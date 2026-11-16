@@ -1,10 +1,11 @@
 // The local merge (design 05-sources, Local items): `factory merge <id>` merges an item's local branch into the
 // factory repo's local base branch, through the sandbox the controller already holds (as the merge check does),
-// so core runs no git. Never automatic. With a forge selected, the merge queues one base push, which
+// so core runs no git. Never automatic. With a forge that pushes a base, the merge queues one base push, which
 // outbound's `local` target brings to the remote later (`BaseSyncSandbox` here, `Forge.pushBase` there).
 
 import type { SourceRef, SourceType, WorkItem } from "./types.js";
 import type { NewThreadDelivery, ThreadLinkField } from "../interfaces/factory-store.js";
+import type { Forge } from "../interfaces/forge.js";
 import type { Sandbox } from "../interfaces/sandbox.js";
 
 /**
@@ -135,4 +136,14 @@ export function canReadLocal(sandbox: Sandbox | undefined): sandbox is LocalRead
 export function canMergeLocal(sandbox: Sandbox | undefined): sandbox is LocalMergeSandbox {
   const s = sandbox as Partial<LocalMergeSandbox> | undefined;
   return !!s && typeof s.mergeLocal === "function" && typeof s.localConflicts === "function";
+}
+
+/**
+ * The controller's forge and link reader (issue #273; design 05-sources, Local items): a selected forge is both.
+ * With none, `local` (the local forge compose builds) reads links, and is the forge too only when it pushes the base
+ * (`merge_queue.push_base` and an origin), so the default stays no forge, no push row and no remote call.
+ */
+export function forgeRoles(selected: Forge | null, local: Forge): { forge: Forge | null; links: Forge } {
+  if (selected) return { forge: selected, links: selected };
+  return { forge: local.pushBase ? local : null, links: local };
 }

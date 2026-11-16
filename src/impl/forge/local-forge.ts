@@ -1,19 +1,25 @@
 import { fixReferences, isRevertSubject, revertedShas, subjectOf, unique } from "../../core/links.js";
 import type { SourceRef } from "../../core/types.js";
-import type { BaseChecks, ChangeLinks, Forge, ForgePollResult, PrChecks, PrMergeResult } from "../../interfaces/forge.js";
+import type { BaseChecks, BasePushInput, ChangeLinks, Forge, ForgePollResult, PrChecks, PrMergeResult } from "../../interfaces/forge.js";
+import { pushBaseToOrigin } from "../git/base-push.js";
 
 /**
  * The local forge (docs/plugins/forge.md): changes live in the factory's own repository, named by their branch, so a
  * change ref is a branch name and an item's `change_url` stays null. It answers every read with nothing, makes no
- * write and no outbound call; it holds no state. The verdict unit reads links through it when config selects no forge.
+ * PR write and no API call; it holds no state. The verdict unit reads links through it when config selects no forge.
+ * Given the base branch (`merge_queue.push_base` on and an origin, local.plugin.ts) it has `pushBase`, the GitHub
+ * forge's git push of the base to the factory repo's origin; without it, no `pushBase` and a local merge queues none.
  */
 export class LocalForge implements Forge {
   readonly ref_type = "local_change";
   /** One change ref: the branch prefix and a branch name after it, ending on a word character (not on `.` or `/`). */
   private readonly ref: RegExp;
+  /** The base push (design 05-sources, Local items); no property at all unless the base branch is given. */
+  declare readonly pushBase?: (input: BasePushInput) => Promise<void>;
 
-  constructor(branchPrefix: string) {
+  constructor(branchPrefix: string, pushBaseBranch: string | null = null) {
     this.ref = new RegExp(`(${branchPrefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\w-]+(?:[./][\\w-]+)*)`);
+    if (pushBaseBranch !== null) this.pushBase = (input) => pushBaseToOrigin(pushBaseBranch, input);
   }
 
   /** Reverted shas, the branches a `Revert` subject names (no reverting change: a local revert has none), fix refs. */

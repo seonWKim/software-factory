@@ -11,6 +11,7 @@ import type { EgressChannel, EgressScanner, ScanResult } from "../src/interfaces
 import { PackEntriesStore, addLine, addPack, canonicalJson, descriptionHash, moduleHash, readPointer } from "../src/packs/pack-entries.store.js";
 import { serverDescriptor } from "../src/import/mcp-servers.js";
 import { discoverMigrations } from "../src/state/index.js";
+import { settingValues } from "../src/core/settings.js";
 import type { WorkerDeps } from "../src/worker/index.js";
 import { WorkerPool } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
@@ -188,7 +189,8 @@ describe("packs: prompts", () => {
     expect(loaded.packs[0]).toEqual({ layer: "base", dir: REPO_ROOT });
     for (const name of ["triage", "implement", "review", "resolve", "improve"] as const) {
       const base = readFileSync(join(REPO_ROOT, "prompts", `${name}.md`), "utf8");
-      const filled = fillPrompt(base, loaded.config.repo, loaded.plugins.forge ?? "local", loaded.config.toolchain);
+      const limits = settingValues(`${loaded.config.repo.owner}/${loaded.config.repo.name}`, loaded.config.settings);
+      const filled = fillPrompt(base, loaded.config.repo, loaded.plugins.forge ?? "local", loaded.config.toolchain, limits);
       if (name === "triage") expect(loaded.prompts.triage.startsWith(filled.trimEnd())).toBe(true);
       else expect(loaded.prompts[name]).toBe(filled);
     }

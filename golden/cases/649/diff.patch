@@ -1,0 +1,165 @@
+diff --git a/factory.config.json b/factory.config.json
+index 9c3b2613..77b658d7 100644
+--- a/factory.config.json
++++ b/factory.config.json
+@@ -82,7 +82,7 @@
+   "hotspot_weight": 3.0,
+   "hotspot_paths": ["src/impl/store/sqlite/schema.ts", "src/impl/store/mysql/schema.ts", "src/core/controller.ts", "src/core/worker.ts", "docs/design.md", "SET_UP.md"],
+   "mechanical_weight": 0.25,
+-  "mechanical_paths": ["src/impl/store/mysql/migrations.ts", "migrations/mysql/", "docs/design/", "docs/design.md", "docs/plugins.md", "docs/plugins/"],
++  "mechanical_paths": ["src/impl/store/mysql/migrations.ts", "docs/design/", "docs/design.md", "docs/plugins.md", "docs/plugins/"],
+   "path_companions": [
+     { "when": "src/impl/store/sqlite/schema.ts", "also": ["migrations/mysql/", "src/impl/store/mysql/migrations.ts"] },
+     { "when": "src/impl/store/mysql/schema.ts", "also": ["migrations/mysql/", "src/impl/store/mysql/migrations.ts"] },
+diff --git a/src/core/coordination.ts b/src/core/coordination.ts
+index e753afd8..8d5d2a91 100644
+--- a/src/core/coordination.ts
++++ b/src/core/coordination.ts
+@@ -39,12 +39,11 @@ export const DEFAULT_HOTSPOTS: readonly string[] = [
+ 
+ /**
+  * Default `mechanical_paths` (design §5, issue #297): files two items usually change only by adding lines or new
+- * files (the MySQL migration runner and its step folder, the design and plugin indexes and topic files). Their
++ * files (the MySQL migration runner, the design and plugin indexes and topic files). Their
+  * conflicts are merged in code (src/core/mechanical.ts), so they weigh `mechanical_weight` and are never hotspots.
+  */
+ export const DEFAULT_MECHANICAL: readonly string[] = [
+   "src/impl/store/mysql/migrations.ts",
+-  "migrations/mysql/",
+   "docs/design/",
+   "docs/design.md",
+   "docs/plugins.md",
+diff --git a/tests/commands-cursor.test.ts b/tests/commands-cursor.test.ts
+index bf5162ef..e859fcc0 100644
+--- a/tests/commands-cursor.test.ts
++++ b/tests/commands-cursor.test.ts
+@@ -2,14 +2,13 @@ import { mkdtempSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { describe, expect, it } from "vitest";
+-import step from "../migrations/mysql/0042-commands-cursor.js";
+-import type { Row, StepDb, Value } from "../migrations/step.js";
+ import { migrateSqlite } from "../src/impl/store/sqlite/rehearse.js";
+ import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
+ import { MIGRATIONS_TABLE } from "../src/state/index.js";
++import type { Row } from "../src/state/sql-driver.js";
+ 
+-// Issue #467: the `commands` cursor starts from the old `intake:local` cursor once, by migration, instead of a
+-// fallback read on every tick. SQLite: the inbound migration; MySQL: step 0042, driven here by a scripted StepDb.
++// Issue #467: the `commands` cursor starts from the old `intake:local` cursor once, by the inbound migration,
++// instead of a fallback read on every tick.
+ 
+ const MIGRATION = "20261111T1200-inbound-commands-cursor";
+ const noSteps = { topicTables: async () => undefined, projectKeys: async () => 0 };
+@@ -36,33 +35,6 @@ async function query(file: string, sql: string): Promise<Row[]> {
+ const migrate = async (file: string) => expect(await migrateSqlite(file, "apply", noSteps, () => undefined)).toBe(0);
+ const sqliteCursors = (file: string) => query(file, "SELECT name, value FROM inbound_cursors ORDER BY name");
+ 
+-/**
+- * A MySQL database as step 0042 sees it: a cursor table named `table` holding `cursors`. Answers only the three
+- * statements the step sends, so a changed statement fails the test instead of passing unread.
+- */
+-function scriptedDb(table: "inbound_cursors" | "cursors", cursors: Record<string, string>): StepDb & { cursors: Map<string, string> } {
+-  const state = new Map(Object.entries(cursors));
+-  const guarded = (sql: string, p: readonly Value[] | undefined, from: number) => {
+-    expect(sql).toContain(`FROM ${table} o WHERE o.name = ? AND NOT EXISTS (SELECT 1 FROM ${table} c WHERE c.name = ?)`);
+-    const [legacy, commands] = [String(p![from]), String(p![from + 1])];
+-    return state.has(commands) || !state.has(legacy) ? [] : [{ value: state.get(legacy)! }];
+-  };
+-  return {
+-    cursors: state,
+-    async all(sql, params) {
+-      if (sql.includes("information_schema.tables")) return [{ t: table }, { t: "unrelated" }];
+-      if (sql.startsWith("SELECT o.value ")) return guarded(sql, params, 0);
+-      throw new Error(`unscripted query: ${sql}`);
+-    },
+-    async run(sql, params) {
+-      expect(sql.startsWith(`INSERT INTO ${table} (name, value) SELECT ?, o.value `)).toBe(true);
+-      const rows = guarded(sql, params, 1);
+-      for (const r of rows) state.set(String(params![0]), String(r.value));
+-      return rows.length;
+-    },
+-  };
+-}
+-
+ describe("the commands cursor starts from intake:local, once", () => {
+   it("SQLite: a store with only intake:local gets commands with the same value", async () => {
+     const file = await sqliteWith({ "intake:local": "7", other: "x" });
+@@ -98,29 +70,4 @@ describe("the commands cursor starts from intake:local, once", () => {
+     expect(await sqliteCursors(file)).toEqual([{ name: "intake:local", value: "9" }]);
+     expect(await query(file, `SELECT id FROM ${MIGRATIONS_TABLE} WHERE id = '${MIGRATION}'`)).toEqual([{ id: MIGRATION }]);
+   });
+-
+-  for (const table of ["inbound_cursors", "cursors"] as const) {
+-    it(`MySQL step 0042 on ${table}: plan lists the commands row, apply writes it, then plan is empty`, async () => {
+-      const db = scriptedDb(table, { "intake:local": "7", other: "x" });
+-      expect(await step.plan(db)).toEqual([{ table, name: "commands", value: "7" }]);
+-      expect(db.cursors.get("commands")).toBeUndefined();
+-      await step.apply(db);
+-      expect(Object.fromEntries(db.cursors)).toEqual({ "intake:local": "7", other: "x", commands: "7" });
+-      expect(await step.plan(db)).toEqual([]);
+-      await step.apply(db);
+-      expect(Object.fromEntries(db.cursors)).toEqual({ "intake:local": "7", other: "x", commands: "7" });
+-    });
+-  }
+-
+-  it("MySQL step 0042: a store that already has commands keeps its value, and plan lists nothing", async () => {
+-    const db = scriptedDb("inbound_cursors", { "intake:local": "7", commands: "12" });
+-    expect(await step.plan(db)).toEqual([]);
+-    await step.apply(db);
+-    expect(Object.fromEntries(db.cursors)).toEqual({ "intake:local": "7", commands: "12" });
+-  });
+-
+-  it("MySQL step 0042: refuses a database with no cursor table", async () => {
+-    const db: StepDb = { all: async () => [], run: async () => 0 };
+-    await expect(step.plan(db)).rejects.toThrow(/neither inbound_cursors nor cursors/);
+-  });
+ });
+diff --git a/tests/config-keys.test.ts b/tests/config-keys.test.ts
+index 7575dfa2..12894c09 100644
+--- a/tests/config-keys.test.ts
++++ b/tests/config-keys.test.ts
+@@ -299,7 +299,7 @@ describe("coordination config (design §5, 2026-11-03)", () => {
+   it("mechanical_paths and mechanical_weight load with their defaults, and compose passes them into the coordination config", async () => {
+     const { coordinationConfig } = await import("../src/core/config.js");
+     const { DEFAULT_MECHANICAL } = await import("../src/core/coordination.js");
+-    const defaults = ["src/impl/store/mysql/migrations.ts", "migrations/mysql/", "docs/design/", "docs/design.md", "docs/plugins.md", "docs/plugins/"];
++    const defaults = ["src/impl/store/mysql/migrations.ts", "docs/design/", "docs/design.md", "docs/plugins.md", "docs/plugins/"];
+     expect(DEFAULT_MECHANICAL).toEqual(defaults);
+     expect(coordinationConfig({})).toMatchObject({ mechanical: defaults, mechanical_weight: 0.25 });
+     expect(REAL).toMatchObject({ mechanical_paths: defaults, mechanical_weight: 0.25 });
+diff --git a/tests/coordination.test.ts b/tests/coordination.test.ts
+index c91ee5ab..6d8231b2 100644
+--- a/tests/coordination.test.ts
++++ b/tests/coordination.test.ts
+@@ -102,12 +102,14 @@ describe("coordination cost (design §5, 2026-11-03)", () => {
+ 
+ describe("mechanical paths (design §5, issue #297)", () => {
+   const holder = (files: string[]): Holder => ({ work_item_id: "wi_b", project: "p", ref: "#2", kind: "running", files, fallback: false });
++  /** The defaults plus a step folder this test sets itself, so the check does not depend on a default folder. */
++  const STEPS = { ...S, mechanical: [...S.mechanical, "db/steps/"] };
+ 
+   it("a mechanical path is never a hotspot, even when hotspot_paths lists it, and weighs mechanical_weight", () => {
+     expect(S.hotspots).toContain("docs/design.md");
+     expect(pathWeight("docs/design.md", none, S)).toEqual({ path: "docs/design.md", weight: 0.25, conflicts: 0, hotspot: false, mechanical: true });
+     // A file under a mechanical folder too; a folder that only holds mechanical files is not one.
+-    expect(pathWeight("migrations/mysql/0025-x.sql", none, S)).toMatchObject({ weight: 0.25, mechanical: true });
++    expect(pathWeight("db/steps/0025-x.sql", none, STEPS)).toMatchObject({ weight: 0.25, mechanical: true });
+     expect(pathWeight("docs/", none, S).mechanical).toBeUndefined();
+     expect(pathWeight("docs/design/05-coordination.md", none, { ...S, mechanical_weight: 0.5 }).weight).toBe(0.5);
+     // Listed in both: still mechanical.
+@@ -120,10 +122,10 @@ describe("mechanical paths (design §5, issue #297)", () => {
+   });
+ 
+   it("a step file, a History line and an index line each: 0.5, so the two run side by side", () => {
+-    const a = ["migrations/mysql/0025-a.sql", "docs/design/05-coordination.md", "docs/design.md", "lib/a.ts"];
+-    const b = ["migrations/mysql/0025-b.sql", "docs/design/05-coordination.md", "docs/design.md", "lib/b.ts"];
+-    expect(coordinationCost(a, b, none, S).cost).toBe(0.5);
+-    expect(claimDecision(holdsOn({ work_item_id: "wi_a", project: "p", files: a }, [holder(b)], none, S))).toBe("free");
++    const a = ["db/steps/0025-a.sql", "docs/design/05-coordination.md", "docs/design.md", "lib/a.ts"];
++    const b = ["db/steps/0025-b.sql", "docs/design/05-coordination.md", "docs/design.md", "lib/b.ts"];
++    expect(coordinationCost(a, b, none, STEPS).cost).toBe(0.5);
++    expect(claimDecision(holdsOn({ work_item_id: "wi_a", project: "p", files: a }, [holder(b)], none, STEPS))).toBe("free");
+   });
+ 
+   it("two items that both change src/controller/router/router.ts are still held", () => {

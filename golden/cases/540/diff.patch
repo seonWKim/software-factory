@@ -1,0 +1,331 @@
+diff --git a/docs/design/09-dashboard-app.md b/docs/design/09-dashboard-app.md
+index 9da7a419..cdcb063c 100644
+--- a/docs/design/09-dashboard-app.md
++++ b/docs/design/09-dashboard-app.md
+@@ -15,7 +15,7 @@
+ 
+   - **The app is the default (steps 3–5, 2026-11-07).** `/` answers 302 to `/app/`; the server-rendered page moved to `/classic` (its own links and filter form point there; `/items/<id>` is unchanged) and stays until the app covers everything it shows. Pages: **Floor** (the supervisor banner, then Needs you (ready to merge, needs approval, needs a human, stuck), Running now, the first 10 queued runs, then the last-24-h numbers), **Work items** (the API's ranked list with the state filter and search; an item page under `/app/items/<id>` with its facts, runs with their errors and the timeline), **Workers** (lease owners with runs, and the running runs), **Queue** (every queued run in claim order, with when it may start), **Health** (the doctor checks, failing first; read every 30 s, not 3 s) and **Settings** (see below). `/api/v1/overview` now also returns `factory`, the supervisor status the banner shows (absent without a status function, null when stopped). Client routing is `history.pushState` under `/app/` (`web/src/nav.tsx`), no router dependency. The item page also has the item's command buttons (below, issue #228).
+ 
+-  - **Settings page layout and object values (decision changed 2026-11-10, owner feedback; before: the pending proposals sat inside "Standing approvals" near the bottom, the PR-only keys were headed "Changes by PR only" with a "changes by PR only" note per row, and an object value showed as one JSON line, see History).** The page opens with "Pending proposals" (its own section, the one part of the page that waits for an answer), then Mode, Commands from the page, Settable keys, Standing approvals, the PR-only keys and History. The PR-only keys are headed "Change only in factory.config.json (by a reviewed PR)" with one line under it: they set the guards, secrets, permissions, plugins and what agents may read, so a person reviews every change; the page and `factory settings set` refuse them; to change one, edit `factory.config.json` in a pull request. The API's per-row `note` is gone (it repeated the heading). A JSON object value (`model_by`, `models`, `hold_policy`, as file value or default) shows as one `path → value` line per entry with nested objects flattened (`implement.1 → standard`); above three entries the list sits behind a `<details>` summary of the top-level keys, so the row stays a few lines tall. The `json` edit field is a textarea of the pretty-printed value (up to 16 rows), behind the same kind of summary when the value is long. The value, file value and applies-at columns have a minimum width and no `break-all`, so a long value never squeezes a column to a few characters; below `sm` the rows are cards as before.
++  - **Settings page layout and object values (decision changed 2026-11-10, owner feedback; before: see History).** The page opens with "Pending proposals" (its own section, the one part of the page that waits for an answer), then Mode, Commands from the page, Settable keys, Standing approvals, the PR-only keys and History. "Pending proposals" shows only when a proposal waits (no heading or list otherwise); Standing approvals keeps the rules and switches. The PR-only keys are headed "Set in factory.config.json only" with one line: they can't be changed here and change only through a reviewed PR to `factory.config.json`. The API's per-row `note` is gone (it repeated the heading). A JSON object value (`model_by`, `models`, `hold_policy`, as file value or default) shows as one `path → value` line per entry with nested objects flattened (`implement.1 → standard`); above three entries the cell is a one-line summary (`{triage, implement, review, …}`) with a Show toggle that opens the pretty-printed JSON, so the row stays short. The `json` edit field is a textarea of the pretty-printed value (2-space indent) sized to its line count (up to 16 rows, then it scrolls); saving sends compact JSON, and text that is not JSON is sent unchanged so the server's refusal shows beside the field. The value, file value and applies-at columns have a minimum width and no `break-all`, so a long value never squeezes a column to a few characters; below `sm` the rows are cards as before.
+   - **Settings page writes (decision changed 2026-11-07, issue #236).** The Settings page (`web/src/views/settings.tsx`) shows a row per settable key with its value, source, file value and "applies at", a number field, a switch (a plain button with `role=switch`, `web/src/components/ui/switch.tsx`, no new dependency), a text field per tier for `models` (no model picker: the factory has no model list) or a JSON field for `model_by`, a reset button when an override exists, and for `max_attempts`, `max_diff_lines` and `max_diff_files` a row for the configured repo. A refusal shows next to its field. The PR-only keys are listed read-only, then the last 50 audit rows. Writes are `POST /api/v1/settings` with the CSRF token in `x-csrf-token`, behind the Host, Origin, Content-Type and token guards; the endpoint, its checks and the no-forge project lookup are in `08-settings.md`. It was the dashboard's only write until item commands (below, issue #227), which the item page sends (issue #228), and "Resume now" (below, issue #291).
+   - **Claim pauses and "Resume now" (decision changed 2026-11-07, issue #291; design §5 Restarts).** `GET /api/v1/pauses` (`src/ui/pause-api.ts`, store reads only) returns `pauses`, each claim pause in effect (`rate_limit`, `forge_auth`, `preflight_access`, `model_stall`, in that order) with `name` and `ends_at` (for `model_stall` the next probe time), and `csrf_token` (the Settings token; null when the resume route is not wired). `POST /api/v1/pauses/resume` with `{ "name": <pause> }` ends one through `endClaimPause`, the same code `factory resume <name>` runs, and answers `{ name, ended, pauses }`; a second resume answers `ended: false`. Guards, in order, all before any store write: Host, Origin equal to the Host's own origin, Content-Type `application/json`, the CSRF token in `x-csrf-token`, the body size, JSON, a known pause name (400 otherwise), then the owner check: the page's factory user (a `local` account linked to a user, else `cli_user`; none is a 403) must be allowed `approve_spec` on the configured project (403 otherwise, nothing written). The UI process still makes no forge call: the check runs the configured auth plugin over the local grants only (a remote grant such as `github-permission` is left out there, so grant the role in `permissions.static` or use `factory resume`). Each resume writes one log line with the factory user ID. **App:** the Floor and Health pages show a "Claim pauses" section above their other sections while any pause is in effect: each pause's name, what it stops and when it ends, and a "Resume now" button that posts with the token; the endpoint's error shows next to that button, and a resumed pause leaves the list. No section while none is in effect. `/classic` is unchanged.
+   - **Standing approvals on the Settings page (decision changed 2026-11-08, issue #300, phase 3 of #293; see `05-standing-approvals.md`).** `GET /api/v1/standing` (`src/ui/standing-api.ts`, store reads only) returns `rules`, each rule a person can turn on (only `spec-t1`) with `rule`, `gate`, `tier`, `threshold` (the effective `standing_approvals.threshold`: file, override or default, the Settings resolve), `enabled` (off when no row is stored), `set_by` (a user ID), `created_at`, `updated_at` and `last_used_at` (always null: not recorded in this phase, the page shows "not recorded"); `proposals`, the pending ones (`id`, `rule`, `run_length`, `threshold`, `created_at`): stored, its rule not on, and the rule not written since the proposal was stored; and `csrf_token` (null when the write is not wired). Every text value passes the Withholder. `POST /api/v1/standing` with `{ rule, enabled, proposal? }` writes the rule with `putStandingRule` (`set_by` = the page's factory user ID) and one log line (`standing rule on|off`, rule, user ID, proposal), and answers `{ changed, ...the read model }`. Guards, in order, all before any store write, the same as the resume route: Host, Origin equal to the Host's own origin, Content-Type `application/json`, the CSRF token in `x-csrf-token`, the body size, JSON; then the body (400: not `{ rule, enabled, proposal? }`, a rule other than `spec-t1`, or a proposal not stored for that rule); then the owner check, the resume route's own principal and `approve_spec` authorize (403, nothing written). A rule already in the asked state is not written (`changed: false`; no row stored counts as off), unless the body names a pending proposal: then the answer is written so the proposal leaves the list. The route is wired with the pause routes (absent: a POST is a 405). No audit row (a stored per-person audit record is a follow-up). **App:** the Settings page shows a "Standing approvals" section: a switch per rule with its gate, tier, threshold, who set it, created and last used, and Accept and Decline per pending proposal; a refusal shows beside its item.
+@@ -44,7 +44,7 @@
+ - **One note box, approve at once** (decision changed 2026-11-10, issue #526). Before: the item page had one note box for every command, so an approver scrolled up to the spec and typed answers into it, and approve was sent on the first click with no confirm step.
+ - **No automated responsive check** (decision changed 2026-11-10). Before: only the ui-reviewer agent looked at other widths, by hand, at 1280px and 390px wide, and no check ran on a PR, so changes made without a browser (background agents, the factory's own PRs) could break a narrow or short window unnoticed.
+ - **No improve run from the dashboard** (decision changed 2026-11-10, issue #508). Before: the dashboard had five write routes and no way to start an improve run; the Health panel was read-only and every classic page allowed exactly one script by hash.
+-- **Settings page layout and object values** (decision changed 2026-11-10, owner feedback). Before: the pending proposals were the last part of "Standing approvals"; the PR-only keys were headed "Changes by PR only" with that note on every row and no reason; an object value was one JSON line (`break-all` in the file value column), and the `json` field a four-row textarea of the same line.
++- **Settings page layout and object values** (decision changed 2026-11-10, owner feedback). Before: the pending proposals were the last part of "Standing approvals"; the PR-only keys were headed "Changes by PR only" with that note on every row and no reason; an object value was one JSON line (`break-all` in the file value column), and the `json` field a four-row textarea of the same line. The earlier layout: the PR-only section was headed "Change only in factory.config.json (by a reviewed PR)" with a longer note, the empty proposals section showed "No proposal is waiting.", and a long object value sat behind a `<details>` summary.
+ - **Thread readability** (decision changed 2026-11-09). Before: the markdown renderer showed `<details>` as text, all sections looked alike, and a thread entry's header was a line of grey text above a full-width body.
+ - **Dashboard reject and verdict** (decision changed 2026-11-09, issue #452). Before: the controller applied only `approve` and `merge` from the page; Reject and Verdict were recorded and then refused (`only \`approve\` and \`merge\` are applied from an app request`), and no reject closed an open PR.
+ - **No users view** (decision changed 2026-11-08, issue #445). Before: the dashboard had no users view and no write route for users; `factory users` (owner only) was the only way to read or change local roles, and nothing showed whether a role came from a local row, a static grant or GitHub.
+diff --git a/tests/ui-settings-page.test.tsx b/tests/ui-settings-page.test.tsx
+index 38a66551..a2c11c28 100644
+--- a/tests/ui-settings-page.test.tsx
++++ b/tests/ui-settings-page.test.tsx
+@@ -85,7 +85,7 @@ async function show() {
+   return screen.findByRole("table", { name: "Settable keys" });
+ }
+ 
+-const PR_ONLY = "Change only in factory.config.json (by a reviewed PR)";
++const PR_ONLY = "Set in factory.config.json only";
+ const rowOf = (table: HTMLElement, key: string) => table.querySelector<HTMLElement>(`tr[data-key="${key}"]`)!;
+ 
+ describe("Settings page", () => {
+@@ -134,8 +134,8 @@ describe("Settings page", () => {
+   it("lists the PR-only keys read-only, with no control, under a heading that says where and why they change", async () => {
+     await show();
+     const section = screen.getByRole("region", { name: PR_ONLY });
+-    expect(section.textContent).toContain("a person must review every change");
+-    expect(section.textContent).toContain("edit it in factory.config.json in a pull request");
++    expect(section.textContent).toContain("can't be changed here");
++    expect(section.textContent).toContain("only through a reviewed PR to factory.config.json");
+     const pr = screen.getByRole("table", { name: PR_ONLY });
+     for (const key of ["plugins", "secrets"]) {
+       const r = pr.querySelector<HTMLElement>(`tr[data-key="${key}"]`)!;
+@@ -225,28 +225,33 @@ describe("Settings page", () => {
+     expect(within(rowOf(table, "max_loops")).queryByRole("alert")).toBeNull();
+   });
+ 
+-  it("shows an object value as one line per entry behind a summary, and edits it as pretty-printed JSON", async () => {
++  it("shows a long object value as a one-line summary with a Show toggle, and a short one in full", async () => {
+     const table = await show();
+     const modelBy = rowOf(table, "model_by");
+-    // The file value: a summary of the keys, opening to `path → value` lines with nested objects flattened.
+     const file = modelBy.querySelectorAll("td")[3]!;
+-    expect(file.querySelector("summary")!.textContent).toBe("4 keys: triage, implement, review, retry_up");
+-    const lines = [...file.querySelectorAll("[data-entries] dt")].map((dt) => `${dt.textContent} → ${dt.nextElementSibling!.textContent}`);
+-    expect(lines).toEqual(["triage → cheap", "implement.1 → standard", "implement.4 → strong", "review → standard", "retry_up → true"]);
+-    expect(file.textContent).not.toContain(MODEL_BY);
+-    // The edit field: one entry per line, behind its own summary.
+-    const field = within(modelBy).getByLabelText("model_by") as HTMLTextAreaElement;
+-    expect(field.value).toBe(JSON.stringify(JSON.parse(MODEL_BY), null, 2));
+-    expect(field.closest("details")!.querySelector("summary")!.textContent).toContain("4 keys");
+-    // A short object is listed in full, with no summary; its default too.
++    expect(file.querySelector("[data-json-summary]")!.textContent).toBe("{triage, implement, review, …}");
++    expect(file.querySelector("[data-json-full]")).toBeNull();
++    fireEvent.click(within(file).getByRole("button", { name: "Show" }));
++    expect(file.querySelector("[data-json-full]")!.textContent).toBe(JSON.stringify(JSON.parse(MODEL_BY), null, 2));
++    expect(file.className).not.toContain("break-all");
++    // A short object is listed in full, with no toggle; its default too.
+     const hold = rowOf(table, "hold_policy");
+-    expect(hold.querySelector("summary")).toBeNull();
++    expect(within(hold).queryByRole("button", { name: "Show" })).toBeNull();
+     expect(hold.querySelectorAll("td")[3]!.textContent).toBe("not set; default:modehold");
+   });
+ 
+-  it("puts the pending proposals first on the page", async () => {
+-    await show();
+-    const first = document.querySelector("section");
+-    expect(first?.getAttribute("aria-label")).toBe("Pending proposals");
++  it("edits a JSON key as pretty-printed text and saves it compact; invalid text is sent unchanged", async () => {
++    const table = await show();
++    const modelBy = rowOf(table, "model_by");
++    const field = within(modelBy).getByLabelText("model_by") as HTMLTextAreaElement;
++    expect(field.value).toBe(JSON.stringify(JSON.parse(MODEL_BY), null, 2));
++    expect(field.rows).toBe(Math.min(field.value.split("\n").length, 16));
++    const edited = JSON.stringify({ triage: "strong" }, null, 4);
++    fireEvent.change(field, { target: { value: edited } });
++    await act(async () => fireEvent.click(within(modelBy).getByRole("button", { name: "Save model_by" })));
++    expect(JSON.parse(posts.at(-1)!.init.body as string).value).toBe(JSON.stringify(JSON.parse(edited)));
++    fireEvent.change(field, { target: { value: "{not json" } });
++    await act(async () => fireEvent.click(within(modelBy).getByRole("button", { name: "Save model_by" })));
++    expect(JSON.parse(posts.at(-1)!.init.body as string).value).toBe("{not json");
+   });
+ });
+diff --git a/tests/ui-standing-page.test.tsx b/tests/ui-standing-page.test.tsx
+index 2a87fd31..1101df71 100644
+--- a/tests/ui-standing-page.test.tsx
++++ b/tests/ui-standing-page.test.tsx
+@@ -82,6 +82,24 @@ describe("Standing approvals section (stubbed API)", { timeout: TEST_MS }, () =>
+     expect(screen.getByRole("region", { name: "Standing approvals" })).toBeTruthy();
+   });
+ 
++  it("renders Pending proposals above Mode, with Accept and Decline only there", async () => {
++    const list = await show();
++    const proposals = screen.getByRole("region", { name: "Pending proposals" });
++    const mode = screen.getByRole("region", { name: "Mode" });
++    expect(proposals.compareDocumentPosition(mode) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
++    expect(within(list).queryByRole("button", { name: "Accept" })).toBeNull();
++    expect(within(list).queryByRole("button", { name: "Decline" })).toBeNull();
++    expect(screen.getAllByRole("button", { name: "Accept" })).toHaveLength(1);
++  });
++
++  it("renders no Pending proposals section when none wait, and the rules still show", async () => {
++    view.proposals = [];
++    const list = await show();
++    expect(screen.queryByText("Pending proposals")).toBeNull();
++    expect(screen.queryByRole("list", { name: "Pending proposals" })).toBeNull();
++    expect(within(list).getByRole("switch", { name: "spec-t1" })).toBeTruthy();
++  });
++
+   it("the switch posts the rule and its new state with the CSRF token", async () => {
+     const list = await show();
+     fireEvent.click(within(ruleItem(list, "spec-t1")).getByRole("switch", { name: "spec-t1" }));
+diff --git a/web/src/views/settings.tsx b/web/src/views/settings.tsx
+index 617985a7..0d103d6f 100644
+--- a/web/src/views/settings.tsx
++++ b/web/src/views/settings.tsx
+@@ -15,7 +15,7 @@ import { ProposalsSection, StandingSection } from "./standing.js";
+ // the same checks as `factory settings`; a refusal is shown next to the field it came from.
+ 
+ const TIERS = ["cheap", "standard", "strong"] as const;
+-const PR_ONLY_TITLE = "Change only in factory.config.json (by a reviewed PR)";
++const PR_ONLY_TITLE = "Set in factory.config.json only";
+ const SOURCE_TONE: Record<string, string> = { override: "needs_approval", file: "", default: "" };
+ 
+ const input =
+@@ -77,6 +77,15 @@ function pretty(text: string): string {
+   }
+ }
+ 
++/** `text` as compact JSON; text that is not JSON as it is, so the server's refusal shows beside the field. */
++function compact(text: string): string {
++  try {
++    return JSON.stringify(JSON.parse(text));
++  } catch {
++    return text;
++  }
++}
++
+ /** An object's entries as `path → value`, nested objects flattened to dotted paths ("implement.1 → standard"). */
+ function entries(value: unknown, path = ""): [string, string][] {
+   if (typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length > 0) {
+@@ -87,33 +96,49 @@ function entries(value: unknown, path = ""): [string, string][] {
+ 
+ /** Up to this many entries an object is listed in full; above it, a summary that opens to the list. */
+ const SHORT_OBJECT = 3;
++/** The JSON editor grows with its line count up to this many rows, then scrolls. */
++const MAX_ROWS = 16;
+ 
+ /** An object's one-line summary: its top-level keys. */
+ const summaryOf = (obj: Record<string, unknown>) => `${Object.keys(obj).length} keys: ${Object.keys(obj).join(", ")}`;
+ 
++/** An object's one-line summary for the file value column: its first keys, then an ellipsis ("{triage, implement, review, …}"). */
++const braces = (obj: Record<string, unknown>) => {
++  const keys = Object.keys(obj);
++  return `{${keys.slice(0, SHORT_OBJECT).join(", ")}${keys.length > SHORT_OBJECT ? ", …" : ""}}`;
++};
++
+ /**
+- * A setting value: a JSON object as one `key → value` line per entry (behind a summary of its keys when it has more
+- * than SHORT_OBJECT entries, so a long value never makes its row tall), anything else as its text.
++ * A setting value: a JSON object as one `key → value` line per entry when it has up to SHORT_OBJECT entries; a longer
++ * one as a one-line summary of its keys with a Show toggle that opens the pretty-printed JSON, so a long value never
++ * makes its row tall. Anything else as its text.
+  */
+ function JsonValue({ text }: { text: string }) {
++  const [open, setOpen] = useState(false);
+   const obj = asObject(text);
+   if (obj === null || Object.keys(obj).length === 0) return <span className="font-mono text-xs break-words">{text}</span>;
+-  const list = (
+-    <dl data-entries className="grid grid-cols-[auto_minmax(10ch,1fr)] gap-x-2 font-mono text-xs">
+-      {entries(obj).map(([k, v]) => (
+-        <Fragment key={k}>
+-          <dt className="text-zinc-600 dark:text-zinc-400">{k}</dt>
+-          <dd className="min-w-0 break-words">{v}</dd>
+-        </Fragment>
+-      ))}
+-    </dl>
+-  );
+-  if (entries(obj).length <= SHORT_OBJECT) return list;
++  if (entries(obj).length <= SHORT_OBJECT) {
++    return (
++      <dl data-entries className="grid grid-cols-[auto_minmax(10ch,1fr)] gap-x-2 font-mono text-xs">
++        {entries(obj).map(([k, v]) => (
++          <Fragment key={k}>
++            <dt className="text-zinc-600 dark:text-zinc-400">{k}</dt>
++            <dd className="min-w-0 break-words">{v}</dd>
++          </Fragment>
++        ))}
++      </dl>
++    );
++  }
+   return (
+-    <details>
+-      <summary className="cursor-pointer text-xs text-pretty break-words text-zinc-600 dark:text-zinc-400">{summaryOf(obj)}</summary>
+-      <div className="mt-1">{list}</div>
+-    </details>
++    <div>
++      <p className="flex flex-wrap items-center gap-x-2 font-mono text-xs text-pretty break-words text-zinc-600 dark:text-zinc-400">
++        <span data-json-summary>{braces(obj)}</span>
++        <button type="button" aria-expanded={open} className="font-sans underline" onClick={() => setOpen(!open)}>
++          {open ? "Hide" : "Show"}
++        </button>
++      </p>
++      {open && <pre data-json-full className="mt-1 font-mono text-xs break-words whitespace-pre-wrap">{pretty(text)}</pre>}
++    </div>
+   );
+ }
+ 
+@@ -127,7 +152,7 @@ function Editor({ row, label, value, token, project, floating = false }: { row:
+   const [tiers, setTiers] = useState<Record<string, string> | null>(null);
+   const target = project === undefined ? {} : { project };
+   const save = async (text: string) => {
+-    if (await write({ action: "set", key: row.key, value: text, ...target })) {
++    if (await write({ action: "set", key: row.key, value: row.kind === "json" ? compact(text) : text, ...target })) {
+       setDraft(null);
+       setTiers(null);
+     }
+@@ -167,7 +192,7 @@ function Editor({ row, label, value, token, project, floating = false }: { row:
+     const obj = asObject(value);
+     const form = (
+       <form className="flex flex-col items-start gap-2" onSubmit={(e) => (e.preventDefault(), void save(shown))}>
+-        <textarea aria-label={label} rows={Math.min(lines, 16)} spellCheck={false} wrap="off" className={cn(input, "w-full min-w-64 font-mono text-xs")} value={shown} onChange={(e) => setDraft(e.target.value)} />
++        <textarea aria-label={label} rows={Math.min(lines, MAX_ROWS)} spellCheck={false} wrap="off" className={cn(input, "max-h-96 w-full min-w-64 overflow-y-auto font-mono text-xs")} value={shown} onChange={(e) => setDraft(e.target.value)} />
+         <Button type="submit" variant="outline" className={textButton} disabled={busy || draft === null} aria-label={`Save ${label}`}>
+           Save
+         </Button>
+@@ -414,9 +439,7 @@ export function SettingsPage() {
+       <StandingSection />
+       <Section title={PR_ONLY_TITLE} count={v.pr_only.length}>
+         <p className="mb-2 text-sm text-pretty text-zinc-600 dark:text-zinc-400">
+-          These keys set the guards, secrets, permissions, plugins and what agents may read, so a person must review every
+-          change: this page and <code>factory settings set</code> refuse them. To change one, edit it in{" "}
+-          <code>factory.config.json</code> in a pull request and merge it after review.
++          These keys can't be changed here; they change only through a reviewed PR to <code>factory.config.json</code>.
+         </p>
+         <Table label={PR_ONLY_TITLE} head={["Key"]}>
+           {v.pr_only.map((p) => (
+diff --git a/web/src/views/standing.tsx b/web/src/views/standing.tsx
+index 46476162..9b5d8bbe 100644
+--- a/web/src/views/standing.tsx
++++ b/web/src/views/standing.tsx
+@@ -1,8 +1,8 @@
+ import { useQueryClient } from "@tanstack/react-query";
+-import { type ReactNode, useState } from "react";
++import { useState } from "react";
+ import { API, type StandingProposalRow, type StandingRuleRow, type StandingView, postStanding, useApi } from "../api.js";
+ import { Button } from "../components/ui/button.js";
+-import { Empty, ErrorNote, Loading, Section } from "../components/ui/parts.js";
++import { ErrorNote, Loading, Section } from "../components/ui/parts.js";
+ import { Switch } from "../components/ui/switch.js";
+ 
+ // Standing approvals on the Settings page (design 05-standing-approvals and §9, issue #300): an on or off switch per
+@@ -80,40 +80,32 @@ function ProposalItem({ proposal, token }: { proposal: StandingProposalRow; toke
+   );
+ }
+ 
+-/** The standing read, or its loading or error state, inside a section; both sections below read it (one fetch). */
+-function WithStanding({ title, count, children }: { title: string; count: (v: StandingView) => number; children: (v: StandingView) => ReactNode }) {
++/** The pending proposals, at the top of the Settings page: the one part of it that waits for an answer. Nothing when none wait. */
++export function ProposalsSection() {
+   const standing = useApi<StandingView>(API.standing);
+   const v = standing.data;
++  if (!v || v.proposals.length === 0) return null;
+   return (
+-    <Section title={title} count={v ? count(v) : undefined}>
+-      {standing.isError ? <ErrorNote error={standing.error} /> : !v ? <Loading rows={2} /> : children(v)}
++    <Section title="Pending proposals" count={v.proposals.length}>
++      <ul aria-label="Pending proposals" className="space-y-2">
++        {v.proposals.map((p) => (
++          <ProposalItem key={p.id} proposal={p} token={v.csrf_token} />
++        ))}
++      </ul>
+     </Section>
+   );
+ }
+ 
+-/** The pending proposals, at the top of the Settings page: the one part of it that waits for an answer. */
+-export function ProposalsSection() {
+-  return (
+-    <WithStanding title="Pending proposals" count={(v) => v.proposals.length}>
+-      {(v) =>
+-        v.proposals.length === 0 ? (
+-          <Empty>No proposal is waiting.</Empty>
+-        ) : (
+-          <ul aria-label="Pending proposals" className="space-y-2">
+-            {v.proposals.map((p) => (
+-              <ProposalItem key={p.id} proposal={p} token={v.csrf_token} />
+-            ))}
+-          </ul>
+-        )
+-      }
+-    </WithStanding>
+-  );
+-}
+-
+ export function StandingSection() {
++  const standing = useApi<StandingView>(API.standing);
++  const v = standing.data;
+   return (
+-    <WithStanding title="Standing approvals" count={(v) => v.rules.length}>
+-      {(v) => (
++    <Section title="Standing approvals" count={v?.rules.length}>
++      {standing.isError ? (
++        <ErrorNote error={standing.error} />
++      ) : !v ? (
++        <Loading rows={2} />
++      ) : (
+         <>
+           <p className={`mb-2 ${muted}`}>
+             A rule that is on approves the specs of its tier that wait at its gate without a reply. Changing one needs approve_spec.
+@@ -126,6 +118,6 @@ export function StandingSection() {
+           </ul>
+         </>
+       )}
+-    </WithStanding>
++    </Section>
+   );
+ }

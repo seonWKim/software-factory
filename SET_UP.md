@@ -11,9 +11,9 @@ It is safe to run again: every question shows its default (your current choice) 
 Every step looks the same: its number and title, one line on why, its question with the default, then a `✓` (done) or `✗` (not done, with what to do) line:
 
 ```
-4. Secrets
+3. Secrets
    The credentials the selected plugins declare; each missing one is asked with hidden input and written only to the secret file.
-   Needed: CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY
+   Needed: CLAUDE_CODE_OAUTH_TOKEN
    Paste CLAUDE_CODE_OAUTH_TOKEN now (hidden input)? [Y/n]
    ...
    ✓ saved CLAUDE_CODE_OAUTH_TOKEN
@@ -51,7 +51,7 @@ It never removes `factory.config.json`, the secret file (unless `ARGS=--secrets`
 
 | Step | Automated | You do |
 |---|---|---|
-| 1. Plugins | Asks whether to sync with GitHub and whether to take work from Slack threads (then the channel IDs). Shows the change to `factory.config.json` as a `-`/`+` diff and writes it when you say yes; only the changed keys (`plugins`, `auth`, `permissions`, `slack`) change. Local only (the default on a new file) selects no GitHub plugin. If you answer no to GitHub and decline the diff, setup still asks for no GitHub secret and checks none | Answer, then confirm the diff |
+| 1. Plugins | Asks whether to sync with GitHub and whether to take work from Slack threads (then the channel IDs). Shows the change to `factory.config.json` as a `-`/`+` diff and writes it when you say yes; only the changed keys (`plugins`, `slack`) change. Local only (the default on a new file) selects no GitHub plugin. If you answer no to GitHub and decline the diff, setup still asks for no GitHub secret and checks none | Answer, then confirm the diff |
 | 2. Secret file | Creates `~/.config/software-factory/.env` (folder `700`, file `600`), outside the repository, with an empty line for each secret the selected plugins need | Press Enter |
 | 3. Secrets | Lists the secrets the selected plugins need, then asks for each missing one with hidden input and writes it to the secret file. The model credential is `CLAUDE_CODE_OAUTH_TOKEN`; with GitHub on, `GITHUB_APP_ID` (App) or `GITHUB_TOKEN` (token, with the settings below); with Slack on, its two tokens. With nothing missing it asks whether to replace one | For the model credential, run `claude setup-token` in a **separate, plain terminal**, sign in in the browser, copy the token it prints (shown once). Paste each at its prompt |
 | 4. Database | Creates or updates the SQLite store under the state folder (the only store) | Press Enter |
@@ -195,7 +195,7 @@ The identity comes from your environment (git config, OS user), so anyone who ca
 
 `task create` takes the item in and queues its triage run; the store must already know the configured repo, so start the factory once first. `approve`, `retry`, `revise`, `reject` and `resolve` work for any work item, a GitHub one included, and only store the command in the command log; the controller reads it on its next poll and applies it with the owner check, so the owner needs no GitHub write access. For a GitHub item the factory also posts one comment on the issue saying who sent which command. That mirror is best effort: while GitHub is down or rate limited the command still applies, and the comment is posted on a later tick. Its replies (the spec, refusals, failures) are stored as the item's messages: read them with `task show`. `merge` is stored the same way; the controller merges the item's local branch `factory/<id>` into your local base branch with a merge commit, writing no checkout and pushing nothing, and closes the item. Only the owner may send it; it applies only to a local item waiting for a merge, and refuses while the base branch is checked out in a worktree (switch that checkout to another branch first) or when the branch conflicts (the reply lists the files). Generated from the command table, `src/core/command-table.ts`; a test fails when this list differs.
 
-With no GitHub plugin selected (the solo default below) nothing ever reaches GitHub: `"auth": "local"`, `"permissions": { "grants": ["static"] }` and `"plugins": { …, "source": ["local"], "broker": "local" }`. Then the factory reads no GitHub credential, fetches no origin, opens no PR, and every item ends with `factory merge` (design `docs/design/05-sources.md`, Local startup).
+With no GitHub plugin selected (the solo default below) nothing ever reaches GitHub: `"plugins": { …, "source": ["local"], "broker": "local" }`. Then the factory reads no GitHub credential, fetches no origin, opens no PR, and every item ends with `factory merge` (design `docs/design/05-sources.md`, Local startup).
 
 ### Status labels
 
