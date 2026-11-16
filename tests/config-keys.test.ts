@@ -498,12 +498,12 @@ describe("retention (design 08-retention)", () => {
   it("is a top-level key; absent, it gives 30, 30 and 90 days and startup goes on", async () => {
     expect(TOP_LEVEL_KEYS).toContain("retention");
     const { retention: _set, ...rest } = SQLITE as Record<string, unknown>;
-    expect((await loadConfig(root(rest))).config.retention).toEqual({ outbox_days: 30, commands_days: 30, records_days: 90 });
+    expect((await loadConfig(root(rest))).config.retention).toEqual({ outbox_days: 30, commands_days: 30, records_days: 90, raw_records_days: 7 });
   });
 
   it("compose passes the set values into the config; an absent key keeps its default; 0 loads", async () => {
     const { config } = await loadConfig(root({ ...SQLITE, retention: { outbox_days: 7, records_days: 0 } }));
-    expect(config.retention).toEqual({ outbox_days: 7, commands_days: 30, records_days: 0 });
+    expect(config.retention).toEqual({ outbox_days: 7, commands_days: 30, records_days: 0, raw_records_days: 7 });
   });
 
   it("an unknown key under retention fails at load with a suggestion", async () => {

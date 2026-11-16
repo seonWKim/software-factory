@@ -1,6 +1,6 @@
 // `npm run migrate` on SQLite. --status and --dry-run only read: they list the pending baseline steps and
 // timestamped migrations and never open the store for writing. Apply mode (after the command's drain) brings
-// the schema to the latest, breaking migrations included, then runs the project-key data step. --rehearse
+// the schema to the latest, breaking migrations included, then runs the project-key data step and VACUUM. --rehearse
 // (RFC 0015 §12 D8): the database file is copied with VACUUM INTO, the copy is brought to the frozen baseline and
 // fingerprinted, then the pending migrations run on it and no row may be lost or changed. The live file is only
 // read; the copy is deleted.
@@ -55,7 +55,9 @@ export async function migrateSqlite(file: string, mode: ProjectKeyMode, steps: S
     try {
       await driver.migrate();
       await steps.topicTables(driver);
-      return await steps.projectKeys(driver, mode);
+      const code = await steps.projectKeys(driver, mode);
+      await vacuum(driver, print);
+      return code;
     } finally {
       await driver.close();
     }
@@ -79,6 +81,20 @@ export async function migrateSqlite(file: string, mode: ProjectKeyMode, steps: S
   } finally {
     await driver.close();
   }
+}
+
+/**
+ * VACUUM once the migrations applied (design 08-retention): the file gives back the pages retention freed. Prints the
+ * bytes freed, the database's size (pages times page size) before minus after.
+ */
+async function vacuum(driver: SqliteDriver, print: (line: string) => void): Promise<void> {
+  const size = async () => {
+    const [[count], [page]] = await Promise.all([driver.all("PRAGMA page_count"), driver.all("PRAGMA page_size")]);
+    return Number(count!.page_count) * Number(page!.page_size);
+  };
+  const before = await size();
+  await driver.run("VACUUM");
+  print(`vacuum: freed ${before - (await size())} bytes`);
 }
 
 export async function rehearseSqlite(file: string, print: (line: string) => void): Promise<number> {

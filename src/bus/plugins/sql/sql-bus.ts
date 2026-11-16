@@ -42,6 +42,11 @@ export interface SqlBusOptions extends ComponentBusOptions {
   readonly relayBatch?: number;
   /** How long published outbox rows are kept before `prune` removes them. */
   readonly outboxRetentionMs?: number;
+  /**
+   * The key TTL an inbox row gets when its message carries none (`idempotency_key_ttl_ms` null), raised to the topic's
+   * maximum redelivery; a dead-letter notice keeps none. Absent: such a row never expires (design 08-retention).
+   */
+  readonly inboxTtlMs?: number;
 }
 
 const DEFAULT_LEASE_MS = 60_000;
@@ -56,6 +61,7 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
   private readonly leaseMs: number;
   private readonly relayBatch: number;
   private readonly outboxRetentionMs: number;
+  private readonly inboxTtlMs: number | null;
   private readonly capabilities: readonly string[];
   private readonly byName = new Map<string, TopicDescriptor>();
   private readonly byType = new Map<string, TopicDescriptor>();
@@ -71,6 +77,7 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
     this.leaseMs = o.leaseMs ?? DEFAULT_LEASE_MS;
     this.relayBatch = o.relayBatch ?? DEFAULT_RELAY_BATCH;
     this.outboxRetentionMs = o.outboxRetentionMs ?? DEFAULT_OUTBOX_RETENTION_MS;
+    this.inboxTtlMs = o.inboxTtlMs ?? null;
     const capabilities = [...new Set(o.capabilities ?? [])];
     const bad = capabilities.filter((c) => !CAPABILITY.test(c));
     if (bad.length > 0) throw new Error(`capability ${bad.join(", ")} is not key=value`);
@@ -151,13 +158,21 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
 
   /** Inserts `(consumer, idempotency_key)` with the caller's state change; a key seen before is a duplicate. */
   async claim(tx: Tx, consumer: string, m: Envelope): Promise<"new" | "duplicate"> {
-    const expires = m.idempotency_key_ttl_ms === null ? null : addMs(m.occurred_at, m.idempotency_key_ttl_ms);
+    const ttl = m.idempotency_key_ttl_ms ?? this.defaultTtl(m);
+    const expires = ttl === null ? null : addMs(m.occurred_at, ttl);
     const inserted = await insertOrSkip(
       tx,
       `${this.inbox} (consumer, idempotency_key, message_id, processed_at, expires_at) VALUES (?, ?, ?, ?, ?)`,
       [consumer, m.idempotency_key, m.id, await readHorizon(tx), expires],
     );
     return inserted ? "new" : "duplicate";
+  }
+
+  /** The inbox TTL of a message that carries none: `inboxTtlMs`, at least its topic's maximum redelivery; none for a dead letter. */
+  private defaultTtl(m: Envelope): number | null {
+    const topic = this.byType.get(m.type);
+    if (this.inboxTtlMs === null || m.type === DEAD_LETTERED || !topic) return null;
+    return Math.max(this.inboxTtlMs, maxRedeliveryMs(topic.backoff));
   }
 
   /** Removes inbox rows past their key's TTL and old published outbox rows (the component's `prune` tick). */
