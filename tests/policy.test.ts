@@ -146,8 +146,8 @@ describe("auto mode rules (design 03-risk)", () => {
     expect(autoMergeRefusal({ ...ok, max_tier: 0 })).toContain("auto_merge_max_tier (0)");
   });
 
-  it("the gate list is one list: the merge check's paths, every standing-rule protected path, the grant and tool folders", () => {
-    expect(GATE_PATHS).toEqual(expect.arrayContaining([...Object.values(PROTECTED_PATHS).flat(), "src/impl/grant/", "src/core/tools/"]));
+  it("the gate list is one list: the merge check's paths, every standing-rule protected path, the identity and tool folders", () => {
+    expect(GATE_PATHS).toEqual(expect.arrayContaining([...Object.values(PROTECTED_PATHS).flat(), "src/identity/", "src/core/tools/"]));
     expect(new Set(GATE_PATHS).size).toBe(GATE_PATHS.length);
   });
 
@@ -167,7 +167,7 @@ describe("auto mode rules (design 03-risk)", () => {
 
   it("an allowed path or changed file touches the gate list when it is on it, under it, or a folder holding it", () => {
     expect(gatePathTouched(["docs/x.md", "src/core/policy.ts"])).toBe("src/core/policy.ts");
-    expect(gatePathTouched(["src/impl/grant/static.ts"])).toBe("src/impl/grant/static.ts");
+    expect(gatePathTouched(["src/impl/auth/link-code.ts"])).toBe("src/impl/auth/link-code.ts");
     expect(gatePathTouched(["src/core/tools/"])).toBe("src/core/tools/");
     expect(gatePathTouched(["src/"])).toBe("src/");
     expect(gatePathTouched(["./prompts/triage.md"])).toBe("./prompts/triage.md");

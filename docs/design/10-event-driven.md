@@ -1,8 +1,9 @@
 # 10. Event-driven factory (RFC 0015)
 
 The factory is moving to independent, restartable actors that talk only through messages on a bus (RFC 0015,
-kept outside the repo with the other RFCs). `PROGRESS.md` at the repo root holds the current snapshot of the
-move: what exists now, what is still legacy, and the next milestone. This file holds the decisions already in
+kept outside the repo with the other RFCs). The RFC 0015 progress record, kept in the RFC repo with the
+RFCs (outside this repository), holds the snapshot of the move; its open items are rows in `ARCHITECTURE.md`
+section 7. This file holds the decisions already in
 force.
 
 ## Current decisions

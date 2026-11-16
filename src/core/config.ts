@@ -289,6 +289,11 @@ export interface LoadedConfig {
    */
   merge_queue_depth: number;
   /**
+   * `merge_queue.push_base` (design 05-sources, Local items): with no forge selected, a local merge pushes the local
+   * base to the factory repo's origin through the `local` forge. Off (absent) by default; no origin, no push.
+   */
+  merge_queue_push_base?: boolean;
+  /**
    * `hooks` (RFC 0015 §15.2, design 10-event-driven): the hook names the owner enabled, each a discovered
    * `*.hook.ts`. A PR-only key, checked at startup. Absent or empty: no hook runs, solo or enterprise.
    */
@@ -569,4 +574,11 @@ export interface Prompts {
   resolve?: string;
   /** prompts/improve.md, the improve run's system prompt (design §7). Absent: the improve run asks no model. */
   improve?: string;
+}
+
+/** `merge_queue.push_base` (design 05-sources, Local items): absent means off, otherwise true or false or startup fails. */
+export function mergeQueuePushBase(mergeQueue: { push_base?: unknown } | undefined): boolean {
+  const v = mergeQueue?.push_base;
+  if (v !== undefined && typeof v !== "boolean") throw new Error("merge_queue.push_base must be true or false");
+  return v === true;
 }

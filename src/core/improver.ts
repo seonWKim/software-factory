@@ -178,12 +178,11 @@ async function ofProject(store: Pick<FactoryStore, "getWorkItem">, runs: readonl
 /**
  * The owner-only paths (design §7 and 03-risk): a change to any of them needs a human merge, and auto mode never
  * approves or merges one. One list, the merge check's and auto mode's: these paths, widened with every standing-rule
- * protected path (`PROTECTED_PATHS`, which holds `src/impl/grant/` and `src/core/tools/`). A path ending in `/`
+ * protected path (`PROTECTED_PATHS`, which holds `src/identity/` and `src/core/tools/`). A path ending in `/`
  * covers everything under it; any other names one file.
  */
 export const GATE_PATHS: readonly string[] = [...new Set([
   "prompts/", "src/impl/broker/", "src/impl/egress/", "src/impl/secrets/", "src/impl/sandbox/", "src/impl/auth/",
-  "src/impl/github/github-auth-provider.ts", "src/impl/github/github.plugin.ts",
   "src/core/checks.ts", "src/core/policy.ts", ".claude/", "factory.config.json",
   ...Object.values(PROTECTED_PATHS).flat(),
 ])];

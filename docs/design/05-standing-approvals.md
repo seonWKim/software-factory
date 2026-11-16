@@ -9,8 +9,8 @@
   the resume route's guards and its owner check (`approve_spec`, the `/approve` check), so the page accepts what
   `/standing accept|decline` accepts and refuses any rule but `spec-t1`. A rule already in the asked state is not
   written. Each write is the rule row (`set_by` = the factory user ID) and one log line, with no audit row; a stored
-  per-person audit record (enterprise) is a follow-up. Routes and guards: `09-dashboard-app.md`. Solo and
-  enterprise: one code path; solo, the user is the linked local account or `cli_user`; a team member's own ID goes in
+  per-person audit record (enterprise) is a follow-up. Routes and guards: `09-dashboard-app.md`. One code path
+  for one worker or many: the user is the owner, the linked local account or `cli_user`, and that ID goes in
   `set_by`.
 - **A rule acts at the spec gate** (decision changed 2026-11-07, issue #299, phase 2 of 3 of #293; before: phase 1
   recorded and checked, and nothing acted on a rule, see History).
@@ -47,8 +47,8 @@
   - **Threshold.** `standing_approvals.threshold` is a `factory settings set` key (global, live, audited in
     `runtime_settings_changes`), default 10, read at each approval with no restart; anything but a positive whole number is
     refused on set and ignored when the stored overrides load. It is not a config file key. See `08-settings.md`.
-  - **Solo and enterprise.** The same code path: solo, the local user is the owner and the threshold is 10; a team gets
-    the same permission check, with user IDs in `set_by` and `owner_id`. No new schema, migration or store method.
+  - **One worker or many.** The same code path: the local user is the owner and the threshold is 10; the owner check
+    applies on every worker, with user IDs in `set_by` and `owner_id`. No new schema, migration or store method.
 - **Spec decisions are recorded for standing approvals** (2026-11-07, issue #298, phase 1 of 3 of #293).
   - **Decision detail.** Every `spec_approved`, `spec_rejected` and `spec_revision_requested` state change, and the
     `split_approved` change of a split's `/approve`, carries in its `detail`: `gate` (`spec`, the only gate so far),

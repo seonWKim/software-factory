@@ -51,7 +51,7 @@ graph TB
   subgraph IMPL["Implementations: chosen by config"]
     direction LR
     LOC["Local (now)"]
-    CLD["Cloud / enterprise (later)"]
+    CLD["Cloud (later)"]
   end
 
   SURF --> CORE --> IF --> IMPL
@@ -59,15 +59,15 @@ graph TB
 
 **GitHub is a plugin, not core.** It is a forge plugin (`plugins.forge`: where a change is reviewed and merged) and a sync plugin (`plugins.source`: issues and comments copied to and from the store), like Slack and Jira. With no forge selected the factory runs local: intake, specs, gate commands, branches, review and merge all work from the store and the local repository, and the prompts name the forge as `local` (`{{forge}}`, filled at load). Core code never assumes a forge is there.
 
-| Interface | Local implementation (now) | Cloud / enterprise implementation (later) |
+| Interface | Local implementation (now) | Cloud implementation (later) |
 |---|---|---|
 | `FactoryStore` | `SqlFactoryStore` (all store logic, once) over `SqliteDriver`: one machine, every worker process of the owner (`docs/design/05-coordination.md`) | none planned |
 | `Sandbox` | `NoOpSandbox`: a clone per run on the host (with no GitHub plugin: the local base branch, no origin fetch) | Docker → gVisor / Kata / Firecracker, hosted sandboxes |
 | `AgentRunner` | `ClaudeCodeRunner`: `claude -p` | API-based runner |
 | `LLMProvider` | Anthropic via the Claude Code CLI (subscription) | Anthropic API, Bedrock, Vertex, company ML gateway |
-| `AuthProvider` | NoAuth | SSO / OIDC, GitHub permissions, policy engine |
+| `AuthProvider` | `OwnerAuth`: the one owner, identified from the environment (git `user.email`, then the OS user, then `anonymous`) | none planned: the factory serves one owner (`docs/design/08-enterprise.md`) |
 | `SecretStore` | `~/.config/software-factory/.env` (outside the repo) | Vault / cloud secret manager |
-| `SourceAdapter` | GitHub issues via REST / `gh` | Slack (`slack`), GitLab |
+| `SourceAdapter` | `local`: items from `factory task create` and the dashboard; sync plugins `github-issues` and `slack` when selected | GitLab |
 | `CapabilitySearch` | List everything (`list-all`); BM25 over `docs/` and `skills/` markdown (`bm25`) | vector, hybrid |
 | `SharedStorage` | Local filesystem | PV / PVC |
 | `ToolBroker` (G2) | In the worker process: `git.store_branch` stores the run's HEAD in the factory repo (`github`: a staging ref outbound pushes from; `local`: the run's branch as a local branch, no remote) and the read-only `forge.preflight`. Pushes, PRs and comments are outbound deliveries through the forge and source plugins (RFC 0015 M7) | same, per tool |

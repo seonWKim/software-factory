@@ -9,8 +9,8 @@ Goal: build a minimal factory by hand, then let the factory build the rest of it
 | 0 Decisions | done |
 | 1 Minimal factory, by hand | done: issues go from intake to a merged PR with the full trail in `state_changes` |
 | 2 The factory builds itself | most of the order below is in; the golden set's replay is in progress (#317, #369) |
-| 3 Toward autonomy | started: auto mode, the improve loop, standing approvals, Slack, local and GitHub auth with grants |
-| RFC 0015 event-driven refactor | landed on main 2026-11-09 (`PROGRESS.md`); the `legacy_*` contract (copy missing rows, then drop; `--contract --dry-run` first) waits until about 2026-11-26 (14 days after the change-ref rebuild `20261112T1200` was applied) |
+| 3 Toward autonomy | started: auto mode, the improve loop, standing approvals, Slack, the local owner check (`OwnerAuth`) |
+| RFC 0015 event-driven refactor | landed on main 2026-11-09 (the RFC 0015 progress record (kept in the RFC repo with the RFCs, outside this repository); open items in `ARCHITECTURE.md` section 7); the `legacy_*` contract (copy missing rows, then drop; `--contract --dry-run` first) waits until about 2026-11-26 (14 days after the change-ref rebuild `20261112T1200` was applied) |
 
 ## Principles carried into every phase
 
@@ -71,6 +71,6 @@ Order (each one makes the next safer or cheaper):
 | Self-improvement loop: improver agent clusters failures → PRs against prompts / gates / config with replay evidence → human | partly: the improve run groups failures and files issues (`07-self-improvement.md`); replay evidence waits on the golden set. North star: #305 |
 | Routing-rule extraction from recorded human decisions → proposed rules → human | partly: standing approvals and rule proposals (`05-standing-approvals.md`) |
 | Second intake source (Slack) | done for the main flow; parity gaps filed as #479–#486 |
-| Enterprise layers: `AuthProvider` (SSO, policy engine), ML gateway `ModelProvider`, real sandboxes (Docker → gVisor / Kata), user-added tools with approval | partly: local and GitHub auth with grants and roles, passports and an audit of every decision (`08-permissions.md`); an `openai-compatible` LLM provider; SSO, a policy engine, container sandboxes and user-added tools not started |
+| Infrastructure layers for one owner: ML gateway `ModelProvider`, real sandboxes (Docker → gVisor / Kata), user-added tools with approval | partly: the local owner check (`OwnerAuth`), passports and an audit of every decision (`08-permissions.md`); an `openai-compatible` LLM provider; container sandboxes and user-added tools not started |
 
 "Autonomous" here means: humans only make the decisions the design reserves for them (tier ≥ 3, structural changes, loosening), and everything else runs.

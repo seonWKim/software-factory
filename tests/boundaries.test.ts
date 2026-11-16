@@ -57,7 +57,6 @@ const ALLOWED: readonly Allowed[] = [
   { token: /\b(?:GitHubCredentials|GitHubApi|GitHubAccess)\b/g, files: ["interfaces/github-credentials.ts"], reason: "exported interface names: the credentials, the forge client every plugin shares, and the credential plugin's build of both" },
   { token: /\bGitHubBudgetStatus\b/g, files: ["interfaces/github-credentials.ts"], reason: "the client's budget type, exported by core/controller-deps.ts, as GitHubApi.status returns it" },
   { token: /"GitHub rate limit, calls resume at "/g, files: ["core/policy.ts"], reason: "marker stored in run outcome details; githubRateLimitReset parses it back from runs stored before this change" },
-  { token: /"src\/impl\/github\/github(?:-auth-provider\.ts|\.plugin\.ts)"/g, files: ["core/improver.ts", "core/standing.ts"], reason: "gate paths of the moved GitHub auth files (`src/impl/github/github-auth-provider.ts`, `src/impl/github/github.plugin.ts`)" },
   { token: /"src\/impl\/github\/(?:github-tool-broker|broker\.plugin)\.ts"/g, files: ["core/standing.ts"], reason: "gate paths of the default ToolBroker's files (a guard, runtime review H3)" },
 ];
 
