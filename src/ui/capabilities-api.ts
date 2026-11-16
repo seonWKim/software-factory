@@ -1,5 +1,6 @@
-// The capability list (design 08-settings, 2026-11-15): GET /api/v1/settings/capabilities lists the skills in the
-// configured skill folders, the ToolBroker's tools and the provider entries (each registered LLM provider and agent
+// The capability list (design 08-settings, 2026-11-16): GET /api/v1/settings/capabilities lists the skills in the
+// configured skill folders and the imported ones (`ext_skill_refs` pointers, each read from its SKILL.md now; one whose
+// file is missing or changed is listed but not enabled), the ToolBroker's tools and the provider entries (each registered LLM provider and agent
 // runner, one per configured endpoint), with whether each is enabled, the roles that may use it and when a stored run
 // last used it. The Settings page shows its providers; the Plugins page's Skills and Tools tabs come from the same
 // builder (capabilityRows) through plugins-api.ts. Read only: grants change through the `tool_grants` setting.
@@ -16,12 +17,13 @@ import { MODEL_RUN_KINDS } from "../core/model-choice.js";
 import { type SettingsBase, resolveSettings } from "../core/settings.js";
 import type { Run, RunKind } from "../core/types.js";
 import { harnessToolName } from "../impl/runner/tool-bridge.js";
+import { storeSql } from "../impl/store/sql/store-sql.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { readRange } from "../interfaces/shared-storage.js";
 import type { ToolBroker } from "../interfaces/tool-broker.js";
 import {
-  type Capability, type CapabilitySources, type ProviderSource, type StoredRun, type ToolSource,
-  capabilityList, grantName, lastUsed, providerId, providerRoles, readSkills, skillFolderPath, toolId,
+  type Capability, type CapabilitySources, type ProviderSource, type Skill, type SkillRef, type StoredRun, type ToolSource,
+  capabilityList, grantName, lastUsed, providerId, providerRoles, readSkillRefs, readSkills, skillFolderPath, toolId,
 } from "../runtime/capabilities/capabilities.js";
 import type { UiDeps } from "./pages.js";
 import type { UiSettings } from "./settings-api.js";
@@ -110,6 +112,12 @@ const NO_SOURCES: UiCapabilitySources = { skill_folders: [], tools: [], provider
 /** The sources the Settings wiring reads, again on each call; none without the config file's writer. */
 export const settingsSources = async (s: Pick<UiSettings, "editFile">): Promise<UiCapabilitySources> => (await s.editFile?.capabilities?.()) ?? NO_SOURCES;
 
+/** The imported skills: every stored `ext_skill_refs` pointer, read from its file now (readSkillRefs). Reads only. */
+async function importedSkills(store: FactoryStore): Promise<Skill[]> {
+  const rows = await storeSql(store).all("SELECT source, name, path, sha256, created_at FROM ext_skill_refs");
+  return readSkillRefs(rows.map((r) => ({ source: r.source === "codex" ? "codex" : "claude", name: String(r.name), path: String(r.path), sha256: String(r.sha256), created_at: String(r.created_at) }) satisfies SkillRef));
+}
+
 /** The model a finished run's usage reports, or null. */
 function runModel(run: Run): string | null {
   const o = run.outcome;
@@ -147,7 +155,7 @@ export async function capabilityRows(d: CapabilityDeps, base: SettingsBase, sour
   const finished = (await d.store.listRunsFinishedWithin(USAGE_WINDOW_MS)).filter((r) => r.finished_at !== null).slice(0, USAGE_RUNS);
   const items = new Map(finished.map((r) => [r.id as string, r.work_item_id as string]));
   const runs: StoredRun[] = finished.map((r) => ({ id: r.id, kind: r.kind, finished_at: r.finished_at!, model: runModel(r) }));
-  const skills = await readSkills(sources.skill_folders);
+  const skills = [...(await readSkills(sources.skill_folders)), ...(await importedSkills(d.store))];
   const markers = new Map<string, string[]>([
     ...skills.map((k): [string, string[]] => [`skill:${k.name}`, [`"skill":"${k.name}"`]]),
     ...sources.tools.map((t): [string, string[]] => [toolId(t), [harnessToolName(grantName(t))]]),
@@ -168,6 +176,7 @@ export async function capabilityRows(d: CapabilityDeps, base: SettingsBase, sour
       name: await text(c.name),
       detail: c.detail === null ? null : await text(c.detail),
       ...(c.description === undefined ? {} : { description: c.description === null ? null : await text(c.description) }),
+      ...(c.imported ? { imported: { ...c.imported, path: await text(c.imported.path) } } : {}),
       ...(c.models ? { models: await Promise.all(c.models.map(async (m) => ({ class: m.class, model: await text(m.model) }))) } : {}),
     });
   }

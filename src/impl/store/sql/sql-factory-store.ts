@@ -972,7 +972,7 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
          WHERE id = ? AND status = 'running' AND lease_token = ?`,
         [outcome.status, JSON.stringify(outcome), now, now, runId, token],
       );
-      if (completed === 1) await this.closeAttempt(tx, runId, token, outcome.status, now, outcome);
+      if (completed === 1) await this.closeAttempt(tx, runId, token, outcome.status, now, outcome); // same tx: run and attempt never disagree
       return completed === 1 ? { ok: true, run: (await this.selectRun(tx, runId))! } : { ok: false, reason: "lease_lost" };
     });
   }
@@ -2491,10 +2491,9 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
         "UPDATE worker_runs SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ? AND status = ?",
         [now, r.id as string, status],
       );
-      if (n === 1) {
-        cancelled.push(r.id as RunId);
-        if (status === "running") await this.closeAttempt(tx, r.id as RunId, null, "cancelled", now);
-      }
+      if (n !== 1) continue;
+      cancelled.push(r.id as RunId);
+      await this.closeAttempt(tx, r.id as RunId, status === "running" ? null : "paused", "cancelled", now);
     }
     return cancelled;
   }
@@ -2513,21 +2512,22 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
   }
 
   /**
-   * Closes the run's open attempt record. `token`: only the record that claim opened (completeRun, pauseRun, the
-   * reaper); null: whichever is open (a cancel, which holds no token). A failed outcome gives its error code,
+   * Closes the run's open attempt record: the one claim `token` opened (completeRun, pauseRun, the reaper); null: any
+   * open one (a cancel); "paused": the latest if paused (a paused run's cancel). A failed outcome gives its error code,
    * failureClass() and outcomeTokens(); a reaped claim gives lease_expired and infra; anything else neither.
    */
   private async closeAttempt(
-    tx: SqlExecutor, runId: RunId, token: number | null, status: Exclude<RunAttemptStatus, "running">, now: Timestamp,
+    tx: SqlExecutor, runId: RunId, token: number | null | "paused", status: Exclude<RunAttemptStatus, "running">, now: Timestamp,
     outcome: RunOutcome | null = null,
   ): Promise<void> {
     const failed = outcome?.status === "failed" ? outcome : null;
     const error_code = failed ? failed.error_code : status === "lease_expired" ? "lease_expired" : null;
     const failure_class = failed ? failureClass(failed) : status === "lease_expired" ? "infra" : null;
+    const open = token === "paused" ? `status = 'paused' AND attempt = (SELECT MAX(b.attempt) FROM worker_run_attempts b WHERE b.run_id = ?)`
+      : `status = 'running'${token === null ? "" : " AND lease_token = ?"}`;
     await tx.run(
-      `UPDATE worker_run_attempts SET status = ?, finished_at = ?, error_code = ?, failure_class = ?, tokens = ?
-       WHERE run_id = ? AND status = 'running'${token === null ? "" : " AND lease_token = ?"}`,
-      [status, now, error_code, failure_class, outcomeTokens(outcome), runId, ...(token === null ? [] : [token])],
+      `UPDATE worker_run_attempts SET status = ?, finished_at = COALESCE(finished_at, ?), error_code = ?, failure_class = ?, tokens = ? WHERE run_id = ? AND ${open}`,
+      [status, now, error_code, failure_class, outcomeTokens(outcome), runId, ...(token === null ? [] : [token === "paused" ? runId : token])],
     );
   }
 

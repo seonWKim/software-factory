@@ -493,7 +493,14 @@ export interface PluginsView {
   /** The pack write route's token (approve, revoke, import, add); null when this server cannot write packs from the page. */
   csrf_token: string | null;
   mcp: { name: string; description: string | null; source: "pack"; status: McpStatus }[];
-  skills: { name: string; folder: string; description: string | null; roles: string[]; last_used: string | null }[];
+  /**
+   * The skill folders' skills, and the imported ones (design 11-plugin-import): an imported row adds its `source`, its
+   * SKILL.md `path` and its `state` (`missing` or `changed`: not offered to agents). A folder skill's row has none.
+   */
+  skills: {
+    name: string; folder: string; description: string | null; roles: string[]; last_used: string | null;
+    source?: "claude" | "codex"; path?: string; state?: "ok" | "missing" | "changed";
+  }[];
   tools: { name: string; description: string; read_only: boolean; origin: "broker" | "pack"; roles: string[]; last_used: string | null }[];
   /** Each pack tool's status, by its row name (`pack:tool:<name>`). Absent from an older server. */
   tool_status?: Record<string, McpStatus>;
