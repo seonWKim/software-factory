@@ -609,9 +609,9 @@ describe("Plugins page: Import", () => {
     expect(rtl.within(table).queryByRole("button", { name: /Approve|Revoke/ })).toBeNull();
   });
 
-  it("without the page's token the Import button is off and names the CLI command", async () => {
+  it("without the page's token the Import button is off and a visible notice names the CLI command", async () => {
     page({ ...PAGE, csrf_token: null });
     await rtl.waitFor(() => expect((rtl.screen.getByRole("button", { name: "Import…" }) as HTMLButtonElement).disabled).toBe(true));
-    expect(rtl.screen.getByRole("button", { name: "Import…" }).getAttribute("title")).toContain("factory plugins import");
+    expect(rtl.screen.getAllByRole("status").map((n) => n.textContent).join(" ")).toContain("factory plugins import");
   });
 });

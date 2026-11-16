@@ -8,10 +8,12 @@ import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { CopyText } from "../components/ui/copy.js";
 import { Input } from "../components/ui/input.js";
+import { type Column, DataTable } from "../components/ui/data-table.js";
 import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
 import { Notice, PageHeader, StatusBadge } from "../components/ui/notice.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Markdown } from "../components/ui/markdown.js";
+import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { Tabs } from "../components/ui/tabs.js";
 import { cn } from "../lib/cn.js";
 import { useUrlParam } from "../lib/url-param.js";
@@ -24,7 +26,7 @@ import { ItemsTable, MergeCheckNote, byId, PersonName, QueueTable, RunningTable,
 import { ItemCommands } from "./item-commands.js";
 import { Thread } from "./thread.js";
 import { transcriptPath } from "./transcript.js";
-import { HELD, ItemsTree, type TreeFilter, type View, VIEW_KEY, buildTree, defaultExpanded, itemMatches, parentIds, summaryCounts, useExpanded } from "./tree.js";
+import { HELD, ItemsTree, type TreeFilter, type View, VIEW_KEY, buildTree, defaultExpanded, itemMatches, parentIds, useExpanded } from "./tree.js";
 
 /** "host slept N min" for a host sleep's gap, at least 1 min (only gaps over 60 s are recorded). */
 export const sleptText = (gap_ms: number): string => t("host.slept", { min: Math.max(1, Math.round(gap_ms / 60_000)) });
@@ -245,6 +247,15 @@ function initialState(): string | null {
   return s !== null && (s === HELD || (STATE_FILTERS as readonly string[]).includes(s)) ? s : null;
 }
 
+const ALL = "all";
+const VIEW_OPTIONS: { id: View; label: string }[] = [{ id: "tree", label: t("items.tree") }, { id: "list", label: t("items.list") }];
+
+/** The items a link named (`/app/items?ids=wi_1,wi_2`, from the Failures page); null for no such filter. */
+function initialIds(): ReadonlySet<string> | null {
+  const ids = new URLSearchParams(location.search).get("ids");
+  return ids ? new Set(ids.split(",").filter(Boolean)) : null;
+}
+
 /** The saved view: the tree unless the browser chose the list. */
 function savedView(): View {
   try {
@@ -254,30 +265,9 @@ function savedView(): View {
   }
 }
 
-/** "rate limit: ok", or until when the rate limit pause lasts (the pauses read; "–" before it arrives). */
-function rateLimitText(pauses: PausesView | undefined): string {
-  if (!pauses) return "–";
-  const p = pauses.pauses.find((x) => x.name === "rate_limit");
-  return p ? t("items.ratePaused", { time: p.ends_at }) : t("items.rateOk");
-}
-
 /** The queued runs: the one source of Work's Queued list, its filter count and its "N queued" (the same runs as overview.queued). */
 function useQueuedRuns() {
   return useApi<{ queue: QueueRow[] }>(API.queue);
-}
-
-/** The tree's summary line; each count is a button that sets the matching state filter. */
-function Summary({ rows, queued, rateLimit, onFilter }: { rows: readonly ItemRow[]; queued: number | undefined; rateLimit: string; onFilter: (s: string) => void }) {
-  const c = summaryCounts(rows);
-  const parts: [string, number | string, string][] = [[t("items.running"), c.running, "running"], [t("items.queued"), queued ?? "…", "queued"], [t("items.heldLower"), c.held, HELD], [t("items.needs"), c.needs, "needs"]];
-  return (
-    <p data-testid="summary" className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-      {parts.map(([label, n, filter]) => (
-        <Button key={filter} variant="ghost" size="sm" onClick={() => onFilter(filter)} className={cn("tabular-nums", LINK_CLASS)}>{t("items.count", { count: n, label })}</Button>
-      ))}
-      <span>{t("items.rateLimit", { state: rateLimit })}</span>
-    </p>
-  );
 }
 
 /** Every work item as a tree (the default) or, with the List toggle, the flat list; filterable by state and search. */
@@ -286,6 +276,7 @@ export function ItemsPage() {
   const [view, setViewState] = useState<View>(savedView);
   const [state, setState] = useState<string | null>(initialState);
   const [q, setQ] = useState("");
+  const [ids, setIds] = useState<ReadonlySet<string> | null>(initialIds);
   const [showClosed, setShowClosed] = useState(false);
   const tree = view === "tree";
   const queuedView = state === "queued";
@@ -300,7 +291,7 @@ export function ItemsPage() {
   };
   // One request per poll: the tree reads every row once and filters in the page, the list asks the server.
   const params = new URLSearchParams();
-  if (tree) params.set("closed", "1");
+  if (tree || ids) params.set("closed", "1");
   else if (!queuedView) {
     if (state) params.set("state", state);
     if (q.trim()) params.set("q", q.trim());
@@ -310,13 +301,16 @@ export function ItemsPage() {
   const overview = useApi<Overview>(API.overview);
   const pauses = useApi<PausesView>(API.pauses);
   const queue = useQueuedRuns();
+  const rateLimit = pauses.data?.pauses.find((x) => x.name === "rate_limit");
   const rows = items.data?.items ?? [];
-  const filter: TreeFilter = { state, q, showClosed };
-  const nodes = useMemo(() => buildTree(rows, filter), [items.data, state, q, showClosed]);
+  const filter: TreeFilter = { state, q, showClosed, ids };
+  const nodes = useMemo(() => buildTree(rows, filter), [items.data, state, q, showClosed, ids]);
   const [expanded, setExpanded] = useExpanded(defaultExpanded(nodes));
   const itemsById = useMemo(() => byId(items.data?.items), [items.data]);
-  const counted = (s: string) => (s === "queued" ? (queue.data?.queue.length ?? "…") : tree ? rows.filter((r) => itemMatches(r, { state: s, q, showClosed })).length : (items.data?.facets.state[s] ?? 0));
-  const allCount = tree ? rows.filter((r) => itemMatches(r, { state: null, q, showClosed })).length : (items.data?.facets.allStates ?? "");
+  // The tree, and a list narrowed to named items, read every row and filter in the page.
+  const local = tree || ids !== null;
+  const counted = (s: string) => (s === "queued" ? (queue.data?.queue.length ?? "…") : local ? rows.filter((r) => itemMatches(r, { state: s, q, showClosed, ids })).length : (items.data?.facets.state[s] ?? 0));
+  const allCount = local ? rows.filter((r) => itemMatches(r, { state: null, q, showClosed, ids })).length : (items.data?.facets.allStates ?? "");
   return (
     <>
       <PageHeader title={t("page.work")} />
@@ -329,11 +323,7 @@ export function ItemsPage() {
           aria-label={t("items.searchLabel")}
           className="w-full max-w-sm"
         />
-        <ButtonRow role="group" aria-label={t("items.view")}>
-          {(["tree", "list"] as const).map((v) => (
-            <Button key={v} size="sm" aria-pressed={view === v} onClick={() => setView(v)}>{v === "tree" ? t("items.tree") : t("items.list")}</Button>
-          ))}
-        </ButtonRow>
+        <SegmentedControl label={t("items.view")} options={VIEW_OPTIONS} value={view} onChange={setView} />
         {tree && (
           <ButtonRow>
             <Button size="sm" aria-pressed={showClosed} onClick={() => setShowClosed(!showClosed)}>{t("items.showClosed")}</Button>
@@ -342,14 +332,23 @@ export function ItemsPage() {
           </ButtonRow>
         )}
       </div>
-      {tree && items.data && <Summary rows={rows} queued={queue.data?.queue.length} rateLimit={rateLimitText(pauses.data)} onFilter={setState} />}
-      <ButtonRow role="group" aria-label={t("items.filterByState")} className="mb-3">
-        {[null, ...(tree ? [HELD] : []), ...STATE_FILTERS].map((s) => (
-          <Button key={s ?? "all"} size="sm" aria-pressed={state === s} onClick={() => setState(s)} className="tabular-nums">
-            {t("items.filterCount", { label: s === null ? t("items.all") : FILTER_LABELS[s]!, count: s === null ? allCount : counted(s) })}
-          </Button>
-        ))}
-      </ButtonRow>
+      {ids && (
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <Notice tone="info">{t("items.idsFilter", { count: ids.size })}</Notice>
+          <Button size="sm" onClick={() => setIds(null)}>{t("items.idsClear")}</Button>
+        </div>
+      )}
+      {rateLimit && <div className="mb-3"><Notice tone="warn">{t("items.rateLimit", { state: t("items.ratePaused", { time: rateLimit.ends_at }) })}</Notice></div>}
+      <Tabs
+        label={t("items.filterByState")}
+        className="mb-3"
+        options={[null, ...(tree ? [HELD] : []), ...STATE_FILTERS].map((s) => ({
+          id: s ?? ALL,
+          label: t("items.filterCount", { label: s === null ? t("items.all") : FILTER_LABELS[s]!, count: s === null ? allCount : counted(s) }),
+        }))}
+        value={state ?? ALL}
+        onChange={(id) => setState(id === ALL ? null : id)}
+      />
       {queuedView ? (
         <Section title={t("queue.title")} count={queue.data?.queue.length}>
           {queue.isError ? <ErrorNote error={queue.error} /> : !queue.data || !items.data ? <Loading rows={4} /> : <QueueTable queue={queue.data.queue} items={itemsById} now={now} />}
@@ -359,7 +358,7 @@ export function ItemsPage() {
           <ItemsTree nodes={nodes} rows={rows} now={now} expanded={expanded} onExpanded={setExpanded} />
         )
       ) : (
-        <ItemsTable items={items.data.items} now={now} label={t("items.label")} plugins={overview.data?.plugins} empty={t("items.noMatch")} />
+        <ItemsTable items={ids ? rows.filter((r) => itemMatches(r, { ...filter, showClosed: true })) : items.data.items} now={now} label={t("items.label")} plugins={overview.data?.plugins} empty={t("items.noMatch")} />
       )}
     </>
   );
@@ -798,21 +797,19 @@ export function HealthPage() {
       {tab === "merges" && (
         <div id="unreviewed-merges">
           <Section title={t("health.merges")} count={mergeList?.length}>
-            {merges.isError ? <ErrorNote error={merges.error} /> : !mergeList ? <Loading rows={2} /> : mergeList.length === 0 ? (
-              <Empty>{t("health.noMerges")}</Empty>
-            ) : (
-              <Table label={t("health.merges")} head={[t("col.pr"), t("health.mergedBy"), t("health.mergeCommit"), t("col.when")]}>
-                {mergeList.map((m) => (
-                  <Tr key={`${m.project}#${m.change_ref}`}>
-                    <Td className="tabular-nums">
-                      {m.change_url ? <a href={m.change_url} target="_blank" rel="noreferrer" className={LINK_CLASS}>#{m.change_ref}</a> : `#${m.change_ref}`}
-                    </Td>
-                    <Td className="text-xs break-words">{m.merged_by && m.merged_by !== "unknown" ? <span title={m.merged_by}>{m.merged_by === viewer ? t("person.you") : t("person.other")}</span> : t("format.unknown")}</Td>
-                    <Td className="font-mono text-xs">{m.merge_sha}</Td>
-                    <Td className="tabular-nums whitespace-nowrap">{t("time.ago", { time: ago(m.recorded_at, now) })}</Td>
-                  </Tr>
-                ))}
-              </Table>
+            {merges.isError ? <ErrorNote error={merges.error} /> : !mergeList ? <Loading rows={2} /> : (
+              <DataTable
+                label={t("health.merges")}
+                columns={[
+                  { key: "pr", header: t("col.pr"), className: "tabular-nums", render: (m) => (m.change_url ? <a href={m.change_url} target="_blank" rel="noreferrer" className={LINK_CLASS}>#{m.change_ref}</a> : `#${m.change_ref}`) },
+                  { key: "merged_by", header: t("health.mergedBy"), className: "text-xs break-words", render: (m) => (m.merged_by && m.merged_by !== "unknown" ? <span title={m.merged_by}>{m.merged_by === viewer ? t("person.you") : t("person.other")}</span> : t("format.unknown")) },
+                  { key: "merge_sha", header: t("health.mergeCommit"), className: "font-mono text-xs" },
+                  { key: "recorded_at", header: t("col.when"), className: "tabular-nums whitespace-nowrap", render: (m) => t("time.ago", { time: ago(m.recorded_at, now) }) },
+                ]}
+                rows={mergeList}
+                rowKey={(m) => `${m.project}#${m.change_ref}`}
+                empty={t("health.noMerges")}
+              />
             )}
           </Section>
         </div>

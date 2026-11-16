@@ -343,8 +343,9 @@ function Actions({ view, tab, report }: { view: PluginsView; tab: Tab; report: R
   const off = t("plugins.cannotWrite");
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <Button variant="secondary" disabled={!canImport} title={canImport ? undefined : t("plugins.importFromCli")} onClick={() => setOpen("import")}>{t("plugins.import")}</Button>
+      <Button variant="secondary" disabled={!canImport} onClick={() => setOpen("import")}>{t("plugins.import")}</Button>
       <Button variant="secondary" disabled={!canAdd} title={canAdd ? undefined : off} onClick={() => setOpen("add")}>{t("plugins.add")}</Button>
+      {!canImport && <div className="basis-full"><Notice tone="info">{t("plugins.importFromCli")}</Notice></div>}
       {open === "import" && view.csrf_token !== null && <ImportDialog tab={tab} token={view.csrf_token} report={report} onClose={() => setOpen(null)} />}
       {open === "add" && <AddDialog view={view} skills={skills} report={report} onClose={() => setOpen(null)} />}
     </div>
