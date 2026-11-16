@@ -289,6 +289,11 @@ export interface LoadedConfig {
    */
   merge_queue_depth: number;
   /**
+   * `merge_queue.push_base` (design 05-sources, Local items): with no forge selected, a local merge pushes the local
+   * base to the factory repo's origin through the `local` forge. Off (absent) by default; no origin, no push.
+   */
+  merge_queue_push_base?: boolean;
+  /**
    * `hooks` (RFC 0015 §15.2, design 10-event-driven): the hook names the owner enabled, each a discovered
    * `*.hook.ts`. A PR-only key, checked at startup. Absent or empty: no hook runs, solo or enterprise.
    */
