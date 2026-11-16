@@ -2,7 +2,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { ChevronDown } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import {
-  API, type AppliedRule, type RetiredRule, type RuleDetail, type RuleEvidence, type RuleRow, type RuleVerdict, type RulesView, postRuleVerdict, postSettings, useApi, useRuleEntry,
+  API, type AppliedRule, type ImproveGroupView, type ImproveView, type RetiredRule, type RuleDetail, type RuleEvidence, type RuleRow, type RuleVerdict, type RulesView,
+  postImproveRun, postRuleVerdict, postSettings, useApi, useRuleEntry,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
@@ -38,6 +39,10 @@ import { t } from "../i18n/index.js";
 // and scope; it is collapsed while something waits. Suggest reads each class's retire suggestions on demand. Then a
 // collapsed Retired list. Scope and the encoded-elsewhere lines render through Markdown.
 // One card per entry at every width, so no table turns into cards.
+// The improve report (design 07-self-improvement, 2026-11-16) is a Section from GET /api/v1/rules's `improve`: its
+// window and counts, then one row per failure group with its draft and filing. Run now shows only when `run_now` says
+// the viewer may run it (approve_spec); it posts to POST /api/v1/improve/run and shows the queued run_id, or a 409's
+// refusal and the run already queued, with no reload. It sits below the rules, and above the EmptyState with the ledger off.
 
 const muted = "text-xs text-pretty text-text-2";
 
@@ -591,7 +596,17 @@ export function RulesPage() {
   const title = t("page.rules");
   if (rules.isError) return <><PageHeader title={title} /><ErrorNote error={rules.error} /></>;
   if (!v) return <><PageHeader title={title} /><Loading rows={3} /></>;
-  if (!v.enabled) return <><PageHeader title={title} /><LedgerOff view={v} /></>;
+  if (!v.enabled) {
+    return (
+      <>
+        <PageHeader title={title} />
+        <div className={`${PAGE_WIDTH} space-y-4`}>
+          {v.improve && <Improve view={v.improve} />}
+          <LedgerOff view={v} />
+        </div>
+      </>
+    );
+  }
   const token = v.judge === null ? v.csrf_token : null;
   // Only an entry the ledger has not judged waits; a judged one is decided.
   const waiting = v.entries.filter((e) => e.judged === null);
@@ -638,7 +653,102 @@ export function RulesPage() {
         )}
         {v.applied !== null && <Applied applied={v.applied} token={token} collapsed={waiting.length > 0} />}
         {v.retired && <Retired retired={v.retired} />}
+        {v.improve && <Improve view={v.improve} />}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Run now: posts to POST /api/v1/improve/run and shows the queued run_id, or the refusal and the run already queued
+ * (409). The rules are reloaded only after a run was queued, so a refusal never reads as one.
+ */
+function RunNow({ token }: { token: string }) {
+  const client = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const run = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      const r = await postImproveRun(token);
+      if (r.ok) {
+        setResult({ ok: true, text: t("rules.runNowQueued", { run_id: r.run_id }) });
+        await client.invalidateQueries({ queryKey: [API.rules] });
+      } else {
+        setResult({ ok: false, text: r.run_id === null ? r.error : t("rules.runNowRefused", { error: r.error, run_id: r.run_id }) });
+      }
+    } catch (err) {
+      setResult({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div data-run-now className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button variant="secondary" size="sm" disabled={busy} onClick={() => void run()}>
+          {t("rules.runNow")}
+        </Button>
+        <span className={muted}>{t("rules.runNowHint")}</span>
+      </div>
+      {result !== null && <Notice tone={result.ok ? "ok" : "bad"}>{result.text}</Notice>}
+    </div>
+  );
+}
+
+/** One failure group: its error code and runs, its detail, its draft (cause and fix, or a note) and its filing. */
+function ImproveGroup({ g }: { g: ImproveGroupView }) {
+  return (
+    <li data-improve-group={g.error_code} className="min-w-0 space-y-1 px-3 py-2">
+      <p className="flex flex-wrap items-baseline gap-x-2">
+        <span className="font-mono text-sm break-all">{g.error_code}</span>
+        <span className="text-xs text-text-2 tabular-nums">{t("rules.improveRuns")}: {g.runs}</span>
+      </p>
+      {g.detail !== null && <p className={`${line} text-text-2`}>{g.detail}</p>}
+      <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1">
+        <dt className="text-xs font-semibold text-text-2">{t("rules.improveDraft")}</dt>
+        <dd data-draft className="min-w-0 space-y-0.5">
+          {g.draft === null && <p className={muted}>{t("rules.improveNoDraft")}</p>}
+          {g.draft?.cause != null && <p className={line}>{t("rules.improveCause", { cause: g.draft.cause })}</p>}
+          {g.draft?.fix != null && <p className={line}>{t("rules.improveFix", { fix: g.draft.fix })}</p>}
+          {g.draft?.note != null && <p className={line}>{g.draft.note}</p>}
+        </dd>
+        <dt className="text-xs font-semibold text-text-2">{t("rules.improveFiling")}</dt>
+        <dd data-filing className={`min-w-0 ${g.filing === null ? muted : line}`}>{g.filing ?? t("rules.improveNotFiled")}</dd>
+      </dl>
+    </li>
+  );
+}
+
+/** The latest improve report and, for a viewer who may run one, Run now. */
+function Improve({ view }: { view: ImproveView }) {
+  const r = view.report;
+  return (
+    <div id="improve" data-improve>
+      <Section title={t("rules.improveTitle")} count={r?.groups.length}>
+        <div className="space-y-2">
+          {r === null ? (
+            <p className={muted}>{t("rules.improveNone")}</p>
+          ) : (
+            <>
+              <p data-improve-window className={`${muted} tabular-nums`}>
+                {t("rules.improveWindow", {
+                  start: r.window_start, end: r.window_end, created: r.created_at, groups: r.groups.length, runs: r.runs, patterns: r.patterns,
+                })}
+              </p>
+              {r.groups.length === 0 ? (
+                <p className={muted}>{t("rules.improveNoGroup")}</p>
+              ) : (
+                <ul aria-label={t("rules.improveTitle")} className="divide-y divide-border rounded-control border border-border">
+                  {r.groups.map((g, i) => <ImproveGroup key={`${g.error_code}${i}`} g={g} />)}
+                </ul>
+              )}
+            </>
+          )}
+          {view.run_now && view.csrf_token !== null && <RunNow token={view.csrf_token} />}
+        </div>
+      </Section>
     </div>
   );
 }

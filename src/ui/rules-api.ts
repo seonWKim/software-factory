@@ -23,6 +23,11 @@
 // so a changed `integrations` entry takes effect here with no restart. With the ledger off, GET also says where the
 // agents home is and which CLI is missing there, and gives the owner the `integrations` value that turns the ledger
 // on; the page writes it through POST /api/v1/settings, whose guards and owner check run as for any setting.
+//
+// `improve` (design 07-self-improvement, 2026-11-16) carries the latest improve report, as the classic page's
+// improveSection shows it, every text through the same Withholder, and `run_now`: whether the viewer may run one now
+// (improve-api.ts runNowButton, approve_spec), with the token Run now sends to POST /api/v1/improve/run. It is there
+// with the ledger on or off.
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -33,12 +38,13 @@ import { type RetireRule, retireSuggestions } from "../core/rule-retirement.js";
 import { LiveSettings } from "../core/settings.js";
 import { checkAgentsHome } from "../impl/tacit/agents-home-tacit-ledger.js";
 import { LiveTacit } from "../runtime/live-tacit.js";
-import type { UserId } from "../core/types.js";
+import type { FailureGroup, ImproveReport, UserId } from "../core/types.js";
 import {
   type TacitApplication, type TacitEntryDetail, type TacitEvidence, type TacitLedger, type TacitPendingEntry, type TacitPromotion, TacitRefusal, TacitSyncFailed,
   appliedToError, tacitIdKind,
 } from "../interfaces/tacit-ledger.js";
 import type { ApiResult } from "./api.js";
+import { runNowButton } from "./improve-api.js";
 import type { PauseDeps, UiPauses } from "./pause-api.js";
 import { Withholder } from "./withhold.js";
 
@@ -103,12 +109,13 @@ export async function readRules(d: PauseDeps): Promise<ApiResult> {
   const tacit = d.tacit?.ledger;
   const w = new Withholder(d.scanner);
   const text = async (v: string) => (await w.plain(v)).text;
+  const improve = await readImprove(d, text);
   const judgeOf = async (does: string) => {
     const who = d.pauses ? await ownerOf(d, d.pauses, does) : { error: "The page has no owner check: verdicts are off." };
     return "error" in who ? await text(who.error) : null;
   };
   if (!tacit?.enabled) {
-    if (!d.tacit) return { status: 200, value: { enabled: false, entries: [], applied: null, retired: null, error: null, csrf_token: null, judge: null, home: null, turn_on: null } };
+    if (!d.tacit) return { status: 200, value: { enabled: false, entries: [], applied: null, retired: null, error: null, csrf_token: null, judge: null, home: null, turn_on: null, improve } };
     const judge = await judgeOf("turns the ledger on");
     const home = d.tacit.home();
     // The whole entry with `tacit` set: other integrations keep theirs.
@@ -117,7 +124,7 @@ export async function readRules(d: PauseDeps): Promise<ApiResult> {
       status: 200,
       value: {
         enabled: false, entries: [], applied: null, retired: null, error: null, csrf_token: judge === null ? d.pauses!.csrfToken : null, judge,
-        home: { path: await text(home.path), missing: home.missing }, turn_on: turnOn,
+        home: { path: await text(home.path), missing: home.missing }, turn_on: turnOn, improve,
       },
     };
   }
@@ -145,9 +152,61 @@ export async function readRules(d: PauseDeps): Promise<ApiResult> {
     status: 200,
     value: {
       enabled: true, entries: shown, applied: await readApplied(tacit, text), retired: await readRetired(tacit, text),
-      error: error === null ? null : await text(error), csrf_token: d.pauses?.csrfToken ?? null, judge, home: null, turn_on: null,
+      error: error === null ? null : await text(error), csrf_token: d.pauses?.csrfToken ?? null, judge, home: null, turn_on: null, improve,
     },
   };
+}
+
+/**
+ * The `improve` field: the latest improve report (null: none yet) and whether the viewer may run one now, with the
+ * write routes' token when they may (null otherwise). Store reads only.
+ */
+async function readImprove(d: PauseDeps, text: (v: string) => Promise<string>) {
+  const report = await d.store.getLatestImproveReport();
+  const button = await runNowButton(d);
+  return { report: report === null ? null : await improveReport(report, text), run_now: button !== null, csrf_token: button?.csrfToken ?? null };
+}
+
+/** The report's window, counts and one row per failure group (draft and filing), each text through `text`. */
+async function improveReport(r: ImproveReport, text: (v: string) => Promise<string>) {
+  const opt = async (v: string | null) => (v === null || v === "" ? null : await text(v));
+  const groups = [];
+  for (const g of r.groups) {
+    groups.push({
+      error_code: await text(g.error_code), detail: await opt(g.detail), runs: g.run_ids.length,
+      draft: await improveDraft(g, text), filing: await opt(filingText(g)),
+    });
+  }
+  return {
+    window_start: r.window_start, window_end: r.window_end, created_at: r.created_at,
+    runs: r.groups.reduce((n, g) => n + g.run_ids.length, 0), patterns: r.patterns.length, groups,
+  };
+}
+
+/** A group's draft: its cause and fix when drafted, else one note (withheld, failed or skipped); null with none. */
+async function improveDraft(g: FailureGroup, text: (v: string) => Promise<string>) {
+  const d = g.draft;
+  if (!d) return null;
+  if (d.status === "drafted") return { cause: await text(d.cause), fix: await text(d.fix), note: null };
+  return { cause: null, fix: null, note: await text(d.status === "withheld" ? `withheld (${d.rules.join(", ")})` : `${d.status} (${d.reason})`) };
+}
+
+/** A group's filing as one line; null when not filed yet. */
+function filingText(g: FailureGroup): string | null {
+  const f = g.filing;
+  if (!f) return null;
+  switch (f.status) {
+    case "filed":
+    case "linked":
+      return `${f.status}: ${f.ref.link || f.ref.id}`;
+    case "commented":
+      return `commented on ${f.ref.link || f.ref.id}: ${f.run_ids.length} new runs`;
+    case "withheld":
+      return `withheld (${f.rules.join(", ")})`;
+    case "skipped":
+    case "failed":
+      return `${f.status} (${f.reason})`;
+  }
 }
 
 /** The retired classes, newest first, each text through the Withholder; a failed read gives none. */
