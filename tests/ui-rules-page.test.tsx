@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { RuleEntryView, RulesView } from "../web/src/api.js";
+import type { ImproveView, RuleEntryView, RulesView } from "../web/src/api.js";
 import { PAGES, routeFor } from "../web/src/pages.js";
 
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
@@ -659,5 +659,75 @@ describe("Rules page", () => {
     await show();
     expect((await screen.findByRole("alert", {}, SLOW)).textContent).toContain("Only the owner");
     expect(screen.queryAllByRole("button")).toEqual([]);
+  });
+});
+
+describe("Rules page: improve report and Run now (design 07-self-improvement, 2026-11-16)", () => {
+  const IMPROVE_TOKEN = "tok_improve";
+  const report: ImproveView["report"] = {
+    window_start: "2026-11-15T00:00:00.000Z", window_end: "2026-11-16T00:00:00.000Z", created_at: "2026-11-16T00:05:00.000Z", runs: 4, patterns: 1,
+    groups: [
+      { error_code: "checks_failed", detail: "npm test exited #", runs: 2, draft: { cause: "a flaky port", fix: "pin the port", note: null }, filing: "filed: local:local-1" },
+      { error_code: "no_commits", detail: null, runs: 2, draft: { cause: null, fix: null, note: "withheld (github_token)" }, filing: null },
+    ],
+  };
+  const improve = (over: Partial<ImproveView> = {}): ImproveView => ({ report, run_now: true, csrf_token: IMPROVE_TOKEN, ...over });
+  const section = () => screen.findByRole("region", { name: "Improve report" }, SLOW);
+
+  it("shows the report's window, counts and one row per group with its draft and filing", async () => {
+    current = view({ improve: improve() });
+    await show();
+    const s = await section();
+    expect(s.querySelector("[data-improve-window]")!.textContent).toContain("2 groups (4 runs), 1 single-run patterns");
+    const rows = [...s.querySelectorAll<HTMLElement>("[data-improve-group]")];
+    expect(rows.map((r) => r.dataset.improveGroup)).toEqual(["checks_failed", "no_commits"]);
+    expect(rows[0]!.querySelector("[data-draft]")!.textContent).toContain("a flaky port");
+    expect(rows[0]!.querySelector("[data-draft]")!.textContent).toContain("pin the port");
+    expect(rows[0]!.querySelector("[data-filing]")!.textContent).toBe("filed: local:local-1");
+    expect(rows[1]!.querySelector("[data-draft]")!.textContent).toBe("withheld (github_token)");
+    expect(rows[1]!.querySelector("[data-filing]")!.textContent).toBe("not filed yet");
+  });
+
+  it("with no report it says so; with no run_now there is no Run now button", async () => {
+    current = view({ improve: improve({ report: null, run_now: false, csrf_token: null }) });
+    await show();
+    const s = await section();
+    expect(s.textContent).toContain("no improve run has reported yet");
+    expect(within(s).queryByRole("button", { name: "Run now" })).toBeNull();
+  });
+
+  it("Run now posts to POST /api/v1/improve/run with the x-csrf-token header; a 200 shows the run_id", async () => {
+    current = view({ improve: improve() });
+    answer = { status: 200, body: { run_id: "run_queued_1" } };
+    await show();
+    const s = await section();
+    fireEvent.click(within(s).getByRole("button", { name: "Run now" }));
+    expect((await within(s).findByRole("status")).textContent).toBe("Improve run queued: run_queued_1");
+    expect(posts.map((p) => p.url)).toEqual(["/api/v1/improve/run"]);
+    expect(new Headers(posts[0]!.init.headers).get("x-csrf-token")).toBe(IMPROVE_TOKEN);
+    expect(JSON.parse(String(posts[0]!.init.body))).toEqual({});
+  });
+
+  it("a 409 shows its error and run_id, and the rules are not reloaded into a success", async () => {
+    current = view({ improve: improve() });
+    answer = { status: 409, body: { error: "An improve run is already queued (run_busy).", run_id: "run_busy" } };
+    await show();
+    const s = await section();
+    const before = gets.filter((u) => u === "/api/v1/rules").length;
+    fireEvent.click(within(s).getByRole("button", { name: "Run now" }));
+    const alert = await within(s).findByRole("alert");
+    expect(alert.textContent).toContain("An improve run is already queued (run_busy).");
+    expect(alert.textContent).toContain("run_busy");
+    expect(within(s).queryByRole("status")).toBeNull();
+    expect(gets.filter((u) => u === "/api/v1/rules").length).toBe(before);
+  });
+
+  it("with the ledger off the section and Run now show above the ledger-off EmptyState", async () => {
+    current = view({ enabled: false, entries: [], home: { path: "/Users/me/.agents", missing: null }, turn_on: '{"tacit":"agents-home"}', improve: improve() });
+    await show();
+    const s = await section();
+    expect(within(s).getByRole("button", { name: "Run now" })).toBeTruthy();
+    const empty = screen.getByText("No tacit ledger is on, so there are no rules to review.");
+    expect(s.compareDocumentPosition(empty) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
