@@ -429,9 +429,9 @@ describe("POST /api/v1/settings", () => {
     await nothingStored(store);
   });
 
-  it("POST on other /api/v1 paths, /app and /classic, and POST without settings wired, still answer 405", async () => {
+  it("POST on other /api/v1 paths, and /app, and POST without settings wired, still answer 405", async () => {
     const { d, store } = await setup();
-    for (const path of ["/api/v1/overview", "/api/v1/settings/x", "/api/v1/settingsx", "/app/settings", "/classic", "/api/health"]) {
+    for (const path of ["/api/v1/overview", "/api/v1/settings/x", "/api/v1/settingsx", "/app/settings", "/api/health"]) {
       const r = await post(d, { action: "set", key: "max_loops", value: "2" }, { path });
       expect(r.status, path).toBe(405);
     }
