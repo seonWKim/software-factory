@@ -28,7 +28,7 @@ const OWNER = "github:1" as UserId;
 class ReactionAuth implements AuthProvider {
   async resolve(id: ExternalIdentity): Promise<Principal | null> {
     const user = ({ "github:1": OWNER, "slack:U0ALICE": OWNER, "github:666": "github:666", "slack:U0MALLORY": "github:666" } as Record<string, string>)[`${id.provider}:${id.subject}`];
-    return user ? { user_id: user as UserId, attributes: {} } : null;
+    return user ? { user_id: user as UserId } : null;
   }
   async authorize(p: Principal, action: string): Promise<AuthDecision> {
     return action === "submit_work" || p.user_id === OWNER ? { allow: true } : { allow: false, reason: "not_a_collaborator" };

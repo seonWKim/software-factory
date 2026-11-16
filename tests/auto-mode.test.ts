@@ -131,7 +131,7 @@ async function autoFactory(opts: Opts = {}) {
     return runSettings({
       store, base: baseFromConfig(cfg), repo: { owner: "o", name: "r" }, actor: who, resolveProject: async () => project,
       mayApproveMerge: async () => {
-        const d = await auth.authorize({ user_id: who, attributes: {} }, "approve_merge", { kind: "project", id: project.key });
+        const d = await auth.authorize({ user_id: who }, "approve_merge", { kind: "project", id: project.key });
         return d.allow ? null : d.reason;
       },
     }, action);

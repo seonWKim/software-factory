@@ -26,7 +26,7 @@ const SPEC_BODY = "## Factory spec\n\nThe spec.\n\nCommands you can reply with n
 class ButtonAuth implements AuthProvider {
   async resolve(id: ExternalIdentity): Promise<Principal | null> {
     const user = ({ "slack:U0ALICE": OWNER, "slack:U0MALLORY": "github:666" } as Record<string, string>)[`${id.provider}:${id.subject}`];
-    return user ? { user_id: user as UserId, attributes: {} } : null;
+    return user ? { user_id: user as UserId } : null;
   }
   async authorize(p: Principal, action: string): Promise<AuthDecision> {
     return action === "submit_work" || p.user_id === OWNER ? { allow: true } : { allow: false, reason: "no_role" };
