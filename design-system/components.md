@@ -128,7 +128,11 @@ A readable name (`label`, e.g. "worker 3" or "you") as a plain button on the sha
 
 ## KeyValue
 
-A `dl` of label → value pairs (`items`: `key`, `term`, `value`), `text-xs`, terms in `text-2`. Default: two columns (term, then value that wraps anywhere); `stacked`: term above value, for a dialog. A term with `code` is a code identifier and shows in monospace; values are plain text, monospace only for ids, SHAs, paths, commands, code and SQL. `valueProps` and extra `data-*` props pass through to the dd and dl. `ValueBlock` is the code block for a long value (pretty JSON): monospace, wraps, scrolls past `max-h-48`. No interactive states.
+A `dl` of label → value pairs (`items`: `key`, `term`, `value`), `text-xs`, terms in `text-2`. Default: two columns (term, then value that wraps anywhere); `stacked`: term above value, for a dialog. A term with `code` is a code identifier and shows in monospace; values are plain text, monospace only for ids, SHAs, paths, commands, code and SQL. `valueProps` and extra `data-*` props pass through to the dd and dl. No interactive states.
+
+## ValueBlock
+
+The code block for a long value (pretty JSON, a command) beside KeyValue: a `pre` in `surface-2`, `font-mono text-xs`, wraps, scrolls past `max-h-48`. No interactive states.
 
 ## Markdown
 
