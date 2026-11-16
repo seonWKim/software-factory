@@ -437,7 +437,8 @@ describe("ui: Needs you (?state=needs)", () => {
     expect(by["Restarted item"]![next]).toContain("failed: lease_expired");
     expect(by["Restarted item"]![next]).toContain("/retry");
 
-    expect(by["Loops item"]![next]).toContain("review found bugs too many times");
+    // The classic page shows the stored reason with spaces; the app words it from en.ts (one text per reason code).
+    expect(by["Loops item"]![next]).toContain("max loops");
     expect(by["Loops item"]![0]).toContain("too many loops");
     expect(by["Conflict item"]![next]).toContain("merge conflict");
     expect(by["Unknown item"]![next]).toContain("max revisions");
