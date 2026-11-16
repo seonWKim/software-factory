@@ -2,6 +2,7 @@
 // folders, the broker's tools and the provider entries, each with enabled, roles and last used (from stored runs), and
 // no secret value in the response. Reading the list writes nothing.
 
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +14,8 @@ import type { WorkerId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { harnessToolName } from "../src/impl/runner/tool-bridge.js";
+import { storeSql } from "../src/impl/store/sql/store-sql.js";
+import { SkillRefsStore } from "../src/import/import-plugins.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { SecretStore } from "../src/interfaces/secret-store.js";
 import type { SharedStorage } from "../src/interfaces/shared-storage.js";
@@ -112,6 +115,62 @@ async function setup(sources: UiCapabilitySources, opts: { base?: SettingsBase; 
 
 type Cap = { kind: string; id: string; name: string; detail: string | null; enabled: boolean; roles: string[]; last_used: string | null; models?: { class: string; model: string }[] };
 const caps = async (d: UiDeps, s: UiSettings) => (await readCapabilities(d, s)).capabilities as Cap[];
+
+describe("imported skills (ext_skill_refs pointers)", () => {
+  const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+  type Row = { name: string; source?: string; path?: string; state?: string; description: string | null };
+
+  /** Three imported skills, each pointing at a SKILL.md: one unchanged, one deleted, one edited since import. */
+  async function imported() {
+    const root = await tmp();
+    const t = await setup({ skill_folders: [], tools: [], providers: [] });
+    const refs = new SkillRefsStore(storeSql(t.store), () => "2026-11-16T09:00:00.000Z");
+    const files: Record<string, string> = {};
+    for (const name of ["kept", "gone", "edited"]) {
+      const text = `---\nname: ${name}\ndescription: The ${name} skill.\n---\nbody\n`;
+      const path = join(root, name, "SKILL.md");
+      await mkdir(join(root, name), { recursive: true });
+      await writeFile(path, text);
+      files[name] = path;
+      await refs.insert({ kind: "skill", source: "claude", name, path, sha256: sha(text) }, "local:me");
+    }
+    await rm(files.gone!);
+    await writeFile(files.edited!, "---\ndescription: Edited after import.\n---\n");
+    return { ...t, root, files };
+  }
+
+  it("each pointer is read from its file now: ok is enabled with its description; missing and changed are listed but not enabled", async () => {
+    const t = await imported();
+    const skills = (await readCapabilities(t.d, t.settings)).capabilities.filter((c) => c.kind === "skill");
+    expect(skills.map((c) => [c.name, c.enabled, c.description, c.imported?.state])).toEqual([
+      ["edited", false, null, "changed"],
+      ["gone", false, null, "missing"],
+      ["kept", true, "The kept skill.", "ok"],
+    ]);
+    expect(skills.find((c) => c.name === "kept")?.imported).toEqual({ source: "claude", path: t.files.kept, state: "ok" });
+  });
+
+  it("GET /api/v1/plugins still answers 200 and shows the missing and changed states on the Skills tab", async () => {
+    const t = await imported();
+    const r = await respond(t.d, { method: "GET", url: "/api/v1/plugins", host: "127.0.0.1:4310" });
+    expect(r.status).toBe(200);
+    const skills = JSON.parse(r.body).skills as Row[];
+    expect(skills.map((s) => [s.name, s.source, s.path, s.state])).toEqual([
+      ["edited", "claude", t.files.edited, "changed"],
+      ["gone", "claude", t.files.gone, "missing"],
+      ["kept", "claude", t.files.kept, "ok"],
+    ]);
+    expect(r.body).not.toContain("Edited after import.");
+  });
+
+  it("a re-import after a change is the newest pointer for that path, so the skill is ok again", async () => {
+    const t = await imported();
+    const text = "---\ndescription: Edited after import.\n---\n";
+    await new SkillRefsStore(storeSql(t.store), () => "2026-11-16T10:00:00.000Z").insert({ kind: "skill", source: "claude", name: "edited", path: t.files.edited!, sha256: sha(text) }, "local:me");
+    const edited = (await readCapabilities(t.d, t.settings)).capabilities.filter((c) => c.name === "edited");
+    expect(edited.map((c) => [c.enabled, c.description, c.imported?.state])).toEqual([[true, "Edited after import.", "ok"]]);
+  });
+});
 
 describe("skill folders", () => {
   it("lists each skill of a configured folder: a subfolder with SKILL.md, or a top-level <name>.md", async () => {

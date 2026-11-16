@@ -1,15 +1,19 @@
-// The capabilities registry (design 08-settings, 2026-11-15): one list of what the factory's agents may use, for the
+// The capabilities registry (design 08-settings, 2026-11-16): one list of what the factory's agents may use, for the
 // Plugins page's Skills and Tools tabs and the Settings page's Providers section. Three kinds: the skills in the
-// configured skill folders, the tools the ToolBroker serves (with pack tools), and the LLM provider and agent runner
-// entries, one per configured endpoint. Pack MCP servers are listed beside them by src/ui/plugins-api.ts.
+// configured skill folders and the skills imported from Claude Code and Codex (`ext_skill_refs` pointers, design
+// 11-plugin-import), the tools the ToolBroker serves (with pack tools), and the LLM provider and agent runner entries,
+// one per configured endpoint. Pack MCP servers are listed beside them by src/ui/plugins-api.ts.
 //
 // Names only: the registry reads folder listings, a skill file's front matter description, tool descriptors and
-// plugin selections, never a secret, a skill file's body or a credential. "Last used" comes from runs already stored (their finish time, their reported model and
-// their stored transcript), so a tool call writes nothing new. Pure but for the skill folder listing.
+// plugin selections, never a secret, a skill file's body or a credential. An imported skill is read from its file each
+// time (readSkillRefs): its bytes are hashed against the stored SHA-256 and only its front matter description is kept.
+// "Last used" comes from runs already stored (their finish time, their reported model and their stored transcript), so
+// a tool call writes nothing new. Pure but for the skill folder listing and the skill file reads.
 
-import { open, readdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { open, readFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 export type CapabilityKind = "skill" | "tool" | "provider";
 
@@ -42,11 +46,32 @@ export interface CapabilitySources {
   providers: readonly ProviderSource[];
 }
 
+/** Where an imported skill was found: Claude Code's or Codex's user-level skills. */
+export type SkillRefSource = "claude" | "codex";
+
+/**
+ * An imported skill's state, read from its file at read time: `ok` (its bytes still hash to the stored SHA-256),
+ * `missing` (the file is gone or unreadable) or `changed` (it hashes to something else; import it again).
+ */
+export type SkillState = "ok" | "missing" | "changed";
+
 export interface Skill {
   name: string;
   folder: string;
   /** The `description` of the skill file's front matter; null when it has none. */
   description: string | null;
+  /** An imported skill only: its source, its SKILL.md path and its state. A folder skill has none of these. */
+  imported?: { source: SkillRefSource; path: string; state: SkillState };
+}
+
+/** One `ext_skill_refs` row, as the registry reads it. */
+export interface SkillRef {
+  source: SkillRefSource;
+  name: string;
+  /** The absolute path of its SKILL.md. */
+  path: string;
+  sha256: string;
+  created_at: string;
 }
 
 export interface Capability {
@@ -63,6 +88,8 @@ export interface Capability {
   last_used: string | null;
   /** A skill: its front matter description (null: none). */
   description?: string | null;
+  /** An imported skill: its source, SKILL.md path and state (only `ok` is enabled). */
+  imported?: Skill["imported"];
   /** A tool: whether it is read-only (only read-only tools reach an agent). */
   read_only?: boolean;
   /** A tool: the broker's, or a pack layer's. */
@@ -153,6 +180,28 @@ export async function readSkills(folders: readonly string[]): Promise<Skill[]> {
   return out.sort((a, b) => a.name.localeCompare(b.name) || a.folder.localeCompare(b.folder));
 }
 
+/**
+ * The imported skills: the newest pointer per source and path, each read from its file now. The file's bytes are
+ * hashed: a gone or unreadable file is `missing`, a different SHA-256 is `changed`, and only an `ok` one gives its
+ * front matter description. The text is never kept. Its folder is the skills folder that holds its own.
+ */
+export async function readSkillRefs(refs: readonly SkillRef[]): Promise<Skill[]> {
+  const newest = new Map<string, SkillRef>();
+  for (const r of refs) {
+    const key = `${r.source}\n${r.path}`;
+    const seen = newest.get(key);
+    if (!seen || r.created_at > seen.created_at) newest.set(key, r);
+  }
+  const out: Skill[] = [];
+  for (const r of newest.values()) {
+    const bytes = await readFile(r.path).catch(() => null);
+    const state: SkillState = bytes === null ? "missing" : createHash("sha256").update(bytes).digest("hex") === r.sha256 ? "ok" : "changed";
+    const description = state === "ok" ? frontMatterDescription(bytes!.subarray(0, FRONT_MATTER_BYTES).toString("utf8")) : null;
+    out.push({ name: r.name, folder: dirname(dirname(r.path)), description, imported: { source: r.source, path: r.path, state } });
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name) || a.folder.localeCompare(b.folder));
+}
+
 /** One stored run, as the registry reads it: newest first. `model`: the model its usage reports, null when none. */
 export interface StoredRun {
   id: string;
@@ -214,13 +263,17 @@ export const providerRoles = (p: Pick<ProviderSource, "interface">, i: Pick<Capa
   p.interface === "runner" ? i.runner_roles : i.llm_roles;
 
 /**
- * The Capabilities list: skills, then tools, then providers. A skill in a configured folder is enabled; no role grant
- * exists for skills, so it names no role. A tool is enabled when a role is granted it; a tool that is not read-only
+ * The Capabilities list: skills, then tools, then providers. A skill in a configured folder is enabled, and an imported
+ * one while its file is unchanged (`ok`); no role grant exists for skills, so it names no role. A tool is enabled when a role is granted it; a tool that is not read-only
  * never reaches an agent. A provider entry is enabled when config selects it, for the roles of its interface.
  */
 export function capabilityList(i: CapabilityInputs): Capability[] {
   const used = (id: string) => i.last_used.get(id) ?? null;
-  const skills: Capability[] = i.skills.map((s) => ({ kind: "skill", id: `skill:${s.name}`, name: s.name, detail: s.folder, description: s.description, enabled: true, roles: [], last_used: used(`skill:${s.name}`) }));
+  const skills: Capability[] = i.skills.map((s) => ({
+    kind: "skill", id: `skill:${s.name}`, name: s.name, detail: s.folder, description: s.description,
+    enabled: s.imported === undefined || s.imported.state === "ok", roles: [], last_used: used(`skill:${s.name}`),
+    ...(s.imported ? { imported: s.imported } : {}),
+  }));
   const tools: Capability[] = i.sources.tools.map((t) => {
     const roles = Object.entries(i.grants).filter(([, names]) => t.read_only && (names ?? []).includes(grantName(t))).map(([kind]) => kind).sort();
     return { kind: "tool", id: toolId(t), name: grantName(t), detail: t.description, enabled: roles.length > 0, roles, last_used: used(toolId(t)), read_only: t.read_only, origin: t.origin };

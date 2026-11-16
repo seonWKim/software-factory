@@ -90,6 +90,23 @@ describe("POST /api/v1/packs/approvals: add", () => {
     expect((await writePackApproval(s.d, s.pauses, { action: "add", path: "relative/path" })).status).toBe(400);
   });
 
+  it("the approve, revoke and add notices are plain words: no description_hash, module_hash or hex hash", async () => {
+    const s = await server();
+    const pack = temp("plugins-pack-");
+    write(join(pack, "mcp_servers", "docs.json"), JSON.stringify({ name: "docs", command: "docs-bin" }));
+    write(join(pack, "tools", "reader.json"), JSON.stringify({ name: "reader", description: "Reads.", read_only: true }));
+    const added = await writePackApproval(s.d, s.pauses, { action: "add", path: pack });
+    expect((added.value as { lines: string[] }).lines).toEqual(["stored tool reader as pending", "stored MCP server docs as pending"]);
+    const approved = await writePackApproval(s.d, s.pauses, { action: "approve", kind: "mcp_server", name: "docs" });
+    expect(approved.status).toBe(200);
+    expect((approved.value as { line: string }).line).toBe("approved MCP server docs");
+    const revoked = await writePackApproval(s.d, s.pauses, { action: "revoke", kind: "mcp_server", name: "docs" });
+    expect((revoked.value as { line: string }).line).toBe("revoked MCP server docs");
+    for (const text of [...(added.value as { lines: string[] }).lines, (approved.value as { line: string }).line, (revoked.value as { line: string }).line]) {
+      expect(text).not.toMatch(/description_hash|module_hash|sha256|[0-9a-f]{12}/);
+    }
+  });
+
   it("refuses add with no factory user, before any write", async () => {
     const s = await server();
     const pack = temp("plugins-pack-");
@@ -211,13 +228,20 @@ function show() {
 const rowsOf = (table: HTMLElement) => [...table.querySelectorAll("tbody > tr")] as HTMLElement[];
 const dialog = () => screen.getByRole("dialog");
 
-/** Opens Import, which lists what the scan found of the tab's kind, picks the one item, and imports it. */
+/**
+ * Opens Import, which lists what the scan found of the tab's kind, picks the one item, and imports it; the dialog
+ * stays open with the item's result until Close.
+ */
 async function importOne(tab: string) {
   const [item, label] = tab === "Skills" ? [FOUND[1]!, "Import deploy from Codex"] : [FOUND[0]!, "Import docs-search from Claude Code"];
   fireEvent.click(screen.getByRole("button", { name: "Import…" }));
   fireEvent.click(await within(dialog()).findByRole("checkbox", { name: label }));
   fireEvent.click(within(dialog()).getByRole("button", { name: "Import 1" }));
   await waitFor(() => expect(posts.at(-1)).toEqual({ url: "/api/v1/plugins/import", body: { items: [{ kind: item.kind, source: item.source, name: item.name }] } }));
+  const results = await within(dialog()).findByRole("list", { name: "Import results" });
+  expect(results.textContent).toContain(`${item.name}`);
+  expect(results.textContent).toContain("Stored");
+  fireEvent.click(within(dialog()).getByRole("button", { name: "Close" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 }
 
