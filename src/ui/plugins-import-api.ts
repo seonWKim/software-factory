@@ -5,7 +5,8 @@
 // rules as the CLI: a skill as an `ext_skill_refs` row, an MCP server, after the three `pack add` scans, as a pending
 // `ext_packs_entries` row. The browser names items only; their descriptors come from the server's own scan, so no
 // descriptor, env value or header value is ever sent or returned. added_by is the page's factory user (403 when there
-// is none). Nothing is started, approved or granted. server.ts runs the request guards first: Host and the CSRF token
+// is none). Nothing is started, approved or granted. Each result's `line` is plain words without the CLI's sha256
+// (design 11-plugin-import, 2026-11-16): "stored skill deploy from codex". server.ts runs the request guards first: Host and the CSRF token
 // for the read; Host, Origin, Content-Type, CSRF token, body size and JSON for the write.
 
 import { storeSql } from "../impl/store/sql/store-sql.js";
@@ -102,6 +103,9 @@ async function importOne(o: { db: SqlDriver; now: () => string; d: ApiDeps; adde
   return { outcome: inserted ? "stored" : "already_added", item };
 }
 
+/** An item's line for the page: importLine without the stored skill's sha256. */
+const pageLine = (r: ImportOutcome): string => (r.outcome === "stored" && r.item.kind === "skill" ? `stored skill ${r.item.name} from ${r.item.source}` : importLine(r));
+
 /** POST /api/v1/plugins/import, after the request guards: stores the selected items as the page's factory user. */
 export async function writePluginsImport(d: ApiDeps, p: UiPauses, body: unknown): Promise<ApiResult> {
   const keys = selection(body);
@@ -121,7 +125,7 @@ export async function writePluginsImport(d: ApiDeps, p: UiPauses, body: unknown)
       continue;
     }
     const r = await importOne(o, item);
-    results.push({ ...key, outcome: r.outcome, rules: r.outcome === "refused" ? r.rules : [], line: await text(importLine(r)) });
+    results.push({ ...key, outcome: r.outcome, rules: r.outcome === "refused" ? r.rules : [], line: await text(pageLine(r)) });
   }
   return { status: 200, value: { results, errors: await Promise.all(errors.map(async (e) => ({ source: e.source, message: await text(e.message) }))) } };
 }
