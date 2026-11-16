@@ -1,6 +1,6 @@
 // The app talks only to the JSON API under /api/v1 (design §9); nothing else is fetched. Its writes are
 // POST /api/v1/settings (postSettings), POST /api/v1/items/:id/commands (postCommand), POST /api/v1/pauses/resume
-// (postResume), POST /api/v1/standing (postStanding), POST /api/v1/rules/verdict (postRuleVerdict), POST
+// (postResume), POST /api/v1/standing (postStanding), POST /api/v1/rules/verdict (postRuleVerdict), POST /api/v1/improve/run (postImproveRun), POST
 // /api/v1/packs/approvals (postPackApproval, the Plugins page's Approve and Revoke; postPackAdd, its Add), POST /api/v1/plugins/import
 // (postPluginsImport, the Plugins page's Import dialog; its read, getPluginsImport, sends the token too) and POST
 // /api/v1/tasks/build (postTaskBuild), POST /api/v1/tasks (postTaskAdd) and the Tasks page's row actions under
@@ -66,6 +66,25 @@ export interface Overview {
   plugins?: { issues: "github" | null };
   /** Absent when the server has no status function. */
   factory?: FactoryState | null;
+  /** Days left on the GitHub token from the last health run; "unknown" before one; null: no expiry check. */
+  github_token_days?: number | "unknown" | null;
+  /** The GitHub budget the controller stored after its last poll; null: none stored (GitHub off, or no poll yet). */
+  github_budget?: GitHubBudget | null;
+}
+
+/** The stored GitHub call budget (src/ui/github-budget.ts): `waiting` and `low` each show a banner on the Health tab. */
+export interface GitHubBudget {
+  limit: number;
+  remaining: number;
+  reset_at: string;
+  budget_share: number;
+  share_limit: number | null;
+  /** The calls this process counted in the window. */
+  counted: number;
+  state: "ok" | "low" | "waiting";
+  as_of: string;
+  replica_id: string | null;
+  wait_reason: string | null;
 }
 
 export interface SourceRef {
@@ -771,6 +790,38 @@ export interface RulesView {
   judge: string | null;
   home: { path: string; missing: string | null } | null;
   turn_on: string | null;
+  /** The latest improve report and Run now (absent from an older server), with the ledger on or off. */
+  improve?: ImproveView;
+}
+
+/**
+ * The `improve` field of `/api/v1/rules`: the latest report (null: no run has reported), and `run_now` whether the
+ * viewer may queue a run (approve_spec), with the token POST /api/v1/improve/run takes (null when they may not).
+ */
+export interface ImproveView {
+  report: ImproveReportView | null;
+  run_now: boolean;
+  csrf_token: string | null;
+}
+
+export interface ImproveReportView {
+  window_start: string;
+  window_end: string;
+  created_at: string;
+  /** The runs in all groups. */
+  runs: number;
+  /** Single-run patterns. */
+  patterns: number;
+  groups: ImproveGroupView[];
+}
+
+/** One failure group: its draft's cause and fix, or one note (withheld, failed, skipped); `filing` null: not filed yet. */
+export interface ImproveGroupView {
+  error_code: string;
+  detail: string | null;
+  runs: number;
+  draft: { cause: string | null; fix: string | null; note: string | null } | null;
+  filing: string | null;
 }
 
 export type RuleVerdict = "promote" | "reject" | "hold" | "retire";
@@ -999,6 +1050,7 @@ export const API = {
   rules: "/api/v1/rules",
   ruleVerdict: "/api/v1/rules/verdict",
   ruleEntry: (id: string) => `/api/v1/rules/entry?id=${encodeURIComponent(id)}`,
+  improveRun: "/api/v1/improve/run",
   tasks: "/api/v1/tasks",
   /** The tasks' read, filtered to one task project's tasks when `project` is a slug. */
   tasksIn: (project: string | null) => (project === null ? "/api/v1/tasks" : `/api/v1/tasks?project=${encodeURIComponent(project)}`),
@@ -1171,6 +1223,13 @@ export async function postRuleVerdict(
   const r = await postJson<{ error?: string }>(API.ruleVerdict, token, body);
   if (r.ok) return { ok: true };
   return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+}
+
+/** POST /api/v1/improve/run: the queued run's ID, or the refusal with the run already queued or running (409). */
+export async function postImproveRun(token: string): Promise<{ ok: true; run_id: string } | { ok: false; error: string; run_id: string | null }> {
+  const r = await postJson<{ run_id?: string; error?: string }>(API.improveRun, token, {});
+  if (r.ok && r.value.run_id) return { ok: true, run_id: r.value.run_id };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }), run_id: r.value.run_id ?? null };
 }
 
 /** POST /api/v1/packs/approvals: approve or revoke an MCP server's or pack tool's current description, as `factory pack approve|revoke`. */
