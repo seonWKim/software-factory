@@ -88,7 +88,7 @@ function units(): Promise<ControllerUnits> {
 /** The SQL driver under the store: the bus and inbound write in its transactions. */
 function driverOf(store: ControllerDeps["store"]): SqlDriver {
   const db = (store as { db?: SqlDriver }).db;
-  if (!db) throw new Error("the controller role needs a SQL store (sqlite or mysql)");
+  if (!db) throw new Error("the controller role needs a SQL store (SQLite)");
   return db;
 }
 

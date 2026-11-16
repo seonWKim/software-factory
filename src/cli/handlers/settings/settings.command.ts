@@ -30,7 +30,7 @@ export default defineCommand({
       return 1;
     }
     const identity = await ctx.identity();
-    // Refuses on MySQL while schema steps are pending, as the other commands do (withStore migrates first).
+    // withStore migrates the store first, as for the other commands.
     return ctx.withStore(async (store, loaded) => {
       // The configured egress scanner (G5): a message_style it flags is refused before anything is stored.
       const plugins = new Plugins(loaded);
