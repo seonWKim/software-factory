@@ -1,0 +1,1812 @@
+diff --git a/docs/design/01-shape.md b/docs/design/01-shape.md
+index 2b4d712e..a54dfcaa 100644
+--- a/docs/design/01-shape.md
++++ b/docs/design/01-shape.md
+@@ -14,9 +14,13 @@ graph LR
+   R -->|"else"| H2["Human form"]
+   H2 -->|"reject"| C["CLOSED / rejected"]
+   AM --> PM["Post-merge: reverts, fix-forwards, audits"]
+-  H2 -->|"approve"| PM
++  H2 -->|"merge on GitHub"| PM
++  H2 -->|"Merge in the app (plugins.forge set)"| FM["Controller re-check, then Forge.mergePr"]
++  FM --> PM
+ ```
+ 
++**The last human gate has a factory path** (decision changed 2026-11-08, issue #246). A ready PR is still merged only by a person, now either on GitHub or with the app's Merge button on a project that names its forge in `plugins.forge`. The button sends the `merge` command; the controller checks again that the item is ready (review passed, checks green, no commits after the reviewed head, merges cleanly) and merges through the forge: the `github` forge through the bot, the `local` forge into the base branch of the factory repo with no GitHub call (design 04-gate-commands, merge command; docs/plugins/forge.md). Auto-merge stays off (`auto_merge_max_tier` 0).
++
+ ## History
+ 
+-No earlier decision is recorded for this topic.
++- **The last human gate has a factory path** (decision changed 2026-11-08, issue #246). Before: only a person on GitHub merged a ready PR ("approve" on the human form meant merging it there); the factory only read the merge.
+diff --git a/docs/design/04-gate-commands.md b/docs/design/04-gate-commands.md
+index ccbdae5d..d550466f 100644
+--- a/docs/design/04-gate-commands.md
++++ b/docs/design/04-gate-commands.md
+@@ -1,5 +1,14 @@
+ # 4. Agents: gate commands
+ 
++**Merge command** (new decision, 2026-11-08, issue #246; the decision that changed: only a person on GitHub merged a PR). `merge` is an item command sent from the app only: an app request (below) with `command: "merge"`, read from the command inbox; an `app_only` row of the command table: the comment parser treats `/merge` as unknown and `/help` names it as an app command. The controller (`mergeRequest`, `mergeReady` in `src/core/controller.ts`), each refusal before any write and before the next read:
++- **Off unless the project turns it on:** `FactoryConfig.forge_merge`, true when `factory.config.json` names a forge in `plugins.forge` itself (`github` or `local`); a forge derived from `plugins.source` does not count. Off: refused with ``merging from the factory is off for this project (`plugins.forge` is not set in factory.config.json); merge PR #N on the forge``, with no forge read. Solo and enterprise default: off.
++- **Authorize:** the `/approve` check, `approve_spec` on the item for the request's user through the local auth plugin (owner only by default). No new action (#107 owns per-command permissions).
++- **Ready:** the item waits for a human merge (`merge_pending`, so its review passed), it is a PR the factory opened (an adopted PR is refused with a pointer to the forge), and it has a recorded head (`last_head_sha`, the head its review read).
++- **Re-check through the forge:** `prMergeState` (a PR the forge reports merged skips the rest and closes the item: a crash after the merge never merges twice; a closed PR is refused), then `prChecks` (failed: ``N of the PR's checks failed``; pending: refused until they pass), then the PR's head equals the reviewed head (else ``commits arrived after the reviewed head``), then `mergeable` (false: does not merge cleanly into the base; null: the forge is still working it out).
++- **Merge:** one `Forge.mergePr` at the reviewed head (docs/plugins/forge.md). A forge refusal is the reply. On success the item closes in one conditional transition: `CLOSED` / `completed`, `merge_sha`, reason `merged_by_command`, actor the requester's user ID (never a display name), detail `{ app_request, pr_number, merge_sha }`; then its dependents are released, as on a `pr_merged`. The next poll's `pr_merged` finds it closed and changes nothing.
++- **Twice:** a request whose close is stored is marked applied (the `app_request` detail, as for approve); a new request on an item already merged does nothing and posts nothing.
++Auto-merge is unchanged: `auto_merge_max_tier` stays 0. Slack merge buttons, a `/merge` comment and merges of PRs the factory did not open are out of scope.
++
+ **`/resolve +paths` and `/resolve` notes** (decision changed 2026-11-08; replaces "`/resolve` takes its whole text as the run's notes, unscanned, and never widens `allowed_paths`"). `/resolve` now reads its text as `/retry` does: the whole text is egress-scanned first (a finding refuses the `/resolve` with one reply and stores nothing), then `parseCommandPaths` splits a `+paths <path>...` first line off, and the notes are the lines below (empty when there are none), capped at 2000 characters. The `+paths` rules are those of `/retry +paths`: at most 10 paths, no `..`, no glob, no absolute path, a refused path changes nothing and gets one reply, and paths already covered by `allowed_paths` are not added again. The widening (the same `widen` helper, so a path under a higher floor raises the tier) lands in the `resolve_requested` transition that queues the resolve run, with `detail.added_paths` and the old and new `allowed_paths` in `changes`; the resolve run's scope gate reads the widened list. It applies where `/resolve` applies: an item waiting on a merge conflict, or one whose resolve run asked for a human (`agent_needs_human`); anywhere else it is refused and nothing changes. Why: a resolve run may change only the conflicting files and the allowed paths, so when the base needs one more file (a test that imports a file the PR moved) the run failed with `out_of_scope` every time, and the item stayed at `merge_conflict_pending`. Unchanged: `/resolve` without `+paths` (same run input, no change to `allowed_paths`), `/retry +paths` on a failed resolve run (still refused), the `factory resolve` CLI usage, automatic resolve notes, the resolve prompt and the scope gate. No schema change. Solo and enterprise behave the same.
+ 
+ **Commands at the review loop limit** (decision changed 2026-11-08; replaces "at `max_loops` no command changes the state"). An item blocked on a human with `max_loops` (command phase `max_loops`, label "review loop limit reached") now takes the three existing commands, from the issue and from the CLI, with or without a PR. `/retry [notes]` starts one implement run: the item goes to `RUNNING`, unblocked, with `loop_count` back at 0 and `restart_count` + 1, and the run key uses the reset count (`…:implement:l0:r<n>`); `+paths` widens `allowed_paths` exactly as after a failed implement run (at most 10, no `..`, no glob, covered paths not added again). `/revise <feedback>` takes the after-failure path (`reviseAfterFailure`): back to `NEW` with a triage run and the feedback stored, `loop_count` 0 (only at `max_loops`); the open PR and its branch stay. With no feedback it is refused with one reply and nothing changes. `/reject <reason>` closes the item as at the spec gate (`rejected`, the issue closed as not planned). A human chose to try again, so the loop count restarts (and the model bump that follows it may drop). The max-loops comment's footer lists the three commands and `/help`, so it no longer ends with "No command changes this item's state now." Unchanged: the limit itself, the review loop, `/retry` on the other phases (a failed triage, review or update run still refuses `+paths`) and commands on the PR conversation at `max_loops` (none). No schema change. Solo and enterprise behave the same.
+@@ -30,12 +39,13 @@ All three need write permission, and on an item in any other state they are refu
+ 
+ **Command suggestions for plain-language replies.** The GitHub source now emits a `plain_comment` event (author, comment id, whole body) for each non-bot issue comment that is not a command; PR conversation comments are left alone. The controller, in this order: finds the work item (none: ignored); checks the commenter's write permission with the action the gate commands use (`approve_spec`), and without it makes no model call and posts nothing; skips comments over 300 characters, empty ones and `CLOSED` items; then calls `suggestCommand(text, state, llm)` (`src/core/suggest.ts`). That is one `LLMProvider` call, `model_class: "cheap"`, `data_env: "test"` (the comment is factory input of the same kind as the issue text triage reads). The prompt lists only the commands `commandsFor` allows in the item's state, with their usage lines, never `/verdict` (structured args), and holds the person's text once, in a fenced section labelled untrusted that the text cannot close; the model answers JSON `{command, args, confidence}` with one command name from the list or `none`. Malformed output, any stop reason but `end`, a confidence below 0.7, `none`, extra keys, a command not in the list, or one that does not apply in the state gives no suggestion. Args: `/revise` carries the feedback and `/reject` the reason (the person's text when the model gives none), `/approve` no note, `/budget` only a whole number. Non-empty args go through the `EgressScanner`; a finding drops the suggestion. The reply is one comment keyed on the comment id (`factory:suggest:<comment id>`, so a redelivery posts nothing new): the suggested command in a code block to type, or, with no suggestion, the command list for the state. **The rule: a suggestion never changes state** (no `state_changes` row, no stage or block change, no run, no stored pending suggestion); the person confirms by typing the command, which goes through the normal command path and its permission check. The controller takes the LLM as an optional dependency (`compose.ts` wires the configured one); without it plain comments get no reply. Not built: Slack Confirm/Cancel buttons, suggestions on PR conversations, a per-command permission model (#107 would replace the `approve_spec` check).
+ 
+-**App requests** (issue #245). A request stored in `app_command_requests` (request key, the factory user's id, command, JSON args) is a new entry point to the same command path as a comment, not a new command path. Each controller tick, outside the poll interval, reads them from the command inbox in order (see "Commands from the command inbox"; until 2026-11-07, up to 20 pending rows of the request table). `approve` with `args.work_item_id` (and an optional `args.note`) gets the `/approve` permission check (`approve_spec` on the item, for the request's user), the same note scan and the same transition: on a spec waiting for approval, `spec_approved` with that user as actor and one implement run under the comment path's key. The state change also carries `detail.app_request` (the request's seq), so a request applied but not marked (a crash, another replica) is found and marked applied, with no second change and no refusal. Any other command is refused (`only \`approve\` is applied from an app request`). A refusal reads exactly as the comment path's (`` `/approve` was not applied: <reason>. ``), is written once to the item's thread with the marker `factory:refused:app-<seq>` (the outbox posts it), and is then stored on the row; a request naming no known item stores its refusal and posts nothing. Each request is marked once by a conditional update (`handled_at`, `refusal`; migration 23 on SQLite, step `0023-app-command-handling.sql` on MySQL). Nothing creates requests yet: no endpoint, UI or CLI.
++**App requests** (issue #245). A request stored in `app_command_requests` (request key, the factory user's id, command, JSON args) is a new entry point to the same command path as a comment, not a new command path. Each controller tick, outside the poll interval, reads them from the command inbox in order (see "Commands from the command inbox"; until 2026-11-07, up to 20 pending rows of the request table). `approve` with `args.work_item_id` (and an optional `args.note`) gets the `/approve` permission check (`approve_spec` on the item, for the request's user), the same note scan and the same transition: on a spec waiting for approval, `spec_approved` with that user as actor and one implement run under the comment path's key. The state change also carries `detail.app_request` (the request's seq), so a request applied but not marked (a crash, another replica) is found and marked applied, with no second change and no refusal. `merge` goes through the merge command (above). Any other command is refused (`only \`approve\` is applied from an app request`; the wording predates `merge` and is kept while tests outside this change pin it). A refusal reads exactly as the comment path's (`` `/approve` was not applied: <reason>. ``), is written once to the item's thread with the marker `factory:refused:app-<seq>` (the outbox posts it), and is then stored on the row; a request naming no known item stores its refusal and posts nothing. Each request is marked once by a conditional update (`handled_at`, `refusal`; migration 23 on SQLite, step `0023-app-command-handling.sql` on MySQL). The app creates them through `POST /api/v1/items/:id/commands` (design 09-dashboard-app), its Merge button among them.
+ 
+ **Verdict command:** a user with write permission (auth action `record_verdict`, separate from `approve_spec`) records a structured verdict with `/verdict accept|changes|reject <severity> <reason>`, on the work item's issue or on its PR. Severity is one of `none`, `minor`, `major`, `critical`. The reason is the text after the severity, following lines included; `accept` may omit the severity (then `none`) and the reason, `changes` and `reject` may not; `yes` and `ok` mean `accept` (since 2026-11-08, above). **A verdict does not change `stage`, `blocked_on` or `blocked_reason`:** it bumps the version and stores a `state_changes` row (reason `human_verdict`, actor = the user's id, `changes` = {}) plus a linked `verdicts` row (verdict, severity, reason, comment id, target `issue`/`pr`, `implicit` 0, `pr_head` = the item's current head). `verdicts.comment_id` is unique, so a redelivered comment stores nothing and gets no second reply. A bad format, an unknown severity, a missing reason, no write permission, a `CLOSED` item whose PR was not merged, or an item with no PR yet is refused with one reply on the issue, keyed on the comment id, and nothing is stored. A PR comment maps to its item by the PR's head branch. Verdicts are the input for the weighted human-feedback rate that gates auto-merge (§6); computing it is not built yet.
+ 
+ ## History
+ 
++- **Merge command** (new decision, 2026-11-08, issue #246). Before: only a person on GitHub merged a PR; the factory read the merge (`pr_merged`) but had no merge path of its own, and an app request applied only `approve`.
+ - **`/resolve +paths` and `/resolve` notes** (decision changed 2026-11-08). Before: `/resolve` passed its raw text as the resolve run's notes, with no egress scan and no length cap, and `+paths` was not split off, so a resolve that needed a file outside the conflicts and the allowed paths could only fail `out_of_scope` (PR #416).
+ - **Commands at the review loop limit** (decision changed 2026-11-08). Before: `max_loops` had no command in the table; its footer ended with "No command changes this item's state now.", `/retry` was refused as "no failed run to retry", and `/revise` and `/reject` were refused because no spec was waiting, so the item could only be closed or changed by hand.
+ - **Implicit verdicts and the lenient `/verdict`** (decision changed 2026-11-08, issue #316). Before: only `/verdict` wrote verdicts; `/verdict accept` alone and `/verdict yes` were refused (a severity was required for every kind), so every owner `/verdict` on record was refused; merges, pushes and reverts wrote no verdict; a `/verdict` on a merged item was refused as closed.
+diff --git a/docs/design/09-dashboard-app.md b/docs/design/09-dashboard-app.md
+index f3eef15c..728dca40 100644
+--- a/docs/design/09-dashboard-app.md
++++ b/docs/design/09-dashboard-app.md
+@@ -17,8 +17,9 @@
+   - **Item tables: plugins, issue and PR links (new decision, 2026-11-07, issue #240).** `/api/v1/overview` returns `plugins: { issues, prs }`, each `"github"` or `null`: `issues` is `"github"` when the `github-issues` source is selected (`main.ts` passes it in the optional `UiDeps.plugins`, default both null), and `prs` follows the same condition because PRs are read only through that adapter today (no separate PR host setting). Each row of `/api/v1/items` has `issue: { number, url }`, or `null` for an adopted PR (recognised on the server from a `/pull/` source link). `pr_url` (items and item routes) is built from the project's stored label (`github.com/owner/name`), never the key; with no stored label it is `null` and the app shows the number without a link. In Needs you and Work items the title links to `/app/items/<id>` (the item id when there is no title) and the Item cell has no GitHub link; the Issue and PR columns (`#N` linked, or a dash) show only when the matching plugin is `"github"`, so with no GitHub source no link in those tables points to github.com. Running now and Queue keep their title component and its GitHub link on the source id. `/classic` is unchanged.
+   - **Unreviewed merges in the app (new decision, 2026-11-07, issue #268).** `GET /api/v1/unreviewed-merges?limit=N` returns the stored `unreviewed_merges` rows, newest first: default 50, at most 200 (a larger value is capped, a non-numeric or zero one is 400). Each row: `project` (the stored label, `unknown project` when none; never the key), `pr_number`, `pr_url`, `merge_sha` (first 7 characters), `merged_by` (the stored user ID, `unknown` when null; no display name) and `recorded_at`. `pr_url` is `https://<label>/pull/<n>` only when `plugins.prs` is `"github"` and a label is stored, else `null` and the app shows the number alone. Every string passes the `Withholder`; the sha is scanned whole, then shortened. `/api/v1/overview` adds `unreviewed_merges_7d`, the count of rows recorded in the last 7 days, from the new store read `countUnreviewedMergesSince(since)` (SQL store only). The Floor shows "N PRs merged without review in the last 7 days" with a link to Health, hidden at 0; the Health page has a "Merged without review" table (PR, merged by, merge commit, when), newest first. Read-only: no schema, migration or recording change; no way to mark a merge reviewed. `/classic` and factory stats are unchanged.
+ 
+-  - **Item commands from the page (decision changed 2026-11-07, issue #227).** A second write route, `POST /api/v1/items/:id/commands` (`src/ui/commands.ts`), records one app command request (`app_command_requests`, design §4 app requests) for the controller to apply on its next tick; the route itself never applies a command. Body: JSON `{ command, note? }`; `command` is any item command but `help` and the account command `link` (`approve`, `reject`, `revise`, `retry`, `resolve`, `budget`, `verdict`); `note` is optional, at most 2000 characters, trimmed, and required (non-blank) for `reject` and `revise`. The row's actor is `ui.user_id` from `factory.config.json` (a factory user ID, optional, unset in the checked-in config; an empty or non-string value stops startup naming the key), so the controller's permission check is that user's; args are `{ work_item_id, note? }` and the key is `app:<random UUID>`. **Token:** one random token per UI process (32 bytes, base64url), made at startup in `buildUiParts`, shared with the Settings write, held only in memory (never in a file, the store or a log) and new after every restart; the page reads it from `GET /api/v1/session` (`{ as_of, csrf_token, commands_enabled }`; 404 when the route is not wired), which is behind the same Host guard as every route, and sends it in `x-csrf-token`. **Checks, in order, each before any store write:** a Host other than `127.0.0.1`/`localhost` 403; an Origin missing or not `http://<Host>` 403; a Content-Type other than `application/json` 415; a missing or wrong token 403; no `ui.user_id` 503; a body over 16 KB 413; a body that is not JSON 400; an unknown command, an unknown or ill-typed field, a note over 2000 characters, or `reject`/`revise` without text 400; an unknown item id 404. Success is 202 `{ request_id, seq, command, work_item_id }`. A POST to any other path (settings excepted) is a 405 with a JSON `{ error }` body and `allow: GET, HEAD`, whatever the area; every other method keeps its area's 405. **Item API:** `/api/v1/items/:id` adds `commands` (`{ name, usage, description }` for each command that applies in the item's current state, from the same table and rule as the comment footer, `commandsFor`, `/help` last) and `replies` (the item's stored requests, oldest first, the newest 50: `{ seq, command, created_at, handled_at, refusal }`; `command` and `refusal` pass the `Withholder`; the note is never returned). They read a new store method, `listAppCommandRequestsForItem` (no schema change). Every other GET response is unchanged. The server still binds only `127.0.0.1`.
++  - **Item commands from the page (decision changed 2026-11-07, issue #227).** A second write route, `POST /api/v1/items/:id/commands` (`src/ui/commands.ts`), records one app command request (`app_command_requests`, design §4 app requests) for the controller to apply on its next tick; the route itself never applies a command. Body: JSON `{ command, note? }`; `command` is any item command but `help` and the account command `link` (`approve`, `reject`, `revise`, `retry`, `resolve`, `budget`, `verdict`, and since issue #246 `merge`); `note` is optional, at most 2000 characters, trimmed, and required (non-blank) for `reject` and `revise`. The row's actor is `ui.user_id` from `factory.config.json` (a factory user ID, optional, unset in the checked-in config; an empty or non-string value stops startup naming the key), so the controller's permission check is that user's; args are `{ work_item_id, note? }` and the key is `app:<random UUID>`. **Token:** one random token per UI process (32 bytes, base64url), made at startup in `buildUiParts`, shared with the Settings write, held only in memory (never in a file, the store or a log) and new after every restart; the page reads it from `GET /api/v1/session` (`{ as_of, csrf_token, commands_enabled }`; 404 when the route is not wired), which is behind the same Host guard as every route, and sends it in `x-csrf-token`. **Checks, in order, each before any store write:** a Host other than `127.0.0.1`/`localhost` 403; an Origin missing or not `http://<Host>` 403; a Content-Type other than `application/json` 415; a missing or wrong token 403; no `ui.user_id` 503; a body over 16 KB 413; a body that is not JSON 400; an unknown command, an unknown or ill-typed field, a note over 2000 characters, or `reject`/`revise` without text 400; an unknown item id 404. Success is 202 `{ request_id, seq, command, work_item_id }`. A POST to any other path (settings excepted) is a 405 with a JSON `{ error }` body and `allow: GET, HEAD`, whatever the area; every other method keeps its area's 405. **Item API:** `/api/v1/items/:id` adds `commands` (`{ name, usage, description }` for each command that applies in the item's current state, from the same table and rule as the comment footer, `commandsFor`, `/help` last) and `replies` (the item's stored requests, oldest first, the newest 50: `{ seq, command, created_at, handled_at, refusal }`; `command` and `refusal` pass the `Withholder`; the note is never returned). They read a new store method, `listAppCommandRequestsForItem` (no schema change). Every other GET response is unchanged. The server still binds only `127.0.0.1`.
+   - **Command buttons on the item page (decision changed 2026-11-07, issue #228).** The item page (`web/src/views/item-commands.tsx`) shows one button per entry of the item API's `commands`, in the API's order, labelled with the command name, and one text box that is the note of every send: the reason for reject, the feedback for revise, tokens for budget, `accept|changes|reject <severity> <reason>` for verdict, and an optional note for approve, retry and resolve. A send is `postCommand` (`web/src/api.ts`): `POST /api/v1/items/:id/commands` with JSON `{ command, note }` (`note` only when the box has text, trimmed) and the token from `GET /api/v1/session` in `x-csrf-token`; the session is read once per page load, not polled. Revise and reject stay disabled while the box is blank. Reject asks first with an inline "Confirm reject" / "Cancel"; nothing is posted before Confirm. No other command asks. Next to each button: the error text of a failed send (a non-2xx answer), "sent" at once after a 202 until a reply as new as it arrives, else the item's latest request for that command from `replies`: its refusal, "sent" while it has no handled time, "Done" when handled with no refusal. When the session says `commands_enabled` is false, or the session cannot be read, every button is disabled and the page says commands are off. Outcomes update with the 3 s poll; request notes and the full reply history are not shown. No server route, store or command changed.
++  - **Merge button (new decision, 2026-11-08, issue #246; the decision that changed: the app could not merge, only a person on GitHub did).** Each row of `/api/v1/items` and the body of `/api/v1/items/:id` have `merge`: null unless the item is a factory PR waiting for a human merge and the project has the merge command on (`forge_merge`, design 04-gate-commands; `buildUiParts` passes it as `commands.merge`, `MergeCommands` in `src/ui/api.ts`), else `{ pr_number, pr_url, title, tier, files, lines, replies }`. `lines` and `files` are the PR's size the controller kept on the item's `review_passed` change (`lines_changed`, `files_changed`); without it `files` is the stored PR files' count and `lines` null. `replies` are the item's `merge` requests, as in the item's `replies`. Store reads only; no forge call. **App** (`web/src/views/merge.tsx`): a Merge button in the State cell of that row (Floor's Needs you and Work items) and above the item page's commands, nowhere else; disabled while commands are off, while `mergeBlocked` (conflicts or checking), and while a merge is out. It opens an inline confirmation (`role=dialog`) with the title, tier, files and lines changed and the PR link when it is an http(s) URL; "Confirm merge" sends `merge` through the commands route (`postCommand`, the same POST guards: Host, Origin, Content-Type, CSRF token, `ui.user_id`), "Cancel" sends nothing. After confirming, the row shows "merging" until the controller merges (the item closes and leaves Needs you) or refuses (the refusal shows next to the button, as an alert). The generic command buttons never list `merge` (`app_only`). No new route.
+   - **Merge check fields (new fields, 2026-11-07, issue #248; design §5 Merge check).** Each row of `/api/v1/items` and the `item` of `/api/v1/items/:id` have `merge_check`: `null` for an item that is not ready to merge, else `{ state, conflicts, head_sha, base_sha, checked_at }`. `state` is `mergeable` or `conflicts` from the item's stored result, or `checking` while it has none or while the result is for an older head than the item's recorded `last_head_sha`. `conflicts` are the conflicting file names, each through the `Withholder`. The routes read `listMergeChecks` and `getMergeCheck`, both store reads; the API still never writes and never runs git. **App:** a ready-to-merge row shows `Mergeable`, `Conflicts: N files` (the names on hover) or `Checking…` next to its state; the item page has a Merge check section with the conflicting files, the base sha it was checked against and when. `mergeBlocked` (`web/src/api.ts`) is true while the item has conflicts or is being checked, for the Merge button (#246) to read. `/classic` is unchanged.
+ - **Work items tree (decision changed 2026-11-08, issue #295; current).** The Work items page defaults to a tree (`web/src/views/tree.tsx`, `react-aria-components` `Tree`: treegrid roles, arrow keys move focus, right expands, left collapses). A split parent holds its phases in phase order; every other item is a top-level row, in the API's ranked order. Each item shows once: a held item stays where its parent puts it and is never moved under the item it waits for; it carries a "waits for #N" chip linking to that item (a phase hold: the previous phase; a dependency blocker: the named issue; a coordination hold: the holder from the latest claim decision). A row shows `#N` and title, the state badge, the wait reason and the running run's worker ID (on a second line at phone width), the run kind and attempt (queue position when queued, run time when running), the PR link and the last update. **CI is not shown:** the store holds no CI result (it comes from GitHub at check time); a follow-up issue covers storing it. **List toggle:** keeps the flat table unchanged (same server `state` and `q` query); the choice is saved in `localStorage` (`sf.items.view`), the tree is the default. **One request per poll:** the tree reads `GET /api/v1/items?closed=1` once and filters in the page (state, search, held); the list sends its server filters as before. **Filters in the tree:** closed items are hidden unless "Show closed" (or the Closed filter) is on, so a parent whose phases are all closed is one row; a match shows its parents for context; the summary line "N running · N queued · N held · N needs you · rate limit: …" counts the open items and each count is a button that sets the matching state filter ("held": a held claim or a phase waiting for its previous phase). Expanded rows are saved per browser (`sf.items.expanded`); "Expand all" and "Collapse all" set them; the default is every parent with an open phase expanded. **API:** each row of `/api/v1/items` adds `parent_id`, `phase`, `waiting_on_number`, `run` (`kind`, `status`, `attempt`, `worker_id`, `started_at`, `position` when queued) and `claim` (the latest claim decision of the current implement run, null when it is from an earlier run: `decision`, `holder`, `holder_id`, `approved`, `cost`, `threshold`); existing fields keep their names and values. `worker_id` and `holder` pass the Withholder. The decisions come from one batched store read, `listLatestClaimDecisions(ids)` (read-only, no schema change). Out of scope: CI per PR row, commands from this page, the classic page.
+ - **Run transcripts in the app (new decision, 2026-11-07, issue #303; current).** A run's stored transcript opens from the item page. **Lookup:** by the worker's storage key, `transcripts/<item>/<run>.json` (a second agent step of the run: `<run>.<step>.json`, e.g. `resolve`, `fix`), never `runs.transcript_url`, which holds the external link a person gives for an interactive session (those stay out of scope). The run must belong to the item (`listRuns(item)`); no store method, schema or migration changed. **Storage:** `SharedStorage` gains `getRange(key, start, end)` → `{ bytes, size }` (only that range is read; `getRange(key, 0, 0)` gives the size), implemented by `fs` with one file handle. It is optional on the interface so an older implementation still builds; `readRange` falls back to `get` there. `UiDeps.storage` (optional; `main.ts` passes the configured storage plugin) is the UI's only storage dependency. **API** (`src/ui/transcript.ts`, routed from `src/ui/api.ts`): `GET`/`HEAD /api/v1/items/<id>/runs/<run>/transcript?offset=&filter=&tail=&part=` (every other method is 405, like every route). One request reads at most 64 KiB (`PAGE_BYTES`) and returns at most 64 KiB: a forward page reads from `offset - 1` so it can tell whether `offset` starts a line, leaves a line cut by the range for the next page (`next`), and skips a single line over 64 KiB with a marker; `tail=1` reads only the file's final 64 KiB and returns its last 20 steps (`earlier` says more exist). Each stream-json line (Claude Code's or the OpenAI-compatible runner's events) gives its steps (`text`, `tool_use`, `tool_result`, `result`, `system`, `error`); a line that is not a JSON event is a `plain` step, so a non-stream-json transcript shows as plain lines. `filter=edits|commands|reads` keeps only tool calls of that kind and is applied on the server, page by page. **Egress:** every step and every other text of the response (outcome code, detail, summary, worker id) passes the `EgressScanner` on the new channel `ui` before it leaves; a finding withholds the whole step (`[withheld: <rule>]`, its tool name dropped), never a cut-off part, and a clean step cut to fit the page is cut after the scan. Errors are fixed texts: 404 for an unknown run, another item's run, no stored transcript or an unknown `part`; 400 for a bad `offset` or `filter`; a storage error is a 500 whose text never includes the storage message. `/api/v1/items/:id` adds `transcripts`, run id → its stored parts (only runs with a transcript; from one `list` of the item's prefix); the run rows keep their fields, and the app's worker column is the last attempt's `worker_id`. **App:** the item page's Runs table shows kind with the run ID, attempt, status, error, worker, started, took, tokens and an Open link when a transcript is stored (a table at `sm` and up, cards below it: see "Item page, phases and narrow screens"); the view `/app/items/<id>/runs/<run>` (`web/src/views/transcript.tsx`, routed in `App.tsx`) shows the outcome first, then the steps: assistant text collapses past five lines, tool results start collapsed, errors are highlighted, a failed run offers "Jump to the last 20 steps", the step-type filter holds across "Load more" pages, and text wraps so a 375 px screen does not scroll sideways. It never polls. Out of scope: editing or re-running from a transcript, a live view, full-text search, and what the worker stores. Decision changed: "the UI reads only the store" (and the Data page's "out of scope: shared-storage transcripts") now has one storage read path, this route.
+@@ -26,11 +27,12 @@
+ - **Item page, phases and narrow screens (decision changed 2026-11-07, issue #313; current).** **Item API:** the `item` of `/api/v1/items/:id` adds `spec_comment_url` (through the Withholder; null before triage posts the spec), `parent_id` and `phase` (both null unless the item is a phase of a split spec) and `phases`, a split parent's phases in phase order as `{ id, phase, title, stage, source }` (title through the Withholder; empty for any other item), read with the store's existing `listPhases`; no store method, schema or migration changed. **Item page:** a phase says "Phase N of its split parent" with a link to the parent; a split parent has a Phases section linking each phase's page. The spec comment and the PR are links only when the URL is http(s); any other value (a withheld marker, a local path) shows as plain text. The Runs table's first cell is the run's kind and ID. **Timeline:** each change value is parsed from the API's JSON text and shown as words (strings unquoted, lists joined, none as `–`; a withheld marker as it is). The spec fields triage writes (`problem`, `scope`, `desired_output`, `done_criteria`, `files_to_change`, `allowed_paths`) never show inline: their row has a "spec written (show)" button that opens them, each rendered as markdown (lists as bullet lists). **Markdown:** a small built-in renderer (`web/src/components/ui/markdown.tsx`, no dependency): headings, paragraphs, bullet and numbered lists, fenced code, inline code, bold and `[text](url)` links. It builds React elements, never HTML strings, so raw HTML shows as text; a link is drawn only for an http(s) URL, any other (`javascript:`, `data:`, relative) shows its text, plain. **Closed facet:** the Closed option (and stage `CLOSED`) counts the closed items that match the other filters, the same rule as every other facet. When the filters leave closed items out of the list, `/api/v1/items` reads them for the counts only: one `listWorkItemsWhere({ stage: "CLOSED" })` read (at most `LIST_LIMIT` items), no per-item reads (a closed item's level is always `closed`, its kind comes from its blocked reason, its search keys from its withheld title). The classic page at `/classic` keeps its own counts. **Tables:** every `Table` in the app (not the Data page's own table, which keeps its horizontal scroll) is a table at `sm` (640 px) and up and a list of cards below it, with no horizontal scroll: the first cell is the card's title, the next two sit under it, the rest are listed with their column names. Rows are `Tr`, cells `Td` (`web/src/components/ui/parts.tsx`); the width is read from the window, so a component test at 390 px sees the cards. **Sidebar:** in the icon-only layout below `sm` each link keeps a `title` and an accessible name (`aria-label`, its page label). **Settings:** each `_ms` key shows its value as a duration with units under its field (5400000 as `1h 30m`, 1800000 as `30m`), its description unchanged.
+ - **Revisions, system actions and the tab title (decision changed 2026-11-07, issue #311; current).** **Revisions:** `/api/v1/overview` adds `server_rev`, the git revision the UI server runs (`git rev-parse HEAD` of its code root, read once at start; null when git cannot say), beside `factory.rev`, which stays the supervisor's. The app has its own revision built in through Vite `define` (`__FACTORY_REV__` from `git rev-parse HEAD` at build time, `web/vite.config.ts`; `WEB_REV` in `web/src/api.ts`, null in tests) and sends it on each overview poll as `?rev=`. When both are known and differ, a banner under the top bar says "Dashboard out of date: reload / restart `factory ui`" (`web/src/views/system-banner.tsx`); equal or unknown revisions show none. It says only that they differ, never which is newer. Under `git-worktree` the supervisor restarts the page on each new revision ([08-self-update.md](08-self-update.md)). **System actions:** the overview adds `system_actions` and counts them in `needs_you` ([09-status-page.md](09-status-page.md)); the Floor lists them at the top of Needs you, each with its command. **Tab title:** `(N) <page> · software-factory` with N the overview's `needs_you`, no prefix at 0. **Health:** ok rows fold behind their count ([09-health.md](09-health.md)). No store method, schema or migration changed.
+ - **Workers, Failures and the effective worker count (decision changed 2026-11-07, issue #312; current).** **Workers page:** one row per entry of `processes` on `/api/v1/workers`: host, pid, start time, busy and idle slots (idle is slots minus busy, never below 0), current and max slots, the process's runs, and a "draining" badge when `slots` is 0. It shows the effective worker count once, as "Worker setting: N (override | config file | default)"; the factory banner no longer states a count. **Overview:** `factory.workers` is the effective `workers` setting (`effectiveWorkers`, `src/ui/settings-api.ts`: the Settings page's resolve of file, override and default, capped at `max_workers`) with `factory.workers_source`; without the Settings wiring it falls back to the status file's value with source `file`. **Failures:** `GET /api/v1/failures?window=24h|7d` (`src/ui/failures.ts`, default 24h, any other value 400) returns the failed runs of the window grouped by error code: `{ window, cap, total, capped, groups: [{ code, description, count, last_seen, items, runs: [{ id, work_item_id, kind, attempt, detail, worker, finished_at }] }] }`, largest group first. It reads only `listRunsFinishedWithin` and `listRunAttempts` (the worker of the run's claim), at most the newest 500 failed runs per window; `capped` says when more failed, and the page states the cap. Codes, details and workers pass the Withholder (run-outcome channel). `description` comes from one server-side table (`FAILURE_DESCRIPTIONS`) of the codes the code base names; any other code shows raw with `description: null`. The Failures page is a sidebar entry after Health; its groups expand to their runs, each item linked to its page. The Floor's "Runs failed" count links to `/app/failures?window=24h`. Out of scope: transcript links per run (#303), write actions, a history of worker processes.
+-- **Item thread on the item page (new decision, 2026-11-08, issue #286; current).** **Item API:** `/api/v1/items/:id` adds `thread`, the item's thread entries read with the store's existing `listItemMessages` (`src/ui/thread.ts`), oldest first, each `{ seq, at, kind, author, channel, anchor, body }`: `body` through the Withholder; `kind` from the marker (the word after `<!-- factory:` for the factory's own entries, `comment` for a GitHub comment `github:<id>`, else `message`); `author` is `factory` for an entry whose marker starts with `<!-- factory:` and `unknown` for every other, because a thread entry stores no author; `channel` is the item's source type; `anchor` is `msg-<seq>`. The marker itself is never returned. No store method, schema or migration changed: storing an author or channel per entry was weighed and left out (the owner's choice, option A), so existing entries need no backfill. **Item page:** a Thread section (`web/src/views/thread.tsx`) under the command buttons lists every entry sorted by time (seq breaks a tie), each with its author, `on <channel>`, kind and age, the body as markdown, and the anchor as the element's id; opening the page with that hash scrolls to it. A command sent from the command box re-reads the item after its 202, so the controller's reply shows in the thread once it is written (and with the 3 s poll); no live update beyond that. **Routing:** a hash on an `/app/` path (`#msg-3`) does not change the page. **Merge:** there is no local forge or merge command yet; the local flow test drives the CLI through review and injects the merge through the fake forge, with no sync plugin selected (a local forge merge is a follow-up issue).
++- **Item thread on the item page (new decision, 2026-11-08, issue #286; current).** **Item API:** `/api/v1/items/:id` adds `thread`, the item's thread entries read with the store's existing `listItemMessages` (`src/ui/thread.ts`), oldest first, each `{ seq, at, kind, author, channel, anchor, body }`: `body` through the Withholder; `kind` from the marker (the word after `<!-- factory:` for the factory's own entries, `comment` for a GitHub comment `github:<id>`, else `message`); `author` is `factory` for an entry whose marker starts with `<!-- factory:` and `unknown` for every other, because a thread entry stores no author; `channel` is the item's source type; `anchor` is `msg-<seq>`. The marker itself is never returned. No store method, schema or migration changed: storing an author or channel per entry was weighed and left out (the owner's choice, option A), so existing entries need no backfill. **Item page:** a Thread section (`web/src/views/thread.tsx`) under the command buttons lists every entry sorted by time (seq breaks a tie), each with its author, `on <channel>`, kind and age, the body as markdown, and the anchor as the element's id; opening the page with that hash scrolls to it. A command sent from the command box re-reads the item after its 202, so the controller's reply shows in the thread once it is written (and with the 3 s poll); no live update beyond that. **Routing:** a hash on an `/app/` path (`#msg-3`) does not change the page. **Merge:** the local flow test drives the CLI through review and injects the merge through the fake forge, with no sync plugin selected; the merge command and the local forge (issue #246) are the Merge button above and design §4, merge command.
+ - **Needs-you Why column (decision changed 2026-11-08, issue #286; before: see History).** A Needs-you row's Why shows what to do, from `needOf` (`src/ui/need.ts`), the one function the classic status page also uses; `GET /api/v1/items` returns it as `need: { reason, command, anchor }` on those rows only. `anchor` is the item page anchor (`msg-<seq>`) of the item's newest thread entry whose marker starts with `<!-- factory:` (the factory's latest "why"), null when it has none; the app links the reason to `/app/items/<id>#<anchor>`, and shows it unlinked when `anchor` is null. One `listItemMessages` read per Needs-you row. Failed: `failed: <code>` with `/retry`. Waiting for approval: `spec ready` with `/approve or /reject <reason>`. Ready to merge: the merge check (`mergeable`, `merge check running` or `N conflicting files`) with `merge the PR`. Other reasons in plain words. It never repeats the State label. Store reads only, no forge call. Rows without `need` fall back to the `why` sentence.
+ 
+ ## History
+ 
++- **No merge from the app** (decision changed 2026-11-08, issue #246). Before: the app could send item commands but none merged; a ready PR showed "Ready to merge" and its merge check, and only a person on GitHub merged it (the old "the app is read-only" for merges).
+ - **Work items tree** (decision changed 2026-11-08, issue #295). Before: the Work items page was one flat table of `/api/v1/items` rows (item, state, why, since, issue, PR) with no parent, phase, worker, queue position or claim decision on a row, filtered by the server's `state` and `q`. It stays as the List toggle.
+ - **Revisions, system actions and the tab title** (decision changed 2026-11-07, issue #311). Before: the overview returned only the supervisor's revision (`factory.rev`), the web build had no revision built in, so a tab or a page server on old code was not shown; `needs_you` counted only human-blocked and deadlocked items; the tab title had no count.
+ - **Item page, phases and narrow screens** (decision changed 2026-11-07, issue #313). Before: the item API had no `spec_comment_url`, `parent_id`, `phase` or `phases`; the timeline printed each change as `field: <from JSON> → <to JSON>`, so a spec showed escaped newlines and arrays; the Runs table showed only the kind ("the item page's Runs table shows kind, attempt, status, error, worker, started, took, tokens and an Open link when a transcript is stored, scrolling inside its own box"); every table kept its full width in a scroll box on a phone; the sidebar links below `sm` had no title; the Closed facet read 0 because closed items were loaded only when a filter asked for them; and Settings showed `_ms` keys as plain milliseconds.
+diff --git a/docs/plugins.md b/docs/plugins.md
+index 0afcd509..3ffbf296 100644
+--- a/docs/plugins.md
++++ b/docs/plugins.md
+@@ -31,4 +31,4 @@ kebab-case (KeepAwake is `keep-awake.md`).
+ | GitHubCredentials | `token`, `app` | [github-credentials.md](plugins/github-credentials.md) |
+ | TestDatabase | `mysql-local`, `none` | [test-database.md](plugins/test-database.md) |
+ | NetworkProbe | `http` | [network-probe.md](plugins/network-probe.md) |
+-| Forge (optional; follows `plugins.source`: `github` with `github-issues`, else none) | `github` | [forge.md](plugins/forge.md) |
++| Forge (optional; follows `plugins.source`: `github` with `github-issues`, else none) | `github`, `local` | [forge.md](plugins/forge.md) |
+diff --git a/docs/plugins/forge.md b/docs/plugins/forge.md
+index 179f9f05..6df071d9 100644
+--- a/docs/plugins/forge.md
++++ b/docs/plugins/forge.md
+@@ -4,7 +4,9 @@ What it does: the forge is where pull requests live. The `Forge` interface (`src
+ 
+ - **PR events.** `poll(cursor)` returns the PR events (`pr_merged`, `pr_closed`, `pr_open`, `pr_unmergeable`, `pr_changes_requested`) and the next cursor. The controller polls it on `poll_interval_ms`, under its own guard (a forge that fails does not stop the sources' intake in the same tick, and its cursor does not move), through the cursor `forge:<ref type>` (`forge:github_issue`). The poll sources are read first and the forge after them, and the forge's events are handled first, so a merge that closed its issue is applied before the issue's close. While that cursor is empty the forge's `handover_cursor` is its first cursor (below).
+ - **PR facts.** `prChecks` (the checks on a PR's head commit), `prFiles` (the paths a PR changes), `labelAddedBy` (who put a label on a PR), `commitAuthor` (the forge account behind a commit), `commitsBetween(from_sha, to_sha)` (how many commits a push from `from_sha` to `to_sha` added, or null when the forge cannot say; read once per person's push to a factory PR, for the reason of its implicit `changes` verdict, design 04-gate-commands). All read-only.
+-- **PR writes.** `postPrComment` (one comment per marker on a PR), `setPrStatus` (the item's status on its PR), `closePr` (close a factory PR after one comment). A PR comment is an item thread entry whose outbox row targets the forge's PR ref (`prRef`, rows of type `ref_type`); the outbox step posts it through the forge, recognising the ref with `prNumberOf`, whatever source the item came from. So a Slack or local item's PR gets its comments and labels on the PR.
++- **PR writes.** `postPrComment` (one comment per marker on a PR), `setPrStatus` (the item's status on its PR), `closePr` (close a factory PR after one comment), `mergePr` (merge a factory PR, only at the head its review read). A PR comment is an item thread entry whose outbox row targets the forge's PR ref (`prRef`, rows of type `ref_type`); the outbox step posts it through the forge, recognising the ref with `prNumberOf`, whatever source the item came from. So a Slack or local item's PR gets its comments and labels on the PR.
++
++- **Merges** (decision changed 2026-11-08, issue #246; design 04-gate-commands, merge command). `prMergeState` reads what the merge command re-checks (the PR's state, current head, whether it merges cleanly, its merge commit, its size), and `mergePr` merges it at the reviewed head (`head_sha`); a refusal is fixed words, never forge text. Only the controller calls them, after its own checks, for an app `merge` request. They are on only when `factory.config.json` names a forge in `plugins.forge` itself (`FactoryConfig.forge_merge`): a forge derived from `plugins.source` keeps today's behaviour (no Merge button, the request refused with a pointer to merge on the forge); so rollout is per project, off by default. With it on, the item's size is read once (`prMergeState`) as it becomes ready to merge and kept on its `review_passed` state change (`lines_changed`, `files_changed`), for the app's confirmation; no other project makes that read.
+ 
+ **Which forge.** No forge plugin is a default. `plugins.forge` left out follows the sources (derived in `src/compose.ts`, `withForgeDefault`; not a setting): `github` when `plugins.source` lists `github-issues`, none otherwise. One rule for both use cases:
+ 
+@@ -21,15 +23,21 @@ Plugins:
+   - `github.history_since` (optional, a date like `2026-01-01` or a UTC time; anything else fails at startup naming the setting): checks merges back to that time. Older than `start`, it moves `start` back once: that poll reads closed PRs back to it, at most 5 pages of 100, with one GET per merged PR, and the cursor records the value so a restart does not read it again. Not older (or already applied), it is ignored, with one warning naming the setting.
+   - Upgrade (`handover_cursor`: `intake:github_issue`): before issue #273 the PR position (`pulls`, `start`, `history_since`, `reviews`, `review_ids`) lived in the GitHub source's cursor, under the same names. The forge's first poll starts from that cursor, so a merge during the upgrade is not missed and one already applied is not applied again (a boundary PR may come back; handling is idempotent). A fresh install has no such cursor: the forge starts empty and reads one page of closed PRs.
+   - PR comments and labels go through a `GitHubIssueSource` with the store (`postComment` and `setStatus` on the PR ref; PRs share the issues API), so they use the same posted-comment and label-state records as issue ones (design 05-sources, GitHub sync records). build() passes the store, the Clock and a log beside the forge context; built without them (`Plugins.forge(github)` alone) it records nothing and cannot poll.
++  - Merge: `prMergeState` is one `GET /pulls/N` (state, head, `mergeable`, additions plus deletions, changed files); `mergePr` is the bot merge `mergePullRequest` at the reviewed head (docs/plugins/tool-broker.md).
+   - `commitsBetween`: one GET of the compare endpoint (`/compare/<from>...<to>`), its `ahead_by`. A 404 or 422 (a sha GitHub does not know, e.g. after a force-push) or no count gives null; any other failure throws, and the controller then records the count as unknown.
+-  - Enable: list `github-issues` in `plugins.source`, or set `"plugins": { "forge": "github", ... }`.
++  - Enable: list `github-issues` in `plugins.source`, or set `"plugins": { "forge": "github", ... }`. The merge command needs the second form.
+   - Secrets: none of its own (the shared client's `GitHubCredentials`).
++- `local`: `LocalForge` (`src/impl/forge/local-forge.ts`). The solo merge path: no forge account and no GitHub call. A PR is its factory branch in the factory repo (`repo.path`): `refs/heads/<branch>`, else the fetched `refs/remotes/origin/<branch>` (the merge check fetches it).
++  - Merge: `git merge-tree --write-tree` of the local base and the branch head, `git commit-tree` with both as parents (author and committer `agent_git_identity`, subject `Merge branch '<branch>' (PR #N)`), then a compare-and-swap `git update-ref refs/heads/<base> <new> <old>`. Only git's object store and that one ref change: no checkout, index or HEAD is touched. Refused, with nothing written, when the head is not the reviewed head, the merge conflicts, the base moved meanwhile, or the base branch is checked out in any working tree of the repo (moving it would change that checkout's status; switch it to another branch first). The base is not pushed: pushing it is the person's.
++  - Reads: `prMergeState` is merged when the head is already on the base, closed when no such branch exists, else open with `merge-tree`'s answer and the size from `git diff --numstat base...head`. No PR events (`poll` returns none), checks `passed` (the pre-push checks ran before the push), `prFiles` empty (nothing is adopted), no label or commit author, `closePr` `not_open`. PR refs are of type `local` (`local-pr:<n>`); it posts nothing, since a local item's thread is the store.
++  - Enable: `"plugins": { "forge": "local", ... }`. Next to `github-issues` its PRs on GitHub are no longer read: a merge made on GitHub does not close its item.
++  - Secrets: none.
+ 
+ Switch back / disable: drop `github-issues` from `plugins.source` and leave `plugins.forge` out, or set it to `"none"` with no `github-issues`.
+ 
+ ## History
+ 
++- **Merges through the forge** (decision changed 2026-11-08, issue #246). Before: the forge only read PRs and wrote comments, labels and closes; only a person on GitHub merged a PR, and there was no `local` forge.
+ - **`commitsBetween`** (new method, 2026-11-08, issue #316). Before: the forge could name a commit's author but not count the commits in a push.
+-
+ - **The forge reads PRs** (decision changed 2026-11-07, issue #273, phase 2 of #172). Before: selecting a forge only loaded it; the controller read every PR event and PR fact from the `github-issues` source and sent PR comments and PR status to the `github_issue` adapter, and `plugins.forge` left out meant no forge.
+ - **An optional Forge** (new decision, 2026-11-07, issue #272, phase 1 of #172). Before: the PR facts lived only on the `github-issues` source, and every non-guard kind needed a default plugin.
+diff --git a/docs/plugins/tool-broker.md b/docs/plugins/tool-broker.md
+index 6d319f20..8caaaeca 100644
+--- a/docs/plugins/tool-broker.md
++++ b/docs/plugins/tool-broker.md
+@@ -14,6 +14,8 @@ Plugins:
+   - Secrets: none. Settings: `branch_prefix`, `repo.path`, `repo.base_branch`.
+   - Tools: `github.push_branch` only (the name is kept until core's tool names are made neutral). It writes the run's HEAD to the local branch `refs/heads/<branch>` of the factory repo with git's local transport, never to a remote and never forced; the scanned diff starts at the factory repo's local `refs/heads/<base_branch>`. No `github.open_pr`, `github.preflight` or `github.comment`: the worker skips the PR, the preflight's forge checks and PR comments when the broker has no such tool, and a local item's messages are its thread.
+ 
++Merge (decision changed 2026-11-08, issue #246): the `github` broker module also holds the bot's merge, `mergePullRequest` (`src/impl/github/github-tool-broker.ts`): one `PUT /repos/<owner>/<name>/pulls/<n>/merge` with `sha` = the reviewed head, so GitHub merges only that head, and GitHub's own merge commit subject (no item text is sent, so nothing needs a scan). GitHub's 405 (`merge_refused`) and 409 (`head_changed`) are results in fixed words, never GitHub's text; a 401/403 is `forge_auth`; anything else throws. It is not a listed tool: no agent run may merge, tools are fenced by a run's lease and the merge is the controller's after its re-checks, so `allTools()` is unchanged and `tool_grants` can never name it. The `github` forge's `mergePr` calls it (docs/plugins/forge.md).
++
+ Granted tools: each tool descriptor sets `read_only`, true only for a tool that changes nothing (`github` marks `github.preflight` read-only; `github.push_branch`, `github.open_pr` and `github.comment` are not). A broker lists every tool it serves through `allTools()`. `tool_grants` in `factory.config.json` grants read-only tools to agent runs per run kind (`triage`, `implement`, `review`, `update`, `resolve`, `manual`), for example `{"tool_grants": {"triage": ["github.preflight"]}}`; absent, no grants. Startup checks it when the broker is built and fails on an unknown run kind, an unknown tool or one that is not read-only, listing the valid names. Only a runner with `exposes_tools` (`claude-code`) can take grants. How the guards hold: `docs/architecture.md` §5.
+ 
+ Switch back: `"broker": "github"` (with the GitHub source and auth, the enterprise setting). The local branches stay in the factory repo; nothing is pushed for them.
+@@ -22,5 +24,6 @@ Why it cannot be disabled: without the broker the only way to push or comment wo
+ 
+ ## History
+ 
++- **Merge** (decision changed 2026-11-08, issue #246). Before: the broker could push, open a PR and comment, never merge; only a person on GitHub merged.
+ - **Trusted-git checks in one helper** (2026-11-07). Before: the run-folder, base and config checks and the branch scan lived inside the GitHub broker, the only broker.
+ - **Granted tools** (2026-11-07, issue #164). Before: no descriptor said whether a tool was read-only, and no tool could be granted to an agent run.
+diff --git a/src/compose.ts b/src/compose.ts
+index 8a35b127..3963f6e2 100644
+--- a/src/compose.ts
++++ b/src/compose.ts
+@@ -42,7 +42,7 @@ import { CONFIG_ENV, type ChildRestart, SUPERVISOR_STATUS_FILE, type SupervisorS
+ import { autoMigrate } from "./impl/updater/auto-migrate.js";
+ import { GitHubClient, type GitHubClientOptions, GitHubError, type RepoIdentity, type RepoRef, githubBudgetShare, githubMinRemaining } from "./impl/github/github-client.js";
+ import { ConsoleLogger } from "./impl/log/console-logger.js";
+-import type { UiCommands } from "./ui/commands.js";
++import type { MergeCommands } from "./ui/api.js";
+ import { type UiSettings, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
+ import type { UiPauses } from "./ui/pause-api.js";
+ import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
+@@ -322,6 +322,11 @@ export function fillPrompt(text: string, repo: FactoryConfig["repo"], forge: str
+ const GITHUB_SOURCE = "github-issues";
+ const GITHUB_FORGE = "github";
+ 
++/** Whether factory.config.json's `plugins` names `forge` itself (any value, `"none"` included). */
++function forgeNamed(plugins: unknown): boolean {
++  return plugins !== null && typeof plugins === "object" && Object.hasOwn(plugins, "forge");
++}
++
+ /**
+  * The forge default rule (issue #273): `plugins.forge` left out follows the sources: `github` when `plugins.source`
+  * lists github-issues, else none. Derived, not a setting, so a local-only setup makes no GitHub call. An off value
+@@ -329,7 +334,7 @@ const GITHUB_FORGE = "github";
+  */
+ export function withForgeDefault(registry: Registry, selection: Selection, plugins: unknown): Selection {
+   if (!selectedSources(selection).includes(GITHUB_SOURCE)) return selection;
+-  const given = plugins !== null && typeof plugins === "object" && Object.hasOwn(plugins, "forge");
++  const given = forgeNamed(plugins);
+   if (!given) return Object.hasOwn(registry.forge.plugins, GITHUB_FORGE) ? { ...selection, forge: GITHUB_FORGE } : selection;
+   if (selection.forge !== undefined) return selection;
+   const value = JSON.stringify((plugins as { forge?: unknown }).forge) ?? "nothing";
+@@ -410,6 +415,8 @@ export async function loadConfig(
+     status_label_prefix: file.status_label_prefix ?? DEFAULT_STATUS_LABEL_PREFIX,
+     branch_prefix: file.branch_prefix,
+     dials: { spec_gate_min_tier: file.dials.spec_gate_min_tier as Tier, auto_merge_max_tier: 0 },
++    // The merge command's per-project switch: a forge named in plugins.forge, never one derived from the sources.
++    forge_merge: forgeNamed(file.plugins) && plugins.forge !== undefined,
+     settings,
+     max_loops: file.max_loops,
+     phases_auto_approve: file.phases_auto_approve === undefined ? false : booleanSetting("phases_auto_approve", file.phases_auto_approve),
+@@ -879,8 +886,11 @@ export interface UiParts {
+   scanner: EgressScanner;
+   /** The Settings page's write path (design §8, issue #236): the config base, repo, actor, store-only resolver, CSRF token. */
+   settings: UiSettings;
+-  /** The item commands route (POST /api/v1/items/:id/commands, issue #227): ui.user_id and the per-process token. */
+-  commands: UiCommands;
++  /**
++   * The item commands route (POST /api/v1/items/:id/commands, issue #227): ui.user_id and the per-process token,
++   * and `merge`, the merge command's switch (forge_merge), which the item API reads for the Merge button (issue #246).
++   */
++  commands: MergeCommands;
+   /** The "Resume now" route (design §5 Restarts, issue #291): the page's factory user, the owner check, the CSRF token. */
+   pauses: UiPauses;
+   close(): Promise<void>;
+@@ -917,7 +927,7 @@ export async function buildUiParts(loaded: Loaded, opts: { actor: string }): Pro
+     csrfToken: token,
+   };
+   // One token per process for every write route; held only in memory, never written to a file, the store or a log.
+-  const commands: UiCommands = { actor: uiUserId(loaded.file.ui), token };
++  const commands: MergeCommands = { actor: uiUserId(loaded.file.ui), token, merge: loaded.config.forge_merge === true };
+   // The owner check for "Resume now": the configured auth plugin over the local grants only (a remote grant such as
+   // github-permission would call the forge, so it is left out here; `factory resume` needs no grant).
+   const base = p.base;
+diff --git a/src/core/commands.ts b/src/core/commands.ts
+index 406b72f0..21006b68 100644
+--- a/src/core/commands.ts
++++ b/src/core/commands.ts
+@@ -54,7 +54,7 @@ export interface CommandState {
+   asked_by?: RunKind;
+ }
+ 
+-export type CommandName = "approve" | "reject" | "revise" | "retry" | "resolve" | "budget" | "verdict" | "standing" | "link" | "help";
++export type CommandName = "approve" | "reject" | "revise" | "retry" | "resolve" | "budget" | "verdict" | "merge" | "standing" | "link" | "help";
+ 
+ export interface CommandSpec {
+   name: CommandName;
+@@ -77,6 +77,12 @@ export interface CommandSpec {
+   pr_description?: string;
+   /** At `agent_needs_human`, it applies only when the run that asked was one of these kinds. Absent: any kind. */
+   asked_by?: readonly RunKind[];
++  /**
++   * Sent from the app only (the command inbox), never read from a comment (design §4, merge command): the comment
++   * parser treats its word as unknown, footers and the SET_UP.md table leave it out, and `/help` names it as an app
++   * command, never marked as applying now.
++   */
++  app_only?: true;
+ }
+ 
+ export const COMMANDS: readonly CommandSpec[] = [
+@@ -156,6 +162,16 @@ export const COMMANDS: readonly CommandSpec[] = [
+     needs_pr: true,
+     changes_state: false,
+   },
++  {
++    name: "merge",
++    usage: "/merge",
++    description:
++      "In the app only, on a project that sets `plugins.forge`: merge the PR through the forge after the factory checks again that it is ready (review passed, checks green, no newer commits, merges cleanly)",
++    phases: ["merge_pending"],
++    needs_pr: true,
++    changes_state: true,
++    app_only: true,
++  },
+   {
+     name: "standing",
+     usage: "/standing [accept|decline <rule>]",
+@@ -274,7 +290,7 @@ const FACTORY_COMMANDS: readonly CommandName[] = ["standing"];
+ 
+ /** The commands that apply in `s`, in table order; `/help` always last. */
+ export function commandsFor(s: CommandState): CommandSpec[] {
+-  const shown = (c: CommandSpec) => c.name !== "help" && !ACCOUNT_COMMANDS.includes(c.name) && !FACTORY_COMMANDS.includes(c.name);
++  const shown = (c: CommandSpec) => c.name !== "help" && !ACCOUNT_COMMANDS.includes(c.name) && !FACTORY_COMMANDS.includes(c.name) && !c.app_only;
+   return COMMANDS.filter((c) => shown(c) && applies(c, s)).concat(commandSpec("help"));
+ }
+ 
+@@ -309,7 +325,7 @@ export function helpReply(s: CommandState): string {
+     `Commands marked **(now)** apply to this item in its current state (${phaseLabel(s.phase)}).`,
+     "",
+     ...COMMANDS.map((c) => {
+-      const now = applies(c, s) ? " **(now)**" : appliesOnPr(c, s) ? " **(now, on the PR)**" : "";
++      const now = c.app_only ? "" : applies(c, s) ? " **(now)**" : appliesOnPr(c, s) ? " **(now, on the PR)**" : "";
+       return `- \`${c.usage}\`${now}: ${c.description}${c.pr_description ? `. ${c.pr_description}` : ""}.`;
+     }),
+     "",
+@@ -359,12 +375,12 @@ function whenText(c: CommandSpec): string {
+   return (c.needs_pr ? `${where}, once it has a PR` : where) + onPr;
+ }
+ 
+-/** The command table in SET_UP.md, generated from COMMANDS; a test keeps the two equal. */
++/** The command table in SET_UP.md, generated from COMMANDS (comment commands only); a test keeps the two equal. */
+ export function commandTableMarkdown(): string {
+   return [
+     "| Command | What it does | Applies when |",
+     "|---|---|---|",
+-    ...COMMANDS.map((c) =>
++    ...COMMANDS.filter((c) => !c.app_only).map((c) =>
+       `| \`${c.usage.replace(/\|/g, "\\|")}\` | ${c.description}${c.pr_description ? `. ${c.pr_description}` : ""} | ${whenText(c)} |`),
+   ].join("\n");
+ }
+@@ -386,7 +402,7 @@ export function parseComment(body: string): ParsedComment {
+   if (!m) return null;
+   const word = m[1]!;
+   const name = word.toLowerCase();
+-  if (!BY_NAME.has(name as CommandName)) return { kind: "unknown", word };
++  if (!BY_NAME.has(name as CommandName) || BY_NAME.get(name as CommandName)!.app_only) return { kind: "unknown", word };
+   // An account command is not an item command: sources pass it on as a plain comment, read by parseLink.
+   if (ACCOUNT_COMMANDS.includes(name as CommandName)) return null;
+   const same = first.trim().slice(m[0].length).replace(/^[.,:;!?]/, "").trim();
+diff --git a/src/core/config.ts b/src/core/config.ts
+index 30e8b449..e3a66b23 100644
+--- a/src/core/config.ts
++++ b/src/core/config.ts
+@@ -112,6 +112,12 @@ export interface LoadedConfig {
+   /** Factory PR branches are `${branch_prefix}${work_item_id}`. The broker pushes nowhere else. */
+   branch_prefix: string;
+   dials: { spec_gate_min_tier: Tier; auto_merge_max_tier: 0 };
++  /**
++   * The merge command (design §4, issue #246): true when factory.config.json names a forge itself in
++   * `plugins.forge` (not one derived from `plugins.source`), so a project turns it on by writing that setting.
++   * Absent or false: no Merge button, and an app `merge` request is refused with a pointer to the forge.
++   */
++  forge_merge?: boolean;
+   /**
+    * The per-project gate settings in layers: max_attempts, max_diff_lines, max_diff_files, budgets, floors
+    * (design 2026-11-01). Read only through settingsFor / settingValues (src/core/settings.ts), never directly.
+diff --git a/src/core/controller.ts b/src/core/controller.ts
+index 9c2625a9..37362142 100644
+--- a/src/core/controller.ts
++++ b/src/core/controller.ts
+@@ -37,6 +37,7 @@ import {
+   REPEATED_FAILURE,
+   type FailureClass,
+   blockingRunKind,
++  branchFor,
+   failureLine,
+   repeatsFastInfraFailure,
+   repeatsLastFailure,
+@@ -59,7 +60,6 @@ import {
+   GITHUB_RATE_LIMITED,
+   runKey,
+   sameStep,
+-  branchFor,
+   workItemIdFromBranch,
+   FORGE_AUTH,
+   MODEL_STALL,
+@@ -290,6 +290,8 @@ const MAX_NOTE_CHARS = 2000;
+ const MAX_FEEDBACK_CHARS = 8000;
+ /** State change reasons of PR feedback that started an implement run (design §4). */
+ const PR_REVISE = "pr_revise_requested";
++/** The state change reason of a merge made by the merge command (design §4, issue #246). */
++const MERGED_BY_COMMAND = "merged_by_command";
+ const PR_CHANGES = "pr_changes_requested";
+ /** blocked_reason of an item whose diff touches a floor above its tier (design §4). */
+ const FLOOR_TIER = "floor_tier";
+@@ -808,7 +810,9 @@ export class Controller {
+     if (await applied()) return this.finishAppRequest(r, item, null);
+ 
+     let refusal: string | null;
+-    if (r.command !== "approve") {
++    if (r.command === "merge") {
++      refusal = await this.mergeRequest(r, item);
++    } else if (r.command !== "approve") {
+       refusal = "only `approve` is applied from an app request" + (known ? `; reply \`/${r.command}\` on the issue instead` : "");
+     } else {
+       const principal = await this.allowed({ user_id: r.actor, attributes: {} }, "approve_spec", item.id, true);
+@@ -829,6 +833,78 @@ export class Controller {
+     await this.finishAppRequest(r, item, refusal === null ? null : say(refusal));
+   }
+ 
++  /**
++   * An app `merge` request (design §4, merge command): the refusal reason, else null. Off unless config names a
++   * forge in `plugins.forge` (`forge_merge`). Then the `/approve` permission check, the item's state (waiting for a
++   * human merge, a factory PR), and the forge's re-checks (mergeReady); only then one merge through the forge at the
++   * reviewed head, and the item closes as completed with the requester as actor and the request on the state change.
++   * Safe to run twice: an item already merged is left alone, and a PR the forge already reports merged (a crash
++   * between the merge and the close) is closed with no second merge.
++   */
++  private async mergeRequest(r: AppCommandRequest, item: WorkItem): Promise<string | null> {
++    if (item.stage === "CLOSED" && item.merge_sha !== null) return null;
++    const forge = this.forge;
++    if (!forge || this.cfg.forge_merge !== true) {
++      const n = prNumber(item);
++      const pr = n === null ? "the PR" : `PR #${n}`;
++      return `merging from the factory is off for this project (\`plugins.forge\` is not set in factory.config.json); merge ${pr} on the forge`;
++    }
++    const principal = await this.allowed({ user_id: r.actor, attributes: {} }, "approve_spec", item.id, true);
++    if ("refuse" in principal) return principal.refuse;
++    const ready = await this.mergeReady(forge, item);
++    if ("refuse" in ready) return ready.refuse;
++    let merge_sha = ready.merged;
++    if (merge_sha === null) {
++      const m = await forge.mergePr({ pr_number: ready.pr_number, branch: ready.branch, base_ref: this.cfg.repo.base_branch, head_sha: ready.head_sha });
++      if (!m.merged) return m.reason;
++      merge_sha = m.merge_sha;
++    }
++    this.d.log.info("merged from the factory", { work_item_id: item.id, pr_number: ready.pr_number, user_id: principal.user_id });
++    const sha = merge_sha;
++    await this.decide(item.id, (it) => {
++      if (it.stage === "CLOSED" || prNumber(it) !== ready.pr_number) return null;
++      return {
++        patch: { stage: "CLOSED", close_reason: "completed", merge_sha: sha, blocked_on: "none", blocked_reason: null },
++        actor: { kind: "user", id: principal.user_id },
++        reason: MERGED_BY_COMMAND,
++        detail: { [APP_REQUEST]: r.seq, pr_number: ready.pr_number, merge_sha: sha },
++      };
++    });
++    await this.guard("dependents", () => this.releaseDependents(item.source.id));
++    return null;
++  }
++
++  /**
++   * The merge command's re-check, in order, each refusal before any write: waiting for a human merge (so its review
++   * passed), a PR the factory opened, the PR's checks passed (not failed, not pending), its head still the reviewed
++   * head (`last_head_sha`), and it merges cleanly into the base. A PR the forge reports merged skips the rest.
++   */
++  private async mergeReady(
++    forge: Forge,
++    it: WorkItem,
++  ): Promise<{ pr_number: number; branch: string; head_sha: string; merged: string | null } | Refusal> {
++    const phase = commandPhase(it);
++    const pr_number = prNumber(it);
++    if (phase !== "merge_pending" || pr_number === null) {
++      return { refuse: `the item is ${phaseLabel(phase)}; \`merge\` applies only when it is ${phaseLabel("merge_pending")}` };
++    }
++    if (it.origin !== "factory") return { refuse: `the factory merges only the PRs it opened; merge PR #${pr_number} on the forge` };
++    if (it.last_head_sha === null) return { refuse: "the factory has no record of the head its review read; merge on the forge" };
++    const pr = { pr_number, branch: branchFor(it, this.cfg.branch_prefix), head_sha: it.last_head_sha };
++    const state = await forge.prMergeState(pr.pr_number, pr.branch);
++    if (state.state === "merged") return { ...pr, merged: state.merge_sha ?? it.last_head_sha };
++    if (state.state === "closed") return { refuse: `PR #${pr.pr_number} is closed` };
++    const checks = await forge.prChecks(pr.pr_number);
++    if (checks.state === "pending") return { refuse: "the PR's checks are still running; merge once they pass" };
++    if (checks.state === "failed") return { refuse: `${checks.failed.length} of the PR's checks failed` };
++    if (state.head_sha !== pr.head_sha) {
++      return { refuse: "commits arrived after the reviewed head; they need a review before the PR can merge" };
++    }
++    if (state.mergeable === false) return { refuse: `the branch does not merge cleanly into \`${this.cfg.repo.base_branch}\`` };
++    if (state.mergeable === null) return { refuse: "the forge is still working out whether the branch merges cleanly; try again in a minute" };
++    return { ...pr, merged: null };
++  }
++
+   /** Posts `text` (a refusal) once on the item's source, keyed on the request, then marks the request handled. */
+   private async finishAppRequest(r: AppCommandRequest, item: WorkItem | null, text: string | null): Promise<void> {
+     if (text !== null) {
+@@ -3306,7 +3382,26 @@ export class Controller {
+       ].join("\n")
+       : `${ready} A human merge is required${local ? `: \`factory merge ${it.id}\` (approver role) merges it into the local \`${this.cfg.repo.base_branch}\`, with no push` : ""}.`;
+     await this.comment(it, `merge:${reviewRunId}`, `${text}\n\n${footerAfter(it, patch)}`);
+-    return { patch, actor: SYSTEM, reason: "review_passed", ...ack };
++    const size = await this.prSize(it);
++    return { patch, actor: SYSTEM, reason: "review_passed", ...(size ? { detail: size } : {}), ...ack };
++  }
++
++  /**
++   * The PR's size for the app's merge confirmation (design §9, merge button), read once as the item becomes ready
++   * to merge and kept on that state change: only on a project with the merge command on, so no other project makes
++   * the read. Null when off, when the forge does not say, or when the read fails (logged).
++   */
++  private async prSize(it: WorkItem): Promise<{ lines_changed: number; files_changed: number } | null> {
++    const forge = this.forge;
++    const n = prNumber(it);
++    if (!forge || this.cfg.forge_merge !== true || n === null || it.origin !== "factory") return null;
++    try {
++      const s = await forge.prMergeState(n, branchFor(it, this.cfg.branch_prefix));
++      return s.lines === null || s.files === null ? null : { lines_changed: s.lines, files_changed: s.files };
++    } catch (err) {
++      this.d.log.warn("reading the PR size failed", { work_item_id: it.id, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
++      return null;
++    }
+   }
+ 
+   /** The PR's checks, from the forge whatever source the item came from; no forge counts as passed, a forge error as pending (logged). */
+diff --git a/src/impl/forge/local-forge.ts b/src/impl/forge/local-forge.ts
+new file mode 100644
+index 00000000..5b969783
+--- /dev/null
++++ b/src/impl/forge/local-forge.ts
+@@ -0,0 +1,173 @@
++import type { WorkStatus } from "../../core/status-label.js";
++import type { PrCheckResult, SourceRef } from "../../core/types.js";
++import { TRUSTED_GIT_ENV } from "../../core/worker.js";
++import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
++import type { ClosePrInput, Forge, ForgePollResult, MergePrInput, MergePrResult, PrChecks, PrMergeState } from "../../interfaces/forge.js";
++import type { ExecResult } from "../../interfaces/sandbox.js";
++import { baseEnv, runProcess } from "../process/run-process.js";
++
++/** A branch name the local forge reads: a plain ref path, never an option or a refspec. */
++const SAFE_BRANCH = /^[A-Za-z0-9_][A-Za-z0-9._/-]*$/;
++
++export interface LocalForgeOptions {
++  /** The factory repo (`repo.path`): its refs are the PRs' branches and its base branch is merged into. */
++  repo: string;
++  /** `repo.base_branch`. */
++  base: string;
++  /** Who the merge commit names as author and committer (`agent_git_identity`). */
++  identity: { name: string; email: string };
++  /** Runs git; tests may pass their own. */
++  run?: (cmd: readonly string[], opts: { cwd: string; env: Record<string, string> }) => Promise<ExecResult>;
++}
++
++/**
++ * The local forge (design §4, merge command; issue #246): a factory PR is its branch in the factory repo, and a
++ * merge puts that branch's commits on the base branch there, with no forge account and no GitHub call. The merge
++ * works in git's object store only (`merge-tree --write-tree`, `commit-tree`, then a compare-and-swap `update-ref`
++ * of the base), so no checkout, index or HEAD is touched; it refuses while the base is checked out anywhere, since
++ * moving a checked-out branch would change that checkout's status. It reads no PR events (nothing is polled), has
++ * no checks (`passed`) and posts nothing: a local item's thread is the store.
++ */
++export class LocalForge implements Forge {
++  readonly ref_type = "local" as const;
++
++  constructor(private readonly o: LocalForgeOptions) {}
++
++  async poll(cursor: string | null): Promise<ForgePollResult> {
++    return { events: [], next_cursor: cursor ?? "" };
++  }
++
++  prRef(pr_number: number): SourceRef {
++    return { type: this.ref_type, id: `local-pr:${pr_number}`, link: "" };
++  }
++
++  prNumberOf(ref: SourceRef): number | null {
++    const m = /^local-pr:(\d+)$/.exec(ref.id);
++    return ref.type === this.ref_type && m ? Number(m[1]) : null;
++  }
++
++  async postPrComment(): Promise<{ url: string | null }> {
++    return { url: null };
++  }
++
++  async setPrStatus(_source: SourceRef, _status: WorkStatus, _pr_number: number): Promise<void> {}
++
++  /** No CI runs here: the pre-push checks already ran on the branch before it was pushed. */
++  async prChecks(): Promise<PrChecks> {
++    return { state: "passed" };
++  }
++
++  /** No CI runs on a local branch: no check results. */
++  async prCheckResults(): Promise<PrCheckResult[]> {
++    return [];
++  }
++
++  /** Nothing is adopted locally (no PR events), so no PR's files are ever asked for. */
++  async prFiles(): Promise<string[]> {
++    return [];
++  }
++
++  async labelAddedBy(): Promise<ExternalIdentity | null> {
++    return null;
++  }
++
++  async commitAuthor(): Promise<ExternalIdentity | null> {
++    return null;
++  }
++
++  /** Never read: a local forge reports no pushes (no PR events). */
++  async commitsBetween(): Promise<number | null> {
++    return null;
++  }
++
++  /** A local branch is never closed by the factory: the item closes, the branch stays. */
++  async closePr(_input: ClosePrInput): Promise<"closed" | "not_open"> {
++    return "not_open";
++  }
++
++  /**
++   * The branch (a local branch first, else the fetched `origin/<branch>`) against the local base: merged when its
++   * head is already on the base, closed when there is no such branch, else open with whether it merges cleanly
++   * (`merge-tree`, objects only) and its size (`diff --numstat base...head`).
++   */
++  async prMergeState(_pr_number: number, branch: string): Promise<PrMergeState> {
++    const head = await this.branchHead(branch);
++    const base = await this.commit(`refs/heads/${this.o.base}`);
++    if (base === null) throw new Error(`local forge: no branch ${this.o.base} in ${this.o.repo}`);
++    const none = { lines: null, files: null };
++    if (head === null) return { state: "closed", head_sha: null, mergeable: null, merge_sha: null, ...none };
++    if ((await this.git(["merge-base", "--is-ancestor", head, base])).exit_code === 0) {
++      return { state: "merged", head_sha: head, mergeable: null, merge_sha: base, ...none };
++    }
++    const tree = await this.mergeTree(base, head);
++    const stat = await this.git(["diff", "--no-textconv", "--no-ext-diff", "--numstat", "-z", `${base}...${head}`]);
++    let lines = 0;
++    let files = 0;
++    for (const entry of stat.stdout.split("\0")) {
++      const m = /^(\d+|-)\t(\d+|-)\t/.exec(entry);
++      if (!m) continue;
++      files++;
++      lines += (m[1] === "-" ? 0 : Number(m[1])) + (m[2] === "-" ? 0 : Number(m[2]));
++    }
++    const size = stat.exit_code === 0 ? { lines, files } : none;
++    return { state: "open", head_sha: head, mergeable: tree !== null, merge_sha: null, ...size };
++  }
++
++  /**
++   * One merge commit of base and the branch's head, written to the base with a compare-and-swap, so a base that
++   * moved meanwhile is never overwritten. Refused (nothing written to any ref) when the head is not the reviewed
++   * one, the base is checked out somewhere, or the merge conflicts.
++   */
++  async mergePr(input: MergePrInput): Promise<MergePrResult> {
++    const head = await this.branchHead(input.branch);
++    if (head !== input.head_sha) return { merged: false, reason: "the branch's head is not the reviewed head" };
++    const base = await this.commit(`refs/heads/${input.base_ref}`);
++    if (base === null) return { merged: false, reason: `there is no local branch \`${input.base_ref}\`` };
++    const worktrees = await this.git(["worktree", "list", "--porcelain"]);
++    if (worktrees.exit_code !== 0) throw gitError("worktree list", worktrees);
++    if (worktrees.stdout.split("\n").includes(`branch refs/heads/${input.base_ref}`)) {
++      return {
++        merged: false,
++        reason: `\`${input.base_ref}\` is checked out in a working tree of this repository, and the local forge never changes a checkout; switch it to another branch, then merge again`,
++      };
++    }
++    const tree = await this.mergeTree(base, head);
++    if (tree === null) return { merged: false, reason: `the branch does not merge cleanly into \`${input.base_ref}\`` };
++    const { name, email } = this.o.identity;
++    const who = { GIT_AUTHOR_NAME: name, GIT_AUTHOR_EMAIL: email, GIT_COMMITTER_NAME: name, GIT_COMMITTER_EMAIL: email };
++    const message = `Merge branch '${input.branch}' (PR #${input.pr_number})`;
++    const made = await this.git(["commit-tree", tree, "-p", base, "-p", head, "-m", message], who);
++    if (made.exit_code !== 0) throw gitError("commit-tree", made);
++    const commit = made.stdout.trim();
++    const moved = await this.git(["update-ref", "-m", message, `refs/heads/${input.base_ref}`, commit, base], who);
++    if (moved.exit_code !== 0) return { merged: false, reason: `\`${input.base_ref}\` moved during the merge; merge again` };
++    return { merged: true, merge_sha: commit };
++  }
++
++  /** The merged tree of base and head, or null when they conflict. Writes objects only. */
++  private async mergeTree(base: string, head: string): Promise<string | null> {
++    const r = await this.git(["merge-tree", "--write-tree", "--no-messages", base, head]);
++    if (r.exit_code === 1) return null;
++    if (r.exit_code !== 0) throw gitError("merge-tree", r);
++    return r.stdout.split("\n")[0]!.trim();
++  }
++
++  private async branchHead(branch: string): Promise<string | null> {
++    if (!SAFE_BRANCH.test(branch) || branch.includes("..")) throw new Error(`local forge: refusing branch ${JSON.stringify(branch)}`);
++    return (await this.commit(`refs/heads/${branch}`)) ?? this.commit(`refs/remotes/origin/${branch}`);
++  }
++
++  private async commit(ref: string): Promise<string | null> {
++    const r = await this.git(["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`]);
++    return r.exit_code === 0 ? r.stdout.trim() : null;
++  }
++
++  private git(args: string[], extra: Record<string, string> = {}): Promise<ExecResult> {
++    const run = this.o.run ?? runProcess;
++    return run(["git", "-C", this.o.repo, ...args], { cwd: this.o.repo, env: baseEnv({ ...extra, ...TRUSTED_GIT_ENV, GIT_TERMINAL_PROMPT: "0" }) });
++  }
++}
++
++function gitError(what: string, r: ExecResult): Error {
++  return new Error(`local forge: git ${what} failed (${r.exit_code}): ${r.stderr.trim().slice(0, 300)}`);
++}
+diff --git a/src/impl/forge/local.plugin.ts b/src/impl/forge/local.plugin.ts
+new file mode 100644
+index 00000000..8f9faf41
+--- /dev/null
++++ b/src/impl/forge/local.plugin.ts
+@@ -0,0 +1,12 @@
++import { definePlugin } from "../../plugin-api.js";
++import { LocalForge } from "./local-forge.js";
++
++// Not a default: selected by `"forge": "local"` under `plugins` (docs/plugins/forge.md). Makes no GitHub call.
++export default definePlugin({
++  kind: "forge",
++  name: "local",
++  create: (ctx) => {
++    const cfg = ctx.loaded.config;
++    return new LocalForge({ repo: cfg.repo.path, base: cfg.repo.base_branch, identity: cfg.agent_git_identity });
++  },
++});
+diff --git a/src/impl/github/github-forge.ts b/src/impl/github/github-forge.ts
+index ea586aa2..228a23ef 100644
+--- a/src/impl/github/github-forge.ts
++++ b/src/impl/github/github-forge.ts
+@@ -1,7 +1,10 @@
+ import type { WorkStatus } from "../../core/status-label.js";
+ import type { PrCheckResult, SourceRef } from "../../core/types.js";
+ import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
+-import type { ClosePrInput, Forge, ForgeEvent, ForgePollResult, PrChecks, PrLineComment } from "../../interfaces/forge.js";
++import type {
++  ClosePrInput, Forge, ForgeEvent, ForgePollResult, MergePrInput, MergePrResult, PrChecks, PrLineComment, PrMergeState,
++} from "../../interfaces/forge.js";
++import { mergePullRequest } from "./github-tool-broker.js";
+ import { type GitHubClient, GitHubError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
+ import { type GhUser, type GitHubIssueSource, type PollContext, githubTime, identity, max } from "../source/github-issue-source.js";
+ 
+@@ -23,6 +26,11 @@ interface GhPullFull extends GhPull {
+   /** null while GitHub is still computing it. */
+   mergeable: boolean | null;
+   merged_by: GhUser | null;
++  state: string;
++  merged: boolean;
++  additions: number;
++  deletions: number;
++  changed_files: number;
+ }
+ /** A PR review. `state`: APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED, PENDING. */
+ interface GhReview {
+@@ -341,6 +349,26 @@ export class GitHubForge implements Forge {
+     return "closed";
+   }
+ 
++  /** One GET of the PR: its state, head, `mergeable`, merge commit and size. `branch` is GitHub's to know. */
++  async prMergeState(pr_number: number): Promise<PrMergeState> {
++    const p = await this.client.request<GhPullFull>("GET", `${this.base}/pulls/${pr_number}`);
++    return {
++      state: p.merged ? "merged" : p.state === "open" ? "open" : "closed",
++      head_sha: p.head.sha,
++      mergeable: p.mergeable,
++      merge_sha: p.merged ? p.merge_commit_sha : null,
++      lines: typeof p.additions === "number" && typeof p.deletions === "number" ? p.additions + p.deletions : null,
++      files: typeof p.changed_files === "number" ? p.changed_files : null,
++    };
++  }
++
++  /** Through the broker's merge (`mergePullRequest`): the bot merges, only at the reviewed head. */
++  async mergePr(input: MergePrInput): Promise<MergePrResult> {
++    const r = await mergePullRequest(this.client, this.repo, { number: input.pr_number, head_sha: input.head_sha });
++    if (!r.ok) return { merged: false, reason: r.message };
++    return { merged: true, merge_sha: (r.content as { sha: string }).sha };
++  }
++
+   /**
+    * The CI gate's summary of prCheckResults: any failed check fails it (with the failed names), else any pending
+    * one keeps it pending, else (none at all included) it passed. Under the budget threshold the gate waits
+diff --git a/src/impl/github/github-tool-broker.ts b/src/impl/github/github-tool-broker.ts
+index 8c08bfd1..51212dd2 100644
+--- a/src/impl/github/github-tool-broker.ts
++++ b/src/impl/github/github-tool-broker.ts
+@@ -80,6 +80,36 @@ interface CommentArgs {
+   body: string;
+   marker: string;
+ }
++export interface MergePrArgs {
++  number: number;
++  head_sha: string;
++}
++
++/**
++ * The broker's merge (design §4, merge command): `PUT /pulls/N/merge` with the reviewed head as `sha`, so GitHub
++ * merges only that head, through the bot, with GitHub's own merge commit subject (no item text is sent). Not a
++ * listed tool: no agent run may call it (tools are fenced by a run lease and a merge is the controller's, after its
++ * re-checks), so the GitHub forge's `mergePr` calls it directly. GitHub's 405 (not mergeable: a
++ * branch rule, a check, the merge method) and 409 (the head moved) are refusals in fixed words, never GitHub's
++ * text; a 401/403 is `forge_auth`; anything else throws, as the other tools do.
++ */
++export async function mergePullRequest(client: GitHubClient, repo: RepoRef, a: MergePrArgs): Promise<ToolResult> {
++  if (!/^[0-9a-f]{40,64}$/.test(a.head_sha)) return { ok: false, error_code: "bad_head", message: "head_sha is not a commit sha" };
++  try {
++    const r = await client.request<{ sha: string; merged: boolean }>("PUT", `/repos/${repo.owner}/${repo.name}/pulls/${a.number}/merge`, { sha: a.head_sha });
++    return { ok: true, content: { sha: r.sha } };
++  } catch (err) {
++    const status = refusedStatus(err);
++    if (status) return { ok: false, error_code: FORGE_AUTH, message: `merge_pr: GitHub refused the credentials (${status})` };
++    if (err instanceof GitHubError && err.status === 405) {
++      return { ok: false, error_code: "merge_refused", message: "GitHub refused the merge: a branch rule, a required check or the repository's merge method does not allow it" };
++    }
++    if (err instanceof GitHubError && err.status === 409) {
++      return { ok: false, error_code: "head_changed", message: "the PR's head moved after the review, so GitHub did not merge it" };
++    }
++    throw err;
++  }
++}
+ 
+ /**
+  * G2: credentialed GitHub actions, in the worker process. Every call checks the caller still holds
+diff --git a/src/interfaces/forge.ts b/src/interfaces/forge.ts
+index 02dbbe64..ed7fed7e 100644
+--- a/src/interfaces/forge.ts
++++ b/src/interfaces/forge.ts
+@@ -92,6 +92,34 @@ export interface ClosePrInput {
+   body(closer: ExternalIdentity | null): string;
+ }
+ 
++/**
++ * What the merge command re-reads before it merges (design §4, merge command): the PR's state, its current head,
++ * whether it merges cleanly into its base (null while the forge is still working that out), the merge commit once
++ * merged, and its size (added plus deleted lines, changed files; null when the forge does not say).
++ */
++export interface PrMergeState {
++  state: "open" | "merged" | "closed";
++  head_sha: string | null;
++  mergeable: boolean | null;
++  merge_sha: string | null;
++  lines: number | null;
++  files: number | null;
++}
++
++/**
++ * What `mergePr` needs: the PR, its branch and base, and the head that was reviewed (the merge refuses any other).
++ * No text from the item goes along: the merge commit gets the forge's own subject.
++ */
++export interface MergePrInput {
++  pr_number: number;
++  branch: string;
++  base_ref: string;
++  head_sha: string;
++}
++
++/** A merge the forge made, or why it refused one (fixed words, never forge text). */
++export type MergePrResult = { merged: true; merge_sha: string } | { merged: false; reason: string };
++
+ /** The PR events, facts and writes the factory reads from and makes on a forge. Agents never call it. */
+ export interface Forge {
+   /** The source type of the PR refs this forge hands out (`prRef`): PR comments wait in the outbox under it. */
+@@ -150,4 +178,11 @@ export interface Forge {
+    * another. Throws on a forge failure; the caller retries.
+    */
+   closePr(input: ClosePrInput): Promise<"closed" | "not_open">;
++  /** PR `pr_number` (head branch `branch`) as the merge command re-checks it. Read-only. */
++  prMergeState(pr_number: number, branch: string): Promise<PrMergeState>;
++  /**
++   * Merges PR `input.pr_number` into its base, only while its head is still `input.head_sha` (design §4, merge
++   * command). Called by the controller after its re-checks, never by an agent. A refusal changes nothing.
++   */
++  mergePr(input: MergePrInput): Promise<MergePrResult>;
+ }
+diff --git a/src/ui/api.ts b/src/ui/api.ts
+index e55015ea..befe3941 100644
+--- a/src/ui/api.ts
++++ b/src/ui/api.ts
+@@ -15,7 +15,7 @@ import { readProjectLabel } from "../core/project-labels.js";
+ import { conflictCounts } from "../core/resolve.js";
+ import type { HostSleep, Run, RunAttempt, Stage, StateChange, Timestamp, WorkItem, WorkItemId } from "../core/types.js";
+ import { itemAlarms, openAlarms } from "./alarms.js";
+-import { itemCommands, itemReplies, readSession } from "./commands.js";
++import { type UiCommands, itemCommands, itemReplies, readSession } from "./commands.js";
+ import { type DataCtx, type DataResult, dataTable, dataTables } from "./data.js";
+ import { applyFilters, facetCounts, parseFilters } from "./filters.js";
+ import { LIST_LIMIT, activeRuns, closedFacetRows, latestDecision, listRows, readClaimPauses, readPhases, waitingOn, whyOf } from "./list.js";
+@@ -358,6 +358,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
+       dependents: r.dependents,
+       conflicts: r.conflicts,
+       merge_check,
++      merge: await mergeView(c, it),
+       need: NEEDS_YOU.includes(r.level) ? await c.need(it, merge_check) : undefined,
+       why: await c.why(r.why, it),
+       parent_id: it.parent_id,
+@@ -467,6 +468,36 @@ async function item(c: ApiCtx, id: WorkItemId) {
+     thread: await threadRows(s, it.id, it.source.type, async (v) => (await c.text(v))!),
+     commands: itemCommands(it, runs),
+     replies: await itemReplies(c.d, it.id, (v) => c.text(v)),
++    merge: await mergeView(c, it, changes),
++  };
++}
++
++/**
++ * The commands route's deps as compose.ts builds them for `factory ui`: `merge` is the merge command's switch
++ * (FactoryConfig.forge_merge, design §4). Absent or false: no item gets a Merge button.
++ */
++export type MergeCommands = UiCommands & { merge?: boolean };
++
++/**
++ * What the Merge button needs (design §9, merge button), on a factory PR waiting for a human merge in a project
++ * with the merge command on; null on every other item. The confirmation shows the title, tier, size and PR link:
++ * lines and files as the controller read them when the item became ready (its `review_passed` change), files
++ * from the stored PR files when that read is missing, lines then null. `replies`: the item's merge requests.
++ */
++async function mergeView(c: ApiCtx, it: WorkItem, changes?: readonly StateChange[]) {
++  if ((c.d.commands as MergeCommands | undefined)?.merge !== true) return null;
++  if (!readyToMerge(it) || it.pr_number === null || it.origin !== "factory") return null;
++  const passed = (changes ?? (await c.d.store.listStateChanges(it.id))).filter((sc) => sc.reason === "review_passed").at(-1)?.detail;
++  const num = (v: unknown) => (typeof v === "number" ? v : null);
++  const replies = (await itemReplies(c.d, it.id, (v) => c.text(v))).filter((r) => r.command === "merge");
++  return {
++    pr_number: it.pr_number,
++    pr_url: await c.prUrl(it),
++    title: await c.text(it.title || null),
++    tier: it.tier,
++    files: num(passed?.files_changed) ?? it.pr_files?.length ?? null,
++    lines: num(passed?.lines_changed),
++    replies,
+   };
+ }
+ 
+diff --git a/tests/commands.test.ts b/tests/commands.test.ts
+index 891edc93..f6e7b2b3 100644
+--- a/tests/commands.test.ts
++++ b/tests/commands.test.ts
+@@ -217,12 +217,14 @@ describe("command table", () => {
+     expect(setup).toContain(commandTableMarkdown());
+   });
+ 
+-  it("/help and the SET_UP.md table list every command in COMMANDS, /standing included, in table order", () => {
++  it("/help lists every command in COMMANDS and the SET_UP.md table every comment command, /standing included, in table order", () => {
+     const help = helpReply(s("spec_pending"));
+     const table = commandTableMarkdown();
+     const at = (text: string, usage: string) => text.indexOf(`\`${usage.replace(/\|/g, "\\|")}\``);
+     for (const text of [help, table]) {
+-      const positions = COMMANDS.map((c) => (text === table ? at(text, c.usage) : text.indexOf(`\`${c.usage}\``)));
++      // App-only commands (`/merge`) are never read from a comment, so the SET_UP.md table leaves them out (design §4).
++      const listed = text === table ? COMMANDS.filter((c) => !c.app_only) : COMMANDS;
++      const positions = listed.map((c) => (text === table ? at(text, c.usage) : text.indexOf(`\`${c.usage}\``)));
+       expect(positions.every((p) => p >= 0)).toBe(true);
+       expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+     }
+diff --git a/tests/helpers/fakes.ts b/tests/helpers/fakes.ts
+index fff7f70f..14e89a22 100644
+--- a/tests/helpers/fakes.ts
++++ b/tests/helpers/fakes.ts
+@@ -13,7 +13,9 @@ import type { SharedStorage } from "../../src/interfaces/shared-storage.js";
+ import type {
+   PollResult, PollSource, PushedEvent, SourceCloseReason, SourceEvent, StreamSource, SubIssueInput,
+ } from "../../src/interfaces/source-adapter.js";
+-import type { ClosePrInput, Forge, ForgeEvent, ForgePollResult, PrChecks } from "../../src/interfaces/forge.js";
++import type {
++  ClosePrInput, Forge, ForgeEvent, ForgePollResult, MergePrInput, MergePrResult, PrChecks, PrMergeState,
++} from "../../src/interfaces/forge.js";
+ import { REGISTRY, type Registry, withPlugin } from "../../src/plugins.js";
+ import { Controller } from "../../src/core/controller.js";
+ import { Worker } from "../../src/core/worker.js";
+@@ -321,6 +323,29 @@ export class FakeForge implements Forge {
+   async commitAuthor(sha: string): Promise<ExternalIdentity | null> {
+     return this.commitAuthors[sha] ?? null;
+   }
++  /**
++   * What prMergeState answers per PR, over an open, clean PR of 12 lines in 2 files (absent: that, with head
++   * null). The state follows `prStates`, so a merge made here reads back as merged.
++   */
++  mergeStates = new Map<number, Partial<PrMergeState>>();
++  /** Every mergePr call, refused ones included, in order. */
++  mergeCalls: MergePrInput[] = [];
++  /** When set, mergePr refuses with this reason. */
++  mergeRefusal: string | null = null;
++  async prMergeState(pr_number: number): Promise<PrMergeState> {
++    const state = this.prStates.get(pr_number) ?? "open";
++    const merged = this.mergeCalls.find((c) => c.pr_number === pr_number && state === "merged");
++    return {
++      state, head_sha: null, mergeable: true, merge_sha: merged ? `merge-${pr_number}` : null, lines: 12, files: 2,
++      ...this.mergeStates.get(pr_number),
++    };
++  }
++  async mergePr(input: MergePrInput): Promise<MergePrResult> {
++    this.mergeCalls.push(input);
++    if (this.mergeRefusal) return { merged: false, reason: this.mergeRefusal };
++    this.prStates.set(input.pr_number, "merged");
++    return { merged: true, merge_sha: `merge-${input.pr_number}` };
++  }
+   /** The commit count per `${from}..${to}` (absent: null, unknown). Every range asked for is recorded in `betweenCalls`. */
+   commitCounts: Record<string, number> = {};
+   betweenCalls: string[] = [];
+diff --git a/tests/local-forge.test.ts b/tests/local-forge.test.ts
+new file mode 100644
+index 00000000..c1b5b278
+--- /dev/null
++++ b/tests/local-forge.test.ts
+@@ -0,0 +1,185 @@
++import { execFileSync } from "node:child_process";
++import { mkdtempSync, writeFileSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { describe, expect, it } from "vitest";
++import { Controller } from "../src/core/controller.js";
++import type { UserId } from "../src/core/types.js";
++import type { GitHubClient } from "../src/impl/github/github-client.js";
++import { LocalForge } from "../src/impl/forge/local-forge.js";
++import { REGISTRY, createPlugin } from "../src/plugins.js";
++import type { Forge } from "../src/interfaces/forge.js";
++import { FakeAuth, cleanScanner, config, silent } from "./helpers/fakes.js";
++import { PROJECT_KEY, newStore } from "./helpers/store.js";
++
++// The local forge (design §4, merge command; issue #246): a merge puts the item's branch on the base branch of the
++// factory repo, in git's object store only, with no GitHub call, and never touches the person's own checkout.
++
++const WRITER = "github:1" as UserId;
++const IDENTITY = { name: "bot", email: "bot@example.com" };
++
++function git(cwd: string, ...args: string[]): string {
++  return execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "p", GIT_AUTHOR_EMAIL: "p@x", GIT_COMMITTER_NAME: "p", GIT_COMMITTER_EMAIL: "p@x" } }).trim();
++}
++
++/** A repo with `main`, the person's own branch `mine` checked out with uncommitted edits, and one factory branch. */
++function repoWithBranch(branch: string, file = "feature.txt", content = "feature\n") {
++  const repo = mkdtempSync(join(tmpdir(), "sf-local-forge-"));
++  git(repo, "init", "--quiet", "--initial-branch=main");
++  writeFileSync(join(repo, "README.md"), "base\n");
++  git(repo, "add", "README.md");
++  git(repo, "commit", "--quiet", "-m", "base");
++  git(repo, "checkout", "--quiet", "-b", branch);
++  writeFileSync(join(repo, file), content);
++  git(repo, "add", file);
++  git(repo, "commit", "--quiet", "-m", "factory change");
++  const head = git(repo, "rev-parse", "HEAD");
++  git(repo, "checkout", "--quiet", "-b", "mine", "main");
++  writeFileSync(join(repo, "README.md"), "base\nmy edit\n");
++  writeFileSync(join(repo, "notes.txt"), "untracked\n");
++  return { repo, head };
++}
++
++/** The person's checkout as they see it: branch, HEAD and status. */
++const checkout = (repo: string) => ({
++  branch: git(repo, "symbolic-ref", "HEAD"),
++  head: git(repo, "rev-parse", "HEAD"),
++  status: git(repo, "status", "--porcelain=v1", "--untracked-files=all"),
++});
++
++/** A GitHub client that fails on any use: the local forge must make no GitHub call. */
++const NO_GITHUB = new Proxy({}, {
++  get: (_t, key) => (key === "then" ? undefined : () => {
++    throw new Error("GitHub call");
++  }),
++}) as unknown as GitHubClient;
++
++/** The local forge as startup builds it, from `plugins.forge: "local"`, over `repo`. */
++async function localForge(repo: string): Promise<Forge> {
++  const loaded = { config: { ...config, repo: { ...config.repo, path: repo }, agent_git_identity: IDENTITY } };
++  return createPlugin(REGISTRY, "forge", "local", { loaded, repo: { owner: "o", name: "r" }, extraScanValues: [], github: NO_GITHUB } as never);
++}
++
++/**
++ * A local item waiting for a human merge, then its repo (`make`, given the item's branch `factory/<id>`) with the
++ * branch's head recorded as the reviewed head, then the controller over the local forge of that repo.
++ */
++async function harness(make: (branch: string) => { repo: string; head: string } = (b) => repoWithBranch(b)) {
++  const { store, clock } = await newStore();
++  const actor = { kind: "system" as const, id: "system:test" };
++  const { item } = await store.createWorkItem(
++    { source: { type: "local", id: "local:1", link: "" }, requester_id: WRITER, project: PROJECT_KEY, problem: "p", resources: [] },
++    actor,
++  );
++  const branch = `factory/${item.id}`;
++  const { repo, head } = make(branch);
++  const r = await store.transition({
++    id: item.id, expected_version: item.version, actor, reason: "setup",
++    patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "7", tier: 2 },
++  });
++  if (!r.ok) throw new Error("setup failed");
++  await store.recordPrHead({ id: item.id, expected_head: null, head_sha: head, manual: null });
++  const it = (await store.getWorkItem(item.id))!;
++  const forge = await localForge(repo);
++  const controller = new Controller({ store, sources: [], forge, auth: new FakeAuth(), clock, config: { ...config, forge_merge: true }, log: silent, scanner: cleanScanner });
++  const merge = async (key = "m1") => {
++    const { request } = await store.recordAppCommandRequest({ key, actor: WRITER, command: "merge", args: { work_item_id: it.id } });
++    await controller.tickCommands();
++    return (await store.getAppCommandRequest(request.seq))!;
++  };
++  return { store, controller, forge, it, merge, repo, head, branch };
++}
++
++// Real git work per test (about twenty git processes): fast alone, slower under a full parallel run on a CI runner.
++// Above the global 5 s testTimeout (vitest.config.ts, unchanged), as the other git-heavy test files do.
++const GIT_HEAVY = { timeout: 30_000 };
++
++describe("local forge: merge", GIT_HEAVY, () => {
++  it("puts the branch's commits on the base branch and closes the item, with no GitHub call", async () => {
++    const h = await harness();
++    const { repo, head } = h;
++    const mainBefore = git(repo, "rev-parse", "refs/heads/main");
++    const r = await h.merge();
++
++    expect(r.refusal).toBeNull();
++    const main = git(repo, "rev-parse", "refs/heads/main");
++    expect(main).not.toBe(mainBefore);
++    expect(git(repo, "rev-list", "--parents", "-n", "1", main).split(" ").slice(1)).toEqual([mainBefore, head]);
++    expect(git(repo, "show", "refs/heads/main:feature.txt")).toBe("feature");
++    // The commit and the base's reflog entry name the bot, never an identity git guessed from the host.
++    expect(git(repo, "log", "-1", "--format=%an <%ae>|%cn <%ce>", main)).toBe("bot <bot@example.com>|bot <bot@example.com>");
++    expect(git(repo, "reflog", "-1", "--format=%gn <%ge>", "refs/heads/main")).toBe("bot <bot@example.com>");
++    const item = (await h.store.getWorkItem(h.it.id))!;
++    expect(item).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: main });
++    expect((await h.store.listStateChanges(h.it.id)).at(-1)).toMatchObject({ reason: "merged_by_command", actor: { kind: "user", id: WRITER } });
++  });
++
++  it("never touches the person's own checkout: its branch, HEAD and status are the same before and after", async () => {
++    const h = await harness();
++    const before = checkout(h.repo);
++    expect(before.status).not.toBe("");
++    await h.merge();
++    expect((await h.store.getWorkItem(h.it.id))!.stage).toBe("CLOSED");
++    expect(checkout(h.repo)).toEqual(before);
++  });
++
++  it("a second merge makes no second merge commit", async () => {
++    const h = await harness();
++    const { repo } = h;
++    await h.merge();
++    const main = git(repo, "rev-parse", "refs/heads/main");
++    const again = await h.merge("m2");
++    expect(again.refusal).toBeNull();
++    expect(git(repo, "rev-parse", "refs/heads/main")).toBe(main);
++  });
++
++  it("refuses, writing no ref, while the base branch is checked out", async () => {
++    const h = await harness((b) => {
++      const made = repoWithBranch(b);
++      git(made.repo, "stash", "--include-untracked", "--quiet");
++      git(made.repo, "checkout", "--quiet", "main");
++      return made;
++    });
++    const { repo } = h;
++    const before = checkout(repo);
++    const r = await h.merge();
++    expect(r.refusal).toMatch(/`main` is checked out in a working tree of this repository/);
++    expect(checkout(repo)).toEqual(before);
++    expect(await h.store.getWorkItem(h.it.id)).toEqual(h.it);
++  });
++
++  it("refuses when the branch has commits after the reviewed head", async () => {
++    const h = await harness();
++    const { repo, head, branch } = h;
++    git(repo, "branch", "--quiet", "-f", branch, git(repo, "commit-tree", `${head}^{tree}`, "-p", head, "-m", "later"));
++    const mainBefore = git(repo, "rev-parse", "refs/heads/main");
++    const r = await h.merge();
++    expect(r.refusal).toMatch(/commits arrived after the reviewed head/);
++    expect(git(repo, "rev-parse", "refs/heads/main")).toBe(mainBefore);
++    expect(await h.store.getWorkItem(h.it.id)).toEqual(h.it);
++  });
++});
++
++describe("local forge: what it reads", GIT_HEAVY, () => {
++  it("reports a conflicting branch as not mergeable, and its size", async () => {
++    const branch = "factory/wi_conflict";
++    const { repo, head } = repoWithBranch(branch, "README.md", "theirs\n");
++    git(repo, "stash", "--include-untracked", "--quiet");
++    git(repo, "checkout", "--quiet", "main");
++    writeFileSync(join(repo, "README.md"), "ours\n");
++    git(repo, "commit", "--quiet", "-am", "ours");
++    git(repo, "checkout", "--quiet", "mine");
++    const forge = new LocalForge({ repo, base: "main", identity: IDENTITY });
++    expect(await forge.prMergeState(7, branch)).toEqual({ state: "open", head_sha: head, mergeable: false, merge_sha: null, lines: 2, files: 1 });
++    const r = await forge.mergePr({ pr_number: 7, branch, base_ref: "main", head_sha: head });
++    expect(r).toEqual({ merged: false, reason: "the branch does not merge cleanly into `main`" });
++  });
++
++  it("has no PR events, passed checks, and refs of its own type", async () => {
++    const forge = new LocalForge({ repo: "/nowhere", base: "main", identity: IDENTITY });
++    expect(await forge.poll(null)).toEqual({ events: [], next_cursor: "" });
++    expect(await forge.prChecks()).toEqual({ state: "passed" });
++    expect(forge.prNumberOf(forge.prRef(7))).toBe(7);
++    expect(forge.prNumberOf({ type: "local", id: "local:7", link: "" })).toBeNull();
++  });
++});
+diff --git a/tests/merge-app.test.tsx b/tests/merge-app.test.tsx
+new file mode 100644
+index 00000000..724be961
+--- /dev/null
++++ b/tests/merge-app.test.tsx
+@@ -0,0 +1,213 @@
++// @vitest-environment jsdom
++// @ts-nocheck -- tsconfig.test.json has no DOM or JSX; like the other ui tests this file typechecks under the web config.
++import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
++import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import { App } from "../web/src/App.js";
++import { HealthMonitor } from "../src/ui/health.js";
++import { api } from "../src/ui/api.js";
++import { FakeClock } from "../src/impl/clock/fake-clock.js";
++import type { UserId, WorkItemPatch } from "../src/core/types.js";
++import { cleanScanner, issueRef } from "./helpers/fakes.js";
++import { PROJECT_KEY, newStore } from "./helpers/store.js";
++
++// The Merge button (design §9, issue #246): only on ready-to-merge rows and items the API gives a `merge` view;
++// its confirmation shows the title, tier, files and lines changed and the PR link; after confirming, the row shows
++// "merging", then leaves Needs you once merged, or shows the refusal next to the button.
++
++const AT = "2026-11-07T00:00:00.000Z";
++const src = (n: number) => ({ type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` });
++const MERGE = { pr_number: 42, pr_url: "https://github.com/o/r/pull/42", title: "Add the merge button", tier: 2, files: 3, lines: 120, replies: [] };
++const CHECK = { state: "mergeable", conflicts: [], head_sha: "a".repeat(40), base_sha: "b".repeat(40), checked_at: AT };
++const row = (id: string, n: number, level: string, extra: object = {}) => ({
++  id, source: src(n), title: `Item ${n}`, level, badges: [], stage: "REVIEW", tier: 2, kind: null, blocked_on: "human", blocked_reason: "merge_pending",
++  close_reason: null, run_status: null, pr_number: 42, pr_url: "https://github.com/o/r/pull/42", issue: null, since: AT, updated_at: AT, version: 3,
++  dependents: 0, conflicts: { automatic: 0, person: 0 }, merge_check: null, merge: null, ...extra,
++});
++const detail = (merge: object | null) => ({
++  as_of: AT,
++  item: {
++    id: "wi_ready", source: src(1), title: "Add the merge button", stage: "REVIEW", close_reason: null, blocked_on: "human", blocked_reason: "merge_pending",
++    tier: 2, loop_count: 0, restart_count: 0, token_cost: 0, pr_number: 42, pr_url: MERGE.pr_url, version: 3, created_at: AT, updated_at: AT, merge_check: CHECK,
++  },
++  timeline: [], runs: [], commands: [], replies: [], merge,
++});
++
++let items: { id: string; merge: object | null }[];
++let mergeRequests: object[];
++let posts: { url: string; body: unknown }[];
++let details: Record<string, unknown>;
++
++beforeEach(() => {
++  history.replaceState(null, "", "/app/");
++  posts = [];
++  mergeRequests = [];
++  items = [
++    row("wi_ready", 1, "ready_to_merge", { merge_check: CHECK, merge: MERGE }),
++    row("wi_spec", 2, "needs_approval", { stage: "READY", blocked_reason: "spec_pending", pr_number: null }),
++  ];
++  details = { "/api/v1/items/wi_ready": detail(MERGE), "/api/v1/items/wi_other": { ...detail(null), item: { ...detail(null).item, id: "wi_other" } } };
++  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
++    const path = url.split("?")[0]!;
++    if (init?.method === "POST") {
++      posts.push({ url: path, body: JSON.parse(String(init.body)) });
++      mergeRequests = [{ seq: 9, command: "merge", created_at: AT, handled_at: null, refusal: null }];
++      return json({ request_id: "app:x", seq: 9, command: "merge", work_item_id: "wi_ready" }, 202);
++    }
++    const bodies: Record<string, unknown> = {
++      "/api/v1/overview": { as_of: AT, stages: {}, needs_you: 0, running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 }, plugins: { issues: "github", prs: "github" } },
++      // The merge requests sent so far, as the server lists them on the row.
++      "/api/v1/items": { as_of: AT, total: items.length, items: items.map((i) => (i.merge ? { ...i, merge: { ...i.merge, replies: mergeRequests } } : i)), facets: {} },
++      "/api/v1/runs": { runs: [] },
++      "/api/v1/queue": { queue: [] },
++      "/api/v1/pauses": { as_of: AT, pauses: [], csrf_token: null },
++      "/api/v1/session": { as_of: AT, csrf_token: "tok", commands_enabled: true },
++      ...details,
++    };
++    const body = bodies[path];
++    return body === undefined ? json({ error: "Not found." }, 404) : json(body, 200);
++  }));
++  vi.stubGlobal("scrollTo", () => undefined);
++});
++
++afterEach(() => {
++  cleanup();
++  vi.unstubAllGlobals();
++});
++
++function json(body: unknown, status: number) {
++  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
++}
++
++function mount(path: string) {
++  history.replaceState(null, "", path);
++  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
++  render(
++    <QueryClientProvider client={client}>
++      <App />
++    </QueryClientProvider>,
++  );
++  return client;
++}
++
++const needsYou = () => screen.findByRole("table", { name: "Needs you" });
++const rowOf = (table: HTMLElement, id: string) => table.querySelector(`[data-key="${id}"]`) as HTMLElement | null;
++
++describe("Merge button: where it shows", () => {
++  it("shows on the ready-to-merge Floor row only, not on other rows", async () => {
++    mount("/app/");
++    const table = await needsYou();
++    const ready = rowOf(table, "wi_ready")!;
++    await waitFor(() => expect(within(ready).getByRole("button", { name: "Merge" })).toBeTruthy());
++    expect(within(rowOf(table, "wi_spec")!).queryByRole("button", { name: "Merge" })).toBeNull();
++  });
++
++  it("shows on the item page of a ready item, and not on an item without a merge view", async () => {
++    mount("/app/items/wi_ready");
++    expect(await screen.findByRole("button", { name: "Merge" })).toBeTruthy();
++    cleanup();
++    mount("/app/items/wi_other");
++    await screen.findByRole("heading", { name: "Add the merge button" });
++    expect(screen.queryByRole("button", { name: "Merge" })).toBeNull();
++  });
++});
++
++describe("Merge button: confirm, then merging, then gone or refused", () => {
++  it("the confirmation shows the title, tier, files and lines changed and the PR link; Cancel sends nothing", async () => {
++    mount("/app/");
++    const ready = rowOf(await needsYou(), "wi_ready")!;
++    const button = await within(ready).findByRole("button", { name: "Merge" });
++    await waitFor(() => expect(button.hasAttribute("disabled")).toBe(false));
++    fireEvent.click(button);
++    const dialog = within(ready).getByRole("dialog", { name: "Merge PR #42" });
++    expect(dialog.querySelector("[data-merge-title]")!.textContent).toBe("Add the merge button");
++    expect(dialog.querySelector("[data-merge-tier]")!.textContent).toBe("2");
++    expect(dialog.querySelector("[data-merge-size]")!.textContent).toBe("3 files, 120 lines");
++    expect(dialog.querySelector("[data-merge-pr]")!.getAttribute("href")).toBe("https://github.com/o/r/pull/42");
++    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
++    expect(within(ready).queryByRole("dialog")).toBeNull();
++    expect(posts).toEqual([]);
++  });
++
++  it("after confirming, the row shows merging, then leaves Needs you once merged", async () => {
++    const client = mount("/app/");
++    const ready = rowOf(await needsYou(), "wi_ready")!;
++    const button = await within(ready).findByRole("button", { name: "Merge" });
++    await waitFor(() => expect(button.hasAttribute("disabled")).toBe(false));
++    fireEvent.click(button);
++    fireEvent.click(within(ready).getByRole("button", { name: "Confirm merge" }));
++    await waitFor(() => expect(posts).toEqual([{ url: "/api/v1/items/wi_ready/commands", body: { command: "merge" } }]));
++    await waitFor(() => expect(within(rowOf(screen.getByRole("table", { name: "Needs you" }), "wi_ready")!).getByRole("status").textContent).toBe("merging"));
++    expect(within(rowOf(screen.getByRole("table", { name: "Needs you" }), "wi_ready")!).getByRole("button", { name: "Merge" }).hasAttribute("disabled")).toBe(true);
++
++    // The controller merged: the item is closed, so it is no longer a Needs-you row.
++    items = items.filter((i) => i.id !== "wi_ready");
++    await client.invalidateQueries();
++    await waitFor(() => expect(rowOf(screen.getByRole("table", { name: "Needs you" }), "wi_ready")).toBeNull());
++  });
++
++  it("a refusal shows its reason next to the button", async () => {
++    const client = mount("/app/");
++    const ready = rowOf(await needsYou(), "wi_ready")!;
++    const button = await within(ready).findByRole("button", { name: "Merge" });
++    await waitFor(() => expect(button.hasAttribute("disabled")).toBe(false));
++    fireEvent.click(button);
++    fireEvent.click(within(ready).getByRole("button", { name: "Confirm merge" }));
++    await waitFor(() => expect(posts).toHaveLength(1));
++    const refusal = "`merge` was not applied: commits arrived after the reviewed head; they need a review before the PR can merge.";
++    mergeRequests = [{ seq: 9, command: "merge", created_at: AT, handled_at: AT, refusal }];
++    await client.invalidateQueries();
++    await waitFor(() => expect(within(rowOf(screen.getByRole("table", { name: "Needs you" }), "wi_ready")!).getByRole("alert").textContent).toBe(refusal));
++  });
++
++  it("is disabled while the merge check finds conflicts", async () => {
++    items = [row("wi_ready", 1, "ready_to_merge", { merge_check: { ...CHECK, state: "conflicts", conflicts: ["a.ts"] }, merge: MERGE })];
++    mount("/app/");
++    const button = await within(rowOf(await needsYou(), "wi_ready")!).findByRole("button", { name: "Merge" });
++    await new Promise((r) => setTimeout(r, 50));
++    expect(button.hasAttribute("disabled")).toBe(true);
++  });
++});
++
++describe("item API: the merge view", () => {
++  const READY: WorkItemPatch = { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42", tier: 2, pr_files: ["a.ts", "b.ts"] };
++
++  async function apiWith(merge: boolean | undefined) {
++    const { store } = await newStore();
++    const clock = new FakeClock(AT);
++    const actor = { kind: "system" as const, id: "system:test" };
++    const make = async (n: number, patch: WorkItemPatch) => {
++      const { item } = await store.createWorkItem({ source: issueRef(n), title: `Item ${n}`, requester_id: "github:1" as UserId, project: PROJECT_KEY, problem: "p", resources: [] }, actor);
++      const r = await store.transition({ id: item.id, expected_version: item.version, actor, reason: "review_passed", patch, detail: { lines_changed: 40, files_changed: 2 } });
++      if (!r.ok) throw new Error("setup failed");
++      return r.item;
++    };
++    const ready = await make(1, READY);
++    const spec = await make(2, { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" });
++    const commands = merge === undefined ? undefined : { actor: "github:1" as UserId, token: "t", merge };
++    const d = {
++      store, scanner: cleanScanner, clock, lease_ms: 60_000, prUrl: (label: string, n: number) => `https://${label}/pull/${n}`,
++      health: new HealthMonitor(async () => [], clock), ...(commands ? { commands } : {}),
++    };
++    const get = async (path: string) => (await api(d as never, new URL(`http://127.0.0.1/api/v1${path}`))).value as Record<string, unknown>;
++    return { ready, spec, get };
++  }
++
++  it("a ready factory PR gets title, tier, size and PR link when merging is on; other items get null", async () => {
++    const h = await apiWith(true);
++    const body = await h.get(`/items/${h.ready.id}`);
++    expect(body.merge).toMatchObject({ pr_number: 42, title: "Item 1", tier: 2, files: 2, lines: 40, replies: [] });
++    expect((await h.get(`/items/${h.spec.id}`)).merge).toBeNull();
++    const rows = (await h.get("/items")).items as { id: string; merge: unknown }[];
++    expect(rows.find((r) => r.id === h.ready.id)!.merge).toMatchObject({ pr_number: 42, lines: 40 });
++    expect(rows.find((r) => r.id === h.spec.id)!.merge).toBeNull();
++  });
++
++  it("a project with no forge setting gets no merge view, so no button", async () => {
++    for (const merge of [false, undefined]) {
++      const h = await apiWith(merge);
++      expect((await h.get(`/items/${h.ready.id}`)).merge).toBeNull();
++      expect(((await h.get("/items")).items as { merge: unknown }[]).every((r) => r.merge === null)).toBe(true);
++    }
++  });
++});
+diff --git a/tests/merge-command.test.ts b/tests/merge-command.test.ts
+new file mode 100644
+index 00000000..ea36ff92
+--- /dev/null
++++ b/tests/merge-command.test.ts
+@@ -0,0 +1,272 @@
++import { describe, expect, it } from "vitest";
++import { commandFooter, commandsFor, commandTableMarkdown, helpReply, parseComment } from "../src/core/commands.js";
++import { Controller } from "../src/core/controller.js";
++import type { UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
++import { GitHubForge } from "../src/impl/github/github-forge.js";
++import { GitHubClient, GitHubError } from "../src/impl/github/github-client.js";
++import type { AppCommandRequest } from "../src/interfaces/factory-store.js";
++import type { Forge } from "../src/interfaces/forge.js";
++import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
++import { FakeAuth, FakeForge, FakeSource, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
++import { PROJECT_KEY, newStore } from "./helpers/store.js";
++
++// The merge command (design §4, issue #246): an app `merge` request on an item waiting for a human merge goes
++// through the `/approve` permission check and the controller's re-checks, then one merge through the forge at the
++// reviewed head; the item closes as completed with the requester as actor. Off unless config names a forge.
++
++/** FakeAuth lets github:1 approve, nobody else. */
++const WRITER = "github:1" as UserId;
++const READER = "github:666" as UserId;
++const HEAD = "a".repeat(40);
++const PR = 42;
++const MERGE_PENDING: WorkItemPatch = { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: String(PR), tier: 2 };
++
++async function harness(opts: { merge?: boolean; forge?: boolean } = {}) {
++  const { store, clock } = await newStore();
++  const source = new FakeSource();
++  const forge = new FakeForge();
++  const cfg = opts.merge === false ? config : { ...config, forge_merge: true };
++  const controller = new Controller({
++    store, source, ...(opts.forge === false ? {} : { forge }), auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner,
++  });
++  const actor = { kind: "system" as const, id: "system:test" };
++  /** A factory item on issue `n` in the state `patch` gives, its PR head recorded as HEAD; the forge reports that head. */
++  const itemIn = async (patch: WorkItemPatch, n: number): Promise<WorkItem> => {
++    const { item } = await store.createWorkItem({ source: issueRef(n), requester_id: WRITER, project: PROJECT_KEY, problem: "p", resources: [] }, actor);
++    const r = await store.transition({ id: item.id, expected_version: item.version, actor, reason: "setup", patch });
++    if (!r.ok) throw new Error("setup failed");
++    await store.recordPrHead({ id: item.id, expected_head: null, head_sha: HEAD, manual: null });
++    forge.mergeStates.set(PR, { head_sha: HEAD });
++    return (await store.getWorkItem(item.id))!;
++  };
++  const merge = async (it: WorkItem, user: UserId = WRITER, key = "m1"): Promise<AppCommandRequest> => {
++    const { request } = await store.recordAppCommandRequest({ key, actor: user, command: "merge", args: { work_item_id: it.id } });
++    await controller.tickCommands();
++    return (await store.getAppCommandRequest(request.seq))!;
++  };
++  return { store, clock, source, forge, controller, itemIn, merge };
++}
++
++/** Refused with `reason`: no merge call, the item exactly as it was, the refusal stored and posted once. */
++async function expectRefused(h: Awaited<ReturnType<typeof harness>>, it: WorkItem, r: AppCommandRequest, reason: RegExp) {
++  expect(h.forge.mergeCalls).toEqual([]);
++  expect(await h.store.getWorkItem(it.id)).toEqual(it);
++  expect(r.refusal).toMatch(/^`merge` was not applied: /);
++  expect(r.refusal).toMatch(reason);
++  // Posted once on the item's own surface: its issue, or for an adopted item its PR (through the forge).
++  const posted = [...h.source.comments, ...h.forge.comments].filter((c) => c.marker === `<!-- factory:refused:app-${r.seq} -->`);
++  expect(posted.map((c) => c.body)).toEqual([r.refusal]);
++}
++
++describe("merge command: the GitHub forge path (fake forge)", () => {
++  it("merges a ready item's PR once at the reviewed head, and the item closes as completed", async () => {
++    const h = await harness();
++    const it1 = await h.itemIn(MERGE_PENDING, 1);
++    const r = await h.merge(it1);
++
++    expect(h.forge.mergeCalls).toEqual([{ pr_number: PR, branch: `factory/${it1.id}`, base_ref: "main", head_sha: HEAD }]);
++    expect(await h.store.getWorkItem(it1.id)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: `merge-${PR}`, blocked_on: "none" });
++    expect(r).toMatchObject({ refusal: null });
++    expect(r.handled_at).not.toBeNull();
++    expect(h.source.comments.filter((c) => c.marker.includes("refused"))).toEqual([]);
++  });
++
++  it("stores the merge decision with the actor's ID in the timeline, and no display name", async () => {
++    const h = await harness();
++    const it1 = await h.itemIn(MERGE_PENDING, 1);
++    const r = await h.merge(it1);
++    const changes = await h.store.listStateChanges(it1.id);
++    const merged = changes.filter((c) => c.reason === "merged_by_command");
++    expect(merged).toHaveLength(1);
++    expect(merged[0]!.actor).toEqual({ kind: "user", id: WRITER });
++    expect(merged[0]!.detail).toEqual({ app_request: r.seq, pr_number: PR, merge_sha: `merge-${PR}` });
++    expect(JSON.stringify(changes)).not.toMatch(/alice|login/);
++  });
++
++  it("a second merge request on the merged item does nothing: no second merge, no refusal, no change", async () => {
++    const h = await harness();
++    const it1 = await h.itemIn(MERGE_PENDING, 1);
++    await h.merge(it1);
++    const after = (await h.store.getWorkItem(it1.id))!;
++    const again = await h.merge(it1, WRITER, "m2");
++    expect(h.forge.mergeCalls).toHaveLength(1);
++    expect(again.refusal).toBeNull();
++    expect(await h.store.getWorkItem(it1.id)).toEqual(after);
++  });
++
++  it("the same request handled twice (a crash before the mark) merges once", async () => {
++    const h = await harness();
++    const it1 = await h.itemIn(MERGE_PENDING, 1);
++    const { request } = await h.store.recordAppCommandRequest({ key: "m1", actor: WRITER, command: "merge", args: { work_item_id: it1.id } });
++    await h.controller.tickCommands();
++    await h.store.advanceCursor("commands", String(request.seq), "0");
++    await h.controller.tickCommands();
++    expect(h.forge.mergeCalls).toHaveLength(1);
++    expect((await h.store.listStateChanges(it1.id)).filter((c) => c.reason === "merged_by_command")).toHaveLength(1);
++  });
++
++  it("a PR the forge already reports merged (a crash after the merge) closes the item with no second merge", async () => {
++    const h = await harness();
++    const it1 = await h.itemIn(MERGE_PENDING, 1);
++    h.forge.mergeStates.set(PR, { head_sha: HEAD, state: "merged", merge_sha: "m".repeat(40) });
++    const r = await h.merge(it1);
++    expect(h.forge.mergeCalls).toEqual([]);
++    expect(r.refusal).toBeNull();
++    expect(await h.store.getWorkItem(it1.id)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "m".repeat(40) });
++  });
++
++  it("a refusal from the forge is stored and posted, and nothing changes", async () => {
++    const h = await harness();
++    const it1 = await h.itemIn(MERGE_PENDING, 1);
++    h.forge.mergeRefusal = "GitHub refused the merge: a branch rule, a required check or the repository's merge method does not allow it";
++    const r = await h.merge(it1);
++    expect(h.forge.mergeCalls).toHaveLength(1);
++    expect(await h.store.getWorkItem(it1.id)).toEqual(it1);
++    expect(r.refusal).toBe(`\`merge\` was not applied: ${h.forge.mergeRefusal}.`);
++  });
++});
++
++describe("merge command: refusals before any merge", () => {
++  it("is refused when the item is not ready to merge: no forge read, no merge, no stage or block change", async () => {
++    const h = await harness();
++    const it1 = await h.itemIn({ stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", change_ref: String(PR) }, 1);
++    const reviewing = await h.itemIn({ stage: "REVIEW", change_ref: String(PR) }, 2);
++    await expectRefused(h, it1, await h.merge(it1), /the item is spec waiting for approval; `merge` applies only when it is waiting for a human merge/);
++    await expectRefused(h, reviewing, await h.merge(reviewing, WRITER, "m2"), /the item is in review/);
++    expect(h.forge.checkCalls).toEqual([]);
++  });
++
++  it("is refused when a check failed or is still pending", async () => {
++    const h = await harness();
++    const failed = await h.itemIn(MERGE_PENDING, 1);
++    h.forge.checkResults.push({ state: "failed", failed: ["ci", "lint"] });
++    await expectRefused(h, failed, await h.merge(failed), /2 of the PR's checks failed/);
++    const pending = await h.itemIn(MERGE_PENDING, 2);
++    h.forge.checkResults.push({ state: "pending" });
++    await expectRefused(h, pending, await h.merge(pending, WRITER, "m2"), /checks are still running/);
++  });
++
++  it("is refused when commits arrived after the reviewed head", async () => {
++    const h = await harness();
++    const it1 = await h.itemIn(MERGE_PENDING, 1);
++    h.forge.mergeStates.set(PR, { head_sha: "b".repeat(40) });
++    await expectRefused(h, it1, await h.merge(it1), /commits arrived after the reviewed head/);
++  });
++
++  it("is refused when the branch does not merge cleanly into base, or the forge does not know yet", async () => {
++    const h = await harness();
++    const it1 = await h.itemIn(MERGE_PENDING, 1);
++    h.forge.mergeStates.set(PR, { head_sha: HEAD, mergeable: false });
++    await expectRefused(h, it1, await h.merge(it1), /the branch does not merge cleanly into `main`/);
++    h.forge.mergeStates.set(PR, { head_sha: HEAD, mergeable: null });
++    await expectRefused(h, it1, await h.merge(it1, WRITER, "m2"), /still working out whether the branch merges cleanly/);
++  });
++
++  it("is refused for a user without permission, with the same check as /approve", async () => {
++    const h = await harness();
++    const it1 = await h.itemIn(MERGE_PENDING, 1);
++    await expectRefused(h, it1, await h.merge(it1, READER), /it needs write permission on this repository \(`not_a_collaborator`\)/);
++    expect(h.forge.checkCalls).toEqual([]);
++  });
++
++  it("is refused for a PR the factory did not open", async () => {
++    const h = await harness();
++    const { item } = await h.store.createWorkItem({
++      source: { type: "github_issue", id: "o/r#77", link: "https://github.com/o/r/pull/77" }, requester_id: WRITER, project: PROJECT_KEY,
++      problem: "p", resources: [], adopted: { change_ref: "77", head_branch: "feature", head_sha: HEAD, allowed_paths: [], tier: null },
++    }, { kind: "system", id: "system:test" });
++    const r = await h.store.transition({
++      id: item.id, expected_version: item.version, actor: { kind: "system", id: "t" }, reason: "setup", patch: { ...MERGE_PENDING, change_ref: "77" },
++    });
++    if (!r.ok) throw new Error("setup failed");
++    await expectRefused(h, r.item, await h.merge(r.item), /the factory merges only the PRs it opened; merge PR #77 on the forge/);
++  });
++});
++
++describe("merge command: off by default", () => {
++  it("with no forge setting the request is refused with a pointer to GitHub, and nothing is read or merged", async () => {
++    const h = await harness({ merge: false });
++    const it1 = await h.itemIn(MERGE_PENDING, 1);
++    await expectRefused(h, it1, await h.merge(it1), /merging from the factory is off for this project .*`plugins\.forge`.*; merge PR #42 on the forge/);
++    expect(h.forge.checkCalls).toEqual([]);
++  });
++
++  it("with no forge at all it is refused the same way", async () => {
++    const h = await harness({ forge: false });
++    const it1 = await h.itemIn(MERGE_PENDING, 1);
++    await expectRefused(h, it1, await h.merge(it1), /merge PR #42 on the forge/);
++  });
++
++  it("is an app command: never read from a comment, never in a footer or the SET_UP.md table", () => {
++    expect(parseComment("/merge")).toEqual({ kind: "unknown", word: "merge" });
++    const ready = { phase: "merge_pending" as const, has_pr: true };
++    expect(commandsFor(ready).map((c) => c.name)).not.toContain("merge");
++    expect(commandFooter(ready)).not.toContain("/merge");
++    expect(commandFooter(ready).split("\n").at(-1)).toBe("No command changes this item's state now.");
++    expect(commandTableMarkdown()).not.toContain("/merge");
++    expect(helpReply(ready)).toContain("- `/merge`: In the app only");
++    expect(helpReply(ready)).not.toContain("`/merge` **(now)**");
++  });
++
++  it("the size of a ready PR is kept on its review_passed change only when merging is on", async () => {
++    for (const merge of [true, false]) {
++      const h = await harness({ merge });
++      const it1 = await h.itemIn({ stage: "REVIEW", change_ref: String(PR), tier: 2 }, 1);
++      const { run } = await h.store.enqueueRun({ work_item_id: it1.id, kind: "review", idempotency_key: "rv" });
++      const claimed = await h.store.claimRun({ worker_id: "w" as never, kinds: ["review"], lease_ms: 60_000 });
++      expect(claimed?.id).toBe(run.id);
++      const done = await h.store.completeRun(run.id, claimed!.lease!.token, { status: "succeeded", data: { review: { verdict: "pass", tier: 2, findings: [], summary: "ok" } } } as never);
++      expect(done.ok).toBe(true);
++      await h.controller.tickRuns();
++      const passed = (await h.store.listStateChanges(it1.id)).find((c) => c.reason === "review_passed");
++      expect(passed).toBeDefined();
++      expect(passed!.detail).toEqual(merge ? { lines_changed: 12, files_changed: 2 } : null);
++    }
++  });
++});
++
++describe("GitHub forge merge: through the bot, at the reviewed head", () => {
++  class MergeClient extends GitHubClient {
++    calls: { method: string; path: string; body: unknown }[] = [];
++    answer: (() => unknown) | null = null;
++    constructor() {
++      super({} as GitHubCredentials, "http://unused");
++    }
++    override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
++      this.calls.push({ method, path, body });
++      if (method === "PUT") return (this.answer ? this.answer() : { sha: "c".repeat(40), merged: true }) as T;
++      return {
++        state: "open", merged: false, merge_commit_sha: null, mergeable: true, head: { ref: "factory/x", sha: HEAD }, base: { ref: "main", sha: "d".repeat(40) },
++        additions: 10, deletions: 5, changed_files: 3,
++      } as T;
++    }
++  }
++  const forgeWith = (client: MergeClient): Forge =>
++    new GitHubForge(client, { owner: "o", name: "r" }, "factory/", "main", { postComment: async () => ({ url: null }), setStatus: async () => undefined });
++
++  it("merges with one PUT naming the reviewed head as sha and no item text", async () => {
++    const client = new MergeClient();
++    const r = await forgeWith(client).mergePr({ pr_number: PR, branch: "factory/x", base_ref: "main", head_sha: HEAD });
++    expect(r).toEqual({ merged: true, merge_sha: "c".repeat(40) });
++    expect(client.calls).toEqual([{ method: "PUT", path: "/repos/o/r/pulls/42/merge", body: { sha: HEAD } }]);
++  });
++
++  it("reads the PR's state, head, mergeable and size in one GET", async () => {
++    const client = new MergeClient();
++    expect(await forgeWith(client).prMergeState(PR, "factory/x")).toEqual({ state: "open", head_sha: HEAD, mergeable: true, merge_sha: null, lines: 15, files: 3 });
++    expect(client.calls.map((c) => `${c.method} ${c.path}`)).toEqual(["GET /repos/o/r/pulls/42"]);
++  });
++
++  it("GitHub's 405 and 409 are refusals in fixed words", async () => {
++    for (const [status, words] of [[405, /GitHub refused the merge/], [409, /head moved after the review/]] as const) {
++      const client = new MergeClient();
++      client.answer = () => {
++        throw new GitHubError(status, "secret-looking GitHub text");
++      };
++      const r = await forgeWith(client).mergePr({ pr_number: PR, branch: "factory/x", base_ref: "main", head_sha: HEAD });
++      expect(r.merged).toBe(false);
++      expect(!r.merged && r.reason).toMatch(words);
++      expect(JSON.stringify(r)).not.toContain("secret-looking");
++    }
++  });
++});
+diff --git a/web/src/api.ts b/web/src/api.ts
+index 54b43859..ebf61038 100644
+--- a/web/src/api.ts
++++ b/web/src/api.ts
+@@ -75,6 +75,21 @@ export function mergeCheckLabel(m: MergeCheckView): string {
+   return `Conflicts: ${m.conflicts.length} ${m.conflicts.length === 1 ? "file" : "files"}`;
+ }
+ 
++/**
++ * The Merge button's data (design §9, issue #246): present only on a factory PR waiting for a human merge in a
++ * project with the merge command on. The confirmation shows the title, tier, size and PR link; `files` and `lines`
++ * are null when the server does not know them. `replies`: the item's merge requests.
++ */
++export interface MergeView {
++  pr_number: number;
++  pr_url: string | null;
++  title: string | null;
++  tier: number | null;
++  files: number | null;
++  lines: number | null;
++  replies: CommandReply[];
++}
++
+ /** Whether the Merge button (#246) is disabled: while the item has conflicts or is being checked. */
+ export function mergeBlocked(m: MergeCheckView | null | undefined): boolean {
+   return !!m && m.state !== "mergeable";
+@@ -115,6 +130,7 @@ export interface ItemRow {
+   dependents: number;
+   conflicts: { automatic: number; person: number };
+   merge_check?: MergeCheckView | null;
++  merge?: MergeView | null;
+   /**
+    * What a Needs-you row says: the reason and the command to type (src/ui/need.ts); absent for other rows.
+    * `anchor`: the item page's anchor of the newest factory thread entry (`msg-<seq>`), null when it has none.
+@@ -233,6 +249,7 @@ export interface ItemDetail {
+   replies?: CommandReply[];
+   /** Run id → its stored transcript parts ("" is the main step); a run not listed has no transcript. */
+   transcripts?: Record<string, string[]>;
++  merge?: MergeView | null;
+ }
+ 
+ /** One entry of an item's thread: `author` is `factory` or `unknown` (no author is stored), `channel` the item's source type. */
+diff --git a/web/src/views/common.tsx b/web/src/views/common.tsx
+index b04a6789..bfa114cb 100644
+--- a/web/src/views/common.tsx
++++ b/web/src/views/common.tsx
+@@ -6,6 +6,7 @@ import { LINK_CLASS } from "../components/ui/link-style.js";
+ import { LEVEL_LABELS, ago, shortSource, until } from "../lib/format.js";
+ import { Link } from "../nav.js";
+ import { itemPath } from "../pages.js";
++import { MergeButton } from "./merge.js";
+ 
+ /** Date.now(), ticking each second, for "Ns ago" texts. */
+ export function useNow(): number {
+@@ -102,6 +103,7 @@ export function ItemsTable({ items, now, label, empty, plugins }: { items: reado
+           <Td>
+             <Badge level={it.level}>{LEVEL_LABELS[it.level] ?? it.level}</Badge>
+             {it.merge_check && <MergeCheckNote check={it.merge_check} />}
++            {it.merge && <MergeButton id={it.id} merge={it.merge} check={it.merge_check} />}
+           </Td>
+           <Td className="text-zinc-600 dark:text-zinc-400">{it.need ? <NeedText id={it.id} need={it.need} /> : it.why ? <WhyText why={it.why} /> : it.badges.join(" · ") || it.blocked_reason || "–"}</Td>
+           <Td className="tabular-nums whitespace-nowrap">{ago(it.since, now)}</Td>
+diff --git a/web/src/views/item-commands.tsx b/web/src/views/item-commands.tsx
+index c9844cb0..0a598359 100644
+--- a/web/src/views/item-commands.tsx
++++ b/web/src/views/item-commands.tsx
+@@ -33,7 +33,8 @@ export function commandOutcome(replies: readonly CommandReply[], command: string
+   return { tone: "status", text: latest.handled_at === null ? "sent" : "Done" };
+ }
+ 
+-function OutcomeText({ outcome }: { outcome: Outcome }) {
++/** A command's outcome next to its button: a refusal as an alert, anything else as a status. */
++export function OutcomeText({ outcome }: { outcome: Outcome }) {
+   if (!outcome) return null;
+   return (
+     <span
+diff --git a/web/src/views/merge.tsx b/web/src/views/merge.tsx
+new file mode 100644
+index 00000000..acea2284
+--- /dev/null
++++ b/web/src/views/merge.tsx
+@@ -0,0 +1,87 @@
++import { useQueryClient } from "@tanstack/react-query";
++import { useState } from "react";
++import { API, type CommandReply, type MergeCheckView, type MergeView, type Session, mergeBlocked, postCommand, useApi } from "../api.js";
++import { Button } from "../components/ui/button.js";
++import { LINK_CLASS } from "../components/ui/link-style.js";
++import { cn } from "../lib/cn.js";
++import { isHttpUrl } from "../lib/format.js";
++import { type LocalSend, type Outcome, OutcomeText, commandOutcome } from "./item-commands.js";
++
++// The Merge button (design §9, issue #246) on Floor rows and the item page, only where the API gives a `merge` view
++// (a factory PR waiting for a human merge, merge command on). It opens a confirmation with the title, tier, size and
++// PR link; confirming sends a `merge` command (POST /api/v1/items/:id/commands), and the row shows "merging" until
++// the controller merges (the item leaves Needs you) or refuses (the reason shows next to the button).
++
++/** The merge's outcome: a failed send or a refusal as an error, else "merging" while a request is out. */
++export function mergeOutcome(replies: readonly CommandReply[], local?: LocalSend): Outcome {
++  const o = commandOutcome(replies, "merge", local);
++  if (!o || o.tone === "error") return o;
++  return { tone: "status", text: "merging" };
++}
++
++const count = (n: number | null, one: string, many: string) => (n === null ? "unknown" : `${n} ${n === 1 ? one : many}`);
++
++export function MergeButton({ id, merge, check }: { id: string; merge: MergeView; check?: MergeCheckView | null | undefined }) {
++  const client = useQueryClient();
++  const session = useApi<Session>(API.session, false);
++  const [confirming, setConfirming] = useState(false);
++  const [busy, setBusy] = useState(false);
++  const [local, setLocal] = useState<LocalSend | undefined>(undefined);
++  const token = session.data?.csrf_token;
++  const outcome = mergeOutcome(merge.replies, local);
++  const merging = outcome?.tone === "status";
++  const disabled = !token || session.data?.commands_enabled !== true || mergeBlocked(check) || busy || merging;
++
++  const send = async () => {
++    if (!token) return;
++    setBusy(true);
++    setConfirming(false);
++    try {
++      const r = await postCommand(token, id, "merge", "");
++      setLocal(r.ok ? { seq: r.seq } : { error: r.error });
++      if (r.ok) await Promise.all([client.invalidateQueries({ queryKey: [API.items] }), client.invalidateQueries({ queryKey: [API.item(id)] })]);
++    } catch (err) {
++      setLocal({ error: err instanceof Error ? err.message : String(err) });
++    } finally {
++      setBusy(false);
++    }
++  };
++
++  return (
++    <span data-merge={id} className="mt-1 flex flex-wrap items-center gap-2">
++      <Button variant="outline" className="h-7 w-auto px-2 text-xs" disabled={disabled || confirming} onClick={() => setConfirming(true)}>
++        Merge
++      </Button>
++      <OutcomeText outcome={outcome} />
++      {confirming && (
++        <span role="dialog" aria-label={`Merge PR #${merge.pr_number}`} className="block w-full rounded-md border border-zinc-300 p-2 text-sm dark:border-zinc-700">
++          <span className="mb-2 block text-pretty">Merge PR #{merge.pr_number} into the base branch?</span>
++          <dl className="mb-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">
++            <dt className="text-zinc-600 dark:text-zinc-400">Title</dt>
++            <dd data-merge-title className="break-words">{merge.title ?? "–"}</dd>
++            <dt className="text-zinc-600 dark:text-zinc-400">Tier</dt>
++            <dd data-merge-tier>{merge.tier ?? "–"}</dd>
++            <dt className="text-zinc-600 dark:text-zinc-400">Changed</dt>
++            <dd data-merge-size>{count(merge.files, "file", "files")}, {count(merge.lines, "line", "lines")}</dd>
++            {isHttpUrl(merge.pr_url) && (
++              <>
++                <dt className="text-zinc-600 dark:text-zinc-400">PR</dt>
++                <dd>
++                  <a data-merge-pr href={merge.pr_url} target="_blank" rel="noreferrer" className={cn("tabular-nums", LINK_CLASS)}>#{merge.pr_number}</a>
++                </dd>
++              </>
++            )}
++          </dl>
++          <span className="flex gap-2">
++            <Button variant="outline" className="h-7 w-auto px-2 text-xs" disabled={disabled} onClick={() => void send()}>
++              Confirm merge
++            </Button>
++            <Button variant="outline" className="h-7 w-auto px-2 text-xs" onClick={() => setConfirming(false)}>
++              Cancel
++            </Button>
++          </span>
++        </span>
++      )}
++    </span>
++  );
++}
+diff --git a/web/src/views/pages.tsx b/web/src/views/pages.tsx
+index 4c1f1e6e..f982c94c 100644
+--- a/web/src/views/pages.tsx
++++ b/web/src/views/pages.tsx
+@@ -14,6 +14,7 @@ import { Link } from "../nav.js";
+ import { BASE, itemPath } from "../pages.js";
+ import { ItemsTable, MergeCheckNote, QueueTable, RunningTable, WhyText, useNow } from "./common.js";
+ import { ItemCommands } from "./item-commands.js";
++import { MergeButton } from "./merge.js";
+ import { SystemActions } from "./system-banner.js";
+ import { Thread } from "./thread.js";
+ import { transcriptPath } from "./transcript.js";
+@@ -382,6 +383,7 @@ export function ItemPage({ id }: { id: string }) {
+           </div>
+         ))}
+       </dl>
++      {q.data.merge && <MergeButton id={item.id} merge={q.data.merge} check={item.merge_check} />}
+       <ItemCommands id={item.id} commands={q.data.commands ?? []} replies={q.data.replies ?? []} />
+       <Thread entries={q.data.thread ?? []} now={now} />
+       <Phases phases={item.phases ?? []} />

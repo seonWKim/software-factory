@@ -1,0 +1,64 @@
+diff --git a/scripts/build-icons.mjs b/scripts/build-icons.mjs
+index e8a20e49..4ddc6841 100644
+--- a/scripts/build-icons.mjs
++++ b/scripts/build-icons.mjs
+@@ -8,7 +8,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSy
+ import { tmpdir } from "node:os";
+ import { dirname, join, resolve } from "node:path";
+ import { fileURLToPath } from "node:url";
+-import { crc32, deflateSync } from "node:zlib";
++import { crc32, deflateSync, inflateSync } from "node:zlib";
+ 
+ /** The PNG sizes, in px. */
+ export const SIZES = [16, 32, 64, 128, 256, 512, 1024];
+@@ -198,6 +198,31 @@ export function encodePng(rgba, size) {
+   ]);
+ }
+ 
++/**
++ * A PNG written by encodePng back to `{ width, height, rgba }`. Compare pixels, not file bytes: deflate's output
++ * differs between zlib builds (macOS vs Linux) for the same image.
++ */
++export function decodePng(png) {
++  const width = png.readUInt32BE(16);
++  const height = png.readUInt32BE(20);
++  if (png[24] !== 8 || png[25] !== 6) throw new Error("decodePng reads only 8-bit RGBA");
++  const idat = [];
++  for (let at = 8; at < png.length; ) {
++    const len = png.readUInt32BE(at);
++    if (png.toString("ascii", at + 4, at + 8) === "IDAT") idat.push(png.subarray(at + 8, at + 8 + len));
++    at += 12 + len;
++  }
++  const raw = inflateSync(Buffer.concat(idat));
++  const row = width * 4 + 1;
++  if (raw.length !== row * height) throw new Error("decodePng: pixel data does not match the size");
++  const rgba = Buffer.alloc(width * height * 4);
++  for (let y = 0; y < height; y++) {
++    if (raw[y * row] !== 0) throw new Error("decodePng reads only unfiltered rows");
++    raw.copy(rgba, y * width * 4, y * row + 1, (y + 1) * row);
++  }
++  return { width, height, rgba };
++}
++
+ /** The PNG file name of one size. */
+ export const pngName = (size) => `icon-${size}.png`;
+ 
+diff --git a/tests/design-system.test.ts b/tests/design-system.test.ts
+index 7ee89684..eda42b43 100644
+--- a/tests/design-system.test.ts
++++ b/tests/design-system.test.ts
+@@ -80,10 +80,11 @@ describe("the Gongbang mark in the dashboard", () => {
+     const icons = (await import(pathToFileURL(join(ROOT, "scripts", "build-icons.mjs")).href as string)) as {
+       parseSvg: (text: string) => unknown;
+       render: (svg: unknown, size: number) => Buffer;
+-      encodePng: (rgba: Buffer, size: number) => Buffer;
++      decodePng: (png: Buffer) => { width: number; height: number; rgba: Buffer };
+     };
+-    const favicon = readFileSync(join(ROOT, "web", "public", "favicon.png"));
+-    expect(favicon.equals(icons.encodePng(icons.render(icons.parseSvg(svg), 16), 16))).toBe(true);
++    const favicon = icons.decodePng(readFileSync(join(ROOT, "web", "public", "favicon.png")));
++    expect([favicon.width, favicon.height]).toEqual([16, 16]);
++    expect(favicon.rgba.equals(icons.render(icons.parseSvg(svg), 16))).toBe(true);
+     const html = readFileSync(join(ROOT, "web", "index.html"), "utf8");
+     expect(html).toMatch(/<link rel="icon" type="image\/png" sizes="16x16" href="\/favicon\.png" \/>/);
+     expect(html).toContain("<title>Gongbang</title>");

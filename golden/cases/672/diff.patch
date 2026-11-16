@@ -1,0 +1,69 @@
+diff --git a/docs/design/10-event-driven.md b/docs/design/10-event-driven.md
+index 1a030f9f..7507bce0 100644
+--- a/docs/design/10-event-driven.md
++++ b/docs/design/10-event-driven.md
+@@ -76,8 +76,11 @@ force.
+     run; failed or running rows hold only a partial, so a paused or requeued run whose steps all failed survives a
+     deploy with its WIP (decision changed 2026-11-09, worker review finding 4; see History). Each process
+     stamps the revision its supervisor built it from (`SF_CODE_VERSION`, 08-self-update), or `dev` unsupervised.
+-  - Named timeouts per run kind (`timeouts` in the kind file): `start_to_close` one hour per step (above the agent's
+-    own `run_timeout_ms`, which fires first), `heartbeat` the default `lease_ms`, `schedule_to_close` a week from
++  - Named timeouts per run kind (`timeouts` in the kind file): `start_to_close` one hour per step by default; the
++    implement kind's `run-agent` step gets two hours (7,200,000 ms), above twice `run_timeout_ms`, since it holds
++    the toolchain warm-up and the agent, each with its own `run_timeout_ms`, then the pack checks and the bundle
++    save; the resolve kind's `resolve` step gets three hours (decision changed 2026-11-13, issue #671; see
++    History). `heartbeat` the default `lease_ms`, `schedule_to_close` a week from
+     the run's creation (runs wait in claim pauses and coordination holds). A step over its timeout fails
+     `start_to_close` (infra); a run past its deadline fails `schedule_to_close`. Either one stops the step's work:
+     the step's abort also aborts the signal the runner hands the run kind, and a failed step settles only after its
+@@ -542,6 +545,10 @@ force.
+ 
+ ## History
+ 
++- **Implement run-agent step budget** (decision changed 2026-11-13, issue #671). Before: the implement kind's
++  `run-agent` step had the shared `start_to_close` of one hour per step (above the agent's own `run_timeout_ms`,
++  which fires first); warm-up plus agent could pass one hour, so the step failed `start_to_close`.
++
+ - **Outbound wait time and Slack refusals** (decision changed 2026-11-10, issue #483). Before: a failed batch always
+   retried on its backoff and ignored the error's `wait_until`; a Slack error had only a method and a code, so a 429
+   was `rate_limited` with its `Retry-After` unread, and `channel_not_found` and `not_in_channel` had no status and
+diff --git a/src/worker/runs/implement/implement.run.ts b/src/worker/runs/implement/implement.run.ts
+index afddc702..9abb1525 100644
+--- a/src/worker/runs/implement/implement.run.ts
++++ b/src/worker/runs/implement/implement.run.ts
+@@ -1103,7 +1103,7 @@ function baseRefspec(w: Worker, item: WorkItem): string {
+ export default defineRunKind({
+   name: "implement",
+   folder: true,
+-  timeouts: DEFAULT_TIMEOUTS,
++  timeouts: { ...DEFAULT_TIMEOUTS, steps: { "run-agent": { start_to_close_ms: 2 * 3_600_000 } } }, // Warm-up and agent (run_timeout_ms each), then pack checks and bundle: 2 h, over twice run_timeout_ms (#671).
+   execute: (w, c) => implement(w, c.run, c.item, c.handle!, c.ctx, c.signal, c.model, c.plan ?? null, c.kept ?? null, c.step),
+ });
+ 
+diff --git a/tests/implement-run-timeouts.test.ts b/tests/implement-run-timeouts.test.ts
+new file mode 100644
+index 00000000..b27022b0
+--- /dev/null
++++ b/tests/implement-run-timeouts.test.ts
+@@ -0,0 +1,21 @@
++import { describe, expect, it } from "vitest";
++import implementKind from "../src/worker/runs/implement/implement.run.js";
++import runTimeout from "../src/worker/settings/run-timeout-ms.setting.js";
++import { DEFAULT_TIMEOUTS } from "../src/worker/run-kind.js";
++
++// Issue #671: the implement agent step holds the toolchain warm-up and the agent, each with its own
++// `run_timeout_ms` budget, then the pack checks and the bundle save. One hour per step was too short.
++describe("implement run timeouts", () => {
++  it("gives the run-agent step more than twice the default run_timeout_ms", () => {
++    const budget = implementKind.timeouts.steps?.["run-agent"]?.start_to_close_ms;
++    expect(budget).toBeDefined();
++    expect(budget!).toBeGreaterThan(2 * Number(runTimeout.default));
++    expect(budget).toBe(2 * 3_600_000);
++  });
++
++  it("keeps the shared defaults for everything else", () => {
++    const { steps: _steps, ...rest } = implementKind.timeouts;
++    expect(rest).toEqual(DEFAULT_TIMEOUTS);
++    expect(DEFAULT_TIMEOUTS.start_to_close_ms).toBe(3_600_000);
++  });
++});

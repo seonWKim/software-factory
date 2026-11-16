@@ -7,7 +7,7 @@ import { availableParallelism, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
   AGENT_STOP_CHECKS_DEFAULT, ALARM_DEFAULTS, type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, type ToolchainConfig, cliUserConfig, uiCheckConfig, uiCheckSentence,
-  coordinationConfig, readOnlyFolders, readOnlyInputsConfig, retentionConfig, toolGrantsConfig,
+  coordinationConfig, mergeQueuePushBase, readOnlyFolders, readOnlyInputsConfig, retentionConfig, toolGrantsConfig,
 } from "./core/config.js";
 import { toolchainEnvKeyRefusal } from "./core/tools/policy.js";
 import { type ProjectRef, localProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
@@ -17,7 +17,7 @@ import { type SplitLimits, splitThresholds } from "./core/split.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
 import { errorText, type Logger } from "./core/log.js";
 import type { CliEnvironment, CliIdentity } from "./core/local-cli.js";
-import { canMergeLocal } from "./core/local-merge.js";
+import { canMergeLocal, forgeRoles } from "./core/local-merge.js";
 import { StoredLearnedSettings } from "./core/learned-settings.js";
 import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
@@ -157,8 +157,8 @@ export interface FileConfig {
   retention?: { outbox_days?: unknown; commands_days?: unknown; records_days?: unknown; raw_records_days?: unknown }; // design 08-retention; absent: 30, 30, 90, 7
   /** Outbound (RFC 0015 §15.1): `batching` per destination kind. Absent: `auto` everywhere. */
   outbound?: { batching?: unknown };
-  /** The merge queue (RFC 0015 §7): `depth`, the speculative depth. Absent: 1. */
-  merge_queue?: { depth?: unknown };
+  /** The merge queue (RFC 0015 §7): `depth`, the speculative depth (absent: 1); `push_base`, the local forge's base push (absent: off). */
+  merge_queue?: { depth?: unknown; push_base?: unknown };
   /** Hook names the owner enabled (RFC 0015 §15.2). Absent: none. Checked against the discovered hooks at startup. */
   hooks?: unknown;
   /** Worker loops per `dev` / `worker` process (architecture §4). Absent: 1. */
@@ -441,7 +441,7 @@ export async function loadConfig(
     agent_stop_checks: agentStopChecks(file),
     ...retention, // the retention block, inbox_retention_days as its fallback (design 08-retention)
     outbound_batching: batchingPolicies(file.outbound?.batching),
-    merge_queue_depth: mergeQueueDepth(file),
+    merge_queue_depth: mergeQueueDepth(file), merge_queue_push_base: mergeQueuePushBase(file.merge_queue),
     ...(file.hooks === undefined ? {} : { hooks: hookNames(file.hooks) }),
     ...(autoApproveReadOnly(file.packs) ? { packs_auto_approve_read_only: true } : {}),
     workers,
@@ -763,9 +763,9 @@ export async function build(
   for (const name of selectedSources(sel)) {
     sources.push(await createPlugin(registry, "source", name, { ...base, github, store, secrets, scanner, log: sourceLog, clock }));
   }
-  // PR events, facts, comments and status (issue #273), else null; with no forge, the local forge reads links only.
-  const forge = await p.forge(github, { store, clock, log: new ConsoleLogger(clock, "forge"), credentials });
-  const links = forge ?? (await createPlugin(registry, "forge", "local", { ...base, github }));
+  // PR events, facts, comments and status (issue #273), else null; with no forge, the local forge reads links (forgeRoles).
+  const selected = await p.forge(github, { store, clock, log: new ConsoleLogger(clock, "forge"), credentials });
+  const { forge, links } = forgeRoles(selected, selected ?? (await createPlugin(registry, "forge", "local", { ...base, github })));
   // Identity (RFC 0015 §8, M9): service and run passports, and the audit of every authorize decision.
   const identity = await startProcessIdentity(loaded, store, clock);
   // Every person's command, whatever its origin, by the one owner check, one authz_audit row per decision (passport `none`).
