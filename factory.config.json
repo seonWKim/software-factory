@@ -92,7 +92,16 @@
       "also": ["src/impl/store/sql/sql-factory-store.ts", "src/impl/store/sqlite/schema.ts", "tests/store-contract.test.ts"]
     },
     { "when": "src/config-keys.ts", "also": ["tests/config-keys.test.ts"] },
-    { "when": "docs/design/", "also": ["docs/design.md"] }
+    { "when": "docs/design/", "also": ["docs/design.md"] },
+    { "when": "src/controller/migrations/", "also": ["schema/sqlite.sql"] },
+    { "when": "src/impl/store/sqlite/schema.ts", "also": ["schema/sqlite.sql"] },
+    { "when": "src/controller/settings/", "also": ["docs/settings.md"] },
+    { "when": "src/guards/settings/", "also": ["docs/settings.md"] },
+    { "when": "src/inbound/settings/", "also": ["docs/settings.md"] },
+    { "when": "src/outbound/settings/", "also": ["docs/settings.md"] },
+    { "when": "src/runtime/settings/", "also": ["docs/settings.md"] },
+    { "when": "src/state/settings/", "also": ["docs/settings.md"] },
+    { "when": "src/worker/settings/", "also": ["docs/settings.md"] }
   ],
   "state_dir": ".factory",
   "worktrees_dir": ".worktrees",

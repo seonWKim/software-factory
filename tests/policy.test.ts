@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  IMPLEMENT_KINDS, autoApproveRefusal, autoMergeRefusal, effectiveTier, failureClass, floorTier, retryDelayMs, retryKey, runKey,
+  IMPLEMENT_KINDS, autoApproveRefusal, autoMergeRefusal, effectiveTier, failureClass, floorTier, isCovered, pathsOverlap, retryDelayMs, retryKey, runKey,
   sameStep, workItemIdFromBranch,
 } from "../src/core/policy.js";
 import { GATE_PATHS, gatePathTouched } from "../src/core/improver.js";
@@ -191,5 +191,41 @@ describe("auto mode rules (design 03-risk)", () => {
     expect(r.value.decisions).toEqual(["Warn? Proposed default: No.", "Drop it? Proposed default: Yes. (owner only)", "Rename it?"]);
     const again = parseTriage(r.value);
     expect(again.ok && again.value.decision_items).toEqual(r.value.decision_items);
+  });
+});
+
+// Decided 2026-11-16 (design 04-triage): one rule in isCovered, used by the scope gate and the edit hook, always
+// covers the ratchet lists. Their growth is refused by tests/architecture/, and they stay on the gate list.
+describe("isCovered: the ratchet lists", () => {
+  it("covers each *.json directly in tests/architecture/known-violations/, whatever allowed_paths says", () => {
+    for (const f of ["file-budget.json", "dependency-direction.json", "unit-purity.json", "new-rule.json"]) {
+      expect(isCovered(`tests/architecture/known-violations/${f}`, []), f).toBe(true);
+    }
+  });
+
+  it("covers no other path", () => {
+    for (const p of [
+      "tests/architecture/known-violations",
+      "tests/architecture/known-violations/",
+      "tests/architecture/known-violations/notes.md",
+      "tests/architecture/known-violations/sub/x.json",
+      "tests/architecture/known-violations/../lib.ts",
+      "tests/architecture/lib.ts",
+      "tests/architecture/file-budget.test.ts",
+      "tests/architecture/known-violations-x/a.json",
+      "./tests/architecture/known-violations/file-budget.json",
+      "src/tests/architecture/known-violations/file-budget.json",
+      "src/core/policy.ts",
+    ]) {
+      expect(isCovered(p, []), p).toBe(false);
+    }
+    expect(isCovered("src/core/policy.ts", ["src/"])).toBe(true);
+  });
+
+  it("does not make a ratchet list overlap other paths, and leaves it on the gate list", () => {
+    const list = "tests/architecture/known-violations/file-budget.json";
+    expect(pathsOverlap([list], ["src/core/policy.ts"])).toEqual([]);
+    expect(pathsOverlap([list], ["tests/architecture/"])).toEqual([list]);
+    expect(gatePathTouched([list])).toBe(list);
   });
 });
