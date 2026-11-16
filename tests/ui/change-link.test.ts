@@ -6,7 +6,8 @@ import { PatternEgressScanner } from "../../src/impl/egress/pattern-egress-scann
 import type { FactoryStore } from "../../src/interfaces/factory-store.js";
 import { HealthMonitor } from "../../src/ui/health.js";
 import { needOf } from "../../src/ui/need.js";
-import { type UiDeps, renderItem } from "../../src/ui/pages.js";
+import type { UiDeps } from "../../src/ui/deps.js";
+import { renderItem } from "../../src/ui/pages.js";
 import { PROJECT } from "../helpers/fakes.js";
 import { issue, newStore, system } from "../helpers/store.js";
 

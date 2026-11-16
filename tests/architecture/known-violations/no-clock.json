@@ -32,6 +32,6 @@
   "supervisor.ts": 1,
   "ui/health.ts": 1,
   "ui/html.ts": 5,
-  "ui/pages.ts": 1,
+  "ui/deps.ts": 1,
   "ui/system-actions.ts": 1
 }

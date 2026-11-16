@@ -19,7 +19,7 @@ import { actorGrant, itemCommands, itemProposals, itemReplies, mergeReadiness, n
 import { type DataCtx, type DataResult, dataAutonomy, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, activeRuns, closedFacetRows, itemCounts, itemState, latestDecision, holderTitles, listRows, readClaimPauses, readPhases, waitingOn, whyOf, withTitle } from "./list.js";
-import { runTokens } from "./pages.js";
+import { runTokens } from "./deps.js";
 import { heldFailureOf, needCtx, needOf } from "./need.js";
 import { NEEDS_YOU } from "./priority.js";
 import { type PauseDeps, readPauses } from "./pause-api.js";

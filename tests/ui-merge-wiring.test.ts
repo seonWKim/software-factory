@@ -11,7 +11,7 @@ import type { UserId, WorkItem } from "../src/core/types.js";
 import type { Sandbox } from "../src/interfaces/sandbox.js";
 import { withPlugin } from "../src/plugins.js";
 import { mergeReadiness } from "../src/ui/commands.js";
-import type { UiDeps } from "../src/ui/pages.js";
+import type { UiDeps } from "../src/ui/deps.js";
 import { issue, system } from "./helpers/store.js";
 
 const REPO_ROOT = join(import.meta.dirname, "..");
