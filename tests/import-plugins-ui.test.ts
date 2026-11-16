@@ -235,6 +235,52 @@ describe("POST /api/v1/plugins/import", () => {
   });
 });
 
+describe("imported skills on the Skills tab and in the agents' list", () => {
+  /** The import setup with the Settings wiring, so GET /api/v1/plugins and /api/v1/settings/capabilities answer. */
+  async function wired() {
+    const h = home();
+    write(join(h, ".codex", "skills", "deploy", "SKILL.md"), "---\nname: deploy\ndescription: Ships a release.\n---\n\nBODY_MARKER\n");
+    const s = await setup();
+    const editFile = Object.assign(async () => ({ ok: false as const, reason: "not wired" }), { capabilities: async () => ({ skill_folders: [], tools: [], providers: [] }) });
+    const settings: UiSettings = {
+      base: { file: {}, layers: { defaults: {}, projects: {} } }, repo: { owner: "o", name: "r" }, actor: "local:owner",
+      resolveProject: storeProjectResolver(s.d.store, { owner: "o", name: "r" }), csrfToken: newCsrfToken(),
+      editFile: editFile as unknown as NonNullable<UiSettings["editFile"]>,
+    };
+    const d: ApiDeps = { ...s.d, settings };
+    const read = async (url: string) => {
+      const r = await respond(d, { method: "GET", url, host: HOST });
+      expect(r.status).toBe(200);
+      return r.body;
+    };
+    return { ...s, h, read };
+  }
+
+  it("a skill the Import route stores shows in the Skills tab rows with its source, path and state ok, and in the agents' list, enabled", async () => {
+    const s = await wired();
+    const r = await s.post({ items: [sel("skill", "codex", "deploy")] });
+    expect(JSON.parse(r.body).results[0]).toMatchObject({ outcome: "stored", line: "stored skill deploy from codex" });
+    const path = join(s.h, ".codex", "skills", "deploy", "SKILL.md");
+    const page = await s.read("/api/v1/plugins");
+    expect((JSON.parse(page) as PluginsView).skills).toEqual([
+      { name: "deploy", folder: join(s.h, ".codex", "skills"), description: "Ships a release.", roles: [], last_used: null, source: "codex", path, state: "ok" },
+    ]);
+    const caps = JSON.parse(await s.read("/api/v1/settings/capabilities")).capabilities as { kind: string; name: string; enabled: boolean; description: string | null }[];
+    expect(caps.filter((c) => c.kind === "skill")).toEqual([expect.objectContaining({ name: "deploy", enabled: true, description: "Ships a release." })]);
+    expect(page).not.toContain("BODY_MARKER");
+    // The store keeps the pointer only: no file text.
+    expect(JSON.stringify(await s.db.all("SELECT * FROM ext_skill_refs"))).not.toContain("Ships a release.");
+  });
+
+  it("the Import result lines name no hash", async () => {
+    const s = await wired();
+    const body = (await s.post({ items: [sel("skill", "claude", "review-helper"), sel("mcp_server", "claude", "docs")] })).body;
+    const lines = (JSON.parse(body).results as { line: string }[]).map((x) => x.line);
+    expect(lines).toEqual(["stored skill review-helper from claude", "stored mcp_server docs from claude as pending"]);
+    expect(body).not.toMatch(/sha256|description_hash/);
+  });
+});
+
 describe("no env or header value leaves the configs", () => {
   it("the sentinel values appear in no response body and in no store row", async () => {
     home();
@@ -373,18 +419,22 @@ const SCAN: PluginsImportView = {
   errors: [],
 };
 
-/** The page over a fake fetch; returns the import posts it sent and each import read's token. */
-function page(view: PluginsView = PAGE) {
+/**
+ * The page over a fake fetch; returns the import posts it sent and each import read's token. `hold`: the POST answers
+ * only once it settles. `after`: the list the page reads once a POST was sent (the rows the import stored).
+ */
+function page(view: PluginsView = PAGE, o: { hold?: Promise<void>; after?: PluginsView; results?: (i: { kind: string; source: string; name: string }) => Record<string, unknown> } = {}) {
   const posts: { url: string; init: RequestInit }[] = [];
   const reads: (string | undefined)[] = [];
   const reply = (v: unknown) => new Response(JSON.stringify(v), { status: 200, headers: { "content-type": "application/json" } });
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method === "POST") {
       posts.push({ url, init });
+      await o.hold;
       const items = JSON.parse(String(init.body)).items as { kind: string; source: string; name: string }[];
-      return reply({ results: items.map((i) => ({ ...i, outcome: "stored", rules: [], line: `stored ${i.kind} ${i.name}` })), errors: [] });
+      return reply({ results: items.map((i) => ({ ...i, outcome: "stored", rules: [], line: `stored ${i.kind} ${i.name}`, ...o.results?.(i) })), errors: [] });
     }
-    if (url === "/api/v1/plugins") return reply(view);
+    if (url === "/api/v1/plugins") return reply(posts.length > 0 && o.after ? o.after : view);
     if (url === PATH) {
       reads.push((init?.headers as Record<string, string> | undefined)?.["x-csrf-token"]);
       return reply(SCAN);
@@ -439,7 +489,7 @@ describe("Plugins page: Import", () => {
     expect(docs!.closest("li")!.textContent).toContain("DOCS_TOKEN");
   });
 
-  it("Import posts the checked items with the token and closes", async () => {
+  it("Import posts the checked items with the token; the dialog stays open with each result until Close", async () => {
     const s = page();
     rtl.fireEvent.click(rtl.screen.getByRole("tab", { name: "Skills" }));
     await openImport();
@@ -452,7 +502,66 @@ describe("Plugins page: Import", () => {
     expect(s.posts[0]!.url).toBe(PATH);
     expect((s.posts[0]!.init.headers as Record<string, string>)["x-csrf-token"]).toBe(TOKEN);
     expect(JSON.parse(String(s.posts[0]!.init.body))).toEqual({ items: [{ kind: "skill", source: "claude", name: "review-helper" }] });
+    const results = await rtl.within(dialog()).findByRole("list", { name: "Import results" });
+    expect(results.textContent).toContain("review-helper");
+    expect(results.textContent).toContain("Stored");
+    expect(dialog()).not.toBeNull();
+    rtl.fireEvent.click(rtl.within(dialog()).getByRole("button", { name: "Close" }));
     await rtl.waitFor(() => expect(dialog()).toBeNull());
+  });
+
+  it("while the import runs the confirm button says Importing… and is off", async () => {
+    let release!: () => void;
+    const s = page(PAGE, { hold: new Promise<void>((r) => (release = r)) });
+    rtl.fireEvent.click(rtl.screen.getByRole("tab", { name: "Skills" }));
+    await openImport();
+    await rtl.waitFor(() => expect(boxes()).toHaveLength(2));
+    rtl.fireEvent.click(boxes()[0]!);
+    rtl.fireEvent.click(rtl.within(dialog()).getByRole("button", { name: "Import 1" }));
+    await rtl.waitFor(() => expect(s.posts).toHaveLength(1));
+    const busy = await rtl.within(dialog()).findByRole("button", { name: "Importing…" });
+    expect((busy as HTMLButtonElement).disabled).toBe(true);
+    release();
+    await rtl.within(dialog()).findByRole("list", { name: "Import results" });
+    expect(rtl.within(dialog()).queryByRole("button", { name: "Importing…" })).toBeNull();
+  });
+
+  it("shows a refused item with its rules and an already added one, in plain words", async () => {
+    page(PAGE, { results: (i) => (i.name === "docs" ? { outcome: "refused", rules: ["secret_file_access"] } : {}) });
+    await openImport();
+    await rtl.waitFor(() => expect(boxes()).toHaveLength(3));
+    rtl.fireEvent.click(boxes()[0]!);
+    rtl.fireEvent.click(rtl.within(dialog()).getByRole("button", { name: "Import 1" }));
+    const results = await rtl.within(dialog()).findByRole("list", { name: "Import results" });
+    expect(results.textContent).toContain("Refused: secret_file_access");
+    expect(results.textContent).not.toMatch(/sha256|description_hash/);
+  });
+
+  it("the stored rows show on the tab at once, marked New with the summary notice; a tab change clears both", async () => {
+    const skill = { name: "review-helper", folder: "/home/me/.claude/skills", description: null, roles: [], last_used: null, source: "claude" as const, path: "/home/me/.claude/skills/review-helper/SKILL.md", state: "ok" as const };
+    page(PAGE, { after: { ...PAGE, skills: [skill] } });
+    rtl.fireEvent.click(rtl.screen.getByRole("tab", { name: "Skills" }));
+    expect(await rtl.screen.findByText(/No skill yet/)).toBeTruthy();
+    await openImport();
+    await rtl.waitFor(() => expect(boxes()).toHaveLength(2));
+    rtl.fireEvent.click(boxes()[0]!);
+    rtl.fireEvent.click(rtl.within(dialog()).getByRole("button", { name: "Import 1" }));
+    const table = await rtl.screen.findByRole("table", { name: "Skills" });
+    // The dialog stayed open while the empty tab filled.
+    expect(dialog()).not.toBeNull();
+    const row = rtl.within(table).getAllByRole("row")[1]!;
+    expect(row.querySelector("[data-new]")).not.toBeNull();
+    expect(row.textContent).toContain("Claude Code");
+    expect(row.textContent).toContain(skill.path);
+    // The notice on the page, not only the screen reader's status region.
+    const notice = () => rtl.screen.queryByText("Imported 1; 0 already added.", { ignore: "[data-toast], script, style" });
+    expect(notice()).not.toBeNull();
+    rtl.fireEvent.click(rtl.within(dialog()).getByRole("button", { name: "Close" }));
+    rtl.fireEvent.click(rtl.screen.getByRole("tab", { name: "MCP" }));
+    rtl.fireEvent.click(rtl.screen.getByRole("tab", { name: "Skills" }));
+    const again = await rtl.screen.findByRole("table", { name: "Skills" });
+    expect(again.querySelector("[data-new]")).toBeNull();
+    expect(notice()).toBeNull();
   });
 
   it("the Tools tab labels an imported MCP server's tools with origin MCP and has no approve or revoke control", async () => {
