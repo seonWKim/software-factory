@@ -24,7 +24,7 @@ export interface TaskFields {
   due: DueDay | null;
   /** `HH:MM`, 24-hour. */
   due_time: string | null;
-  /** How long the task takes, in minutes; null or left out: DEFAULT_DURATION_MINUTES. */
+  /** How long the task takes, in minutes; null or left out: none stored. */
   duration_minutes?: number | null;
   recurrence: Recurrence | null;
   /**
@@ -43,7 +43,7 @@ export interface NewTask extends TaskFields {
 
 export interface Task extends Omit<TaskFields, "due" | "duration_minutes" | "projects"> {
   id: string;
-  /** How long the task takes, in minutes; null: DEFAULT_DURATION_MINUTES (taskDuration). */
+  /** How long the task takes, in minutes; null: none stored. */
   duration_minutes: number | null;
   /** `YYYY-MM-DD`, or null. */
   due_date: string | null;
@@ -243,13 +243,8 @@ export function taskLine(t: Task, projects?: readonly string[]): string {
     ...(t.parent_task_id === null ? [] : [`sub of ${t.parent_task_id}`])].join("\t");
 }
 
-/** How long a timed task with no stored duration is planned and drawn: 30 minutes. */
-export const DEFAULT_DURATION_MINUTES = 30;
 /** The longest duration a task takes: one day. */
 export const MAX_DURATION_MINUTES = 24 * 60;
-
-/** The task's duration in minutes: the stored one, else DEFAULT_DURATION_MINUTES. */
-export const taskDuration = (t: Pick<Task, "duration_minutes">): number => t.duration_minutes ?? DEFAULT_DURATION_MINUTES;
 
 /** Why `n` is not a duration in minutes (a whole number from 1 to MAX_DURATION_MINUTES), or null. */
 export function durationError(n: unknown): string | null {
@@ -315,54 +310,13 @@ export interface TaskDay {
  * open undated tasks created on today's local date.
  * Upcoming: today through UPCOMING_DAYS days after it, one entry per day that has a task or an event (the Tasks page
  * shows the days after today). Projects: every task, undated included, by its
- * list label (unlabelled last), each by due date (undated last): the Tasks page's All view. The timeline holds open tasks only.
+ * list label (unlabelled last), each by due date (undated last): the Tasks page's All view.
  */
 export interface TaskViews {
   today_date: string;
   today: { overdue: Task[]; due: DayEntry[] };
   upcoming: TaskDay[];
   projects: { list: string | null; tasks: Task[] }[];
-  /** Today's timeline: its open timed tasks and events as blocks (planDay). */
-  timeline: TimelineBlock[];
-}
-
-/**
- * One block on a day's timeline: a timed task (its duration, DEFAULT_DURATION_MINUTES when none is stored) or a timed
- * event (read-only; its length that day). `offset`: minutes after local midnight it starts; `minutes`: how long it is
- * drawn, cut at the day's end. `id`: the task's ID, or `<source>:<id>` for an event.
- */
-export interface TimelineBlock {
-  kind: "task" | "event";
-  id: string;
-  title: string;
-  start: string;
-  end: string;
-  offset: number;
-  minutes: number;
-}
-
-const DAY_MINUTES = 24 * 60;
-const hhmm = (m: number) => `${pad(Math.floor(m / 60) % 24)}:${pad(m % 60)}`;
-const minutesOf = (time: string) => {
-  const [h, m] = time.split(":").map(Number) as [number, number];
-  return h * 60 + m;
-};
-
-/** The timed entries of the local day `date` as timeline blocks, in the order given. Pure. */
-export function planDay(entries: readonly DayEntry[], date: string): TimelineBlock[] {
-  const { from, to } = dayBounds(date);
-  const out: TimelineBlock[] = [];
-  for (const e of entries) {
-    const time = isEvent(e) ? e.time : e.due_time;
-    if (time === null) continue;
-    const offset = minutesOf(time);
-    const length = isEvent(e) ? Math.max(1, Math.round((Math.min(Date.parse(e.ends_at), to) - Math.max(Date.parse(e.starts_at), from)) / 60_000)) : taskDuration(e);
-    out.push({
-      kind: isEvent(e) ? "event" : "task", id: isEvent(e) ? `${e.source}:${e.id}` : e.id, title: e.title, start: time, end: hhmm(offset + length), offset,
-      minutes: Math.min(length, DAY_MINUTES - offset),
-    });
-  }
-  return out;
 }
 
 /** Due date, then due time (untimed last in its day), then priority (unset last), then age. Undated sorts last. */
@@ -435,6 +389,5 @@ export function taskViews(tasks: readonly Task[], now: Date, events: readonly Ca
     today: { overdue: sorted.filter(overdue), due: todays },
     upcoming,
     projects: lists.map((list) => ({ list, tasks: sorted.filter((t) => t.list === list) })),
-    timeline: planDay(todays.filter((e) => isEvent(e) || e.done_at === null), today),
   };
 }
