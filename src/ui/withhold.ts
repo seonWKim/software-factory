@@ -1,42 +1,15 @@
 // Free text from the store (titles, reasons, run errors, state-change values) is egress-scanned before it
-// reaches the page. EgressScanner reports rules, not spans, so a field with any finding is withheld whole:
+// leaves the server. EgressScanner reports rules, not spans, so a field with any finding is withheld whole:
 // it is replaced by `[withheld: <rule>, ...]` and its text never leaves this module (design §9).
 
 import type { EgressChannel, EgressScanner } from "../interfaces/egress-scanner.js";
-import { esc } from "./html.js";
 
 export class Withholder {
   constructor(private readonly scanner: EgressScanner) {}
 
   /**
-   * Escaped HTML for `value` (cut to `max` characters after the scan, so a cut never hides a finding),
-   * or the withheld marker naming the scanner's rules. Empty values show `fallback`.
-   */
-  async text(
-    value: string | null | undefined,
-    opts: { channel?: EgressChannel; max?: number; fallback?: string } = {},
-  ): Promise<string> {
-    return (await this.shown(value, opts)).html;
-  }
-
-  /**
-   * `text`'s HTML plus the plain text the page shows (full, not cut), or null when the value is empty or
-   * withheld. Search and title attributes use `plain`, so a withheld value can be neither found nor hovered.
-   */
-  async shown(
-    value: string | null | undefined,
-    opts: { channel?: EgressChannel; max?: number; fallback?: string } = {},
-  ): Promise<{ html: string; plain: string | null }> {
-    if (value === null || value === undefined || value === "") {
-      return { html: `<span class="muted">${esc(opts.fallback ?? "unknown")}</span>`, plain: null };
-    }
-    const r = await this.plain(value, opts);
-    return r.withheld ? { html: `<strong>${esc(r.text)}</strong>`, plain: null } : { html: esc(r.text), plain: value };
-  }
-
-  /**
-   * Unescaped text for `value` (cut to `max` after the scan), or the withheld marker naming the scanner's
-   * rules, with `withheld` saying which. For non-HTML output (JSON); the caller escapes it for HTML.
+   * Text for `value` (cut to `max` after the scan, so a cut never hides a finding), or the withheld marker
+   * naming the scanner's rules, with `withheld` saying which. Unescaped: for JSON.
    */
   async plain(value: string, opts: { channel?: EgressChannel; max?: number } = {}): Promise<{ text: string; withheld: boolean }> {
     const result = await this.scanner.scan(opts.channel ?? "log", value);

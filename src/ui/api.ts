@@ -1,5 +1,5 @@
 // The JSON API under /api/v1 (design §9), for the app under /app/. GET reads only: every value comes
-// from FactoryStore read methods, the same ones the HTML page uses, so for the same store both give the same
+// from FactoryStore read methods, and the item list is list.ts's, so for the same store every route gives the same
 // rows and numbers. Free text from the store (titles, blocked reasons, state-change values, run errors, owner
 // and actor ids) leaves only through the Withholder: clean text as is (JSON, not HTML-escaped), anything with
 // an egress finding as `[withheld: <rule>]`. A lease's fencing token is never returned. The Data page's raw
@@ -239,7 +239,7 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
   const queued = await s.listRunsByStatus(["queued"], LIST_LIMIT);
   const recent = await s.listRunsFinishedWithin(DAY_MS);
   const succeeded = recent.filter((r) => r.status === "succeeded");
-  // The supervisor's status (the HTML page's banner); absent without a status function, null when stopped.
+  // The supervisor's status (the app's banner); absent without a status function, null when stopped.
   const status = c.d.factoryStatus ? await c.d.factoryStatus() : undefined;
   // The effective `workers` setting (file, override or default, capped at max_workers), not the file value the status holds.
   const workers = status && c.d.settings ? await effectiveGlobal(c.d, "workers") : status ? { value: status.workers, source: "file" as const } : null;

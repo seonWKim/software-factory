@@ -15,9 +15,8 @@ import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { ExecResult, Sandbox } from "../src/interfaces/sandbox.js";
 import { STORE_BRANCH, type ToolCallContext, type ToolResult } from "../src/interfaces/tool-broker.js";
-import { NO_FILTERS } from "../src/ui/filters.js";
+import { api } from "../src/ui/api.js";
 import { HealthMonitor } from "../src/ui/health.js";
-import { renderIndex } from "../src/ui/pages.js";
 import {
   FakeForge, FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
   alice, cleanScanner, config as baseConfig, issueRef, prompts, silent, settingsWith, triageSpec,
@@ -25,7 +24,7 @@ import {
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 
 // Issue #136: every agent call's usage (input, output, cache read, cache write, cost, model) is recorded on
-// the run's outcome, failed runs included, and counted in token_cost, the budget and the status page.
+// the run's outcome, failed runs included, and counted in token_cost, the budget and the dashboard's spend.
 
 // ---------------------------------------------------------------------------------------------------------
 // Runner
@@ -424,34 +423,25 @@ const u = (n: number, cost: number | null): RunUsage => ({
   input_tokens: n, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: cost, model: "m",
 });
 
-function section(body: string, id: string): string {
-  const start = body.indexOf(`<section id="${id}">`);
-  if (start < 0) throw new Error(`no section ${id}`);
-  return body.slice(start, body.indexOf("</section>", start));
-}
+type SpendDay = { day: string; cost_usd: number; tokens: number; runs: number; unknown: number };
 
-/** The cost table as rows of cell texts (tags stripped), header row first. */
-function costRows(html: string): string[][] {
-  return [...section(html, "cost").matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/g)].map((m) =>
-    [...m[1]!.matchAll(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/g)].map((c) => c[1]!.replace(/<[^>]+>/g, "").trim()),
-  );
-}
-
-async function page(seed: (store: Awaited<ReturnType<typeof newStore>>["store"], clock: FakeClock) => Promise<void>) {
+/** GET /api/v1/spend over `query` after `seed`, read at NOW: its days, oldest first. */
+async function spendDays(query: string, seed: (store: Awaited<ReturnType<typeof newStore>>["store"], clock: FakeClock) => Promise<void>) {
   const clock = new FakeClock("2026-11-01T00:00:00.000Z");
   const { store } = await newStore(clock);
   await seed(store, clock);
   clock.set(NOW);
-  const html = await renderIndex(
+  const r = await api(
     { store, scanner: cleanScanner, clock, lease_ms: 60_000, health: new HealthMonitor(async () => [], clock) },
-    NO_FILTERS,
+    new URL(`http://127.0.0.1/api/v1/spend?${query}`),
   );
-  return { html, store };
+  expect(r.status).toBe(200);
+  return new Map((r.value as { days: SpendDay[] }).days.map((d) => [d.day, d]));
 }
 
-describe("status page: tokens and cost", () => {
-  it("24-hour totals count the full tokens of every finished run, failed runs included; old succeeded rows keep data.tokens", async () => {
-    const { html } = await page(async (store, clock) => {
+describe("dashboard spend: tokens and cost", () => {
+  it("a day's tokens count the full tokens of every finished run, failed runs included; old succeeded rows keep data.tokens", async () => {
+    const days = await spendDays("from=2026-11-08&to=2026-11-08", async (store, clock) => {
       await seedRun(store, clock, 1, "implement", "2026-11-08T10:00:00.000Z", failed({ ...u(1000, 0.1), cache_read_tokens: 500 }));
       await seedRun(store, clock, 2, "triage", "2026-11-08T11:00:00.000Z", ok(u(30, 0.01)));
       // A row from before this change: only data.tokens.
@@ -459,11 +449,11 @@ describe("status page: tokens and cost", () => {
       // A failed row from before: no usage, counts 0.
       await seedRun(store, clock, 4, "implement", "2026-11-08T11:40:00.000Z", failed(undefined));
     });
-    expect(section(html, "totals")).toMatch(/tokens<\/th><td>1537</);
+    expect(days.get("2026-11-08")).toMatchObject({ tokens: 1537, runs: 4 });
   });
 
-  it("the cost section: USD per UTC day of finished_at for the last 7 days, one column per run kind, unknown cost not added as zero", async () => {
-    const { html } = await page(async (store, clock) => {
+  it("USD per UTC day of finished_at over the range asked, unknown cost counted apart, never added as zero", async () => {
+    const byDay = await spendDays("from=2026-11-02&to=2026-11-08", async (store, clock) => {
       await seedRun(store, clock, 7, "triage", "2026-11-01T23:00:00.000Z", ok(u(1, 9))); // 8th day back: left out
       await seedRun(store, clock, 6, "triage", "2026-11-02T00:00:00.000Z", ok(u(1, 0.125)));
       await seedRun(store, clock, 5, "review", "2026-11-07T10:00:00.000Z", ok(null, 50)); // old row: unknown cost
@@ -472,14 +462,12 @@ describe("status page: tokens and cost", () => {
       await seedRun(store, clock, 2, "implement", "2026-11-08T02:00:00.000Z", failed(u(1, 0.25)));
       await seedRun(store, clock, 3, "triage", "2026-11-08T03:00:00.000Z", ok(u(1, null)));
     });
-    const rows = costRows(html);
-    expect(rows[0]).toEqual(["day (UTC)", "triage", "implement", "review", "resolve", "update", "total"]);
-    const byDay = new Map(rows.slice(1).map((r) => [r[0], r.slice(1)]));
-    expect([...byDay.keys()]).toEqual(["2026-11-08", "2026-11-07", "2026-11-06", "2026-11-05", "2026-11-04", "2026-11-03", "2026-11-02"]);
-    expect(byDay.get("2026-11-08")).toEqual(["unknown (1 run)", "$0.7500", "", "", "", "$0.7500 + 1 unknown"]);
-    expect(byDay.get("2026-11-07")).toEqual(["", "", "$1.0000 + 1 unknown", "", "", "$1.0000 + 1 unknown"]);
-    expect(byDay.get("2026-11-02")).toEqual(["$0.1250", "", "", "", "", "$0.1250"]);
-    expect(byDay.get("2026-11-05")).toEqual(["", "", "", "", "", ""]);
-    expect(section(html, "cost")).not.toContain("9.0000");
+    expect([...byDay.keys()]).toEqual(["2026-11-02", "2026-11-03", "2026-11-04", "2026-11-05", "2026-11-06", "2026-11-07", "2026-11-08"]);
+    expect(byDay.get("2026-11-08")).toMatchObject({ cost_usd: 0.75, runs: 3, unknown: 1 });
+    expect(byDay.get("2026-11-07")).toMatchObject({ cost_usd: 1, runs: 2, unknown: 1 });
+    expect(byDay.get("2026-11-02")).toMatchObject({ cost_usd: 0.125, runs: 1, unknown: 0 });
+    expect(byDay.get("2026-11-05")).toMatchObject({ cost_usd: 0, runs: 0, unknown: 0 });
+    // The run before the range (cost 9) is in no day.
+    expect([...byDay.values()].some((d) => d.cost_usd >= 9)).toBe(false);
   });
 });

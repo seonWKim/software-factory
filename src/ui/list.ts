@@ -1,6 +1,5 @@
-// The ranked item list (design §9): every listed item with its level, badges and what the filters read.
-// Shared by the HTML page (src/ui/pages.ts) and the JSON API (src/ui/api.ts), so both show the same rows in
-// the same order for the same store and query. Reads only.
+// The ranked item list (design §9): every listed item with its level and what the filters read, for the JSON
+// API (src/ui/api.ts): the items list and its facet counts read the same rows in the same order. Reads only.
 
 import { type ConflictCounts, conflictCounts } from "../core/resolve.js";
 import type { Alert, FactoryStore } from "../interfaces/factory-store.js";
@@ -9,7 +8,6 @@ import { PERSON_PHASES, phaseOf } from "../core/phase.js";
 import type { ClaimDecision, Run, StateChange, WorkItem, WorkItemId } from "../core/types.js";
 import { alarmText, alarmsFor, itemAlarms, openAlarms } from "./alarms.js";
 import { type FilterRow, type Filters, runKindOf, searchKeys } from "./filters.js";
-import { esc } from "./html.js";
 import { type Level, type PriorityInput, levelOf, rank } from "./priority.js";
 import { heldFailureOf, needCtx } from "./need.js";
 import { type ClaimPauses, type HeldFailure, type Why, type WhyInput, deadlocked, heldBy, refsOf, whyWaiting, withAlarms } from "./why.js";
@@ -30,11 +28,6 @@ export interface ListCtx {
 export interface ListRow extends FilterRow {
   item: WorkItem;
   input: PriorityInput;
-  badges: string[];
-  /** Escaped title HTML (withheld marker when withheld; source id when untitled). */
-  titleHtml: string;
-  /** The full title as shown, for the title attribute; null when withheld or untitled. */
-  titlePlain: string | null;
   runStatus: "queued" | "running" | null;
   /** The item's queued or running run, and a queued run's 1-based place in the queue. */
   run: Run | null;
@@ -85,19 +78,15 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
   const out: ListRow[] = [];
   for (const r of rank(inputs, c.now, c.lease_ms)) {
     const it = r.input.item;
-    const t = it.title ? await c.w.shown(it.title, { max: 120 }) : { html: esc(it.source.id), plain: null };
     out.push({
       item: it,
       input: r.input,
       level: r.level,
-      badges: r.badges,
       stage: it.stage,
       tier: it.tier,
       kind: runKindOf(it.blocked_reason, r.input.run?.kind ?? null),
       dependents: r.input.dependents,
-      search: searchKeys(it.source.id, it.title ? t.plain : null),
-      titleHtml: t.html,
-      titlePlain: t.plain,
+      search: searchKeys(it.source.id, await searchTitle(c.w, it)),
       runStatus: r.input.run?.status ?? null,
       run: active.get(it.id) ?? null,
       position: position.get(active.get(it.id)?.id ?? "") ?? null,
@@ -154,6 +143,11 @@ export async function itemCounts(store: Pick<FactoryStore, "countWorkItemsByStag
   return { open, running: (await store.listRunsByStatus(["running"], LIST_LIMIT)).length };
 }
 
+/** The title the search reads: the full title, or null when the item has none or it is withheld. */
+async function searchTitle(w: Withholder, it: WorkItem): Promise<string | null> {
+  return it.title && !(await w.plain(it.title)).withheld ? it.title : null;
+}
+
 /**
  * The closed items as the facet counts read them, when listRows left them out: so the Closed option counts the
  * closed items that match the other filters, as every other option does. One store read (at most LIST_LIMIT
@@ -163,8 +157,7 @@ export async function closedFacetRows(c: ListCtx, f: Filters): Promise<FilterRow
   if (showsClosed(f)) return [];
   const out: FilterRow[] = [];
   for (const it of await c.store.listWorkItemsWhere({ stage: "CLOSED", limit: LIST_LIMIT })) {
-    const shown = it.title ? (await c.w.shown(it.title, { max: 120 })).plain : null;
-    out.push({ level: "closed", stage: it.stage, tier: it.tier, kind: runKindOf(it.blocked_reason, null), dependents: 0, search: searchKeys(it.source.id, shown) });
+    out.push({ level: "closed", stage: it.stage, tier: it.tier, kind: runKindOf(it.blocked_reason, null), dependents: 0, search: searchKeys(it.source.id, await searchTitle(c.w, it)) });
   }
   return out;
 }
