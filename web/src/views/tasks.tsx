@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode, type RefObject, createContext, useContext, useEffect, useRef, useState } from "react";
+import { type FormEvent, type KeyboardEvent, type ReactNode, type RefObject, createContext, useContext, useEffect, useRef, useState } from "react";
 import {
-  API, type DayRow, type ProjectChoice, type TaskAction, type TaskRow, type TasksView, type TimelineRow, isEventRow, postProject, postTaskAction,
+  API, type DayRow, type ProjectChoice, type TaskAction, type TaskRow, type TasksView, isEventRow, postProject, postTaskAction,
   postTaskAdd, postTaskBuild, postTaskProject, useTasks,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
@@ -29,18 +29,13 @@ import { NeedsYou, WorkState } from "./task-work.js";
 // today, each later day by date, and no date, in that order, 20 rows to a page (the shared Pagination, paged here from the one
 // read). Page 1 holds the overdue and today groups, so the list opens on today.
 // A done task of the last 30 days (design 02-tasks, done tasks stay) keeps its place: its title struck through and muted,
-// its done time, and only Reopen (the same route as ⌘Z); no checkbox, edit, sub-task, projects, delete, Build this or drag.
+// its done time, and only Reopen (the same route as ⌘Z); no checkbox, edit, sub-task, projects, delete or Build this.
 // The server places overdue and today and orders each day; the page only compares ISO date text. Calendar events are not shown here: the Calendar page (views/
 // calendar.tsx) lists them, with the stale-sync notice. Build this sends a task to intake once (POST /api/v1/tasks/build); a
 // built task links to its work item instead. One list of cards at every width, so no table turns into cards.
 // Each row's actions (design 02-tasks) post to the route that calls the CLI command's store method: the checkbox
 // completes it, `e` or Edit edits it in place (Enter saves, Esc cancels), and its overflow menu adds a sub-task (top-level
 // rows only) or deletes it through the danger Dialog. A sub-task shows indented under its parent, one level.
-// The list starts with today's timeline (design 02-tasks, schedule a task), collapsed until its control (aria-expanded)
-// is pressed: the server places each timed task, drawn its duration (30 minutes when none is stored); events are not
-// drawn. A task row dragged onto a
-// half-hour slot is scheduled there (POST /api/v1/tasks/schedule: today's date, the slot's time); typing a time in
-// the row's edit (3pm, 45m) does the same from the keyboard.
 // ⌘Z outside a field undoes the last completion this page made (POST /api/v1/tasks/reopen, `factory task reopen`), then
 // the one before it: the page keeps the completed tasks in memory only, so a reload forgets them, and it never undoes an
 // edit or a delete.
@@ -438,8 +433,6 @@ function TaskCard({ task, overdue: inOverdue = false, sub = false }: { task: Tas
       data-overdue={overdue ? "" : undefined}
       data-done={done ? "" : undefined}
       data-sub={sub ? "" : undefined}
-      draggable={token !== null && mode === "view" && !done}
-      onDragStart={(e) => e.dataTransfer.setData(DRAG_TYPE, task.id)}
       className={cn("flex flex-wrap items-start justify-between gap-x-3 gap-y-2 p-3", FOCUS, "focus-visible:-outline-offset-2", sub && "pl-10")}
     >
       {token !== null && !done && (
@@ -554,93 +547,6 @@ function Group({ title, rows, overdue }: { title: string; rows: readonly Nested[
   );
 }
 
-/** What a task row carries when dragged: its ID. */
-const DRAG_TYPE = "text/plain";
-/** A timed task with no stored duration is drawn this long (the server plans it so too). */
-const DEFAULT_MINUTES = 30;
-/** The timeline's slots: one per half hour; each is h-6 (1.5rem) high, so a minute is 1.5/30 rem. */
-const SLOT_MINUTES = 30;
-const REM_PER_MINUTE = 1.5 / SLOT_MINUTES;
-const SLOTS = Array.from({ length: (24 * 60) / SLOT_MINUTES }, (_, i) => i * SLOT_MINUTES);
-const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
-
-/**
- * Today's timeline: collapsed until its control is pressed; then a half-hour slot per row, each a drop target for a task
- * row, and the server's scheduled tasks drawn over it at their time and length. A drop schedules the task at the slot; its
- * refusal shows above the timeline.
- */
-function Timeline({ date, blocks }: { date: string; blocks: readonly TimelineRow[] }) {
-  const { token } = useContext(Rows);
-  const action = useTaskAction(token);
-  const [over, setOver] = useState<string | null>(null);
-  const [open, setOpen] = useState(false);
-  const label = t("tasks.timeline", { day: dayLabel(date) });
-  const drop = async (e: DragEvent<HTMLLIElement>, time: string) => {
-    e.preventDefault();
-    setOver(null);
-    const id = e.dataTransfer.getData(DRAG_TYPE);
-    if (id === "") return;
-    if (await action.run("schedule", { id, date, time })) announceStatus(t("tasks.scheduled", { time }));
-  };
-  const body = `timeline-${date}`;
-  return (
-    <div className="space-y-1">
-      <div className="flex items-center gap-2">
-        <h3 className="text-xs font-medium text-text-2">{label}</h3>
-        <Button variant="ghost" size="sm" aria-expanded={open} aria-controls={body} onClick={() => setOpen(!open)}>
-          {open ? t("tasks.timelineHide") : t("tasks.timelineShow")}
-        </Button>
-      </div>
-      <div id={body} hidden={!open} className="space-y-1">
-      {open && token !== null && <p className={muted}>{t("tasks.timelineHint")}</p>}
-      {open && action.error !== null && (
-        <p role="alert" className={ALERT}>
-          {action.error}
-        </p>
-      )}
-      {open && <div className="max-h-96 overflow-y-auto rounded-control border border-border">
-        <div className="relative">
-          <ol aria-label={label}>
-            {SLOTS.map((m) => {
-              const time = hhmm(m);
-              return (
-                <li
-                  key={time}
-                  data-slot={time}
-                  aria-label={time}
-                  onDragOver={token === null ? undefined : (e) => {
-                    e.preventDefault();
-                    setOver(time);
-                  }}
-                  onDragLeave={() => setOver((o) => (o === time ? null : o))}
-                  onDrop={token === null ? undefined : (e) => void drop(e, time)}
-                  className={cn("h-6 border-border pl-2 text-xs text-text-2 tabular-nums", m > 0 && "border-t", m % 60 !== 0 && "border-dashed", over === time && "bg-surface-2")}
-                >
-                  {m % 60 === 0 ? time : null}
-                </li>
-              );
-            })}
-          </ol>
-          <ul aria-label={t("tasks.timelineBlocks")}>
-            {blocks.filter((b) => b.kind === "task").map((b) => (
-              <li
-                key={`${b.kind}:${b.id}`}
-                data-block={b.id}
-                data-minutes={b.minutes}
-                className="pointer-events-none absolute right-2 left-16 overflow-hidden rounded-control border border-border-strong bg-surface-2 px-2 text-xs text-text-1"
-                style={{ top: `${b.offset * REM_PER_MINUTE}rem`, height: `${b.minutes * REM_PER_MINUTE}rem` }}
-              >
-                <span className="tabular-nums">{t("tasks.span", { start: b.start, end: b.end })}</span> <span className="break-words">{b.title}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      </div>}
-      </div>
-    </div>
-  );
-}
-
 /** Tasks per page of the list (design 02-tasks, one list). */
 const PAGE_SIZE = 20;
 
@@ -684,7 +590,7 @@ function pageOf(groups: readonly TaskGroup[], page: number): TaskGroup[] {
   return out;
 }
 
-/** Today's timeline (collapsed), then the one paginated list; page 1 opens on the overdue and today groups. */
+/** The one paginated list; page 1 opens on the overdue and today groups. */
 function OpenTasks({ v }: { v: TasksView }) {
   const [wanted, setPage] = useState(1);
   const groups = groupsOf(v);
@@ -694,7 +600,6 @@ function OpenTasks({ v }: { v: TasksView }) {
   const page = Math.min(wanted, pages);
   return (
     <div className="space-y-3">
-      <Timeline date={v.today_date} blocks={v.timeline ?? []} />
       {total === 0 && <EmptyState title={t("tasks.emptyAll")} />}
       {pageOf(groups, page).map((g) => <Group key={g.key} title={g.title} rows={g.rows} overdue={g.overdue} />)}
       <Pagination page={page} pages={pages} onChange={setPage} />
