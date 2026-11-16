@@ -5,18 +5,34 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PluginsView } from "../web/src/api.js";
+import type { CapabilitiesView, PluginsView } from "../web/src/api.js";
 
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
 // loaded by a specifier the node check skips.
 const PAGE_MODULE = "../web/src/views/plugins.js";
 const { PluginsPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { PluginsPage: FunctionComponent };
 
-// The Plugins page (design 09-dashboard-app, 2026-11-15): MCP, Skills and Tools tabs over GET /api/v1/plugins, the
-// selected tab in the URL, a search box and an empty state per tab, and Approve or Revoke as POST /api/v1/packs/approvals.
+// The Plugins page (design 09-dashboard-app, 2026-11-16): MCP, Skills and Tools tabs over GET /api/v1/plugins and a
+// Models tab (the provider entries, moved from Settings) over GET /api/v1/settings/capabilities, the selected tab in the
+// URL, a search box and an empty state per list tab, and Approve or Revoke as POST /api/v1/packs/approvals.
 
 const AT = "2026-11-15T00:00:00.000Z";
 const LONG = `very-long-mcp-server-name-${"x".repeat(80)}`;
+
+// The capability list's read: a skill, a tool and a provider entry; the Models tab shows only the provider entries.
+const capabilities: CapabilitiesView = {
+  as_of: AT,
+  roles: ["triage", "implement", "review", "update", "resolve", "manual"],
+  capabilities: [
+    { kind: "skill", id: "skill:deploy", name: "deploy", detail: "/home/me/.claude/skills", enabled: true, roles: [], last_used: null },
+    { kind: "tool", id: "tool:forge.preflight", name: "forge.preflight", detail: "Read-only check.", enabled: true, roles: ["review", "triage"], last_used: AT, read_only: true },
+    {
+      kind: "provider", id: "runner:claude-code", name: "runner:claude-code", detail: null, enabled: true, roles: ["triage", "implement", "review", "resolve"], last_used: AT,
+      models: [{ class: "cheap", model: "haiku" }, { class: "standard", model: "sonnet" }, { class: "strong", model: "opus" }],
+    },
+  ],
+};
+let capabilityReads = 0;
 
 let view: PluginsView;
 let posts: { url: string; init: RequestInit }[] = [];
@@ -40,12 +56,14 @@ const FULL: PluginsView = {
 beforeEach(() => {
   view = FULL;
   posts = [];
+  capabilityReads = 0;
   history.replaceState(null, "", "/app/plugins");
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method === "POST") {
       posts.push({ url, init });
       return new Response(JSON.stringify({ line: "approved MCP server docs-search" }), { status: 200, headers: { "content-type": "application/json" } });
     }
+    if (url === "/api/v1/settings/capabilities") return (capabilityReads++, new Response(JSON.stringify(capabilities), { status: 200, headers: { "content-type": "application/json" } }));
     if (url === "/api/v1/plugins") return new Response(JSON.stringify(view), { status: 200, headers: { "content-type": "application/json" } });
     return new Response("{}", { status: 404 });
   }));
@@ -65,9 +83,9 @@ const rowsOf = (table: HTMLElement) => [...table.querySelectorAll("tbody > tr")]
 const selected = () => screen.getAllByRole("tab").find((t) => t.getAttribute("aria-selected") === "true")!.textContent;
 
 describe("Plugins page", () => {
-  it("has MCP, Skills and Tools tabs; MCP is selected by default and lists each server's source, status and action", async () => {
+  it("has MCP, Skills, Tools and Models tabs; MCP is selected by default and lists each server's source, status and action", async () => {
     show();
-    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["MCP", "Skills", "Tools"]);
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["MCP", "Skills", "Tools", "Models"]);
     const table = await screen.findByRole("table", { name: "MCP" });
     expect(selected()).toBe("MCP");
     const rows = rowsOf(table);
@@ -79,6 +97,33 @@ describe("Plugins page", () => {
     expect(within(rows[1]!).getByRole("button", { name: "Revoke" })).toBeTruthy();
     expect(rows[2]!.textContent).toContain("Off");
     expect(within(rows[2]!).getByRole("button", { name: "Approve" })).toBeTruthy();
+  });
+
+  it("the Models tab lists each provider entry with its state, roles and last use, read once, with no search box and no link to the Plugins page", async () => {
+    show();
+    await screen.findByRole("table", { name: "MCP" });
+    expect(capabilityReads).toBe(0);
+    fireEvent.click(screen.getByRole("tab", { name: "Models" }));
+    expect(location.search).toBe("?tab=models");
+    expect(selected()).toBe("Models");
+    const table = await screen.findByRole("table", { name: "Models" });
+    expect(rowsOf(table).map((r) => r.querySelector("td")!.textContent)).toEqual(["runner:claude-codecheap: haiku · standard: sonnet · strong: opus"]);
+    expect(rowsOf(table)[0]!.textContent).toContain("Enabled");
+    expect(rowsOf(table)[0]!.textContent).toContain("triage, implement, review, resolve");
+    expect(rowsOf(table)[0]!.textContent).toContain("ago");
+    const section = screen.getByRole("region", { name: "Models" });
+    expect(section.textContent).not.toContain("forge.preflight");
+    expect(section.textContent).not.toContain("deploy");
+    expect(within(section).queryByRole("link")).toBeNull();
+    expect(screen.queryByRole("searchbox")).toBeNull();
+    expect(capabilityReads).toBe(1);
+  });
+
+  it("opening /app/plugins?tab=models selects Models", async () => {
+    history.replaceState(null, "", "/app/plugins?tab=models");
+    show();
+    await screen.findByRole("table", { name: "Models" });
+    expect(selected()).toBe("Models");
   });
 
   it("Approve and Revoke post to /api/v1/packs/approvals with the token, and the list is read again", async () => {

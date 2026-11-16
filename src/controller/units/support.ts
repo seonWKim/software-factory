@@ -1,10 +1,10 @@
 // Declarations two or more controller units share (moved out of the legacy controller, RFC 0015 M5).
 
-import { commandFooter, commandState } from "../../core/commands.js";
-import { AUTO_ACTOR, runKey } from "../../core/policy.js";
+import { commandFooter, commandPhase, commandState } from "../../core/commands.js";
+import { AUTO_ACTOR, isCovered, runKey } from "../../core/policy.js";
 import { MERGE_CONFLICT_PENDING } from "../../core/resolve.js";
 import { PHASES_OPEN, SPLIT_FILING } from "../../core/split.js";
-import { type Actor, RECURRING_FAILURE, type RunKind, type SourceType, type StateChangeDetail, type Timestamp, type WorkItem, type WorkItemId, type WorkItemPatch } from "../../core/types.js";
+import { type Actor, RECURRING_FAILURE, type RunKind, type SourceRef, type SourceType, type StateChangeDetail, type Timestamp, type WorkItem, type WorkItemId, type WorkItemPatch } from "../../core/types.js";
 import type { TransitionInput } from "../../interfaces/factory-store.js";
 import type { SourceEvent } from "../../interfaces/source-adapter.js";
 
@@ -93,6 +93,21 @@ export function retry(it: WorkItem, actor: Actor, kind: RunKind | undefined, not
     enqueue: { kind, idempotency_key: runKey(next, kind), ...(kind === "resolve" ? { input: { notes: note ?? "" } } : {}) },
   };
 }
+/**
+ * The reply to an applied `/approve`, `/retry` or `/resolve` whose every `+paths` path an allowed path (or the
+ * ratchet-list rule) already covered, so it added nothing (design 04-gate-commands, 2026-11-16): on the thread the
+ * command came from (a `/resolve` on the PR, else the item's), keyed on the comment. null: no `+paths`, or one is new.
+ */
+export function alreadyAllowed(it: WorkItem, e: CommandEvent, paths: readonly string[]): { target: SourceRef; body: string; marker: string } | null {
+  const unique = [...new Set(paths)];
+  if (unique.length === 0 || !unique.every((p) => isCovered(p, it.allowed_paths))) return null;
+  const onPr = (e.kind === "resolve_requested" || e.kind === "revise_requested") && e.pr;
+  return {
+    target: onPr ? e.source : it.source,
+    body: `\`${COMMAND[e.kind]}\` was applied; its \`+paths\` added nothing to the allowed paths, already allowed: ${unique.join(", ")}`,
+    marker: `<!-- factory:already-allowed:${e.comment_id} -->`,
+  };
+}
 /** Closed as completed: the only close that releases the next phase or counts toward closing the parent. */
 export function completed(it: WorkItem | null | undefined): boolean {
   return it?.stage === "CLOSED" && it.close_reason === "completed";
@@ -143,6 +158,7 @@ export function updateKey(id: WorkItemId, change_ref: string, head_sha: string, 
 export function updatingForChecks(it: WorkItem): boolean {
   return it.stage === "REVIEW" && it.blocked_on === "ci" && it.blocked_reason === CHECKS_FAILED_UPDATE;
 }
+/** Waiting for a person's merge (core/phase.ts `merge_pending`, through commandPhase): the only state the merge check runs on. */
 export function awaitingMerge(it: WorkItem): boolean {
-  return it.stage === "REVIEW" && it.blocked_on === "human" && it.blocked_reason === "merge_pending";
+  return commandPhase(it) === "merge_pending";
 }

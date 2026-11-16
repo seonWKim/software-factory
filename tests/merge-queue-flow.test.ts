@@ -24,8 +24,8 @@ import { BACKENDS } from "./helpers/store.js";
 // The merge queue (RFC 0015 M8), end to end over a real git repo: a change whose merged result is red never lands.
 // Two local changes each pass their own checks (a.yml alone, b.yml alone), but together they break the test command
 // (it fails when both files exist). Both are approved for a merge at once: the first lands; the second is checked
-// as it would land (base + the first) by a merge-check run, comes back red, leaves the queue with the reason, and
-// the base never holds both files. At speculative depth 2 (`merge_queue.depth`) both checks run at once, b's on the
+// as it would land (base + the first) by a merge-check run, comes back red, leaves the queue with the reason, goes
+// back to implement as a loop, and the base never holds both files. At speculative depth 2 (`merge_queue.depth`) both checks run at once, b's on the
 // base plus a, and two changes that pass together both land, b on the commit a landed as. A check no worker runs is
 // ended by MergeCheckTimedOut; an enabled before_merge hook that vetoes keeps the base where it was.
 
@@ -170,10 +170,11 @@ for (const backend of BACKENDS) {
       expect(git(f.repo, "rev-list", "--parents", "-n", "1", main).split(" ")[1]).toBe(mainBefore);
       // b's merged result (base + a + b) failed the checks: the base never holds both files.
       expect(git(f.repo, "ls-tree", "-r", "--name-only", "main").split("\n").sort()).toEqual([`${DIR}/a.yml`, "README.md"]);
-      expect(await f.store.getWorkItem(b)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", merge_sha: null });
+      expect(await f.store.getWorkItem(b)).toMatchObject({ stage: "RUNNING", loop_count: 1, merge_sha: null });
+      expect((await f.store.listStateChanges(b)).map((c) => c.reason)).toContain("merge_check_failed");
       const refused = (await f.store.listItemMessages(b)).filter((m) => m.marker.startsWith("<!-- factory:refused:")).map((m) => m.body);
       expect(refused).toHaveLength(1);
-      expect(refused[0]).toContain("on the merged commit, so `main` did not move and the change left the merge queue");
+      expect(refused[0]).toContain("on the merged commit, so `main` did not move and the change left the merge queue; the factory sent it back to the implementer (loop 1 of");
 
       const queue = await f.controller.unit("merge-queue");
       expect((await queue.entries(a)).map((e) => e.state)).toEqual(["merged"]);

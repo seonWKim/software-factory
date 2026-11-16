@@ -28,16 +28,14 @@ async function setup(named: boolean) {
 }
 
 describe("display names on the status page", () => {
-  it("shows the name beside the id on the item page and in the item API", async () => {
+  it("shows the name in the item API", async () => {
     const { item, get } = await setup(true);
-    expect((await get(`/items/${item.id}`)).body).toContain(`Test Robot (${system.id})`);
     const api = JSON.parse((await get(`/api/v1/items/${item.id}`)).body) as { timeline: { actor: unknown }[] };
     expect(api.timeline[0]!.actor).toEqual({ kind: "system", id: system.id, name: "Test Robot" });
   });
 
   it("shows the id alone for a user with no name", async () => {
     const { item, get } = await setup(false);
-    expect((await get(`/items/${item.id}`)).body).not.toContain("(system:");
     const api = JSON.parse((await get(`/api/v1/items/${item.id}`)).body) as { timeline: { actor: unknown }[] };
     expect(api.timeline[0]!.actor).toEqual({ kind: "system", id: system.id, name: null });
   });

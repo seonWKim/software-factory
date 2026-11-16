@@ -10,8 +10,8 @@ import { githubLinks } from "../src/impl/github/github-forge.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { REGISTRY } from "../src/plugins.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
+import { api } from "../src/ui/api.js";
 import { HealthMonitor } from "../src/ui/health.js";
-import { renderItem } from "../src/ui/pages.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
@@ -92,7 +92,7 @@ async function setup(forge: LocalForge | null, links?: LocalForge) {
 }
 
 describe("a local-forge flow", () => {
-  it("merges an item whose change_ref is its branch name, with change_url null; its page shows no GitHub link", async () => {
+  it("merges an item whose change_ref is its branch name, with change_url null; its item API gives no GitHub link", async () => {
     const f = await setup(new LocalForge(config.branch_prefix));
     const it0 = await f.inReview(1);
     const branch = it0.change_ref!;
@@ -100,10 +100,9 @@ describe("a local-forge flow", () => {
     const done = (await f.store.getWorkItem(it0.id))!;
     expect(done).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "m1", change_ref: branch, change_url: null });
 
-    const page = (await renderItem(f.ui, done.id))!;
-    expect(page).toContain(branch);
-    expect(page).not.toMatch(/github\.com\/[^"]*\/pull\//);
-    expect(page).not.toContain(`href="${branch}"`);
+    const r = await api(f.ui, new URL(`http://127.0.0.1/api/v1/items/${done.id}`));
+    expect((r.value as { item: unknown }).item).toMatchObject({ change_ref: branch, change_url: null });
+    expect(JSON.stringify(r.value)).not.toMatch(/github\.com\/[^"]*\/pull\//);
   });
 
   it("with no forge selected, links are read through the local forge: a branch-named revert and fix-forward, never #N", async () => {

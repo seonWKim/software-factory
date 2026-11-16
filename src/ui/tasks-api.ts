@@ -17,7 +17,7 @@ import { isProjectSlug } from "../core/projects.js";
 import { ProjectRefused, type TaskStore, doneWindow, durationError, projectRefusal, taskViews } from "../core/tasks.js";
 import { TASK_LIST_LIMIT } from "../core/local-cli.js";
 import type { ApiResult } from "./api.js";
-import type { UiDeps } from "./pages.js";
+import type { UiDeps } from "./deps.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
 import { TASKS_ADD_KEYS, type TasksAddKey } from "../runtime/settings/tasks-add-key.setting.js";
 import { Withholder } from "./withhold.js";

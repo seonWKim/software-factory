@@ -34,7 +34,7 @@ let posts: { url: string; body: unknown }[];
 let afterPost: (() => void) | null;
 
 const ROW = {
-  id: "wi_1", source: SRC, title: "Thread item", level: "needs_you", badges: [], stage: "READY", tier: 2, kind: null, blocked_on: "human",
+  id: "wi_1", source: SRC, title: "Thread item", item_phase: "needs_you", reason_code: "person", stage: "READY", tier: 2, kind: null, blocked_on: "human",
   blocked_reason: "agent_needs_human", close_reason: null, run_status: null, change_ref: null, change_url: null, since: AT, updated_at: AT, version: 3,
   dependents: 0, conflicts: { automatic: 0, person: 0 }, need: { reason: "the agent asks a question", anchor: "msg-7" },
 };
@@ -52,7 +52,7 @@ beforeEach(() => {
     }
     const bodies: Record<string, unknown> = {
       "/api/v1/items/wi_1": detail,
-      "/api/v1/items": { as_of: AT, total: 1, items: [ROW], facets: { state: {}, allStates: 1 } },
+      "/api/v1/items": { as_of: AT, total: 1, items: [ROW], facets: { state: {}, allStates: 1 }, counts: { open: 0, running: 1 } },
       "/api/v1/session": { as_of: AT, csrf_token: "tok", commands_enabled: true, actor: "local:me", actor_source: "environment" },
       "/api/v1/tasks": { today_date: "2026-11-12", today: { overdue: [], due: [] }, upcoming: [], projects: [], csrf_token: "tok", can_build: true, active_projects: [] },
       "/api/v1/overview": { as_of: AT, stages: {}, needs_you: 1, system_actions: [], running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 } },
@@ -159,7 +159,7 @@ describe("item page: thread", () => {
 
 describe("item page: command reply in the thread", () => {
   it("a command from the decision box gets 202, and its reply shows in the thread once the item is read again", async () => {
-    const why = { code: "human", text: "Waiting for a person to approve the spec", next_actor: "human", refs: [], ref_url: null };
+    const why = { code: "human", reason_code: "spec_pending", params: {}, alarms: [], holder_id: null, next_actor: "human", refs: [], ref_url: null };
     detail = { ...detail, item: { ...ITEM, why }, commands: [{ name: "approve", usage: "/approve", description: "approve the spec", allowed: true, reason: null }] };
     // The controller writes its reply after the request: the next read of the item has it.
     afterPost = () => {

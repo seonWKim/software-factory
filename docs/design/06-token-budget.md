@@ -18,9 +18,4 @@
   - **Cost** is the CLI's own `total_cost_usd`, summed over the run's calls that reported one, null when none did. It is not checked against the bill, and the factory computes no prices. `model` is the model in the CLI's `modelUsage` that cost the most (the CLI also uses a small model for side tasks), from the run's last call that named one. The status page shows cost per UTC day of `finished_at` for the last 7 days, one column per run kind plus a total; a run with no cost is shown as unknown, never added as 0.
   - **Consequences.** Budgets a human set now trip sooner, because the count is larger; configured values are not changed. The budget suggestion's history mixes old (input + output) and new item totals until old items close. Not counted: runs the reaper fails and runs cancelled with no output (no outcome usage), and the LLM provider's calls (`claude-cli-llm-provider`, `llm-check`), which keep their own shape.
 
-## History
-
-- **Per-tier token budget** (decision changed 2026-11-01). Before: "Per-tier budget → `blocked_on: budget`" was a plan with no limit, no check and no human answer, so an item could spend tokens with no human check.
-- **What "tokens" counts, and cost** (decision changed 2026-11-02, issue #136). Before: a run's tokens were input + output only, read from the Claude CLI's JSON result, so cache reads and writes, most of a run's tokens, were never counted; only succeeded runs added to `token_cost`; timed-out and aborted runs recorded zero without reading their output; and no cost was kept anywhere.
-- **Ignored runs count** (decision changed 2026-11-07). Before: a succeeded run acknowledged as `run_ignored` (its item closed or blocked while it ran) added nothing to `token_cost`, though its outcome kept its `data.usage`; only failed ignored runs were counted.
-- **MySQL text removed from the current decisions** (decision changed 2026-11-11, issue #567). Before: migration 9 was "SQLite and MySQL".
+- Replaced decisions of this topic: [history/06-token-budget.md](history/06-token-budget.md).

@@ -35,7 +35,7 @@ const issueNumber = (it: ItemRow): number | null => {
   return m ? Number(m[1]) : null;
 };
 
-const needsYou = (it: ItemRow) => (NEEDS_YOU_LEVELS as readonly string[]).includes(it.level);
+const needsYou = (it: ItemRow) => (NEEDS_YOU_LEVELS as readonly string[]).includes(it.item_phase);
 
 /** Held behind another item: a held claim, or a phase waiting for the phase before it. */
 export function isHeld(it: ItemRow): boolean {
@@ -47,7 +47,7 @@ function inState(it: ItemRow, state: string | null): boolean {
   if (state === null) return true;
   if (state === "needs") return needsYou(it);
   if (state === HELD) return isHeld(it);
-  return it.level === state;
+  return it.item_phase === state;
 }
 
 /** True when the title or the source id holds the search text (a leading # is optional). */
@@ -68,7 +68,7 @@ export interface TreeFilter {
 /** Whether a row passes the filters: closed rows only with Show closed (or the Closed filter). */
 export function itemMatches(it: ItemRow, f: TreeFilter): boolean {
   if (f.ids) return f.ids.has(it.id) && inSearch(it, f.q);
-  if (it.level === "closed" && !f.showClosed && f.state !== "closed") return false;
+  if (it.item_phase === "closed" && !f.showClosed && f.state !== "closed") return false;
   return inState(it, f.state) && inSearch(it, f.q);
 }
 
@@ -103,7 +103,7 @@ export function parentIds(nodes: readonly TreeNode[]): string[] {
 
 /** The expanded rows when nothing is saved: every parent that has an open phase. */
 export function defaultExpanded(nodes: readonly TreeNode[]): string[] {
-  return nodes.flatMap((n) => (n.children.some((c) => c.item.level !== "closed") ? [n.item.id, ...defaultExpanded(n.children)] : defaultExpanded(n.children)));
+  return nodes.flatMap((n) => (n.children.some((c) => c.item.item_phase !== "closed") ? [n.item.id, ...defaultExpanded(n.children)] : defaultExpanded(n.children)));
 }
 
 /** What an item waits for: the number to show and the item it names (null when it is not in the list). */
@@ -127,7 +127,7 @@ function Row({ node, now, byNumber }: { node: TreeNode; now: number; byNumber: R
     <div className={cn("flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-1 py-1", node.context && "text-text-2")}>
       <SourceLink source={it.source} itemId={it.id} className="shrink-0" />
       <Link href={itemPath(it.id)} className={cn("min-w-0 truncate font-medium", LINK_CLASS)}>{it.title ?? shortSource(it.source.id)}</Link>
-      <Badge level={it.level}>{LEVEL_LABELS[it.level] ?? it.level}</Badge>
+      <Badge level={it.item_phase}>{LEVEL_LABELS[it.item_phase] ?? it.item_phase}</Badge>
       {waits && (
         waits.id ? (
           <Link href={itemPath(waits.id)} className={cn(CHIP, LINK_CLASS)} data-waits-for>{t("tree.waitsFor", { label: waits.label })}</Link>

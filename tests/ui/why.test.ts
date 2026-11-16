@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { type WhyInput, deadlocked, refsOf, whyWaiting } from "../../src/ui/why.js";
+import { whyText } from "../../web/src/lib/format.js";
+
+// The server sends a reason code with its values; the web app words it (en.ts, one text per reason code). `said`
+// is the text a person reads for an input.
+const said = (x: WhyInput) => whyText(whyWaiting(x));
 
 const queued = (kind: "implement" | "triage" | "review" | "update" = "implement", position: number | null = 3) =>
   ({ id: "run_q", kind, status: "queued" as const, position });
@@ -56,14 +61,15 @@ describe("whyWaiting: every case", () => {
     ["idle", input(), "Nothing moves it: no run is queued", "human", []],
   ];
   it.each(cases)("%s", (_name, x, text, next_actor, refs) => {
-    expect(whyWaiting(x)).toMatchObject({ text, next_actor, refs });
+    const w = whyWaiting(x);
+    expect({ text: whyText(w), next_actor: w.next_actor, refs: w.refs }).toEqual({ text, next_actor, refs });
   });
 
   it("a person's block with no stored reason names the item's state and the next step, never \"no reason\"", () => {
     for (const stage of ["NEW", "READY", "RUNNING", "REVIEW"] as const) {
       const w = whyWaiting(input({ item: { stage, blocked_on: "human", blocked_reason: null } }));
-      expect(w.text).toMatch(/^Waiting for a person: the item is .+; next, /);
-      expect(w.text).not.toMatch(/no reason/i);
+      expect(whyText(w)).toMatch(/^Waiting for a person: the item is .+; next, /);
+      expect(whyText(w)).not.toMatch(/no reason/i);
     }
   });
 
@@ -95,7 +101,7 @@ describe("whyWaiting: precedence", () => {
     expect(whyWaiting(input({ run: queued(), decision: held("pr"), not_before: UNTIL })).code).toBe("held");
   });
   it("a dependency beats queued", () => {
-    expect(whyWaiting(input({ run: queued(), item: dep })).text).toBe("Waiting for #12 to merge");
+    expect(said(input({ run: queued(), item: dep }))).toBe("Waiting for #12 to merge");
   });
 });
 
@@ -107,37 +113,37 @@ describe("whyWaiting: a recurring-failure hold names its last failed run", () =>
   it("an agent_stalled run: the model stalled and a retry is enough", () => {
     const w = whyWaiting(input({ item: hold, failure: failure("agent_stalled", "no model output for 5 minutes", true) }));
     expect(w).toMatchObject({ code: "human", next_actor: "human" });
-    expect(w.text).toMatch(/model stalled/);
-    expect(w.text).toMatch(/a plain retry is likely enough/);
-    expect(w.text).toContain("The model printed nothing for the stall timeout");
-    expect(w.text).toContain("no model output for 5 minutes");
-    expect(w.text).not.toContain("recurring_failure");
+    expect(whyText(w)).toMatch(/model stalled/);
+    expect(whyText(w)).toMatch(/a plain retry is likely enough/);
+    expect(whyText(w)).toContain("The model printed nothing for the stall timeout");
+    expect(whyText(w)).toContain("no model output for 5 minutes");
+    expect(whyText(w)).not.toContain("recurring_failure");
   });
 
   it("a rate limit or an infra failure: a retry is enough too", () => {
     for (const f of [failure("rate_limited", "429"), failure("lease_lost", "lost", true)]) {
-      expect(whyWaiting(input({ item: hold, failure: f })).text).toMatch(/a plain retry is likely enough/);
+      expect(said(input({ item: hold, failure: f }))).toMatch(/a plain retry is likely enough/);
     }
   });
 
   it("a task failure: named in plain words, and something must change before a retry", () => {
     const w = whyWaiting(input({ item: hold, failure: failure("tests_failed", "2 tests failed") }));
-    expect(w.text).toContain("The checks or tests failed");
-    expect(w.text).toMatch(/a plain retry will likely fail again/);
-    expect(w.text).toMatch(/change .* first/);
-    expect(w.text).not.toMatch(/likely enough/);
+    expect(whyText(w)).toContain("The checks or tests failed");
+    expect(whyText(w)).toMatch(/a plain retry will likely fail again/);
+    expect(whyText(w)).toMatch(/change .* first/);
+    expect(whyText(w)).not.toMatch(/likely enough/);
   });
 
   it("a code with no description is named as is", () => {
-    expect(whyWaiting(input({ item: hold, failure: failure("odd_code", "") })).text).toContain("odd_code");
+    expect(said(input({ item: hold, failure: failure("odd_code", "") }))).toContain("odd_code");
   });
 
   it("no failed run: still a sentence, never empty or a raw code, naming no failure", () => {
     for (const x of [input({ item: hold, failure: null }), input({ item: hold })]) {
       const w = whyWaiting(x);
-      expect(w.text).toMatch(/no failed run/);
-      expect(w.text).not.toContain("recurring_failure");
-      expect(w.text).not.toMatch(/likely (enough|fail)/);
+      expect(whyText(w)).toMatch(/no failed run/);
+      expect(whyText(w)).not.toContain("recurring_failure");
+      expect(whyText(w)).not.toMatch(/likely (enough|fail)/);
     }
   });
 });
@@ -158,6 +164,37 @@ describe("the deadlock sentence", () => {
   it("names no number and none of the internal words", () => {
     const w = whyWaiting(input({ run: { id: "run_r", kind: "implement", status: "running", position: null }, decision: { run_id: "run_r", decision: "deadlock", holder_ref: "#92", holder_kind: "waiting", approved_by: null, holder_title: "Other item" } }));
     expect(w.code).toBe("deadlock");
-    expect(w.text).not.toMatch(/#\d|deadlock|claim|overlap/i);
+    expect(whyText(w)).not.toMatch(/#\d|deadlock|claim|overlap/i);
+  });
+});
+
+describe("a held item names its holder", () => {
+  const local = { run_id: "run_q", decision: "held" as const, holder_ref: "local-716e2b9f", holder_kind: "pr" as const, approved_by: null };
+
+  it("by its title, with the holder's item id for the link; never the raw local id", () => {
+    const w = whyWaiting(input({ run: queued(), decision: { ...local, holder_title: "Add the merge queue", holder_work_item_id: "wi_holder" } }));
+    expect(w).toMatchObject({ code: "held", reason_code: "held_pr", holder_id: "wi_holder" });
+    expect(whyText(w)).toBe("Held behind Add the merge queue, which has an open PR");
+    expect(whyText(w)).not.toContain("local-716e");
+  });
+
+  it("as another item when it has no title and no issue number", () => {
+    const w = whyWaiting(input({ run: queued(), decision: local }));
+    expect(whyText(w)).toBe("Held behind another item, which has an open PR");
+    expect(w.holder_id).toBeNull();
+  });
+});
+
+describe("the reason texts live in en.ts", () => {
+  it("a spec at its revision limit waits for approval, and max_loops has one text", () => {
+    expect(said(input({ item: { stage: "READY", blocked_on: "human", blocked_reason: "max_revisions" } }))).toMatch(/revision limit: a person approves/);
+    expect(whyWaiting(input({ item: { stage: "REVIEW", blocked_on: "human", blocked_reason: "max_loops" } })).reason_code).toBe("max_loops");
+  });
+
+  it("no English reason text is written in src/ui", async () => {
+    const { readFileSync, readdirSync } = await import("node:fs");
+    const dir = new URL("../../src/ui/", import.meta.url);
+    const texts = readdirSync(dir).filter((f) => f.endsWith(".ts")).map((f) => readFileSync(new URL(f, dir), "utf8")).join("\n");
+    for (const phrase of ["review found bugs too many times", "Too many review loops", "Held behind"]) expect(texts).not.toContain(phrase);
   });
 });

@@ -8,7 +8,7 @@
 import { isProjectSlug, projectName, type Project } from "../core/projects.js";
 import { projectRefusal } from "../core/tasks.js";
 import type { ApiResult } from "./api.js";
-import type { UiDeps } from "./pages.js";
+import type { UiDeps } from "./deps.js";
 
 export const PROJECTS_PATH = "/api/v1/projects";
 export const TASK_PROJECT_PATH = "/api/v1/tasks/project";

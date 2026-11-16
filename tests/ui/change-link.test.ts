@@ -4,9 +4,10 @@ import type { WorkItem } from "../../src/core/types.js";
 import { FakeClock } from "../../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../../src/impl/egress/pattern-egress-scanner.js";
 import type { FactoryStore } from "../../src/interfaces/factory-store.js";
+import { api } from "../../src/ui/api.js";
 import { HealthMonitor } from "../../src/ui/health.js";
 import { needOf } from "../../src/ui/need.js";
-import { type UiDeps, renderItem } from "../../src/ui/pages.js";
+import type { UiDeps } from "../../src/ui/deps.js";
 import { PROJECT } from "../helpers/fakes.js";
 import { issue, newStore, system } from "../helpers/store.js";
 
@@ -28,15 +29,23 @@ async function mergePending(store: FactoryStore, n: number): Promise<WorkItem> {
 
 const ctx = (store: FactoryStore) => ({ store, text: async (v: string) => v });
 
+/** GET /api/v1/items/<id>: the item's stored change and the whole answer as text. */
+async function detail(store: FactoryStore, clock: FakeClock, item: WorkItem) {
+  const r = await api(deps(store, clock), new URL(`http://127.0.0.1/api/v1/items/${item.id}`));
+  expect(r.status).toBe(200);
+  const v = r.value as { item: { change_ref: string | null; change_url: string | null } };
+  return { change: { change_ref: v.item.change_ref, change_url: v.item.change_url }, text: JSON.stringify(r.value) };
+}
+
 describe("ui: PR links come only from the stored change_url", () => {
-  it("with a stored change_url: Needs you and the item page link to it", async () => {
+  it("with a stored change_url: Needs you and the item API link to it", async () => {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
     await saveProjectLabel(store, PROJECT);
     const it0 = await mergePending(store, 7);
     expect(it0.change_url).toBe("https://github.com/o/r/pull/7");
     expect(await needOf(ctx(store), it0)).toMatchObject({ url: it0.change_url, label: "PR #7" });
-    expect(await renderItem(deps(store, clock), it0.id)).toContain(`<a href="${it0.change_url}">PR #7</a>`);
+    expect((await detail(store, clock, it0)).change).toEqual({ change_ref: "7", change_url: it0.change_url });
   });
 
   it("with a change_ref and no change_url: the ref as plain text, no PR link anywhere", async () => {
@@ -47,15 +56,15 @@ describe("ui: PR links come only from the stored change_url", () => {
     // A label stored later builds no link: the UI reads only the stored column.
     await saveProjectLabel(store, PROJECT);
     expect(await needOf(ctx(store), it0)).toMatchObject({ url: it0.source.link, label: "issue" });
-    const page = (await renderItem(deps(store, clock), it0.id))!;
-    expect(page).toContain("PR #8");
-    expect(page).not.toContain("/pull/8");
+    const d = await detail(store, clock, it0);
+    expect(d.change).toEqual({ change_ref: "8", change_url: null });
+    expect(d.text).not.toContain("/pull/8");
   });
 
-  it("with no change_ref: no PR text", async () => {
+  it("with no change_ref: no change", async () => {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
     const { item } = await store.createWorkItem(issue(9), system);
-    expect(await renderItem(deps(store, clock), item.id)).not.toContain("PR #");
+    expect((await detail(store, clock, item)).change).toEqual({ change_ref: null, change_url: null });
   });
 });

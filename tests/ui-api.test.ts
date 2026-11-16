@@ -19,6 +19,8 @@ import type { ConfigEditRequest, ConfigEditResult } from "../src/core/config-wri
 import { checkoutRevision } from "../src/ui/system-actions.js";
 import { type PauseDeps, resumePause } from "../src/ui/pause-api.js";
 import viteConfig from "../web/vite.config.js";
+import type { Why } from "../web/src/api.js";
+import { whyText } from "../web/src/lib/format.js";
 import { PROJECT_KEY, issue, newStore, system, w1 } from "./helpers/store.js";
 
 const LEASE = 60_000;
@@ -118,18 +120,6 @@ async function seeded(opts: { store?: (s: FactoryStore) => FactoryStore } = {}) 
   return { d, store, clock, items: { approve, merge, secretive, done, running, running2, running3, queued, queued2 }, claimed, claimed2, healthRuns: () => healthRuns };
 }
 
-/** The data-key of every row in the HTML list, in order. */
-function htmlKeys(body: string): string[] {
-  const start = body.indexOf(`<section id="items">`);
-  const sec = body.slice(start, body.indexOf("</section>", start));
-  return [...sec.matchAll(/data-key="([^"]+)"/g)].map((m) => m[1]!);
-}
-
-function sectionOf(body: string, id: string): string {
-  const start = body.indexOf(`<section id="${id}">`);
-  return body.slice(start, body.indexOf("</section>", start));
-}
-
 describe("ui api: contract", () => {
   it("every route answers 200 JSON with no-store and the security headers", async () => {
     const { d, items } = await seeded();
@@ -189,27 +179,28 @@ describe("ui api: contract", () => {
 });
 
 describe("ui api: items", () => {
-  it("lists the same rows in the same order as / for the same query string, every filter included", async () => {
-    const { d } = await seeded();
-    const queries = [
-      "", "?closed=1", "?state=needs", "?state=running", "?state=queued", "?state=closed", "?stage=REVIEW", "?stage=CLOSED",
-      "?tier=2", "?kind=triage", "?kind=implement", "?unblocks=1", "?q=merge", "?q=%233", "?q=leaky", "?state=needs&tier=3",
-    ];
-    for (const q of queries) {
-      const page = await get(d, `/classic${q}`);
-      expect(page.status, q).toBe(200);
-      const api = await json<{ total: number; items: { id: string }[] }>(d, `/api/v1/items${q}`);
-      expect(api.items.map((i) => i.id), q).toEqual(htmlKeys(page.body));
-      expect(api.total, q).toBe(api.items.length);
-    }
+  it("Work and Activity give one running count (runs with status running) and one open count (stage not CLOSED)", async () => {
+    const { d, store } = await seeded();
+    const o = await json<{ open: number; running: number; stages: Record<string, number> }>(d, "/api/v1/overview");
+    const list = await json<{ counts: { open: number; running: number }; items: { item_phase: string }[] }>(d, "/api/v1/items?closed=1");
+    const runs = await json<{ runs: { status: string }[] }>(d, "/api/v1/runs");
+    // Running: every run whose status is running, on both pages, even when a stale heartbeat ranks its item stuck.
+    expect(list.counts.running).toBe(3);
+    expect(o.running).toBe(list.counts.running);
+    expect(runs.runs.filter((r) => r.status === "running")).toHaveLength(list.counts.running);
+    // Open: every item whose stage is not CLOSED (owner answer 2), the overview's and the list's alike.
+    const open = (await store.listWorkItemsWhere({ exclude_closed: true, limit: 1000 })).length;
+    expect(list.counts.open).toBe(open);
+    expect(o.open).toBe(list.counts.open);
+    expect(list.items.filter((i) => i.item_phase !== "closed")).toHaveLength(open);
   });
 
   it("the default list has every open item ranked, and the filters narrow it", async () => {
     const { d, items } = await seeded();
-    const all = await json<{ items: { id: string; level: string; badges: string[]; stage: string; run_status: string | null }[] }>(d, "/api/v1/items");
+    const all = await json<{ items: { id: string; item_phase: string; reason_code: string; stage: string; run_status: string | null }[] }>(d, "/api/v1/items");
     expect(all.items.length).toBe(8); // nine items, one closed
-    expect(all.items[0]).toMatchObject({ id: items.merge.id, level: "ready_to_merge", badges: ["ready to merge"], stage: "REVIEW" });
-    expect(all.items[1]).toMatchObject({ id: items.approve.id, level: "needs_approval" });
+    expect(all.items[0]).toMatchObject({ id: items.merge.id, item_phase: "ready_to_merge", reason_code: "merge_pending", stage: "REVIEW" });
+    expect(all.items[1]).toMatchObject({ id: items.approve.id, item_phase: "needs_approval", reason_code: "spec_pending" });
     const needs = await json<{ items: { id: string }[] }>(d, "/api/v1/items?state=needs");
     expect(needs.items.map((i) => i.id)).toEqual([items.merge.id, items.approve.id, items.secretive.id]);
     const closed = await json<{ items: { id: string }[] }>(d, "/api/v1/items?stage=CLOSED");
@@ -225,9 +216,6 @@ describe("ui api: items", () => {
     // The closed item counts under Closed though the default list leaves it out (same rule as every facet).
     expect(api.facets.stage.CLOSED).toBe(1);
     expect(api.facets.state.closed).toBe(1);
-    const page = (await get(d, "/classic")).body;
-    expect(page).toContain(`<option value="needs">Needs you (3)</option>`);
-    expect(page).toContain(`>All (${api.facets.allStates})</option>`);
   });
 
   it("the Closed facet counts the closed items that match the other filters (148 closed items)", async () => {
@@ -259,7 +247,6 @@ describe("ui api: items", () => {
       expect(r.status, q).toBe(400);
       expect(r.headers["content-type"]).toBe("application/json; charset=utf-8");
       expect(JSON.parse(r.body).error, q).toMatch(/^Unknown /);
-      expect((await get(d, `/classic?${q}`)).status, q).toBe(400);
     }
   });
 
@@ -474,8 +461,6 @@ describe("ui api: runs, queue, workers, overview, health", () => {
       [1, "triage", items.queued.id],
       [2, "triage", items.queued2.id],
     ]);
-    const rows = sectionOf((await get(d, "/classic")).body, "queue").split("<tr").length - 2; // minus the leading text and the header row
-    expect(body.queue.length).toBe(rows);
   });
 
   it("/workers lists each current lease owner once with its running count, as IDs", async () => {
@@ -530,7 +515,7 @@ describe("ui api: runs, queue, workers, overview, health", () => {
     expect(body.processes_error).toBe("Table 'sf.worker_processes' doesn't exist");
   });
 
-  it("/overview gives the numbers the page shows for the same store", async () => {
+  it("/overview gives the numbers for the same store", async () => {
     const { d } = await seeded();
     const o = await json<{
       stages: Record<string, number>; needs_you: number; running: number; queued: number; last_24h: { succeeded: number; failed: number; tokens: number };
@@ -538,17 +523,6 @@ describe("ui api: runs, queue, workers, overview, health", () => {
     expect(o).toMatchObject({ needs_you: 3, running: 3, queued: 2, last_24h: { succeeded: 1, failed: 1, tokens: 1234 } });
     expect(o.stages).toEqual({ NEW: 3, READY: 1, RUNNING: 2, REVIEW: 2, CLOSED: 1 });
 
-    const page = (await get(d, "/classic")).body;
-    expect(page).toContain(`<title>(${o.needs_you}) software-factory status</title>`);
-    const totals = sectionOf(page, "totals");
-    const cell = (k: string) => Number(new RegExp(`<th scope="row">${k}</th><td>(\\d+)</td>`).exec(totals)![1]);
-    for (const [stage, n] of Object.entries(o.stages)) expect(cell(stage), stage).toBe(n);
-    expect(cell("succeeded")).toBe(o.last_24h.succeeded);
-    expect(cell("failed")).toBe(o.last_24h.failed);
-    expect(cell("tokens")).toBe(o.last_24h.tokens);
-    const rows = (id: string) => sectionOf(page, id).split("<tr").length - 2;
-    expect(rows("running")).toBe(o.running);
-    expect(rows("queue")).toBe(o.queued);
   });
 
   it("/health returns what /api/health returns, from the one HealthMonitor (one run for both), and /api/health is unchanged", async () => {
@@ -887,7 +861,7 @@ describe("ui api: item commands POST (issue #227)", () => {
     const id = encodeURIComponent(items.approve.id);
     for (const path of [
       `/api/v1/items/${id}`, `/api/v1/items/${id}/commands/x`, `/api/v1/items/${id}/commandsx`, "/api/v1/items//commands", "/api/v1/session",
-      "/api/v1/overview", "/api/v1/nope", "/classic", "/", `/items/${id}`, "/app/", "/app/items/x", "/api/health",
+      "/api/v1/overview", "/api/v1/nope", "/", "/app/", "/app/items/x", "/api/health",
     ]) {
       const r = await post(d, items.approve.id, { command: "approve" }, { path });
       await refused(r, 405, path);
@@ -1228,7 +1202,7 @@ describe("ui api: unreviewed merges", () => {
 const SAME_TIME = (other: string) => `Running at the same time as ${other}, which changes some of the same files. If they clash, you'll be asked when it merges.`;
 
 describe("ui api: why an item waits (issue #310)", () => {
-  type WhyBody = { code: string; text: string; next_actor: string; refs: number[]; ref_url: string | null };
+  type WhyBody = Why & { text: string };
   type Decision = Awaited<ReturnType<FactoryStore["listClaimDecisions"]>>[number];
   /** The seeded store, with the claim decisions the test sets (only the claim writes real ones). */
   async function withDecisions() {
@@ -1253,11 +1227,15 @@ describe("ui api: why an item waits (issue #310)", () => {
       } as unknown as Decision]);
     return { ...s, decide };
   }
+  // Each why with the text the web app shows for it (en.ts, one text per reason code).
+  const said = (w: Why): WhyBody => ({ ...w, text: whyText(w) });
   const whyOn = async (d: UiDeps, id: string) => {
-    const list = await json<{ items: { id: string; level: string; badges: string[]; why: WhyBody }[] }>(d, "/api/v1/items");
-    const queue = await json<{ queue: { work_item_id: string; why: WhyBody | null }[] }>(d, "/api/v1/queue");
-    const item = await json<{ item: { why: WhyBody } }>(d, `/api/v1/items/${encodeURIComponent(id)}`);
-    return { row: list.items.find((i) => i.id === id)!, queued: queue.queue.find((q) => q.work_item_id === id) ?? null, item: item.item.why };
+    const list = await json<{ items: { id: string; item_phase: string; reason_code: string; why: Why }[] }>(d, "/api/v1/items");
+    const queue = await json<{ queue: { work_item_id: string; why: Why | null }[] }>(d, "/api/v1/queue");
+    const item = await json<{ item: { why: Why } }>(d, `/api/v1/items/${encodeURIComponent(id)}`);
+    const row = list.items.find((i) => i.id === id)!;
+    const queued = queue.queue.find((q) => q.work_item_id === id) ?? null;
+    return { row: { ...row, why: said(row.why) }, queued: queued && { ...queued, why: queued.why && said(queued.why) }, item: said(item.item.why) };
   };
 
   it("a held run reads 'Held behind #N' with its holder on Items, the item page and the Queue's why", async () => {
@@ -1268,11 +1246,11 @@ describe("ui api: why an item waits (issue #310)", () => {
     decide(held, run.id, "held", "pr");
     const w = await whyOn(d, held.id);
     const expected = { code: "held", text: "Held behind #92, which has an open PR", next_actor: "other_item", refs: [92], ref_url: "https://github.com/o/r/issues/" };
-    expect(w.row.level).toBe("blocked_by_task");
-    expect(w.row.badges).toEqual(["waits on #92"]);
-    expect(w.row.why).toEqual(expected);
-    expect(w.queued!.why).toEqual(expected);
-    expect(w.item).toEqual(expected);
+    expect(w.row.item_phase).toBe("blocked_by_task");
+    expect(w.row.reason_code).toBe("held_pr");
+    expect(w.row.why).toMatchObject(expected);
+    expect(w.queued!.why).toMatchObject(expected);
+    expect(w.item).toMatchObject(expected);
   });
 
   it("a dependency blocker waits (not queued) and reads the same sentence on Items, Queue and the item page", async () => {
@@ -1280,7 +1258,7 @@ describe("ui api: why an item waits (issue #310)", () => {
     const dep = await make(store, 21, "Dependent item");
     await enqueue(store, dep, "implement", "dep:i", { stage: "RUNNING", blocked_on: "dependency", blocked_reason: "waiting for #12 and #13 to merge" });
     const w = await whyOn(d, dep.id);
-    expect(w.row.level).toBe("blocked_by_task");
+    expect(w.row.item_phase).toBe("blocked_by_task");
     for (const why of [w.row.why, w.queued!.why!, w.item]) {
       expect(why).toMatchObject({ code: "dependency", text: "Waiting for #12 and #13 to merge", next_actor: "other_item", refs: [12, 13] });
     }
@@ -1315,8 +1293,8 @@ describe("ui api: why an item waits (issue #310)", () => {
     expect(o.needs_you).toBe(before);
     expect(o.system_actions.map((a) => a.code)).not.toContain("claim_deadlock");
     const w = await whyOn(d, items.running.id);
-    expect(w.row.level).toBe("blocked_by_task");
-    expect(w.row.badges).toEqual(["waits on #92"]);
+    expect(w.row.item_phase).toBe("blocked_by_task");
+    expect(w.row.why.holder_id).toBe(other.id);
     const why = { code: "deadlock", text: SAME_TIME("\"Other item\""), next_actor: "factory", refs: [] };
     expect(w.row.why).toMatchObject(why);
     expect(w.item).toMatchObject(why);
@@ -1337,14 +1315,16 @@ describe("ui api: why an item waits (issue #310)", () => {
   it("a merge conflict the resolve run gives up on still needs you", async () => {
     const { d, store, items } = await withDecisions();
     await patch(store, items.running, { blocked_on: "human", blocked_reason: "merge_conflict_pending" });
-    expect((await whyOn(d, items.running.id)).row.level).toBe("needs_you");
+    expect((await whyOn(d, items.running.id)).row.item_phase).toBe("needs_you");
   });
 
   it("free text in why passes the Withholder", async () => {
     const { d, items } = await withDecisions();
     const w = await whyOn(d, items.secretive.id);
-    expect(w.row.why.text).toBe("[withheld: github_token]");
-    expect(w.item.text).toBe("[withheld: github_token]");
+    for (const text of [w.row.why.text, w.item.text]) {
+      expect(text).toBe("Waiting for a person: [withheld: github_token]");
+      expect(text).not.toContain(SECRET);
+    }
   });
 });
 
@@ -1389,7 +1369,9 @@ describe("ui api: pauses and Needs-you reasons (issue: floor banner)", () => {
     expect(due[0]!.ends_at < clock.now().toISOString()).toBe(true);
   });
 
-  type NeedRow = { id: string; level: string; need?: { reason: string }; commands?: { name: string; allowed: boolean; reason: string | null }[] };
+  type NeedRow = { id: string; item_phase: string; why: Why; need?: { reason: string | null }; commands?: { name: string; allowed: boolean; reason: string | null }[] };
+  /** What the Needs-you row shows: the need's own words, else the why's en.ts text. */
+  const shown = (r: NeedRow) => r.need!.reason ?? whyText(r.why);
   const LABELS: Record<string, string> = { ready_to_merge: "Ready to merge", needs_approval: "Needs approval", needs_you: "Needs you", needs_triage: "Needs triage" };
 
   it("each Needs-you reason is its own words, never the State label, and names what to do", async () => {
@@ -1405,12 +1387,15 @@ describe("ui api: pauses and Needs-you reasons (issue: floor banner)", () => {
     const commands = (id: string) => rows.find((r) => r.id === id)!.commands!.map((c) => c.name);
     expect(commands(items.approve.id)).toEqual(["approve", "reject", "revise"]);
     expect(need(items.merge.id).reason).toBe("merge check running");
-    expect(need(more["null"]!.id).reason).toBe("waiting for a person");
+    // A reason the why says better is not sent: the row shows the why's text, as Work does.
+    expect(need(more["null"]!.id).reason).toBeNull();
+    expect(shown(rows.find((r) => r.id === more["null"]!.id)!)).toMatch(/^Waiting for a person: the item is new/);
+    expect(shown(rows.find((r) => r.id === more["max_loops"]!.id)!)).toBe("Too many review loops: a person decides what happens next");
     for (const r of rows) {
       expect(r.need, r.id).toBeDefined();
-      expect(r.need!.reason.toLowerCase(), r.id).not.toBe(LABELS[r.level]!.toLowerCase());
-      expect(r.need!.reason.trim(), r.id).not.toBe("");
-      expect(r.need!.reason, r.id).not.toContain("no reason");
+      expect(shown(r).toLowerCase(), r.id).not.toBe(LABELS[r.item_phase]!.toLowerCase());
+      expect(shown(r).trim(), r.id).not.toBe("");
+      expect(shown(r), r.id).not.toContain("no reason");
     }
     expect(rows.filter((r) => r.need!.reason === "failed: diff_too_large")).toHaveLength(1);
   });
@@ -1505,9 +1490,6 @@ describe("ui api: GitHub budget (design §5 Sources, GitHub call budget)", () =>
     });
     // A wait, not an error: nothing for the operator to do.
     expect(JSON.stringify(o.system_actions)).not.toContain("rate-limit");
-    const html = (await get(d, "/classic")).body;
-    expect(sectionOf(html, "github-budget")).toContain(`waiting for the GitHub rate-limit reset at ${reset_at}`);
-    expect(sectionOf(html, "github-budget")).toContain("this factory counted 1234 of 2500");
   });
 
   it("once the stored reset has passed, the window is over: no wait and a count of 0", async () => {
@@ -1592,7 +1574,7 @@ describe("ui api: items for the tree (issue #295)", () => {
 
 describe("ui api: open alarms in Needs you and the why sentence (design 09-status-page)", () => {
   const ALARM = "Alarm: checks_failed failed 4 runs on several items";
-  type WhyBody = { text: string };
+  type WhyBody = Why;
   type Action = { code: string; text: string; command: string; until: string | null; work_item_id: string | null };
 
   /** An item whose run failed with checks_failed (blocked on a person), one with no runs, and an open alarm. */
@@ -1610,8 +1592,8 @@ describe("ui api: open alarms in Needs you and the why sentence (design 09-statu
     return { d, store, clock, hit, other };
   }
   const overview = (d: UiDeps) => json<{ needs_you: number; system_actions: Action[] }>(d, "/api/v1/overview");
-  const whyRow = async (d: UiDeps, id: string) => (await json<{ items: { id: string; why: WhyBody }[] }>(d, "/api/v1/items")).items.find((i) => i.id === id)!.why.text;
-  const whyItem = async (d: UiDeps, id: string) => (await json<{ item: { why: WhyBody } }>(d, `/api/v1/items/${encodeURIComponent(id)}`)).item.why.text;
+  const whyRow = async (d: UiDeps, id: string) => whyText((await json<{ items: { id: string; why: WhyBody }[] }>(d, "/api/v1/items")).items.find((i) => i.id === id)!.why);
+  const whyItem = async (d: UiDeps, id: string) => whyText((await json<{ item: { why: WhyBody } }>(d, `/api/v1/items/${encodeURIComponent(id)}`)).item.why);
 
   it("the overview lists an open alarm in Needs you with where to look and when it closes, and drops it once resolved", async () => {
     const { d, clock } = await alarmed();
@@ -1656,7 +1638,7 @@ describe("ui api: open alarms in Needs you and the why sentence (design 09-statu
     expect(await whyRow(d, other.id)).toBe(`Queued at position 1. ${restart}`);
     expect(await whyItem(d, other.id)).toBe(`Queued at position 1. ${restart}`);
     const q = await json<{ queue: { work_item_id: string; why: WhyBody | null }[] }>(d, "/api/v1/queue");
-    expect(q.queue.find((x) => x.work_item_id === other.id)!.why!.text).toBe(`Queued at position 1. ${restart}`);
+    expect(whyText(q.queue.find((x) => x.work_item_id === other.id)!.why!)).toBe(`Queued at position 1. ${restart}`);
     clock.advance(ALERT_DEDUPE_MS);
     expect(await whyRow(d, other.id)).toBe("Queued at position 1");
   });
@@ -1694,14 +1676,10 @@ describe("ui api: Needs you, Needs triage and Blocked by another task", () => {
     await patch(store, impl, { stage: "RUNNING", blocked_on: "human", blocked_reason: "agent_needs_human" });
     asks.set(triage.id, "triage");
     asks.set(impl.id, "implement");
-    const rows = (await json<{ items: { id: string; level: string; badges: string[]; need?: { reason: string } }[] }>(d, "/api/v1/items?state=needs")).items;
+    const rows = (await json<{ items: { id: string; item_phase: string; need?: { reason: string } }[] }>(d, "/api/v1/items?state=needs")).items;
     const row = (id: string) => rows.find((r) => r.id === id)!;
-    expect(row(triage.id)).toMatchObject({ level: "needs_triage", badges: ["triage asks"], need: { reason: ASK.question } });
-    expect(row(impl.id)).toMatchObject({ level: "needs_you", need: { reason: ASK.question } });
-    // The classic page shows the question and an Answer link to the ask.
-    const page = (await get(d, "/classic")).body;
-    expect(page).toContain(`${ASK.question} · <a href="https://github.com/o/r/issues/40#c1"`);
-    expect(page).toContain(">Answer</a>");
+    expect(row(triage.id)).toMatchObject({ item_phase: "needs_triage", need: { reason: ASK.question } });
+    expect(row(impl.id)).toMatchObject({ item_phase: "needs_you", need: { reason: ASK.question } });
   });
 
   it("the overview's needs_you counts Needs you and Needs triage items plus system actions, nothing from Blocked by another task", async () => {
@@ -1718,7 +1696,7 @@ describe("ui api: Needs you, Needs triage and Blocked by another task", () => {
     const triage = await make(store, 53, "Triage asks");
     await patch(store, triage, { blocked_on: "human", blocked_reason: "agent_needs_human" });
     expect(await count()).toBe(before + 2);
-    const needs = (await json<{ items: { id: string; level: string }[] }>(d, "/api/v1/items?state=needs")).items;
+    const needs = (await json<{ items: { id: string }[] }>(d, "/api/v1/items?state=needs")).items;
     expect(needs.map((i) => i.id)).toEqual(expect.arrayContaining([budget.id, triage.id]));
     expect(needs.map((i) => i.id)).not.toContain(dep.id);
     expect(needs.map((i) => i.id)).not.toContain(phase.id);

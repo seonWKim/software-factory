@@ -25,7 +25,7 @@ import {
   type Capability, type CapabilitySources, type ProviderSource, type Skill, type SkillRef, type StoredRun, type ToolSource,
   capabilityList, grantName, lastUsed, providerId, providerRoles, readSkillRefs, readSkills, skillFolderPath, toolId,
 } from "../runtime/capabilities/capabilities.js";
-import type { UiDeps } from "./pages.js";
+import type { UiDeps } from "./deps.js";
 import type { UiSettings } from "./settings-api.js";
 import { itemPrefix, runParts } from "./transcript.js";
 import { Withholder } from "./withhold.js";

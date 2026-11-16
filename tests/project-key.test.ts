@@ -6,7 +6,7 @@ import { PROJECT_RETRY_MS, build, loadConfig, resolvedConfig, startupProject } f
 import { githubProjectKey, resolveProject } from "../src/impl/github/forge.plugin.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import {
-  UNKNOWN_PROJECT_LABEL, assertProjectKey, isLegacyProject, isProjectKey, projectKeyCursor, projectLabel, projectLabelCursor,
+  assertProjectKey, isLegacyProject, isProjectKey, projectKeyCursor, projectLabel, projectLabelCursor,
 } from "../src/core/project.js";
 import { readProjectLabel, saveProject, saveProjectLabel } from "../src/core/project-labels.js";
 import { type FactoryConfig, cliUserConfig } from "../src/core/config.js";
@@ -19,8 +19,8 @@ import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { projectKeyChecks } from "../src/ui/factory-status.js";
-import { NO_FILTERS } from "../src/ui/filters.js";
-import { type UiDeps, renderIndex, renderItem } from "../src/ui/pages.js";
+import { api } from "../src/ui/api.js";
+import type { UiDeps } from "../src/ui/deps.js";
 import type { Secret } from "../src/interfaces/secret-store.js";
 import { REGISTRY, withPlugin } from "../src/plugins.js";
 import { GitHubForge } from "../src/impl/github/github-forge.js";
@@ -329,30 +329,35 @@ describe("the label, never the key, is shown", () => {
     };
   }
 
-  it("the dashboard shows the project's label and links PRs through it; the raw key never appears", async () => {
+  async function apiGet(d: UiDeps, path: string): Promise<unknown> {
+    const r = await api(d, new URL(`http://127.0.0.1/api/v1${path}`));
+    expect(r.status).toBe(200);
+    return r.value;
+  }
+
+  it("the dashboard API links PRs through the project's label; the raw key never appears", async () => {
     const f = await rawStore();
     await saveProjectLabel(f.store, { key: KEY, label: "github.com/o/r" });
     const { item } = await f.store.createWorkItem({ ...issue(1), project: KEY }, system);
     await f.store.transition({ id: item.id, expected_version: 1, patch: { change_ref: "42", stage: "REVIEW" }, actor: system, reason: "x" });
 
-    const index = await renderIndex(uiDeps(f.store, f.clock), { ...NO_FILTERS });
-    const page = (await renderItem(uiDeps(f.store, f.clock), item.id))!;
-    for (const html of [index, page]) {
-      expect(html).toContain("github.com/o/r");
-      expect(html).toContain(`href="https://github.com/o/r/pull/42"`);
-      expect(html).not.toContain(KEY);
-      expect(html).not.toContain(NODE_ID);
+    const list = await apiGet(uiDeps(f.store, f.clock), "/items");
+    const detail = await apiGet(uiDeps(f.store, f.clock), `/items/${item.id}`);
+    expect((list as { items: unknown[] }).items[0]).toMatchObject({ change_ref: "42", change_url: "https://github.com/o/r/pull/42" });
+    expect((detail as { item: unknown }).item).toMatchObject({ change_ref: "42", change_url: "https://github.com/o/r/pull/42" });
+    for (const json of [list, detail].map((v) => JSON.stringify(v))) {
+      expect(json).not.toContain(KEY);
+      expect(json).not.toContain(NODE_ID);
     }
   });
 
-  it("a project with no stored label shows a fixed text, not the key", async () => {
+  it("a project with no stored label builds no PR link and never gives the key", async () => {
     const f = await rawStore();
     const { item } = await f.store.createWorkItem({ ...issue(1), project: KEY }, system);
     await f.store.transition({ id: item.id, expected_version: 1, patch: { change_ref: "42" }, actor: system, reason: "x" });
-    const page = (await renderItem(uiDeps(f.store, f.clock), item.id))!;
-    expect(page).toContain(UNKNOWN_PROJECT_LABEL);
-    expect(page).toContain("PR #42");
-    expect(page).not.toContain(NODE_ID);
+    const detail = await apiGet(uiDeps(f.store, f.clock), `/items/${item.id}`);
+    expect((detail as { item: unknown }).item).toMatchObject({ change_ref: "42", change_url: null });
+    expect(JSON.stringify(detail)).not.toContain(NODE_ID);
   });
 
   it("comments and log lines name the project by its label, never the key", async () => {

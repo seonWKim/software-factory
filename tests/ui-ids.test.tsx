@@ -18,9 +18,10 @@ const RAW = new RegExp(`\\bwi_[0-9a-z]+|\\bgithub:\\d+|${HOST}:\\d+`);
 
 const gh = (n: number) => ({ type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` });
 const local = { type: "local", id: LOCAL, link: `local:${LOCAL}` };
-const why = (code: string, text: string) => ({ code, text, next_actor: "human", refs: [], ref_url: null });
+// An unknown reason code shows as is (lib/format.ts whyText), so each fixture names its text as its reason code.
+const why = (code: string, text: string) => ({ code, reason_code: text, params: {}, alarms: [], holder_id: null, next_actor: "human", refs: [], ref_url: null });
 const row = (id: string, source: object, level: string, title: string, extra: object = {}) => ({
-  id, source, title, level, badges: [], stage: "RUNNING", tier: 2, kind: null, blocked_on: "none", blocked_reason: null, close_reason: null,
+  id, source, title, item_phase: level, reason_code: "person",  stage: "RUNNING", tier: 2, kind: null, blocked_on: "none", blocked_reason: null, close_reason: null,
   run_status: null, change_ref: null, change_url: null, since: AT, updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 }, ...extra,
 });
 const ITEMS = [
@@ -54,7 +55,7 @@ const ITEM_DETAIL = {
 };
 const RESPONSES: Record<string, unknown> = {
   "/api/v1/overview": { as_of: AT, stages: { RUNNING: 3 }, needs_you: 1, running: 1, queued: 1, last_24h: { succeeded: 0, failed: 1, tokens: 0 }, system_actions: [] },
-  "/api/v1/items": { as_of: AT, total: ITEMS.length, items: ITEMS, facets: { allStates: ITEMS.length, state: {} } },
+  "/api/v1/items": { as_of: AT, total: ITEMS.length, items: ITEMS, facets: { allStates: ITEMS.length, state: {} }, counts: { open: 0, running: 1 } },
   "/api/v1/items/wi_local3": ITEM_DETAIL,
   "/api/v1/runs": { as_of: AT, runs: [{ id: "run_a", status: "running", kind: "implement", work_item_id: "wi_run2", attempt: 1, owner: `${HOST}:4242:0`, heartbeat_at: AT, started_at: AT, lease_expires_at: AT, created_at: AT }] },
   "/api/v1/queue": { as_of: AT, queue: [{ position: 1, id: "run_b", kind: "implement", work_item_id: "wi_local3", attempt: 0, created_at: AT, not_before: null, why: why("queued", "Queued at position 1") }] },

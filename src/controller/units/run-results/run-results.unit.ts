@@ -936,8 +936,8 @@ export class RunResultsUnit {
     const answer = run.kind === "resolve"
       ? "Reply `/resolve <your answer>` to run the resolve again with your answer as its notes, or `/retry` to run it again as it is."
       : `Fix what it needs, then reply \`/retry\` to run the ${run.kind} again, \`/revise <feedback>\` to get a new spec written with your answer, or \`/reject <reason>\` to close.`;
-    const asked = [...new Set((ask.paths ?? []).filter((p) => !isCovered(p, it.allowed_paths)))], reply = run.kind === "implement" ? retryPathsReply(asked) : null;
-    const granted = run.kind === "implement" ? await autoGrant(this.c, { ...it, ...patch }, run, asked, reply, tokens) : undefined; if (granted !== undefined) return granted; // test paths only: once (design 05-restarts)
+    const named = [...new Set(ask.paths ?? [])], asked = named.filter((p) => !isCovered(p, it.allowed_paths)), reply = run.kind === "implement" ? retryPathsReply(asked) : null;
+    const granted = run.kind === "implement" ? await autoGrant(this.c, { ...it, ...patch }, run, { named, asked, reply }, tokens) : undefined; if (granted !== undefined) return granted; // test paths or allowed paths only: once (design 05-restarts)
     const body = (withText: boolean) => [
       "## Factory: the agent needs a human",
       "",

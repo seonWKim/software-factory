@@ -14,7 +14,7 @@ import { validDate } from "../core/quick-add.js";
 import { calendarDays, dayBounds } from "../core/tasks.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
 import type { ApiResult } from "./api.js";
-import type { UiDeps } from "./pages.js";
+import type { UiDeps } from "./deps.js";
 import { Withholder } from "./withhold.js";
 
 export const CALENDAR_EVENTS_PATH = "/api/v1/calendar/events";

@@ -25,7 +25,7 @@ const budget = (over: Partial<GitHubBudget> = {}): GitHubBudget => ({
   wait_reason: null, ...over,
 });
 const overview = (over: Partial<Overview> = {}): Overview => ({
-  as_of: RESET, stages: {}, needs_you: 0, running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 }, ...over,
+  as_of: RESET, stages: {}, needs_you: 0, open: 0, running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 }, ...over,
 });
 
 let current: Overview;

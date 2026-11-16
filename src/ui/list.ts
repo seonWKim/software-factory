@@ -1,16 +1,14 @@
-// The ranked item list (design §9): every listed item with its level, badges and what the filters read.
-// Shared by the HTML page (src/ui/pages.ts) and the JSON API (src/ui/api.ts), so both show the same rows in
-// the same order for the same store and query. Reads only.
+// The ranked item list (design §9): every listed item with its level and what the filters read, for the JSON
+// API (src/ui/api.ts): the items list and its facet counts read the same rows in the same order. Reads only.
 
 import { type ConflictCounts, conflictCounts } from "../core/resolve.js";
 import type { Alert, FactoryStore } from "../interfaces/factory-store.js";
 import { blockingRunKind } from "../core/policy.js";
-import { PHASE_HOLD, PHASES_OPEN } from "../core/split.js";
+import { PERSON_PHASES, phaseOf } from "../core/phase.js";
 import type { ClaimDecision, Run, StateChange, WorkItem, WorkItemId } from "../core/types.js";
-import { alarmText, alarmsFor, openAlarms } from "./alarms.js";
+import { alarmText, alarmsFor, itemAlarms, openAlarms } from "./alarms.js";
 import { type FilterRow, type Filters, runKindOf, searchKeys } from "./filters.js";
-import { esc } from "./html.js";
-import { type PriorityInput, rank } from "./priority.js";
+import { type Level, type PriorityInput, levelOf, rank } from "./priority.js";
 import { heldFailureOf, needCtx } from "./need.js";
 import { type ClaimPauses, type HeldFailure, type Why, type WhyInput, deadlocked, heldBy, refsOf, whyWaiting, withAlarms } from "./why.js";
 import type { Withholder } from "./withhold.js";
@@ -30,11 +28,6 @@ export interface ListCtx {
 export interface ListRow extends FilterRow {
   item: WorkItem;
   input: PriorityInput;
-  badges: string[];
-  /** Escaped title HTML (withheld marker when withheld; source id when untitled). */
-  titleHtml: string;
-  /** The full title as shown, for the title attribute; null when withheld or untitled. */
-  titlePlain: string | null;
   runStatus: "queued" | "running" | null;
   /** The item's queued or running run, and a queued run's 1-based place in the queue. */
   run: Run | null;
@@ -67,7 +60,6 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
   const phases = items.filter((it) => it.parent_id !== null);
   for (const it of items) {
     const run = active.get(it.id) ?? null;
-    const blocked = it.blocked_on === "human" || it.blocked_on === "budget";
     const changes = await c.store.listStateChanges(it.id);
     const decision = run?.kind === "implement" ? (decisions.get(it.id) ?? null) : null;
     const waiting = waitingOn(it, phases);
@@ -75,18 +67,7 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
     const alarms = alarmsFor(open, it, runs);
     inputs.push({
       item: it,
-      stage: it.stage,
-      blocked_on: it.blocked_on,
-      blocked_reason: it.blocked_reason,
-      close_reason: it.close_reason,
-      tier: it.tier,
-      since: blocked && it.stage !== "CLOSED" ? waitingSince(it, changes) : it.updated_at,
-      run: run ? { kind: run.kind, status: run.status as "queued" | "running", heartbeat_at: run.updated_at, paused_at: run.paused_at } : null,
-      last_finished_at: runs.reduce<string | null>((a, r) => (r.finished_at && (!a || r.finished_at > a) ? r.finished_at : a), null),
-      dependents: 0,
-      ...waiting,
-      ...holdOf(decision, run, waiting.waiting_on_number),
-      asked_by: blockingRunKind(it.blocked_reason, runs) ?? null,
+      ...priorityInput(it, run, runs, decision, waiting, changes),
       conflicts: conflictCounts(runs, changes),
       decision,
       alarms,
@@ -97,19 +78,15 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
   const out: ListRow[] = [];
   for (const r of rank(inputs, c.now, c.lease_ms)) {
     const it = r.input.item;
-    const t = it.title ? await c.w.shown(it.title, { max: 120 }) : { html: esc(it.source.id), plain: null };
     out.push({
       item: it,
       input: r.input,
       level: r.level,
-      badges: r.badges,
       stage: it.stage,
       tier: it.tier,
       kind: runKindOf(it.blocked_reason, r.input.run?.kind ?? null),
       dependents: r.input.dependents,
-      search: searchKeys(it.source.id, it.title ? t.plain : null),
-      titleHtml: t.html,
-      titlePlain: t.plain,
+      search: searchKeys(it.source.id, await searchTitle(c.w, it)),
       runStatus: r.input.run?.status ?? null,
       run: active.get(it.id) ?? null,
       position: position.get(active.get(it.id)?.id ?? "") ?? null,
@@ -123,6 +100,55 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
 }
 
 /**
+ * What the ranking reads about one item (priority.ts levelOf): its state, its active run, its last finished run,
+ * what it waits on and its claim hold. One builder for the list and the item page, so both give one level.
+ */
+export function priorityInput(it: WorkItem, run: Run | null, runs: readonly Run[], decision: ClaimDecision | null, waiting: { waiting_on: number; waiting_on_number: number | null }, changes: readonly StateChange[]): PriorityInput {
+  const person = PERSON_PHASES.has(phaseOf(it));
+  return {
+    stage: it.stage,
+    blocked_on: it.blocked_on,
+    blocked_reason: it.blocked_reason,
+    close_reason: it.close_reason,
+    tier: it.tier,
+    since: person ? waitingSince(it, changes) : it.updated_at,
+    run: run && (run.status === "queued" || run.status === "running") ? { kind: run.kind, status: run.status, heartbeat_at: run.updated_at, paused_at: run.paused_at } : null,
+    last_finished_at: runs.reduce<string | null>((a, r) => (r.finished_at && (!a || r.finished_at > a) ? r.finished_at : a), null),
+    dependents: 0,
+    ...waiting,
+    ...holdOf(decision, run, waiting.waiting_on_number),
+    asked_by: blockingRunKind(it.blocked_reason, runs) ?? null,
+  };
+}
+
+/** Why one item waits and its level, from the same reads and rules as listRows (the item page's state). */
+export async function itemState(c: ListCtx, it: WorkItem, runs: readonly Run[], changes: readonly StateChange[]): Promise<{ why: Why; level: Level }> {
+  const { active, position } = await activeRuns(c.store);
+  const run = active.get(it.id) ?? null;
+  const decision = await latestDecision(c.store, it.id, run);
+  const waiting = waitingOn(it, await readPhases(c.store, [it]));
+  const alarms = await itemAlarms(c.store, await openAlarms(c.store, c.now), it);
+  const why = whyOf(it, run, position.get(run?.id ?? "") ?? null, withTitle(decision, await holderTitles(c.store, [decision])), await readClaimPauses(c.store), waiting, c.now, alarms, await heldFailureOf(needCtx(c.store, c.w), it, runs));
+  return { why, level: levelOf(priorityInput(it, run, runs, decision, waiting, changes), c.now, c.lease_ms) };
+}
+
+/**
+ * The open and running counts every page shows (design 09-status-page), defined once: open is every item whose stage
+ * is not CLOSED, running every run whose status is running. The overview (Activity) and the items list (Work) both
+ * read them from here.
+ */
+export async function itemCounts(store: Pick<FactoryStore, "countWorkItemsByStage" | "listRunsByStatus">): Promise<{ open: number; running: number }> {
+  const stages = await store.countWorkItemsByStage();
+  const open = Object.entries(stages).reduce((n, [stage, count]) => n + (stage === "CLOSED" ? 0 : count), 0);
+  return { open, running: (await store.listRunsByStatus(["running"], LIST_LIMIT)).length };
+}
+
+/** The title the search reads: the full title, or null when the item has none or it is withheld. */
+async function searchTitle(w: Withholder, it: WorkItem): Promise<string | null> {
+  return it.title && !(await w.plain(it.title)).withheld ? it.title : null;
+}
+
+/**
  * The closed items as the facet counts read them, when listRows left them out: so the Closed option counts the
  * closed items that match the other filters, as every other option does. One store read (at most LIST_LIMIT
  * items), no per-item reads: a closed item's level is always `closed`, its kind comes from its blocked reason.
@@ -131,8 +157,7 @@ export async function closedFacetRows(c: ListCtx, f: Filters): Promise<FilterRow
   if (showsClosed(f)) return [];
   const out: FilterRow[] = [];
   for (const it of await c.store.listWorkItemsWhere({ stage: "CLOSED", limit: LIST_LIMIT })) {
-    const shown = it.title ? (await c.w.shown(it.title, { max: 120 })).plain : null;
-    out.push({ level: "closed", stage: it.stage, tier: it.tier, kind: runKindOf(it.blocked_reason, null), dependents: 0, search: searchKeys(it.source.id, shown) });
+    out.push({ level: "closed", stage: it.stage, tier: it.tier, kind: runKindOf(it.blocked_reason, null), dependents: 0, search: searchKeys(it.source.id, await searchTitle(c.w, it)) });
   }
   return out;
 }
@@ -152,15 +177,16 @@ export function waitingSince(it: WorkItem, changes: readonly StateChange[]): str
  * Anything else: nothing.
  */
 export function waitingOn(it: WorkItem, phases: readonly WorkItem[]): { waiting_on: number; waiting_on_number: number | null } {
-  if (it.blocked_on === "upstream" && it.blocked_reason === PHASE_HOLD && it.phase !== null) {
+  const p = phaseOf(it);
+  if (p === "phase_hold" && it.phase !== null) {
     const before = phases.find((p) => p.parent_id === it.parent_id && p.phase === it.phase! - 1 && p.stage !== "CLOSED");
     return before ? { waiting_on: 1, waiting_on_number: issueNumber(before) } : { waiting_on: 0, waiting_on_number: null };
   }
-  if (it.blocked_on === "upstream" && it.blocked_reason === PHASES_OPEN) {
+  if (p === "phases_open") {
     const open = phases.filter((p) => p.parent_id === it.id && p.stage !== "CLOSED");
     return { waiting_on: open.length, waiting_on_number: open.length === 1 ? issueNumber(open[0]!) : null };
   }
-  if (it.blocked_on === "dependency") {
+  if (p === "dependency_hold") {
     const refs = refsOf(it.blocked_reason ?? "");
     return { waiting_on: refs.length, waiting_on_number: refs.length === 1 ? refs[0]! : null };
   }
@@ -200,11 +226,11 @@ export async function latestDecision(store: FactoryStore, id: WorkItemId, run: R
   return run?.kind === "implement" ? ((await store.listClaimDecisions(id)).at(-1) ?? null) : null;
 }
 
-/** The titles of the work items that hold a deadlock claim of one of `decisions`: one store read per distinct holder. */
+/** The titles of the work items that hold a deadlock or held claim of one of `decisions`: one store read per distinct holder. */
 export async function holderTitles(store: FactoryStore, decisions: readonly (ClaimDecision | null)[]): Promise<Map<WorkItemId, string | null>> {
   const out = new Map<WorkItemId, string | null>();
   for (const d of decisions) {
-    const id = d?.decision === "deadlock" ? d.holder_work_item_id : null;
+    const id = d?.decision === "deadlock" || d?.decision === "held" ? d.holder_work_item_id : null;
     if (id && !out.has(id)) out.set(id, (await store.getWorkItem(id))?.title ?? null);
   }
   return out;
@@ -245,7 +271,7 @@ export function whyOf(
 
 /** The phases waitingOn reads: the open split items, read only when one of `items` waits on a phase. */
 export async function readPhases(store: FactoryStore, items: readonly WorkItem[]): Promise<WorkItem[]> {
-  if (!items.some((it) => it.blocked_on === "upstream")) return [];
+  if (!items.some((it) => phaseOf(it) === "phase_hold" || phaseOf(it) === "phases_open")) return [];
   return (await store.listWorkItemsWhere({ exclude_closed: true, limit: LIST_LIMIT })).filter((it) => it.parent_id !== null);
 }
 

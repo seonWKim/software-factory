@@ -24,10 +24,10 @@ import { refusalReply } from "../core/authorize.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, isProposalId, parseProposalMarker, typed } from "../core/interpret.js";
 import { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND } from "../core/local-cli.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../core/local-merge.js";
-import { AGENT_NEEDS_HUMAN } from "../core/policy.js";
+import { phaseOf } from "../core/phase.js";
 import type { Run, UserId, WorkItem, WorkItemId } from "../core/types.js";
 import type { AuthDecision } from "../interfaces/auth-provider.js";
-import type { UiDeps } from "./pages.js";
+import type { UiDeps } from "./deps.js";
 import { csrfMatches } from "./settings-api.js";
 
 /** What the commands route needs beside the store. Built once per UI process (compose.ts buildUiParts). */
@@ -242,7 +242,7 @@ export async function itemCommands(
  * that asked decides which commands apply.
  */
 export async function needsYouCommands(d: UiDeps, it: WorkItem, grant: () => Promise<ActorGrant>, text: (v: string) => Promise<string | null>) {
-  const runs = it.blocked_reason === AGENT_NEEDS_HUMAN ? await d.store.listRuns(it.id) : [];
+  const runs = phaseOf(it) === "agent_needs_human" ? await d.store.listRuns(it.id) : [];
   const all = await itemCommands(it, runs, await grant(), text);
   return all.filter((c) => c.name === "verdict" || (c.name !== "budget" && commandSpec(c.name).changes_state));
 }
@@ -253,7 +253,8 @@ export async function needsYouCommands(d: UiDeps, it: WorkItem, grant: () => Pro
  * `text` (the Withholder). Store reads only: the caller passes the item's runs.
  */
 export async function waitingSpec(it: WorkItem, runs: readonly Run[], text: (v: string | null) => Promise<string | null>) {
-  if (it.stage !== "READY" || (it.blocked_reason !== "spec_pending" && it.blocked_reason !== "max_revisions")) return null;
+  const phase = phaseOf(it);
+  if (phase !== "spec_pending" && phase !== "max_revisions") return null;
   const spec = latestSpec(runs);
   if (!spec) return null;
   const decisions = [];

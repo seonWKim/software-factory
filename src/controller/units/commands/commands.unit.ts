@@ -17,7 +17,7 @@ import type { AppCommandRequest, CliCommand, FactoryStore, RedeemLinkResult } fr
 import type { ForgeEvent } from "../../../interfaces/forge.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
 import { answersDetail, splitAnswers } from "../../../shared/command-notes.js";
-import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEvent, COMMAND, MAX_CONFLICT_RETRIES, MAX_FEEDBACK_CHARS, FLOOR_TIER, RULE_OF_TWO, CONFLICT_PENDING, SOURCE_CLOSE_PENDING, retry, splitFiling, splitFilingFailed, splitOpen, footerAfter } from "../support.js";
+import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEvent, COMMAND, MAX_CONFLICT_RETRIES, MAX_FEEDBACK_CHARS, FLOOR_TIER, RULE_OF_TWO, CONFLICT_PENDING, SOURCE_CLOSE_PENDING, retry, splitFiling, splitFilingFailed, splitOpen, footerAfter, alreadyAllowed } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 import { answerPlain, appProposal, confirmProposal, storeProposals } from "./proposals.js";
@@ -185,7 +185,7 @@ export class CommandsUnit {
   }
 
   /** A gate command from a comment (`app` null) or an app request (its user), design §4: `approve_spec`, the
-   * note (a comment's `+paths` too) through G5, the transition (`tag` on its change), the standing follow-up, a reject's close, the pushback's capture. */
+   * note (a comment's `+paths` too) through G5, the transition (`tag` on its change), an "already allowed" `+paths` reply, the standing follow-up, a reject's close, the pushback's capture. */
   async gateCommand(item: WorkItem, e: CommandEvent, app: AppSender = null, tag: StateChangeDetail | null = null): Promise<string | null> {
     const who = e.kind === "spec_approved" || e.kind === "spec_rejected" || e.kind === "budget_continue" ? e.approver : e.requester;
     const principal = app ? await this.c.unit("auth").allowed({ user_id: app.user_id }, "approve_spec", item.id) : await this.c.unit("auth").authorize(who, "approve_spec", item.id);
@@ -193,7 +193,7 @@ export class CommandsUnit {
     const input = await this.commandInput(item.id, e, app === null);
     if ("refuse" in input) return input.refuse;
     const refusal = await this.applyCommand(item.id, e, { kind: "user", id: principal.user_id }, input.note, tag, input.paths);
-    if (refusal === null) await this.c.k.guard("standing", () => this.c.unit("standing").afterSpecCommand(item.id, e, principal.user_id));
+    const said = refusal === null ? alreadyAllowed(item, e, input.paths) : null; if (said) await this.c.unit("outbox").post(item, said.target, said.body, said.marker); if (refusal === null) await this.c.k.guard("standing", () => this.c.unit("standing").afterSpecCommand(item.id, e, principal.user_id));
     if (refusal === null && e.kind === "spec_rejected") await this.c.unit("closes").afterReject(item.id);
     if (refusal === null && (e.kind === "spec_rejected" || e.kind === "revise_requested")) await this.c.unit("outbox").captureTacit(item, e.comment_id, e.kind === "spec_rejected" ? e.reason : e.feedback);
     if (refusal === null && e.kind === "revise_requested") await replyQueued(this.c, item, e.comment_id);

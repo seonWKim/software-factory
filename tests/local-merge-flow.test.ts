@@ -15,7 +15,8 @@ import { LocalToolBroker } from "../src/impl/broker/local-tool-broker.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { HealthMonitor } from "../src/ui/health.js";
-import { type UiDeps, renderItem } from "../src/ui/pages.js";
+import type { UiDeps } from "../src/ui/deps.js";
+import { api } from "../src/ui/api.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import type { Forge } from "../src/interfaces/forge.js";
 import { autoResolveKey } from "../src/core/policy.js";
@@ -338,7 +339,7 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
   });
 
-  it("the base checked out with uncommitted changes: the merge applies, that checkout's HEAD, index and status stay, and the page says so", async () => {
+  it("the base checked out with uncommitted changes: the merge applies, that checkout's HEAD, index and status stay, and the item API says so", async () => {
     const f = await localFactory();
     const id = await f.toMergePending();
     const side = join(f.repo, "..", "side");
@@ -357,9 +358,9 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     const merged = (await f.store.listStateChanges(id)).find((c) => c.reason === "local_merged")!;
     expect(merged.detail).toMatchObject({ checkout_not_updated: realpathSync(side) });
     expect((await f.messages(id, "<!-- factory:local-merged:")).join("")).toContain("that checkout was not updated");
-    const page = (await renderItem(uiDeps(f.store), id))!;
-    expect(page).toContain("not updated");
-    expect(page).toContain(esc(realpathSync(side)));
+    const r = await api(uiDeps(f.store), new URL(`http://127.0.0.1/api/v1/items/${id}`));
+    const timeline = (r.value as { timeline: { reason: string; detail: Record<string, string | null> | null }[] }).timeline;
+    expect(timeline.find((c) => c.reason === "local_merged")?.detail).toMatchObject({ checkout_not_updated: realpathSync(side) });
   });
 
   it("the base checked out clean: that checkout is fast-forwarded to the merge (HEAD, index and files), status still clean", async () => {
@@ -421,11 +422,10 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
   });
 });
 
-/** The status page's dependencies, enough for the item page. */
+/** The dashboard API's dependencies, enough for an item's detail. */
 function uiDeps(store: UiDeps["store"]): UiDeps {
   return {
     store, scanner: cleanScanner, clock: new FakeClock(), lease_ms: 60_000,
     health: new HealthMonitor(async () => [{ ok: true, msg: "ok" }], new FakeClock()),
   };
 }
-const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");

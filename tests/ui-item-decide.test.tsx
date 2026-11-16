@@ -24,7 +24,7 @@ const item = (extra: object = {}) => ({
   id: "wi_9f3c2a", source: { type: "github_issue", id: "o/r#30", link: "https://github.com/o/r/issues/30" }, title: "Check the scope in CI",
   stage: "READY", close_reason: null, blocked_on: "human", blocked_reason: "spec_pending", tier: 2, loop_count: 0, restart_count: 0, token_cost: 0,
   change_ref: null, change_url: null, spec_comment_url: null, parent_id: null, phase: null, phases: [], version: 3, created_at: AT, updated_at: AT,
-  why: { code: "human", text: "Waiting for a person to approve the spec", next_actor: "human", refs: [], ref_url: null },
+  why: { code: "human", reason_code: "spec_pending", params: {}, alarms: [], holder_id: null, next_actor: "human", refs: [], ref_url: null },
   ...extra,
 });
 const detail = (extra: object = {}) => ({
@@ -81,7 +81,7 @@ const FACTORY_MSG = { seq: 7, at: AT, kind: "spec", author: "factory", role: "fa
 
 describe("item page: What you need to decide", () => {
   it("an item in triage (next actor is the factory) renders no decision box, but still has its menu", async () => {
-    body = detail({ item: item({ stage: "NEW", blocked_on: null, blocked_reason: null, why: { code: "triage", text: "Running triage", next_actor: "factory", refs: [], ref_url: null } }), spec: null });
+    body = detail({ item: item({ stage: "NEW", blocked_on: null, blocked_reason: null, why: { code: "triage", reason_code: "person", params: { reason: "Running triage" }, alarms: [], holder_id: null, next_actor: "factory", refs: [], ref_url: null } }), spec: null });
     mount();
     await screen.findByRole("heading", { name: "Check the scope in CI" });
     await screen.findByRole("button", { name: "More commands" });
@@ -92,7 +92,7 @@ describe("item page: What you need to decide", () => {
 
   it("at merge_pending renders one box whose first button is Merge, then Good/Bad, Feedback and the menu", async () => {
     body = detail({
-      item: item({ stage: "MERGE_PENDING", blocked_reason: null, merge: { enabled: true, reason: null }, why: { code: "merge", text: "Ready to merge", next_actor: "human", refs: [], ref_url: null } }),
+      item: item({ stage: "MERGE_PENDING", blocked_reason: null, merge: { enabled: true, reason: null }, why: { code: "merge", reason_code: "person", params: { reason: "Ready to merge" }, alarms: [], holder_id: null, next_actor: "human", refs: [], ref_url: null } }),
       commands: ["verdict", "reject"].map(cmd), spec: null,
     });
     mount();

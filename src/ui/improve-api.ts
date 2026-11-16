@@ -1,4 +1,4 @@
-// The Health panel's Run now (design §7 and §9, issue #508): POST /api/v1/improve/run queues one manual improve
+// The Rules page's Run now (design §7 and §9, issue #508): POST /api/v1/improve/run queues one manual improve
 // run of the configured project through enqueueImprove, as `factory improve` does. The request guards (Host,
 // Origin, Content-Type, CSRF token) run in server.ts first; then the approver check, the pause route's: the page's
 // factory user must be allowed `approve_spec` on the project, asked of the local grants only (no forge call). A
@@ -28,7 +28,7 @@ async function approver(p: UiPauses): Promise<{ user: UserId } | { error: string
   return decision.allow ? { user } : { error: `Running an improve run needs write permission (approve_spec): ${decision.reason}. Or run \`factory improve\`.` };
 }
 
-/** The Health panel's Run now button: its CSRF token when the route is wired and the page's user may approve, else null. */
+/** The Rules page's Run now button: its CSRF token when the route is wired and the page's user may approve, else null. */
 export async function runNowButton(d: PauseDeps): Promise<{ csrfToken: string } | null> {
   if (!improveRunWired(d) || "error" in (await approver(d.pauses))) return null;
   return { csrfToken: d.pauses.csrfToken };
