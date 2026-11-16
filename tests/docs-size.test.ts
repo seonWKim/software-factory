@@ -15,7 +15,6 @@ const MAX_TOPIC_BYTES = 30_000;
 const OVER_CAP = new Set([
   "02-tasks.md",
   "04-gate-commands.md",
-  "04-pre-push-gates.md",
   "05-coordination.md",
   "05-restarts.md",
   "05-sources.md",

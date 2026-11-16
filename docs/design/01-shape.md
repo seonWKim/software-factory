@@ -17,6 +17,4 @@ graph LR
   H2 -->|"approve"| PM
 ```
 
-## History
-
-No earlier decision is recorded for this topic.
+- Replaced decisions of this topic: [history/01-shape.md](history/01-shape.md).
