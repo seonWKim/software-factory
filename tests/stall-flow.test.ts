@@ -245,14 +245,14 @@ describe("the stall pause line", () => {
     const line = `agents paused: model not answering since ${iso(f.stalledAt)}, next probe at ${iso(f.stalledAt + PROBE_MS)}`;
     // factory status
     expect(await modelStallLine(f.store)).toBe(line);
-    // the dashboard's Health panel
+    // the dashboard's health report (/api/health)
     const health = new HealthMonitor(() => modelStallChecks(f.store), f.clock, 0);
-    expect(await health.section(cleanScanner, { refresh: false })).toContain(line);
+    expect((await health.report(cleanScanner)).checks).toContainEqual({ status: "fail", msg: line });
 
     f.clock.advance(PROBE_MS);
     await f.prober.tickModelProbe();
     expect(await modelStallLine(f.store)).toBeNull();
-    expect(await health.section(cleanScanner, { refresh: false })).not.toContain("agents paused");
+    expect((await health.report(cleanScanner)).checks.map((c) => c.msg).join("\n")).not.toContain("agents paused");
   });
 });
 

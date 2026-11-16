@@ -24,8 +24,8 @@
 // agents home is and which CLI is missing there, and gives the owner the `integrations` value that turns the ledger
 // on; the page writes it through POST /api/v1/settings, whose guards and owner check run as for any setting.
 //
-// `improve` (design 07-self-improvement, 2026-11-16) carries the latest improve report, as the classic page's
-// improveSection shows it, every text through the same Withholder, and `run_now`: whether the viewer may run one now
+// `improve` (design 07-self-improvement, 2026-11-16) carries the latest improve report, every text through
+// the Withholder, and `run_now`: whether the viewer may run one now
 // (improve-api.ts runNowButton, approve_spec), with the token Run now sends to POST /api/v1/improve/run. It is there
 // with the ledger on or off.
 

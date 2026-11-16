@@ -145,6 +145,21 @@ describe("ui: read-only status page", () => {
     expect(noHost.body).not.toContain("Merge me");
   });
 
+  it("the classic page is gone: /classic and /items/<id> are the 404 page, which links to /app/ and allows no script", async () => {
+    const { port, items } = await seeded();
+    for (const path of ["/classic", "/classic?closed=1", `/items/${items.done.id}`, `/items/${items.waiting.id}`]) {
+      const res = await get(port, path);
+      expect(res.status, path).toBe(404);
+      expect(res.headers["content-type"], path).toMatch(/^text\/html/);
+      expect(res.body, path).toContain(`<a href="/app/">`);
+      expect(res.body, path).not.toContain("<script");
+      expect(res.body, path).not.toContain("Done item");
+      const csp = String(res.headers["content-security-policy"]);
+      expect(csp, path).toMatch(/^default-src 'none'/);
+      expect(csp, path).not.toContain("script-src");
+    }
+  });
+
   it("reading every page and API route writes nothing to the store", async () => {
     const { port, store, items } = await seeded();
     const ids = Object.values(items).map((i) => i.id as WorkItemId);

@@ -1,4 +1,4 @@
-// `factory ui`: the status page over FactoryStore (design §9, architecture §1).
+// `factory ui`: the dashboard's server over FactoryStore (design §9, architecture §1).
 // node:http only, bound to 127.0.0.1 with no host option. GET and HEAD only, on every path (/api/health too),
 // except the write routes: POST /api/v1/settings (design §8, issue #236), POST /api/v1/items/:id/commands
 // (design §9, issue #227; commands.ts), POST /api/v1/pauses/resume (design §5 Restarts, issue #291), POST
@@ -15,9 +15,9 @@
 // the commands actor, the plugins import the page's factory user. GET /api/v1/plugins/import (it reads the user's own
 // Claude Code and Codex configs) also needs the CSRF token after the Host check. A POST to any
 // other path answers 405 as JSON; every other method answers 405 in its area's format. The Host header must name
-// 127.0.0.1 or localhost, so a page on another origin cannot read this one through DNS rebinding. The CSP
-// allows only the page's own inline style and script (by hash; on /classic also the Run now script when shown), same-origin fetches and same-origin GET forms.
-// Three areas, the same guards for each: the HTML pages (/, /items/<id>, /api/health), the JSON API under
+// 127.0.0.1 or localhost, so a page on another origin cannot read this one through DNS rebinding. Outside /app the
+// CSP allows only the error page's own inline style (by hash) and no script.
+// Three areas, the same guards for each: the rest (/ redirects to the app, /api/health, the HTML error pages), the JSON API under
 // /api/v1 (api.ts, GET /api/v1/notices in notices-api.ts, GET /api/v1/rules and /api/v1/rules/entry in rules-api.ts, GET
 // /api/v1/tasks (`?project=<slug>`: the project switcher) in tasks-api.ts, GET /api/v1/plugins (the Plugins page) in plugins-api.ts and GET
 // /api/v1/calendar in calendar-api.ts, GET /api/v1/calendar/events (the Calendar page's range read) in
@@ -26,7 +26,6 @@
 
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import type { WorkItemId } from "../core/types.js";
 import { type ApiDeps, api, apiError, isApiPath } from "./api.js";
 import { DEFAULT_APP_DIR, appText, isAppPath, serveApp } from "./app.js";
 import { MAX_COMMAND_BODY, commandsPathId, commandsPost, staleCsrf } from "./commands.js";
@@ -43,11 +42,7 @@ import { PLUGINS_IMPORT_PATH, readPluginsImport, writePluginsImport } from "./pl
 import { CALENDAR_CONNECT_PATH, CALENDAR_DISCONNECT_PATH, CALENDAR_PATH, readCalendarStatus, writeCalendar } from "./calendar-api.js";
 import { CALENDAR_EVENTS_PATH, readCalendarEvents } from "./calendar-events-api.js";
 import { DATA_ASK_PATH, askData } from "./data-ask.js";
-import { RUN_NOW_SCRIPT, RUN_NOW_SCRIPT_HASH } from "./health.js";
-import { parseFilters } from "./filters.js";
-import { SCRIPT_HASH, STYLE_HASH, esc, page } from "./html.js";
-import type { UiDeps } from "./deps.js";
-import { renderIndex, renderItem } from "./pages.js";
+import { APP_HOME, STYLE_HASH, errorPage } from "./html.js";
 
 export type { UiDeps } from "./deps.js";
 export type { PauseDeps } from "./pause-api.js";
@@ -57,16 +52,9 @@ export const BIND = "127.0.0.1";
 const ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost"]);
 const ALLOW = "GET, HEAD";
 
-/** The HTML pages' CSP with these script hashes: the page's own script, plus Run now's on a page that shows it. */
-function csp(scripts: readonly string[]): string {
-  return (
-    `default-src 'none'; script-src ${scripts.map((h) => `'${h}'`).join(" ")}; style-src '${STYLE_HASH}'; connect-src 'self'; ` +
-    "form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
-  );
-}
-
 const SECURITY_HEADERS: Record<string, string> = {
-  "content-security-policy": csp([SCRIPT_HASH]),
+  // No script-src: default-src 'none' allows none.
+  "content-security-policy": `default-src 'none'; style-src '${STYLE_HASH}'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'`,
   "x-content-type-options": "nosniff",
   "x-frame-options": "DENY",
   "referrer-policy": "no-referrer",
@@ -105,11 +93,6 @@ export function allowedHost(host: string | undefined): boolean {
   return m !== null && ALLOWED_HOSTS.has(m[1]!);
 }
 
-/** The server-rendered status page, kept beside the app until the app covers everything it shows. */
-export const CLASSIC_PATH = "/classic";
-/** Where `/` sends the browser. */
-export const APP_HOME = "/app/";
-
 function html(status: number, body: string, extra: Record<string, string> = {}): UiResponse {
   return { status, headers: { "content-type": "text/html; charset=utf-8", ...SECURITY_HEADERS, ...extra }, body };
 }
@@ -119,7 +102,7 @@ function json(status: number, value: unknown): UiResponse {
 }
 
 function error(status: number, message: string, extra: Record<string, string> = {}): UiResponse {
-  return html(status, page(`${status}`, `<h1>${esc(status)}</h1><p>${esc(message)}</p>`), extra);
+  return html(status, errorPage(status, message), extra);
 }
 
 /** A raw request URL's path, without its query string or fragment. */
@@ -267,32 +250,9 @@ export async function respond(d: ApiDeps, req: UiRequest): Promise<UiResponse> {
   }
   if (isAppPath(url.pathname)) return serveApp(d.appDir ?? DEFAULT_APP_DIR, url.pathname);
 
-  // The app is the default UI (design §9, 2026-11-07); the server-rendered page stays at CLASSIC_PATH.
+  // The app is the only UI (design 09-dashboard-app); every other HTML path is the 404 page.
   if (url.pathname === "/") return html(302, "", { location: APP_HOME });
-  if (url.pathname === CLASSIC_PATH) {
-    const parsed = parseFilters(url.searchParams);
-    if (!parsed.ok) return error(400, parsed.error);
-    const healthRefresh = url.searchParams.get("health") === "refresh";
-    const body = await renderIndex(d, parsed.filters, url.pathname + url.search, healthRefresh);
-    // The Health panel's Run now button brings its own script; only a page that shows it allows it.
-    const runNow = body.includes(`<script>${RUN_NOW_SCRIPT}</script>`);
-    return html(200, body, runNow ? { "content-security-policy": csp([SCRIPT_HASH, RUN_NOW_SCRIPT_HASH]) } : {});
-  }
-
   if (url.pathname === "/api/health") return json(200, await d.health.report(d.scanner));
-
-  const m = /^\/items\/([^/]+)$/.exec(url.pathname);
-  if (m) {
-    let id: string;
-    try {
-      id = decodeURIComponent(m[1]!);
-    } catch {
-      return error(404, "Not found.");
-    }
-    const body = await renderItem(d, id as WorkItemId);
-    return body === null ? error(404, "No such work item.") : html(200, body);
-  }
-
   return error(404, "Not found.");
 }
 

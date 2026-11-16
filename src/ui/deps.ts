@@ -1,4 +1,4 @@
-// The dependencies the dashboard's HTML pages and JSON API read through, and the token count of a run.
+// The dependencies the dashboard's JSON API reads through, and the token count of a run.
 
 import { type Run, outcomeTokens } from "../core/types.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -18,7 +18,7 @@ export interface UiDeps {
   clock: Clock;
   /** Running runs whose last heartbeat is older than this are highlighted. */
   lease_ms: number;
-  /** The Health panel and /api/health: doctor's checks, rate-limited and egress-scanned. */
+  /** /api/health and /api/v1/health: doctor's checks, rate-limited and egress-scanned. */
   health: HealthMonitor;
   /** The supervisor's state (null: no status file); absent: the banner is not shown. */
   factoryStatus?: () => Promise<FactoryStatus | null>;

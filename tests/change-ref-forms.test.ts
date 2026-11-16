@@ -23,10 +23,8 @@ const ALLOWED: Readonly<Record<string, string>> = {
   "core/session.ts": "session messages name issues and PRs as `#N`, and its PR body's `Closes #N`",
   "ui/api.ts": "an issue item's number from its `owner/repo#N` source id, and an issue number in a code comment",
   "ui/filters.ts": "the `#N` search key of an issue item",
-  "ui/html.ts": "CSS colours (`#1f2328`) and HTML entities (`&#39;`), not change refs",
   "ui/list.ts": "an issue item's number from its source id",
   "ui/need.ts": "the item's change shown as `PR #N`",
-  "ui/pages.ts": "the item's change shown as `PR #N`, and an issue item's `#N`",
   "ui/priority.ts": "an item waiting on another, as `#N`",
   "ui/why.ts": "dependency refs `#N` in an item's text, and the phase it waits on",
 };

@@ -1,8 +1,7 @@
 // What a waiting item's row says (design §9): the reason in plain words, where to act, and the command to type.
-// One function for the classic page (pages.ts) and the items API (api.ts), so both give the same reason for the
-// same item. Store reads only, no forge call: the PR link is the item's stored change_url. A reason with nothing
-// to add to the item's why (why.ts) is `from_why`: the app shows the why's en.ts text instead, so Tasks and Work
-// say the same words; the classic page shows the stored reason with spaces.
+// For the items API (api.ts): one function, so every row gives the same reason for the same item. Store reads
+// only, no forge call: the PR link is the item's stored change_url. A reason with nothing to add to the item's
+// why (why.ts) is `from_why`: the app shows the why's en.ts text instead, so Tasks and Work say the same words.
 
 import { LOCAL_SOURCE } from "../core/local-merge.js";
 import { parseNeedsHuman } from "../core/outputs.js";
