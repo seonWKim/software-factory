@@ -1741,6 +1741,8 @@ CREATE INDEX controller_claim_decisions_work_item ON controller_claim_decisions 
 
 CREATE INDEX controller_dependency_edges_target ON controller_dependency_edges (depends_on);
 
+CREATE INDEX controller_handoffs_item ON controller_handoffs (work_item_id, at);
+
 CREATE INDEX controller_improve_reports_project ON controller_improve_reports (project_key, created_at);
 
 CREATE INDEX controller_inbox_expiry ON controller_inbox (expires_at);
@@ -1833,6 +1835,8 @@ CREATE INDEX inbound_raw_records_seq ON inbound_raw_records (source_type, seq);
 
 CREATE INDEX link_codes_live ON "legacy_link_codes" (used_at, expires_at);
 
+CREATE INDEX outbound_actions_item ON outbound_actions (work_item_id, action, seq);
+
 CREATE UNIQUE INDEX outbound_actions_key ON outbound_actions (intent_key);
 
 CREATE INDEX outbound_actions_pending ON outbound_actions (delivered_at, seq);
@@ -1844,6 +1848,8 @@ CREATE INDEX outbound_batch_intents_batch ON outbound_batch_intents (batch_id, s
 CREATE INDEX outbound_batches_destination ON outbound_batches (destination, seq);
 
 CREATE INDEX outbound_batches_flush ON outbound_batches (state, flush_at);
+
+CREATE INDEX outbound_deliveries_comment ON outbound_deliveries (comment_id);
 
 CREATE INDEX outbound_inbox_expiry ON outbound_inbox (expires_at);
 

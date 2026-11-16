@@ -2547,6 +2547,18 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect(await counts()).toEqual(before);
     });
 
+    it("the base push, handoff and posted-comment lookups use their indexes, not a table scan", async () => {
+      const { store } = await make();
+      const plan = async (sql: string) => (await dbOf(store).all(`EXPLAIN QUERY PLAN ${sql}`, ["x"])).map((r) => String(r.detail)).join("; ");
+      // The store's queries, as getBasePush, listHandoffs and the reactions' comment lookup send them.
+      expect(await plan("SELECT seq, args, delivered_ref FROM outbound_actions WHERE action = 'push_base' AND work_item_id = ? ORDER BY seq DESC LIMIT 1"))
+        .toMatch(/SEARCH outbound_actions USING INDEX outbound_actions_item \(work_item_id=\? AND action=\?\)/);
+      expect(await plan("SELECT * FROM controller_handoffs WHERE work_item_id = ? ORDER BY at, rowid"))
+        .toMatch(/SEARCH controller_handoffs USING INDEX controller_handoffs_item \(work_item_id=\?\)/);
+      expect(await plan("SELECT * FROM outbound_deliveries WHERE comment_id = ? ORDER BY created_at, updated_at, marker"))
+        .toMatch(/SEARCH outbound_deliveries USING INDEX outbound_deliveries_comment \(comment_id=\?\)/);
+    });
+
     it("pruneHistory deletes authz_audit rows older than the cutoff; a recent one stays", async () => {
       const { store, clock } = await make();
       const decide = (principal: string) => store.recordOwnerDecision({ principal: principal as UserId, action: "approve_spec", allow: true, reason: "allowed" });
