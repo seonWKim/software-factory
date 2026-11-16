@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import {
-  API, type FactoryState, type Health, type HostSleepRow, type ItemDetail, type ItemRow, type Items, type Overview, type PauseRow, type PhaseRow, type PausesView, type QueueRow, type RunRow,
+  API, type FactoryState, type GitHubBudget, type Health, type HostSleepRow, type ItemDetail, type ItemRow, type Items, type Overview, type PauseRow, type PhaseRow, type PausesView, type QueueRow, type RunRow,
   type UnreviewedMerges, type WorkerProcess, type WorkersView, postResume, useApi,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
@@ -685,7 +685,29 @@ function CheckList({ checks }: { checks: Health["checks"] }) {
   );
 }
 
-type HealthTab = "checks" | "pauses" | "sleeps" | "merges";
+type HealthTab = "checks" | "pauses" | "sleeps" | "merges" | "github";
+
+/**
+ * The GitHub budget tab (design 09-dashboard-app, 2026-11-16): what the controller stored after its last poll, so no
+ * GitHub call. Remaining of limit until reset_at, the counted calls (and the share when one is set), a banner while
+ * waiting or low, and the token's days left when the last health run checked it.
+ */
+function GitHubBudgetTab({ budget, tokenDays }: { budget: GitHubBudget; tokenDays: Overview["github_token_days"] }) {
+  return (
+    <Section title={t("health.githubBudget")}>
+      <div data-github-budget className="space-y-2 text-sm">
+        {budget.state === "waiting" && <Notice tone="warn">{t("health.budgetWaiting", { reason: budget.wait_reason ?? budget.reset_at })}</Notice>}
+        {budget.state === "low" && <Notice tone="warn">{t("health.budgetLow")}</Notice>}
+        <p className="tabular-nums">{t("health.budgetLeft", { remaining: budget.remaining, limit: budget.limit, reset: budget.reset_at })}</p>
+        <p className="tabular-nums text-text-2">{t("health.budgetCounted", { counted: budget.counted })}</p>
+        {budget.share_limit !== null && <p className="tabular-nums text-text-2">{t("health.budgetShare", { share_limit: budget.share_limit, share: budget.budget_share })}</p>}
+        {tokenDays !== null && tokenDays !== undefined && (
+          <p data-token-days className="tabular-nums">{tokenDays === "unknown" ? t("health.tokenUnknown") : t("health.tokenDays", { days: tokenDays })}</p>
+        )}
+      </div>
+    </Section>
+  );
+}
 
 /** One row per sleep event: entries with the same `woke_at` (one per worker) merge, the gap being the largest. */
 function groupSleeps(sleeps: readonly HostSleepRow[]): { woke_at: string; gap_ms: number; slots: number[] }[] {
@@ -718,7 +740,7 @@ export function HealthPage() {
   const overview = useApi<Overview>(API.overview);
   const viewer = useViewer();
   const held = (pauses.data?.pauses.length ?? 0) > 0;
-  const [picked, pick] = useUrlParam("tab", (v) => ["checks", "pauses", "sleeps", "merges"].includes(v));
+  const [picked, pick] = useUrlParam("tab", (v) => ["checks", "pauses", "sleeps", "merges", "github"].includes(v));
   if (health.isError) return <><PageHeader title={t("page.health")} /><ErrorNote error={health.error} /></>;
   if (!health.data) return <><PageHeader title={t("page.health")} /><Loading rows={6} /></>;
   const order = ["fail", "warn", "ok"];
@@ -729,11 +751,14 @@ export function HealthPage() {
   const sleeps = groupSleeps(health.data.sleeps ?? []);
   const failing = checks.some((c) => c.status === "fail");
   const mergeList = merges.data?.merges;
+  const budget = overview.data?.github_budget ?? null;
   const options: { id: HealthTab; label: string }[] = [
     { id: "checks", label: `${t("health.tabChecks")} (${checks.length})${failing ? ` ${t("health.failMark")}` : ""}` },
     ...(held ? [{ id: "pauses" as const, label: `${t("pause.title")} (${pauses.data!.pauses.length})` }] : []),
     { id: "sleeps", label: `${t("health.sleeps")} (${sleeps.length})` },
     { id: "merges", label: `${t("health.merges")}${mergeList ? ` (${mergeList.length})` : ""}` },
+    // Only while a GitHub budget is stored (GitHub selected and polled).
+    ...(budget ? [{ id: "github" as const, label: t("health.githubBudget") }] : []),
   ];
   const tab = options.some((o) => o.id === picked) ? (picked as HealthTab) : "checks";
   return (
@@ -792,6 +817,7 @@ export function HealthPage() {
           </Section>
         </div>
       )}
+      {tab === "github" && budget && <GitHubBudgetTab budget={budget} tokenDays={overview.data?.github_token_days} />}
     </>
   );
 }
