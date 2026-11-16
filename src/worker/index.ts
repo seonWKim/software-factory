@@ -4,7 +4,7 @@
 
 export { Worker } from "./runner.js";
 export {
-  CountedKeepAwake, WORKERS_CLI_ACTOR, WORKERS_USAGE, WorkerPool, parseWorkersArgs, runWorkersCommand,
+  CountedKeepAwake, WORKERS_USAGE, WorkerPool, parseWorkersArgs, runWorkersCommand,
 } from "./pool.js";
 export {
   DIFF_CHECK_MS, HOST_SLEEP_MS, NETWORK_PAUSED_BY, NO_COMMITS_DETAIL, READ_TOOLS, TRUSTED_GIT_ENV, WARM_FAILED, WRITE_TOOLS,

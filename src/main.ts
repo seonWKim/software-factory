@@ -4,17 +4,12 @@
 // command word but what any other first word means (design 04-gate-commands).
 
 import { randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
 import { CHILD_ERROR_MESSAGE } from "./interfaces/updater.js";
-import { CODE_ROOT_ENV, Plugins, buildStatsStore, cliConfig, loadConfig, localAuth, localProject } from "./compose.js";
+import { CODE_ROOT_ENV, Plugins, cliConfig, loadConfig, ownerRefusal } from "./compose.js";
 import { defineCommand, loadCommands, resolveCommand } from "./cli/index.js";
-import { cliEnvironment } from "./cli/support.js";
 import { SENTENCE_FORM } from "./core/command-table.js";
-import { cliUserConfig } from "./core/config.js";
-import { cliIdentity, parseSentence, runSentence } from "./core/local-cli.js";
+import { parseSentence, runSentence } from "./core/local-cli.js";
 import { SUPERVISED_ENV } from "./supervisor.js";
-import { storeProjectResolver } from "./ui/settings-api.js";
 
 const HEADER = `factory [--config <path>] <command>
 
@@ -36,28 +31,15 @@ const SENTENCE = defineCommand({
       console.error(`${parsed.error}\n${ctx.usage}`);
       return 1;
     }
-    const loaded = await ctx.load();
-    const identity = cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root));
-    await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
-    const store = await buildStatsStore(loaded);
-    try {
-      await store.migrate();
+    const identity = await ctx.identity();
+    return ctx.withStore(async (store, loaded) => {
       const p = new Plugins(loaded);
       const secrets = await p.secrets();
-      const auth = await localAuth(loaded, store);
-      const repo = { owner: loaded.config.repo.owner, name: loaded.config.repo.name };
-      const refusal = async () => {
-        const project = (await storeProjectResolver(store, repo)()) ?? (loaded.config.local_only ? localProject(repo) : null);
-        if (!project) return "no project key is stored yet; start the factory once first";
-        const d = await auth.authorize({ user_id: identity.user, attributes: {} }, "approve_spec", { kind: "project", id: project.key });
-        return d.allow ? null : d.reason;
-      };
+      const refusal = ownerRefusal(loaded, store, identity.user, "approve_spec");
       const r = await runSentence({ store, llm: await p.llm(secrets), scanner: await p.scanner(secrets), identity, refusal, newId: () => randomUUID() }, parsed.text);
       for (const line of r.lines) (r.code === 0 ? console.log : console.error)(line);
       return r.code;
-    } finally {
-      await store.close();
-    }
+    });
   },
 });
 
@@ -66,7 +48,7 @@ async function main(argv: readonly string[]): Promise<number> {
   const { args: [cmd, ...args], configFile } = cliConfig(argv, process.env, process.cwd());
   const commands = await loadCommands();
   const usage = `${HEADER}\n${[...new Set(commands.values()), SENTENCE].map((c) => c.usage).join("\n")}`;
-  // Any other first word is the sentence form, `factory "<words>"` (resolveCommand).
+  // Any other first word is a mistyped command name or the sentence form, `factory "<words>"` (resolveCommand).
   const found = resolveCommand(commands, SENTENCE, cmd, args);
   if (!found) {
     console.log(usage);

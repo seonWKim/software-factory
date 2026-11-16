@@ -29,7 +29,7 @@ export function parseResumeArgs(args: readonly string[]): { pauses: ResumablePau
 
 export interface ResumeDeps {
   store: Pick<FactoryStore, "endClaimPause">;
-  /** Who resumes, as an ID (`local:<login>` on the CLI, the factory user ID in the UI), never a display name. */
+  /** Who resumes, as an ID (the CLI identity's user on the CLI, the factory user ID in the UI), never a display name. */
   actor: string;
   log: Logger;
 }
@@ -41,8 +41,15 @@ export async function endPause(d: ResumeDeps, pause: ResumablePause): Promise<{ 
   return r;
 }
 
-/** `factory resume`: one line per pause, what it ended or "no pause in effect". Always exit 0. */
-export async function runResume(d: ResumeDeps, a: { pauses: readonly ResumablePause[] }): Promise<{ code: number; lines: string[] }> {
+/**
+ * `factory resume`: the owner check first (approve_spec, as the dashboard's "Resume now"); a refusal is one line, exit 1,
+ * and ends nothing. Else one line per pause, what it ended or "no pause in effect", exit 0.
+ */
+export async function runResume(
+  d: ResumeDeps & { refusal: () => Promise<string | null> }, a: { pauses: readonly ResumablePause[] },
+): Promise<{ code: number; lines: string[] }> {
+  const refused = await d.refusal();
+  if (refused !== null) return { code: 1, lines: [`not resumed: ${refused}`] };
   const lines: string[] = [];
   for (const pause of a.pauses) {
     const r = await endPause(d, pause);

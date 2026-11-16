@@ -54,7 +54,8 @@ function unlinkedHelp(): string {
 /** The refusal of a write that waits for chat edge passports (#479). */
 export function edgeRefusal(c: TableCommand): string {
   return `\`${c.name}\` was not run: from Slack, writes to settings and the mode wait for signed command passports (issue #479). ` +
-    `Run \`factory ${cliUsageOf(c)}\` from the command line. Reads (\`settings list\`, \`settings history\`) work here.`;
+    `Change it on the dashboard: Settings (/app/settings), or run \`factory ${cliUsageOf(c)}\` from the command line. ` +
+    "Reads (`settings list`, `settings history`) work here.";
 }
 
 /**

@@ -211,7 +211,7 @@ describe("POST /api/v1/settings", () => {
     // buildUiParts takes the actor the ui command builds as the CLI identity (issue #318): cli_user, git user.email, the OS
     // login, or anonymous; an ID, never a display name (tests/local-cli.test.ts covers the order).
     const main = readFileSync(join(import.meta.dirname, "../src/cli/handlers/ui/ui.command.ts"), "utf8");
-    expect(main).toContain("const identity = cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root));");
+    expect(main).toContain("const identity = await ctx.identity();");
     expect(main).toContain("buildUiParts(loaded, { identity })");
   });
 
