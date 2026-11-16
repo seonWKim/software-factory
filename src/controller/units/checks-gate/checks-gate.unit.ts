@@ -7,13 +7,15 @@ import { parseReview } from "../../../core/outputs.js";
 import { runKey, branchFor } from "../../../core/policy.js";
 import { lastPrNotes } from "../../../core/pr-body.js";
 import { type Run, type RunId, type RunInput, type Tier, type WorkItem, type WorkItemId } from "../../../core/types.js";
-import type { PrChecks } from "../../../interfaces/forge.js";
+import type { BaseChecks, PrChecks } from "../../../interfaces/forge.js";
 import { type Decision, SYSTEM, UNCHANGED_HEAD, CHECKS_FAILED, CHECKS_FAILED_UPDATE, footerAfter, updateKey } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
 /** blocked_reason (with `blocked_on: ci`) of a reviewed PR whose checks have not finished (design §5 CI gate). */
 const CHECKS_PENDING = "checks_pending";
+/** blocked_reason prefix (with `blocked_on: ci`) of a PR whose every failed check fails on the base too; the first name follows. */
+const MAIN_RED = "main is red: ";
 /** Items waiting on checks looked at per tick. */
 const CHECKS_BATCH = 50;
 /** Check names kept per decision and per review input, and characters per name. */
@@ -23,16 +25,31 @@ const MAX_CHECK_NAME_CHARS = 100;
 function waitingOnChecks(it: WorkItem): boolean {
   return it.stage === "REVIEW" && it.blocked_on === "ci" && it.blocked_reason === CHECKS_PENDING;
 }
+/** A reviewed PR waiting for its base to turn green (design 05-ci-gate, Red main). */
+function waitingOnMain(it: WorkItem): boolean {
+  return it.stage === "REVIEW" && it.blocked_on === "ci" && (it.blocked_reason?.startsWith(MAIN_RED) ?? false);
+}
+/** An item the checks step reads again each tick: its checks pending, or its base red. */
+function waitingOnCi(it: WorkItem): boolean {
+  return waitingOnChecks(it) || waitingOnMain(it);
+}
 
 /** The CI gate: a reviewed PR waits for its checks; failed checks send it back or block it. */
 export class ChecksGateUnit {
   constructor(private readonly c: Ctx) {}
 
   /**
+   * The base checks read during one checks step, shared by every item that step decides (so items on one base head
+   * share one read); dropped when the step ends. Null outside a step, where each decision reads once.
+   */
+  private stepBase: Promise<BaseChecks | null> | null = null;
+  private inStep = false;
+
+  /**
    * The CI gate (design §5): a PR that passed review is offered for a human merge only once its checks
    * passed. Pending (or the source could not say): the item waits in `REVIEW` with `blocked_on: ci` /
-   * `checks_pending`, and tickChecks looks again. Failed: back to implement like a review bug (loop_count + 1,
-   * max_loops applies), with the failing check names on the state change for the next implementer.
+   * `checks_pending`, and tickChecks looks again. Failed: checksFailed (an update first, a red-base wait, an
+   * unchanged-head block, or back to implement like a review bug), with the failing check names on the state change.
    * `review` is the review that passed; its id keys the comments, so a re-decide posts each once.
    * `ackRun` acks the run being applied (that review, or an update run); tickChecks passes null.
    */
@@ -82,9 +99,11 @@ export class ChecksGateUnit {
   /**
    * Failed checks after `review` (design §5 CI gate). An adopted PR blocks on its author. A factory PR whose stored
    * merge check conflicts for the reviewed head gets one update run first (keyed as from the merge check, no loop
-   * counted), and the item waits in REVIEW on `checks_failed_update`. Otherwise back to implement like a review
-   * bug (loop_count + 1), or at `max_loops` a block on a human. A review that skipped an unchanged head marks the
-   * state change `unchanged_head: true`, so the next implement prompt says its previous attempt pushed nothing.
+   * counted), and the item waits in REVIEW on `checks_failed_update`. When every failed check also fails on the base
+   * branch, the item waits in REVIEW on `main is red: <first name>` (no run, no loop); the checks step reads it again.
+   * A review that skipped an unchanged head blocks on a human with `unchanged_head` (no run, no loop). Otherwise
+   * back to implement like a review bug (loop_count + 1), or at `max_loops` a block on a human. The state change of
+   * a review that skipped an unchanged head carries `unchanged_head: true`.
    */
   async checksFailed(
     it: WorkItem,
@@ -118,6 +137,21 @@ export class ChecksGateUnit {
         enqueue: { kind: "update", idempotency_key: update },
       };
     }
+    if (await this.baseRed(it, failed)) {
+      const blocked_reason = `${MAIN_RED}${names[0]}`;
+      // Still red on a later step: nothing changes (a review being applied is still acked).
+      if (!ack.ack_run && it.blocked_on === "ci" && it.blocked_reason === blocked_reason) return null;
+      const base = this.c.k.cfg.repo.base_branch;
+      await this.checksComment(it, `main-red:${reviewRunId}`, names, (list) =>
+        `PR #${it.change_ref} passed review but its checks failed${list}, and the same checks fail on \`${base}\`. The factory starts no loop: it waits, and goes on by itself once \`${base}\` is green again.`);
+      return { patch: { ...fields, blocked_on: "ci", blocked_reason }, actor: SYSTEM, reason: "main_red", detail, ...ack };
+    }
+    if (data.no_agent === UNCHANGED_HEAD) {
+      const patch = { ...fields, blocked_on: "human" as const, blocked_reason: UNCHANGED_HEAD };
+      await this.checksComment(it, `unchanged-head:${reviewRunId}`, names, (list) =>
+        `PR #${it.change_ref} passed review but its checks failed${list}, and the last implement run pushed no commit. The factory starts no new loop (loop ${it.loop_count} of ${this.c.k.cfg.max_loops}). A human needs to decide.\n\n${footerAfter(it, patch)}`);
+      return { patch, actor: SYSTEM, reason: UNCHANGED_HEAD, detail, ...ack };
+    }
     const loop = it.loop_count + 1;
     if (loop >= this.c.k.cfg.max_loops) {
       const patch = { ...fields, blocked_on: "human" as const, blocked_reason: "max_loops" };
@@ -149,6 +183,28 @@ export class ChecksGateUnit {
     if (!check || check.mergeable || check.head_sha !== head) return null;
     const key = updateKey(it.id, String(pr), check.head_sha, check.base_sha);
     return (await this.c.k.reader.listRuns(it.id)).some((r) => r.idempotency_key === key) ? null : key;
+  }
+
+  /**
+   * Whether every one of the PR's `failed` checks also fails on the base branch (design 05-ci-gate, Red main). A
+   * base that is not read (no forge read for it, pending, or an error, logged) is not red: the normal path.
+   */
+  async baseRed(it: WorkItem, failed: readonly string[]): Promise<boolean> {
+    if (failed.length === 0) return false;
+    const base = await this.readBase(it);
+    return base?.state === "failed" && failed.every((n) => base.failed.includes(n));
+  }
+
+  /** The base checks: once per checks step (shared), else once per call; null when the forge has no such read or it failed. */
+  private readBase(it: WorkItem): Promise<BaseChecks | null> {
+    const forge = this.c.k.reader.forge;
+    if (!forge?.baseChecks) return Promise.resolve(null);
+    const read = () => forge.baseChecks!().catch((err: unknown) => {
+      this.c.k.d.log.warn("reading base checks failed", { work_item_id: it.id, error: errorText(err) });
+      return null;
+    });
+    if (!this.inStep) return read();
+    return (this.stepBase ??= read());
   }
 
   /** Whether the item's latest review with a verdict, other than run `self`, passed. */
@@ -210,12 +266,23 @@ export class ChecksGateUnit {
     await this.c.k.guard("sync", () => this.c.unit("sync").syncStep());
     // Check reads are optional: with the budget low, or another replica syncing, they wait for a later tick.
     if (this.c.unit("sync").lowBudget()) return;
+    this.inStep = true;
+    try {
+      await this.decideWaiting();
+    } finally {
+      this.inStep = false;
+      this.stepBase = null;
+    }
+  }
+
+  /** The checks step's items: those waiting on CI, then those stalled after an unchanged head. */
+  private async decideWaiting(): Promise<void> {
     const waiting = await this.c.k.reader.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "ci", limit: CHECKS_BATCH });
     for (const w of waiting) {
-      if (!waitingOnChecks(w)) continue;
+      if (!waitingOnCi(w)) continue;
       const review = await this.c.unit("run-results").latestReview(w.id);
       if (!review) continue;
-      await this.c.k.guard("checks", () => this.c.unit("transitions").decide(w.id, (it) => (waitingOnChecks(it) ? this.checkGate(it, review, {}, null) : null)).then(() => undefined));
+      await this.c.k.guard("checks", () => this.c.unit("transitions").decide(w.id, (it) => (waitingOnCi(it) ? this.checkGate(it, review, {}, null) : null)).then(() => undefined));
     }
     // Items stalled before failed checks on an unchanged head looped (PR #399): in REVIEW, unblocked, with no run.
     const unblocked = await this.c.k.reader.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "none", limit: CHECKS_BATCH });

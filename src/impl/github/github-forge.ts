@@ -3,7 +3,7 @@ import type { PrCheckResult, SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
 import { FORGE_AUTH, GITHUB_RATE_LIMITED, NETWORK_UNAVAILABLE, githubRateLimitMessage, networkDetail, unreachableHost } from "../../core/policy.js";
 import { fixReferences, isRevertSubject, revertedShas, subjectOf, unique } from "../../core/links.js";
-import type { BasePushInput, BranchPushInput, ChangeLinks, ClosePrInput, Forge, OpenPrInput, ForgeEvent, ForgePollResult, PrChecks, PrLineComment, PrMergeMethod, PrMergeResult } from "../../interfaces/forge.js";
+import type { BaseChecks, BasePushInput, BranchPushInput, ChangeLinks, ClosePrInput, Forge, OpenPrInput, ForgeEvent, ForgePollResult, PrChecks, PrLineComment, PrMergeMethod, PrMergeResult } from "../../interfaces/forge.js";
 import type { GitHubApi, GitHubCredentials } from "../../interfaces/github-credentials.js";
 import { factoryGit, factoryRemoteUrl } from "../broker/trusted-git.js";
 import { GitHubError, GitHubRateLimitError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
@@ -94,7 +94,7 @@ interface Cursor {
   history_since?: string | null;
 }
 
-/** Check-run pages read per prCheckResults call, 100 each. */
+/** Check-run pages read per commit checks read, 100 each. */
 const CHECK_PAGES = 3;
 /** Check-run conclusions that do not fail the gate. */
 const PASSING_CONCLUSIONS = new Set(["success", "neutral", "skipped"]);
@@ -488,29 +488,42 @@ export class GitHubForge implements Forge {
   }
 
   /**
-   * The CI gate's summary of prCheckResults: any failed check fails it (with the failed names), else any pending
-   * one keeps it pending, else (none at all included) it passed. Under the budget threshold the gate waits
-   * (pending) and a later pass reads the checks.
+   * The CI gate's summary of prCheckResults (summedUp). Under the budget threshold the gate waits (pending) and a
+   * later pass reads the checks.
    */
   async prChecks(pr: number): Promise<PrChecks> {
     if (this.client.lowBudget()) return { state: "pending" };
-    const results = await this.prCheckResults(pr);
-    const failed = results.filter((r) => r.result === "failed").map((r) => r.name);
-    if (failed.length) return { state: "failed", failed };
-    return results.some((r) => r.result === "pending") ? { state: "pending" } : { state: "passed" };
+    return summedUp(await this.prCheckResults(pr));
   }
 
   /**
-   * Each check on the PR's current head commit: its check runs (GitHub Actions and apps; the latest run per name,
-   * GitHub's default), then its commit statuses (older integrations). Three read-only GETs and at most CHECK_PAGES
-   * pages of check runs. A check run with a conclusion other than success, neutral or skipped, and a status in
-   * `failure` or `error`, is failed; any unfinished one is pending. Under the budget threshold it reads nothing
+   * The base branch's head checks (design 05-ci-gate, Red main): one GET of the branch for its head commit, then
+   * that commit's check runs and statuses, summed up as prChecks are. Under the budget threshold: pending, no read.
+   */
+  async baseChecks(): Promise<BaseChecks> {
+    if (this.client.lowBudget()) return { state: "pending", head_sha: null };
+    const branch = await this.client.request<{ commit: { sha: string } }>("GET", `${this.base}/branches/${encodeURIComponent(this.baseBranch)}`);
+    return { ...summedUp(await this.commitCheckResults(branch.commit.sha)), head_sha: branch.commit.sha };
+  }
+
+  /**
+   * Each check on the PR's current head commit (commitCheckResults). Under the budget threshold it reads nothing
    * and throws, so the review prompt says the results could not be read.
    */
   async prCheckResults(pr: number): Promise<PrCheckResult[]> {
     if (this.client.lowBudget()) throw new Error("GitHub request budget low: checks not read");
     const pull = await this.client.request<Pick<GhPull, "head">>("GET", `${this.base}/pulls/${pr}`);
-    const sha = encodeURIComponent(pull.head.sha);
+    return this.commitCheckResults(pull.head.sha);
+  }
+
+  /**
+   * Each check on commit `sha`: its check runs (GitHub Actions and apps; the latest run per name, GitHub's default),
+   * then its commit statuses (older integrations). Two read-only GETs and at most CHECK_PAGES pages of check runs. A
+   * check run with a conclusion other than success, neutral or skipped, and a status in `failure` or `error`, is
+   * failed; any unfinished one is pending.
+   */
+  private async commitCheckResults(commit: string): Promise<PrCheckResult[]> {
+    const sha = encodeURIComponent(commit);
     const runs: GhCheckRun[] = [];
     for (let page = 1; page <= CHECK_PAGES; page++) {
       const r = await this.client.request<{ total_count: number; check_runs: GhCheckRun[] }>(
@@ -530,4 +543,14 @@ export class GitHubForge implements Forge {
       })),
     ];
   }
+}
+
+/**
+ * The CI gate's summary of a commit's checks: any failed check fails it (with the failed names), else any pending one
+ * keeps it pending, else (none at all included) it passed.
+ */
+function summedUp(results: readonly PrCheckResult[]): PrChecks {
+  const failed = results.filter((r) => r.result === "failed").map((r) => r.name);
+  if (failed.length) return { state: "failed", failed };
+  return results.some((r) => r.result === "pending") ? { state: "pending" } : { state: "passed" };
 }
