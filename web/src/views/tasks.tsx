@@ -49,6 +49,8 @@ import { NeedsYou, WorkState } from "./task-work.js";
 // are spaced by one flex gap, the Section gap of design-system/patterns.md.
 
 const muted = "text-xs text-pretty text-text-2";
+/** A timed task with no stored duration shows this long. */
+const DEFAULT_MINUTES = 30;
 
 /** `2026-11-13` as the viewer's short weekday and date, e.g. "Fri, 13 Nov"; the date itself when it is not one. */
 export function dayLabel(date: string): string {
