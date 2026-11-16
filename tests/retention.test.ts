@@ -1,4 +1,9 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { migrateSqlite } from "../src/impl/store/sqlite/rehearse.js";
+import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { type FactoryConfig, RETENTION_DEFAULTS, type RetentionDays, retentionConfig } from "../src/core/config.js";
 import type { Timestamp, UserId } from "../src/core/types.js";
 import type { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -229,5 +234,25 @@ describe("the controller inbox TTL (design 08-retention, decision 4)", () => {
     const expiry = Object.fromEntries((await db.all("SELECT idempotency_key, expires_at FROM controller_inbox")).map((r) => [r.idempotency_key, r.expires_at]));
     const after = (ms: number) => new Date(Date.parse(AT) + ms).toISOString();
     expect(expiry).toEqual({ short: after(14 * DAY), long: after(20 * DAY), own: after(2 * DAY), dead: null, plain: null });
+  });
+});
+
+describe("npm run migrate", () => {
+  it("runs VACUUM once the migrations applied and prints the bytes it freed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sf-vacuum-"));
+    try {
+      const file = join(dir, "factory.db");
+      const db = new SqliteDriver(file);
+      await db.migrate();
+      for (let n = 0; n < 200; n++) await db.run("INSERT INTO authz_audit (passport_id, principal, action, resource, decision, reason, at) VALUES ('none', ?, 'a', 'r', 'allow', ?, 't')", [`p${n}`, "x".repeat(4000)]);
+      await db.run("DELETE FROM authz_audit");
+      await db.close();
+      const lines: string[] = [];
+      expect(await migrateSqlite(file, "apply", { topicTables: async () => {}, projectKeys: async () => 0 }, (l) => lines.push(l))).toBe(0);
+      const freed = lines.map((l) => /^vacuum: freed (\d+) bytes$/.exec(l)).find((m) => m !== null);
+      expect(Number(freed![1])).toBeGreaterThan(200 * 4000);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
