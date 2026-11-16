@@ -41,7 +41,7 @@ It never removes `factory.config.json`, the secret file (unless `ARGS=--secrets`
 
 ## Before you start
 
-- Node.js 22.13 or newer, and git
+- Node.js 22 (the major CI runs; `.nvmrc`), 22.13 or newer, and git
 - Claude Code installed (`claude --version`)
 - A Claude Pro / Max / Team / Enterprise plan
 - With GitHub sync on: write access to the GitHub repository the factory works on (set in `factory.config.json`, default `seonWKim/software-factory`)
