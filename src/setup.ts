@@ -4,7 +4,7 @@
 import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { type SyncOutcome, syncCalendars } from "./calendar/index.js";
-import { type Loaded, Plugins, settingsBase } from "./compose.js";
+import { type Loaded, Plugins, buildStatsStore, settingsBase } from "./compose.js";
 import { runCanary } from "./canary.js";
 import { type LoadedConfig, readOnlyOverlaps } from "./core/config.js";
 import { describeSettings, resolveSettings, settingsFor } from "./core/settings.js";
@@ -14,11 +14,13 @@ import { prFlagLabels, statusLabels } from "./impl/github/github-issue-source.js
 import { baseEnv, runProcess } from "./impl/process/run-process.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
 import type { GitHubApi } from "./interfaces/github-credentials.js";
+import { SqlFactoryStore } from "./impl/store/sql/sql-factory-store.js";
 import { storeSql } from "./impl/store/sql/store-sql.js";
 import type { SecretName, SecretStore } from "./interfaces/secret-store.js";
 import type { ConnectContext } from "./plugin-api.js";
 import { REGISTRY, type SecretDeclaration, connectHooks, createPlugin, declaredSecrets, selectedSetups } from "./plugins.js";
 import type { Ask } from "./cli/handlers/setup/ask.js";
+import { storeRunAttemptChecks } from "./worker/migrations/run-attempt-status.js";
 
 export const MAX_TOKEN_DAYS = 30;
 
@@ -327,7 +329,8 @@ export async function statusLabelChecks(client: Pick<GitHubApi, "request">, repo
 
 /** `llm`: one extra line that runs the LLM check (two real provider calls). Plain doctor calls no model. */
 export async function doctor(loaded: Loaded, opts: { llm?: boolean } = {}): Promise<number> {
-  const checks = await doctorChecks(loaded);
+  const open = () => buildStatsStore(loaded).then((s) => ({ sql: s instanceof SqlFactoryStore ? s.db : null, close: () => s.close() }));
+  const checks = [...(await doctorChecks(loaded)), ...(await storeRunAttemptChecks(open))];
   if (opts.llm) {
     const r = await llmCheckFromPlugins(new Plugins(loaded), "cheap");
     checks.push({ ok: r.ok, msg: r.summary });
