@@ -46,9 +46,10 @@ import { DATA_ASK_PATH, askData } from "./data-ask.js";
 import { RUN_NOW_SCRIPT, RUN_NOW_SCRIPT_HASH } from "./health.js";
 import { parseFilters } from "./filters.js";
 import { SCRIPT_HASH, STYLE_HASH, esc, page } from "./html.js";
-import { type UiDeps, renderIndex, renderItem } from "./pages.js";
+import type { UiDeps } from "./deps.js";
+import { renderIndex, renderItem } from "./pages.js";
 
-export type { UiDeps } from "./pages.js";
+export type { UiDeps } from "./deps.js";
 export type { PauseDeps } from "./pause-api.js";
 export type { ApiDeps } from "./api.js";
 

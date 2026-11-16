@@ -27,7 +27,7 @@ import { LOCAL_SOURCE, MERGE_COMMAND } from "../core/local-merge.js";
 import { AGENT_NEEDS_HUMAN } from "../core/policy.js";
 import type { Run, UserId, WorkItem, WorkItemId } from "../core/types.js";
 import type { AuthDecision } from "../interfaces/auth-provider.js";
-import type { UiDeps } from "./pages.js";
+import type { UiDeps } from "./deps.js";
 import { csrfMatches } from "./settings-api.js";
 
 /** What the commands route needs beside the store. Built once per UI process (compose.ts buildUiParts). */

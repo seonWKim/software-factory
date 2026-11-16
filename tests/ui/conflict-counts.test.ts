@@ -6,7 +6,8 @@ import { PatternEgressScanner } from "../../src/impl/egress/pattern-egress-scann
 import type { FactoryStore } from "../../src/interfaces/factory-store.js";
 import { NO_FILTERS } from "../../src/ui/filters.js";
 import { HealthMonitor } from "../../src/ui/health.js";
-import { type UiDeps, renderIndex, renderItem } from "../../src/ui/pages.js";
+import type { UiDeps } from "../../src/ui/deps.js";
+import { renderIndex, renderItem } from "../../src/ui/pages.js";
 import { issue, newStore, system, w1 } from "../helpers/store.js";
 
 // The dashboard shows each item's merge-conflict counts (design §5 Merge conflict, decided 2026-11-02):

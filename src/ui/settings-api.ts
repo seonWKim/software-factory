@@ -38,7 +38,7 @@ import { type ConfigEditRequest, type ConfigEditResult, FILE_ONLY_KEYS, editConf
 import { type SettingsAction, type SettingsDeps, runSettings } from "../settings-cmd.js";
 import { lastAutoStop } from "./alarms.js";
 import { type UiCapabilitySources, capabilitySources } from "./capabilities-api.js";
-import type { UiDeps } from "./pages.js";
+import type { UiDeps } from "./deps.js";
 import type { PauseDeps } from "./pause-api.js";
 import { ownerOf } from "./rules-api.js";
 import { Withholder } from "./withhold.js";
