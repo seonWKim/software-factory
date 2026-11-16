@@ -121,7 +121,7 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
     });
   }
 
-  /** Writes one message to its topic's table ; a message id already there is skipped. */
+  /** Writes one message to its topic's table; a message id already there is skipped. */
   private async insertMessage(tx: SqlExecutor, topic: TopicDescriptor, m: Envelope, publishedAt: string): Promise<void> {
     const key = topic.partitionKey(m);
     const values: SqlValue[] = [

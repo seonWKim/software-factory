@@ -24,7 +24,7 @@ export async function listLearnedSettingChanges(db: SqlDriver, limit: number): P
 /** Conditional on the stored value being `expected` and on no audit row for the window: else nothing is written. */
 export async function setLearnedSetting(db: SqlDriver, input: SetLearnedSettingInput, at: Timestamp): Promise<LearnedSettingChange | null> {
   return db.transaction(async (tx) => {
-    const old = await selectForUpdate(db, tx, input.project, input.key);
+    const old = await selectForUpdate(tx, input.project, input.key);
     if ((old?.value ?? null) !== input.expected) return null;
     const [seen] = await tx.all("SELECT seq FROM runtime_learned_setting_changes WHERE project_key = ? AND setting_key = ? AND window_end = ?", [
       input.project, input.key, input.window_end,
@@ -52,7 +52,7 @@ export async function setLearnedSetting(db: SqlDriver, input: SetLearnedSettingI
 
 export async function resetLearnedSetting(db: SqlDriver, input: ResetSettingInput, at: Timestamp): Promise<LearnedSettingChange | null> {
   return db.transaction(async (tx) => {
-    const old = await selectForUpdate(db, tx, input.project, input.key);
+    const old = await selectForUpdate(tx, input.project, input.key);
     if (!old) return null;
     if ((await tx.run("DELETE FROM runtime_learned_settings WHERE project_key = ? AND setting_key = ?", [input.project, input.key])) === 0) return null;
     await insertChange(tx, input.project, input.key, old.value, null, [], null, input.actor, at);
@@ -60,7 +60,7 @@ export async function resetLearnedSetting(db: SqlDriver, input: ResetSettingInpu
   });
 }
 
-async function selectForUpdate(db: SqlDriver, tx: SqlExecutor, project: string, key: string): Promise<LearnedSetting | null> {
+async function selectForUpdate(tx: SqlExecutor, project: string, key: string): Promise<LearnedSetting | null> {
   const [row] = await tx.all(`SELECT * FROM runtime_learned_settings WHERE project_key = ? AND setting_key = ?`, [project, key]);
   return row ? rowToLearned(row) : null;
 }
