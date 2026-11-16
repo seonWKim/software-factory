@@ -6,7 +6,6 @@ import { NumstatError, diffGates, scopeGate } from "../../../core/pre-push.js";
 import { BASE_CHECKOUT_DIR, CHECKS_FAILED_RUN, type CheckResult, TOOLCHAIN_MISSING, checkCommands, checkedLines, commandText, failingTestFiles, toolchainMissing, withTestFiles } from "../../../core/checks.js";
 import { IMPLEMENT_SCHEMA, type NeedsHuman, SPEC_CONFLICT, findingLine, parseImplement, parseReview } from "../../../core/outputs.js";
 import { CHECKS_ENV, CHECKS_ENV_LIMIT, PREFLIGHT_FAILED, branchFor, wipBranchFor } from "../../../core/policy.js";
-import { failingTests } from "../../../core/output-summary.js";
 import { mergeAppendedConflicts } from "../../../core/mechanical.js";
 import { type ConflictFile, renderResolvePrompt } from "../../../core/resolve.js";
 import { errorText } from "../../../core/log.js";
@@ -14,7 +13,7 @@ import type { Run, RunResume, WipRef, WorkItem } from "../../../core/types.js";
 import type { AgentRunSpec, GateHooks, PackRefusal } from "../../../interfaces/agent-runner.js";
 import type { SandboxHandle } from "../../../interfaces/sandbox.js";
 import { PREFLIGHT, type ToolCallContext } from "../../../interfaces/tool-broker.js";
-import { BUDGET_NEXT_STEPS, type ContinueWip, DIFF_CHECK_MS, type DiffBudget, type FixContext, LOOP_STARTS, MAX_CONFLICT_COMMITS, MAX_FAILING_TESTS, MAX_PR_FILES, NO_COMMITS_DETAIL, NO_HOOKS, PAUSE_NEXT_STEPS, type ResumePlan, RunFailure, RunPaused, STOPPED_CODES, STOPPED_NEXT_STEPS, WIP_TEXT_CHARS, continues, fenced, gitIdentity, hasTool, prTitle, renderBudget, renderContinueNewSession, renderNewSessionResume, renderRequest, renderSessionResume, renderWorkItem, runCommits, scopeReply, specQuery, tail } from "../../support.js";
+import { BUDGET_NEXT_STEPS, type ContinueWip, DIFF_CHECK_MS, type DiffBudget, type FixContext, LOOP_STARTS, MAX_CONFLICT_COMMITS, MAX_PR_FILES, NO_COMMITS_DETAIL, NO_HOOKS, PAUSE_NEXT_STEPS, type ResumePlan, RunFailure, RunPaused, STOPPED_CODES, STOPPED_NEXT_STEPS, WIP_TEXT_CHARS, continues, failingTestNames, fenced, gitIdentity, hasTool, prTitle, renderBudget, renderContinueNewSession, renderMergeCheckFailure, renderNewSessionResume, renderRequest, renderSessionResume, renderWorkItem, runCommits, scopeReply, specQuery, tail } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { RESUME_LOST, fetchBundle, saveBundle } from "../../bundle.js";
 import { decisionsSection } from "../../../shared/command-notes.js";
@@ -889,7 +888,7 @@ async function checksFailed(w: Worker, run: Run, item: WorkItem, first: CheckRes
   ].join("\n");
   await w.comment(item, { pr: null, body, marker: `<!-- factory:checks:${run.id} -->` });
   // The failing tests by name (design §5 Restarts), so the detail says what broke, not only the exit code.
-  const tests = failingTests(second.tail, MAX_FAILING_TESTS);
+  const tests = failingTestNames(second.tail);
   const named = tests.length > 0 ? `; failing tests: ${tests.join(", ")}` : "";
   throw new RunFailure(CHECKS_FAILED_RUN, `\`${cmd}\` ${second.how} after one fix step (before it: \`${before}\` ${first.how})${named}`.slice(0, 500), false, {
     output_tail: second.tail,
@@ -1041,7 +1040,7 @@ async function prFeedback(w: Worker, item: WorkItem, run: Run): Promise<string> 
 
 /**
  * The "Failing CI checks" section when this loop started because the PR's checks failed (the item's latest
- * loop-starting state change is `checks_failed`, not `review_bug`); else empty. The names come from the
+ * loop-starting state change is `checks_failed`; `merge_check_failed`: the merged commit's section); else empty. The names come from the
  * forge and from files in the repository, so they are labelled untrusted and fenced. When the loop started from
  * a review that skipped an unchanged head (`unchanged_head` on the state change), it says the previous attempt pushed no commit.
  */
@@ -1049,6 +1048,7 @@ async function failedChecks(w: Worker, item: WorkItem): Promise<string> {
   const row = (await w.d.store.listStateChanges(item.id))
     .filter((c) => LOOP_STARTS.includes(c.reason))
     .at(-1);
+  if (row?.reason === "merge_check_failed") return renderMergeCheckFailure(row.detail ?? {});
   if (row?.reason !== "checks_failed" || typeof row.detail?.failed_checks !== "string") return "";
   let names: unknown;
   try {

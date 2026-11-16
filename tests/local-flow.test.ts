@@ -232,7 +232,7 @@ describe("local task flow, over git", { timeout: 60_000 }, () => {
     });
   }
 
-  it("a failing test command on the merged commit merges nothing: main is unchanged and the item still waits", async () => {
+  it("a failing test command on the merged commit merges nothing: main is unchanged and the item goes back to implement as a loop", async () => {
     const f = await gitFactory({ github: false });
     const pushesBefore = f.pushes();
     const id = await f.toMergePending();
@@ -242,8 +242,11 @@ describe("local task flow, over git", { timeout: 60_000 }, () => {
     await f.merge(id);
 
     expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
-    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", merge_sha: null });
-    expect((await f.messages(id, "<!-- factory:refused:")).at(-1)).toContain("on the merged commit, so `main` did not move");
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "RUNNING", loop_count: 1, merge_sha: null });
+    expect((await f.store.listStateChanges(id)).map((c) => c.reason)).toContain("merge_check_failed");
+    const refused = (await f.messages(id, "<!-- factory:refused:")).at(-1);
+    expect(refused).toContain("on the merged commit, so `main` did not move");
+    expect(refused).toContain("the factory sent it back to the implementer (loop 1 of");
     expect(f.owner()).toEqual(ownerBefore);
     expect(f.pushes()).toBe(pushesBefore);
     expect(f.githubCalls()).toBe(0);
