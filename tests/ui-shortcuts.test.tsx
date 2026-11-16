@@ -11,11 +11,11 @@ import { GO_KEYS, isQuickAddSubmit } from "../web/src/keys.js";
 
 const AT = "2026-11-07T00:00:00.000Z";
 const row = (id: string, title: string, level: string) => ({
-  id, title, level, since: AT, badges: [], source: { id: `local:${id}`, type: "local", link: "" }, change_ref: null, change_url: null, issue: null, why: null, need: null, commands: [], merge: null, stage: "SPEC", blocked_reason: null,
+  id, title, item_phase: level, reason_code: "person", since: AT, source: { id: `local:${id}`, type: "local", link: "" }, change_ref: null, change_url: null, issue: null, why: null, need: null, commands: [], merge: null, stage: "SPEC", blocked_reason: null,
 });
 const RESPONSES: Record<string, unknown> = {
   "/api/v1/overview": { as_of: AT, stages: {}, needs_you: 2, running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 }, factory: null, system_actions: [] },
-  "/api/v1/items": { as_of: AT, total: 2, items: [row("wi_1", "First spec", "needs_approval"), row("wi_2", "Second spec", "needs_approval")], facets: { state: {}, allStates: 2 } },
+  "/api/v1/items": { as_of: AT, total: 2, items: [row("wi_1", "First spec", "needs_approval"), row("wi_2", "Second spec", "needs_approval")], facets: { state: {}, allStates: 2 }, counts: { open: 0, running: 1 } },
   "/api/v1/pauses": { as_of: AT, csrf_token: null, pauses: [] },
   "/api/v1/runs": { as_of: AT, runs: [] },
   "/api/v1/queue": { as_of: AT, queue: [] },

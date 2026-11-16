@@ -1,8 +1,9 @@
 import { COMMAND_TABLE, type CommandWho, cliHelpLine } from "./command-table.js";
 import { LOCAL_SOURCE } from "./local-merge.js";
 import { type TriageOutput, parseTriage } from "./outputs.js";
+import { type ItemPhase, isClosedPhase, phaseOf } from "./phase.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind } from "./policy.js";
-import { RECURRING_FAILURE, type Run, type RunKind, type WorkItem } from "./types.js";
+import type { Run, RunKind, WorkItem } from "./types.js";
 
 /**
  * The human commands on a work item (design §4): one table of names, usage, descriptions and the states
@@ -210,7 +211,7 @@ export function commandSpec(name: CommandName): CommandSpec {
 }
 
 /** blocked_reason prefix (with `blocked_on: human`) of an item whose dependency closed without a merge (design §5). */
-export const DEPENDENCY_CLOSED = "dependency_closed";
+export { DEPENDENCY_CLOSED } from "./phase.js";
 
 /** Block reasons whose step `/retry` reads from the stage (or, for the agent blocks, from the item's runs first). */
 const STAGE_RETRY_REASONS: readonly (string | null)[] = ["max_attempts", "max_restart", AGENT_NEEDS_HUMAN, REPEATED_FAILURE];
@@ -230,35 +231,21 @@ export function failedRunKind(it: WorkItem): RunKind | undefined {
   return undefined;
 }
 
-type ItemState = Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason" | "change_ref"> & Partial<Pick<WorkItem, "merge_sha" | "source">>;
+type ItemState = Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason" | "change_ref"> & Partial<Pick<WorkItem, "merge_sha" | "source" | "close_reason">>;
 
-/** The phase of an item; the same checks, in the same order, as the controller's command handling. */
+/** The item phases that are a command phase of the same name; READY with nothing blocking is `implementing`, any other open phase `other_blocked`. */
+const SAME: ReadonlySet<ItemPhase> = new Set<Extract<ItemPhase, CommandPhase>>([
+  "budget_checkpoint", "floor_tier", "rule_of_two", "agent_needs_human", "repeated_failure", "recurring_failure", "dependency_closed", "too_large",
+  "failed_implement", "failed_review", "failed_run", "spec_pending", "max_revisions", "merge_pending", "max_loops", "merge_conflict", "dependency_hold",
+  "phase_hold", "triaging", "implementing", "reviewing",
+]);
+const isCommandPhase = (p: ItemPhase): p is Extract<ItemPhase, CommandPhase> => SAME.has(p);
+
+/** The command phase of an item, from its phase (core/phase.ts). */
 export function commandPhase(it: ItemState): CommandPhase {
-  if (it.stage === "CLOSED") return it.merge_sha ? "merged" : "closed";
-  if (it.blocked_reason === "budget_checkpoint") return "budget_checkpoint";
-  if (it.blocked_reason === "floor_tier") return "floor_tier";
-  if (it.blocked_reason === "rule_of_two") return "rule_of_two";
-  if (it.blocked_on === "human") {
-    if (it.blocked_reason === AGENT_NEEDS_HUMAN) return "agent_needs_human";
-    if (it.blocked_reason === REPEATED_FAILURE) return "repeated_failure";
-    if (it.blocked_reason === RECURRING_FAILURE) return "recurring_failure";
-    if (it.blocked_reason?.startsWith(`${DEPENDENCY_CLOSED}:`)) return "dependency_closed";
-    const kind = failedRunKind(it as WorkItem);
-    if (kind === "implement") return it.blocked_reason === "run_failed:implement:diff_too_large" ? "too_large" : "failed_implement";
-    if (kind === "review") return "failed_review";
-    if (kind) return "failed_run";
-  }
-  if (it.stage === "READY" && it.blocked_reason === "spec_pending") return "spec_pending";
-  if (it.stage === "READY" && it.blocked_reason === "max_revisions") return "max_revisions";
-  if (it.stage === "REVIEW" && it.blocked_on === "human" && it.blocked_reason === "merge_pending") return "merge_pending";
-  if (it.blocked_reason === "max_loops") return "max_loops";
-  if (it.blocked_reason === "merge_conflict_pending") return "merge_conflict";
-  if (it.blocked_on === "dependency") return "dependency_hold";
-  if (it.stage === "NEW" && it.blocked_on === "upstream" && it.blocked_reason === "phase_hold") return "phase_hold";
-  if (it.blocked_on !== "none") return "other_blocked";
-  if (it.stage === "NEW") return "triaging";
-  if (it.stage === "REVIEW") return "reviewing";
-  return "implementing";
+  const p = phaseOf({ close_reason: null, ...it });
+  if (isClosedPhase(p)) return it.merge_sha ? "merged" : "closed";
+  return isCommandPhase(p) ? p : p === "specced" ? "implementing" : "other_blocked";
 }
 
 /** `askedBy`: at `agent_needs_human`, the kind of run that asked (see CommandState.asked_by). */
@@ -272,7 +259,7 @@ export function commandState(it: ItemState, askedBy?: RunKind): CommandState {
 
 /** The command state of `it` read with its runs (the kind of run that asked at agent_needs_human), as the controller reads it. */
 export function itemCommandState(it: ItemState, runs: readonly Run[]): CommandState {
-  return commandState(it, it.blocked_reason === AGENT_NEEDS_HUMAN ? blockingRunKind(it.blocked_reason, runs) : undefined);
+  return commandState(it, blockingRunKind(it.blocked_reason, runs));
 }
 
 /** Whether `c` applies to the local item with no PR in `s` with its local meaning (`local_phases`, issue #563). */

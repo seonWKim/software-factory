@@ -11,6 +11,7 @@ describe("statusOf", () => {
     ["NEW, triage failed", item("NEW", "human", "run_failed:triage:agent_error"), "needs_human"],
     ["NEW, triage invalid output", item("NEW", "human", "run_failed:triage:invalid_output"), "needs_human"],
     ["READY, spec pending", item("READY", "human", "spec_pending"), "needs_approval"],
+    ["READY, spec at its revision limit", item("READY", "human", "max_revisions"), "needs_approval"],
     ["RUNNING, not blocked", item("RUNNING"), "implementing"],
     ["RUNNING, implement failed", item("RUNNING", "human", "run_failed:implement:timeout"), "needs_human"],
     ["REVIEW, not blocked", item("REVIEW"), "in_review"],

@@ -10,6 +10,7 @@
 // (pause-api.ts) and POST /api/v1/standing (standing-api.ts), are handled behind server.ts's write guards;
 // GET /api/v1/settings, /session, /pauses and /standing are here.
 
+import { phaseOf } from "../core/phase.js";
 import { readProjectLabel } from "../core/project-labels.js";
 import { conflictCounts } from "../core/resolve.js";
 import type { HostSleep, Run, RunAttempt, Stage, StateChange, Timestamp, WorkItem, WorkItemId } from "../core/types.js";
@@ -17,7 +18,7 @@ import { itemAlarms, openAlarms } from "./alarms.js";
 import { actorGrant, itemCommands, itemProposals, itemReplies, mergeReadiness, needsYouCommands, readSession, waitingSpec } from "./commands.js";
 import { type DataCtx, type DataResult, dataAutonomy, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
-import { LIST_LIMIT, activeRuns, closedFacetRows, latestDecision, holderTitles, listRows, readClaimPauses, readPhases, waitingOn, whyOf, withTitle } from "./list.js";
+import { LIST_LIMIT, activeRuns, closedFacetRows, itemCounts, itemState, latestDecision, holderTitles, listRows, readClaimPauses, readPhases, waitingOn, whyOf, withTitle } from "./list.js";
 import { runTokens } from "./deps.js";
 import { heldFailureOf, needCtx, needOf } from "./need.js";
 import { NEEDS_YOU } from "./priority.js";
@@ -176,14 +177,21 @@ class ApiCtx {
   }
 
   /**
-   * `why` as the API returns it: the sentence through the Withholder, the refs as numbers, and `ref_url`, the
-   * item's repository issue URL to append a ref to (null when the source link is not an issue or PR URL).
+   * `why` as the API returns it: the reason code (the app words it), each value and alarm through the Withholder, the
+   * refs as numbers, the holder's id, and `ref_url`, the repository issue URL to append a ref to (null: not an issue or PR URL).
    */
   async why(w: Why, it: WorkItem) {
     const repo = /^(https:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+)\/(?:issues|pull)\/\d+$/.exec(it.source.link)?.[1];
+    const params: Record<string, string | number> = {};
+    for (const [k, v] of Object.entries(w.params)) params[k] = typeof v === "number" ? v : (await this.text(v))!;
+    const alarms: string[] = [];
+    for (const a of w.alarms) alarms.push((await this.text(a))!);
     return {
       code: w.code,
-      text: (await this.text(w.text))!,
+      reason_code: w.reason_code,
+      params,
+      alarms,
+      holder_id: w.holder_id,
       next_actor: w.next_actor,
       refs: w.refs.filter((n) => Number.isSafeInteger(n)),
       ref_url: repo ? await this.text(`${repo}/issues/`) : null,
@@ -200,19 +208,10 @@ class ApiCtx {
       it,
       check && { state: check.state, conflicts: check.conflicts.length },
     );
-    return { reason: n.reason, anchor: await latestWhyAnchor(this.d.store, it.id) };
+    // A reason the why says better is not sent: the app shows the why's text (one en.ts text per reason code).
+    return { reason: n.from_why ? null : n.reason, anchor: await latestWhyAnchor(this.d.store, it.id) };
   }
 
-  /** Why one item waits, from the same reads and rules as the list (list.ts whyOf). */
-  async whyOfItem(it: WorkItem) {
-    const s = this.d.store;
-    const { active, position } = await activeRuns(s);
-    const run = active.get(it.id) ?? null;
-    const decision = await latestDecision(s, it.id, run);
-    const waiting = waitingOn(it, await readPhases(s, [it]));
-    const alarms = await itemAlarms(s, await openAlarms(s, this.now), it);
-    return this.why(whyOf(it, run, position.get(run?.id ?? "") ?? null, withTitle(decision, await holderTitles(s, [decision])), await readClaimPauses(s), waiting, this.now, alarms, await heldFailureOf(needCtx(s, this.w), it)), it);
-  }
 }
 
 /**
@@ -236,7 +235,7 @@ async function sleepRows(c: ApiCtx, rows: readonly HostSleep[]) {
 async function overview(c: ApiCtx, params: URLSearchParams) {
   const s = c.d.store;
   const stages: Record<Stage, number> = await s.countWorkItemsByStage();
-  const running = await s.listRunsByStatus(["running"], LIST_LIMIT);
+  const counts = await itemCounts(s);
   const queued = await s.listRunsByStatus(["queued"], LIST_LIMIT);
   const recent = await s.listRunsFinishedWithin(DAY_MS);
   const succeeded = recent.filter((r) => r.status === "succeeded");
@@ -272,7 +271,8 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
     github_token_days: c.d.lastChecks?.tokenDays() ?? null,
     /** The GitHub budget the controller stored after its last poll (remaining, reset, this process's count, wait reason); null: none stored. */
     github_budget: await readGitHubBudget(s, c.now),
-    running: running.length,
+    open: counts.open, // open items and running runs, defined once (list.ts itemCounts), as /items `counts`
+    running: counts.running,
     queued: queued.length,
     last_24h: {
       succeeded: succeeded.length,
@@ -321,7 +321,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
   const rows = await listRows(ctx, f);
   const shown = await inProject(c.d.store, params.get("project"), applyFilters(rows, f));
   const checks = new Map<string, MergeCheck>();
-  for (const m of await c.d.store.listMergeChecks(shown.filter((r) => readyToMerge(r.item)).map((r) => r.item.id))) checks.set(m.work_item_id, m);
+  for (const m of await c.d.store.listMergeChecks(shown.filter((r) => phaseOf(r.item) === "merge_pending").map((r) => r.item.id))) checks.set(m.work_item_id, m);
   const out = [];
   const [allowed, commandGrant] = [actorGrant(c.d, "approve_merge"), actorGrant(c.d, "approve_spec")]; // each asked once per list
   for (const r of shown) {
@@ -332,8 +332,8 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       id: it.id,
       source: { type: it.source.type, id: it.source.id, link: it.source.link },
       title: await c.text(it.title || null),
-      level: r.level,
-      badges: r.badges,
+      item_phase: r.level,
+      reason_code: r.why.reason_code,
       stage: it.stage,
       tier: it.tier,
       kind: r.kind,
@@ -375,7 +375,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
   }
   // The closed items count in the facets even when the list leaves them out (the Closed option's count).
   const facets = facetCounts([...rows, ...(await closedFacetRows(ctx, f))], f);
-  return ok({ as_of: c.now.toISOString(), total: out.length, items: out, facets });
+  return ok({ as_of: c.now.toISOString(), total: out.length, items: out, facets, counts: await itemCounts(c.d.store) });
 }
 
 async function item(c: ApiCtx, id: WorkItemId) {
@@ -396,7 +396,8 @@ async function item(c: ApiCtx, id: WorkItemId) {
       stored = [];
     }
   }
-  const merge_check = await mergeCheckRow(c, it, readyToMerge(it) ? await s.getMergeCheck(id) : null);
+  const merge_check = await mergeCheckRow(c, it, phaseOf(it) === "merge_pending" ? await s.getMergeCheck(id) : null);
+  const st = await itemState({ store: s, w: c.w, now: c.now, lease_ms: c.d.lease_ms }, it, runs, changes); // as the list reads it
   const timeline = [];
   for (const sc of changes) timeline.push(await stateChange(c, sc));
   const runRows = [];
@@ -445,7 +446,9 @@ async function item(c: ApiCtx, id: WorkItemId) {
       conflicts: conflictCounts(runs, changes),
       merge_check,
       merge: await mergeReadiness(c.d, it, merge_check, actorGrant(c.d, "approve_merge")),
-      why: await c.whyOfItem(it),
+      item_phase: st.level,
+      reason_code: st.why.reason_code,
+      why: await c.why(st.why, it),
     },
     timeline,
     runs: runRows,
@@ -472,18 +475,14 @@ async function phaseRows(c: ApiCtx, it: WorkItem) {
   return out;
 }
 
-/** Waiting for a human merge: the only state the local merge check runs on (design §5 Merge check). */
-function readyToMerge(it: WorkItem): boolean {
-  return it.stage === "REVIEW" && it.blocked_on === "human" && it.blocked_reason === "merge_pending";
-}
-
 /**
  * The local merge check of a ready-to-merge item (null for any other item): `mergeable` or `conflicts` from its
  * stored result, or `checking` while it has none, or while the result is for an older head than the one the
  * factory last recorded. File names pass the Withholder, each on its own.
  */
 async function mergeCheckRow(c: ApiCtx, it: WorkItem, m: MergeCheck | null) {
-  if (!readyToMerge(it)) return null;
+  // Waiting for a person's merge (core/phase.ts): the only state the local merge check runs on (design §5 Merge check).
+  if (phaseOf(it) !== "merge_pending") return null;
   const current = m !== null && (it.last_head_sha === null || it.last_head_sha === m.head_sha);
   const conflicts: string[] = [];
   if (current) for (const f of m.conflicts) conflicts.push((await c.text(f))!);

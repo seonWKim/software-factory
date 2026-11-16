@@ -1,4 +1,5 @@
-import { type MessageKey } from "../i18n/en.js";
+import type { Why } from "../api.js";
+import { type MessageKey, en } from "../i18n/en.js";
 import { formatInteger, t, withUnit } from "../i18n/index.js";
 
 // Display helpers. Pure: `now` is passed in, so a test can fix it.
@@ -127,20 +128,15 @@ export function stateAndNext(stage: string, commands: readonly { name: string; a
 }
 
 /**
- * The item page's state pill: the list's level words, from the item's stage, block and why code (the item API has
- * no level). Running, queued and held come from the why code; an item nothing moves (`idle`) is "Stuck".
+ * Why an item waits, in the active locale: its reason code's text (`why.reason.<code>`, one per code) with the values
+ * the API sent, then the open alarms that affect it. `holder` stands for the holder's name (WhyText puts a link
+ * there); without it the name is the holder's title or ref, or "another item". An unknown code shows as is.
  */
-export function detailLevel(i: { stage: string; blocked_on: string; blocked_reason: string | null; why?: { code: string } | undefined }): string {
-  if (i.stage === "CLOSED") return "closed";
-  if (i.blocked_on === "human" && i.blocked_reason === "merge_pending") return "ready_to_merge";
-  if (i.blocked_on === "human" && (i.blocked_reason === "spec_pending" || i.blocked_reason === "max_revisions")) return "needs_approval";
-  if (i.blocked_on === "human" || i.blocked_on === "budget") return "needs_you";
-  const code = i.why?.code;
-  if (code === "running") return "running";
-  if (code === "queued" || code === "not_before" || code === "paused") return "queued";
-  if (code === "dependency" || code === "phase" || code === "held" || code === "deadlock" || i.blocked_on === "dependency" || i.blocked_on === "upstream") {
-    return "blocked_by_task";
-  }
-  if (code === "idle") return "stuck";
-  return i.stage === "RUNNING" || i.stage === "REVIEW" ? "running" : "queued";
+export function whyText(why: Pick<Why, "reason_code" | "params" | "alarms">, holder?: string): string {
+  const vars: Record<string, string | number> = { ...why.params };
+  const stage = `why.stage.${vars.stage}`;
+  if (stage in en) vars.stage = t(stage as MessageKey);
+  if ("holder" in vars) vars.holder = holder ?? (vars.holder || t("why.anotherItem"));
+  const key = `why.reason.${why.reason_code}`;
+  return [key in en ? t(key as MessageKey, vars) : why.reason_code, ...why.alarms].join(". ");
 }

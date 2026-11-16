@@ -17,7 +17,7 @@ const src = (n: number) => ({ type: "github_issue", id: `o/r#${n}`, link: `https
 const base = (id: string, n: number, title: string, extra: object = {}) => ({
   id, source: src(n), title, stage: "READY", close_reason: null, blocked_on: "human", blocked_reason: "spec_pending", tier: 2, loop_count: 0,
   restart_count: 0, token_cost: 0, change_ref: null, change_url: null, spec_comment_url: null, parent_id: null, phase: null, phases: [], version: 3,
-  created_at: AT, updated_at: AT, why: { code: "human", text: "Waiting for a person", next_actor: "human", refs: [], ref_url: null }, ...extra,
+  created_at: AT, updated_at: AT, why: { code: "human", reason_code: "person", params: { reason: "Waiting for a person" }, alarms: [], holder_id: null, next_actor: "human", refs: [], ref_url: null }, ...extra,
 });
 
 // A fixture spec as triage writes it: a heading, a blank line, a list, and text that must not become HTML.

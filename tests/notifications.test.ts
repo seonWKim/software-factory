@@ -12,7 +12,7 @@ import {
   parseNoticeKinds, parseQuietHours, quietUntil,
 } from "../src/core/notifications.js";
 import { SETTABLE_DEFAULTS, parseSettable, resolveSettings } from "../src/core/settings.js";
-import type { StateChange, StateChangeId, Timestamp, WorkItem, WorkItemId } from "../src/core/types.js";
+import type { Stage, StateChange, StateChangeId, Timestamp, WorkItem, WorkItemId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
@@ -60,15 +60,19 @@ async function rows(store: SqlFactoryStore) {
 
 async function block(store: FactoryStore, clock: FakeClock, it: WorkItem, blocked_on: WorkItem["blocked_on"], blocked_reason: string | null) {
   clock.advance(1000);
-  const r = await store.transition({ id: it.id, expected_version: it.version, patch: { blocked_on, blocked_reason }, actor: system, reason: `test_${blocked_on}` });
+  const r = await store.transition({ id: it.id, expected_version: it.version, patch: { blocked_on, blocked_reason, ...(blocked_on === "human" ? { stage: waitStage(blocked_reason) } : {}) }, actor: system, reason: `test_${blocked_on}` });
   if (!r.ok) throw new Error(r.reason);
   return r.item;
 }
 
+/** The stage an item waits at with `blocked_reason`: a spec at READY, a merge at REVIEW, anything else while running. */
+const waitStage = (blocked_reason: string | null): Stage => (blocked_reason === "spec_pending" ? "READY" : blocked_reason === "merge_pending" ? "REVIEW" : "RUNNING");
+const waitingItem = (blocked_reason: string | null) => ({ stage: waitStage(blocked_reason), blocked_on: "human" as const, blocked_reason, close_reason: null });
+
 /** A wait as the decision sees it: the item, and the state change that set blocked_on human. */
 function waiting(id: string, blocked_reason: string | null, change = `sc_${id}`): WaitingItem {
   const changes = [{ id: change as StateChangeId, changes: { blocked_on: { from: "none", to: "human" } } } as Pick<StateChange, "id" | "changes">];
-  return { item: { id: id as WorkItemId, blocked_on: "human", blocked_reason }, changes };
+  return { item: { id: id as WorkItemId, ...waitingItem(blocked_reason) }, changes };
 }
 
 const asNotices = (n: ReturnType<typeof decideNotices>): Notice[] => n.map((x) => ({ ...x, delivered_at: null }));
@@ -345,9 +349,11 @@ describe("notice kinds", () => {
   const reasons: Record<WaitKind, string> = { spec: "spec_pending", merge: "merge_pending", failure: "run_failed:implement:timeout", other: "needs_input" };
 
   it("classifies each blocked_reason, and parses the setting", () => {
-    for (const [kind, reason] of Object.entries(reasons)) expect(noticeKind(reason)).toBe(kind);
-    expect(noticeKind("max_attempts")).toBe("failure");
-    expect(noticeKind(null)).toBe("other");
+    for (const [kind, reason] of Object.entries(reasons)) expect(noticeKind(waitingItem(reason))).toBe(kind);
+    expect(noticeKind(waitingItem("max_attempts"))).toBe("failure");
+    expect(noticeKind(waitingItem(null))).toBe("other");
+    // A spec at its revision limit waits for approval, as on every other surface (owner answer 1).
+    expect(noticeKind({ ...waitingItem("max_revisions"), stage: "READY" })).toBe("spec");
     expect(parseNoticeKinds(["merge", "spec"])).toEqual(["merge", "spec"]);
     for (const bad of [["spec", "spec"], ["summary"], "spec"]) expect(() => parseNoticeKinds(bad)).toThrow(/notice_kinds/);
     expect(SETTABLE_DEFAULTS.notice_kinds).toEqual([...NOTICE_KINDS]);

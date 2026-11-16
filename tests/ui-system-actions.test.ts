@@ -217,7 +217,7 @@ describe("needs_you: the number of Needs-you rows (design 09-status-page)", () =
   async function counted(s: Awaited<ReturnType<typeof setup>>) {
     const o = await s.overview();
     const r = await respond(s.d, { method: "GET", url: "/api/v1/items", host: "127.0.0.1:4310" });
-    const levels = (JSON.parse(r.body) as { items: { level: string }[] }).items.map((i) => i.level);
+    const levels = (JSON.parse(r.body) as { items: { item_phase: string }[] }).items.map((i) => i.item_phase);
     expect(o.needs_you).toBe(levels.filter((l) => WAITING.includes(l)).length + o.system_actions.length);
     return { o, levels };
   }

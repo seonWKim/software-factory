@@ -19,7 +19,7 @@ import { cn } from "../lib/cn.js";
 import { useUrlParam } from "../lib/url-param.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { LEVEL_LABELS, ago, detailLevel, isHttpUrl, shortRev, shortSource, tokens } from "../lib/format.js";
+import { LEVEL_LABELS, ago, isHttpUrl, shortRev, shortSource, tokens } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
 import { ItemsTable, MergeCheckNote, byId, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, useNow, useViewer } from "./common.js";
@@ -206,7 +206,7 @@ export function ActivityPage() {
   return (
     <>
       <PageHeader title={t("page.activity")} />
-      <Section title={t("running.label")} count={runs.data?.runs.filter((r) => r.status === "running").length}>
+      <Section title={t("running.label")} count={o?.running}>
         {runs.isError ? <ErrorNote error={runs.error} /> : !runs.data ? <Loading rows={2} /> : <RunningTable runs={runs.data.runs} items={map} now={now} />}
       </Section>
       {o && (o.unreviewed_merges_7d ?? 0) > 0 && (
@@ -222,7 +222,7 @@ export function ActivityPage() {
               [t("activity.succeeded"), String(o.last_24h.succeeded)],
               [t("activity.failed"), String(o.last_24h.failed), `${BASE}failures?window=24h`],
               [t("col.tokens"), tokens(o.last_24h.tokens)],
-              [t("activity.openItems"), String(Object.entries(o.stages).filter(([s]) => s !== "CLOSED").reduce((n, [, v]) => n + v, 0))],
+              [t("activity.openItems"), String(o.open)],
             ].map(([k, v, href]) => (
               <div key={k} className="rounded-control border border-border px-3 py-2">
                 <dt className="text-xs text-text-2">{k}</dt>
@@ -309,8 +309,11 @@ export function ItemsPage() {
   const itemsById = useMemo(() => byId(items.data?.items), [items.data]);
   // The tree, and a list narrowed to named items, read every row and filter in the page.
   const local = tree || ids !== null;
-  const counted = (s: string) => (s === "queued" ? (queue.data?.queue.length ?? "…") : local ? rows.filter((r) => itemMatches(r, { state: s, q, showClosed, ids })).length : (items.data?.facets.state[s] ?? 0));
-  const allCount = local ? rows.filter((r) => itemMatches(r, { state: null, q, showClosed, ids })).length : (items.data?.facets.allStates ?? "");
+  // Running, with no search and no named items, is the server's count of runs whose status is running, as Activity's Running now.
+  const narrowed = !!q.trim() || ids !== null;
+  const counted = (s: string) => (s === "queued" ? (queue.data?.queue.length ?? "…") : s === "running" && !narrowed && items.data ? items.data.counts.running : local ?rows.filter((r) => itemMatches(r, { state: s, q, showClosed, ids })).length : (items.data?.facets.state[s] ?? 0));
+  // All, with no search, no named items and closed items hidden, is the server's open count (stage not CLOSED), as Activity's Open items.
+  const allCount = !narrowed && !showClosed && items.data ? items.data.counts.open : local ? rows.filter((r) => itemMatches(r, { state: null, q, showClosed, ids })).length : (items.data?.facets.allStates ?? "");
   return (
     <>
       <PageHeader title={t("page.work")} />
@@ -380,7 +383,7 @@ export function ItemPage({ id }: { id: string }) {
   entries.reverse().sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
   const transcripts = q.data.transcripts ?? {};
   const short = shortSource(item.source.id);
-  const level = detailLevel(item);
+  const level = item.item_phase;
   return (
     <>
       <nav aria-label={t("item.breadcrumb")} className="mb-1 text-sm">

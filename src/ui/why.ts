@@ -1,16 +1,17 @@
-// Why an item waits (design §9, issue #310): one sentence for the Floor, Items, Queue and item page, from the
-// item's state, its active run, the run's latest claim decision, the claim pauses, the run's not_before and its
-// phases. Pure: no store, no clock, no I/O. The caller reads the inputs (list.ts) and passes the sentence
-// through the Withholder before it leaves (api.ts); `refs` are the same-repo issue numbers the sentence names.
+// Why an item waits (design §9, issue #310): one reason for the Floor, Items, Queue and item page, from the
+// item's phase (core/phase.ts), its active run, the run's latest claim decision, the claim pauses, the run's
+// not_before and its phases. Pure: no store, no clock, no I/O. The reason is a code with its values; the web app
+// words it (web/src/i18n/en.ts, one text per reason code), so no reason text is written here. The caller passes
+// each value through the Withholder before it leaves (api.ts); `refs` are the same-repo issue numbers it names.
 //
 // Precedence, first match wins: closed, blocked on a person or the budget, running, a claim
 // pause that stops this run's kind, a dependency, a phase hold, a coordination hold, a retry's not_before, the
 // queue position, and last nothing (no run moves it). An open alarm that affects the item is named after the
-// sentence (withAlarms), whichever rule gave it.
+// reason (withAlarms), whichever rule gave it.
 
-import { type FailureClass, IMPLEMENT_KINDS, failureClass, retryClears } from "../core/policy.js";
-import { PHASE_HOLD, PHASES_OPEN } from "../core/split.js";
-import { type BlockedOn, type ClaimDecision, type CloseReason, RECURRING_FAILURE, type RunKind, type RunOutcome, type Stage } from "../core/types.js";
+import { DEPENDENCY_CLOSED, DEPENDENCY_CYCLE, type ItemPhase, PERSON_PHASES, isClosedPhase, phaseOf } from "../core/phase.js";
+import { failureClass, IMPLEMENT_KINDS, retryClears } from "../core/policy.js";
+import type { BlockedOn, ClaimDecision, CloseReason, RunKind, RunOutcome, Stage } from "../core/types.js";
 import { FAILURE_DESCRIPTIONS } from "./failures.js";
 
 /** Which rule gave the sentence. */
@@ -30,12 +31,31 @@ export type WhyCode =
 /** Who moves the item next: a person, the factory on its own, another item (its merge), or nobody (closed). */
 export type NextActor = "human" | "factory" | "other_item" | "none";
 
+/** The reason in words: one web/src/i18n/en.ts text per code (`why.reason.<code>`). */
+export type ReasonCode =
+  | "closed" | "closed_as"
+  | "budget" | "merge_pending" | "spec_pending" | "max_revisions" | "dependency_closed" | "dependency_cycle" | "max_loops" | "merge_conflict"
+  | "recurring_none" | "recurring_stalled" | "recurring_rate_limited" | "recurring_infra" | "recurring_own"
+  | "run_failed" | "person_idle" | "person"
+  | "deadlock" | "deadlock_unknown" | "running"
+  | "paused_rate_limit" | "paused_model_stall" | "paused_forge_auth" | "paused_preflight"
+  | "dependency" | "dependency_unknown"
+  | "phase_parent_one" | "phase_parent_many" | "phase_parent" | "phase_prev_ref" | "phase_prev" | "ci" | "other_issue"
+  | "held_running" | "held_pr" | "held_waiting"
+  | "not_before" | "queued_at" | "queued" | "idle";
+
 export interface Why {
   code: WhyCode;
-  text: string;
+  reason_code: ReasonCode;
+  /** The values the reason's text names (`{name}` in en.ts); free text from the store is withheld by the caller. */
+  params: Record<string, string | number>;
   next_actor: NextActor;
-  /** Issue numbers of the item's own repository that `text` names as `#N`, in order. */
+  /** Issue numbers of the item's own repository that the params and alarms name as `#N`, in order. */
   refs: number[];
+  /** The open alarms that affect the item (alarms.ts alarmText), said after the reason. */
+  alarms: string[];
+  /** The work item that holds a held or deadlocked run, for the link to its page; null when none. */
+  holder_id: string | null;
 }
 
 /**
@@ -57,6 +77,8 @@ export interface WhyInput {
   decision: (Pick<ClaimDecision, "decision" | "holder_ref" | "holder_kind"> & {
     run_id: string;
     approved_by: string | null;
+    /** The holder's work item (claim decision `holder_work_item_id`); absent or null when it has none. */
+    holder_work_item_id?: string | null;
     /** The title of the holder's work item (list.ts `holderTitle`); absent or null when it has none. */
     holder_title?: string | null;
   }) | null;
@@ -102,123 +124,125 @@ export function heldBy(decision: WhyInput["decision"], run: { id: string } | nul
   return decision?.decision === "held" && !decision.approved_by && run !== null && decision.run_id === run.id;
 }
 
-const FAILED = /^run_failed:|^max_attempts$|^max_restart$|^repeated_failure$/;
-
 /** `2026-11-07 12:30 UTC` from an ISO time; the text as is when it is not one. */
 function when(iso: string): string {
   return /^\d{4}-\d\d-\d\dT\d\d:\d\d/.test(iso) ? `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC` : iso;
 }
 
-function why(code: WhyCode, text: string, next_actor: NextActor): Why {
-  return { code, text, next_actor, refs: refsOf(text) };
+function why(code: WhyCode, reason_code: ReasonCode, next_actor: NextActor, params: Why["params"] = {}, holder_id: string | null = null): Why {
+  return { code, reason_code, params, next_actor, refs: refsOf(Object.values(params).join(" ")), alarms: [], holder_id };
 }
 
-/** Each stage in words, for a block with no stored reason. */
-const STAGE_WORDS: Record<Stage, string> = {
-  NEW: "new, not triaged yet",
-  READY: "specced, not started",
-  RUNNING: "being built",
-  REVIEW: "in review",
-  CLOSED: "closed",
-};
-
-/** Why a plain retry is likely enough, by the failure class that makes it so (policy retryClears). */
-const RETRY_CLEARS: Partial<Record<FailureClass, string>> = {
-  stalled: "The model stalled",
-  rate_limited: "A usage or rate limit stopped it",
-  infra: "The factory's own infrastructure failed, not the task",
+/** The recurring-failure reason by why a plain retry is likely enough (policy retryClears), or the task's own failure. */
+const RECURRING: Partial<Record<ReturnType<typeof failureClass>, ReasonCode>> = {
+  stalled: "recurring_stalled",
+  rate_limited: "recurring_rate_limited",
+  infra: "recurring_infra",
 };
 
 /**
- * What a recurring-failure hold says (design 05-alarms), the same text for the explanation and the decision box
- * (need.ts): the last failed run's failure in plain words (FAILURE_DESCRIPTIONS), and whether a plain retry is
- * likely enough. With no failed run it names no failure.
+ * A recurring-failure hold (design 05-alarms): the last failed run's failure in plain words (FAILURE_DESCRIPTIONS,
+ * else its code) and whether a plain retry is likely enough. With no failed run it names no failure.
  */
-export function heldFailureText(f: HeldFailure | null): string {
-  if (f === null) return "Held by a recurring failure; its runs hold no failed run to name it. A person retries it (/retry) or rejects it";
-  const said = FAILURE_DESCRIPTIONS[f.outcome.error_code]?.replace(/\.$/, "") ?? `Its last run failed with ${f.code}`;
-  const failure = f.detail ? `${said} (${f.detail})` : said;
-  const next = retryClears(f.outcome)
-    ? `${RETRY_CLEARS[failureClass(f.outcome)]}, so a plain retry is likely enough: /retry`
-    : "It is the task's own failure, so a plain retry will likely fail again: change the spec, the code or the setup first, then /retry";
-  return `Held by a recurring failure. ${failure}. ${next}`;
+function recurring(f: HeldFailure | null): Why {
+  if (f === null) return why("human", "recurring_none", "human");
+  const said = FAILURE_DESCRIPTIONS[f.outcome.error_code]?.replace(/\.$/, "") ?? f.code;
+  const code = retryClears(f.outcome) ? (RECURRING[failureClass(f.outcome)] ?? "recurring_own") : "recurring_own";
+  return why("human", code, "human", { failure: f.detail ? `${said} (${f.detail})` : said });
 }
 
-function human(i: WhyInput["item"], failure: HeldFailure | null): Why {
-  if (i.blocked_on === "budget") return why("human", "Waiting for a person to answer the budget check", "human");
+/** The reason of each person's phase with nothing more to name than the phase. */
+const PERSON: Partial<Record<ItemPhase, ReasonCode>> = {
+  budget_checkpoint: "budget",
+  budget_wait: "budget",
+  merge_pending: "merge_pending",
+  spec_pending: "spec_pending",
+  max_revisions: "max_revisions",
+  max_loops: "max_loops",
+  merge_conflict: "merge_conflict",
+  too_large: "run_failed",
+  failed_implement: "run_failed",
+  failed_review: "run_failed",
+  failed_run: "run_failed",
+  repeated_failure: "run_failed",
+};
+
+function human(i: WhyInput["item"], p: ItemPhase, failure: HeldFailure | null): Why {
   const r = i.blocked_reason ?? "";
-  if (r === "merge_pending") return why("human", "Ready to merge: waiting for a person to merge the PR", "human");
-  if (r === "spec_pending") return why("human", "Waiting for a person to approve the spec", "human");
-  if (r.startsWith("dependency_closed:")) {
-    return why("human", `${r.slice("dependency_closed:".length)} was closed without a merge: a person decides how this item goes on`, "human");
-  }
-  if (r.startsWith("dependency_cycle:")) {
-    return why("human", `Its dependencies form a cycle (${r.slice("dependency_cycle:".length).trim()}): a person removes one link`, "human");
-  }
-  if (r === "max_loops") return why("human", "Too many review loops: a person decides what happens next", "human");
-  if (r === "merge_conflict_pending") return why("human", "A merge conflict needs a person", "human");
-  if (r === RECURRING_FAILURE) return why("human", heldFailureText(failure), "human");
-  if (FAILED.test(r)) return why("human", `The run failed (${r}): a person decides what happens next`, "human");
+  if (p === "dependency_closed") return why("human", "dependency_closed", "human", { ref: r.slice(DEPENDENCY_CLOSED.length + 1) });
+  if (p === "dependency_cycle") return why("human", "dependency_cycle", "human", { cycle: r.slice(DEPENDENCY_CYCLE.length + 1).trim() });
+  if (p === "recurring_failure") return recurring(failure);
+  const code = PERSON[p];
+  if (code === "run_failed") return why("human", code, "human", { reason: r });
+  if (code) return why("human", code, "human");
   // No stored reason: the item's state and what moves it next, never an empty or "no reason" text.
-  if (!r) return why("human", `Waiting for a person: the item is ${STAGE_WORDS[i.stage]}; next, a person retries, resolves or rejects it`, "human");
-  return why("human", `Waiting for a person: ${r}`, "human");
+  if (!r) return why("human", "person_idle", "human", { stage: i.stage });
+  return why("human", "person", "human", { reason: r });
 }
 
 /** The claim pause that stops this run's kind, by the store's claim rule (sql-factory-store claimRun). */
 function pause(p: ClaimPauses, kind: RunKind): Why | null {
-  if (p.rate_limit) return why("paused", `Paused by a usage or rate limit until ${when(p.rate_limit)}`, "factory");
-  if (p.model_stall) return why("paused", "Paused: the model is not answering; runs start again once a probe answers", "factory");
+  if (p.rate_limit) return why("paused", "paused_rate_limit", "factory", { until: when(p.rate_limit) });
+  if (p.model_stall) return why("paused", "paused_model_stall", "factory");
   if (!IMPLEMENT_KINDS.includes(kind)) return null;
-  if (p.forge_auth) return why("paused", `Paused: the forge refused the factory's credentials, until ${when(p.forge_auth)}`, "human");
-  if (p.preflight_access) return why("paused", `Paused: a push or PR access check failed, until ${when(p.preflight_access)}`, "human");
+  if (p.forge_auth) return why("paused", "paused_forge_auth", "human", { until: when(p.forge_auth) });
+  if (p.preflight_access) return why("paused", "paused_preflight", "human", { until: when(p.preflight_access) });
   return null;
 }
 
-/** "Waiting for #A and #B to merge" from the stored dependency hold reason (`dependencyReason`). */
+/** "#A and #B" from the stored dependency hold reason (`dependencyReason`: "waiting for #A and #B to merge"). */
 function dependency(reason: string | null): Why {
   const m = /^waiting for (.+) to merge$/.exec(reason ?? "");
-  return why("dependency", m ? `Waiting for ${m[1]} to merge` : "Waiting for another issue to merge", "other_item");
+  return m ? why("dependency", "dependency", "other_item", { refs: m[1]! }) : why("dependency", "dependency_unknown", "other_item");
 }
 
-function phase(i: WhyInput["item"], p: WhyInput["phases"]): Why {
-  if (i.blocked_reason === PHASES_OPEN || (i.blocked_reason !== PHASE_HOLD && p.waiting_on > 1)) {
-    if (p.waiting_on_number) return why("phase", `Waiting for its phase #${p.waiting_on_number} to merge`, "other_item");
-    return why("phase", p.waiting_on > 0 ? `Waiting for its ${p.waiting_on} open phases to merge` : "Waiting for its phases to merge", "other_item");
+function splitWait(p: ItemPhase, ph: WhyInput["phases"]): Why {
+  const ref = ph.waiting_on_number ? `#${ph.waiting_on_number}` : null;
+  if (p === "phases_open" || (p !== "phase_hold" && ph.waiting_on > 1)) {
+    if (ref) return why("phase", "phase_parent_one", "other_item", { ref });
+    return ph.waiting_on > 0 ? why("phase", "phase_parent_many", "other_item", { count: ph.waiting_on }) : why("phase", "phase_parent", "other_item");
   }
-  if (i.blocked_reason === PHASE_HOLD || p.waiting_on > 0) {
-    return why("phase", p.waiting_on_number ? `Waiting for the previous phase #${p.waiting_on_number} to merge` : "Waiting for the previous phase to merge", "other_item");
-  }
-  return why("phase", i.blocked_on === "ci" ? "Waiting for CI" : "Waiting on another issue", "other_item");
+  if (p === "phase_hold" || ph.waiting_on > 0) return ref ? why("phase", "phase_prev_ref", "other_item", { ref }) : why("phase", "phase_prev", "other_item");
+  return why("phase", p === "ci_wait" ? "ci" : "other_issue", "other_item");
 }
 
-const HOLDER: Record<ClaimDecision["holder_kind"], string> = {
-  running: "which is running",
-  pr: "which has an open PR",
-  waiting: "which is queued ahead of it",
+const HOLDER: Record<ClaimDecision["holder_kind"], ReasonCode> = {
+  running: "held_running",
+  pr: "held_pr",
+  waiting: "held_waiting",
 };
 
-/** The one sentence that says why the item waits (or what it is doing), who moves it next and the issues it names. */
-export function whyWaiting(x: WhyInput): Why {
-  const { item: i, run } = x;
-  if (i.stage === "CLOSED") return why("closed", i.close_reason ? `Closed: ${i.close_reason.replace(/_/g, " ")}` : "Closed", "none");
-  if (i.blocked_on === "human" || i.blocked_on === "budget") return human(i, x.failure ?? null);
-  if (deadlocked(x.decision, run)) {
-    const other = x.decision!.holder_title ? `"${x.decision!.holder_title}"` : "another item";
-    return why("deadlock", `Running at the same time as ${other}, which changes some of the same files. If they clash, you'll be asked when it merges.`, "factory");
-  }
-  if (run?.status === "running") return why("running", `Running ${run.kind}`, "factory");
-  const paused = run ? pause(x.pauses, run.kind) : null;
-  if (paused) return paused;
-  if (i.blocked_on === "dependency") return dependency(i.blocked_reason);
-  if (i.blocked_on === "upstream" || i.blocked_on === "ci" || x.phases.waiting_on > 0) return phase(i, x.phases);
-  const d = x.decision;
-  if (heldBy(d, run)) return why("held", `Held behind ${d!.holder_ref}, ${HOLDER[d!.holder_kind]}`, "other_item");
-  if (run && x.not_before) return why("not_before", `Retry waits until ${when(x.not_before)}`, "factory");
-  if (run) return why("queued", run.position ? `Queued at position ${run.position}` : `Queued ${run.kind}`, "factory");
-  return why("idle", "Nothing moves it: no run is queued", "human");
+/**
+ * How a held or deadlocked run names its holder: the holder item's title, else a same-repo `#N` ref, else nothing
+ * (the text says "another item"). Never a raw local id.
+ */
+function holderName(d: NonNullable<WhyInput["decision"]>): string {
+  return d.holder_title || (/^#\d+$/.test(d.holder_ref) ? d.holder_ref : "");
 }
 
-/** The sentence with each open alarm that affects the item named after it (design 09-status-page); as is with none. */
+/** The reason the item waits (or what it is doing), who moves it next and the issues it names. */
+export function whyWaiting(x: WhyInput): Why {
+  const { item: i, run } = x;
+  const p = phaseOf(i);
+  if (isClosedPhase(p)) return i.close_reason ? why("closed", "closed_as", "none", { reason: i.close_reason.replace(/_/g, " ") }) : why("closed", "closed", "none");
+  if (PERSON_PHASES.has(p)) return human(i, p, x.failure ?? null);
+  const d = x.decision;
+  const holder = d?.holder_work_item_id ?? null;
+  if (deadlocked(d, run)) {
+    return d!.holder_title ? why("deadlock", "deadlock", "factory", { holder: d!.holder_title }, holder) : why("deadlock", "deadlock_unknown", "factory", {}, holder);
+  }
+  if (run?.status === "running") return why("running", "running", "factory", { kind: run.kind });
+  const paused = run ? pause(x.pauses, run.kind) : null;
+  if (paused) return paused;
+  if (p === "dependency_hold") return dependency(i.blocked_reason);
+  if (p === "phase_hold" || p === "phases_open" || p === "upstream_wait" || p === "ci_wait" || x.phases.waiting_on > 0) return splitWait(p, x.phases);
+  if (heldBy(d, run)) return why("held", HOLDER[d!.holder_kind], "other_item", { holder: holderName(d!) }, holder);
+  if (run && x.not_before) return why("not_before", "not_before", "factory", { until: when(x.not_before) });
+  if (run) return run.position ? why("queued", "queued_at", "factory", { position: run.position }) : why("queued", "queued", "factory", { kind: run.kind });
+  return why("idle", "idle", "human");
+}
+
+/** The reason with each open alarm that affects the item named after it (design 09-status-page); as is with none. */
 export function withAlarms(w: Why, alarms: readonly string[]): Why {
-  return alarms.length === 0 ? w : why(w.code, [w.text, ...alarms].join(". "), w.next_actor);
+  return alarms.length === 0 ? w : { ...w, alarms: [...alarms], refs: refsOf([...Object.values(w.params), ...alarms].join(" ")) };
 }

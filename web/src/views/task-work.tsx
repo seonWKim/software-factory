@@ -6,7 +6,7 @@ import { LINK_CLASS } from "../components/ui/link-style.js";
 import { ErrorNote, Section } from "../components/ui/parts.js";
 import { StatusBadge } from "../components/ui/notice.js";
 import type { MessageKey } from "../i18n/en.js";
-import { LEVEL_LABELS, shortSource } from "../lib/format.js";
+import { LEVEL_LABELS, shortSource, whyText } from "../lib/format.js";
 import { t } from "../i18n/index.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
@@ -26,10 +26,10 @@ const STATE_OF: Record<string, MessageKey> = {
   stuck: "tasks.state.needs",
 };
 
-const stateKey = (it: ItemRow): MessageKey | null => (it.level === "closed" ? (it.close_reason === "completed" ? "tasks.state.merged" : null) : (STATE_OF[it.level] ?? null));
+const stateKey = (it: ItemRow): MessageKey | null => (it.item_phase === "closed" ? (it.close_reason === "completed" ? "tasks.state.merged" : null) : (STATE_OF[it.item_phase] ?? null));
 
-/** An Answer-or-fix item's reason (the need's, else the Why text); empty for Merge and Approve, which say it with the badge. */
-const needReason = (it: ItemRow): string => (needGroup(it) === "answer" ? (it.need?.reason ?? it.why?.text ?? "") : "");
+/** An Answer-or-fix item's reason (the need's, else the why's en.ts text); empty for Merge and Approve, which say it with the badge. */
+const needReason = (it: ItemRow): string => (needGroup(it) === "answer" ? (it.need?.reason ?? (it.why ? whyText(it.why) : "")) : "");
 
 /**
  * The primary action and overflow menu of a waiting item (Merge, Approve, Retry, Answer, or Open), as in every Needs
@@ -55,7 +55,7 @@ export function WorkState({ id, title, open: taskOpen }: { id: string; title: st
   if (taskOpen && needsYou([it]).length > 0) {
     return (
       <>
-        <StatusBadge level={it.level} size="sm">{t(key)}</StatusBadge>
+        <StatusBadge level={it.item_phase} size="sm">{t(key)}</StatusBadge>
         <RowActions it={it} cmd={cmd} />
       </>
     );
@@ -63,7 +63,7 @@ export function WorkState({ id, title, open: taskOpen }: { id: string; title: st
   return (
     <>
       <Button size="sm" aria-label={t("tasks.stateOpen", { title })} onClick={() => setOpen(true)}>
-        <StatusBadge level={it.level} size="sm">{t(key)}</StatusBadge>
+        <StatusBadge level={it.item_phase} size="sm">{t(key)}</StatusBadge>
       </Button>
       {open && (
         <Dialog title={it.title ?? title} confirmLabel={t("tasks.stateClose")} onConfirm={() => setOpen(false)} onClose={() => setOpen(false)}>
@@ -98,7 +98,7 @@ function WorkRow({ it }: { it: ItemRow }) {
           {it.change_ref !== null && <span className="shrink-0 text-xs text-text-2 tabular-nums">#{it.change_ref}</span>}
         </span>
         <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <StatusBadge level={it.level} size="sm">{LEVEL_LABELS[it.level] ?? it.level}</StatusBadge>
+          <StatusBadge level={it.item_phase} size="sm">{LEVEL_LABELS[it.item_phase] ?? it.item_phase}</StatusBadge>
           {it.merge_check && !checking && it.merge_check.state !== "mergeable" && <MergeCheckNote check={it.merge_check} />}
         </span>
         {reason !== "" && (

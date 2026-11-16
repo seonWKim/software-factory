@@ -14,8 +14,8 @@ const AT = "2026-11-12T00:00:00.000Z";
 const cmd = (name: string) => ({ name, usage: `/${name}`, description: name, allowed: true, reason: null });
 const WHY = "Please merge wi_5b2b, then /retry this item. Or allow adding web/src/components/ui/input.tsx here with /retry +paths web/src/components/ui/input.tsx.";
 const row = (n: string, level: string, title: string, extra: object = {}) => ({
-  id: `wi_${n}`, source: { type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` }, title, level,
-  badges: [], stage: "REVIEW", tier: 2, kind: null, blocked_on: "human", blocked_reason: "x", close_reason: null, run_status: null,
+  id: `wi_${n}`, source: { type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` }, title, item_phase: level, reason_code: "person",
+   stage: "REVIEW", tier: 2, kind: null, blocked_on: "human", blocked_reason: "x", close_reason: null, run_status: null,
   change_ref: null, change_url: null, since: AT, updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 },
   need: { reason: `Reason of ${title}`, anchor: null }, ...extra,
 });
@@ -46,7 +46,7 @@ beforeEach(() => {
     }
     const bodies: Record<string, unknown> = {
       "/api/v1/overview": overview,
-      "/api/v1/items": { as_of: AT, total: list.length, items: list, facets: { allStates: list.length, state: {} } },
+      "/api/v1/items": { as_of: AT, total: list.length, items: list, facets: { allStates: list.length, state: {} }, counts: { open: 0, running: 1 } },
       "/api/v1/tasks": { today_date: "2026-11-12", today: { overdue: [], due: [] }, upcoming: [], projects, csrf_token: "tok", can_build: true, active_projects: [] },
       "/api/v1/pauses": { pauses: [], csrf_token: null },
       "/api/v1/session": { as_of: AT, csrf_token: "tok", commands_enabled: true, actor: "local:me", actor_source: "environment" },
