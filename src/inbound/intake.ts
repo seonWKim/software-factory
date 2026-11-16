@@ -236,7 +236,7 @@ export class Inbound {
   ): Promise<void> {
     try {
       await this.d.db.transaction(async (tx) => {
-        if (fence && !(await fenceHolds(tx, this.d.db.dialect.forUpdate, fence))) throw new Stale(true);
+        if (fence && !(await fenceHolds(tx, fence))) throw new Stale(true);
         const messages = await write(tx);
         if (!(await moveCursor(tx, this.d.dialect, name, expected, next))) throw new Stale(false);
         await this.d.bus.publish(tx, messages);

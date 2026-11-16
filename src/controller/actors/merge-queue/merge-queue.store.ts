@@ -122,11 +122,11 @@ export class MergeQueueStore {
   async enter(e: NewEntry): Promise<{ entry: MergeQueueEntry; created: boolean } | { refused: MergeQueueEntry }> {
     return this.db.transaction(async (tx) => {
       // The queue row first: entries of one queue are made one at a time (MySQL's gap locks let two inserts through).
-      await tx.all(`SELECT queue_id FROM controller_merge_queues WHERE queue_id = ?${this.db.dialect.forUpdate}`, [e.queue_id]);
-      const same = await tx.all(`SELECT * FROM controller_merge_queue_entries WHERE entry_id = ?${this.db.dialect.forUpdate}`, [e.entry_id]);
+      await tx.all(`SELECT queue_id FROM controller_merge_queues WHERE queue_id = ?`, [e.queue_id]);
+      const same = await tx.all(`SELECT * FROM controller_merge_queue_entries WHERE entry_id = ?`, [e.entry_id]);
       if (same[0]) return { entry: entryOf(same[0]), created: false };
       const live = await tx.all(
-        `SELECT * FROM controller_merge_queue_entries WHERE work_item_id = ? AND state IN (${LIVE})${this.db.dialect.forUpdate}`,
+        `SELECT * FROM controller_merge_queue_entries WHERE work_item_id = ? AND state IN (${LIVE})`,
         [e.work_item_id, ...LIVE_ENTRY_STATES],
       );
       if (live[0]) return { refused: entryOf(live[0]) };

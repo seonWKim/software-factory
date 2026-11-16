@@ -75,10 +75,9 @@ export class JournalEngine implements ExecutionEngine {
   async claim(runId: string): Promise<RunRef | null> {
     const now = this.now();
     if (this.full()) return null;
-    const { forUpdate } = this.opts.db.dialect;
     const ref = await this.opts.db.transaction(async (tx): Promise<{ ref: RunRef; deadline: string } | null> => {
       const [row] = await tx.all(
-        `SELECT kind, status, attempt, lease_token, created_at, not_before, code_version, deadline_at FROM worker_runs WHERE id = ?${forUpdate}`,
+        `SELECT kind, status, attempt, lease_token, created_at, not_before, code_version, deadline_at FROM worker_runs WHERE id = ?`,
         [runId],
       );
       if (!row || row.status !== "queued") return null;
@@ -102,9 +101,8 @@ export class JournalEngine implements ExecutionEngine {
     const now = this.observe(tick);
     const timeouts = this.opts.kinds[run.kind];
     if (!timeouts) return false;
-    const { forUpdate } = this.opts.db.dialect;
     const deadline = await this.opts.db.transaction(async (tx): Promise<string | null> => {
-      const [row] = await tx.all(`SELECT status, lease_token, created_at, code_version, deadline_at FROM worker_runs WHERE id = ?${forUpdate}`, [run.id]);
+      const [row] = await tx.all(`SELECT status, lease_token, created_at, code_version, deadline_at FROM worker_runs WHERE id = ?`, [run.id]);
       if (!row || row.status !== "running" || Number(row.lease_token) !== run.lease_token) return null;
       if (!(await this.mayResume(tx, run.id, row.code_version))) return null;
       const deadline = row.deadline_at === null ? iso(Date.parse(String(row.created_at)) + timeouts.schedule_to_close_ms) : String(row.deadline_at);
@@ -203,10 +201,9 @@ export class JournalEngine implements ExecutionEngine {
 
   /** Marks the step running for this attempt, keeping a partial result; or reports its stored result. */
   private begin(run: RunRef, stepId: StepId, now: number): Promise<Begun> {
-    const { forUpdate } = this.opts.db.dialect;
     return this.opts.db.transaction(async (tx): Promise<Begun> => {
       if (!(await this.leaseHeld(tx, run))) return { kind: "lost" };
-      const [row] = await tx.all(`SELECT status, result_ref FROM worker_run_steps WHERE run_id = ? AND step_id = ?${forUpdate}`, [run.id, stepId]);
+      const [row] = await tx.all(`SELECT status, result_ref FROM worker_run_steps WHERE run_id = ? AND step_id = ?`, [run.id, stepId]);
       if (row?.status === "succeeded") return { kind: "done", result: String(row.result_ref) };
       if (row) {
         await tx.run(
@@ -250,7 +247,7 @@ export class JournalEngine implements ExecutionEngine {
   }
 
   private async leaseHeld(tx: SqlExecutor, run: RunRef): Promise<boolean> {
-    const rows = await tx.all(`SELECT 1 AS held FROM worker_runs WHERE id = ? AND status = 'running' AND lease_token = ?${this.opts.db.dialect.forShare}`, [
+    const rows = await tx.all(`SELECT 1 AS held FROM worker_runs WHERE id = ? AND status = 'running' AND lease_token = ?`, [
       run.id, run.lease_token,
     ]);
     return rows.length > 0;
