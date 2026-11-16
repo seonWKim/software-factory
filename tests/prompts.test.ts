@@ -190,6 +190,15 @@ describe("prompts/implement.md: the original request (design 04-agents.md, Given
   });
 });
 
+describe("prompts/implement.md: the ratchet lists (design 05-restarts, 2026-11-16)", () => {
+  it("says next to the allowed-paths rule that known-violations lists are always editable to shrink (never to grow)", () => {
+    const lines = prompt("implement").split("\n");
+    const at = lines.findIndex((l) => l.startsWith("- Change only files under the allowed paths"));
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(lines[at]).toContain("known-violations lists are always editable to shrink (never to grow)");
+  });
+});
+
 describe("prompts/improve.md (issue #307)", () => {
   const text = prompt("improve");
   const produce = text.slice(text.indexOf("Produce:"));

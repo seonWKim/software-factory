@@ -1915,6 +1915,10 @@ describe("/resolve on a merge conflict", () => {
     expect(item.allowed_paths).toEqual(f.item.allowed_paths);
     expect((await f.store.listRuns(f.item.id)).filter(byPerson).map((r) => r.input)).toEqual([{ notes: "" }]);
     expect(refusals(f)).toEqual([]);
+    // Every path covered already: one reply says so (design 04-gate-commands, 2026-11-16).
+    const said = f.source.comments.filter((c) => c.marker === "<!-- factory:already-allowed:7601 -->");
+    expect(said).toHaveLength(1);
+    expect(said[0]!.body).toContain("already allowed: .github/workflows/x.yml");
   });
 
   it("/resolve +paths with a bad path, or more than 10, is refused with one reply each and nothing changes", async () => {
@@ -2639,6 +2643,8 @@ describe("+paths on /approve and /retry, and /retry notes (issue #280)", () => {
   const current = (f: F) => f.store.getWorkItem(f.item.id).then((x) => x!);
   const implementPrompts = (f: F) => f.runner.specs.filter((s) => s.role === "implement").map((s) => s.prompt);
   const refusals = (f: F, id: string) => f.source.comments.filter((c) => c.marker === `<!-- factory:refused:${id} -->`);
+  /** The "already allowed" replies to a `+paths` comment (design 04-gate-commands, 2026-11-16). */
+  const allowedReplies = (f: F, id: string) => f.source.comments.filter((c) => c.marker === `<!-- factory:already-allowed:${id} -->`);
   const ALLOWED = "## Allowed paths (do not change files outside these)";
   const names = (f: F) => f.broker.calls.map((c) => c.name);
   /** The allowed-paths list of a prompt, as its bullet lines. */
@@ -2746,6 +2752,9 @@ describe("+paths on /approve and /retry, and /retry notes (issue #280)", () => {
     await g.step();
     expect((await g.store.getWorkItem(g.item.id))!.allowed_paths).toEqual([".github/workflows/"]);
     expect((await g.store.listStateChanges(g.item.id)).find((c) => c.reason === "spec_approved")!.detail?.added_paths).toBeUndefined();
+    expect(allowedReplies(g, "9501").map((c) => c.body)).toEqual([expect.stringContaining("already allowed: .github/workflows/x.yml")]);
+    // Some paths new: only those are added, and no "already allowed" reply.
+    expect(allowedReplies(f, "9401")).toEqual([]);
   });
 
   it("/approve +paths is accepted at the revision limit", async () => {
@@ -2857,6 +2866,23 @@ describe("+paths on /approve and /retry, and /retry notes (issue #280)", () => {
     f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "10002", requester: alice, note: "+paths src/loader.ts" });
     await f.step();
     expect(await current(f)).toMatchObject({ stage: "REVIEW", allowed_paths: [".github/workflows/", "src/loader.ts"] });
+  });
+
+  it("/retry +paths with only covered paths retries as before, adds nothing and replies that they were already allowed", async () => {
+    const f = await scopeViolation(102, ["src/x.ts"]);
+    const ratchet = "tests/architecture/known-violations/no-clock.json";
+    f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "10201", requester: alice, note: `+paths ${ratchet} .github/workflows/x.yml` });
+    await f.step();
+    const row = (await f.store.listStateChanges(f.item.id)).find((c) => c.reason === "retry_requested")!;
+    expect(row.actor).toEqual({ kind: "user", id: "github:1" });
+    expect(row.changes.allowed_paths).toBeUndefined();
+    expect(row.detail?.added_paths).toBeUndefined();
+    expect((await current(f)).allowed_paths).toEqual([".github/workflows/"]);
+    expect((await f.store.listRuns(f.item.id)).filter((r) => r.kind === "implement")).toHaveLength(2);
+    expect(refusals(f, "10201")).toEqual([]);
+    const said = allowedReplies(f, "10201");
+    expect(said).toHaveLength(1);
+    expect(said[0]!.body).toContain(`already allowed: ${ratchet}, .github/workflows/x.yml`);
   });
 });
 
