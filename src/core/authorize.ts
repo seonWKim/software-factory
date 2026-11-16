@@ -65,7 +65,7 @@ export class OwnerAuth implements AuthProvider {
   constructor(private readonly store: OwnerStore) {}
 
   async resolve(identity: ExternalIdentity): Promise<Principal> {
-    return { user_id: await factoryUserOf(this.store, identity), attributes: {} };
+    return { user_id: await factoryUserOf(this.store, identity) };
   }
 
   /** The resource does not matter: the owner may act on every one, anyone else on none. */

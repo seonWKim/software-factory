@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { LocalAuthProvider, NotAuthenticated, PassportService, REVOCATIONS_TICK, localKeyFile, secretKeyring } from "../src/identity/index.js";
-import { AuditedAuthProvider, controllerServiceAuth } from "../src/impl/auth/audited-auth.js";
+import { controllerServiceAuth } from "../src/impl/auth/audited-auth.js";
 import { PassportToolBroker, type HeldRunPassport } from "../src/impl/broker/passport-broker.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
-import type { AuthProvider } from "../src/interfaces/auth-provider.js";
 import type { ToolBroker, ToolCallContext } from "../src/interfaces/tool-broker.js";
 import type { RunId, WorkItemId } from "../src/core/types.js";
 import { ManualTickGenerator } from "../src/shared/ticks/plugins/manual/manual-tick-generator.js";
@@ -154,20 +153,7 @@ describe("service passports", () => {
   });
 });
 
-describe("audited legacy auth", () => {
-  it("the deprecated wrapper keeps the plugin's decision and records nothing: the owner check audits itself", async () => {
-    const { identity, audit } = await setup();
-    const inner: AuthProvider = {
-      resolve: async () => null,
-      authorize: async (p, action) => (action === "submit_work" ? { allow: true } : { allow: false, reason: "not_owner" }),
-    };
-    const auth = new AuditedAuthProvider(inner, identity);
-    const who = { user_id: "local:ada" as never, attributes: {} };
-    expect(await auth.authorize(who, "submit_work", { kind: "work_item", id: "wi_1" })).toEqual({ allow: true });
-    expect(await auth.authorize(who, "approve_merge", { kind: "work_item", id: "wi_1" })).toEqual({ allow: false, reason: "not_owner" });
-    expect(await audit()).toEqual([]);
-  });
-
+describe("controller service auth", () => {
   it("the controller's automatic steps act under its service passport, limited to its actions", async () => {
     const { identity, db } = await setup();
     const service = controllerServiceAuth(identity);
