@@ -12,6 +12,7 @@ import { runLocalCli } from "../src/core/local-cli.js";
 import type { UserId, WorkItemId } from "../src/core/types.js";
 import { OwnerAuth } from "../src/core/authorize.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { LocalForge } from "../src/impl/forge/local-forge.js";
 import { GitHubForge } from "../src/impl/github/github-forge.js";
 import type { GitHubClient } from "../src/impl/github/github-client.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
@@ -69,7 +70,7 @@ function fakeForge() {
   return { forge, pushes, state };
 }
 
-async function setup(opts: { forge?: Forge; store?: FactoryStore; clock?: FakeClock } = {}) {
+async function setup(opts: { forge?: Forge; store?: FactoryStore; clock?: FakeClock; repo?: string } = {}) {
   const clock = opts.clock ?? new FakeClock();
   const store = opts.store ?? (await newStore(clock)).store;
   const created = await runLocalCli(
@@ -84,14 +85,16 @@ async function setup(opts: { forge?: Forge; store?: FactoryStore; clock?: FakeCl
   });
   if (!moved.ok) throw new Error("setup transition failed");
   const sandbox = new FakeMergeSandbox();
-  const controller = replica(store, clock, sandbox, opts.forge);
+  const controller = replica(store, clock, sandbox, opts.forge, undefined, opts.repo);
   return { store, clock, sandbox, controller, id };
 }
 
-function replica(store: FactoryStore, clock: FakeClock, sandbox: FakeMergeSandbox, forge?: Forge, host?: { replica_id: string; git_host: { id: string; flush_all: boolean } }) {
+function replica(
+  store: FactoryStore, clock: FakeClock, sandbox: FakeMergeSandbox, forge?: Forge, host?: { replica_id: string; git_host: { id: string; flush_all: boolean } }, repo?: string,
+) {
   const auth = new OwnerAuth(store);
   return new ControllerRole({
-    store, sources: [new LocalSource(store)], auth, clock, config: cfg, log: silent, scanner: cleanScanner,
+    store, sources: [new LocalSource(store)], auth, clock, config: repo ? { ...cfg, repo: { ...cfg.repo, path: repo } } : cfg, log: silent, scanner: cleanScanner,
     sandbox: sandbox as unknown as Sandbox, repeated_failure_rule: false, ...(forge ? { forge } : {}), ...host,
   });
 }
@@ -300,7 +303,11 @@ function remoteSetup() {
   git(repo, "checkout", "--quiet", "--detach");
   const merge_sha = git(repo, "rev-parse", "main");
   const sandbox = new NoOpSandbox(join(root, "wt"));
-  const forge = new GitHubForge({} as GitHubClient, { owner: "o", name: "r" }, "factory/", "main", { postComment: async () => ({ url: null }), setStatus: async () => undefined });
+  // Both forges push through the one shared git push (src/impl/git/base-push.ts).
+  const forges: Record<string, Forge> = {
+    github: new GitHubForge({} as GitHubClient, { owner: "o", name: "r" }, "factory/", "main", { postComment: async () => ({ url: null }), setStatus: async () => undefined }),
+    local: new LocalForge("factory/", "main"),
+  };
   const spec = { repo, base_ref: "main", merge_sha, message: "Merge origin/main into main", identity: { name: "factory", email: "f@example.com" } };
   /** A person's push to the remote base from another clone. */
   const push = (file: string, text: string) => {
@@ -309,12 +316,13 @@ function remoteSetup() {
     git(dev, "push", "--quiet", "origin", "main");
     return git(dev, "rev-parse", "HEAD");
   };
-  return { repo, origin, sandbox, forge, spec, merge_sha, push };
+  return { repo, origin, sandbox, forges, spec, merge_sha, push };
 }
 
-describe("base push: fetch, merge a moved remote base, conditional push (local bare remote)", { timeout: 60_000 }, () => {
+describe.each(["github", "local"])("base push with the %s forge: fetch, merge a moved remote base, conditional push (local bare remote)", { timeout: 60_000 }, (name) => {
   it("a remote base that moved is merged into the local base first, and the merge is pushed", async () => {
     const r = remoteSetup();
+    const forge = r.forges[name]!;
     const theirs = r.push("theirs.txt", "a person's change");
     const s = await r.sandbox.syncBase(r.spec);
     if (!s.synced) throw new Error("expected a clean sync");
@@ -322,7 +330,7 @@ describe("base push: fetch, merge a moved remote base, conditional push (local b
     expect(git(r.repo, "rev-parse", "main")).toBe(s.local);
     expect(git(r.repo, "rev-list", "--parents", "-n", "1", s.local).split(" ").slice(1)).toEqual([r.merge_sha, theirs]);
 
-    await r.forge.pushBase({ repo: r.repo, base_ref: "main", sha: s.local, expected_sha: s.remote });
+    await forge.pushBase!({ repo: r.repo, base_ref: "main", sha: s.local, expected_sha: s.remote });
     expect(git(r.origin, "rev-parse", "main")).toBe(s.local);
     // Pushed: the next sync finds the merge on the remote.
     expect(await r.sandbox.syncBase(r.spec)).toMatchObject({ synced: true, contains: true });
@@ -330,19 +338,21 @@ describe("base push: fetch, merge a moved remote base, conditional push (local b
 
   it("a remote base that did not move is pushed as the local base", async () => {
     const r = remoteSetup();
+    const forge = r.forges[name]!;
     const before = git(r.origin, "rev-parse", "main");
     const s = await r.sandbox.syncBase(r.spec);
     expect(s).toMatchObject({ synced: true, local: r.merge_sha, remote: before, contains: false });
-    await r.forge.pushBase({ repo: r.repo, base_ref: "main", sha: r.merge_sha, expected_sha: before });
+    await forge.pushBase!({ repo: r.repo, base_ref: "main", sha: r.merge_sha, expected_sha: before });
     expect(git(r.origin, "rev-parse", "main")).toBe(r.merge_sha);
   });
 
   it("the push is conditional on the remote base read: one that moved again is not overwritten", async () => {
     const r = remoteSetup();
+    const forge = r.forges[name]!;
     const s = await r.sandbox.syncBase(r.spec);
     if (!s.synced) throw new Error("expected a clean sync");
     const again = r.push("late.txt", "pushed after the fetch");
-    await expect(r.forge.pushBase({ repo: r.repo, base_ref: "main", sha: s.local, expected_sha: s.remote })).rejects.toThrow(/git push failed/);
+    await expect(forge.pushBase!({ repo: r.repo, base_ref: "main", sha: s.local, expected_sha: s.remote })).rejects.toThrow(/git push failed/);
     expect(git(r.origin, "rev-parse", "main")).toBe(again);
   });
 
@@ -352,5 +362,50 @@ describe("base push: fetch, merge a moved remote base, conditional push (local b
     const s = await r.sandbox.syncBase(r.spec);
     expect(s).toEqual({ synced: false, conflicts: ["local.txt"] });
     expect(git(r.repo, "rev-parse", "main")).toBe(r.merge_sha);
+  });
+});
+
+// The local forge's base push (merge_queue.push_base, docs/plugins/forge.md): no GitHub plugin, the factory repo's
+// own origin. Compose makes it the forge only when the setting is on and origin exists (tests/local-forge.test.ts).
+describe("base push with the local forge, no GitHub plugin", { timeout: 60_000 }, () => {
+  it("a local merge pushes the local base to origin once the merge is recorded", async () => {
+    const r = remoteSetup();
+    const before = git(r.origin, "rev-parse", "main");
+    const f = await setup({ forge: new LocalForge("factory/", "main"), repo: r.repo });
+    f.sandbox.sync = () => ({ synced: true, local: r.merge_sha, remote: before, contains: false, not_updated: [] });
+    await merge(f);
+    expect(await f.store.getWorkItem(f.id)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
+    expect(await basePush(f)).toMatchObject([{ key: `push_base:${f.id}:${SHA("a")}`, args: { base_ref: "main" }, delivered: false }]);
+    expect(git(r.origin, "rev-parse", "main")).toBe(before);
+    const reply = (await f.store.listItemMessages(f.id)).find((m) => m.marker.startsWith("<!-- factory:local-merged:"))!;
+    expect(reply.body).toContain("its push to origin is queued");
+
+    await f.controller.tickOutbox();
+    expect(git(r.origin, "rev-parse", "main")).toBe(r.merge_sha);
+    expect(await basePush(f)).toMatchObject([{ delivered: true, outcome: { pushed: r.merge_sha } }]);
+  });
+
+  it("a push that fails stays pending for a retry with backoff; the merge stays merged and the item closed", async () => {
+    const f = await setup({ forge: new LocalForge("factory/", "main") });
+    await merge(f);
+    const closed = (await f.store.getWorkItem(f.id))!;
+    expect(closed).toMatchObject({ stage: "CLOSED", merge_sha: SHA("a") });
+    await f.controller.tickOutbox();
+    expect(f.sandbox.syncs).toHaveLength(1);
+    expect(await basePush(f)).toMatchObject([{ delivered: false }]);
+    f.clock.advance(cfg.retry_base_ms);
+    await f.controller.tickOutbox();
+    expect(f.sandbox.syncs).toHaveLength(2);
+    expect(await basePush(f)).toMatchObject([{ delivered: false }]);
+    expect(await f.store.getWorkItem(f.id)).toEqual(closed);
+  });
+
+  it("a local forge that does not push (the setting off or no origin) queues no push", async () => {
+    const f = await setup({ forge: new LocalForge("factory/") });
+    await merge(f);
+    await f.controller.tickOutbox();
+    expect(await f.store.getWorkItem(f.id)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
+    expect(await basePush(f)).toEqual([]);
+    expect(f.sandbox.syncs).toEqual([]);
   });
 });
