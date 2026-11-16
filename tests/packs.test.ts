@@ -8,7 +8,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import packCommand from "../src/cli/handlers/pack/pack.command.js";
 import { type Loaded, Plugins, build, fillPrompt, loadConfig } from "../src/compose.js";
 import type { EgressChannel, EgressScanner, ScanResult } from "../src/interfaces/egress-scanner.js";
-import { PackEntriesStore, addLine, addPack, canonicalJson, descriptionHash, moduleHash } from "../src/packs/pack-entries.store.js";
+import { PackEntriesStore, addLine, addPack, canonicalJson, descriptionHash, moduleHash, readPointer } from "../src/packs/pack-entries.store.js";
+import { serverDescriptor } from "../src/import/mcp-servers.js";
 import { discoverMigrations } from "../src/state/index.js";
 import type { WorkerDeps } from "../src/worker/index.js";
 import { WorkerPool } from "../src/worker/index.js";
@@ -382,7 +383,7 @@ describe("packs: tool and MCP server entries (pack add)", () => {
     expect(await s.rows()).toEqual([
       {
         id: expect.stringMatching(/^pe_/), kind: "mcp_server", name: "docs-search", description_hash: sha256(canonicalJson(MCP)), module_hash: null,
-        descriptor: canonicalJson(MCP), credential_name: null, status: "pending", added_by: ME,
+        descriptor: canonicalJson(MCP), credential_name: null, source: null, source_file: null, source_key: null, status: "pending", added_by: ME,
         created_at: "2026-11-11T12:00:00.000Z", updated_at: "2026-11-11T12:00:00.000Z",
       },
       // A tool with no module keeps the descriptor-only hash, so its stored entries and approvals are unchanged.
@@ -869,6 +870,100 @@ describe("packs: approvals, the pin and the grant check", () => {
     const { store } = await newStore();
     await m!.up({ dialect: "sqlite", run: (sql, p) => store.db.run(sql, p), all: (sql, p) => store.db.all(sql, p) });
     expect(await store.db.all("SELECT * FROM ext_packs_approvals")).toEqual([]);
+  });
+});
+
+describe("packs: imported MCP servers are pointers read from their source file", () => {
+  const ME = "local:me@example.com" as UserId;
+  const GRANT = "pack:mcp_server:docs";
+  const SECRET = "SENTINEL-pointer-env-41ab";
+
+  /** A ~/.claude.json holding `servers` as its mcpServers, a store, and the pointer helpers. */
+  async function open(servers: Record<string, unknown>) {
+    const clock = new FakeClock(new Date("2026-11-16T09:00:00.000Z"));
+    const { store } = await newStore(clock);
+    const now = () => clock.now().toISOString();
+    const file = join(temp("sf-pointer-"), ".claude.json");
+    const write = (s: Record<string, unknown>) => writeFileSync(file, JSON.stringify({ mcpServers: s }));
+    write(servers);
+    const entries = new PackEntriesStore(store.db, now);
+    const approvals = new PackApprovalsStore(store.db, now);
+    /** Stores the pointer to `key` with the hash its entry has now, as the import does. */
+    const point = async (key = "docs") => {
+      const live = await readPointer({ source: "claude", file, key });
+      clock.advance(1000);
+      return entries.storePointer({ source: "claude", file, key, description_hash: live!.description_hash, added_by: ME }, false);
+    };
+    const approve = async (name = "docs") => approvals.record((await entries.current("mcp_server", name))!, "approve", ME);
+    const check = () => checkPackGrants(store.db, [GRANT], false);
+    const row = async () => (await store.db.all("SELECT * FROM ext_packs_entries WHERE source_key = 'docs'"))[0]!;
+    return { clock, store, file, write, entries, approvals, point, approve, check, row };
+  }
+
+  const DOCS = { command: "docs-mcp", args: ["--stdio"], env: { DOCS_TOKEN: SECRET }, url: "https://x.example.com/mcp?key=v" };
+
+  it("stores only the source file, the server key and a SHA-256 of the allow-listed descriptor: no command, args, env or URL", async () => {
+    const s = await open({ docs: DOCS });
+    expect(await s.point()).toEqual({ outcome: "stored", name: "docs" });
+    const row = await s.row();
+    expect(row).toMatchObject({ kind: "mcp_server", name: "docs", descriptor: null, source: "claude", source_file: s.file, source_key: "docs", status: "pending", module_hash: null });
+    expect(row.description_hash).toBe(descriptionHash(serverDescriptor("claude", "docs", DOCS)));
+    const text = JSON.stringify(await s.store.db.all("SELECT * FROM ext_packs_entries"));
+    for (const copy of ["docs-mcp", "--stdio", "DOCS_TOKEN", SECRET, "x.example.com"]) expect(text).not.toContain(copy);
+    // No env or header value is hashed: other values under the same keys give the same hash.
+    const hashOf = (raw: Record<string, unknown>) => descriptionHash(serverDescriptor("claude", "docs", raw));
+    expect(hashOf({ ...DOCS, env: { DOCS_TOKEN: "other" } })).toBe(row.description_hash);
+    expect(hashOf({ ...DOCS, headers: { Authorization: "Bearer one" } })).toBe(hashOf({ ...DOCS, headers: { Authorization: "Bearer two" } }));
+  });
+
+  it("the grant check reads the descriptor from the source file when the server is used", async () => {
+    const s = await open({ docs: { command: "docs-mcp", args: ["--stdio"] } });
+    await s.point();
+    await s.approve();
+    expect(await s.check()).toEqual({ broker: [], mcp_servers: [{ name: "docs", command: "docs-mcp", args: ["--stdio"] }], refused: [] });
+    // Only the file changes: the run sees it, and the stored row still holds no descriptor.
+    s.write({ docs: { command: "docs-mcp", args: ["--stdio"], env: { NEW_KEY: "v" } } });
+    expect(await s.check()).toEqual({ broker: [], mcp_servers: [], refused: [{ grant: GRANT, reason: "not_approved" }] });
+  });
+
+  it("a changed entry is pending again: the old hash's approval no longer applies, also after the import updates the row", async () => {
+    const s = await open({ docs: { command: "docs-mcp" } });
+    await s.point();
+    await s.approve();
+    const before = await s.row();
+    s.write({ docs: { command: "docs-mcp-v2" } });
+    expect((await s.entries.current("mcp_server", "docs"))!.imported).toMatchObject({ state: "changed" });
+    expect((await s.check()).refused).toEqual([{ grant: GRANT, reason: "not_approved" }]);
+    expect(await s.point()).toEqual({ outcome: "updated", name: "docs" });
+    const after = await s.row();
+    expect(after).toMatchObject({ id: before.id, status: "pending", descriptor: null, created_at: before.created_at });
+    expect(after.description_hash).not.toBe(before.description_hash);
+    expect(await s.approvals.approved((await s.entries.current("mcp_server", "docs"))!)).toBe(false);
+    expect((await s.check()).refused).toEqual([{ grant: GRANT, reason: "not_approved" }]);
+    // Approving the new hash lets it run with the file's descriptor.
+    await s.approve();
+    expect((await s.check()).mcp_servers).toEqual([{ name: "docs", command: "docs-mcp-v2", args: [] }]);
+  });
+
+  it("an entry that leaves its source file is missing: nothing runs it", async () => {
+    const s = await open({ docs: { command: "docs-mcp" }, other: { command: "o" } });
+    await s.point();
+    await s.approve();
+    s.write({ other: { command: "o" } });
+    expect((await s.entries.current("mcp_server", "docs"))!.imported).toMatchObject({ state: "missing" });
+    expect(await s.check()).toEqual({ broker: [], mcp_servers: [], refused: [{ grant: GRANT, reason: "missing" }] });
+    rmSync(s.file);
+    expect((await s.check()).refused).toEqual([{ grant: GRANT, reason: "missing" }]);
+  });
+
+  it("names a server by its key, adding the source label only when another source holds the same key", async () => {
+    const s = await open({ docs: { command: "d" } });
+    expect(await s.point()).toMatchObject({ name: "docs" });
+    const other = join(temp("sf-pointer-codex-"), "config.toml");
+    writeFileSync(other, `[mcp_servers.docs]\ncommand = "d2"\n`);
+    const live = await readPointer({ source: "codex", file: other, key: "docs" });
+    expect(await s.entries.storePointer({ source: "codex", file: other, key: "docs", description_hash: live!.description_hash, added_by: ME }, false)).toEqual({ outcome: "stored", name: "docs@codex" });
+    expect(await s.entries.storePointer({ source: "claude-desktop", file: other, key: "fresh", description_hash: "h", added_by: ME }, true)).toEqual({ outcome: "stored", name: "fresh@claude-desktop" });
   });
 });
 

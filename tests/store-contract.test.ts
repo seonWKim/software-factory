@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { serverDescriptor } from "../src/import/mcp-servers.js";
 import { canonicalJson, descriptionHash } from "../src/packs/pack-entries.store.js";
+import { checkPackGrants } from "../src/packs/pack-grants.js";
 import type { HostSleep, RunId, RunKind, Timestamp, UserId, WorkItemId } from "../src/core/types.js";
 import { projectLabelCursor } from "../src/core/project.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -3628,6 +3629,21 @@ describe("20261116T1300 and 20261116T1310: the plugin import's pointer tables on
       expect(() => db.prepare("INSERT INTO ext_skill_refs (id, source, kind, name, path, sha256, added_by, created_at, updated_at) VALUES ('x', 'claude', 'skill', 'alpha', '/s/alpha/SKILL.md', 'a2', 'u', 't', 't')").run()).toThrow(/UNIQUE/);
     } finally {
       db.close();
+    }
+  });
+
+  it("an unchanged server's approval still holds; a changed one is pending again; a missing one runs nothing", async () => {
+    const o = await oldDatabase();
+    await migrate(o.path);
+    const driver = new SqliteDriver(o.path);
+    try {
+      expect(await checkPackGrants(driver, ["pack:mcp_server:docs", "pack:mcp_server:notes", "pack:mcp_server:gone"], false)).toEqual({
+        broker: [],
+        mcp_servers: [{ name: "docs", command: "docs-mcp", args: [] }],
+        refused: [{ grant: "pack:mcp_server:notes", reason: "not_approved" }, { grant: "pack:mcp_server:gone", reason: "missing" }],
+      });
+    } finally {
+      await driver.close();
     }
   });
 
