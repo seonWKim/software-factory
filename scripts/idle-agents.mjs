@@ -5,6 +5,9 @@
 // the two users run daily, each owning a project built through its own, separate Gongbang instance (the map is the
 // git-ignored .factory/idle-agents/projects.json: agent → { project, goal, repo, cli, dashboard }). Each one files
 // at most two evidence-backed tasks for this factory through `factory task create` (scripts/idle-agents/feedback.md).
+// projects.json may also add agents of its own (e.g. a backend/frontend/platform team on one project,
+// scripts/idle-agents/dev-team.md): each entry may set `team` (the agents sharing it, who get a shared board) and
+// `budget_usd` (that agent's per-run cap).
 //
 //   node scripts/idle-agents.mjs run [--agent <name>] [--force]   one pass: idle check, pick an agent, run it
 //   node scripts/idle-agents.mjs loop [--every <minutes>]         a pass every N minutes (default 30); each pass
@@ -35,7 +38,9 @@ const DIR = join(REPO, ".factory", "idle-agents");
 const STATE = join(DIR, "state.json");
 const LOCK = join(DIR, "run.lock");
 const API = "http://127.0.0.1:4310/api/v1/items";
-const AGENTS = ["gongbang-user-en", "gongbang-user-ko", "gongbang-designer", "gongbang-developer"];
+const BUILT_IN = ["gongbang-user-en", "gongbang-user-ko", "gongbang-designer", "gongbang-developer"];
+/** The built-in agents plus every agent projects.json names (e.g. a team of role agents sharing one project). */
+const agents = (projects) => [...BUILT_IN, ...Object.keys(projects).filter((a) => !BUILT_IN.includes(a))];
 /** Agents that run only while this factory is idle; the others run daily on their own project. */
 const IDLE_ONLY = new Set(["gongbang-designer", "gongbang-developer"]);
 const PROJECTS = join(DIR, "projects.json");
@@ -50,6 +55,8 @@ const SHELL = [
   "npm run -s factory -- help", "mkdir -p .factory/idle-agents", "ls", "cat", "wc", "grep", "date", "git log", "git show", "git diff",
 ].map((c) => `Bash(${c}:*)`);
 const BROWSER = ["mcp__playwright"];
+/** An agent that projects.json adds gets the user agents' tools. */
+const toolsOf = (agent) => TOOLS[agent] ?? TOOLS["gongbang-user-en"];
 const TOOLS = {
   "gongbang-user-en": [...READ, ...SHELL, ...BROWSER],
   "gongbang-user-ko": [...READ, ...SHELL, ...BROWSER],
@@ -144,11 +151,14 @@ async function runAgent(agent, url, project) {
           `Your project: ${project.project}. Goal: ${project.goal}`,
           `Repository: ${project.repo} (read only for you). Its Gongbang: ${project.dashboard} (yours). Its CLI: ${project.cli} <command>.`,
           projectRevision(project),
+          ...(project.team
+            ? [`Team: ${project.team.join(", ")} share this project. Team board: .factory/idle-agents/team-${project.project}.md (read it first; update your own section and the hand-offs).`]
+            : []),
         ]
       : []),
     "Read scripts/idle-agents/feedback.md and your notes file, do one focused pass as your agent file describes, file at most two tasks for the software-factory, then append to your notes.",
   ].join("\n");
-  const tools = [...TOOLS[agent]];
+  const tools = [...toolsOf(agent)];
   const extra = [];
   if (project) {
     tools.push(`Bash(${project.cli}:*)`, ...["log", "show", "diff", "status"].map((c) => `Bash(git -C ${project.repo} ${c}:*)`));
@@ -156,8 +166,8 @@ async function runAgent(agent, url, project) {
     tools.push(`Bash(${join(project.repo, "bin")}/:*)`);
     extra.push("--add-dir", project.repo);
   }
-  const args = ["-p", prompt, "--agent", agent, "--output-format", "stream-json", "--verbose", "--max-budget-usd", BUDGET, ...extra, "--allowedTools", ...tools];
-  log(`running ${agent} (budget $${BUDGET}), log ${logFile}`);
+  const args = ["-p", prompt, "--agent", agent, "--output-format", "stream-json", "--verbose", "--max-budget-usd", String(project?.budget_usd ?? BUDGET), ...extra, "--allowedTools", ...tools];
+  log(`running ${agent} (budget $${project?.budget_usd ?? BUDGET}), log ${logFile}`);
   const from = existsSync(logFile) ? statSync(logFile).size : 0;
   const out = openSync(logFile, "a");
   const started = Date.now();
@@ -209,9 +219,10 @@ async function runOnce({ agent, force }) {
   for (const [a, p] of Object.entries(projects)) up[a] = await answers(p.dashboard);
   const allowed = (a) => (IDLE_ONLY.has(a) ? idle : Boolean(projects[a] && up[a]));
   const state = readState();
-  const chosen = agent ?? pick(AGENTS, state.last, allowed, new Date());
+  const roster = agents(projects);
+  const chosen = agent ?? pick(roster, state.last, allowed, new Date());
   if (!chosen) return log(`nothing due (factory ${idle ? "idle" : `busy, ${busy.length} open items`})`);
-  if (!AGENTS.includes(chosen)) throw new Error(`unknown agent ${chosen}; agents: ${AGENTS.join(", ")}`);
+  if (!roster.includes(chosen)) throw new Error(`unknown agent ${chosen}; agents: ${roster.join(", ")}`);
   if (!IDLE_ONLY.has(chosen) && !up[chosen]) return log(`${chosen}: its project's Gongbang does not answer; skipped`);
   writeFileSync(LOCK, String(process.pid));
   let sandbox = null;
@@ -252,7 +263,7 @@ else if (cmd === "loop") {
   console.log(busy === null ? "dashboard: not answering" : busy.length ? `factory: busy (${busy.length} open items)` : "factory: idle");
   const state = readState();
   const projects = readProjects();
-  for (const a of AGENTS) {
+  for (const a of agents(projects)) {
     const p = projects[a];
     const where = p ? `, project ${p.project} (${(await answers(p.dashboard)) ? "up" : "down"})` : IDLE_ONLY.has(a) ? ", when idle" : ", no project";
     console.log(`${a}: last run ${state.last[a] ?? "never"} (${describeRun(state.runs[a])})${where}`);
