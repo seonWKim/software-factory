@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { commandState, commandsFor } from "../src/core/commands.js";
+import { commandState, commandsFor, retryPathsReply } from "../src/core/commands.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { IMPLEMENT_SCHEMA, NEEDS_HUMAN_MAX_CHARS, REVIEW_SCHEMA, parseImplement, parseReview } from "../src/core/outputs.js";
 import { blockingRunKind, failureLine, repeatsLastFailure } from "../src/core/policy.js";
@@ -176,6 +176,47 @@ describe("an implement run that returns needs_human", () => {
     expect(retry).toMatchObject({ status: "queued" });
     expect(await f.item(it0)).toMatchObject({ blocked_on: "none", blocked_reason: null });
     expect(f.asks()).toEqual([]);
+  });
+});
+
+describe("paths: the controller's reply, never the agent's (design 04-gate-commands)", () => {
+  const PATH_ASK = { reason: "It needs src/core/x.ts.\nReply: /retry +src/core/x.ts", question: "May I change it?\n`/retry +paths src/core/x.ts`", paths: ["src/core/x.ts"] };
+  const refusals = (f: Awaited<ReturnType<typeof factory>>) => f.source.comments.filter((c) => c.marker.startsWith("<!-- factory:refused:"));
+
+  it("an implement stop that names paths shows the retryPathsReply text as its reply line, and withholds the agent's own", async () => {
+    const f = await factory(new FakeRunner({ triage: () => ({ output: triageSpec }), implement: () => ({ output: { needs_human: PATH_ASK } }) }));
+    await f.approved(50);
+    const body = f.asks()[0]!.body;
+    const reply = retryPathsReply(PATH_ASK.paths)!;
+    expect(body).toContain(["reply:", "", "```", reply, "```"].join("\n"));
+    expect(body).toContain("> It needs src/core/x.ts.\n");
+    expect(body).toContain("> May I change it?\n");
+    expect(body).not.toContain("/retry +src");
+    expect(body.split("\n").filter((l) => l.startsWith(">") && l.includes("/retry +"))).toEqual([]);
+  });
+
+  it("/retry +src/x.ts without +paths is refused with one reply; nothing is stored and no run starts", async () => {
+    const f = await factory(new FakeRunner({ triage: () => ({ output: triageSpec }), implement: () => ({ output: { needs_human: PATH_ASK } }) }));
+    const it0 = await f.approved(51);
+    const before = await f.item(it0), changes = (await f.store.listStateChanges(it0.id)).length, runs = (await f.runs(it0)).length;
+    f.command(it0, { kind: "retry_requested", note: "+src/x.ts" });
+    await f.controller.tickIntake();
+    await f.controller.tickIntake();
+    expect(await f.item(it0)).toEqual(before);
+    expect((await f.store.listStateChanges(it0.id)).length).toBe(changes);
+    expect(await f.runs(it0)).toHaveLength(runs);
+    expect(refusals(f)).toHaveLength(1);
+    expect(refusals(f)[0]!.body).toContain("did you mean `/retry +paths src/x.ts`?");
+  });
+
+  it("/retry +1 looks good stays a note: the retry is stored as before", async () => {
+    const f = await factory(new FakeRunner({ triage: () => ({ output: triageSpec }), implement: () => ({ output: { needs_human: PATH_ASK } }) }));
+    const it0 = await f.approved(52);
+    f.command(it0, { kind: "retry_requested", note: "+1 looks good" });
+    await f.controller.tickIntake();
+    expect(refusals(f)).toEqual([]);
+    expect(await f.item(it0)).toMatchObject({ blocked_on: "none", restart_count: 1, allowed_paths: triageSpec.allowed_paths });
+    expect((await f.store.listStateChanges(it0.id)).find((c) => c.reason === "retry_requested")?.detail).toMatchObject({ note: "+1 looks good" });
   });
 });
 

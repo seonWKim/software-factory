@@ -417,7 +417,7 @@ export class CommandsUnit {
     const text = e.kind === "resolve_requested" ? e.notes : e.note;
     const scanned = await this.approvalNote(id, text, COMMAND[e.kind]);
     if ("refuse" in scanned) return scanned;
-    const split = paths ? parseCommandPaths(text ?? "") : { note: text ?? "", paths: [] };
+    const split = paths ? parseCommandPaths(text ?? "", COMMAND[e.kind]) : { note: text ?? "", paths: [] };
     if ("refuse" in split) return split;
     const note = split.note.slice(0, MAX_NOTE_CHARS).trim();
     return { note: note || null, paths: split.paths };
