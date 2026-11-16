@@ -57,7 +57,7 @@ Pick **one**.
    echo ${ANTHROPIC_API_KEY:+set}   # prints "set" if present
    ```
 
-The token is valid for about a year and draws from your plan's usage limits. Anthropic does not allow claude.ai login for products offered to other people: if you run the factory for a team or as a service, use Option B.
+The token is valid for about a year and draws from your plan's usage limits. Anthropic does not allow claude.ai login for products offered to other people: if you run the factory for other people or as a service, use Option B.
 
 **Option B: API key, cloud provider, or company gateway**
 

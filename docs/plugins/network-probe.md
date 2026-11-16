@@ -13,7 +13,7 @@ Plugins:
   - With no remote plugin selected there is nothing to ask, so a probe passes at once.
   - Enable: `"plugins": { "network_probe": "http", ... }`, or leave `network_probe` out: it is the default. Secrets: none. Settings: none.
 
-Solo developer and enterprise team: the same `http` plugin and no extra setting. An enterprise setup that points its plugins at a shared forge or model endpoint gets those endpoints probed, since the targets follow the selection and its config.
+One owner, one worker or many: the same `http` plugin and no extra setting. A setup that points its plugins at a remote forge or model endpoint gets those endpoints probed, since the targets follow the selection and its config.
 
 Turn on / off: it cannot be turned off, and there is no other plugin yet; with no probe at all (a test controller built without one) a network pause ends at its first probe time, as a stall pause does without an LLM provider.
 

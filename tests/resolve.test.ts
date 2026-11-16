@@ -100,13 +100,16 @@ describe("resolve prompt fixed rules", () => {
     expect(prompt).toContain("AGENTS.md");
   });
 
-  it("AGENTS.md keeps both sides' sections in the design, plugin and settings docs and SET_UP.md (moved from the prompt, issue #335)", () => {
-    const rule = readFileSync("AGENTS.md", "utf8").split("\n").find((l) => l.startsWith("- Merge conflicts in"));
+  it("AGENTS.md keeps both sides' sections in the design and plugin docs and SET_UP.md (moved from the prompt, issue #335)", () => {
+    const lines = readFileSync("AGENTS.md", "utf8").split("\n");
+    const rule = lines.find((l) => l.startsWith("- Merge conflicts in"));
     expect(rule, "the merge rule").toBeDefined();
-    for (const doc of ["`docs/design.md`", "`SET_UP.md`", "`docs/design/", "`docs/plugins/", "`docs/settings.md`"]) {
+    for (const doc of ["`docs/design.md`", "`SET_UP.md`", "`docs/design/", "`docs/plugins/"]) {
       expect(rule).toContain(doc);
     }
     expect(rule).toMatch(/keep both sides' sections/i);
+    expect(rule, "docs/settings.md is generated, not hand-merged").not.toContain("docs/settings.md");
+    expect(lines.find((l) => l.includes("`docs/settings.md`"))).toContain("`npm run settings:catalog`");
   });
 
   it("says next to the allowed-paths rule that known-violations lists are always editable to shrink (never to grow)", () => {
