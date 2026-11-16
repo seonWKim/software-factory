@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { type FactoryConfig, RETENTION_DEFAULTS, type RetentionDays, retentionConfig } from "../src/core/config.js";
-import type { Timestamp } from "../src/core/types.js";
+import type { Timestamp, UserId } from "../src/core/types.js";
 import type { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { RETENTION } from "../src/controller/units/retention/retention.unit.js";
+import { NOT_OWNER, OwnerAuth } from "../src/core/authorize.js";
 import { FakeAuth, cleanScanner, config, silent } from "./helpers/fakes.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 
@@ -171,5 +172,25 @@ describe("the retention config", () => {
     expect(() => retentionConfig({ records_days: 2.5 })).toThrow(/retention\.records_days/);
     expect(() => retentionConfig({ commands_days: "30" })).toThrow(/retention\.commands_days/);
     expect(() => retentionConfig([])).toThrow(/retention must be an object/);
+  });
+});
+
+describe("the owner check's audit rows (design 08-permissions)", () => {
+  it("an allowed read-only check writes none; a refused check and an allowed command decision write one each", async () => {
+    const { store } = await newStore();
+    const owner = "local:me" as UserId;
+    await store.claimOwner(owner);
+    const auth = new OwnerAuth(store);
+    const project = { kind: "project" as const, id: "p" };
+    const audit = () => store.db.all("SELECT principal, action, decision FROM authz_audit ORDER BY seq");
+    // A page load asking whether to show the item commands.
+    expect(await auth.check({ user_id: owner, attributes: {} }, "approve_spec", project)).toEqual({ allow: true });
+    expect(await audit()).toEqual([]);
+    expect(await auth.check({ user_id: "local:other" as UserId, attributes: {} }, "approve_spec", project)).toEqual({ allow: false, reason: NOT_OWNER });
+    expect(await auth.authorize({ user_id: owner, attributes: {} }, "approve_spec", project)).toEqual({ allow: true });
+    expect(await audit()).toEqual([
+      { principal: "local:other", action: "approve_spec", decision: "deny" },
+      { principal: owner, action: "approve_spec", decision: "allow" },
+    ]);
   });
 });

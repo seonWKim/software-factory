@@ -1030,13 +1030,13 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
     integrations: INTEGRATION_KINDS.map((kind) => ({ kind, interface: loaded.registry[kind].interface, configured: String(loaded.plugins[kind]) })),
   };
   // The owner check for "Resume now", approve_tool and the page's command checks (approve_spec, approve_merge), with no
-  // forge call; every decision here is audited (passport `none`).
+  // forge call. Each command decision is audited (passport `none`); a page's read-only check only when refused (`check`).
   const identity = await startProcessIdentity(loaded, store, clock);
-  const auth = new AuditedAuthProvider(new OwnerAuth(store), identity.passports);
-  const onProject = async (user_id: UserId, action: AuthAction): Promise<AuthDecision> => {
+  const auth = new OwnerAuth(store);
+  const onProject = async (user_id: UserId, action: AuthAction, readOnly = false): Promise<AuthDecision> => {
     const project = await settings.resolveProject();
     if (!project) return { allow: false, reason: "no project is stored yet" };
-    return auth.authorize({ user_id, attributes: {} }, action, { kind: "project", id: project.key });
+    return auth[readOnly ? "check" : "authorize"]({ user_id, attributes: {} }, action, { kind: "project", id: project.key });
   };
   // One token per process for every write route; held only in memory, never written to a file, the store or a log.
   // The UI server, loaded here only: through setup.ts it reaches GitHub modules a solo start must not load.
@@ -1045,7 +1045,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   const actor = who.actor;
   const commands: UiCommands = {
     ...who, token, forge: loaded.plugins.forge !== undefined, localMerge: canMergeLocal(await p.sandbox()),
-    allowed: (action) => (actor === null ? Promise.resolve({ allow: false, reason: "no_actor" }) : onProject(actor, action)),
+    allowed: (action) => (actor === null ? Promise.resolve({ allow: false, reason: "no_actor" }) : onProject(actor, action, true)),
   };
   // The mode switch, the auto-merge tier and a loosening change need approve_merge on the project (design 08-settings), as the Merge button.
   settings.mayApproveMerge = async () => refusalOf(await onProject(opts.identity.user, "approve_merge"));
