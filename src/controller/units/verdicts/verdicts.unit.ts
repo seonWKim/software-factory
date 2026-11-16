@@ -1,5 +1,5 @@
 // Verdicts: a person's verdict, implicit verdicts (merges, pushes, reverts) and fix-forward links.
-// Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
+// Moved out of the legacy controller (RFC 0015 M5); it reads through the kernel's reader and writes through the kernel.
 
 import { prNumber } from "../../../core/change-ref.js";
 import { LOCAL_SOURCE } from "../../../core/local-merge.js";
