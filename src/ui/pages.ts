@@ -4,67 +4,25 @@
 import { readProjectLabel } from "../core/project-labels.js";
 import { type ConflictCounts, conflictCounts } from "../core/resolve.js";
 import { type Run, type RunKind, type StateChange, type WorkItem, type WorkItemId, outcomeCost, outcomeTokens } from "../core/types.js";
-import type { Clock } from "../interfaces/clock.js";
-import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { Alert, FactoryStore } from "../interfaces/factory-store.js";
-import type { SharedStorage } from "../interfaces/shared-storage.js";
 import {
   type FacetCounts, type Filters, RUN_KINDS, STAGES, STATE_OPTIONS, TIERS, applyFilters, facetCounts, isFiltered,
 } from "./filters.js";
 import { alarmCommand, alarmText, alarmUntil, alarmsFor, openAlarms } from "./alarms.js";
 import { between, duration, esc, facts as factsTable, link, page, table } from "./html.js";
-import type { FactoryStatus } from "./factory-status.js";
 import { githubBudgetSection, readGitHubBudget } from "./github-budget.js";
-import { type HealthMonitor, improveSection } from "./health.js";
+import { improveSection } from "./health.js";
+import { type UiDeps, runTokens } from "./deps.js";
 import { runNowButton } from "./improve-api.js";
 import type { PauseDeps } from "./pause-api.js";
 import { LIST_LIMIT, type ListRow, listRows } from "./list.js";
 import { mergesSection } from "./merge-digest.js";
 import { needCtx, needOf } from "./need.js";
 import { NEEDS_YOU } from "./priority.js";
-import type { UiTacit } from "./rules-api.js";
-import type { UiSettings } from "./settings-api.js";
-import type { UiCommands } from "./commands.js";
-import { type DisplayNames, userLabel } from "./names.js";
+import { userLabel } from "./names.js";
 import { Withholder } from "./withhold.js";
 
 export { STAGES } from "./filters.js";
-
-export interface UiDeps {
-  store: FactoryStore;
-  scanner: EgressScanner;
-  clock: Clock;
-  /** Running runs whose last heartbeat is older than this are highlighted. */
-  lease_ms: number;
-  /** The Health panel and /api/health: doctor's checks, rate-limited and egress-scanned. */
-  health: HealthMonitor;
-  /** The supervisor's state (null: no status file); absent: the banner is not shown. */
-  factoryStatus?: () => Promise<FactoryStatus | null>;
-  /** Which plugins are in use, for the app's Issue column. Absent: null. */
-  plugins?: { issues: "github" | null };
-  /** The built app served under /app/; absent: web/dist in this checkout. */
-  appDir?: string;
-  /**
-   * The Settings routes (GET and POST /api/v1/settings; design §8, issue #236): the config base, the repo, the
-   * actor, a store-only project resolver and the per-process CSRF token. Absent: GET is a 404 and POST a 405.
-   */
-  settings?: UiSettings;
-  /**
-   * Where the worker stores run transcripts (`transcripts/<item>/<run>.json`), read back one byte range at a
-   * time for the app's transcript view (design §9, issue #303). Absent: no run has a transcript link and the
-   * transcript route is a 404.
-   */
-  storage?: SharedStorage;
-  /**
-   * The item commands route (POST /api/v1/items/:id/commands and GET /api/v1/session; issue #227): the actor
-   * and the per-process token. Absent: the session is a 404 and a commands POST a 503.
-   */
-  commands?: UiCommands;
-  /** Display names by user id (Identity's identity_profiles), read only to show. Absent: ids only. */
-  displayNames?: DisplayNames;
-  /** The Rules page's tacit ledger (rules-api.ts, issue #571), read and judged only through it. Absent: the plugin `none`. */
-  tacit?: UiTacit;
-}
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -72,20 +30,6 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const COST_DAYS = 7;
 /** The cost section's columns: every run kind that can run an agent. `manual` is a record, never work. */
 const COST_KINDS: readonly RunKind[] = ["triage", "implement", "review", "resolve", "update"];
-
-/**
- * Tokens a run used, the same count the controller adds to token_cost (design §6 Measurement): a succeeded
- * run's data.tokens, a failed run's usage. Null when the run stored none (unfinished, or an older failed row).
- */
-export function runTokens(run: Run): number | null {
-  // A person's session reports its own total (design §5, 2026-11-01).
-  if (run.kind === "interactive") return run.session_tokens;
-  if (run.outcome?.status === "succeeded") {
-    const t = Number(run.outcome.data.tokens);
-    return Number.isFinite(t) && t >= 0 ? t : null;
-  }
-  return run.outcome?.status === "failed" && run.outcome.usage ? outcomeTokens(run.outcome) : null;
-}
 
 class Ctx {
   readonly w: Withholder;
