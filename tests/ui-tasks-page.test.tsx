@@ -301,7 +301,6 @@ describe("Tasks page", () => {
       expect(c.getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual(["Reopen: tk_late"]);
       expect(c.queryByRole("checkbox")).toBeNull();
       expect(card("tk_late").hasAttribute("data-overdue")).toBe(false);
-      expect(card("tk_late").getAttribute("draggable")).not.toBe("true");
       expect(title("tk_late").className).not.toContain("text-pill-bad-fg");
       expect(card("tk_late").textContent).not.toContain("Overdue");
       card("tk_late").focus();
@@ -358,79 +357,22 @@ describe("Tasks page", () => {
     });
   });
 
-  describe("today's timeline (design 02-tasks, schedule a task)", () => {
-    const slot = (time: string) => document.querySelector<HTMLElement>(`[data-slot="${time}"]`)!;
-    const block = (id: string) => document.querySelector<HTMLElement>(`[data-block="${id}"]`)!;
-    /** A drag carrying `id`, as a task row's drag start sets it. */
-    const carrying = (id: string) => ({ dataTransfer: { getData: (type: string) => (type === "text/plain" ? id : ""), setData: () => {} } });
-    /** The timeline starts collapsed; its control (aria-expanded) opens it. */
-    const expand = () => fireEvent.click(screen.getByRole("button", { name: "Show timeline" }));
-
-    it("is collapsed by default and expands on a control with aria-expanded", async () => {
+  describe("no timeline (design 02-tasks)", () => {
+    it("shows no timeline control or slots, and no row is draggable", async () => {
       await show();
-      const control = screen.getByRole("button", { name: "Show timeline" });
-      expect(control.getAttribute("aria-expanded")).toBe("false");
-      expect(document.querySelector("[data-slot]")).toBeNull();
-      fireEvent.click(control);
-      expect(screen.getByRole("button", { name: "Hide timeline" }).getAttribute("aria-expanded")).toBe("true");
-      expect(document.querySelectorAll("[data-slot]").length).toBeGreaterThan(0);
+      expect(screen.queryByRole("button", { name: /timeline/i })).toBeNull();
+      expect(document.querySelector("[data-slot], [data-block]")).toBeNull();
+      expect(document.querySelectorAll("[data-task]").length).toBeGreaterThan(0);
+      for (const r of document.querySelectorAll("[data-task]")) expect(r.hasAttribute("draggable")).toBe(false);
     });
 
-    it("dragging a task onto a slot posts its ID with today's date and the slot's time", async () => {
-      await show();
-      expand();
-      const data = new Map<string, string>();
-      fireEvent.dragStart(card("tk_late"), { dataTransfer: { setData: (type: string, v: string) => data.set(type, v), getData: () => "" } });
-      expect(data.get("text/plain")).toBe("tk_late");
-      fireEvent.dragOver(slot("15:30"), carrying("tk_late"));
-      fireEvent.drop(slot("15:30"), carrying("tk_late"));
-      await waitFor(() => expect(posts).toHaveLength(1));
-      expect(posts[0]!.url).toBe("/api/v1/tasks/schedule");
-      expect(new Headers(posts[0]!.init.headers).get("x-csrf-token")).toBe(TOKEN);
-      expect(JSON.parse(String(posts[0]!.init.body))).toEqual({ id: "tk_late", date: "2026-11-12", time: "15:30" });
-    });
-
-    it("shows once, above the list; a refusal shows above the timeline", async () => {
-      await show();
-      expect(screen.getAllByRole("button", { name: "Show timeline" })).toHaveLength(1);
-      expand();
-      answer = { status: 409, body: { error: "the task is done: a done task cannot be scheduled" } };
-      fireEvent.drop(slot("09:00"), carrying("tk_late"));
-      await waitFor(() => expect(posts).toHaveLength(1));
-      expect(JSON.parse(String(posts[0]!.init.body))).toEqual({ id: "tk_late", date: "2026-11-12", time: "09:00" });
-      expect((await screen.findByRole("alert", undefined, SLOW)).textContent).toBe("the task is done: a done task cannot be scheduled");
-    });
-
-    it("draws a timed task with no stored duration as 30 minutes and a stored duration as its length; an event is not drawn", async () => {
+    it("a timed row still shows its duration: 30 minutes when none is stored, else the stored one", async () => {
       current = view({
         today: { overdue: [], due: [row("tk_call", { due_date: "2026-11-12", due_time: "15:00" }), row("tk_gym", { due_date: "2026-11-12", due_time: "18:00", duration_minutes: 90 })] },
-        timeline: [
-          { kind: "task", id: "tk_call", title: "call", start: "15:00", end: "15:30", offset: 900, minutes: 30 },
-          { kind: "task", id: "tk_gym", title: "gym", start: "18:00", end: "19:30", offset: 1080, minutes: 90 },
-          { kind: "event", id: "work:ev1", title: "standup", start: "09:00", end: "09:15", offset: 540, minutes: 15 },
-        ],
       });
-      render(createElement(QueryClientProvider, { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) }, createElement(TasksPage)));
-      await screen.findByRole("list", { name: /^Today/ }, SLOW);
-      expand();
+      await show2();
       expect(card("tk_call").textContent).toContain("30 min");
       expect(card("tk_gym").textContent).toContain("90 min");
-      // A slot is 1.5rem per 30 minutes: 15:00 is 45rem down, 30 minutes 1.5rem high; 90 minutes 4.5rem.
-      expect([block("tk_call").style.top, block("tk_call").style.height]).toEqual(["45rem", "1.5rem"]);
-      expect(block("tk_call").textContent).toContain("15:00–15:30");
-      expect(block("tk_gym").style.height).toBe("4.5rem");
-      expect(block("tk_gym").textContent).toContain("18:00–19:30");
-      expect(block("work:ev1")).toBeNull();
-      expect(within(screen.getByRole("list", { name: "Scheduled today" })).queryByRole("button")).toBeNull();
-    });
-
-    it("with no commands actor a row is not draggable and a drop posts nothing", async () => {
-      current = view({ can_build: false });
-      await show();
-      expect(card("tk_late").getAttribute("draggable")).toBe("false");
-      expand();
-      fireEvent.drop(slot("15:00"), carrying("tk_late"));
-      expect(posts).toEqual([]);
     });
   });
 

@@ -101,7 +101,6 @@ describe("task views: placement", () => {
     expect(ids(v.today.due)).toEqual(["undated"]);
     expect(v.today.overdue).toEqual([]);
     expect(v.upcoming.flatMap((d) => ids(d.tasks))).not.toContain("undated");
-    expect(v.timeline).toEqual([]);
     s.clock.advance(at(13, 0, 0).getTime() - s.clock.now().getTime());
     v = await s.views();
     expect(ids(v.today.due)).not.toContain("undated");
@@ -120,7 +119,6 @@ describe("task views: placement", () => {
     await s.store.completeTask("undated-done");
     const v = await s.views();
     expect(ids(v.today.due)).toEqual(["call", "dated", "undated-p1", "undated-old"]);
-    expect(v.timeline.map((b) => b.id)).toEqual(["call"]);
   });
 
   it("a task added today with a due date next week is in that day's Upcoming group, not in Today", async () => {

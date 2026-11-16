@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import migration from "../src/controller/migrations/20261111T1610-controller-tasks.migration.js";
 import { type CliAction, type LocalCliDeps, parseLocalCliArgs, runLocalCli } from "../src/core/local-cli.js";
-import { DEFAULT_DURATION_MINUTES, type NewTask, type Task, localDate, planDay, taskDuration, taskViews } from "../src/core/tasks.js";
+import { type NewTask, type Task, localDate, taskViews } from "../src/core/tasks.js";
 import type { Timestamp, UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { MIGRATIONS_TABLE, type MigrationDb, type SqlDriver, tableExists } from "../src/state/index.js";
@@ -123,34 +123,14 @@ describe("factory task done and recurring completion", () => {
 });
 
 describe("schedule a task: duration and recurrence (design 02-tasks)", () => {
-  it("a timed task with no stored duration is planned as 30 minutes; a stored duration replaces it", async () => {
+  it("a task stores its duration, null when none is given; the views carry no timeline", async () => {
     const { store, clock } = await setup();
     const today = localDate(clock.now());
     const plain = await store.addTask(task({ id: "tk_a", due: { date: today }, due_time: "15:00" }));
     const long = await store.addTask(task({ id: "tk_b", due: { date: today }, due_time: "16:00", duration_minutes: 90 }));
     expect(plain.duration_minutes).toBeNull();
-    expect(taskDuration(plain)).toBe(DEFAULT_DURATION_MINUTES);
-    expect(DEFAULT_DURATION_MINUTES).toBe(30);
-    expect(taskDuration(long)).toBe(90);
-    const views = taskViews(await store.listTasks(10), clock.now());
-    expect(views.timeline).toEqual([
-      { kind: "task", id: "tk_a", title: "water plants", start: "15:00", end: "15:30", offset: 900, minutes: 30 },
-      { kind: "task", id: "tk_b", title: "water plants", start: "16:00", end: "17:30", offset: 960, minutes: 90 },
-    ]);
-  });
-
-  it("the timeline leaves untimed tasks and all-day events out, draws a timed event its length, and cuts a block at midnight", () => {
-    const day = "2026-11-11";
-    const at = (h: number, m = 0) => new Date(2026, 10, 11, h, m).toISOString();
-    const late: Task = { ...task(), id: "tk_late", due_date: day, due_time: "23:45", created_at: at(1) as Timestamp, done_at: null, parent_id: null,
-      work_item_id: null, parent_task_id: null, duration_minutes: null, reminded_at: null };
-    const untimed = { ...late, id: "tk_untimed", due_time: null };
-    const event = { kind: "event" as const, source: "work", id: "ev1", title: "standup", starts_at: at(9), ends_at: at(9, 15), all_day: false, time: "09:00" };
-    const allDay = { ...event, id: "ev2", all_day: true, time: null };
-    expect(planDay([allDay, event, late, untimed], day)).toEqual([
-      { kind: "event", id: "work:ev1", title: "standup", start: "09:00", end: "09:15", offset: 540, minutes: 15 },
-      { kind: "task", id: "tk_late", title: "water plants", start: "23:45", end: "00:15", offset: 1425, minutes: 15 },
-    ]);
+    expect(long.duration_minutes).toBe(90);
+    expect(taskViews(await store.listTasks(10), clock.now())).not.toHaveProperty("timeline");
   });
 
   it("a recurring task's next occurrence keeps its due time and duration, its date counted from the old due date", async () => {
