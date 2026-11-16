@@ -86,7 +86,7 @@ Other sources may implement `setStatus` as a no-op.
 - `ack()` tells the source the event is safe. The listener calls it only after the event is committed to the store inbox, so do not ack on receipt. An event that was never acked must come back on a later connection; that is what makes a crash lose nothing.
 - Do not keep state another replica would need. Only the replica holding the source's listener lease calls `subscribe`; every replica's controller handles the events from the inbox, through the same `handleEvent` as polled events, so the source's `postComment`, `markSeen` and `setStatus` are called from whichever replica handles the event.
 - Credentials (e.g. a Socket Mode app token) are read by the plugin from the `SecretStore` passed in its factory context, as `slack` does, never put in events or logs (`github-issues` gets only the shared GitHub client, never the credentials).
-- Register it with a `*.plugin.ts` descriptor beside it (kind `source`) and its section here, as for any plugin. Settings: `lease_ms` and `heartbeat_ms` (the listener lease reuses them), `inbox_retention_days` (optional, default 14, a positive integer or startup fails: inbox rows older than this that every reader has passed are deleted).
+- Register it with a `*.plugin.ts` descriptor beside it (kind `source`) and its section here, as for any plugin. Settings: `lease_ms` and `heartbeat_ms` (the listener lease reuses them), `retention.raw_records_days` (optional, default 7, an integer of 0 or more, 0 keeps them forever: inbox rows older than this that every reader has passed are deleted; changed 2026-11-16, design 08-retention). The old top-level `inbox_retention_days` is deprecated: still read when `retention.raw_records_days` is absent, with a warning.
 
 `fake-stream` (`FakeStreamSource`, source type `slack_thread`) is **test-only**: it lives in `tests/helpers/fakes.ts`, is added with `withPlugin` through `fakeStreamRegistry()` in tests only, and is not in `REGISTRY`, so config cannot select it.
 
@@ -96,6 +96,7 @@ Switch back / disable: `"source": "github-issues"` (or drop the other names from
 
 ## History
 
+- **Raw record retention key** (changed 2026-11-16). Before: `inbox_retention_days` (default 14, a positive integer) set how long inbox rows were kept.
 - **Replies under a Slack notice** (changed 2026-11-12). Before: `notifyOwner` posted the notice and kept nothing, so a mention under it was a request that made a work item, and `slack` read no channel outside `slack.channels`.
 - **Slack dashboard links on 127.0.0.1** (changed 2026-11-12, design 05-sources). Before: with no `slack.dashboard_url`, the Full spec link and the notice title links went to the local dashboard `http://127.0.0.1:<ui.port>`, which a phone cannot open; now they are View buttons that open the item in a Slack modal.
 - **PR fields are `change_ref`** (changed 2026-11-08, phase 3 of the change fields). Before: `revise_requested` and `resolve_requested` named their PR as `pr: { pr_number, head_branch }`, a `/verdict` PR target had `pr_number`, and `setStatus` took `pr_number` (a number or null); all are now `change_ref`, a string. Queued command rows that still hold `args.pr.pr_number` are read as before (removal plan: design 02).
