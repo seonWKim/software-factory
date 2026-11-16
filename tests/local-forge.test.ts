@@ -7,7 +7,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { type Loaded, forgeRoles, mergeQueuePushBase } from "../src/compose.js";
+import type { Loaded } from "../src/compose.js";
+import { mergeQueuePushBase } from "../src/core/config.js";
+import { forgeRoles } from "../src/core/local-merge.js";
 import type { WorkItem } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalForge } from "../src/impl/forge/local-forge.js";
@@ -152,11 +154,11 @@ describe("LocalForge base push (merge_queue.push_base)", () => {
   };
 
   it("`merge_queue.push_base` is off when absent and must be true or false", () => {
+    expect(mergeQueuePushBase(undefined)).toBe(false);
     expect(mergeQueuePushBase({})).toBe(false);
-    expect(mergeQueuePushBase({ merge_queue: { depth: 2 } })).toBe(false);
-    expect(mergeQueuePushBase({ merge_queue: { push_base: true } })).toBe(true);
-    expect(mergeQueuePushBase({ merge_queue: { push_base: false } })).toBe(false);
-    for (const v of ["true", 1, null]) expect(() => mergeQueuePushBase({ merge_queue: { push_base: v } }), String(v)).toThrow(/merge_queue.push_base must be true or false/);
+    expect(mergeQueuePushBase({ push_base: true })).toBe(true);
+    expect(mergeQueuePushBase({ push_base: false })).toBe(false);
+    for (const v of ["true", 1, null]) expect(() => mergeQueuePushBase({ push_base: v }), String(v)).toThrow(/merge_queue.push_base must be true or false/);
   });
 
   it("the plugin pushes only with the setting on and an origin in the factory repo", async () => {

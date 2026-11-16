@@ -7,7 +7,7 @@ import { availableParallelism, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
   AGENT_STOP_CHECKS_DEFAULT, ALARM_DEFAULTS, type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, type ToolchainConfig, cliUserConfig, uiCheckConfig, uiCheckSentence,
-  coordinationConfig, readOnlyFolders, readOnlyInputsConfig, retentionConfig, toolGrantsConfig,
+  coordinationConfig, mergeQueuePushBase, readOnlyFolders, readOnlyInputsConfig, retentionConfig, toolGrantsConfig,
 } from "./core/config.js";
 import { toolchainEnvKeyRefusal } from "./core/tools/policy.js";
 import { type ProjectRef, localProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
@@ -16,7 +16,7 @@ import { checkCommands, commandText } from "./core/checks.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
 import { errorText, type Logger } from "./core/log.js";
 import type { CliEnvironment, CliIdentity } from "./core/local-cli.js";
-import { canMergeLocal } from "./core/local-merge.js";
+import { canMergeLocal, forgeRoles } from "./core/local-merge.js";
 import { StoredLearnedSettings } from "./core/learned-settings.js";
 import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
@@ -441,8 +441,7 @@ export async function loadConfig(
     agent_stop_checks: agentStopChecks(file),
     ...retention, // the retention block, inbox_retention_days as its fallback (design 08-retention)
     outbound_batching: batchingPolicies(file.outbound?.batching),
-    merge_queue_depth: mergeQueueDepth(file),
-    merge_queue_push_base: mergeQueuePushBase(file),
+    merge_queue_depth: mergeQueueDepth(file), merge_queue_push_base: mergeQueuePushBase(file.merge_queue),
     ...(file.hooks === undefined ? {} : { hooks: hookNames(file.hooks) }),
     ...(autoApproveReadOnly(file.packs) ? { packs_auto_approve_read_only: true } : {}),
     workers,
@@ -764,8 +763,7 @@ export async function build(
   for (const name of selectedSources(sel)) {
     sources.push(await createPlugin(registry, "source", name, { ...base, github, store, secrets, scanner, log: sourceLog, clock }));
   }
-  // PR events, facts, comments and status (issue #273), else null; with no forge, the local forge reads links only.
-  // With no forge selected and merge_queue.push_base on, the local forge is the forge too, for its base push (forgeRoles).
+  // PR events, facts, comments and status (issue #273), else null; with no forge, the local forge reads links (forgeRoles).
   const selected = await p.forge(github, { store, clock, log: new ConsoleLogger(clock, "forge"), credentials });
   const { forge, links } = forgeRoles(selected, selected ?? (await createPlugin(registry, "forge", "local", { ...base, github })));
   // Identity (RFC 0015 §8, M9): service and run passports, and the audit of every authorize decision.
@@ -1313,22 +1311,6 @@ export function mergeQueueDepth(file: Pick<FileConfig, "merge_queue">): number {
     throw new Error(`merge_queue.depth must be an integer from 1 to ${MERGE_QUEUE_DEPTH_MAX}`);
   }
   return v;
-}
-
-/** `merge_queue.push_base` (design 05-sources, Local items): absent means off, otherwise true or false or startup fails. */
-export function mergeQueuePushBase(file: Pick<FileConfig, "merge_queue">): boolean {
-  const v = file.merge_queue?.push_base;
-  return v === undefined ? false : booleanSetting("merge_queue.push_base", v);
-}
-
-/**
- * The controller's forge and link reader (issue #273; design 05-sources, Local items): a selected forge is both.
- * With none, `local` (the local forge compose builds) reads links, and is the forge too only when it pushes the base
- * (`merge_queue.push_base` and an origin), so the default stays no forge, no push row and no remote call.
- */
-export function forgeRoles(selected: Forge | null, local: Forge): { forge: Forge | null; links: Forge } {
-  if (selected) return { forge: selected, links: selected };
-  return { forge: local.pushBase ? local : null, links: local };
 }
 
 function isTier(n: number): n is Tier {
