@@ -20,7 +20,7 @@ Diff budget:
 Docs:
 - Follow the repository's agent instructions (AGENTS.md or CLAUDE.md) on where design and docs live.
 - When the docs are an index that links to topic files: read the index first, then open only the topic files your change touches.
-- Record a design change in the topic file that holds the decision: the current decision first, the decision it replaces as a line under the History heading at the bottom. Say which decision changed. Update the topic files, never the index: edit an index only to add a line for a new topic file.
+- Record a design change in the topic file that holds the decision: the current decision first, the decision it replaces as a line in docs/design/history/<topic>.md, which the topic file's History heading at the bottom links to. Say which decision changed. Update the topic files, never the index: edit an index only to add a line for a new topic file.
 
 Keep the code maintainable:
 - Delete what your change replaces, inside the allowed paths: dead code, unused exports and helpers, old code paths, stale tests and docs for removed behaviour.

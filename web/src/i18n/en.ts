@@ -630,6 +630,7 @@ export const en = {
   "plugins.statusApproved": "Approved",
   "plugins.statusWaiting": "Waiting",
   "plugins.statusOff": "Off",
+  "plugins.statusMissing": "Missing",
   "plugins.approve": "Approve",
   "plugins.revoke": "Revoke",
   "plugins.cannotWrite": "This server cannot change plugins from the page.",

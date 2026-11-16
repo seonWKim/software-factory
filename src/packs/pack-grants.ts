@@ -6,7 +6,9 @@
 // joins the run's broker tools: the pack tool broker (src/impl/broker/pack-tool-broker.ts) serves it and checks the
 // approval again on every call (issue #592). An MCP server that passes both checks reaches the run as its
 // descriptor's `command` and `args` (issue #596), when it is a stdio server with no credential; any other is refused,
-// as `not_started`, and the run fails before its agent starts.
+// as `not_started`, and the run fails before its agent starts. An imported MCP server (a pointer row, design
+// 11-plugin-import) is read from its source file here: gone is refused as `missing`, and a file whose entry no longer
+// hashes to the stored description_hash is `not_approved`, so the old hash's approval no longer applies.
 
 import { PACK_GRANT } from "../core/config.js";
 import type { PackMcpServer } from "../interfaces/agent-runner.js";
@@ -18,11 +20,12 @@ import { PackEntriesStore, type PackEntryKind, type StoredEntry } from "./pack-e
 export const PACK_TOOL_REFUSED = "pack_tool_refused";
 
 /**
- * `no_entry`: nothing is stored under the name. `not_approved`: its current description is not approved.
+ * `no_entry`: nothing is stored under the name. `not_approved`: its current description is not approved (an imported
+ * server whose file changed since import included). `missing`: an imported server whose entry left its file.
  * `not_started`: an approved MCP server the factory does not start: it names a credential, is not a stdio server
  * with a `command`, or the run's runner cannot run MCP servers.
  */
-export type PackRefusalReason = "no_entry" | "not_approved" | "not_started";
+export type PackRefusalReason = "no_entry" | "not_approved" | "missing" | "not_started";
 
 export interface PackRefusal {
   readonly grant: string;
@@ -83,16 +86,19 @@ export async function checkPackGrants(
 
 /**
  * The approval check of one entry: its current description, when it is approved; else why not. Reads the store
- * only (no time, no write), so the grant check and the pack tool broker can each run it any number of times.
+ * (and an imported server's source file) only (no time, no write), so the grant check and the pack tool broker can
+ * each run it any number of times.
  */
 export async function approvedEntry(
   db: SqlDriver,
   kind: PackEntryKind,
   name: string,
   autoApproveReadOnly: boolean,
-): Promise<StoredEntry | "no_entry" | "not_approved"> {
+): Promise<StoredEntry | "no_entry" | "not_approved" | "missing"> {
   const entry = await new PackEntriesStore(db, () => "").current(kind, name);
   if (entry === null) return "no_entry";
+  if (entry.imported?.state === "missing") return "missing";
+  if (entry.imported?.state === "changed") return "not_approved";
   if (autoApproved(entry, autoApproveReadOnly)) return entry;
   return (await new PackApprovalsStore(db, () => "").approved(entry)) ? entry : "not_approved";
 }

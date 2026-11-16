@@ -503,8 +503,11 @@ export interface CapabilitiesView {
   capabilities: CapabilityRow[];
 }
 
-/** An MCP server's or pack tool's approval status on the Plugins page: `waiting` until approved, `off` once revoked (design 11-packs). */
-export type McpStatus = "approved" | "waiting" | "off";
+/**
+ * An MCP server's or pack tool's approval status on the Plugins page: `waiting` until approved, `off` once revoked
+ * (design 11-packs), `missing` when an imported server's source file no longer holds it (design 11-plugin-import).
+ */
+export type McpStatus = "approved" | "waiting" | "off" | "missing";
 
 /** `/api/v1/plugins` (design 09-dashboard-app, 2026-11-16): what the agents can use, one list per tab. Names and descriptions only. */
 export interface PluginsView {

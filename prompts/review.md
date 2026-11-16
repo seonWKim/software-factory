@@ -13,8 +13,8 @@ Do:
    weakened assertion that hides a real bug is a finding.
 5. If the change alters a design decision, check that the docs the repository's agent instructions (AGENTS.md or
    CLAUDE.md) name for it were updated. Where the docs are an index of topic files: the topic files were updated
-   (current decision first, the replaced one under History), and the index holds no decision text: one line or
-   row per topic only.
+   (current decision first, the replaced one in docs/design/history/<topic>.md, linked under History), and the index
+   holds no decision text: one line or row per topic only.
 6. Check maintainability in the diff itself. Each of these is a finding of kind `code`:
    - the change leaves dead code, unused exports or a replaced code path behind
    - it duplicates an existing helper instead of reusing it

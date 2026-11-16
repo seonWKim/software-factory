@@ -122,6 +122,7 @@ const STATUS: Record<McpStatus, { label: MessageKey; level: string | undefined }
   approved: { label: "plugins.statusApproved", level: "ready_to_merge" },
   waiting: { label: "plugins.statusWaiting", level: "needs_approval" },
   off: { label: "plugins.statusOff", level: undefined },
+  missing: { label: "plugins.statusMissing", level: "stuck" },
 };
 
 const Status = ({ status }: { status: McpStatus }) => <StatusBadge size="sm" level={STATUS[status].level}>{t(STATUS[status].label)}</StatusBadge>;
