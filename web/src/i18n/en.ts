@@ -339,7 +339,6 @@ export const en = {
   "standing.accept": "Accept",
   "standing.decline": "Decline",
   "standing.pending": "Pending proposals",
-  "standing.noProposal": "No proposal is waiting.",
   "standing.title": "Standing approvals",
   "standing.rules": "Standing rules",
   "standing.intro": "A rule that is on approves the specs of its tier that wait at its gate without a reply. Changing one needs approve_spec.",
