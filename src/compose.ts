@@ -23,7 +23,7 @@ import { budgetConfig } from "./core/budget.js";
 import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./core/model-choice.js";
 import { gitHost, hostId } from "./runtime/host-id.js";
 import { ControllerRole } from "./runtime/roles/controller-role.js";
-import { SqlHookAudit, ensureDiscoveredTopicTables, loadHooks } from "./runtime/index.js";
+import { SqlHookAudit, loadHooks } from "./runtime/index.js";
 import { PackCheckRunner } from "./runtime/hooks/pack-checks.js";
 import { type HookDescriptor, UNCALLED_HOOK_POINTS } from "./shared/hook.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
@@ -63,7 +63,6 @@ import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { UiCommands } from "./ui/commands.js";
 import { type UiSettings, configWriter, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
 import type { UiPauses } from "./ui/pause-api.js";
-import type { UiMigrate } from "./ui/migrate-api.js";
 import { type UiTacit, uiTacit } from "./ui/rules-api.js";
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
 import type { SlackConfig } from "./impl/source/slack-config.js";
@@ -1004,8 +1003,7 @@ export interface UiParts {
   pauses: UiPauses;
   displayNames: (user_ids: readonly string[]) => Promise<ReadonlyMap<string, string>>; // by user id from Identity's identity_profiles (M9), only to show
   tacit: UiTacit; // the Rules page's ledger, switched by the `integrations` setting before each Rules request (design 08-settings)
-  /** Migrate now, Start and Restart now (design 08-self-update): the state dir, clock, run_timeout_ms and `npm run migrate`'s steps. */
-  migrate: UiMigrate;
+  migrate: import("./ui/migrate-api.js").UiMigrate; // Migrate now, Start and Restart now (design 08-self-update): state dir, clock, run_timeout_ms, steps
   close(): Promise<void>;
 }
 
@@ -1065,25 +1063,11 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   };
   const profiles = new ProfileStore(storeSql(store)), displayNames = (ids: readonly string[]) => profiles.displayNames(ids);
   const tacit = await uiTacit(loaded.plugins.tacit, (n) => createPlugin(loaded.registry, "tacit", n, p.base), { config: loaded.config, base: settingsBase(loaded), source: store, log: new ConsoleLogger(clock, "tacit") });
-  // Migrate now's steps, as `npm run migrate` runs them. The project-key resolver builds the GitHub client only when the
-  // step finds owner/name rows left (a store from before 2026-11-01); otherwise the page makes no forge call.
-  const migrate: UiMigrate = {
-    stateDir: loaded.stateDir, clock, runTimeoutMs: loaded.config.run_timeout_ms, log: new ConsoleLogger(clock, "migrate"), running: null,
-    topicTables: (driver) => ensureDiscoveredTopicTables("sqlite", driver),
-    resolveRepo: async () => {
-      const github = await p.githubApi();
-      return (ownerName) => {
-        const [owner = "", name = ""] = ownerName.split("/");
-        return resolveProject(github, { owner, name });
-      };
-    },
-  };
+  const migrate = (await import("./ui/migrate-api.js")).uiMigrate({ stateDir: loaded.stateDir, clock, runTimeoutMs: loaded.config.run_timeout_ms, githubApi: () => p.githubApi(), resolveProject }); // its GitHub client only for owner/name rows
   return { clock, store, scanner, settings, commands, pauses, displayNames, tacit, migrate, close: () => identity.stop().then(() => store.close()) };
 }
 
-function refusalOf(d: AuthDecision): string | null {
-  return d.allow ? null : d.reason;
-}
+const refusalOf = (d: AuthDecision): string | null => (d.allow ? null : d.reason);
 
 /** The owner check, with no forge call: how a CLI command is authorized (approve_tool, `factory settings`, `factory resume`). */
 export async function localAuth(_loaded: Loaded, store: FactoryStore): Promise<AuthProvider> {

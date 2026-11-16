@@ -12,13 +12,16 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Logger } from "../core/log.js";
-import type { Clock } from "../interfaces/clock.js";
+import type { ProjectRef } from "../core/project.js";
+import type { GitHubApi } from "../interfaces/github-credentials.js";
 import type { SupervisorStatus } from "../interfaces/updater.js";
+import { ConsoleLogger } from "../impl/log/console-logger.js";
 import { type ResolveRepo, runProjectKeyStep } from "../impl/store/project-keys.js";
 import { type SqliteMigrateSteps, migrateSqlite, sqlitePendingSteps } from "../impl/store/sqlite/rehearse.js";
 import type { SqliteDriver } from "../impl/store/sqlite/sqlite-driver.js";
 import { DRAIN_MARGIN_MS } from "../impl/updater/git-worktree.js";
-import { fileSupervisorRequest, isLiveSupervisor, processAlive, readSupervisorStatus, withDrain } from "../migrate-drain.js";
+import { type DrainDeps, fileSupervisorRequest, isLiveSupervisor, processAlive, readSupervisorStatus, withDrain } from "../migrate-drain.js";
+import { ensureDiscoveredTopicTables } from "../runtime/index.js";
 import type { ApiResult } from "./api.js";
 import type { PauseDeps, UiPauses } from "./pause-api.js";
 
@@ -28,7 +31,7 @@ export const SUPERVISOR_PATH = "/api/v1/supervisor";
 /** What the three actions need beside the store. Built once per UI process (compose.ts buildUiParts). */
 export interface UiMigrate {
   stateDir: string;
-  clock: Clock;
+  clock: DrainDeps["clock"];
   /** `run_timeout_ms`: the drain wait gives up after it plus the supervisor's drain margin, as `npm run migrate`. */
   runTimeoutMs: number;
   /** After the schema is current (apply only): the discovered topic tables, as `npm run migrate`. */
@@ -40,6 +43,30 @@ export interface UiMigrate {
   pidAlive?: (pid: number) => boolean;
   /** Migrate now's sequence while it runs in this process (a second press is refused), else null. */
   running: Promise<number> | null;
+}
+
+/**
+ * The UI process's parts (compose.ts buildUiParts): `npm run migrate`'s steps, the topic tables and the project-key step,
+ * whose resolver builds the GitHub client (`githubApi`) only when owner/name rows are left, as the CLI's does. The GitHub
+ * plugin's `resolveProject` comes from the composition: src/ui imports no GitHub code.
+ */
+export function uiMigrate(
+  o: Pick<UiMigrate, "stateDir" | "clock" | "runTimeoutMs"> & {
+    githubApi: () => Promise<GitHubApi>;
+    resolveProject: (github: GitHubApi, repo: { owner: string; name: string }) => Promise<ProjectRef>;
+  },
+): UiMigrate {
+  return {
+    stateDir: o.stateDir, clock: o.clock, runTimeoutMs: o.runTimeoutMs, log: new ConsoleLogger(o.clock, "migrate"), running: null,
+    topicTables: (driver) => ensureDiscoveredTopicTables("sqlite", driver),
+    resolveRepo: async () => {
+      const github = await o.githubApi();
+      return (ownerName) => {
+        const [owner = "", name = ""] = ownerName.split("/");
+        return o.resolveProject(github, { owner, name });
+      };
+    },
+  };
 }
 
 /** The UI's dependencies with these routes. Absent `migrate` (or `pauses`): GET is a 404 and POST a 405. */

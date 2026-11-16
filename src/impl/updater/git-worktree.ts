@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
-import { writeSupervisorStatus } from "../../supervisor-status.js";
+import { takeSupervisorRequest, writeSupervisorStatus } from "../../supervisor-status.js";
 import type { Clock } from "../../interfaces/clock.js";
 import { CodeOrigin, type CodeOriginOptions } from "./code-origin.js";
 import type { ExecResult } from "../../interfaces/sandbox.js";
@@ -14,7 +14,6 @@ import {
   type ChildRestart,
   MIGRATION_PENDING,
   RESTART_HISTORY,
-  type SupervisorRequest,
   type ChildLauncher,
   type CommandRunner,
   SUPERVISED_ENV,
@@ -388,17 +387,8 @@ export class GitWorktreeUpdater implements Updater {
 
   /** Reads and removes `npm run migrate`'s or the dashboard's request, if any, and acts on it. */
   private async readRequest(): Promise<void> {
-    const file = this.o.requestFile;
-    if (!file || !existsSync(file)) return;
-    let req: SupervisorRequest | null = null;
-    try {
-      req = JSON.parse(await readFile(file, "utf8")) as SupervisorRequest;
-    } catch {
-      req = null;
-    }
-    await rm(file, { force: true });
+    const action = this.o.requestFile ? (await takeSupervisorRequest(this.o.requestFile))?.action : undefined;
     const { log } = this.o;
-    const action = req?.action;
     if (action === "drain") {
       if (!this.migration) {
         // No update waits: migrate on the running revision (its own code needs the steps, or a crash loop).
@@ -419,24 +409,16 @@ export class GitWorktreeUpdater implements Updater {
       log.warn("npm run migrate failed: starting the old revision again", { rev: this.migration.rev });
       await this.cancelMigration();
     } else if (action === "start" && !this.migration && this.live.length === 0) {
-      // The dashboard's Start: a build that failed on this folder's head is tried once more.
-      log.info("start request: no child is live; starting one");
+      log.info("start request: no child is live; starting one"); // the dashboard's Start: a failed build of the newest head is tried again
       if (this.newest && this.failedRev === (await this.head(this.newest).catch(() => null))) this.failedRev = null;
       await this.ensureChild();
     } else if (action === "restart" && !this.migration && this.current && this.newest) {
-      await this.restartChild(this.newest);
+      // The dashboard's Restart now: a new child from the current (built) folder, then the claiming one drains.
+      const head = await this.head(this.newest);
+      if ((await this.builtRev(this.newest)) !== head) return log.warn("restart request ignored: the current version folder is not built", { rev: head });
+      log.info("restart request: starting a child from the current version folder", { rev: head, dir: this.newest });
+      await this.startChild(this.newest, head);
     } else if (action) log.warn("supervisor request ignored", { action });
-  }
-
-  /** The dashboard's Restart now: a new child from `dir` (built), then the claiming one drains (startChild). */
-  private async restartChild(dir: string): Promise<void> {
-    const head = await this.head(dir);
-    if ((await this.builtRev(dir)) !== head) {
-      this.o.log.warn("restart request ignored: the current version folder is not built", { dir, rev: head });
-      return;
-    }
-    this.o.log.info("restart request: starting a child from the current version folder", { rev: head, dir });
-    await this.startChild(dir, head);
   }
 
   async shutdown(): Promise<void> {

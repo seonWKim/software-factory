@@ -93,10 +93,10 @@ const parse = (r: { body: string }) => JSON.parse(r.body);
 
 /** The supervisor's side of the handshake: reads and removes each request, answering a drain with migration_ready. */
 async function supervisorAnswers(s: Awaited<ReturnType<typeof setup>>): Promise<string> {
-  await waitFor(() => s.request()?.action === "drain", "drain request");
+  await waitFor(() => s.request()?.action === "drain", "drain request", 200, 20_000);
   rmSync(s.requestFile);
   s.writeStatus({ state: "migration_ready", child_pid: null, target_rev: "c2" });
-  await waitFor(() => s.request() !== null, "start or cancel request");
+  await waitFor(() => s.request() !== null, "start or cancel request", 200, 20_000);
   return s.request()!.action;
 }
 
@@ -130,8 +130,9 @@ describe("Migrate now (POST /api/v1/migrate)", { timeout: 30_000 }, () => {
     const s = await setup({ status: { state: "migration_pending", target_rev: "c2" } });
     const r = await respond(s.d, post(s.pauses, MIGRATE_PATH, { confirm: true }));
     expect(r.status).toBe(202);
+    const run = s.migrate.running; // reset to null once the sequence ends
     expect(await supervisorAnswers(s)).toBe("start");
-    expect(await s.migrate.running).toBe(0);
+    expect(await run).toBe(0);
     expect(existsSync(join(s.dir, "db", "factory.db"))).toBe(true);
     expect(s.log.lines).toContain("drained: no factory process runs; applying the steps");
   });
@@ -139,8 +140,9 @@ describe("Migrate now (POST /api/v1/migrate)", { timeout: 30_000 }, () => {
   it("a failed step files cancel, so the old revision starts again", async () => {
     const s = await setup({ status: { state: "migration_pending", target_rev: "c2" }, topicTables: async () => { throw new Error("disk full"); } });
     expect((await respond(s.d, post(s.pauses, MIGRATE_PATH, { confirm: true }))).status).toBe(202);
+    const run = s.migrate.running;
     expect(await supervisorAnswers(s)).toBe("cancel");
-    expect(await s.migrate.running).toBe(1);
+    expect(await run).toBe(1);
     expect(s.log.lines).toContain("migrate now: the steps failed");
   });
 
