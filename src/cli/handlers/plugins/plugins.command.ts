@@ -15,8 +15,8 @@ import { cliEnvironment } from "../../support.js";
 // factory's implementation plugins. Approve and revoke stay `factory pack approve|revoke` (decision 3).
 // `factory plugins import` stores what Claude Code and Codex use (skills, commands and MCP servers) as pointers.
 
-const USAGE = `usage: factory plugins list [--kind ${PLUGIN_KINDS.join("|")}]
-usage: factory plugins import [--dry-run] [--kind ${IMPORT_KINDS.join("|")}|all] [--source ${IMPORT_SOURCES.join("|")}] [--from <path>]`;
+const USAGE = `usage: npm run factory -- plugins list [--kind ${PLUGIN_KINDS.join("|")}]
+usage: npm run factory -- plugins import [--dry-run] [--kind ${IMPORT_KINDS.join("|")}|all] [--source ${IMPORT_SOURCES.join("|")}] [--from <path>]`;
 
 /** The kinds to list, or null when the arguments are not a plugins list command. */
 function parseListArgs(args: readonly string[]): readonly PluginKind[] | null {
@@ -64,7 +64,7 @@ export default defineCommand({
                lists what the agents can use, the rows of the dashboard's Plugins page: MCP servers (name, status
                approved|waiting|off, source, description), skills (name, folder, description, roles, last used)
                and tools (name, origin, read-only, roles, last used, description). Never an env value or a
-               descriptor body. Approve or revoke an MCP server with factory pack approve|revoke mcp_server <name>
+               descriptor body. Approve or revoke an MCP server with npm run factory -- pack approve|revoke mcp_server <name>
   plugins import [--dry-run] [--kind skill|command|mcp_server|all] [--source <source>] [--from <path>]
                finds the skills, commands and MCP servers Claude Code and Codex use: ~/.claude.json,
                ~/.claude/skills/, ~/.claude/commands/*.md, enabled Claude Code plugins, ~/.codex/config.toml,
