@@ -1,0 +1,8 @@
+## History
+
+- **What a hold shows** (decision changed 2026-11-15). Before: the explanation of a held item read "Waiting for a person: recurring_failure" and its decision box "recurring failure", with no command and no word on the failure behind the hold.
+- **Open filed item and `/retry`** (decision changed 2026-11-11, issue #511 follow-up). Before: a filed item not in the store counted as open with no time bound, so a filed issue closed or never labelled before intake held its pattern's items for good, and no command lifted a hold; the re-raise held every item its pattern hit in the hour, even one whose hold a person had cleared.
+- **Hold at the first matching run, for a person** (decision changed 2026-11-11, issue #511). Before: a filed pattern's items were held only by the re-raise, after `alarm_repeat_count` new failures within the hour, and every hold was `blocked_on: upstream`, so it did not ask a person; the release read `blocked_on: upstream` items.
+- **Re-raise and hold** (decision changed 2026-11-10, issue #504). Before: a pattern stored one alert per 6 hours and nothing else; no alert re-raised a pattern that kept failing, nothing commented on its filed item, the items it hit kept being retried, and delivery was local only.
+- **Alarm step** (new decision, 2026-11-07). Before: nothing looked across items. Repeated error codes, zero-token runs and child crash loops were not counted anywhere. The supervisor status file showed only the current child state, and only the daily improve run grouped failures, a day late.
+- **MySQL text removed from the current decisions** (decision changed 2026-11-11, issue #567). Before: the alarm tables were "SQLite migration 36 and MySQL step `0036-alarms.sql` (0025 to 0035 were taken when this landed)".
