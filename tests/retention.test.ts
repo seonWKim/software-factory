@@ -3,7 +3,10 @@ import { type FactoryConfig, RETENTION_DEFAULTS, type RetentionDays, retentionCo
 import type { Timestamp, UserId } from "../src/core/types.js";
 import type { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
-import { ControllerRole } from "../src/runtime/roles/controller-role.js";
+import { CONTROLLER_INBOX_TTL_MS, ControllerRole } from "../src/runtime/roles/controller-role.js";
+import { DEAD_LETTERED, SYSTEM_ALERTS, SqlEventBus } from "../src/bus/index.js";
+import type { Envelope } from "../src/shared/envelope.js";
+import { defineTopic } from "../src/shared/topic.js";
 import { RETENTION } from "../src/controller/units/retention/retention.unit.js";
 import { NOT_OWNER, OwnerAuth } from "../src/core/authorize.js";
 import { FakeAuth, cleanScanner, config, silent } from "./helpers/fakes.js";
@@ -192,5 +195,39 @@ describe("the owner check's audit rows (design 08-permissions)", () => {
       { principal: "local:other", action: "approve_spec", decision: "deny" },
       { principal: owner, action: "approve_spec", decision: "allow" },
     ]);
+  });
+});
+
+describe("the controller inbox TTL (design 08-retention, decision 4)", () => {
+  const SHORT = defineTopic({
+    name: "test.short", owner: "test", messages: { Short: "event" }, partitions: 1, consumption: "partitioned", retentionDays: 7,
+    backoff: { baseMs: 1_000, maxMs: 4_000, maxAttempts: 3 },
+  });
+  // A topic whose maximum redelivery is past 14 days: the TTL is raised to it.
+  const LONG = defineTopic({
+    name: "test.long", owner: "test", messages: { Long: "event" }, partitions: 1, consumption: "partitioned", retentionDays: 60,
+    backoff: { baseMs: 10 * DAY, maxMs: 10 * DAY, maxAttempts: 3 },
+  });
+  const AT = "2026-11-16T00:00:00.000Z";
+  const message = (type: string, key: string, ttl: number | null): Envelope => ({
+    id: `m_${key}`, type, schema_version: 1, subject: "s", project_id: "p", idempotency_key: key, idempotency_key_ttl_ms: ttl,
+    causation_id: null, correlation_id: "c", passport_id: null, producer: "test", occurred_at: AT, not_before: null, payload: {},
+  });
+
+  it("a message with no key TTL gets 14 days or its topic's redelivery floor; a dead letter and an inbox with no TTL keep none", async () => {
+    const { store } = await newStore();
+    const db = store.db;
+    const topics = [SHORT, LONG, SYSTEM_ALERTS];
+    const bus = new SqlEventBus({ db, component: "controller", topics, consumerId: "c", inboxTtlMs: CONTROLLER_INBOX_TTL_MS });
+    const plain = new SqlEventBus({ db, component: "controller", topics, consumerId: "c" });
+    const claim = (b: SqlEventBus, m: Envelope) => db.transaction((tx) => b.claim(tx, "h", m));
+    await claim(bus, message("Short", "short", null));
+    await claim(bus, message("Long", "long", null));
+    await claim(bus, message("Short", "own", 2 * DAY));
+    await claim(bus, message(DEAD_LETTERED, "dead", null));
+    await claim(plain, message("Short", "plain", null));
+    const expiry = Object.fromEntries((await db.all("SELECT idempotency_key, expires_at FROM controller_inbox")).map((r) => [r.idempotency_key, r.expires_at]));
+    const after = (ms: number) => new Date(Date.parse(AT) + ms).toISOString();
+    expect(expiry).toEqual({ short: after(14 * DAY), long: after(20 * DAY), own: after(2 * DAY), dead: null, plain: null });
   });
 });

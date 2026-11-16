@@ -8,7 +8,7 @@
 // drive the same path one step at a time through the tick* methods, which drain the bus.
 
 import {
-  BUS_PERIODS, SqlBus, scheduleBus, scheduleComponent, type BusPlugin, type EventBus, type Inbox, type Relay, type RetryScheduler,
+  BUS_PERIODS, SqlBus, scheduleBus, scheduleComponent, type BusPlugin, type SqlBusOptions, type EventBus, type Inbox, type Relay, type RetryScheduler,
 } from "../../bus/index.js";
 import {
   CONTROLLER, CONTROLLER_EVENTS, CONTROLLER_EVENT_KINDS, type ControllerContext, type ControllerEvent, type ControllerReader, type ControllerWrite, type Decisions, type ControllerUnits, Kernel, Router, type UnitName, type UnitOperations,
@@ -60,6 +60,8 @@ const SYNC_OWNER = "controller";
 const SYNCED: SourceType = "github_issue";
 /** Rounds of relay and consume one manual step runs at most before it leaves the rest to the next. */
 const MAX_DRAIN_ROUNDS = 50;
+/** The key TTL a controller inbox row gets when its message carries none (design 08-retention, decision 4). */
+export const CONTROLLER_INBOX_TTL_MS = 14 * 86_400_000;
 
 let discovered: Promise<Registry> | null = null;
 let discoveredUnits: Promise<ControllerUnits> | null = null;
@@ -445,7 +447,9 @@ export class ControllerRole implements Decisions {
     const consumerId = d.replica_id ?? SYNC_OWNER;
     const bus = d.bus ?? new SqlBus();
     const inboundBus = bus.component({ db, component: INBOUND, topics, consumerId });
-    const controllerBus = bus.component({ db, component: CONTROLLER, topics, consumerId });
+    // A controller message with no key TTL (but a dead letter) is deduped for 14 days, so its inbox row expires (design 08-retention).
+    const controllerOptions: SqlBusOptions = { db, component: CONTROLLER, topics, consumerId, inboxTtlMs: CONTROLLER_INBOX_TTL_MS };
+    const controllerBus = bus.component(controllerOptions);
     const outboundBus = bus.component({ db, component: OUTBOUND, topics, consumerId });
     const sync = (await this.router()).unit("sync");
     // Only the sync lease's holder writes the synced type (design 05-coordination), whatever the budget.
