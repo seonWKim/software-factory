@@ -118,18 +118,6 @@ async function seeded(opts: { store?: (s: FactoryStore) => FactoryStore } = {}) 
   return { d, store, clock, items: { approve, merge, secretive, done, running, running2, running3, queued, queued2 }, claimed, claimed2, healthRuns: () => healthRuns };
 }
 
-/** The data-key of every row in the HTML list, in order. */
-function htmlKeys(body: string): string[] {
-  const start = body.indexOf(`<section id="items">`);
-  const sec = body.slice(start, body.indexOf("</section>", start));
-  return [...sec.matchAll(/data-key="([^"]+)"/g)].map((m) => m[1]!);
-}
-
-function sectionOf(body: string, id: string): string {
-  const start = body.indexOf(`<section id="${id}">`);
-  return body.slice(start, body.indexOf("</section>", start));
-}
-
 describe("ui api: contract", () => {
   it("every route answers 200 JSON with no-store and the security headers", async () => {
     const { d, items } = await seeded();
@@ -189,21 +177,6 @@ describe("ui api: contract", () => {
 });
 
 describe("ui api: items", () => {
-  it("lists the same rows in the same order as / for the same query string, every filter included", async () => {
-    const { d } = await seeded();
-    const queries = [
-      "", "?closed=1", "?state=needs", "?state=running", "?state=queued", "?state=closed", "?stage=REVIEW", "?stage=CLOSED",
-      "?tier=2", "?kind=triage", "?kind=implement", "?unblocks=1", "?q=merge", "?q=%233", "?q=leaky", "?state=needs&tier=3",
-    ];
-    for (const q of queries) {
-      const page = await get(d, `/classic${q}`);
-      expect(page.status, q).toBe(200);
-      const api = await json<{ total: number; items: { id: string }[] }>(d, `/api/v1/items${q}`);
-      expect(api.items.map((i) => i.id), q).toEqual(htmlKeys(page.body));
-      expect(api.total, q).toBe(api.items.length);
-    }
-  });
-
   it("the default list has every open item ranked, and the filters narrow it", async () => {
     const { d, items } = await seeded();
     const all = await json<{ items: { id: string; level: string; badges: string[]; stage: string; run_status: string | null }[] }>(d, "/api/v1/items");
@@ -225,9 +198,6 @@ describe("ui api: items", () => {
     // The closed item counts under Closed though the default list leaves it out (same rule as every facet).
     expect(api.facets.stage.CLOSED).toBe(1);
     expect(api.facets.state.closed).toBe(1);
-    const page = (await get(d, "/classic")).body;
-    expect(page).toContain(`<option value="needs">Needs you (3)</option>`);
-    expect(page).toContain(`>All (${api.facets.allStates})</option>`);
   });
 
   it("the Closed facet counts the closed items that match the other filters (148 closed items)", async () => {
@@ -259,7 +229,6 @@ describe("ui api: items", () => {
       expect(r.status, q).toBe(400);
       expect(r.headers["content-type"]).toBe("application/json; charset=utf-8");
       expect(JSON.parse(r.body).error, q).toMatch(/^Unknown /);
-      expect((await get(d, `/classic?${q}`)).status, q).toBe(400);
     }
   });
 
@@ -474,8 +443,6 @@ describe("ui api: runs, queue, workers, overview, health", () => {
       [1, "triage", items.queued.id],
       [2, "triage", items.queued2.id],
     ]);
-    const rows = sectionOf((await get(d, "/classic")).body, "queue").split("<tr").length - 2; // minus the leading text and the header row
-    expect(body.queue.length).toBe(rows);
   });
 
   it("/workers lists each current lease owner once with its running count, as IDs", async () => {
@@ -530,7 +497,7 @@ describe("ui api: runs, queue, workers, overview, health", () => {
     expect(body.processes_error).toBe("Table 'sf.worker_processes' doesn't exist");
   });
 
-  it("/overview gives the numbers the page shows for the same store", async () => {
+  it("/overview gives the numbers for the same store", async () => {
     const { d } = await seeded();
     const o = await json<{
       stages: Record<string, number>; needs_you: number; running: number; queued: number; last_24h: { succeeded: number; failed: number; tokens: number };
@@ -538,17 +505,6 @@ describe("ui api: runs, queue, workers, overview, health", () => {
     expect(o).toMatchObject({ needs_you: 3, running: 3, queued: 2, last_24h: { succeeded: 1, failed: 1, tokens: 1234 } });
     expect(o.stages).toEqual({ NEW: 3, READY: 1, RUNNING: 2, REVIEW: 2, CLOSED: 1 });
 
-    const page = (await get(d, "/classic")).body;
-    expect(page).toContain(`<title>(${o.needs_you}) software-factory status</title>`);
-    const totals = sectionOf(page, "totals");
-    const cell = (k: string) => Number(new RegExp(`<th scope="row">${k}</th><td>(\\d+)</td>`).exec(totals)![1]);
-    for (const [stage, n] of Object.entries(o.stages)) expect(cell(stage), stage).toBe(n);
-    expect(cell("succeeded")).toBe(o.last_24h.succeeded);
-    expect(cell("failed")).toBe(o.last_24h.failed);
-    expect(cell("tokens")).toBe(o.last_24h.tokens);
-    const rows = (id: string) => sectionOf(page, id).split("<tr").length - 2;
-    expect(rows("running")).toBe(o.running);
-    expect(rows("queue")).toBe(o.queued);
   });
 
   it("/health returns what /api/health returns, from the one HealthMonitor (one run for both), and /api/health is unchanged", async () => {
@@ -887,7 +843,7 @@ describe("ui api: item commands POST (issue #227)", () => {
     const id = encodeURIComponent(items.approve.id);
     for (const path of [
       `/api/v1/items/${id}`, `/api/v1/items/${id}/commands/x`, `/api/v1/items/${id}/commandsx`, "/api/v1/items//commands", "/api/v1/session",
-      "/api/v1/overview", "/api/v1/nope", "/classic", "/", `/items/${id}`, "/app/", "/app/items/x", "/api/health",
+      "/api/v1/overview", "/api/v1/nope", "/", "/app/", "/app/items/x", "/api/health",
     ]) {
       const r = await post(d, items.approve.id, { command: "approve" }, { path });
       await refused(r, 405, path);
@@ -1505,9 +1461,6 @@ describe("ui api: GitHub budget (design §5 Sources, GitHub call budget)", () =>
     });
     // A wait, not an error: nothing for the operator to do.
     expect(JSON.stringify(o.system_actions)).not.toContain("rate-limit");
-    const html = (await get(d, "/classic")).body;
-    expect(sectionOf(html, "github-budget")).toContain(`waiting for the GitHub rate-limit reset at ${reset_at}`);
-    expect(sectionOf(html, "github-budget")).toContain("this factory counted 1234 of 2500");
   });
 
   it("once the stored reset has passed, the window is over: no wait and a count of 0", async () => {
@@ -1698,10 +1651,6 @@ describe("ui api: Needs you, Needs triage and Blocked by another task", () => {
     const row = (id: string) => rows.find((r) => r.id === id)!;
     expect(row(triage.id)).toMatchObject({ level: "needs_triage", badges: ["triage asks"], need: { reason: ASK.question } });
     expect(row(impl.id)).toMatchObject({ level: "needs_you", need: { reason: ASK.question } });
-    // The classic page shows the question and an Answer link to the ask.
-    const page = (await get(d, "/classic")).body;
-    expect(page).toContain(`${ASK.question} · <a href="https://github.com/o/r/issues/40#c1"`);
-    expect(page).toContain(">Answer</a>");
   });
 
   it("the overview's needs_you counts Needs you and Needs triage items plus system actions, nothing from Blocked by another task", async () => {
