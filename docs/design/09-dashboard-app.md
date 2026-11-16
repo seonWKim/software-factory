@@ -136,4 +136,3 @@
 ## History
 
 - Replaced decisions of this topic: [history/09-dashboard-app.md](history/09-dashboard-app.md).
-- Removed 2026-11-16: the Work summary line "N running · N queued · N held · N needs you · rate limit: …" (each count a button that set the state filter), the Failures group heading as the raw error code with the server's English `description`, and the Import button's tooltip naming the CLI command.
