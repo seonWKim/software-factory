@@ -6,7 +6,7 @@
 #   make teardown ARGS=--dry-run     list what teardown would remove
 
 .DEFAULT_GOAL := help
-.PHONY: help setup teardown dev controller worker ui status doctor canary
+.PHONY: help setup teardown dev check ui status doctor canary
 
 FACTORY := npm run factory --
 ID ?=
@@ -30,13 +30,11 @@ teardown: ## Undo setup on this machine (ARGS=--dry-run, --yes, --stop or --secr
 dev: ## Controller + worker in one process
 	$(call factory,dev)
 
-controller: ## Intake, run outcomes, reaper
-	$(call factory,controller)
+check: ## Typecheck, then run the tests
+	npm run typecheck
+	npm test
 
-worker: ## Claims and executes agent runs
-	$(call factory,worker)
-
-ui: ## Read-only dashboard at http://127.0.0.1:4310/ (run beside dev)
+ui: ## Status page at http://127.0.0.1:4310/ (run beside dev)
 	$(call factory,ui)
 
 status: ## Work items, or one item's trail with ID=<work item id>
