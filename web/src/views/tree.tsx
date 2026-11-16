@@ -1,10 +1,10 @@
 // The Work items tree (design §9): a split parent with its phases in phase order, each item once. The model
-// (buildTree, itemMatches, summaryCounts) is pure; ItemsTree draws it with react-aria-components' Tree, which
+// (buildTree, itemMatches) is pure; ItemsTree draws it with react-aria-components' Tree, which
 // brings the keyboard use (arrow keys move focus, right expands, left collapses) and the treegrid roles.
 
 import { useState } from "react";
 import { Button, Tree, TreeItem, TreeItemContent } from "react-aria-components";
-import type { ItemRow, Items } from "../api.js";
+import type { ItemRow } from "../api.js";
 import { Badge } from "../components/ui/parts.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { t } from "../i18n/index.js";
@@ -61,10 +61,13 @@ export interface TreeFilter {
   state: string | null;
   q: string;
   showClosed: boolean;
+  /** Only these items (a link from Failures names them); closed ones show too. */
+  ids?: ReadonlySet<string> | null;
 }
 
 /** Whether a row passes the filters: closed rows only with Show closed (or the Closed filter). */
 export function itemMatches(it: ItemRow, f: TreeFilter): boolean {
+  if (f.ids) return f.ids.has(it.id) && inSearch(it, f.q);
   if (it.item_phase === "closed" && !f.showClosed && f.state !== "closed") return false;
   return inState(it, f.state) && inSearch(it, f.q);
 }
@@ -101,19 +104,6 @@ export function parentIds(nodes: readonly TreeNode[]): string[] {
 /** The expanded rows when nothing is saved: every parent that has an open phase. */
 export function defaultExpanded(nodes: readonly TreeNode[]): string[] {
   return nodes.flatMap((n) => (n.children.some((c) => c.item.item_phase !== "closed") ? [n.item.id, ...defaultExpanded(n.children)] : defaultExpanded(n.children)));
-}
-
-/**
- * The counts of the summary line: running is the server's count of running runs (`counts`, the same number as
- * Activity's), held and needs count the open items, each also a state filter. Queued is a run count (pages.tsx, useQueuedRuns).
- */
-export function summaryCounts(rows: readonly ItemRow[], counts: Items["counts"]) {
-  const open = rows.filter((r) => r.item_phase !== "closed");
-  return {
-    running: counts.running,
-    held: open.filter(isHeld).length,
-    needs: open.filter((r) => needsYou(r)).length,
-  };
 }
 
 /** What an item waits for: the number to show and the item it names (null when it is not in the list). */

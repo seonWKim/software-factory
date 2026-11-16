@@ -5,7 +5,8 @@ import { ButtonRow } from "../components/ui/button-row.js";
 import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
-import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
+import { type Column, DataTable } from "../components/ui/data-table.js";
+import { Badge, ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { Select } from "../components/ui/select.js";
 import { Switch } from "../components/ui/switch.js";
 import { Textarea } from "../components/ui/textarea.js";
@@ -468,59 +469,72 @@ function IntegrationsSection({ view }: { view: SettingsView }) {
   );
 }
 
-function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
-  const own = view.project === null ? undefined : row.projects.find((p) => p.project === view.project);
-  const learned = view.project === null ? undefined : ((row as SettingRow & { learned?: LearnedValue[] }).learned ?? []).find((l) => l.project === view.project);
-  return (
-    <Tr data-key={row.key}>
-      <Td>
-        <span className="font-mono text-xs whitespace-nowrap">{row.key}</span>
-        <Description text={row.description} />
-      </Td>
-      <Td className="min-w-56">
-        {SECTION_KEYS[row.key] ? (
-          <p className="text-xs text-pretty text-text-2">
-            <span className="font-mono wrap-anywhere">{row.value}</span> · {t(SECTION_KEYS[row.key]!)}
-          </p>
-        ) : (
-          <Editor row={row} label={row.key} value={row.value} token={view.csrf_token} />
-        )}
-        <Duration settingKey={row.key} value={row.value} />
-        {row.key === "workers" && row.max !== undefined && (
-          <p className="mt-1 text-xs text-text-2">
-            {row.capped_at ? t("settings.workersRangeCapped", { max: row.max, capped: row.capped_at }) : t("settings.workersRange", { max: row.max })}
-          </p>
-        )}
-        {row.project_settable && (
-          <div className="mt-2 border-t border-border pt-2">
-            <p className="mb-1 text-xs text-text-2">
-              {t("settings.forValue", { value: own ? `${own.value} (${own.source})` : t("settings.globalValue") })}
-              {view.project === null && ` · ${t("settings.noProjectLabel")}`}
-            </p>
-            <div className="flex flex-wrap items-start gap-2">
-              <Editor row={row} label={t("settings.keyFor", { key: row.key, project: view.repo })} value={own?.value ?? row.value} token={view.csrf_token} project={view.repo} />
-              {own?.source === "override" && <ResetButton row={row} label={t("settings.keyFor", { key: row.key, project: view.repo })} token={view.csrf_token} project={view.repo} />}
-            </div>
-            <Duration settingKey={row.key} value={own?.value ?? row.value} />
-            {learned && <LearnedLayer row={row} learned={learned} view={view} />}
-          </div>
-        )}
-      </Td>
-      <Td>
-        <Badge level={SOURCE_TONE[row.source] || undefined}>{row.source}</Badge>
-      </Td>
-      <Td className="min-w-40">
-        {row.file_value !== null ? (
+/** The settable keys table's columns; the Value cell holds the editors, the per-project layer and the learned value. */
+function keyColumns(view: SettingsView): Column<SettingRow>[] {
+  return [
+    {
+      key: "key",
+      header: t("settings.colKey"),
+      render: (row) => (
+        <>
+          <span className="font-mono text-xs whitespace-nowrap">{row.key}</span>
+          <Description text={row.description} />
+        </>
+      ),
+    },
+    { key: "value", header: t("settings.colValue"), className: "min-w-56", render: (row) => <ValueCell row={row} view={view} /> },
+    { key: "source", header: t("settings.colSource"), render: (row) => <Badge level={SOURCE_TONE[row.source] || undefined}>{row.source}</Badge> },
+    {
+      key: "file_value",
+      header: t("settings.colFileValue"),
+      className: "min-w-40",
+      render: (row) =>
+        row.file_value !== null ? (
           <JsonValue text={shownValue(row.key, row.file_value)} />
         ) : (
           <span className="text-xs text-text-3">
             {withNodes("settings.default", { value: <JsonValue text={shownValue(row.key, row.default_value)} /> })}
           </span>
-        )}
-      </Td>
-      <Td className="min-w-24 whitespace-nowrap text-text-2">{row.applies_at}</Td>
-      <Td>{row.source === "override" && <ResetButton row={row} label={row.key} token={view.csrf_token} />}</Td>
-    </Tr>
+        ),
+    },
+    { key: "applies_at", header: t("settings.colAppliesAt"), className: "min-w-24 whitespace-nowrap text-text-2" },
+    { key: "reset", header: t("settings.colReset"), render: (row) => row.source === "override" && <ResetButton row={row} label={row.key} token={view.csrf_token} /> },
+  ];
+}
+
+function ValueCell({ row, view }: { row: SettingRow; view: SettingsView }) {
+  const own = view.project === null ? undefined : row.projects.find((p) => p.project === view.project);
+  const learned = view.project === null ? undefined : ((row as SettingRow & { learned?: LearnedValue[] }).learned ?? []).find((l) => l.project === view.project);
+  return (
+    <>
+      {SECTION_KEYS[row.key] ? (
+        <p className="text-xs text-pretty text-text-2">
+          <span className="font-mono wrap-anywhere">{row.value}</span> · {t(SECTION_KEYS[row.key]!)}
+        </p>
+      ) : (
+        <Editor row={row} label={row.key} value={row.value} token={view.csrf_token} />
+      )}
+      <Duration settingKey={row.key} value={row.value} />
+      {row.key === "workers" && row.max !== undefined && (
+        <p className="mt-1 text-xs text-text-2">
+          {row.capped_at ? t("settings.workersRangeCapped", { max: row.max, capped: row.capped_at }) : t("settings.workersRange", { max: row.max })}
+        </p>
+      )}
+      {row.project_settable && (
+        <div className="mt-2 border-t border-border pt-2">
+          <p className="mb-1 text-xs text-text-2">
+            {t("settings.forValue", { value: own ? `${own.value} (${own.source})` : t("settings.globalValue") })}
+            {view.project === null && ` · ${t("settings.noProjectLabel")}`}
+          </p>
+          <div className="flex flex-wrap items-start gap-2">
+            <Editor row={row} label={t("settings.keyFor", { key: row.key, project: view.repo })} value={own?.value ?? row.value} token={view.csrf_token} project={view.repo} />
+            {own?.source === "override" && <ResetButton row={row} label={t("settings.keyFor", { key: row.key, project: view.repo })} token={view.csrf_token} project={view.repo} />}
+          </div>
+          <Duration settingKey={row.key} value={own?.value ?? row.value} />
+          {learned && <LearnedLayer row={row} learned={learned} view={view} />}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -701,11 +715,7 @@ export function SettingsPage() {
           {withNodes("settings.settableIntro", { command: <code>{"factory settings"}</code> })}
         </p>
         <ProjectLabel view={v} />
-        <Table label={t("settings.settableKeys")} head={[t("settings.colKey"), t("settings.colValue"), t("settings.colSource"), t("settings.colFileValue"), t("settings.colAppliesAt"), t("settings.colReset")]}>
-          {v.keys.map((row) => (
-            <KeyRow key={row.key} row={row} view={v} />
-          ))}
-        </Table>
+        <DataTable label={t("settings.settableKeys")} columns={keyColumns(v)} rows={v.keys} rowKey={(r) => r.key} empty={t("settings.noKeys")} dataKey />
       </Section>
       {v.ignored.length > 0 && (
         <Section title={t("settings.ignoredOverrides")} count={v.ignored.length}>
@@ -725,37 +735,33 @@ export function SettingsPage() {
         <p className="mb-2 text-sm text-pretty text-text-2">
           {withNodes("settings.prOnlyIntro", { command: <code>{"factory settings set"}</code>, file: <code>{"factory.config.json"}</code> })}
         </p>
-        <Table label={PR_ONLY_TITLE} head={[t("settings.colKey")]}>
-          {prOnly.map((p) => (
-            <Tr key={p.key} data-key={p.key}>
-              <Td>
-                <span className="font-mono text-xs">{p.key}</span>
-                <Description text={p.description} />
-              </Td>
-            </Tr>
-          ))}
-        </Table>
+        <DataTable
+          label={PR_ONLY_TITLE}
+          columns={[{ key: "key", header: t("settings.colKey"), render: (p: SettingsView["pr_only"][number]) => <><span className="font-mono text-xs">{p.key}</span><Description text={p.description} /></> }]}
+          rows={prOnly}
+          rowKey={(p) => p.key}
+          empty={t("settings.noKeys")}
+          dataKey
+        />
       </Section>
       <Section title={t("settings.history")} count={v.history.length}>
-        {v.history.length === 0 ? (
-          <Empty>{t("settings.noHistory")}</Empty>
-        ) : (
-          <Table label={t("settings.history")} head={[t("col.when"), t("settings.colWho"), t("settings.colKey"), t("settings.colChange")]}>
-            {v.history.map((c) => (
-              <Tr key={c.seq}>
-                <Td className="tabular-nums whitespace-nowrap">{t("time.ago", { time: ago(c.at, now) })}</Td>
-                <Td className="font-mono text-xs">{c.actor}</Td>
-                <Td className="font-mono text-xs">
-                  {c.key}
-                  {c.project ? t("settings.forProject", { project: c.project }) : ""}
-                </Td>
-                <Td className="font-mono text-xs break-all">
-                  {c.new_value === null ? t("settings.resetWas", { old: String(c.old_value) }) : t("settings.changed", { old: c.old_value ?? t("settings.noOverride"), new: c.new_value })}
-                </Td>
-              </Tr>
-            ))}
-          </Table>
-        )}
+        <DataTable
+          label={t("settings.history")}
+          columns={[
+            { key: "at", header: t("col.when"), className: "tabular-nums whitespace-nowrap", render: (c) => t("time.ago", { time: ago(c.at, now) }) },
+            { key: "actor", header: t("settings.colWho"), className: "font-mono text-xs" },
+            { key: "key", header: t("settings.colKey"), className: "font-mono text-xs", render: (c) => `${c.key}${c.project ? t("settings.forProject", { project: c.project }) : ""}` },
+            {
+              key: "change",
+              header: t("settings.colChange"),
+              className: "font-mono text-xs break-all",
+              render: (c) => (c.new_value === null ? t("settings.resetWas", { old: String(c.old_value) }) : t("settings.changed", { old: c.old_value ?? t("settings.noOverride"), new: c.new_value })),
+            },
+          ]}
+          rows={v.history}
+          rowKey={(c) => String(c.seq)}
+          empty={t("settings.noHistory")}
+        />
       </Section>
     </>
   );

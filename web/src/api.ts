@@ -984,8 +984,6 @@ export interface FailureRun {
 }
 export interface FailureGroup {
   code: string;
-  /** Plain words for a known code; null for an unknown one. */
-  description: string | null;
   count: number;
   last_seen: string | null;
   items: number;

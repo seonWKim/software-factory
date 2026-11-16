@@ -344,13 +344,11 @@ describe("sidebar", () => {
 });
 
 describe("one queued count", () => {
-  it("Work's queued summary, its Queued filter button and overview.queued are the same number of queued runs", async () => {
+  it("Work's Queued filter tab and overview.queued are the same number of queued runs", async () => {
     history.replaceState(null, "", "/app/items");
     mount();
-    const summary = await screen.findByTestId("summary");
-    expect(await within(summary).findByRole("button", { name: `${overview.queued} queued` })).toBeTruthy();
-    const filters = screen.getByRole("group", { name: "Filter by state" });
-    expect(await within(filters).findByRole("button", { name: `Queued ${queue.queue.length}` })).toBeTruthy();
+    const filters = await screen.findByRole("tablist", { name: "Filter by state" });
+    expect(await within(filters).findByRole("tab", { name: `Queued ${queue.queue.length}` })).toBeTruthy();
     expect(queue.queue.length).toBe(overview.queued);
   });
 
@@ -358,16 +356,16 @@ describe("one queued count", () => {
     history.replaceState(null, "", "/app/queue");
     mount();
     await vi.waitFor(() => expect(location.pathname + location.search).toBe("/app/items?state=queued"));
-    const filters = screen.getByRole("group", { name: "Filter by state" });
-    expect(within(filters).getByRole("button", { name: /^Queued/ }).getAttribute("aria-pressed")).toBe("true");
+    const filters = screen.getByRole("tablist", { name: "Filter by state" });
+    expect(within(filters).getByRole("tab", { name: /^Queued/ }).getAttribute("aria-selected")).toBe("true");
     expect(await screen.findByRole("table", { name: "Queued runs" })).toBeTruthy();
   });
 
   it("an unknown state value leaves no filter pressed", async () => {
     history.replaceState(null, "", "/app/items?state=nonsense");
     mount();
-    const filters = await screen.findByRole("group", { name: "Filter by state" });
-    expect(within(filters).getByRole("button", { name: /^All/ }).getAttribute("aria-pressed")).toBe("true");
+    const filters = await screen.findByRole("tablist", { name: "Filter by state" });
+    expect(within(filters).getByRole("tab", { name: /^All/ }).getAttribute("aria-selected")).toBe("true");
   });
 
   it("the Queued filter lists the runs in the server's order with their start times", async () => {
@@ -516,7 +514,7 @@ describe("app pages", () => {
     history.replaceState(null, "", "/app/items");
     mount();
     await screen.findByRole("table", { name: "Work items" });
-    fireEvent.click(screen.getByRole("button", { name: /^Needs you/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /^Needs you/ }));
     await act(async () => void (await vi.advanceTimersByTimeAsync(10)));
     expect(fetched).toContain("/api/v1/items?state=needs");
   });
