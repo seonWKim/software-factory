@@ -189,6 +189,7 @@ export function Select({ id, "aria-label": ariaLabel, value, disabled, className
                 type="button"
                 role="option"
                 id={optionId(i)}
+                value={c.value}
                 tabIndex={-1}
                 aria-selected={i === selected}
                 disabled={c.disabled}

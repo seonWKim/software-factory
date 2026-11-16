@@ -179,7 +179,8 @@ describe("the verdict dialog on a Needs-you row", () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(posts).toEqual([]);
     fireEvent.click(screen.getByRole("radio", { name: "Reject" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "Verdict severity" }), { target: { value: "major" } });
+    fireEvent.click(screen.getByRole("combobox", { name: "Verdict severity" }));
+    fireEvent.click(within(screen.getByRole("listbox")).getAllByRole<HTMLButtonElement>("option").find((o) => o.value === "major")!);
     fireEvent.change(screen.getByRole("textbox", { name: "Reason" }), { target: { value: "wrong approach" } });
     fireEvent.click(send());
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
