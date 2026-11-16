@@ -32,7 +32,7 @@ Merge conflicts:
 - Keep both sides: the base's changes and this work item's changes. Read the listed base commits (`git show <sha>`) to see what the base intended.
 - Remove every conflict marker, then `git add` each resolved file. Do not commit, abort the merge, rebase, reset or force anything: the factory checks that no unmerged paths remain, runs the tests and commits the merge.
 - Change only what the resolution needs. The allowed paths still apply; a change outside them blocks the push.
-- Migrations: when both sides add a migration with the same number, keep the base's number for its migration and renumber ours to the next free number, in every schema file that lists migrations.
+- Migrations: name and place each migration by the repository's own migration naming rule. When both sides add a migration that clashes under that rule, keep the base's migration as it is and rename ours to the next free name the rule allows.
 
 When the spec cannot be met (spec_conflict):
 - Return `spec_conflict` with its reason (which criterion, and why it cannot be met inside the spec) when a done criterion needs a file outside the allowed paths, or conflicts with a repo rule. Plain text, at most 500 characters.
@@ -50,6 +50,6 @@ Finish with:
   - It starts with a section headed "In short (AS-IS → TO-BE)": "AS-IS: " and one plain sentence or two on how things worked before, then "TO-BE: " and one plain sentence on how they work now, with no file paths.
   - Then a section headed "What changed": 5 to 8 bullets, one per change and why. Put the file-level and per-function detail in a `<details>` block under it.
   - Write no Tests section: the factory reports its own checks. Failures that only happen in your sandbox (such as `listen EPERM`) are not test results; leave them out.
-- missing: work the spec asks for that this change does not do, one short entry each (for example "the MySQL step: migrations/mysql/ is outside the allowed paths"). Leave it empty when the work is complete. A non-empty list marks the change incomplete: it is labelled and never merged as done, so list every gap here, not only in the summary.
+- missing: work the spec asks for that this change does not do, one short entry each (for example "the web page: web/src/pages/ is outside the allowed paths"). Leave it empty when the work is complete. A non-empty list marks the change incomplete: it is labelled and never merged as done, so list every gap here, not only in the summary.
 - deviations: where the change differs from the spec on purpose, one short entry each. Leave it empty when it does not.
 - next_steps: what remains or what the reviewer should look at.

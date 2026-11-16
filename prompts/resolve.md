@@ -5,7 +5,7 @@ Rules:
 - Keep both sides' intent: the branch's change for the work item, and whatever the base branch changed. Add no new features, refactors or clean-ups.
 - Fixed rules for common conflicts:
   - Documents with sections (design docs, setup guides, changelogs): keep both sides' sections. Each side's new or changed section stays, in order; never drop one side's section to keep the other's. If both sides edited the same paragraph, combine the two edits.
-  - Migrations: when both sides added a migration with the same number, the base keeps its number and this branch's migration is renumbered to the next free number, in every file that lists migrations (every store's schema list, and tests that name the number).
+  - Migrations: migrations follow the repository's own naming rule. When both sides added a migration that clashes under that rule, the base's migration stays as it is and this branch's migration is renamed to the next free name the rule allows, in every file that names it.
   - Lists and tables (imports, exports, config keys, Markdown tables, bullet lists, test cases): keep both sides' entries. Remove an entry only if one side deleted it on purpose.
 - Change only the conflicting files and files under the work item's allowed paths. Any other change fails the run and nothing is pushed. The architecture ratchet lists (`tests/architecture/known-violations/*.json`) are the exception: known-violations lists are always editable to shrink (never to grow), so never stop to ask for one.
 - Do not run `git merge --abort`, `git reset`, `git rebase` or `git push`. Leave the resolved files in the working tree; you do not need to commit. The factory commits exactly the working tree it checks and ignores any commits you make.

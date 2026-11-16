@@ -13,6 +13,7 @@ import { toolchainEnvKeyRefusal } from "./core/tools/policy.js";
 import { type ProjectRef, localProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { pathCompanionsConfig } from "./core/companions.js";
 import { checkCommands, commandText } from "./core/checks.js";
+import { type SplitLimits, splitThresholds } from "./core/split.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
 import { errorText, type Logger } from "./core/log.js";
 import type { CliEnvironment, CliIdentity } from "./core/local-cli.js";
@@ -28,7 +29,7 @@ import { PackCheckRunner } from "./runtime/hooks/pack-checks.js";
 import { type HookDescriptor, UNCALLED_HOOK_POINTS } from "./shared/hook.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import {
-  type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, type LearnedSettingsSource, booleanSetting, intakeLabel, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, positiveInteger, settingsLayers, workerCount,
+  BUILT_IN_SETTINGS, type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, type LearnedSettingsSource, booleanSetting, intakeLabel, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, positiveInteger, settingValues, settingsLayers, workerCount,
 } from "./core/settings.js";
 import { WorkerPool } from "./worker/index.js";
 import type { LocalRoute } from "./worker/index.js";
@@ -312,23 +313,22 @@ export interface Loaded {
 export const CHECK_COMMANDS_PLACEHOLDER = "{{check_commands}}";
 /** The placeholder in prompts/*.md that names where a change lives: the forge plugin, or "local" with none. */
 export const FORGE_PLACEHOLDER = "{{forge}}";
-
-/** The placeholder in prompts/*.md for the toolchain sentence (design 05-sandbox.md): empty with no toolchain block. */
-export const TOOLCHAIN_PLACEHOLDER = "{{toolchain}}";
+export const TOOLCHAIN_PLACEHOLDER = "{{toolchain}}"; // the toolchain sentence (design 05-sandbox.md): empty with no toolchain block
 export const UI_CHECK_PLACEHOLDER = "{{ui_check}}"; // the UI check sentence (uiCheckSentence): empty with no repo.ui_check
+export const SPLIT_PLACEHOLDERS = ["{{max_diff_lines}}", "{{max_diff_files}}", "{{split_lines}}", "{{split_files}}"] as const;
 
 /**
  * A prompt file's text with its placeholders filled, once at load: the check commands, each command of
  * `checkCommands` (so `repo.check_commands`, else `test_command`) in backticks, in order; the forge name
- * (`plugins.forge`, else "local"); the `toolchain` block's offline sentence; the `repo.ui_check` sentence (none: "").
+ * (`plugins.forge`, else "local"); the `toolchain` block's offline sentence; the `repo.ui_check` sentence (none: "");
+ * SPLIT_PLACEHOLDERS: the size caps `limits` (the configured project's max_diff_lines, max_diff_files), then their split thresholds.
  */
-export function fillPrompt(text: string, repo: FactoryConfig["repo"], forge: string, toolchain?: ToolchainConfig): string {
+export function fillPrompt(text: string, repo: FactoryConfig["repo"], forge: string, toolchain?: ToolchainConfig, limits: SplitLimits = BUILT_IN_SETTINGS): string {
+  const t = splitThresholds(limits), sizes = [limits.max_diff_lines, limits.max_diff_files, t.lines, t.files];
   const checks = checkCommands(repo).map((c) => `\`${commandText(c)}\``).join(", then ");
   const caches = toolchain && toolchain.caches.length > 0 ? ` (${toolchain.caches.map((c) => `\`${c}\``).join(", ")})` : "";
-  const offline = toolchain
-    ? ` They run offline: there is no network, and the toolchain caches${caches} are read-only, so build from what they hold and never write to or download into them.`
-    : "";
-  return text.split(CHECK_COMMANDS_PLACEHOLDER).join(checks).split(FORGE_PLACEHOLDER).join(forge).split(TOOLCHAIN_PLACEHOLDER).join(offline).split(UI_CHECK_PLACEHOLDER).join(uiCheckSentence(repo.ui_check));
+  const offline = toolchain ? ` They run offline: there is no network, and the toolchain caches${caches} are read-only, so build from what they hold and never write to or download into them.` : "";
+  return SPLIT_PLACEHOLDERS.reduce((out, p, i) => out.split(p).join(String(sizes[i])), text).split(CHECK_COMMANDS_PLACEHOLDER).join(checks).split(FORGE_PLACEHOLDER).join(forge).split(TOOLCHAIN_PLACEHOLDER).join(offline).split(UI_CHECK_PLACEHOLDER).join(uiCheckSentence(repo.ui_check));
 }
 
 /** The source plugin whose PRs live on GitHub, and the forge it implies (issue #273). */
@@ -478,7 +478,7 @@ export async function loadConfig(
   if (inputs) config.read_only_inputs = inputs;
   // Each prompt through the pack layers, placeholders filled after the merge (design 11-packs.md). A required
   // prompt no layer has fails startup; owner-defaults is appended to triage.
-  const prompts = await packPrompts(packs, (text) => fillPrompt(text, config.repo, plugins.forge ?? "local", config.toolchain));
+  const prompts = await packPrompts(packs, (text) => fillPrompt(text, config.repo, plugins.forge ?? "local", config.toolchain, settingValues(`${file.repo.owner}/${file.repo.name}`, settings)));
   return { root, codeRoot, configFile, externalConfig, worktreesDir, file, config, prompts, secretsFile, stateDir, store, plugins, registry, packs, pack_tools, stats, models, model_by };
 }
 
