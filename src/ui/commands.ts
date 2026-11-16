@@ -40,7 +40,8 @@ export interface UiCommands {
   token: string;
   /**
    * Whether `actor` may send `action` on the project: the owner check the controller applies to every command
-   * (compose.ts, src/core/authorize.ts). Absent (a page with no auth wired): see actorGrant.
+   * (compose.ts, src/core/authorize.ts), asked read-only: an allowed answer writes no authz_audit row, a refusal one.
+   * Absent (a page with no auth wired): see actorGrant.
    */
   allowed?: (action: PageAction) => Promise<AuthDecision>;
   /** Whether a forge is selected (`plugins.forge`), for a PR's Merge; set by compose.ts buildUiParts. Absent: not known here; the controller still checks. */

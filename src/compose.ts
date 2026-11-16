@@ -151,9 +151,9 @@ export interface FileConfig {
   tick_ms: number;
   poll_interval_ms: number;
   run_timeout_ms: number;
-  /** Stream intake: days an inbox row is kept once behind its cursor. Absent: 14. Positive integer. */
+  /** Deprecated (design 08-retention): `retention.raw_records_days` when that is absent, with a warning. Positive integer. */
   inbox_retention_days?: number;
-  retention?: { outbox_days?: unknown; commands_days?: unknown; records_days?: unknown }; // design 08-retention; absent: 30, 30, 90
+  retention?: { outbox_days?: unknown; commands_days?: unknown; records_days?: unknown; raw_records_days?: unknown }; // design 08-retention; absent: 30, 30, 90, 7
   /** Outbound (RFC 0015 §15.1): `batching` per destination kind. Absent: `auto` everywhere. */
   outbound?: { batching?: unknown };
   /** The merge queue (RFC 0015 §7): `depth`, the speculative depth. Absent: 1. */
@@ -392,7 +392,7 @@ export async function loadConfig(
   const retry = retryConfig(file);
   // The per-project gate settings in layers (design 2026-11-01): top level / `defaults`, then `projects`.
   const settings = settingsLayers(raw as Record<string, unknown>, `${file.repo.owner}/${file.repo.name}`);
-  const retention = { inbox_retention_days: inboxRetentionDays(file), retention: retentionConfig(file.retention) };
+  const retention = { retention: retentionConfig(file.retention, file.inbox_retention_days) };
   const budget = budgetConfig({ budget_min_sample: file.budget_min_sample });
   const stats = statsConfig(file.stats);
   const models = parseModels(file.models);
@@ -439,7 +439,7 @@ export async function loadConfig(
     ...stallConfig(file),
     ...alarmConfig(file),
     agent_stop_checks: agentStopChecks(file),
-    ...retention, // inbox_retention_days and the retention block (design 08-retention)
+    ...retention, // the retention block, inbox_retention_days as its fallback (design 08-retention)
     outbound_batching: batchingPolicies(file.outbound?.batching),
     merge_queue_depth: mergeQueueDepth(file),
     ...(file.hooks === undefined ? {} : { hooks: hookNames(file.hooks) }),
@@ -1029,13 +1029,13 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
     integrations: INTEGRATION_KINDS.map((kind) => ({ kind, interface: loaded.registry[kind].interface, configured: String(loaded.plugins[kind]) })),
   };
   // The owner check for "Resume now", approve_tool and the page's command checks (approve_spec, approve_merge), with no
-  // forge call; every decision here is audited (passport `none`).
+  // forge call. Each command decision is audited (passport `none`); a page's read-only check only when refused (`check`).
   const identity = await startProcessIdentity(loaded, store, clock);
   const auth = new OwnerAuth(store);
-  const onProject = async (user_id: UserId, action: AuthAction): Promise<AuthDecision> => {
+  const onProject = async (user_id: UserId, action: AuthAction, readOnly = false): Promise<AuthDecision> => {
     const project = await settings.resolveProject();
     if (!project) return { allow: false, reason: "no project is stored yet" };
-    return auth.authorize({ user_id }, action, { kind: "project", id: project.key });
+    return auth[readOnly ? "check" : "authorize"]({ user_id }, action, { kind: "project", id: project.key });
   };
   // One token per process for every write route; held only in memory, never written to a file, the store or a log.
   // The UI server, loaded here only: through setup.ts it reaches GitHub modules a solo start must not load.
@@ -1044,7 +1044,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   const actor = who.actor;
   const commands: UiCommands = {
     ...who, token, forge: loaded.plugins.forge !== undefined, localMerge: canMergeLocal(await p.sandbox()),
-    allowed: (action) => (actor === null ? Promise.resolve({ allow: false, reason: "no_actor" }) : onProject(actor, action)),
+    allowed: (action) => (actor === null ? Promise.resolve({ allow: false, reason: "no_actor" }) : onProject(actor, action, true)),
   };
   // The mode switch, the auto-merge tier and a loosening change need approve_merge on the project (design 08-settings), as the Merge button.
   settings.mayApproveMerge = async () => refusalOf(await onProject(opts.identity.user, "approve_merge"));
@@ -1310,16 +1310,6 @@ export function mergeQueueDepth(file: Pick<FileConfig, "merge_queue">): number {
   if (typeof v !== "number" || !Number.isInteger(v) || v < 1 || v > MERGE_QUEUE_DEPTH_MAX) {
     throw new Error(`merge_queue.depth must be an integer from 1 to ${MERGE_QUEUE_DEPTH_MAX}`);
   }
-  return v;
-}
-
-export const DEFAULT_INBOX_RETENTION_DAYS = 14;
-
-/** `inbox_retention_days`: absent means 14, otherwise a positive integer or startup fails. */
-export function inboxRetentionDays(file: Pick<FileConfig, "inbox_retention_days">): number {
-  const v = file.inbox_retention_days;
-  if (v === undefined) return DEFAULT_INBOX_RETENTION_DAYS;
-  if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error("inbox_retention_days must be a positive integer");
   return v;
 }
 

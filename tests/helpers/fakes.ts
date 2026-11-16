@@ -71,7 +71,6 @@ export const config: FactoryConfig = {
   tick_ms: 1000,
   poll_interval_ms: 30_000,
   run_timeout_ms: 600_000,
-  inbox_retention_days: 14,
   retention: RETENTION_DEFAULTS,
   // Tests that are not about batching send each commit at once (`commit`): the `auto` debounce waits on time these
   // tests never advance. Batching has its own tests (tests/outbound/).
