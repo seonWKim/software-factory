@@ -12,11 +12,10 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { insertOrSkip } from "../bus/index.js";
 import type { PackMcpServer } from "../interfaces/agent-runner.js";
-import { PackApprovalsStore, packGrantName } from "../packs/pack-approvals.store.js";
+import { packGrantName } from "../packs/pack-approvals.store.js";
 import { PackEntriesStore, type PackEntryRef, type StoredEntry } from "../packs/pack-entries.store.js";
-import { type PackRefusal, packMcpServer } from "../packs/pack-grants.js";
+import { type PackRefusal, approvedEntry, packMcpServer } from "../packs/pack-grants.js";
 import type { SqlDriver } from "../state/index.js";
-import { IMPORT_SOURCES } from "./scan.js";
 
 export type McpToolListStatus = "requested" | "running" | "listed" | "not_stdio" | "did_not_start" | "not_approved";
 
@@ -32,21 +31,20 @@ export type StartMcpServer = (server: PackMcpServer, opts: { cwd?: string }) => 
 /** A `running` row not finished in this long was left by a stopped worker: another may claim it. */
 export const MCP_LIST_STALE_MS = 10 * 60_000;
 
-/** Imported by `factory plugins import` or the dashboard's Import: its descriptor's `source` is claude or codex. */
-const isImported = (e: Pick<StoredEntry, "descriptor">): boolean => (IMPORT_SOURCES as readonly unknown[]).includes(e.descriptor.source);
-
-/** The current description of the imported MCP server `name` when it is approved; else null. Reads only. */
+/**
+ * The current description of the imported MCP server `name` (a pointer row) when it is approved and its file still
+ * holds that description; else null. Reads only.
+ */
 async function approvedImported(db: SqlDriver, name: string): Promise<StoredEntry | null> {
-  const entry = await new PackEntriesStore(db, () => "").current("mcp_server", name);
-  if (entry === null || !isImported(entry)) return null;
-  return (await new PackApprovalsStore(db, () => "").approved(entry)) ? entry : null;
+  const entry = await approvedEntry(db, "mcp_server", name, false);
+  return typeof entry === "string" || entry.imported === null ? null : entry;
 }
 
 /** Every imported MCP server whose current description is approved, by name. Reads only. */
 export async function approvedImportedServers(db: SqlDriver): Promise<StoredEntry[]> {
   const out: StoredEntry[] = [];
-  for (const r of await db.all("SELECT DISTINCT name FROM ext_packs_entries WHERE kind = 'mcp_server' ORDER BY name")) {
-    const entry = await approvedImported(db, String(r.name));
+  for (const name of await new PackEntriesStore(db, () => "").names("mcp_server")) {
+    const entry = await approvedImported(db, name);
     if (entry) out.push(entry);
   }
   return out;
@@ -165,7 +163,7 @@ export async function importedMcpRefusals(db: SqlDriver, servers: readonly PackM
   const out: PackRefusal[] = [];
   for (const s of servers) {
     const entry = await entries.current("mcp_server", s.name);
-    if (entry !== null && isImported(entry)) out.push({ grant: packGrantName("mcp_server", s.name), reason: "not_started" });
+    if (entry?.imported) out.push({ grant: packGrantName("mcp_server", s.name), reason: "not_started" });
   }
   return out;
 }

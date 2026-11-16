@@ -393,7 +393,7 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
   /** The page as `actor`, its grants checked as compose.ts checks them: the local auth plugin over the local grants, on the project. */
   function page(h: Awaited<ReturnType<typeof harness>>, actor: UserId): ApiDeps {
     const auth = new OwnerAuth(h.store);
-    const allowed = (action: PageAction) => auth.authorize({ user_id: actor, attributes: {} }, action, { kind: "project", id: PROJECT_KEY });
+    const allowed = (action: PageAction) => auth.authorize({ user_id: actor }, action, { kind: "project", id: PROJECT_KEY });
     return {
       store: h.store, scanner: cleanScanner, clock: h.clock, lease_ms: 60_000,
       health: new HealthMonitor(async () => [], h.clock), commands: { actor, source: "environment", token: TOKEN, allowed },
@@ -579,7 +579,7 @@ describe("Needs you: the verdict control (issue #513)", () => {
   /** The page as the local owner, its grants checked by the local auth plugin, as compose.ts checks them. */
   function page(h: Awaited<ReturnType<typeof harness>>): ApiDeps {
     const auth = new OwnerAuth(h.store);
-    const allowed = (action: PageAction) => auth.authorize({ user_id: OWNER, attributes: {} }, action, { kind: "project", id: PROJECT_KEY });
+    const allowed = (action: PageAction) => auth.authorize({ user_id: OWNER }, action, { kind: "project", id: PROJECT_KEY });
     return {
       store: h.store, scanner: cleanScanner, clock: h.clock, lease_ms: 60_000,
       health: new HealthMonitor(async () => [], h.clock), commands: { actor: OWNER, source: "environment", token: TOKEN, allowed },

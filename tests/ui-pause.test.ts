@@ -53,7 +53,7 @@ async function setup(opts: { user?: UserId | null; wired?: boolean } = {}) {
   const log = new MemLog();
   const pauses: UiPauses = {
     principal: async () => (opts.user === undefined ? OWNER : opts.user),
-    authorize: (user_id) => auth.authorize({ user_id, attributes: {} }, "approve_spec", { kind: "project", id: PROJECT_KEY }),
+    authorize: (user_id) => auth.authorize({ user_id }, "approve_spec", { kind: "project", id: PROJECT_KEY }),
     csrfToken: newCsrfToken(),
     log,
   };

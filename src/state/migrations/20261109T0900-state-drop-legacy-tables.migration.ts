@@ -1,6 +1,7 @@
 // RFC 0015 M11: the one contract migration for `legacy_*` tables (§12 D2), SQLite only. It runs only through
 // `npm run migrate -- --contract` (`--dry-run` prints what it would do and rolls back), at least CONTRACT_MIN_DAYS
-// after every migration that left legacy tables: M1's prefix rename, M4's command merge and the change-ref rebuild.
+// after every migration that left legacy tables: M1's prefix rename, M4's command merge, the change-ref rebuild and
+// the plugin import's two rebuilds (ext_packs_entries pointers, ext_skill_refs by path).
 // It finds every legacy table, copies each row whose key is missing from its current table, checks the copy, and
 // drops them all; a legacy table missing from LEGACY_TABLES stops it before anything changes. The runner archives
 // every table that still holds rows first (D4), and refuses without a backup folder.
@@ -15,6 +16,8 @@ const RETIRED: Readonly<Record<string, string>> = {
   ...Object.fromEntries(ARCHIVE_ONLY.map((t) => [t, "no code read it"])),
   base_pushes: "replaced by outbound push_base actions; 20261109T1200 carried the pending ones",
   local_users: "the owner moved to identity_owner and the table was dropped (20261113T1500)",
+  ext_packs_entries: "rebuilt with imported MCP servers as pointers (20261116T1300); its pack entries and the current row of each imported server were carried",
+  ext_skill_refs: "rebuilt one row per source and path (20261116T1310); the newest row of each was carried",
 };
 
 /** M4 (20261108T2200) merged both command tables into inbound_commands, keyed by command_key; ids as it built them. */
@@ -47,7 +50,10 @@ export const LEGACY_TABLES: Readonly<Record<string, LegacySource>> = Object.from
 export default defineMigration({
   change: "contract",
   tables: Object.keys(LEGACY_TABLES),
-  after: ["20261108T1300-state-prefix-tables", "20261108T2200-inbound-merge-commands", "20261112T1200-controller-change-ref-only"],
+  after: [
+    "20261108T1300-state-prefix-tables", "20261108T2200-inbound-merge-commands", "20261112T1200-controller-change-ref-only",
+    "20261116T1300-state-ext-packs-entries-pointers", "20261116T1310-state-ext-skill-refs-by-path",
+  ],
   async up(db) {
     await dropLegacyTables(db, LEGACY_TABLES, printerOf(db));
   },

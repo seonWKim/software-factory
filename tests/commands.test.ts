@@ -563,7 +563,7 @@ describe("answers to the spec's decisions on /approve (issue #526)", () => {
   const ME = "local:me" as UserId;
   /** Lets everyone approve; the user ID is `provider:subject`, so a local identity is `local:<name>` as in solo. */
   const auth: AuthProvider = {
-    resolve: async (i) => ({ user_id: `${i.provider}:${i.subject}` as UserId, attributes: {} }),
+    resolve: async (i) => ({ user_id: `${i.provider}:${i.subject}` as UserId }),
     authorize: async () => ({ allow: true }),
   };
 
@@ -736,7 +736,7 @@ describe("decisions for the spec in the implement and review prompts (issue #526
 
 describe("one refusal and help text on every surface (issue #528)", () => {
   const ME = "github:1" as UserId;
-  const auth: AuthProvider = { resolve: async (i) => ({ user_id: `${i.provider}:${i.subject}` as UserId, attributes: {} }), authorize: async () => ({ allow: true }) };
+  const auth: AuthProvider = { resolve: async (i) => ({ user_id: `${i.provider}:${i.subject}` as UserId }), authorize: async () => ({ allow: true }) };
 
   async function harness() {
     const { store, clock } = await newStore();

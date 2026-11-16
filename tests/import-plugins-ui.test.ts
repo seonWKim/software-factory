@@ -26,7 +26,7 @@ import { newStore } from "./helpers/store.js";
 import { startPackMcpServer } from "../src/impl/runner/pack-mcp-client.js";
 import { listRequestedMcpTools } from "../src/import/mcp-tool-lists.js";
 import { PackApprovalsStore } from "../src/packs/pack-approvals.store.js";
-import { PackEntriesStore } from "../src/packs/pack-entries.store.js";
+import { PackEntriesStore, readPointer } from "../src/packs/pack-entries.store.js";
 import { type UiSettings, newCsrfToken, storeProjectResolver } from "../src/ui/settings-api.js";
 
 // The UI process starts no MCP server: every start goes through this spy, which the Plugins read must never call.
@@ -299,7 +299,7 @@ describe("no env or header value leaves the configs", () => {
 describe("GET /api/v1/plugins: tools of approved imported MCP servers (phase 3)", () => {
   /** The import setup with the Plugins read wired, the stored servers approved by name, and the listing rows. */
   async function readSetup(principal: UserId | null = ME) {
-    home();
+    const h = home();
     const s = await setup(principal);
     const editFile = Object.assign(async () => ({ ok: false as const, reason: "not wired" }), { capabilities: async () => ({ skill_folders: [], tools: [], providers: [] }) });
     const settings: UiSettings = {
@@ -322,7 +322,7 @@ describe("GET /api/v1/plugins: tools of approved imported MCP servers (phase 3)"
     /** The worker's side, with a start that lists `tools` or fails. */
     const work = (tools: string[] | null) =>
       listRequestedMcpTools({ db: s.db, now, by: "host:1:0", start: async () => { if (tools === null) throw new Error("no"); return { tools: tools.map((name) => ({ name })), close: async () => {} }; } });
-    return { ...s, approve, read, lists, work };
+    return { ...s, home: h, approve, read, lists, work };
   }
 
   it("writes one request per approved server as the page's factory user, starts nothing, and shows it as listing", async () => {
@@ -370,12 +370,46 @@ describe("GET /api/v1/plugins: tools of approved imported MCP servers (phase 3)"
 
   it("with no factory user the read requests nothing", async () => {
     const s = await readSetup(null);
-    await new PackEntriesStore(s.db, () => "2026-11-15T09:00:00.000Z").insert({
-      kind: "mcp_server", name: "docs", description_hash: "h", module_hash: null, descriptor: JSON.stringify({ name: "docs", source: "claude", command: "d" }), credential_name: null, added_by: ME,
-    });
+    const file = join(s.home, ".claude.json");
+    const { description_hash } = (await readPointer({ source: "claude", file, key: "docs" }))!;
+    await new PackEntriesStore(s.db, () => "2026-11-15T09:00:00.000Z").storePointer({ source: "claude", file, key: "docs", description_hash, added_by: ME }, false);
     await s.approve("docs");
     expect(await s.read()).toEqual([expect.objectContaining({ name: "mcp:docs", description: "MCP server docs: listing its tools" })]);
     expect(await s.lists()).toEqual([]);
+  });
+});
+
+describe("GET /api/v1/plugins: imported MCP servers are read from their source file", () => {
+  it("shows the description read from the file, waiting after a change, and missing once the entry leaves the file", async () => {
+    home();
+    const s = await setup();
+    await s.post({ items: [sel("mcp_server", "claude", "docs")] });
+    const settings: UiSettings = {
+      base: { file: {}, layers: { defaults: {}, projects: {} } }, repo: { owner: "o", name: "r" }, actor: "local:owner",
+      resolveProject: storeProjectResolver(s.d.store, { owner: "o", name: "r" }), csrfToken: newCsrfToken(),
+    };
+    const mcp = async () => (JSON.parse((await respond({ ...s.d, settings }, { method: "GET", url: "/api/v1/plugins", host: HOST })).body) as PluginsView).mcp;
+    const entry = await new PackEntriesStore(s.db, () => "").current("mcp_server", "docs");
+    await new PackApprovalsStore(s.db, () => "2026-11-15T09:00:00.000Z").record(entry!, "approve", ME);
+    expect(await mcp()).toEqual([{ name: "docs", description: "Imported from the Claude Code user config", source: "pack", status: "approved" }]);
+    const file = join(process.env.HOME!, ".claude.json");
+    writeFileSync(file, JSON.stringify({ mcpServers: { docs: { command: "changed" } } }));
+    expect((await mcp()).map((m) => m.status)).toEqual(["waiting"]);
+    writeFileSync(file, JSON.stringify({ mcpServers: {} }));
+    expect((await mcp()).map((m) => m.status)).toEqual(["missing"]);
+    // The read wrote nothing: the row is the pointer the import stored.
+    expect(await s.db.all("SELECT descriptor, status FROM ext_packs_entries")).toEqual([{ descriptor: null, status: "pending" }]);
+  });
+
+  it("the page's import updates an edited skill's row in place", async () => {
+    const h = home();
+    const s = await setup();
+    await s.post({ items: [sel("skill", "claude", "review-helper")] });
+    write(join(h, ".claude", "skills", "review-helper", "SKILL.md"), "# Review helper, edited\n");
+    expect((await s.get()).body).toContain('"imported":false');
+    const r = JSON.parse((await s.post({ items: [sel("skill", "claude", "review-helper")] })).body) as { results: { outcome: string; line: string }[] };
+    expect(r.results).toEqual([expect.objectContaining({ outcome: "updated", line: "updated skill review-helper from claude" })]);
+    expect(await s.db.all("SELECT name FROM ext_skill_refs")).toEqual([{ name: "review-helper" }]);
   });
 });
 

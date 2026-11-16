@@ -112,10 +112,10 @@ const NO_SOURCES: UiCapabilitySources = { skill_folders: [], tools: [], provider
 /** The sources the Settings wiring reads, again on each call; none without the config file's writer. */
 export const settingsSources = async (s: Pick<UiSettings, "editFile">): Promise<UiCapabilitySources> => (await s.editFile?.capabilities?.()) ?? NO_SOURCES;
 
-/** The imported skills: every stored `ext_skill_refs` pointer, read from its file now (readSkillRefs). Reads only. */
+/** The imported skills: every stored `ext_skill_refs` pointer of kind `skill`, read from its file now (readSkillRefs). Reads only. */
 async function importedSkills(store: FactoryStore): Promise<Skill[]> {
-  const rows = await storeSql(store).all("SELECT source, name, path, sha256, created_at FROM ext_skill_refs");
-  return readSkillRefs(rows.map((r) => ({ source: r.source === "codex" ? "codex" : "claude", name: String(r.name), path: String(r.path), sha256: String(r.sha256), created_at: String(r.created_at) }) satisfies SkillRef));
+  const rows = await storeSql(store).all("SELECT source, kind, name, path, sha256 FROM ext_skill_refs WHERE kind = 'skill'");
+  return readSkillRefs(rows.map((r) => ({ source: String(r.source), kind: String(r.kind), name: String(r.name), path: String(r.path), sha256: String(r.sha256) }) satisfies SkillRef));
 }
 
 /** The model a finished run's usage reports, or null. */

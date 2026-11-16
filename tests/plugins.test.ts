@@ -7,7 +7,6 @@ import { type Loaded, Plugins, build, loadConfig } from "../src/compose.js";
 import type { WorkerDeps } from "../src/worker/index.js";
 import { CaffeinateKeepAwake } from "../src/impl/awake/caffeinate-keep-awake.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
-import { AuditedAuthProvider } from "../src/impl/auth/audited-auth.js";
 import { PassportToolBroker } from "../src/impl/broker/passport-broker.js";
 import { OwnerAuth } from "../src/core/authorize.js";
 import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
@@ -557,7 +556,7 @@ describe("plugin registry: existing config keys keep working", () => {
     const built = await build(await loadConfig(root({ ...REAL, store: { type: "sqlite" } })), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
     try {
       const { d, reader } = built.controller.kernel;
-      expect((d.auth as AuditedAuthProvider).inner).toBeInstanceOf(OwnerAuth);
+      expect(d.auth).toBeInstanceOf(OwnerAuth);
       expect(reader.auth.owner).toBe(d.auth);
       // The service principals keep their passport checks.
       expect(reader.auth.service).toBe(d.service_auth);

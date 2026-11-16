@@ -11,7 +11,7 @@ import { SqlHookAudit } from "../src/runtime/index.js";
 // Pack checks (design 04-pre-push-gates.md, 11-packs.md, issue #494): `checks/<name>.json` in a pack layer, on when
 // `hooks` names it, checked at startup, run as argv in the run's sandbox. A fixture pack in a temp folder per test.
 
-const ON = { sharedStore: false, toolHooks: true };
+const ON = { toolHooks: true };
 
 /** A fixture pack: one folder per layer, each with the check files given (name → JSON value or raw text). */
 function fixture(layers: Partial<Record<PackLayer, Record<string, unknown> | null>>): Pack[] {
@@ -76,17 +76,10 @@ describe("pack checks: startup refusals", () => {
 
   it("an on_tool_call check when the runner has no tool hooks, naming the check and the point", () => {
     const packs = fixture({ org: { "tool-check": at("on_tool_call") } });
-    expect(() => packChecks(packs, ["tool-check"], { sharedStore: false, toolHooks: false })).toThrow(/tool-check runs at on_tool_call.*supports_tool_hooks/);
+    expect(() => packChecks(packs, ["tool-check"], { toolHooks: false })).toThrow(/tool-check runs at on_tool_call.*supports_tool_hooks/);
     expect(packChecks(packs, ["tool-check"], ON)).toHaveLength(1);
   });
 
-  it("a project-layer check on a shared store, naming the file; org and base checks still run there", () => {
-    const packs = fixture({ base: { b: at("before_agent") }, org: { o: at("before_agent") }, project: { p: at("before_agent") } });
-    const shared = { sharedStore: true, toolHooks: true };
-    expect(() => packChecks(packs, ["p"], shared)).toThrow(join(packs[2]!.dir, "checks", "p.json"));
-    expect(packChecks(packs, ["b", "o"], shared).map((c) => c.name)).toEqual(["b", "o"]);
-    expect(packChecks(packs, ["p"], ON).map((c) => c.layer)).toEqual(["project"]);
-  });
 
   it("a bad check file: not JSON, no argv, a shell string, an on_tool_call timeout over the PreToolUse limit, bad retries", () => {
     const bad: Record<string, unknown> = {
