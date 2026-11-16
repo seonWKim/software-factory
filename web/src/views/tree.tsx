@@ -1,5 +1,5 @@
 // The Work items tree (design §9): a split parent with its phases in phase order, each item once. The model
-// (buildTree, itemMatches, summaryCounts) is pure; ItemsTree draws it with react-aria-components' Tree, which
+// (buildTree, itemMatches) is pure; ItemsTree draws it with react-aria-components' Tree, which
 // brings the keyboard use (arrow keys move focus, right expands, left collapses) and the treegrid roles.
 
 import { useState } from "react";
@@ -61,10 +61,13 @@ export interface TreeFilter {
   state: string | null;
   q: string;
   showClosed: boolean;
+  /** Only these items (a link from Failures names them); closed ones show too. */
+  ids?: ReadonlySet<string> | null;
 }
 
 /** Whether a row passes the filters: closed rows only with Show closed (or the Closed filter). */
 export function itemMatches(it: ItemRow, f: TreeFilter): boolean {
+  if (f.ids) return f.ids.has(it.id) && inSearch(it, f.q);
   if (it.level === "closed" && !f.showClosed && f.state !== "closed") return false;
   return inState(it, f.state) && inSearch(it, f.q);
 }
@@ -101,16 +104,6 @@ export function parentIds(nodes: readonly TreeNode[]): string[] {
 /** The expanded rows when nothing is saved: every parent that has an open phase. */
 export function defaultExpanded(nodes: readonly TreeNode[]): string[] {
   return nodes.flatMap((n) => (n.children.some((c) => c.item.level !== "closed") ? [n.item.id, ...defaultExpanded(n.children)] : defaultExpanded(n.children)));
-}
-
-/** The item counts of the summary line, over the open items: each is also a state filter. Queued is a run count (pages.tsx, useQueuedRuns). */
-export function summaryCounts(rows: readonly ItemRow[]) {
-  const open = rows.filter((r) => r.level !== "closed");
-  return {
-    running: open.filter((r) => r.level === "running").length,
-    held: open.filter(isHeld).length,
-    needs: open.filter((r) => needsYou(r)).length,
-  };
 }
 
 /** What an item waits for: the number to show and the item it names (null when it is not in the list). */

@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { isGatePath } from "../../src/core/improver.js";
 import { keyRefusal, resolveSettings } from "../../src/core/settings.js";
-import { type SettingCatalog, loadSettingCatalog, monotonicProblems, renderSettingCatalog, resolveLevels } from "../../src/runtime/index.js";
+import { type SettingCatalog, loadSettingCatalog, monotonicProblems, renderSettingCatalog } from "../../src/runtime/index.js";
+import { resolveLevels } from "../../src/runtime/settings/monotonic.js";
 import { type SettingDescriptor, settingFileName, settingProblems } from "../../src/shared/setting.js";
 import { REPO, componentOf } from "./lib.js";
 

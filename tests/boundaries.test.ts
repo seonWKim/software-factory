@@ -50,7 +50,7 @@ const ALLOWED: readonly Allowed[] = [
   { token: /\bgithub_rate_limit(?:ed)?\b/g, files: ["core/types.ts", "core/policy.ts", "interfaces/factory-store.ts"], reason: "stored run error code `github_rate_limited` and claim pause name `github_rate_limit`" },
   { token: /\bGITHUB_RATE_LIMIT(?:ED)?\b/g, files: ["core/policy.ts"], reason: "exported constant names of that error code and claim pause" },
   { token: /\bgithubRateLimit(?:Message|Reset)\b/g, files: ["core/policy.ts"], reason: "exported function names the GitHub broker calls" },
-  { token: /["`]github["`]/g, files: ["core/project.ts", "core/command-inbox.ts", "interfaces/auth-provider.ts"], reason: "stored provider name of identities and project keys" },
+  { token: /["`]github["`]/g, files: ["core/command-inbox.ts", "interfaces/auth-provider.ts"], reason: "stored provider name of identities and project keys" },
   { token: /\bgithub:/g, files: ["core/command-inbox.ts"], reason: "prefix of stored values: project keys, comment inbox keys and actors, the `github:budget` cursor" },
   { token: /\b(?:githubCommentKey|githubCommand|GITHUB_KEY|GITHUB_ACTOR)\b/g, files: ["core/command-inbox.ts"], reason: "exported function names and the code names of their key patterns" },
   { token: /\bGitHubBudgetStatus\b/g, files: ["core/controller-deps.ts"], reason: "exported type name of the GitHub call budget" },

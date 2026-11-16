@@ -5,7 +5,8 @@ import { ButtonRow } from "../components/ui/button-row.js";
 import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
-import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
+import { type Column, DataTable } from "../components/ui/data-table.js";
+import { Badge, ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { Select } from "../components/ui/select.js";
 import { Tabs } from "../components/ui/tabs.js";
 import { Switch } from "../components/ui/switch.js";
@@ -499,51 +500,60 @@ function KeyDetails({ row }: { row: SettingRow }) {
   );
 }
 
-function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
+/** The settable keys table's columns; the Value cell holds the editors, the per-project layer and the learned value. */
+function keyColumns(view: SettingsView): Column<SettingRow>[] {
+  return [
+    {
+      key: "key",
+      header: t("settings.colKey"),
+      render: (row) => (
+        <>
+          <span className="text-sm font-medium text-pretty">{keyLabel(row.key)}</span>
+          <Description text={keyHelp(row.key, row.description)} />
+        </>
+      ),
+    },
+    { key: "value", header: t("settings.colValue"), className: "min-w-56", render: (row) => <ValueCell row={row} view={view} /> },
+    { key: "details", header: t("settings.details"), className: "min-w-32", render: (row) => <KeyDetails row={row} /> },
+    { key: "reset", header: t("settings.colReset"), render: (row) => row.source === "override" && <ResetButton row={row} label={keyLabel(row.key)} token={view.csrf_token} /> },
+  ];
+}
+
+function ValueCell({ row, view }: { row: SettingRow; view: SettingsView }) {
   const own = view.project === null ? undefined : row.projects.find((p) => p.project === view.project);
   const learned = view.project === null ? undefined : ((row as SettingRow & { learned?: LearnedValue[] }).learned ?? []).find((l) => l.project === view.project);
   const label = keyLabel(row.key);
   const projectLabel = t("settings.keyFor", { key: label, project: view.repo });
   return (
-    <Tr data-key={row.key}>
-      <Td>
-        <span className="text-sm font-medium text-pretty">{label}</span>
-        <Description text={keyHelp(row.key, row.description)} />
-      </Td>
-      <Td className="min-w-56">
-        {SECTION_KEYS[row.key] ? (
-          <p className="text-xs text-pretty text-text-2">
-            <span className="font-mono wrap-anywhere">{row.value}</span> · {t(SECTION_KEYS[row.key]!)}
+    <>
+      {SECTION_KEYS[row.key] ? (
+        <p className="text-xs text-pretty text-text-2">
+          <span className="font-mono wrap-anywhere">{row.value}</span> · {t(SECTION_KEYS[row.key]!)}
+        </p>
+      ) : (
+        <Editor row={row} label={label} value={row.value} token={view.csrf_token} />
+      )}
+      <Duration settingKey={row.key} value={row.value} />
+      {row.key === "workers" && row.max !== undefined && (
+        <p className="mt-1 text-xs text-text-2">
+          {row.capped_at ? t("settings.workersRangeCapped", { max: row.max, capped: row.capped_at }) : t("settings.workersRange", { max: row.max })}
+        </p>
+      )}
+      {row.project_settable && (
+        <div className="mt-2 border-t border-border pt-2">
+          <p className="mb-1 text-xs text-text-2">
+            {t("settings.forValue", { value: own ? `${own.value} (${own.source})` : t("settings.globalValue") })}
+            {view.project === null && ` · ${t("settings.noProjectLabel")}`}
           </p>
-        ) : (
-          <Editor row={row} label={label} value={row.value} token={view.csrf_token} />
-        )}
-        <Duration settingKey={row.key} value={row.value} />
-        {row.key === "workers" && row.max !== undefined && (
-          <p className="mt-1 text-xs text-text-2">
-            {row.capped_at ? t("settings.workersRangeCapped", { max: row.max, capped: row.capped_at }) : t("settings.workersRange", { max: row.max })}
-          </p>
-        )}
-        {row.project_settable && (
-          <div className="mt-2 border-t border-border pt-2">
-            <p className="mb-1 text-xs text-text-2">
-              {t("settings.forValue", { value: own ? `${own.value} (${own.source})` : t("settings.globalValue") })}
-              {view.project === null && ` · ${t("settings.noProjectLabel")}`}
-            </p>
-            <div className="flex flex-wrap items-start gap-2">
-              <Editor row={row} label={projectLabel} value={own?.value ?? row.value} token={view.csrf_token} project={view.repo} />
-              {own?.source === "override" && <ResetButton row={row} label={projectLabel} token={view.csrf_token} project={view.repo} />}
-            </div>
-            <Duration settingKey={row.key} value={own?.value ?? row.value} />
-            {learned && <LearnedLayer row={row} learned={learned} view={view} />}
+          <div className="flex flex-wrap items-start gap-2">
+            <Editor row={row} label={projectLabel} value={own?.value ?? row.value} token={view.csrf_token} project={view.repo} />
+            {own?.source === "override" && <ResetButton row={row} label={projectLabel} token={view.csrf_token} project={view.repo} />}
           </div>
-        )}
-      </Td>
-      <Td className="min-w-32">
-        <KeyDetails row={row} />
-      </Td>
-      <Td>{row.source === "override" && <ResetButton row={row} label={label} token={view.csrf_token} />}</Td>
-    </Tr>
+          <Duration settingKey={row.key} value={own?.value ?? row.value} />
+          {learned && <LearnedLayer row={row} learned={learned} view={view} />}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -724,49 +734,52 @@ function AdvancedTab({ view: v }: { view: SettingsView }) {
       <Section title={t("settings.settableKeys")} count={v.keys.length}>
         <p className="mb-2 text-sm text-pretty text-text-2">{t("settings.settableIntro")}</p>
         <ProjectLabel view={v} />
-        <Table label={t("settings.settableKeys")} head={[t("settings.colKey"), t("settings.colValue"), t("settings.details"), t("settings.colReset")]}>
-          {v.keys.map((row) => (
-            <KeyRow key={row.key} row={row} view={v} />
-          ))}
-        </Table>
+        <DataTable label={t("settings.settableKeys")} columns={keyColumns(v)} rows={v.keys} rowKey={(r) => r.key} empty={t("settings.noKeys")} dataKey />
       </Section>
       <FileKeysSection view={v} />
       <Section title={PR_ONLY_TITLE} count={prOnly.length}>
         <p className="mb-2 text-sm text-pretty text-text-2">
           {withNodes("settings.prOnlyIntro", { file: <code>{"factory.config.json"}</code> })}
         </p>
-        <Table label={PR_ONLY_TITLE} head={[t("settings.colKey")]}>
-          {prOnly.map((p) => (
-            <Tr key={p.key} data-key={p.key}>
-              <Td>
-                <span className="text-sm font-medium text-pretty">{keyLabel(p.key)}</span>
-                <Description text={p.description} />
-                <KeyNameDetails name={p.key} />
-              </Td>
-            </Tr>
-          ))}
-        </Table>
+        <DataTable
+          label={PR_ONLY_TITLE}
+          columns={[
+            {
+              key: "key",
+              header: t("settings.colKey"),
+              render: (p: SettingsView["pr_only"][number]) => (
+                <>
+                  <span className="text-sm font-medium text-pretty">{keyLabel(p.key)}</span>
+                  <Description text={p.description} />
+                  <KeyNameDetails name={p.key} />
+                </>
+              ),
+            },
+          ]}
+          rows={prOnly}
+          rowKey={(p) => p.key}
+          empty={t("settings.noKeys")}
+          dataKey
+        />
       </Section>
       <Section title={t("settings.history")} count={v.history.length}>
-        {v.history.length === 0 ? (
-          <Empty>{t("settings.noHistory")}</Empty>
-        ) : (
-          <Table label={t("settings.history")} head={[t("col.when"), t("settings.colWho"), t("settings.colKey"), t("settings.colChange")]}>
-            {v.history.map((c) => (
-              <Tr key={c.seq}>
-                <Td className="tabular-nums whitespace-nowrap">{t("time.ago", { time: ago(c.at, now) })}</Td>
-                <Td className="font-mono text-xs">{c.actor}</Td>
-                <Td className="text-sm">
-                  {keyLabel(c.key)}
-                  {c.project ? t("settings.forProject", { project: c.project }) : ""}
-                </Td>
-                <Td className="font-mono text-xs break-all">
-                  {c.new_value === null ? t("settings.resetWas", { old: String(c.old_value) }) : t("settings.changed", { old: c.old_value ?? t("settings.noOverride"), new: c.new_value })}
-                </Td>
-              </Tr>
-            ))}
-          </Table>
-        )}
+        <DataTable
+          label={t("settings.history")}
+          columns={[
+            { key: "at", header: t("col.when"), className: "tabular-nums whitespace-nowrap", render: (c) => t("time.ago", { time: ago(c.at, now) }) },
+            { key: "actor", header: t("settings.colWho"), className: "font-mono text-xs" },
+            { key: "key", header: t("settings.colKey"), className: "text-sm", render: (c) => `${keyLabel(c.key)}${c.project ? t("settings.forProject", { project: c.project }) : ""}` },
+            {
+              key: "change",
+              header: t("settings.colChange"),
+              className: "font-mono text-xs break-all",
+              render: (c) => (c.new_value === null ? t("settings.resetWas", { old: String(c.old_value) }) : t("settings.changed", { old: c.old_value ?? t("settings.noOverride"), new: c.new_value })),
+            },
+          ]}
+          rows={v.history}
+          rowKey={(c) => String(c.seq)}
+          empty={t("settings.noHistory")}
+        />
       </Section>
       <PageCommands />
       {v.ignored.length > 0 && (

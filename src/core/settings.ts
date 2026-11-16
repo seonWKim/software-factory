@@ -288,7 +288,6 @@ export const PR_ONLY_KEYS = [
   "plugins", "repo", "store", "floors", "dials", "secrets", "egress", "broker", "deny_paths", "env", "toolchain",
   "outbound.batching", "merge_queue.depth", "hooks", "packs.auto_approve_read_only",
 ] as const;
-export type PrOnlyKey = (typeof PR_ONLY_KEYS)[number];
 
 // What each key controls and when a change applies live in its `*.setting.ts` file (RFC 0015 M10), read through
 // the settings catalog (src/runtime); tests/settings-catalog.test.ts holds the key lists here and the catalog equal.

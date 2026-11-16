@@ -274,11 +274,9 @@ export interface LoadedConfig {
   poll_interval_ms: number;
   run_timeout_ms: number;
   /**
-   * Stream intake: inbox rows older than this many days, and already behind their source's inbox cursor,
-   * are deleted by the controller's cleanup. Default 14.
+   * `retention` (design 08-retention): days kept per class of operational rows; 0 keeps a class forever. File-only.
+   * `raw_records_days` is inbound's raw records (the old top-level `inbox_retention_days`, still read).
    */
-  inbox_retention_days: number;
-  /** `retention` (design 08-retention): days kept per class of operational rows; 0 keeps a class forever. File-only. */
   retention: RetentionDays;
   /**
    * `outbound.batching` (RFC 0015 §15.1): each destination kind's batching policy (outbound's BatchingPolicy), `*`
@@ -430,26 +428,43 @@ export function readOnlyRunFields(
   };
 }
 
-/** Days the controller's daily retention pass keeps each class of operational rows (design 08-retention). */
+/**
+ * Days kept per class of operational rows (design 08-retention): the controller's daily pass keeps the first three,
+ * inbound's `prune` tick `raw_records_days`.
+ */
 export interface RetentionDays {
   readonly outbox_days: number;
   readonly commands_days: number;
   readonly records_days: number;
+  readonly raw_records_days: number;
 }
 
-/** The `retention` defaults, the same solo and enterprise: delivered outbox rows and handled commands 30 days, records 90. */
-export const RETENTION_DEFAULTS: RetentionDays = { outbox_days: 30, commands_days: 30, records_days: 90 };
+/** The `retention` defaults: delivered outbox rows and handled commands 30 days, records 90, inbound's raw records 7. */
+export const RETENTION_DEFAULTS: RetentionDays = { outbox_days: 30, commands_days: 30, records_days: 90, raw_records_days: 7 };
 
-/** The `retention` block: each absent key its default; a value that is not an integer of 0 or more fails startup. */
-export function retentionConfig(raw: unknown): RetentionDays {
-  if (raw === undefined) return RETENTION_DEFAULTS;
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error("retention must be an object");
+/** The warning a config with the old top-level key loads with (design 08-retention: deprecated, removal plan there). */
+export const INBOX_RETENTION_DEPRECATED = "inbox_retention_days is deprecated: set retention.raw_records_days instead";
+
+/**
+ * The `retention` block: each absent key its default; a value that is not an integer of 0 or more fails startup.
+ * The old top-level `inbox_retention_days` (a positive integer) still sets raw_records_days when the block does not,
+ * with a warning; when both are set the block wins.
+ */
+export function retentionConfig(raw: unknown, inbox_retention_days?: unknown, warn: (message: string) => void = console.warn): RetentionDays {
+  if (raw !== undefined && (typeof raw !== "object" || raw === null || Array.isArray(raw))) throw new Error("retention must be an object");
+  const block = (raw ?? {}) as Record<string, unknown>;
   const out: Record<string, number> = { ...RETENTION_DEFAULTS };
   for (const key of Object.keys(RETENTION_DEFAULTS)) {
-    const v = (raw as Record<string, unknown>)[key];
+    const v = block[key];
     if (v === undefined) continue;
     if (typeof v !== "number" || !Number.isInteger(v) || v < 0) throw new Error(`retention.${key} must be an integer of 0 or more (0 keeps forever)`);
     out[key] = v;
+  }
+  const old = inbox_retention_days;
+  if (old !== undefined) {
+    if (typeof old !== "number" || !Number.isInteger(old) || old < 1) throw new Error("inbox_retention_days must be a positive integer");
+    if (block.raw_records_days === undefined) out.raw_records_days = old;
+    warn(block.raw_records_days === undefined ? INBOX_RETENTION_DEPRECATED : `${INBOX_RETENTION_DEPRECATED} (retention.raw_records_days is set and wins)`);
   }
   return out as unknown as RetentionDays;
 }

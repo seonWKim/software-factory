@@ -17,7 +17,8 @@ export default defineCommand({
                SQLite: the breaking migrations, then the project-key data step (owner/name →
                github:<host>:<repo id>): --status lists the state and pending steps,
                --dry-run prints what would run and each row it would change, --rehearse runs them on a
-               copy and checks no row was lost, no flag applies them (back up first). The other commands
+               copy and checks no row was lost, no flag applies them (back up first) and then runs VACUUM,
+               printing the bytes it freed. The other commands
                refuse to start while steps or owner/name rows remain. --contract copies each legacy_* row
                missing from its current table, then drops the legacy_* tables, 14 days after the
                migrations that left them, archiving their rows to db/backups first; with --dry-run it

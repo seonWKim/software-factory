@@ -1,5 +1,5 @@
 // The CI gate: a reviewed PR waits for its checks; failed checks send it back or block it.
-// Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
+// Moved out of the legacy controller (RFC 0015 M5); it reads through the kernel's reader and writes through the kernel.
 
 import { prNumber } from "../../../core/change-ref.js";
 import { errorText } from "../../../core/log.js";

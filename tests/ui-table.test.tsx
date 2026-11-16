@@ -2,6 +2,7 @@
 // @ts-nocheck -- tsconfig.test.json has no DOM or JSX; like the other ui tests this file typechecks under the web config.
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
+import { DataTable } from "../web/src/components/ui/data-table.js";
 import { SM_PX, Table, Td, Tr } from "../web/src/components/ui/parts.js";
 import { ItemsTable } from "../web/src/views/common.js";
 
@@ -113,5 +114,26 @@ describe("Needs you at 390px", () => {
     expect(under!.textContent).toContain("Needs approval");
     expect(cards[0]!.querySelector("dl")!.textContent).toContain("Waits for your /approve on the spec.");
     for (const el of document.querySelectorAll("*")) expect(el.className).not.toMatch(/overflow-x-(auto|scroll)/);
+  });
+});
+
+describe("DataTable dataKey", () => {
+  const rows = [{ id: "a", n: "Alpha" }, { id: "b", n: "Beta" }];
+  const columns = [{ key: "n", header: "Name" }];
+
+  it("sets data-key on each row to its rowKey, in the table and in the cards", () => {
+    width(SM_PX);
+    const { unmount } = render(<DataTable label="T" columns={columns} rows={rows} rowKey={(r) => r.id} empty="None" dataKey />);
+    expect([...document.querySelectorAll("tbody tr")].map((tr) => tr.getAttribute("data-key"))).toEqual(["a", "b"]);
+    unmount();
+    width(390);
+    render(<DataTable label="T" columns={columns} rows={rows} rowKey={(r) => r.id} empty="None" dataKey />);
+    expect([...document.querySelectorAll("li[data-key]")].map((li) => li.getAttribute("data-key"))).toEqual(["a", "b"]);
+  });
+
+  it("leaves the attribute off without dataKey", () => {
+    width(SM_PX);
+    render(<DataTable label="T" columns={columns} rows={rows} rowKey={(r) => r.id} empty="None" />);
+    expect(document.querySelector("[data-key]")).toBeNull();
   });
 });

@@ -196,6 +196,30 @@ describe("path_companions load check", () => {
       expect(await allowedFor("docs/design/04-triage.md")).toContain("docs/design.md");
     });
 
+    // Decided 2026-11-16: the generated files a change implies (npm run schema:snapshot, npm run settings:catalog).
+    it("naming a migration or the SQLite schema adds schema/sqlite.sql", async () => {
+      expect(await allowedFor("src/controller/migrations/0042-example.ts")).toContain("schema/sqlite.sql");
+      expect(await allowedFor("src/impl/store/sqlite/schema.ts")).toContain("schema/sqlite.sql");
+    });
+
+    it.each([
+      "src/controller/settings/",
+      "src/guards/settings/",
+      "src/inbound/settings/",
+      "src/outbound/settings/",
+      "src/runtime/settings/",
+      "src/state/settings/",
+      "src/worker/settings/",
+    ])("naming a setting file under %s adds docs/settings.md", async (folder) => {
+      expect(await allowedFor(`${folder}example.setting.ts`)).toContain("docs/settings.md");
+    });
+
+    it("naming neither adds no generated file", async () => {
+      const paths = await allowedFor("src/core/policy.ts");
+      expect(paths).not.toContain("schema/sqlite.sql");
+      expect(paths).not.toContain("docs/settings.md");
+    });
+
     it("an absent key loads with no companions", async () => {
       const rest: Record<string, unknown> = { ...SQLITE };
       delete rest.path_companions;

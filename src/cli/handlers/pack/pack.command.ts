@@ -5,7 +5,7 @@ import { type ApprovalRequest, PackApprovalsStore, approvalLine, changeApproval 
 import { PackEntriesStore, addLine, addPack } from "../../../packs/pack-entries.store.js";
 import { defineCommand } from "../../command.js";
 
-const USAGE = "usage: factory pack add <path> | factory pack approve|revoke <tool|mcp_server> <name> [<description_hash>]";
+const USAGE = "usage: npm run factory -- pack add <path> | npm run factory -- pack approve|revoke <tool|mcp_server> <name> [<description_hash>]";
 
 /** The parsed arguments, or null when they are not a pack command. */
 function parse(args: readonly string[]): { sub: "add"; path: string } | ({ sub: "approval" } & ApprovalRequest) | null {

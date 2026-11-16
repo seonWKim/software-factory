@@ -1,5 +1,5 @@
 // Identity's tables (RFC 0015 §6.3): identity_passports (one row per link, never the token), the deny list
-// identity_revocations, and authz_audit (every decision). Plain SQL that runs on SQLite and MySQL.
+// identity_revocations, and authz_audit (every decision). Plain SQL that runs on the SQLite store.
 
 import type { SqlExecutor } from "../../state/index.js";
 import { canonicalRestrictions } from "./restrictions.js";

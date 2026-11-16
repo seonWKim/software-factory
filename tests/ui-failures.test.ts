@@ -8,7 +8,8 @@ import { type SettingsBase } from "../src/core/settings.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
-import { FAILURES_CAP } from "../src/ui/failures.js";
+import { FAILURES_CAP, FAILURE_DESCRIPTIONS } from "../src/ui/failures.js";
+import { en } from "../web/src/i18n/en.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type UiDeps, respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
@@ -80,13 +81,18 @@ describe("GET /api/v1/failures", () => {
     expect(typeof g.runs[0].finished_at).toBe("string");
   });
 
-  it("describes known codes only; an unknown code has no description", async () => {
+  it("sends no description: the page's plain copy lives in the web catalog", async () => {
     const { d, store } = await setup();
     await fail(store, 1, "tests_failed", "x");
-    await fail(store, 2, "made_up_code", "y");
-    const groups = (await get(d, "/api/v1/failures")).body.groups as { code: string; description: string | null }[];
-    expect(groups.find((g) => g.code === "tests_failed")!.description).toEqual(expect.any(String));
-    expect(groups.find((g) => g.code === "made_up_code")!.description).toBeNull();
+    const groups = (await get(d, "/api/v1/failures")).body.groups as Record<string, unknown>[];
+    expect(groups[0]).not.toHaveProperty("description");
+  });
+
+  it("the web catalog has a title, meaning and next step for every described code and the three without a description", () => {
+    const codes = [...Object.keys(FAILURE_DESCRIPTIONS), "spec_conflict", "checks_failed", "agent_timed_out"];
+    for (const code of codes) {
+      for (const part of ["title", "meaning", "next"]) expect(en, `failure.${code}.${part}`).toHaveProperty([`failure.${code}.${part}`], expect.stringMatching(/\S/));
+    }
   });
 
   it("answers 400 for an unknown window", async () => {

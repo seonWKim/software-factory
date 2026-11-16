@@ -171,7 +171,7 @@ describe("base push: queued by the merge's delivery, made by outbound's local ta
     expect(await basePush(f)).toMatchObject([
       { key: `push_base:${f.id}:${SHA("a")}`, target: { type: "git", id: "local:main:push" }, args: { base_ref: "main", merge_sha: SHA("a") }, delivered: false },
     ]);
-    // As `factory controller` runs solo: a replica id and the state dir's host id, on the SQLite store.
+    // As one `factory dev` process runs solo: a replica id and the state dir's host id, on the SQLite store.
     const stateDir = mkdtempSync(join(tmpdir(), "sf-state-"));
     const solo = replica(f.store, f.clock, f.sandbox, g.forge, { replica_id: `${hostname()}:4242`, git_host: gitHost(stateDir, "sqlite") });
     await solo.tickOutbox();

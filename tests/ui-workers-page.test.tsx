@@ -33,13 +33,13 @@ const overview = {
   as_of: AT, stages: {}, needs_you: 0, running: 0, queued: 0, last_24h: { succeeded: 1, failed: 7, tokens: 0 },
   factory: { state: "running", rev: "aaaaaaa1111", target_rev: null, child_pid: 7, since: AT, workers: 10, workers_source: "override", error: null, pending: [] },
 };
-const group = (code: string, description: string | null, n: number) => ({
-  code, description, count: n, last_seen: AT, items: 1,
+const group = (code: string, n: number) => ({
+  code, count: n, last_seen: AT, items: 1,
   runs: Array.from({ length: n }, (_, i) => ({ id: `r_${code}_${i}`, work_item_id: "wi_9", kind: "implement", attempt: i + 1, detail: `${code} detail ${i}`, worker: "h1:1:0", finished_at: AT })),
 });
 const failures = (window: string): Failures => ({
   as_of: AT, window: window as "24h", cap: 500, total: 3, capped: false,
-  groups: [group("tests_failed", "The checks or tests failed.", 2), group("made_up_code", null, 1)],
+  groups: [group("tests_failed", 2), group("made_up_code", 1)],
 });
 
 let fetched: string[] = [];
@@ -115,23 +115,33 @@ describe("Activity", () => {
 });
 
 describe("Failures page", () => {
-  it("lists groups with count, items, last seen and a description for a known code only", async () => {
+  it("titles each group in plain words with the code as small text, a meaning, a next step and a link to its items on Work", async () => {
     show(FailuresPage);
     const groups = await screen.findAllByTestId("failure-group");
     expect(groups).toHaveLength(2);
-    expect(groups[0]!.textContent).toContain("tests_failed");
+    expect(groups[0]!.textContent).toContain("Checks or tests failed");
+    expect(within(groups[0]!).getByTestId("failure-code").textContent).toBe("tests_failed");
     expect(groups[0]!.textContent).toContain("2 runs");
     expect(groups[0]!.textContent).toContain("1 item");
-    expect(groups[0]!.textContent).toContain("The checks or tests failed.");
-    expect(groups[1]!.textContent).toContain("made_up_code");
+    expect(groups[0]!.textContent).toContain("The checks or tests failed on the change.");
+    expect(groups[0]!.textContent).toContain("Read the failing checks");
+    expect(within(groups[0]!).getByRole("link", { name: "View items on Work" }).getAttribute("href")).toBe("/app/items?ids=wi_9");
     expect(fetched).toContain("/api/v1/failures?window=24h");
+  });
+
+  it("a code with no copy shows the raw code and a generic line", async () => {
+    show(FailuresPage);
+    const g = (await screen.findAllByTestId("failure-group"))[1]!;
+    expect(g.textContent).toContain("made_up_code");
+    expect(g.textContent).toContain("This error code has no plain description yet.");
+    expect(within(g).queryByTestId("failure-code")).toBeNull();
   });
 
   it("expands a group to its runs, each item linked to its page", async () => {
     show(FailuresPage);
     const g = (await screen.findAllByTestId("failure-group"))[0]!;
     expect(within(g).queryByRole("table")).toBeNull();
-    fireEvent.click(within(g).getByRole("button"));
+    fireEvent.click(within(g).getByRole("button", { expanded: false }));
     const table = within(g).getByRole("table", { name: "Runs failed with tests_failed" });
     expect(table.textContent).toContain("tests_failed detail 1");
     expect(table.querySelector("details")).toBeNull();
@@ -145,6 +155,7 @@ describe("Failures page", () => {
     show(FailuresPage);
     await screen.findAllByTestId("failure-group");
     expect(fetched).toContain("/api/v1/failures?window=7d");
+    expect(within(screen.getByRole("group", { name: "Window" })).getByRole("button", { name: "Last 7 days" }).getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(screen.getByRole("button", { name: "Last 24 hours" }));
     await vi.waitFor(() => expect(fetched).toContain("/api/v1/failures?window=24h"));
   });

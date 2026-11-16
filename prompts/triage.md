@@ -54,6 +54,9 @@ Produce:
   (not files you only read). Before answering, make sure each entry equals an allowed_paths entry or sits
   under an allowed_paths entry ending in `/`. An output where allowed_paths does not cover files_to_change
   is rejected.
+  Tests: existing tests may assert the text or behaviour the change removes or changes. Before answering,
+  grep the tests for each string the change removes or changes,
+  and list each matching test file in allowed_paths and files_to_change.
   Docs: when the repository's docs are an index that links to topic files, read the index first, then open
   only the topic files that apply. The documentation targets are the topic files the change touches,
   not the index: name those in files_to_change and allowed_paths. A new topic file also needs its one line

@@ -136,24 +136,26 @@ describe("items tree", () => {
     expect(titles(await screen.findByRole("treegrid", { name: "Work items" }))).toContain("Closed alone");
   });
 
-  it("the summary counts are buttons that set the filter", async () => {
+  it("has no summary line; the state filter is tabs with the counts, and the Held tab filters the tree", async () => {
     await mount();
-    const summary = screen.getByTestId("summary");
-    expect(within(summary).getByRole("button", { name: "1 running" })).toBeTruthy();
-    expect(await within(summary).findByRole("button", { name: `${overview.queued} queued` })).toBeTruthy();
-    expect(queueBody.queue.length).toBe(overview.queued);
-    expect(within(summary).getByRole("button", { name: "3 held" })).toBeTruthy();
-    expect(within(summary).getByRole("button", { name: "3 needs you" })).toBeTruthy();
-    expect(summary.textContent).toContain("rate limit: ok");
-    fireEvent.click(within(summary).getByRole("button", { name: "3 held" }));
+    expect(screen.queryByTestId("summary")).toBeNull();
+    expect(screen.queryByText(/rate limit: ok/)).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: /^Held 3/ }));
     await settle();
     expect(titles(screen.getByRole("treegrid", { name: "Work items" }))).toEqual(["Split parent", "Phase two", "Phase three", "Held by coordination"]);
-    expect(screen.getByRole("button", { name: /^Held 3/ }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("tab", { name: /^Held 3/ }).getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("the Tree and List switch is a segmented control", async () => {
+    await mount();
+    const view = screen.getByRole("group", { name: "View" });
+    expect(within(view).getByRole("button", { name: "Tree" }).getAttribute("aria-pressed")).toBe("true");
+    expect(within(view).getByRole("button", { name: "List" }).getAttribute("aria-pressed")).toBe("false");
   });
 
   it("the needs filter shows Needs you and Needs triage, nothing from Blocked by another task", async () => {
     await mount();
-    fireEvent.click(within(screen.getByTestId("summary")).getByRole("button", { name: "3 needs you" }));
+    fireEvent.click(screen.getByRole("tab", { name: /^Needs you 3/ }));
     await settle();
     const shown = titles(screen.getByRole("treegrid", { name: "Work items" }));
     expect(shown).toEqual(expect.arrayContaining(["Spec waiting", "Agent asks", "Triage asks"]));

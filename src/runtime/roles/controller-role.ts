@@ -1,4 +1,4 @@
-// The controller role (RFC 0015 §8, M4–M5): what `factory controller` and `factory dev` run. Inbound polls the
+// The controller role (RFC 0015 §8, M4–M5): what `factory dev` runs. Inbound polls the
 // sources and the forge, stores their records and announces them; its normalizer turns them into
 // controller.commands; the controller's consumer hands each to the router, which gives each event to the unit that
 // accepts its kind. The units (src/controller/units/, discovered) decide; their steps run on the controller's tick.
@@ -8,7 +8,7 @@
 // drive the same path one step at a time through the tick* methods, which drain the bus.
 
 import {
-  BUS_PERIODS, SqlBus, scheduleBus, scheduleComponent, type BusPlugin, type EventBus, type Inbox, type Relay, type RetryScheduler,
+  BUS_PERIODS, SqlBus, scheduleBus, scheduleComponent, type BusPlugin, type SqlBusOptions, type EventBus, type Inbox, type Relay, type RetryScheduler,
 } from "../../bus/index.js";
 import {
   CONTROLLER, CONTROLLER_EVENTS, CONTROLLER_EVENT_KINDS, type ControllerContext, type ControllerEvent, type ControllerReader, type ControllerWrite, type Decisions, type ControllerUnits, Kernel, Router, type UnitName, type UnitOperations,
@@ -60,6 +60,8 @@ const SYNC_OWNER = "controller";
 const SYNCED: SourceType = "github_issue";
 /** Rounds of relay and consume one manual step runs at most before it leaves the rest to the next. */
 const MAX_DRAIN_ROUNDS = 50;
+/** The key TTL a controller inbox row gets when its message carries none (design 08-retention, decision 4). */
+export const CONTROLLER_INBOX_TTL_MS = 14 * 86_400_000;
 
 let discovered: Promise<Registry> | null = null;
 let discoveredUnits: Promise<ControllerUnits> | null = null;
@@ -88,7 +90,7 @@ function units(): Promise<ControllerUnits> {
 /** The SQL driver under the store: the bus and inbound write in its transactions. */
 function driverOf(store: ControllerDeps["store"]): SqlDriver {
   const db = (store as { db?: SqlDriver }).db;
-  if (!db) throw new Error("the controller role needs a SQL store (sqlite or mysql)");
+  if (!db) throw new Error("the controller role needs a SQL store (SQLite)");
   return db;
 }
 
@@ -263,7 +265,7 @@ export class ControllerRole implements Decisions {
     await this.outboxStep();
   }
 
-  /** Removes inbound records past inbox_retention_days, as inbound's `records` tick does. */
+  /** Removes inbound records past retention.raw_records_days, as inbound's `records` tick does. */
   async tickRecords(): Promise<void> {
     await (await this.wire()).inbound.prune(this.tick("records"));
   }
@@ -445,7 +447,9 @@ export class ControllerRole implements Decisions {
     const consumerId = d.replica_id ?? SYNC_OWNER;
     const bus = d.bus ?? new SqlBus();
     const inboundBus = bus.component({ db, component: INBOUND, topics, consumerId });
-    const controllerBus = bus.component({ db, component: CONTROLLER, topics, consumerId });
+    // A controller message with no key TTL (but a dead letter) is deduped for 14 days, so its inbox row expires (design 08-retention).
+    const controllerOptions: SqlBusOptions = { db, component: CONTROLLER, topics, consumerId, inboxTtlMs: CONTROLLER_INBOX_TTL_MS };
+    const controllerBus = bus.component(controllerOptions);
     const outboundBus = bus.component({ db, component: OUTBOUND, topics, consumerId });
     const sync = (await this.router()).unit("sync");
     // Only the sync lease's holder writes the synced type (design 05-coordination), whatever the budget.
@@ -488,7 +492,7 @@ export class ControllerRole implements Decisions {
       forge: d.forge ?? null,
       config: () => {
         const c = d.settings.config();
-        return { poll_interval_ms: c.poll_interval_ms, inbox_retention_days: c.inbox_retention_days, project_key: c.project.key };
+        return { poll_interval_ms: c.poll_interval_ms, raw_records_days: c.retention.raw_records_days, project_key: c.project.key };
       },
       sync: d.sync ? { lease: d.sync, type: SYNCED } : null,
       forgePaused: async () => (await d.store.getClaimPause(GITHUB_RATE_LIMIT)) !== null,

@@ -49,7 +49,7 @@ const LONG_BODY = [
   "- a short point",
 ].join("\n");
 
-/** A local source with a long ID, as `factory issue` files it. */
+/** A local source with a long ID, as `factory task create` files it. */
 const local = (id) => ({ type: "local", id, link: `local:${id}` });
 
 /**
