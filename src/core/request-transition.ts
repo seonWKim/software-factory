@@ -2,8 +2,9 @@
 // (the spec gate, the revision limit, the floor block, the Rule of Two, a split, a dependency hold, the decision
 // answers), the note scan and `+paths`, and the merge gate. The controller's comment command path and the dashboard's
 // request path both call them, so both refuse with the same words. `requestTransition` is the request path: the
-// dashboard's Approve or Merge as one conditional store write while the request is handled, or its refusal. The
-// merge conflict check, the merge queue and the forge's merge stay in the controller.
+// dashboard's Approve as one conditional store write while the request is handled, its Merge checked and answered
+// "Merging…" with nothing written, or its refusal. The controller enters the merge queue (merge_queued) on its next
+// pass; the merge conflict check, the merge queue and the forge's merge stay in the controller.
 
 import type { EgressScanner, ScanResult } from "../interfaces/egress-scanner.js";
 import type { AppCommandRequest, FactoryStore, NewRun, TransitionInput } from "../interfaces/factory-store.js";
@@ -39,9 +40,9 @@ export const APP_REQUEST = "app_request";
 export const QUEUED_RUN = "queued_run";
 /** The reason of the controller's transition that queues a request-time approval's run. */
 export const APPROVED_RUN_QUEUED = "approved_run_queued";
-/** blocked_reason of an item whose Merge was pressed: the controller's merge queue or the forge's merge has it now. */
+/** blocked_reason of an item whose Merge the controller took: its merge queue or the forge's merge has it now. */
 export const MERGE_QUEUED = "merge_queued";
-/** The reason of the request-time Merge: merge_pending → merge_queued. */
+/** The reason of the controller's entry of a dashboard Merge: merge_pending → merge_queued. */
 export const MERGE_REQUESTED = "merge_requested";
 /** The reason of a refused or failed merge: merge_queued → merge_pending, the refusal in its detail. */
 export const MERGE_RETURNED = "merge_returned";
@@ -286,8 +287,8 @@ export function mergeQueued(it: Pick<WorkItem, "stage" | "blocked_on" | "blocked
   return it.stage === "REVIEW" && it.blocked_on === "ci" && it.blocked_reason === MERGE_QUEUED;
 }
 
-/** Waiting for its merge: ready for a person's Merge (merge_pending), or that Merge already pressed (merge_queued). */
-export function waitsForMerge(it: Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason">): boolean {
+/** Waiting for its merge: ready for a person's Merge (merge_pending), or that Merge taken by the controller (merge_queued). */
+export function awaitingMerge(it: Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason">): boolean {
   return (it.stage === "REVIEW" && it.blocked_on === "human" && it.blocked_reason === "merge_pending") || mergeQueued(it);
 }
 
@@ -301,7 +302,7 @@ export type ChangeName = (change_ref: string) => string;
 
 /** Why the local merge does not apply to `it` (`canMerge`: a sandbox that merges locally), or null. */
 export function localMergeRefusal(it: WorkItem, canMerge: boolean, name: ChangeName): string | null {
-  if (!waitsForMerge(it) || it.change_ref !== null) {
+  if (!awaitingMerge(it) || it.change_ref !== null) {
     const at = [it.stage, it.blocked_reason].filter(Boolean).join(", ");
     return it.change_ref !== null
       ? `${it.id} has ${name(it.change_ref)}: merge the PR instead`
@@ -313,13 +314,30 @@ export function localMergeRefusal(it: WorkItem, canMerge: boolean, name: ChangeN
 /** Why the PR's merge does not apply to `it` (`forge`: one is selected), or null. */
 export function prMergeRefusal(it: WorkItem, forge: boolean, name: ChangeName): string | null {
   const pr = prNumber(it);
-  if (!waitsForMerge(it) || pr === null) {
+  if (!awaitingMerge(it) || pr === null) {
     const at = [it.stage, it.blocked_reason].filter(Boolean).join(", ");
     return `${it.id} is not waiting for a merge (${at}); Merge applies once its PR passed review (merge_pending)`;
   }
   if (!forge) return `no forge is selected (\`plugins.forge\`), so the factory cannot merge ${name(String(pr))}`;
   return it.last_head_sha === null ? `no reviewed head is recorded for ${name(String(pr))}` : null;
 }
+
+/**
+ * The controller's entry of a dashboard Merge (request `seq`): merge_pending → merge_queued, tagged with the request,
+ * before its merge runs; null when the item does not wait at merge_pending (queued already, or moved on).
+ */
+export function mergeEntered(it: WorkItem, actor: Actor, seq: number): Transition | null {
+  if (!awaitingMerge(it) || mergeQueued(it)) return null;
+  return { patch: { blocked_on: "ci", blocked_reason: MERGE_QUEUED }, actor, reason: MERGE_REQUESTED, detail: { [APP_REQUEST]: seq } };
+}
+
+/** Whether a dashboard Merge for the item, other than request `seq`, is stored and not handled yet: the item reads "Merging…". */
+export function mergeRequested(requests: readonly AppCommandRequest[], seq: number | null = null): boolean {
+  return requests.some((q) => q.command === "merge" && q.handled_at === null && q.seq !== seq && (seq === null || q.seq < seq));
+}
+
+/** The newest dashboard Merge requests read for an item: enough to find one still pending. */
+export const MERGE_REQUESTS_READ = 20;
 
 /** A merge that was refused or failed after its Merge was pressed: the item waits for a person again, with why. */
 export function mergeReturned(it: WorkItem, refusal: string, actor: Actor): Transition | null {
@@ -331,7 +349,7 @@ export function mergeReturned(it: WorkItem, refusal: string, actor: Actor): Tran
 
 /** What the request path needs: the store, the egress scanner, the owner check and the merge facts of this process. */
 export interface RequestDeps<A> {
-  store: Pick<FactoryStore, "getWorkItem" | "listRuns" | "listStateChanges" | "transition" | "markAppCommandRequest">;
+  store: Pick<FactoryStore, "getWorkItem" | "listRuns" | "listStateChanges" | "transition" | "markAppCommandRequest" | "listAppCommandRequestsForItem">;
   scanner: EgressScanner;
   /** The owner check of the request's actor: approve_spec for Approve, approve_merge for Merge. */
   allowed: (action: "approve_spec" | "approve_merge") => Promise<AuthDecision>;
@@ -345,7 +363,8 @@ export interface RequestDeps<A> {
 
 /**
  * How the request path answered: `applied` (the transition is stored), `already_done` (an earlier request made it),
- * `refused` (the controller's words), or `queued` (left to the controller: a split's filing, a coordination hold).
+ * `refused` (the controller's words), or `queued` (left to the controller: a Merge that passed its gate, a split's
+ * filing, a coordination hold).
  */
 export type RequestOutcome =
   | { outcome: "applied" | "already_done" | "queued"; item: WorkItem; label: string | null }
@@ -359,9 +378,10 @@ const MAX_TRIES = 5;
  * owner check first, then the note scan, then on the item as read: an earlier request's transition is `already_done`,
  * the approve or merge gate refuses or decides, and the transition is one conditional write on the version read
  * (a conflict reads again, so a double click or a second worker leaves one). The approval's run is left to the
- * controller (QUEUED_RUN) and Merge only moves the item to merge_queued; the request row stays pending for the
- * controller, which finds the transition and does the rest once. A refusal or an earlier request's transition marks
- * the row handled here, so the controller posts nothing.
+ * controller (QUEUED_RUN); the request row stays pending for the controller, which finds the transition and does the
+ * rest once. Merge writes nothing: past its gate it is answered "Merging…" and its pending row is the controller's to
+ * queue; an earlier pending Merge of the item, or one the controller queued, makes it `already_done`. A refusal or an
+ * earlier request's transition marks the row handled here, so the controller posts nothing.
  */
 export async function requestTransition<A>(d: RequestDeps<A>, r: AppCommandRequest, item: WorkItem): Promise<RequestOutcome> {
   const merge = r.command === "merge";
@@ -373,31 +393,32 @@ export async function requestTransition<A>(d: RequestDeps<A>, r: AppCommandReque
   };
   const grant = await d.allowed(merge ? "approve_merge" : "approve_spec");
   if (!grant.allow) return finish(item, refusalReply(grant.reason));
+  if (merge) {
+    const it = (await d.store.getWorkItem(item.id)) ?? item;
+    if (mergeQueued(it) || mergeRequested(await d.store.listAppCommandRequestsForItem(it.id, MERGE_REQUESTS_READ), r.seq)) {
+      await d.store.markAppCommandRequest(r.seq, null);
+      return { outcome: "already_done", item: it, label: ROW_LABELS.merging };
+    }
+    const refusal = mergeRoute(it) === "local" ? localMergeRefusal(it, d.localMerge !== false, d.changeName) : prMergeRefusal(it, d.forge !== false, d.changeName);
+    return refusal !== null ? finish(it, refusal) : { outcome: "queued", item: it, label: ROW_LABELS.merging };
+  }
   const actor: Actor = { kind: "user", id: r.actor };
   const tag = { [APP_REQUEST]: r.seq };
-  const input = merge ? { note: null, paths: [] } : await commandNote((t) => d.scanner.scan("comment", t), typeof r.args.note === "string" ? r.args.note : undefined, name, false);
+  const input = await commandNote((t) => d.scanner.scan("comment", t), typeof r.args.note === "string" ? r.args.note : undefined, name, false);
   if ("refuse" in input) return finish(item, input.refuse);
   for (let i = 0; i < MAX_TRIES; i++) {
     const it = await d.store.getWorkItem(item.id);
     if (!it) return finish(item, "the work item was not found");
-    let want: Transition;
-    if (merge) {
-      if (mergeQueued(it)) return finish(it, null);
-      const refusal = mergeRoute(it) === "local" ? localMergeRefusal(it, d.localMerge !== false, d.changeName) : prMergeRefusal(it, d.forge !== false, d.changeName);
-      if (refusal !== null) return finish(it, refusal);
-      want = { patch: { blocked_on: "ci", blocked_reason: MERGE_QUEUED }, actor, reason: MERGE_REQUESTED, detail: tag };
-    } else {
-      if (approvedAlready(await d.store.listStateChanges(it.id), it)) return finish(it, null);
-      if (approvesHold(it)) return { outcome: "queued", item: it, label: null };
-      const a = await approveCheck(d.store, it, { actor, note: input.note, paths: [], comment_id: `app-${r.seq}`, tag, widen: () => NOT_WIDENED, answers: d.answers });
-      if (a === null) return finish(it, null);
-      if ("refuse" in a) return finish(it, a.refuse);
-      if ("split" in a) return { outcome: "queued", item: it, label: null };
-      want = withTag(await specDecision(it, a, () => specKindOf(d.store, it)), tag)!;
-    }
+    if (approvedAlready(await d.store.listStateChanges(it.id), it)) return finish(it, null);
+    if (approvesHold(it)) return { outcome: "queued", item: it, label: null };
+    const a = await approveCheck(d.store, it, { actor, note: input.note, paths: [], comment_id: `app-${r.seq}`, tag, widen: () => NOT_WIDENED, answers: d.answers });
+    if (a === null) return finish(it, null);
+    if ("refuse" in a) return finish(it, a.refuse);
+    if ("split" in a) return { outcome: "queued", item: it, label: null };
+    const want = withTag(await specDecision(it, a, () => specKindOf(d.store, it)), tag)!;
     const { enqueue, ...rest } = want;
     const t = await d.store.transition({ ...rest, ...(enqueue ? { detail: { ...rest.detail, [QUEUED_RUN]: JSON.stringify(enqueue) } } : {}), id: it.id, expected_version: it.version });
-    if (t.ok) return { outcome: "applied", item: t.item, label: merge ? ROW_LABELS.merging : ROW_LABELS.approved };
+    if (t.ok) return { outcome: "applied", item: t.item, label: ROW_LABELS.approved };
     if (t.reason !== "version_conflict") return { outcome: "queued", item: it, label: null };
   }
   return { outcome: "queued", item: (await d.store.getWorkItem(item.id)) ?? item, label: null };

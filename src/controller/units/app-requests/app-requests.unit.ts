@@ -2,7 +2,7 @@
 // and through the commands unit a sentence and a proposal's Confirm all and Cancel; anything else is refused).
 // Moved out of the legacy controller (RFC 0015 M5); it reads through the kernel's reader and writes through the kernel.
 
-import { APP_REQUEST, COMMANDS, MERGE_REQUESTED, refusalText } from "../../../core/commands.js";
+import { APP_REQUEST, COMMANDS, MERGE_REQUESTED, mergeEntered, mergeQueued, refusalText } from "../../../core/commands.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
 import { type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { AppCommandRequest } from "../../../interfaces/factory-store.js";
@@ -32,8 +32,9 @@ export class AppRequestsUnit {
    * is posted once on the item's source, keyed on the request, then stored on the row by the conditional mark. A
    * failed post leaves the request pending for the next tick. Safe to run twice: a request whose transition is
    * already stored (an earlier try, another replica, or the dashboard's request path: design 09-dashboard-app) is
-   * marked applied, after the rest of a request-time approval (CommandsUnit.afterRequestApprove). A request-time Merge
-   * (merge_requested) only put the item at merge_queued: its merge runs here, and a refusal puts it back at merge_pending.
+   * marked applied, after the rest of a request-time approval (CommandsUnit.afterRequestApprove). The request path
+   * writes nothing for a Merge: here the item enters the merge queue (merge_pending → merge_queued, merge_requested)
+   * before its merge runs, a refusal puts it back at merge_pending, and a Merge another request queued is done already.
    */
   async applyAppRequest(r: AppCommandRequest): Promise<void> {
     const known = COMMANDS.some((c) => c.name === r.command);
@@ -61,6 +62,7 @@ export class AppRequestsUnit {
       // PR's merge on the forge (design 05-sources). mergeLocal posts its own refusal under the same marker as
       // finishAppRequest's, so the thread gets it once; a PR merge's later refusal comes back under it too.
       const who = { user_id: r.actor };
+      if (!(await this.enterMerge(item.id, r))) return settle();
       refusal = item.source.type === LOCAL_SOURCE && item.change_ref === null
         ? await this.c.unit("local-merge").mergeLocal(item.id, who, key, { [APP_REQUEST]: r.seq })
         : await this.c.unit("pr-events").requestPrMerge(item.id, who, key, { [APP_REQUEST]: r.seq });
@@ -77,6 +79,19 @@ export class AppRequestsUnit {
     if (refusal !== null && (await applied())) return settle();
     if (refusal !== null && r.command === MERGE_COMMAND) await this.c.unit("commands").mergeReturned(item.id, refusal);
     await this.finishAppRequest(r, item, refusal === null ? null : say(refusal));
+  }
+
+  /**
+   * Enters a dashboard Merge: an item at merge_pending moves to merge_queued, tagged with the request. False when
+   * another request's Merge queued it already (that one runs the merge); true for this request's own entry, also
+   * on a second try of it.
+   */
+  private async enterMerge(id: WorkItemId, r: AppCommandRequest): Promise<boolean> {
+    await this.c.unit("transitions").decide(id, (it) => mergeEntered(it, { kind: "user", id: r.actor }, r.seq));
+    const it = await this.c.k.reader.getWorkItem(id);
+    if (!it || !mergeQueued(it)) return true;
+    const entry = (await this.c.k.reader.listStateChanges(id)).filter((c) => c.reason === MERGE_REQUESTED).at(-1);
+    return entry?.detail?.[APP_REQUEST] === r.seq;
   }
 
   /** Posts `text` (a refusal) once on the item's source, keyed on the request, then marks the request handled. */

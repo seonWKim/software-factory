@@ -7,7 +7,7 @@ import { SKIP_LABEL, floorTier, workItemIdFromBranch } from "../../../core/polic
 import { type Actor, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { ForgeEvent } from "../../../interfaces/forge.js";
 import { prMergeOutcome, type ActionRow } from "../../../outbound/index.js";
-import { SYSTEM, updateKey, waitsForMerge } from "../support.js";
+import { SYSTEM, updateKey, awaitingMerge } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
@@ -29,7 +29,7 @@ export class PrEventsUnit {
   async startUpdate(id: WorkItemId, change_ref: string, head_sha: string, base_sha: string): Promise<void> {
     const key = updateKey(id, change_ref, head_sha, base_sha);
     await this.c.unit("transitions").decide(id, async (it) => {
-      if (!waitsForMerge(it) || it.change_ref !== change_ref) return null;
+      if (!awaitingMerge(it) || it.change_ref !== change_ref) return null;
       const updates = (await this.c.k.d.store.listRuns(it.id)).filter((r) => r.kind === "update");
       if (updates.some((r) => r.idempotency_key === key || r.acknowledged_at === null)) return null;
       return { patch: {}, actor: SYSTEM, reason: "update_started", enqueue: { kind: "update", idempotency_key: key } };

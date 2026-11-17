@@ -888,9 +888,8 @@ describe("the Merge button's Merging… state (item page and Needs-you row)", ()
     expect(mergeButton().textContent).toBe("Merge");
     expect(mergeButton().disabled).toBe(false);
   });
-  /** What the server answers for an Approve or Merge it applied while handling the request (src/ui/commands.ts applyNow). */
-  const applied = (blocked_reason: string | null, label: string | null, extra: Record<string, unknown> = {}) =>
-    json({ seq: 5, outcome: "applied", refusal: null, state: { stage: blocked_reason === null ? "RUNNING" : "REVIEW", blocked_on: blocked_reason === null ? "none" : "ci", blocked_reason, phase: "p", label }, ...extra }, 202);
+  /** What the server answers for an Approve it applied while handling the request (src/ui/commands.ts applyNow). */
+  const applied = () => json({ seq: 5, outcome: "applied", refusal: null, state: { stage: "RUNNING", blocked_on: "none", blocked_reason: null, phase: "p", label: "Approved" } }, 202);
   const itemReads = () => vi.mocked(fetch).mock.calls.filter(([u]) => u === "/api/v1/items/wi_1").length;
   const row = (extra: Record<string, unknown> = {}) => ({ id: "wi_1", stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", ...extra });
   const approveRow = (cmd: unknown) =>
@@ -908,7 +907,7 @@ describe("the Merge button's Merging… state (item page and Needs-you row)", ()
     rtl.render(wrap(client, createElement(Row)));
     const approve = () => rtl.screen.getByRole("button", { name: "Approve" }) as unknown as { disabled: boolean };
     await rtl.waitFor(() => expect(approve().disabled).toBe(false));
-    post = async () => applied(null, "Approved");
+    post = async () => applied();
     rtl.fireEvent.click(approve() as never);
     await rtl.waitFor(() => expect(rtl.screen.getByText("Approved")).toBeTruthy());
     expect(itemReads()).toBe(0);
@@ -933,7 +932,7 @@ describe("the Merge button's Merging… state (item page and Needs-you row)", ()
     expect((client.getQueryData(["/api/v1/items"]) as { items: { blocked_reason: string }[] }).items[0]!.blocked_reason).toBe("merge_pending");
   });
 
-  it("Merge on a Needs-you row: Merging… at once from the response, the row's state merge_queued, before any poll", async () => {
+  it("Merge on a Needs-you row: Merging… at once from the response's label, the row still merge_pending, before any poll", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     client.setQueryData(["/api/v1/items"], { items: [row({ stage: "REVIEW", blocked_reason: "merge_pending", merge: READY })] });
     function Row() {
@@ -945,9 +944,13 @@ describe("the Merge button's Merging… state (item page and Needs-you row)", ()
     }
     rtl.render(wrap(client, createElement(Row)));
     await rtl.waitFor(() => expect(mergeButton().disabled).toBe(false));
-    post = async () => applied("merge_queued", "Merging…");
+    // The request path writes nothing for a Merge: the state stays merge_pending, the label says Merging….
+    post = async () => json({
+      seq: 5, outcome: "queued", refusal: null, state: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", phase: "p", label: "Merging…" },
+    }, 202);
     rtl.fireEvent.click(mergeButton() as never);
-    await rtl.waitFor(() => expect((client.getQueryData(["/api/v1/items"]) as { items: { blocked_reason: string }[] }).items[0]!.blocked_reason).toBe("merge_queued"));
+    await rtl.waitFor(() => expect((client.getQueryData(["/api/v1/items"]) as { items: { merge: unknown }[] }).items[0]!.merge).toEqual({ enabled: false, reason: "Merging…" }));
+    expect((client.getQueryData(["/api/v1/items"]) as { items: { blocked_reason: string }[] }).items[0]!.blocked_reason).toBe("merge_pending");
     expect(mergeButton().textContent).toBe("Merging…");
     expect(mergeButton().disabled).toBe(true);
   });

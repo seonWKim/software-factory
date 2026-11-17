@@ -15,11 +15,12 @@ import { newCsrfToken } from "../src/ui/settings-api.js";
 import { FakeForge, FakeSandbox, FakeSource, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
-// Approve and Merge from the dashboard apply while the request is handled (design 09-dashboard-app, 2026-11-15): the
-// owner check, then the controller's own store-only checks (core request-transition) and one conditional write, with
-// no controller pass and no poll in between. The response carries the item's new state, or the refusal in the
-// controller's words. The controller's next pass finds the transition made and does the rest once: the approval's run,
-// the merge queue's checks or the forge's merge. A refused or failed merge puts the item back at merge_pending.
+// Approve and Merge from the dashboard are answered while the request is handled (design 09-dashboard-app,
+// 2026-11-15): the owner check, then the controller's own store-only checks (core request-transition), with no
+// controller pass and no poll in between. Approve is one conditional write; Merge writes nothing and is answered
+// "Merging…". The response carries the item's state, or the refusal in the controller's words. The controller's next
+// pass does the rest once: the approval's run, or the Merge's entry into the merge queue (merge_queued), its checks or
+// the forge's merge. A refused or failed merge puts the item back at merge_pending.
 
 const OWNER = "local:owner" as UserId;
 const OTHER = "local:other" as UserId;
@@ -231,48 +232,83 @@ function pageWith(h: Awaited<ReturnType<typeof harness>>, scanner: UiDeps["scann
   };
 }
 
-describe("Merge applies while the request is handled", () => {
-  it("a mergeable local item is merge_queued before any tick; the controller's pass enters the merge queue, which checks it", async () => {
+describe("Merge is answered while the request is handled; the controller queues it", () => {
+  /** The item API's Merge button for the owner: its reason reads "Merging…" while a Merge request waits. */
+  const button = async (h: Awaited<ReturnType<typeof harness>>, it: WorkItem) => {
+    const r = await respond(pageWith(h, cleanScanner), { method: "GET", url: `/api/v1/items/${encodeURIComponent(it.id)}`, host: HOST });
+    return (JSON.parse(r.body) as { item: { merge: { enabled: boolean; reason: string | null } } }).item.merge;
+  };
+
+  it("a mergeable local item: Merging… before any tick, nothing written; the controller's pass enters the merge queue, which checks it", async () => {
     const h = await harness();
     const it1 = await h.itemIn(localRef(1), READY);
     const r = await h.post(it1, { command: "merge" });
 
-    expect(r).toMatchObject({ outcome: "applied", refusal: null, state: { stage: "REVIEW", blocked_reason: MERGE_QUEUED, label: "Merging…" } });
-    expect(await h.state(it1)).toEqual({ stage: "REVIEW", blocked_on: "ci", blocked_reason: MERGE_QUEUED });
-    expect(await h.reasons(it1)).toEqual([MERGE_REQUESTED]);
+    expect(r).toMatchObject({ outcome: "queued", refusal: null, state: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", label: "Merging…" } });
+    expect(await h.state(it1)).toEqual({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
+    expect(await h.reasons(it1)).toEqual([]);
+    expect(await h.runs(it1)).toEqual([]);
     expect(h.roles.asked).toEqual(["approve_merge"]);
+    // A poll before the controller's pass still reads "Merging…", not "Merge".
+    expect(await button(h, it1)).toEqual({ enabled: false, reason: "Merging…" });
 
     await h.controller.tickCommands();
-    // In the queue: its merged result is checked by a merge-check run; the item stays merge_queued meanwhile.
+    // In the queue: merge_queued, and its merged result is checked by a merge-check run.
+    expect(await h.reasons(it1)).toContain(MERGE_REQUESTED);
+    expect(await h.state(it1)).toEqual({ stage: "REVIEW", blocked_on: "ci", blocked_reason: MERGE_QUEUED });
     expect(await h.runs(it1)).toEqual([{ kind: "merge-check", status: "queued" }]);
-    expect(await h.state(it1)).toMatchObject({ blocked_reason: MERGE_QUEUED });
     expect(await h.request(r.seq)).toMatchObject({ refusal: null });
+    expect((await h.request(r.seq))!.handled_at).not.toBeNull();
+    expect(await button(h, it1)).toEqual({ enabled: false, reason: "Checking…" });
   });
 
-  it("an item with a PR is merge_queued before any tick; the controller asks the forge, and the merge closes it", async () => {
+  it("an item with a PR: Merging… before any tick, nothing written; the controller queues it, asks the forge, and the merge closes it", async () => {
     const h = await harness();
     const it1 = await h.itemIn(issueRef(1), { ...READY, change_ref: "42" }, "h1");
     const r = await h.post(it1, { command: "merge" });
 
-    expect(r).toMatchObject({ outcome: "applied", state: { blocked_reason: MERGE_QUEUED, label: "Merging…" } });
-    expect(await h.state(it1)).toEqual({ stage: "REVIEW", blocked_on: "ci", blocked_reason: MERGE_QUEUED });
-    expect(h.forge.mergeCalls).toEqual([]);
+    expect(r).toMatchObject({ outcome: "queued", refusal: null, state: { blocked_reason: "merge_pending", label: "Merging…" } });
+    expect(await h.state(it1)).toEqual({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
+    expect(await h.reasons(it1)).toEqual([]);
+    expect(await button(h, it1)).toEqual({ enabled: false, reason: "Merging…" });
 
     await h.controller.tickCommands();
     await h.controller.tickOutbox();
+    // The controller's pass entered the merge (merge_requested, merge_queued), then the forge merged it.
+    expect((await h.reasons(it1)).slice(0, 1)).toEqual([MERGE_REQUESTED]);
     expect(h.forge.mergeCalls).toEqual([{ pr: 42, head_sha: "h1", method: "merge" }]);
     expect(await h.store.getWorkItem(it1.id)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "merge-42" });
   });
 
-  it("a second Merge is already done: nothing more is written or posted", async () => {
+  it("two Merge requests leave one pending merge: the second is answered Merging… as done, and the controller queues the item once", async () => {
     const h = await harness();
     const it1 = await h.itemIn(localRef(1), READY);
-    await h.post(it1, { command: "merge" });
+    const first = await h.post(it1, { command: "merge" });
     const second = await h.post(it1, { command: "merge" });
 
-    expect(second).toMatchObject({ outcome: "already_done", refusal: null });
-    expect(await h.reasons(it1)).toEqual([MERGE_REQUESTED]);
+    expect(second).toMatchObject({ outcome: "already_done", refusal: null, state: { blocked_reason: "merge_pending", label: "Merging…" } });
     expect(await h.request(second.seq)).toMatchObject({ refusal: null });
+    expect((await h.request(first.seq))!.handled_at).toBeNull();
+    await h.controller.tickCommands();
+    await h.controller.tickCommands();
+
+    expect((await h.reasons(it1)).filter((x) => x === MERGE_REQUESTED)).toHaveLength(1);
+    expect(await h.runs(it1)).toEqual([{ kind: "merge-check", status: "queued" }]);
+    expect(await h.posted(it1)).toEqual([]);
+    // A Merge after the controller queued the item is done already too.
+    const third = await h.post(it1, { command: "merge" });
+    expect(third).toMatchObject({ outcome: "already_done", refusal: null, state: { label: "Merging…" } });
+  });
+
+  it("the controller queues once when both requests reach it (no request path ran)", async () => {
+    const h = await harness();
+    const it1 = await h.itemIn(localRef(1), READY);
+    for (const key of ["k1", "k2"]) await h.store.recordAppCommandRequest({ key, actor: OWNER, command: "merge", args: { work_item_id: it1.id } });
+    await h.controller.tickCommands();
+
+    expect((await h.reasons(it1)).filter((x) => x === MERGE_REQUESTED)).toHaveLength(1);
+    expect(await h.runs(it1)).toEqual([{ kind: "merge-check", status: "queued" }]);
+    expect(await h.posted(it1)).toEqual([]);
   });
 
   it("a conflict found by the controller returns the item to merge_pending with its reason", async () => {
@@ -280,12 +316,15 @@ describe("Merge applies while the request is handled", () => {
     const it1 = await h.itemIn(localRef(1), READY);
     h.sandbox.clashes = ["src/a.ts"];
     const r = await h.post(it1, { command: "merge" });
+    expect(r).toMatchObject({ outcome: "queued", state: { label: "Merging…" } });
     await h.controller.tickCommands();
 
     expect(await h.state(it1)).toEqual({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
     const back = (await h.store.listStateChanges(it1.id)).find((c) => c.reason === MERGE_RETURNED);
     expect(back!.detail!.refusal).toContain("`src/a.ts`");
     expect((await h.request(r.seq))!.refusal).toContain("does not merge cleanly");
+    // Handled: the button offers Merge again.
+    expect(await button(h, it1)).toEqual({ enabled: true, reason: null });
   });
 
   it("the forge's refusal returns a PR item to merge_pending with its reason", async () => {
@@ -301,15 +340,31 @@ describe("Merge applies while the request is handled", () => {
     expect(back!.detail!.refusal).toContain("head moved");
   });
 
-  it("a refused Merge (no PR to merge, not waiting) stores nothing and answers with the controller's words", async () => {
+  it("a refused Merge (not waiting) stores nothing, answers with the controller's words, and the controller posts nothing", async () => {
     const h = await harness();
     const it1 = await h.itemIn(issueRef(1), SPEC_PENDING);
     const r = await h.post(it1, { command: "merge" });
 
     expect(r.outcome).toBe("refused");
     expect(r.refusal).toMatch(/^`merge` was not applied: .* is not waiting for a merge/);
+    expect(r.state).toMatchObject({ blocked_reason: "spec_pending", label: null });
     expect(await h.reasons(it1)).toEqual([]);
     expect(await h.request(r.seq)).toMatchObject({ refusal: r.refusal });
+    await h.controller.tickCommands();
+    expect(await h.reasons(it1)).toEqual([]);
+    expect(await h.posted(it1)).toEqual([]);
+  });
+
+  it("the owner check runs first: a viewer without approve_merge gets the refusal wording and nothing is queued", async () => {
+    const h = await harness();
+    const it1 = await h.itemIn(localRef(1), READY);
+    const r = await h.post(it1, { command: "merge" }, OTHER);
+
+    expect(h.roles.asked).toEqual(["approve_merge"]);
+    expect(r).toMatchObject({ outcome: "refused", refusal: refusalText("merge", refusalReply("no_role")), state: { blocked_reason: "merge_pending", label: null } });
+    await h.controller.tickCommands();
+    expect(await h.reasons(it1)).toEqual([]);
+    expect(await h.runs(it1)).toEqual([]);
   });
 });
 

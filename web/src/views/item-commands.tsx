@@ -172,7 +172,8 @@ export const awaitsReply = (outcome: Outcome): boolean => outcome?.tone === "sta
 /** The fields of the item's row and page that a request's state changes; a Merge under way also turns its button. */
 function statePatch(s: RequestState): Partial<ItemRow> {
   const fields = { stage: s.stage, blocked_on: s.blocked_on, blocked_reason: s.blocked_reason };
-  return s.blocked_reason === "merge_queued" ? { ...fields, merge: { enabled: false, reason: s.label } } : fields;
+  const merge = { enabled: false, reason: s.label };
+  return mergeInFlight(merge) ? { ...fields, merge } : fields;
 }
 
 /**
@@ -484,8 +485,9 @@ function CommandDialog({ command, title, pr, ...props }: Omit<CommandDialogProps
  * merge, as `factory merge`; any other item's PR merged on the forge at the head the review passed), then re-reads
  * the item and the list, so the controller's reply shows. Disabled with the item API's reason beside it; else the
  * latest merge reply (a refusal: the head moved, a conflict, a failing check, no approve_merge), or `returned`, why
- * the last Merge went back to merge_pending. Once pressed (merge_queued) the button reads the merge's progress:
- * "Merging…", or "Checking…" while the merge queue checks a local item's merged result.
+ * the last Merge went back to merge_pending. Once pressed the button reads the merge's progress: "Merging…" while
+ * the request waits for the controller or the forge merges, "Checking…" while the merge queue checks a local item's
+ * merged result.
  */
 export function MergeButton({ id, source, merge, replies = [], returned = null }: {
   id: string; source: string | undefined; merge: MergeReadiness; replies?: readonly CommandReply[]; returned?: string | null;
@@ -494,7 +496,7 @@ export function MergeButton({ id, source, merge, replies = [], returned = null }
   const send = () => post("merge", "");
   const queued = mergeInFlight(merge);
   const reply = commandOutcome(replies, "merge", local.merge);
-  const back: Outcome = returned && (!reply || reply.text === t("commands.done")) ? { tone: "error", text: plainRefusal(returned) } : null;
+  const back: Outcome = returned && reply?.tone !== "error" ? { tone: "error", text: plainRefusal(returned) } : null;
   const outcome: Outcome = queued ? null : merge.enabled ? (back ?? reply) : { tone: "status", text: merge.reason ?? "" };
   // Merging… from the click until the controller's reply (handled or refused) arrives.
   const merging = merge.enabled && (busy || awaitsReply(outcome));
@@ -618,12 +620,12 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
     queryKey: [API.item(id)],
     queryFn: () => getJson<ItemDetail>(API.item(id)),
     enabled: mergeSent || (group === "merge" && merge?.enabled === true),
-    refetchInterval: (q) => (awaitsReply(mergeOutcome(q.state.data?.replies)) || q.state.data?.item.blocked_reason === "merge_queued" ? POLL_MS : false),
+    refetchInterval: (q) => (awaitsReply(mergeOutcome(q.state.data?.replies)) || mergeInFlight(q.state.data?.item.merge) ? POLL_MS : false),
   });
   const queued = group === "merge" && mergeInFlight(merge);
   const reply = mergeSent ? mergeOutcome(detail.data?.replies) : null;
   const returned = group === "merge" && merge?.enabled ? mergeReturned(detail.data) : null;
-  const outcome: Outcome = returned && (!reply || reply.text === t("commands.done")) ? { tone: "error", text: plainRefusal(returned) } : reply;
+  const outcome: Outcome = returned && reply?.tone !== "error" ? { tone: "error", text: plainRefusal(returned) } : reply;
   // Merging… from the click until the controller's reply (handled or refused) arrives, then the merge's progress.
   const merging = group === "merge" && (busy || awaitsReply(outcome) || queued);
   const send = async (command: string, note: string) => {

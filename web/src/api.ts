@@ -130,8 +130,9 @@ export function showsMerge(m: MergeReadiness | null | undefined): m is MergeRead
 }
 
 /**
- * The `merge` reasons of an item whose Merge was pressed (blocked_reason merge_queued; src/core/request-transition.ts
- * ROW_LABELS): the merge queue checks a local item's merged result, the forge merges a PR. The button shows the reason.
+ * The `merge` reasons of an item whose Merge was pressed (src/core/request-transition.ts ROW_LABELS): its request
+ * waits for the controller or the forge merges a PR ("Merging…"), the merge queue checks a local item's merged
+ * result ("Checking…"). The button shows the reason.
  */
 const IN_FLIGHT = ["Checking…", "Merging…"];
 

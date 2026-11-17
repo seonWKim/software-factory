@@ -8,7 +8,7 @@ import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
 import {
   APPROVED_RUN_QUEUED, APP_REQUEST, CHECKPOINT_REFUSAL, CLOSED_REFUSAL, HOLD_PATHS, appliesLocally, appliesOnPr, approveCheck, approvesHold, awaitingSpec, commandFooter, commandNote, commandPhase, commandSpec,
   commandState, failedRunKind, floorCommand, floorTierNeeded, helpReply, parseLink, phaseLabel, refusalText, ruleOfTwoCommand, scanNote, specDecision,
-  specNotWaiting, unknownCommandReply, withTag, localMergeRefusal, mergeReturned, prMergeRefusal, queuedRun, waitsForMerge,
+  specNotWaiting, unknownCommandReply, withTag, localMergeRefusal, mergeReturned, prMergeRefusal, queuedRun, awaitingMerge,
 } from "../../../core/commands.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
 import { commandEvent, syncedCommand } from "../../../core/command-inbox.js";
@@ -119,7 +119,7 @@ export class CommandsUnit {
    * was pressed), and why the local merge or a PR's merge does not apply to it. For the local-merge, merge-queue and
    * pr-events units, which reach the gate's checks through this unit.
    */
-  readonly merge = { waits: waitsForMerge,
+  readonly merge = { waits: awaitingMerge,
     localRefusal: (it: WorkItem, canMerge: boolean) => localMergeRefusal(it, canMerge, PR_NAME),
     prRefusal: (it: WorkItem, forge: boolean) => prMergeRefusal(it, forge, PR_NAME),
   };

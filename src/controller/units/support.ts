@@ -1,6 +1,6 @@
 // Declarations two or more controller units share (moved out of the legacy controller, RFC 0015 M5).
 
-import { commandFooter, commandState, waitsForMerge } from "../../core/commands.js";
+import { commandFooter, commandState } from "../../core/commands.js";
 import { AUTO_ACTOR, runKey } from "../../core/policy.js";
 import { MERGE_CONFLICT_PENDING } from "../../core/resolve.js";
 import { type Actor, RECURRING_FAILURE, type RunKind, type SourceType, type StateChangeDetail, type Timestamp, type WorkItem, type WorkItemId, type WorkItemPatch } from "../../core/types.js";
@@ -8,7 +8,7 @@ import type { TransitionInput } from "../../interfaces/factory-store.js";
 import type { SourceEvent } from "../../interfaces/source-adapter.js";
 
 // The split, delivery and gate states the approve gate checks live in core, shared with the dashboard's request path.
-export { DELIVERY_FAILED, FLOOR_TIER, RULE_OF_TWO, splitFiling, splitOpen, waitsForMerge } from "../../core/commands.js";
+export { DELIVERY_FAILED, FLOOR_TIER, RULE_OF_TWO, awaitingMerge, splitFiling, splitOpen } from "../../core/commands.js";
 
 /** The actor of auto mode's approvals, merges and stops (design 03-risk). */
 export const AUTO: Actor = { kind: "system", id: AUTO_ACTOR };
@@ -120,5 +120,3 @@ export function updateKey(id: WorkItemId, change_ref: string, head_sha: string, 
 export function updatingForChecks(it: WorkItem): boolean {
   return it.stage === "REVIEW" && it.blocked_on === "ci" && it.blocked_reason === CHECKS_FAILED_UPDATE;
 }
-/** The old name of waitsForMerge, for the closes and merge-check units until they import waitsForMerge. */
-export const awaitingMerge = waitsForMerge;

@@ -1,9 +1,10 @@
 // Item commands from the status page (design §9, issue #227): POST /api/v1/items/:id/commands records one app
 // command request (FactoryStore.recordAppCommandRequest) with the page's actor (`ui.user_id`, else on loopback the
-// CLI identity: compose.ts uiCommandsActor). Approve and Merge are applied while the request is handled (design
-// 09-dashboard-app, 2026-11-15): the owner check, then the controller's own store-only checks and one conditional
-// write (core requestTransition); the response carries the item's new state, or the refusal. The controller does the
-// rest on its next tick (an approval's run, the merge itself); it authorizes and applies every other command, or
+// CLI identity: compose.ts uiCommandsActor). Approve and Merge are answered while the request is handled (design
+// 09-dashboard-app, 2026-11-15): the owner check, then the controller's own store-only checks (core
+// requestTransition); Approve is one conditional write, Merge writes nothing and answers "Merging…" until the
+// controller's next pass enters the merge queue. The response carries the item's state, or the refusal. The
+// controller does the rest (an approval's run, the merge itself); it authorizes and applies every other command, or
 // refuses it with a reply (design §4, app requests).
 //
 // Guards, in order, every refusal before any store write: Host (server.ts), then an Origin equal to the Host's own
@@ -23,7 +24,7 @@
 import { randomUUID } from "node:crypto";
 import { COMMAND_TABLE } from "../core/command-table.js";
 import {
-  COMMANDS, type CommandName, ROW_LABELS, commandPhase, commandSpec, commandsFor, itemCommandState, latestSpec, mergeQueued, mergeRoute, phaseLabel, requestTransition,
+  COMMANDS, type CommandName, ROW_LABELS, commandPhase, commandSpec, commandsFor, itemCommandState, latestSpec, MERGE_REQUESTS_READ, mergeQueued, mergeRequested, mergeRoute, phaseLabel, requestTransition,
 } from "../core/commands.js";
 import { refusalReply } from "../core/authorize.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, isProposalId, parseProposalMarker, typed } from "../core/interpret.js";
@@ -356,9 +357,11 @@ const off = (reason: string): MergeReadiness => ({ enabled: false, reason });
  * controller checks everything again when it applies the request; GitHub checks the head at merge time.
  */
 export async function mergeReadiness(d: UiDeps, it: WorkItem, check: MergeCheckState | null, allowed: () => Promise<ActorGrant>): Promise<MergeReadiness> {
-  // Merge pressed (design 09-dashboard-app): the merge queue checks a local item's merged result, the forge merges a PR.
+  // Merge taken by the controller (design 09-dashboard-app): the merge queue checks a local item's merged result, the forge merges a PR.
   if (mergeQueued(it)) return off(mergeRoute(it) === "local" ? ROW_LABELS.checking : ROW_LABELS.merging);
   if (commandPhase(it) !== "merge_pending") return off(NOT_WAITING);
+  // A Merge stored and not handled yet: the controller enters the merge queue on its next pass, so a read before it keeps "Merging…".
+  if (mergeRequested(await d.store.listAppCommandRequestsForItem(it.id, MERGE_REQUESTS_READ))) return off(ROW_LABELS.merging);
   // The controller's route: a local item with no PR takes the local merge, an item with a PR its PR's merge.
   const local = mergeRoute(it) === "local";
   if (!local && it.change_ref === null) return off("no PR to merge");
