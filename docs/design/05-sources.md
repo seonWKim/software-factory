@@ -79,7 +79,6 @@
   - **Schema:** migration 12 adds `work_items.origin` (`factory` default), `head_branch`, `last_head_sha` (all store-owned, not in `WorkItemPatch`) and the `controller_unreviewed_merges` table. SQLite builds it on open.
   - Not built: re-review after a person's push, adopting a PR again after it reopens with a new number, showing unreviewed merges in stats. The Health section and the Floor line of the app show them (see `09-dashboard-app.md`).
 
-## History
 
 - **Only the `github` forge pushed a base** (until 2026-11-16). Before: `Forge.pushBase` was built by the `github` forge alone; the `local` forge had none, and with no forge selected (the solo default) a local merge moved only the local base and nothing pushed it to origin.
 - **One GitHub client per process: `issue-cmd.ts` among its callers** (until 2026-11-16, when the `factory issue` command was removed). Before: the callers of `Plugins.githubApi()` were the CLI commands (`settings --project`, `migrate`, `golden add`), `issue-cmd.ts` (`issueDeps`) and `setup.ts` (doctor, setup).

@@ -1,6 +1,7 @@
 // The design and plugin docs are indexes that link to topic files (issue #121). Agents read the index first
 // and open only the topics their change touches, so the indexes must stay small, every link must work, every
-// topic must be reachable, and old decisions ("before: ...") belong in a topic's History section, never in an index.
+// topic must be reachable, and old decisions ("before: ...") belong in docs/design/history/<topic>.md, never in an index
+// or under a `## History` heading in a topic file.
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -21,9 +22,10 @@ const relativeLinks = (text: string): string[] =>
 
 /**
  * Every problem with one index and its topic folder, one line each; empty when the index is fine.
- * `index` is the index file, `topics` the folder of topic files it must link.
+ * `index` is the index file, `topics` the folder of topic files it must link; `historyHeading` lets a topic keep
+ * a `## History` heading (docs/plugins only).
  */
-function indexProblems(index: string, topics: string): string[] {
+function indexProblems(index: string, topics: string, historyHeading = false): string[] {
   const problems: string[] = [];
   const text = readFileSync(index, "utf8");
   const bytes = Buffer.byteLength(text, "utf8");
@@ -40,19 +42,22 @@ function indexProblems(index: string, topics: string): string[] {
   for (const f of files.sort()) {
     const path = resolve(topics, f);
     if (!linked.has(path)) problems.push(`${index}: topic ${f} is not linked`);
-    problems.push(...topicProblems(path));
+    problems.push(...topicProblems(path, historyHeading));
   }
   return problems;
 }
 
 /**
- * A topic file states its current decision first. It has at most one `## History` heading, at the bottom, and no heading
- * after it. Every link into `history/<topic>.md`, wherever it sits in the file, must resolve.
+ * A topic file states its current decision first. With `historyHeading` false (docs/design) it has no `## History`
+ * heading: replaced decisions live in `history/<topic>.md`, which the topic links to with a plain line. With it true
+ * (docs/plugins) it has at most one `## History` heading, at the bottom, and no heading after it. Every link into
+ * `history/`, wherever it sits in the file, must resolve.
  */
-function topicProblems(path: string): string[] {
+function topicProblems(path: string, historyHeading: boolean): string[] {
   const lines = readFileSync(path, "utf8").split("\n");
   const h2 = lines.map((l, i) => [l, i] as const).filter(([l]) => l.startsWith("## "));
   const history = h2.filter(([l]) => l.trim() === "## History");
+  if (!historyHeading && history.length > 0) return [`${path}: has a "## History" heading; move it to history/<topic>.md`];
   if (history.length > 1) return [`${path}: needs at most one "## History" heading, found ${history.length}`];
   const at = history.length === 1 ? history[0]![1] : lines.length;
   if (history.length === 1 && h2.some(([, i]) => i > at)) return [`${path}: a heading follows "## History"; history must be at the bottom`];
@@ -63,12 +68,12 @@ function topicProblems(path: string): string[] {
 }
 
 describe("the real indexes", () => {
-  for (const [index, topics] of [
-    ["docs/design.md", "docs/design"],
-    ["docs/plugins.md", "docs/plugins"],
+  for (const [index, topics, historyHeading] of [
+    ["docs/design.md", "docs/design", false],
+    ["docs/plugins.md", "docs/plugins", true],
   ] as const) {
     it(`${index} is small, links every topic in ${topics}/, has no broken link and no history`, () => {
-      expect(indexProblems(join(REPO_ROOT, index), join(REPO_ROOT, topics))).toEqual([]);
+      expect(indexProblems(join(REPO_ROOT, index), join(REPO_ROOT, topics), historyHeading)).toEqual([]);
     });
   }
 
@@ -144,14 +149,14 @@ describe("index checks, on small fixtures", () => {
     }
     return { index: join(dir, "index.md"), topics: join(dir, "topics") };
   };
-  const topic = "# A\n\nThe current decision.\n\n## History\n\n- 2026-11-01: before: the old one.\n";
+  const topic = "# A\n\nThe current decision. It says before: this and that.\n";
   const good = { "index.md": "# Index\n\n- [a.md](topics/a.md): what a decides.\n", "topics/a.md": topic };
   const problems = (files: Record<string, string>): string[] => {
     const { index, topics } = fixture(files);
     return indexProblems(index, topics);
   };
 
-  it("passes a good fixture (history text inside a topic file is fine)", () => {
+  it("passes a good fixture (a topic file may mention before: in its decision)", () => {
     expect(problems(good)).toEqual([]);
   });
 
@@ -182,25 +187,20 @@ describe("index checks, on small fixtures", () => {
     expect(out.join("\n")).toMatch(/contains "before:"/);
   });
 
-  it("passes a topic whose History section links to its file in history/, and fails a broken one", () => {
-    const moved = "# A\n\nThe current decision.\n\n## History\n\n- Replaced decisions of this topic: [history/a.md](history/a.md).\n";
-    const split = { ...good, "topics/a.md": moved, "topics/history/a.md": "## History\n\n- 2026-11-01: before: the old one.\n" };
-    expect(problems(split)).toEqual([]);
-    expect(problems({ ...good, "topics/a.md": moved }).join("\n")).toMatch(/broken history link history\/a\.md/);
-  });
-
-  it("passes a topic without History, and fails a broken history link in it", () => {
+  it("passes a topic that links to its file in history/, and fails a broken link", () => {
     const linked = "# A\n\nThe current decision.\n\n- Replaced decisions of this topic: [history/a.md](history/a.md).\n";
-    expect(problems({ ...good, "topics/a.md": "# A\n\nThe decision.\n" })).toEqual([]);
     expect(problems({ ...good, "topics/a.md": linked, "topics/history/a.md": "## History\n\n- old\n" })).toEqual([]);
     expect(problems({ ...good, "topics/a.md": linked }).join("\n")).toMatch(/broken history link history\/a\.md/);
   });
 
-  it("fails a topic with two History headings, or History not at the bottom", () => {
-    const twice = "# A\n\nThe decision.\n\n## History\n\n- old\n\n## History\n\n- older\n";
-    expect(problems({ ...good, "topics/a.md": twice }).join("\n")).toMatch(/at most one "## History"/);
-    const after = "# A\n\nThe decision.\n\n## History\n\n- old\n\n## More\n\ntext\n";
-    expect(problems({ ...good, "topics/a.md": after }).join("\n")).toMatch(/history must be at the bottom/);
-    expect(problems({ ...good, "topics/a.md": "# A\n\n## History\n\n- old\n" }).join("\n")).toMatch(/no current decision/);
+  it("fails a topic with a History heading, wherever it sits", () => {
+    const bottom = "# A\n\nThe decision.\n\n## History\n\n- old\n";
+    expect(problems({ ...good, "topics/a.md": bottom }).join("\n")).toMatch(/has a "## History" heading/);
+    const middle = "# A\n\nThe decision.\n\n## History\n\n- old\n\n## More\n\ntext\n";
+    expect(problems({ ...good, "topics/a.md": middle }).join("\n")).toMatch(/has a "## History" heading/);
+    const kept = fixture({ ...good, "topics/a.md": bottom });
+    expect(indexProblems(kept.index, kept.topics, true)).toEqual([]);
+    expect(problems({ ...good, "topics/a.md": "# A\n\n- link only\n" })).toEqual([]);
+    expect(problems({ ...good, "topics/a.md": "# A\n\n## More\n" }).join("\n")).toMatch(/no current decision/);
   });
 });
