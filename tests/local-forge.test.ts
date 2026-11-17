@@ -2,7 +2,14 @@
 // outbound call, and with no forge selected the kernel reads revert and fix-forward links through it (compose
 // builds it through the registry and gives it as the controller's `links`).
 
+import { execFileSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import type { Loaded } from "../src/compose.js";
+import { mergeQueuePushBase } from "../src/core/config.js";
+import { forgeRoles } from "../src/core/local-merge.js";
 import type { WorkItem } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalForge } from "../src/impl/forge/local-forge.js";
@@ -10,8 +17,8 @@ import { githubLinks } from "../src/impl/github/github-forge.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { REGISTRY } from "../src/plugins.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
+import { api } from "../src/ui/api.js";
 import { HealthMonitor } from "../src/ui/health.js";
-import { renderItem } from "../src/ui/pages.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
@@ -92,7 +99,7 @@ async function setup(forge: LocalForge | null, links?: LocalForge) {
 }
 
 describe("a local-forge flow", () => {
-  it("merges an item whose change_ref is its branch name, with change_url null; its page shows no GitHub link", async () => {
+  it("merges an item whose change_ref is its branch name, with change_url null; its item API gives no GitHub link", async () => {
     const f = await setup(new LocalForge(config.branch_prefix));
     const it0 = await f.inReview(1);
     const branch = it0.change_ref!;
@@ -100,10 +107,9 @@ describe("a local-forge flow", () => {
     const done = (await f.store.getWorkItem(it0.id))!;
     expect(done).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "m1", change_ref: branch, change_url: null });
 
-    const page = (await renderItem(f.ui, done.id))!;
-    expect(page).toContain(branch);
-    expect(page).not.toMatch(/github\.com\/[^"]*\/pull\//);
-    expect(page).not.toContain(`href="${branch}"`);
+    const r = await api(f.ui, new URL(`http://127.0.0.1/api/v1/items/${done.id}`));
+    expect((r.value as { item: unknown }).item).toMatchObject({ change_ref: branch, change_url: null });
+    expect(JSON.stringify(r.value)).not.toMatch(/github\.com\/[^"]*\/pull\//);
   });
 
   it("with no forge selected, links are read through the local forge: a branch-named revert and fix-forward, never #N", async () => {
@@ -127,5 +133,52 @@ describe("a local-forge flow", () => {
     expect(fix.fixes_pr).toBeNull();
     const forward = (await f.store.listStateChanges(orig.id)).filter((c) => c.reason === "fixed_forward");
     expect(forward.map((c) => c.detail)).toEqual([{ fix_work_item_id: fix.id }]);
+  });
+});
+
+// The local forge's base push (docs/plugins/forge.md, design 05-sources Local items): off by default, on with
+// `merge_queue.push_base` when the factory repo names an origin; the git push is the GitHub forge's (src/impl/git/).
+describe("LocalForge base push (merge_queue.push_base)", () => {
+  const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
+  const repo = (origin: boolean): string => {
+    const dir = mkdtempSync(join(tmpdir(), "sf-local-forge-"));
+    execFileSync("git", ["init", "--quiet", "-b", "main", dir], { env: GIT_ENV });
+    if (origin) execFileSync("git", ["-C", dir, "remote", "add", "origin", join(dir, "nowhere.git")], { env: GIT_ENV });
+    return dir;
+  };
+  const create = async (push_base: boolean | undefined, path: string) => {
+    const d = (await import("../src/impl/forge/local.plugin.js")).default;
+    const loaded = { config: { ...config, repo: { ...config.repo, path }, ...(push_base === undefined ? {} : { merge_queue_push_base: push_base }) } } as unknown as Loaded;
+    return d.create({ loaded, repo: { owner: "o", name: "r" }, extraScanValues: [], github: {} as never });
+  };
+
+  it("`merge_queue.push_base` is off when absent and must be true or false", () => {
+    expect(mergeQueuePushBase(undefined)).toBe(false);
+    expect(mergeQueuePushBase({})).toBe(false);
+    expect(mergeQueuePushBase({ push_base: true })).toBe(true);
+    expect(mergeQueuePushBase({ push_base: false })).toBe(false);
+    for (const v of ["true", 1, null]) expect(() => mergeQueuePushBase({ push_base: v }), String(v)).toThrow(/merge_queue.push_base must be true or false/);
+  });
+
+  it("the plugin pushes only with the setting on and an origin in the factory repo", async () => {
+    expect((await create(true, repo(true))).pushBase).toBeTypeOf("function");
+    expect(await create(true, repo(false))).not.toHaveProperty("pushBase");
+    expect(await create(false, repo(true))).not.toHaveProperty("pushBase");
+    expect(await create(undefined, repo(true))).not.toHaveProperty("pushBase");
+  });
+
+  it("pushes only the base branch, and only a commit sha", async () => {
+    const forge = new LocalForge("factory/", "main");
+    await expect(forge.pushBase!({ repo: "/nowhere", base_ref: "factory/wi_1", sha: SHA, expected_sha: SHA })).rejects.toThrow(/refusing to push "factory\/wi_1"/);
+    await expect(forge.pushBase!({ repo: "/nowhere", base_ref: "main", sha: "HEAD", expected_sha: SHA })).rejects.toThrow(/not a commit sha/);
+  });
+
+  it("with no forge selected, the local forge is the controller's forge only when it pushes; a selected forge stays the forge", () => {
+    const quiet = new LocalForge("factory/");
+    const pushing = new LocalForge("factory/", "main");
+    expect(forgeRoles(null, quiet)).toEqual({ forge: null, links: quiet });
+    expect(forgeRoles(null, pushing)).toEqual({ forge: pushing, links: pushing });
+    const selected = new LocalForge("factory/");
+    expect(forgeRoles(selected, pushing)).toEqual({ forge: selected, links: selected });
   });
 });

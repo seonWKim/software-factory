@@ -9,7 +9,7 @@ import type { Timestamp, UserId } from "../core/types.js";
 import type { AuthDecision, AuthProvider } from "../interfaces/auth-provider.js";
 import { RESUMABLE_PAUSES, type ResumablePause, endPause, isResumablePause } from "../resume-cmd.js";
 import type { ApiResult } from "./api.js";
-import type { UiDeps } from "./pages.js";
+import type { UiDeps } from "./deps.js";
 
 export const RESUME_PATH = "/api/v1/pauses/resume";
 

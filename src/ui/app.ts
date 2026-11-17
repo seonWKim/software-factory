@@ -4,7 +4,7 @@
 // is any file whose real path (symlinks followed) is outside web/dist. No web/dist (or no index.html): 503.
 //
 // Its own CSP: the built app is files from this origin only, so script-src and style-src are 'self', with no
-// 'unsafe-inline' and no hash; the HTML page keeps its hash-based policy (server.ts).
+// 'unsafe-inline' and no hash; the error pages keep their hash-based policy (server.ts).
 
 import { readFile, realpath, stat } from "node:fs/promises";
 import { extname, join, resolve, sep } from "node:path";

@@ -30,12 +30,12 @@ import { refusalReply } from "../core/authorize.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, isProposalId, parseProposalMarker, typed } from "../core/interpret.js";
 import { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND } from "../core/local-cli.js";
 import { MERGE_COMMAND } from "../core/local-merge.js";
-import { AGENT_NEEDS_HUMAN } from "../core/policy.js";
+import { phaseOf } from "../core/phase.js";
 import type { Run, UserId, WorkItem, WorkItemId } from "../core/types.js";
 import type { AuthDecision } from "../interfaces/auth-provider.js";
 import type { AppCommandRequest } from "../interfaces/factory-store.js";
 import { answersDetail, splitAnswers } from "../shared/command-notes.js";
-import { type UiDeps, prName } from "./pages.js";
+import type { UiDeps } from "./deps.js";
 import { csrfMatches } from "./settings-api.js";
 import { Withholder } from "./withhold.js";
 
@@ -62,6 +62,8 @@ export interface UiCommands {
    * "Merging…" until the controller's pass enters the merge queue. Set by compose.ts buildUiParts. Absent: not read.
    */
   mergeRequested?: (id: WorkItemId) => Promise<boolean>;
+  /** How a refusal names the item's PR, as the controller names it (`PR #N`); set by compose.ts buildUiParts, so ui writes no change-ref form. Absent: the bare ref. */
+  changeName?: (change_ref: string) => string;
 }
 
 /** The largest commands body read. A command and a 2000-character note fit well inside it. */
@@ -206,7 +208,7 @@ async function applyNow(d: UiDeps, r: AppCommandRequest, item: WorkItem): Promis
   const c = d.commands;
   if (!c?.allowed || !APPLIED_NOW.includes(r.command)) return {};
   const done = await requestTransition({
-    store: d.store, scanner: d.scanner, allowed: c.allowed, answers: { split: splitAnswers, detail: answersDetail }, changeName: prName, forge: c.forge, localMerge: c.localMerge,
+    store: d.store, scanner: d.scanner, allowed: c.allowed, answers: { split: splitAnswers, detail: answersDetail }, changeName: c.changeName ?? String, forge: c.forge, localMerge: c.localMerge,
   }, r, item);
   const it = done.item;
   const refusal = done.outcome === "refused" ? (await new Withholder(d.scanner).plain(done.refusal, { channel: "ui" })).text : null;
@@ -282,7 +284,7 @@ export async function itemCommands(
  * that asked decides which commands apply.
  */
 export async function needsYouCommands(d: UiDeps, it: WorkItem, grant: () => Promise<ActorGrant>, text: (v: string) => Promise<string | null>) {
-  const runs = it.blocked_reason === AGENT_NEEDS_HUMAN ? await d.store.listRuns(it.id) : [];
+  const runs = phaseOf(it) === "agent_needs_human" ? await d.store.listRuns(it.id) : [];
   const all = await itemCommands(it, runs, await grant(), text);
   return all.filter((c) => c.name === "verdict" || (c.name !== "budget" && commandSpec(c.name).changes_state));
 }
@@ -293,7 +295,8 @@ export async function needsYouCommands(d: UiDeps, it: WorkItem, grant: () => Pro
  * `text` (the Withholder). Store reads only: the caller passes the item's runs.
  */
 export async function waitingSpec(it: WorkItem, runs: readonly Run[], text: (v: string | null) => Promise<string | null>) {
-  if (it.stage !== "READY" || (it.blocked_reason !== "spec_pending" && it.blocked_reason !== "max_revisions")) return null;
+  const phase = phaseOf(it);
+  if (phase !== "spec_pending" && phase !== "max_revisions") return null;
   const spec = latestSpec(runs);
   if (!spec) return null;
   const decisions = [];

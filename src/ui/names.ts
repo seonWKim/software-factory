@@ -1,4 +1,4 @@
-// Display names on the status page (RFC 0015 §8, M9): the store keeps user ids only; a name is read by id from
+// Display names on the dashboard (RFC 0015 §8, M9): the store keeps user ids only; a name is read by id from
 // Identity's identity_profiles when a page shows the id, and never stored anywhere else.
 
 /** Names by user id; absent: the page shows ids only. */
@@ -10,8 +10,3 @@ export async function displayName(names: DisplayNames | undefined, id: string): 
   return (await names([id])).get(id) ?? null;
 }
 
-/** `Name (id)` when the user has a name, else the id: what a page shows where it showed the id. */
-export async function userLabel(names: DisplayNames | undefined, id: string): Promise<string> {
-  const name = await displayName(names, id);
-  return name === null ? id : `${name} (${id})`;
-}

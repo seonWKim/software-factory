@@ -4,13 +4,13 @@ import type { WorkItem } from "../../src/core/types.js";
 import { FakeClock } from "../../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../../src/impl/egress/pattern-egress-scanner.js";
 import type { FactoryStore } from "../../src/interfaces/factory-store.js";
-import { NO_FILTERS } from "../../src/ui/filters.js";
+import { api } from "../../src/ui/api.js";
 import { HealthMonitor } from "../../src/ui/health.js";
-import { type UiDeps, renderIndex, renderItem } from "../../src/ui/pages.js";
+import type { UiDeps } from "../../src/ui/deps.js";
 import { issue, newStore, system, w1 } from "../helpers/store.js";
 
 // The dashboard shows each item's merge-conflict counts (design §5 Merge conflict, decided 2026-11-02):
-// resolved automatically, and needed a person. Rendered without a server, so no port is opened.
+// resolved automatically, and needed a person. Read through the JSON API without a server, so no port is opened.
 
 const LEASE = 60_000;
 
@@ -41,21 +41,14 @@ async function block(store: FactoryStore, item: WorkItem, blocked_reason: string
   if (!r.ok) throw new Error("transition failed");
 }
 
-/** The items table's rows, as cell lists; the last cell is the conflicts column. */
-function rows(body: string): string[][] {
-  const start = body.indexOf(`<section id="items">`);
-  const list = body.slice(start, body.indexOf("</section>", start));
-  const tbody = list.indexOf("<tbody>");
-  if (tbody < 0) return [];
-  return list
-    .slice(tbody + "<tbody>".length, list.indexOf("</tbody>"))
-    .split("</tr>")
-    .filter((r) => r.includes("<td>"))
-    .map((r) => r.split("<td>").slice(1).map((c) => c.slice(0, c.lastIndexOf("</td>"))));
+async function get(store: FactoryStore, clock: FakeClock, path: string): Promise<unknown> {
+  const r = await api(deps(store, clock), new URL(`http://127.0.0.1/api/v1${path}`));
+  expect(r.status).toBe(200);
+  return r.value;
 }
 
 describe("dashboard: merge-conflict counts per item", () => {
-  it("each row shows how many conflicts were resolved automatically and how many needed a person", async () => {
+  it("each listed item gives how many conflicts were resolved automatically and how many needed a person", async () => {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
     const a = (await store.createWorkItem(issue(1), system)).item;
@@ -70,21 +63,18 @@ describe("dashboard: merge-conflict counts per item", () => {
     await block(store, a, "merge_pending");
     await block(store, a, "merge_conflict_pending");
 
-    const page = await renderIndex(deps(store, clock), NO_FILTERS);
-    expect(page).toContain(`<th scope="col">conflicts</th>`);
-    const byNumber = new Map(rows(page).map((r) => [r[1]!.replace(/<[^>]+>/g, ""), r.at(-1)!]));
-    expect(byNumber.get("#1")).toBe("2 automatic · 2 needed a person");
-    expect(byNumber.get("#2")).toBe(""); // no conflicts: an empty cell
-    expect(b.id).toBeTruthy();
+    const { items } = (await get(store, clock, "/items")) as { items: { id: string; conflicts: unknown }[] };
+    const byId = new Map(items.map((r) => [r.id, r.conflicts]));
+    expect(byId.get(a.id)).toEqual({ automatic: 2, person: 2 });
+    expect(byId.get(b.id)).toEqual({ automatic: 0, person: 0 });
   });
 
-  it("the item page states the same two counts", async () => {
+  it("the item's detail gives the same two counts", async () => {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
     const a = (await store.createWorkItem(issue(3), system)).item;
     await runOnce(store, a, "resolve", autoResolveKey(a.id, "b1", 1), { result: "pushed", conflicts: ["x.ts"] });
-    const page = (await renderItem(deps(store, clock), a.id))!;
-    expect(page).toContain("merge conflicts");
-    expect(page).toContain("1 resolved automatically, 0 needed a person");
+    const { item } = (await get(store, clock, `/items/${a.id}`)) as { item: { conflicts: unknown } };
+    expect(item.conflicts).toEqual({ automatic: 1, person: 0 });
   });
 });

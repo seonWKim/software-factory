@@ -11,9 +11,9 @@ It is safe to run again: every question shows its default (your current choice) 
 Every step looks the same: its number and title, one line on why, its question with the default, then a `✓` (done) or `✗` (not done, with what to do) line:
 
 ```
-4. Secrets
+3. Secrets
    The credentials the selected plugins declare; each missing one is asked with hidden input and written only to the secret file.
-   Needed: CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY
+   Needed: CLAUDE_CODE_OAUTH_TOKEN
    Paste CLAUDE_CODE_OAUTH_TOKEN now (hidden input)? [Y/n]
    ...
    ✓ saved CLAUDE_CODE_OAUTH_TOKEN
@@ -51,7 +51,7 @@ It never removes `factory.config.json`, the secret file (unless `ARGS=--secrets`
 
 | Step | Automated | You do |
 |---|---|---|
-| 1. Plugins | Asks whether to sync with GitHub and whether to take work from Slack threads (then the channel IDs). Shows the change to `factory.config.json` as a `-`/`+` diff and writes it when you say yes; only the changed keys (`plugins`, `auth`, `permissions`, `slack`) change. Local only (the default on a new file) selects no GitHub plugin. If you answer no to GitHub and decline the diff, setup still asks for no GitHub secret and checks none | Answer, then confirm the diff |
+| 1. Plugins | Asks whether to sync with GitHub and whether to take work from Slack threads (then the channel IDs). Shows the change to `factory.config.json` as a `-`/`+` diff and writes it when you say yes; only the changed keys (`plugins`, `slack`) change. Local only (the default on a new file) selects no GitHub plugin. If you answer no to GitHub and decline the diff, setup still asks for no GitHub secret and checks none | Answer, then confirm the diff |
 | 2. Secret file | Creates `~/.config/software-factory/.env` (folder `700`, file `600`), outside the repository, with an empty line for each secret the selected plugins need | Press Enter |
 | 3. Secrets | Lists the secrets the selected plugins need, then asks for each missing one with hidden input and writes it to the secret file. The model credential is `CLAUDE_CODE_OAUTH_TOKEN`; with GitHub on, `GITHUB_APP_ID` (App) or `GITHUB_TOKEN` (token, with the settings below); with Slack on, its two tokens. With nothing missing it asks whether to replace one | For the model credential, run `claude setup-token` in a **separate, plain terminal**, sign in in the browser, copy the token it prints (shown once). Paste each at its prompt |
 | 4. Database | Creates or updates the SQLite store under the state folder (the only store) | Press Enter |
@@ -195,7 +195,7 @@ The identity comes from your environment (git config, OS user), so anyone who ca
 
 `task create` takes the item in and queues its triage run; the store must already know the configured repo, so start the factory once first. `approve`, `retry`, `revise`, `reject` and `resolve` work for any work item, a GitHub one included, and only store the command in the command log; the controller reads it on its next poll and applies it with the owner check, so the owner needs no GitHub write access. For a GitHub item the factory also posts one comment on the issue saying who sent which command. That mirror is best effort: while GitHub is down or rate limited the command still applies, and the comment is posted on a later tick. Its replies (the spec, refusals, failures) are stored as the item's messages: read them with `task show`. `merge` is stored the same way; the controller merges the item's local branch `factory/<id>` into your local base branch with a merge commit, writing no checkout and pushing nothing, and closes the item. Only the owner may send it; it applies only to a local item waiting for a merge, and refuses while the base branch is checked out in a worktree (switch that checkout to another branch first) or when the branch conflicts (the reply lists the files). Generated from the command table, `src/core/command-table.ts`; a test fails when this list differs.
 
-With no GitHub plugin selected (the solo default below) nothing ever reaches GitHub: `"auth": "local"`, `"permissions": { "grants": ["static"] }` and `"plugins": { …, "source": ["local"], "broker": "local" }`. Then the factory reads no GitHub credential, fetches no origin, opens no PR, and every item ends with `factory merge` (design `docs/design/05-sources.md`, Local startup).
+With no GitHub plugin selected (the solo default below) nothing ever reaches GitHub: `"plugins": { …, "source": ["local"], "broker": "local" }`. Then the factory reads no GitHub credential, fetches no origin, opens no PR, and every item ends with `factory merge` (design `docs/design/05-sources.md`, Local startup).
 
 ### Status labels
 
@@ -356,13 +356,13 @@ Use:
 | See the pending breaking migrations and data steps | `npm run migrate -- --status` |
 | See what `npm run migrate` would run, changing nothing | `npm run migrate -- --dry-run` |
 | See work items / one item's history | `npm run factory -- status` / `npm run factory -- status <id>` |
-| Watch the factory in a browser (read-only) | `make ui` (or `npm run factory -- ui`), then open <http://127.0.0.1:4310/> (the app; the older page is at `/classic`) |
+| Watch the factory in a browser (read-only) | `make ui` (or `npm run factory -- ui`), then open <http://127.0.0.1:4310/> (the app) |
 | Reset this machine and set up again | `make teardown`, then `make setup` (see [Start over](#start-over-pull--teardown--setup)) |
 | Suspect a leak | Revoke the token on GitHub first (or the App's key), then rotate |
 
 ### Status page
 
-`npm run factory -- dev` serves the factory app at <http://127.0.0.1:4310/> (under the checked-in `git-worktree` updater it runs the page as a child and swaps it on each new revision; with `plugins.updater: none`, start it yourself with `npm run factory -- ui`). It redirects to `/app/`; the port is `ui.port` in `factory.config.json`. Pages: Floor (what needs you, what runs, the queue), Work items with a page per item, Workers, Queue, Health, Failures, Settings (the mode switch and runtime settings) and Data. The older server-rendered page described below is at <http://127.0.0.1:4310/classic>. The top shows what the factory process is doing, what runs now, the queue and any paused runs. Then comes one list of work items, most urgent first, each with a short reason badge; items that wait for you also say what to do next (a link to the exact comment or PR and the command to type there). Health, totals and cost come last; `/items/<id>` shows one item's timeline and runs. It updates itself every 5 seconds without losing your scroll, open details or search text, pauses while the tab is hidden, and has a Refresh link when JavaScript is off. Each item page lists the commands that apply to it now and a Merge button once its review passed (a local change through the merge queue, a PR at its reviewed head). It listens on 127.0.0.1 only and answers only requests whose Host is `127.0.0.1` or `localhost`. It starts no controller or worker, so run it beside `npm run factory -- dev`. It reads the secret file like the other commands (known secret values for the egress scan); a field that looks like a secret shows `[withheld: <rule>]` instead of its text, and search can't find it.
+`npm run factory -- dev` serves the factory app at <http://127.0.0.1:4310/> (under the checked-in `git-worktree` updater it runs the page as a child and swaps it on each new revision; with `plugins.updater: none`, start it yourself with `npm run factory -- ui`). It redirects to `/app/`; the port is `ui.port` in `factory.config.json`. Pages: Floor (what needs you, what runs, the queue), Work items with a page per item, Workers, Queue, Health, Failures, Settings (the mode switch and runtime settings) and Data. Each item page lists the commands that apply to it now and a Merge button once its review passed (a local change through the merge queue, a PR at its reviewed head). It listens on 127.0.0.1 only and answers only requests whose Host is `127.0.0.1` or `localhost`. It starts no controller or worker, so run it beside `npm run factory -- dev`. It reads the secret file like the other commands (known secret values for the egress scan); a field that looks like a secret shows `[withheld: <rule>]` instead of its text, and search can't find it.
 
 **Commands from the page.** The page sends item commands as the same user the CLI uses on this machine (`cli_user`, else your git `user.email`, else your OS login), with no setup; the item page shows "Acting as <user>". To act as another user, set `ui.user_id` in `factory.config.json` to a factory user ID (the ID the factory knows you by, e.g. `github:<numeric id>`; never a display name), and restart `npm run factory -- ui`:
 

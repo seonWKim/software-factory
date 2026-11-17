@@ -17,7 +17,7 @@ import { dayLabel } from "./tasks.js";
 // Month: a Monday-first grid, up to 3 events a day and then "+N more". Previous and next move by one week or month;
 // Today returns to the period holding today in the browser's time zone. A day the last syncs did not cover shows
 // "Not synced", never an empty day. A source whose last sync failed is named with its last sync time, and its stored
-// events stay listed. With no calendar connected the empty state links to Settings → Calendar.
+// events stay listed. With no calendar connected the empty state links to the Integrations tab of Settings.
 
 const VIEWS = [
   { id: "week", label: t("calendarPage.week") },
@@ -25,7 +25,7 @@ const VIEWS = [
 ] as const;
 type View = (typeof VIEWS)[number]["id"];
 
-const CONNECT_PATH = `${BASE}settings#calendar`;
+const CONNECT_PATH = `${BASE}settings?tab=integrations#calendar`;
 /** The events a month cell lists before "+N more". */
 const CELL_EVENTS = 3;
 

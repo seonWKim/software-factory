@@ -3,14 +3,14 @@ import { Fragment, type ReactNode, useState } from "react";
 import { API, type StandingProposalRow, type StandingRuleRow, type StandingView, postStanding, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
-import { Empty, ErrorNote, Loading, Section } from "../components/ui/parts.js";
+import { ErrorNote, Section } from "../components/ui/parts.js";
 import { Switch } from "../components/ui/switch.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 
-// Standing approvals on the Settings page (design 05-standing-approvals and §9, issue #300): an on or off switch per
-// rule with its gate, tier, threshold, who set it, when it was created and when it was last used, and Accept and
-// Decline per pending proposal (its own section, first on the page). Every write is POST /api/v1/standing with the CSRF token; the server runs the
+// Approvals on the Rules page (design 05-standing-approvals and §9, issue #300; moved from Settings 2026-11-16): an on
+// or off switch per standing rule with its gate, tier, threshold, who set it, when it was created and when it was
+// last used, and Accept and Decline per pending proposal. Every write is POST /api/v1/standing with the CSRF token; the server runs the
 // owner check (approve_spec), and a refusal shows beside the item it came from.
 
 const muted = "text-xs text-pretty text-text-2";
@@ -90,41 +90,31 @@ function ProposalItem({ proposal, token }: { proposal: StandingProposalRow; toke
   );
 }
 
-/** The standing read, or its loading or error state, inside a section; both sections below read it (one fetch). */
-function WithStanding({ title, count, children }: { title: string; count: (v: StandingView) => number; children: (v: StandingView) => ReactNode }) {
+/**
+ * The Approvals section of the Rules page: the pending proposals, then the standing rules, from one read. Each part is
+ * hidden when it has no items, and the whole section when both are empty, so nothing on the page asks for a decision
+ * that is not there. While the read loads there is nothing to show; a failed read shows its error.
+ */
+export function ApprovalsSection() {
   const standing = useApi<StandingView>(API.standing);
   const v = standing.data;
+  if (standing.isError) return <Section title={t("rules.approvals")}><ErrorNote error={standing.error} /></Section>;
+  if (!v || (v.proposals.length === 0 && v.rules.length === 0)) return null;
   return (
-    <Section title={title} count={v ? count(v) : undefined}>
-      {standing.isError ? <ErrorNote error={standing.error} /> : !v ? <Loading rows={2} /> : children(v)}
-    </Section>
-  );
-}
-
-/** The pending proposals, at the top of the Settings page: the one part of it that waits for an answer. */
-export function ProposalsSection() {
-  return (
-    <WithStanding title={t("standing.pending")} count={(v) => v.proposals.length}>
-      {(v) =>
-        v.proposals.length === 0 ? (
-          <Empty>{t("standing.noProposal")}</Empty>
-        ) : (
+    <Section title={t("rules.approvals")}>
+      {v.proposals.length > 0 && (
+        <div className="mb-4">
+          <h3 className="mb-2 text-sm font-semibold">{t("standing.pending")}</h3>
           <ul aria-label={t("standing.pending")} className="space-y-2">
             {v.proposals.map((p) => (
               <ProposalItem key={p.id} proposal={p} token={v.csrf_token} />
             ))}
           </ul>
-        )
-      }
-    </WithStanding>
-  );
-}
-
-export function StandingSection() {
-  return (
-    <WithStanding title={t("standing.title")} count={(v) => v.rules.length}>
-      {(v) => (
-        <>
+        </div>
+      )}
+      {v.rules.length > 0 && (
+        <div>
+          <h3 className="mb-2 text-sm font-semibold">{t("standing.title")}</h3>
           <p className={`mb-2 ${muted}`}>
             {t("standing.intro")}
             {v.csrf_token === null && t("standing.noWrite")}
@@ -134,8 +124,8 @@ export function StandingSection() {
               <RuleItem key={r.rule} rule={r} token={v.csrf_token} />
             ))}
           </ul>
-        </>
+        </div>
       )}
-    </WithStanding>
+    </Section>
   );
 }

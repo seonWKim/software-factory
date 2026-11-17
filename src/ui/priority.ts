@@ -2,7 +2,7 @@
 // exactly one of nine levels, in the order below; within a level, more dependents first, then the oldest
 // wait, then the higher tier. Badge texts are fixed words and numbers, never free text from the store.
 
-import { AGENT_NEEDS_HUMAN } from "../core/policy.js";
+import { FAILED_PHASES, type ItemPhase, PERSON_PHASES, isClosedPhase, phaseOf } from "../core/phase.js";
 import type { BlockedOn, CloseReason, RunKind, Stage, Tier } from "../core/types.js";
 
 export const LEVELS = [
@@ -85,28 +85,33 @@ function staleRun(i: PriorityInput, now: number, lease_ms: number): boolean {
 }
 
 /**
- * The item's level. A person's block: a triage run's ask is "Needs triage", every other one (and the budget check)
+ * The item's level, from its phase (core/phase.ts) and its run. A person's block: a triage run's ask is "Needs
+ * triage", a spec to approve (also at its revision limit) "Needs approval", every other one (and the budget check)
  * "Needs you". Another item's block (a deadlock claim, a dependency hold, a coordination hold, a phase or upstream
  * hold) is "Blocked by another task", never stuck; a dependency or coordination hold waits even while its run is
  * queued (issue #310). A running run past its lease is stuck; an open item that waits on nothing and has no queued
  * or running run is stuck too (nothing moves it).
  */
 export function levelOf(i: PriorityInput, now: Date, lease_ms: number): Level {
-  if (i.stage === "CLOSED") return "closed";
-  if (i.blocked_on === "human" && i.blocked_reason === "merge_pending") return "ready_to_merge";
-  if (i.blocked_on === "human" && i.blocked_reason === "spec_pending") return "needs_approval";
-  if (i.blocked_on === "human" && i.blocked_reason === AGENT_NEEDS_HUMAN && i.asked_by === "triage") return "needs_triage";
-  if (i.blocked_on === "human" || i.blocked_on === "budget") return "needs_you";
+  const p = phaseOf(i);
+  if (isClosedPhase(p)) return "closed";
+  if (p === "merge_pending") return "ready_to_merge";
+  if (p === "spec_pending" || p === "max_revisions") return "needs_approval";
+  if (p === "agent_needs_human" && i.asked_by === "triage") return "needs_triage";
+  if (PERSON_PHASES.has(p)) return "needs_you";
   if (i.deadlock) return "blocked_by_task";
   if (staleRun(i, now.getTime(), lease_ms)) return "stuck";
   if (i.run?.status === "running") return "running";
-  if (i.blocked_on === "dependency" || i.held) return "blocked_by_task";
+  if (p === "dependency_hold" || i.held) return "blocked_by_task";
   if (i.run?.status === "queued") return "queued";
-  if (i.blocked_on === "ci") return "running";
-  if (i.waiting_on > 0 || i.blocked_on === "upstream") return "blocked_by_task";
-  if (i.blocked_on === "none" && i.last_finished_at && now.getTime() - ms(i.last_finished_at) < lease_ms) return "queued";
+  if (p === "ci_wait") return "running";
+  if (i.waiting_on > 0 || p === "phase_hold" || p === "phases_open" || p === "upstream_wait") return "blocked_by_task";
+  if (UNBLOCKED.has(p) && i.last_finished_at && now.getTime() - ms(i.last_finished_at) < lease_ms) return "queued";
   return "stuck";
 }
+
+/** The phases where nothing blocks the item: its next run is due. */
+const UNBLOCKED: ReadonlySet<ItemPhase> = new Set<ItemPhase>(["triaging", "specced", "implementing", "reviewing"]);
 
 /** The other item a blocked item waits on, in fixed words and numbers. */
 function blockedBadge(i: PriorityInput): string {
@@ -118,11 +123,11 @@ function blockedBadge(i: PriorityInput): string {
 }
 
 function humanBadge(i: PriorityInput): string {
-  if (i.blocked_on === "budget") return "budget check";
-  const r = i.blocked_reason ?? "";
-  if (r.startsWith("run_failed:") || r === "max_attempts" || r === "max_restart" || r === "repeated_failure") return "failed";
-  if (r === "max_loops") return "too many loops";
-  if (r === "merge_conflict_pending") return "merge conflict";
+  const p = phaseOf(i);
+  if (p === "budget_checkpoint" || p === "budget_wait") return "budget check";
+  if (FAILED_PHASES.has(p)) return "failed";
+  if (p === "max_loops") return "too many loops";
+  if (p === "merge_conflict") return "merge conflict";
   return "needs you";
 }
 

@@ -207,7 +207,7 @@ describe("standing approvals: the rule at the spec gate", () => {
     ["gates", "src/core/policy.ts"],
     ["gates", "tests/architecture/known-violations/unit-purity.json"],
     ["prompts", "prompts/triage.md"],
-    ["permissions", "src/impl/grant/github-grant.ts"],
+    ["permissions", "src/impl/auth/link-code.ts"],
     ["tools", "src/core/tools/bash.ts"],
     ["guard_settings", "factory.config.json"],
     ["floor_paths", `${LOW_FLOOR}x.md`],

@@ -140,6 +140,7 @@ describe("ui priority", () => {
   it("every human block reason and the budget need you, with a fixed-word badge; a null reason too", () => {
     const reasons = [
       ["spec_pending", "needs approval"],
+      ["max_revisions", "needs approval"],
       ["run_failed:implement:timeout", "failed"],
       ["max_loops", "too many loops"],
       ["merge_conflict_pending", "merge conflict"],
@@ -149,7 +150,9 @@ describe("ui priority", () => {
       [null, "needs you"],
     ] as const;
     for (const [reason, badge] of reasons) {
-      const h = item(String(reason), { blocked_on: "human", blocked_reason: reason, deadlock: true, held: true });
+      // A spec waits at READY (phaseOf reads the stage); every other block here is on a running item.
+      const stage = reason === "spec_pending" || reason === "max_revisions" ? "READY" : "RUNNING";
+      const h = item(String(reason), { stage, blocked_on: "human", blocked_reason: reason, deadlock: true, held: true });
       const [r] = rank([h], NOW, LEASE);
       expect(NEEDS_YOU).toContain(r!.level);
       expect(r!.level).not.toBe("blocked_by_task");

@@ -65,7 +65,7 @@ export async function projectKeyChecks(store: Pick<FactoryStore, "getCursor">, r
   return [{ ok: false, warn: true, msg: `project key of ${repo.owner}/${repo.name} not stored yet: the factory waits for GitHub to resolve it (see the GitHub API line)` }];
 }
 
-/** The same lines as failing checks, one each, for the dashboard's Health panel; none without a probe pause. */
+/** The same lines as failing checks, one each, for the dashboard's health checks; none without a probe pause. */
 export async function modelStallChecks(store: Pick<FactoryStore, "getClaimPause">): Promise<Check[]> {
   const lines = await modelStallLine(store);
   return lines === null ? [] : lines.split("\n").map((msg) => ({ ok: false, msg }));

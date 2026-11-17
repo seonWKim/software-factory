@@ -1,20 +1,14 @@
-// The status page's Health panel and GET /api/health: the same checks as `factory doctor`, from the one
-// implementation (doctorChecks, src/setup.ts), which the composition root passes in as `run`, plus the GitHub sync
-// line (syncChecks), a store read. It limits how often the checks run, shares one run between concurrent
-// requests, and egress-scans every message before it leaves (design §9). Below it, the latest improve report
-// (design §7): its group counts, drafts and filings, every text through the Withholder. For a user who may
-// approve, the panel carries a Run now button that queues an improve run (POST /api/v1/improve/run, improve-api.ts).
+// GET /api/health and the app's health reads: the same checks as `factory doctor`, from the one implementation
+// (doctorChecks, src/setup.ts), which the composition root passes in as `run`, plus the GitHub sync line
+// (syncChecks), a store read. It limits how often the checks run, shares one run between concurrent requests,
+// and egress-scans every message before it leaves (design §9).
 
-import { createHash } from "node:crypto";
 import { syncLeaseName } from "../core/lease.js";
 import { readStoredProject } from "../core/project-labels.js";
 import type { Clock } from "../interfaces/clock.js";
-import type { FailureGroup, ImproveReport } from "../core/types.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { type Check, type CheckStatus, checkStatus } from "../setup.js";
-import { esc } from "./html.js";
-import { IMPROVE_RUN_PATH } from "./improve-api.js";
 import { Withholder } from "./withhold.js";
 
 export const HEALTH_MIN_INTERVAL_MS = 60_000;
@@ -42,33 +36,6 @@ export async function syncChecks(
   return [{ ok: holder !== null && !low, ...((holder === null || low) && { warn: true }), msg }];
 }
 
-/**
- * The Run now button's script: one listener on the document (the page's refresh swaps the section's HTML, and a
- * swapped-in script never runs), posting `{}` with the CSRF token the button carries, then showing the reply.
- */
-export const RUN_NOW_SCRIPT = `(function(){
-document.addEventListener("click",function(e){
-var b=e.target&&e.target.closest?e.target.closest("#improve-run-now"):null;if(!b||b.disabled)return;
-var out=document.getElementById("improve-run-now-result");b.disabled=true;
-fetch(${JSON.stringify(IMPROVE_RUN_PATH)},{method:"POST",credentials:"same-origin",headers:{"content-type":"application/json","x-csrf-token":b.getAttribute("data-csrf")||""},body:"{}"})
-.then(function(r){return r.json().then(function(v){return {ok:r.ok,v:v};});})
-.then(function(x){if(out)out.textContent=x.ok?"Improve run queued: "+x.v.run_id:(x.v&&x.v.error)||"Refused.";})
-.catch(function(){if(out)out.textContent="The request failed.";})
-.then(function(){b.disabled=false;});
-});
-})();`;
-/** The CSP source for RUN_NOW_SCRIPT; server.ts adds it to a page that carries the script. */
-export const RUN_NOW_SCRIPT_HASH = `sha256-${createHash("sha256").update(RUN_NOW_SCRIPT, "utf8").digest("base64")}`;
-
-/** The Run now button and its script, for a user who may approve; `csrfToken` is the write routes' token. */
-function runNowHtml(csrfToken: string): string {
-  return (
-    `<p><button type="button" id="improve-run-now" data-csrf="${esc(csrfToken)}">Run now</button> ` +
-    `<span class="muted">queues an improve run of the last 24 hours</span> <span id="improve-run-now-result" role="status"></span></p>` +
-    `<script>${RUN_NOW_SCRIPT}</script>`
-  );
-}
-
 /** One finished run, messages as the checks wrote them. Never leaves this module unfiltered. */
 interface RawRun {
   started_at: Date;
@@ -84,7 +51,7 @@ export interface HealthReport {
 
 /**
  * Runs the checks at most once per `min_interval_ms` per process (measured between run starts), whoever
- * asks: page loads, the refresh link and the API all count. A request during a run waits for that run.
+ * asks: every read of the report counts. A request during a run waits for that run.
  * In-process state on purpose: it is a per-process rate limit on a read-only probe, not shared state.
  */
 export class HealthMonitor {
@@ -116,7 +83,7 @@ export class HealthMonitor {
     try {
       checks = await this.run();
     } catch (err) {
-      // doctor would stop on this error; the page reports it as one FAIL instead (scanned like any message).
+      // doctor would stop on this error; the report shows it as one FAIL instead (scanned like any message).
       checks = [{ ok: false, msg: `health checks could not finish: ${err instanceof Error ? err.message.slice(0, 120) : "error"}` }];
     }
     return { started_at, checked_at: this.clock.now(), checks };
@@ -130,88 +97,5 @@ export class HealthMonitor {
     for (const c of r.checks) checks.push({ status: checkStatus(c), msg: (await w.plain(c.msg)).text });
     return { checked_at: r.checked_at.toISOString(), checks };
   }
-
-  /**
-   * The Health panel: a `<section id="health">`. `refresh`: the refresh link asked for this load. `runNow`: the
-   * page's user may approve, so the panel shows the Run now button with this CSRF token.
-   */
-  async section(scanner: EgressScanner, opts: { refresh: boolean; runNow?: { csrfToken: string } | null }): Promise<string> {
-    const r = await this.latest();
-    const w = new Withholder(scanner);
-    const rows = [];
-    for (const c of r.checks) {
-      const status = checkStatus(c);
-      const word = status === "fail" ? "<strong>FAIL</strong>" : esc(status);
-      rows.push(`<tr class="health-${esc(status)}"><td>${word}</td><td>${await w.text(c.msg)}</td></tr>`);
-    }
-    const nextMs = r.started_at.getTime() + this.min_interval_ms - this.clock.now().getTime();
-    const limited = opts.refresh && nextMs > 0 ? ` Checks run at most once a minute; next run possible in ${esc(Math.ceil(nextMs / 1000))}s.` : "";
-    const table = rows.length === 0
-      ? `<p class="muted">no checks ran</p>`
-      : `<table><tr><th>result</th><th>check</th></tr>${rows.join("")}</table>`;
-    return (
-      `<section id="health"><h2>Health</h2>` +
-      `<p class="muted">Last run ${esc(r.checked_at.toISOString())}. <a href="/classic?health=refresh#health">refresh</a>${limited}</p>` +
-      `${table}${opts.runNow ? runNowHtml(opts.runNow.csrfToken) : ""}</section>`
-    );
-  }
 }
 
-/**
- * The latest improve report as a `<section id="improve">`: its window and counts, then one row per group of two
- * or more runs with its draft and filing; skipped and withheld drafts and filings name their reason or rules.
- * Every text (code, detail, cause, fix, reason) passes the Withholder first.
- */
-export async function improveSection(report: ImproveReport | null, scanner: EgressScanner): Promise<string> {
-  const head = `<section id="improve"><h2>Improve report</h2>`;
-  if (!report) return `${head}<p class="muted">no improve run has reported yet</p></section>`;
-  const w = new Withholder(scanner);
-  const runs = report.groups.reduce((n, g) => n + g.run_ids.length, 0);
-  const rows = [];
-  for (const g of report.groups) {
-    rows.push(
-      `<tr><td>${await w.text(g.error_code)}</td><td>${await w.text(g.detail, { fallback: "none" })}</td><td>${esc(g.run_ids.length)}</td>` +
-      `<td>${await draftCell(w, g)}</td><td>${await w.text(filingText(g), { fallback: "not filed yet" })}</td></tr>`,
-    );
-  }
-  const table = rows.length === 0
-    ? `<p class="muted">no failure group of two or more runs</p>`
-    : `<table><tr><th>error</th><th>detail</th><th>runs</th><th>draft</th><th>filing</th></tr>${rows.join("")}</table>`;
-  return (
-    head +
-    `<p class="muted">Window ${esc(report.window_start)} to ${esc(report.window_end)}, reported ${esc(report.created_at)}. ` +
-    `${esc(report.groups.length)} groups (${esc(runs)} runs), ${esc(report.patterns.length)} single-run patterns.</p>` +
-    `${table}</section>`
-  );
-}
-
-async function draftCell(w: Withholder, g: FailureGroup): Promise<string> {
-  const d = g.draft;
-  if (!d) return `<span class="muted">no draft</span>`;
-  switch (d.status) {
-    case "drafted":
-      return `<strong>cause:</strong> ${await w.text(d.cause)}<br><strong>fix:</strong> ${await w.text(d.fix)}`;
-    case "withheld":
-      return await w.text(`withheld (${d.rules.join(", ")})`);
-    case "failed":
-    case "skipped":
-      return await w.text(`${d.status} (${d.reason})`);
-  }
-}
-
-function filingText(g: FailureGroup): string | null {
-  const f = g.filing;
-  if (!f) return null;
-  switch (f.status) {
-    case "filed":
-    case "linked":
-      return `${f.status}: ${f.ref.link || f.ref.id}`;
-    case "commented":
-      return `commented on ${f.ref.link || f.ref.id}: ${f.run_ids.length} new runs`;
-    case "withheld":
-      return `withheld (${f.rules.join(", ")})`;
-    case "skipped":
-    case "failed":
-      return `${f.status} (${f.reason})`;
-  }
-}

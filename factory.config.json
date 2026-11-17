@@ -24,8 +24,6 @@
     { "prefix": "src/impl/egress/", "tier": 4 },
     { "prefix": "src/impl/secrets/", "tier": 4 },
     { "prefix": "src/impl/auth/", "tier": 4 },
-    { "prefix": "src/impl/github/github-auth-provider.ts", "tier": 4 },
-    { "prefix": "src/impl/github/github.plugin.ts", "tier": 4 },
     { "prefix": "src/impl/github/app-credentials.ts", "tier": 4 },
     { "prefix": "src/impl/github/token-credentials.ts", "tier": 4 },
     { "prefix": "src/impl/github/app.plugin.ts", "tier": 4 },
@@ -81,7 +79,7 @@
   "agent_stop_checks": 3,
   "max_coordination_cost": 2.5,
   "hotspot_weight": 3.0,
-  "hotspot_paths": ["src/impl/store/sqlite/schema.ts", "src/core/controller.ts", "src/core/worker.ts", "docs/design.md", "SET_UP.md"],
+  "hotspot_paths": ["src/impl/store/sqlite/schema.ts", "docs/design.md", "SET_UP.md"],
   "mechanical_weight": 0.25,
   "mechanical_paths": ["docs/design/", "docs/design.md", "docs/plugins.md", "docs/plugins/"],
   "path_companions": [

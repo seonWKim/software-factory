@@ -6,6 +6,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SettingRow, SettingsView, SpendDay, SpendView } from "../web/src/api.js";
+import { keyLabel } from "../web/src/lib/key-label.js";
 import { PAGES, routeFor } from "../web/src/pages.js";
 
 // tsconfig.test.json checks this file without JSX, so the pages are built with createElement and their .tsx modules
@@ -79,6 +80,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  history.replaceState(null, "", "/");
   vi.unstubAllGlobals();
 });
 
@@ -239,14 +241,15 @@ describe("Spend page: the daily chart", () => {
 
 describe("Settings page: dollar budgets", () => {
   it("an unset budget shows an empty number field that takes a fraction such as 12.50, and saves it", async () => {
+    history.replaceState(null, "", "/app/settings?tab=advanced");
     show(SettingsPage);
-    const field = (await screen.findByLabelText("spend.daily_budget_usd")) as HTMLInputElement;
+    const field = (await screen.findByLabelText(`${keyLabel("spend.daily_budget_usd")}`)) as HTMLInputElement;
     expect(field.type).toBe("number");
     expect(field.step).toBe("any");
     expect(field.value).toBe("");
     fireEvent.change(field, { target: { value: "12.50" } });
     expect(field.validity.valid).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "Save spend.daily_budget_usd" }));
+    fireEvent.click(screen.getByRole("button", { name: `Save ${keyLabel("spend.daily_budget_usd")}` }));
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]!.body).toMatchObject({ action: "set", key: "spend.daily_budget_usd", value: "12.50" });
   });

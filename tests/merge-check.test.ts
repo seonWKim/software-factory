@@ -22,6 +22,7 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { Sandbox } from "../src/interfaces/sandbox.js";
+import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import { autoResolveKey } from "../src/core/policy.js";
 import {
   FakeAuth, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, cleanScanner, config, fakeRepoLookup, pipeline, prompts, silent,
@@ -574,14 +575,63 @@ describe("merge check run: the UI check (fake sandbox)", () => {
   });
 });
 
+// A failing check on the merged result names its failing tests (`file > name`, at most MAX_FAILING_TESTS, as the
+// implement run parses them) and keeps the output tail (at most CHECK_TAIL_CHARS), scanned first: a flagged tail is
+// withheld whole, the names are kept.
+describe("merge check run: a failing check names its tests and keeps the output tail (fake sandbox)", () => {
+  const fails = (n: number) => Array.from({ length: n }, (_, i) => ` FAIL  tests/t${i}.test.ts > suite > case ${i}`).join("\n");
+  const printed = { "npm test": `${"x".repeat(3000)}\n${fails(12)}\n Test Files  12 failed\n` };
+
+  async function failingRun(scanner?: EgressScanner) {
+    const repo = { ...config.repo, check_commands: [["npm", "test"]] };
+    const f = await pipeline({ config: { repo }, ...(scanner ? { scanner } : {}) });
+    f.sandbox.exits["npm test"] = 1;
+    const exec = f.sandbox.exec.bind(f.sandbox);
+    f.sandbox.exec = async (h, cmd, eo) => {
+      const r = await exec(h, cmd, eo);
+      const out = printed[cmd.join(" ") as keyof typeof printed];
+      return out === undefined ? r : { ...r, stdout: out };
+    };
+    const { item } = await f.store.createWorkItem(issue(7), system);
+    const moved = await f.store.transition({
+      id: item.id, expected_version: item.version, actor: system, reason: "test_setup", patch: {},
+      enqueue: { kind: "merge-check", idempotency_key: "mc-1", input: { merge_check: { base_ref: "main", branches: [`factory/${item.id}`] } } },
+    });
+    if (!moved.ok) throw new Error("setup");
+    expect(await f.w1.tick()).toBe(true);
+    return (await f.runs(moved.item, "merge-check"))[0]!.outcome;
+  }
+
+  it("the red outcome holds the failing test names, at most 10, and the last 2000 characters of the output", async () => {
+    const outcome = await failingRun();
+    expect(outcome).toMatchObject({ status: "succeeded", data: { result: "red", why: "checks", command: "npm test", how: "exited 1" } });
+    const data = outcome?.status === "succeeded" ? outcome.data : {};
+    expect(data.failing_tests).toEqual(Array.from({ length: 10 }, (_, i) => `tests/t${i}.test.ts > suite > case ${i}`));
+    expect(typeof data.output_tail).toBe("string");
+    expect((data.output_tail as string).length).toBe(2000);
+    expect(data.output_tail).toContain("Test Files  12 failed");
+  });
+
+  it("a tail the egress scan flags is withheld whole; the names are kept", async () => {
+    const flagTail: EgressScanner = {
+      scan: async (channel, text) => (text.includes("Test Files") && !text.startsWith("{") ? { clean: false, findings: [{ rule: "test_leak", channel }] } : { clean: true }),
+    };
+    const outcome = await failingRun(flagTail);
+    expect(outcome).toMatchObject({ status: "succeeded", data: { result: "red", why: "checks", output_tail: null } });
+    const data = outcome?.status === "succeeded" ? outcome.data : {};
+    expect(data.failing_tests).toContain("tests/t0.test.ts > suite > case 0");
+  });
+});
+
 // End to end over a real git repo (as tests/merge-queue-flow.test.ts): a local change to web/ whose merged commit fails
-// the UI check leaves the merge queue, `main` does not move, and the item's thread names the check.
+// the UI check leaves the merge queue, `main` does not move, the item's thread names the check, and the item goes back
+// to implement as a loop.
 describe("merge queue: a failing UI check (real git)", { timeout: 120_000 }, () => {
   const ME = "local:me@example.com" as UserId;
   const ident = ["-c", "user.name=t", "-c", "user.email=t@example.com"];
   const sh = (cwd: string, ...args: string[]) => git(cwd, ...args).trim();
 
-  it("keeps main where it was, removes the entry and names check:responsive in the thread", async () => {
+  it("keeps main where it was, removes the entry, names check:responsive in the thread and sends the item back", async () => {
     const root = mkdtempSync(join(tmpdir(), "sf-ui-check-"));
     const repo = join(root, "repo");
     sh(root, "init", "--quiet", "-b", "main", repo);
@@ -641,7 +691,7 @@ describe("merge queue: a failing UI check (real git)", { timeout: 120_000 }, () 
     await step();
 
     expect(sh(repo, "rev-parse", "main")).toBe(mainBefore);
-    expect(await store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", merge_sha: null });
+    expect(await store.getWorkItem(id)).toMatchObject({ stage: "RUNNING", loop_count: 1, merge_sha: null });
     const queue = await controller.unit("merge-queue");
     expect((await queue.entries(id)).map((e) => e.state)).toEqual(["removed"]);
     const check = (await store.listRuns(id)).find((r) => r.kind === "merge-check")!;

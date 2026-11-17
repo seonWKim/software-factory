@@ -215,8 +215,7 @@ export const PROTECTED_PATHS: Readonly<Record<string, readonly string[]>> = {
   ],
   prompts: ["prompts/", "golden/"],
   permissions: [
-    "src/core/authorize.ts", "src/impl/auth/", "src/impl/grant/", ".claude/",
-    "src/impl/github/github-auth-provider.ts", "src/impl/github/github.plugin.ts",
+    "src/core/authorize.ts", "src/impl/auth/", ".claude/",
     "src/worker/roles/", "src/shared/role.ts", "src/identity/",
   ],
   tools: ["src/core/tools/", "src/impl/broker/", "src/impl/github/github-tool-broker.ts", "src/impl/github/broker.plugin.ts"],
@@ -231,7 +230,7 @@ export const PROTECTED_PATHS: Readonly<Record<string, readonly string[]>> = {
 
 /**
  * The first protected category `paths` touch, or null. A path touches a prefix the way it touches a floor
- * (`floorTier`): it is under the prefix, or it covers it (`src/` covers `src/impl/grant/`). `floors`: the item's
+ * (`floorTier`): it is under the prefix, or it covers it (`src/` covers `src/impl/auth/`). `floors`: the item's
  * configured floors, the `floor_paths` category.
  */
 export function protectedCategory(paths: readonly string[], floors: readonly Floor[]): string | null {

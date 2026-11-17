@@ -28,7 +28,7 @@ const view: TasksView = {
   csrf_token: "tok", can_build: true, active_projects: PROJECTS,
 };
 const item = (id: string, title: string): ItemRow => ({
-  id, source: { type: "local", id: `local:${id}`, link: "" }, title, level: "needs_approval", badges: [], stage: "REVIEW", tier: null, kind: null,
+  id, source: { type: "local", id: `local:${id}`, link: "" }, title, item_phase: "needs_approval", reason_code: "person", stage: "REVIEW", tier: null, kind: null,
   blocked_on: "human", blocked_reason: null, close_reason: null, run_status: null, change_ref: null, change_url: null, since: AT,
   updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 }, commands: [], need: { reason: `Reason of ${title}`, anchor: null },
 } as ItemRow);
@@ -56,7 +56,7 @@ beforeEach(() => {
     const url = new URL(input, "http://localhost");
     if (url.pathname === "/api/v1/items") {
       const list = BY_PROJECT[url.searchParams.get("project") ?? ""];
-      return list ? json({ as_of: AT, total: list.length, items: list, facets: { allStates: list.length, state: {} } }) : json({ error: "no project" }, 404);
+      return list ? json({ as_of: AT, total: list.length, items: list, facets: { allStates: list.length, state: {} }, counts: { open: 0, running: 1 } }) : json({ error: "no project" }, 404);
     }
     if (url.pathname === "/api/v1/tasks") return json(view);
     if (url.pathname === "/api/v1/overview") return json(overview);

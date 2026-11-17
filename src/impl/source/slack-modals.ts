@@ -90,7 +90,7 @@ function oneLine(a: NonNullable<ChatAnswer>): string {
 export function itemModal(item: WorkItem, bodies: readonly string[], repo: SlackSourceDeps["repo"]): Record<string, unknown> {
   const phase = commandPhase(item);
   const waits = item.blocked_on === "human" || item.blocked_on === "budget";
-  const reason = waits ? waitReason(noticeKind(item.blocked_reason)) : "nothing: it does not wait on you";
+  const reason = waits ? waitReason(noticeKind(item)) : "nothing: it does not wait on you";
   const head = `*${escapeSlack(item.title ?? item.id)}*\nState: ${escapeSlack(phaseLabel(phase))}\nNeeds you for: ${escapeSlack(reason)}`;
   const specBody = phase === "spec_pending" ? bodies.filter((b) => waitingSpec(b) !== null).at(-1) : undefined;
   const body = specBody ?? bodies.at(-1);

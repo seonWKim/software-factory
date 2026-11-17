@@ -14,12 +14,12 @@ import { App } from "../web/src/App.js";
 const AT = "2026-11-12T00:00:00.000Z";
 const cmd = (name: string) => ({ name, usage: `/${name}`, description: name, allowed: true, reason: null });
 const row = (n: number, level: string, title: string, extra: object = {}) => ({
-  id: `wi_${n}`, source: { type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` }, title, level,
-  badges: [], stage: "RUNNING", tier: 2, kind: null, blocked_on: "none", blocked_reason: null, close_reason: null, run_status: null,
+  id: `wi_${n}`, source: { type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` }, title, item_phase: level, reason_code: "person",
+   stage: "RUNNING", tier: 2, kind: null, blocked_on: "none", blocked_reason: null, close_reason: null, run_status: null,
   change_ref: null, change_url: null, since: AT, updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 }, ...extra,
 });
 const deadlocked = (n: number) => row(n, "blocked_by_task", `Overlapping ${n}`, {
-  why: { code: "deadlock", text: `Started past a deadlock with #9${n}: a person checks the overlap`, next_actor: "factory", refs: [90 + n], ref_url: null },
+  why: { code: "deadlock", reason_code: "deadlock", params: { holder: `Item 9${n}` }, alarms: [], holder_id: null, next_actor: "factory", refs: [90 + n], ref_url: null },
   run: { kind: "implement", status: "running", attempt: 1, worker_id: `mac-mini:4242:${n}`, started_at: AT, position: null },
 });
 const SPEC = row(30, "needs_approval", "Spec waiting for you", {
@@ -33,7 +33,7 @@ let responses: Record<string, unknown>;
 beforeEach(() => {
   responses = {
     "/api/v1/overview": { as_of: AT, stages: {}, needs_you: 1, running: 5, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 }, system_actions: [] },
-    "/api/v1/items": { as_of: AT, total: 6, items: [1, 2, 3, 4, 5].map(deadlocked).concat([SPEC]), facets: { allStates: 6, state: {} } },
+    "/api/v1/items": { as_of: AT, total: 6, items: [1, 2, 3, 4, 5].map(deadlocked).concat([SPEC]), facets: { allStates: 6, state: {} }, counts: { open: 0, running: 1 } },
     "/api/v1/tasks": { today_date: "2026-11-12", today: { overdue: [], due: [] }, upcoming: [], projects: [], csrf_token: "tok", can_build: true, active_projects: [] },
     "/api/v1/runs": { as_of: AT, runs: [] },
     "/api/v1/queue": { as_of: AT, queue: [] },

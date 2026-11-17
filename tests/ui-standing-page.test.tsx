@@ -5,22 +5,21 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SettingsView, StandingView } from "../web/src/api.js";
+import type { RulesView, StandingView } from "../web/src/api.js";
 
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
 // loaded by a specifier the node check skips (as tests/ui-settings-page.test.tsx does).
-const PAGE_MODULE = "../web/src/views/settings.js";
-const { SettingsPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { SettingsPage: FunctionComponent };
+const PAGE_MODULE = "../web/src/views/rules.js";
+const { RulesPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { RulesPage: FunctionComponent };
 
-// Standing approvals on the Settings page (issue #300, design 05-standing-approvals and §9): an on or off switch per
-// rule and Accept and Decline per pending proposal, each a POST /api/v1/standing with the CSRF token; a refusal
-// shows beside its item.
+// Approvals on the Rules page (issue #300, design 05-standing-approvals and §9; moved from Settings 2026-11-16): under
+// one "Approvals" heading, an on or off switch per standing rule and Accept and Decline per pending proposal, each a
+// POST /api/v1/standing with the CSRF token; a refusal shows beside its item. Each part is hidden when it has no items,
+// and the heading when both are empty.
 
 const TOKEN = "tok_standing";
 const AT = "2026-11-07T00:00:00.000Z";
-const settings: SettingsView = {
-  as_of: AT, csrf_token: TOKEN, repo: "o/r", project: null, project_keys: [], keys: [], pr_only: [], ignored: [], history: [],
-};
+const rules: RulesView = { enabled: true, applied: null, error: null, csrf_token: TOKEN, judge: null, home: null, turn_on: null, entries: [] };
 const standing = (): StandingView => ({
   as_of: AT,
   csrf_token: TOKEN,
@@ -36,7 +35,7 @@ const TEST_MS = 15_000;
 
 function show() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(createElement(QueryClientProvider, { client }, createElement(SettingsPage)));
+  render(createElement(QueryClientProvider, { client }, createElement(RulesPage)));
   return screen.findByRole("list", { name: "Standing rules" }, SLOW);
 }
 
@@ -68,7 +67,7 @@ describe("Standing approvals section (stubbed API)", { timeout: TEST_MS }, () =>
         if (hold) await new Promise<void>((r) => release.push(r));
         return json(answer.status, answer.body);
       }
-      if (url === "/api/v1/settings") return json(200, settings);
+      if (url === "/api/v1/rules") return json(200, rules);
       if (url === "/api/v1/standing") return json(200, view);
       return json(404, { error: "Not found." });
     }));
@@ -79,7 +78,39 @@ describe("Standing approvals section (stubbed API)", { timeout: TEST_MS }, () =>
     const li = ruleItem(list, "spec-t1");
     expect(within(li).getByRole("switch", { name: "spec-t1" }).getAttribute("aria-checked")).toBe("false");
     for (const text of ["gate spec", "tier 1", "threshold 10", `created ${AT}`, "last used not recorded", "github:1"]) expect(li.textContent).toContain(text);
-    expect(screen.getByRole("region", { name: "Standing approvals" })).toBeTruthy();
+    const approvals = screen.getByRole("region", { name: "Approvals" });
+    expect(within(approvals).getByRole("heading", { level: 2 }).textContent).toBe("Approvals");
+    // No config key path next to the threshold.
+    expect(li.textContent).not.toContain("standing_approvals.threshold");
+  });
+
+  it("puts the pending proposals before the standing rules, both under the Approvals heading", async () => {
+    await show();
+    const approvals = screen.getByRole("region", { name: "Approvals" });
+    const lists = [...approvals.querySelectorAll("ul")].map((u) => u.getAttribute("aria-label"));
+    expect(lists).toEqual(["Pending proposals", "Standing rules"]);
+  });
+
+  it("hides the pending proposals when there are none, and the standing rules when there are none", async () => {
+    view = { ...view, proposals: [] };
+    await show();
+    expect(screen.queryByRole("list", { name: "Pending proposals" })).toBeNull();
+    expect(screen.queryByText("No proposal is waiting.")).toBeNull();
+    cleanup();
+    view = { ...standing(), rules: [] };
+    render(createElement(QueryClientProvider, { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) }, createElement(RulesPage)));
+    await screen.findByRole("list", { name: "Pending proposals" }, SLOW);
+    expect(screen.queryByRole("list", { name: "Standing rules" })).toBeNull();
+  });
+
+  it("hides the whole Approvals heading when there is nothing in either part", async () => {
+    view = { ...view, proposals: [], rules: [] };
+    render(createElement(QueryClientProvider, { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) }, createElement(RulesPage)));
+    await screen.findByRole("heading", { name: "Rules" }, SLOW);
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/standing", expect.anything()), SLOW);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByRole("region", { name: "Approvals" })).toBeNull();
+    expect(screen.queryByText("Approvals")).toBeNull();
   });
 
   it("the switch posts the rule and its new state with the CSRF token", async () => {
@@ -138,8 +169,7 @@ describe("Standing approvals section against a server that keeps the rule", () =
     const writes: boolean[] = [];
     const current = (): StandingView => ({ ...standing(), rules: [{ ...standing().rules[0]!, enabled }] });
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
-      if (url === "/api/v1/settings") return json(200, settings);
-      if (url === "/api/v1/settings/capabilities") return json(200, { as_of: "", roles: [], capabilities: [] });
+      if (url === "/api/v1/rules") return json(200, rules);
       if (init?.method === "POST") {
         const body = JSON.parse(String(init.body)) as { enabled: boolean };
         const changed = body.enabled !== enabled;

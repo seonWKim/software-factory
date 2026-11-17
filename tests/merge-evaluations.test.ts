@@ -6,22 +6,16 @@ import { digestMerges, noVerdicts } from "../src/core/merge-evaluation.js";
 import type { Actor, Timestamp, UserId, WorkItem } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { recordMergeEvaluation } from "../src/impl/store/sql/merge-evaluations.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
-import { mergesSection } from "../src/ui/merge-digest.js";
-import { Withholder } from "../src/ui/withhold.js";
-import { cleanScanner } from "./helpers/fakes.js";
 import { human, issue, newStore, system } from "./helpers/store.js";
 
-// Per-merge evaluations (design 06-measurement, 09-status-page): one row per merge, written by the merge's own
+// Per-merge evaluations (design 06-measurement): one row per merge, written by the merge's own
 // transition with a conditional insert, read back with what followed the merge, from store data only.
 
 const merger: Actor = { kind: "user", id: "github:7" as UserId };
-// Built here so no secret-shaped literal sits in the repository.
-const SECRET = `ghp_${"Ab3".repeat(12)}`;
 
 async function item(store: FactoryStore, n: number, title?: string): Promise<WorkItem> {
   return (await store.createWorkItem({ ...issue(n), ...(title ? { title } : {}) }, system)).item;
@@ -132,49 +126,5 @@ describe("merge evaluations: the read, from store data only", () => {
     expect((await store.listMergeEvaluations(all[1]!.merged_at)).map((e) => e.work_item_id)).toEqual([b.id]);
 
     expect(digestMerges(all)).toEqual({ merged: 2, reverted: 1, fixed_forward: 1, verdicts: { ...noVerdicts(), changes: 1 }, tokens: 1500 });
-  });
-});
-
-/** The inner HTML of <section id="merges">. */
-async function section(store: FactoryStore, clock: FakeClock, scanner = cleanScanner): Promise<string> {
-  return mergesSection(store, new Withholder(scanner), clock.now());
-}
-
-describe("status page: the Merges digest", () => {
-  it("shows the counts, verdicts and tokens and lists the merges, newest first", async () => {
-    const clock = new FakeClock();
-    const { store } = await newStore(clock);
-    const a = await merge(store, await item(store, 1, "Older merge"), "sha-a", 40);
-    clock.advance(60_000);
-    await merge(store, await item(store, 2, "Newer <b>merge</b>"), "sha-b", 2);
-    await move(store, a, {}, "reverted");
-    const html = await section(store, clock);
-    expect(html).toContain(`<section id="merges">`);
-    for (const [k, v] of [["merged", 2], ["reverted", 1], ["fixed forward", 0], ["verdicts: accept", 0], ["tokens", 42]] as const) {
-      expect(html).toContain(`<th scope="row">${k}</th><td>${v}</td>`);
-    }
-    expect(html.indexOf("Newer &lt;b&gt;merge&lt;/b&gt;")).toBeLessThan(html.indexOf("Older merge"));
-    expect(html).toContain(`href="/items/${a.id}"`);
-  });
-
-  it("an empty state with no evaluations, and older merges outside the window are left out", async () => {
-    const clock = new FakeClock();
-    const { store } = await newStore(clock);
-    expect(await section(store, clock)).toContain("No merge in the last 7 days");
-    await merge(store, await item(store, 1), "sha-a");
-    clock.advance(8 * 24 * 3_600_000);
-    const html = await section(store, clock);
-    expect(html).toContain("No merge in the last 7 days");
-    expect(html).not.toContain("<table");
-  });
-
-  it("a title with an egress finding is withheld whole", async () => {
-    const clock = new FakeClock();
-    const { store } = await newStore(clock);
-    await merge(store, await item(store, 1, `leaked ${SECRET} here`), "sha-a");
-    const html = await section(store, clock, new PatternEgressScanner(async () => []));
-    expect(html).toContain("[withheld: github_token]");
-    expect(html).not.toContain(SECRET);
-    expect(html).not.toContain("leaked");
   });
 });

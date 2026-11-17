@@ -1,0 +1,16 @@
+{
+  "id": "540",
+  "pr_number": 540,
+  "work_item_id": "wi_a28d12ea6e874c7ca62de571b81c282f",
+  "expect": "should_flag",
+  "outcome": "rejected",
+  "human_verdict": {
+    "reason": "pr_closed_unmerged",
+    "actor_id": "system:post-merge",
+    "record_id": "sc_f23bd15dc34c4d88aaed5623b297df55"
+  },
+  "revert_reason": null,
+  "source_record_ids": [
+    "sc_f23bd15dc34c4d88aaed5623b297df55"
+  ]
+}

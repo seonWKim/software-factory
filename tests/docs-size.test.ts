@@ -19,7 +19,6 @@ const OVER_CAP = new Set([
   "05-restarts.md",
   "05-sources.md",
   "07-self-improvement.md",
-  "08-permissions.md",
   "08-settings.md",
   "09-dashboard-app.md",
   "10-event-driven.md",

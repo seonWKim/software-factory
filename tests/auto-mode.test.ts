@@ -317,7 +317,7 @@ describe("auto mode: merges", { timeout: 60_000 }, () => {
     expect((await f.messages(id, "<!-- factory:auto-merge-held:")).join("")).toContain("it touches the gate list (`prompts/");
   });
 
-  it("a merge whose checks fail on the merge commit moves nothing and leaves the item in merge_pending", async () => {
+  it("a merge whose checks fail on the merge commit moves nothing and sends the item back to implement as a loop", async () => {
     const f = await autoFactory({ test_command: FAILS_ON_MERGE });
     await f.setting("auto_merge_max_tier", 3);
     await f.mode("auto");
@@ -326,12 +326,14 @@ describe("auto mode: merges", { timeout: 60_000 }, () => {
     await f.step();
     await f.approveRun(id);
     await f.step();
-    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "RUNNING", loop_count: 1 });
+    expect((await f.changes(id)).map((c) => c.reason)).toContain("merge_check_failed");
     expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
     // Tried once for this version of the item: one refusal, not one per tick.
     const refused = await f.messages(id, "<!-- factory:refused:auto-merge:");
     expect(refused).toHaveLength(1);
     expect(refused[0]).toContain("The automatic merge was not applied");
+    expect(refused[0]).toContain("the factory sent it back to the implementer (loop 1 of");
   });
 
   it("a sync source's item is never merged in auto mode: it waits as in manual mode, with no post", async () => {
