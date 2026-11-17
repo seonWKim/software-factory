@@ -80,6 +80,19 @@ describe("design tokens", () => {
     expect(raw.test("<buttons> and <inputs>")).toBe(false);
   });
 
+  it("no raw table element appears under web/src/views: tables are the shared Table, Tr and Td", () => {
+    const raw = /<(?:table|thead|tbody|tfoot|tr|td|th|caption)(?=[\s/>])/;
+    const hits = files(join(WEB_SRC, "views"))
+      .filter((f) => /\.tsx?$/.test(f))
+      .filter((f) => raw.test(readFileSync(f, "utf8")));
+    expect(hits).toEqual([]);
+    // Self-check: a multi-line raw td and a th are caught; the components and words such as <thread> are not.
+    expect(raw.test('<td\n  data-day={d}\n  className="p-1"\n>')).toBe(true);
+    expect(raw.test('<th scope="col">')).toBe(true);
+    expect(raw.test("<table>")).toBe(true);
+    expect(raw.test("<Table /> <Tr> <Td /> <thread> <title> <tdx>")).toBe(false);
+  });
+
   it("components/ui has the control set, and every control shares the focus ring and the disabled look", () => {
     const ui = (name: string) => readFileSync(join(WEB_SRC, "components", "ui", name), "utf8");
     const control = ui("control.ts");

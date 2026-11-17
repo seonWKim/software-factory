@@ -99,11 +99,11 @@ export function Tr({ children, ...attrs }: { children: ReactNode } & { [data: `d
   );
 }
 
-export function Td({ children, className }: { children: ReactNode; className?: string }) {
+export function Td({ children, className, ...attrs }: { children?: ReactNode; className?: string } & { [data: `data-${string}`]: string | undefined }) {
   const { cards } = useContext(TableMode);
   // In a card the cell wraps: the table's column widths and no-wrap are dropped.
-  if (cards) return <div className={cn("min-w-0 break-words", className?.split(/\s+/).filter((c) => !/^((min-|max-)?w-|whitespace-nowrap$)/.test(c)).join(" "))}>{children}</div>;
-  return <td className={cn("px-3 py-2 align-top", className)}>{children}</td>;
+  if (cards) return <div {...attrs} className={cn("min-w-0 break-words", className?.split(/\s+/).filter((c) => !/^((min-|max-)?w-|whitespace-nowrap$)/.test(c)).join(" "))}>{children}</div>;
+  return <td {...attrs} className={cn("px-3 py-2 align-top", className)}>{children}</td>;
 }
 
 /** The one status colour map: a level name to its token classes. Badge and StatusBadge both read it. */
