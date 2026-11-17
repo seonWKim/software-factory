@@ -30,7 +30,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
  * After `g`, the page a key goes to. `g i`, `g t` and `g u` (Inbox, Today, Upcoming) have no view until the task
  * views exist, so they are not listed and do nothing;.
  */
-export const GO_KEYS: Readonly<Record<string, string>> = { w: `${BASE}items`, a: `${BASE}activity` };
+export const GO_KEYS: Readonly<Record<string, string>> = { w: `${BASE}items`, a: `${BASE}items` };
 
 /** The Tasks page's quick-add field: `q` focuses it, so the key does nothing on a page without one. */
 export const QUICK_ADD_ATTR = "data-quick-add";

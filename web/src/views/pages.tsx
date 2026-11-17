@@ -12,6 +12,8 @@ import { type Column, DataTable } from "../components/ui/data-table.js";
 import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
 import { Notice, PageHeader, StatusBadge } from "../components/ui/notice.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
+import { FailuresSection } from "./failures.js";
+import { SpendSection } from "./spend.js";
 import { Markdown } from "../components/ui/markdown.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { Tabs } from "../components/ui/tabs.js";
@@ -199,7 +201,7 @@ export function FloorStatus() {
   );
 }
 
-/** Activity: what runs now, then the numbers of the last 24 hours. */
+/** Work's Activity section, below its list: what runs now, the unreviewed-merges line, then the numbers of the last 24 hours. */
 export function ActivityPage() {
   const now = useNow();
   const overview = useApi<Overview>(API.overview);
@@ -208,8 +210,7 @@ export function ActivityPage() {
   const map = useMemo(() => byId(items.data?.items), [items.data]);
   const o = overview.data;
   return (
-    <>
-      <PageHeader title={t("page.activity")} />
+    <div className="mt-8">
       <Section title={t("running.label")} count={o?.running}>
         {runs.isError ? <ErrorNote error={runs.error} /> : !runs.data ? <Loading rows={2} /> : <RunningTable runs={runs.data.runs} items={map} now={now} />}
       </Section>
@@ -238,7 +239,7 @@ export function ActivityPage() {
           </dl>
         </Section>
       )}
-    </>
+    </div>
   );
 }
 
@@ -367,6 +368,7 @@ export function ItemsPage() {
       ) : (
         <ItemsTable items={ids ? rows.filter((r) => itemMatches(r, { ...filter, showClosed: true })) : items.data.items} now={now} label={t("items.label")} plugins={overview.data?.plugins} empty={t("items.noMatch")} />
       )}
+      <ActivityPage />
     </>
   );
 }
@@ -822,6 +824,8 @@ export function HealthPage() {
         </div>
       )}
       {tab === "github" && budget && <GitHubBudgetTab budget={budget} tokenDays={overview.data?.github_token_days} />}
+      <SpendSection />
+      <FailuresSection />
     </>
   );
 }

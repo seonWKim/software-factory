@@ -758,6 +758,13 @@ function AdvancedTab({ view: v }: { view: SettingsView }) {
   const prOnly = v.pr_only.filter((p) => !editable.has(p.key));
   return (
     <>
+      <Section title={t("settings.devTools")}>
+        <p className="mb-2 text-sm text-pretty text-text-2">{t("settings.devToolsIntro")}</p>
+        <ul className="space-y-1 text-sm">
+          <li><Link href={`${BASE}runners`} className={LINK_CLASS}>{t("page.runners")}</Link></li>
+          <li><Link href={`${BASE}data`} className={LINK_CLASS}>{t("page.data")}</Link></li>
+        </ul>
+      </Section>
       <Section title={t("settings.settableKeys")} count={v.keys.length}>
         <p className="mb-2 text-sm text-pretty text-text-2">{t("settings.settableIntro")}</p>
         <ProjectLabel view={v} />

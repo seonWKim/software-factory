@@ -103,18 +103,13 @@ async function openTable(name: string) {
 }
 
 describe("Data page", () => {
-  it("the Data entry is last in the System group and shows the table list beside the rows", async () => {
+  it("Data is not in the sidebar (Settings > Advanced links it) and /app/data shows the table list beside the rows", async () => {
     mount();
     const side = screen.getByRole("complementary", { name: "Sidebar" });
-    // The System group ends with Data; the Settings row sits below it, outside the group.
-    const system = within(side).getByRole("navigation", { name: "System" });
-    const links = [...system.querySelectorAll("a")].map((a) => a.textContent);
-    expect(links.slice(links.indexOf("Data"))).toEqual(["Data"]);
-    const settings = within(side).getByRole("link", { name: "Settings" });
-    expect(system.contains(settings)).toBe(false);
-    expect(system.compareDocumentPosition(settings) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    fireEvent.click(within(side).getByText("Data"));
-    expect(location.pathname).toBe("/app/data");
+    expect(within(side).queryByRole("link", { name: "Data" })).toBeNull();
+    cleanup();
+    history.replaceState(null, "", "/app/data");
+    mount();
     expect(await screen.findByRole("heading", { name: "Data" })).toBeTruthy();
     expect(await screen.findByRole("navigation", { name: "Tables" })).toBeTruthy();
     expect(screen.getByText("Choose a table to see its rows, newest first.")).toBeTruthy();
