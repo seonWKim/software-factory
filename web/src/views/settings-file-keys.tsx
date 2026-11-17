@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { API, type FileKeysView, type ItemDetail, type SettingsView, type SettingsWrite, postSettings, useApi } from "../api.js";
-import { Badge, Section } from "../components/ui/parts.js";
+import { Section, Table } from "../components/ui/parts.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { Dialog } from "../components/ui/dialog.js";
@@ -13,8 +13,9 @@ import { Switch } from "../components/ui/switch.js";
 import { Textarea } from "../components/ui/textarea.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { keyLabel } from "../lib/key-label.js";
+import { keyHelp, keyLabel } from "../lib/key-label.js";
 import { MergeButton } from "./item-commands.js";
+import { SettingsRow } from "./settings-row.js";
 import { withNodes } from "./standing.js";
 
 // The Settings page's write pieces (useWrite, Outcome) and its typed form of the file-only keys (design 08-settings,
@@ -73,7 +74,7 @@ type Spec =
   | { kind: "text" | "number" | "bool" | "argv" | "json" | "pairs" }
   | { kind: "choice"; choices: readonly string[]; placeholder?: string }
   | { kind: "list"; item: Spec }
-  | { kind: "fields"; fields: Readonly<Record<string, Spec>>; labels?: Readonly<Record<string, string>> };
+  | { kind: "fields"; fields: Readonly<Record<string, Spec>> };
 
 /** A control's draft: text for the text-like kinds, a boolean for a switch, one draft per item or member. */
 type Draft = string | boolean | Draft[] | { [k: string]: Draft };
@@ -256,7 +257,7 @@ function FieldsControl({ spec, draft, label, onChange }: { spec: Extract<Spec, {
   return (
     <div className="flex w-full flex-wrap items-start gap-x-4 gap-y-3">
       {Object.entries(spec.fields).map(([k, sub], i) => (
-        <Field key={k} label={<span className="font-mono text-xs">{spec.labels?.[k] ?? k}</span>} htmlFor={`${uid}-${i}`} className={sub.kind === "list" || sub.kind === "pairs" || sub.kind === "json" || sub.kind === "fields" ? "w-full" : ""}>
+        <Field key={k} label={<span className="font-mono text-xs">{k}</span>} htmlFor={`${uid}-${i}`} className={sub.kind === "list" || sub.kind === "pairs" || sub.kind === "json" || sub.kind === "fields" ? "w-full" : ""}>
           <Control spec={sub} id={`${uid}-${i}`} draft={draft[k] ?? toDraft(sub, undefined)} label={`${label} ${k}`} onChange={(next) => onChange({ ...draft, [k]: next })} />
         </Field>
       ))}
@@ -279,136 +280,160 @@ function Filed({ item, branch }: { item: string; branch: string }) {
 /** A value as the confirm Dialog shows it: pretty JSON, or "not set" when the file leaves it out. */
 const shownJson = (v: Json | undefined): string => (v === undefined ? t("settings.file.notSet") : JSON.stringify(v, null, 2));
 
-/**
- * One file-only key: its control, Save, its restart note and the outcome. Save opens the confirm Dialog with the old
- * and new value; its confirm sends `edit-file` with the whole new value, its Cancel sends nothing. A danger key (or a
- * guard, by `danger`) uses the Dialog's danger form, and its confirm sends the confirm flag.
- */
-/** The raw key name behind a Details toggle, under a row's human label. */
-export function KeyNameDetails({ name }: { name: string }) {
+/** The raw key name behind a Details toggle, under a row's human label; a guard plugin's Details also says "guard". */
+export function KeyNameDetails({ name, guard }: { name: string; guard?: boolean }) {
   return (
     <details>
       <summary className="cursor-pointer text-xs text-text-2">{t("settings.details")}</summary>
-      <KeyValue className="mt-1" items={[{ key: "key", term: t("settings.detailKey"), value: name, code: true }]} />
+      <KeyValue
+        className="mt-1"
+        items={[
+          { key: "key", term: t("settings.detailKey"), value: name, code: true },
+          ...(guard ? [{ key: "guard", term: t("settings.file.guard"), value: "" }] : []),
+        ]}
+      />
     </details>
   );
 }
 
-function FileKey({ name, spec, value, token, danger }: { name: string; spec: Spec; value: Json | undefined; token: string; danger: (next: Json) => boolean }) {
+/**
+ * One file-only key as a shared settings row: its control, Save and restart note in the control cell, its key name in
+ * Details. Save opens the confirm Dialog with the old and new value; its confirm sends `edit-file` with the whole new
+ * value, its Cancel sends nothing. A danger key (or a guard plugin) uses the Dialog's danger form, and its confirm sends
+ * the confirm flag. A `member` row edits one member of the key's object (one plugin kind of `plugins`) and writes the
+ * object whole, its other members kept.
+ */
+function FileKey({ name, member, label, help, spec, value, token, danger, guard }: { name: string; member?: string; label: string; help: string; spec: Spec; value: Json | undefined; token: string; danger: boolean; guard?: boolean }) {
   const { busy, error, done, filed, write, fail } = useWrite(token);
   const [draft, setDraft] = useState<Draft | null>(null);
-  /** The value the confirm Dialog asks about, and whether it is a danger change; null while it is closed. */
-  const [asking, setAsking] = useState<{ next: Json; danger: boolean } | null>(null);
-  const shown = draft ?? toDraft(spec, value);
-  const label = keyLabel(name);
-  const send = async (next: Json, confirm: boolean): Promise<boolean> => {
-    const ok = await write({ action: "edit-file", key: name, value: JSON.stringify(next), confirm });
+  /** The value the confirm Dialog asks about; null while it is closed. */
+  const [asking, setAsking] = useState<Json | null>(null);
+  const own = member === undefined ? value : isObject(value) ? value[member] : undefined;
+  const shown = draft ?? toDraft(spec, own);
+  const send = async (next: Json): Promise<boolean> => {
+    const ok = await write({ action: "edit-file", key: name, value: JSON.stringify(next), confirm: danger });
     if (ok) setDraft(null);
     return ok;
   };
   const save = () => {
     let next: Json;
     try {
-      const made = fromDraft(spec, shown) ?? null;
-      // Members of the file's object this form does not name stay as they are.
-      next = spec.kind === "fields" && isObject(value) && isObject(made) ? { ...value, ...made } : made;
+      const made = fromDraft(spec, shown);
+      if (member !== undefined) {
+        const rest = isObject(value) ? { ...value } : {};
+        if (made === undefined) delete rest[member];
+        else rest[member] = made;
+        next = rest;
+      } else {
+        // Members of the file's object this form does not name stay as they are.
+        next = spec.kind === "fields" && isObject(value) && isObject(made) ? { ...value, ...made } : (made ?? null);
+      }
     } catch (err) {
       fail(t("settings.file.badJson", { key: label, message: err instanceof Error ? err.message : String(err) }));
       return;
     }
-    setAsking({ next, danger: danger(next) });
+    setAsking(next);
   };
   return (
-    <li data-file-key={name} className="border-t border-border py-3 first:border-t-0 first:pt-0">
-      <form className="flex flex-col items-start gap-3" onSubmit={(e) => (e.preventDefault(), save())}>
-        <span className="text-sm font-medium">{label}</span>
-        <KeyNameDetails name={name} />
-        <Control spec={spec} draft={shown} label={label} onChange={setDraft} />
-        <ButtonRow>
-          <Button type="submit" variant="secondary" disabled={busy || draft === null} aria-label={t("settings.saveLabel", { label })}>
-            {t("settings.save")}
-          </Button>
-        </ButtonRow>
-        <p data-restart-note className="text-xs text-pretty text-text-2">
-          {t("settings.file.restartNote")}
-        </p>
-      </form>
-      <Outcome error={error} done={done} />
-      {filed && <Filed item={filed.item} branch={filed.branch} />}
-      {asking !== null && (
-        <Dialog
-          danger={asking.danger}
-          title={t("settings.file.dangerTitle", { key: label })}
-          consequence={asking.danger ? t("settings.file.dangerConsequence", { key: label }) : t("settings.file.confirmConsequence")}
-          confirmLabel={t("settings.file.dangerConfirm")}
-          confirmDisabled={busy}
-          error={error}
-          onConfirm={() => void send(asking.next, asking.danger).then((ok) => ok && setAsking(null))}
-          onClose={() => setAsking(null)}
-        >
-          <KeyValue
-            stacked
-            items={[
-              { key: "old", term: t("settings.file.oldValue"), value: <ValueBlock>{shownJson(value)}</ValueBlock>, valueProps: { "data-old-value": true } },
-              { key: "new", term: t("settings.file.newValue"), value: <ValueBlock>{shownJson(asking.next)}</ValueBlock>, valueProps: { "data-new-value": true } },
-            ]}
-          />
-        </Dialog>
-      )}
-    </li>
+    <SettingsRow
+      attrs={{ "data-file-key": member === undefined ? name : `${name}.${member}` }}
+      name={label}
+      description={help}
+      details={<KeyNameDetails name={member === undefined ? name : `${name}.${member}`} {...(guard ? { guard } : {})} />}
+      control={
+        <>
+          <form className="flex flex-col items-start gap-3" onSubmit={(e) => (e.preventDefault(), save())}>
+            <Control spec={spec} draft={shown} label={label} onChange={setDraft} />
+            <ButtonRow>
+              <Button type="submit" variant="secondary" disabled={busy || draft === null} aria-label={t("settings.saveLabel", { label })}>
+                {t("settings.save")}
+              </Button>
+            </ButtonRow>
+            <p data-restart-note className="text-xs text-pretty text-text-2">
+              {t("settings.file.restartNote")}
+            </p>
+          </form>
+          <Outcome error={error} done={done} />
+          {filed && <Filed item={filed.item} branch={filed.branch} />}
+          {asking !== null && (
+            <Dialog
+              danger={danger}
+              title={t("settings.file.dangerTitle", { key: label })}
+              consequence={danger ? t("settings.file.dangerConsequence", { key: label }) : t("settings.file.confirmConsequence")}
+              confirmLabel={t("settings.file.dangerConfirm")}
+              confirmDisabled={busy}
+              error={error}
+              onConfirm={() => void send(asking).then((ok) => ok && setAsking(null))}
+              onClose={() => setAsking(null)}
+            >
+              <KeyValue
+                stacked
+                items={[
+                  { key: "old", term: t("settings.file.oldValue"), value: <ValueBlock>{shownJson(value)}</ValueBlock>, valueProps: { "data-old-value": true } },
+                  { key: "new", term: t("settings.file.newValue"), value: <ValueBlock>{shownJson(asking)}</ValueBlock>, valueProps: { "data-new-value": true } },
+                ]}
+              />
+            </Dialog>
+          )}
+        </>
+      }
+    />
   );
 }
 
-/** The plugins form: a select of the registered names per interface; a list for an interface the file lists several of. */
-function pluginsSpec(view: FileKeysView, file: Json | undefined): Spec {
-  const f: Record<string, Spec> = {};
-  const labels: Record<string, string> = {};
-  for (const p of view.plugins) {
-    const choice: Spec = { kind: "choice", choices: p.names, placeholder: t("settings.file.inForce", { name: p.selected ?? t("settings.file.notSet") }) };
-    f[p.kind] = isObject(file) && Array.isArray(file[p.kind]) ? list(choice) : choice;
-    labels[p.kind] = p.guard ? t("settings.file.guardLabel", { name: p.interface, kind: p.kind }) : t("settings.file.pluginLabel", { name: p.interface, kind: p.kind });
-  }
-  return { kind: "fields", fields: f, labels };
+/** One plugin kind's control: a select of the registered names; a list of selects for a kind the file lists several of. */
+function pluginSpec(p: FileKeysView["plugins"][number], file: Json | undefined): Spec {
+  const choice: Spec = { kind: "choice", choices: p.names, placeholder: t("settings.file.inForce", { name: p.selected ?? t("settings.file.notSet") }) };
+  return isObject(file) && Array.isArray(file[p.kind]) ? list(choice) : choice;
 }
 
-/** The read-only keys: each value and the reason the page does not edit it. */
+/** The three columns every settings row fills: name and description, value, Details. */
+const head = () => [t("settings.colKey"), t("settings.colValue"), t("settings.details")];
+
+/** The read-only keys: each value and the reason the page does not edit it, in the same row layout. */
 function ReadOnlyKeys({ keys }: { keys: FileKeysView["read_only"] }) {
   return (
-    <ul aria-label={t("settings.file.readOnlyTitle")} className="flex flex-col gap-2">
+    <Table label={t("settings.file.readOnlyTitle")} head={head()}>
       {keys.map((k) => (
-        <li key={k.key} data-read-only={k.key} className="text-xs">
-          <span className="font-medium">{keyLabel(k.key)}</span> <code className="font-mono wrap-anywhere">{k.value ?? t("settings.file.notSet")}</code>
-          <p className="text-pretty text-text-2">{t(`settings.file.why.${k.key}` as MessageKey)}</p>
-          <KeyNameDetails name={k.key} />
-        </li>
+        <SettingsRow
+          key={k.key}
+          attrs={{ "data-read-only": k.key }}
+          name={keyLabel(k.key)}
+          description={t(`settings.file.why.${k.key}` as MessageKey)}
+          control={<code className="font-mono text-xs wrap-anywhere">{k.value ?? t("settings.file.notSet")}</code>}
+          details={<KeyNameDetails name={k.key} />}
+        />
       ))}
-    </ul>
+    </Table>
   );
 }
 
-/** The file-only keys: a typed control for each the page edits, then the read-only ones. Null without a file writer. */
+/** The file-only keys: a typed row for each the page edits (`plugins` as one row per plugin kind), then the read-only ones. Null without a file writer. */
 export function FileKeysSection({ view }: { view: SettingsView }) {
   const fk = view.file_keys;
   if (!fk) return null;
   const file = (key: string) => parse(fk.editable.find((e) => e.key === key)?.value ?? null);
   const plugins = file("plugins");
-  const guards = fk.plugins.filter((p) => p.guard).map((p) => p.kind);
-  const guardChanged = (next: Json) => guards.some((g) => JSON.stringify(isObject(next) ? next[g] : undefined) !== JSON.stringify(isObject(plugins) ? plugins[g] : undefined));
   // model_by's shape: the file's value, else the built-in default the settable row carries.
   const modelByShape = file("model_by") ?? parse(view.keys.find((k) => k.key === "model_by")?.default_value ?? null);
-  const specOf = (key: string): Spec | undefined => (key === "plugins" ? pluginsSpec(fk, plugins) : key === "model_by" ? tierSpec(modelByShape) : SPECS[key]);
+  const specOf = (key: string): Spec | undefined => (key === "model_by" ? tierSpec(modelByShape) : SPECS[key]);
+  const common = { token: view.csrf_token };
   return (
     <Section title={t("settings.file.title")} count={fk.editable.length}>
       <p className="mb-2 text-sm text-pretty text-text-2">{t("settings.file.intro")}</p>
-      <ul className="flex flex-col">
-        {fk.editable.map(({ key }) => {
+      <Table label={t("settings.file.title")} head={head()}>
+        {fk.editable.flatMap(({ key }) => {
+          if (key === "plugins") {
+            return fk.plugins.map((p) => (
+              <FileKey key={`plugins.${p.kind}`} {...common} name="plugins" member={p.kind} label={keyLabel(`plugin.${p.kind}`)} help={t("settings.file.pluginHelp")} spec={pluginSpec(p, plugins)} value={plugins} danger={p.guard} guard={p.guard} />
+            ));
+          }
           const spec = specOf(key);
-          if (!spec) return null;
-          const danger = key === "plugins" ? guardChanged : () => DANGER_KEYS.has(key);
-          return <FileKey key={key} name={key} spec={spec} value={file(key)} token={view.csrf_token} danger={danger} />;
+          if (!spec) return [];
+          return [<FileKey key={key} {...common} name={key} label={keyLabel(key)} help={keyHelp(key, "")} spec={spec} value={file(key)} danger={DANGER_KEYS.has(key)} />];
         })}
-      </ul>
-      <h3 className="mt-4 mb-2 text-sm font-semibold">{t("settings.file.readOnlyTitle")}</h3>
+      </Table>
+      <h3 className="mt-6 mb-2 text-balance text-sm font-semibold">{t("settings.file.readOnlyTitle")}</h3>
       <ReadOnlyKeys keys={fk.read_only} />
     </Section>
   );
