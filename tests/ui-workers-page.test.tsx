@@ -15,7 +15,7 @@ const mod = async (name: string) => (await import(/* @vite-ignore */ `../web/src
 const pages = await mod("pages");
 const WorkersPage = pages.RunnersPage!;
 const ActivityPage = pages.ActivityPage!;
-const FailuresPage = (await mod("failures")).FailuresPage!;
+const FailuresSection = (await mod("failures")).FailuresSection!;
 
 const AT = new Date().toISOString();
 const proc = (n: number, extra: object = {}) => ({
@@ -116,7 +116,7 @@ describe("Activity", () => {
 
 describe("Failures page", () => {
   it("titles each group in plain words with the code as small text, a meaning, a next step and a link to its items on Work", async () => {
-    show(FailuresPage);
+    show(FailuresSection);
     const groups = await screen.findAllByTestId("failure-group");
     expect(groups).toHaveLength(2);
     expect(groups[0]!.textContent).toContain("Checks or tests failed");
@@ -130,7 +130,7 @@ describe("Failures page", () => {
   });
 
   it("a code with no copy shows the raw code and a generic line", async () => {
-    show(FailuresPage);
+    show(FailuresSection);
     const g = (await screen.findAllByTestId("failure-group"))[1]!;
     expect(g.textContent).toContain("made_up_code");
     expect(g.textContent).toContain("This error code has no plain description yet.");
@@ -138,7 +138,7 @@ describe("Failures page", () => {
   });
 
   it("expands a group to its runs, each item linked to its page", async () => {
-    show(FailuresPage);
+    show(FailuresSection);
     const g = (await screen.findAllByTestId("failure-group"))[0]!;
     expect(within(g).queryByRole("table")).toBeNull();
     fireEvent.click(within(g).getByRole("button", { expanded: false }));
@@ -152,7 +152,7 @@ describe("Failures page", () => {
 
   it("reads the window from the link and switches to 7 days", async () => {
     history.replaceState(null, "", "/app/failures?window=7d");
-    show(FailuresPage);
+    show(FailuresSection);
     await screen.findAllByTestId("failure-group");
     expect(fetched).toContain("/api/v1/failures?window=7d");
     expect(within(screen.getByRole("group", { name: "Window" })).getByRole("button", { name: "Last 7 days" }).getAttribute("aria-pressed")).toBe("true");
@@ -162,7 +162,7 @@ describe("Failures page", () => {
 
   it("states the cap when runs were left out", async () => {
     overrides["/api/v1/failures?window=24h"] = { ...failures("24h"), total: 800, capped: true };
-    show(FailuresPage);
+    show(FailuresSection);
     expect((await screen.findByTestId("failures-cap")).textContent).toBe("Showing the newest 500 of 800 failed runs in this window.");
   });
 });

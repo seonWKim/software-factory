@@ -5,11 +5,14 @@ import { ButtonRow } from "../../components/ui/button-row.js";
 import { DataTable } from "../../components/ui/data-table.js";
 import { Field } from "../../components/ui/field.js";
 import { Input } from "../../components/ui/input.js";
+import { LINK_CLASS } from "../../components/ui/link-style.js";
 import { KeyValue } from "../../components/ui/key-value.js";
 import { Badge, Empty, Section, Table } from "../../components/ui/parts.js";
 import type { MessageKey } from "../../i18n/en.js";
 import { t } from "../../i18n/index.js";
 import { ago, duration } from "../../lib/format.js";
+import { Link } from "../../nav.js";
+import { BASE } from "../../pages.js";
 import { keyHelp, keyLabel } from "../../lib/key-label.js";
 import { useNow } from "../common.js";
 import { FileKeysSection, KeyNameDetails, Outcome, editableKeys, useWrite } from "../settings-file-keys.js";
@@ -251,6 +254,11 @@ export function AdvancedTab({ view: v }: { view: SettingsView }) {
   const prOnly = v.pr_only.filter((p) => !editable.has(p.key));
   return (
     <>
+      <p className="mb-4 text-sm text-text-2">
+        {t("settings.devTools")}{" "}
+        <Link href={`${BASE}runners`} className={LINK_CLASS}>{t("page.runners")}</Link>{" · "}
+        <Link href={`${BASE}data`} className={LINK_CLASS}>{t("page.data")}</Link>
+      </p>
       <Section title={t("settings.settableKeys")} count={v.keys.length}>
         <p className="mb-2 text-sm text-pretty text-text-2">{t("settings.settableIntro")}</p>
         <ProjectLabel view={v} />

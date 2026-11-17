@@ -11,7 +11,6 @@ import { ago } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
 import { WorkerName, useNow } from "./common.js";
-import { PageHeader } from "../components/ui/notice.js";
 
 const WINDOWS = ["24h", "7d"] as const;
 type Window = (typeof WINDOWS)[number];
@@ -73,8 +72,8 @@ function Group({ group, now, titles }: { group: FailureGroup; now: number; title
   );
 }
 
-/** Failed runs grouped by error code, for the last 24 hours or 7 days (design §9, issue #312). */
-export function FailuresPage() {
+/** Health's Failures section: failed runs grouped by error code, for the last 24 hours or 7 days (design §9, issue #312). Its anchor is `#failures`. */
+export function FailuresSection() {
   const now = useNow();
   const [win, setWin] = useState<Window>(initialWindow);
   const q = useApi<Failures>(API.failures(win));
@@ -82,8 +81,8 @@ export function FailuresPage() {
   const items = useApi<Items>(API.items);
   const titles = useMemo(() => new Map((items.data?.items ?? []).flatMap((i) => (i.title ? [[i.id, i.title] as const] : []))), [items.data]);
   return (
-    <>
-      <PageHeader title={t("page.failures")} />
+    <section id="failures" aria-label={t("page.failures")} className="mt-8">
+      <h2 className="mb-3 text-base font-semibold">{t("page.failures")}</h2>
       <SegmentedControl label={t("failures.window")} options={WINDOWS.map((w) => ({ id: w, label: t(WINDOW_LABELS[w]) }))} value={win} onChange={setWin} className="mb-6" />
       <Section title={t("failures.title")} count={q.data?.total}>
         {q.isError ? <ErrorNote error={q.error} /> : !q.data ? <Loading rows={3} /> : q.data.groups.length === 0 ? (
@@ -101,6 +100,6 @@ export function FailuresPage() {
           </>
         )}
       </Section>
-    </>
+    </section>
   );
 }

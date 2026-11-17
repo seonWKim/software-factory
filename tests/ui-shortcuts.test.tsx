@@ -48,14 +48,15 @@ const fields = () => [screen.getByLabelText("field"), screen.getByLabelText("are
 const press = (key: string, init: KeyboardEventInit = {}, target: Element | Document = document.body) => fireEvent.keyDown(target, { key, ...init });
 
 describe("shortcuts", () => {
-  it("g w and g a go to Work and Activity; g n, g i, g t and g u do nothing", async () => {
+  it("g w and g a both go to Work; g n, g i, g t and g u do nothing", async () => {
     mount();
     press("g");
     press("w");
     expect(location.pathname).toBe("/app/items");
+    history.pushState(null, "", "/app/health");
     press("g");
     press("a");
-    expect(location.pathname).toBe("/app/activity");
+    expect(location.pathname).toBe("/app/items");
     press("g");
     press("w");
     for (const k of ["n", "i", "t", "u"]) {

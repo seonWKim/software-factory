@@ -142,10 +142,10 @@ describe("app shell", () => {
     const tasks = screen.getByRole("navigation", { name: "Tasks" });
     expect([...tasks.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Tasks4", "Calendar"]);
     const nav = screen.getByRole("navigation", { name: "System" });
-    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Work", "Activity", "Health", "Failures", "Spend", "Rules", "Runners", "Data"]);
-    fireEvent.click(within(nav).getByText("Runners"));
-    expect(await screen.findByRole("heading", { name: "Runners" })).toBeTruthy();
-    expect(location.pathname).toBe("/app/runners");
+    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Work", "Rules", "Health"]);
+    fireEvent.click(within(nav).getByText("Health"));
+    expect(await screen.findByRole("heading", { level: 1, name: "Health" })).toBeTruthy();
+    expect(location.pathname).toBe("/app/health");
     expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
     expect(fetched.length).toBeGreaterThan(0);
     expect(fetched.every((u) => u.startsWith("/api/v1/"))).toBe(true);
@@ -429,7 +429,7 @@ describe("top bar on a narrow screen", () => {
 });
 
 describe("app pages", () => {
-  it("/app/ opens the Tasks page with what needs you in its section; Activity shows what runs", async () => {
+  it("/app/ opens the Tasks page with what needs you in its section; Work shows what runs", async () => {
     mount();
     // An update in progress is no page banner and there is no header status.
     expect(await screen.findByRole("heading", { level: 1, name: "Tasks" })).toBeTruthy();
@@ -441,9 +441,9 @@ describe("app pages", () => {
     expect(within(needs).queryByText("Being built")).toBeNull();
     expect(screen.queryByRole("table", { name: "Running now" })).toBeNull();
     cleanup();
-    history.replaceState(null, "", "/app/activity");
+    history.replaceState(null, "", "/app/items");
     mount();
-    expect(screen.getByRole("heading", { level: 1, name: "Activity" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 1, name: "Work" })).toBeTruthy();
     const running = await screen.findByRole("table", { name: "Running now" });
     expect(within(running).getByText("Being built")).toBeTruthy();
   });
@@ -455,6 +455,17 @@ describe("app pages", () => {
     const system = screen.getByRole("navigation", { name: "System" });
     expect(within(system).getByRole("link", { name: "Health" })).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Users" })).toBeNull();
+  });
+
+  it("the sidebar has exactly seven links; Activity, Failures, Spend, Runners and Data are not among them", () => {
+    mount();
+    const side = screen.getByRole("complementary", { name: "Sidebar" });
+    const links = [...side.querySelectorAll("a")].filter((a) => a.getAttribute("href")?.startsWith("/app/") && a.getAttribute("href") !== "/app/");
+    expect(links.map((a) => [a.getAttribute("aria-label"), a.getAttribute("href")])).toEqual([
+      ["Tasks", "/app/tasks"], ["Calendar", "/app/calendar"], ["Plugins", "/app/plugins"],
+      ["Work", "/app/items"], ["Rules", "/app/rules"], ["Health", "/app/health"], ["Settings", "/app/settings"],
+    ]);
+    for (const gone of ["Activity", "Failures", "Spend", "Runners", "Data"]) expect(within(side).queryByRole("link", { name: gone })).toBeNull();
   });
 
   it("the sidebar shows Plugins in its own group above System, linking to /app/plugins", () => {
@@ -476,8 +487,40 @@ describe("app pages", () => {
     expect(redirectFor("/app/users")).toBeNull();
   });
 
+  it("/app/spend, /app/failures and /app/activity redirect, keeping the query; /app/queue and /app/workers still do", async () => {
+    expect(redirectFor("/app/spend")).toBe("/app/health#spend");
+    expect(redirectFor("/app/failures")).toBe("/app/health#failures");
+    expect(redirectFor("/app/failures", "?window=7d")).toBe("/app/health?window=7d#failures");
+    expect(redirectFor("/app/activity")).toBe("/app/items");
+    expect(redirectFor("/app/workers")).toBe("/app/runners");
+    expect(redirectFor("/app/queue")).toBe("/app/items?state=queued");
+    for (const [from, to] of [
+      ["/app/spend", "/app/health#spend"],
+      ["/app/failures?window=7d", "/app/health?window=7d#failures"],
+      ["/app/activity", "/app/items"],
+    ] as const) {
+      history.replaceState(null, "", from);
+      mount();
+      await vi.waitFor(() => expect(location.pathname + location.search + location.hash).toBe(to));
+      cleanup();
+    }
+  });
+
+  it("Health has Spend and Failures sections as level-2 headings under its one h1; Work holds the Activity content", async () => {
+    history.replaceState(null, "", "/app/health");
+    mount();
+    expect(await screen.findByRole("heading", { level: 2, name: "Spend" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 2, name: "Failures" })).toBeTruthy();
+    expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
+    cleanup();
+    history.replaceState(null, "", "/app/items");
+    mount();
+    expect(await screen.findByRole("table", { name: "Running now" })).toBeTruthy();
+    expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
+  });
+
   it("every sidebar page has exactly one h1, its menu name, from its own PageHeader", async () => {
-    const names: Record<string, string> = { "": "Tasks", tasks: "Tasks", calendar: "Calendar", items: "Work", activity: "Activity", runners: "Runners", health: "Health", failures: "Failures", spend: "Spend", rules: "Rules", data: "Data", settings: "Settings" };
+    const names: Record<string, string> = { "": "Tasks", tasks: "Tasks", calendar: "Calendar", items: "Work", runners: "Runners", health: "Health", rules: "Rules", data: "Data", settings: "Settings" };
     for (const [path, name] of Object.entries(names)) {
       history.replaceState(null, "", `/app/${path}`);
       mount();
@@ -488,7 +531,7 @@ describe("app pages", () => {
   });
 
   it("each page's heading matches its menu name", async () => {
-    const names: Record<string, string> = { items: "Work", activity: "Activity", runners: "Runners", health: "Health", failures: "Failures", spend: "Spend", data: "Data", settings: "Settings" };
+    const names: Record<string, string> = { items: "Work", runners: "Runners", health: "Health", data: "Data", settings: "Settings" };
     for (const [path, name] of Object.entries(names)) {
       history.replaceState(null, "", `/app/${path}`);
       mount();
@@ -546,8 +589,8 @@ describe("app pages", () => {
 });
 
 describe("unreviewed merges", () => {
-  it("Activity says how many PRs merged without review and links to Health; hidden at 0", async () => {
-    history.replaceState(null, "", "/app/activity");
+  it("Work says how many PRs merged without review and links to Health; hidden at 0", async () => {
+    history.replaceState(null, "", "/app/items");
     mount();
     const line = await screen.findByTestId("unreviewed-merges-line");
     expect(line.textContent).toContain("2 PRs merged without review in the last 7 days");
@@ -556,7 +599,7 @@ describe("unreviewed merges", () => {
     cleanup();
     (overview as { unreviewed_merges_7d: number }).unreviewed_merges_7d = 0;
     try {
-      history.replaceState(null, "", "/app/activity");
+      history.replaceState(null, "", "/app/items");
       mount();
       await screen.findByRole("table", { name: "Running now" });
       expect(screen.queryByTestId("unreviewed-merges-line")).toBeNull();
