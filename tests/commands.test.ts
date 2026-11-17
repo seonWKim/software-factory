@@ -15,6 +15,7 @@ import { githubCommand } from "../src/core/command-inbox.js";
 import type { AuthProvider } from "../src/interfaces/auth-provider.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { storedAnswers } from "../src/shared/command-notes.js";
+import { retry } from "../src/controller/units/support.js";
 import { FakeAuth, FakeSlackPollSource, FakeSource, alice, cleanScanner, config, issueRef, pipeline, silent, slackRef, triageSpec } from "./helpers/fakes.js";
 import { newStore, PROJECT_KEY, system, w1 } from "./helpers/store.js";
 
@@ -503,7 +504,30 @@ describe("footers match what the controller accepts", () => {
       expect(after).toEqual(item);
       expect(refused).toHaveLength(1);
       expect(refused[0]!.body).toContain(`a ${phase === "failed_review" ? "review" : "update"} run`);
+      expect(refused[0]!.body).toContain("applies only to a failed implement or resolve run");
     }
+  });
+
+  it("for a failed resolve run, retryKind is resolve and retry() widens allowed_paths and enqueues a resolve run", async () => {
+    const { store, controller, itemIn } = await harness();
+    const item0 = await itemIn("merge_conflict", 42, 31_000);
+    const queued = await store.transition({
+      id: item0.id, expected_version: item0.version, patch: {}, actor: system, reason: "setup", enqueue: { kind: "resolve", idempotency_key: "r31000" },
+    });
+    if (!queued.ok) throw new Error("setup failed");
+    const run = (await store.claimRun({ worker_id: w1, kinds: ["resolve"], lease_ms: 60_000 }))!;
+    await store.completeRun(run.id, run.lease!.token, { status: "failed", error_code: "boom", detail: "x", infra: false });
+    const blocked = await store.transition({
+      id: item0.id, expected_version: queued.item.version, actor: system, reason: "setup", patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "repeated_failure" },
+    });
+    if (!blocked.ok) throw new Error("setup failed");
+    const item = blocked.item;
+    const unit = await controller.unit("commands");
+    expect(await unit.retryKind(item)).toBe("resolve");
+    const d = retry(item, system, "resolve", "keep both imports", unit.widen(item, ["src/a.ts"]));
+    if (!d || "refuse" in d) throw new Error(d?.refuse ?? "no decision");
+    expect(d.patch.allowed_paths).toEqual([...item.allowed_paths, "src/a.ts"]);
+    expect(d.enqueue).toMatchObject({ kind: "resolve", input: { notes: "keep both imports" } });
   });
 
   // One test per phase on one shared harness, as above: all phases in one test drove 400 controller events.

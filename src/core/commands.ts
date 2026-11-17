@@ -137,7 +137,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     usage: "/retry",
     description:
       "Run the failed run again. Notes on the same line or below go to the implementer and the reviewer. " +
-      "`/retry +paths <path>...` (at most 10, notes on the lines below) after a failed implement run also adds those paths to the allowed paths. " +
+      "`/retry +paths <path>...` (at most 10, notes on the lines below) after a failed implement or resolve run also adds those paths to the allowed paths; a resolve run gets the notes without the `+paths` line. " +
       "At a dependency closed without a merge, it reads the dependencies again and starts the implement run if none is still closed. " +
       "At the review loop limit, it starts an implement run with the loop count reset; `+paths` applies there too. " +
       "On an item held for a recurring failure, it lifts the hold so the item's queued runs start. On a held phase of a split, it releases the phase into triage once the previous phase closed without a merge",
