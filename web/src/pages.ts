@@ -1,7 +1,7 @@
 import { CalendarCheck, CalendarDays, Database, HeartPulse, ListTodo, Puzzle, ScrollText, Settings, Waypoints, type LucideIcon } from "lucide-react";
 
-/** Where a page sits in the sidebar: the top block (Tasks), the middle one (System), the setup block pinned to the bottom (what agents may do and use, and Settings), or nowhere (a routable page with no sidebar link: Runners and Data, linked from Settings > Advanced). */
-export type PageGroup = "tasks" | "system" | "setup" | "hidden";
+/** Where a page sits in the sidebar: the Tasks group, the Plugins group (its own, above System), the System group, the row at its bottom (Settings), or nowhere (a routable page with no sidebar link: Runners and Data, linked from Settings > Advanced). */
+export type PageGroup = "tasks" | "plugins" | "system" | "bottom" | "hidden";
 
 /** One routable page. `key` names it in the English catalog (`page.<key>`), which also names its heading. */
 export interface PageDef {
@@ -16,11 +16,11 @@ export interface PageDef {
 export const PAGES: readonly PageDef[] = [
   { path: "tasks", label: "Tasks", key: "tasks", icon: CalendarCheck, group: "tasks" },
   { path: "calendar", label: "Calendar", key: "calendar", icon: CalendarDays, group: "tasks" },
+  { path: "plugins", label: "Plugins", key: "plugins", icon: Puzzle, group: "plugins" },
   { path: "items", label: "Work", key: "work", icon: ListTodo, group: "system" },
+  { path: "rules", label: "Rules", key: "rules", icon: ScrollText, group: "system" },
   { path: "health", label: "Health", key: "health", icon: HeartPulse, group: "system" },
-  { path: "rules", label: "Rules", key: "rules", icon: ScrollText, group: "setup" },
-  { path: "plugins", label: "Plugins", key: "plugins", icon: Puzzle, group: "setup" },
-  { path: "settings", label: "Settings", key: "settings", icon: Settings, group: "setup" },
+  { path: "settings", label: "Settings", key: "settings", icon: Settings, group: "bottom" },
   { path: "runners", label: "Runners", key: "runners", icon: Waypoints, group: "hidden" },
   { path: "data", label: "Data", key: "data", icon: Database, group: "hidden" },
 ];

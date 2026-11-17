@@ -4,7 +4,6 @@ export const en = {
   "nav.sidebar": "Sidebar",
   "nav.tasks": "Tasks",
   "nav.system": "System",
-  "nav.setup": "Setup",
   "page.tasks": "Tasks",
   "page.calendar": "Calendar",
   "page.needs": "Needs you",
