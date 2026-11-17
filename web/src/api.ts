@@ -851,11 +851,18 @@ export interface AppliedRule {
   raw: string | null;
 }
 
+/** One agents home and the first of bin/tacit and bin/evolve that is missing or not executable there (null: both are). */
+export interface AgentsHomeView {
+  path: string;
+  missing: string | null;
+}
+
 /**
  * `/api/v1/rules`: `enabled` false when the tacit ledger is off; `judge` is why the viewer cannot send a verdict (or,
  * with the ledger off, turn it on), or null; `error` is a failed ledger read, or null. With the ledger off, `home` is
- * the agents home and the CLI missing there (null: found), and `turn_on` the `integrations` value that turns it on,
- * sent through POST /api/v1/settings; null when the viewer may not or the home is not found.
+ * the agents home in use and the CLI missing there (null: found), with `homes`, each known home (AGENTS_HOME when set,
+ * ~/.agents) and its own check, for the picker; `turn_on` the `integrations` value that turns it on (the plugin name
+ * only), sent through POST /api/v1/settings; null when the viewer may not or the home is not found.
  */
 export interface RulesView {
   enabled: boolean;
@@ -867,7 +874,7 @@ export interface RulesView {
   error: string | null;
   csrf_token: string | null;
   judge: string | null;
-  home: { path: string; missing: string | null } | null;
+  home: (AgentsHomeView & { homes?: AgentsHomeView[] }) | null;
   turn_on: string | null;
   /** The latest improve report and Run now (absent from an older server), with the ledger on or off. */
   improve?: ImproveView;
@@ -1295,12 +1302,13 @@ export async function postStanding(
 }
 
 /**
- * POST /api/v1/rules/verdict: a verdict with its reason, for promote of a class (C-) the owner's wording, default and
- * exception, and for promote of a proposal (P-) `applied_to`, the file the change went into (retire takes none).
+ * POST /api/v1/rules/verdict: a verdict with its reason, and for promote of a class (C-) the owner's wording, default
+ * and exception. Promote of a proposal (P-) takes none: the server applies its current → proposed lines, and a failed
+ * apply comes back as the error, with nothing written.
  */
 export async function postRuleVerdict(
   token: string,
-  body: { id: string; verdict: RuleVerdict; reason: string; text?: string; default?: string; exception?: string; applied_to?: string },
+  body: { id: string; verdict: RuleVerdict; reason: string; text?: string; default?: string; exception?: string },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const r = await postJson<{ error?: string }>(API.ruleVerdict, token, body);
   if (r.ok) return { ok: true };

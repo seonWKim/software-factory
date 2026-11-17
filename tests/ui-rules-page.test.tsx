@@ -17,10 +17,11 @@ const { RulesPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { RulesP
 // each under its line on what promoting one does; each card with its title, state, ID and one line of what it would
 // change, and its detail (what, before → after, why, evidence, where, related; an empty part left out) read from GET /api/v1/rules/entry only when the card opens. Promote, Hold and Reject ask for a
 // reason in a dialog before they send; Promote of a class (C-) sends the owner's wording, default and exception (the
-// last two prefilled from its draft), Promote of a proposal (P-) sends none. A judged entry shows its decision and no
-// verdict buttons; a class whose draft could not be read offers no Promote. With the ledger off (design 08-settings): the agents home found gives one line and one
-// primary Turn on, which writes the `integrations` entry through POST /api/v1/settings and loads the rules with no
-// reload; not found, the page names the missing CLI and how to set AGENTS_HOME.
+// last two prefilled from its draft), Promote of a proposal (P-) shows its Now and Proposed lines and sends only the
+// reason. A judged entry shows its decision and no
+// verdict buttons; a class whose draft could not be read offers no Promote. With the ledger off (design 08-settings): a
+// picker over the known agents homes shows the chosen one's check, and one primary Turn on, when the home in use is
+// found, writes the `integrations` entry through POST /api/v1/settings and loads the rules with no reload.
 
 const TOKEN = "tok_rules";
 const SLOW = { timeout: 5_000 };
@@ -106,7 +107,7 @@ describe("Rules page", () => {
     const groups = screen.getAllByRole("region").map((r) => [r.getAttribute("aria-label"), r.querySelector("[data-group-line]")!.textContent]);
     expect(groups).toEqual([
       ["Rule candidates", "Promoting a candidate adds its rule to every run's prompt from the next run on."],
-      ["Structure proposals", "Promoting a proposal records your verdict only; you make the change by hand."],
+      ["Structure proposals", "Promoting a proposal shows its before and after, then applies it to the target file once you confirm."],
     ]);
     expect(card("C-012").querySelector("[data-rule-title]")!.textContent).toBe("Keep existing CLI flags.");
     expect(card("C-012").textContent).toContain("Pending");
@@ -243,30 +244,46 @@ describe("Rules page", () => {
     ]);
   });
 
-  it("promote of a proposal asks for no wording and an Applied to file prefilled with its target; empty, Send is off and the field says why", async () => {
+  it("promote of a proposal shows its Now and Proposed lines, asks for no wording or file, and sends only the reason; with no lines Send is off", async () => {
     current = view({
-      entries: [{ id: "P-20261101-158e", title: "Quiet notify", state: "open", kind: "edit-asset", target: "private/bin/notify", judged: null, draft: null, draft_error: null }],
+      entries: [{ id: "P-20261101-158e", title: "Quiet notify", state: "open", kind: "edit-asset", target: "private/bin/notify", judged: null, draft: null, draft_error: null },
+        { id: "P-0009", title: "No lines", state: "open", kind: "edit-asset", target: "x.md", judged: null, draft: null, draft_error: null }],
     });
+    detail = (id) => ({ id, error: null, detail: id === "P-0009" ? { id } : { id, target: "private/bin/notify", current: "notify --loud", proposed: "notify --quiet" } });
     await show();
     await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
     fireEvent.click(within(card("P-20261101-158e")).getByRole("button", { name: "Promote" }));
-    for (const name of ["Rule wording", "Default", "Exception"]) expect(within(dialog()).queryByRole("textbox", { name })).toBeNull();
-    expect(dialog().querySelector("[data-dialog-consequence]")!.textContent)
-      .toBe("Promoting records the verdict and names the file the change went into; you make the change by hand.");
-    const applied = within(dialog()).getByRole("textbox", { name: "Applied to" }) as HTMLInputElement;
-    expect(applied.value).toBe("private/bin/notify");
-    fireEvent.change(within(dialog()).getByRole("textbox", { name: "Reason" }), { target: { value: "good shape" } });
+    for (const name of ["Rule wording", "Default", "Exception", "Applied to"]) expect(within(dialog()).queryByRole("textbox", { name })).toBeNull();
+    expect(dialog().querySelector("[data-dialog-consequence]")!.textContent).toBe(
+      "Promoting replaces the Now lines with the Proposed lines in the target file, then records the verdict. If the Now lines are not there exactly once, or evolve refuses, nothing is written and the error shows here.",
+    );
+    await waitFor(() => expect(dialog().querySelector('[data-change="proposed"]')!.textContent).toBe("notify --quiet"), SLOW);
+    expect(dialog().querySelector('[data-change="current"]')!.textContent).toBe("notify --loud");
     const confirm = within(dialog()).getByRole("button", { name: "Send promote" }) as HTMLButtonElement;
-    expect(confirm.disabled).toBe(false);
-    fireEvent.change(applied, { target: { value: "  " } });
     expect(confirm.disabled).toBe(true);
-    expect(applied.parentElement!.textContent).toContain("Name the file the change went into: Send stays off until you do.");
-    fireEvent.change(applied, { target: { value: "private/bin/notify-quiet" } });
+    fireEvent.change(within(dialog()).getByRole("textbox", { name: "Reason" }), { target: { value: "good shape" } });
     expect(confirm.disabled).toBe(false);
-    expect(applied.parentElement!.textContent).not.toContain("Send stays off");
     fireEvent.click(confirm);
     await waitFor(() => expect(posts).toHaveLength(1));
-    expect(sent()).toEqual([{ id: "P-20261101-158e", verdict: "promote", reason: "good shape", applied_to: "private/bin/notify-quiet" }]);
+    expect(sent()).toEqual([{ id: "P-20261101-158e", verdict: "promote", reason: "good shape" }]);
+    await waitFor(() => expect(document.querySelector("dialog[data-dialog]")).toBeNull());
+
+    fireEvent.click(within(card("P-0009")).getByRole("button", { name: "Promote" }));
+    expect((await within(dialog()).findByRole("alert", {}, SLOW)).textContent).toBe("Promote is off: this proposal gives no Now and Proposed lines to apply.");
+    fireEvent.change(within(dialog()).getByRole("textbox", { name: "Reason" }), { target: { value: "x" } });
+    expect((within(dialog()).getByRole("button", { name: "Send promote" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("a failed apply keeps the dialog open with the CLI's error", async () => {
+    detail = (id) => ({ id, error: null, detail: { id, target: "prompts/review.md", current: "a", proposed: "b" } });
+    answer = { status: 502, body: { error: "The ledger refused the verdict: evolve verdict exited 1: evolve: P-0007 was judged already" } };
+    await show();
+    await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
+    fireEvent.click(within(card("P-0007")).getByRole("button", { name: "Promote" }));
+    await waitFor(() => expect(dialog().querySelector('[data-change="proposed"]')).not.toBeNull(), SLOW);
+    fireEvent.change(within(dialog()).getByRole("textbox", { name: "Reason" }), { target: { value: "x" } });
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Send promote" }));
+    expect((await within(dialog()).findByRole("alert", {}, SLOW)).textContent).toContain("evolve: P-0007 was judged already");
   });
 
   it("promote of a class keeps its own help text and has no Applied to field", async () => {
@@ -297,22 +314,44 @@ describe("Rules page", () => {
     expect(within(card("C-012")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Why and where"]);
   });
 
+  const HOMES = [{ path: "/Users/me/agents", missing: "bin/evolve" }, { path: "/Users/me/.agents", missing: null }];
   const off = (over: Partial<RulesView> = {}): RulesView =>
-    view({ enabled: false, entries: [], home: { path: "/Users/me/.agents", missing: null }, turn_on: '{"tacit":"agents-home"}', ...over });
+    view({ enabled: false, entries: [], home: { path: "/Users/me/.agents", missing: null, homes: [HOMES[1]!] }, turn_on: '{"tacit":"agents-home"}', ...over });
   const h1s = () => screen.queryAllByRole("heading", { level: 1 }).map((h) => h.textContent);
+  const check = () => document.querySelector<HTMLElement>("[data-home-check]")!;
 
-  it("ledger off, home found: one line names the home and one primary Turn on is the only button", async () => {
+  it("ledger off, home found: the picker shows the home in use and its check, and one primary Turn on is the only button", async () => {
     current = off();
     await show();
     const turnOn = await screen.findByRole("button", { name: "Turn on" }, SLOW);
     expect(screen.getAllByRole("button")).toEqual([turnOn]);
     expect(turnOn.className).toContain("bg-accent"); // the primary variant
-    expect(document.querySelector("[data-home]")!.textContent).toBe("Found your agents home at /Users/me/.agents");
+    const radios = within(screen.getByRole("radiogroup", { name: "Agents home" })).getAllByRole("radio") as HTMLInputElement[];
+    expect(radios.map((r) => [r.value, r.checked])).toEqual([["/Users/me/.agents", true]]);
+    expect(check().textContent).toBe("bin/tacit and bin/evolve are both executable in /Users/me/.agents.");
+    // No path field: the picker offers only the known homes.
+    expect(screen.queryByRole("textbox")).toBeNull();
     // The page's own header is the one "Rules"; the page adds no second h1 and no step list.
     expect(h1s()).toEqual(["Rules"]);
     expect(document.querySelector("ol")).toBeNull();
     // The empty state carries the action, and the page is capped at max-w-3xl.
     expect(turnOn.closest("div.max-w-3xl")).not.toBeNull();
+  });
+
+  it("the picker lists only the known homes, AGENTS_HOME first, and shows the check of the one chosen: the missing file, or both executable", async () => {
+    current = off({ home: { path: "/Users/me/agents", missing: "bin/evolve", homes: HOMES }, turn_on: null });
+    await show();
+    const group = await screen.findByRole("radiogroup", { name: "Agents home" }, SLOW);
+    const radios = within(group).getAllByRole("radio") as HTMLInputElement[];
+    expect(radios.map((r) => [r.value, r.checked])).toEqual([["/Users/me/agents", true], ["/Users/me/.agents", false]]);
+    expect(group.textContent).toContain("/Users/me/agents (in use)");
+    expect(check().textContent).toBe("bin/evolve is missing or not executable in /Users/me/agents.");
+    fireEvent.click(radios[1]!);
+    expect(check().textContent).toContain("bin/tacit and bin/evolve are both executable in /Users/me/.agents.");
+    expect(check().textContent).toContain("The factory reads the home in use, /Users/me/agents, not this one.");
+    // Choosing writes nothing, and with the home in use not found there is no Turn on.
+    expect(posts).toEqual([]);
+    expect(screen.queryAllByRole("button")).toEqual([]);
   });
 
   it("Turn on writes the integrations entry through POST /api/v1/settings, then loads the rules with no reload", async () => {
@@ -337,13 +376,13 @@ describe("Rules page", () => {
     expect(screen.queryByRole("list", { name: "Rule candidates" })).toBeNull();
   });
 
-  it("ledger off, home not found: names the missing CLI and how to set AGENTS_HOME, with no path field and no Turn on", async () => {
-    current = off({ home: { path: "/Users/me/.agents", missing: "bin/evolve" }, turn_on: null });
+  it("ledger off, home not found: names the missing file, with no path field and no Turn on, and tells nobody where to put the CLIs", async () => {
+    current = off({ home: { path: "/Users/me/.agents", missing: "bin/evolve", homes: [{ path: "/Users/me/.agents", missing: "bin/evolve" }] }, turn_on: null });
     await show();
     await waitFor(() => expect(document.querySelector("[data-home]")).not.toBeNull(), SLOW);
     const text = document.querySelector("[data-home]")!.textContent!;
-    expect(text).toContain("bin/evolve is missing or not executable");
-    expect(text).toContain("AGENTS_HOME");
+    expect(text).toContain("bin/evolve is missing or not executable in /Users/me/.agents.");
+    expect(text).not.toMatch(/\bput\b/i);
     expect(screen.queryAllByRole("button")).toEqual([]);
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(h1s()).toEqual(["Rules"]);

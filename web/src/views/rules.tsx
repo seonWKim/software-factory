@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { ChevronDown } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import {
-  API, type AppliedRule, type ImproveGroupView, type ImproveView, type RetiredRule, type RuleDetail, type RuleEvidence, type RuleRow, type RuleVerdict, type RulesView,
+  API, type AgentsHomeView, type AppliedRule, type ImproveGroupView, type ImproveView, type RetiredRule, type RuleDetail, type RuleEvidence, type RuleRow, type RuleVerdict, type RulesView,
   postImproveRun, postRuleVerdict, postSettings, useApi, useRuleEntry,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
@@ -13,6 +13,7 @@ import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
 import { Markdown } from "../components/ui/markdown.js";
 import { Tooltip } from "../components/ui/menu.js";
+import { Radio } from "../components/ui/radio.js";
 import { Badge, ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { EmptyState, Notice, PageHeader, StatusBadge } from "../components/ui/notice.js";
 import { Textarea } from "../components/ui/textarea.js";
@@ -32,10 +33,12 @@ import { ApprovalsSection } from "./standing.js";
 // Promote (primary, with a Tooltip when off), Hold and Reject (danger, last) each open a dialog that shows the
 // entry's full title and that detail above a required reason;
 // Promote of a class also asks for the rule's wording, default and exception (prefilled from the class's draft);
-// Promote of a proposal asks for the file the change went into, "Applied to" (prefilled with its target, required: an
-// empty field says why and keeps Send off), sent as `applied_to`.
-// Only the owner sends. With the ledger off the page is an EmptyState whose action is Turn on (stores `integrations`
-// through POST /api/v1/settings, then loads the rules) or, with no agents home, says which CLI is missing.
+// Promote of a proposal shows its Now and Proposed lines (the detail's before → after) and sends only the reason on
+// confirm: the server applies the change through the plugin; a failed apply's error stays in the dialog. With no
+// lines to apply Send stays off and a Notice says why.
+// Only the owner sends. With the ledger off the page is an EmptyState whose action is Turn on (stores `integrations`,
+// the plugin name only, through POST /api/v1/settings, then loads the rules), and an agents home picker over the
+// known homes (AGENTS_HOME when set, ~/.agents) shows the chosen one's check: both CLIs executable, else the missing file.
 // Applied lists the promoted rules file in the file's order, one compact row per rule (ID, name, scope, judged date,
 // the "Suggested to retire" badge and Retire) that expands to a label/value list, with a search over ID, name, default
 // and scope; it is collapsed while something waits. Suggest reads each class's retire suggestions on demand. Then a
@@ -55,7 +58,7 @@ const STATE_LABEL: Record<string, MessageKey> = { open: "rules.stateOpen", pendi
 const STATE_LEVEL: Record<string, string> = { open: "running", pending: "needs_approval" };
 /** The page's reading width. */
 const PAGE_WIDTH = "max-w-3xl";
-/** A candidate class (`C-…`) takes the owner's wording as its rule on promote; a structure proposal the file it was applied to. */
+/** A candidate class (`C-…`) takes the owner's wording as its rule on promote; a structure proposal applies its lines. */
 const isClass = (id: string): boolean => id.startsWith("C-");
 const VERDICTS: readonly { verdict: RuleVerdict; label: MessageKey; variant: "primary" | "secondary" | "danger" }[] = [
   { verdict: "promote", label: "rules.promote", variant: "primary" },
@@ -120,30 +123,31 @@ function ReasonField({ id, value, onChange }: { id: string; value: string; onCha
 
 /**
  * The verdict dialog: the entry's full title and its detail above the fields, then a reason, and for promote of a class the rule's wording (prefilled with its title) and its
- * default and exception (prefilled from its draft); for promote of a proposal the file it was applied to (prefilled
- * with its target).
+ * default and exception (prefilled from its draft). Promote of a proposal shows its Now and Proposed lines in the
+ * detail and is off until both are read.
  */
 function VerdictDialog({ entry, applied, verdict, token, onClose }: { entry: RuleRow; applied: AppliedRule[]; verdict: RuleVerdict; token: string; onClose: () => void }) {
   const [reason, setReason] = useState("");
   const [text, setText] = useState(entry.title);
   const [dflt, setDefault] = useState(entry.draft?.default ?? "");
   const [exception, setException] = useState(entry.draft?.exception ?? "");
-  const [appliedTo, setAppliedTo] = useState(entry.target ?? "");
   const { busy, error, send } = useSendVerdict(token, onClose);
   const promote = verdict === "promote" && isClass(entry.id);
   const applies = verdict === "promote" && !isClass(entry.id);
   const rule = { text: text.trim(), default: dflt.trim(), exception: exception.trim() };
-  const noFile = applies && appliedTo.trim() === "";
+  // The same read as the detail above: a proposal applies only with both its Now and Proposed lines.
+  const lines = useRuleEntry(entry.id, applies);
+  const noLines = applies && (lines.data?.detail?.current === undefined || lines.data.detail.proposed === undefined);
   const label = t(VERDICTS.find((v) => v.verdict === verdict)!.label);
   return (
     <Dialog
       title={t("rules.dialogTitle", { label, id: entry.id })}
       consequence={t(promote ? "rules.consequencePromoteClass" : CONSEQUENCE[verdict])}
       confirmLabel={t("rules.send", { label: label.toLowerCase() })}
-      confirmDisabled={busy || reason.trim() === "" || (promote && Object.values(rule).includes("")) || noFile}
+      confirmDisabled={busy || reason.trim() === "" || (promote && Object.values(rule).includes("")) || noLines}
       danger={verdict === "reject"}
       error={error}
-      onConfirm={() => void send({ id: entry.id, verdict, reason: reason.trim(), ...(promote ? rule : {}), ...(applies ? { applied_to: appliedTo.trim() } : {}) }, label)}
+      onConfirm={() => void send({ id: entry.id, verdict, reason: reason.trim(), ...(promote ? rule : {}) }, label)}
       onClose={onClose}
     >
       <p data-dialog-summary className="min-w-0 text-sm font-medium text-pretty break-words whitespace-pre-wrap">
@@ -157,14 +161,7 @@ function VerdictDialog({ entry, applied, verdict, token, onClose }: { entry: Rul
           <RuleText id={`${entry.id}-exception`} label={t("rules.exception")} value={exception} onChange={setException} />
         </>
       )}
-      {applies && (
-        <Field label={t("rules.appliedTo")} htmlFor={`${entry.id}-applied-to`} help={t(noFile ? "rules.appliedToEmpty" : "rules.appliedToHelp")}>
-          <Input
-            id={`${entry.id}-applied-to`} aria-label={t("rules.appliedTo")} aria-invalid={noFile} className="font-mono" value={appliedTo} maxLength={1000}
-            onChange={(e) => setAppliedTo(e.target.value)}
-          />
-        </Field>
-      )}
+      {noLines && !lines.isPending && <Notice tone="warn">{t("rules.applyNoLines")}</Notice>}
       <ReasonField id={entry.id} value={reason} onChange={setReason} />
     </Dialog>
   );
@@ -387,12 +384,49 @@ function RuleCard({ entry, applied, token }: { entry: RuleRow; applied: AppliedR
   );
 }
 
-/** The ledger off: the agents home found (Turn on) or the CLI missing there, and why the viewer cannot turn it on. */
+/** The chosen home's check: both CLIs executable, else the first missing file; and whether the ledger reads it. */
+function HomeCheck({ home, inUse }: { home: AgentsHomeView; inUse: string }) {
+  return (
+    <div data-home-check className="space-y-2">
+      {home.missing === null ? (
+        <Notice tone="ok">{t("rules.homeOk", { path: home.path })}</Notice>
+      ) : (
+        <Notice tone="warn">{t("rules.homeMissingFile", { file: home.missing, path: home.path })}</Notice>
+      )}
+      {home.path !== inUse && <p className={muted}>{t("rules.homeNotUsed", { path: inUse })}</p>}
+    </div>
+  );
+}
+
+/**
+ * The agents home picker: the known homes only (AGENTS_HOME when set, ~/.agents), the one in use chosen first, and the
+ * chosen one's check. Choosing stores nothing.
+ */
+function HomePicker({ home }: { home: AgentsHomeView & { homes?: AgentsHomeView[] } }) {
+  const homes = home.homes ?? [home];
+  const [chosen, setChosen] = useState(home.path);
+  const shown = homes.find((h) => h.path === chosen) ?? home;
+  return (
+    <div data-home className="space-y-2">
+      <Field label={t("rules.homePick")} help={t("rules.homePickHelp")}>
+        <div role="radiogroup" aria-label={t("rules.homePick")} className="space-y-1">
+          {homes.map((h) => (
+            <Radio key={h.path} name="agents-home" value={h.path} checked={h.path === chosen} onChange={() => setChosen(h.path)}>
+              <span className="font-mono break-all">{h.path === home.path ? t("rules.homeInUse", { path: h.path }) : h.path}</span>
+            </Radio>
+          ))}
+        </div>
+      </Field>
+      <HomeCheck home={shown} inUse={home.path} />
+    </div>
+  );
+}
+
+/** The ledger off: the agents home picker with its check, Turn on when the home in use is found, and why the viewer cannot turn it on. */
 function LedgerOff({ view }: { view: RulesView }) {
   const client = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const home = view.home;
   const turnOn = async (token: string, value: string) => {
     setBusy(true);
     setError(null);
@@ -425,22 +459,7 @@ function LedgerOff({ view }: { view: RulesView }) {
       >
         {canTurnOn ? t("rules.turnOnHint") : undefined}
       </EmptyState>
-      {home !== null && home.missing === null && (
-        <p data-home className="text-sm text-pretty break-words">
-          {t("rules.homeFound")}<span className="font-mono break-all">{home.path}</span>
-        </p>
-      )}
-      {home !== null && home.missing !== null && (
-        <p data-home className="text-sm text-pretty break-words">
-          {t("rules.homeMissing")}<span className="font-mono break-all">{home.path}</span>:{" "}
-          <span className="font-mono break-all">{home.missing}</span>
-          {t("rules.homeMissingNext")}
-          <span className="font-mono break-all">{`${home.path}/bin`}</span>
-          {t("rules.homeMissingStart")}
-          <code>{t("rules.factoryUi")}</code>
-          {t("rules.homeMissingEnd")}
-        </p>
-      )}
+      {view.home !== null && <HomePicker home={view.home} />}
       {view.judge !== null && <Notice tone="warn">{view.judge}</Notice>}
       {error !== null && <Notice tone="bad">{error}</Notice>}
     </div>
