@@ -753,9 +753,9 @@ async function mergeConflict(
     ...conflicts.map((f) => `- \`${f}\``),
   ].join("\n");
   await w.comment(item, { pr: null, body, marker: `<!-- factory:merge-conflict:${run.id} -->` });
-  throw new RunFailure("merge_conflict", `${why}; conflicting files: ${conflicts.join(", ")}`.slice(0, 500), false, {
-    output_tail: tail(transcript),
-  });
+  // The files go into the failed outcome as `conflicts` too: the improver's hotspot count reads only that (design §7).
+  const extra = { output_tail: tail(transcript), conflicts };
+  throw new RunFailure("merge_conflict", `${why}; conflicting files: ${conflicts.join(", ")}`.slice(0, 500), false, extra);
 }
 
 /**

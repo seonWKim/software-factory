@@ -105,58 +105,70 @@ async function mergeAndResolve(
   const mechanical = conflicts.length > 0 && (await mergeAppendedConflicts(w.mergeIO(handle), conflicts));
   if (conflicts.length > 0 && !mechanical) await w.recordConflicts(item, baseSha, conflicts);
 
-  // Seeded from the merge's own index (written by the worker, before the agent): every tracked path, ignored or not.
-  const cp = await w.d.sandbox.exec(handle, ["cp", "--", realIndex, index], { env: w.d.toolEnv });
-  if (cp.exit_code !== 0) throw new RunFailure("git_failed", `copy index: ${cp.stderr.trim()}`, true);
-  const before = await snapshot(w, handle, index);
-  let tree = before;
-  if (conflicts.length > 0 && !mechanical) {
-    const files: ConflictFile[] = [];
-    for (const path of conflicts) {
-      const r = await w.d.sandbox.exec(handle, ["cat", "--", path], { env: w.d.toolEnv });
-      files.push({ path, text: r.exit_code === 0 ? r.stdout : "" });
+  // A failure from here on names the conflicting files as outcome `conflicts` (the improver's hotspot count, design §7).
+  try {
+    // Seeded from the merge's own index (written by the worker, before the agent): every tracked path, ignored or not.
+    const cp = await w.d.sandbox.exec(handle, ["cp", "--", realIndex, index], { env: w.d.toolEnv });
+    if (cp.exit_code !== 0) throw new RunFailure("git_failed", `copy index: ${cp.stderr.trim()}`, true);
+    const before = await snapshot(w, handle, index);
+    let tree = before;
+    if (conflicts.length > 0 && !mechanical) {
+      const files: ConflictFile[] = [];
+      for (const path of conflicts) {
+        const r = await w.d.sandbox.exec(handle, ["cat", "--", path], { env: w.d.toolEnv });
+        files.push({ path, text: r.exit_code === 0 ? r.stdout : "" });
+      }
+      const notes = run.input?.notes ?? "";
+      const result = await w.agent(run, item, handle, signal, {
+        prompt: await w.withIndex(renderResolvePrompt(item, baseRef, files, notes), specQuery(item)),
+        model_class: model,
+        output_schema: IMPLEMENT_SCHEMA,
+        writable_paths: [gitDir],
+        env_allowlist: identity,
+      });
+      const out = parseImplement(result.output);
+      if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
+      await w.distrustAgentGit(handle, dirs);
+      // The agent asked for a human: nothing is committed or pushed; the PR is as it was.
+      if (out.value.needs_human) return { needs_human: out.value.needs_human };
+
+      // Re-seeded from the pre-agent tree, not the agent's index: no skip-worktree or assume-unchanged bits survive.
+      await w.gitWith(handle, ["read-tree", before], { GIT_INDEX_FILE: index });
+      tree = await snapshot(w, handle, index);
+      const changed = await w.git(handle, ["diff", "--name-only", "-z", "--no-renames", before, tree]);
+      const outside = resolveScopeViolations(changed, conflicts, item.allowed_paths);
+      if (outside.length > 0) {
+        throw new RunFailure("out_of_scope", `changed files outside the conflicts and allowed_paths: ${outside.join(", ")}`.slice(0, 500));
+      }
     }
-    const notes = run.input?.notes ?? "";
-    const result = await w.agent(run, item, handle, signal, {
-      prompt: await w.withIndex(renderResolvePrompt(item, baseRef, files, notes), specQuery(item)),
-      model_class: model,
-      output_schema: IMPLEMENT_SCHEMA,
-      writable_paths: [gitDir],
-      env_allowlist: identity,
+    if (conflicts.length > 0) {
+      const markers = await w.gitRaw(handle, ["grep", "-l", "-E", "^(<<<<<<<|>>>>>>>)( |$)", tree, "--", ...conflicts]);
+      if (markers.exit_code === 0) throw new RunFailure("unresolved_conflicts", `conflict markers left in: ${markers.stdout.trim()}`.slice(0, 500));
+    }
+
+    const head = await commitResolution(w, handle, { tree, tipSha, baseSha, branch, message: `Merge ${baseRef} into ${branch}` }, identity);
+    // install_command first, then the check list (design §4).
+    await gate(w, handle, repo.install_command, signal);
+    for (const cmd of checkCommands(repo)) await gate(w, handle, cmd, signal);
+    // The gate commands run repo code: they must not have moved HEAD off the commit they checked.
+    const now = (await w.git(handle, ["rev-parse", "HEAD"])).trim();
+    if (now !== head) throw new RunFailure("head_moved", `HEAD moved from ${head.slice(0, 8)} to ${now.slice(0, 8)} during the gates`);
+
+    // Only the merge commit goes in the bundle: the other side has the tip and the base.
+    const bundle = head === tipSha ? null : await saveBundle(w, run, item, handle, dirs, {
+      revs: ["HEAD", `^${tipSha}`, `^${baseSha}`], patch: await w.git(handle, ["diff", "--binary", tipSha, "HEAD"]), what: "resolve", suffix: ".resolve",
     });
-    const out = parseImplement(result.output);
-    if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
-    await w.distrustAgentGit(handle, dirs);
-    // The agent asked for a human: nothing is committed or pushed; the PR is as it was.
-    if (out.value.needs_human) return { needs_human: out.value.needs_human };
-
-    // Re-seeded from the pre-agent tree, not the agent's index: no skip-worktree or assume-unchanged bits survive.
-    await w.gitWith(handle, ["read-tree", before], { GIT_INDEX_FILE: index });
-    tree = await snapshot(w, handle, index);
-    const changed = await w.git(handle, ["diff", "--name-only", "-z", "--no-renames", before, tree]);
-    const outside = resolveScopeViolations(changed, conflicts, item.allowed_paths);
-    if (outside.length > 0) {
-      throw new RunFailure("out_of_scope", `changed files outside the conflicts and allowed_paths: ${outside.join(", ")}`.slice(0, 500));
-    }
+    return { conflicts, head, base_sha: baseSha, bundle };
+  } catch (err) {
+    throw withConflicts(err, conflicts);
   }
-  if (conflicts.length > 0) {
-    const markers = await w.gitRaw(handle, ["grep", "-l", "-E", "^(<<<<<<<|>>>>>>>)( |$)", tree, "--", ...conflicts]);
-    if (markers.exit_code === 0) throw new RunFailure("unresolved_conflicts", `conflict markers left in: ${markers.stdout.trim()}`.slice(0, 500));
-  }
+}
 
-  const head = await commitResolution(w, handle, { tree, tipSha, baseSha, branch, message: `Merge ${baseRef} into ${branch}` }, identity);
-  // install_command first, then the check list (design §4).
-  await gate(w, handle, repo.install_command, signal);
-  for (const cmd of checkCommands(repo)) await gate(w, handle, cmd, signal);
-  // The gate commands run repo code: they must not have moved HEAD off the commit they checked.
-  const now = (await w.git(handle, ["rev-parse", "HEAD"])).trim();
-  if (now !== head) throw new RunFailure("head_moved", `HEAD moved from ${head.slice(0, 8)} to ${now.slice(0, 8)} during the gates`);
-
-  // Only the merge commit goes in the bundle: the other side has the tip and the base.
-  const bundle = head === tipSha ? null : await saveBundle(w, run, item, handle, dirs, {
-    revs: ["HEAD", `^${tipSha}`, `^${baseSha}`], patch: await w.git(handle, ["diff", "--binary", tipSha, "HEAD"]), what: "resolve", suffix: ".resolve",
-  });
-  return { conflicts, head, base_sha: baseSha, bundle };
+/** `err` with `conflicts` in its failed outcome when it is a RunFailure and the merge conflicted; else `err` as it was. */
+function withConflicts(err: unknown, conflicts: string[]): unknown {
+  if (!(err instanceof RunFailure) || conflicts.length === 0) return err;
+  const extra = { ...err.extra, conflicts };
+  return new RunFailure(err.code, err.message, err.infra, extra);
 }
 
 /**

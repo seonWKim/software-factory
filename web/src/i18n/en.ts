@@ -1177,6 +1177,8 @@ export const en = {
   "key.max_coordination_cost.help": "The most coordination work one item may cost before it is split or stopped.",
   "key.hotspot_weight.label": "Hotspot weight",
   "key.hotspot_weight.help": "How much a change to a hotspot path adds to an item's coordination cost.",
+  "key.conflict_hotspot_threshold.label": "Conflict hotspot threshold",
+  "key.conflict_hotspot_threshold.help": "How many merge conflicts or held items on one file in 7 days file a task to reduce conflicts on it.",
   "key.mechanical_weight.label": "Mechanical weight",
   "key.mechanical_weight.help": "How much a mechanical change adds to an item's coordination cost.",
   "key.intake_label.label": "Intake label",
