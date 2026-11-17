@@ -55,7 +55,7 @@ function RuleItem({ rule, token }: { rule: StandingRuleRow; token: string | null
     <li data-rule={rule.rule} className="rounded-control border border-border px-3 py-2">
       <div className="flex items-center gap-3">
         <Switch aria-label={rule.rule} checked={rule.enabled} disabled={busy} onCheckedChange={(next) => void write({ rule: rule.rule, enabled: next })} />
-        <span className="font-mono text-sm">{rule.rule}</span>
+        <span className="text-sm">{rule.rule}</span>
         <span className="text-sm">{rule.enabled ? t("standing.on") : t("standing.off")}</span>
       </div>
       <p className={`mt-1 ${muted}`}>

@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { NoneUpdater } from "../src/impl/updater/none.js";
 import { SUPERVISOR_REQUEST_FILE, SUPERVISOR_STATUS_FILE } from "../src/interfaces/updater.js";
-import { supervisorLive, withDrain } from "../src/migrate-drain.js";
+import { factoryRunning, supervisorLive, withDrain } from "../src/migrate-drain.js";
 import { waitFor } from "./helpers/fakes.js";
 
 function stateDir(status: Record<string, unknown> | null) {
@@ -45,6 +45,18 @@ describe("migrate: drain handshake with factory dev", { timeout: 30_000 }, () =>
       expect(s.request()).toBeNull();
     }
     expect(await supervisorLive(stateDir({ state: "running" }).dir, () => true)).toBe(true);
+  });
+
+  it("factoryRunning: a live supervisor or child other than this process runs; this process, stopped or dead pids do not", async () => {
+    const live = (pid: number) => pid !== 0;
+    expect(await factoryRunning(stateDir(null).dir, live)).toBe(false);
+    expect(await factoryRunning(stateDir({ state: "stopped" }).dir, live)).toBe(false);
+    expect(await factoryRunning(stateDir({ state: "migration_draining" }).dir, live)).toBe(true);
+    expect(await factoryRunning(stateDir({ state: "migration_ready", child_pid: null }).dir, live)).toBe(true);
+    expect(await factoryRunning(stateDir({ state: "running" }).dir, () => false)).toBe(false);
+    // An in-place `dev` names itself as the child: its own open may apply; another process's may not.
+    expect(await factoryRunning(stateDir({ state: "running", supervisor_pid: undefined, child_pid: process.pid }).dir, live)).toBe(false);
+    expect(await factoryRunning(stateDir({ state: "running", supervisor_pid: undefined, child_pid: 7 }).dir, live)).toBe(true);
   });
 
   it("an in-place (updater none) status has no supervisor_pid: not a live supervisor, so migrate applies at once", async () => {

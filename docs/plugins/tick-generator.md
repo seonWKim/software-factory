@@ -11,7 +11,7 @@ Plugins:
 - `manual`: `ManualTicks`, for tests. Nothing ticks until a test calls `tick(schedule, at, due?)` on a generator it made (`made`, in creation order), with no sleeps and no fake timers.
   - Enable: `"plugins": { "ticks": "manual", ... }`. Secrets: none. Settings: none. A factory run this way does not move on its own.
 
-Solo developer and enterprise team: the same `time-based` plugin. Turn on / off: it cannot be turned off. Switch back: `"ticks": "time-based"`.
+One owner, one worker or many: the same `time-based` plugin. Turn on / off: it cannot be turned off. Switch back: `"ticks": "time-based"`.
 
 ## History
 

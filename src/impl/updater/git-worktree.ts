@@ -7,19 +7,8 @@ import type { Clock } from "../../interfaces/clock.js";
 import { CodeOrigin, type CodeOriginOptions } from "./code-origin.js";
 import type { ExecResult } from "../../interfaces/sandbox.js";
 import {
-  CODE_ROOT_ENV,
-  CODE_VERSION_ENV,
-  CONFIG_ENV,
-  type ChildHandle,
-  type ChildRestart,
-  MIGRATION_PENDING,
-  RESTART_HISTORY,
-  type ChildLauncher,
-  type CommandRunner,
-  SUPERVISED_ENV,
-  type SupervisorStatus,
-  type Updater,
-  WORKER_INDEX_BASE_ENV,
+  CODE_ROOT_ENV, CODE_VERSION_ENV, CONFIG_ENV, type ChildHandle, type ChildRestart, isBreakingStep, MIGRATION_PENDING, RESTART_HISTORY,
+  type ChildLauncher, type CommandRunner, SUPERVISED_ENV, type SupervisorStatus, type Updater, WORKER_INDEX_BASE_ENV,
 } from "../../interfaces/updater.js";
 
 /** Added to run_timeout_ms before a draining child is hard-stopped. */
@@ -77,7 +66,7 @@ export interface GitWorktreeOptions extends CodeOriginOptions {
   pendingMigrations?: (dir: string) => Promise<string[] | null>;
   /** Applies a folder's migrations (`migrate`); true on success. Used only with `autoMigrate`. */
   applyMigrations?: (dir: string) => Promise<boolean>;
-  /** `updater.auto_migrate`: drain, migrate and start without an owner command. Default off. */
+  /** `updater.auto_migrate`: drain, migrate and start without an owner command. Default off; breaking steps always do. */
   autoMigrate?: boolean;
   /** `<state_dir>/supervisor-request.json`, written by `npm run migrate`; read and removed on each poll. */
   requestFile?: string;
@@ -307,9 +296,9 @@ export class GitWorktreeUpdater implements Updater {
 
   /**
    * One poll of a pending migration. waiting: check the steps again; none left starts the target (the old child
-   * drains as on any update); with auto_migrate, drain every child. A crashed old child restarts meanwhile,
-   * unless the crashed one is the target itself. draining: once no child is live, drained. drained: with
-   * auto_migrate, apply the steps here; else wait for `npm run migrate` to send start or cancel.
+   * drains as on any update); with auto_migrate or a breaking step, drain every child. A crashed old child restarts
+   * meanwhile, unless the crashed one is the target itself. draining: once no child is live, drained. drained: with
+   * auto_migrate or a breaking step, apply the steps here; else wait for `npm run migrate` to send start or cancel.
    */
   private async migrationStep(): Promise<void> {
     const m = this.migration!;
@@ -323,7 +312,7 @@ export class GitWorktreeUpdater implements Updater {
         return;
       }
       if (steps !== null) m.steps = steps;
-      if (this.o.autoMigrate && !m.autoFailed) {
+      if (this.auto(m)) {
         log.info("auto_migrate: draining every child before the migration", { rev: m.rev, pending: m.steps.join(",") });
         this.drainAll();
       } else {
@@ -341,7 +330,7 @@ export class GitWorktreeUpdater implements Updater {
       log.info("every child exited: ready to migrate", { rev: m.rev });
     }
     await this.report("migration_ready", m.rev);
-    if (!this.o.autoMigrate || m.autoFailed || this.closed) return;
+    if (!this.auto(m) || this.closed) return;
     const ok = this.o.applyMigrations ? await this.o.applyMigrations(m.dir) : false;
     if (ok) await this.startTarget();
     else {
@@ -350,6 +339,9 @@ export class GitWorktreeUpdater implements Updater {
       await this.cancelMigration();
     }
   }
+
+  /** Whether the supervisor drains and applies `m` itself: auto_migrate, or a breaking step (never after it failed). */
+  private auto = (m: Migration): boolean => !m.autoFailed && (!!this.o.autoMigrate || m.steps.some(isBreakingStep));
 
   /** Every live child that is not draining yet is asked to drain; no child claims until the migration ends. */
   private drainAll(): void {
@@ -413,8 +405,7 @@ export class GitWorktreeUpdater implements Updater {
       if (this.newest && this.failedRev === (await this.head(this.newest).catch(() => null))) this.failedRev = null;
       await this.ensureChild();
     } else if (action === "restart" && !this.migration && this.current && this.newest) {
-      // The dashboard's Restart now: a new child from the current (built) folder, then the claiming one drains.
-      const head = await this.head(this.newest);
+      const head = await this.head(this.newest); // the dashboard's Restart now: a new child from the current (built) folder, then the old one drains
       if ((await this.builtRev(this.newest)) !== head) return log.warn("restart request ignored: the current version folder is not built", { rev: head });
       log.info("restart request: starting a child from the current version folder", { rev: head, dir: this.newest });
       await this.startChild(this.newest, head);
@@ -495,7 +486,7 @@ export class GitWorktreeUpdater implements Updater {
       // Before the drain: the old child keeps claiming until `npm run migrate` (or auto_migrate) moves on.
       this.migration = { dir: dir!, rev: target, steps: pending, phase: "waiting" };
       log.info("the new revision needs npm run migrate; the running child stays", { rev: target, pending: pending.join(",") });
-      if (!this.o.autoMigrate) await this.report("migration_pending", target);
+      if (!this.auto(this.migration)) await this.report("migration_pending", target);
       return;
     }
     this.newest = dir;

@@ -10,7 +10,4 @@
   - **Never removed; printed as hand steps.** `factory.config.json` (setup's edits stay; undo with git), the secret file (unless `--secrets`, which removes only the template's keys and every name a plugin declares, keeps every other line and leaves mode 600), `github-app.pem`, GitHub issues and pull requests, the GitHub App and the Slack app.
   - **Idempotent.** A second run finds nothing the factory made, prints that there is nothing to delete and exits 0.
 
-## History
-
-- **Current text names SQLite only** (decision changed 2026-11-11, issue #567). Before: the first decision was titled "No MySQL lines in teardown" and said the plan and hand-step list named no MySQL database; it now says the same without naming one, and calls the `test-mysql.url` entry in `src/setup-paths.ts` the old test-database URL file entry.
-- **Stores** (decision changed 2026-11-11, issue #590). Before: on a shared MySQL store teardown reset only this machine, never connected to, dropped or altered the database, skipped saving it, and printed "the shared store was not touched" with the `DROP DATABASE` / `DROP USER` statements as a hand step; on SQLite it printed "MySQL: not selected".
+- Replaced decisions of this topic: [history/08-teardown.md](history/08-teardown.md).

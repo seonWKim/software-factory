@@ -1,5 +1,6 @@
 // Failure groups (design §7): the improve run's and the alarm step's grouping of failed runs by error code and
-// normalized detail, and of the owner's pushbacks by their normalized words (issue #571).
+// normalized detail, and of the owner's pushbacks by their normalized words (issue #571); and the flaky tests merge
+// checks named (a failing test that passed its one rerun).
 
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
@@ -47,9 +48,7 @@ export interface Pushback {
  * patterns by key. Runs that did not fail, and improve runs themselves, are left out.
  */
 export function groupFailures(runs: readonly Run[], pushbacks: readonly Pushback[] = []): { groups: FailureGroup[]; patterns: FailureGroup[] } {
-  const failed = runs
-    .filter(reviewable)
-    .sort((a, b) => cmp(a.finished_at ?? "", b.finished_at ?? "") || cmp(a.id, b.id));
+  const failed = runs.filter(reviewable).sort(byFinish);
   const byKey = new Map<string, FailureGroup>();
   const add = (error_code: string, raw: string, run_id: RunId, work_item_id: WorkItemId) => {
     const detail = normalizeDetail(raw);
@@ -66,6 +65,34 @@ export function groupFailures(runs: readonly Run[], pushbacks: readonly Pushback
   for (const p of [...pushbacks].sort((a, b) => cmp(a.at, b.at) || cmp(a.run_id, b.run_id))) add(PUSHBACK, p.text, p.run_id, p.work_item_id);
   const all = [...byKey.values()].sort((a, b) => b.run_ids.length - a.run_ids.length || cmp(a.error_code, b.error_code) || cmp(a.detail, b.detail));
   return { groups: all.filter((g) => g.run_ids.length > 1), patterns: all.filter((g) => g.run_ids.length === 1) };
+}
+
+/** A flaky-test entry's error code (design §7): a merge check's failing test passed its one rerun. */
+export const FLAKY_TEST = "flaky_test";
+
+/**
+ * The flaky tests the merge-check runs among `runs` named on their green result (`flaky_tests`, `file > name`): one
+ * entry per name under the code `flaky_test`, its detail the name as written (cut to 200 characters), with every run
+ * and item that named it. Pure: runs in (finished_at, id) order, entries by name.
+ */
+export function flakyTests(runs: readonly Run[]): FailureGroup[] {
+  const byName = new Map<string, FailureGroup>();
+  for (const r of [...runs].sort(byFinish)) {
+    const named = r.kind === "merge-check" && r.outcome?.status === "succeeded" ? r.outcome.data.flaky_tests : undefined;
+    for (const name of Array.isArray(named) ? named : []) {
+      if (typeof name !== "string" || name.trim() === "") continue;
+      const detail = name.trim().slice(0, DETAIL_CHARS);
+      const g = byName.get(detail) ?? { error_code: FLAKY_TEST, detail, run_ids: [] as RunId[], work_item_ids: [] as WorkItemId[] };
+      if (!g.run_ids.includes(r.id)) g.run_ids.push(r.id);
+      if (!g.work_item_ids.includes(r.work_item_id)) g.work_item_ids.push(r.work_item_id);
+      byName.set(detail, g);
+    }
+  }
+  return [...byName.values()].sort((a, b) => cmp(a.detail, b.detail));
+}
+
+function byFinish(a: Run, b: Run): number {
+  return cmp(a.finished_at ?? "", b.finished_at ?? "") || cmp(a.id, b.id);
 }
 
 function cmp(a: string, b: string): number {

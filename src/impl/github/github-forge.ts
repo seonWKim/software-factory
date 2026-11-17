@@ -6,6 +6,7 @@ import { fixReferences, isRevertSubject, revertedShas, subjectOf, unique } from 
 import type { BaseChecks, BasePushInput, BranchPushInput, ChangeLinks, ClosePrInput, Forge, OpenPrInput, ForgeEvent, ForgePollResult, PrChecks, PrLineComment, PrMergeMethod, PrMergeResult } from "../../interfaces/forge.js";
 import type { GitHubApi, GitHubCredentials } from "../../interfaces/github-credentials.js";
 import { factoryGit, factoryRemoteUrl } from "../broker/trusted-git.js";
+import { pushBaseToOrigin } from "../git/base-push.js";
 import { GitHubError, GitHubRateLimitError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
 import { forgeAuthRefused, openOrUpdatePr } from "./pull-requests.js";
 import { resolveProject } from "./forge.plugin.js";
@@ -429,20 +430,9 @@ export class GitHubForge implements Forge {
     throw new Error(`GitHub answered the merge of PR #${pr} with no merge sha`);
   }
 
-  /**
-   * The base push (design 05-sources, Local items): one `git push` from the factory repo to its `origin`, of `sha` to
-   * the base branch, with `--force-with-lease` on `expected_sha`, so it lands only while the remote base is still
-   * the one the factory read (and `sha` descends from it, so it is a fast-forward). `--no-verify`: no hook runs. The
-   * push goes through the factory repo's own git configuration for origin, as its fetches do; it makes no API call.
-   */
+  /** The base push (design 05-sources, Local items): the shared git push to origin (pushBaseToOrigin), no API call. */
   async pushBase(input: BasePushInput): Promise<void> {
-    if (input.base_ref !== this.baseBranch) throw new Error(`refusing to push ${JSON.stringify(input.base_ref)}: the base branch is ${this.baseBranch}`);
-    for (const sha of [input.sha, input.expected_sha]) {
-      if (!/^[0-9a-f]{40,64}$/.test(sha)) throw new Error(`not a commit sha: ${JSON.stringify(sha)}`);
-    }
-    const ref = `refs/heads/${input.base_ref}`;
-    const r = await factoryGit(input.repo, ["push", "--quiet", "--no-verify", `--force-with-lease=${ref}:${input.expected_sha}`, "origin", `${input.sha}:${ref}`]);
-    if (r.exit_code !== 0) throw new Error(`git push failed: ${r.stderr.trim().slice(0, 500)}`);
+    await pushBaseToOrigin(this.baseBranch, input);
   }
 
   /**

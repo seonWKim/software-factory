@@ -5,8 +5,9 @@ import { ButtonRow } from "../components/ui/button-row.js";
 import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
-import { type Column, DataTable } from "../components/ui/data-table.js";
-import { Badge, ErrorNote, Loading, Section } from "../components/ui/parts.js";
+import { DataTable } from "../components/ui/data-table.js";
+import { KeyValue } from "../components/ui/key-value.js";
+import { Badge, Empty, ErrorNote, Loading, Section, Table } from "../components/ui/parts.js";
 import { Select } from "../components/ui/select.js";
 import { Tabs } from "../components/ui/tabs.js";
 import { Switch } from "../components/ui/switch.js";
@@ -22,6 +23,7 @@ import { useNow } from "./common.js";
 import { PageHeader } from "../components/ui/notice.js";
 import { CalendarSection } from "./settings-calendar.js";
 import { FileKeysSection, KeyNameDetails, Outcome, editableKeys, useWrite } from "./settings-file-keys.js";
+import { Description, SettingsRow } from "./settings-row.js";
 import { withNodes } from "./standing.js";
 
 // The Settings page (design §8 and §9, issue #236; three tabs since 2026-11-16, design 08-settings): the tab is the `tab`
@@ -119,17 +121,8 @@ const summaryOf = (obj: Record<string, unknown>, key: MessageKey = "settings.key
  */
 function JsonValue({ text }: { text: string }) {
   const obj = asObject(text);
-  if (obj === null || Object.keys(obj).length === 0) return <span className="font-mono text-xs wrap-anywhere">{text}</span>;
-  const list = (
-    <dl data-entries className="grid grid-cols-[auto_minmax(10ch,1fr)] gap-x-2 font-mono text-xs">
-      {entries(obj).map(([k, v]) => (
-        <Fragment key={k}>
-          <dt className="text-text-2">{k}</dt>
-          <dd className="min-w-0 wrap-anywhere">{v}</dd>
-        </Fragment>
-      ))}
-    </dl>
-  );
+  if (obj === null || Object.keys(obj).length === 0) return <span className="text-xs wrap-anywhere">{text}</span>;
+  const list = <KeyValue data-entries items={entries(obj).map(([k, v]) => ({ key: k, term: k, value: v, code: true }))} className="gap-x-2" />;
   if (entries(obj).length <= SHORT_OBJECT) return list;
   return (
     <details>
@@ -313,11 +306,6 @@ function shownValue(settingKey: string, text: string): string {
   return settingKey.endsWith("_ms") && /^\d+$/.test(text.trim()) ? duration(Number(text)) : text;
 }
 
-/** What a key controls, under its name; always shown, narrow screens included. */
-function Description({ text }: { text: string }) {
-  return <p className="mt-1 max-w-64 text-xs text-pretty text-text-2">{text}</p>;
-}
-
 /** A learned value as GET /api/v1/settings returns it; `source` is the layer in force for its project ("learned" while it is). */
 interface LearnedValue {
   project: string;
@@ -480,43 +468,48 @@ function KeyDetails({ row }: { row: SettingRow }) {
   return (
     <details data-details>
       <summary className="cursor-pointer text-xs text-text-2">{t("settings.details")}</summary>
-      <dl className="mt-2 grid grid-cols-[auto_minmax(10ch,1fr)] gap-x-3 gap-y-1 text-xs">
-        <dt className="text-text-2">{t("settings.detailKey")}</dt>
-        <dd className="font-mono wrap-anywhere">{row.key}</dd>
-        <dt className="text-text-2">{t("settings.colSource")}</dt>
-        <dd><Badge level={SOURCE_TONE[row.source] || undefined}>{row.source}</Badge></dd>
-        <dt className="text-text-2">{t("settings.colFileValue")}</dt>
-        <dd className="min-w-0">
-          {row.file_value !== null ? (
-            <JsonValue text={shownValue(row.key, row.file_value)} />
-          ) : (
-            <span className="text-text-3">{withNodes("settings.default", { value: <JsonValue text={shownValue(row.key, row.default_value)} /> })}</span>
-          )}
-        </dd>
-        <dt className="text-text-2">{t("settings.colAppliesAt")}</dt>
-        <dd className="text-text-2">{row.applies_at}</dd>
-      </dl>
+      <KeyValue
+        className="mt-2"
+        items={[
+          { key: "key", term: t("settings.detailKey"), value: <span className="font-mono">{row.key}</span> },
+          { key: "source", term: t("settings.colSource"), value: <Badge level={SOURCE_TONE[row.source] || undefined}>{row.source}</Badge> },
+          {
+            key: "file",
+            term: t("settings.colFileValue"),
+            value:
+              row.file_value !== null ? (
+                <JsonValue text={shownValue(row.key, row.file_value)} />
+              ) : (
+                <span className="text-text-3">{withNodes("settings.default", { value: <JsonValue text={shownValue(row.key, row.default_value)} /> })}</span>
+              ),
+          },
+          { key: "applies", term: t("settings.colAppliesAt"), value: <span className="text-text-2">{row.applies_at}</span> },
+        ]}
+      />
     </details>
   );
 }
 
-/** The settable keys table's columns; the Value cell holds the editors, the per-project layer and the learned value. */
-function keyColumns(view: SettingsView): Column<SettingRow>[] {
-  return [
-    {
-      key: "key",
-      header: t("settings.colKey"),
-      render: (row) => (
-        <>
-          <span className="text-sm font-medium text-pretty">{keyLabel(row.key)}</span>
-          <Description text={keyHelp(row.key, row.description)} />
-        </>
-      ),
-    },
-    { key: "value", header: t("settings.colValue"), className: "min-w-56", render: (row) => <ValueCell row={row} view={view} /> },
-    { key: "details", header: t("settings.details"), className: "min-w-32", render: (row) => <KeyDetails row={row} /> },
-    { key: "reset", header: t("settings.colReset"), render: (row) => row.source === "override" && <ResetButton row={row} label={keyLabel(row.key)} token={view.csrf_token} /> },
-  ];
+/** The settable keys table: one shared settings row per key; the Value cell holds the editors, the per-project layer and the learned value. */
+function KeysTable({ view }: { view: SettingsView }) {
+  if (view.keys.length === 0) return <Empty>{t("settings.noKeys")}</Empty>;
+  // The Reset column shows only while some key has an override to reset.
+  const resets = view.keys.some((row) => row.source === "override");
+  return (
+    <Table label={t("settings.settableKeys")} head={[t("settings.colKey"), t("settings.colValue"), t("settings.details"), ...(resets ? [t("settings.colReset")] : [])]}>
+      {view.keys.map((row) => (
+        <SettingsRow
+          key={row.key}
+          attrs={{ "data-key": row.key }}
+          name={keyLabel(row.key)}
+          description={keyHelp(row.key, row.description)}
+          control={<ValueCell row={row} view={view} />}
+          details={<KeyDetails row={row} />}
+          trailing={resets ? row.source === "override" && <ResetButton row={row} label={keyLabel(row.key)} token={view.csrf_token} /> : undefined}
+        />
+      ))}
+    </Table>
+  );
 }
 
 function ValueCell({ row, view }: { row: SettingRow; view: SettingsView }) {
@@ -734,7 +727,7 @@ function AdvancedTab({ view: v }: { view: SettingsView }) {
       <Section title={t("settings.settableKeys")} count={v.keys.length}>
         <p className="mb-2 text-sm text-pretty text-text-2">{t("settings.settableIntro")}</p>
         <ProjectLabel view={v} />
-        <DataTable label={t("settings.settableKeys")} columns={keyColumns(v)} rows={v.keys} rowKey={(r) => r.key} empty={t("settings.noKeys")} dataKey />
+        <KeysTable view={v} />
       </Section>
       <FileKeysSection view={v} />
       <Section title={PR_ONLY_TITLE} count={prOnly.length}>

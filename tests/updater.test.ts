@@ -1180,6 +1180,32 @@ describe("updater: git-worktree pending migrations", () => {
     expect(launcher.live.map((c) => relative(world.root, c.spec.entry))).toEqual([`${V("c2")}/dist/main.js`]);
   });
 
+  it("a breaking step after an update: drains and applies with no child live, without auto_migrate, then starts it", async () => {
+    const f = files();
+    const m = migrations({ c2: ["20261116T1300-state-ext-packs-entries-pointers (breaking)"] });
+    const { world, launcher, updater } = setup({ ...m, statusFile: f.statusFile, requestFile: f.requestFile });
+    await updater.start();
+    world.push("c2", ["src/core/worker.ts"]);
+    let liveAtApply: number[] | null = null;
+    const apply = m.applyMigrations;
+    (updater as unknown as { o: GitWorktreeOptions }).o.applyMigrations = async (dir) => {
+      liveAtApply = launcher.live.map((c) => c.pid);
+      return apply(dir);
+    };
+    await updater.poll(); // built, waiting
+    expect(m.applied).toEqual([]);
+    await updater.poll(); // drain all
+    expect(world.events).toContain("drain 1");
+    await settle();
+    await updater.poll(); // drained: apply, start
+    await settle();
+    expect(m.applied).toEqual(["c2"]);
+    expect(liveAtApply).toEqual([]);
+    expect(launcher.live.map((c) => relative(world.root, c.spec.entry))).toEqual([`${V("c2")}/dist/main.js`]);
+    expect(f.read()).toMatchObject({ state: "running", rev: "c2" });
+    await updater.shutdown();
+  });
+
   it("auto_migrate: a failed apply starts the old revision again", async () => {
     const m = migrations({ c2: ["schema:12"] });
     const { world, launcher, updater } = setup({ ...m, autoMigrate: true, applyMigrations: async () => false });

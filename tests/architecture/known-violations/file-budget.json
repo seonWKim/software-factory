@@ -1,6 +1,6 @@
 {
   "compose.ts": 1319,
-  "controller/units/commands/commands.unit.ts": 739,
+  "controller/units/commands/commands.unit.ts": 738,
   "controller/units/run-results/run-results.unit.ts": 1161,
   "core/settings.ts": 774,
   "core/types.ts": 734,
@@ -9,9 +9,9 @@
   "impl/runner/claude-code-runner.ts": 661,
   "impl/store/sql/sql-factory-store.ts": 2879,
   "impl/store/sqlite/schema.ts": 735,
-  "impl/updater/git-worktree.ts": 912,
+  "impl/updater/git-worktree.ts": 903,
   "interfaces/factory-store.ts": 1349,
   "ui/api.ts": 634,
-  "worker/runner.ts": 1058,
+  "worker/runner.ts": 1056,
   "worker/runs/implement/implement.run.ts": 1119
 }

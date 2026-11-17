@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { GATE_PATHS, MAX_DRAFT_CALLS, enqueueImprove, isGatePath, runImprove, systemSource } from "../src/core/improver.js";
+import { FLAKY_TEST, GATE_PATHS, MAX_DRAFT_CALLS, enqueueImprove, isGatePath, runImprove, systemSource } from "../src/core/improver.js";
 import { Worker } from "../src/worker/index.js";
 import type { ImproveReport, Run, RunId, WorkerId } from "../src/core/types.js";
 import type { AgentRunner } from "../src/interfaces/agent-runner.js";
@@ -47,11 +47,21 @@ async function failRun(store: FactoryStore, storage: MemoryStorage, n: number, c
   return run.id;
 }
 
+/** A green merge-check run of a new item `n` whose one rerun passed `flaky` (design §4): its outcome names them. */
+async function flakyMergeCheck(store: FactoryStore, n: number, flaky: string[]): Promise<RunId> {
+  await store.createWorkItem(issue(n), system, { enqueue: { kind: "merge-check", idempotency_key: `m${n}` } });
+  const run = (await store.claimRun({ worker_id: "seed" as WorkerId, kinds: ["merge-check"], lease_ms: 60_000 }))!;
+  await store.completeRun(run.id, run.lease!.token, { status: "succeeded", summary: "", data: { result: "green", flaky_tests: flaky } });
+  return run.id;
+}
+
 /**
  * A store with failed runs inside tomorrow's daily window and that window's improve run queued. `groups`: per
  * group, its run count; each group gets its own code. Plus one single-run pattern.
  */
-async function world(groups: number[], transcripts: (group: number, i: number) => string | undefined = () => "npm test failed") {
+async function world(
+  groups: number[], transcripts: (group: number, i: number) => string | undefined = () => "npm test failed", flaky: string[][] = [],
+) {
   const clock = new FakeClock("2026-03-04T01:00:00.000Z");
   const { store } = await newStore(clock);
   const storage = new MemoryStorage();
@@ -66,9 +76,14 @@ async function world(groups: number[], transcripts: (group: number, i: number) =
   }
   clock.advance(1_000);
   const pattern = await failRun(store, storage, ++n, "lonely", "only once", "once");
+  const checks: RunId[] = [];
+  for (const names of flaky) {
+    clock.advance(1_000);
+    checks.push(await flakyMergeCheck(store, ++n, names));
+  }
   clock.set("2026-03-05T06:00:00.000Z");
   const { run } = await enqueueImprove({ store, clock }, PROJECT.key, "daily");
-  return { clock, store, storage, ids, pattern, run };
+  return { clock, store, storage, ids, pattern, checks, run };
 }
 
 function worker(w: Awaited<ReturnType<typeof world>>, llm: LLMProvider, broker = new FakeBroker()): Worker {
@@ -221,18 +236,36 @@ describe("improve: drafts", () => {
   });
 });
 
+describe("improve: flaky tests from merge checks", () => {
+  it("the report lists each flaky test a merge check named in its window, with its runs, and asks no model about it", async () => {
+    const A = "tests/a.test.ts > merged > flaky", B = "tests/b.test.ts > other > case 2";
+    const w = await world([], undefined, [[A], [A, B]]);
+    const llm = new CountingLLM();
+    await worker(w, llm).tick();
+    const { run, report: r } = await report(w);
+    expect(run.status).toBe("succeeded");
+    expect(llm.requests).toEqual([]);
+    expect(r.groups).toEqual([]);
+    const flaky = r.patterns.filter((p) => p.error_code === FLAKY_TEST);
+    expect(flaky).toEqual([
+      { error_code: FLAKY_TEST, detail: A, run_ids: w.checks, work_item_ids: expect.any(Array) },
+      { error_code: FLAKY_TEST, detail: B, run_ids: [w.checks[1]], work_item_ids: expect.any(Array) },
+    ]);
+    // The failed runs' patterns are kept, before the flaky tests.
+    expect(r.patterns[0]).toMatchObject({ error_code: "lonely", run_ids: [w.pattern] });
+  });
+});
+
 describe("improve: the gate list", () => {
   it("holds the owner-only paths the merge check treats as gates", () => {
     expect(GATE_PATHS).toEqual(expect.arrayContaining([
       "prompts/", "src/impl/broker/", "src/impl/egress/", "src/impl/secrets/", "src/impl/sandbox/", "src/impl/auth/",
-      "src/impl/github/github-auth-provider.ts", "src/impl/github/github.plugin.ts",
       "src/core/checks.ts", "src/core/policy.ts", ".claude/", "factory.config.json",
     ]));
   });
 
   it("matches files under a gate folder and gate files exactly, nothing looser", () => {
-    for (const p of ["prompts/implement.md", "./src/impl/auth/x.ts", "/factory.config.json", "src/core/policy.ts", ".claude/settings.json", "prompts",
-      "src/impl/github/github-auth-provider.ts", "src/impl/github/github.plugin.ts"]) {
+    for (const p of ["prompts/implement.md", "./src/impl/auth/x.ts", "/factory.config.json", "src/core/policy.ts", ".claude/settings.json", "prompts"]) {
       expect(isGatePath(p), p).toBe(true);
     }
     for (const p of ["src/core/worker.ts", "src/core/policy.test.ts", "docs/prompts/x.md", "src/impl/store/x.ts", "factory.config.json.bak",

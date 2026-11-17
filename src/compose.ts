@@ -7,16 +7,18 @@ import { availableParallelism, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
   AGENT_STOP_CHECKS_DEFAULT, ALARM_DEFAULTS, type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, type ToolchainConfig, cliUserConfig, uiCheckConfig, uiCheckSentence,
-  coordinationConfig, readOnlyFolders, readOnlyInputsConfig, retentionConfig, toolGrantsConfig,
+  coordinationConfig, mergeQueuePushBase, readOnlyFolders, readOnlyInputsConfig, retentionConfig, toolGrantsConfig,
 } from "./core/config.js";
 import { toolchainEnvKeyRefusal } from "./core/tools/policy.js";
 import { type ProjectRef, localProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { pathCompanionsConfig } from "./core/companions.js";
 import { checkCommands, commandText } from "./core/checks.js";
+import { type SplitLimits, splitThresholds } from "./core/split.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
 import { errorText, type Logger } from "./core/log.js";
 import type { CliEnvironment, CliIdentity } from "./core/local-cli.js";
-import { canMergeLocal } from "./core/local-merge.js";
+import { canMergeLocal, forgeRoles } from "./core/local-merge.js";
+import { MERGE_REQUESTS_READ, mergeRequested } from "./core/commands.js";
 import { StoredLearnedSettings } from "./core/learned-settings.js";
 import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
@@ -28,7 +30,7 @@ import { PackCheckRunner } from "./runtime/hooks/pack-checks.js";
 import { type HookDescriptor, UNCALLED_HOOK_POINTS } from "./shared/hook.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import {
-  type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, type LearnedSettingsSource, booleanSetting, intakeLabel, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, positiveInteger, settingsLayers, workerCount,
+  BUILT_IN_SETTINGS, type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, type LearnedSettingsSource, booleanSetting, intakeLabel, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, positiveInteger, settingValues, settingsLayers, workerCount,
 } from "./core/settings.js";
 import { WorkerPool } from "./worker/index.js";
 import type { LocalRoute } from "./worker/index.js";
@@ -156,8 +158,8 @@ export interface FileConfig {
   retention?: { outbox_days?: unknown; commands_days?: unknown; records_days?: unknown; raw_records_days?: unknown }; // design 08-retention; absent: 30, 30, 90, 7
   /** Outbound (RFC 0015 §15.1): `batching` per destination kind. Absent: `auto` everywhere. */
   outbound?: { batching?: unknown };
-  /** The merge queue (RFC 0015 §7): `depth`, the speculative depth. Absent: 1. */
-  merge_queue?: { depth?: unknown };
+  /** The merge queue (RFC 0015 §7): `depth`, the speculative depth (absent: 1); `push_base`, the local forge's base push (absent: off). */
+  merge_queue?: { depth?: unknown; push_base?: unknown };
   /** Hook names the owner enabled (RFC 0015 §15.2). Absent: none. Checked against the discovered hooks at startup. */
   hooks?: unknown;
   /** Worker loops per `dev` / `worker` process (architecture §4). Absent: 1. */
@@ -312,23 +314,22 @@ export interface Loaded {
 export const CHECK_COMMANDS_PLACEHOLDER = "{{check_commands}}";
 /** The placeholder in prompts/*.md that names where a change lives: the forge plugin, or "local" with none. */
 export const FORGE_PLACEHOLDER = "{{forge}}";
-
-/** The placeholder in prompts/*.md for the toolchain sentence (design 05-sandbox.md): empty with no toolchain block. */
-export const TOOLCHAIN_PLACEHOLDER = "{{toolchain}}";
+export const TOOLCHAIN_PLACEHOLDER = "{{toolchain}}"; // the toolchain sentence (design 05-sandbox.md): empty with no toolchain block
 export const UI_CHECK_PLACEHOLDER = "{{ui_check}}"; // the UI check sentence (uiCheckSentence): empty with no repo.ui_check
+export const SPLIT_PLACEHOLDERS = ["{{max_diff_lines}}", "{{max_diff_files}}", "{{split_lines}}", "{{split_files}}"] as const;
 
 /**
  * A prompt file's text with its placeholders filled, once at load: the check commands, each command of
  * `checkCommands` (so `repo.check_commands`, else `test_command`) in backticks, in order; the forge name
- * (`plugins.forge`, else "local"); the `toolchain` block's offline sentence; the `repo.ui_check` sentence (none: "").
+ * (`plugins.forge`, else "local"); the `toolchain` block's offline sentence; the `repo.ui_check` sentence (none: "");
+ * SPLIT_PLACEHOLDERS: the size caps `limits` (the configured project's max_diff_lines, max_diff_files), then their split thresholds.
  */
-export function fillPrompt(text: string, repo: FactoryConfig["repo"], forge: string, toolchain?: ToolchainConfig): string {
+export function fillPrompt(text: string, repo: FactoryConfig["repo"], forge: string, toolchain?: ToolchainConfig, limits: SplitLimits = BUILT_IN_SETTINGS): string {
+  const t = splitThresholds(limits), sizes = [limits.max_diff_lines, limits.max_diff_files, t.lines, t.files];
   const checks = checkCommands(repo).map((c) => `\`${commandText(c)}\``).join(", then ");
   const caches = toolchain && toolchain.caches.length > 0 ? ` (${toolchain.caches.map((c) => `\`${c}\``).join(", ")})` : "";
-  const offline = toolchain
-    ? ` They run offline: there is no network, and the toolchain caches${caches} are read-only, so build from what they hold and never write to or download into them.`
-    : "";
-  return text.split(CHECK_COMMANDS_PLACEHOLDER).join(checks).split(FORGE_PLACEHOLDER).join(forge).split(TOOLCHAIN_PLACEHOLDER).join(offline).split(UI_CHECK_PLACEHOLDER).join(uiCheckSentence(repo.ui_check));
+  const offline = toolchain ? ` They run offline: there is no network, and the toolchain caches${caches} are read-only, so build from what they hold and never write to or download into them.` : "";
+  return SPLIT_PLACEHOLDERS.reduce((out, p, i) => out.split(p).join(String(sizes[i])), text).split(CHECK_COMMANDS_PLACEHOLDER).join(checks).split(FORGE_PLACEHOLDER).join(forge).split(TOOLCHAIN_PLACEHOLDER).join(offline).split(UI_CHECK_PLACEHOLDER).join(uiCheckSentence(repo.ui_check));
 }
 
 /** The source plugin whose PRs live on GitHub, and the forge it implies (issue #273). */
@@ -441,7 +442,7 @@ export async function loadConfig(
     agent_stop_checks: agentStopChecks(file),
     ...retention, // the retention block, inbox_retention_days as its fallback (design 08-retention)
     outbound_batching: batchingPolicies(file.outbound?.batching),
-    merge_queue_depth: mergeQueueDepth(file),
+    merge_queue_depth: mergeQueueDepth(file), merge_queue_push_base: mergeQueuePushBase(file.merge_queue),
     ...(file.hooks === undefined ? {} : { hooks: hookNames(file.hooks) }),
     ...(autoApproveReadOnly(file.packs) ? { packs_auto_approve_read_only: true } : {}),
     workers,
@@ -478,7 +479,7 @@ export async function loadConfig(
   if (inputs) config.read_only_inputs = inputs;
   // Each prompt through the pack layers, placeholders filled after the merge (design 11-packs.md). A required
   // prompt no layer has fails startup; owner-defaults is appended to triage.
-  const prompts = await packPrompts(packs, (text) => fillPrompt(text, config.repo, plugins.forge ?? "local", config.toolchain));
+  const prompts = await packPrompts(packs, (text) => fillPrompt(text, config.repo, plugins.forge ?? "local", config.toolchain, settingValues(`${file.repo.owner}/${file.repo.name}`, settings)));
   return { root, codeRoot, configFile, externalConfig, worktreesDir, file, config, prompts, secretsFile, stateDir, store, plugins, registry, packs, pack_tools, stats, models, model_by };
 }
 
@@ -763,9 +764,9 @@ export async function build(
   for (const name of selectedSources(sel)) {
     sources.push(await createPlugin(registry, "source", name, { ...base, github, store, secrets, scanner, log: sourceLog, clock }));
   }
-  // PR events, facts, comments and status (issue #273), else null; with no forge, the local forge reads links only.
-  const forge = await p.forge(github, { store, clock, log: new ConsoleLogger(clock, "forge"), credentials });
-  const links = forge ?? (await createPlugin(registry, "forge", "local", { ...base, github }));
+  // PR events, facts, comments and status (issue #273), else null; with no forge, the local forge reads links (forgeRoles).
+  const selected = await p.forge(github, { store, clock, log: new ConsoleLogger(clock, "forge"), credentials });
+  const { forge, links } = forgeRoles(selected, selected ?? (await createPlugin(registry, "forge", "local", { ...base, github })));
   // Identity (RFC 0015 §8, M9): service and run passports, and the audit of every authorize decision.
   const identity = await startProcessIdentity(loaded, store, clock);
   // Every person's command, whatever its origin, by the one owner check, one authz_audit row per decision (passport `none`).
@@ -1041,11 +1042,10 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   // One token per process for every write route; held only in memory, never written to a file, the store or a log.
   // The UI server, loaded here only: through setup.ts it reaches GitHub modules a solo start must not load.
   const who = uiCommandsActor(uiUserId(loaded.file.ui), opts.identity, (await import("./ui/server.js")).BIND);
-  // The Merge button's facts from config (design §9): a forge selected, a sandbox that merges locally (built only to ask).
-  const actor = who.actor;
+  // The Merge button's facts (design §9): a forge selected, a sandbox that merges locally (built only to ask), a Merge request still pending.
   const commands: UiCommands = {
-    ...who, token, forge: loaded.plugins.forge !== undefined, localMerge: canMergeLocal(await p.sandbox()),
-    allowed: (action) => (actor === null ? Promise.resolve({ allow: false, reason: "no_actor" }) : onProject(actor, action, true)),
+    ...who, token, forge: loaded.plugins.forge !== undefined, localMerge: canMergeLocal(await p.sandbox()), mergeRequested: async (id) => mergeRequested(await store.listAppCommandRequestsForItem(id, MERGE_REQUESTS_READ)), changeName: (ref) => `PR #${ref}`,
+    allowed: (action) => (who.actor === null ? Promise.resolve({ allow: false, reason: "no_actor" }) : onProject(who.actor, action, true)),
   };
   // The mode switch, the auto-merge tier and a loosening change need approve_merge on the project (design 08-settings), as the Merge button.
   settings.mayApproveMerge = async () => refusalOf(await onProject(opts.identity.user, "approve_merge"));

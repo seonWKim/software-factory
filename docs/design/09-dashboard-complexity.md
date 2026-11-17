@@ -66,6 +66,4 @@ Overlap [code]: Verdict (4), Good, Bad and Feedback (5) are the same verdict req
 - Should an approve with only default answers still need a confirm?
 - Which System pages does the owner open in a normal week?
 
-## History
-
-- 2026-11-13: first audit, documentation only. Nothing replaced.
+- Replaced decisions of this topic: [history/09-dashboard-complexity.md](history/09-dashboard-complexity.md).

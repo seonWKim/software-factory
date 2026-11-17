@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CHECK_COMMANDS_PLACEHOLDER, FORGE_PLACEHOLDER, UI_CHECK_PLACEHOLDER, fillPrompt, loadConfig } from "../src/compose.js";
+import { CHECK_COMMANDS_PLACEHOLDER, FORGE_PLACEHOLDER, SPLIT_PLACEHOLDERS, UI_CHECK_PLACEHOLDER, fillPrompt, loadConfig } from "../src/compose.js";
 import type { FactoryConfig } from "../src/core/config.js";
 
 // These tests check the instruction text only. They cannot prove a model's reply starts with the section.
@@ -29,10 +29,21 @@ function bullet(text: string, field: string): string {
 describe("prompts/triage.md", () => {
   const text = prompt("triage");
 
-  it("allows every store's migration paths for a store schema change, naming no repo path (issues #229, #335)", () => {
+  it("allows the migration paths of the repository's own naming rule for a store schema change, naming no repo path (issues #229, #335)", () => {
     expect(text).toContain("store schema change");
-    expect(text).toMatch(/migration for every store the repository\s+ships/);
-    expect(text).not.toContain("migrations/mysql/");
+    expect(text).toMatch(/repository's own migration naming rule/);
+    expect(text).not.toMatch(/mysql/i);
+  });
+
+  it("takes its split caps from placeholders, with no literal default caps", () => {
+    for (const p of SPLIT_PLACEHOLDERS) expect(text, p).toContain(p);
+    expect(text).not.toMatch(/\b(?:1500|40)\b/);
+  });
+
+  it("renders this repo's caps and their 85% split thresholds", async () => {
+    const { prompts } = await loadConfig(join(import.meta.dirname, ".."));
+    expect(prompts.triage).toContain("caps of 5000 lines and 80 files: over 4250 lines or over 68 files");
+    expect(prompts.triage).not.toContain("{{");
   });
 
   it("its output example uses neutral paths (issue #335)", () => {

@@ -61,6 +61,17 @@ export async function supervisorLive(stateDir: string, alive: (pid: number) => b
 }
 
 /**
+ * True when supervisor.json names a live factory process other than this one: the supervisor, or the child it runs
+ * (an in-place `dev` names itself as the child). The store's open applies a breaking migration only when this is
+ * false: nothing then runs that a drain would have to stop. A supervised child sees its supervisor and refuses.
+ */
+export async function factoryRunning(stateDir: string, alive: (pid: number) => boolean = processAlive): Promise<boolean> {
+  const s = await readSupervisorStatus(stateDir);
+  const other = (pid: number | null | undefined) => typeof pid === "number" && pid !== process.pid && alive(pid);
+  return s !== null && s.state !== "stopped" && (other(s.supervisor_pid) || other(s.child_pid));
+}
+
+/**
  * Runs `apply` with no factory child live. No live supervisor: `apply` runs at once, as with --no-drain.
  * Otherwise: a drain request, a wait (with progress lines) until supervisor.json says migration_ready, then
  * `apply`, then a start request on success or a cancel request on failure. Gives up at the timeout with exit 1

@@ -37,6 +37,4 @@
 - **Claim pauses on the Floor page (new decision, 2026-11-07, issue #291).** The app's Floor page shows a "Claim pauses" section right after the factory banner while any claim pause is in effect: each pause's name, what it stops and when it ends, with a "Resume now" button (`POST /api/v1/pauses/resume`); the endpoint's error shows next to that button. Nothing shows while no pause is in effect.
 - **GitHub budget (new decision, 2026-11-07, issue #340).** `GET /api/v1/overview` returns `github_budget`: GitHub's limit and remaining calls, the reset time, this process's `budget_share`, its share in calls and its counted calls in the window, the state (`ok`, `low`, `waiting`), the replica that stored it, and `wait_reason` (`waiting for the GitHub rate-limit reset at <time>` while no calls are left). It is read from the store cursor `github:budget` the controller writes after each poll (05-sources.md, GitHub call budget), so the page makes no GitHub call. A wait is not an error and not a system action: once the stored reset has passed the state is `ok` and the count 0. Null when nothing is stored (GitHub not in use, or no poll yet). The app's Health page shows it in its GitHub budget tab (design 09-dashboard-app).
 
-## History
-
 - Replaced decisions of this topic: [history/09-status-page.md](history/09-status-page.md).

@@ -97,7 +97,15 @@ describe("design tokens", () => {
       expect(ui(file)).toContain(`export function ${name}(`);
     }
     for (const file of ["button.tsx", "select.tsx", "input.tsx", "textarea.tsx", "radio.tsx"]) expect(ui(file)).toMatch(/\b(FOCUS|FIELD)\b/);
-    expect(ui("select.tsx")).toMatch(/h-8 [^"]*appearance-none[^"]*pr-8 pl-3/);
+    // Select: a 32px field with its own list in the menu's look, and the shared focus ring and disabled look on its options.
+    const select = ui("select.tsx");
+    expect(select).toMatch(/h-8 [^"]*pr-8 pl-3/);
+    expect(select).not.toMatch(/<select(?=[\s/>])/);
+    expect(select).toMatch(/role="listbox"/);
+    expect(select).toMatch(/"absolute [^"]*rounded-control border border-border bg-surface py-1 shadow"/);
+    expect(select).toMatch(/role="option"/);
+    expect(select).toMatch(/"[^"]*text-sm enabled:hover:bg-surface-2"/);
+    expect(select).toMatch(/FOCUS,\s*"focus-visible:-outline-offset-2",\s*DISABLED,/);
     expect(ui("input.tsx")).toContain("h-8 min-w-0 px-3");
     expect(ui("textarea.tsx")).toContain("px-3 py-2");
     expect(ui("button-row.tsx")).toContain("flex flex-wrap items-center gap-2");
