@@ -7,13 +7,13 @@ import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SettingRow, SettingsView, SpendDay, SpendView } from "../web/src/api.js";
 import { keyLabel } from "../web/src/lib/key-label.js";
-import { PAGES, routeFor } from "../web/src/pages.js";
+import { PAGES, redirectFor, routeFor } from "../web/src/pages.js";
 
 // tsconfig.test.json checks this file without JSX, so the pages are built with createElement and their .tsx modules
 // are loaded by a specifier the node check skips (as tests/ui-rules-page.test.tsx does).
 const SPEND_MODULE = "../web/src/views/spend.js";
 const SETTINGS_MODULE = "../web/src/views/settings.js";
-const { SpendPage } = (await import(/* @vite-ignore */ SPEND_MODULE)) as { SpendPage: FunctionComponent };
+const { SpendSection } = (await import(/* @vite-ignore */ SPEND_MODULE)) as { SpendSection: FunctionComponent };
 const { SettingsPage } = (await import(/* @vite-ignore */ SETTINGS_MODULE)) as { SettingsPage: FunctionComponent };
 
 // The Spend page (design 06-spend): today, this week and the last 30 days (cost and tokens), one daily bar chart,
@@ -90,14 +90,17 @@ function show(page: FunctionComponent) {
 }
 
 describe("Spend page", () => {
-  it("is a sidebar page at /app/spend, right after Failures", () => {
-    expect(routeFor("/app/spend").page.label).toBe("Spend");
-    const paths = PAGES.map((p) => p.path);
-    expect(paths.indexOf("spend")).toBe(paths.indexOf("failures") + 1);
+  it("is a section of Health, not a sidebar page: /app/spend leads to Health's Spend section", async () => {
+    expect(routeFor("/app/spend").page.label).toBe("Health");
+    expect(redirectFor("/app/spend")).toBe("/app/health#spend");
+    expect(PAGES.map((p) => p.path)).not.toContain("spend");
+    show(SpendSection);
+    expect(await screen.findByRole("heading", { level: 2, name: "Spend" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
   });
 
   it("shows today, this week and the last 30 days, each with cost and tokens", async () => {
-    show(SpendPage);
+    show(SpendSection);
     const today = await screen.findByText("Today");
     const totals = (label: string) => document.querySelector<HTMLElement>(`[data-total="${label}"]`)!.textContent;
     expect(today).toBeTruthy();
@@ -110,7 +113,7 @@ describe("Spend page", () => {
   });
 
   it("draws one bar per day, the highest day full height, each named with its day and cost", async () => {
-    show(SpendPage);
+    show(SpendSection);
     const chart = await screen.findByRole("list", { name: "Cost per UTC day, last 30 days" });
     const bars = chart.querySelectorAll("li");
     expect(bars).toHaveLength(SPEND.days.length);
@@ -123,7 +126,7 @@ describe("Spend page", () => {
   });
 
   it("lists the tasks by cost with run count and kinds, each linking to its item", async () => {
-    show(SpendPage);
+    show(SpendSection);
     const table = await screen.findByRole("table", { name: "Tasks by cost" });
     const rows = [...table.querySelectorAll("tbody > tr")];
     expect(rows.map((r) => r.querySelector("a")!.textContent)).toEqual(["Big task", "Middle task", "wi_small"]);
@@ -134,7 +137,7 @@ describe("Spend page", () => {
   });
 
   it("says how many runs had no stored cost, apart from the totals", async () => {
-    show(SpendPage);
+    show(SpendSection);
     expect((await screen.findByTestId("spend-unknown")).textContent).toBe("1 run reported no cost; it is counted apart, never as $0.");
   });
 });
@@ -173,7 +176,7 @@ describe("Spend page: the daily chart", () => {
   const taskLinks = () => [...screen.getByRole("table", { name: "Tasks by cost" }).querySelectorAll("tbody a")].map((a) => a.textContent);
 
   it("hovering the 2026-11-07 bar shows that day's cost, runs, tokens and top items, each linking to its item", async () => {
-    show(SpendPage);
+    show(SpendSection);
     fireEvent.mouseEnter(await bar("2026-11-07"));
     const tip = screen.getByRole("tooltip");
     expect(tip.className).toContain("bottom-full"); // above the bar
@@ -191,7 +194,7 @@ describe("Spend page: the daily chart", () => {
   });
 
   it("keyboard focus on a bar shows the same tooltip, and focus can move to its links", async () => {
-    show(SpendPage);
+    show(SpendSection);
     const b = await bar("2026-11-07");
     fireEvent.focus(b);
     const link = within(screen.getByRole("tooltip")).getByRole("link", { name: "Desktop app" });
@@ -200,7 +203,7 @@ describe("Spend page: the daily chart", () => {
   });
 
   it("the x-axis shows only the first and last dates; the y-axis shows cost labels with gridlines, the top one the most cost", async () => {
-    show(SpendPage);
+    show(SpendSection);
     await chart();
     const x = document.querySelector<HTMLElement>('[data-axis="x"]')!;
     expect([...x.children].map((c) => c.textContent)).toEqual(["2026-10-17", "2026-11-15"]);
@@ -215,7 +218,7 @@ describe("Spend page: the daily chart", () => {
   });
 
   it("clicking a bar filters the tasks to that day by a one-day read, totals and chart unchanged; clicking it again shows all", async () => {
-    show(SpendPage);
+    show(SpendSection);
     await screen.findByRole("table", { name: "Tasks by cost" });
     expect(taskLinks()).toContain("Other day only");
     const b = await bar("2026-11-07");
@@ -231,7 +234,7 @@ describe("Spend page: the daily chart", () => {
   });
 
   it("a clear control shows all days in the table again", async () => {
-    show(SpendPage);
+    show(SpendSection);
     fireEvent.click(await bar("2026-11-07"));
     await waitFor(() => expect(taskLinks()).not.toContain("Other day only"));
     fireEvent.click(screen.getByRole("button", { name: "Show all days" }));
@@ -240,6 +243,14 @@ describe("Spend page: the daily chart", () => {
 });
 
 describe("Settings page: dollar budgets", () => {
+  it("Advanced links the Runners and Data pages, which the sidebar no longer shows", async () => {
+    history.replaceState(null, "", "/app/settings?tab=advanced");
+    show(SettingsPage);
+    const runners = await screen.findByRole("link", { name: "Runners" });
+    expect(runners.getAttribute("href")).toBe("/app/runners");
+    expect(screen.getByRole("link", { name: "Data" }).getAttribute("href")).toBe("/app/data");
+  });
+
   it("an unset budget shows an empty number field that takes a fraction such as 12.50, and saves it", async () => {
     history.replaceState(null, "", "/app/settings?tab=advanced");
     show(SettingsPage);
