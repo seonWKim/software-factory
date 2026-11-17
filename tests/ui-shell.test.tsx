@@ -142,7 +142,7 @@ describe("app shell", () => {
     const tasks = screen.getByRole("navigation", { name: "Tasks" });
     expect([...tasks.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Tasks4", "Calendar"]);
     const nav = screen.getByRole("navigation", { name: "System" });
-    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Work", "Rules", "Health"]);
+    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Work", "Health"]);
     fireEvent.click(within(nav).getByText("Health"));
     expect(await screen.findByRole("heading", { level: 1, name: "Health" })).toBeTruthy();
     expect(location.pathname).toBe("/app/health");
@@ -312,15 +312,19 @@ describe("sidebar", () => {
     expect(content.className.split(" ")).toContain("overflow-y-auto");
   });
 
-  it("the Tasks group shows a small grey title that names it, and so does System", () => {
+  it("the sidebar has no group heading; each nav is named by aria-label and the blocks are split by dividers", () => {
     mount();
-    for (const name of ["Tasks", "System"]) {
+    const side = screen.getByRole("complementary", { name: "Sidebar" });
+    expect(side.querySelectorAll("nav p, nav h1, nav h2, nav h3, nav h4, nav h5, nav h6")).toHaveLength(0);
+    for (const name of ["Tasks", "System", "Setup"]) {
       const nav = screen.getByRole("navigation", { name });
-      const title = document.getElementById(nav.getAttribute("aria-labelledby")!)!;
-      expect(title.textContent).toBe(name);
-      expect(nav.firstElementChild).toBe(title);
-      for (const c of ["text-xs", "text-text-3"]) expect(title.className.split(" ")).toContain(c);
+      expect(nav.hasAttribute("aria-labelledby")).toBe(false);
+      expect(nav.getAttribute("aria-label")).toBe(name);
     }
+    const links = (name: string) => within(screen.getByRole("navigation", { name })).getAllByRole("link").map((a) => a.getAttribute("aria-label"));
+    expect(links("Tasks")).toEqual(["Tasks", "Calendar"]);
+    expect(links("System")).toEqual(["Work", "Health"]);
+    expect(links("Setup")).toEqual(["Rules", "Plugins", "Settings"]);
     expect(document.querySelector("aside details, aside summary, aside [data-chevron]")).toBeNull();
     expect(screen.getByRole("navigation", { name: "System" }).closest("div")!.className.split(" ")).toEqual(expect.arrayContaining(["mt-3", "border-t", "pt-3"]));
   });
@@ -462,21 +466,30 @@ describe("app pages", () => {
     const side = screen.getByRole("complementary", { name: "Sidebar" });
     const links = [...side.querySelectorAll("a")].filter((a) => a.getAttribute("href")?.startsWith("/app/") && a.getAttribute("href") !== "/app/");
     expect(links.map((a) => [a.getAttribute("aria-label"), a.getAttribute("href")])).toEqual([
-      ["Tasks", "/app/tasks"], ["Calendar", "/app/calendar"], ["Plugins", "/app/plugins"],
-      ["Work", "/app/items"], ["Rules", "/app/rules"], ["Health", "/app/health"], ["Settings", "/app/settings"],
+      ["Tasks", "/app/tasks"], ["Calendar", "/app/calendar"], ["Work", "/app/items"], ["Health", "/app/health"],
+      ["Rules", "/app/rules"], ["Plugins", "/app/plugins"], ["Settings", "/app/settings"],
     ]);
     for (const gone of ["Activity", "Failures", "Spend", "Runners", "Data"]) expect(within(side).queryByRole("link", { name: gone })).toBeNull();
   });
 
-  it("the sidebar shows Plugins in its own group above System, linking to /app/plugins", () => {
+  it("the bottom block lists Rules, Plugins and Settings under no visible title, below Work and Health, with dividers between the blocks", () => {
     mount();
-    const plugins = screen.getByRole("navigation", { name: "Plugins" });
-    expect([...plugins.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual(["/app/plugins"]);
+    const tasks = screen.getByRole("navigation", { name: "Tasks" });
     const system = screen.getByRole("navigation", { name: "System" });
-    expect(plugins.compareDocumentPosition(system) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByRole("navigation", { name: "Tasks" }).contains(plugins)).toBe(false);
-    expect(system.contains(plugins)).toBe(false);
-    expect(plugins.closest("div")!.className.split(" ")).toEqual(expect.arrayContaining(["mt-3", "border-t", "pt-3"]));
+    const setup = screen.getByRole("navigation", { name: "Setup" });
+    expect([...setup.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual(["/app/rules", "/app/plugins", "/app/settings"]);
+    expect(setup.hasAttribute("aria-labelledby")).toBe(false);
+    expect(setup.querySelector("p")).toBeNull();
+    expect(tasks.compareDocumentPosition(system) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(system.compareDocumentPosition(setup) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    for (const nav of [system, setup]) {
+      expect(nav.closest("div")!.className.split(" ")).toEqual(expect.arrayContaining(["border-t", "pt-3"]));
+    }
+    expect(setup.closest("aside > div")!.className.split(" ")).toContain("mt-auto");
+    for (const name of ["Rules", "Plugins"]) {
+      expect(within(setup).getByRole("link", { name })).toBeTruthy();
+      expect(within(system).queryByRole("link", { name })).toBeNull();
+    }
   });
 
   it("old paths redirect: /app/workers to Runners; /app/users is no longer an old path", async () => {

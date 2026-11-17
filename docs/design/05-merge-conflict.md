@@ -1,5 +1,7 @@
 # 5. Coordination: merge conflict
 
+- **A failed resolve run takes `/retry +paths` (decision changed 2026-11-18; replaces "`+paths` applies only to a failed implement run").** The decision that changed: a resolve run that asked for a path outside `allowed_paths` (`agent_needs_human`), or that failed without asking (`repeated_failure`), is answered with `/retry +paths <path>`: the paths are added as for an implement run (design 04-gate-commands, same limits) and one resolve run is queued with the `/retry` notes minus the `+paths` line, keeping the reviewed change and the spec. Before, the `+paths` was refused, a plain `/retry` asked again, and only `/revise` (which redoes the item) got past it. `/resolve +paths` is unchanged.
+
 - **The resolve run no longer renumbers migration steps (decision changed 2026-11-13, #659 phase 2; before: see History).** The decision that changed: the resolve run's renumbering of a duplicate step (2026-11-08). It is removed with the update run's and the implement sync's (`docs/design/05-coordination.md`). After its `--no-commit` merge the resolve run runs the appended-line merge, snapshots, lets the agent resolve what is left, then gates and commits as before.
   - **On both paths:** removed. Neither the clean merge nor the conflict path stages any step move before the snapshot.
   - **Same skip rule:** removed with the renumbering it skipped.
@@ -32,4 +34,5 @@
     - **Success:** the worker pushes the merge to the same branch (no new PR). The controller moves the item to `REVIEW` (`resolved`; `pr_number` unchanged, block cleared) and enqueues a review whose key is `<id>:review:after-resolve:<resolve run id>`, so it never collides with an earlier review key. The usual review outcomes follow (`merge_pending`, or a bug loop), and `pr_merged` closes the item as before.
     - **Failure** (any code: agent, `out_of_scope`, `unresolved_conflicts`, `tests_failed`, `head_moved`, push, egress, rate limit, lease loss): a human's run is not retried automatically (an automatic run under its limit is, above). The item goes back to `REVIEW` / `blocked_on: human` / `merge_conflict_pending` (`resolve_failed`, detail = run id and error code), not `run_failed:*`. One comment, marked `run-failed:<run id>`, names the code and its detail (the detail is dropped if the egress scan flags it) and says `/resolve` can be sent again. The next `/resolve` is accepted under a new key.
 
+- Replaced (2026-11-18): `/retry +paths` applied only to a failed implement run; after a failed resolve run it was refused, and a plain `/retry` re-ran the resolve without the path.
 - Replaced decisions of this topic: [history/05-merge-conflict.md](history/05-merge-conflict.md).

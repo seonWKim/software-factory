@@ -2,7 +2,7 @@
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
 import { DEPENDENCY_CLOSED } from "../../../core/commands.js";
-import { type DependencyLink, type DependencyVerdict, dependencyReason, dependencyVerdict, holdReason, isDependencySource, shortRef } from "../../../core/coordination.js";
+import { type DependencyLink, type DependencyVerdict, dependencyReason, dependencyRef, dependencyVerdict, holdReason, isDependencySource } from "../../../core/coordination.js";
 import { runKey } from "../../../core/policy.js";
 import { type Actor, type DependencyState, type SourceType, type Timestamp, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { FactoryStore } from "../../../interfaces/factory-store.js";
@@ -94,7 +94,8 @@ export class CoordinationUnit {
   ): Promise<string | null> {
     if (paths.length > 0) return "`+paths` applies only to a failed implement run; reply `/retry` without `+paths`";
     const v = await this.readDependencies(it, "now");
-    const short = (d: string) => shortRef(d, it.source.id);
+    const labels = await this.dependencyLabels(it.source.type, verdictIds(v));
+    const short = (d: string) => dependencyRef(d, it.source.id, labels);
     if (v.kind === "closed") {
       return `${short(v.dependency)} is still closed without a merge; reply \`/retry\` once it is merged or the link to it is removed`;
     }
@@ -226,14 +227,15 @@ export class CoordinationUnit {
   async applyDependencies(id: WorkItemId, v: DependencyVerdict): Promise<void> {
     await this.c.unit("transitions").decide(id, async (it) => {
       if (it.stage !== "RUNNING" || it.change_ref !== null || (it.blocked_on !== "none" && it.blocked_on !== "dependency")) return null;
-      const short = (d: string) => shortRef(d, it.source.id);
+      const labels = await this.dependencyLabels(it.source.type, verdictIds(v));
+      const short = (d: string) => dependencyRef(d, it.source.id, labels);
       switch (v.kind) {
         case "clear":
           return it.blocked_on === "dependency"
             ? { patch: { blocked_on: "none", blocked_reason: null }, actor: SYSTEM, reason: "dependency_released" }
             : null;
         case "wait": {
-          const reason = dependencyReason(v.open, it.source.id);
+          const reason = dependencyReason(v.open, it.source.id, labels);
           if (it.blocked_on === "dependency" && it.blocked_reason === reason) return null;
           const patch = { blocked_on: "dependency" as const, blocked_reason: reason };
           await this.c.unit("outbox").comment(it, `dependency-hold:${it.id}:${v.open.join(",")}`, [
@@ -266,6 +268,21 @@ export class CoordinationUnit {
     });
   }
 
+  /**
+   * How holds name the dependencies `ids` of an item of source `type`: the source's labels (the local source's wi_
+   * ids, store reads only, design 05-dependencies); empty for a source without them, so shortRef applies.
+   */
+  async dependencyLabels(type: SourceType, ids: readonly string[]): Promise<Map<string, string>> {
+    const labels = new Map<string, string>();
+    const adapter = this.c.k.byType.get(type);
+    if (!adapter || !isDependencySource(adapter) || !adapter.dependencyLabel) return labels;
+    for (const id of ids) {
+      const label = await adapter.dependencyLabel(id);
+      if (label) labels.set(id, label);
+    }
+    return labels;
+  }
+
   /** After `sourceId`'s item closed: every item waiting on it is re-checked from the store (no forge call). */
   async releaseDependents(sourceId: string): Promise<void> {
     for (const e of await this.c.k.d.store.listDependencyEdges({ depends_on: sourceId })) {
@@ -289,6 +306,16 @@ export class CoordinationUnit {
       "",
       `Reply \`/approve\` to start it now anyway (threshold \`max_coordination_cost\` = ${d.threshold}).`,
     ].join("\n"));
+  }
+}
+
+/** The dependency ids a verdict names. */
+function verdictIds(v: DependencyVerdict): string[] {
+  switch (v.kind) {
+    case "clear": return [];
+    case "wait": return v.open;
+    case "closed": return [v.dependency];
+    case "cycle": return v.cycle;
   }
 }
 

@@ -1987,6 +1987,87 @@ describe("/resolve on a merge conflict", () => {
     expect(refusals(f)).toEqual([]);
   });
 
+  describe("/retry +paths after a failed resolve run (design 04-gate-commands, 2026-11-18)", () => {
+    const retryEvent = (f: F, comment_id: string, note: string) => ({ kind: "retry_requested" as const, source: f.src, comment_id, requester: alice, note });
+    const queuedRuns = async (f: F) => (await f.store.listRuns(f.item.id)).filter((r) => r.status === "queued");
+    /** A person's resolve run that asked for a human (agent_needs_human). */
+    async function resolveAsked(n: number) {
+      const f = await conflicted(n);
+      const resolve = f.runner.script.resolve!;
+      f.runner.script.resolve = () => ({ output: { needs_human: { reason: "r", question: "q", paths: ["tests/x.test.ts"] } } });
+      f.source.queue.push(resolveEvent(f, `${n}01`));
+      await f.step();
+      f.runner.script.resolve = resolve;
+      const item = (await f.store.getWorkItem(f.item.id))!;
+      expect(item).toMatchObject({ blocked_on: "human", blocked_reason: "agent_needs_human" });
+      return { ...f, item };
+    }
+    /** A person's resolve run that failed without asking, then held for a repeated failure. */
+    async function resolveFailed(n: number) {
+      const f = await conflicted(n);
+      const resolve = f.runner.script.resolve!;
+      f.runner.script.resolve = () => ({ status: "failed", error: "boom" });
+      f.source.queue.push(resolveEvent(f, `${n}01`));
+      await f.step();
+      f.runner.script.resolve = resolve;
+      expect((await f.store.listRuns(f.item.id)).filter(byPerson).at(-1)!.outcome?.status).toBe("failed");
+      const it0 = (await f.store.getWorkItem(f.item.id))!;
+      const r = await f.store.transition({
+        id: it0.id, expected_version: it0.version, actor: { kind: "system", id: "test" }, reason: "test_setup",
+        patch: { blocked_on: "human", blocked_reason: "repeated_failure" },
+      });
+      if (!r.ok) throw new Error("setup");
+      return { ...f, item: r.item };
+    }
+
+    it("a resolve run that asked for a path: /retry +paths adds it, queues one resolve run with the notes below, and leaves the spec as it was", async () => {
+      const f = await resolveAsked(83);
+      expect(await queuedRuns(f)).toEqual([]);
+      f.source.queue.push(retryEvent(f, "8302", "+paths tests/x.test.ts\nThe test imports the moved file"));
+      await f.controller.tickIntake();
+      const item = (await f.store.getWorkItem(f.item.id))!;
+      expect(item).toMatchObject({ blocked_on: "none", blocked_reason: null, tier: f.item.tier });
+      expect(item.allowed_paths).toEqual([...f.item.allowed_paths, "tests/x.test.ts"]);
+      expect([item.problem, item.done_criteria, item.desired_output]).toEqual([f.item.problem, f.item.done_criteria, f.item.desired_output]);
+      expect((await queuedRuns(f)).map((r) => [r.kind, r.input])).toEqual([["resolve", { notes: "The test imports the moved file" }]]);
+      const row = (await f.store.listStateChanges(f.item.id)).at(-1)!;
+      expect(row).toMatchObject({ reason: "retry_requested", detail: { added_paths: JSON.stringify(["tests/x.test.ts"]) } });
+      expect(refusals(f)).toEqual([]);
+    });
+
+    it("a resolve run that failed without asking: /retry +paths adds the path and queues one resolve run", async () => {
+      const f = await resolveFailed(84);
+      f.source.queue.push(retryEvent(f, "8402", "+paths tests/x.test.ts"));
+      await f.controller.tickIntake();
+      const item = (await f.store.getWorkItem(f.item.id))!;
+      expect(item.allowed_paths).toEqual([...f.item.allowed_paths, "tests/x.test.ts"]);
+      expect(item.problem).toBe(f.item.problem);
+      expect((await queuedRuns(f)).map((r) => [r.kind, r.input])).toEqual([["resolve", { notes: "" }]]);
+      expect(refusals(f)).toEqual([]);
+    });
+
+    it("only covered paths: the resolve run is retried, nothing is added, and one reply says they were already allowed", async () => {
+      const f = await resolveAsked(85);
+      f.source.queue.push(retryEvent(f, "8502", "+paths .github/workflows/x.yml\nagain"));
+      await f.controller.tickIntake();
+      expect((await f.store.getWorkItem(f.item.id))!.allowed_paths).toEqual(f.item.allowed_paths);
+      expect((await queuedRuns(f)).map((r) => [r.kind, r.input])).toEqual([["resolve", { notes: "again" }]]);
+      const said = f.source.comments.filter((c) => c.marker === "<!-- factory:already-allowed:8502 -->");
+      expect(said).toHaveLength(1);
+      expect(said[0]!.body).toContain("`/retry` was applied; its `+paths` added nothing to the allowed paths, already allowed: .github/workflows/x.yml");
+    });
+
+    it("bad paths and more than 10 are refused with one reply each, and nothing changes", async () => {
+      const f = await resolveAsked(86);
+      const before = await snapshot(f);
+      const bad = ["+paths tests/../x.ts", "+paths tests/*.ts", `+paths ${Array.from({ length: 11 }, (_, i) => `f${i}.ts`).join(" ")}`];
+      bad.forEach((note, i) => f.source.queue.push(retryEvent(f, `86b${i}`, note)));
+      await f.controller.tickIntake();
+      expect(await snapshot(f)).toEqual(before);
+      bad.forEach((_, i) => expect(f.source.comments.filter((c) => c.marker === `<!-- factory:refused:86b${i} -->`)).toHaveLength(1));
+    });
+  });
+
   it("scope gate: a changed file outside the conflicts and allowed_paths fails out_of_scope, pushes nothing, re-blocks with a comment; a later /resolve is accepted", async () => {
     const f = await conflicted(74);
     f.sandbox.resolveChanged = ["src/gate.ts", ".github/workflows/new.yml", "package.json", "src/extra.ts"];
@@ -2808,7 +2889,7 @@ describe("+paths on /approve and /retry, and /retry notes (issue #280)", () => {
     expect(await f.store.getWorkItem(before.id)).toEqual(before);
     const replies = f.source.comments.filter((c) => c.marker === "<!-- factory:refused:9801 -->");
     expect(replies).toHaveLength(1);
-    expect(replies[0]!.body).toContain("applies only to a failed implement run");
+    expect(replies[0]!.body).toContain("applies only to a failed implement or resolve run, and this item's failed run is a triage run");
   });
 
   it("bad paths and more than 10 are refused with one reply each, and nothing changes", async () => {

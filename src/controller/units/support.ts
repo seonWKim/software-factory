@@ -56,8 +56,8 @@ export const QUOTABLE_COMMAND = /^[a-z][a-z0-9_-]{0,31}$/;
 export const GITHUB_SOURCE_TYPE: SourceType = "github_issue";
 /**
  * `/retry [notes]`: the failed step again under a new key. `widen` (a `+paths`, issue #280) applies only to a
- * failed implement run; on any other kind it is refused and nothing changes. The note goes on the state change
- * (and is a resolve run's notes). At the review loop limit it is an implement run with loop_count back at 0 and
+ * failed implement or resolve run; on any other kind it is refused and nothing changes. The note, without its
+ * `+paths` line, goes on the state change (and is a resolve run's notes). At the review loop limit it is an implement run with loop_count back at 0 and
  * the item RUNNING (a human chose to try again). On a `recurring_failure` hold it only lifts the hold.
  */
 export function retry(it: WorkItem, actor: Actor, kind: RunKind | undefined, note: string | null, widen: Widening | null): Decision | Refusal {
@@ -67,8 +67,8 @@ export function retry(it: WorkItem, actor: Actor, kind: RunKind | undefined, not
     return { patch: { blocked_on: "none", blocked_reason: null }, actor, reason: "retry_requested", ...(note ? { detail: { note } } : {}) };
   }
   if (it.blocked_on !== "human" || !kind) return { refuse: "there is no failed run to retry" };
-  if (widen && kind !== "implement") {
-    return { refuse: `\`+paths\` applies only to a failed implement run, and this item's failed run is a ${kind} run; reply \`/retry\` without \`+paths\`` };
+  if (widen && kind !== "implement" && kind !== "resolve") {
+    return { refuse: `\`+paths\` applies only to a failed implement or resolve run, and this item's failed run is a ${kind} run; reply \`/retry\` without \`+paths\`` };
   }
   const w = widen ?? NO_WIDENING;
   const detail = { ...(note ? { note } : {}), ...w.detail };
