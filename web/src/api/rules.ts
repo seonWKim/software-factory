@@ -1,0 +1,214 @@
+// The Rules page: GET /api/v1/standing, /api/v1/rules and /api/v1/rules/entry; POST /api/v1/standing (postStanding),
+// POST /api/v1/rules/verdict (postRuleVerdict) and POST /api/v1/improve/run (postImproveRun).
+
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { t } from "../i18n/index.js";
+import { getJson, postJson } from "./client.js";
+import { API } from "./routes.js";
+
+/** One standing rule of `/api/v1/standing` (design 05-standing-approvals). `last_used_at`: null, not recorded yet. */
+export interface StandingRuleRow {
+  rule: string;
+  gate: string;
+  tier: number;
+  threshold: number;
+  enabled: boolean;
+  set_by: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  last_used_at: string | null;
+}
+
+/** A proposal to turn a rule on that no one has answered yet. */
+export interface StandingProposalRow {
+  id: string;
+  rule: string;
+  run_length: number;
+  threshold: number;
+  created_at: string;
+}
+
+/** `/api/v1/standing`: the rules and the pending proposals; `csrf_token` is null when the server has no write route. */
+export interface StandingView {
+  as_of: string;
+  csrf_token: string | null;
+  rules: StandingRuleRow[];
+  proposals: StandingProposalRow[];
+}
+
+/** One ledger entry waiting for the owner's verdict on the Rules page (issue #571). */
+export interface RuleRow {
+  /** `C-…` for a candidate class, `P-…` for a structure proposal. */
+  id: string;
+  title: string;
+  /** `open`, `pending` or `held`: the ledger's heading it is listed under. */
+  state: string;
+  /** The decision of a ledger verdict newer than the pending view: judged already, no verdict offered. Null: not judged. */
+  judged: string | null;
+  /** A class's draft (`evolve show`), which prefills Promote; null for a proposal, a judged entry or a failed read. */
+  draft: { default: string; exception: string; incidents: string[]; scope: string } | null;
+  /** Why a class's draft could not be read (Promote is off then), or null. */
+  draft_error: string | null;
+  /** A proposal's kind (`promote-learning`, `edit-asset`, `new-asset`) and the asset it changes, when the ledger lists them. */
+  kind?: string;
+  target?: string;
+}
+
+/** One incident behind an entry: its linked ID (T-, L-, E-), day, the agent's proposal, the owner's quote, its root reason. */
+export interface RuleEvidence {
+  ref?: string;
+  date?: string;
+  proposal?: string;
+  quote?: string;
+  root_reason?: string;
+}
+
+/** One entry's detail from `/api/v1/rules/entry?id=`; a field the ledger did not print is absent. */
+export interface RuleDetail {
+  id: string;
+  /** One line on what the entry is. */
+  description?: string;
+  default?: string;
+  exceptions?: string;
+  kind?: string;
+  target?: string;
+  /** A proposal's current lines of its target and the change it proposes, when the ledger carries them. */
+  current?: string;
+  proposed?: string;
+  incidents?: number;
+  /** The incidents, newest first. */
+  evidence?: RuleEvidence[];
+  root_reason?: string;
+  scope?: string;
+}
+
+/**
+ * `/api/v1/rules/entry?id=`: `detail` null when the ledger gave none; `error` a failed read, or null. `retire`: an
+ * applied class's reasons to retire it ([] for none), null for any other entry (absent from an older server).
+ */
+export interface RuleEntryView {
+  id: string;
+  detail: RuleDetail | null;
+  error: string | null;
+  retire?: string[] | null;
+}
+
+/** One retired class from the ledger's retire verdicts: the owner's reason and the day (YYYY-MM-DD). */
+export interface RetiredRule {
+  id: string;
+  reason: string;
+  date: string;
+}
+
+/** One promoted block of the rules file (Applied group); a part it lacks is null, an unparsable block has only `raw`. */
+export interface AppliedRule {
+  id: string | null;
+  name: string | null;
+  default: string | null;
+  exceptions: string | null;
+  scope: string | null;
+  incidents: string[] | null;
+  judged: string | null;
+  raw: string | null;
+}
+
+/** One agents home and the first of bin/tacit and bin/evolve that is missing or not executable there (null: both are). */
+export interface AgentsHomeView {
+  path: string;
+  missing: string | null;
+}
+
+/**
+ * `/api/v1/rules`: `enabled` false when the tacit ledger is off; `judge` is why the viewer cannot send a verdict (or,
+ * with the ledger off, turn it on), or null; `error` is a failed ledger read, or null. With the ledger off, `home` is
+ * the agents home in use and the CLI missing there (null: found), with `homes`, each known home (AGENTS_HOME when set,
+ * ~/.agents) and its own check, for the picker; `turn_on` the `integrations` value that turns it on (the plugin name
+ * only), sent through POST /api/v1/settings; null when the viewer may not or the home is not found.
+ */
+export interface RulesView {
+  enabled: boolean;
+  entries: RuleRow[];
+  /** The rules file's blocks and encoded-elsewhere lines; null with the ledger off. */
+  applied: { rules: AppliedRule[]; elsewhere: string[] } | null;
+  /** The retired classes, newest first; null with the ledger off (absent from an older server). */
+  retired?: RetiredRule[] | null;
+  error: string | null;
+  csrf_token: string | null;
+  judge: string | null;
+  home: (AgentsHomeView & { homes?: AgentsHomeView[] }) | null;
+  turn_on: string | null;
+  /** The latest improve report and Run now (absent from an older server), with the ledger on or off. */
+  improve?: ImproveView;
+}
+
+/**
+ * The `improve` field of `/api/v1/rules`: the latest report (null: no run has reported), and `run_now` whether the
+ * viewer may queue a run (approve_spec), with the token POST /api/v1/improve/run takes (null when they may not).
+ */
+export interface ImproveView {
+  report: ImproveReportView | null;
+  run_now: boolean;
+  csrf_token: string | null;
+}
+
+export interface ImproveReportView {
+  window_start: string;
+  window_end: string;
+  created_at: string;
+  /** The runs in all groups. */
+  runs: number;
+  /** Single-run patterns. */
+  patterns: number;
+  groups: ImproveGroupView[];
+}
+
+/** One failure group: its draft's cause and fix, or one note (withheld, failed, skipped); `filing` null: not filed yet. */
+export interface ImproveGroupView {
+  error_code: string;
+  detail: string | null;
+  runs: number;
+  draft: { cause: string | null; fix: string | null; note: string | null } | null;
+  filing: string | null;
+}
+
+export type RuleVerdict = "promote" | "reject" | "hold" | "retire";
+
+/**
+ * One entry's detail, read once when `enabled` turns true (a card opens, or Suggest is pressed), never polled. Each
+ * `round` (a Suggest press) reads it again, and the last round's answer stays shown while the next one loads.
+ */
+export function useRuleEntry(id: string, enabled: boolean, round = 0) {
+  const url = API.ruleEntry(id);
+  return useQuery({ queryKey: [url, round], queryFn: () => getJson<RuleEntryView>(url), enabled, staleTime: Infinity, placeholderData: keepPreviousData });
+}
+
+/** POST /api/v1/standing: a rule on or off, naming the proposal it answers if any. A refusal comes back as `{ ok: false, error }`. */
+export async function postStanding(
+  token: string,
+  body: { rule: string; enabled: boolean; proposal?: string },
+): Promise<{ ok: true; changed: boolean } | { ok: false; error: string }> {
+  const r = await postJson<{ changed?: boolean; error?: string }>(API.standing, token, body);
+  if (r.ok) return { ok: true, changed: r.value.changed === true };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+}
+
+/**
+ * POST /api/v1/rules/verdict: a verdict with its reason, and for promote of a class (C-) the owner's wording, default
+ * and exception. Promote of a proposal (P-) takes none: the server applies its current → proposed lines, and a failed
+ * apply comes back as the error, with nothing written.
+ */
+export async function postRuleVerdict(
+  token: string,
+  body: { id: string; verdict: RuleVerdict; reason: string; text?: string; default?: string; exception?: string },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await postJson<{ error?: string }>(API.ruleVerdict, token, body);
+  if (r.ok) return { ok: true };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+}
+
+/** POST /api/v1/improve/run: the queued run's ID, or the refusal with the run already queued or running (409). */
+export async function postImproveRun(token: string): Promise<{ ok: true; run_id: string } | { ok: false; error: string; run_id: string | null }> {
+  const r = await postJson<{ run_id?: string; error?: string }>(API.improveRun, token, {});
+  if (r.ok && r.value.run_id) return { ok: true, run_id: r.value.run_id };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }), run_id: r.value.run_id ?? null };
+}
