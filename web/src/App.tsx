@@ -157,16 +157,12 @@ export function App() {
         >
           <Brand />
           <SideLinks label={t("nav.tasks")} pages={pagesIn("tasks")} current={current} badges={{ tasks: needs }} titled />
-          {/* Plugins: what the agents can use, its own group above System. One entry, so no title over it. */}
-          <div className="mt-3 border-t border-border pt-3">
-            <SideLinks label={t("page.plugins")} pages={pagesIn("plugins")} current={current} />
-          </div>
           <div className="mt-3 border-t border-border pt-3">
             <SideLinks label={t("nav.system")} pages={pagesIn("system")} current={current} titled />
           </div>
           <div className="mt-auto pt-3">
             <div className="border-t border-border pt-3">
-              <SideLinks label={t("page.settings")} pages={pagesIn("bottom")} current={current} />
+              <SideLinks label={t("nav.setup")} pages={pagesIn("bottom")} current={current} />
             </div>
           </div>
         </aside>
