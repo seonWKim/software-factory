@@ -12,17 +12,7 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const MAX_TOPIC_BYTES = 30_000;
 
 /** Topic files over the cap today. Remove a file once it is at or under the cap; never add one. */
-const OVER_CAP = new Set([
-  "02-tasks.md",
-  "04-gate-commands.md",
-  "05-coordination.md",
-  "05-restarts.md",
-  "05-sources.md",
-  "07-self-improvement.md",
-  "08-settings.md",
-  "09-dashboard-app.md",
-  "10-event-driven.md",
-]);
+const OVER_CAP = new Set<string>();
 
 /** Every size problem in `sizes` (file name → bytes) against `ratchet`, one line each; empty when fine. */
 function sizeProblems(sizes: ReadonlyMap<string, number>, ratchet: ReadonlySet<string>): string[] {
