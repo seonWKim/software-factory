@@ -126,6 +126,14 @@ A copy element: the shown text (`children`, else `value`) in `font-mono text-xs`
 
 A readable name (`label`, e.g. "worker 3" or "you") as a plain button on the shared Tooltip: the full `id` shows in the tooltip on hover and keyboard focus (not in the DOM while hidden), and a click copies it and shows "Copied" in place of the label for 1.5 s, on the same line, so the row height never changes. No disclosure; with no clipboard a click does nothing. The copy logic is one helper shared with CopyButton. Pages use it so no raw ID shows in running text (design 09-dashboard-app).
 
+## KeyValue
+
+A `dl` of label → value pairs (`items`: `key`, `term`, `value`), `text-xs`, terms in `text-2`. Default: two columns (term, then value that wraps anywhere); `stacked`: term above value, for a dialog. A term with `code` is a code identifier and shows in monospace; values are plain text, monospace only for ids, SHAs, paths, commands, code and SQL. `valueProps` and extra `data-*` props pass through to the dd and dl. No interactive states.
+
+## ValueBlock
+
+The code block for a long value (pretty JSON, a command) beside KeyValue: a `pre` in `surface-2`, `font-mono text-xs`, wraps, scrolls past `max-h-48`. No interactive states.
+
 ## Markdown
 
 Renders a markdown string as safe elements. No variants or sizes.
