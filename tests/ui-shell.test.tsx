@@ -312,15 +312,19 @@ describe("sidebar", () => {
     expect(content.className.split(" ")).toContain("overflow-y-auto");
   });
 
-  it("the Tasks group shows a small grey title that names it, and so does System", () => {
+  it("the sidebar has no group heading; each nav is named by aria-label and the blocks are split by dividers", () => {
     mount();
-    for (const name of ["Tasks", "System"]) {
+    const side = screen.getByRole("complementary", { name: "Sidebar" });
+    expect(side.querySelectorAll("nav p, nav h1, nav h2, nav h3, nav h4, nav h5, nav h6")).toHaveLength(0);
+    for (const name of ["Tasks", "System", "Setup"]) {
       const nav = screen.getByRole("navigation", { name });
-      const title = document.getElementById(nav.getAttribute("aria-labelledby")!)!;
-      expect(title.textContent).toBe(name);
-      expect(nav.firstElementChild).toBe(title);
-      for (const c of ["text-xs", "text-text-3"]) expect(title.className.split(" ")).toContain(c);
+      expect(nav.hasAttribute("aria-labelledby")).toBe(false);
+      expect(nav.getAttribute("aria-label")).toBe(name);
     }
+    const links = (name: string) => within(screen.getByRole("navigation", { name })).getAllByRole("link").map((a) => a.getAttribute("aria-label"));
+    expect(links("Tasks")).toEqual(["Tasks", "Calendar"]);
+    expect(links("System")).toEqual(["Work", "Health"]);
+    expect(links("Setup")).toEqual(["Rules", "Plugins", "Settings"]);
     expect(document.querySelector("aside details, aside summary, aside [data-chevron]")).toBeNull();
     expect(screen.getByRole("navigation", { name: "System" }).closest("div")!.className.split(" ")).toEqual(expect.arrayContaining(["mt-3", "border-t", "pt-3"]));
   });
