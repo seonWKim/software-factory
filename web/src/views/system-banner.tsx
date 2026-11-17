@@ -9,7 +9,7 @@ import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { BASE } from "../pages.js";
-import { AutoStopNote, alarmAnchor } from "./settings.js";
+import { AutoStopNote, alarmAnchor } from "./settings/general.js";
 
 /**
  * Shown while the app was built from another revision than the server it talks to runs (design §9): the tab
