@@ -1,5 +1,6 @@
 import { type RunCall, type RunKindDescriptor, loadRunKinds } from "./run-kind.js";
 import { gradeRun } from "./runs/improve/improve.run.js";
+import type { MergeCheckTools } from "./runs/merge-check/merge-check.run.js";
 import { type ExecutionEngine, type ExecutionEngines, LeaseLostError, RunDeadlineError, type RunRef, StepTimeoutError } from "./engine/index.js";
 import { JournalEngines } from "./engine/plugins/journal/journal-engine.js";
 import { type Period, type TickHandler, type TickSource, tickAt } from "../shared/ticks/tick-generator.js";
@@ -12,7 +13,7 @@ import { type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor, readOnlyOv
 import { LiveSettings } from "../core/settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelRunKind, type ModelTable, isModelRunKind, modelClassFor } from "../core/model-choice.js";
 import { errorText, type LogFields } from "../core/log.js";
-import { type CheckRound, checkCommands, commandText, runChecks } from "../core/checks.js";
+import { type CheckRound, checkCommands, commandText, failingTestFiles, runChecks, withTestFiles } from "../core/checks.js";
 import { AGENT_STALLED, FORGE_AUTH, GITHUB_RATE_LIMIT, GITHUB_RATE_LIMITED, githubRateLimitReset, MODEL_STALL, PREFLIGHT_ACCESS, preflightCheck, RATE_LIMITED, branchFor, wipBranchFor, canAutoMerge, NETWORK, NETWORK_PROBE_MS, NETWORK_UNAVAILABLE, classifyNetwork, failureClass } from "../core/policy.js";
 import { incompleteLabel, lastPrNotes, prBody } from "../core/pr-body.js";
 import type { MergeIO } from "../core/mechanical.js";
@@ -34,6 +35,9 @@ export class Worker {
   readonly meters = new WeakMap<Run, RunUsage>();
 
   readonly live: LiveSettings;
+
+  /** The check helpers the merge-check run uses, injected so the run imports no legacy core module. */
+  readonly checkTools: MergeCheckTools = { checkCommands, failingTestFiles, withTestFiles };
 
   /** The settings of the run being executed, read once at its claim. Scratch for one run, like `meters`. */
   cfg: FactoryConfig;
@@ -648,14 +652,8 @@ export class Worker {
    */
   async runCheckList(run: Run, handle: SandboxHandle, signal: AbortSignal, o: { commands?: string[][]; cwd?: string } = {}): Promise<CheckRound> {
     const round = await runChecks({
-      sandbox: this.d.sandbox,
-      handle,
-      commands: o.commands ?? checkCommands(this.cfg.repo),
-      ...(o.cwd === undefined ? {} : { cwd: o.cwd }),
-      env: { ...this.d.toolEnv, ...this.slotEnv() },
-      timeout_ms: this.cfg.run_timeout_ms,
-      signal,
-      redact: [],
+      sandbox: this.d.sandbox, handle, commands: o.commands ?? checkCommands(this.cfg.repo), ...(o.cwd === undefined ? {} : { cwd: o.cwd }),
+      env: { ...this.d.toolEnv, ...this.slotEnv() }, timeout_ms: this.cfg.run_timeout_ms, signal, redact: [],
     });
     if (signal.aborted) throw new RunFailure("lease_lost", "run aborted", true);
     return round;

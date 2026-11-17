@@ -585,12 +585,11 @@ describe("merge check run: a failing check names its tests and keeps the output 
   async function failingRun(scanner?: EgressScanner) {
     const repo = { ...config.repo, check_commands: [["npm", "test"]] };
     const f = await pipeline({ config: { repo }, ...(scanner ? { scanner } : {}) });
-    f.sandbox.exits["npm test"] = 1;
     const exec = f.sandbox.exec.bind(f.sandbox);
+    // `npm test` fails, and so does its one rerun on the failing files (`npm test -- tests/t0.test.ts ...`).
     f.sandbox.exec = async (h, cmd, eo) => {
       const r = await exec(h, cmd, eo);
-      const out = printed[cmd.join(" ") as keyof typeof printed];
-      return out === undefined ? r : { ...r, stdout: out };
+      return cmd.slice(0, 2).join(" ") === "npm test" ? { ...r, exit_code: 1, stdout: printed["npm test"] } : r;
     };
     const { item } = await f.store.createWorkItem(issue(7), system);
     const moved = await f.store.transition({
@@ -620,6 +619,84 @@ describe("merge check run: a failing check names its tests and keeps the output 
     expect(outcome).toMatchObject({ status: "succeeded", data: { result: "red", why: "checks", output_tail: null } });
     const data = outcome?.status === "succeeded" ? outcome.data : {};
     expect(data.failing_tests).toContain("tests/t0.test.ts > suite > case 0");
+  });
+});
+
+// A failing check list whose output names failing test files reruns only those files once, with the same command
+// (design §4). A passing rerun is green, listing the flaky tests, and the list goes on; a failing rerun, one that
+// cannot start, or a failure naming no test file stays red with the first failure. The install command and the UI
+// check are never rerun.
+describe("merge check run: one rerun of the failing test files (fake sandbox)", () => {
+  const FAIL = " FAIL  tests/a.test.ts > suite > flaky\n FAIL  tests/b.test.ts > other > case\n";
+  type Reply = { exit: number; out?: string } | "throw";
+
+  /** Each command's replies by its argv joined with spaces, one per call in order (then exit 0). */
+  async function rerunRun(replies: Record<string, Reply[]>, o: { ui?: true } = {}) {
+    const repo = {
+      ...config.repo, check_commands: [["npm", "test"], ["npm", "run", "lint"]],
+      ...(o.ui ? { ui_check: { command: ["npm", "run", "check:responsive"], paths: ["web/"] } } : {}),
+    };
+    const f = await pipeline({ config: { repo } });
+    f.sandbox.changedFiles = ["web/a.css"];
+    const exec = f.sandbox.exec.bind(f.sandbox);
+    f.sandbox.exec = async (h, cmd, eo) => {
+      const r = await exec(h, cmd, eo);
+      const reply = replies[cmd.join(" ")]?.shift();
+      if (reply === "throw") throw new Error("spawn ENOENT");
+      return reply === undefined ? r : { ...r, exit_code: reply.exit, stdout: reply.out ?? "" };
+    };
+    const { item } = await f.store.createWorkItem(issue(7), system);
+    const moved = await f.store.transition({
+      id: item.id, expected_version: item.version, actor: system, reason: "test_setup", patch: {},
+      enqueue: { kind: "merge-check", idempotency_key: "mc-1", input: { merge_check: { base_ref: "main", branches: [`factory/${item.id}`] } } },
+    });
+    if (!moved.ok) throw new Error("setup");
+    expect(await f.w1.tick()).toBe(true);
+    const outcome = (await f.runs(moved.item, "merge-check"))[0]!.outcome;
+    return { commands: f.sandbox.commands, outcome, data: outcome?.status === "succeeded" ? outcome.data : {} };
+  }
+
+  it("a fail-then-pass test file is rerun alone, the list goes on, and the green result lists the flaky tests", async () => {
+    const r = await rerunRun({ "npm test": [{ exit: 1, out: FAIL }] });
+    expect(r.commands).toEqual(["npm ci", "npm test", "npm test -- tests/a.test.ts tests/b.test.ts", "npm run lint"]);
+    expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "green" } });
+    expect(r.data.flaky_tests).toEqual(["tests/a.test.ts > suite > flaky", "tests/b.test.ts > other > case"]);
+  });
+
+  it("a green result with no rerun lists no flaky tests", async () => {
+    const r = await rerunRun({});
+    expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "green" } });
+    expect(r.data).not.toHaveProperty("flaky_tests");
+  });
+
+  it("a rerun that fails too stays red with the failing tests named, and nothing more runs", async () => {
+    const r = await rerunRun({ "npm test": [{ exit: 1, out: FAIL }], "npm test -- tests/a.test.ts tests/b.test.ts": [{ exit: 1, out: FAIL }] });
+    expect(r.commands).toEqual(["npm ci", "npm test", "npm test -- tests/a.test.ts tests/b.test.ts"]);
+    expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "red", why: "checks", command: "npm test", how: "exited 1" } });
+    expect(r.data.failing_tests).toEqual(["tests/a.test.ts > suite > flaky", "tests/b.test.ts > other > case"]);
+    expect(r.data).not.toHaveProperty("flaky_tests");
+  });
+
+  it("a failure naming no test file is not rerun and stays red", async () => {
+    const r = await rerunRun({ "npm test": [{ exit: 2, out: "Error: config not found\n" }] });
+    expect(r.commands).toEqual(["npm ci", "npm test"]);
+    expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "red", command: "npm test", how: "exited 2", failing_tests: [] } });
+  });
+
+  it("a rerun that cannot start is red with the first failure", async () => {
+    const r = await rerunRun({ "npm test": [{ exit: 1, out: FAIL }], "npm test -- tests/a.test.ts tests/b.test.ts": ["throw"] });
+    expect(r.commands).toEqual(["npm ci", "npm test", "npm test -- tests/a.test.ts tests/b.test.ts"]);
+    expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "red", command: "npm test", how: "exited 1" } });
+    expect(r.data.failing_tests).toEqual(["tests/a.test.ts > suite > flaky", "tests/b.test.ts > other > case"]);
+  });
+
+  it("the install command and the UI check are not rerun, even when their output names a test file", async () => {
+    const install = await rerunRun({ "npm ci": [{ exit: 1, out: FAIL }] });
+    expect(install.commands).toEqual(["npm ci"]);
+    expect(install.outcome).toMatchObject({ data: { result: "red", command: "npm ci" } });
+    const ui = await rerunRun({ "npm run check:responsive": [{ exit: 1, out: FAIL }] }, { ui: true });
+    expect(ui.commands).toEqual(["npm ci", "npm test", "npm run lint", "npm run check:responsive"]);
+    expect(ui.outcome).toMatchObject({ data: { result: "red", command: "npm run check:responsive" } });
   });
 });
 
