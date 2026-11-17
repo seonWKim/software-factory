@@ -16,7 +16,7 @@ One row of a `Table`: a `<tr>`, or a card below `sm` (first cell the title, the 
 
 ## Td
 
-One cell of a `Tr`; in a card it wraps and drops width classes.
+One cell of a `Tr`; in a card it wraps and drops width classes. Data attributes pass through to the `<td>` or the card's `<div>`.
 
 ## DataTable
 

@@ -44,6 +44,9 @@ const view: SettingsView = {
     row("hold_policy", { kind: "json", value: '{"mode":"hold"}', source: "default", file_value: null, default_value: '{"mode":"hold"}', applies_at: "the next claim" }),
     row("message_style", { kind: "text", value: '"Short."', file_value: '"Short."', default_value: '""' }),
     row("phases_auto_approve", { kind: "boolean", value: "false", source: "default", file_value: null, applies_at: "the next phase spec triage writes" }),
+    row("auto_grant_test_paths", { kind: "boolean", value: "true", default_value: "true", file_value: null, source: "default" }),
+    row("test_globs", { kind: "list", value: '["tests/**","**/*.test.*"]', default_value: '["tests/**"]', file_value: null, source: "default" }),
+    row("intake_label", { kind: "text", value: '"factory"', file_value: '"factory"', default_value: "null" }),
     row("retry_max_ms", { value: "1800000", file_value: "1800000", default_value: "1800000", applies_at: "the next retry" }),
     row("run_timeout_ms", { value: "5400000", source: "override", file_value: "3600000", default_value: "3600000", applies_at: "the next run that starts" }),
   ],
@@ -187,12 +190,40 @@ describe("Settings page", () => {
     for (const t of ["cheap", "standard", "strong"]) expect(within(rowOf(table, "models")).getByLabelText(`${keyLabel("models")} ${t}`)).not.toBeNull();
     expect((within(rowOf(table, "models")).getByLabelText(`${keyLabel("models")} strong`) as HTMLInputElement).value).toBe("opus");
     expect(within(rowOf(table, "model_by")).getByLabelText(`${keyLabel("model_by")}`).tagName).toBe("TEXTAREA");
+    const grant = within(rowOf(table, "auto_grant_test_paths")).getByRole("switch", { name: `${keyLabel("auto_grant_test_paths")}` });
+    expect(grant.getAttribute("aria-checked")).toBe("true");
+    const globs = rowOf(table, "test_globs");
+    expect(within(globs).getByLabelText(`${keyLabel("test_globs")} 2`)).not.toBeNull();
+    expect(globs.querySelectorAll("[data-list-item]").length).toBeGreaterThan(0);
+    expect(within(globs).getByRole("button", { name: `Add to ${keyLabel("test_globs")}` })).not.toBeNull();
+    expect(within(globs).getByRole("button", { name: `Remove ${keyLabel("test_globs")} 1` })).not.toBeNull();
+    const label = within(rowOf(table, "intake_label")).getByLabelText(`${keyLabel("intake_label")}`) as HTMLInputElement;
+    expect(label.tagName).toBe("INPUT");
+    expect(label.type).toBe("text");
+    expect(label.value).toBe("factory");
+    expect(table.querySelectorAll('input[type="number"]').length).toBeGreaterThan(0);
+    for (const k of ["auto_grant_test_paths", "test_globs", "intake_label"]) expect(rowOf(table, k).querySelector('input[type="number"]'), k).toBeNull();
     const sw = within(rowOf(table, "phases_auto_approve")).getByRole("switch", { name: `${keyLabel("phases_auto_approve")}` });
     expect(sw.getAttribute("aria-checked")).toBe("false");
     // The project value of a per-project key, with its own reset.
     const att = rowOf(table, "max_attempts");
     expect(att.textContent).toContain("This project: 2 (override)");
     expect(within(att).getByRole("button", { name: `Reset ${keyLabel("max_attempts")} for o/r` })).not.toBeNull();
+  });
+
+  it("logs no console error or warning on render with a boolean and a list value (no 'cannot be parsed')", async () => {
+    const error = vi.spyOn(console, "error");
+    const warn = vi.spyOn(console, "warn");
+    try {
+      const table = await show();
+      await waitFor(() => expect(within(rowOf(table, "auto_grant_test_paths")).getByRole("switch")).not.toBeNull());
+      expect(rowOf(table, "test_globs").querySelectorAll("[data-list-item]").length).toBeGreaterThan(0);
+      expect(error).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+      warn.mockRestore();
+    }
   });
 
   it("the models form is a two-column grid (tier | 7rem field, 8 px by 12 px) with Save in its own button row 12 px below", async () => {

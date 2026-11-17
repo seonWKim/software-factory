@@ -22,7 +22,7 @@ import { BASE } from "../pages.js";
 import { useNow } from "./common.js";
 import { PageHeader } from "../components/ui/notice.js";
 import { CalendarSection } from "./settings-calendar.js";
-import { FileKeysSection, KeyNameDetails, Outcome, editableKeys, useWrite } from "./settings-file-keys.js";
+import { FileKeysSection, KeyNameDetails, Outcome, StringListControl, editableKeys, useWrite } from "./settings-file-keys.js";
 import { Description, SettingsRow } from "./settings-row.js";
 import { withNodes } from "./standing.js";
 
@@ -60,6 +60,16 @@ function stringOf(text: string): string {
     return typeof v === "string" ? v : text;
   } catch {
     return text;
+  }
+}
+
+/** A list value (a JSON array of strings) as its items; anything else is an empty list. */
+function stringItems(text: string): string[] {
+  try {
+    const v: unknown = JSON.parse(text);
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
   }
 }
 
@@ -141,6 +151,7 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
   const [draft, setDraft] = useState<string | null>(null);
   const [tiers, setTiers] = useState<Record<string, string> | null>(null);
   const [hold, setHold] = useState<HoldDraft | null>(null);
+  const [items, setItems] = useState<string[] | null>(null);
   const uid = useId();
   const target = project === undefined ? {} : { project };
   const save = async (text: string) => {
@@ -148,6 +159,7 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
       setDraft(null);
       setTiers(null);
       setHold(null);
+      setItems(null);
     }
   };
 
@@ -210,7 +222,18 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
         </Button>
       </form>
     );
-  } else if (row.kind === "text") {
+  } else if (row.kind === "list") {
+    // A list of strings: one control per item, sent as a JSON array.
+    const shown = items ?? stringItems(value);
+    control = (
+      <form className="flex flex-col items-start gap-3" onSubmit={(e) => (e.preventDefault(), void save(JSON.stringify(shown)))}>
+        <StringListControl draft={shown} label={label} onChange={setItems} />
+        <Button type="submit" variant="secondary" disabled={busy || items === null} aria-label={t("settings.saveLabel", { label })}>
+          {t("settings.save")}
+        </Button>
+      </form>
+    );
+  } else if (row.kind === "text" && row.key === "message_style") {
     // Free text: shown and edited as plain text, sent as a JSON string, as `factory settings set` takes it.
     const shown = draft ?? stringOf(value);
     control = (
@@ -245,7 +268,7 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
       ) : (
         form
       );
-  } else {
+  } else if (row.kind === "number") {
     // A key with no value (`null`: a spend budget left unset) shows an empty field.
     const shown = draft ?? (value === "null" ? "" : value);
     control = (
@@ -259,6 +282,17 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
           value={shown}
           onChange={(e) => setDraft(e.target.value)}
         />
+        <Button type="submit" variant="secondary" disabled={busy || draft === null} aria-label={t("settings.saveLabel", { label })}>
+          {t("settings.save")}
+        </Button>
+      </form>
+    );
+  } else {
+    // Text, and the fallback for a kind this page does not know: never a number box.
+    const shown = draft ?? stringOf(value);
+    control = (
+      <form className="flex items-center gap-2" onSubmit={(e) => (e.preventDefault(), void save(JSON.stringify(shown)))}>
+        <Input aria-label={label} className="w-48" value={shown} onChange={(e) => setDraft(e.target.value)} />
         <Button type="submit" variant="secondary" disabled={busy || draft === null} aria-label={t("settings.saveLabel", { label })}>
           {t("settings.save")}
         </Button>

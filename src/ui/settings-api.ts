@@ -246,10 +246,26 @@ export async function learnedWithRecords(
   return { rows, source: { get: (project, key) => view.get(project, key), record: (project, key) => records.get(JSON.stringify([project, key])) } };
 }
 
-/** How the page edits a key. `json`: an object edited as JSON text (`model_by`, `hold_policy`). `text`: free text, sent as a JSON string (`message_style`). */
-type Kind = "number" | "boolean" | "models" | "json" | "mode" | "text";
-const kindOf = (k: SettableKey): Kind =>
-  k === "phases_auto_approve" ? "boolean" : k === "models" ? "models" : k === "model_by" || k === "hold_policy" || k === "integrations" || k === "tool_grants" ? "json" : k === "mode" ? "mode" : k === "message_style" ? "text" : "number";
+/** How the page edits a key. `json`: an object edited as JSON text (`model_by`, `hold_policy`). `text`: free text, sent as a JSON string. `list`: a list of strings, one control per item. */
+type Kind = "number" | "boolean" | "models" | "json" | "mode" | "text" | "list";
+/** The keys with a number box. A key whose built-in default is null is named here too (the spend budgets); `intake_label` is text. */
+const NUMBER_KEYS: ReadonlySet<string> = new Set([
+  "max_attempts", "max_loops", "max_restart", "retry_base_ms", "retry_max_ms", "max_diff_lines", "max_diff_files", "run_timeout_ms",
+  "first_output_ms", "poll_interval_ms", "tick_ms", "heartbeat_ms", "lease_ms", "workers", "alarm_repeat_count", "alarm_window_minutes",
+  "alarm_restart_count", "standing_approvals.threshold", "auto_merge_max_tier", "stall_ms", "probe_interval_ms", "auth_pause_ms",
+  "max_coordination_cost", "hotspot_weight", "mechanical_weight", "spend.daily_budget_usd", "spend.weekly_budget_usd",
+]);
+/** A key's kind from its built-in default's type; a number box only for a listed numeric key, so an unmapped key reads as text. */
+const kindOf = (k: SettableKey): Kind => {
+  if (k === "models") return "models";
+  if (k === "mode") return "mode";
+  if (NUMBER_KEYS.has(k)) return "number";
+  const d = SETTABLE_DEFAULTS[k];
+  if (typeof d === "boolean") return "boolean";
+  if (Array.isArray(d)) return "list";
+  if (typeof d === "object" && d !== null) return "json";
+  return "text";
+};
 
 /** GET /api/v1/settings. */
 export async function readSettings(d: UiDeps, s: UiSettings) {

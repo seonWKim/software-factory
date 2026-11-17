@@ -223,6 +223,11 @@ function Control({ spec, draft, label, id, onChange }: { spec: Spec; draft: Draf
   }
 }
 
+/** An ordered list of strings: each item's text box and its Remove, then Add (the Settings page's list kind). */
+export function StringListControl({ draft, label, onChange }: { draft: string[]; label: string; onChange: (d: string[]) => void }) {
+  return <ListControl item={TEXT} draft={draft} label={label} onChange={(d) => onChange(d as string[])} />;
+}
+
 /** An ordered list: each item's control and its Remove, then Add. */
 function ListControl({ item, draft, label, onChange }: { item: Spec; draft: Draft[]; label: string; onChange: (d: Draft) => void }) {
   return (
