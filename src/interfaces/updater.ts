@@ -40,6 +40,13 @@ export const CHILD_ERROR_MESSAGE = "factory:error";
 /** The stable `code` of the error a store throws while `npm run migrate` has steps to apply. */
 export const MIGRATION_PENDING = "migration_pending";
 
+/**
+ * How `migrate --status --json` names a pending breaking migration. The supervisor drains and applies such a step
+ * on its own (design 08-self-update); `updater.auto_migrate` decides only for the other steps.
+ */
+export const breakingStep = (id: string): string => `${id} (breaking)`;
+export const isBreakingStep = (step: string): boolean => step.endsWith(" (breaking)");
+
 /** An Error carrying `code: MIGRATION_PENDING`, so the supervisor never has to match the message text. */
 export function migrationPendingError(message: string): Error & { code: string } {
   return Object.assign(new Error(message), { code: MIGRATION_PENDING as string });

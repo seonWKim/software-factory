@@ -6,6 +6,7 @@ import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { Dialog } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
+import { KeyValue, ValueBlock } from "../components/ui/key-value.js";
 import { Input } from "../components/ui/input.js";
 import { Select } from "../components/ui/select.js";
 import { Switch } from "../components/ui/switch.js";
@@ -278,8 +279,6 @@ function Filed({ item, branch }: { item: string; branch: string }) {
 /** A value as the confirm Dialog shows it: pretty JSON, or "not set" when the file leaves it out. */
 const shownJson = (v: Json | undefined): string => (v === undefined ? t("settings.file.notSet") : JSON.stringify(v, null, 2));
 
-const VALUE_CLASS = "max-h-48 overflow-auto rounded-control bg-surface-2 p-2 font-mono text-xs break-all whitespace-pre-wrap";
-
 /**
  * One file-only key: its control, Save, its restart note and the outcome. Save opens the confirm Dialog with the old
  * and new value; its confirm sends `edit-file` with the whole new value, its Cancel sends nothing. A danger key (or a
@@ -290,10 +289,7 @@ export function KeyNameDetails({ name }: { name: string }) {
   return (
     <details>
       <summary className="cursor-pointer text-xs text-text-2">{t("settings.details")}</summary>
-      <dl className="mt-1 flex gap-x-3 text-xs">
-        <dt className="text-text-2">{t("settings.detailKey")}</dt>
-        <dd className="font-mono wrap-anywhere">{name}</dd>
-      </dl>
+      <KeyValue className="mt-1" items={[{ key: "key", term: t("settings.detailKey"), value: name, code: true }]} />
     </details>
   );
 }
@@ -350,16 +346,13 @@ function FileKey({ name, spec, value, token, danger }: { name: string; spec: Spe
           onConfirm={() => void send(asking.next, asking.danger).then((ok) => ok && setAsking(null))}
           onClose={() => setAsking(null)}
         >
-          <dl className="flex flex-col gap-1 text-xs">
-            <dt className="text-text-2">{t("settings.file.oldValue")}</dt>
-            <dd data-old-value>
-              <pre className={VALUE_CLASS}>{shownJson(value)}</pre>
-            </dd>
-            <dt className="mt-2 text-text-2">{t("settings.file.newValue")}</dt>
-            <dd data-new-value>
-              <pre className={VALUE_CLASS}>{shownJson(asking.next)}</pre>
-            </dd>
-          </dl>
+          <KeyValue
+            stacked
+            items={[
+              { key: "old", term: t("settings.file.oldValue"), value: <ValueBlock>{shownJson(value)}</ValueBlock>, valueProps: { "data-old-value": true } },
+              { key: "new", term: t("settings.file.newValue"), value: <ValueBlock>{shownJson(asking.next)}</ValueBlock>, valueProps: { "data-new-value": true } },
+            ]}
+          />
         </Dialog>
       )}
     </li>

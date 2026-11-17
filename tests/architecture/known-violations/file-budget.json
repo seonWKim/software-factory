@@ -9,7 +9,7 @@
   "impl/runner/claude-code-runner.ts": 661,
   "impl/store/sql/sql-factory-store.ts": 2879,
   "impl/store/sqlite/schema.ts": 735,
-  "impl/updater/git-worktree.ts": 912,
+  "impl/updater/git-worktree.ts": 903,
   "interfaces/factory-store.ts": 1349,
   "ui/api.ts": 634,
   "worker/runner.ts": 1056,
