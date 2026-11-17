@@ -86,15 +86,11 @@ export class PrEventsUnit {
     if (!item) return "the work item was not found";
     const principal = await this.c.unit("auth").allowed({ user_id: who.user_id }, "approve_merge", item.id);
     if ("refuse" in principal) return principal.refuse;
-    const pr = prNumber(item);
-    if (!awaitingMerge(item) || pr === null) {
-      const at = [item.stage, item.blocked_reason].filter(Boolean).join(", ");
-      return `${item.id} is not waiting for a merge (${at}); Merge applies once its PR passed review (merge_pending)`;
-    }
+    // The merge gate (core request-transition, through the commands unit): waiting for its merge, a PR, a forge, a reviewed head.
     const forge = this.c.k.forge;
-    if (!forge) return `no forge is selected (\`plugins.forge\`), so the factory cannot merge PR #${pr}`;
-    const head = item.last_head_sha;
-    if (head === null) return `no reviewed head is recorded for PR #${pr}`;
+    const refusal = this.c.unit("commands").merge.prRefusal(item, !!forge);
+    const [pr, head] = [prNumber(item), item.last_head_sha];
+    if (refusal !== null || !forge || pr === null || head === null) return refusal ?? "the PR cannot be merged";
     await this.c.k.commit({ writes: [{ kind: "intent", action: {
       action: "merge_pr", target: forge.prRef(pr), work_item_id: item.id, key: `merge_pr:${item.id}:${key}`,
       args: { pr, head_sha: head, change_ref: item.change_ref, by: principal.user_id, reply_key: key, detail: JSON.stringify(detail) },

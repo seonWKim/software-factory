@@ -2,7 +2,7 @@
 // and through the commands unit a sentence and a proposal's Confirm all and Cancel; anything else is refused).
 // Moved out of the legacy controller (RFC 0015 M5); it reads through the kernel's reader and writes through the kernel.
 
-import { COMMANDS, refusalText } from "../../../core/commands.js";
+import { APP_REQUEST, COMMANDS, MERGE_REQUESTED, mergeEntered, mergeQueued, refusalText } from "../../../core/commands.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
 import { type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { AppCommandRequest } from "../../../interfaces/factory-store.js";
@@ -10,31 +10,12 @@ import { type CommandEvent, COMMAND, QUOTABLE_COMMAND } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
-/** The state change detail key that names the app request a transition applied, so a second apply finds it. */
-const APP_REQUEST = "app_request";
 /** The app's gate commands, as the comment command each one is (design §4, app requests). */
 const GATE: ReadonlyMap<string, Exclude<CommandEvent["kind"], "budget_continue">> = new Map([
   ["approve", "spec_approved"], ["reject", "spec_rejected"], ["revise", "revise_requested"], ["retry", "retry_requested"], ["resolve", "resolve_requested"],
 ]);
 /** The commands applied from an app request, as a refusal names them. */
 const APPLIED = "only `approve`, `merge`, `reject`, `resolve`, `retry`, `revise` and `verdict` are applied from an app request";
-
-/**
- * The comment command event of an app gate command on `item`, keyed `key`: the note is the approve's or retry's
- * note, the resolve's notes, the reject's reason or the revise's feedback. Never on a PR: a revise here is the
- * issue's `/revise`, and no `+paths` is read.
- */
-function gateEvent(kind: Exclude<CommandEvent["kind"], "budget_continue">, item: WorkItem, key: string, r: AppCommandRequest, note: string): CommandEvent {
-  const who = { provider: "local" as const, subject: r.actor };
-  const at = { source: item.source, comment_id: key };
-  switch (kind) {
-    case "spec_approved": return { kind, ...at, approver: who, note };
-    case "spec_rejected": return { kind, ...at, approver: who, reason: note };
-    case "revise_requested": return { kind, ...at, requester: who, feedback: note, pr: null };
-    case "retry_requested": return { kind, ...at, requester: who, note };
-    case "resolve_requested": return { kind, ...at, requester: who, notes: note, pr: null };
-  }
-}
 
 /** Applies the status page's requests (approve, reject, revise, retry, resolve, verdict, merge; anything else is refused). */
 export class AppRequestsUnit {
@@ -50,7 +31,11 @@ export class AppRequestsUnit {
    * proposal's Confirm all and Cancel go to the commands unit (`appProposal`). Any other command is refused. A refusal
    * is posted once on the item's source, keyed on the request, then stored on the row by the conditional mark. A
    * failed post leaves the request pending for the next tick. Safe to run twice: a request whose transition is
-   * already stored (an earlier try, another replica) is marked applied.
+   * already stored (an earlier try, another replica, or the dashboard's request path: design 09-dashboard-app) is
+   * marked applied, after the rest of a request-time approval (CommandsUnit.afterRequestApprove). The request path
+   * writes nothing for a Merge: here a local item enters the merge queue (merge_pending → merge_queued,
+   * merge_requested) before its merge runs, a refusal puts it back at merge_pending, and a Merge another request
+   * queued is done already. An item with a PR asks the forge as before; its item stays merge_pending.
    */
   async applyAppRequest(r: AppCommandRequest): Promise<void> {
     const known = COMMANDS.some((c) => c.name === r.command);
@@ -63,17 +48,22 @@ export class AppRequestsUnit {
     if (!item) return this.finishAppRequest(r, null, say(id ? "the work item was not found" : "the request names no work item"));
     const key = `app-${r.seq}`;
     const applied = async () =>
-      (await this.c.k.reader.listStateChanges(item.id)).some((c) => c.detail?.[APP_REQUEST] === r.seq) ||
+      (await this.c.k.reader.listStateChanges(item.id)).some((c) => c.detail?.[APP_REQUEST] === r.seq && c.reason !== MERGE_REQUESTED) ||
       (r.command === "verdict" && (await this.c.k.reader.listVerdicts(item.id)).some((v) => v.comment_id === key));
-    if (await applied()) return this.finishAppRequest(r, item, null);
-
     const note = typeof r.args.note === "string" ? r.args.note : undefined;
+    const settle = async () => {
+      if (gate === "spec_approved") await this.c.unit("commands").afterRequestApprove(item, r);
+      await this.finishAppRequest(r, item, null);
+    };
+    if (await applied()) return settle();
+
     let refusal: string | null;
     if (r.command === MERGE_COMMAND) {
       // A local item with no PR takes the local merge; an item with a PR (a local item from the PR era too) its
       // PR's merge on the forge (design 05-sources). mergeLocal posts its own refusal under the same marker as
       // finishAppRequest's, so the thread gets it once; a PR merge's later refusal comes back under it too.
       const who = { user_id: r.actor };
+      if (!(await this.enterMerge(item.id, r))) return settle();
       refusal = item.source.type === LOCAL_SOURCE && item.change_ref === null
         ? await this.c.unit("local-merge").mergeLocal(item.id, who, key, { [APP_REQUEST]: r.seq })
         : await this.c.unit("pr-events").requestPrMerge(item.id, who, key, { [APP_REQUEST]: r.seq });
@@ -81,32 +71,28 @@ export class AppRequestsUnit {
       const principal = await this.c.unit("auth").allowed({ user_id: r.actor }, "record_verdict", item.id);
       refusal = "refuse" in principal ? principal.refuse : await this.c.unit("verdicts").verdictFrom(item.id, { comment_id: key, target: "issue" }, principal, note ?? "");
     } else if (gate) {
-      refusal = await this.gateRequest(r, item, gate, key, note);
+      refusal = await this.c.unit("commands").appGate(r, item, gate, key, note);
     } else {
       const proposal = this.c.unit("commands").appProposal(r, item, key);
       refusal = proposal ? await proposal : APPLIED + (known ? `; reply \`/${r.command}\` on the issue instead` : "");
     }
-    // Refused here, but applied by a concurrent try of the same request: that one stands.
-    if (refusal !== null && (await applied())) refusal = null;
+    // Refused here, but applied by a concurrent try of the same request (or the dashboard's request path): that one stands.
+    if (refusal !== null && (await applied())) return settle();
+    if (refusal !== null && r.command === MERGE_COMMAND) await this.c.unit("commands").mergeReturned(item.id, refusal);
     await this.finishAppRequest(r, item, refusal === null ? null : say(refusal));
   }
 
   /**
-   * An app gate command through the comment's handler, tagged with the request's seq. A reject's reason and a revise's
-   * feedback are new text the factory would publish (the reject's close quotes it), so they pass the egress scan
-   * first, as an approve's, retry's or resolve's note does in the handler; a comment's own text is already on its source.
+   * Enters a dashboard Merge: a local item at merge_pending moves to merge_queued, tagged with the request. False when
+   * another request's Merge queued it already (that one runs the merge); true for this request's own entry, also
+   * on a second try of it.
    */
-  private async gateRequest(
-    r: AppCommandRequest, item: WorkItem, kind: Exclude<CommandEvent["kind"], "budget_continue">, key: string, raw: string | undefined,
-  ): Promise<string | null> {
-    let note = raw ?? "";
-    if (kind === "spec_rejected" || kind === "revise_requested") {
-      const scanned = await this.c.unit("commands").approvalNote(item.id, raw, COMMAND[kind]);
-      if ("refuse" in scanned) return scanned.refuse;
-      note = scanned.note ?? "";
-    }
-    const app = { user_id: r.actor };
-    return this.c.unit("commands").gateCommand(item, gateEvent(kind, item, key, r, note), app, { [APP_REQUEST]: r.seq });
+  private async enterMerge(id: WorkItemId, r: AppCommandRequest): Promise<boolean> {
+    await this.c.unit("transitions").decide(id, (it) => mergeEntered(it, { kind: "user", id: r.actor }, r.seq));
+    const it = await this.c.k.reader.getWorkItem(id);
+    if (!it || !mergeQueued(it)) return true;
+    const entry = (await this.c.k.reader.listStateChanges(id)).filter((c) => c.reason === MERGE_REQUESTED).at(-1);
+    return entry?.detail?.[APP_REQUEST] === r.seq;
   }
 
   /** Posts `text` (a refusal) once on the item's source, keyed on the request, then marks the request handled. */
