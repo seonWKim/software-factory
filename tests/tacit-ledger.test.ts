@@ -4,14 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { AgentsHomeTacitLedger, TACIT_AGENT, TACIT_CLI_TIMEOUT_MS, agentsHome, checkAgentsHome, tacitLedgerAt } from "../src/impl/tacit/agents-home-tacit-ledger.js";
+import { AgentsHomeTacitLedger, TACIT_AGENT, TACIT_CLI_TIMEOUT_MS, agentsHome, checkAgentsHome, knownAgentsHomes, tacitLedgerAt } from "../src/impl/tacit/agents-home-tacit-ledger.js";
 import { parseApplied, parseDraft, parsePending, parseShow, withoutRuleBlock } from "../src/impl/tacit/ledger-text.js";
 import { NoTacitLedger } from "../src/impl/tacit/no-tacit-ledger.js";
 import { REGISTRY, createPlugin, defaultPlugins } from "../src/plugins.js";
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
-import { type TacitLedger, type TacitPromotion, TacitRefusal, TacitSyncFailed, appliedToError } from "../src/interfaces/tacit-ledger.js";
+import { type TacitLedger, type TacitPromotion, TacitRefusal, TacitSyncFailed } from "../src/interfaces/tacit-ledger.js";
 import type { SqlDriver } from "../src/state/index.js";
 import { FakeAuth, FakeForge, FakeSource, alice, config, issueRef, silent } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore, system, w1 } from "./helpers/store.js";
@@ -281,7 +281,7 @@ describe("plugin agents-home", () => {
     const root = mkdtempSync(join(tmpdir(), "sf-tacit-detect-"));
     const at = join(root, "home");
     const check = () => checkAgentsHome({ AGENTS_HOME: at }, "/nowhere");
-    expect(check()).toEqual({ path: at, missing: "bin/tacit" });
+    expect(check()).toMatchObject({ path: at, missing: "bin/tacit" });
     mkdirSync(join(at, "bin"), { recursive: true });
     writeFileSync(join(at, "bin", "tacit"), "#!/bin/sh\n");
     expect(check().missing).toBe("bin/tacit"); // not executable
@@ -291,10 +291,29 @@ describe("plugin agents-home", () => {
     expect(check().missing).toBe("bin/evolve");
     rmSync(join(at, "bin", "evolve"), { recursive: true });
     writeFileSync(join(at, "bin", "evolve"), "#!/bin/sh\n", { mode: 0o755 });
-    expect(check()).toEqual({ path: at, missing: null });
+    expect(check()).toMatchObject({ path: at, missing: null });
     expect(tacitLedgerAt({ AGENTS_HOME: at }, "/nowhere")).toBeInstanceOf(AgentsHomeTacitLedger);
     // No AGENTS_HOME: ~/.agents under the given home.
-    expect(checkAgentsHome({}, root)).toEqual({ path: join(root, ".agents"), missing: "bin/tacit" });
+    expect(checkAgentsHome({}, root)).toMatchObject({ path: join(root, ".agents"), missing: "bin/tacit" });
+  });
+
+  it("lists only the known homes, AGENTS_HOME when set and ~/.agents, each once, with its own check; the one in use stays AGENTS_HOME", () => {
+    const root = mkdtempSync(join(tmpdir(), "sf-tacit-homes-"));
+    const at = join(root, "set");
+    const dflt = join(root, ".agents");
+    for (const h of [at, dflt]) mkdirSync(join(h, "bin"), { recursive: true });
+    for (const f of ["tacit", "evolve"]) writeFileSync(join(dflt, "bin", f), "#!/bin/sh\n", { mode: 0o755 });
+    writeFileSync(join(at, "bin", "tacit"), "#!/bin/sh\n", { mode: 0o755 });
+    expect(knownAgentsHomes({ AGENTS_HOME: at }, root)).toEqual([at, dflt]);
+    expect(knownAgentsHomes({}, root)).toEqual([dflt]);
+    expect(knownAgentsHomes({ AGENTS_HOME: dflt }, root)).toEqual([dflt]);
+    // Both results of the check: the first missing file, or none.
+    expect(checkAgentsHome({ AGENTS_HOME: at }, root)).toEqual({
+      path: at, missing: "bin/evolve", homes: [{ path: at, missing: "bin/evolve" }, { path: dflt, missing: null }],
+    });
+    expect(checkAgentsHome({}, root)).toEqual({ path: dflt, missing: null, homes: [{ path: dflt, missing: null }] });
+    // A passing ~/.agents does not stand in for a broken AGENTS_HOME: the ledger stays off.
+    expect(tacitLedgerAt({ AGENTS_HOME: at }, root)).toBeInstanceOf(NoTacitLedger);
   });
 
   it("is built from the stub home AGENTS_HOME names", () => {
@@ -553,42 +572,71 @@ describe("plugin agents-home", () => {
     expect(existsSync(join(s.home, "pwned"))).toBe(false);
   });
 
-  it("a verdict on a P- ID runs evolve verdict with no --rule; an ID that is neither throws before any CLI runs", async () => {
+  it("a hold or reject on a P- ID runs evolve verdict with no --rule; an ID that is neither throws before any CLI runs", async () => {
     const s = stubHome();
     const ledger = new AgentsHomeTacitLedger(s.home);
-    await ledger.verdict("P-20261101-158e", "promote", "good shape", { applied_to: "private/bin/notify" });
     await ledger.verdict("P-0008", "reject", "not now");
-    expect(s.argv()).toEqual([
-      "evolve|verdict|P-20261101-158e|promote|--reason|good shape|--applied-to|private/bin/notify",
-      "evolve|verdict|P-0008|reject|--reason|not now",
-    ]);
+    await ledger.verdict("P-0009", "hold", "later", RULE);
+    expect(s.argv()).toEqual(["evolve|verdict|P-0008|reject|--reason|not now", "evolve|verdict|P-0009|hold|--reason|later"]);
     await expect(ledger.verdict("t1", "promote", "x")).rejects.toThrow(/neither a class \(C-\) nor a proposal \(P-\)/);
     await expect(ledger.verdict("P-0007", "retire", "x")).rejects.toThrow(/takes no retire/);
     expect(s.argv()).toHaveLength(2);
   });
 
-  it("a promote of a P- ID with no, an empty, an absolute or a .. applied-to path is refused with no CLI run", async () => {
+  /** A stub home whose `evolve show P-0007` gives `show`, with `<home>/private/bin/notify` holding `file`. */
+  const applyHome = (show: string, file = "#!/bin/sh\nnotify --loud \"$1\"\n") => {
     const s = stubHome();
-    const ledger = new AgentsHomeTacitLedger(s.home);
-    for (const detail of [undefined, RULE, { applied_to: "" }, { applied_to: "  " }, { applied_to: "/etc/passwd" }, { applied_to: "C:\\x" },
-      { applied_to: "../outside" }, { applied_to: "private/../../x" }, { applied_to: "private\\..\\x" }]) {
-      await expect(ledger.verdict("P-0007", "promote", "r", detail)).rejects.toBeInstanceOf(TacitRefusal);
+    writeFileSync(join(s.root, "drafts", "P-0007"), show);
+    mkdirSync(join(s.home, "private", "bin"), { recursive: true });
+    writeFileSync(join(s.home, "private", "bin", "notify"), file);
+    return { ...s, file: () => readFileSync(join(s.home, "private", "bin", "notify"), "utf8") };
+  };
+  const SHOW_P = "# P-0007 Quiet notify\nkind: edit-asset\ntarget: private/bin/notify\ncurrent: notify --loud \"$1\"\nproposed: notify --quiet \"$1\"\n";
+
+  it("a promote of a P- ID applies its proposed lines to its target, then runs evolve verdict with --applied-to the target", async () => {
+    const s = applyHome(SHOW_P);
+    await new AgentsHomeTacitLedger(s.home).verdict("P-0007", "promote", "good shape");
+    expect(s.file()).toBe("#!/bin/sh\nnotify --quiet \"$1\"\n");
+    expect(s.argv()).toEqual(["evolve|show|P-0007", "evolve|verdict|P-0007|promote|--reason|good shape|--applied-to|private/bin/notify"]);
+  });
+
+  it("a promote of a P- ID is refused, with nothing written and no verdict sent, when its lines or target do not fit", async () => {
+    const base = "# P-0007 Quiet notify\nkind: edit-asset\n";
+    for (const [show, error] of [
+      [`${base}current: a\nproposed: b\n`, /has no target line/],
+      [`${base}target: private/bin/notify\nproposed: b\n`, /has no current line/],
+      [`${base}target: private/bin/notify\ncurrent: notify\n`, /has no proposed line/],
+      [`${base}target: /etc/passwd\ncurrent: a\nproposed: b\n`, /is an absolute path/],
+      [`${base}target: private/../../x\ncurrent: a\nproposed: b\n`, /has a \.\. segment/],
+      [`${base}target: private/bin/none\ncurrent: a\nproposed: b\n`, /no private\/bin\/none in the agents home/],
+      [`${base}target: private/bin/notify\ncurrent: absent\nproposed: b\n`, /occur 0 times in private\/bin\/notify, not once/],
+      [`${base}target: private/bin/notify\ncurrent: notify\nproposed: b\n`, /occur 2 times in private\/bin\/notify, not once/],
+    ] as const) {
+      const s = applyHome(show, "notify\nnotify --loud\n");
+      const err = await new AgentsHomeTacitLedger(s.home).verdict("P-0007", "promote", "r").catch((e: unknown) => e);
+      expect(err, show).toBeInstanceOf(TacitRefusal);
+      expect((err as Error).message, show).toMatch(error);
+      expect(s.file()).toBe("notify\nnotify --loud\n");
+      expect(s.argv()).toEqual(["evolve|show|P-0007"]);
     }
-    expect(s.argv()).toEqual([]);
   });
 
-  it("the stub evolve, as the real one, refuses a proposal promote without --applied-to", () => {
+  it("a promote of a P- ID whose evolve verdict fails or times out puts the target back byte for byte and throws the CLI's error", async () => {
+    const s = applyHome(SHOW_P);
+    const before = s.file();
+    writeFileSync(join(s.home, "bin", "evolve"), `#!/bin/sh\n[ "$1" = show ] && { cat "${join(s.root, "drafts", "P-0007")}"; exit 0; }\necho 'evolve: P-0007 was judged already' >&2\nexit 1\n`);
+    await expect(new AgentsHomeTacitLedger(s.home).verdict("P-0007", "promote", "r")).rejects.toThrow(/^evolve verdict exited 1: evolve: P-0007 was judged already$/);
+    expect(s.file()).toBe(before);
+    writeFileSync(join(s.home, "bin", "evolve"), `#!/bin/sh\n[ "$1" = show ] && { cat "${join(s.root, "drafts", "P-0007")}"; exit 0; }\nsleep 5\n`);
+    await expect(new AgentsHomeTacitLedger(s.home, 300).verdict("P-0007", "promote", "r")).rejects.toThrow(/evolve verdict stopped after 300 ms/);
+    expect(s.file()).toBe(before);
+  });
+
+  it("the stub evolve, as the real one, refuses a proposal promote without --applied-to and has no apply subcommand", () => {
     const s = stubHome();
-    expect(() => execFileSync(join(s.home, "bin", "evolve"), ["verdict", "P-1", "promote", "--reason", "r"], { stdio: ["ignore", "pipe", "pipe"] }))
-      .toThrow(/promote requires --applied-to/);
-  });
-
-  it("appliedToError takes a path relative to the agents home and names why it refuses any other", () => {
-    expect(appliedToError("private/bin/notify")).toBeNull();
-    expect(appliedToError("a..b/c")).toBeNull();
-    expect(appliedToError("")).toMatch(/name the file/);
-    expect(appliedToError("/abs")).toMatch(/relative to the agents home/);
-    expect(appliedToError("a/../b")).toMatch(/\.\. segment/);
+    const run = (args: string[]) => () => execFileSync(join(s.home, "bin", "evolve"), args, { stdio: ["ignore", "pipe", "pipe"] });
+    expect(run(["verdict", "P-1", "promote", "--reason", "r"])).toThrow(/promote requires --applied-to/);
+    expect(run(["apply", "P-1"])).toThrow(/usage: evolve/);
   });
 
   it("a CLI that exits non-zero throws with the CLI and subcommand first", async () => {

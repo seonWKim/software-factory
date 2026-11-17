@@ -1,21 +1,22 @@
 // The owner's ledger in their agents home (issue #570): `<home>/bin/tacit` and `<home>/bin/evolve`, found from
-// AGENTS_HOME, else ~/.agents. The factory runs these CLIs, each stopped after 30 seconds. One of its two writes under the
+// AGENTS_HOME, else ~/.agents. The factory runs these CLIs, each stopped after 30 seconds. One of its writes under the
 // home is a promote of a class: the rule's block goes into `<home>/private/tacit/rules.md` (its resolved path inside
 // the resolved home), then `tacit verdict … --encoded-to private/tacit/rules.md` runs (the block is removed again if
 // it fails), then `<home>/bin/sync-agents`. Each value is its own argv item and nothing goes through a shell; only a
 // captured record goes on stdin (as JSON). The forms are the owner's real CLIs (checked 2026-11-12, `evolve show`
-// 2026-11-13); they print text, read in ledger-text.ts. A retire of a class is the other write: its block leaves the
+// 2026-11-13); they print text, read in ledger-text.ts. A retire of a class is another write: its block leaves the
 // rules file, then `tacit verdict <id> retire` runs (the file is put back if it fails), then `sync-agents`. A promote of
-// a proposal writes nothing: `evolve verdict <id> promote --reason <r> --applied-to <path>`, the file the owner changed
-// by hand (a relative path with no `..`, checked before the CLI runs; evolve checks that it exists). Factory
+// a proposal applies it (2026-11-18; evolve has no apply subcommand): the proposal's current lines, read from `evolve
+// show`, are replaced with its proposed lines in its target file only when they occur there exactly once, then
+// `evolve verdict <id> promote --reason <r> --applied-to <target>` runs (the file is put back if it fails). Factory
 // processes only: an agent run never gets it.
 
 import { accessSync, constants, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, sep } from "node:path";
 import {
-  type TacitApplication, type TacitApplied, type TacitDecision, type TacitDraft, type TacitEntryDetail, type TacitLedger, type TacitPendingEntry, type TacitPromotion,
-  type TacitPushback, type TacitRetired, type TacitRule, TacitRefusal, TacitSyncFailed, appliedToError, tacitIdKind,
+  type TacitApplied, type TacitDecision, type TacitDraft, type TacitEntryDetail, type TacitLedger, type TacitPendingEntry, type TacitPromotion,
+  type TacitPushback, type TacitRetired, type TacitRule, TacitRefusal, TacitSyncFailed, tacitIdKind,
 } from "../../interfaces/tacit-ledger.js";
 import { SystemClock } from "../clock/system-clock.js";
 import { baseEnv, runProcess } from "../process/run-process.js";
@@ -47,10 +48,26 @@ export function agentsHome(env: Readonly<Record<string, string | undefined>>, ho
 /** The two CLIs a home must hold, as executable files. */
 export const AGENTS_HOME_CLIS = ["bin/tacit", "bin/evolve"] as const;
 
-/** The agents home `env` names, and the first of its CLIs that is missing or not executable (null: the home is found). */
-export function checkAgentsHome(env: Readonly<Record<string, string | undefined>>, home: string = homedir()): { path: string; missing: string | null } {
-  const path = agentsHome(env, home);
-  return { path, missing: AGENTS_HOME_CLIS.find((f) => !isRunnable(join(path, f))) ?? null };
+/** One agents home and the first of its CLIs that is missing or not executable there (null: both are executable). */
+export interface AgentsHomeCheck {
+  readonly path: string;
+  readonly missing: string | null;
+}
+
+/** The known agents homes, each once: AGENTS_HOME when set, then `~/.agents`. No other path is offered or stored. */
+export function knownAgentsHomes(env: Readonly<Record<string, string | undefined>>, home: string = homedir()): string[] {
+  return [...new Set([agentsHome(env, home), join(home, ".agents")])];
+}
+
+/** `path` checked: the first of its CLIs that is missing or not executable. */
+const checkHome = (path: string): AgentsHomeCheck => ({ path, missing: AGENTS_HOME_CLIS.find((f) => !isRunnable(join(path, f))) ?? null });
+
+/**
+ * The agents home `env` names (the one the ledger uses) with its check, and `homes`, each known home with its own
+ * check, for the Rules page's picker.
+ */
+export function checkAgentsHome(env: Readonly<Record<string, string | undefined>>, home: string = homedir()): AgentsHomeCheck & { homes: AgentsHomeCheck[] } {
+  return { ...checkHome(agentsHome(env, home)), homes: knownAgentsHomes(env, home).map(checkHome) };
 }
 
 /** The ledger at the agents home `env` names; with either CLI missing there, no ledger (as `none`), and startup goes on. */
@@ -108,22 +125,47 @@ export class AgentsHomeTacitLedger implements TacitLedger {
 
   /**
    * `tacit verdict` for a class, `evolve verdict` for a proposal (never a rule). Promote of a class encodes its rule
-   * first (`promote`); retire of a class removes its block first (`retire`). Promote of a proposal adds
-   * `--applied-to <path>`, the file the owner changed, checked first (a refusal runs no CLI); it writes nothing.
+   * first (`promote`); retire of a class removes its block first (`retire`); promote of a proposal applies its lines
+   * first (`apply`).
    */
-  async verdict(id: string, decision: TacitDecision, reason: string, detail?: TacitPromotion | TacitApplication): Promise<void> {
+  async verdict(id: string, decision: TacitDecision, reason: string, rule?: TacitPromotion): Promise<void> {
     const kind = kindOf(id);
     if (kind === "proposal" && decision === "retire") throw new Error(`evolve verdict takes no retire: "${id}" is a proposal`);
-    if (kind === "class" && decision === "promote") return this.promote(id, reason, detail !== undefined && "wording" in detail ? detail : undefined);
+    if (kind === "class" && decision === "promote") return this.promote(id, reason, rule);
     if (kind === "class" && decision === "retire") return this.retire(id, reason);
-    const args = ["verdict", id, decision, "--reason", reason];
-    if (kind === "proposal" && decision === "promote") {
-      const appliedTo = detail !== undefined && "applied_to" in detail ? detail.applied_to : "";
-      const error = appliedToError(appliedTo);
-      if (error !== null) throw new TacitRefusal(`promote of ${id}: ${error}`);
-      args.push("--applied-to", appliedTo);
+    if (kind === "proposal" && decision === "promote") return this.apply(id, reason);
+    await this.run(kind === "class" ? "tacit" : "evolve", ["verdict", id, decision, "--reason", reason]);
+  }
+
+  /**
+   * Promote of a proposal. Checks first, with nothing written and no verdict sent on a refusal: `evolve show <id>`
+   * reads, and gives a target, current lines and proposed lines; the target is a relative path with no `..` segment
+   * whose resolved path is a file inside the resolved home; the current lines occur there exactly once. Then they are
+   * replaced with the proposed lines and `evolve verdict <id> promote --reason <r> --applied-to <target>` runs; a
+   * failure (a non-zero exit or the timeout) puts the file back byte for byte and throws the CLI's error.
+   */
+  private async apply(id: string, reason: string): Promise<void> {
+    let shown: string;
+    try {
+      shown = await this.run("evolve", ["show", id]);
+    } catch (err) {
+      throw new TacitRefusal(`the lines of ${id} could not be read: ${err instanceof Error ? err.message : String(err)}`);
     }
-    await this.run(kind === "class" ? "tacit" : "evolve", args);
+    const d = parseShow(id, shown);
+    const part = (["target", "current", "proposed"] as const).find((k) => d?.[k] === undefined);
+    if (d === null || part !== undefined) throw new TacitRefusal(`${id} (evolve show) has no ${part ?? "target"} line: nothing written`);
+    const { target, current, proposed } = d as Required<Pick<TacitEntryDetail, "target" | "current" | "proposed">>;
+    const pathError = relativePathError(target);
+    if (pathError !== null) throw new TacitRefusal(`the target of ${id}, ${target}, ${pathError}: nothing written`);
+    const file = this.homeFile(target);
+    const before = readFileSync(file);
+    const text = before.toString("utf8");
+    const found = text.split(current).length - 1;
+    if (found !== 1) throw new TacitRefusal(`the current lines of ${id} occur ${found} times in ${target}, not once: nothing written`);
+    const at = text.indexOf(current);
+    await this.writeThen(file, before, text.slice(0, at) + proposed + text.slice(at + current.length), "evolve", [
+      "verdict", id, "promote", "--reason", reason, "--applied-to", target,
+    ]);
   }
 
   /**
@@ -135,7 +177,7 @@ export class AgentsHomeTacitLedger implements TacitLedger {
    */
   private async promote(id: string, reason: string, rule: TacitPromotion | undefined): Promise<void> {
     if (rule === undefined) throw new TacitRefusal(`promote of ${id} needs the rule's wording, default and exception`);
-    const file = this.rulesFile();
+    const file = this.homeFile(RULES_FILE);
     const before = readFileSync(file);
     const text = before.toString("utf8");
     if (hasRuleHeading(text, id)) throw new TacitRefusal(`${id} is already in ${RULES_FILE}: nothing written`);
@@ -152,25 +194,30 @@ export class AgentsHomeTacitLedger implements TacitLedger {
    * puts the file back byte for byte) and `sync-agents` run (a failure keeps the removal: the verdict is recorded).
    */
   private async retire(id: string, reason: string): Promise<void> {
-    const file = this.rulesFile();
+    const file = this.homeFile(RULES_FILE);
     const before = readFileSync(file);
     const after = withoutRuleBlock(before.toString("utf8"), id);
     if (after === null) throw new TacitRefusal(`${id} has no block in ${RULES_FILE}: nothing written`);
     await this.rewrite(file, before, after, ["verdict", id, "retire", "--reason", reason]);
   }
 
-  /**
-   * Writes `after` to the rules file, then runs `tacit <args>`: a failure writes `before` back byte for byte and
-   * throws. Then `sync-agents`: a failure keeps `after` (the verdict is recorded) and throws `TacitSyncFailed`.
-   */
-  private async rewrite(file: string, before: Buffer, after: string, args: readonly string[]): Promise<void> {
+  /** Writes `after` to `file`, then runs `<cli> <args>`: a failure writes `before` back byte for byte and throws. */
+  private async writeThen(file: string, before: Buffer, after: string, cli: "tacit" | "evolve", args: readonly string[]): Promise<void> {
     writeFileSync(file, after);
     try {
-      await this.run("tacit", args);
+      await this.run(cli, args);
     } catch (err) {
       writeFileSync(file, before);
       throw err;
     }
+  }
+
+  /**
+   * Writes `after` to the rules file, then runs `tacit <args>` (`writeThen`). Then `sync-agents`: a failure keeps
+   * `after` (the verdict is recorded) and throws `TacitSyncFailed`.
+   */
+  private async rewrite(file: string, before: Buffer, after: string, args: readonly string[]): Promise<void> {
+    await this.writeThen(file, before, after, "tacit", args);
     try {
       await this.run("sync-agents", []);
     } catch (err) {
@@ -178,16 +225,16 @@ export class AgentsHomeTacitLedger implements TacitLedger {
     }
   }
 
-  /** The rules file's resolved path, refused when it is missing or resolves outside the resolved home. */
-  private rulesFile(): string {
+  /** `<home>/<path>` resolved, refused when it is missing or resolves outside the resolved home. */
+  private homeFile(path: string): string {
     let file: string;
     try {
-      file = realpathSync(join(this.home, RULES_FILE));
+      file = realpathSync(join(this.home, path));
     } catch {
-      throw new TacitRefusal(`no ${RULES_FILE} in the agents home: nothing written`);
+      throw new TacitRefusal(`no ${path} in the agents home: nothing written`);
     }
     if (!file.startsWith(realpathSync(this.home) + sep) || !statSync(file).isFile()) {
-      throw new TacitRefusal(`${RULES_FILE} resolves outside the agents home: nothing written`);
+      throw new TacitRefusal(`${path} resolves outside the agents home: nothing written`);
     }
     return file;
   }
@@ -311,6 +358,13 @@ function newestVerdicts(verdicts: readonly LedgerVerdict[]): Map<string, LedgerV
 function localDate(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** Why `path` is no path relative to the agents home (absolute, or with a `..` segment), or null when it is one. */
+function relativePathError(path: string): string | null {
+  if (/^([/\\]|[A-Za-z]:)/.test(path)) return "is an absolute path";
+  if (path.split(/[/\\]/).includes("..")) return "has a .. segment";
+  return null;
 }
 
 /** Whether `path` is an executable file. */

@@ -13,16 +13,19 @@
 // paths; no model call). The page's Suggest button reads it once per applied rule; it writes nothing. Every ledger text
 // leaves through the Withholder. POST /api/v1/rules/verdict sends one verdict (promote, reject, hold or retire) with
 // the owner's reason, and for promote of a class their wording, default and exception, which the plugin encodes in the
-// owner's rules file before the verdict (a retire removes the class's block instead), and for promote of a proposal
-// `applied_to`, the file the owner changed (relative to the agents home, no `..`), through `TacitLedger.verdict`
+// owner's rules file before the verdict (a retire removes the class's block instead); promote of a proposal takes no
+// field beyond the reason: the plugin applies the proposal's current → proposed lines (as `show` gives them) to its
+// target file, then sends the verdict, all through `TacitLedger.verdict`
 // only: the page has no other write path and writes nothing to the store. The request guards
 // (Host, Origin, Content-Type, CSRF token, body size, JSON) run in server.ts; then the owner check (decision 1 of #571:
 // the store's local owner only); every refusal comes before the ledger's CLI runs.
 //
 // The ledger is the UI's live holder (design 08-settings, 2026-11-12): each request first refreshes the UI's settings,
 // so a changed `integrations` entry takes effect here with no restart. With the ledger off, GET also says where the
-// agents home is and which CLI is missing there, and gives the owner the `integrations` value that turns the ledger
-// on; the page writes it through POST /api/v1/settings, whose guards and owner check run as for any setting.
+// agents home is and which CLI is missing there, each known home (AGENTS_HOME when set, ~/.agents) with its own check
+// for the page's picker, and gives the owner the `integrations` value that turns the ledger on (the plugin name only:
+// no home path is stored); the page writes it through POST /api/v1/settings, whose guards and owner check run as for
+// any setting.
 //
 // `improve` (design 07-self-improvement, 2026-11-16) carries the latest improve report, every text through
 // the Withholder, and `run_now`: whether the viewer may run one now
@@ -36,12 +39,11 @@ import { RULE_VERDICTS, type RuleVerdict } from "../core/learned-rules.js";
 import { errorText } from "../core/log.js";
 import { type RetireRule, retireSuggestions } from "../core/rule-retirement.js";
 import { LiveSettings } from "../core/settings.js";
-import { checkAgentsHome } from "../impl/tacit/agents-home-tacit-ledger.js";
+import { type AgentsHomeCheck, checkAgentsHome } from "../impl/tacit/agents-home-tacit-ledger.js";
 import { LiveTacit } from "../runtime/live-tacit.js";
 import type { FailureGroup, ImproveReport, UserId } from "../core/types.js";
 import {
-  type TacitApplication, type TacitEntryDetail, type TacitEvidence, type TacitLedger, type TacitPendingEntry, type TacitPromotion, TacitRefusal, TacitSyncFailed,
-  appliedToError, tacitIdKind,
+  type TacitEntryDetail, type TacitEvidence, type TacitLedger, type TacitPendingEntry, type TacitPromotion, TacitRefusal, TacitSyncFailed, tacitIdKind,
 } from "../interfaces/tacit-ledger.js";
 import type { ApiResult } from "./api.js";
 import { runNowButton } from "./improve-api.js";
@@ -62,8 +64,11 @@ export interface UiTacit {
   ledger: TacitLedger;
   /** The UI's settings: refreshed before each Rules request, which rebuilds `ledger` when the entry changed. */
   settings: { refresh(): Promise<void>; values(): { integrations: Readonly<Record<string, string>> } };
-  /** The agents home (AGENTS_HOME, else ~/.agents) and the first CLI missing there, or null when both are executable. */
-  home(): { path: string; missing: string | null };
+  /**
+   * The agents home (AGENTS_HOME, else ~/.agents) and the first CLI missing there, or null when both are executable;
+   * `homes`, each known home with its own check.
+   */
+  home(): AgentsHomeCheck & { homes: readonly AgentsHomeCheck[] };
 }
 
 type LiveOpts = ConstructorParameters<typeof LiveSettings>[0];
@@ -118,13 +123,14 @@ export async function readRules(d: PauseDeps): Promise<ApiResult> {
     if (!d.tacit) return { status: 200, value: { enabled: false, entries: [], applied: null, retired: null, error: null, csrf_token: null, judge: null, home: null, turn_on: null, improve } };
     const judge = await judgeOf("turns the ledger on");
     const home = d.tacit.home();
-    // The whole entry with `tacit` set: other integrations keep theirs.
+    // The whole entry with `tacit` set to the plugin name: other integrations keep theirs, and no path goes in.
     const turnOn = judge === null && home.missing === null ? JSON.stringify({ ...d.tacit.settings.values().integrations, tacit: RULES_PLUGIN }) : null;
+    const homes = await Promise.all(home.homes.map(async (h) => ({ path: await text(h.path), missing: h.missing })));
     return {
       status: 200,
       value: {
         enabled: false, entries: [], applied: null, retired: null, error: null, csrf_token: judge === null ? d.pauses!.csrfToken : null, judge,
-        home: { path: await text(home.path), missing: home.missing }, turn_on: turnOn, improve,
+        home: { path: await text(home.path), missing: home.missing, homes }, turn_on: turnOn, improve,
       },
     };
   }
@@ -304,7 +310,7 @@ export async function readRuleEntry(d: PauseDeps, rawId: string | null): Promise
   return { status: 200, value: { id: shown.id, detail: shown, error: null, retire: reasons } };
 }
 
-type VerdictBody = { id: string; verdict: RuleVerdict; reason: string; detail?: TacitPromotion | TacitApplication };
+type VerdictBody = { id: string; verdict: RuleVerdict; reason: string; rule?: TacitPromotion };
 
 /** The rule's fields a promote of a class takes, each required there and refused anywhere else. */
 const RULE_FIELDS = ["text", "default", "exception"] as const;
@@ -313,22 +319,13 @@ const RULE_FIELDS = ["text", "default", "exception"] as const;
 function parseVerdict(body: unknown): VerdictBody | string {
   if (typeof body !== "object" || body === null || Array.isArray(body)) return "the body must be a JSON object";
   const b = body as Record<string, unknown>;
-  const extra = Object.keys(b).find((k) => !["id", "verdict", "reason", "applied_to", ...RULE_FIELDS].includes(k));
+  const extra = Object.keys(b).find((k) => !["id", "verdict", "reason", ...RULE_FIELDS].includes(k));
   if (extra) return `unknown field "${extra}"`;
   if (typeof b.id !== "string" || b.id.trim() === "") return "id must be a non-empty string";
   if (!RULE_VERDICTS.includes(b.verdict as RuleVerdict)) return `verdict must be one of ${RULE_VERDICTS.join(", ")}`;
   if (typeof b.reason !== "string" || b.reason.trim() === "" || b.reason.length > MAX_REASON) return `reason must be 1 to ${MAX_REASON} characters`;
   const v = { id: b.id.trim(), verdict: b.verdict as RuleVerdict, reason: b.reason.trim() };
   if (v.verdict === "retire" && tacitIdKind(v.id) !== "class") return "only a class (C-) is retired";
-  const proposalPromote = v.verdict === "promote" && tacitIdKind(v.id) === "proposal";
-  if (!proposalPromote && b.applied_to !== undefined) return "only promote of a proposal (P-) takes applied_to";
-  if (proposalPromote) {
-    const given = RULE_FIELDS.find((k) => b[k] !== undefined);
-    if (given) return `only promote of a class (C-) takes a ${given}`;
-    if (typeof b.applied_to !== "string") return "applied_to must name the file the change went into";
-    const error = appliedToError(b.applied_to);
-    return error ?? { ...v, detail: { applied_to: b.applied_to.trim() } };
-  }
   if (v.verdict !== "promote" || tacitIdKind(v.id) !== "class") {
     const given = RULE_FIELDS.find((k) => b[k] !== undefined);
     return given ? `only promote of a class (C-) takes a ${given}` : v;
@@ -336,15 +333,16 @@ function parseVerdict(body: unknown): VerdictBody | string {
   const bad = RULE_FIELDS.find((k) => typeof b[k] !== "string" || b[k].trim() === "" || b[k].length > MAX_RULE_TEXT);
   if (bad) return `${bad} must be 1 to ${MAX_RULE_TEXT} characters`;
   const field = (k: (typeof RULE_FIELDS)[number]) => (b[k] as string).trim();
-  return { ...v, detail: { wording: field("text"), default: field("default"), exception: field("exception") } };
+  return { ...v, rule: { wording: field("text"), default: field("default"), exception: field("exception") } };
 }
 
 /**
- * POST /api/v1/rules/verdict with `{ id, verdict, reason, text?, default?, exception?, applied_to? }` (the three rule
- * fields required on promote of a class, `applied_to` on promote of a proposal, each refused on anything else; retire
- * of a class takes none), after the request guards:
- * 400 for a body that is not one, 409 with no ledger or when the ledger refuses a promote or retire before writing anything, 403 for anyone but the owner,
- * 502 when the ledger's CLI fails (or the verdict was recorded but sync-agents failed); else 200.
+ * POST /api/v1/rules/verdict with `{ id, verdict, reason, text?, default?, exception? }` (the three rule fields required
+ * on promote of a class and refused on anything else; promote of a proposal and retire of a class take none), after the
+ * request guards: 400 for a body that is not one, 409 with no ledger or when the ledger refuses a promote or retire
+ * before writing anything (a proposal whose current lines are not in its target exactly once), 403 for anyone but the
+ * owner, 502 when the ledger's CLI fails, with its error and any file it wrote put back (or the verdict was recorded but
+ * sync-agents failed); else 200.
  */
 export async function writeRuleVerdict(d: PauseDeps, p: UiPauses, body: unknown): Promise<ApiResult> {
   const v = parseVerdict(body);
@@ -355,13 +353,13 @@ export async function writeRuleVerdict(d: PauseDeps, p: UiPauses, body: unknown)
   const who = await ownerOf(d, p, "judges rules");
   if ("error" in who) return { status: 403, value: { error: who.error } };
   try {
-    // The owner's rule goes with a promoted class, the changed file with a promoted proposal; the CLIs take no "by", so the log keeps who judged.
-    await tacit.verdict(v.id, v.verdict, v.reason, v.detail);
+    // The owner's rule goes with a promoted class; the CLIs take no "by", so the log keeps who judged.
+    await tacit.verdict(v.id, v.verdict, v.reason, v.rule);
   } catch (err) {
     if (err instanceof TacitRefusal) return { status: 409, value: { error: `The ${v.verdict} was refused: ${errorText(err)}` } };
     if (err instanceof TacitSyncFailed) return { status: 502, value: { error: `The verdict was recorded, but sync-agents failed: ${errorText(err)}` } };
     return { status: 502, value: { error: `The ledger refused the verdict: ${errorText(err)}` } };
   }
-  p.log.info("rule verdict sent", { id: v.id, verdict: v.verdict, actor: who.user, edited: v.detail !== undefined && "wording" in v.detail });
+  p.log.info("rule verdict sent", { id: v.id, verdict: v.verdict, actor: who.user, edited: v.rule !== undefined });
   return { status: 200, value: { id: v.id, verdict: v.verdict } };
 }

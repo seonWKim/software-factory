@@ -132,7 +132,7 @@ async function show(tab: string | null = "advanced") {
   return tab === "advanced" || tab === null ? screen.findByRole("table", { name: "Settable keys" }) : screen.findByRole("tablist");
 }
 
-const PR_ONLY = "Change only in factory.config.json (by a reviewed PR)";
+const PR_ONLY = "Change only through a reviewed PR";
 /** Opens a Select, reads its options (each option's `value` is its choice), and closes it with Esc. */
 const optionsOf = (select: HTMLElement) => {
   fireEvent.click(select);
