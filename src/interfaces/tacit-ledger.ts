@@ -2,8 +2,8 @@
 // is captured, so the owner's own tools can learn from it. The ledger lives outside the factory; a plugin only runs
 // its CLIs and reads its promoted rules. The controller records each capture as an outbound intent, and outbound calls
 // `capture` (retried with backoff, its text through G5 first). `pending`, `show`, `verdict` and `rules` read and judge
-// the ledger (a promote of a class also writes the rule into the owner's rules file; a promote of a proposal names the
-// file the owner changed by hand): the dashboard's Rules page and
+// the ledger (a promote of a class also writes the rule into the owner's rules file; a promote of a proposal applies its
+// proposed lines to its target file): the dashboard's Rules page and
 // the learned rules in every prompt (issue #571) go through them only.
 
 /** One pushback as the factory knows it. The ledger's own fields (root reason, hypothesis, rule draft) stay empty. */
@@ -96,23 +96,7 @@ export interface TacitPromotion {
   readonly exception: string;
 }
 
-/** The owner's answer on promote of a proposal: the file the change went into, relative to the agents home (`--applied-to`). */
-export interface TacitApplication {
-  readonly applied_to: string;
-}
-
-/**
- * Why `path` is no `--applied-to` value, or null when it is one: it must be non-empty, relative to the agents home (no
- * leading `/`, `\` or drive letter) and have no `..` segment. The route and the plugin both check it before any CLI runs.
- */
-export function appliedToError(path: string): string | null {
-  if (path.trim() === "") return "applied_to must name the file the change went into";
-  if (/^([/\\]|[A-Za-z]:)/.test(path)) return "applied_to must be a path relative to the agents home, not an absolute path";
-  if (path.split(/[/\\]/).includes("..")) return "applied_to must not have a .. segment";
-  return null;
-}
-
-/** A promote or retire of a class refused before anything was written or any verdict sent (a check failed). */
+/** A promote or retire refused before anything was written or any verdict sent (a check failed). */
 export class TacitRefusal extends Error {}
 
 /** A promote or retire whose verdict was recorded but whose follow-up (sync-agents) failed; the rules file keeps the change. */
@@ -182,13 +166,14 @@ export interface TacitLedger {
    */
   show?(id: string): Promise<TacitEntryDetail | null>;
   /**
-   * Records the owner's verdict on entry `id` with their reason; `detail` is the owner's rule on a promote of a class,
-   * which encodes it first, and the file the change went into on a promote of a proposal (required there); a retire of a
-   * class removes its block from the rules file first. Throws for an ID that is neither a class nor a proposal, before
-   * any CLI runs; throws `TacitRefusal` when a promote or retire is refused with nothing written or run,
-   * `TacitSyncFailed` when its verdict was recorded but the follow-up failed.
+   * Records the owner's verdict on entry `id` with their reason; `rule` is the owner's rule on a promote of a class,
+   * which encodes it first; a promote of a proposal applies its proposed lines to its target file first (as `show`
+   * gives them); a retire of a class removes its block from the rules file first. Throws for an ID that is neither a
+   * class nor a proposal, before any CLI runs; throws `TacitRefusal` when a promote or retire is refused with nothing
+   * written or run, `TacitSyncFailed` when its verdict was recorded but the follow-up failed. A verdict that fails after
+   * a write puts the file back.
    */
-  verdict(id: string, decision: TacitDecision, reason: string, detail?: TacitPromotion | TacitApplication): Promise<void>;
+  verdict(id: string, decision: TacitDecision, reason: string, rule?: TacitPromotion): Promise<void>;
   /** The promoted rules, in the ledger's order; none when the ledger has no rules file. */
   rules(): Promise<readonly TacitRule[]>;
   /** Everything the rules file holds, for the Rules page's Applied group; nothing when there is no file. Reads only. Optional as `show` is: a ledger written before it has none. */
