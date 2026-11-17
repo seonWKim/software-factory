@@ -142,7 +142,7 @@ describe("app shell", () => {
     const tasks = screen.getByRole("navigation", { name: "Tasks" });
     expect([...tasks.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Tasks4", "Calendar"]);
     const nav = screen.getByRole("navigation", { name: "System" });
-    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Work", "Rules", "Health"]);
+    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Work", "Health"]);
     fireEvent.click(within(nav).getByText("Health"));
     expect(await screen.findByRole("heading", { level: 1, name: "Health" })).toBeTruthy();
     expect(location.pathname).toBe("/app/health");
@@ -312,17 +312,18 @@ describe("sidebar", () => {
     expect(content.className.split(" ")).toContain("overflow-y-auto");
   });
 
-  it("the Tasks group shows a small grey title that names it, and so does System", () => {
+  it("three blocks with no titles over them: a divider between each, and the Setup block pinned to the bottom", () => {
     mount();
-    for (const name of ["Tasks", "System"]) {
+    for (const name of ["Tasks", "System", "Setup"]) {
       const nav = screen.getByRole("navigation", { name });
-      const title = document.getElementById(nav.getAttribute("aria-labelledby")!)!;
-      expect(title.textContent).toBe(name);
-      expect(nav.firstElementChild).toBe(title);
-      for (const c of ["text-xs", "text-text-3"]) expect(title.className.split(" ")).toContain(c);
+      expect(nav.getAttribute("aria-label")).toBe(name);
+      expect(nav.querySelector("p")).toBeNull();
     }
     expect(document.querySelector("aside details, aside summary, aside [data-chevron]")).toBeNull();
-    expect(screen.getByRole("navigation", { name: "System" }).closest("div")!.className.split(" ")).toEqual(expect.arrayContaining(["mt-3", "border-t", "pt-3"]));
+    for (const name of ["System", "Setup"]) {
+      expect(screen.getByRole("navigation", { name }).parentElement!.className.split(" ")).toEqual(expect.arrayContaining(["border-t", "pt-3"]));
+    }
+    expect(screen.getByRole("navigation", { name: "Setup" }).parentElement!.parentElement!.className.split(" ")).toContain("mt-auto");
   });
 
   it("Settings is a row at the bottom of the sidebar, selected while open, and no longer a top-bar link", async () => {
@@ -335,6 +336,7 @@ describe("sidebar", () => {
     expect(row.hasAttribute("aria-current")).toBe(false);
     expect(screen.getByRole("navigation", { name: "System" }).compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByRole("navigation", { name: "System" }).contains(row)).toBe(false);
+    expect(screen.getByRole("navigation", { name: "Setup" }).contains(row)).toBe(true);
     fireEvent.click(row);
     expect(await screen.findByRole("heading", { level: 1, name: "Settings" })).toBeTruthy();
     const open = within(side).getByRole("link", { name: "Settings" });
@@ -396,7 +398,7 @@ describe("sidebar in the icon-only layout", () => {
     try {
       mount();
       await screen.findByText("Needs you (4)");
-      for (const nav of [screen.getByRole("navigation", { name: "Tasks" }), screen.getByRole("navigation", { name: "System" })]) {
+      for (const nav of ["Tasks", "System", "Setup"].map((name) => screen.getByRole("navigation", { name }))) {
         const links = [...nav.querySelectorAll("a")];
         expect(links.length).toBeGreaterThan(0);
         for (const a of links) {
@@ -462,21 +464,23 @@ describe("app pages", () => {
     const side = screen.getByRole("complementary", { name: "Sidebar" });
     const links = [...side.querySelectorAll("a")].filter((a) => a.getAttribute("href")?.startsWith("/app/") && a.getAttribute("href") !== "/app/");
     expect(links.map((a) => [a.getAttribute("aria-label"), a.getAttribute("href")])).toEqual([
-      ["Tasks", "/app/tasks"], ["Calendar", "/app/calendar"], ["Plugins", "/app/plugins"],
-      ["Work", "/app/items"], ["Rules", "/app/rules"], ["Health", "/app/health"], ["Settings", "/app/settings"],
+      ["Tasks", "/app/tasks"], ["Calendar", "/app/calendar"],
+      ["Work", "/app/items"], ["Health", "/app/health"],
+      ["Rules", "/app/rules"], ["Plugins", "/app/plugins"], ["Settings", "/app/settings"],
     ]);
     for (const gone of ["Activity", "Failures", "Spend", "Runners", "Data"]) expect(within(side).queryByRole("link", { name: gone })).toBeNull();
   });
 
-  it("the sidebar shows Plugins in its own group above System, linking to /app/plugins", () => {
+  it("the sidebar blocks: Tasks and Calendar, then Work and Health, then the setup pages Rules, Plugins and Settings", () => {
     mount();
-    const plugins = screen.getByRole("navigation", { name: "Plugins" });
-    expect([...plugins.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual(["/app/plugins"]);
-    const system = screen.getByRole("navigation", { name: "System" });
-    expect(plugins.compareDocumentPosition(system) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByRole("navigation", { name: "Tasks" }).contains(plugins)).toBe(false);
-    expect(system.contains(plugins)).toBe(false);
-    expect(plugins.closest("div")!.className.split(" ")).toEqual(expect.arrayContaining(["mt-3", "border-t", "pt-3"]));
+    const hrefs = (name: string) => [...screen.getByRole("navigation", { name }).querySelectorAll("a")].map((a) => a.getAttribute("href"));
+    expect(hrefs("Tasks")).toEqual(["/app/tasks", "/app/calendar"]);
+    expect(hrefs("System")).toEqual(["/app/items", "/app/health"]);
+    expect(hrefs("Setup")).toEqual(["/app/rules", "/app/plugins", "/app/settings"]);
+    const [tasks, system, setup] = ["Tasks", "System", "Setup"].map((name) => screen.getByRole("navigation", { name }));
+    expect(tasks!.compareDocumentPosition(system!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(system!.compareDocumentPosition(setup!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByRole("navigation", { name: "Plugins" })).toBeNull();
   });
 
   it("old paths redirect: /app/workers to Runners; /app/users is no longer an old path", async () => {

@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Monitor, Moon, RefreshCw, Search, Sun } from "lucide-react";
-import { type JSX, useEffect, useId, useState } from "react";
+import { type JSX, useEffect, useState } from "react";
 import { API, type Overview, POLL_MS, WEB_REV, getJson } from "./api.js";
 import { Brand } from "./components/ui/brand.js";
 import { Button } from "./components/ui/button.js";
@@ -52,12 +52,10 @@ const pageLabel = (p: PageDef) => t(`page.${p.key}` as MessageKey);
 
 const LINK_ROW = "flex items-center gap-2 px-2 py-1.5 text-sm";
 
-/** One sidebar group of page links; with `titled`, its label shows above it as a small grey title and names it. */
-function SideLinks({ label, pages, current, badges = {}, titled = false }: { label: string; pages: readonly PageDef[]; current: PageDef; badges?: Readonly<Record<string, number | undefined>>; titled?: boolean }) {
-  const id = useId();
+/** One sidebar block of page links, named by `label` for a screen reader; no title shows over it. */
+function SideLinks({ label, pages, current, badges = {} }: { label: string; pages: readonly PageDef[]; current: PageDef; badges?: Readonly<Record<string, number | undefined>> }) {
   return (
-    <nav aria-label={titled ? undefined : label} aria-labelledby={titled ? id : undefined}>
-      {titled && <p id={id} className="px-2 pb-1 text-xs text-text-3 max-sm:sr-only">{label}</p>}
+    <nav aria-label={label}>
       <ul className="space-y-1">
         {pages.map((p) => (
           <li key={p.path}>
@@ -155,17 +153,14 @@ export function App() {
           className="flex w-44 shrink-0 flex-col overflow-y-auto border-r border-border bg-(--sidebar) p-3 max-sm:w-14"
         >
           <Brand />
-          <SideLinks label={t("nav.tasks")} pages={pagesIn("tasks")} current={current} badges={{ tasks: needs }} titled />
-          {/* Plugins: what the agents can use, its own group above System. One entry, so no title over it. */}
+          {/* Three blocks with a divider between them and no titles: Tasks, then System, then the setup pages pinned above the bottom. */}
+          <SideLinks label={t("nav.tasks")} pages={pagesIn("tasks")} current={current} badges={{ tasks: needs }} />
           <div className="mt-3 border-t border-border pt-3">
-            <SideLinks label={t("page.plugins")} pages={pagesIn("plugins")} current={current} />
-          </div>
-          <div className="mt-3 border-t border-border pt-3">
-            <SideLinks label={t("nav.system")} pages={pagesIn("system")} current={current} titled />
+            <SideLinks label={t("nav.system")} pages={pagesIn("system")} current={current} />
           </div>
           <div className="mt-auto pt-3">
             <div className="border-t border-border pt-3">
-              <SideLinks label={t("page.settings")} pages={pagesIn("bottom")} current={current} />
+              <SideLinks label={t("nav.setup")} pages={pagesIn("setup")} current={current} />
             </div>
           </div>
         </aside>
