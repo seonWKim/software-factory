@@ -81,7 +81,7 @@ async function form(): Promise<HTMLElement> {
   return screen.getByRole("region", { name: "Change on a local branch" });
 }
 
-const keyOf = (section: HTMLElement, key: string) => section.querySelector<HTMLElement>(`li[data-file-key="${key}"]`)!;
+const keyOf = (section: HTMLElement, key: string) => section.querySelector<HTMLElement>(`tr[data-file-key="${key}"]`)!;
 const dialog = () => document.querySelector<HTMLElement>("dialog[data-dialog]");
 
 /** Adds src/ui/ to hotspot_paths and presses Save. */
@@ -151,7 +151,7 @@ describe("the restart note and the read-only keys", () => {
 
   it("each of the seven read-only keys shows its value and reason, and no file path or command", async () => {
     const section = await form();
-    const items = [...section.querySelectorAll<HTMLElement>("li[data-read-only]")];
+    const items = [...section.querySelectorAll<HTMLElement>("tr[data-read-only]")];
     expect(items.map((li) => li.getAttribute("data-read-only"))).toEqual(READ_ONLY);
     for (const li of items) {
       const key = li.getAttribute("data-read-only")!;

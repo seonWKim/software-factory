@@ -9,6 +9,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { breakingStep } from "../../../interfaces/updater.js";
 import { type Migration, type MigrationDb, type SqlExecutor, fingerprintTables, lostRows, pendingMigrations } from "../../../state/index.js";
 import { type ProjectKeyMode, countLegacyProjectRows } from "../project-keys.js";
 import { SqliteDriver } from "./sqlite-driver.js";
@@ -33,7 +34,7 @@ export async function sqlitePendingSteps(file: string): Promise<string[]> {
   const driver = new SqliteDriver(file);
   try {
     const breaking = (await pendingSchema(driver)).migrations.filter((m) => m.change === "breaking");
-    if (breaking.length > 0) return breaking.map((m) => `${m.id} (breaking)`);
+    if (breaking.length > 0) return breaking.map((m) => breakingStep(m.id));
     const n = await countLegacyProjectRows(driver).catch(() => 0);
     return n > 0 ? [`project keys (${n} row${n === 1 ? "" : "s"})`] : [];
   } finally {

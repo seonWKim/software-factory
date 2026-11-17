@@ -6,10 +6,4 @@
   - **Migrations (since 2026-11-07, #165):** `migration_pending` names the pending steps and says whether the old revision still runs; `migration_draining` says new runs are paused for `npm run migrate`; `migration_ready` says the steps are being applied and the new revision starts when `migrate` finishes.
 - **Pause line on the Floor banner (decision changed 2026-11-07).** While the supervisor says `running` and a claim pause is in effect, the Floor banner names the pause instead of "Factory running": `Paused (<name>): <what it stops>; until <time>.` For `model_stall` it says when the stall began and when the next check is (`since <time>; next check at <time>`), or `the next check is due` once that time has passed. The data is `GET /api/v1/pauses` (the same rows as the Claim pauses list; `model_stall` carries `since`, read from `model_stall_since`), store reads only, no forge call. Several pauses give one sentence each. No pause: the text is unchanged. Other supervisor states keep their text. Solo and enterprise alike: the pauses are the rows of the store the app reads.
 
-## History
-
 - Replaced decisions of this topic: [history/09-status-banner.md](history/09-status-banner.md).
-- **Factory status banner** (new decision, 2026-11-01). Before: the page could not tell an update drain from idle workers, so with `workers: 10` and two runs going it looked like the setting was ignored.
-- **Crash message on the banner** (2026-11-02). Before: a pending migration kept the factory down for 77 min with no sign outside the log.
-- **Both updaters write the status file** (2026-11-07, #352). Before: only the git-worktree updater wrote it; under `updater: none` there was no file, so the banner said "Factory stopped. No runs start." above runs that were progressing.
-- **Pause line on the Floor banner** (decision changed 2026-11-07). Before: the Floor banner read only the supervisor's process state, so it said "Factory running" while every claim was paused.

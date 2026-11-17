@@ -39,11 +39,11 @@ describe("form controls", () => {
     expect(screen.getByLabelText("t").getAttribute("rows")).toBe("2");
   });
 
-  it("Select draws its own chevron inside its wrapper", () => {
-    render(<Select aria-label="s" wrapperClassName="w-40"><option>a</option></Select>);
-    const select = screen.getByLabelText("s");
-    expect(select.tagName).toBe("SELECT");
-    expect(select.className).toContain("appearance-none");
+  it("Select draws its own chevron inside its wrapper, and no native select", () => {
+    const { container } = render(<Select aria-label="s" wrapperClassName="w-40"><option>a</option></Select>);
+    const select = screen.getByRole("combobox", { name: "s" });
+    expect(container.querySelector("select")).toBeNull();
+    expect(select.className).toContain("h-8");
     expect(select.parentElement.className).toContain("w-40");
     expect(select.parentElement.querySelector("svg")).not.toBeNull();
   });
@@ -72,6 +72,115 @@ describe("form controls", () => {
     expect(container.firstChild.className).toContain("flex-wrap");
     expect(container.firstChild.className).toContain("gap-2");
     expect(container.firstChild.className).toContain("justify-end");
+  });
+});
+
+describe("Select", () => {
+  const FRUIT = (
+    <>
+      <option value="" disabled>Pick a fruit</option>
+      <option value="apple">Apple</option>
+      <option value="banana">Banana</option>
+      <option value="blueberry">Blueberry</option>
+      <option value="cherry">Cherry</option>
+    </>
+  );
+  const box = () => screen.getByRole("combobox", { name: "Fruit" });
+  const optionNames = () => screen.getAllByRole("option").map((o) => o.textContent);
+  const highlighted = () => document.getElementById(box().getAttribute("aria-activedescendant")!)!.textContent;
+
+  it("opens its own list below the field, shows the choice checked, picks and closes", () => {
+    const pick = vi.fn();
+    render(<Select aria-label="Fruit" value="banana" onChange={pick}>{FRUIT}</Select>);
+    expect(box().textContent).toBe("Banana");
+    expect(box().getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("listbox")).toBeNull();
+    fireEvent.click(box());
+    const list = screen.getByRole("listbox");
+    expect(box().getAttribute("aria-expanded")).toBe("true");
+    expect(box().getAttribute("aria-controls")).toBe(list.id);
+    expect(list.className).toContain("top-full");
+    expect(optionNames()).toEqual(["Pick a fruit", "Apple", "Banana", "Blueberry", "Cherry"]);
+    const banana = screen.getByRole("option", { name: "Banana" });
+    expect(banana.getAttribute("aria-selected")).toBe("true");
+    expect(banana.querySelector("svg:not(.invisible)")).not.toBeNull();
+    expect(screen.getByRole("option", { name: "Apple" }).getAttribute("aria-selected")).toBe("false");
+    expect(screen.getByRole("option", { name: "Apple" }).querySelector("svg:not(.invisible)")).toBeNull();
+    expect((screen.getByRole("option", { name: "Pick a fruit" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("option", { name: "Cherry" }));
+    expect(pick).toHaveBeenCalledTimes(1);
+    expect(pick.mock.calls[0]![0].target.value).toBe("cherry");
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(document.activeElement).toBe(box());
+  });
+
+  it("shows the disabled placeholder option when the value is empty", () => {
+    render(<Select aria-label="Fruit" value="" onChange={vi.fn()}>{FRUIT}</Select>);
+    expect(box().textContent).toBe("Pick a fruit");
+  });
+
+  it("Esc closes the list without picking and returns focus to the field", () => {
+    const pick = vi.fn();
+    render(<Select aria-label="Fruit" value="apple" onChange={pick}>{FRUIT}</Select>);
+    fireEvent.click(box());
+    expect(screen.getByRole("listbox")).not.toBeNull();
+    fireEvent.keyDown(box(), { key: "Escape" });
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(document.activeElement).toBe(box());
+    expect(pick).not.toHaveBeenCalled();
+  });
+
+  it("opens above the field when there is no room below it", () => {
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      const r = this.getAttribute("role") === "listbox" ? { top: 0, bottom: 200, height: 200 } : { top: innerHeight - 40, bottom: innerHeight - 8, height: 32 };
+      return { ...r, left: 0, right: 100, width: 100, x: 0, y: r.top, toJSON: () => r } as DOMRect;
+    });
+    try {
+      render(<Select aria-label="Fruit" value="apple" onChange={vi.fn()}>{FRUIT}</Select>);
+      fireEvent.click(box());
+      expect(screen.getByRole("listbox").className).toContain("bottom-full");
+      expect(screen.getByRole("listbox").className).not.toContain("top-full");
+    } finally {
+      rect.mockRestore();
+    }
+  });
+
+  it("keyboard: Enter opens, arrows move the highlight past disabled options, Enter picks", () => {
+    const pick = vi.fn();
+    render(<Select aria-label="Fruit" value="apple" onChange={pick}>{FRUIT}</Select>);
+    fireEvent.keyDown(box(), { key: "Enter" });
+    expect(screen.getByRole("listbox")).not.toBeNull();
+    expect(highlighted()).toBe("Apple");
+    fireEvent.keyDown(box(), { key: "ArrowUp" });
+    expect(highlighted()).toBe("Apple");
+    fireEvent.keyDown(box(), { key: "ArrowDown" });
+    fireEvent.keyDown(box(), { key: "ArrowDown" });
+    expect(highlighted()).toBe("Blueberry");
+    fireEvent.keyDown(box(), { key: "ArrowUp" });
+    expect(highlighted()).toBe("Banana");
+    fireEvent.keyDown(box(), { key: "Enter" });
+    expect(pick.mock.calls[0]![0].target.value).toBe("banana");
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("keyboard: Space opens; type-to-find highlights the first option starting with the typed letters", () => {
+    const pick = vi.fn();
+    render(<Select aria-label="Fruit" value="apple" onChange={pick}>{FRUIT}</Select>);
+    fireEvent.keyDown(box(), { key: " " });
+    expect(screen.getByRole("listbox")).not.toBeNull();
+    fireEvent.keyDown(box(), { key: "b" });
+    expect(highlighted()).toBe("Banana");
+    fireEvent.keyDown(box(), { key: "l" });
+    expect(highlighted()).toBe("Blueberry");
+    fireEvent.keyDown(box(), { key: "Enter" });
+    expect(pick.mock.calls[0]![0].target.value).toBe("blueberry");
+  });
+
+  it("a disabled Select does not open", () => {
+    render(<Select aria-label="Fruit" value="apple" disabled onChange={vi.fn()}>{FRUIT}</Select>);
+    fireEvent.click(box());
+    fireEvent.keyDown(box(), { key: "Enter" });
+    expect(screen.queryByRole("listbox")).toBeNull();
   });
 });
 

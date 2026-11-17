@@ -4,12 +4,12 @@ import { type TriageOutput, parseTriage } from "./outputs.js";
 import { type ItemPhase, isClosedPhase, phaseOf } from "./phase.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind } from "./policy.js";
 import type { Run, RunKind, WorkItem } from "./types.js";
+export * from "./request-transition.js"; // the approve and merge gates' shared checks (design 04-gate-commands)
 
 /**
  * The human commands on a work item (design §4): one table of names, usage, descriptions and the states
  * each applies in, plus a pure parser for comment bodies. Footers, `/help` replies (issue comments, Slack, `factory help`),
- * unknown-command replies, refusals and the SET_UP.md command table are all built here, so they cannot drift from
- * each other.
+ * unknown-command replies, refusals and the SET_UP.md command table are all built here, so they cannot drift from each other.
  */
 
 /** Where an item is, as far as human commands are concerned. Derived from the item by `commandPhase`. */

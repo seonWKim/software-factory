@@ -1,12 +1,13 @@
 // The improve run (design §7, issues #306, #307, #308, #571): a daily look back at failed runs and the owner's pushbacks,
 // no agent. The project's failed runs in a window are grouped by error code and normalized detail, its pushbacks by their
 // normalized words (code `pushback`); each group of 2+ gets one plain model call (no tools) for a draft; one report is stored for the learner (learnFromReport); the controller files its groups (fileReport).
+// The flaky tests merge checks named in the window are listed with the patterns (code `flaky_test`), never drafted or filed.
 export { learnFromReport } from "./learned-settings.js";
-export { PUSHBACK, type Pushback, groupFailures, normalizeDetail } from "./failure-groups.js";
+export { FLAKY_TEST, PUSHBACK, type Pushback, groupFailures, normalizeDetail } from "./failure-groups.js";
 export { NO_SCORER, type Grade, type GradeSubject, type Scorer, improvePrompts, scoreRun, scorerFor } from "./scorer.js";
 
 import { cyrb53 } from "./hash.js";
-import { PUSHBACK, groupFailures, pushbacksIn, reviewable } from "./failure-groups.js";
+import { PUSHBACK, flakyTests, groupFailures, pushbacksIn, reviewable } from "./failure-groups.js";
 import { AGENT_STALLED } from "./policy.js";
 import { parseJson } from "./scorer.js";
 import { PROTECTED_PATHS } from "./standing.js";
@@ -259,7 +260,7 @@ export interface ImproveDeps {
 
 /**
  * The improve run's work: the failed runs of the item's project finished inside its window and the owner's pushbacks
- * made inside it, grouped, each group drafted, stored as its one report. A run with no window in its input reports the 24 hours before it was queued.
+ * made inside it, grouped, each group drafted, stored as its one report with the flaky tests its merge checks named. A run with no window in its input reports the 24 hours before it was queued.
  * Safe to run twice: a run whose report exists returns it with no model call; the report is keyed by the run.
  */
 export async function runImprove(d: ImproveDeps, run: Run, item: Pick<WorkItem, "project">): Promise<ImproveReport> {
@@ -289,7 +290,9 @@ export async function runImprove(d: ImproveDeps, run: Run, item: Pick<WorkItem, 
       g.draft = await draft(d, llm, prompt, g, texts);
     }
   }
-  const { report } = await d.store.recordImproveReport({ run_id: run.id, project: item.project, ...window, groups, patterns });
+  // The flaky tests merge checks named go with the patterns: listed for the owner, never drafted or filed.
+  const listed = [...patterns, ...flakyTests(runs)];
+  const { report } = await d.store.recordImproveReport({ run_id: run.id, project: item.project, ...window, groups, patterns: listed });
   return report;
 }
 

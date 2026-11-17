@@ -1,13 +1,17 @@
 // Item commands from the status page (design §9, issue #227): POST /api/v1/items/:id/commands records one app
 // command request (FactoryStore.recordAppCommandRequest) with the page's actor (`ui.user_id`, else on loopback the
-// CLI identity: compose.ts uiCommandsActor); the controller authorizes and applies
-// it on its next tick, or refuses it with a reply (design §4, app requests). This module never applies a command.
+// CLI identity: compose.ts uiCommandsActor). Approve and Merge are answered while the request is handled (design
+// 09-dashboard-app, 2026-11-15): the owner check, then the controller's own store-only checks (core
+// requestTransition); Approve is one conditional write, Merge writes nothing and answers "Merging…" until the
+// controller's next pass enters the merge queue. The response carries the item's state, or the refusal. The
+// controller does the rest (an approval's run, the merge itself); it authorizes and applies every other command, or
+// refuses it with a reply (design §4, app requests).
 //
 // Guards, in order, every refusal before any store write: Host (server.ts), then an Origin equal to the Host's own
 // http origin (403), Content-Type application/json (415), the per-process token in x-csrf-token (403, with code
 // "stale_csrf": STALE_CSRF, which the page retries once with a fresh token), a
 // an actor (503), a body of at most 16 KB (413), JSON (400), a known command with a valid note (400),
-// a known item (404). Success is 202 with the request's ID. GET /api/v1/session hands out the token behind the
+// a known item (404). Success is 202 with the request's ID (Approve and Merge: also `outcome` and `state`). GET /api/v1/session hands out the token behind the
 // same Host guard. The item API's `commands` (each with the viewer's `allowed` and `reason`), `replies`, `spec` and
 // `merge` fields are built here too.
 // `merge` (design §9, the Merge button) is an app command beside the item commands, with no note: the local merge
@@ -19,16 +23,21 @@
 
 import { randomUUID } from "node:crypto";
 import { COMMAND_TABLE } from "../core/command-table.js";
-import { COMMANDS, type CommandName, commandPhase, commandSpec, commandsFor, itemCommandState, latestSpec } from "../core/commands.js";
+import {
+  COMMANDS, type CommandName, ROW_LABELS, commandPhase, commandSpec, commandsFor, itemCommandState, latestSpec, mergeQueued, mergeRoute, phaseLabel, requestTransition,
+} from "../core/commands.js";
 import { refusalReply } from "../core/authorize.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, isProposalId, parseProposalMarker, typed } from "../core/interpret.js";
 import { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND } from "../core/local-cli.js";
-import { LOCAL_SOURCE, MERGE_COMMAND } from "../core/local-merge.js";
+import { MERGE_COMMAND } from "../core/local-merge.js";
 import { phaseOf } from "../core/phase.js";
 import type { Run, UserId, WorkItem, WorkItemId } from "../core/types.js";
 import type { AuthDecision } from "../interfaces/auth-provider.js";
+import type { AppCommandRequest } from "../interfaces/factory-store.js";
+import { answersDetail, splitAnswers } from "../shared/command-notes.js";
 import type { UiDeps } from "./deps.js";
 import { csrfMatches } from "./settings-api.js";
+import { Withholder } from "./withhold.js";
 
 /** What the commands route needs beside the store. Built once per UI process (compose.ts buildUiParts). */
 export interface UiCommands {
@@ -48,6 +57,13 @@ export interface UiCommands {
   forge?: boolean;
   /** Whether the controller's sandbox can merge locally, for a local item's Merge; set by compose.ts buildUiParts. Absent: not known here; the controller still checks. */
   localMerge?: boolean;
+  /**
+   * Whether a dashboard Merge of the item is stored and not handled yet (core mergeRequested): its button reads
+   * "Merging…" until the controller's pass enters the merge queue. Set by compose.ts buildUiParts. Absent: not read.
+   */
+  mergeRequested?: (id: WorkItemId) => Promise<boolean>;
+  /** How a refusal names the item's PR, as the controller names it (`PR #N`); set by compose.ts buildUiParts, so ui writes no change-ref form. Absent: the bare ref. */
+  changeName?: (change_ref: string) => string;
 }
 
 /** The largest commands body read. A command and a 2000-character note fit well inside it. */
@@ -175,7 +191,33 @@ export async function commandsPost(d: UiDeps, rawId: string, req: CommandsReques
     work_item_id: item.id, ...("note" in parsed && parsed.note !== undefined ? { note: parsed.note } : {}), ...("proposal" in parsed ? { proposal: parsed.proposal } : {}),
   };
   const { request } = await d.store.recordAppCommandRequest({ key, actor: c.actor, command: parsed.command, args });
-  return { status: 202, value: { request_id: request.key, seq: request.seq, command: request.command, work_item_id: item.id } };
+  const value = { request_id: request.key, seq: request.seq, command: request.command, work_item_id: item.id };
+  return { status: 202, value: { ...value, ...(await applyNow(d, request, item)) } };
+}
+
+/** The commands the request path applies while the request is handled; every other one waits for the controller. */
+const APPLIED_NOW: readonly string[] = ["approve", MERGE_COMMAND];
+
+/**
+ * Approve and Merge applied now (core requestTransition, design 09-dashboard-app): `outcome` (applied, already_done,
+ * refused or queued for the controller), the item's `state` after it (stage, blocked_on, blocked_reason, its phase in
+ * the owner's words and the row's label) and the refusal in the controller's words, through the Withholder. Nothing
+ * for any other command, or with no owner check wired (UiCommands.allowed): the controller applies the request then.
+ */
+async function applyNow(d: UiDeps, r: AppCommandRequest, item: WorkItem): Promise<Record<string, unknown>> {
+  const c = d.commands;
+  if (!c?.allowed || !APPLIED_NOW.includes(r.command)) return {};
+  const done = await requestTransition({
+    store: d.store, scanner: d.scanner, allowed: c.allowed, answers: { split: splitAnswers, detail: answersDetail }, changeName: c.changeName ?? String, forge: c.forge, localMerge: c.localMerge,
+  }, r, item);
+  const it = done.item;
+  const refusal = done.outcome === "refused" ? (await new Withholder(d.scanner).plain(done.refusal, { channel: "ui" })).text : null;
+  const label = done.label ?? (mergeQueued(it) ? ROW_LABELS.merging : it.stage === "CLOSED" && it.merge_sha ? ROW_LABELS.merged : null);
+  return {
+    outcome: done.outcome,
+    state: { stage: it.stage, blocked_on: it.blocked_on, blocked_reason: it.blocked_reason, phase: phaseLabel(commandPhase(it)), label },
+    refusal,
+  };
 }
 
 /** GET /api/v1/session: the per-process token, whether commands are on, and who they act as; null (a 404) when not wired. */
@@ -323,9 +365,13 @@ const off = (reason: string): MergeReadiness => ({ enabled: false, reason });
  * controller checks everything again when it applies the request; GitHub checks the head at merge time.
  */
 export async function mergeReadiness(d: UiDeps, it: WorkItem, check: MergeCheckState | null, allowed: () => Promise<ActorGrant>): Promise<MergeReadiness> {
+  // Merge taken by the controller (design 09-dashboard-app): the merge queue checks a local item's merged result.
+  if (mergeQueued(it)) return off(ROW_LABELS.checking);
   if (commandPhase(it) !== "merge_pending") return off(NOT_WAITING);
+  // A Merge stored and not handled yet: the controller enters the merge queue on its next pass, so a read before it keeps "Merging…".
+  if (await d.commands?.mergeRequested?.(it.id)) return off(ROW_LABELS.merging);
   // The controller's route: a local item with no PR takes the local merge, an item with a PR its PR's merge.
-  const local = it.source.type === LOCAL_SOURCE && it.change_ref === null;
+  const local = mergeRoute(it) === "local";
   if (!local && it.change_ref === null) return off("no PR to merge");
   if (!local && d.commands?.forge === false) return off("no forge selected");
   if (local && d.commands?.localMerge === false) return off("no sandbox that can merge");

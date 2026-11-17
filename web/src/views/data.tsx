@@ -3,6 +3,7 @@ import { type FormEvent, useState } from "react";
 import { API, type DataAskResult, type DataAutonomy, type DataCell, type DataPageBody, type DataTableInfo, type DataTables, postDataAsk, useManualApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
+import { DataTable } from "../components/ui/data-table.js";
 import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
 import { Notice, PageHeader } from "../components/ui/notice.js";
@@ -157,53 +158,31 @@ function TableRows({
       {d.rows.length === 0 ? (
         <Empty>{filter ? t("data.noMatch") : t("data.empty")}</Empty>
       ) : (
-        <div className="max-h-[75vh] overflow-auto rounded-control border border-border">
-          <table aria-label={d.table} className="text-left text-xs">
-            <thead>
-              <tr>
-                <th scope="col" className="sticky top-0 z-10 bg-bg px-2 py-2">
-                  <span className="sr-only">{t("data.copyColumn")}</span>
-                </th>
-                {d.columns.map((c) => (
-                  <th key={c} scope="col" title={info?.column_docs?.[c]} className="sticky top-0 z-10 bg-bg px-2 py-2 font-mono font-medium whitespace-nowrap text-text-2">
-                    {c}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border">
-              {d.rows.map((row, i) => (
-                <tr key={i}>
-                  <td className="px-2 py-1 align-top">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      aria-label={t("data.copyRow")}
-                      title={copied === i ? t("copy.done") : t("data.copyRow")}
-                      onClick={() => copy(i, row)}
-                      className="text-text-3"
-                    >
-                      <Copy aria-hidden className="size-3.5" />
-                    </Button>
-                  </td>
-                  {d.columns.map((c) => {
-                    const key = `${i}:${c}`;
-                    return (
-                      <td key={c} className="max-w-md px-2 py-1 align-top font-mono break-words whitespace-pre-wrap">
-                        <CellView
-                          value={row[c] ?? null}
-                          runItems={d.run_items}
-                          open={expanded.has(key)}
-                          onOpen={() => setExpanded(new Set([...expanded, key]))}
-                        />
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          label={d.table}
+          rows={d.rows.map((row, i) => ({ i, row }))}
+          rowKey={(r) => String(r.i)}
+          empty={null}
+          columns={[
+            {
+              key: "copy",
+              header: t("data.copyColumn"),
+              render: ({ i, row }) => (
+                <Button variant="ghost" size="sm" aria-label={t("data.copyRow")} title={copied === i ? t("copy.done") : t("data.copyRow")} onClick={() => copy(i, row)} className="text-text-3">
+                  <Copy aria-hidden className="size-3.5" />
+                </Button>
+              ),
+            },
+            ...d.columns.map((c) => ({
+              key: c,
+              header: c,
+              className: CELL_CLASS,
+              render: ({ i, row }: { i: number; row: Record<string, DataCell> }) => (
+                <CellView value={row[c] ?? null} runItems={d.run_items} open={expanded.has(`${i}:${c}`)} onOpen={() => setExpanded(new Set([...expanded, `${i}:${c}`]))} />
+              ),
+            })),
+          ]}
+        />
       )}
     </section>
   );
@@ -302,32 +281,27 @@ function AskAnswer({ result }: { result: DataAskResult }) {
   );
 }
 
+/** Classes for a data cell: a value as stored, monospace, wrapping. */
+const CELL_CLASS = "max-w-md font-mono break-words whitespace-pre-wrap";
+
 /** The Ask's result: its columns in order (two may share a name), each cell shown as on a table page. */
 function ResultTable({ columns, rows }: { columns: string[]; rows: DataCell[][] }) {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   return (
-    <div className="max-h-[60vh] overflow-auto rounded-control border border-border">
-      <table aria-label={t("data.ask.result")} className="text-left text-xs">
-        <thead>
-          <tr>
-            {columns.map((c, i) => (
-              <th key={i} scope="col" className="sticky top-0 z-10 bg-bg px-2 py-2 font-mono font-medium whitespace-nowrap text-text-2">{c}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-border">
-          {rows.map((row, r) => (
-            <tr key={r}>
-              {columns.map((_, i) => (
-                <td key={i} className="max-w-md px-2 py-1 align-top font-mono break-words whitespace-pre-wrap">
-                  <CellView value={row[i] ?? null} runItems={{}} open={expanded.has(`${r}:${i}`)} onOpen={() => setExpanded(new Set([...expanded, `${r}:${i}`]))} />
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <DataTable
+      label={t("data.ask.result")}
+      rows={rows.map((cells, r) => ({ r, cells }))}
+      rowKey={(x) => String(x.r)}
+      empty={null}
+      columns={columns.map((c, i) => ({
+        key: String(i),
+        header: c,
+        className: CELL_CLASS,
+        render: ({ r, cells }: { r: number; cells: DataCell[] }) => (
+          <CellView value={cells[i] ?? null} runItems={{}} open={expanded.has(`${r}:${i}`)} onOpen={() => setExpanded(new Set([...expanded, `${r}:${i}`]))} />
+        ),
+      }))}
+    />
   );
 }
 

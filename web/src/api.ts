@@ -6,7 +6,8 @@
 // /api/v1/tasks/build (postTaskBuild), POST /api/v1/tasks (postTaskAdd) and the Tasks page's row actions under
 // /api/v1/tasks (postTaskAction: edit, done, reopen (⌘Z and All's done list), delete and sub), the
 // project dialog's POST /api/v1/projects (postProject) and POST /api/v1/tasks/project (postTaskProject) and POST /api/v1/data/ask
-// (postDataAsk), each with the per-process CSRF token (from GET /api/v1/settings,
+// (postDataAsk) and Migrate now, Start and Restart now (POST /api/v1/migrate, postMigrate; POST /api/v1/supervisor, postSupervisor),
+// each with the per-process CSRF token (from GET /api/v1/settings, /api/v1/supervisor,
 // /api/v1/session, /api/v1/pauses, /api/v1/standing, /api/v1/rules, /api/v1/tasks, /api/v1/plugins or /api/v1/data/tables) in x-csrf-token.
 // A write refused for a stale token (code "stale_csrf", after a UI restart) is retried once with GET /api/v1/session's token (postJson).
 
@@ -129,6 +130,28 @@ const NOT_WAITING = "not waiting for a merge";
 /** Whether to draw the Merge button, enabled or with its reason: for an item waiting for its merge only. */
 export function showsMerge(m: MergeReadiness | null | undefined): m is MergeReadiness {
   return !!m && (m.enabled || m.reason !== NOT_WAITING);
+}
+
+/**
+ * The `merge` reasons of an item whose Merge was pressed (src/core/request-transition.ts ROW_LABELS): its request
+ * waits for the controller or the forge merges a PR ("Merging…"), the merge queue checks a local item's merged
+ * result ("Checking…"). The button shows the reason.
+ */
+const IN_FLIGHT = ["Checking…", "Merging…"];
+
+/** Whether the item's Merge was pressed and its merge is under way: the button reads its reason, disabled. */
+export function mergeInFlight(m: MergeReadiness | null | undefined): boolean {
+  return !!m && !m.enabled && IN_FLIGHT.includes(m.reason ?? "");
+}
+
+/**
+ * Why the item's last Merge did not land (design 09-dashboard-app): the refusal on its newest state change when that
+ * change put it back at merge_pending (`merge_returned`: a conflict, a red check, the forge's refusal); else null.
+ */
+export function mergeReturned(detail: Pick<ItemDetail, "item" | "timeline"> | undefined): string | null {
+  const newest = (detail?.timeline ?? []).reduce<ItemDetail["timeline"][number] | null>((a, c) => (a && a.version > c.version ? a : c), null);
+  if (detail?.item.blocked_reason !== "merge_pending" || newest?.reason !== "merge_returned") return null;
+  return newest.detail?.refusal ?? null;
 }
 
 /**
@@ -435,7 +458,26 @@ export interface Session {
   actor_source: "config" | "environment" | null;
 }
 
-export type CommandResult = { ok: true; seq: number } | { ok: false; error: string };
+/**
+ * The item's state after an Approve or Merge the server applied while it handled the request (design
+ * 09-dashboard-app): `phase` in the owner's words, `label` the row's words for it ("Approved", "Merging…"), null when
+ * the request changed nothing.
+ */
+export interface RequestState {
+  stage: string;
+  blocked_on: string;
+  blocked_reason: string | null;
+  phase: string;
+  label: string | null;
+}
+
+/**
+ * A sent command: its seq; for Approve and Merge also `outcome` (applied, already_done, refused, or queued for the
+ * controller), the item's `state` after it and the `refusal` in the controller's words.
+ */
+export type CommandResult =
+  | { ok: true; seq: number; outcome?: string; state?: RequestState; refusal?: string | null }
+  | { ok: false; error: string };
 
 export interface Health {
   checked_at: string;
@@ -672,6 +714,29 @@ export interface PauseRow {
   ends_at: string;
   /** When a model stall began; absent for the pauses that have no start time. */
   since?: string | null;
+}
+
+/** One of Migrate now, Start and Restart now: offered, or why not in plain words. */
+export interface SupervisorOffer {
+  offered: boolean;
+  reason: string | null;
+}
+
+/** `/api/v1/supervisor`: which supervisor actions the page may offer (404 when the server has none of them). */
+export interface SupervisorView {
+  live: boolean;
+  state: string | null;
+  migrate: SupervisorOffer;
+  start: SupervisorOffer;
+  restart: SupervisorOffer;
+  csrf_token: string;
+}
+
+/** Migrate now's dry run: the pending steps and each line `npm run migrate -- --dry-run` would print. */
+export interface MigrateDryRun {
+  pending: string[];
+  lines: string[];
+  ok: boolean;
 }
 
 /** `/api/v1/pauses`: the pauses in effect; `csrf_token` is null when the server has no resume route. */
@@ -1041,6 +1106,8 @@ export const API = {
   pluginsImport: "/api/v1/plugins/import",
   pauses: "/api/v1/pauses",
   resume: "/api/v1/pauses/resume",
+  supervisor: "/api/v1/supervisor",
+  migrate: "/api/v1/migrate",
   standing: "/api/v1/standing",
   rules: "/api/v1/rules",
   ruleVerdict: "/api/v1/rules/verdict",
@@ -1180,13 +1247,16 @@ export async function postSettings(token: string, body: SettingsWrite): Promise<
 
 /**
  * POST /api/v1/items/:id/commands: `{ command, note }`, the note only when it has text; a proposal's Confirm all or
- * Cancel sends `{ command, proposal }` instead. 202 → the request's seq.
+ * Cancel sends `{ command, proposal }` instead. 202 → the request's seq, and for Approve and Merge the item's new state.
  */
 export async function postCommand(token: string, id: string, command: string, note: string, proposal?: string): Promise<CommandResult> {
   const text = note.trim();
   const body = proposal !== undefined ? { command, proposal } : text ? { command, note: text } : { command };
-  const r = await postJson<{ seq?: number; error?: string }>(API.itemCommands(id), token, body);
-  if (r.ok) return { ok: true, seq: r.value.seq ?? 0 };
+  const r = await postJson<{ seq?: number; error?: string; outcome?: string; state?: RequestState; refusal?: string | null }>(API.itemCommands(id), token, body);
+  if (r.ok) {
+    const { outcome, state, refusal } = r.value;
+    return { ok: true, seq: r.value.seq ?? 0, ...(outcome ? { outcome } : {}), ...(state ? { state } : {}), ...(refusal ? { refusal } : {}) };
+  }
   return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
@@ -1194,6 +1264,23 @@ export async function postCommand(token: string, id: string, command: string, no
 export async function postResume(token: string, name: string): Promise<{ ok: true; ended: boolean } | { ok: false; error: string }> {
   const r = await postJson<{ ended?: boolean; error?: string }>(API.resume, token, { name });
   if (r.ok) return { ok: true, ended: r.value.ended === true };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+}
+
+/**
+ * POST /api/v1/migrate: without `confirm` the dry run (nothing filed), with it the drain, apply and start-or-cancel
+ * sequence, started in the background. A refusal (no live supervisor, a migration under way, …) comes back as `{ ok: false, error }`.
+ */
+export async function postMigrate(token: string, confirm: boolean): Promise<{ ok: true; dry_run: MigrateDryRun | null } | { ok: false; error: string }> {
+  const r = await postJson<{ dry_run?: MigrateDryRun; error?: string }>(API.migrate, token, confirm ? { confirm: true } : {});
+  if (r.ok) return { ok: true, dry_run: r.value.dry_run ?? null };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+}
+
+/** POST /api/v1/supervisor: Start or Restart now, confirmed. A refusal comes back as `{ ok: false, error }`. */
+export async function postSupervisor(token: string, action: "start" | "restart"): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await postJson<{ error?: string }>(API.supervisor, token, { action, confirm: true });
+  if (r.ok) return { ok: true };
   return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 

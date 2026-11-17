@@ -15,7 +15,7 @@ import { useNow } from "./common.js";
 function NameCell({ row }: { row: CapabilityRow }) {
   return (
     <div className="flex min-w-0 flex-col gap-0.5">
-      <span className="font-mono text-xs wrap-anywhere">{row.name}</span>
+      <span className="text-xs wrap-anywhere">{row.name}</span>
       {row.detail !== null && <span className="text-xs text-pretty wrap-anywhere text-text-2">{row.detail}</span>}
       {row.models && row.models.length > 0 && (
         <span className="font-mono text-xs wrap-anywhere text-text-2">{row.models.map((m) => t("settings.capModel", { class: m.class, model: m.model })).join(" · ")}</span>

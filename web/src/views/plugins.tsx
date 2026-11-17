@@ -104,7 +104,7 @@ function NameCell({ name, description, fresh = false }: { name: string; descript
   return (
     <div data-new={fresh ? "" : undefined} className="flex min-w-0 flex-col gap-0.5">
       <span className="flex min-w-0 flex-wrap items-center gap-1.5">
-        <span className="font-mono text-xs wrap-anywhere">{name}</span>
+        <span className="text-xs wrap-anywhere">{name}</span>
         {fresh && <StatusBadge size="sm" level="running">{t("plugins.new")}</StatusBadge>}
       </span>
       {description && <span className="text-xs text-pretty wrap-anywhere text-text-2">{description}</span>}
@@ -190,7 +190,7 @@ function ImportResults({ results }: { results: readonly ImportResult[] }) {
           const ok = r.outcome === "stored" || r.outcome === "already_added";
           return (
             <li key={itemKey(r)} data-import-result={r.outcome} className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-xs">
-              <span className="font-mono wrap-anywhere">{r.name}</span>
+              <span className="wrap-anywhere">{r.name}</span>
               <span className="text-text-2">{t(SOURCE[r.source])}</span>
               <span className={ok ? "text-pretty" : "text-pretty wrap-anywhere text-pill-bad-fg"}>{resultText(r)}</span>
             </li>
@@ -282,7 +282,7 @@ function ImportDialog({ tab, token, report, onClose }: { tab: ListTab; token: st
                   <span aria-hidden>{on ? "✓" : ""}</span>
                 </Button>
                 <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <span className="font-mono text-xs wrap-anywhere">{i.name}</span>
+                  <span className="text-xs wrap-anywhere">{i.name}</span>
                   <span className="text-xs text-pretty wrap-anywhere text-text-2">{i.path ?? t(SOURCE[i.source])}</span>
                   {i.env_keys.length > 0 && <span className="text-xs text-pretty wrap-anywhere text-text-2">{t("plugins.importEnvKeys", { keys: i.env_keys.join(", ") })}</span>}
                   {i.refused.length > 0 && <span className="text-xs text-pretty wrap-anywhere text-pill-bad-fg">{t("plugins.importRefused", { rules: i.refused.join(", ") })}</span>}

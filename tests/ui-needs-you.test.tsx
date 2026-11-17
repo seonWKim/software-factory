@@ -126,14 +126,34 @@ describe("Needs you on the Tasks page", () => {
 
   it("lists each other system action as one row with its command in the Check group", async () => {
     (responses["/api/v1/overview"] as { system_actions: unknown[] }).system_actions = [
-      { code: "migration_pending", text: "Schema at version 3 of 8", command: "npm run migrate", until: null },
+      { code: "migration_pending", text: "Schema at version 3 of 8", command: "Migrate now, or factory migrate", until: null },
       { code: "worker_pause", text: "2 worker pauses in effect (factory workers pause)", command: "factory workers resume", until: null },
     ];
     mount();
     const section = await screen.findByRole("region", { name: "Needs you" });
     const rows = [...within(section).getByRole("list", { name: "Check" }).querySelectorAll<HTMLElement>("li")];
     expect(rows.map((r) => r.dataset.check)).toEqual(["migration_pending", "worker_pause"]);
-    expect(rows.map((r) => r.querySelector("code")!.textContent)).toEqual(["npm run migrate", "factory workers resume"]);
+    expect(rows.map((r) => r.querySelector("code")!.textContent)).toEqual(["Migrate now, or factory migrate", "factory workers resume"]);
     expect(section.querySelector("h2")!.nextElementSibling!.textContent).toBe("3");
+  });
+
+  it("the migration row offers Migrate now when a supervisor is live, else says why; its command carries no npm run", async () => {
+    const offer = (offered: boolean, reason: string | null = null) => ({ offered, reason });
+    const NOT_LIVE = "No factory supervisor is running, so this page cannot reach it. Start the factory from a terminal with factory dev.";
+    (responses["/api/v1/overview"] as { system_actions: unknown[] }).system_actions = [
+      { code: "migration_pending", text: "Schema at version 3 of 8", command: "Migrate now, or factory migrate", until: null },
+    ];
+    responses["/api/v1/supervisor"] = { live: true, state: "running", csrf_token: "tok", migrate: offer(true), start: offer(false, "x"), restart: offer(true) };
+    mount();
+    const row = (await screen.findByRole("region", { name: "Needs you" })).querySelector<HTMLElement>('li[data-check="migration_pending"]')!;
+    expect(row.textContent).not.toContain("npm run");
+    await within(row).findByRole("button", { name: "Migrate now" });
+    expect(within(row).queryByRole("button", { name: "Restart now" })).toBeNull();
+    cleanup();
+    responses["/api/v1/supervisor"] = { live: false, state: null, csrf_token: "tok", migrate: offer(false, NOT_LIVE), start: offer(false, NOT_LIVE), restart: offer(false, NOT_LIVE) };
+    mount();
+    const refused = (await screen.findByRole("region", { name: "Needs you" })).querySelector<HTMLElement>('li[data-check="migration_pending"]')!;
+    await within(refused).findByText(NOT_LIVE);
+    expect(within(refused).queryByRole("button")).toBeNull();
   });
 });

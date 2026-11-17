@@ -14,7 +14,4 @@
   - **Backfill.** A source with no stored row reads every record it has, so the first tick after the migration writes the signals already stored, once, with the same keys as later ones.
   - **One store.** SQLite: the migration runs when the store opens; the table is shared by every worker process, and the unique key keeps several replicas from writing a signal twice.
 
-## History
-
-- **Current text names SQLite only** (decision changed 2026-11-11, issue #567). Before: the migration paragraph said there was no numbered MySQL step; the idempotency paragraph said a MySQL skipped duplicate would cost a round trip on every poll; the Solo and enterprise paragraph said enterprise used MySQL with the migration run by `npm run migrate`.
-- **Signal ledger** (new decision, 2026-11-11, issue #491). Before: the signals were spread over state changes, verdicts and runs, and none recorded the role or standing rule it was about.
+- Replaced decisions of this topic: [history/11-signal-ledger.md](history/11-signal-ledger.md).

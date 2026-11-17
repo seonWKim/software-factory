@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -23,7 +23,8 @@ import { newStore } from "./helpers/store.js";
 // but its merged result fails them (the base moved meanwhile). The merge-check run's red result names the failing
 // tests; the merge queue removes the entry with a reason naming them and sends the item back to an implement run as a
 // loop (loop_count + 1), whose prompt lists the names in a fenced, untrusted section. At max_loops a human decides.
-// A conflict red and a run that could not run keep the item at merge_pending, with no loop counted.
+// A conflict red and a run that could not run keep the item at merge_pending, with no loop counted. A test that fails
+// once and passes its one rerun (design 04-pre-push-gates) merges with no loop, listed as flaky.
 
 const ME = "local:me@example.com" as UserId;
 const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
@@ -33,7 +34,18 @@ const DIR = ".github/workflows";
 /** Fails, naming a vitest test, exactly when the change's file and the base's BROKEN file are both there. */
 const TEST = ["sh", "-c", `if [ -f ${DIR}/a.yml ] && [ -f BROKEN ]; then echo ' FAIL  tests/a.test.ts > merged > breaks'; exit 1; fi`];
 
-async function factory(o: { max_loops?: number } = {}) {
+/**
+ * Flaky: as TEST, but only on its first failing run; every later run, the merge check's rerun of the failing file
+ * among them, passes. Each run's arguments are appended to `<root>/args`.
+ */
+const flakyTest = (root: string) => [
+  "sh", "-c",
+  `echo "$*" >> ${root}/args; if [ -f ${root}/flaked ]; then exit 0; fi; ` +
+    `if [ -f ${DIR}/a.yml ] && [ -f BROKEN ]; then touch ${root}/flaked; echo ' FAIL  tests/a.test.ts > merged > flaky'; exit 1; fi`,
+  "sh",
+];
+
+async function factory(o: { max_loops?: number; test?: (root: string) => string[] } = {}) {
   const root = mkdtempSync(join(tmpdir(), "sf-merge-check-loop-"));
   const repo = join(root, "repo");
   git(root, "init", "--quiet", "-b", "main", repo);
@@ -45,7 +57,7 @@ async function factory(o: { max_loops?: number } = {}) {
   const project = localProject({ owner: "o", name: "r" });
   const cfg: FactoryConfig = {
     ...config, project, local_only: true, merge_queue_depth: 1, ...(o.max_loops === undefined ? {} : { max_loops: o.max_loops }),
-    repo: { ...config.repo, path: repo, install_command: ["sh", "-c", "exit 0"], test_command: TEST },
+    repo: { ...config.repo, path: repo, install_command: ["sh", "-c", "exit 0"], test_command: o.test?.(root) ?? TEST },
   };
   const clock = new FakeClock();
   const { store } = await newStore(clock);
@@ -100,7 +112,7 @@ async function factory(o: { max_loops?: number } = {}) {
     expect(check).toMatchObject({ status: "queued" });
     return { id, check: check! };
   };
-  return { repo, store, controller, worker, runner, queuedRed };
+  return { root, repo, store, controller, worker, runner, step, queuedRed };
 }
 
 type Factory = Awaited<ReturnType<typeof factory>>;
@@ -199,5 +211,24 @@ describe("merge queue: a merged result that fails its checks sends the item back
     expect((await f.store.listRuns(id)).filter((r) => r.kind === "implement")).toHaveLength(1);
     expect((await refusedBodies(f, id))[0]).toContain("its merge check could not run (`git_failed`)");
     expect((await (await f.controller.unit("merge-queue")).entries(id)).map((e) => e.state)).toEqual(["removed"]);
+  });
+
+  it("a test that fails once and passes its rerun merges with no loop, and the merge check lists it as flaky", async () => {
+    const f = await factory({ test: flakyTest });
+    const { id } = await f.queuedRed();
+    const mainBefore = git(f.repo, "rev-parse", "main");
+    await f.step();
+
+    const check = (await f.store.listRuns(id)).find((r) => r.kind === "merge-check")!;
+    expect(check.outcome).toMatchObject({ status: "succeeded", data: { result: "green", flaky_tests: ["tests/a.test.ts > merged > flaky"] } });
+    // The rerun ran the same command on the failing file only.
+    expect(readFileSync(join(f.root, "args"), "utf8").split("\n").slice(-3, -1)).toEqual(["", "tests/a.test.ts"]);
+    expect(git(f.repo, "rev-parse", "main")).not.toBe(mainBefore);
+    const item = (await f.store.getWorkItem(id))!;
+    expect(item.loop_count).toBe(0);
+    expect(item.merge_sha).not.toBeNull();
+    expect((await f.store.listStateChanges(id)).some((c) => c.reason === "merge_check_failed")).toBe(false);
+    expect((await f.store.listRuns(id)).filter((r) => r.kind === "implement")).toHaveLength(1);
+    expect(await refusedBodies(f, id)).toEqual([]);
   });
 });

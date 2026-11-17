@@ -189,7 +189,8 @@ describe("Data page", () => {
     history.replaceState(null, "", "/app/data");
     mount();
     await openTable("work_items");
-    fireEvent.change(screen.getByRole("combobox", { name: "Filter column" }), { target: { value: "problem" } });
+    fireEvent.click(screen.getByRole("combobox", { name: "Filter column" }));
+    fireEvent.click(within(screen.getByRole("listbox", { name: "Filter column" })).getByRole("option", { name: "problem" }));
     fireEvent.change(screen.getByRole("textbox", { name: "Filter value" }), { target: { value: "it's" } });
     fireEvent.click(screen.getByRole("button", { name: "Filter" }));
     await act(async () => void (await vi.advanceTimersByTimeAsync(10)));
@@ -223,13 +224,12 @@ describe("Data page", () => {
     mount();
     const list = await screen.findByRole("navigation", { name: "Tables" });
     expect((await within(list).findAllByTestId("data-table-doc")).map((p) => p.textContent)).toEqual(["worker · Each attempt of a run.", "controller · Work items."]);
-    const t = await openTable("run_attempts");
+    await openTable("run_attempts");
     const info = screen.getByTestId("data-table-info");
     expect(info.textContent).toContain("Each attempt of a run.");
     expect(info.textContent).toContain("Owner: worker");
     const meanings = within(info).getByLabelText("Columns");
     expect(meanings.textContent).toBe("error_codeWhy the attempt failed.");
-    expect([...t.querySelectorAll("th")].find((th) => th.textContent === "error_code")!.getAttribute("title")).toBe("Why the attempt failed.");
   });
 
   async function ask(question: string) {

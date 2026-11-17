@@ -24,6 +24,7 @@ import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
 import { ItemsTable, MergeCheckNote, byId, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, useNow, useViewer } from "./common.js";
 import { ItemCommands } from "./item-commands.js";
+import { type SupervisorActionName, SupervisorActions } from "./system-banner.js";
 import { Thread } from "./thread.js";
 import { transcriptPath } from "./transcript.js";
 import { HELD, ItemsTree, type TreeFilter, type View, VIEW_KEY, buildTree, defaultExpanded, itemMatches, parentIds, useExpanded } from "./tree.js";
@@ -83,9 +84,12 @@ function factoryView(factory: FactoryState | null, now: number, pauses: readonly
 export function FactoryBanner({ factory, now, pauses = [] }: { factory: FactoryState | null | undefined; now: number; pauses?: readonly PauseRow[] | undefined }) {
   if (factory === undefined) return null;
   const v = factoryView(factory, now, pauses);
+  // Migrate now while an update waits for its migration; otherwise Start or Restart now (design 08-self-update).
+  const actions: SupervisorActionName[] = factory?.state === "migration_pending" ? ["migrate"] : ["start", "restart"];
   return (
-    <div data-testid="factory-banner">
+    <div data-testid="factory-banner" className="space-y-2">
       <Notice tone={v.tone}>{v.text}</Notice>
+      <SupervisorActions actions={actions} />
     </div>
   );
 }

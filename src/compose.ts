@@ -18,6 +18,7 @@ import { saveProject, saveProjectLabel } from "./core/project-labels.js";
 import { errorText, type Logger } from "./core/log.js";
 import type { CliEnvironment, CliIdentity } from "./core/local-cli.js";
 import { canMergeLocal, forgeRoles } from "./core/local-merge.js";
+import { MERGE_REQUESTS_READ, mergeRequested } from "./core/commands.js";
 import { StoredLearnedSettings } from "./core/learned-settings.js";
 import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
@@ -1003,6 +1004,7 @@ export interface UiParts {
   pauses: UiPauses;
   displayNames: (user_ids: readonly string[]) => Promise<ReadonlyMap<string, string>>; // by user id from Identity's identity_profiles (M9), only to show
   tacit: UiTacit; // the Rules page's ledger, switched by the `integrations` setting before each Rules request (design 08-settings)
+  migrate: import("./ui/migrate-api.js").UiMigrate; // Migrate now, Start and Restart now (design 08-self-update): state dir, clock, run_timeout_ms, steps
   close(): Promise<void>;
 }
 
@@ -1040,11 +1042,10 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   // One token per process for every write route; held only in memory, never written to a file, the store or a log.
   // The UI server, loaded here only: through setup.ts it reaches GitHub modules a solo start must not load.
   const who = uiCommandsActor(uiUserId(loaded.file.ui), opts.identity, (await import("./ui/server.js")).BIND);
-  // The Merge button's facts from config (design §9): a forge selected, a sandbox that merges locally (built only to ask).
-  const actor = who.actor;
+  // The Merge button's facts (design §9): a forge selected, a sandbox that merges locally (built only to ask), a Merge request still pending.
   const commands: UiCommands = {
-    ...who, token, forge: loaded.plugins.forge !== undefined, localMerge: canMergeLocal(await p.sandbox()),
-    allowed: (action) => (actor === null ? Promise.resolve({ allow: false, reason: "no_actor" }) : onProject(actor, action, true)),
+    ...who, token, forge: loaded.plugins.forge !== undefined, localMerge: canMergeLocal(await p.sandbox()), mergeRequested: async (id) => mergeRequested(await store.listAppCommandRequestsForItem(id, MERGE_REQUESTS_READ)), changeName: (ref) => `PR #${ref}`,
+    allowed: (action) => (who.actor === null ? Promise.resolve({ allow: false, reason: "no_actor" }) : onProject(who.actor, action, true)),
   };
   // The mode switch, the auto-merge tier and a loosening change need approve_merge on the project (design 08-settings), as the Merge button.
   settings.mayApproveMerge = async () => refusalOf(await onProject(opts.identity.user, "approve_merge"));
@@ -1062,12 +1063,11 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   };
   const profiles = new ProfileStore(storeSql(store)), displayNames = (ids: readonly string[]) => profiles.displayNames(ids);
   const tacit = await uiTacit(loaded.plugins.tacit, (n) => createPlugin(loaded.registry, "tacit", n, p.base), { config: loaded.config, base: settingsBase(loaded), source: store, log: new ConsoleLogger(clock, "tacit") });
-  return { clock, store, scanner, settings, commands, pauses, displayNames, tacit, close: () => identity.stop().then(() => store.close()) };
+  const migrate = (await import("./ui/migrate-api.js")).uiMigrate({ stateDir: loaded.stateDir, clock, runTimeoutMs: loaded.config.run_timeout_ms, githubApi: () => p.githubApi(), resolveProject }); // its GitHub client only for owner/name rows
+  return { clock, store, scanner, settings, commands, pauses, displayNames, tacit, migrate, close: () => identity.stop().then(() => store.close()) };
 }
 
-function refusalOf(d: AuthDecision): string | null {
-  return d.allow ? null : d.reason;
-}
+const refusalOf = (d: AuthDecision): string | null => (d.allow ? null : d.reason);
 
 /** The owner check, with no forge call: how a CLI command is authorized (approve_tool, `factory settings`, `factory resume`). */
 export async function localAuth(_loaded: Loaded, store: FactoryStore): Promise<AuthProvider> {

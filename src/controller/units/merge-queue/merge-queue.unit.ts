@@ -21,7 +21,7 @@ import type { EntryFields, MergeQueue, MergeQueueEntry } from "../../actors/merg
 import { MergeQueueStore } from "../../actors/merge-queue/merge-queue.store.js";
 import { mergeOutcome, type ActionRow } from "../../../outbound/index.js";
 import { MERGE_CHECK_TIMED_OUT } from "../../topics/controller-events.topic.js";
-import { AUTO, SYSTEM, awaitingMerge } from "../support.js";
+import { AUTO, SYSTEM } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 import type { UnitOperations } from "../../router/unit.js";
@@ -98,7 +98,8 @@ export class MergeQueueUnit {
       // A landing entry's item closes as it lands: only the landing decides on it.
       if (e.state === "merging") continue;
       const item = await this.c.unit("local-merge").item(e.work_item_id as WorkItemId);
-      if (item && awaitingMerge(item) && item.change_ref === null) items.set(e.entry_id, item);
+      // Waiting for its merge: merge_pending, or merge_queued once the controller took its dashboard Merge.
+      if (item && this.c.unit("commands").merge.waits(item) && item.change_ref === null) items.set(e.entry_id, item);
       else await this.leave(e, "the item no longer waits for a merge", false);
     }
     const live = await s.live(q.queue_id);
@@ -138,7 +139,7 @@ export class MergeQueueUnit {
 
   private async queueRun(entry_id: string, run_key: string, items: readonly WorkItem[]): Promise<void> {
     const branches = items.map((it) => this.c.unit("local-merge").branchOf(it));
-    await this.c.unit("transitions").decide(items.at(-1)!.id, (it) => (awaitingMerge(it)
+    await this.c.unit("transitions").decide(items.at(-1)!.id, (it) => (this.c.unit("commands").merge.waits(it)
       ? {
           patch: {}, actor: SYSTEM, reason: "merge_check_queued", detail: { entry_id },
           enqueue: { kind: MERGE_CHECK, idempotency_key: run_key, input: { merge_check: { base_ref: this.c.k.cfg.repo.base_branch, branches } } },
@@ -334,7 +335,7 @@ export class MergeQueueUnit {
       : `\`${command}\` ${how} on the merged commit`;
     let next = `fix it on the branch and run the merge again`;
     await this.c.unit("transitions").decide(e.work_item_id as WorkItemId, (it) => {
-      if (!awaitingMerge(it)) return null;
+      if (!this.c.unit("commands").merge.waits(it)) return null;
       const loop = it.loop_count + 1;
       const detail = { entry_id: e.entry_id, run_id: run.id, command, how, failing_tests: JSON.stringify(tests) };
       if (loop >= limit) {
