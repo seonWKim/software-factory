@@ -153,7 +153,7 @@ export function App() {
               <Search aria-hidden className="size-4" />
             </Button>
             <Button variant="ghost" size="icon" aria-label={t("topbar.refresh")} className="shrink-0" onClick={() => void client.invalidateQueries()}>
-              <RefreshCw aria-hidden className={cn("size-4", fetching > 0 && "animate-spin")} />
+              <RefreshCw aria-hidden className={cn("size-4", fetching > 0 && "animate-spin motion-reduce:animate-none")} />
             </Button>
             <ThemeControl choice={choice} onChoose={choose} />
           </header>
