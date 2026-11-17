@@ -1,8 +1,7 @@
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { API, type SpendDay, type SpendItem, type SpendTotals, type SpendView, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
-import { PageHeader } from "../components/ui/notice.js";
 import { BANNER_LINK_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import { Tooltip } from "../components/ui/menu.js";
 import { ErrorNote, Loading, Section } from "../components/ui/parts.js";
@@ -143,18 +142,27 @@ function Tasks({ view, day, onClear }: { view: SpendView; day: string | null; on
   );
 }
 
-/** Cost and tokens per day and per task over the last 30 UTC days (GET /api/v1/spend). */
-export function SpendPage() {
+/** The anchor and level-2 heading Health puts over the Spend section; its figures are the sections inside. */
+function SpendFrame({ children }: { children: ReactNode }) {
+  return (
+    <section id="spend" aria-label={t("page.spend")} className="mt-8">
+      <h2 className="mb-3 text-base font-semibold">{t("page.spend")}</h2>
+      {children}
+    </section>
+  );
+}
+
+/** Health's Spend section: cost and tokens per day and per task over the last 30 UTC days (GET /api/v1/spend). Its anchor is `#spend`. */
+export function SpendSection() {
   const q = useApi<SpendView>(API.spend);
   // The day picked on the chart: it filters the tasks table only, and stays in the browser.
   const [day, setDay] = useState<string | null>(null);
-  if (q.isError) return <><PageHeader title={t("page.spend")} /><ErrorNote error={q.error} /></>;
-  if (!q.data) return <><PageHeader title={t("page.spend")} /><Loading rows={4} /></>;
+  if (q.isError) return <SpendFrame><ErrorNote error={q.error} /></SpendFrame>;
+  if (!q.data) return <SpendFrame><Loading rows={4} /></SpendFrame>;
   const v = q.data;
   const unknown = v.total.unknown;
   return (
-    <>
-      <PageHeader title={t("page.spend")} />
+    <SpendFrame>
       <Section title={t("spend.totals")}>
         <dl className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Total label={t("spend.today")} total={sum(v.days.filter((d) => d.day === v.today))} />
@@ -172,6 +180,6 @@ export function SpendPage() {
         <DailyChart days={v.days} selected={day} onSelect={setDay} />
       </Section>
       <Tasks view={v} day={day} onClear={() => setDay(null)} />
-    </>
+    </SpendFrame>
   );
 }

@@ -27,7 +27,7 @@ export const shell = {
   "keys.search": "Search pages and items",
   "keys.help": "Show this list",
   "keys.goWork": "Go to Work",
-  "keys.goActivity": "Go to Activity",
+  "keys.goActivity": "Go to Work (its Running now and feed)",
   "keys.next": "Select the next row",
   "keys.prev": "Select the previous row",
   "keys.open": "Open the selected row",

@@ -153,6 +153,7 @@ export const settings = {
   "settings.tabGeneral": "General",
   "settings.tabIntegrations": "Integrations",
   "settings.tabAdvanced": "Advanced",
+  "settings.devTools": "Pages not in the sidebar:",
   "settings.details": "Details",
   "settings.detailKey": "Key name",
   "key.max_attempts.label": "Attempts per item",

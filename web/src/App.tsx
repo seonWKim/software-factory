@@ -14,14 +14,12 @@ import { HelpDialog, SearchDialog } from "./search.js";
 import { type ThemeChoice, applyChoice, saveChoice, storedChoice } from "./theme.js";
 import { useNow } from "./views/common.js";
 import { DataPage } from "./views/data.js";
-import { FailuresPage } from "./views/failures.js";
-import { ActivityPage, HealthPage, ItemPage, ItemsPage, RunnersPage } from "./views/pages.js";
+import { HealthPage, ItemPage, ItemsPage, RunnersPage } from "./views/pages.js";
 import { PluginsPage } from "./views/plugins.js";
 import { ModeSwitch, SettingsPage } from "./views/settings.js";
 import { RevisionBanner } from "./views/system-banner.js";
 import { TranscriptView, transcriptRoute } from "./views/transcript.js";
 import { RulesPage } from "./views/rules.js";
-import { SpendPage } from "./views/spend.js";
 import { CalendarPage } from "./views/calendar.js";
 import { TasksPage } from "./views/tasks.js";
 
@@ -41,11 +39,8 @@ const VIEWS: Record<string, () => JSX.Element> = {
   items: ItemsPage,
   tasks: TasksPage,
   calendar: CalendarPage,
-  activity: ActivityPage,
   runners: RunnersPage,
   health: HealthPage,
-  failures: FailuresPage,
-  spend: SpendPage,
   rules: RulesPage,
   settings: SettingsPage,
   data: DataPage,
@@ -130,8 +125,8 @@ export function App() {
   const [dialog, setDialog] = useState<"search" | "help" | null>(null);
   useShortcuts({ navigate, openSearch: () => setDialog("search"), openHelp: () => setDialog("help"), path });
   const route = routeFor(path);
-  // An old page path (/app/workers) swaps itself for its new one in the address bar.
-  const moved = redirectFor(path);
+  // An old page path (/app/workers) swaps itself for its new one in the address bar, keeping its query.
+  const moved = redirectFor(path, location.search);
   useEffect(() => {
     if (moved) navigate(moved, true);
   }, [moved]);
