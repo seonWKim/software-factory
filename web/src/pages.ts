@@ -1,6 +1,6 @@
 import { CalendarCheck, CalendarDays, Database, HeartPulse, ListTodo, Puzzle, ScrollText, Settings, Waypoints, type LucideIcon } from "lucide-react";
 
-/** Where a page sits in the sidebar: the Tasks group, the System group (Work, Health), the bottom block (Rules, Plugins, Settings), or nowhere (a routable page with no sidebar link: Runners and Data, linked from Settings > Advanced). */
+/** Where a page sits in the sidebar: the Tasks block, the System block (Work, Health), the bottom block (Rules, Plugins, Settings), or nowhere (a routable page with no sidebar link: Runners and Data, linked from Settings > Advanced). */
 export type PageGroup = "tasks" | "system" | "bottom" | "hidden";
 
 /** One routable page. `key` names it in the English catalog (`page.<key>`), which also names its heading. */
