@@ -270,13 +270,32 @@ export function shortRef(id: string, self: string): string {
   return repo === self.split("#")[0] && n ? `#${n}` : id;
 }
 
+/**
+ * How a hold names dependency `id`: its `label` (a local item's wi_ id, design 05-dependencies) when it has one, else
+ * shortRef.
+ */
+export function dependencyRef(id: string, self: string, labels: ReadonlyMap<string, string> = new Map()): string {
+  return labels.get(id) ?? shortRef(id, self);
+}
+
 /** The blocked_reason of a dependency hold: `waiting for #92 to merge` (and the others, if several). */
-export function dependencyReason(open: readonly string[], self: string): string {
-  return `waiting for ${list(open.map((d) => shortRef(d, self)))} to merge`;
+export function dependencyReason(open: readonly string[], self: string, labels?: ReadonlyMap<string, string>): string {
+  return `waiting for ${list(open.map((d) => dependencyRef(d, self, labels)))} to merge`;
 }
 
 const DEPENDS_LINE = /^\s*(?:[-*]\s*)?depends\s+on\b\s*:?(.*)$/i;
 const REF = /(?:\b([\w.-]+\/[\w.-]+))?#(\d+)\b/g;
+
+/**
+ * The text after `Depends on` on each such line of `text` (`Depends on: #12`, `depends on #12, #13`, `- Depends on
+ * wi_abc`), in order. parseDependsOn reads `#N` refs from it, the local source wi_ and tk_ ids.
+ */
+export function dependsOnLines(text: string): string[] {
+  return text.split(/\r?\n/).flatMap((line) => {
+    const m = DEPENDS_LINE.exec(line);
+    return m ? [m[1]!] : [];
+  });
+}
 
 /**
  * The source ids a text names on `Depends on` lines (`Depends on: #12`, `depends on #12, #13`, `- Depends on
@@ -284,10 +303,8 @@ const REF = /(?:\b([\w.-]+\/[\w.-]+))?#(\d+)\b/g;
  */
 export function parseDependsOn(text: string, repo: string): string[] {
   const out: string[] = [];
-  for (const line of text.split(/\r?\n/)) {
-    const m = DEPENDS_LINE.exec(line);
-    if (!m) continue;
-    for (const r of m[1]!.matchAll(REF)) {
+  for (const line of dependsOnLines(text)) {
+    for (const r of line.matchAll(REF)) {
       const id = `${r[1] ?? repo}#${Number(r[2])}`;
       if (Number(r[2]) > 0 && !out.includes(id)) out.push(id);
     }
@@ -353,6 +370,11 @@ export interface DependencySource {
   dependencyLinks(source: SourceRef): Promise<DependencyLink[]>;
   /** The state of a source item the store has no work item for. */
   dependencyState(depends_on: string): Promise<DependencyState>;
+  /**
+   * How a hold names `depends_on` when not as shortRef: the local source's wi_ id of the item (design
+   * 05-dependencies). Optional: absent, or null, keeps shortRef. Reads only the store.
+   */
+  dependencyLabel?(depends_on: string): Promise<string | null>;
 }
 
 export function isDependencySource(x: object): x is DependencySource {
