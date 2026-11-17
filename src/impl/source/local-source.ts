@@ -1,8 +1,12 @@
 import { createHash } from "node:crypto";
+import { type DependencyLink, type DependencySource, dependsOnLines } from "../../core/coordination.js";
 import type { WorkStatus } from "../../core/status-label.js";
-import type { SourceRef } from "../../core/types.js";
+import type { DependencyState, SourceRef, WorkItem, WorkItemId } from "../../core/types.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
 import type { IssueInput, PollResult, PollSource, SourceCloseReason, SubIssueInput } from "../../interfaces/source-adapter.js";
+
+/** A work item or task id on a `Depends on:` line: `wi_…`, `tk_…`. */
+const LOCAL_REF = /\b(?:wi|tk)_[\w-]+/g;
 
 /**
  * The `local` poll source (issues #199, #282): a local item's surface is the store itself. The controller reads
@@ -16,8 +20,12 @@ import type { IssueInput, PollResult, PollSource, SourceCloseReason, SubIssueInp
  *
  * `fileIssue` (design §7, filed failure patterns) creates a local work item, keyed on a source id derived from the
  * marker, with its triage run queued as `factory task create` queues one. Filing again finds the same item and run.
+ *
+ * Dependencies (design 05-dependencies): `Depends on:` lines naming wi_ (work item) or tk_ (task) ids are the
+ * item's edges, each resolved through the store to the named local item's source id; an id naming no local item
+ * gives none. The edge is labelled with the item's wi_ id, which the hold reason names.
  */
-export class LocalSource implements PollSource {
+export class LocalSource implements PollSource, DependencySource {
   readonly intake = "poll";
   readonly type = "local";
 
@@ -48,6 +56,40 @@ export class LocalSource implements PollSource {
 
   /** The store holds the item's state; there is nothing to close elsewhere. */
   async closeIssue(_source: SourceRef, _reason?: SourceCloseReason): Promise<void> {}
+
+  /** The local items the item's `Depends on:` lines name by wi_ or tk_ id, in order, each once; unknown ids dropped. */
+  async dependencyLinks(source: SourceRef): Promise<DependencyLink[]> {
+    const item = await this.store.getWorkItemBySource("local", source.id);
+    if (!item) return [];
+    const links: DependencyLink[] = [];
+    for (const line of dependsOnLines(item.problem)) {
+      for (const [id] of line.matchAll(LOCAL_REF)) {
+        const dep = await this.resolve(id);
+        if (dep && !links.some((l) => l.depends_on === dep.source.id)) links.push({ depends_on: dep.source.id, kind: "depends_on" });
+      }
+    }
+    return links;
+  }
+
+  /**
+   * The state of a local item from the store. The controller asks only for an id the store has no item for, which
+   * never names a local item: it throws, so the stored state applies.
+   */
+  async dependencyState(depends_on: string): Promise<DependencyState> {
+    throw new Error(`local source: no local work item with source id ${JSON.stringify(depends_on)}`);
+  }
+
+  /** The wi_ id of the local item with source id `depends_on`, which the hold reason names; null for none. */
+  async dependencyLabel(depends_on: string): Promise<string | null> {
+    return (await this.store.getWorkItemBySource("local", depends_on))?.id ?? null;
+  }
+
+  /** The local work item a wi_ id names, or the one task tk_'s build made; null for none. */
+  private async resolve(id: string): Promise<WorkItem | null> {
+    const wi = id.startsWith("tk_") ? (await this.store.getTask(id))?.work_item_id ?? null : (id as WorkItemId);
+    const item = wi ? await this.store.getWorkItem(wi) : null;
+    return item?.source.type === "local" ? item : null;
+  }
 
   /** A new local work item for `input` with its triage run queued, idempotent on its marker-derived source id. */
   async fileIssue(input: IssueInput): Promise<SourceRef> {
