@@ -6,6 +6,7 @@ import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { DataTable } from "../components/ui/data-table.js";
+import { KeyValue } from "../components/ui/key-value.js";
 import { Badge, Empty, ErrorNote, Loading, Section, Table } from "../components/ui/parts.js";
 import { Select } from "../components/ui/select.js";
 import { Tabs } from "../components/ui/tabs.js";
@@ -120,17 +121,8 @@ const summaryOf = (obj: Record<string, unknown>, key: MessageKey = "settings.key
  */
 function JsonValue({ text }: { text: string }) {
   const obj = asObject(text);
-  if (obj === null || Object.keys(obj).length === 0) return <span className="font-mono text-xs wrap-anywhere">{text}</span>;
-  const list = (
-    <dl data-entries className="grid grid-cols-[auto_minmax(10ch,1fr)] gap-x-2 font-mono text-xs">
-      {entries(obj).map(([k, v]) => (
-        <Fragment key={k}>
-          <dt className="text-text-2">{k}</dt>
-          <dd className="min-w-0 wrap-anywhere">{v}</dd>
-        </Fragment>
-      ))}
-    </dl>
-  );
+  if (obj === null || Object.keys(obj).length === 0) return <span className="text-xs wrap-anywhere">{text}</span>;
+  const list = <KeyValue data-entries items={entries(obj).map(([k, v]) => ({ key: k, term: k, value: v, code: true }))} className="gap-x-2" />;
   if (entries(obj).length <= SHORT_OBJECT) return list;
   return (
     <details>
@@ -476,22 +468,24 @@ function KeyDetails({ row }: { row: SettingRow }) {
   return (
     <details data-details>
       <summary className="cursor-pointer text-xs text-text-2">{t("settings.details")}</summary>
-      <dl className="mt-2 grid grid-cols-[auto_minmax(10ch,1fr)] gap-x-3 gap-y-1 text-xs">
-        <dt className="text-text-2">{t("settings.detailKey")}</dt>
-        <dd className="font-mono wrap-anywhere">{row.key}</dd>
-        <dt className="text-text-2">{t("settings.colSource")}</dt>
-        <dd><Badge level={SOURCE_TONE[row.source] || undefined}>{row.source}</Badge></dd>
-        <dt className="text-text-2">{t("settings.colFileValue")}</dt>
-        <dd className="min-w-0">
-          {row.file_value !== null ? (
-            <JsonValue text={shownValue(row.key, row.file_value)} />
-          ) : (
-            <span className="text-text-3">{withNodes("settings.default", { value: <JsonValue text={shownValue(row.key, row.default_value)} /> })}</span>
-          )}
-        </dd>
-        <dt className="text-text-2">{t("settings.colAppliesAt")}</dt>
-        <dd className="text-text-2">{row.applies_at}</dd>
-      </dl>
+      <KeyValue
+        className="mt-2"
+        items={[
+          { key: "key", term: t("settings.detailKey"), value: <span className="font-mono">{row.key}</span> },
+          { key: "source", term: t("settings.colSource"), value: <Badge level={SOURCE_TONE[row.source] || undefined}>{row.source}</Badge> },
+          {
+            key: "file",
+            term: t("settings.colFileValue"),
+            value:
+              row.file_value !== null ? (
+                <JsonValue text={shownValue(row.key, row.file_value)} />
+              ) : (
+                <span className="text-text-3">{withNodes("settings.default", { value: <JsonValue text={shownValue(row.key, row.default_value)} /> })}</span>
+              ),
+          },
+          { key: "applies", term: t("settings.colAppliesAt"), value: <span className="text-text-2">{row.applies_at}</span> },
+        ]}
+      />
     </details>
   );
 }

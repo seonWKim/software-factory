@@ -166,7 +166,7 @@ describe("Settings page", () => {
     expect(tick.textContent).toContain("default: 2s");
     expect(tick.textContent).toContain("the next tick");
     // A long unbroken value may break anywhere, so the table fits its card at 1280 px and Reset keeps its 12 px.
-    expect(within(tick).getByText("2s", { selector: "span.font-mono" }).className.split(" ")).toContain("wrap-anywhere");
+    expect(within(tick).getByText("2s", { selector: "span" }).className.split(" ")).toContain("wrap-anywhere");
     // Reset only where an override exists.
     expect(within(loops).queryByRole("button", { name: `Reset ${keyLabel("max_loops")}` })).not.toBeNull();
     expect(within(tick).queryByRole("button", { name: /^Reset/ })).toBeNull();
