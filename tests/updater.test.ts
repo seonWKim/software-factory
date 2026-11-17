@@ -990,7 +990,7 @@ describe("updater: git-worktree pending migrations", () => {
       statusFile,
       requestFile,
       read: () => JSON.parse(readFileSync(statusFile, "utf8")) as Status,
-      send: (action: "drain" | "start" | "cancel") => writeFileSync(requestFile, JSON.stringify({ action, at: "x" })),
+      send: (action: "drain" | "start" | "cancel" | "restart") => writeFileSync(requestFile, JSON.stringify({ action, at: "x" })),
     };
   };
 
@@ -1089,6 +1089,55 @@ describe("updater: git-worktree pending migrations", () => {
     f.send("cancel");
     await updater.poll();
     expect(launcher.live.map((c) => relative(world.root, c.spec.entry))).toEqual([`${V("c1")}/dist/main.js`]);
+    expect(f.read()).toMatchObject({ state: "migration_pending", target_rev: "c2" });
+    await updater.shutdown();
+  });
+
+  it("a start with no migration waiting starts a child only when none is live; one that arrives while a child claims is ignored", async () => {
+    const f = files();
+    const { launcher, log, updater } = setup({ statusFile: f.statusFile, requestFile: f.requestFile });
+    await updater.start();
+    f.send("start");
+    await updater.poll();
+    expect(existsSync(f.requestFile)).toBe(false); // read and removed
+    expect(launcher.children).toHaveLength(1);
+    expect(log.lines.some((l) => l.level === "warn" && l.msg === "supervisor request ignored" && l.fields?.action === "start")).toBe(true);
+
+    launcher.children[0]!.exit(1);
+    await settle();
+    f.send("start");
+    await updater.poll();
+    expect(launcher.children).toHaveLength(2);
+    expect(launcher.live).toHaveLength(1);
+    expect(log.lines.some((l) => /start request: no child is live/.test(l.msg))).toBe(true);
+    await updater.shutdown();
+  });
+
+  it("a restart starts a child from the current version folder and drains the old one", async () => {
+    const f = files();
+    const { world, launcher, updater } = setup({ statusFile: f.statusFile, requestFile: f.requestFile });
+    await updater.start();
+    launcher.children[0]!.drainMode = "hold";
+    f.send("restart");
+    await updater.poll();
+    expect(existsSync(f.requestFile)).toBe(false);
+    expect(launcher.children.map((c) => relative(world.root, c.spec.entry))).toEqual([`${V("c1")}/dist/main.js`, `${V("c1")}/dist/main.js`]);
+    expect(world.events).toContain("drain 1");
+    expect(world.events.indexOf("drain 1")).toBeGreaterThan(world.events.findIndex((e) => e.startsWith("launch 2 ")));
+    expect(f.read()).toMatchObject({ state: "running", rev: "c1", child_pid: 2 });
+    await updater.shutdown();
+  });
+
+  it("a restart while a migration waits is ignored", async () => {
+    const f = files();
+    const m = migrations({ c2: ["schema:12"] });
+    const { world, launcher, updater } = setup({ ...m, statusFile: f.statusFile, requestFile: f.requestFile });
+    await updater.start();
+    world.push("c2", ["src/core/worker.ts"]);
+    await updater.poll();
+    f.send("restart");
+    await updater.poll();
+    expect(launcher.children).toHaveLength(1);
     expect(f.read()).toMatchObject({ state: "migration_pending", target_rev: "c2" });
     await updater.shutdown();
   });

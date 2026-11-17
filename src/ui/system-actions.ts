@@ -128,7 +128,8 @@ export async function systemActions(x: SystemInput): Promise<SystemAction[]> {
     out.push({ code, text, command, until });
 
   const migration = await pendingMigration(x.store, x.factory);
-  if (migration) add("migration_pending", migration, "npm run migrate");
+  // The dashboard action first (the row's Migrate now button), the CLI command as the fallback.
+  if (migration) add("migration_pending", migration, "Migrate now, or factory migrate");
 
   const days = x.deps.lastChecks?.tokenDays() ?? null;
   if (typeof days === "number" && days < TOKEN_WARN_DAYS) {
