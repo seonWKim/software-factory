@@ -31,4 +31,3 @@
   - **Not built yet.** A written brand brief.
 
 - Replaced decisions of this topic: [history/09-brand-and-tokens.md](history/09-brand-and-tokens.md).
-- **Select was a native select** (until 2026-11-17, the Select decision at the top). Before: `Select` wrapped a native `<select>` (`appearance-none`, with its own chevron), so the browser drew the option list; on macOS it opened over the field and hid the label above the next field, and tests drove it with `fireEvent.change` and read its `options`.
