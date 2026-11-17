@@ -8,6 +8,7 @@ import {
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
+import { KeyValue } from "../components/ui/key-value.js";
 import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
 import { Markdown } from "../components/ui/markdown.js";
@@ -711,17 +712,24 @@ function ImproveGroup({ g }: { g: ImproveGroupView }) {
         <span className="text-xs text-text-2 tabular-nums">{t("rules.improveRuns")}: {g.runs}</span>
       </p>
       {g.detail !== null && <p className={`${line} text-text-2`}>{g.detail}</p>}
-      <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1">
-        <dt className="text-xs font-semibold text-text-2">{t("rules.improveDraft")}</dt>
-        <dd data-draft className="min-w-0 space-y-0.5">
-          {g.draft === null && <p className={muted}>{t("rules.improveNoDraft")}</p>}
-          {g.draft?.cause != null && <p className={line}>{t("rules.improveCause", { cause: g.draft.cause })}</p>}
-          {g.draft?.fix != null && <p className={line}>{t("rules.improveFix", { fix: g.draft.fix })}</p>}
-          {g.draft?.note != null && <p className={line}>{g.draft.note}</p>}
-        </dd>
-        <dt className="text-xs font-semibold text-text-2">{t("rules.improveFiling")}</dt>
-        <dd data-filing className={`min-w-0 ${g.filing === null ? muted : line}`}>{g.filing ?? t("rules.improveNotFiled")}</dd>
-      </dl>
+      <KeyValue
+        items={[
+          {
+            key: "draft",
+            term: <span className="font-semibold">{t("rules.improveDraft")}</span>,
+            valueProps: { "data-draft": true },
+            value: (
+              <div className="space-y-0.5">
+                {g.draft === null && <p className={muted}>{t("rules.improveNoDraft")}</p>}
+                {g.draft?.cause != null && <p className={line}>{t("rules.improveCause", { cause: g.draft.cause })}</p>}
+                {g.draft?.fix != null && <p className={line}>{t("rules.improveFix", { fix: g.draft.fix })}</p>}
+                {g.draft?.note != null && <p className={line}>{g.draft.note}</p>}
+              </div>
+            ),
+          },
+          { key: "filing", term: <span className="font-semibold">{t("rules.improveFiling")}</span>, valueProps: { "data-filing": true }, value: <span className={g.filing === null ? muted : line}>{g.filing ?? t("rules.improveNotFiled")}</span> },
+        ]}
+      />
     </li>
   );
 }

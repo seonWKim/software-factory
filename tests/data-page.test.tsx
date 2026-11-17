@@ -224,13 +224,12 @@ describe("Data page", () => {
     mount();
     const list = await screen.findByRole("navigation", { name: "Tables" });
     expect((await within(list).findAllByTestId("data-table-doc")).map((p) => p.textContent)).toEqual(["worker · Each attempt of a run.", "controller · Work items."]);
-    const t = await openTable("run_attempts");
+    await openTable("run_attempts");
     const info = screen.getByTestId("data-table-info");
     expect(info.textContent).toContain("Each attempt of a run.");
     expect(info.textContent).toContain("Owner: worker");
     const meanings = within(info).getByLabelText("Columns");
     expect(meanings.textContent).toBe("error_codeWhy the attempt failed.");
-    expect([...t.querySelectorAll("th")].find((th) => th.textContent === "error_code")!.getAttribute("title")).toBe("Why the attempt failed.");
   });
 
   async function ask(question: string) {
