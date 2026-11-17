@@ -211,6 +211,21 @@ describe("Settings page", () => {
     expect(within(att).getByRole("button", { name: `Reset ${keyLabel("max_attempts")} for o/r` })).not.toBeNull();
   });
 
+  it("logs no console error or warning on render with a boolean and a list value (no 'cannot be parsed')", async () => {
+    const error = vi.spyOn(console, "error");
+    const warn = vi.spyOn(console, "warn");
+    try {
+      const table = await show();
+      await waitFor(() => expect(within(rowOf(table, "auto_grant_test_paths")).getByRole("switch")).not.toBeNull());
+      expect(rowOf(table, "test_globs").querySelectorAll("[data-list-item]").length).toBeGreaterThan(0);
+      expect(error).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
   it("the models form is a two-column grid (tier | 7rem field, 8 px by 12 px) with Save in its own button row 12 px below", async () => {
     const table = await show();
     const models = rowOf(table, "models");
