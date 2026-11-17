@@ -1,5 +1,6 @@
 ## History
 
+- **Only `npm run migrate` files a supervisor request; the supervisor has no restart action** (changed 2026-11-16). Before: `supervisor-request.json` took `drain`, `start` and `cancel`, all from `npm run migrate`; a `start` with no migration under way was ignored; the status page filed nothing and its banners told the owner to run `npm run migrate` or `npm run factory -- dev`.
 - **The controller and the worker can also run alone** (changed 2026-11-16). Before: `factory controller` and `factory worker` (and `make controller` / `make worker`) ran one loop each outside the supervisor, through a mode argument of `runLoops`; `npm run migrate` did not drain them, so SET_UP.md told the owner to stop them by hand first.
 - **Local mode follows the local base branch** (changed 2026-11-15). Before: with no GitHub plugin selected, the updater always followed the code checkout's local `refs/heads/<repo.base_branch>` and never fetched, whether or not the code checkout was the repository `factory merge` moves; with the GitHub source a separate clone followed `origin/<repo.base_branch>`, fetched every poll.
 

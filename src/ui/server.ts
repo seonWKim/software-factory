@@ -43,15 +43,8 @@ import { PLUGINS_IMPORT_PATH, readPluginsImport, writePluginsImport } from "./pl
 import { CALENDAR_CONNECT_PATH, CALENDAR_DISCONNECT_PATH, CALENDAR_PATH, readCalendarStatus, writeCalendar } from "./calendar-api.js";
 import { CALENDAR_EVENTS_PATH, readCalendarEvents } from "./calendar-events-api.js";
 import { DATA_ASK_PATH, askData } from "./data-ask.js";
-<<<<<<< HEAD
 import { MIGRATE_PATH, type MigrateDeps, SUPERVISOR_PATH, postMigrate, postSupervisor, readSupervisor } from "./migrate-api.js";
-import { RUN_NOW_SCRIPT, RUN_NOW_SCRIPT_HASH } from "./health.js";
-import { parseFilters } from "./filters.js";
-import { SCRIPT_HASH, STYLE_HASH, esc, page } from "./html.js";
-import { type UiDeps, renderIndex, renderItem } from "./pages.js";
-=======
 import { APP_HOME, STYLE_HASH, errorPage } from "./html.js";
->>>>>>> origin/main
 
 export type { UiDeps } from "./deps.js";
 export type { PauseDeps } from "./pause-api.js";
