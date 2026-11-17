@@ -20,3 +20,4 @@
 - **Checked-in `CapabilitySearch` default** (changed 2026-11-07). Before: the default stayed `list-all`, which finds nothing, so no prompt got a doc index. Now: `bm25`.
 - **Additive learnings** (corrected 2026-11-07). Before: "additive learnings: automatic", though nothing wrote them. Now: marked planned, not built yet.
 - **MySQL text removed from the current decisions** (decision changed 2026-11-11, issue #567). Before: the outcome migration was "(SQLite and MySQL; no numbered step: the numbered list is frozen)"; the record needed no schema step "as it is, in SQLite and MySQL"; and the tables were "SQLite migration 31, MySQL step 0031".
+- **Flaky tests in the improve report** (decision changed 2026-11-17). Before: the report held only the failed runs (grouped by code and detail) and the owner's pushbacks; a merge check had no rerun, so a flaky test showed only as a red merge check and a loop, never as a flaky test.
