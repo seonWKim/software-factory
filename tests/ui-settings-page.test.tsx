@@ -130,6 +130,18 @@ async function show(tab: string | null = "advanced") {
 }
 
 const PR_ONLY = "Change only in factory.config.json (by a reviewed PR)";
+/** Opens a Select, reads its options (each option's `value` is its choice), and closes it with Esc. */
+const optionsOf = (select: HTMLElement) => {
+  fireEvent.click(select);
+  const options = within(screen.getByRole("listbox")).getAllByRole<HTMLButtonElement>("option");
+  fireEvent.keyDown(select, { key: "Escape" });
+  return options;
+};
+/** Opens a Select and picks the option whose value is `value`. */
+const pick = (select: HTMLElement, value: string) => {
+  fireEvent.click(select);
+  fireEvent.click(within(screen.getByRole("listbox")).getAllByRole<HTMLButtonElement>("option").find((o) => o.value === value)!);
+};
 const rowOf = (table: HTMLElement, key: string) => table.querySelector<HTMLElement>(`tr[data-key="${key}"]`)!;
 const selectedTab = () => screen.getAllByRole("tab").find((t) => t.getAttribute("aria-selected") === "true")!.textContent;
 /** The names of the page's top-level sections, in page order. */
@@ -352,9 +364,9 @@ describe("Settings page", () => {
   it("hold_policy is a select (hold, start, wait) with the server mode's meaning in each label; wait adds minutes, starting at 20", async () => {
     const table = await show();
     const hold = rowOf(table, "hold_policy");
-    const select = within(hold).getByLabelText(`${keyLabel("hold_policy")}`) as HTMLSelectElement;
-    expect([...select.options].map((o) => o.value)).toEqual(["hold", "start", "wait"]);
-    expect([...select.options].map((o) => o.textContent)).toEqual([
+    const select = within(hold).getByRole("combobox", { name: `${keyLabel("hold_policy")}` });
+    expect(optionsOf(select).map((o) => o.value)).toEqual(["hold", "start", "wait"]);
+    expect(optionsOf(select).map((o) => o.textContent)).toEqual([
       "hold: keeps the run queued until /approve",
       "start: claims the run at once (mode run)",
       "wait: claims the run after its minutes (mode run_after_minutes)",
@@ -362,12 +374,12 @@ describe("Settings page", () => {
     expect(hold.querySelector("textarea")).toBeNull();
     expect(within(hold).queryByLabelText(`${keyLabel("hold_policy")} minutes`)).toBeNull();
     // start writes {"mode":"run"}.
-    fireEvent.change(select, { target: { value: "start" } });
+    pick(select, "start");
     fireEvent.click(within(hold).getByRole("button", { name: `Save ${keyLabel("hold_policy")}` }));
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(JSON.parse(posts[0]!.init.body as string)).toEqual({ action: "set", key: "hold_policy", value: '{"mode":"run"}' });
     // wait shows minutes at 20 and writes run_after_minutes with them.
-    fireEvent.change(select, { target: { value: "wait" } });
+    pick(select, "wait");
     const minutes = within(hold).getByLabelText(`${keyLabel("hold_policy")} minutes`) as HTMLInputElement;
     expect(minutes.value).toBe("20");
     fireEvent.change(minutes, { target: { value: "5" } });
@@ -380,7 +392,7 @@ describe("Settings page", () => {
     answer = { status: 400, body: { ok: false, error: "minutes must be a positive integer" } };
     const table = await show();
     const hold = rowOf(table, "hold_policy");
-    fireEvent.change(within(hold).getByLabelText(`${keyLabel("hold_policy")}`), { target: { value: "wait" } });
+    pick(within(hold).getByRole("combobox", { name: `${keyLabel("hold_policy")}` }), "wait");
     fireEvent.change(within(hold).getByLabelText(`${keyLabel("hold_policy")} minutes`), { target: { value: "0" } });
     fireEvent.click(within(hold).getByRole("button", { name: `Save ${keyLabel("hold_policy")}` }));
     expect((await within(hold).findByRole("alert")).textContent).toContain("minutes must be a positive integer");
@@ -539,9 +551,9 @@ describe("Settings page: the typed form of the file-only keys (design 08-setting
     }
     // Text fields per model class; a class select per model_by role and tier, a switch for retry_up.
     expect((within(keyOf(section, "models")).getByLabelText(`${keyLabel("models")} strong`) as HTMLInputElement).value).toBe("opus");
-    const triage = within(keyOf(section, "model_by")).getByLabelText(`${keyLabel("model_by")} triage`) as HTMLSelectElement;
-    expect([...triage.options].map((o) => o.value)).toEqual(["cheap", "standard", "strong"]);
-    expect((within(keyOf(section, "model_by")).getByLabelText(`${keyLabel("model_by")} implement 1`) as HTMLSelectElement).value).toBe("standard");
+    const triage = within(keyOf(section, "model_by")).getByRole("combobox", { name: `${keyLabel("model_by")} triage` });
+    expect(optionsOf(triage).map((o) => o.value)).toEqual(["cheap", "standard", "strong"]);
+    expect(within(keyOf(section, "model_by")).getByRole<HTMLButtonElement>("combobox", { name: `${keyLabel("model_by")} implement 1` }).value).toBe("standard");
     expect(within(keyOf(section, "model_by")).getByRole("switch", { name: `${keyLabel("model_by")} retry_up` }).getAttribute("aria-checked")).toBe("true");
     // slack: a list editor of channels and a text field per optional member.
     expect((within(keyOf(section, "slack")).getByLabelText(`${keyLabel("slack")} channels 1`) as HTMLInputElement).value).toBe("C1");
@@ -569,18 +581,18 @@ describe("Settings page: the typed form of the file-only keys (design 08-setting
   it("the plugin select of each interface lists only its registered names; no option turns a guard off", async () => {
     const plugins = keyOf(await form(), "plugins");
     for (const p of view.file_keys!.plugins.filter((x) => x.kind !== "source")) {
-      const select = within(plugins).getByLabelText(new RegExp(`^${keyLabel("plugins")} ${p.kind}$`)) as HTMLSelectElement;
-      expect([...select.options].filter((o) => !o.disabled).map((o) => o.value), p.kind).toEqual(p.names);
+      const select = within(plugins).getByRole<HTMLButtonElement>("combobox", { name: new RegExp(`^${keyLabel("plugins")} ${p.kind}$`) });
+      expect(optionsOf(select).filter((o) => !o.disabled).map((o) => o.value), p.kind).toEqual(p.names);
       // The file's choice; an interface the file leaves out shows the plugin in force and writes nothing until picked.
       if (p.kind === "capability") {
         expect(select.value).toBe("");
-        expect(select.selectedOptions[0]!.textContent).toBe("default: bm25");
+        expect(select.textContent).toBe("default: bm25");
       } else expect(select.value, p.kind).toBe(p.selected);
     }
-    const secrets = within(plugins).getByLabelText(`${keyLabel("plugins")} secrets`) as HTMLSelectElement;
-    expect([...secrets.options].map((o) => o.value)).not.toContain("none");
+    const secrets = within(plugins).getByRole("combobox", { name: `${keyLabel("plugins")} secrets` });
+    expect(optionsOf(secrets).map((o) => o.value)).not.toContain("none");
     // An interface the file lists several of is a list of selects.
-    expect((within(plugins).getByLabelText(`${keyLabel("plugins")} source 2`) as HTMLSelectElement).value).toBe("slack");
+    expect(within(plugins).getByRole<HTMLButtonElement>("combobox", { name: `${keyLabel("plugins")} source 2` }).value).toBe("slack");
   });
 
   it("Save sends edit-file through the writer, then shows the branch and a Merge button that merges the item locally", async () => {
@@ -619,7 +631,7 @@ describe("Settings page: the typed form of the file-only keys (design 08-setting
     expect(JSON.parse(sent(4).value)).toEqual({ channels: ["C2"] });
     // A non-guard plugin change writes the whole plugins object, the file's other members kept, without the confirm flag.
     const plugins = keyOf(section, "plugins");
-    fireEvent.change(within(plugins).getByLabelText(`${keyLabel("plugins")} runner`), { target: { value: "fake" } });
+    pick(within(plugins).getByRole("combobox", { name: `${keyLabel("plugins")} runner` }), "fake");
     await act(async () => fireEvent.click(within(plugins).getByRole("button", { name: `Save ${keyLabel("plugins")}` })));
     await confirm();
     expect(sent(5)).toMatchObject({ key: "plugins", confirm: false });
@@ -630,7 +642,7 @@ describe("Settings page: the typed form of the file-only keys (design 08-setting
     filedAnswer();
     const section = await form();
     const change: [string, () => void][] = [
-      ["plugins", () => fireEvent.change(within(keyOf(section, "plugins")).getByLabelText(`${keyLabel("plugins")} secrets`), { target: { value: "keychain" } })],
+      ["plugins", () => pick(within(keyOf(section, "plugins")).getByRole("combobox", { name: `${keyLabel("plugins")} secrets` }), "keychain")],
       ["floors", () => fireEvent.change(within(keyOf(section, "floors")).getByLabelText(`${keyLabel("floors")} 1 tier`), { target: { value: "2" } })],
       ["permissions", () => fireEvent.click(within(keyOf(section, "permissions")).getByRole("button", { name: `Remove ${keyLabel("permissions")} grants 1` }))],
       ["dials", () => fireEvent.change(within(keyOf(section, "dials")).getByLabelText(`${keyLabel("dials")} auto_merge_max_tier`), { target: { value: "2" } })],

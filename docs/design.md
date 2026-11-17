@@ -24,7 +24,7 @@ index. Add a line here only for a new topic file. Topic files keep the old secti
 - [04-spec-gate-commands.md](design/04-spec-gate-commands.md): spec answers, `/revise` and `/resolve` forms, widening allowed paths.
 - [04-chat-commands.md](design/04-chat-commands.md): commands in your own words: classifier, chat answers, proposals.
 - [04-verdicts.md](design/04-verdicts.md): `/verdict` on every surface, implicit verdicts, pushback capture.
-- [04-closing-source-issue.md](design/04-closing-source-issue.md): closing the source issue stops the item, its runs and its PR.
+- [04-closing-source-issue.md](design/04-closing-source-issue.md): closing the source issue stops the item, its runs and its PR; `/reject` at any open phase.
 - [04-pre-push-gates.md](design/04-pre-push-gates.md): the scope, size and floor gates before a push, and sync with the base.
 - [04-triage.md](design/04-triage.md): path companions, files triage adds to allowed paths, topic folders.
 - [04-split-specs.md](design/04-split-specs.md): size estimates, splitting a big spec into phases, the phase hold.
