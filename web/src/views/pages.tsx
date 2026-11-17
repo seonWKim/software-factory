@@ -205,7 +205,8 @@ export function FloorStatus() {
 export function ActivityPage() {
   const now = useNow();
   const overview = useApi<Overview>(API.overview);
-  const items = useApi<Items>(API.items);
+  // The tree's own read (`closed=1`), so under Work's tree this section adds no request.
+  const items = useApi<Items>(`${API.items}?closed=1`);
   const runs = useApi<{ runs: RunRow[] }>(API.runs);
   const map = useMemo(() => byId(items.data?.items), [items.data]);
   const o = overview.data;
