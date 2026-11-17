@@ -4,10 +4,21 @@
 // (`repo.ui_check`, design §4) when the merged result changes one of its paths. A conflict or a failing check is a
 // result (`red`), not a run failure: the merge queue decides. Git and sandbox errors fail the run. A failing check's
 // red result names the failing tests and keeps the output tail, as the implement run's `checks_failed` does.
+// A failing check list whose output names failing test files reruns only those files once, with the same command
+// (design §4); a passing rerun goes on, and the green result lists the flaky tests for the improve report (design §7).
 
 import { NO_HOOKS, RunFailure, failingTestNames, gitIdentity } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { DEFAULT_TIMEOUTS, defineRunKind, type RunCall } from "../../run-kind.js";
+
+/** The check helpers the runner hands this run (core/checks.ts), so the run imports none of them. */
+export interface MergeCheckTools {
+  checkCommands(repo: Worker["cfg"]["repo"]): string[][];
+  failingTestFiles(text: string): string[];
+  withTestFiles(cmd: readonly string[], files: readonly string[]): string[];
+}
+
+type Failed = { command: readonly string[]; how: string; tail: string };
 
 /** What the merge queue put in the run's input: the base, and the branches to merge onto it in order (this one last). */
 function inputOf(run: RunCall["run"]): { base_ref: string; branches: string[] } {
@@ -40,19 +51,46 @@ async function mergeCheck(w: Worker, { run, item, signal }: RunCall): Promise<Re
       return { result: "red", why: "conflict", branch, conflicts, base_sha };
     }
     const merged_sha = (await w.git(handle, ["rev-parse", "HEAD"])).trim();
-    // The install command first, then the configured checks (runCheckList's default list), as the local merge ran them,
-    // then the UI check where Chrome can start (not in the agent sandbox) when the merged result changes its paths.
+    // The install command first, then the configured checks (checkList: its failing test files get one rerun), as the
+    // local merge ran them, then the UI check where Chrome can start (not in the agent sandbox) when the merged result
+    // changes its paths. The install command and the UI check are not rerun.
     const ui = w.cfg.repo.ui_check;
     const changed = ui ? (await w.git(handle, ["diff", "--name-only", "-z", "--no-renames", base_sha, merged_sha])).split("\0").filter(Boolean) : [];
-    const uiRound = ui && changed.some((f) => ui.paths.some((p) => f.startsWith(p))) ? [{ commands: [[...ui.command]] }] : [];
-    for (const round of [{ commands: [[...w.cfg.repo.install_command]] }, {}, ...uiRound]) {
-      const r = await w.runCheckList(run, handle, signal, round);
-      if (r.failed) return { result: "red", why: "checks", ...(await failure(w, r.failed)), base_sha, merged_sha };
-    }
-    return { result: "green", base_sha, merged_sha, heads };
+    const uiCheck = ui && changed.some((f) => ui.paths.some((p) => f.startsWith(p))) ? [[...ui.command]] : null;
+    const red = async (failed: Failed) => ({ result: "red", why: "checks", ...(await failure(w, failed)), base_sha, merged_sha });
+    const install = await w.runCheckList(run, handle, signal, { commands: [[...w.cfg.repo.install_command]] });
+    if (install.failed) return red(install.failed);
+    const list = await checkList(w, run, handle, signal);
+    if (list.failed) return red(list.failed);
+    const uiFailed = uiCheck ? (await w.runCheckList(run, handle, signal, { commands: uiCheck })).failed : null;
+    if (uiFailed) return red(uiFailed);
+    const flaky = list.flaky.length > 0 ? { flaky_tests: list.flaky } : {};
+    return { result: "green", base_sha, merged_sha, heads, ...flaky };
   } finally {
     await w.d.sandbox.destroy(handle);
   }
+}
+
+/**
+ * The check list (`repo.check_commands`, else the test command), with one rerun of a failing command on the test
+ * files its output names: a passing rerun counts those tests as flaky (`file > name`) and the list goes on after
+ * that command; a failing rerun, one that cannot start, or a failure naming no test file returns the first failure.
+ */
+async function checkList(w: Worker, run: RunCall["run"], handle: NonNullable<RunCall["handle"]>, signal: AbortSignal): Promise<{ failed: Failed | null; flaky: string[] }> {
+  const tools: MergeCheckTools = w.checkTools;
+  let rest = tools.checkCommands(w.cfg.repo);
+  const flaky: string[] = [];
+  while (rest.length > 0) {
+    const r = await w.runCheckList(run, handle, signal, { commands: rest });
+    if (!r.failed) break;
+    const files = tools.failingTestFiles(r.failed.tail);
+    if (files.length === 0) return { failed: r.failed, flaky };
+    const again = await w.runCheckList(run, handle, signal, { commands: [tools.withTestFiles(r.failed.command, files)] });
+    if (again.failed) return { failed: r.failed, flaky };
+    flaky.push(...failingTestNames(r.failed.tail).filter((t) => !flaky.includes(t)));
+    rest = rest.slice(r.results.length);
+  }
+  return { failed: null, flaky };
 }
 
 /**
@@ -60,7 +98,7 @@ async function mergeCheck(w: Worker, { run, item, signal }: RunCall): Promise<Re
  * the implement run names them) and its output tail (at most CHECK_TAIL_CHARS, 2000). The tail goes through the
  * egress scan first; a flagged tail is withheld whole (null), and the names are kept.
  */
-async function failure(w: Worker, failed: { command: readonly string[]; how: string; tail: string }): Promise<Record<string, unknown>> {
+async function failure(w: Worker, failed: Failed): Promise<Record<string, unknown>> {
   const clean = failed.tail === "" || (await w.d.scanner.scan("run_outcome", failed.tail)).clean;
   return {
     command: failed.command.join(" "),
