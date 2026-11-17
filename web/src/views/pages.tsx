@@ -610,7 +610,7 @@ function ProcessRow({ p, items, now }: { p: WorkerProcess; items: ReadonlyMap<st
   return (
     <li data-testid="worker-process" className="rounded-control border border-border px-3 py-2">
       <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
-        <span className="font-mono text-xs font-semibold">{p.host}</span>
+        <span className="text-xs font-semibold">{p.host}</span>
         <span className="tabular-nums">{t("runners.pid", { pid: p.pid })}</span>
         <span className="tabular-nums text-text-2">{t("runners.started", { time: ago(p.started_at, now) })}</span>
         {draining && <Badge level="needs_approval">{t("runners.draining")}</Badge>}

@@ -4,7 +4,7 @@ import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { EmptyState, Notice, PageHeader } from "../components/ui/notice.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
-import { ErrorNote, Loading } from "../components/ui/parts.js";
+import { ErrorNote, Loading, Table, Td, Tr } from "../components/ui/parts.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
@@ -104,7 +104,7 @@ function MonthCell({ day }: { day: CalendarDay }) {
   const shown = day.events.slice(0, CELL_EVENTS);
   const more = day.events.length - shown.length;
   return (
-    <td data-day={day.date} className="h-20 border border-border p-1 align-top">
+    <Td data-day={day.date} className="h-20 p-1">
       <p className="text-xs font-medium tabular-nums">{Number(day.date.slice(8))}</p>
       {!day.synced ? (
         <NotSynced />
@@ -119,7 +119,7 @@ function MonthCell({ day }: { day: CalendarDay }) {
           {more > 0 && <li className="text-xs text-text-2">{t("calendarPage.more", { n: more })}</li>}
         </ul>
       )}
-    </td>
+    </Td>
   );
 }
 
@@ -135,22 +135,11 @@ function MonthGrid({ label, days }: { label: string; days: readonly CalendarDay[
   // 2024-01-01 is a Monday: the column heads in the viewer's locale.
   const weekdays = Array.from({ length: 7 }, (_, i) => new Date(2024, 0, 1 + i).toLocaleDateString(undefined, { weekday: "short" }));
   return (
-    <table aria-label={label} className="w-full table-fixed border-collapse">
-      <thead>
-        <tr>
-          {weekdays.map((w) => (
-            <th key={w} scope="col" className="p-1 text-left text-xs font-medium text-text-2">{w}</th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {weeks.map((week, i) => (
-          <tr key={i}>
-            {week.map((day, j) => (day === null ? <td key={`empty-${j}`} className="border border-border" /> : <MonthCell key={day.date} day={day} />))}
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <Table label={label} head={weekdays}>
+      {weeks.map((week, i) => (
+        <Tr key={i}>{week.map((day, j) => (day === null ? <Td key={`empty-${j}`} /> : <MonthCell key={day.date} day={day} />))}</Tr>
+      ))}
+    </Table>
   );
 }
 
