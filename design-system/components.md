@@ -64,7 +64,7 @@ A multi-line field on the same field classes as Input, padding-x 12 px and paddi
 
 ## Select
 
-A native select 32 px high on the field classes, drawing its own chevron (in `text-2`) instead of the browser's; options are children. `wrapperClassName` sets the box around the select and its chevron (its width, its margin). One size. States: default, focus-visible, `disabled`.
+A field 32 px high on the field classes (a `role=combobox` button that shows the current choice) with its own chevron (in `text-2`), which opens its own list, not the browser's: a `role=listbox` in the OverflowMenu's look (`surface`, 1 px `border`, `rounded-control`, shadow; items `text-sm`, hover and highlight `surface-2`, the shared `FOCUS` and `DISABLED` classes), the current choice `aria-selected` with an `accent` check mark. The list opens directly below the field, or above it when the viewport has no room below (a measured check, no positioning library). Options are `<option>` children (`value`, text, `disabled`, so a disabled placeholder works); `onChange` gets an event whose `target.value` is the picked value. Keys: Enter, Space or an arrow opens; ArrowDown and ArrowUp move the highlight; Enter picks; Esc closes and keeps the focus on the field; letters move the highlight to the first option starting with them. A click outside closes it. `wrapperClassName` sets the box around the field and its chevron (its width, its margin). One size. States: closed, open (below or above), focus-visible, `disabled`; option default, highlighted, selected, `disabled`.
 
 ## Field
 

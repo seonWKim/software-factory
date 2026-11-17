@@ -189,7 +189,8 @@ describe("Data page", () => {
     history.replaceState(null, "", "/app/data");
     mount();
     await openTable("work_items");
-    fireEvent.change(screen.getByRole("combobox", { name: "Filter column" }), { target: { value: "problem" } });
+    fireEvent.click(screen.getByRole("combobox", { name: "Filter column" }));
+    fireEvent.click(within(screen.getByRole("listbox", { name: "Filter column" })).getByRole("option", { name: "problem" }));
     fireEvent.change(screen.getByRole("textbox", { name: "Filter value" }), { target: { value: "it's" } });
     fireEvent.click(screen.getByRole("button", { name: "Filter" }));
     await act(async () => void (await vi.advanceTimersByTimeAsync(10)));
