@@ -8,7 +8,7 @@ import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { readProjectLabel, saveProject, saveProjectLabel } from "../src/core/project-labels.js";
-import { PR_ONLY_KEYS, SETTABLE_KEYS, type SettingsBase } from "../src/core/settings.js";
+import { PR_ONLY_KEYS, SETTABLE_DEFAULTS, SETTABLE_KEYS, type SettingsBase } from "../src/core/settings.js";
 import { loadSettingCatalog } from "../src/runtime/index.js";
 
 const catalog = await loadSettingCatalog();
@@ -111,6 +111,22 @@ async function nothingStored(store: FactoryStore) {
 }
 
 describe("GET /api/v1/settings", () => {
+  it("gives each key the kind of its default's type: a number box only for a number default or a spend budget", async () => {
+    const { d } = await setup();
+    const v = await view(d);
+    const kinds = new Map<string, string>(v.keys.map((k: { key: string; kind: string }) => [k.key, k.kind]));
+    for (const k of SETTABLE_KEYS) {
+      const def = SETTABLE_DEFAULTS[k];
+      if (typeof def === "number" || k.startsWith("spend.")) expect(kinds.get(k), k).toBe("number");
+      else expect(kinds.get(k), k).not.toBe("number");
+    }
+    expect(kinds.get("auto_grant_test_paths")).toBe("boolean");
+    expect(kinds.get("test_globs")).toBe("list");
+    expect(kinds.get("notify_channels")).toBe("list");
+    expect(kinds.get("intake_label")).toBe("text");
+    expect(kinds.get("quiet_hours")).toBe("text");
+  });
+
   it("lists every settable key with its effective value, source, file value, project values and applies-at", async () => {
     const { d, store } = await setup();
     await store.setSettingOverride({ key: "max_loops", project: "", value: "4", actor: ACTOR });

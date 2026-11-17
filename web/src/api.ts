@@ -497,8 +497,8 @@ export interface SettingRow {
   key: string;
   /** What the key controls, from the settings core module. */
   description: string;
-  /** `text`: free text (message_style), shown as plain text and sent back as a JSON string. */
-  kind: "number" | "boolean" | "models" | "json" | "mode" | "text";
+  /** `text`: free text, shown as plain text and sent back as a JSON string. `list`: a list of strings, edited item by item and sent back as a JSON array. */
+  kind: "number" | "boolean" | "models" | "json" | "mode" | "text" | "list";
   value: string;
   source: "override" | "file" | "default";
   file_value: string | null;
