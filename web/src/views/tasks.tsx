@@ -156,9 +156,9 @@ function useTaskAction(token: string | null) {
 /**
  * Quick add: the submit key (`addKey`, the owner's `tasks_add_key` setting: Enter, or ⌘Enter with plain Enter adding
  * nothing) or Add posts the words under an ID the page chose. The field keeps that ID, for those words, until the add
- * succeeds, so a retry after an error stores one task. Esc clears the field. The placeholder names the submit key.
+ * succeeds, so a retry after an error stores one task. On a project tab the tab's slug goes with the words (a `+slug` in them replaces it). Esc clears the field. The placeholder names the submit key.
  */
-function QuickAdd({ token, addKey }: { token: string | null; addKey: QuickAddKey }) {
+function QuickAdd({ token, addKey, project }: { token: string | null; addKey: QuickAddKey; project: string | null }) {
   const client = useQueryClient();
   const input = useRef<HTMLInputElement>(null);
   const attempt = useRef<{ id: string; words: string } | null>(null);
@@ -173,7 +173,7 @@ function QuickAdd({ token, addKey }: { token: string | null; addKey: QuickAddKey
     setBusy(true);
     setError(null);
     try {
-      const r = await postTaskAdd(token, id, words);
+      const r = await postTaskAdd(token, id, words, project);
       if (!r.ok) {
         setError(r.error);
         return;
@@ -742,7 +742,7 @@ export function TasksPage() {
         {adding && token !== null && <AddProjectDialog token={token} returnFocusTo={addButton} onCreated={setProject} onClose={() => setAdding(false)} />}
       </div>
       <div className="space-y-1">
-        <QuickAdd token={v?.csrf_token ?? null} addKey={v?.add_key ?? "enter"} />
+        <QuickAdd token={v?.csrf_token ?? null} addKey={v?.add_key ?? "enter"} project={project} />
         {undo.error !== null && (
           <p role="alert" className={ALERT}>
             {undo.error}

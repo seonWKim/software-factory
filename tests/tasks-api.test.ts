@@ -171,6 +171,24 @@ describe("+slug on the dashboard's add, edit and sub routes (design 02-tasks, ta
     expect(await links(s)).toEqual([{ task_id: ID, project_id: "pj_home" }]);
   });
 
+  it("POST /api/v1/tasks with a project links the task to it, shows in that project's list; +slug replaces it; bad values answer 400 and store nothing", async () => {
+    const s = await withProjects();
+    await s.store.createProject({ id: "pj_garden", name: "Garden", created_by: ACTOR });
+    expect((await s.post({ id: ID, words: "buy milk", project: "home" })).status).toBe(200);
+    expect(await links(s)).toEqual([{ task_id: ID, project_id: "pj_home" }]);
+    const list = await respond(s.d, { method: "GET", url: `${TASKS_PATH}?project=home`, host: HOST });
+    expect(JSON.stringify(JSON.parse(list.body).projects)).toContain(ID);
+    const ID2 = "tk_fedcba9876543210";
+    expect((await s.post({ id: ID2, words: "water +garden", project: "home" })).status).toBe(200);
+    expect((await links(s)).filter((l) => (l as { task_id: string }).task_id === ID2)).toEqual([{ task_id: ID2, project_id: "pj_garden" }]);
+    const before = await s.tasks();
+    for (const project of ["nope", "old", "Not A Slug", 5]) {
+      expect((await s.post({ id: "tk_aaaaaaaaaaaa", words: "x", project })).status, String(project)).toBe(400);
+    }
+    expect((await s.post({ id: "tk_aaaaaaaaaaaa", words: "x", project: "home", extra: 1 })).status).toBe(400);
+    expect(await s.tasks()).toEqual(before);
+  });
+
   it("POST /api/v1/tasks/edit answers 400 for an unknown or archived project, writing no edit and no link", async () => {
     const s = await withProjects();
     await s.post({ id: ID, words: "fix tap" });

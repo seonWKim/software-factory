@@ -419,6 +419,25 @@ describe("Tasks page", () => {
       expect(document.activeElement).toBe(field());
     });
 
+    it("on a project tab the POST carries the tab's project; on All projects it is { id, words }", async () => {
+      await show();
+      answer = { status: 200, body: { id: "tk_new" } };
+      type("buy milk");
+      enter();
+      await waitFor(() => expect(posts).toHaveLength(1));
+      expect(Object.keys(JSON.parse(String(posts[0]!.init.body))).sort()).toEqual(["id", "words"]);
+      cleanup();
+      history.replaceState(null, "", "/app/tasks?project=home");
+      current = view({ active_projects: [{ slug: "home", name: "Home" }] });
+      filtered = { home: view({ active_projects: [{ slug: "home", name: "Home" }] }) };
+      await show2();
+      type("buy milk");
+      enter();
+      await waitFor(() => expect(posts).toHaveLength(2));
+      expect(JSON.parse(String(posts[1]!.init.body))).toMatchObject({ words: "buy milk", project: "home" });
+      history.replaceState(null, "", "/app/tasks");
+    });
+
     it("a refusal shows its message beside the field, keeps the text and adds nothing; a retry sends the same id", async () => {
       await show();
       const before = document.querySelectorAll("[data-task]").length;
