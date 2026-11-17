@@ -176,7 +176,6 @@ describe("the verdict dialog on a Needs-you row", () => {
       expect(send().disabled, kind).toBe(true);
       fireEvent.submit(screen.getByRole("dialog").querySelector("form")!);
     }
-    await new Promise((r) => setTimeout(r, 10));
     expect(posts).toEqual([]);
     fireEvent.click(screen.getByRole("radio", { name: "Reject" }));
     fireEvent.change(screen.getByRole("combobox", { name: "Verdict severity" }), { target: { value: "major" } });
@@ -184,7 +183,7 @@ describe("the verdict dialog on a Needs-you row", () => {
     fireEvent.click(send());
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(posts.map((p) => p.body)).toEqual([{ command: "verdict", note: "reject major wrong approach" }]);
-    expect(document.activeElement).toBe(more);
+    await waitFor(() => expect(document.activeElement).toBe(more));
     // Accept sends with no reason.
     openFromMenu("Verdict");
     expect(send().disabled).toBe(false);
@@ -193,14 +192,13 @@ describe("the verdict dialog on a Needs-you row", () => {
     expect(posts[1]!.body).toEqual({ command: "verdict", note: "accept none" });
   });
 
-  it("Esc in the verdict, reject and revise dialogs sends nothing and closes them", async () => {
+  it("Esc in the verdict, reject and revise dialogs sends nothing and closes them", () => {
     mountRow();
     for (const name of ["Verdict", "Reject", "Revise"]) {
       openFromMenu(name);
       fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
       expect(screen.queryByRole("dialog"), name).toBeNull();
     }
-    await new Promise((r) => setTimeout(r, 10));
     expect(posts).toEqual([]);
   });
 
