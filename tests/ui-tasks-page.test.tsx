@@ -278,6 +278,27 @@ describe("Tasks page", () => {
       expect(title("tk_inbox").className.split(" ")).not.toContain("line-through");
     });
 
+    it("a task whose work item closed without a merge shows done with the item's close reason beside it, in the row's details", async () => {
+      current = view({
+        projects: [{
+          list: null,
+          tasks: [
+            done("tk_rejected", { work_item_id: "wi_r", close_reason: "rejected" }), done("tk_wont", { work_item_id: "wi_w", close_reason: "wont_do" }),
+            done("tk_closed", { work_item_id: "wi_c", close_reason: "completed" }), done("tk_merged", { work_item_id: "wi_m", close_reason: null }), row("tk_open"),
+          ],
+        }],
+      });
+      await show();
+      expect(title("tk_rejected").className.split(" ")).toContain("line-through");
+      expect(within(card("tk_rejected")).queryByRole("checkbox")).toBeNull();
+      expect(within(card("tk_rejected")).getByText("rejected")).toBeTruthy();
+      expect(within(card("tk_wont")).getByText("not planned")).toBeTruthy();
+      expect(within(card("tk_closed")).getByText("closed")).toBeTruthy();
+      for (const id of ["tk_merged", "tk_open"]) for (const reason of ["rejected", "not planned", "closed"]) expect(within(card(id)).queryByText(reason)).toBeNull();
+      // Beside the done time, in the row's details line: no new column.
+      expect(within(card("tk_rejected")).getByText("rejected").parentElement).toBe(within(card("tk_rejected")).getByText("done 2026-11-12", { exact: false }).parentElement);
+    });
+
     it("Reopen posts { id } to the reopen route with the token; the row shows open again", async () => {
       current = withNow(done("tk_now", { due_date: "2026-11-12" }));
       await show();
