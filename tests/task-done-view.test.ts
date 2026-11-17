@@ -141,7 +141,7 @@ describe("GET /api/v1/tasks keeps the done tasks of the window", () => {
 });
 
 describe("taskViews with done tasks", () => {
-  it("places a done task by its due date as an open one; overdue keeps one done today only; the timeline draws open tasks only", async () => {
+  it("places a done task by its due date as an open one; overdue keeps one done today only", async () => {
     const s = await setup();
     s.clock.advance(NOW - 3 * DAY - s.clock.now().getTime());
     const today = localDate(new Date(NOW));
@@ -157,7 +157,6 @@ describe("taskViews with done tasks", () => {
     const v = taskViews(all, s.clock.now());
     expect(v.today.overdue.map((t) => t.id).sort()).toEqual(["tk_late_done_today", "tk_late_open"]);
     expect(v.today.due.map((t) => t.id)).toEqual(["tk_timed_done", "tk_timed_open"]);
-    expect(v.timeline.map((b) => b.id)).toEqual(["tk_timed_open"]);
     expect(v.projects.flatMap((p) => p.tasks.map((t) => t.id))).toEqual(expect.arrayContaining(["tk_late_done_before", "tk_timed_done"]));
   });
 });

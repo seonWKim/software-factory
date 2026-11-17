@@ -1,6 +1,6 @@
 // The plain tasks' routes (design 02-tasks): GET /api/v1/tasks, the Tasks page's views (open tasks and the done tasks of the
 // done window) with the stored calendar events; POST /api/v1/tasks/edit,
-// /done, /reopen, /delete and /sub, the page's row actions, and /schedule, its timeline's drop, each calling the store method of its CLI command (`factory task
+// /done, /reopen, /delete and /sub, the page's row actions, each calling the store method of its CLI command (`factory task
 // edit`, `done`, `reopen`, `delete`, `sub`), so the page and the CLI cannot diverge; POST /api/v1/tasks/build,
 // its Build this button (task-build.ts, the same action as `factory task build`); POST /api/v1/tasks/create, a task in a
 // project built at once (createProjectTask, the same action as `factory task create --project`); and POST /api/v1/tasks, which
@@ -11,10 +11,10 @@
 // refusal comes before the store write.
 
 import { readCalendar } from "../calendar/index.js";
-import { needsDueDate, parseQuickAdd, parseQuickEdit, validDate } from "../core/quick-add.js";
+import { needsDueDate, parseQuickAdd, parseQuickEdit } from "../core/quick-add.js";
 import { buildTask, createProjectTask } from "../core/task-build.js";
 import { isProjectSlug } from "../core/projects.js";
-import { ProjectRefused, type TaskStore, doneWindow, durationError, projectRefusal, taskViews } from "../core/tasks.js";
+import { ProjectRefused, type TaskStore, doneWindow, projectRefusal, taskViews } from "../core/tasks.js";
 import { TASK_LIST_LIMIT } from "../core/local-cli.js";
 import type { ApiResult } from "./api.js";
 import type { UiDeps } from "./deps.js";
@@ -31,7 +31,6 @@ export const TASK_DONE_PATH = "/api/v1/tasks/done";
 export const TASK_REOPEN_PATH = "/api/v1/tasks/reopen";
 export const TASK_DELETE_PATH = "/api/v1/tasks/delete";
 export const TASK_SUB_PATH = "/api/v1/tasks/sub";
-export const TASK_SCHEDULE_PATH = "/api/v1/tasks/schedule";
 
 /** A caller-chosen task ID: `tk_` and 8 to 64 URL-safe characters (the CLI's own `tk_<random>`). */
 const TASK_ID = /^tk_[A-Za-z0-9_-]{8,64}$/;
@@ -292,38 +291,6 @@ export async function writeTaskSub(d: UiDeps, body: unknown): Promise<ApiResult>
   });
 }
 
-const DATE = /^\d{4}-\d{2}-\d{2}$/;
-const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
-
-/** A schedule body: `{ id, date, time }` and an optional `duration_minutes`, or why it is not one. */
-function parseSchedule(body: unknown): { id: string; date: string; time: string; duration_minutes?: number } | { error: string } {
-  if (typeof body !== "object" || body === null || Array.isArray(body)) return { error: "the body must be a JSON object" };
-  const b = body as Record<string, unknown>;
-  const extra = Object.keys(b).find((k) => !["id", "date", "time", "duration_minutes"].includes(k));
-  if (extra) return { error: `unknown field "${extra}"` };
-  const id = fieldError("id", b.id, true);
-  if (id !== null) return { error: id };
-  if (typeof b.date !== "string" || !DATE.test(b.date) || !validDate(b.date)) return { error: "date must be a real date, YYYY-MM-DD" };
-  if (typeof b.time !== "string" || !TIME.test(b.time)) return { error: "time must be HH:MM, 24-hour" };
-  if (b.duration_minutes !== undefined && durationError(b.duration_minutes) !== null) return { error: durationError(b.duration_minutes)! };
-  return b as { id: string; date: string; time: string; duration_minutes?: number };
-}
-
-/**
- * POST /api/v1/tasks/schedule with `{ id, date, time }` and an optional `duration_minutes`, the Tasks page's drop on
- * its timeline: the store's updateTask, as `factory task edit <id> <date> <time>` would, so a moved task keeps its
- * stored duration unless one is sent. 400 for a body that is not one; 404 for an unknown task; 409 for a done one;
- * else 200 with the stored task. Every refusal writes nothing.
- */
-export async function writeTaskSchedule(d: UiDeps, body: unknown): Promise<ApiResult> {
-  if ((d.commands?.actor ?? null) === null) return OFF;
-  const b = parseSchedule(body);
-  if ("error" in b) return refused(400, b.error);
-  const r = await d.store.updateTask(b.id, { due: { date: b.date }, due_time: b.time, ...(b.duration_minutes === undefined ? {} : { duration_minutes: b.duration_minutes }) });
-  if (r.ok) return { status: 200, value: { task: (await shown(new Withholder(d.scanner), [r.task]))[0] } };
-  return r.reason === "done" ? refused(409, "the task is done: a done task cannot be scheduled") : unknown(b.id);
-}
-
 /** Every POST route of this file and projects-api.ts by path, for server.ts: each after the request guards, with the commands actor's token. */
 export const TASK_WRITES: Readonly<Record<string, (d: UiDeps, body: unknown) => Promise<ApiResult>>> = {
   [TASKS_PATH]: writeTask,
@@ -334,7 +301,6 @@ export const TASK_WRITES: Readonly<Record<string, (d: UiDeps, body: unknown) => 
   [TASK_REOPEN_PATH]: writeTaskReopen,
   [TASK_DELETE_PATH]: writeTaskDelete,
   [TASK_SUB_PATH]: writeTaskSub,
-  [TASK_SCHEDULE_PATH]: writeTaskSchedule,
   [TASK_PROJECT_PATH]: writeTaskProject,
   [PROJECTS_PATH]: writeProject,
 };

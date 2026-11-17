@@ -4,7 +4,7 @@
 // /api/v1/packs/approvals (postPackApproval, the Plugins page's Approve and Revoke; postPackAdd, its Add), POST /api/v1/plugins/import
 // (postPluginsImport, the Plugins page's Import dialog; its read, getPluginsImport, sends the token too) and POST
 // /api/v1/tasks/build (postTaskBuild), POST /api/v1/tasks (postTaskAdd) and the Tasks page's row actions under
-// /api/v1/tasks (postTaskAction: edit, done, reopen (⌘Z and All's done list), delete, sub, and schedule, the timeline's drop), the
+// /api/v1/tasks (postTaskAction: edit, done, reopen (⌘Z and All's done list), delete and sub), the
 // project dialog's POST /api/v1/projects (postProject) and POST /api/v1/tasks/project (postTaskProject) and POST /api/v1/data/ask
 // (postDataAsk) and Migrate now, Start and Restart now (POST /api/v1/migrate, postMigrate; POST /api/v1/supervisor, postSupervisor),
 // each with the per-process CSRF token (from GET /api/v1/settings, /api/v1/supervisor,
@@ -952,21 +952,6 @@ export type DayRow = TaskRow | EventRow;
 
 export const isEventRow = (r: DayRow): r is EventRow => "kind" in r && r.kind === "event";
 
-/**
- * One block on today's timeline (design 02-tasks, schedule a task): a timed task, drawn its duration (30 minutes when
- * none is stored), or a read-only timed event. `offset`: minutes after midnight it starts; `minutes`: how long it is
- * drawn. `id`: the task's ID, or `<source>:<id>` for an event.
- */
-export interface TimelineRow {
-  kind: "task" | "event";
-  id: string;
-  title: string;
-  start: string;
-  end: string;
-  offset: number;
-  minutes: number;
-}
-
 /** A calendar source's last sync: when it last succeeded (null: never) and whether its last read failed. */
 export interface CalendarSync {
   source: string;
@@ -988,8 +973,6 @@ export interface TasksView {
   projects: { list: string | null; tasks: TaskRow[] }[];
   /** The active task projects, by slug (absent from an older server). */
   active_projects?: ProjectChoice[];
-  /** Today's timed tasks and events, placed by the server (absent from an older server). */
-  timeline?: TimelineRow[];
   calendar?: CalendarSync[];
   csrf_token: string | null;
   can_build: boolean;
@@ -1435,11 +1418,11 @@ export async function postCalendarDisconnect(token: string, plugin: string): Pro
 }
 
 /** A Tasks page row action: the path segment of its route. */
-export type TaskAction = "edit" | "done" | "reopen" | "delete" | "sub" | "schedule";
+export type TaskAction = "edit" | "done" | "reopen" | "delete" | "sub";
 
 /**
  * POST /api/v1/tasks/<action>: a row action (edit `{ id, words }`, done and delete `{ id }`, sub `{ parent, id, words }`),
- * ⌘Z's undo of a completion (reopen `{ id }`), or a drop on the timeline (schedule `{ id, date, time }`).
+ * or ⌘Z's undo of a completion (reopen `{ id }`).
  * A refusal (400, 404, 409, …) comes back as `{ ok: false, error }` with the server's reason.
  */
 export async function postTaskAction(token: string, action: TaskAction, body: Record<string, string>): Promise<{ ok: true } | { ok: false; error: string }> {
