@@ -1,0 +1,9 @@
+## History
+
+- **First start of the GitHub source** (decision changed 2026-11-07, issue #341). Before: a fresh install's first poll read one page of closed PRs and the merger of each merged one, so every past merge there was recorded as an unreviewed merge with a warning.
+- **Stream intake** (new decision, 2026-11-01). Before: every source was polled on a timer, so a source that pushes events, like Slack Socket Mode, had to be forced into polling.
+- **Several sources** (decision changed 2026-11-01). Before: `plugins.source` named one plugin and the controller sent every comment, 👀, status and close through that one adapter, so a second source such as Slack could not run next to GitHub, and its items would have been answered through GitHub.
+- **Pull requests a person opens, and a person's pushes** (decision changed 2026-11-01, issue #113). Before: only factory PRs were tracked: the GitHub source read pull requests on factory branches only, so a PR a person opened could merge with no review run, no scope or size check and no record, and a push a person made to a factory branch was invisible to the factory.
+- **Local intake** (decision changed 2026-11-07, issue #199). Before: polled intake was GitHub only, nothing read the CLI command log and nothing stored item messages; now local intake and item messages live in the store, through the `local` source.
+- **Item thread and command inbox** (decision changed 2026-11-07, issue #281). Before: local item messages and CLI commands lived in two tables from migration 21 named for the local source only, so the store had no single place for an item's conversation.
+- **Stream intake cleanup read `inbox_retention_days`** (until 2026-11-16, design 08-retention). Before: raw records were kept `inbox_retention_days` days (default 14); now `retention.raw_records_days` (default 7), the old key a deprecated fallback.
