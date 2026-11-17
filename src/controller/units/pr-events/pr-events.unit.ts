@@ -65,10 +65,6 @@ export class PrEventsUnit {
             reason: "pr_closed_unmerged",
           };
     });
-    if (e.kind === "change_merged") {
-      const closed = await this.c.k.reader.getWorkItem(item.id);
-      if (closed?.stage === "CLOSED" && closed.close_reason === "completed" && closed.merge_sha === e.merge_sha) await this.closeLinkedTasks(item.id);
-    }
     // Items waiting on this one move now, with no other action (design §5, 2026-11-03).
     await this.c.k.guard("dependents", () => this.c.unit("coordination").releaseDependents(item.source.id));
   }
@@ -131,7 +127,6 @@ export class PrEventsUnit {
         }));
     const closed = await this.c.k.reader.getWorkItem(item.id);
     if (closed?.stage !== "CLOSED" || closed.merge_sha !== r.sha) return;
-    await this.closeLinkedTasks(item.id);
     this.c.k.d.log.info("PR merged", { work_item_id: item.id, change_ref, merge_sha: r.sha, user_id: actor.id });
     const head = String(a.head_sha).slice(0, 12);
     await this.c.unit("outbox").post(item, item.source, `Merged PR #${pr} at its reviewed head \`${head}\` as \`${r.sha.slice(0, 12)}\` (a merge commit). The item is closed.`, `<!-- factory:pr-merged:${key} -->`);
@@ -139,9 +134,9 @@ export class PrEventsUnit {
   }
 
   /**
-   * A merged item's plain task, the one `task build` linked to it (design 02-tasks), is done: called by each merge path
-   * (this unit's two and the local merge) once the item is closed as merged. Conditional in the store, so a repeated
-   * event or delivery closes nothing more; an unlinked task is never read.
+   * A closed item's plain tasks, those `task build` linked to it (design 02-tasks), are done. The store's close transition
+   * already completes them in the item's own transaction, whatever the close; the local merge still calls this after its
+   * close, which then finds none open. Conditional in the store, so a repeat closes nothing more.
    */
   async closeLinkedTasks(id: WorkItemId): Promise<void> {
     await this.c.k.d.store.closeLinkedTasks(id);

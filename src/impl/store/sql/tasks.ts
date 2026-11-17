@@ -205,15 +205,21 @@ export async function linkTask(db: SqlDriver, id: string, work_item_id: WorkItem
   return select(db, "id", id);
 }
 
-/** Completes each open task linked to the item, in one transaction; a second call finds none open. */
+/**
+ * In `tx`: completes each open task linked to the item, as completeTask does each. The store's close transition calls it
+ * in the item's own transaction (design 02-tasks), so a closed item never leaves its task open; a second call finds none open.
+ */
+export async function completeLinkedTasks(db: SqlDriver, tx: SqlExecutor, work_item_id: WorkItemId, now: Timestamp): Promise<Task[]> {
+  const open = await tx.all("SELECT id FROM controller_tasks WHERE work_item_id = ? AND done_at IS NULL ORDER BY id", [work_item_id]);
+  const closed: Task[] = [];
+  for (const { id } of open) {
+    const r = await complete(db, tx, String(id), now);
+    if (r.ok && r.completed) closed.push(r.task);
+  }
+  return closed;
+}
+
+/** completeLinkedTasks in its own transaction. */
 export async function closeLinkedTasks(db: SqlDriver, work_item_id: WorkItemId, now: Timestamp): Promise<Task[]> {
-  return db.transaction(async (tx) => {
-    const open = await tx.all("SELECT id FROM controller_tasks WHERE work_item_id = ? AND done_at IS NULL ORDER BY id", [work_item_id]);
-    const closed: Task[] = [];
-    for (const { id } of open) {
-      const r = await complete(db, tx, String(id), now);
-      if (r.ok && r.completed) closed.push(r.task);
-    }
-    return closed;
-  });
+  return db.transaction((tx) => completeLinkedTasks(db, tx, work_item_id, now));
 }

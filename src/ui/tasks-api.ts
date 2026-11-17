@@ -14,7 +14,8 @@ import { readCalendar } from "../calendar/index.js";
 import { needsDueDate, parseQuickAdd, parseQuickEdit } from "../core/quick-add.js";
 import { buildTask, createProjectTask } from "../core/task-build.js";
 import { isProjectSlug } from "../core/projects.js";
-import { ProjectRefused, type TaskStore, doneWindow, projectRefusal, taskViews } from "../core/tasks.js";
+import { ProjectRefused, type Task, type TaskStore, doneWindow, projectRefusal, taskViews } from "../core/tasks.js";
+import type { CloseReason } from "../core/types.js";
 import { TASK_LIST_LIMIT } from "../core/local-cli.js";
 import type { ApiResult } from "./api.js";
 import type { UiDeps } from "./deps.js";
@@ -52,7 +53,8 @@ async function shown<T extends { title: string }>(w: Withholder, rows: readonly 
  * tasks stay) at the server's clock, in its time zone, with the calendar events stored by the last syncs placed in Today
  * and Upcoming, and `calendar`, each source's last sync time and whether its last sync failed. Each task row carries
  * `projects`, the slugs of its active task projects, and `active_projects` lists the active projects (slug and name)
- * for the page's project switcher. With `project` (a slug, `?project=`) the views hold only the tasks, open or done, linked to
+ * for the page's project switcher, and `close_reason`, a done task's linked item's close reason when it closed without a merge
+ * (closeReasons; else null). With `project` (a slug, `?project=`) the views hold only the tasks, open or done, linked to
  * that project: 400 for a value that is not a slug or an archived project, 404 for an unknown one. Reads the stored
  * copy only: no source is called and nothing is written. `csrf_token` and `can_build` for Build this (null and false
  * when the commands route is off). `add_key`, the quick-add field's submit key: the `tasks_add_key` setting's stored
@@ -66,7 +68,8 @@ export async function readTasks(d: UiDeps, project: string | null = null): Promi
   const done = (await d.store.listDoneTasks(doneWindow(now, null))).tasks;
   const listed = await shown(w, [...await d.store.listTasks(TASK_LIST_LIMIT), ...done]);
   const slugs = await d.store.listTaskProjectSlugs(listed.map((t) => t.id));
-  const rows = listed.map((t) => ({ ...t, projects: slugs[t.id] ?? [] }));
+  const reasons = await closeReasons(d, listed);
+  const rows = listed.map((t) => ({ ...t, projects: slugs[t.id] ?? [], close_reason: reasons.get(t.id) ?? null }));
   const kept = project === null ? rows : rows.filter((t) => t.projects.includes(project));
   const active_projects = await Promise.all((await d.store.listProjects("active")).map(async (p) => ({ slug: p.slug, name: (await w.plain(p.name)).text })));
   const calendar = await readCalendar(storeSql(d.store));
@@ -79,6 +82,20 @@ export async function readTasks(d: UiDeps, project: string | null = null): Promi
       as_of: now.toISOString(), ...taskViews(kept, now, events), active_projects, calendar: calendar.sources, csrf_token: d.commands?.token ?? null, can_build, add_key,
     },
   };
+}
+
+/**
+ * The close reason of each done task's linked work item, read from the item now (design 02-tasks: nothing is stored on
+ * the task), only for an item closed without a merge; a merged item's row shows its state instead.
+ */
+async function closeReasons(d: UiDeps, tasks: readonly Task[]): Promise<Map<string, CloseReason>> {
+  const out = new Map<string, CloseReason>();
+  for (const t of tasks) {
+    if (t.done_at === null || t.work_item_id === null) continue;
+    const item = await d.store.getWorkItem(t.work_item_id);
+    if (item?.stage === "CLOSED" && item.close_reason !== null && item.merge_sha === null) out.set(t.id, item.close_reason);
+  }
+  return out;
 }
 
 /**

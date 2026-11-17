@@ -295,10 +295,10 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
       await tx.run("UPDATE controller_budget_checkpoints SET outcome = ? WHERE work_item_id = ? AND outcome IS NULL", [outcome, input.id]);
     }
     await evaluations.onMergeTransition(tx, current, item, input.actor.id, now); // a merge stores its evaluation once (design §6)
-    // A closed item (its PR merged or closed: the merge path's transition) holds nothing from this commit on, so
-    // the queued runs' decisions that name it go too; the next claim records what holds them now (design §5).
-    // An approval stays: it is the human's, for that run.
+    // A closed item (its PR merged or closed: the merge path's transition) holds nothing from this commit on, so the queued runs' decisions that name
+    // it go too; the next claim records what holds them now (design §5). An approval stays: it is the human's, for that run. Its linked tasks are done (design 02-tasks).
     if (current.stage !== "CLOSED" && item.stage === "CLOSED") {
+      await tasks.completeLinkedTasks(this.db, tx, input.id, now);
       await tx.run(
         `DELETE FROM controller_claim_decisions WHERE holder_work_item_id = ? AND approved_by IS NULL
            AND run_id IN (SELECT id FROM worker_runs WHERE status = 'queued')`,

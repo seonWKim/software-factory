@@ -16,6 +16,7 @@ import { ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { Pagination } from "../components/ui/pagination.js";
 import { Tabs } from "../components/ui/tabs.js";
 import { useUrlParam } from "../lib/url-param.js";
+import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { QUICK_ADD_ATTR, QUICK_ADD_KEYS, type QuickAddKey, isQuickAddSubmit, isUndo } from "../keys.js";
 import { cn } from "../lib/cn.js";
@@ -29,7 +30,7 @@ import { NeedsYou, WorkState } from "./task-work.js";
 // today, each later day by date, and no date, in that order, 20 rows to a page (the shared Pagination, paged here from the one
 // read). Page 1 holds the overdue and today groups, so the list opens on today.
 // A done task of the last 30 days (design 02-tasks, done tasks stay) keeps its place: its title struck through and muted,
-// its done time, and only Reopen (the same route as ⌘Z); no checkbox, edit, sub-task, projects, delete or Build this.
+// its done time, its linked item's close reason when the item closed without a merge, and only Reopen (the same route as ⌘Z); no checkbox, edit, sub-task, projects, delete or Build this.
 // The server places overdue and today and orders each day; the page only compares ISO date text. Calendar events are not shown here: the Calendar page (views/
 // calendar.tsx) lists them, with the stale-sync notice. Build this sends a task to intake once (POST /api/v1/tasks/build); a
 // built task links to its work item instead. One list of cards at every width, so no table turns into cards.
@@ -49,6 +50,10 @@ import { NeedsYou, WorkState } from "./task-work.js";
 // are spaced by one flex gap, the Section gap of design-system/patterns.md.
 
 const muted = "text-xs text-pretty text-text-2";
+
+/** A done task's linked item's close reason, as the row says it beside the done time (design 02-tasks). */
+const closedKey = (reason: NonNullable<TaskRow["close_reason"]>): MessageKey =>
+  reason === "rejected" ? "tasks.closedRejected" : reason === "wont_do" ? "tasks.closedNotPlanned" : "tasks.closedOther";
 /** A timed task with no stored duration shows this long. */
 const DEFAULT_MINUTES = 30;
 
@@ -467,6 +472,7 @@ function TaskCard({ task, overdue: inOverdue = false, sub = false }: { task: Tas
         <p className={cn(muted, "flex flex-wrap gap-x-3 gap-y-1")}>
           {overdue && <StatusBadge level="stuck" size="sm">{t("tasks.overdue")}</StatusBadge>}
           {task.done_at != null && <span className="tabular-nums">{t("tasks.doneAt", { at: localDateTime(task.done_at) })}</span>}
+          {done && task.close_reason != null && <span>{t(closedKey(task.close_reason))}</span>}
           {parent !== null && !sub && titles.has(parent) && <span className="break-words">{t("tasks.subOf", { title: titles.get(parent)! })}</span>}
           {due !== null && <span className={cn("tabular-nums", overdue && "text-pill-bad-fg")}>{t("tasks.due", { due })}</span>}
           {minutes !== null && <span className="tabular-nums">{t("tasks.minutes", { minutes })}</span>}
