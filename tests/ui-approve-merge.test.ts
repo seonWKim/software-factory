@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { refusalText, specNotWaiting } from "../src/core/commands.js";
 import { refusalReply } from "../src/core/authorize.js";
 import type { LocalMergeResult, LocalMergeSpec } from "../src/core/local-merge.js";
-import { APPROVED_RUN_QUEUED, MERGE_QUEUED, MERGE_REQUESTED, MERGE_RETURNED } from "../src/core/request-transition.js";
+import { APPROVED_RUN_QUEUED, MERGE_QUEUED, MERGE_REQUESTED, MERGE_RETURNED, MERGE_REQUESTS_READ, mergeRequested } from "../src/core/request-transition.js";
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import type { AuthDecision, AuthProvider, Principal } from "../src/interfaces/auth-provider.js";
@@ -228,7 +228,10 @@ describe("Approve applies while the request is handled", () => {
 function pageWith(h: Awaited<ReturnType<typeof harness>>, scanner: UiDeps["scanner"]): UiDeps {
   return {
     store: h.store, scanner, clock: h.clock, lease_ms: 60_000, health: new HealthMonitor(async () => [], h.clock),
-    commands: { actor: OWNER, source: "config", token: TOKEN, allowed: (action) => h.roles.authorize({ user_id: OWNER }, action) },
+    commands: {
+      actor: OWNER, source: "config", token: TOKEN, allowed: (action) => h.roles.authorize({ user_id: OWNER }, action),
+      mergeRequested: async (id) => mergeRequested(await h.store.listAppCommandRequestsForItem(id, MERGE_REQUESTS_READ)),
+    },
   };
 }
 
@@ -262,7 +265,7 @@ describe("Merge is answered while the request is handled; the controller queues 
     expect(await button(h, it1)).toEqual({ enabled: false, reason: "Checking…" });
   });
 
-  it("an item with a PR: Merging… before any tick, nothing written; the controller queues it, asks the forge, and the merge closes it", async () => {
+  it("an item with a PR: Merging… before any tick, nothing written; the controller asks the forge, and the merge closes it", async () => {
     const h = await harness();
     const it1 = await h.itemIn(issueRef(1), { ...READY, change_ref: "42" }, "h1");
     const r = await h.post(it1, { command: "merge" });
@@ -274,8 +277,8 @@ describe("Merge is answered while the request is handled; the controller queues 
 
     await h.controller.tickCommands();
     await h.controller.tickOutbox();
-    // The controller's pass entered the merge (merge_requested, merge_queued), then the forge merged it.
-    expect((await h.reasons(it1)).slice(0, 1)).toEqual([MERGE_REQUESTED]);
+    // The forge merges in one call: the item has no queue to wait in, so it never leaves merge_pending before it closes.
+    expect(await h.reasons(it1)).not.toContain(MERGE_REQUESTED);
     expect(h.forge.mergeCalls).toEqual([{ pr: 42, head_sha: "h1", method: "merge" }]);
     expect(await h.store.getWorkItem(it1.id)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "merge-42" });
   });
@@ -327,7 +330,7 @@ describe("Merge is answered while the request is handled; the controller queues 
     expect(await button(h, it1)).toEqual({ enabled: true, reason: null });
   });
 
-  it("the forge's refusal returns a PR item to merge_pending with its reason", async () => {
+  it("the forge's refusal leaves a PR item at merge_pending and posts why; the button no longer reads Merging…", async () => {
     const h = await harness();
     const it1 = await h.itemIn(issueRef(1), { ...READY, change_ref: "42" }, "h1");
     h.forge.prHeads[42] = "h2";
@@ -336,8 +339,9 @@ describe("Merge is answered while the request is handled; the controller queues 
     await h.controller.tickOutbox();
 
     expect(await h.state(it1)).toEqual({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
-    const back = (await h.store.listStateChanges(it1.id)).find((c) => c.reason === MERGE_RETURNED);
-    expect(back!.detail!.refusal).toContain("head moved");
+    expect(await h.reasons(it1)).toEqual([]);
+    expect((await h.posted(it1)).join("\n")).toContain("head moved");
+    expect((await button(h, it1)).reason).not.toBe("Merging…");
   });
 
   it("a refused Merge (not waiting) stores nothing, answers with the controller's words, and the controller posts nothing", async () => {

@@ -93,7 +93,7 @@ export class MergeQueueUnit {
       // A landing entry's item closes as it lands: only the landing decides on it.
       if (e.state === "merging") continue;
       const item = await this.c.unit("local-merge").item(e.work_item_id as WorkItemId);
-      // Waiting for its merge: merge_pending, or merge_queued once its Merge was pressed on the dashboard.
+      // Waiting for its merge: merge_pending, or merge_queued once the controller took its dashboard Merge.
       if (item && this.c.unit("commands").merge.waits(item) && item.change_ref === null) items.set(e.entry_id, item);
       else await this.leave(e, "the item no longer waits for a merge", false);
     }

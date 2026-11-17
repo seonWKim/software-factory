@@ -17,6 +17,7 @@ import { saveProject, saveProjectLabel } from "./core/project-labels.js";
 import { errorText, type Logger } from "./core/log.js";
 import type { CliEnvironment, CliIdentity } from "./core/local-cli.js";
 import { canMergeLocal } from "./core/local-merge.js";
+import { MERGE_REQUESTS_READ, mergeRequested } from "./core/commands.js";
 import { StoredLearnedSettings } from "./core/learned-settings.js";
 import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
@@ -1040,11 +1041,10 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   // One token per process for every write route; held only in memory, never written to a file, the store or a log.
   // The UI server, loaded here only: through setup.ts it reaches GitHub modules a solo start must not load.
   const who = uiCommandsActor(uiUserId(loaded.file.ui), opts.identity, (await import("./ui/server.js")).BIND);
-  // The Merge button's facts from config (design §9): a forge selected, a sandbox that merges locally (built only to ask).
-  const actor = who.actor;
+  // The Merge button's facts (design §9): a forge selected, a sandbox that merges locally (built only to ask), a Merge request still pending.
   const commands: UiCommands = {
-    ...who, token, forge: loaded.plugins.forge !== undefined, localMerge: canMergeLocal(await p.sandbox()),
-    allowed: (action) => (actor === null ? Promise.resolve({ allow: false, reason: "no_actor" }) : onProject(actor, action, true)),
+    ...who, token, forge: loaded.plugins.forge !== undefined, localMerge: canMergeLocal(await p.sandbox()), mergeRequested: async (id) => mergeRequested(await store.listAppCommandRequestsForItem(id, MERGE_REQUESTS_READ)),
+    allowed: (action) => (who.actor === null ? Promise.resolve({ allow: false, reason: "no_actor" }) : onProject(who.actor, action, true)),
   };
   // The mode switch, the auto-merge tier and a loosening change need approve_merge on the project (design 08-settings), as the Merge button.
   settings.mayApproveMerge = async () => refusalOf(await onProject(opts.identity.user, "approve_merge"));

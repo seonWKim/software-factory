@@ -33,8 +33,9 @@ export class AppRequestsUnit {
    * failed post leaves the request pending for the next tick. Safe to run twice: a request whose transition is
    * already stored (an earlier try, another replica, or the dashboard's request path: design 09-dashboard-app) is
    * marked applied, after the rest of a request-time approval (CommandsUnit.afterRequestApprove). The request path
-   * writes nothing for a Merge: here the item enters the merge queue (merge_pending → merge_queued, merge_requested)
-   * before its merge runs, a refusal puts it back at merge_pending, and a Merge another request queued is done already.
+   * writes nothing for a Merge: here a local item enters the merge queue (merge_pending → merge_queued,
+   * merge_requested) before its merge runs, a refusal puts it back at merge_pending, and a Merge another request
+   * queued is done already. An item with a PR asks the forge as before; its item stays merge_pending.
    */
   async applyAppRequest(r: AppCommandRequest): Promise<void> {
     const known = COMMANDS.some((c) => c.name === r.command);
@@ -82,7 +83,7 @@ export class AppRequestsUnit {
   }
 
   /**
-   * Enters a dashboard Merge: an item at merge_pending moves to merge_queued, tagged with the request. False when
+   * Enters a dashboard Merge: a local item at merge_pending moves to merge_queued, tagged with the request. False when
    * another request's Merge queued it already (that one runs the merge); true for this request's own entry, also
    * on a second try of it.
    */

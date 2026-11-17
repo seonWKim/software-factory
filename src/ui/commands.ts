@@ -24,7 +24,7 @@
 import { randomUUID } from "node:crypto";
 import { COMMAND_TABLE } from "../core/command-table.js";
 import {
-  COMMANDS, type CommandName, ROW_LABELS, commandPhase, commandSpec, commandsFor, itemCommandState, latestSpec, MERGE_REQUESTS_READ, mergeQueued, mergeRequested, mergeRoute, phaseLabel, requestTransition,
+  COMMANDS, type CommandName, ROW_LABELS, commandPhase, commandSpec, commandsFor, itemCommandState, latestSpec, mergeQueued, mergeRoute, phaseLabel, requestTransition,
 } from "../core/commands.js";
 import { refusalReply } from "../core/authorize.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, isProposalId, parseProposalMarker, typed } from "../core/interpret.js";
@@ -57,6 +57,11 @@ export interface UiCommands {
   forge?: boolean;
   /** Whether the controller's sandbox can merge locally, for a local item's Merge; set by compose.ts buildUiParts. Absent: not known here; the controller still checks. */
   localMerge?: boolean;
+  /**
+   * Whether a dashboard Merge of the item is stored and not handled yet (core mergeRequested): its button reads
+   * "Merging…" until the controller's pass enters the merge queue. Set by compose.ts buildUiParts. Absent: not read.
+   */
+  mergeRequested?: (id: WorkItemId) => Promise<boolean>;
 }
 
 /** The largest commands body read. A command and a 2000-character note fit well inside it. */
@@ -357,11 +362,11 @@ const off = (reason: string): MergeReadiness => ({ enabled: false, reason });
  * controller checks everything again when it applies the request; GitHub checks the head at merge time.
  */
 export async function mergeReadiness(d: UiDeps, it: WorkItem, check: MergeCheckState | null, allowed: () => Promise<ActorGrant>): Promise<MergeReadiness> {
-  // Merge taken by the controller (design 09-dashboard-app): the merge queue checks a local item's merged result, the forge merges a PR.
-  if (mergeQueued(it)) return off(mergeRoute(it) === "local" ? ROW_LABELS.checking : ROW_LABELS.merging);
+  // Merge taken by the controller (design 09-dashboard-app): the merge queue checks a local item's merged result.
+  if (mergeQueued(it)) return off(ROW_LABELS.checking);
   if (commandPhase(it) !== "merge_pending") return off(NOT_WAITING);
   // A Merge stored and not handled yet: the controller enters the merge queue on its next pass, so a read before it keeps "Merging…".
-  if (mergeRequested(await d.store.listAppCommandRequestsForItem(it.id, MERGE_REQUESTS_READ))) return off(ROW_LABELS.merging);
+  if (await d.commands?.mergeRequested?.(it.id)) return off(ROW_LABELS.merging);
   // The controller's route: a local item with no PR takes the local merge, an item with a PR its PR's merge.
   const local = mergeRoute(it) === "local";
   if (!local && it.change_ref === null) return off("no PR to merge");

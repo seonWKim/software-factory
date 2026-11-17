@@ -115,7 +115,6 @@ export class PrEventsUnit {
     if (r === null || !r.merged) {
       const why = r === null ? `the forge could not be reached to merge PR #${pr}, so nothing moved; press Merge again` : r.refused;
       this.c.k.d.log.info("app command refused", { work_item_id: item.id, command: "merge", reason: why.slice(0, 300) });
-      await this.c.unit("commands").mergeReturned(item.id, why);
       await this.c.unit("outbox").post(item, item.source, `\`merge\` was not applied: ${why}.`, `<!-- factory:refused:${key} -->`);
       return;
     }

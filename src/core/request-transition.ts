@@ -40,7 +40,7 @@ export const APP_REQUEST = "app_request";
 export const QUEUED_RUN = "queued_run";
 /** The reason of the controller's transition that queues a request-time approval's run. */
 export const APPROVED_RUN_QUEUED = "approved_run_queued";
-/** blocked_reason of an item whose Merge the controller took: its merge queue or the forge's merge has it now. */
+/** blocked_reason of a local item whose Merge the controller took: its merge queue has it now. */
 export const MERGE_QUEUED = "merge_queued";
 /** The reason of the controller's entry of a dashboard Merge: merge_pending → merge_queued. */
 export const MERGE_REQUESTED = "merge_requested";
@@ -323,11 +323,12 @@ export function prMergeRefusal(it: WorkItem, forge: boolean, name: ChangeName): 
 }
 
 /**
- * The controller's entry of a dashboard Merge (request `seq`): merge_pending → merge_queued, tagged with the request,
- * before its merge runs; null when the item does not wait at merge_pending (queued already, or moved on).
+ * The controller's entry of a dashboard Merge (request `seq`) into the local merge queue: merge_pending →
+ * merge_queued, tagged with the request, before its merge runs. Null when the item does not wait at merge_pending
+ * (queued already, or moved on), or takes its PR's merge: the forge merges it in one call, with no queue to wait in.
  */
 export function mergeEntered(it: WorkItem, actor: Actor, seq: number): Transition | null {
-  if (!awaitingMerge(it) || mergeQueued(it)) return null;
+  if (!awaitingMerge(it) || mergeQueued(it) || mergeRoute(it) !== "local") return null;
   return { patch: { blocked_on: "ci", blocked_reason: MERGE_QUEUED }, actor, reason: MERGE_REQUESTED, detail: { [APP_REQUEST]: seq } };
 }
 

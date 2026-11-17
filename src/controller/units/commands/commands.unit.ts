@@ -125,7 +125,7 @@ export class CommandsUnit {
   };
 
   /**
-   * A merge refused or failed after its Merge was pressed (a conflict, a red check, the forge's refusal): an item at
+   * A merge refused or failed after its Merge was pressed (a conflict, a red check, a hook veto): a local item at
    * merge_queued goes back to merge_pending with the refusal on its state change, so the dashboard's row shows why
    * and offers Merge again. Any other item changes nothing (a `factory merge` or auto mode's merge never left it).
    */
