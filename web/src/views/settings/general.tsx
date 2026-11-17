@@ -3,6 +3,7 @@ import { API, type AutoStop, type SettingRow, type SettingsView, useApi } from "
 import { Button } from "../../components/ui/button.js";
 import { Input } from "../../components/ui/input.js";
 import { LINK_CLASS } from "../../components/ui/link-style.js";
+import { Tooltip } from "../../components/ui/menu.js";
 import { Section } from "../../components/ui/parts.js";
 import { Switch } from "../../components/ui/switch.js";
 import type { MessageKey } from "../../i18n/en.js";
@@ -104,10 +105,16 @@ export function ModeSwitch({ floating = false }: { floating?: boolean }) {
   const mode = v ? currentMode(v) : null;
   if (!v || !mode) return <span className="text-sm text-text-2">{t("settings.modeLoading")}</span>;
   return (
-    <div data-testid="mode" className="flex items-center gap-2 text-sm whitespace-nowrap" title={v.auto_stop ? autoStopText(v.auto_stop) : undefined}>
-      <span>{t("settings.mode")}</span>
-      <ModeControl view={v} floating={floating} />
-    </div>
+    <Tooltip
+      placement="bottom"
+      align="start"
+      text={<>{v.auto_stop && <span className="mb-1 block">{autoStopText(v.auto_stop)}</span>}{t("settings.modeAutoHint")}</>}
+    >
+      <div data-testid="mode" className="flex items-center gap-2 text-sm whitespace-nowrap">
+        <span>{t("settings.mode")}</span>
+        <ModeControl view={v} floating={floating} />
+      </div>
+    </Tooltip>
   );
 }
 

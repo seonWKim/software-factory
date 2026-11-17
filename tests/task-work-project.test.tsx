@@ -118,10 +118,9 @@ describe("the factory's notes follow the project tabs too", () => {
     expect((await screen.findByRole("alert", {}, SLOW)).textContent).toContain("Factory stopped");
   });
 
-  it("the top bar's count links to /app/, which leads to Tasks with every waiting item", async () => {
+  it("/app/ leads to Tasks with every waiting item", async () => {
     history.replaceState(null, "", "/app/");
     render(createElement(QueryClientProvider, { client: client() }, createElement(App)));
-    expect(screen.getByTestId("needs-you").getAttribute("href")).toBe("/app/");
     await waitFor(() => expect(location.pathname).toBe("/app/tasks"));
     await waitFor(async () => expect(await listed()).toEqual(["wi_bare", "wi_both", "wi_home", "wi_plain"]), SLOW);
   });

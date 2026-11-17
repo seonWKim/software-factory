@@ -59,6 +59,7 @@ export const settings = {
   "settings.mode": "Mode",
   "settings.autoMode": "Auto mode",
   "settings.modeIntro": "Auto approves specs below tier 4 with no owner-only decision and merges reviewed local changes up to the auto-merge tier; tier 4 and the gate list always wait for a person. A red main, a crash loop or a budget checkpoint sets it back to manual; a failure alarm about agent runs only holds the items it hit. Changing either needs approve_merge.",
+  "settings.modeAutoHint": "Auto approves specs below tier 4 and merges reviewed local changes up to the auto-merge tier. Tier 4 and the gate list wait for a person.",
   "settings.autoStopped": "Back to manual at {time}: {reason}",
   "settings.autoStopRedMain": "the checks failed on the base branch after a merge",
   "settings.autoStopBudget": "an item reached its budget checkpoint",
