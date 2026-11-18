@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import type { WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
+import type { Run, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
 import { Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -69,7 +69,14 @@ class GitPushBroker implements ToolBroker {
   names() {
     return this.calls.map((c) => c.name);
   }
+  /** The branches outbound pushed to the forge, in order. */
+  pushed(): string[] {
+    return this.calls.filter((c) => c.name === "forge.push_branch").map((c) => String(c.args.branch));
+  }
 }
+
+/** The wip branch a failed run kept its commits on (design §5 Restarts). */
+const wipOf = (run: Run) => (run.outcome?.status === "failed" ? run.outcome.wip : undefined);
 
 /** The implement run's gate comments, handed to outbound as thread entries (RFC 0015 M7). */
 async function gateComments(f: { store: Parameters<typeof runComments>[0] }, id: WorkItemId) {
@@ -304,24 +311,31 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     ]);
   });
 
-  it("conflicts left after the agent's step fail the run with merge_conflict: nothing pushed, no handoffs, a comment on the issue", async () => {
+  it("conflicts left after the agent's step fail the run with merge_conflict: the commits go to the wip branch only, no handoffs, a comment on the issue", async () => {
     const f = await setup({ moveMain: MAIN_EDITS_A, resolve: () => undefined });
     const item = await f.approveAndImplement();
 
     const runs = await f.implementRuns(item.id);
-    expect(runs[0]!.outcome).toMatchObject({ status: "failed", error_code: "merge_conflict", infra: false });
+    expect(runs[0]!.outcome).toMatchObject({ status: "failed", error_code: "merge_conflict", infra: false, conflicts: ["src/a.txt"] });
     expect(runs.map((r) => r.status)).toEqual(["failed", "queued"]); // a task failure: retried after backoff
     expect(await f.store.getWorkItem(item.id)).toMatchObject({ stage: "RUNNING", blocked_on: "none", restart_count: 0 });
-    expect(f.broker.names()).not.toContain("forge.push_branch");
+    // The implementer's last commit, not the conflicted merge, is kept on the wip branch; the PR branch gets nothing.
+    const wip = wipOf(runs[0]!)!;
+    expect(wip).toMatchObject({ branch: `factory/wip/${item.id}/${runs[0]!.id}`, commits: 1 });
+    expect(f.broker.pushed()).toEqual([wip.branch]);
     expect(f.broker.names()).not.toContain("forge.open_change");
     expect(f.remoteHas(`refs/heads/factory/${item.id}`)).toBe(false);
+    expect(f.remote(`refs/heads/${wip.branch}`)).toBe(wip.head);
+    expect(git(f.origin, "log", "-1", "--format=%s", wip.head)).toBe("implementer edits a (1)");
+    expect(runs[1]!.input?.wip).toEqual(wip);
     expect(await f.store.listHandoffs(item.id)).toEqual([]);
 
     const [c] = (await gateComments(f, item.id));
     expect(c!.number).toBe(5);
     expect(c!.marker).toBe(`<!-- factory:merge-conflict:${runs[0]!.id} -->`);
     expect(c!.body).toContain("- `src/a.txt`");
-    expect(c!.body).toContain("Nothing was pushed");
+    expect(c!.body).toContain(`wip branch \`${wip.branch}\``);
+    expect(c!.body).not.toContain("Nothing was pushed.");
   });
 
   it("tests failing after the resolution fail the run with merge_conflict and push nothing", async () => {
@@ -335,9 +349,9 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     }
     expect(f.conflictSteps).toHaveLength(1);
     expect(f.resolveSteps).toHaveLength(1);
-    expect(f.broker.names()).not.toContain("forge.push_branch");
+    expect(f.broker.pushed()).toEqual([wipOf(run)!.branch]);
     expect(await f.store.listHandoffs(item.id)).toEqual([]);
-    expect((await gateComments(f, item.id))[0]!.body).toContain("Nothing was pushed");
+    expect((await gateComments(f, item.id))[0]!.body).toContain(`wip branch \`${wipOf(run)!.branch}\``);
   });
 
   it("a resolution left unstaged (markers staged, clean file in the working tree) fails with merge_conflict and pushes nothing", async () => {
@@ -353,10 +367,10 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     expect(run.outcome).toMatchObject({ status: "failed", error_code: "merge_conflict", infra: false });
     if (run.outcome?.status === "failed") expect(run.outcome.detail).toContain("not staged");
     expect(f.sandbox.execs.some((c) => c.startsWith("sh -c"))).toBe(false); // tests never ran on an unstaged tree
-    expect(f.broker.names()).not.toContain("forge.push_branch");
+    expect(f.broker.pushed()).toEqual([wipOf(run)!.branch]);
     expect(f.remoteHas(`refs/heads/factory/${item.id}`)).toBe(false);
     expect(await f.store.listHandoffs(item.id)).toEqual([]);
-    expect((await gateComments(f, item.id))[0]!.body).toContain("Nothing was pushed");
+    expect((await gateComments(f, item.id))[0]!.body).toContain(`wip branch \`${wipOf(run)!.branch}\``);
   });
 
   it("an agent that commits the markers itself and fixes only the working tree fails with merge_conflict", async () => {
@@ -371,8 +385,10 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     const item = await f.approveAndImplement();
     const run = (await f.implementRuns(item.id))[0]!;
     expect(run.outcome).toMatchObject({ status: "failed", error_code: "merge_conflict", infra: false });
-    expect(f.broker.names()).not.toContain("forge.push_branch");
+    expect(f.broker.pushed()).toEqual([wipOf(run)!.branch]);
     expect(f.remoteHas(`refs/heads/factory/${item.id}`)).toBe(false);
+    // The agent's commit of the markers is not kept: the wip branch is the implementer's last commit.
+    expect(git(f.origin, "log", "-1", "--format=%s", wipOf(run)!.head)).toBe("implementer edits a (1)");
   });
 
   it("merge_conflict counts toward max_attempts and the last-attempt comment names the code with its label", async () => {
@@ -473,9 +489,35 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     expect(run.outcome).toMatchObject({ status: "failed", error_code: "merge_conflict", infra: false });
     if (run.outcome?.status === "failed") expect(run.outcome.detail).toContain("conflict markers left in: src/a.txt");
     expect(f.sandbox.execs.some((c) => c.startsWith("sh -c"))).toBe(false);
-    expect(f.broker.names()).not.toContain("forge.push_branch");
+    expect(f.broker.pushed()).toEqual([wipOf(run)!.branch]);
     expect(f.remoteHas(`refs/heads/factory/${item.id}`)).toBe(false);
     expect(await f.store.listHandoffs(item.id)).toEqual([]);
+  });
+
+  it("the retry after merge_conflict resolves on the kept commits with one resolve step and pushes the merge", async () => {
+    let resolves = 0;
+    const f = await setup({
+      moveMain: MAIN_EDITS_A,
+      resolve: () => undefined,
+      // The failed run's resolve step leaves the conflict; the retry's resolves it.
+      retry: (wd) => (resolves++ === 0 ? undefined : write(wd, "src/a.txt", "a merged on the retry\n")),
+    });
+    const item = await f.approveAndImplement();
+    const [failed] = await f.implementRuns(item.id);
+    const wip = wipOf(failed!)!;
+    f.clock.advance(f.cfg.retry_max_ms);
+    await f.step();
+    const branch = `refs/heads/factory/${item.id}`;
+    expect((await f.implementRuns(item.id))[1]!.outcome).toMatchObject({ status: "succeeded", data: { conflicts: ["src/a.txt"] } });
+    expect(f.implementCount()).toBe(1); // the work was not rebuilt
+    expect(f.conflictSteps).toHaveLength(1); // the failed run's only
+    expect(f.resolveSteps).toHaveLength(2);
+    expect(f.resolveSteps[1]!.prompt).toContain("### `src/a.txt`");
+    expect(f.resolveSteps[1]!.prompt).not.toContain("## Earlier attempt in this run");
+    expect(f.contains(branch, wip.head)).toBe(true);
+    expect(f.contains(branch, f.remote("refs/heads/main"))).toBe(true);
+    expect(git(f.origin, "show", `${branch}:src/a.txt`)).toBe("a merged on the retry");
+    expect(f.broker.pushed()).toEqual([wip.branch, `factory/${item.id}`]);
   });
 
   it("a failed conflict step and a failed retry on an open PR push nothing: the PR branch is unchanged", async () => {
@@ -495,8 +537,8 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     expect(runs.map((r) => r.status)).toEqual(["succeeded", "failed", "queued"]);
     expect(runs[1]!.outcome).toMatchObject({ status: "failed", error_code: "merge_conflict" });
     expect(f.resolveSteps).toHaveLength(1);
-    // One push only: the first run's. The PR branch is what that push left.
-    expect(f.broker.names().filter((n) => n === "forge.push_branch")).toHaveLength(1);
+    // One push to the PR branch only: the first run's. The PR branch is what that push left; the failed run's commits are on its wip branch.
+    expect(f.broker.pushed()).toEqual([`factory/${item.id}`, wipOf(runs[1]!)!.branch]);
     expect(git(f.origin, "show", `${branch}:src/a.txt`)).toBe("a from the implementer, run 1");
     expect(git(f.origin, "log", "-1", "--format=%s", branch)).toContain("Merge origin/main");
     expect(f.contains(branch, f.remote("refs/heads/main"))).toBe(false);
