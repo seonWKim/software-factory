@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,7 +13,15 @@ import {
   computeRates,
   formatCompare,
   parseCompareArgs,
+  runCases,
 } from "../src/golden.js";
+import { implementReplayRunner } from "../src/controller/golden-gate/implement-replay.js";
+import { EVAL_REGRESSION, type GoldenGateDeps, checkChange, fingerprint } from "../src/controller/golden-gate/golden-gate.js";
+import { goldenConfig } from "../src/core/config.js";
+import type { FactoryStore } from "../src/interfaces/factory-store.js";
+import implementRole from "../src/worker/roles/implement.role.js";
+import { REPO } from "./architecture/lib.js";
+import { issue, newStore, system } from "./helpers/store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { RoleCatalog } from "../src/runtime/index.js";
 import reviewRole from "../src/worker/roles/review.role.js";
@@ -217,5 +225,195 @@ describe("golden compare", () => {
     await expect(compareCases(d, { role: "review", basePrompt: prompts.review, changed: null })).rejects.toThrow(/case 1: prompts must be/);
     expect(runner.specs).toEqual([]);
     expect(existsSync(join(d.resultsDir))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// Eval on change (design 06-measurement, issue #493): the per-entity golden gate over runCases, on a SQLite store.
+
+const GOOD_SKILL = "Write the failing test first, then change the code and the files the spec names.";
+const BROKEN_SKILL = "BROKEN: change only the first file the spec names.";
+const SKILL = "skill:tests-first";
+const IMPLEMENT_CASE = "implement/643";
+
+describe("golden gate (eval on change)", () => {
+  /** The seeded implement case, copied from the repo with a seeded skill added to its `uses`. */
+  async function seedImplementCase(rolesDir: string, uses: string[] = [SKILL]) {
+    const dst = join(rolesDir, "implement", "golden", "643");
+    await cp(join(REPO, "src", "worker", "roles", "implement", "golden", "643"), dst, { recursive: true });
+    const meta = JSON.parse(await readFile(join(dst, "case.json"), "utf8")) as { uses: string[] };
+    await writeFile(join(dst, "case.json"), JSON.stringify({ ...meta, uses: [...meta.uses, ...uses] }));
+  }
+
+  /**
+   * The replay deps: the skill reaches the implement run with its prompt; the fixture agent changes both files the
+   * case's diff changes, or only the first under the broken skill. Each run moves the clock, so results files differ.
+   */
+  function world(golden: GoldenGateDeps["golden"]) {
+    const clock = new FakeClock(new Date("2026-11-18T12:00:00.000Z"));
+    const sandbox = new FakeSandbox();
+    const state = { skill: GOOD_SKILL };
+    const runner = new FakeRunner({
+      implement: (spec: AgentRunSpec) => {
+        clock.advance(1000);
+        sandbox.changedFiles = spec.system_prompt.includes("BROKEN") ? ["scripts/build.mjs"] : ["scripts/build.mjs", "tsconfig.migrations.json"];
+        return { output: null };
+      },
+      review: (spec: AgentRunSpec) => {
+        clock.advance(1000);
+        return { output: spec.prompt.includes("// should_flag") ? REVIEW_BUG : REVIEW_PASS };
+      },
+    });
+    const rd: GoldenRunDeps = {
+      rolesDir: join(tmp, "src", "worker", "roles"),
+      roles: new RoleCatalog([
+        { file: "worker/roles/implement.role.ts", descriptor: implementRole },
+        { file: "worker/roles/review.role.ts", descriptor: reviewRole },
+      ]),
+      prompt: async (file) => (file === "implement.md" ? `${prompts.implement}\n\n${state.skill}` : prompts.review),
+      resultsDir: join(tmp, "state", "golden", "results"),
+      sandbox,
+      runner: implementReplayRunner(runner, sandbox, join(tmp, "src", "worker", "roles")),
+      scanner: cleanScanner,
+      clock,
+      config,
+    };
+    const comments: { key: string; body: string }[] = [];
+    const gate = (store: GoldenGateDeps["store"], over: Partial<GoldenGateDeps> = {}): GoldenGateDeps => ({
+      golden,
+      rolesDir: rd.rolesDir,
+      store,
+      replay: (role, ids, n) => runCases(rd, { role, ids, replays: n }),
+      comment: async (_it, key, body) => void comments.push({ key, body }),
+      ...over,
+    });
+    return { state, runner, rd, comments, gate };
+  }
+
+  async function item(store: FactoryStore) {
+    return (await store.createWorkItem(issue(1), system)).item;
+  }
+
+  it("blocks a seeded skill change that breaks the implement case on a human, naming the failing case", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const { store } = await newStore();
+    const w = world({ replays: 1, regression_margin: 0.05 });
+    await seedImplementCase(w.rd.rolesDir);
+    const it0 = await item(store);
+
+    const first = await checkChange(w.gate(store), it0, [{ id: SKILL, content: GOOD_SKILL }]);
+    expect(first).toMatchObject({ outcome: "pass", ran: [IMPLEMENT_CASE], skipped: [] });
+    expect(await store.getGoldenFingerprint(SKILL)).toMatchObject({ verdict: "pass", pass_rate: 1, base_fingerprint: fingerprint(GOOD_SKILL), base_rate: 1 });
+
+    w.state.skill = BROKEN_SKILL;
+    const second = await checkChange(w.gate(store), (await store.getWorkItem(it0.id))!, [{ id: SKILL, content: BROKEN_SKILL }]);
+    expect(second.outcome).toBe("regression");
+    expect(w.runner.specs.map((s) => s.role)).toEqual(["implement", "implement"]);
+    const blocked = (await store.getWorkItem(it0.id))!;
+    expect([blocked.blocked_on, blocked.blocked_reason]).toEqual(["human", EVAL_REGRESSION]);
+    expect(w.comments).toHaveLength(1);
+    expect(w.comments[0]!.body).toContain(`\`${IMPLEMENT_CASE}\``);
+    expect(w.comments[0]!.body).toContain(`\`${SKILL}\`: pass rate 0.000, down from 1.000`);
+    const change = (await store.listStateChanges(it0.id)).at(-1)!;
+    expect(change).toMatchObject({ reason: EVAL_REGRESSION, detail: { failing_cases: JSON.stringify([IMPLEMENT_CASE]) } });
+    // The regression is the last verdict; the base stays the last passing run.
+    expect(await store.getGoldenFingerprint(SKILL)).toMatchObject({ verdict: "regression", fingerprint: fingerprint(BROKEN_SKILL), failing_cases: [IMPLEMENT_CASE], base_fingerprint: fingerprint(GOOD_SKILL), base_rate: 1 });
+
+    // Run twice: the item stays as it is, and no second comment is posted.
+    await checkChange(w.gate(store), blocked, [{ id: SKILL, content: BROKEN_SKILL }]);
+    expect((await store.getWorkItem(it0.id))!.version).toBe(blocked.version);
+    expect(w.comments).toHaveLength(1);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not re-run an entity whose content matches its last passing run, reading the fingerprint from the store", async () => {
+    const { store } = await newStore();
+    const w = world({ replays: 1, regression_margin: 0.05 });
+    await seedImplementCase(w.rd.rolesDir);
+    const it0 = await item(store);
+    await checkChange(w.gate(store), it0, [{ id: SKILL, content: GOOD_SKILL }]);
+    const calls = w.runner.specs.length;
+
+    // A fresh gate (another worker) on the same store: zero runner calls for the unchanged entity.
+    const again = await checkChange(w.gate(store), it0, [{ id: SKILL, content: GOOD_SKILL }]);
+    expect(again).toEqual({ outcome: "pass", ran: [], skipped: [SKILL], verdicts: [] });
+    expect(w.runner.specs.length).toBe(calls);
+  });
+
+  it("runs a case when any entity it uses changes, and once per change however many changed entities list it", async () => {
+    const { store } = await newStore();
+    const w = world({ replays: 1, regression_margin: 0.05 });
+    await seedImplementCase(w.rd.rolesDir);
+    await writeCase(casesDir(), "1", "should_flag", { uses: ["prompt:review.md"] });
+    const it0 = await item(store);
+
+    const both = await checkChange(w.gate(store), it0, [
+      { id: "prompt:implement.md", content: "v1" }, { id: SKILL, content: GOOD_SKILL }, { id: "role:implement", content: "r1" }, { id: "skill:unused", content: "x" },
+    ]);
+    expect(both.ran).toEqual([IMPLEMENT_CASE]);
+    expect(w.runner.specs.map((s) => s.role)).toEqual(["implement"]);
+    expect(both.verdicts.map((v) => v.entity_id)).toEqual(["prompt:implement.md", SKILL, "role:implement"]);
+    expect(await store.getGoldenFingerprint("skill:unused")).toBeNull();
+
+    // One listed entity changes: its dependent case runs again; the review case runs only for the entity it uses.
+    const one = await checkChange(w.gate(store), it0, [{ id: "prompt:implement.md", content: "v2" }, { id: SKILL, content: GOOD_SKILL }, { id: "prompt:review.md", content: "p1" }]);
+    expect(one.ran).toEqual([IMPLEMENT_CASE, "review/1"]);
+    expect(one.skipped).toEqual([SKILL]);
+    expect(w.runner.specs.map((s) => s.role)).toEqual(["implement", "implement", "review"]);
+  });
+
+  it("replays each case golden.replays times and compares the pass rate with the base against the margin: exactly the margin passes", async () => {
+    const { store } = await newStore();
+    const w = world({ replays: 3, regression_margin: 0.05 });
+    await seedImplementCase(w.rd.rolesDir);
+    await checkChange(w.gate(store), await item(store), [{ id: SKILL, content: GOOD_SKILL }]);
+    expect(w.runner.specs.map((s) => s.role)).toEqual(["implement", "implement", "implement"]);
+
+    // A scripted LLM case: 20 replays per change, so each failed replay moves the pass rate by 0.05.
+    const { store: s2 } = await newStore();
+    const it2 = await item(s2);
+    const asked: number[] = [];
+    let failing = 0;
+    const replay: GoldenGateDeps["replay"] = async (_role, ids, n) => {
+      asked.push(n);
+      return { cases: Array.from({ length: n }, (_, i) => ({ id: ids[0]!, expect: "should_pass" as const, verdict: i >= failing ? ("pass" as const) : ("bug" as const) })) };
+    };
+    const scripted = world({ replays: 20, regression_margin: 0.05 });
+    await seedImplementCase(scripted.rd.rolesDir);
+    const step = async (content: string, fails: number) => {
+      failing = fails;
+      return checkChange(scripted.gate(s2, { replay }), (await s2.getWorkItem(it2.id))!, [{ id: SKILL, content }]);
+    };
+    expect((await step("a", 0)).verdicts[0]).toMatchObject({ verdict: "pass", pass_rate: 1, base_rate: 1 });
+    // 1.00 → 0.95: exactly the margin, a pass, which becomes the base.
+    expect((await step("b", 1)).verdicts[0]).toMatchObject({ verdict: "pass", pass_rate: 0.95, base_rate: 0.95 });
+    // 0.95 → 0.85: more than the margin, a regression against the last passing run's rate.
+    const r = await step("c", 3);
+    expect(r.outcome).toBe("regression");
+    expect(r.verdicts[0]).toMatchObject({ verdict: "regression", pass_rate: 0.85, base_rate: 0.95, failing_cases: [IMPLEMENT_CASE] });
+    expect(asked).toEqual([20, 20, 20]);
+    expect((await s2.getWorkItem(it2.id))!.blocked_reason).toBe(EVAL_REGRESSION);
+  });
+
+  it("with no golden block, runs no eval and blocks nothing", async () => {
+    const { store } = await newStore();
+    const w = world(goldenConfig({ repo: {} }));
+    await seedImplementCase(w.rd.rolesDir);
+    const it0 = await item(store);
+    w.state.skill = BROKEN_SKILL;
+    expect(await checkChange(w.gate(store), it0, [{ id: SKILL, content: BROKEN_SKILL }])).toEqual({ outcome: "off", ran: [], skipped: [], verdicts: [] });
+    expect(w.runner.specs).toEqual([]);
+    expect(w.comments).toEqual([]);
+    expect((await store.getWorkItem(it0.id))!.version).toBe(it0.version);
+    expect(await store.getGoldenFingerprint(SKILL)).toBeNull();
+  });
+
+  it("refuses a malformed uses list before any replay", async () => {
+    const { store } = await newStore();
+    const w = world({ replays: 1, regression_margin: 0.05 });
+    await writeCase(casesDir(), "1", "should_flag", { uses: "prompt:review.md" });
+    await expect(checkChange(w.gate(store), await item(store), [{ id: "prompt:review.md", content: "x" }])).rejects.toThrow(/case review\/1: uses must be a list of entity ids/);
+    expect(w.runner.specs).toEqual([]);
   });
 });

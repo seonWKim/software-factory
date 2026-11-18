@@ -1,6 +1,6 @@
 import { COMMAND_PROPOSALS_SQLITE } from "../sql/command-proposals.js";
-// Append-only list. Never edit a migration that has shipped; add a new one.
-export const MIGRATIONS: readonly string[] = [
+import { GOLDEN_FINGERPRINTS_SQLITE } from "../sql/golden-fingerprints.js";
+export const MIGRATIONS: readonly string[] = [ // Append-only list. Never edit a migration that has shipped; add a new one.
   `
   CREATE TABLE work_items (
     id              TEXT PRIMARY KEY,
@@ -730,5 +730,5 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX IF NOT EXISTS controller_merge_evaluations_at ON controller_merge_evaluations (merged_at);
   `,
-  COMMAND_PROPOSALS_SQLITE, // 43: command proposals (design 04-gate-commands, issue #584), beside their store methods.
+  COMMAND_PROPOSALS_SQLITE, GOLDEN_FINGERPRINTS_SQLITE, // 43: command proposals (04-gate-commands, issue #584); 44: golden gate fingerprints (06-measurement); each beside its store methods.
 ];

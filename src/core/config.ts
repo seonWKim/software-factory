@@ -137,6 +137,13 @@ export function capabilitiesProblems(raw: unknown): string[] {
   return [];
 }
 
+/** `golden` (design 06-measurement): null (off) when absent; else replays (integer ≥ 1, default 1) and regression_margin (0 to 1, default 0.05); any other value throws, failing startup. */
+export function goldenConfig(raw: unknown): { replays: number; regression_margin: number } | null {
+  const g = (raw as { golden?: unknown } | null)?.golden, { replays = 1, regression_margin = 0.05 } = (typeof g === "object" && g !== null && !Array.isArray(g) ? g : { replays: g === undefined ? 1 : NaN }) as Record<string, unknown>;
+  if (!Number.isInteger(replays) || (replays as number) < 1 || typeof regression_margin !== "number" || !(regression_margin >= 0 && regression_margin <= 1)) throw new Error("golden must be an object whose replays is an integer ≥ 1 (default 1) and whose regression_margin is a number from 0 to 1 (default 0.05)");
+  return g === undefined ? null : { replays: replays as number, regression_margin };
+}
+
 /** `repo.ui_check`: an argv command and the path prefixes whose change makes the merge check run it. */
 export interface UiCheck {
   command: string[];

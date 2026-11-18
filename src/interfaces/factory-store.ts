@@ -335,13 +335,13 @@ export type StartSessionResult =
   | { ok: false; reason: "session_open" | "implement_run"; run_id: RunId }
   /** A running implement-type or interactive run of another item shares `paths` with this item's allowed_paths. */
   | { ok: false; reason: "overlap"; work_item_id: WorkItemId; run_id: RunId; paths: string[] };
-
 /** What `session note`, `--tokens`, `--transcript` and `finish` write (scanned by the caller). `note` is appended, the rest replace. */
 export interface SessionUpdate { note?: string; tokens?: number; transcript_url?: string; last_finish?: Omit<SessionFinish, "at"> }
-
 /** `applied`: the highest migration recorded in the database (0 when none). `latest`: the highest this code has. */
 export interface SchemaVersion { applied: number; latest: number }
-
+/** The golden gate's record per entity id (design 06-measurement; null: never evaluated): its last verdict, and its base (last passing fingerprint and pass rate), which a `pass` moves and a `regression` keeps. */
+export interface GoldenFingerprint { entity_id: string; fingerprint: string; verdict: "pass" | "regression"; pass_rate: number; failing_cases: string[]; base_fingerprint: string | null; base_rate: number | null; at: Timestamp }
+export interface GoldenFingerprintStore { getGoldenFingerprint(entity_id: string): Promise<GoldenFingerprint | null>; recordGoldenVerdict(v: Omit<GoldenFingerprint, "base_fingerprint" | "base_rate" | "at">): Promise<GoldenFingerprint> }
 /** A Slack notice as posted (design 05-sources, "Replies under a notice"): channel, ts, the work item IDs its lines name. */
 export interface NoticeMessage { channel: string; ts: string; work_item_ids: string[]; created_at: Timestamp }
 /** A reply under a several-item notice, kept for its which-item press: its ID (the Slack event ID), the notice and its words. */
@@ -354,7 +354,7 @@ export interface NoticeMessageStore {
   getNoticeQuestion(id: string): Promise<NoticeQuestion | null>;
 }
 
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore {
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes
