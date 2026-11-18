@@ -2486,6 +2486,25 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect(await store.listCliCommandsAfter(0, 10)).toEqual([]);
     });
 
+    it("listClaimDecisionsSince lists every item's claim decisions written at or after a time, oldest first", async () => {
+      const { store, clock } = await make();
+      const ids: WorkItemId[] = [];
+      for (const n of [1, 2]) {
+        const { item } = await store.createWorkItem(issue(n), system);
+        await store.transition({ id: item.id, expected_version: 1, actor: system, reason: "x", patch: { stage: "RUNNING", files_to_change: ["src/worker/runner.ts"], allowed_paths: ["src/worker/"] } });
+        await store.transition({ id: item.id, expected_version: 2, patch: {}, actor: system, reason: "x", enqueue: { kind: "implement", idempotency_key: `${n}:implement` } });
+        clock.advance(1_000);
+        ids.push(item.id);
+      }
+      const before = clock.now().toISOString() as Timestamp;
+      await store.claimRun({ worker_id: w1, kinds: ALL_KINDS, lease_ms: LEASE });
+      expect(await store.claimRun({ worker_id: w1, kinds: ALL_KINDS, lease_ms: LEASE })).toBeNull();
+      const since = await store.listClaimDecisionsSince(before);
+      expect(since.find((d) => d.work_item_id === ids[1])).toMatchObject({ decision: "held", shared: [{ path: "src/worker/runner.ts" }] });
+      clock.advance(1_000);
+      expect(await store.listClaimDecisionsSince(clock.now().toISOString() as Timestamp)).toEqual([]);
+    });
+
     it("pruneHistory keeps a claim decision of a queued or running run at any age; finished runs', host sleeps and alerts go", async () => {
       const { store, clock } = await make();
       const held = async (n: number) => {

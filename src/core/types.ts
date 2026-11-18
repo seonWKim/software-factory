@@ -222,8 +222,10 @@ export interface FailureGroup {
   tails?: ImproveTail[];
   /** The model's draft of cause and fix (groups only, design §7). Absent: the worker had no model to ask. */
   draft?: ImproveDraft;
-  /** What the controller filed or posted for the group (groups only, design §7). Absent: not filed yet. */
+  /** What the controller filed or posted for the group (groups and `hotspot` rows, design §7). Absent: not filed yet. */
   filing?: ImproveFiling;
+  /** A `hotspot` row only (detail: the file): the items a coordination hold kept back on the file, each once. */
+  held_item_ids?: WorkItemId[];
 }
 
 /**
@@ -557,10 +559,7 @@ export type RunOutcome =
       status: "failed";
       /** What the run's agent calls used before it failed. Absent on rows from before it existed. */
       usage?: RunUsage;
-      /**
-       * `rate_limited` means a usage or rate limit, `agent_stalled` a model that printed nothing for `stall_ms`;
-       * neither is a failed attempt (design §5 Restarts).
-       */
+      /** `rate_limited`: a usage or rate limit; `agent_stalled`: a model that printed nothing for `stall_ms`. Neither is a failed attempt (design §5 Restarts). */
       error_code: string;
       detail: string;
       /** Infrastructure failure (lease loss, timeout, exception): counts toward `max_restart`, not `max_attempts`. */
@@ -576,6 +575,7 @@ export type RunOutcome =
       wip?: WipRef;
       /** For `forge_auth` and `preflight_access`: this run's failure started its claim pause (one owner comment per pause). */
       pause_started?: boolean;
+      conflicts?: string[]; // a merge_conflict or resolve failure: the files the merge conflicted in (the improver's hotspot count reads only this)
     };
 
 /** One row per implementer commit (design §4). Truth for resuming on any node. */

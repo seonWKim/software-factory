@@ -14,7 +14,7 @@ async function improve(w: Worker, run: Run, item: WorkItem, signal: AbortSignal)
   const metered = meteredLlm(w, run);
   const report = await runImprove(
     {
-      store: w.d.store, storage: w.d.storage, scanner: w.d.scanner, signal,
+      store: w.d.store, storage: w.d.storage, scanner: w.d.scanner, signal, hotspot_threshold: w.live.values().conflict_hotspot_threshold,
       ...(metered ? { llm: metered } : {}), ...(w.d.prompts.improve !== undefined ? { prompt: w.live.styled(improvePrompts(w.d.prompts.improve).draft) } : {}),
     },
     run,

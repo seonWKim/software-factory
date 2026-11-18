@@ -17,9 +17,10 @@ import { SLACK_KEYS, slackConfigProblems } from "./impl/source/slack-config.js";
  * from issue #314) are checked here at load
  * (`coordinationProblems`) and read by compose.ts through `coordinationConfig`. `cli_user` (issue #200): the factory user ID the
  * local CLI commands act as, read by src/core/config.ts. `capabilities` (design 08-settings, 2026-11-13): the skill folders the
- * Settings page's Capabilities list reads (`capabilitiesConfig`).
+ * Settings page's Capabilities list reads (`capabilitiesConfig`). `conflict_hotspot_threshold` (design 07-self-improvement): a settable key
+ * the settings base reads from the file by name (`settingsBase`), checked as a positive integer (`parseSettable`).
  */
-type CoreOnlyKey = "cli_user" | "capabilities" | (typeof COORDINATION_KEYS)[number];
+type CoreOnlyKey = "cli_user" | "capabilities" | "conflict_hotspot_threshold" | (typeof COORDINATION_KEYS)[number];
 
 export const TOP_LEVEL_KEYS = [
   "env",
@@ -73,6 +74,7 @@ export const TOP_LEVEL_KEYS = [
   "max_coordination_cost",
   "hotspot_paths",
   "hotspot_weight",
+  "conflict_hotspot_threshold",
   "mechanical_paths",
   "mechanical_weight",
   "hold_policy",

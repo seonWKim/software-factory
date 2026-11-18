@@ -590,8 +590,8 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   getLatestImproveReport(project?: string): Promise<ImproveReport | null>;
   /** The reports of `project` created at or after `since`, oldest first. Read-only. */
   listImproveReports(project: string, since: Timestamp): Promise<ImproveReport[]>;
-  /** Replaces the groups of report `id` (their filing written after the report). Unknown ID: no change. */
-  setImproveGroups(id: ImproveReportId, groups: ImproveReport["groups"]): Promise<void>;
+  /** Replaces the groups of report `id` (their filing written after the report), and its patterns when given (`hotspot` rows' filing). Unknown ID: no change. */
+  setImproveGroups(id: ImproveReportId, groups: ImproveReport["groups"], patterns?: ImproveReport["patterns"]): Promise<void>;
   getFiledPattern(project: string, pattern_key: string): Promise<FiledPattern | null>;
   /**
    * Claims the filing of (project, pattern key) for `input.report_id`, with no item yet. A row already there is
@@ -643,8 +643,8 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   recordConflicts(input: RecordConflictsInput): Promise<number>;
   /** Recorded conflicts per path in `project`. Read-only. */
   conflictCounts(project: string): Promise<Map<string, number>>;
-  /** The item's claim decisions, oldest first. Read-only. */
-  listClaimDecisions(id: WorkItemId): Promise<ClaimDecision[]>;
+  /** The item's claim decisions, oldest first; ...Since: every item's written at or after `since` (the improver's hotspot count, design §7). Read-only. */
+  listClaimDecisions(id: WorkItemId): Promise<ClaimDecision[]>; listClaimDecisionsSince(since: Timestamp): Promise<ClaimDecision[]>;
   /** The latest claim decision of each of the items that has one, in one read (the Items page, one read for every row). Read-only. */
   listLatestClaimDecisions(ids: readonly WorkItemId[]): Promise<Map<WorkItemId, ClaimDecision>>;
   /**

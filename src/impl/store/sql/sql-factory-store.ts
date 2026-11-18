@@ -1236,8 +1236,8 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
     return rows.map(rowToImproveReport);
   }
 
-  async setImproveGroups(id: ImproveReportId, groups: ImproveReport["groups"]): Promise<void> {
-    await this.db.run("UPDATE controller_improve_reports SET failure_groups = ? WHERE id = ?", [JSON.stringify(groups), id]);
+  async setImproveGroups(id: ImproveReportId, groups: ImproveReport["groups"], patterns?: ImproveReport["patterns"]): Promise<void> {
+    await this.db.run(`UPDATE controller_improve_reports SET failure_groups = ?${patterns ? ", patterns = ?" : ""} WHERE id = ?`, [JSON.stringify(groups), ...(patterns ? [JSON.stringify(patterns)] : []), id]);
   }
 
   // Filed patterns (design 07-self-improvement): in ./filed-patterns.ts, but the claim.
@@ -1404,22 +1404,16 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
     return new Map(rows.map((r) => [r.path as string, Number(r.n)]));
   }
 
-  async listClaimDecisions(id: WorkItemId): Promise<ClaimDecision[]> {
-    const rows = await this.db.all(`SELECT * FROM controller_claim_decisions WHERE work_item_id = ? ORDER BY at, ${this.db.dialect.seq}`, [id]);
-    return rows.map(rowToClaimDecision);
+  listClaimDecisions(id: WorkItemId): Promise<ClaimDecision[]> { return this.claimDecisionsWhere("work_item_id = ?", [id]); }
+  listClaimDecisionsSince(since: Timestamp): Promise<ClaimDecision[]> { return this.claimDecisionsWhere("at >= ?", [since]); }
+  private async claimDecisionsWhere(where: string, args: readonly string[]): Promise<ClaimDecision[]> {
+    return (await this.db.all(`SELECT * FROM controller_claim_decisions WHERE ${where} ORDER BY at, ${this.db.dialect.seq}`, [...args])).map(rowToClaimDecision);
   }
 
   async listLatestClaimDecisions(ids: readonly WorkItemId[]): Promise<Map<WorkItemId, ClaimDecision>> {
     const out = new Map<WorkItemId, ClaimDecision>();
     if (ids.length === 0) return out;
-    const rows = await this.db.all(
-      `SELECT * FROM controller_claim_decisions WHERE work_item_id IN (${placeholders(ids.length)}) ORDER BY at, ${this.db.dialect.seq}`,
-      [...ids],
-    );
-    for (const row of rows) {
-      const d = rowToClaimDecision(row);
-      out.set(d.work_item_id, d); // oldest first: the last one wins
-    }
+    for (const d of await this.claimDecisionsWhere(`work_item_id IN (${placeholders(ids.length)})`, ids)) out.set(d.work_item_id, d); // oldest first: the last one wins
     return out;
   }
 
