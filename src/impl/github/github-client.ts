@@ -347,7 +347,7 @@ export class GitHubClient implements GitHubApi {
   }
 
   /** `redirect: "manual"`: a 3xx answer is returned as it is (for `text`), not followed and not an error. */
-  private async send(method: string, path: string, body?: unknown, accept = "application/vnd.github+json", redirect: RequestRedirect = "follow"): Promise<Response> {
+  private async send(method: string, path: string, body?: unknown, accept = "application/vnd.github+json", redirect: "follow" | "manual" = "follow"): Promise<Response> {
     await this.refreshSharedBudget();
     const r = this.rate;
     if (r && r.remaining <= 0 && this.now() < Date.parse(r.reset_at)) {
