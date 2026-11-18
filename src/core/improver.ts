@@ -2,12 +2,14 @@
 // no agent. The project's failed runs in a window are grouped by error code and normalized detail, its pushbacks by their
 // normalized words (code `pushback`); each group of 2+ gets one plain model call (no tools) for a draft; one report is stored for the learner (learnFromReport); the controller files its groups (fileReport).
 // The flaky tests merge checks named in the window are listed with the patterns (code `flaky_test`), never drafted or filed.
+// So are the files that conflicted or held items back often in 7 days (code `hotspot`, src/core/hotspots.ts), filed, never drafted.
 export { learnFromReport } from "./learned-settings.js";
 export { FLAKY_TEST, PUSHBACK, type Pushback, groupFailures, normalizeDetail } from "./failure-groups.js";
 export { NO_SCORER, type Grade, type GradeSubject, type Scorer, improvePrompts, scoreRun, scorerFor } from "./scorer.js";
 
 import { cyrb53 } from "./hash.js";
 import { PUSHBACK, flakyTests, groupFailures, pushbacksIn, reviewable } from "./failure-groups.js";
+import { hotspotBody, hotspotSince, hotspotsIn, isHotspot, ofProject } from "./hotspots.js";
 import { AGENT_STALLED } from "./policy.js";
 import { parseJson } from "./scorer.js";
 import { PROTECTED_PATHS } from "./standing.js";
@@ -169,13 +171,6 @@ export async function triggerImprove(
   return { ...(await enqueueImprove(d, project, { after: last?.id ?? null, since })), why };
 }
 
-/** The runs of `project`'s work items, in order: one item read per work item (design §7, reports are per project). */
-async function ofProject(store: Pick<FactoryStore, "getWorkItem">, runs: readonly Run[], project: string): Promise<Run[]> {
-  const projects = new Map<WorkItemId, string | null>();
-  for (const r of runs) if (!projects.has(r.work_item_id)) projects.set(r.work_item_id, (await store.getWorkItem(r.work_item_id))?.project ?? null);
-  return runs.filter((r) => projects.get(r.work_item_id) === project);
-}
-
 /**
  * The owner-only paths (design §7 and 03-risk): a change to any of them needs a human merge, and auto mode never
  * approves or merges one. One list, the merge check's and auto mode's: these paths, widened with every standing-rule
@@ -248,7 +243,7 @@ export function parseDraft(v: unknown): { cause: string; fix: string; touches: s
 export interface ImproveDeps {
   store: Pick<
     FactoryStore,
-    "listRunsFinishedBetween" | "recordImproveReport" | "getImproveReport" | "getWorkItem" | "listStateChangesSince" | "listVerdictsSince" | "listRuns"
+    "listRunsFinishedBetween" | "recordImproveReport" | "getImproveReport" | "getWorkItem" | "listStateChangesSince" | "listVerdictsSince" | "listRuns" | "listClaimDecisionsSince"
   >;
   storage: SharedStorage;
   scanner: EgressScanner;
@@ -256,6 +251,7 @@ export interface ImproveDeps {
   /** prompts/improve.md. */
   prompt?: string;
   signal?: AbortSignal;
+  hotspot_threshold?: number; // the live `conflict_hotspot_threshold`; absent: DEFAULT_HOTSPOT_THRESHOLD
 }
 
 /**
@@ -290,8 +286,8 @@ export async function runImprove(d: ImproveDeps, run: Run, item: Pick<WorkItem, 
       g.draft = await draft(d, llm, prompt, g, texts);
     }
   }
-  // The flaky tests merge checks named go with the patterns: listed for the owner, never drafted or filed.
-  const listed = [...patterns, ...flakyTests(runs)];
+  // The flaky tests merge checks named go with the patterns: listed for the owner, never drafted or filed; the hot files too, filed (fileReport).
+  const listed = [...patterns, ...flakyTests(runs), ...(await hotspotsIn(d.store, window, item.project, d.hotspot_threshold))];
   const { report } = await d.store.recordImproveReport({ run_id: run.id, project: item.project, ...window, groups, patterns: listed });
   return report;
 }
@@ -404,24 +400,25 @@ function commentMarker(key: string, report: string): string {
  * goes to Needs you as an alert with the cause (`needs_person`); any other is filed as a fix item, which runs
  * without a person, its runs listed and its marker in the body. At most MAX_FILED_ISSUES new items and as many comments; the rest are skipped with the cap as reason.
  * Every body passes the egress scan first: a flagged one is not sent and is recorded `withheld` with its rules.
+ * Then each `hotspot` row of the patterns alike, same caps: "Reduce conflicts on <file>", no draft (a gate file still waits for a person's merge).
  * Safe to run twice: a filing is claimed in filed_patterns before the call and its marker looked up by the source,
  * and a comment is posted once per marker.
  */
 export async function fileReport(d: FilingDeps, report: ImproveReport): Promise<ImproveReport> {
   const caps = { issues: 0, comments: 0 };
-  const groups: FailureGroup[] = [];
-  for (const g of report.groups) {
-    let filing: ImproveFiling;
+  const fileOne = async (g: FailureGroup): Promise<FailureGroup> => {
     try {
-      filing = await fileGroup(d, report, g, caps);
+      return { ...g, filing: await fileGroup(d, report, g, caps) };
     } catch {
       // A source or store fault fails this group only; the next improve run finds the claim and tries again.
-      filing = { status: "failed", reason: "error" };
+      return { ...g, filing: { status: "failed", reason: "error" } };
     }
-    groups.push({ ...g, filing });
-  }
-  await d.store.setImproveGroups(report.id, groups);
-  return { ...report, groups };
+  };
+  const groups: FailureGroup[] = [], patterns: FailureGroup[] = [];
+  for (const g of report.groups) groups.push(await fileOne(g));
+  for (const g of report.patterns) patterns.push(isHotspot(g) ? await fileOne(g) : g);
+  await d.store.setImproveGroups(report.id, groups, patterns);
+  return { ...report, groups, patterns };
 }
 
 async function fileGroup(d: FilingDeps, report: ImproveReport, g: FailureGroup, caps: { issues: number; comments: number }): Promise<ImproveFiling> {
@@ -445,8 +442,8 @@ async function fileGroup(d: FilingDeps, report: ImproveReport, g: FailureGroup, 
   if (person) return toPerson(d, g, key);
   if (!file) return { status: "skipped", reason: "no_source" };
   if (caps.issues >= MAX_FILED_ISSUES) return { status: "skipped", reason: "issue_cap" };
-  const title = `Recurring failure: ${g.error_code} in ${g.run_ids.length} runs`;
-  const body = issueBody(g);
+  const title = isHotspot(g) ? `Reduce conflicts on ${g.detail}` : `Recurring failure: ${g.error_code} in ${g.run_ids.length} runs`;
+  const body = isHotspot(g) ? hotspotBody(g) : issueBody(g);
   const scan = await d.scanner.scan("comment", `${title}\n\n${body}`);
   if (!scan.clean) return { status: "withheld", rules: [...new Set(scan.findings.map((f) => f.rule))] };
   // A half-done claim (no item yet) is finished under its own report's marker; an item closed long ago is replaced.
@@ -525,12 +522,13 @@ async function commentGroup(
   caps: { issues: number; comments: number },
 ): Promise<ImproveFiling> {
   const ref = row.filed_ref;
-  // A run is linked once a report filed or commented it on this item. Every run of this report finished inside its
-  // window, and a report that named one was made after that run finished, so the reports since window_start cover it.
+  // A run is linked once a report filed or commented it on this item. Every run of this report finished inside its window
+  // (a hot file's: hotspotSince), and a report that named one was made after that run finished, so the reports since cover it.
+  const hot = isHotspot(g);
   const linked = new Set<RunId>();
-  for (const r of await d.store.listImproveReports(report.project, report.window_start)) {
+  for (const r of await d.store.listImproveReports(report.project, hot ? hotspotSince(report) : report.window_start)) {
     if (r.id === report.id) continue;
-    for (const o of r.groups) {
+    for (const o of [...r.groups, ...r.patterns.filter(isHotspot)]) {
       const f = o.filing;
       if (!f || !("ref" in f) || f.ref.type !== ref.type || f.ref.id !== ref.id) continue;
       for (const id of f.status === "commented" ? f.run_ids : f.status === "filed" ? o.run_ids : []) linked.add(id);
@@ -539,7 +537,8 @@ async function commentGroup(
   const fresh = g.run_ids.filter((id) => !linked.has(id));
   if (fresh.length === 0) return { status: "linked", ref };
   if (caps.comments >= MAX_FILED_ISSUES) return { status: "skipped", reason: "comment_cap" };
-  const body = [`This failure came back in ${fresh.length} more failed runs:`, "", ...fresh.map((id) => `- \`${id}\``)].join("\n");
+  const first = hot ? `This file conflicted again in ${fresh.length} more runs:` : `This failure came back in ${fresh.length} more failed runs:`;
+  const body = [first, "", ...fresh.map((id) => `- \`${id}\``)].join("\n");
   const scan = await d.scanner.scan("comment", body);
   if (!scan.clean) return { status: "withheld", rules: [...new Set(scan.findings.map((f) => f.rule))] };
   caps.comments++;

@@ -36,6 +36,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { RULE_VERDICTS, type RuleVerdict } from "../core/learned-rules.js";
+import { isHotspot } from "../core/hotspots.js";
 import { errorText } from "../core/log.js";
 import { type RetireRule, retireSuggestions } from "../core/rule-retirement.js";
 import { LiveSettings } from "../core/settings.js";
@@ -177,7 +178,8 @@ async function readImprove(d: PauseDeps, text: (v: string) => Promise<string>) {
 async function improveReport(r: ImproveReport, text: (v: string) => Promise<string>) {
   const opt = async (v: string | null) => (v === null || v === "" ? null : await text(v));
   const groups = [];
-  for (const g of r.groups) {
+  // The hot files (`hotspot` rows of the patterns) show with the groups: their file, runs and filing.
+  for (const g of [...r.groups, ...r.patterns.filter(isHotspot)]) {
     groups.push({
       error_code: await text(g.error_code), detail: await opt(g.detail), runs: g.run_ids.length,
       draft: await improveDraft(g, text), filing: await opt(filingText(g)),

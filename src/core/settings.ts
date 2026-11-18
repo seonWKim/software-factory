@@ -1,7 +1,7 @@
 import type { Budgets } from "./budget.js";
 import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS, type ToolGrants, coordinationProblems, toolGrantsShape } from "./config.js";
 import { DEFAULT_COORDINATION, type HoldPolicy, parseHoldPolicy } from "./coordination.js";
-import { DIFF_LIMIT_DEFAULTS } from "./diff-gate.js";
+import { DIFF_LIMIT_DEFAULTS } from "./diff-gate.js"; import { DEFAULT_HOTSPOT_THRESHOLD } from "./hotspots.js";
 import { errorText, type Logger } from "./log.js";
 import { parseMessageStyle, withMessageStyle } from "./message-style.js";
 import { NOTICE_KINDS, type NoticeKind, parseNoticeKinds, parseNotifyChannels, quietHoursSetting } from "./notifications.js";
@@ -262,7 +262,7 @@ export const SETTABLE_KEYS = [
   "standing_approvals.threshold",
   "mode", "auto_merge_max_tier",
   "message_style", "notice_kinds", "quiet_hours", "notify_channels", "integrations", "calendar",
-  "stall_ms", "probe_interval_ms", "auth_pause_ms", "max_coordination_cost", "hotspot_weight", "mechanical_weight", "intake_label", "spend.daily_budget_usd", "spend.weekly_budget_usd", "tool_grants",
+  "stall_ms", "probe_interval_ms", "auth_pause_ms", "max_coordination_cost", "hotspot_weight", "mechanical_weight", "intake_label", "spend.daily_budget_usd", "spend.weekly_budget_usd", "tool_grants", "conflict_hotspot_threshold",
 ] as const;
 export type SettableKey = (typeof SETTABLE_KEYS)[number];
 
@@ -318,7 +318,7 @@ export interface SettableValues {
   message_style: string;
   notice_kinds: NoticeKind[]; quiet_hours: string; notify_channels: string[];
   integrations: Readonly<Record<string, string>>; calendar: readonly string[]; // interface → plugin name (no entry: the config's choice); calendar plugin names
-  stall_ms: number; probe_interval_ms: number; auth_pause_ms: number;
+  stall_ms: number; probe_interval_ms: number; auth_pause_ms: number; conflict_hotspot_threshold: number;
   max_coordination_cost: number; hotspot_weight: number; mechanical_weight: number; tool_grants: ToolGrants; // run kind → granted tools (design 08-settings)
   intake_label: string | null; // null: no built-in default, and neither the file nor an override says
 }
@@ -349,7 +349,7 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   auto_merge_max_tier: 0,
   message_style: "",
   notice_kinds: [...NOTICE_KINDS], quiet_hours: "", notify_channels: [], integrations: {}, calendar: [],
-  stall_ms: STALL_DEFAULTS.stall_ms, probe_interval_ms: STALL_DEFAULTS.probe_interval_ms,
+  stall_ms: STALL_DEFAULTS.stall_ms, probe_interval_ms: STALL_DEFAULTS.probe_interval_ms, conflict_hotspot_threshold: DEFAULT_HOTSPOT_THRESHOLD,
   auth_pause_ms: 1_800_000, // shown as the default; with no override and no file value it follows the effective retry_max_ms
   max_coordination_cost: DEFAULT_COORDINATION.max_cost, hotspot_weight: DEFAULT_COORDINATION.hotspot_weight, mechanical_weight: DEFAULT_COORDINATION.mechanical_weight, tool_grants: {},
   intake_label: null, // no built-in default: the config file must say, and its value applies
