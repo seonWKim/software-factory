@@ -153,10 +153,18 @@ describe("built-in companion rules", () => {
     ["web/src/views/settings-calendar.tsx", "web/src/i18n/en/settings.ts"],
     ["web/src/views/settings/editor.tsx", "web/src/i18n/en/settings.ts"],
     ["web/src/components/rules.tsx", "web/src/i18n/en/rules.ts"],
-  ])("a web view or component %s adds its i18n area file %s", (file, area) => {
+  ])("a web view or component %s adds its i18n area file %s and the generated barrel", (file, area) => {
     const { paths, added } = allowedAfter([file]);
     expect(paths).toContain(area);
     expect(added).toContainEqual({ path: area, because: file });
+    expect(paths).toContain("web/src/i18n/en.ts");
+    expect(added).toContainEqual({ path: "web/src/i18n/en.ts", because: file });
+  });
+
+  it("a web file that names no area adds neither an area file nor the barrel", () => {
+    for (const file of ["web/src/App.tsx", "web/src/components/ui/button.tsx", "web/src/api.ts"]) {
+      expect(allowedAfter([file]).added.filter((a) => a.path.startsWith("web/src/i18n/"))).toEqual([]);
+    }
   });
 
   it.each([
@@ -218,7 +226,7 @@ describe("built-in companion rules", () => {
 
   it("refuses every gate path, protected path and floor path a rule could give", () => {
     const protectedPaths = Object.values(PROTECTED_PATHS).flat();
-    for (const p of [...GATE_PATHS, ...protectedPaths, "tests/architecture/lib.test.ts", "golden/cases/1/spec.md"]) {
+    for (const p of [...GATE_PATHS, ...protectedPaths, "tests/architecture/lib.test.ts", "src/worker/roles/review/golden/1/instruction.md"]) {
       expect(refusedCompanion(p, [])).toBe(true);
     }
     expect(refusedCompanion("tests/hotspots.test.ts", [])).toBe(false);
@@ -232,7 +240,7 @@ describe("built-in companion rules", () => {
       { prefix: "web/src/i18n/", tier: 3 },
     ];
     const { paths, added } = allowedAfter(["docs/design/04-triage.md", "src/core/hotspots.ts", "web/src/views/tasks.tsx", "src/core/policy.ts"], floors);
-    for (const p of ["docs/design/history/04-triage.md", "tests/hotspots.test.ts", "web/src/i18n/en/tasks.ts"]) {
+    for (const p of ["docs/design/history/04-triage.md", "tests/hotspots.test.ts", "web/src/i18n/en/tasks.ts", "web/src/i18n/en.ts"]) {
       expect(paths).not.toContain(p);
     }
     expect(added.filter((a) => refusedCompanion(a.path, floors))).toEqual([]);

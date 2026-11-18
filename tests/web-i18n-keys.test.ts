@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { en } from "../web/src/i18n/en.js";
+import { BARREL, readAreas, render } from "../scripts/i18n-catalog.js";
 
 const AREA_DIR = join(import.meta.dirname, "..", "web", "src", "i18n", "en");
 const KEY_LINE = /^ {2}"([^"]+)":/gm;
@@ -66,5 +67,26 @@ describe("English text area files", () => {
     const prefix = (areaKeys(files).get(first) as string[])[0]!.split(".")[0];
     files[second] += `\n  "${prefix}.planted_new_key": "planted",\n`;
     expect(problems(areaKeys(files)).some((p) => p.startsWith("prefix "))).toBe(true);
+  });
+});
+
+describe("the generated catalog barrel", () => {
+  it("web/src/i18n/en.ts is what `npm run i18n:catalog` writes", () => {
+    expect(readFileSync(BARREL, "utf8")).toBe(render(readAreas()));
+  });
+
+  it("imports and spreads every area file once, in file order", () => {
+    const areas = readAreas();
+    const text = render(areas);
+    for (const a of areas) {
+      expect(text).toContain(`import { ${a.name} } from "./en/${a.file}.js";`);
+      expect(text.split(`  ...${a.name},`).length).toBe(2);
+    }
+    expect(areas.map((a) => a.file)).toEqual([...areas.map((a) => a.file)].sort());
+  });
+
+  it("a barrel that misses an area does not match", () => {
+    const areas = readAreas();
+    expect(render(areas.slice(1))).not.toBe(readFileSync(BARREL, "utf8"));
   });
 });
