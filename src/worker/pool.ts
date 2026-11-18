@@ -6,7 +6,7 @@ import { Worker, type WorkerPlugins } from "./runner.js";
 import { KINDS, type WorkerDeps } from "./support.js";
 import type { ExecutionEngines } from "./engine/index.js";
 import type { TickSource } from "../shared/ticks/tick-generator.js";
-import type { FactoryStore } from "../interfaces/factory-store.js";
+import { CAPPED_KINDS, type FactoryStore } from "../interfaces/factory-store.js";
 import type { KeepAwake } from "../interfaces/keep-awake.js";
 
 export interface WorkerPoolDeps extends Omit<WorkerDeps, "id" | "index" | "active"> {
@@ -54,9 +54,11 @@ interface Slot {
  * from claiming and `run` resolves only once every in-flight run has finished.
  *
  * Live size (design 2026-11-03): each tick the pool re-reads the settings. Slots below the effective `workers`
- * run; a slot at or above it stops claiming, finishes its current run and stops; a stopped slot starts again
- * once `workers` rises. The slot count is the file's `max_workers` (absent: its `workers`), which sizes the
- * supervisor's index block, so no index is ever shared with another process.
+ * run, and so does the first slot above them (design 2026-11-18): it claims only while every slot holds an implement
+ * or resolve run, and the store gives it only a short run, so a merge check never waits for a build. A slot above those
+ * stops claiming, finishes its current run and stops; a stopped slot starts again once `workers` rises. The slot
+ * count is the file's `max_workers` (absent: its `workers`), which sizes the supervisor's index block, so no
+ * index is ever shared with another process.
  *
  * Reporting (design §5 Coordination, 2026-11-07): one `worker slots` log line when the live count changes (start,
  * a settings change, drain), never on an unchanged tick. Each tick the pool writes its row to the store (pid,
@@ -84,11 +86,13 @@ export class WorkerPool {
     const settings = this.live;
     const size = d.config.max_workers ?? d.config.workers;
     this.slotAwake = Array.from({ length: size }, () => new SlotAwake(awake));
-    this.workers = Array.from({ length: size }, (_, i) => {
+    const peers = Array.from({ length: size }, (_, i) => `${id_prefix}:${index_base + i}` as WorkerId);
+    this.workers = peers.map((id, i) => {
       const index = index_base + i;
       const slotAwake = this.slotAwake[i]!;
-      return new Worker({ ...shared, settings, id: `${id_prefix}:${index}` as WorkerId, index, awake: slotAwake, active: () => i < settings.workers() }, {
+      return new Worker({ ...shared, settings, id, index, awake: slotAwake, active: () => this.claims(i) }, {
         ...(engines ? { engines } : {}), ...(ticks ? { ticks } : {}), ...(pack_checks ? { pack_checks } : {}), ...(imported_mcp_refusals ? { imported_mcp_refusals } : {}),
+        peers,
       });
     });
     // id_prefix is `<host>:<pid>`.
@@ -110,6 +114,23 @@ export class WorkerPool {
     return Math.min(this.live.workers(), this.workers.length);
   }
 
+  /** Loops that run now: the `workers` slots and the first slot above them, when the slot count has one (design §5, 2026-11-18). */
+  loops(): number {
+    return Math.min(this.live.workers() + 1, this.workers.length);
+  }
+
+  /**
+   * Whether slot `i` calls the claim now: below `workers` always; the slot above them only while `workers` of this
+   * pool's loops hold an implement or resolve run, the one case the store's slot cap (ClaimInput.workers) gives it a
+   * run. This only spares needless claims; the store's count of running runs decides.
+   */
+  private claims(i: number): boolean {
+    const workers = this.live.workers();
+    if (i < workers) return true;
+    const long = this.workers.filter((w) => w.holding !== null && CAPPED_KINDS.includes(w.holding)).length;
+    return i < this.loops() && long >= workers;
+  }
+
   /**
    * Runs the slots until `signal` aborts, starting and stopping them as `workers` changes; resolves after the
    * last in-flight run is done.
@@ -128,9 +149,10 @@ export class WorkerPool {
         this.logSlots(want, current, current === null ? "start" : "settings change");
         current = want;
       }
+      const loops = this.loops();
       this.workers.forEach((w, i) => {
         const slot = slots.get(i);
-        if (i < want && !slot) {
+        if (i < loops && !slot) {
           const stop = new AbortController();
           const onAbort = () => stop.abort();
           signal.addEventListener("abort", onAbort, { once: true });
@@ -141,7 +163,7 @@ export class WorkerPool {
           });
           all.add(done);
           slots.set(i, { stop, done });
-        } else if (i >= want && slot && !slot.stop.signal.aborted) {
+        } else if (i >= loops && slot && !slot.stop.signal.aborted) {
           // Stops claiming; the loop finishes its current run, then ends and frees the slot.
           slot.stop.abort();
         }
