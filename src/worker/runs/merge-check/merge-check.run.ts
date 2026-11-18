@@ -9,10 +9,13 @@
 // A failing UI check runs once more on the base alone, in a fresh checkout at the checked base: when the base fails
 // it too, the result is `base_red` (red main, design 03-risk), not this change's failing checks. A UI check's
 // failure always keeps an output tail: with no output, its reason (a command that could not run, its exit).
+// Install and checks run on the project's Node major (.nvmrc, else package.json engines; node-version.ts); a project
+// whose Node is not installed fails the run with checks_env rather than checking on another Node.
 
 import { NO_HOOKS, RunFailure, failingTestNames, gitIdentity } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { DEFAULT_TIMEOUTS, defineRunKind, type RunCall } from "../../run-kind.js";
+import { type NodeChoice, chooseNode, offNode, onNode, projectNode } from "./node-version.js";
 
 /** The check helpers the runner hands this run (core/checks.ts), so the run imports none of them. */
 export interface MergeCheckTools {
@@ -21,6 +24,7 @@ export interface MergeCheckTools {
   withTestFiles(cmd: readonly string[], files: readonly string[]): string[];
 }
 
+type CheckRound = Awaited<ReturnType<Worker["runCheckList"]>>;
 type Failed = { command: readonly string[]; how: string; tail: string };
 
 /** What the merge queue put in the run's input: the base, and the branches to merge onto it in order (this one last). */
@@ -61,19 +65,28 @@ async function mergeCheck(w: Worker, c: RunCall): Promise<Record<string, unknown
     const ui = w.cfg.repo.ui_check;
     const changed = ui ? (await w.git(handle, ["diff", "--name-only", "-z", "--no-renames", base_sha, merged_sha])).split("\0").filter(Boolean) : [];
     const uiCheck = ui && changed.some((f) => ui.paths.some((p) => f.startsWith(p))) ? [[...ui.command]] : null;
-    const red = async (failed: Failed, ui = false) => ({ result: "red", why: "checks", ...(await failure(w, failed, ui)), base_sha, merged_sha });
-    const install = await w.runCheckList(run, handle, signal, { commands: [[...w.cfg.repo.install_command]] });
+    const want = await projectNode(w, handle, merged_sha);
+    const node: NodeChoice = want ? await chooseNode(w, handle, want) : { bin: null, version: "" };
+    // Which Node ran the checks, in the worker log and the run's result: no version named is said, never silent.
+    const nodeUsed = want ? `Node ${node.version} (${want.from})` : "the worker's Node: no version in .nvmrc or package.json engines";
+    w.d.log.info(`merge check runs on ${nodeUsed}`, { run_id: run.id, node_bin: node.bin ?? "worker" });
+    const red = async (failed: Failed, ui = false) => ({ result: "red", why: "checks", ...(await failure(w, failed, ui)), base_sha, merged_sha, node: nodeUsed });
+    const runOn = async (commands: string[][]) => {
+      const r = await w.runCheckList(run, handle, signal, { commands: commands.map((c) => onNode(node, c)) });
+      return { ...r, failed: r.failed && { ...r.failed, command: offNode(r.failed.command) } };
+    };
+    const install = await runOn([[...w.cfg.repo.install_command]]);
     if (install.failed) return red(install.failed);
-    const list = await checkList(w, run, handle, signal);
+    const list = await checkList(w, runOn);
     if (list.failed) return red(list.failed);
-    const uiFailed = uiCheck ? (await w.runCheckList(run, handle, signal, { commands: uiCheck })).failed : null;
+    const uiFailed = uiCheck ? (await runOn(uiCheck)).failed : null;
     if (uiFailed) {
-      const onBase = await baseUiCheck(w, c, base_ref, base_sha, uiCheck!);
-      if (onBase) return { result: "red", why: "base_red", ...(await failure(w, onBase, true)), base_sha };
+      const onBase = await baseUiCheck(w, c, base_ref, base_sha, uiCheck!, node);
+      if (onBase) return { result: "red", why: "base_red", ...(await failure(w, onBase, true)), base_sha, node: nodeUsed };
       return red(uiFailed, true);
     }
     const flaky = list.flaky.length > 0 ? { flaky_tests: list.flaky } : {};
-    return { result: "green", base_sha, merged_sha, heads, ...flaky };
+    return { result: "green", base_sha, merged_sha, heads, node: nodeUsed, ...flaky };
   } finally {
     await w.d.sandbox.destroy(handle);
   }
@@ -81,15 +94,18 @@ async function mergeCheck(w: Worker, c: RunCall): Promise<Record<string, unknown
 
 /**
  * The UI check once more on the base alone (red main, design 03-risk): a fresh checkout of `base_ref`, pinned to the
- * checked `base_sha`, the install command, then the UI check. Returns its failure, or null when the base passes.
+ * checked `base_sha`, the install command, then the UI check, on the same Node as the change. Returns its failure, or
+ * null when the base passes.
  */
-async function baseUiCheck(w: Worker, { run, item, signal }: RunCall, base_ref: string, base_sha: string, uiCheck: string[][]): Promise<Failed | null> {
+async function baseUiCheck(w: Worker, { run, item, signal }: RunCall, base_ref: string, base_sha: string, uiCheck: string[][], node: NodeChoice): Promise<Failed | null> {
   const handle = await w.route(item).sandbox.create({ repo: w.cfg.repo.path, branch: null, base_ref }).catch((err: unknown) => {
     throw new RunFailure("git_failed", `worktree: ${err instanceof Error ? err.message : "unknown"}`, true);
   });
   try {
     await w.git(handle, [...NO_HOOKS, "checkout", "--quiet", "--detach", base_sha]);
-    return (await w.runCheckList(run, handle, signal, { commands: [[...w.cfg.repo.install_command], ...uiCheck] })).failed;
+    const commands = [[...w.cfg.repo.install_command], ...uiCheck].map((cmd) => onNode(node, cmd));
+    const failed = (await w.runCheckList(run, handle, signal, { commands })).failed;
+    return failed && { ...failed, command: offNode(failed.command) };
   } finally {
     await w.d.sandbox.destroy(handle);
   }
@@ -100,16 +116,16 @@ async function baseUiCheck(w: Worker, { run, item, signal }: RunCall, base_ref: 
  * files its output names: a passing rerun counts those tests as flaky (`file > name`) and the list goes on after
  * that command; a failing rerun, one that cannot start, or a failure naming no test file returns the first failure.
  */
-async function checkList(w: Worker, run: RunCall["run"], handle: NonNullable<RunCall["handle"]>, signal: AbortSignal): Promise<{ failed: Failed | null; flaky: string[] }> {
+async function checkList(w: Worker, runOn: (commands: string[][]) => Promise<CheckRound>): Promise<{ failed: Failed | null; flaky: string[] }> {
   const tools: MergeCheckTools = w.checkTools;
   let rest = tools.checkCommands(w.cfg.repo);
   const flaky: string[] = [];
   while (rest.length > 0) {
-    const r = await w.runCheckList(run, handle, signal, { commands: rest });
+    const r = await runOn(rest);
     if (!r.failed) break;
     const files = tools.failingTestFiles(r.failed.tail);
     if (files.length === 0) return { failed: r.failed, flaky };
-    const again = await w.runCheckList(run, handle, signal, { commands: [tools.withTestFiles(r.failed.command, files)] });
+    const again = await runOn([tools.withTestFiles(r.failed.command, files)]);
     if (again.failed) return { failed: r.failed, flaky };
     flaky.push(...failingTestNames(r.failed.tail).filter((t) => !flaky.includes(t)));
     rest = rest.slice(r.results.length);
