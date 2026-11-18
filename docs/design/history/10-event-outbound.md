@@ -34,3 +34,5 @@
   `before_delivery`), all for `*.hook.ts`, and `hooks` named only `*.hook.ts` files; nothing ran a pack's checks.
 - **An enabled `before_delivery` hook** (changed 2026-11-09, runtime review L1). Before: startup accepted it (the
   name was discovered) though nothing ran it, so every delivery went out unchecked with no error.
+- **A golden case's role** (changed 2026-11-18, issue #492). Before: "A golden case names its role in `case.json`
+  (`role`; none means `review`)."

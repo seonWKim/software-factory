@@ -35,7 +35,7 @@ export interface RoleDescriptor {
   readonly rule_of_two: RuleOfTwo;
   readonly proposes: readonly Artifact[];
   readonly approves: readonly Artifact[];
-  /** Golden cases it ships with (golden/cases/, by `role` in case.json); a role or prompt change replays them. */
+  /** Golden cases it ships with (`src/worker/roles/<name>/golden/<case-id>/`); a role or prompt change replays them. */
   readonly golden: { readonly min_cases: number };
 }
 

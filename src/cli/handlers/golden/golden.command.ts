@@ -4,18 +4,21 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { Plugins, resolveProject } from "../../../compose.js";
 import { addCase, buildGoldenRunDeps, compareCases, formatCompare, formatReport, parseAddArgs, parseCompareArgs, parseRunArgs, runCases } from "../../../golden.js";
+import { ROLES_DIR } from "../../../runtime/index.js";
 import { storeProjectResolver } from "../../../ui/settings-api.js";
 import { defineCommand } from "../../command.js";
 
 /** `golden add` reads the store and GitHub (read-only); `golden run` and `golden compare` open neither. */
 export default defineCommand({
   names: ["golden"],
-  usage: `  golden add <pr> [--expect should_flag|should_pass] [--force]
-               writes golden/cases/<pr>/ (diff.patch, spec.md, case.json) from a factory PR's record;
-               egress-scanned first, nothing written on a finding; a clean merge needs --expect should_pass
-  golden run --agent reviewer
-               replays every golden case through the reviewer (no push, no GitHub writes), prints
-               catch_rate and false_alarm_rate, writes <state_dir>/golden/results/<timestamp>.json.
+  usage: `  golden add <pr> [--role <name>] [--expect should_flag|should_pass] [--force]
+               writes src/worker/roles/<name>/golden/<pr>/ (instruction.md, environment/diff.patch, case.json;
+               no --role: review) from a factory PR's record; egress-scanned first, nothing written on a
+               finding; a clean merge needs --expect should_pass
+  golden run role/<name>
+               replays the role's golden cases with its prompt (no push, no GitHub writes), prints per case
+               and in total: tokens, wall time, pass_rate, catch_rate and false_alarm_rate, and writes
+               <state_dir>/golden/results/<timestamp>.json.
                With the noop sandbox the agent runs as the host user: test environment only (design §5)
   golden compare --base <file> [--agent reviewer] [--since <ref> | --all]
                replays the cases tagged with the changed prompt twice (base prompt from <file>, then the
@@ -42,7 +45,7 @@ export default defineCommand({
             project: (await storeProjectResolver(store, { owner, name })()) ?? (await resolveProject(github, { owner, name })),
             github: { pullDiff: (pr) => github.pullDiff({ owner, name }, pr) },
             scanner: await p.scanner(secrets),
-            casesDir: join(loaded.root, "golden", "cases"),
+            rolesDir: join(loaded.root, ROLES_DIR),
           },
           opts,
         );
@@ -53,7 +56,8 @@ export default defineCommand({
       }
     }
     if (sub === "run") {
-      const report = await runCases(await buildGoldenRunDeps(p, loaded), parseRunArgs(args));
+      const opts = parseRunArgs(args);
+      const report = await runCases(await buildGoldenRunDeps(p, loaded), opts);
       console.log(formatReport(report));
       return 0;
     }
@@ -61,7 +65,7 @@ export default defineCommand({
       const opts = parseCompareArgs(args);
       const basePrompt = await readFile(opts.base, "utf8");
       const changed = opts.all ? null : await changedPaths(loaded.root, opts.since ?? loaded.config.repo.base_branch);
-      const report = await compareCases(await buildGoldenRunDeps(p, loaded), { agent: opts.agent, basePrompt, changed });
+      const report = await compareCases(await buildGoldenRunDeps(p, loaded), { role: opts.role, basePrompt, changed });
       console.log(formatCompare(report));
       return report.outcome === "fail" ? 1 : 0;
     }

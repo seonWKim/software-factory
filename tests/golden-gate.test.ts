@@ -15,6 +15,8 @@ import {
   parseCompareArgs,
 } from "../src/golden.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { RoleCatalog } from "../src/runtime/index.js";
+import reviewRole from "../src/worker/roles/review.role.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import { FakeRunner, FakeSandbox, cleanScanner, config, prompts } from "./helpers/fakes.js";
 
@@ -31,11 +33,13 @@ afterEach(async () => {
   await rm(tmp, { recursive: true, force: true });
 });
 
-async function writeCase(casesDir: string, id: string, expectValue: string, extra: Record<string, unknown> = {}) {
-  const dir = join(casesDir, id);
-  await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "diff.patch"), `diff --git a/x b/x\n// ${expectValue} ${id}\n`);
-  await writeFile(join(dir, "spec.md"), `# Work item wi_${id}\n\n## Problem\n\nspec for ${id}`);
+const casesDir = () => join(tmp, "src", "worker", "roles", "review", "golden");
+
+async function writeCase(dirOfCases: string, id: string, expectValue: string, extra: Record<string, unknown> = {}) {
+  const dir = join(dirOfCases, id);
+  await mkdir(join(dir, "environment"), { recursive: true });
+  await writeFile(join(dir, "environment", "diff.patch"), `diff --git a/x b/x\n// ${expectValue} ${id}\n`);
+  await writeFile(join(dir, "instruction.md"), `# Work item wi_${id}\n\n## Problem\n\nspec for ${id}`);
   await writeFile(join(dir, "case.json"), JSON.stringify({ id, work_item_id: `wi_${id}`, expect: expectValue, ...extra }));
 }
 
@@ -54,22 +58,23 @@ function fixtureRunner() {
 
 function deps(runner: FakeRunner): GoldenRunDeps {
   return {
-    casesDir: join(tmp, "golden", "cases"),
+    rolesDir: join(tmp, "src", "worker", "roles"),
+    roles: new RoleCatalog([{ file: "worker/roles/review.role.ts", descriptor: reviewRole }]),
+    prompt: async () => prompts.review,
     resultsDir: join(tmp, "state", "golden", "results"),
     sandbox: new FakeSandbox(),
     runner,
     scanner: cleanScanner,
     clock: new FakeClock(new Date("2026-11-08T12:00:00.000Z")),
     config,
-    reviewPrompt: prompts.review,
   };
 }
 
 async function seedFixture(d: GoldenRunDeps) {
-  await writeCase(d.casesDir, "1", "should_flag");
-  await writeCase(d.casesDir, "2", "should_flag");
-  await writeCase(d.casesDir, "3", "should_pass");
-  await writeCase(d.casesDir, "4", "should_pass");
+  await writeCase(casesDir(), "1", "should_flag");
+  await writeCase(casesDir(), "2", "should_flag");
+  await writeCase(casesDir(), "3", "should_pass");
+  await writeCase(casesDir(), "4", "should_pass");
 }
 
 describe("golden compare", () => {
@@ -80,7 +85,7 @@ describe("golden compare", () => {
     const d = deps(runner);
     await seedFixture(d);
 
-    const unchanged = await compareCases(d, { agent: "reviewer", basePrompt: prompts.review, changed: ["prompts/review.md"] });
+    const unchanged = await compareCases(d, { role: "review", basePrompt: prompts.review, changed: ["prompts/review.md"] });
     expect(unchanged.outcome).toBe("pass");
     expect(unchanged.base!.catch_rate).toEqual({ numerator: 2, denominator: 2, value: 1 });
     expect(unchanged.head!.false_alarm_rate).toEqual({ numerator: 0, denominator: 2, value: 0 });
@@ -89,8 +94,8 @@ describe("golden compare", () => {
     expect(ids(0)).toEqual(["1", "2", "3", "4", "1", "2", "3", "4"]);
 
     const broken = await compareCases(
-      { ...d, reviewPrompt: BROKEN_PROMPT, clock: new FakeClock(new Date("2026-11-08T13:00:00.000Z")) },
-      { agent: "reviewer", basePrompt: prompts.review, changed: ["prompts/review.md"] },
+      { ...d, prompt: async () => BROKEN_PROMPT, clock: new FakeClock(new Date("2026-11-08T13:00:00.000Z")) },
+      { role: "review", basePrompt: prompts.review, changed: ["prompts/review.md"] },
     );
     expect(broken.outcome).toBe("fail");
     expect(broken.reason).toContain("catch_rate dropped by 1.000");
@@ -98,7 +103,7 @@ describe("golden compare", () => {
     expect(runner.specs.slice(8).map((s) => s.system_prompt)).toEqual([...Array(4).fill(prompts.review), ...Array(4).fill(BROKEN_PROMPT)]);
 
     const text = formatCompare(broken);
-    expect(text).toContain("golden compare (reviewer): fail");
+    expect(text).toContain("golden compare (review): fail");
     expect(text).toContain("- base: catch_rate: 2/2 = 1.000; false_alarm_rate: 0/2 = 0.000");
     expect(text).toContain("- head: catch_rate: 0/2 = 0.000; false_alarm_rate: 0/2 = 0.000");
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -107,7 +112,7 @@ describe("golden compare", () => {
   it("writes each side's results file and one compare record under the results dir", async () => {
     const d = deps(fixtureRunner());
     await seedFixture(d);
-    const r = await compareCases(d, { agent: "reviewer", basePrompt: prompts.review, changed: null });
+    const r = await compareCases(d, { role: "review", basePrompt: prompts.review, changed: null });
     const dir = join(d.resultsDir, "compare-2026-11-08T12-00-00-000Z");
     expect(r.record_file).toBe(join(dir, "compare.json"));
     expect((await readdir(dir)).sort()).toEqual(["base", "compare.json", "head"]);
@@ -120,7 +125,7 @@ describe("golden compare", () => {
     const runner = fixtureRunner();
     const d = deps(runner);
     await seedFixture(d);
-    const r = await compareCases(d, { agent: "reviewer", basePrompt: prompts.review, changed: ["README.md", "prompts/triage.md"] });
+    const r = await compareCases(d, { role: "review", basePrompt: prompts.review, changed: ["README.md", "prompts/triage.md"] });
     expect(r.outcome).toBe("skipped");
     expect(r.reason).toContain("touches neither prompts/review.md nor the code");
     expect(runner.specs).toEqual([]);
@@ -128,17 +133,27 @@ describe("golden compare", () => {
     expect(JSON.parse(await readFile(r.record_file, "utf8")).outcome).toBe("skipped");
   });
 
+  it("skips with a reason when only cases under a role's golden folder changed", async () => {
+    const runner = fixtureRunner();
+    const d = deps(runner);
+    await seedFixture(d);
+    const r = await compareCases(d, { role: "review", basePrompt: prompts.review, changed: ["src/worker/roles/review/golden/1/case.json"] });
+    expect(r.outcome).toBe("skipped");
+    expect(r.reason).toContain("touches neither prompts/review.md nor the code");
+    expect(runner.specs).toEqual([]);
+  });
+
   it("skips with zero cases, and with no case tagged with the changed prompt", async () => {
     const runner = fixtureRunner();
     const d = deps(runner);
-    const none = await compareCases(d, { agent: "reviewer", basePrompt: prompts.review, changed: null });
+    const none = await compareCases(d, { role: "review", basePrompt: prompts.review, changed: null });
     expect(none.outcome).toBe("skipped");
-    expect(none.reason).toContain("no golden cases tagged review.md");
+    expect(none.reason).toContain("no golden cases tagged review.md in src/worker/roles/review/golden");
 
-    await writeCase(d.casesDir, "1", "should_flag", { prompts: ["implement.md"] });
+    await writeCase(casesDir(), "1", "should_flag", { prompts: ["implement.md"] });
     const untagged = await compareCases(
       { ...d, clock: new FakeClock(new Date("2026-11-08T13:00:00.000Z")) },
-      { agent: "reviewer", basePrompt: prompts.review, changed: ["prompts/review.md"] },
+      { role: "review", basePrompt: prompts.review, changed: ["prompts/review.md"] },
     );
     expect(untagged.outcome).toBe("skipped");
     expect(runner.specs).toEqual([]);
@@ -148,16 +163,16 @@ describe("golden compare", () => {
     const runner = fixtureRunner();
     const d = deps(runner);
     await seedFixture(d);
-    await writeCase(d.casesDir, "5", "should_flag", { prompts: ["implement.md"] });
-    await compareCases(d, { agent: "reviewer", basePrompt: prompts.review, changed: ["src/impl/runner/claude-code-runner.ts"] });
+    await writeCase(casesDir(), "5", "should_flag", { prompts: ["implement.md"] });
+    await compareCases(d, { role: "review", basePrompt: prompts.review, changed: ["src/impl/runner/claude-code-runner.ts"] });
     expect(runner.specs.map((s) => /spec for (\w+)/.exec(s.prompt)![1])).not.toContain("5");
   });
 
   it("skips with an n/a rate on either side", async () => {
     const runner = fixtureRunner();
     const d = deps(runner);
-    await writeCase(d.casesDir, "1", "should_flag");
-    const r = await compareCases(d, { agent: "reviewer", basePrompt: prompts.review, changed: null });
+    await writeCase(casesDir(), "1", "should_flag");
+    const r = await compareCases(d, { role: "review", basePrompt: prompts.review, changed: null });
     expect(r.outcome).toBe("skipped");
     expect(r.reason).toContain("n/a rate");
     expect(r.reason).toContain("base false_alarm_rate");
@@ -182,11 +197,14 @@ describe("golden compare", () => {
     expect(affectedPrompts(["src/impl/runner/tool-bridge.ts"], ["review.md"])).toEqual(["review.md"]);
     expect(affectedPrompts(["docs/x.md", "prompts/triage.md"], ["review.md"])).toEqual([]);
     expect(affectedPrompts(null, ["review.md"])).toEqual(["review.md"]);
+    // A case under a role's golden folder is not prompt code, though it sits under src/worker/.
+    expect(affectedPrompts(["src/worker/roles/review/golden/1/instruction.md", "src/worker/roles/demo/golden/2/case.json"], ["review.md"])).toEqual([]);
+    expect(affectedPrompts(["src/worker/roles/review.role.ts"], ["review.md"])).toEqual(["review.md"]);
   });
 
   it("parses its arguments", () => {
-    expect(parseCompareArgs(["--base", "b.md"])).toEqual({ agent: "reviewer", base: "b.md", all: false });
-    expect(parseCompareArgs(["--agent", "reviewer", "--base", "b.md", "--since", "main"])).toEqual({ agent: "reviewer", base: "b.md", since: "main", all: false });
+    expect(parseCompareArgs(["--base", "b.md"])).toEqual({ role: "review", base: "b.md", all: false });
+    expect(parseCompareArgs(["--agent", "reviewer", "--base", "b.md", "--since", "main"])).toEqual({ role: "review", base: "b.md", since: "main", all: false });
     expect(() => parseCompareArgs([])).toThrow(GoldenError);
     expect(() => parseCompareArgs(["--base", "b.md", "--agent", "triage"])).toThrow(/only --agent reviewer/);
     expect(() => parseCompareArgs(["--base", "b.md", "--all", "--since", "main"])).toThrow(GoldenError);
@@ -195,8 +213,8 @@ describe("golden compare", () => {
   it("refuses a malformed prompts tag before any agent runs", async () => {
     const runner = fixtureRunner();
     const d = deps(runner);
-    await writeCase(d.casesDir, "1", "should_flag", { prompts: "review.md" });
-    await expect(compareCases(d, { agent: "reviewer", basePrompt: prompts.review, changed: null })).rejects.toThrow(/case 1: prompts must be/);
+    await writeCase(casesDir(), "1", "should_flag", { prompts: "review.md" });
+    await expect(compareCases(d, { role: "review", basePrompt: prompts.review, changed: null })).rejects.toThrow(/case 1: prompts must be/);
     expect(runner.specs).toEqual([]);
     expect(existsSync(join(d.resultsDir))).toBe(false);
   });
