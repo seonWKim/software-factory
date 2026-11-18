@@ -27,7 +27,7 @@ import { NO_PROJECT_KEY, buildTask, createLocalItem, createProjectTask } from ".
  * (design 04-gate-commands, the CLI sentence form). `help [<id>]` prints the `/help` reply. The controller reads that log and applies each command with the same
  * authorize check and the same replies as the source comment, through the auth plugin for local commands (`local`
  * by default, issue #318); a command on a sync source's item is also mirrored to it, best effort, once the source
- * answers (design 05-sources, CLI intake); a verdict is not mirrored. Every command acts as the CLI identity (`cliIdentity`). The first identity to run a
+ * answers (design 05-sources, CLI intake); a verdict or merge is not mirrored. Every command acts as the CLI identity (`cliIdentity`). The first identity to run a
  * writing command becomes the owner. No sync source call.
  */
 
@@ -411,15 +411,15 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       const item = await d.store.getWorkItem(a.id);
       if (!item) return fail(`no work item ${a.id}`);
       const name = a.command === MERGE_COMMAND ? "factory merge" : `/${a.command}`;
-      if (a.command === MERGE_COMMAND && item.source.type !== "local") return fail(`${a.id} is not a local work item: merge its change on the forge instead`);
       // The controller's phase check, before any write: the same refusal it would post (issues #528, #523).
       const refused = a.command === "approve" ? approveRefusal(item) : a.command === "verdict" ? verdictRefusal(item) : null;
       if (refused !== null) return fail(refusalText(name, refused));
       await claim();
       const args: Record<string, unknown> = { item: item.id, ...(a.text !== "" ? { text: a.text } : {}) };
       // An item of a sync source gets the command mirrored on its issue later; a local item has no other surface, and
-      // a command typed in the item's own thread is already there. A verdict changes no state, so it is not mirrored.
-      const mirror = a.command !== "verdict" && item.source.type !== "local" && item.source.type !== d.origin;
+      // a command typed in the item's own thread is already there. A verdict changes no state and a merge answers on
+      // its own (design 04-gate-commands), so neither is mirrored.
+      const mirror = a.command !== "verdict" && a.command !== MERGE_COMMAND && item.source.type !== "local" && item.source.type !== d.origin;
       const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: a.command, args, ...(mirror ? { mirror } : {}) });
       return {
         code: 0,

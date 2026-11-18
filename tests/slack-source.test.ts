@@ -1046,13 +1046,16 @@ describe("slack source: factory commands (issue #498)", () => {
     expect(f.api.thread("1800000033.000100").map((m) => m.text)).toEqual(["`merge` works only in a work item's thread: post it there, after a mention of the bot."]);
   });
 
-  it("`merge` in the thread of an item with no local branch gets the CLI's refusal", async () => {
+  it("`merge` in the thread of a Slack item stores one row, and the controller refuses it with its own reason", async () => {
     const f = await setup();
     const item = await specPending(f, "1800000034.000100");
     await deliver(f, eventEnvelope(mention("1800000034.000200", "merge", { thread_ts: "1800000034.000100" })));
-    const reply = f.api.thread("1800000034.000100").find((m) => m.text?.startsWith("```"))!;
-    expect(reply.text).toContain(`${item.id} is not a local work item: merge its change on the forge instead`);
-    expect(await f.store.listCliCommandsAfter(0, 10)).toEqual([]);
+    expect((await f.store.listCliCommandsAfter(0, 10)).map((c) => [c.command, c.args])).toEqual([["merge", { item: item.id }]]);
+    await f.controller.tickCommands();
+    await f.controller.tickOutbox();
+    const refusals = f.api.thread("1800000034.000100").filter((m) => m.text?.startsWith("`/merge` was not applied:"));
+    expect(refusals.map((m) => m.text)).toEqual([expect.stringContaining("is not waiting for a merge")]);
+    expect(fields(await f.store.getWorkItem(item.id))).toEqual(fields(item));
   });
 
   it("`help` lists only what the sender may run there: no item command in a channel, and none for a user without the role", async () => {
@@ -1271,14 +1274,13 @@ describe("slack source: commands with no slash after a mention (issue #541)", ()
       await f.controller.tickIntake();
       await f.controller.tickCommands();
       const [r1, r2] = await rows(f);
+      expect(r1, text).toEqual([r1![0], { ...(r1![1] as object), item: slashed.id }]);
+      expect(r2, text).toEqual([r1![0], { ...(r1![1] as object), item: bare.id }]);
       if (text === "merge") {
-        // Not a local item: the CLI refuses both the same way, before any row.
-        expect([r1, r2], text).toEqual([undefined, undefined]);
-        const refusals = (ts: string) => f.api.thread(ts).filter((m) => m.text?.includes("is not a local work item")).length;
+        // The controller refuses both the same way, with its own reason: neither item waits for a merge.
+        await f.controller.tickOutbox();
+        const refusals = (ts: string) => f.api.thread(ts).filter((m) => m.text?.startsWith("`/merge` was not applied:") && m.text.includes("is not waiting for a merge")).length;
         expect([refusals(`18000000${71 + i}.000100`), refusals(`18000000${71 + i}.000200`)]).toEqual([1, 1]);
-      } else {
-        expect(r1, text).toEqual([r1![0], { ...(r1![1] as object), item: slashed.id }]);
-        expect(r2, text).toEqual([r1![0], { ...(r1![1] as object), item: bare.id }]);
       }
       expect(fields(await f.store.getWorkItem(bare.id)), text).toEqual(fields(await f.store.getWorkItem(slashed.id)));
     }
@@ -1785,15 +1787,16 @@ describe("slack source: replies under a notice (design 05-sources)", () => {
     const item = await specPending(f, thread);
     const ts = await notice(f, [item]);
     const before = f.api.thread(thread).length;
-    // `merge` on a Slack item: the CLI's refusal; `resolve` while the spec waits: stored, then refused by the controller.
+    // `merge` and `resolve` while the spec waits: each stored, then refused by the controller with its own reason.
     await deliver(f, eventEnvelope(mention("1800000301.000200", "go ahead and merge", { thread_ts: ts })));
     await deliver(f, eventEnvelope(mention("1800000301.000300", "resolve", { thread_ts: ts })));
+    expect((await rows(f)).map(([command]) => command)).toEqual(["merge", "resolve"]);
     await f.controller.tickCommands();
     await f.controller.tickOutbox();
     const answers = f.api.thread(ts).map((m) => m.text ?? "");
-    expect(answers.some((t) => t.includes("is not a local work item"))).toBe(true);
-    expect(answers.some((t) => t.includes("was not applied"))).toBe(true);
-    expect(f.api.thread(thread).slice(before).filter((m) => /not a local work item|was not applied/.test(m.text ?? ""))).toEqual([]);
+    expect(answers.some((t) => t.startsWith("`/merge` was not applied:") && t.includes("is not waiting for a merge"))).toBe(true);
+    expect(answers.some((t) => t.startsWith("`/resolve` was not applied"))).toBe(true);
+    expect(f.api.thread(thread).slice(before).filter((m) => /was not applied/.test(m.text ?? ""))).toEqual([]);
   });
 
   const FORMS = ["merge", "approve", "retry", "revise narrower scope", "reject duplicate request", "resolve", "/revise narrower scope", "go ahead and merge"];
@@ -1807,13 +1810,13 @@ describe("slack source: replies under a notice (design 05-sources)", () => {
       await deliver(f, eventEnvelope(mention("1800000310.000400", form, { thread_ts: "1800000310.000200" })));
       await f.controller.tickCommands();
       await f.controller.tickOutbox();
-      // The notice's reply stored the same row for `a` as the thread's for `b` (none for `merge`: a Slack item is not local).
+      // The notice's reply stored the same row for `a` as the thread's for `b`.
       const stored = (await rows(f)).map(([command, args]) => [command, { ...(args as object), item: (args as { item: string }).item === a.id ? "a" : "b" }]);
       const same = (r: unknown[]) => JSON.stringify([r[0], { ...(r[1] as object), item: "" }]);
-      expect(stored.map((r) => (r[1] as { item: string }).item)).toEqual(form.endsWith("merge") ? [] : ["a", "b"]);
+      expect(stored.map((r) => (r[1] as { item: string }).item)).toEqual(["a", "b"]);
       expect(new Set(stored.map(same)).size).toBeLessThanOrEqual(1);
       expect(fields(await f.store.getWorkItem(a.id))).toEqual(fields(await f.store.getWorkItem(b.id)));
-      const answers = (ms: { text?: string }[]) => ms.map((m) => (m.text ?? "").replaceAll(a.id, "X").replaceAll(b.id, "X")).filter((t) => /not a local work item|was not applied/.test(t));
+      const answers = (ms: { text?: string }[]) => ms.map((m) => (m.text ?? "").replaceAll(a.id, "X").replaceAll(b.id, "X")).filter((t) => /was not applied/.test(t));
       expect(answers(f.api.thread(ts))).toEqual(answers(f.api.thread("1800000310.000200").slice(bBefore)));
       expect(await itemCount(f)).toBe(2);
     });
@@ -1918,12 +1921,12 @@ describe('slack source: "go ahead and merge" in an item\'s own thread', () => {
     const f = await setup();
     const ts = "1800000390.000100";
     await specPending(f, ts);
-    const refusals = () => f.api.thread(ts).filter((m) => m.text?.includes("is not a local work item")).length;
+    const merges = async () => (await f.store.listCliCommandsAfter(0, 50)).filter((c) => c.command === "merge").length;
     await deliver(f, eventEnvelope(mention("1800000390.000200", "merge", { thread_ts: ts })));
     await deliver(f, eventEnvelope(mention("1800000390.000300", "Go Ahead And Merge", { thread_ts: ts })));
-    expect(refusals()).toBe(2);
+    expect(await merges()).toBe(2);
     await deliver(f, eventEnvelope(mention("1800000390.000400", "go ahead and merge it after lunch", { thread_ts: ts })));
-    expect(refusals()).toBe(2);
+    expect(await merges()).toBe(2);
     const last = (await f.store.listInboxAfter("slack_thread", 0, 50)).at(-1)!.event;
     expect(last).toMatchObject({ kind: "plain_comment", body: "go ahead and merge it after lunch" });
   });

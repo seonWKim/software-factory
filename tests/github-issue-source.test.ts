@@ -508,6 +508,31 @@ describe("GitHubIssueSource: /resolve", () => {
       { kind: "revise_requested", source: issueRef(7), comment_id: "33", requester: aliceId, feedback: "on the issue" },
     ]);
   });
+
+  it("/merge on a PR's conversation stores the PR's change ref, read once as /revise does; on a plain issue no PR", async () => {
+    const { store } = await newStore();
+    const client = new PullClient();
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", "sf: ", store);
+    client.pulls[692] = { number: 692, head: { ref: "factory/wi_26d4d6e4", sha: "h" } };
+    const onPr = (id: number, pr: number) => ({
+      ...comment(id, "/merge", `2026-11-01T00:00:${String(id).padStart(2, "0")}Z`, pr),
+      html_url: `https://github.com/o/r/pull/${pr}#issuecomment-${id}`,
+    });
+    client.responses["/repos/o/r/issues/comments"] = [
+      onPr(40, 692),
+      onPr(41, 45), // PR gone (404): the row is kept with no PR, so the controller answers it
+      comment(42, "/merge", "2026-11-01T00:00:42Z", 7),
+    ];
+    await source.poll(null);
+    const rows = (await store.listCliCommandsAfter(0, 10)).filter((r) => r.command === "merge");
+    expect(rows.map((r) => [r.key, r.args.pr ?? null])).toEqual([
+      ["github:40", { change_ref: "692", head_branch: "factory/wi_26d4d6e4" }],
+      ["github:41", null],
+      ["github:42", null],
+    ]);
+    const lookups = client.calls.filter((c) => /^\/repos\/o\/r\/pulls\/\d+$/.test(c.path)).map((c) => c.path);
+    expect(lookups).toEqual(["/repos/o/r/pulls/692", "/repos/o/r/pulls/45"]);
+  });
 });
 
 describe("GitHubIssueSource: status labels", () => {

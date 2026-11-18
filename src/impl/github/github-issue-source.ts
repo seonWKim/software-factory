@@ -2,6 +2,7 @@ import { prNumber } from "../../core/change-ref.js";
 import { type CommandPr, githubCommand, githubCommentKey, syncedCommand } from "../../core/command-inbox.js";
 import { parseComment } from "../../core/commands.js";
 import { type DependencyLink, type DependencySource, parseDependsOn } from "../../core/coordination.js";
+import { MERGE_COMMAND } from "../../core/local-merge.js";
 import { incompleteLabel } from "../../core/pr-body.js";
 import { workItemIdFromBranch } from "../../core/policy.js";
 import { type ListedReaction, REACTION_WINDOW_MS, changeComments, newReactionEvents } from "../../core/reaction-verdict.js";
@@ -334,6 +335,10 @@ export class GitHubIssueSource implements PollSource, DependencySource {
       // `/revise`: any PR of this repository (factory or adopted); `/resolve`: factory PRs only.
       pr = await this.pullHead(base, n, parsed.name === "resolve");
       if (!pr) return null;
+    } else if (onPr && parsed.kind === "unknown" && parsed.word === MERGE_COMMAND) {
+      // `/merge` (no comment command of its own): any PR of this repository, so the controller finds its item by the PR
+      // whatever the item's source. A PR that is gone keeps the row with no PR: the controller answers it (design 04-gate-commands).
+      pr = await this.pullHead(base, n, false);
     }
     const command = githubCommand({
       comment_id: cm.id, user_id: cm.user.id, source, pr,
