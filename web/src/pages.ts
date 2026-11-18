@@ -1,4 +1,5 @@
 import { CalendarCheck, CalendarDays, Database, HeartPulse, ListTodo, Puzzle, ScrollText, Settings, Waypoints, type LucideIcon } from "lucide-react";
+import { REDIRECTS } from "./page-redirects";
 
 /** Where a page sits in the sidebar: the Tasks block, the System block (Work, Health), the bottom block (Rules, Plugins, Settings), or nowhere (a routable page with no sidebar link: Runners and Data, linked from Settings > Advanced). */
 export type PageGroup = "tasks" | "system" | "bottom" | "hidden";
@@ -31,16 +32,6 @@ export const BASE = "/app/";
 
 /** The Settings page's "Commands from the page" section: what to set when the page's commands are off. */
 export const PAGE_COMMANDS_PATH = `${BASE}settings#page-commands`;
-
-/** Old page paths and where they lead now (the landing page, Needs you, became Tasks; Workers became Runners; Queue became Work's Queued filter; Activity became part of Work; Spend and Failures became sections of Health). */
-const REDIRECTS: Readonly<Record<string, string>> = {
-  "": "tasks",
-  workers: "runners",
-  queue: "items?state=queued",
-  activity: "items",
-  spend: "health#spend",
-  failures: "health#failures",
-};
 
 /** The path under /app/ without query, hash or trailing slash. */
 function restOf(pathname: string): string {
