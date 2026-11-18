@@ -1,5 +1,7 @@
 ## History
 
+- **The top bar showed a Needs you chip, "updated Ns ago" and three theme buttons** (replaced 2026-11-18 by the top bar decision at the top of 09-dashboard-shell.md). Before: a "Needs you (N)" link repeating the sidebar Tasks badge, an "updated Ns ago" or "not updated yet" text, three System, Light and Dark icon buttons as a radio group, a mode switch with only a `title`, and a Refresh icon that never spun.
+
 - **A server-rendered page beside the app at `/classic` and `/items/<id>`** (until 2026-11-16, the app-only decision at the top). Before: `/classic` served the server-rendered status page (`src/ui/pages.ts`: the factory banner, open alarms, GitHub API, Running now, Queue, Paused, the filter form, the ranked items, Health with Run now, the improve report, Totals, Merges and Cost) and `/items/<id>` its item page; an inline script, allowed by hash, refreshed them every 5 s under an "updated N s ago" bar, the Run now script added its own hash to the CSP, and the error pages shared that shell with a home link to `/classic`.
 
 - **A readable name opened to its ID** (decision changed 2026-11-15, IDs in a tooltip). Before: `IdDetails` showed the name as a details summary that opened to the full ID and a Copy button (the readable-names decision of 2026-11-12). Opening made rows taller.

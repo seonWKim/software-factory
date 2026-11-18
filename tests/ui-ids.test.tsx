@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // @ts-nocheck -- tsconfig.test.json has no DOM or JSX; like the other ui tests this file typechecks under the web config.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../web/src/App.js";
 import { VIEW_KEY } from "../web/src/views/tree.js";
@@ -124,7 +124,8 @@ const PAGES: [string, string][] = [
 describe("raw IDs", () => {
   it.each(PAGES)("/app/%s renders no wi_ ID, github:<number> actor or host:pid outside a details or copy element", async (path, ready) => {
     await mountAt(path, ready);
-    if (path === "failures") screen.getByRole("button", { expanded: false }).click();
+    // The failure row's own toggle, inside main: the top bar's Theme menu button is also a closed expandable button.
+    if (path === "failures") within(document.querySelector("main")!).getByRole("button", { expanded: false }).click();
     if (path === "failures") await screen.findByText("A local task");
     expect(rawIds()).toEqual([]);
   });
