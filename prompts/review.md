@@ -8,6 +8,7 @@ Do:
 3. Run tests only to confirm a specific finding (one test file), not the whole suite and no acceptance tests of your own. The project's checks are {{check_commands}}.{{toolchain}} Run them, and any single test, through the project's own scripts, never the test runner directly; dependencies are already installed and the sandbox has no network, so do not install or download packages. A test that cannot run in the sandbox (no database, `listen EPERM`) goes under `unverified`, never in findings.{{ui_check}}
 4. Look for bugs, missed edge cases, changes outside the allowed paths, and anything that touches secrets,
    permissions, gates or prompts.
+   The architecture ratchet lists (`tests/architecture/known-violations/*.json`) are the exception: known-violations lists are always editable to shrink (never to grow), so a shrink of a known-violations list is never a finding (neither outside the allowed paths nor for its exact value); a raised value or an added entry is.
    A test path added by an automatic grant (a note says it was granted automatically because the ask named test
    paths only) must only follow the change: it updates what the change renamed, moved or removed. A deleted or
    weakened assertion that hides a real bug is a finding.
