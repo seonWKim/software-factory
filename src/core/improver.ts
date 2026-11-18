@@ -359,11 +359,8 @@ const RECENT_MS = 30 * DAY_MS;
 
 /** What filing needs. `file`: the first source that can file, null when none can. `comment`: once per marker. */
 export interface FilingDeps {
-  store: Pick<
-    FactoryStore,
-    | "getFiledPattern" | "claimFiledPattern" | "setFiledPatternRef" | "listImproveReports" | "setImproveGroups" | "getWorkItemBySource" | "recordAlert"
-    | "listHostSleeps" | "getRun" | "pauseAt"
-  >;
+  store: Pick<FactoryStore, "getFiledPattern" | "claimFiledPattern" | "setFiledPatternRef" | "listImproveReports" | "setImproveGroups" | "getWorkItemBySource"
+    | "recordAlert" | "listHostSleeps" | "getRun" | "pauseAt">;
   scanner: EgressScanner;
   clock: Clock;
   file: ((input: IssueInput) => Promise<SourceRef>) | null;
@@ -393,18 +390,15 @@ function commentMarker(key: string, report: string): string {
 }
 
 /**
- * Files the groups of `report` (design §7) and stores each group's filing on the report. First, a stall group one of
- * whose runs held a host sleep (`stalledBySleep`) is not filed or commented: one information alert (`host_sleep`). Then the group's
- * failed runs that finished during a `model_stall` or `network` pause are left out (`outsidePauses`): none left, it is
- * skipped (`pause`); fewer than FILE_MIN_RUNS runs or FILE_MIN_ITEMS items left, nothing is filed and it stays in the
- * report with no filing. The rest is filed with the runs left. A group whose pattern
- * has an open filed item gets one comment naming its runs not linked there yet (none: `linked`); one whose item
+ * Files the groups of `report` (design §7) and stores each group's filing on the report. First, a stall group one of whose runs held
+ * a host sleep (`stalledBySleep`) is not filed or commented: one information alert (`host_sleep`). Then its runs that failed in a
+ * model-stall or network pause are left out (`outsidePauses`): none left, `skipped` with `pause`; under FILE_MIN, no filing (report only).
+ * Of the rest, a group whose pattern has an open filed item gets one comment naming its runs not linked there yet (none: `linked`); one whose item
  * closed in the last 30 days is skipped; one whose draft needs a person or touches the gate list is not filed but
  * goes to Needs you as an alert with the cause (`needs_person`); any other is filed as a fix item, which runs
  * without a person, its runs listed and its marker in the body. At most MAX_FILED_ISSUES new items and as many comments; the rest are skipped with the cap as reason.
  * Every body passes the egress scan first: a flagged one is not sent and is recorded `withheld` with its rules.
- * Then each `hotspot` row of the patterns alike, same caps, without the pause and size checks: "Reduce conflicts on <file>", no draft
- * (a gate file still waits for a person's merge).
+ * Then each `hotspot` row of the patterns alike, same caps, no pause or FILE_MIN check: "Reduce conflicts on <file>", no draft (a gate file still waits for a person's merge).
  * Safe to run twice: a filing is claimed in filed_patterns before the call and its marker looked up by the source,
  * and a comment is posted once per marker.
  */
@@ -426,24 +420,18 @@ export async function fileReport(d: FilingDeps, report: ImproveReport): Promise<
   return { ...report, groups, patterns };
 }
 
-/** A failure pattern is filed once it holds at least this many runs outside a pause, on at least FILE_MIN_ITEMS items (design §7). */
-export const FILE_MIN_RUNS = 3;
-/** The fewest work items a filed failure pattern's runs cover: a pattern of one item stays in the report only. */
-export const FILE_MIN_ITEMS = 2;
+/** A failure pattern is filed with at least this many runs outside a pause, on at least this many items (design §7). */
+const FILE_MIN = { runs: 3, items: 2 } as const;
+type Caps = { issues: number; comments: number };
 
-async function fileGroup(
-  d: FilingDeps, report: ImproveReport, all: FailureGroup, caps: { issues: number; comments: number },
-): Promise<ImproveFiling | undefined> {
+async function fileGroup(d: FilingDeps, report: ImproveReport, all: FailureGroup, caps: Caps): Promise<ImproveFiling | undefined> {
   const key = patternKey(all);
   // First: a stall that followed a host sleep is the host's, not the repo's, so nothing is filed or commented.
   if (await stalledBySleep(d.store, all)) return toSleepAlert(d, all, key);
-  let g = all;
-  if (!isHotspot(all)) {
-    // Failures inside a model-stall or network pause are the outage's; what is left must recur across items.
-    g = await outsidePauses(d.store, all);
-    if (g.run_ids.length === 0) return { status: "skipped", reason: "pause" };
-    if (g.run_ids.length < FILE_MIN_RUNS || g.work_item_ids.length < FILE_MIN_ITEMS) return undefined;
-  }
+  // Failures inside a model-stall or network pause are the outage's; what is left must recur across items. A hot file keeps its own rule.
+  const g = isHotspot(all) ? all : await outsidePauses(d.store, all);
+  if (!isHotspot(g) && g.run_ids.length === 0) return { status: "skipped", reason: "pause" };
+  if (!isHotspot(g) && (g.run_ids.length < FILE_MIN.runs || g.work_item_ids.length < FILE_MIN.items)) return undefined;
   const file = d.file;
   const person = needsPerson(g.draft);
   if (!file && !person) return { status: "skipped", reason: "no_source" };
@@ -466,8 +454,7 @@ async function fileGroup(
   const scan = await d.scanner.scan("comment", `${title}\n\n${body}`);
   if (!scan.clean) return { status: "withheld", rules: [...new Set(scan.findings.map((f) => f.rule))] };
   // A half-done claim (no item yet) is finished under its own report's marker; an item closed long ago is replaced.
-  const claim = row && !row.filed_ref
-    ? row
+  const claim = row && !row.filed_ref ? row
     : await d.store.claimFiledPattern({ project: report.project, pattern_key: key, error_code: g.error_code, detail: g.detail, report_id: report.id }, row?.report_id);
   if (claim.filed_ref) return { status: "linked", ref: claim.filed_ref };
   caps.issues++;
@@ -482,39 +469,30 @@ function needsPerson(draft: ImproveDraft | undefined): boolean {
 }
 
 /**
- * A group no automatic fix may take goes to Needs you: one alert (pattern `repeated_error`, key `needs_person:<key>`)
- * whose detail names why and the draft's cause, scanned as UI text first (dropped if flagged). No item is filed,
- * so no fix run is queued. Once a day per pattern: a retry of the same report stores no second alert.
+ * A group no automatic fix may take goes to Needs you: one alert (`alertOnce`, key `needs_person:<key>`) whose detail names why and
+ * the draft's cause. No item is filed, so no fix run is queued; a retry of the same report stores no second alert.
  */
 async function toPerson(d: FilingDeps, g: FailureGroup, key: string): Promise<ImproveFiling> {
   const draft = g.draft as Extract<ImproveDraft, { touches_prompts_or_gate: boolean }>;
   const why = draft.needs_person ? "the draft says a person must decide" : "the fix touches the factory's prompts or gates";
   const cause = draft.status === "drafted" ? ` Draft cause (model, unverified): ${draft.cause}` : "";
-  const text = `Needs a person: ${why}, so no fix item was filed.${cause}`;
-  const scan = await d.scanner.scan("ui", text);
-  await d.store.recordAlert(
-    { pattern: "repeated_error", pattern_key: `needs_person:${key}`, error_code: g.error_code, count: g.run_ids.length, detail: scan.clean ? text : null },
-    DAY_MS,
-  );
+  await alertOnce(d, g, `needs_person:${key}`, `Needs a person: ${why}, so no fix item was filed.${cause}`);
   return { status: "skipped", reason: "needs_person" };
 }
 
-/**
- * `g` without its failed runs that finished during a `model_stall` or `network` pause (design §7, `pauseAt`: start
- * inclusive, end exclusive, a pause still in effect included), its items those of the runs left. A pushback's run
- * did not fail, so it stays. One run read and one pause read per run.
- */
-async function outsidePauses(store: Pick<FactoryStore, "getRun" | "pauseAt">, g: FailureGroup): Promise<FailureGroup> {
-  const run_ids: RunId[] = [];
-  const items = new Set<WorkItemId>();
-  for (const id of g.run_ids) {
-    const run = await store.getRun(id);
-    if (run && reviewable(run) && run.finished_at && (await store.pauseAt(run.finished_at))) continue;
-    run_ids.push(id);
-    if (run) items.add(run.work_item_id);
+/** One `repeated_error` alert of `g` under `pattern_key`, its `text` scanned as UI text first (dropped if flagged), once a day per key. */
+async function alertOnce(d: FilingDeps, g: FailureGroup, pattern_key: string, text: string): Promise<void> {
+  const detail = (await d.scanner.scan("ui", text)).clean ? text : null;
+  await d.store.recordAlert({ pattern: "repeated_error", pattern_key, error_code: g.error_code, count: g.run_ids.length, detail }, DAY_MS);
+}
+
+/** `g` without its failed runs that finished in a `model_stall` or `network` pause (`pauseAt`; a pushback's run did not fail), its items those of the runs left. */
+async function outsidePauses(store: FilingDeps["store"], g: FailureGroup): Promise<FailureGroup> {
+  const left: Run[] = [];
+  for (const r of await Promise.all(g.run_ids.map((id) => store.getRun(id)))) {
+    if (r && !(reviewable(r) && r.finished_at && (await store.pauseAt(r.finished_at)))) left.push(r);
   }
-  if (run_ids.length === g.run_ids.length) return g;
-  return { ...g, run_ids, work_item_ids: g.work_item_ids.filter((id) => items.has(id)) };
+  return { ...g, run_ids: left.map((r) => r.id), work_item_ids: g.work_item_ids.filter((id) => left.some((r) => r.work_item_id === id)) };
 }
 
 /** Host sleeps read per work item of a stall group: far more than the sleeps of one item's recent runs. */
@@ -540,24 +518,13 @@ export async function stalledBySleep(
   return false;
 }
 
-/**
- * A stall group that followed a host sleep is not filed: one information alert (pattern `repeated_error`, key
- * `host_sleep:<key>`), scanned as UI text first (dropped if flagged), once a day per pattern. It holds no item.
- */
+/** A stall group that followed a host sleep is not filed: one information alert (`alertOnce`, key `host_sleep:<key>`). It holds no item. */
 async function toSleepAlert(d: FilingDeps, g: FailureGroup, key: string): Promise<ImproveFiling> {
-  const text = `Host sleep: these ${g.run_ids.length} ${g.error_code} runs followed a host sleep, so no fix item was filed; the stall is the host's, not this repo's code.`;
-  const scan = await d.scanner.scan("ui", text);
-  await d.store.recordAlert(
-    { pattern: "repeated_error", pattern_key: sleepAlertKey(key), error_code: g.error_code, count: g.run_ids.length, detail: scan.clean ? text : null },
-    DAY_MS,
-  );
+  await alertOnce(d, g, sleepAlertKey(key), `Host sleep: these ${g.run_ids.length} ${g.error_code} runs followed a host sleep, so no fix item was filed; the stall is the host's, not this repo's code.`);
   return { status: "skipped", reason: "host_sleep" };
 }
 
-async function commentGroup(
-  d: FilingDeps, report: ImproveReport, g: FailureGroup, row: FiledPattern & { filed_ref: SourceRef }, key: string,
-  caps: { issues: number; comments: number },
-): Promise<ImproveFiling> {
+async function commentGroup(d: FilingDeps, report: ImproveReport, g: FailureGroup, row: FiledPattern & { filed_ref: SourceRef }, key: string, caps: Caps): Promise<ImproveFiling> {
   const ref = row.filed_ref;
   // A run is linked once a report filed or commented it on this item. Every run of this report finished inside its window
   // (a hot file's: hotspotSince), and a report that named one was made after that run finished, so the reports since cover it.
@@ -604,11 +571,8 @@ function issueBody(g: FailureGroup): string {
     lines.push("", "Draft cause (model, unverified):", "", g.draft.cause, "", "Draft fix:", "", g.draft.fix);
     if (g.draft.touches.length > 0) lines.push("", "Touches:", ...g.draft.touches.map((t) => `- \`${t}\``));
   }
-  lines.push(
-    "",
-    "Filed as a fix: the factory triages, implements and reviews it without a person. A change that touches the factory's prompts or gates still waits for a person's merge.",
-  );
-  return lines.join("\n");
+  const fix = "Filed as a fix: the factory triages, implements and reviews it without a person. A change that touches the factory's prompts or gates still waits for a person's merge.";
+  return [...lines, "", fix].join("\n");
 }
 
 export const OUTCOME_WAIT_MS = 7 * DAY_MS; // a filed pattern's fix is judged this long after its item closed (design §7)

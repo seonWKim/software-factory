@@ -8,6 +8,7 @@ import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { LocalSource } from "../src/impl/source/local-source.js";
 import { issue, newStore, system } from "./helpers/store.js";
 import {
   FakeAuth, FakeBroker, FakeForge, FakeSandbox, FakeSlackPollSource, FakeSource, MemoryStorage, PROJECT, cleanScanner, config, prompts, silent,
@@ -47,6 +48,15 @@ async function failRun(store: FactoryStore, storage: MemoryStorage, n: number, c
   return run.id;
 }
 
+/** Fails another triage run (idempotency key `key`) on the item of run `of` with `code`, as failRun's runs. */
+async function failAgain(store: FactoryStore, of: RunId, code: string, key: string): Promise<RunId> {
+  const { run: queued } = await store.enqueueRun({ work_item_id: (await store.getRun(of))!.work_item_id, kind: "triage", idempotency_key: key });
+  const run = (await store.claimRun({ worker_id: "seed" as WorkerId, kinds: ["triage"], lease_ms: 60_000 }))!;
+  expect(run.id).toBe(queued.id);
+  await store.completeRun(run.id, run.lease!.token, { status: "failed", error_code: code, detail: "same detail", infra: false });
+  return run.id;
+}
+
 /** A green merge-check run of a new item `n` whose one rerun passed `flaky` (design §4): its outcome names them. */
 async function flakyMergeCheck(store: FactoryStore, n: number, flaky: string[]): Promise<RunId> {
   await store.createWorkItem(issue(n), system, { enqueue: { kind: "merge-check", idempotency_key: `m${n}` } });
@@ -57,10 +67,12 @@ async function flakyMergeCheck(store: FactoryStore, n: number, flaky: string[]):
 
 /**
  * A store with failed runs inside tomorrow's daily window and that window's improve run queued. `groups`: per
- * group, its run count; each group gets its own code. Plus one single-run pattern.
+ * group, its run count; each group gets its own code. Plus one single-run pattern. `more`: per group, its runs added
+ * again on the item of its first run (so a group can have more runs than items).
  */
 async function world(
   groups: number[], transcripts: (group: number, i: number) => string | undefined = () => "npm test failed", flaky: string[][] = [],
+  more: number[] = [],
 ) {
   const clock = new FakeClock("2026-03-04T01:00:00.000Z");
   const { store } = await newStore(clock);
@@ -72,6 +84,12 @@ async function world(
     for (let i = 0; i < size; i++) {
       clock.advance(1_000);
       ids[g]!.push(await failRun(store, storage, ++n, `code_${g}`, "same detail", transcripts(g, i)));
+    }
+  }
+  for (const [g, count] of more.entries()) {
+    for (let i = 0; i < count; i++) {
+      clock.advance(1_000);
+      ids[g]!.push(await failAgain(store, ids[g]![0]!, `code_${g}`, `again${g}-${i}`));
     }
   }
   clock.advance(1_000);
@@ -233,6 +251,25 @@ describe("improve: drafts", () => {
     expect(calls).toEqual([]);
     expect((await w.store.listTables()).find((t) => t.name === "controller_filed_patterns")!.rows).toBe(0);
     expect(await w.store.getWorkItemBySource("local", systemSource(PROJECT.key).id)).toMatchObject({ stage: "NEW" });
+  });
+});
+
+describe("improve: what a failure pattern needs before it is filed", () => {
+  it("3 runs on 2 items files one item; 2 runs on 1 item, 3 runs on 1 item and 2 runs on 2 items stay in the report only", async () => {
+    // code_0: 3 runs on 2 items; code_1: 2 runs on 1 item; code_2: 3 runs on 1 item; code_3: 2 runs on 2 items.
+    const w = await world([2, 1, 1, 2], undefined, [], [1, 1, 2, 0]);
+    await worker(w, new CountingLLM()).tick();
+    const c = new ControllerRole({ store: w.store, sources: [new LocalSource(w.store)], auth: new FakeAuth(), clock: w.clock, config, log: silent, scanner: cleanScanner });
+    await c.applyRun((await w.store.getRun(w.run.id))!);
+
+    const { report: r } = await report(w);
+    const byCode = new Map(r.groups.map((g) => [g.error_code, g]));
+    expect([...byCode.keys()].sort()).toEqual(["code_0", "code_1", "code_2", "code_3"]);
+    expect(byCode.get("code_0")).toMatchObject({ filing: { status: "filed" } });
+    expect([byCode.get("code_0")!.run_ids.length, byCode.get("code_0")!.work_item_ids.length]).toEqual([3, 2]);
+    for (const code of ["code_1", "code_2", "code_3"]) expect(byCode.get(code)!.filing, code).toBeUndefined();
+    const filed = (await w.store.listWorkItems(100)).filter((i) => i.source.id.startsWith("local-filed-"));
+    expect(filed.map((i) => i.title)).toEqual(["Recurring failure: code_0 in 3 runs"]);
   });
 });
 
