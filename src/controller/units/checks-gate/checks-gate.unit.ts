@@ -114,7 +114,8 @@ export class ChecksGateUnit {
    * counted), and the item waits in REVIEW on `checks_failed_update`. When every failed check also fails on the base
    * branch, the item waits in REVIEW on `main is red: <first name>` (no run, no loop); the checks step reads it again.
    * A first failure on the reviewed head reruns its failed jobs once and waits in REVIEW on `checks_rerun` (no run, no
-   * loop); back to implement after that rerun, the run's input carries the failing tests of the failed job's log. A review that skipped an unchanged head blocks on a human with `unchanged_head` (no run, no loop). Otherwise
+   * loop); back to implement after that rerun, the run's input carries the failing tests of the failed job's log. A
+   * review that skipped an unchanged head blocks on a human with `unchanged_head` (no run, no loop). Otherwise
    * back to implement like a review bug (loop_count + 1), or at `max_loops` a block on a human. The state change of
    * a review that skipped an unchanged head carries `unchanged_head: true`.
    */
@@ -223,8 +224,9 @@ export class ChecksGateUnit {
   /**
    * The failing tests in the failed job's log of `head`, for the implement run's input: each vitest `FAIL` line with
    * its first error line, at most MAX_FAILING_TESTS tests and MAX_FAILING_CHARS characters, whole tests only. Forge
-   * text (G5): every test name and message the egress scan flags is redacted before the cut. Null when the forge has no log read, the
-   * read throws (logged; e.g. a token without the Actions read permission), or the log names no failing test.
+   * text (G5): every test name and message the egress scan flags is redacted before the cut. Null when the forge has
+   * no log read, the read throws (logged; e.g. a token without the Actions read permission), or the log names no
+   * failing test.
    */
   private async failingTests(it: WorkItem, head: string): Promise<string | null> {
     const forge = this.c.k.reader.forge;
