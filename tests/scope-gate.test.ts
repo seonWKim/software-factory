@@ -197,7 +197,8 @@ describe.skipIf(process.env.SF_RATCHET_UPDATE === "1")("the architecture ratchet
     const names = known<string[]>("unit-purity");
     expect(() => ratchet("unit-purity", names)).not.toThrow();
     // A name in the list that the code does not have (the list grew) fails, and so does a new violation.
-    expect(() => ratchet("unit-purity", names.slice(1))).toThrow();
-    expect(() => ratchet("unit-purity", [...names, "reaches-io|new.unit.ts|z"])).toThrow();
+    // An empty env keeps SF_RATCHET_SHRINK and SF_RATCHET_UPDATE off, so made-up names never write the list.
+    expect(() => ratchet("unit-purity", names.slice(1), { env: {} })).toThrow();
+    expect(() => ratchet("unit-purity", [...names, "reaches-io|new.unit.ts|z"], { env: {} })).toThrow();
   });
 });
