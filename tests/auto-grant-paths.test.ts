@@ -9,6 +9,10 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Worker } from "../src/worker/index.js";
+import { conflictAsk } from "../src/worker/runs/implement/conflict-ask.js";
+import { failingTestFiles } from "../src/core/checks.js";
+import { NEEDS_HUMAN_MAX_CHARS, NEEDS_HUMAN_MAX_PATHS } from "../src/core/outputs.js";
+import { isCovered } from "../src/core/policy.js";
 import { newStore } from "./helpers/store.js";
 import {
   FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, config, issueRef, prompts, recordingLog, silent, triageSpec,
@@ -191,6 +195,33 @@ describe("an implement run that asks only for test paths", () => {
     expect(await f.grants()).toHaveLength(1);
     expect(await f.item()).toMatchObject({ blocked_on: "human", blocked_reason: "agent_needs_human" });
     expect(f.comments("needs-human")).toHaveLength(1);
+  });
+});
+
+// A conflict resolution whose checks failed only on test files outside allowed_paths ends in the sync step's ask
+// (design 05-merge-conflict, 2026-11-18): the same once-only grant applies to it.
+describe("an implement run whose conflict resolution failed only on out-of-scope test files", () => {
+  const conflictFor = (files: readonly string[]) => {
+    const tail = files.map((f) => ` FAIL  ${f} > keeps a`).join("\n");
+    const rules = {
+      failingTestFiles, covered: (p: string) => isCovered(p, triageSpec.allowed_paths), grantable: (ps: readonly string[]) => testPathsOnly(ps, DEFAULT_TEST_GLOBS),
+      maxPaths: NEEDS_HUMAN_MAX_PATHS, maxChars: NEEDS_HUMAN_MAX_CHARS,
+    };
+    return { output: { needs_human: conflictAsk({ command: ["npm", "test"], how: "exited 1", tail }, rules) } };
+  };
+
+  it("runs again once with the files granted; a second such ask waits for the owner", async () => {
+    const f = await factory((n) => conflictFor(n === 1 ? TESTS : ["tests/ui-shortcuts.test.tsx"]));
+    await f.approve();
+    await f.step();
+    const grants = await f.grants();
+    expect(grants).toHaveLength(1);
+    expect(grants[0]).toMatchObject({ actor: { kind: "system", id: "system:controller" }, detail: { added_paths: JSON.stringify(TESTS), [AUTO_GRANT]: true } });
+    expect(await f.runs("implement")).toHaveLength(2);
+    expect(f.comments("auto-grant")).toHaveLength(1);
+    expect(await f.item()).toMatchObject({ blocked_on: "human", blocked_reason: "agent_needs_human", allowed_paths: [...triageSpec.allowed_paths, ...TESTS] });
+    expect(f.comments("needs-human")).toHaveLength(1);
+    expect(f.comments("needs-human")[0]!.body).toContain("/retry +paths tests/ui-shortcuts.test.tsx");
   });
 });
 
