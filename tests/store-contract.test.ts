@@ -1101,6 +1101,56 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       await expect(store.endClaimPause("model_stall_since")).rejects.toThrow(/not a pause/);
       await expect(store.endClaimPause("model_answered")).rejects.toThrow(/not a pause/);
     });
+
+    describe("pause history (design 07-self-improvement)", () => {
+      const at = (iso: string) => iso as Timestamp;
+      const historyRows = async (store: FactoryStore) => (await store.listTableRows({ table: "controller_pause_history", limit: 200 }))!.rows;
+
+      it("pauseAt matches an ended pause from its start, inclusive, to its end, exclusive", async () => {
+        const { store } = await make();
+        const outage = { name: "model_stall" as const, started_at: at("2026-11-16T17:00:00.000Z"), ended_at: at("2026-11-16T19:30:00.000Z") };
+        expect(await store.recordEndedPause(outage)).toBe(true);
+        expect(await store.pauseAt(at("2026-11-16T16:59:59.999Z"))).toBeNull();
+        expect(await store.pauseAt(outage.started_at)).toEqual(outage);
+        expect(await store.pauseAt(at("2026-11-16T19:29:59.999Z"))).toEqual(outage);
+        expect(await store.pauseAt(outage.ended_at)).toBeNull();
+      });
+
+      it("a pause is stored once: a second record of the same pause is a no-op and never overwrites the row", async () => {
+        const { store } = await make();
+        const p = { name: "network" as const, started_at: at("2026-11-16T17:00:00.000Z"), ended_at: at("2026-11-16T17:10:00.000Z") };
+        expect(await store.recordEndedPause(p)).toBe(true);
+        expect(await store.recordEndedPause({ ...p, ended_at: at("2026-11-16T18:00:00.000Z") })).toBe(false);
+        expect(await historyRows(store)).toEqual([expect.objectContaining({ name: "network", started_at: p.started_at, ended_at: p.ended_at })]);
+      });
+
+      it.each(["model_stall", "network"] as const)("ending a %s pause records it once, from its since row to now; while open, pauseAt matches it", async (pause) => {
+        const { store, clock } = await make();
+        const started_at = clock.now().toISOString() as Timestamp;
+        await store.pauseClaims(later(clock, 1_000), pause);
+        clock.advance(5_000);
+        // Still open, past its probe time: a time from its start on matches, with no end yet.
+        expect(await store.pauseAt(started_at)).toEqual({ name: pause, started_at, ended_at: null });
+        expect(await store.pauseAt(at(new Date(Date.parse(started_at) - 1).toISOString()))).toBeNull();
+        expect(await historyRows(store)).toEqual([]);
+        const ended_at = clock.now().toISOString() as Timestamp;
+        expect(await store.endClaimPause(pause)).toEqual({ ended: true });
+        expect(await store.endClaimPause(pause)).toEqual({ ended: false });
+        expect(await historyRows(store)).toEqual([expect.objectContaining({ name: pause, started_at, ended_at })]);
+        expect(await store.pauseAt(started_at)).toEqual({ name: pause, started_at, ended_at });
+        expect(await store.pauseAt(ended_at)).toBeNull();
+      });
+
+      it("the other claim pauses are not pause history", async () => {
+        const { store, clock } = await make();
+        for (const pause of ["rate_limit", "forge_auth", "preflight_access", "github_rate_limit"] as const) {
+          await store.pauseClaims(later(clock, 60_000), pause);
+          expect(await store.pauseAt(clock.now().toISOString() as Timestamp)).toBeNull();
+          await store.endClaimPause(pause);
+        }
+        expect(await historyRows(store)).toEqual([]);
+      });
+    });
   });
 
   describe("run input", () => {
@@ -1892,6 +1942,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "controller_notices", // owner notices: src/controller/migrations/20261112T0900-controller-notices
       "controller_notice_messages", "controller_notice_questions", // Slack notice records: 20261112T2100-controller-notice-messages
       "controller_projects", "controller_task_projects", // task projects: 20261113T1300-controller-task-projects
+      "controller_pause_history", // ended model-stall and network pauses (design 07-self-improvement): 20261118T1200-controller-pause-history
       "ext_packs_approvals", // approvals of pack entries: src/state/migrations/20261111T1600-state-ext-packs-approvals
       "ext_packs_entries", // pack tool and MCP server entries: src/state/migrations/20261111T1201-state-ext-packs-entries
       "ext_skill_refs", // imported skill references (design 11-plugin-import): src/state/migrations/20261115T1200-state-ext-skill-refs
@@ -2637,7 +2688,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect((await store.pruneHistory(1, 100)).controller_alerts).toBe(1);
     });
 
-    it("state_changes, verdicts and runs are never deleted", async () => {
+    it("state_changes, verdicts, runs and the pause history are never deleted", async () => {
       const { store, clock } = await make();
       const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "o/r#1:triage" } });
       await store.transition({ id: item.id, expected_version: 1, actor: system, reason: "x", patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "9" } });
@@ -2645,7 +2696,8 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
         id: item.id, expected_version: 2, actor: human, verdict: "accept", severity: "none", reason: null, comment_id: "c1", target: "pr", implicit: false, pr_head: null,
       });
       expect(v.ok).toBe(true);
-      const kept = ["controller_state_changes", "controller_verdicts", "worker_runs"];
+      await store.recordEndedPause({ name: "model_stall", started_at: "2026-01-01T00:00:00.000Z" as Timestamp, ended_at: "2026-01-01T01:00:00.000Z" as Timestamp });
+      const kept = ["controller_state_changes", "controller_verdicts", "worker_runs", "controller_pause_history"];
       const counts = async () => Object.fromEntries((await store.listTables()).filter((t) => kept.includes(t.name)).map((t) => [t.name, t.rows]));
       const before = await counts();
       expect(Object.values(before).every((n) => n > 0)).toBe(true);

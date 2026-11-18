@@ -580,6 +580,14 @@ CREATE TABLE controller_outbox (
   published_at TEXT
 );
 
+CREATE TABLE controller_pause_history (
+    seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    started_at  TEXT NOT NULL,
+    ended_at    TEXT NOT NULL,
+    UNIQUE (name, started_at)
+  );
+
 CREATE TABLE controller_projects (
     id           TEXT PRIMARY KEY,
     slug         TEXT NOT NULL UNIQUE,
@@ -1790,6 +1798,8 @@ CREATE INDEX controller_merge_queue_entries_run ON controller_merge_queue_entrie
 CREATE INDEX controller_notices_undelivered ON controller_notices (delivered_at, held_until);
 
 CREATE INDEX controller_outbox_pending ON controller_outbox (published_at, seq);
+
+CREATE INDEX controller_pause_history_ended ON controller_pause_history (ended_at);
 
 CREATE INDEX controller_signals_item ON controller_signals (work_item_id, at);
 

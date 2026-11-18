@@ -24,6 +24,7 @@ export const TABLE_DOCS: Readonly<Record<string, string>> = {
   controller_notice_questions: "Questions the owner asked in reply to a notice.",
   controller_notices: "One notice per wait on the owner, and when it was delivered.",
   controller_outbox: "Messages the controller emitted for the bus, until they are published.",
+  controller_pause_history: "Model-stall and network pauses that ended, with when each began and ended; kept for good.",
   controller_projects: "Projects the owner groups plain tasks in, each with its unique slug and when it was archived.",
   controller_signals:"The signal ledger: gate decisions, verdicts, failed runs and other signals, as ids and codes only.",
   controller_standing_proposals: "Offers to turn on a standing approval after a run of the same approvals.",

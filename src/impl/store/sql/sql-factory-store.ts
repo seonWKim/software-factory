@@ -111,7 +111,7 @@ import {
 } from "./rows.js";
 import * as filed from "./filed-patterns.js";
 import * as settingsSql from "./settings.js";
-import { placeholders, pruneDeliveredOutbox, pruneHandledCommands, pruneHistory } from "./retention.js";
+import { PAUSE_END_INSERT, PAUSE_INSERT_ROW, pauseAt, placeholders, pruneDeliveredOutbox, pruneHandledCommands, pruneHistory } from "./retention.js";
 import * as signals from "./signals.js";
 import * as evaluations from "./merge-evaluations.js";
 import * as proposals from "./command-proposals.js";
@@ -751,10 +751,7 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
     }
   }
 
-  async pauseClaims(
-    resume_at: Timestamp,
-    name: ClaimPauseName = RATE_LIMIT_PAUSE,
-  ): Promise<{ extended: boolean; started?: boolean; resume_at: Timestamp }> {
+  async pauseClaims(resume_at: Timestamp, name: ClaimPauseName = RATE_LIMIT_PAUSE): Promise<{ extended: boolean; started?: boolean; resume_at: Timestamp }> {
     // `started` for every name but rate_limit: the rate-limit pause's result stays exactly as it was (out of this change).
     const result = (extended: boolean, started: boolean, at: Timestamp) =>
       name === RATE_LIMIT_PAUSE ? { extended, resume_at: at } : { extended, started, resume_at: at };
@@ -782,10 +779,9 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
   }
 
   /**
-   * A probe pause, `model_stall` or `network` (design §5 Restarts), under the claim lock so a claim, a failure and a
-   * probe never interleave. It is in effect while its row's time (the next probe) is after its answered row, whatever
-   * the clock says. Not in effect: this call starts one (`started`) and writes when it began (its since row). In
-   * effect: only a later probe time moves it.
+   * A probe pause, `model_stall` or `network` (design §5 Restarts), under the claim lock so a claim, a failure and a probe never interleave.
+   * It is in effect while its row's time (the next probe) is after its answered row, whatever the clock says. Not in effect: this call
+   * starts one (`started`) and writes when it began (its since row). In effect: only a later probe time moves it.
    */
   private async pauseForProbe(pause: ProbePause, resume_at: Timestamp): Promise<{ extended: boolean; started: boolean; resume_at: Timestamp }> {
     const { since: sinceRow } = PROBE_PAUSES[pause];
@@ -853,8 +849,8 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
   }
 
   /**
-   * Ends a probe pause as a passing probe does, under the claim lock: its row and its answered row both move to the
-   * earlier of the probe time and now. Never a future answer, so a failure right after starts a pause.
+   * Ends a probe pause as a passing probe does, under the claim lock: its row and its answered row both move to the earlier of the probe
+   * time and now. Never a future answer, so a failure right after starts a pause. The pause history gets it, from its since row to now (design §7).
    */
   private async endProbe(pause: ProbePause): Promise<{ ended: boolean }> {
     return this.db.transaction(async (tx) => {
@@ -863,6 +859,7 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
       const now = this.now();
       const at = current < now ? current : now;
       await this.setPauseRows(tx, [[pause, at], [PROBE_PAUSES[pause].answered, at]]);
+      await this.insertOnce(tx, PAUSE_END_INSERT, [pause, now, PROBE_PAUSES[pause].since]);
       return { ended: true };
     });
   }
@@ -1661,6 +1658,8 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
   pruneDeliveredOutbox(older_than_ms: number, limit: number) { return pruneDeliveredOutbox(this.db, this.after(-older_than_ms), limit); } // ./retention.ts
   pruneHandledCommands(older_than_ms: number, limit: number) { return pruneHandledCommands(this.db, this.after(-older_than_ms), limit); }
   pruneHistory(older_than_ms: number, limit: number) { return pruneHistory(this.db, this.after(-older_than_ms), this.now(), limit); }
+  recordEndedPause(p: Parameters<FactoryStore["recordEndedPause"]>[0]) { return this.insertOnce(this.db, PAUSE_INSERT_ROW, [p.name, p.started_at, p.ended_at]); } // ./retention.ts
+  pauseAt(at: Timestamp) { return pauseAt(this.db, at); }
 
   // Forge budget (design 05-sources, call budget)
 

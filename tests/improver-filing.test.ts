@@ -84,14 +84,23 @@ async function setup(sourcesOf: (store: FactoryStore) => SourceAdapter[], authOf
     clock, config, prompts, log: silent, scanner, toolEnv: {}, awake: new NoKeepAwake(),
   });
   let n = 0;
-  /** A failed triage run of a new item, finished now (then the clock moves a second). */
-  const fail = async (code: string, detail = "same detail"): Promise<RunId> => {
-    n++;
-    await store.createWorkItem(issue(n), system, { enqueue: { kind: "triage", idempotency_key: `t${n}` } });
+  /** Claims the queued triage run and fails it now (then the clock moves a second). */
+  const failQueued = async (code: string, detail: string): Promise<RunId> => {
     const run = (await store.claimRun({ worker_id: "seed" as WorkerId, kinds: ["triage"], lease_ms: 60_000 }))!;
     await store.completeRun(run.id, run.lease!.token, { status: "failed", error_code: code, detail, infra: false });
     clock.advance(1_000);
     return run.id;
+  };
+  /** A failed triage run of a new item, finished now (then the clock moves a second). */
+  const fail = async (code: string, detail = "same detail"): Promise<RunId> => {
+    n++;
+    await store.createWorkItem(issue(n), system, { enqueue: { kind: "triage", idempotency_key: `t${n}` } });
+    return failQueued(code, detail);
+  };
+  /** Another failed triage run on the item of run `of`, finished now. */
+  const again = async (of: RunId, code: string, detail = "same detail"): Promise<RunId> => {
+    await store.enqueueRun({ work_item_id: (await store.getRun(of))!.work_item_id, kind: "triage", idempotency_key: `again${++n}` });
+    return failQueued(code, detail);
   };
   const { item: sys } = await store.createWorkItem({
     source: systemSource(PROJECT.key), title: "Factory improve runs", requester_id: IMPROVER.id as UserId, project: PROJECT.key,
@@ -110,7 +119,7 @@ async function setup(sourcesOf: (store: FactoryStore) => SourceAdapter[], authOf
     expect((await store.getRun(run.id))!.acknowledged_at).not.toBeNull();
     return (await store.getImproveReport(run.id))!;
   };
-  return { clock, store, scanner, sources, controller, fail, improve };
+  return { clock, store, scanner, sources, controller, fail, again, improve };
 }
 
 const local = () => setup((store) => [new LocalSource(store)]);
@@ -171,6 +180,7 @@ describe("improve filing: solo, the local source", () => {
     const w = await local();
     const a = await w.fail("checks_failed");
     const b = await w.fail("checks_failed");
+    const e = await w.fail("checks_failed");
     w.clock.set("2026-03-04T12:00:00.000Z");
     const half: ImproveWindow = { window_start: DAY.window_start, window_end: "2026-03-04T12:00:00.000Z" as Timestamp };
     await w.improve(half);
@@ -181,7 +191,7 @@ describe("improve filing: solo, the local source", () => {
     const second = await w.improve();
 
     const [item] = await filedItems(w.store);
-    expect(report.groups[0]!.run_ids).toEqual([a, b, c, d]);
+    expect(report.groups[0]!.run_ids).toEqual([a, b, e, c, d]);
     expect(report.groups[0]!.filing).toEqual({ status: "commented", ref: item!.source, run_ids: [c, d] });
     const messages = await w.store.listItemMessages(item!.id);
     expect(messages).toHaveLength(1);
@@ -196,7 +206,7 @@ describe("improve filing: solo, the local source", () => {
   it(`files at most MAX_FILED_ISSUES (${MAX_FILED_ISSUES}) items per run; the rest are skipped with the cap as reason`, async () => {
     const w = await local();
     const groups = MAX_FILED_ISSUES + 2;
-    for (let g = 0; g < groups; g++) for (let i = 0; i < 2; i++) await w.fail(`code_${g}`);
+    for (let g = 0; g < groups; g++) for (let i = 0; i < 3; i++) await w.fail(`code_${g}`);
     w.clock.set("2026-03-05T06:00:00.000Z");
     const report = await w.improve();
     expect(await filedItems(w.store)).toHaveLength(MAX_FILED_ISSUES);
@@ -209,8 +219,8 @@ describe("improve filing: solo, the local source", () => {
 
   it("every body passes the egress scan first; a flagged one is not sent and the report keeps only its rules", async () => {
     const w = await local();
-    for (let i = 0; i < 2; i++) await w.fail("LEAK_code");
-    for (let i = 0; i < 2; i++) await w.fail("checks_failed");
+    for (let i = 0; i < 3; i++) await w.fail("LEAK_code");
+    for (let i = 0; i < 3; i++) await w.fail("checks_failed");
     w.clock.set("2026-03-05T06:00:00.000Z");
     const report = await w.improve();
     const items = await filedItems(w.store);
@@ -226,7 +236,7 @@ describe("improve filing: solo, the local source", () => {
 
   it("a filed item closed in the last 30 days matches: no new item, no comment; closed longer ago, the pattern is filed again", async () => {
     const w = await local();
-    for (let i = 0; i < 2; i++) await w.fail("checks_failed");
+    for (let i = 0; i < 3; i++) await w.fail("checks_failed");
     w.clock.set("2026-03-05T06:00:00.000Z");
     await w.improve();
     const [item] = await filedItems(w.store);
@@ -244,7 +254,7 @@ describe("improve filing: solo, the local source", () => {
 
   it("with no source that can file, every group is skipped and nothing is claimed", async () => {
     const w = await setup(() => []);
-    for (let i = 0; i < 2; i++) await w.fail("checks_failed");
+    for (let i = 0; i < 3; i++) await w.fail("checks_failed");
     w.clock.set("2026-03-05T06:00:00.000Z");
     const report = await w.improve();
     expect(report.groups.map((g) => g.filing)).toEqual([{ status: "skipped", reason: "no_source" }]);
@@ -269,7 +279,7 @@ describe("improve filing: enterprise, the GitHub source", () => {
 
   it("the next intake poll takes the bot-filed issue in and queues its triage run, with no person starting it", async () => {
     const { client, ...w } = await github();
-    for (let i = 0; i < 2; i++) await w.fail("checks_failed");
+    for (let i = 0; i < 3; i++) await w.fail("checks_failed");
     w.clock.set("2026-03-05T06:00:00.000Z");
     await w.improve();
     await w.controller.tickIntake();
@@ -281,7 +291,7 @@ describe("improve filing: enterprise, the GitHub source", () => {
 
   it("a filing that failed part way is retried by the next run: the marker is found and no second issue is filed", async () => {
     const { client, ...w } = await github();
-    for (let i = 0; i < 2; i++) await w.fail("checks_failed");
+    for (let i = 0; i < 3; i++) await w.fail("checks_failed");
     w.clock.set("2026-03-05T06:00:00.000Z");
     client.failAfterFiling = true;
     const first = await w.improve();
@@ -296,7 +306,7 @@ describe("improve filing: enterprise, the GitHub source", () => {
 
   it("fileReport run twice on one report files once: the claim is found, then the marker", async () => {
     const { client, ...w } = await github();
-    for (let i = 0; i < 2; i++) await w.fail("checks_failed");
+    for (let i = 0; i < 3; i++) await w.fail("checks_failed");
     w.clock.set("2026-03-05T06:00:00.000Z");
     const report = await w.improve();
     const source = w.sources[0]!;
@@ -307,8 +317,7 @@ describe("improve filing: enterprise, the GitHub source", () => {
 
   it("an open filed issue nobody started gets one comment through the source, once per run", async () => {
     const { client, ...w } = await github();
-    await w.fail("checks_failed");
-    await w.fail("checks_failed");
+    for (let i = 0; i < 3; i++) await w.fail("checks_failed");
     w.clock.set("2026-03-04T12:00:00.000Z");
     await w.improve({ window_start: DAY.window_start, window_end: "2026-03-04T12:00:00.000Z" as Timestamp });
     const c = await w.fail("checks_failed");
@@ -341,8 +350,8 @@ describe("improve filing: fix specs", () => {
 
   it("a draft that needs a person, or touches the gate list, goes to Needs you with the cause; no item is filed and no fix run queued", async () => {
     const w = await local();
-    const person = [await w.fail("provider_setup"), await w.fail("provider_setup")];
-    const gate = [await w.fail("egress_blocked"), await w.fail("egress_blocked")];
+    const person = [await w.fail("provider_setup"), await w.fail("provider_setup"), await w.fail("provider_setup")];
+    const gate = [await w.fail("egress_blocked"), await w.fail("egress_blocked"), await w.fail("egress_blocked")];
     const report = await draftedReport(w.store, w.clock, [
       await groupOf(w.store, "provider_setup", person, drafted({ cause: "the API key was revoked", needs_person: true })),
       await groupOf(w.store, "egress_blocked", gate, drafted({ cause: "a scanner rule is too wide", touches: ["src/impl/egress/rules.ts"], touches_prompts_or_gate: true })),
@@ -355,8 +364,8 @@ describe("improve filing: fix specs", () => {
     expect(await w.store.listRunsByKind("triage", ["queued"])).toEqual([]);
     const alerts = await w.store.listAlerts({ limit: 10 });
     expect(alerts.map((a) => [a.pattern, a.pattern_key, a.error_code, a.count])).toEqual(expect.arrayContaining([
-      ["repeated_error", `needs_person:${patternKey(report.groups[0]!)}`, "provider_setup", 2],
-      ["repeated_error", `needs_person:${patternKey(report.groups[1]!)}`, "egress_blocked", 2],
+      ["repeated_error", `needs_person:${patternKey(report.groups[0]!)}`, "provider_setup", 3],
+      ["repeated_error", `needs_person:${patternKey(report.groups[1]!)}`, "egress_blocked", 3],
     ]));
     expect(alerts.find((a) => a.error_code === "provider_setup")!.detail).toContain("a person must decide, so no fix item was filed. Draft cause (model, unverified): the API key was revoked");
     expect(alerts.find((a) => a.error_code === "egress_blocked")!.detail).toContain("the fix touches the factory's prompts or gates");
@@ -367,7 +376,7 @@ describe("improve filing: fix specs", () => {
 
   it("a draft that needs no person and touches no gate path gets one fix item with its triage run queued; two replicas file it once", async () => {
     const w = await local();
-    const runs = [await w.fail("checks_failed"), await w.fail("checks_failed")];
+    const runs = [await w.fail("checks_failed"), await w.fail("checks_failed"), await w.fail("checks_failed")];
     const report = await draftedReport(w.store, w.clock, [await groupOf(w.store, "checks_failed", runs, drafted({ touches: ["tests/x.test.ts"] }))]);
     const source = w.sources[0]!;
     const d = { store: w.store, scanner: w.scanner, clock: w.clock, file: source.fileIssue!.bind(source), comment: async () => {} };
@@ -494,8 +503,7 @@ describe("improve filing: a stall group that followed a host sleep", () => {
 
   it("a stall group with no host sleep on its runs is filed and triaged as before; a sleep of another run or an idle tick does not count", async () => {
     const w = await local();
-    await w.fail(AGENT_STALLED, "silent");
-    await w.fail(AGENT_STALLED, "silent");
+    for (let i = 0; i < 3; i++) await w.fail(AGENT_STALLED, "silent");
     await slept(w, null);
     await slept(w, await w.fail("checks_failed", "once"));
     w.clock.set("2026-03-05T06:00:00.000Z");
@@ -509,12 +517,112 @@ describe("improve filing: a stall group that followed a host sleep", () => {
 
   it("a group with another error code is filed as before, even when its runs held a host sleep", async () => {
     const w = await local();
-    const runs = [await w.fail("checks_failed"), await w.fail("checks_failed")];
+    const runs = [await w.fail("checks_failed"), await w.fail("checks_failed"), await w.fail("checks_failed")];
     await slept(w, runs[0]!);
     w.clock.set("2026-03-05T06:00:00.000Z");
     const report = await w.improve();
     const items = await filedItems(w.store);
     expect(items).toHaveLength(1);
     expect(report.groups.map((g) => g.filing)).toEqual([{ status: "filed", ref: items[0]!.source }]);
+  });
+});
+
+describe("improve filing: a pattern files at 3 runs on 2 items, outside model-stall and network pauses", () => {
+  /** The 2026-11-16 model outage, 17:00-19:30, and the day window that covers it. */
+  const OUTAGE = { name: "model_stall" as const, started_at: "2026-11-16T17:00:00.000Z" as Timestamp, ended_at: "2026-11-16T19:30:00.000Z" as Timestamp };
+  const OUTAGE_DAY: ImproveWindow = { window_start: "2026-11-16T00:00:00.000Z" as Timestamp, window_end: "2026-11-17T00:00:00.000Z" as Timestamp };
+
+  it.each([
+    ["2 runs on 1 item", [1, 0]],
+    ["3 runs on 1 item", [2, 0]],
+    ["2 runs on 2 items", [0, 1]],
+  ] as const)("%s files nothing and stays in the report with no filing", async (_name, [more, items]) => {
+    const w = await local();
+    const first = await w.fail("checks_failed");
+    for (let i = 0; i < more; i++) await w.again(first, "checks_failed");
+    for (let i = 0; i < items; i++) await w.fail("checks_failed");
+    w.clock.set("2026-03-05T06:00:00.000Z");
+    const report = await w.improve();
+    expect(report.groups).toEqual([expect.objectContaining({ error_code: "checks_failed" })]);
+    expect(report.groups[0]!.filing).toBeUndefined();
+    expect(await filedItems(w.store)).toEqual([]);
+    expect(await w.store.getFiledPattern(PROJECT.key, patternKey(report.groups[0]!))).toBeNull();
+  });
+
+  it("3 runs on 2 items files one fix item through the filing path", async () => {
+    const w = await local();
+    const a = await w.fail("checks_failed");
+    const runs = [a, await w.again(a, "checks_failed"), await w.fail("checks_failed")];
+    w.clock.set("2026-03-05T06:00:00.000Z");
+    const report = await w.improve();
+    const items = await filedItems(w.store);
+    expect(items).toHaveLength(1);
+    expect(report.groups[0]).toMatchObject({ run_ids: runs, filing: { status: "filed", ref: items[0]!.source } });
+    expect(report.groups[0]!.work_item_ids).toHaveLength(2);
+    for (const id of runs) expect(items[0]!.problem).toContain(id);
+    expect(items[0]!.title).toBe("Recurring failure: checks_failed in 3 runs");
+  });
+
+  it("a stall pattern whose runs all finished inside the model-stall outage files nothing; its filing is skipped with pause", async () => {
+    const w = await local();
+    await w.store.recordEndedPause(OUTAGE);
+    // The first run finishes at the pause's start (inclusive).
+    w.clock.set(OUTAGE.started_at);
+    for (let i = 0; i < 4; i++) await w.fail(AGENT_STALLED, "silent");
+    w.clock.set("2026-11-17T06:00:00.000Z");
+    const report = await w.improve(OUTAGE_DAY);
+    expect(report.groups.map((g) => [g.error_code, g.filing])).toEqual([[AGENT_STALLED, { status: "skipped", reason: "pause" }]]);
+    expect(await filedItems(w.store)).toEqual([]);
+    expect(await w.store.listRunsByKind("triage", ["queued"])).toEqual([]);
+    expect(await w.store.getFiledPattern(PROJECT.key, patternKey(report.groups[0]!))).toBeNull();
+  });
+
+  it("runs inside a pause are not counted: what is left files only at 3 runs, a run at the pause's end (exclusive) counts", async () => {
+    const w = await local();
+    await w.store.recordEndedPause({ ...OUTAGE, name: "network" });
+    w.clock.set("2026-11-16T18:00:00.000Z");
+    const inside = await w.fail("checks_failed");
+    w.clock.set(OUTAGE.ended_at);
+    const after = [await w.fail("checks_failed"), await w.fail("checks_failed"), await w.fail("checks_failed")];
+    w.clock.set("2026-11-17T06:00:00.000Z");
+    const report = await w.improve(OUTAGE_DAY);
+    const [item] = await filedItems(w.store);
+    expect(report.groups[0]).toMatchObject({ run_ids: [inside, ...after], filing: { status: "filed", ref: item!.source } });
+    expect(item!.title).toBe("Recurring failure: checks_failed in 3 runs");
+    expect(item!.problem).not.toContain(inside);
+    for (const id of after) expect(item!.problem).toContain(id);
+  });
+
+  it("2 runs left outside a pause file nothing", async () => {
+    const w = await local();
+    await w.store.recordEndedPause(OUTAGE);
+    w.clock.set("2026-11-16T18:00:00.000Z");
+    await w.fail("checks_failed");
+    w.clock.set("2026-11-16T20:00:00.000Z");
+    for (let i = 0; i < 2; i++) await w.fail("checks_failed");
+    w.clock.set("2026-11-17T06:00:00.000Z");
+    const report = await w.improve(OUTAGE_DAY);
+    expect(report.groups[0]!.filing).toBeUndefined();
+    expect(await filedItems(w.store)).toEqual([]);
+  });
+
+  it("runs that finished during a network pause still in effect are matched too", async () => {
+    const w = await local();
+    const claimed = [];
+    for (let i = 0; i < 3; i++) {
+      await w.store.createWorkItem(issue(200 + i), system, { enqueue: { kind: "triage", idempotency_key: `open${i}` } });
+      claimed.push((await w.store.claimRun({ worker_id: "seed" as WorkerId, kinds: ["triage"], lease_ms: 60_000 }))!);
+    }
+    expect(await w.store.pauseClaims(new Date(w.clock.now().getTime() + 30_000).toISOString() as Timestamp, "network")).toMatchObject({ started: true });
+    for (const r of claimed) {
+      w.clock.advance(1_000);
+      await w.store.completeRun(r.id, r.lease!.token, { status: "failed", error_code: "network_unreachable", detail: "same detail", infra: true });
+    }
+    const runs = claimed.map((r) => r.id);
+    const report = await draftedReport(w.store, w.clock, [await groupOf(w.store, "network_unreachable", runs, { status: "skipped", reason: "call_cap" })]);
+    const source = w.sources[0]!;
+    const done = await fileReport({ store: w.store, scanner: w.scanner, clock: w.clock, file: source.fileIssue!.bind(source), comment: async () => {} }, report);
+    expect(done.groups[0]!.filing).toEqual({ status: "skipped", reason: "pause" });
+    expect(await filedItems(w.store)).toEqual([]);
   });
 });

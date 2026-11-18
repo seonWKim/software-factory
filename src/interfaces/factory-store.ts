@@ -125,6 +125,9 @@ export interface NewImproveReport extends ImproveWindow {
   patterns: ImproveReport["patterns"];
 }
 
+/** A `model_stall` or `network` claim pause (design §7): the improver files no run that failed inside one. `ended_at` null: still in effect. */
+export type PauseInterval = { name: "model_stall" | "network"; started_at: Timestamp; ended_at: Timestamp | null };
+
 /** A filed pattern as claimed; the store adds `id` and `created_at`, and `filed_ref` starts null. */
 export type NewFiledPattern = Omit<FiledPattern, "id" | "created_at" | "filed_ref" | "outcome" | "outcome_at">;
 
@@ -471,9 +474,8 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
    */
   claimRun(input: ClaimInput): Promise<Run | null>;
   /**
-   * `workers pause <n>`: pauses the `count` workers, not paused yet, whose running runs started most recently
-   * (one row each in `worker_pauses`). `workers pause --all` (`all: true`): the all-flag, so no loop claims,
-   * idle ones included. Returns the worker ids paused by this call (`*` for the flag). Survives a restart.
+   * `workers pause <n>`: pauses the `count` workers, not paused yet, whose running runs started most recently (one row each in `worker_pauses`).
+   * `workers pause --all` (`all: true`): the all-flag, so no loop claims, idle ones included. Returns the worker ids paused by this call (`*` for the flag). Survives a restart.
    */
   pauseWorkers(input: { count: number } | { all: true }, by: string): Promise<{ paused: (WorkerId | "*")[] }>;
   /** `workers resume`: clears every worker pause and the all-flag. Returns how many rows went. */
@@ -483,41 +485,39 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   /** Every worker pause row, the all-flag included, oldest first. Read-only. */
   listWorkerPauses(): Promise<WorkerPause[]>;
   /**
-   * Puts a running run back in `queued` as paused, while it is `running` with this `token`: paused_at = now,
-   * paused_by, session_id and resume set, lease cleared, no outcome, `attempt` unchanged, not acknowledgeable
-   * (it is not finished). lease_lost when the run is no longer ours. Closes the claim's attempt record as `paused`.
-   * `resume` null: nothing to reattach (the network pause requeues a run whose folder is gone), the next claim
-   * starts it afresh, still with `attempt` unchanged.
+   * Puts a running run back in `queued` as paused, while it is `running` with this `token`: paused_at = now, paused_by, session_id and resume set,
+   * lease cleared, no outcome, `attempt` unchanged, not acknowledgeable (it is not finished). lease_lost when the run is no longer ours. Closes the
+   * claim's attempt record as `paused`. `resume` null: nothing to reattach (the network pause requeues a run whose folder is gone), the next claim starts it afresh, `attempt` unchanged.
    */
   pauseRun(runId: RunId, token: number, pause: { paused_by: string; session_id: string | null; resume: RunResume | null }): Promise<LeaseResult>;
   /**
-   * Sets claim pause `name` (default `rate_limit`) until `resume_at`, for every work item and worker:
-   * `rate_limit` stops every claim (a usage or rate limit), `forge_auth` stops implement-type claims (the forge
-   * refused the credentials), `github_rate_limit` stops implement-type and review claims (the forge's rate limit, until
-   * its reset). One `claim_pauses` row per name. Only ever moves a pause later. `extended` is true
-   * when this call moved it, so exactly one caller logs it. For every name but `rate_limit`, `started` is true when this
-   * call found no pause in effect (none yet, or the last one ended) and began one; it is decided by the same
-   * conditional write, so among concurrent callers exactly one starts a pause (one owner comment per pause).
-   * The `rate_limit` result has no `started`. The probe pauses (`model_stall`, `network`) stay in effect past
-   * their time until a probe passes; `started` also writes their since row.
+   * Sets claim pause `name` (default `rate_limit`) until `resume_at`, for every work item and worker: `rate_limit` stops every claim
+   * (a usage or rate limit), `forge_auth` stops implement-type claims (the forge refused the credentials), `github_rate_limit` stops
+   * implement-type and review claims (the forge's rate limit, until its reset). One `claim_pauses` row per name. Only ever moves a pause
+   * later. `extended` is true when this call moved it, so exactly one caller logs it. For every name but `rate_limit`, `started` is true
+   * when this call found no pause in effect (none yet, or the last one ended) and began one; it is decided by the same conditional write,
+   * so among concurrent callers exactly one starts a pause (one owner comment per pause). The `rate_limit` result has no `started`.
+   * The probe pauses (`model_stall`, `network`) stay in effect past their time until a probe passes; `started` also writes their since row.
    */
   pauseClaims(resume_at: Timestamp, name?: ClaimPauseName): Promise<{ extended: boolean; started?: boolean; resume_at: Timestamp }>;
   /** The end of claim pause `name` (default `rate_limit`), or null if there is none or it has passed. Read-only. */
   getClaimPause(name?: ClaimPauseName): Promise<Timestamp | null>;
   /**
-   * Ends claim pause `name` now (`factory resume`, the dashboard's "Resume now"; design §5 Restarts). `rate_limit`,
-   * `forge_auth`, `preflight_access`: a row still in effect gets `resume_at` = now. A probe pause (`model_stall`,
-   * `network`) in effect: its row and its answered row (`model_answered`, `network_answered`) move to the earlier
-   * of the probe time and now, as a passing probe does, so its since row reads null too and a failure right after
-   * starts a new pause. `ended` is true when a pause was in effect. A pause not in effect (none, already over, a
-   * second call) changes no row. The since and answered rows are not pauses of their own and throw.
+   * Ends claim pause `name` now (`factory resume`, the dashboard's "Resume now"; design §5 Restarts). `rate_limit`, `forge_auth`,
+   * `preflight_access`: a row still in effect gets `resume_at` = now. A probe pause (`model_stall`, `network`) in effect: its row and its
+   * answered row (`model_answered`, `network_answered`) move to the earlier of the probe time and now, as a passing probe does, so its since
+   * row reads null too and a failure right after starts a new pause, and it is stored in the pause history (`recordEndedPause`, since row to now).
+   * `ended` is true when a pause was in effect. A pause not in effect (none, already over, a second call) changes no row. The since and answered rows are not pauses of their own and throw.
    */
   endClaimPause(name: ClaimPauseName): Promise<{ ended: boolean }>;
+  /** Appends one ended pause to the pause history (design §7), never pruned; once per (name, started_at): false and no row overwritten when stored already. */
+  recordEndedPause(pause: PauseInterval & { ended_at: Timestamp }): Promise<boolean>;
+  /** The pause in effect at `at`: an ended one with started_at <= at < ended_at, else one still in effect begun by `at` (ended_at null), else null. */
+  pauseAt(at: Timestamp): Promise<PauseInterval | null>;
   /**
-   * Takes the due probe of probe pause `name` (design §5 Restarts): while the pause is in effect with probe time
-   * `due`, moves it to `next` with one conditional write under the claim lock, true for the one caller whose write
-   * landed. Only that replica probes; every other one sees false (another took it, the time moved, or the pause
-   * ended) and probes nothing. A moved, ended or missing pause changes no row and is never started again.
+   * Takes the due probe of probe pause `name` (design §5 Restarts): while the pause is in effect with probe time `due`, moves it to `next`
+   * with one conditional write under the claim lock, true for the one caller whose write landed. Only that replica probes; every other one
+   * sees false (another took it, the time moved, or the pause ended) and probes nothing. A moved, ended or missing pause changes no row and is never started again.
    */
   claimProbe(name: "model_stall" | "network", due: Timestamp, next: Timestamp): Promise<boolean>;
   /**
