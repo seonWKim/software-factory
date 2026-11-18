@@ -209,10 +209,8 @@ export interface ImproveWindow {
   window_end: Timestamp;
 }
 
-/**
- * Failed runs that share an error code and a normalized detail (design §7). `detail` is the normalized text,
- * never the raw detail. Run IDs in finish order; item IDs distinct, in the order their first run finished.
- */
+/** Failed runs that share an error code and a normalized detail (design §7). `detail` is the normalized text, never the raw
+ * detail. Run IDs in finish order; item IDs distinct, in the order their first run finished. */
 export interface FailureGroup {
   error_code: string;
   detail: string;

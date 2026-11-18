@@ -1,8 +1,6 @@
-import { type Grade, type GradeSubject, improvePrompts, learnFromReport, runImprove, scoreRun, scorerFor } from "../../../core/improver.js";
-import type { MergeGit } from "../../../core/hotspots.js";
+import { type Grade, type GradeSubject, type ImproveDeps, improvePrompts, learnFromReport, runImprove, scoreRun, scorerFor } from "../../../core/improver.js";
 import type { Run, WorkItem } from "../../../core/types.js";
 import { factoryGit } from "../../../impl/broker/trusted-git.js";
-import type { LLMProvider } from "../../../interfaces/llm-provider.js";
 import { addUsage } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { DEFAULT_TIMEOUTS, defineRunKind } from "../../run-kind.js";
@@ -36,7 +34,7 @@ async function improve(w: Worker, run: Run, item: WorkItem, signal: AbortSignal)
  * line), each such file's line count at that parent (numstat from the empty tree), and `ls-tree` at the base head.
  * Any git failure throws, so the improve run fails with no report and is retried.
  */
-function mergeGit(repo: string, base_branch: string): MergeGit {
+function mergeGit(repo: string, base_branch: string): NonNullable<ImproveDeps["git"]> {
   const git = async (args: string[]): Promise<string> => {
     const r = await factoryGit(repo, args, { GIT_LITERAL_PATHSPECS: "1" });
     if (r.exit_code !== 0) throw new Error(`git ${args[0]} failed: ${r.stderr.trim().slice(0, 300)}`);
@@ -67,7 +65,7 @@ function mergeGit(repo: string, base_branch: string): MergeGit {
 }
 
 /** The worker's LLMProvider with each call's usage added to the run's (design §6); absent when it has none. */
-function meteredLlm(w: Worker, run: Run): LLMProvider | undefined {
+function meteredLlm(w: Worker, run: Run): ImproveDeps["llm"] {
   const { llm } = w.d;
   const meter = w.meters.get(run);
   return llm && {

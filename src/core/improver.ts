@@ -243,8 +243,7 @@ export function parseDraft(v: unknown): { cause: string; fix: string; touches: s
 export interface ImproveDeps {
   store: Pick<
     FactoryStore,
-    "listRunsFinishedBetween" | "recordImproveReport" | "getImproveReport" | "getWorkItem" | "listStateChangesSince" | "listVerdictsSince" | "listRuns" | "listClaimDecisionsSince"
-    | "listMergeEvaluations"
+    "listRunsFinishedBetween" | "recordImproveReport" | "getImproveReport" | "getWorkItem" | "listStateChangesSince" | "listVerdictsSince" | "listRuns" | "listClaimDecisionsSince" | "listMergeEvaluations"
   >;
   storage: SharedStorage;
   scanner: EgressScanner;
@@ -253,8 +252,7 @@ export interface ImproveDeps {
   prompt?: string;
   signal?: AbortSignal;
   hotspot_threshold?: number; // the live `conflict_hotspot_threshold`; absent: DEFAULT_HOTSPOT_THRESHOLD
-  /** The factory repo's git for the hotspot count (halving merges, files at the base head); absent: no cut, no head check. */
-  git?: MergeGit;
+  git?: MergeGit; // the factory repo's git for the hotspot count (halving cut, base head check); absent: neither. Read before any model call
 }
 
 /**
@@ -269,11 +267,9 @@ export async function runImprove(d: ImproveDeps, run: Run, item: Pick<WorkItem, 
   const runs = await ofProject(d.store, await d.store.listRunsFinishedBetween(window.window_start, window.window_end), item.project);
   const pushbacks = await pushbacksIn(d, window, item.project);
   const { groups, patterns } = groupFailures(runs, pushbacks);
-  // Before any model call: a git failure here fails the run with no report and no call spent.
   const hot = await hotspotsIn(d.store, window, item.project, d.hotspot_threshold, d.git);
   const itemOf = new Map([...runs.map((r) => [r.id, r.work_item_id] as const), ...pushbacks.map((p) => [p.run_id, p.work_item_id] as const)]);
-  const llm = d.llm;
-  const prompt = d.prompt;
+  const { llm, prompt } = d;
   if (llm && prompt) {
     // Groups come largest first, so the cap keeps the largest.
     for (const [i, g] of groups.entries()) {
@@ -292,8 +288,7 @@ export async function runImprove(d: ImproveDeps, run: Run, item: Pick<WorkItem, 
     }
   }
   // The flaky tests merge checks named go with the patterns: listed for the owner, never drafted or filed; the hot files too, filed (fileReport).
-  const listed = [...patterns, ...flakyTests(runs), ...hot];
-  const { report } = await d.store.recordImproveReport({ run_id: run.id, project: item.project, ...window, groups, patterns: listed });
+  const { report } = await d.store.recordImproveReport({ run_id: run.id, project: item.project, ...window, groups, patterns: [...patterns, ...flakyTests(runs), ...hot] });
   return report;
 }
 
