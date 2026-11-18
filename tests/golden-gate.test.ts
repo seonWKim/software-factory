@@ -13,8 +13,9 @@ import {
   computeRates,
   formatCompare,
   parseCompareArgs,
-  replayCases,
+  runCases,
 } from "../src/golden.js";
+import { implementReplayRunner } from "../src/controller/golden-gate/implement-replay.js";
 import { EVAL_REGRESSION, type GoldenGateDeps, checkChange, fingerprint } from "../src/controller/golden-gate/golden-gate.js";
 import { goldenConfig } from "../src/core/config.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
@@ -272,7 +273,7 @@ describe("golden gate (eval on change)", () => {
       prompt: async (file) => (file === "implement.md" ? `${prompts.implement}\n\n${state.skill}` : prompts.review),
       resultsDir: join(tmp, "state", "golden", "results"),
       sandbox,
-      runner,
+      runner: implementReplayRunner(runner, sandbox, join(tmp, "src", "worker", "roles")),
       scanner: cleanScanner,
       clock,
       config,
@@ -282,7 +283,7 @@ describe("golden gate (eval on change)", () => {
       golden,
       rolesDir: rd.rolesDir,
       store,
-      replay: (role, ids, n) => replayCases(rd, role, ids, n),
+      replay: (role, ids, n) => runCases(rd, { role, ids, replays: n }),
       comment: async (_it, key, body) => void comments.push({ key, body }),
       ...over,
     });
@@ -376,7 +377,7 @@ describe("golden gate (eval on change)", () => {
     let failing = 0;
     const replay: GoldenGateDeps["replay"] = async (_role, ids, n) => {
       asked.push(n);
-      return Array.from({ length: n }, (_, i) => ({ id: ids[0]!, passed: i >= failing }));
+      return { cases: Array.from({ length: n }, (_, i) => ({ id: ids[0]!, expect: "should_pass" as const, verdict: i >= failing ? ("pass" as const) : ("bug" as const) })) };
     };
     const scripted = world({ replays: 20, regression_margin: 0.05 });
     await seedImplementCase(scripted.rd.rolesDir);

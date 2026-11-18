@@ -24,8 +24,8 @@ export interface GoldenGateDeps {
   /** `<repo>/src/worker/roles`: each role's cases are under `<name>/golden/`. */
   rolesDir: string;
   store: Pick<FactoryStore, "transition" | "getGoldenFingerprint" | "recordGoldenVerdict">;
-  /** Replays `ids` of `role`'s cases `replays` times each, one entry per replay: `replayCases` in src/golden.ts (runCases). */
-  replay(role: string, ids: readonly string[], replays: number): Promise<readonly { id: string; passed: boolean }[]>;
+  /** Replays `ids` of `role`'s cases `replays` times each, one result per replay: `runCases(deps, { role, ids, replays })` in src/golden.ts. */
+  replay(role: string, ids: readonly string[], replays: number): Promise<{ cases: readonly ReplayResult[] }>;
   /** Posts on the item (the outbox unit's `comment`); the key makes a repeat post once. */
   comment(it: WorkItem, key: string, body: string): Promise<unknown>;
 }
@@ -40,6 +40,10 @@ export interface GoldenGateResult {
 }
 
 interface CaseRef { role: string; id: string; uses: string[] }
+
+/** One replay of a case (golden's CaseResult): it passed when its verdict is what it expects; an errored replay fails. */
+export interface ReplayResult { id: string; expect: "should_flag" | "should_pass"; verdict: "bug" | "pass" | "errored" }
+const passed = (r: ReplayResult) => r.verdict === (r.expect === "should_flag" ? "bug" : "pass");
 
 export const fingerprint = (content: string): string => createHash("sha256").update(content).digest("hex");
 
@@ -82,7 +86,7 @@ export async function checkChange(deps: GoldenGateDeps, it: WorkItem, entities: 
   const replays = new Map<string, boolean[]>();
   for (const role of new Set(run.map((c) => c.role))) {
     const ids = run.filter((c) => c.role === role).map((c) => c.id);
-    for (const r of await deps.replay(role, ids, golden.replays)) replays.set(`${role}/${r.id}`, [...(replays.get(`${role}/${r.id}`) ?? []), r.passed]);
+    for (const r of (await deps.replay(role, ids, golden.replays)).cases) replays.set(`${role}/${r.id}`, [...(replays.get(`${role}/${r.id}`) ?? []), passed(r)]);
   }
 
   const verdicts: GoldenFingerprint[] = [];
