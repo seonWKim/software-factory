@@ -458,6 +458,17 @@ CREATE TABLE controller_filed_patterns (
     UNIQUE (project_key, pattern_key)
   );
 
+CREATE TABLE controller_golden_fingerprints (
+    entity_id         TEXT PRIMARY KEY,
+    fingerprint       TEXT NOT NULL,
+    verdict           TEXT NOT NULL,
+    pass_rate         REAL NOT NULL,
+    failing_cases     TEXT NOT NULL,
+    base_fingerprint  TEXT,
+    base_rate         REAL,
+    at                TEXT NOT NULL
+  );
+
 CREATE TABLE controller_handoffs (
     id            TEXT PRIMARY KEY,
     run_id        TEXT NOT NULL REFERENCES worker_runs(id),
