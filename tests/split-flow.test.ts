@@ -475,6 +475,72 @@ describe("split spec flow", () => {
     expect((await f.runsOf(blocked)).filter((r) => r.status === "queued").map((r) => r.kind)).toEqual(["implement"]);
   });
 
+  describe("closing on the last phase (design 04-split-specs, 2026-11-18)", () => {
+    /** A split of `phases` approved on issue `n`, with an implementing item on issue `n + 1000` waiting for the parent. */
+    async function splitWithDependent(n: number, phases: number) {
+      const f = await setup();
+      const parent = await f.intake(n);
+      await f.finish("triage", f.triaged(bigSpec(phases)));
+      await f.approve(issueRef(n));
+      const subs = f.source.subIssues;
+      const items = await Promise.all(subs.map((s) => f.bySource(s.ref)));
+      const { item } = await f.store.createWorkItem({ ...issue(n + 1000), source: issueRef(n + 1000) }, system);
+      await f.store.transition({
+        id: item.id, expected_version: 1, actor: system, reason: "x",
+        patch: { stage: "RUNNING", tier: 2, allowed_paths: ["lib/"] }, enqueue: { kind: "implement", idempotency_key: `${n}:implement` },
+      });
+      await f.store.replaceDependencyEdges(item.id, [{ depends_on: issueRef(n).id, kind: "depends_on" }]);
+      await f.controller.tickCoordination();
+      expect(await f.get(item)).toMatchObject({ blocked_on: "dependency", blocked_reason: `waiting for #${n} to merge` });
+      /** Closes phase item `p` in the store only, as an earlier version left it: no event, so only the poll sees it. */
+      const closeInStore = async (p: WorkItem, close_reason: "completed" | "rejected", merge_sha: string | null = null) => {
+        const cur = await f.get(p);
+        const r = await f.store.transition({
+          id: cur.id, expected_version: cur.version, actor: system, reason: "setup",
+          patch: { stage: "CLOSED", close_reason, merge_sha, blocked_on: "none", blocked_reason: null },
+        });
+        expect(r.ok).toBe(true);
+      };
+      const parentComment = () => f.source.comments.find((c) => c.source.id === issueRef(n).id && c.body.includes("phases of this split were closed"));
+      return { f, parent, phases: items, dependent: item, closeInStore, parentComment };
+    }
+
+    it("a rejected middle phase and a merged last phase: the poll closes the parent completed with that sha and releases its dependent", async () => {
+      const { f, parent, phases: [p1, p2, p3], dependent, closeInStore, parentComment } = await splitWithDependent(76, 3);
+      await closeInStore(p1!, "completed", "sha-1");
+      await closeInStore(p2!, "rejected");
+      await closeInStore(p3!, "completed", "sha-3");
+      // Already at phases_open: no migration, the next poll applies the rule.
+      expect(await f.get(parent)).toMatchObject({ stage: "READY", blocked_reason: PHASES_OPEN });
+      await f.controller.tickPhases();
+      await f.controller.tickOutbox();
+      expect(await f.get(parent)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "sha-3", blocked_on: "none" });
+      expect(parentComment()!.body.startsWith("Closed because")).toBe(true);
+      const i = f.source.closed.findIndex((s) => s.id === issueRef(76).id);
+      expect(f.source.closeReasons[i]).toBe("completed");
+      expect(await f.get(dependent)).toMatchObject({ blocked_on: "none", blocked_reason: null });
+      expect((await f.store.listDependencyEdges({ work_item_id: dependent.id }))[0]).toMatchObject({ state: "merged" });
+      // A second poll changes nothing.
+      const v = (await f.get(parent)).version;
+      await f.controller.tickPhases();
+      expect((await f.get(parent)).version).toBe(v);
+    });
+
+    it("every phase rejected: the parent closes rejected, its issue is closed as not planned, and its dependent gets the dependency_closed hold", async () => {
+      const { f, parent, phases: [p1, p2], dependent, closeInStore, parentComment } = await splitWithDependent(77, 2);
+      await closeInStore(p1!, "rejected");
+      await closeInStore(p2!, "rejected");
+      await f.controller.tickPhases();
+      await f.controller.tickOutbox();
+      expect(await f.get(parent)).toMatchObject({ stage: "CLOSED", close_reason: "rejected", merge_sha: null, blocked_on: "none" });
+      expect(parentComment()!.body).toContain("the last phase closed without a merge");
+      const i = f.source.closed.findIndex((s) => s.id === issueRef(77).id);
+      expect(i).toBeGreaterThanOrEqual(0);
+      expect(f.source.closeReasons[i]).toBe("not_planned");
+      expect(await f.get(dependent)).toMatchObject({ blocked_on: "human", blocked_reason: "dependency_closed:#77" });
+    });
+  });
+
   it("/revise on a split spec runs triage again; the new spec need not be a split", async () => {
     const f = await setup();
     const item = await f.intake(75);

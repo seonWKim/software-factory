@@ -199,15 +199,13 @@ export class CoordinationUnit {
   }
 
   /**
-   * Whether a work item counts as merged for its dependents: closed `completed` with a merge sha, or a split
-   * parent (never implemented itself, so no sha) closed `completed` whose recorded phases all closed `completed`,
-   * the rule that closes a split (closeSplitIfDone).
+   * Whether a work item counts as merged for its dependents: closed `completed` and either with a merge sha, or a
+   * split parent whose last recorded phase closed `completed`, the rule that closes a split (closeSplitIfDone).
    */
   async itemMerged(it: WorkItem): Promise<boolean> {
     if (!completed(it)) return false;
     if (it.merge_sha !== null) return true;
-    const phases = await this.c.unit("phases").recordedPhases(it.id);
-    return phases.length > 0 && phases.every(completed);
+    return completed(await this.c.unit("phases").lastPhase(it.id));
   }
 
   /** Source id → the source ids it waits for, over every edge not yet merged, for the cycle check. */
