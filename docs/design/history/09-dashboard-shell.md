@@ -1,5 +1,7 @@
 ## History
 
+- **The catalog barrel was a hand-written list** (replaced 2026-11-18 by the generated barrel decision at the top of 09-dashboard-shell.md). Before: `web/src/i18n/en.ts` imported the eight area files by hand and spread them on one line, so every item that added an area file edited the same import list and spread line.
+
 - **Show/hide sections were hand-written `<details>` and a button** (replaced 2026-11-18 by the shared Disclosure decision at the top of 09-dashboard-shell.md). Before: each view wrote its own `<details>` with its own classes (a bordered box for "How this works", a bare triangle for "Show applied rules", `mt-2`/`mt-6` margins), and a Rules card's "Why and where" was a ghost button with a chevron and `aria-expanded`.
 
 - **The top bar showed a Needs you chip, "updated Ns ago" and three theme buttons** (replaced 2026-11-18 by the top bar decision at the top of 09-dashboard-shell.md). Before: a "Needs you (N)" link repeating the sidebar Tasks badge, an "updated Ns ago" or "not updated yet" text, three System, Light and Dark icon buttons as a radio group, a mode switch with only a `title`, and a Refresh icon that never spun.
