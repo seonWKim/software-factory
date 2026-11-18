@@ -3,7 +3,7 @@
 // Only unknown keys are checked here; value and shape checks stay where they were.
 
 import type { FileConfig } from "./compose.js";
-import { CAPABILITIES_KEYS, COORDINATION_KEYS, TOOLCHAIN_KEYS, capabilitiesProblems, coordinationProblems } from "./core/config.js";
+import { CAPABILITIES_KEYS, COORDINATION_KEYS, TOOLCHAIN_KEYS, capabilitiesProblems, coordinationProblems, goldenConfig } from "./core/config.js";
 import { pathCompanionProblems } from "./core/companions.js";
 import { packsProblems } from "./packs/packs.js";
 import { PROJECT_SETTING_KEYS } from "./core/settings.js";
@@ -18,9 +18,10 @@ import { SLACK_KEYS, slackConfigProblems } from "./impl/source/slack-config.js";
  * (`coordinationProblems`) and read by compose.ts through `coordinationConfig`. `cli_user` (issue #200): the factory user ID the
  * local CLI commands act as, read by src/core/config.ts. `capabilities` (design 08-settings, 2026-11-13): the skill folders the
  * Settings page's Capabilities list reads (`capabilitiesConfig`). `conflict_hotspot_threshold` (design 07-self-improvement): a settable key
- * the settings base reads from the file by name (`settingsBase`), checked as a positive integer (`parseSettable`).
+ * the settings base reads from the file by name (`settingsBase`), checked as a positive integer (`parseSettable`). `golden`
+ * (design 06-measurement, eval on change): the golden gate's replays and regression margin (`goldenConfig`); absent, it is off.
  */
-type CoreOnlyKey = "cli_user" | "capabilities" | "conflict_hotspot_threshold" | (typeof COORDINATION_KEYS)[number];
+type CoreOnlyKey = "cli_user" | "capabilities" | "conflict_hotspot_threshold" | "golden" | (typeof COORDINATION_KEYS)[number];
 
 export const TOP_LEVEL_KEYS = [
   "env",
@@ -93,6 +94,7 @@ export const TOP_LEVEL_KEYS = [
   "calendar",
   "calendar_ids",
   "capabilities",
+  "golden",
 ] as const satisfies readonly (keyof FileConfig | CoreOnlyKey)[];
 
 // Fails typecheck when FileConfig gains a key that is not listed above.
@@ -130,6 +132,7 @@ export const UPDATER_KEYS = ["auto_migrate", "code_update_interval_ms"] as const
 export const GITHUB_KEYS = ["min_remaining", "budget_share", "history_since"] as const satisfies readonly (keyof NonNullable<FileConfig["github"]>)[];
 export const STATS_KEYS = ["weights", "min_sample"] as const satisfies readonly (keyof NonNullable<FileConfig["stats"]>)[];
 export const RETENTION_KEYS = ["outbox_days", "commands_days", "records_days", "raw_records_days"] as const satisfies readonly (keyof NonNullable<FileConfig["retention"]>)[];
+export const GOLDEN_KEYS = ["replays", "regression_margin"] as const;
 export const PACKS_KEYS = ["order", "org", "auto_approve_read_only"] as const satisfies readonly (keyof NonNullable<FileConfig["packs"]>)[];
 
 /** A suggestion is offered only within this edit distance. */
@@ -226,6 +229,7 @@ export function unknownConfigKeys(raw: unknown): string[] {
   check(raw.packs, "packs", "packs", PACKS_KEYS);
   check(raw.retention, "retention", "retention", RETENTION_KEYS);
   check(raw.capabilities, "capabilities", "capabilities", CAPABILITIES_KEYS);
+  check(raw.golden, "golden", "golden", GOLDEN_KEYS);
   if (isObject(raw.stats)) check(raw.stats.weights, "stats.weights", "stats.weights", VERDICT_SEVERITIES);
   // Per-project settings (design 2026-11-01): `defaults` and each project block take only the per-project
   // keys. Anything else in a project (dials, plugins, repo, budget_min_sample, a guard) is an unknown key.
@@ -255,8 +259,19 @@ export function checkConfigKeys(raw: unknown): void {
     ...pathCompanionProblems(raw),
     ...packsProblems(raw),
     ...capabilitiesProblems(raw),
+    ...goldenProblems(raw),
   ];
   if (problems.length > 0) throw new ConfigKeyError(problems);
+}
+
+/** The `golden` block's value problem (goldenConfig's refusal), or none. */
+function goldenProblems(raw: unknown): string[] {
+  try {
+    goldenConfig(raw);
+    return [];
+  } catch (err) {
+    return [(err as Error).message];
+  }
 }
 
 /** What `factory doctor` prints when the config does not load: one FAIL line per problem, no stack. */
