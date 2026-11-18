@@ -161,14 +161,14 @@ export class RunResultsUnit {
           throw new Error(`merge-check run ${run.id} reached the run outcome path`);
         case "triage": {
           // The item's size caps decide whether the estimate needs phases (src/core/split.ts).
-          const { max_diff_lines, max_diff_files } = this.c.k.settings(it.project);
+          const { max_diff_lines, max_diff_files, floors } = this.c.k.settings(it.project);
           // Path companions first (design 04-triage.md): on the raw answer, so a companion triage named only in
-          // files_to_change is covered, and before the floor, so an added path under a floor raises the tier.
-          const { answer, added } = applyCompanions(data.spec, this.c.k.cfg.path_companions ?? []);
+          // files_to_change is covered, and before the floor, which raises the tier or refuses a built-in rule's path.
+          const { answer, added } = applyCompanions(data.spec, this.c.k.cfg.path_companions ?? [], floors);
           const parsed = parseTriage(answer, { max_diff_lines, max_diff_files });
           if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
           const spec = parsed.value;
-          const floor = floorTier(spec.allowed_paths, this.c.k.settings(it.project).floors);
+          const floor = floorTier(spec.allowed_paths, floors);
           const tier = effectiveTier(spec.tier, floor, it.tier);
           const fields = {
             problem: spec.problem,
