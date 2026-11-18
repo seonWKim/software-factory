@@ -1419,6 +1419,7 @@ describe("updater: git-worktree cleanup", () => {
     await b.updater.poll();
     expect(a.world.versions()).toContain("c1");
     a.launcher.children[0]!.exit(0);
+    await settle();
     await b.updater.poll();
     expect(a.world.versions()).toEqual(["c2", "c3"]);
   });
