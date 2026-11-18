@@ -764,6 +764,22 @@ describe("GitHubIssueSource: split phases (design 2026-11-01)", () => {
       expect(writes(client)).toEqual([]);
     });
 
+    it("a create whose response was lost is found by its marker on the next call: the create is not sent again", async () => {
+      const { client, source } = make();
+      const post = client.request.bind(client);
+      client.request = async <T>(method: string, path: string, body?: unknown): Promise<T> => {
+        const res = await post<T>(method, path, body);
+        if (method !== "POST") return res;
+        // GitHub created the issue, then the connection dropped before its answer came back.
+        client.responses["/repos/o/r/issues"] = [{ id: 9040, number: 40, body: (body as { body: string }).body }];
+        throw new Error("connection reset");
+      };
+      await expect(source.fileIssue(one)).rejects.toThrow("connection reset");
+      expect(await source.fileIssue(one)).toEqual(issueRef(40));
+      expect(writes(client)).toHaveLength(1);
+      expect(client.calls.map((c) => c.method)).toEqual(["GET", "POST", "GET"]);
+    });
+
     it("a failed lookup is thrown and nothing is filed", async () => {
       const { client, source } = make();
       client.request = async () => { throw new GitHubError(502, "bad gateway"); };
