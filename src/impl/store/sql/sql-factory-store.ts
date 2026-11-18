@@ -1231,10 +1231,6 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
     return filed.getFiledPattern(this.db, project, pattern_key);
   }
 
-  async claimFiledPattern(input: NewFiledPattern, replace?: ImproveReportId): Promise<FiledPattern> {
-    return (await this.takeFiledPattern(input, replace === undefined ? undefined : { replace })).row;
-  }
-
   takeFiledPattern(input: NewFiledPattern, from?: filed.TakeFrom): Promise<{ row: FiledPattern; taken: boolean }> {
     return filed.takeFiledPattern(this.db, (sql, params) => this.insertOnce(this.db, sql, params), input, this.now(), from);
   }

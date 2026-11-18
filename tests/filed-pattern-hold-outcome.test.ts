@@ -36,7 +36,7 @@ async function finish(store: FactoryStore, clock: FakeClock, outcome: RunOutcome
 async function file(store: FactoryStore, n = 100) {
   const { run } = await enqueueImprove({ store, clock: new FakeClock() }, PROJECT_KEY, "manual");
   const { report } = await store.recordImproveReport({ run_id: run.id, project: PROJECT_KEY, ...manualWindow(new Date()), groups: [], patterns: [] });
-  const row = await store.claimFiledPattern({ project: PROJECT_KEY, pattern_key: KEY, ...BOOM, report_id: report.id });
+  const row = (await store.takeFiledPattern({ project: PROJECT_KEY, pattern_key: KEY, ...BOOM, report_id: report.id })).row;
   await store.setFiledPatternRef(row.id, row.report_id, issueRef(n));
   return row;
 }

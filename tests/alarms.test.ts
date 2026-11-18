@@ -252,7 +252,7 @@ describe("alarms: recurring patterns", () => {
   const file = async (store: FactoryStore, n: number, pattern = { error_code: "checks_failed", detail: "npm test exited #: boom" }) => {
     const { run } = await enqueueImprove({ store, clock: new FakeClock() }, PROJECT_KEY, "manual");
     const { report } = await store.recordImproveReport({ run_id: run.id, project: PROJECT_KEY, ...manualWindow(new Date()), groups: [], patterns: [] });
-    const row = await store.claimFiledPattern({ project: PROJECT_KEY, pattern_key: patternKey(pattern), ...pattern, report_id: report.id });
+    const row = (await store.takeFiledPattern({ project: PROJECT_KEY, pattern_key: patternKey(pattern), ...pattern, report_id: report.id })).row;
     await store.setFiledPatternRef(row.id, row.report_id, issueRef(n));
     return row;
   };

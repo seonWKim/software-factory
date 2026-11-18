@@ -107,13 +107,13 @@ describe("improve: filed patterns and the latest report (issue #308)", () => {
     expect((await store.getImproveReport(a!.run_id))!.groups).toEqual([group]);
   });
 
-  it("claimFiledPattern claims once per (project, key); setFiledPatternRef sets the item while that report holds it", async () => {
+  it("takeFiledPattern claims once per (project, key); setFiledPatternRef sets the item while that report holds it", async () => {
     const { store, item, reports: [a, b] } = await reports(2);
     const input = { project: item.project, pattern_key: "abc", error_code: "x", detail: "d", report_id: a!.id };
     expect(await store.getFiledPattern(item.project, "abc")).toBeNull();
-    const claimed = await store.claimFiledPattern(input);
+    const claimed = (await store.takeFiledPattern(input)).row;
     expect(claimed).toMatchObject({ ...input, filed_ref: null });
-    expect(await store.claimFiledPattern({ ...input, report_id: b!.id })).toEqual(claimed);
+    expect((await store.takeFiledPattern({ ...input, report_id: b!.id })).row).toEqual(claimed);
     const ref = { type: "local", id: "local-filed-1", link: "local:local-filed-1" };
     await store.setFiledPatternRef(claimed.id, b!.id, ref);
     expect((await store.getFiledPattern(item.project, "abc"))!.filed_ref).toBeNull();
@@ -124,11 +124,11 @@ describe("improve: filed patterns and the latest report (issue #308)", () => {
   it("a replace claim takes the row over from the named report only, with no item", async () => {
     const { store, item, reports: [a, b, c] } = await reports(3);
     const input = { project: item.project, pattern_key: "abc", error_code: "x", detail: "d", report_id: a!.id };
-    const first = await store.claimFiledPattern(input);
+    const first = (await store.takeFiledPattern(input)).row;
     await store.setFiledPatternRef(first.id, a!.id, { type: "local", id: "old", link: "" });
     // Naming a report that does not hold it changes nothing.
-    expect(await store.claimFiledPattern({ ...input, report_id: c!.id }, b!.id)).toMatchObject({ report_id: a!.id, filed_ref: { id: "old" } });
-    expect(await store.claimFiledPattern({ ...input, report_id: b!.id }, a!.id)).toMatchObject({ id: first.id, report_id: b!.id, filed_ref: null });
-    expect(await store.claimFiledPattern({ ...input, report_id: c!.id }, a!.id)).toMatchObject({ report_id: b!.id });
+    expect((await store.takeFiledPattern({ ...input, report_id: c!.id }, { replace: b!.id })).row).toMatchObject({ report_id: a!.id, filed_ref: { id: "old" } });
+    expect((await store.takeFiledPattern({ ...input, report_id: b!.id }, { replace: a!.id })).row).toMatchObject({ id: first.id, report_id: b!.id, filed_ref: null });
+    expect((await store.takeFiledPattern({ ...input, report_id: c!.id }, { replace: a!.id })).row).toMatchObject({ report_id: b!.id });
   });
 });

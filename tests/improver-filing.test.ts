@@ -401,7 +401,7 @@ describe("improve filing: fix specs", () => {
 /** Files a pattern as GitHub issue `n` (design §7), so the item intake takes in for it is its fix item. Returns its marker. */
 async function fileAs(store: FactoryStore, clock: FakeClock, n: number): Promise<string> {
   const report = await draftedReport(store, clock, []);
-  const row = await store.claimFiledPattern({ project: PROJECT.key, pattern_key: `k${n}`, error_code: "checks_failed", detail: "d", report_id: report.id });
+  const row = (await store.takeFiledPattern({ project: PROJECT.key, pattern_key: `k${n}`, error_code: "checks_failed", detail: "d", report_id: report.id })).row;
   await store.setFiledPatternRef(row.id, row.report_id, issueRef(n));
   return issueMarker(row.pattern_key, row.report_id);
 }
@@ -492,7 +492,7 @@ describe("improve filing: a stall group that followed a host sleep", () => {
     await slept(w, runs[0]!);
     const report = await draftedReport(w.store, w.clock, [{ ...(await groupOf(w.store, AGENT_STALLED, runs, { status: "skipped", reason: "call_cap" })), detail: "silent" }]);
     const earlier = await draftedReport(w.store, w.clock, []);
-    const row = await w.store.claimFiledPattern({ project: PROJECT.key, pattern_key: patternKey(report.groups[0]!), error_code: AGENT_STALLED, detail: "silent", report_id: earlier.id });
+    const row = (await w.store.takeFiledPattern({ project: PROJECT.key, pattern_key: patternKey(report.groups[0]!), error_code: AGENT_STALLED, detail: "silent", report_id: earlier.id })).row;
     await w.store.setFiledPatternRef(row.id, row.report_id, issueRef(7));
     const comments: string[] = [];
     const done = await fileReport({ store: w.store, scanner: w.scanner, clock: w.clock, file: null, comment: async (_r, body) => void comments.push(body) }, report);
@@ -678,7 +678,7 @@ describe("improve filing: one hot file is filed once", () => {
   it("an unfinished claim of another report, younger than the wait, skips the file with no source call; after the wait it is filed under its marker", async () => {
     const { client, w, d, report, filing } = await hotspots();
     const first = await report();
-    const claim = await w.store.claimFiledPattern({ project: PROJECT.key, pattern_key: patternKey(hot), error_code: HOTSPOT, detail: FILE, report_id: first.id });
+    const claim = (await w.store.takeFiledPattern({ project: PROJECT.key, pattern_key: patternKey(hot), error_code: HOTSPOT, detail: FILE, report_id: first.id })).row;
     w.clock.advance(9 * 60_000);
     expect(filing(await fileReport(d, await report()))).toEqual({ status: "skipped", reason: "in_flight" });
     expect(client.calls).toEqual([]);
