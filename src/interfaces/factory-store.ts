@@ -3,7 +3,7 @@ import type { ChildRestart } from "./updater.js";
 import type { CoordinationSettings, DependencyLink } from "../core/coordination.js";
 import type {
   Actor, BlockedOn, BudgetAnswer, BudgetCheckpoint, BudgetCheckpointId, ClaimDecision, ClaimPauseName, DependencyEdge, DependencyState, Tier,
-  Handoff, FiledPattern, FiledPatternId, HostSleep, ImproveReport, ImproveReportId, ImproveWindow, Run, RunAttempt, RunId, RunInput, RunKind,
+  Handoff, FiledPattern, FiledPatternId, HostSleep, ImproveReport, ImproveReportId, ImproveWindow, PauseInterval, Run, RunAttempt, RunId, RunInput, RunKind,
   RunOutcome, RunResume, RunStatus, SessionFinish, SourceRef, SourceType, StandingGate, StandingProposal, StandingRule, StateChange,
   StateChangeDetail, Stage, Timestamp, UnreviewedMerge, UserId, Verdict, VerdictKind, VerdictSeverity, VerdictTarget, WorkItem, WorkItemId,
   WorkItemPatch, WorkerId, WorkerPause,
@@ -513,6 +513,17 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
    * second call) changes no row. The since and answered rows are not pauses of their own and throw.
    */
   endClaimPause(name: ClaimPauseName): Promise<{ ended: boolean }>;
+  /**
+   * Stores one ended `model_stall` or `network` pause in the append-only pause history (design §7), never pruned.
+   * Keyed by (name, started_at): a pause already stored is a no-op that returns false, so no row is ever overwritten.
+   * The store records each probe pause it ends itself (`endClaimPause`, a passing probe) with its since row as start.
+   */
+  recordEndedPause(pause: PauseInterval & { ended_at: Timestamp }): Promise<boolean>;
+  /**
+   * The `model_stall` or `network` pause in effect at `at` (design §7): an ended one from the pause history with
+   * started_at <= at < ended_at, else one still in effect that began at or before `at` (`ended_at` null). Null when none. Read-only.
+   */
+  pauseAt(at: Timestamp): Promise<PauseInterval | null>;
   /**
    * Takes the due probe of probe pause `name` (design §5 Restarts): while the pause is in effect with probe time
    * `due`, moves it to `next` with one conditional write under the claim lock, true for the one caller whose write

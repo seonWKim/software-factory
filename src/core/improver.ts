@@ -362,7 +362,7 @@ export interface FilingDeps {
   store: Pick<
     FactoryStore,
     | "getFiledPattern" | "claimFiledPattern" | "setFiledPatternRef" | "listImproveReports" | "setImproveGroups" | "getWorkItemBySource" | "recordAlert"
-    | "listHostSleeps"
+    | "listHostSleeps" | "getRun" | "pauseAt"
   >;
   scanner: EgressScanner;
   clock: Clock;
@@ -394,13 +394,17 @@ function commentMarker(key: string, report: string): string {
 
 /**
  * Files the groups of `report` (design §7) and stores each group's filing on the report. First, a stall group one of
- * whose runs held a host sleep (`stalledBySleep`) is not filed or commented: one information alert (`host_sleep`). A group whose pattern
+ * whose runs held a host sleep (`stalledBySleep`) is not filed or commented: one information alert (`host_sleep`). Then the group's
+ * failed runs that finished during a `model_stall` or `network` pause are left out (`outsidePauses`): none left, it is
+ * skipped (`pause`); fewer than FILE_MIN_RUNS runs or FILE_MIN_ITEMS items left, nothing is filed and it stays in the
+ * report with no filing. The rest is filed with the runs left. A group whose pattern
  * has an open filed item gets one comment naming its runs not linked there yet (none: `linked`); one whose item
  * closed in the last 30 days is skipped; one whose draft needs a person or touches the gate list is not filed but
  * goes to Needs you as an alert with the cause (`needs_person`); any other is filed as a fix item, which runs
  * without a person, its runs listed and its marker in the body. At most MAX_FILED_ISSUES new items and as many comments; the rest are skipped with the cap as reason.
  * Every body passes the egress scan first: a flagged one is not sent and is recorded `withheld` with its rules.
- * Then each `hotspot` row of the patterns alike, same caps: "Reduce conflicts on <file>", no draft (a gate file still waits for a person's merge).
+ * Then each `hotspot` row of the patterns alike, same caps, without the pause and size checks: "Reduce conflicts on <file>", no draft
+ * (a gate file still waits for a person's merge).
  * Safe to run twice: a filing is claimed in filed_patterns before the call and its marker looked up by the source,
  * and a comment is posted once per marker.
  */
@@ -408,7 +412,8 @@ export async function fileReport(d: FilingDeps, report: ImproveReport): Promise<
   const caps = { issues: 0, comments: 0 };
   const fileOne = async (g: FailureGroup): Promise<FailureGroup> => {
     try {
-      return { ...g, filing: await fileGroup(d, report, g, caps) };
+      const filing = await fileGroup(d, report, g, caps);
+      return filing ? { ...g, filing } : g;
     } catch {
       // A source or store fault fails this group only; the next improve run finds the claim and tries again.
       return { ...g, filing: { status: "failed", reason: "error" } };
@@ -421,10 +426,24 @@ export async function fileReport(d: FilingDeps, report: ImproveReport): Promise<
   return { ...report, groups, patterns };
 }
 
-async function fileGroup(d: FilingDeps, report: ImproveReport, g: FailureGroup, caps: { issues: number; comments: number }): Promise<ImproveFiling> {
-  const key = patternKey(g);
+/** A failure pattern is filed once it holds at least this many runs outside a pause, on at least FILE_MIN_ITEMS items (design §7). */
+export const FILE_MIN_RUNS = 3;
+/** The fewest work items a filed failure pattern's runs cover: a pattern of one item stays in the report only. */
+export const FILE_MIN_ITEMS = 2;
+
+async function fileGroup(
+  d: FilingDeps, report: ImproveReport, all: FailureGroup, caps: { issues: number; comments: number },
+): Promise<ImproveFiling | undefined> {
+  const key = patternKey(all);
   // First: a stall that followed a host sleep is the host's, not the repo's, so nothing is filed or commented.
-  if (await stalledBySleep(d.store, g)) return toSleepAlert(d, g, key);
+  if (await stalledBySleep(d.store, all)) return toSleepAlert(d, all, key);
+  let g = all;
+  if (!isHotspot(all)) {
+    // Failures inside a model-stall or network pause are the outage's; what is left must recur across items.
+    g = await outsidePauses(d.store, all);
+    if (g.run_ids.length === 0) return { status: "skipped", reason: "pause" };
+    if (g.run_ids.length < FILE_MIN_RUNS || g.work_item_ids.length < FILE_MIN_ITEMS) return undefined;
+  }
   const file = d.file;
   const person = needsPerson(g.draft);
   if (!file && !person) return { status: "skipped", reason: "no_source" };
@@ -478,6 +497,24 @@ async function toPerson(d: FilingDeps, g: FailureGroup, key: string): Promise<Im
     DAY_MS,
   );
   return { status: "skipped", reason: "needs_person" };
+}
+
+/**
+ * `g` without its failed runs that finished during a `model_stall` or `network` pause (design §7, `pauseAt`: start
+ * inclusive, end exclusive, a pause still in effect included), its items those of the runs left. A pushback's run
+ * did not fail, so it stays. One run read and one pause read per run.
+ */
+async function outsidePauses(store: Pick<FactoryStore, "getRun" | "pauseAt">, g: FailureGroup): Promise<FailureGroup> {
+  const run_ids: RunId[] = [];
+  const items = new Set<WorkItemId>();
+  for (const id of g.run_ids) {
+    const run = await store.getRun(id);
+    if (run && reviewable(run) && run.finished_at && (await store.pauseAt(run.finished_at))) continue;
+    run_ids.push(id);
+    if (run) items.add(run.work_item_id);
+  }
+  if (run_ids.length === g.run_ids.length) return g;
+  return { ...g, run_ids, work_item_ids: g.work_item_ids.filter((id) => items.has(id)) };
 }
 
 /** Host sleeps read per work item of a stall group: far more than the sleeps of one item's recent runs. */

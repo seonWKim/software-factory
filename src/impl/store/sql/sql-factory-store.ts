@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { TierHistory } from "../../../core/budget.js";
 import type {
   Actor, BudgetCheckpoint, BudgetCheckpointId, BudgetOutcome, ClaimDecision, CloseReason, DependencyEdge, DependencyState, FiledPattern,
-  FiledPatternId, Handoff, HostSleep, ImproveReport, ImproveReportId, Run, RunAttempt, RunAttemptStatus, RunId, RunKind, RunOutcome,
+  FiledPatternId, Handoff, HostSleep, ImproveReport, ImproveReportId, PauseInterval, Run, RunAttempt, RunAttemptStatus, RunId, RunKind, RunOutcome,
   RunStatus, SourceRef, SourceType, Stage, StandingGate, StandingProposal, StandingProposalId, StandingRule, StateChange,
   StateChangeDetail, StateChangeId, Tier, Timestamp, UnreviewedMerge, UnreviewedMergeId, UserId, Verdict, VerdictId, VerdictSeverity,
   WorkItem, WorkItemId, WorkItemPatch, ClaimPauseName, RunInput, RunResume, SessionRecord, WorkerId, WorkerPause,
@@ -863,8 +863,37 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
       const now = this.now();
       const at = current < now ? current : now;
       await this.setPauseRows(tx, [[pause, at], [PROBE_PAUSES[pause].answered, at]]);
+      // The pause history (design §7): it was in effect from its since row until now, whatever its probe time.
+      const [since] = await tx.all("SELECT resume_at FROM worker_claim_pauses WHERE name = ?", [PROBE_PAUSES[pause].since]);
+      if (since !== undefined) await this.insertEndedPause(tx, { name: pause, started_at: since.resume_at as Timestamp, ended_at: now });
       return { ended: true };
     });
+  }
+
+  async recordEndedPause(pause: PauseInterval & { ended_at: Timestamp }): Promise<boolean> {
+    return this.insertEndedPause(this.db, pause);
+  }
+
+  private insertEndedPause(tx: SqlExecutor, p: PauseInterval & { ended_at: Timestamp }): Promise<boolean> {
+    return this.insertOnce(tx, "INSERT INTO controller_pause_history (name, started_at, ended_at) VALUES (?, ?, ?)", [p.name, p.started_at, p.ended_at]);
+  }
+
+  async pauseAt(at: Timestamp): Promise<PauseInterval | null> {
+    const [ended] = await this.db.all(
+      "SELECT name, started_at, ended_at FROM controller_pause_history WHERE started_at <= ? AND ended_at > ? ORDER BY started_at, name LIMIT 1",
+      [at, at],
+    );
+    if (ended !== undefined) return { name: ended.name as ProbePause, started_at: ended.started_at as Timestamp, ended_at: ended.ended_at as Timestamp };
+    const names = Object.entries(PROBE_PAUSES).flatMap(([pause, rows]) => [pause, rows.since, rows.answered]);
+    const rows = new Map(
+      (await this.db.all(`SELECT name, resume_at FROM worker_claim_pauses WHERE name IN (${placeholders(names.length)})`, names))
+        .map((r) => [r.name as string, r.resume_at as Timestamp]),
+    );
+    for (const [pause, { since, answered }] of Object.entries(PROBE_PAUSES) as [ProbePause, (typeof PROBE_PAUSES)[ProbePause]][]) {
+      const started_at = rows.get(since);
+      if (probeInEffect(rows.get(pause), rows.get(answered)) && started_at !== undefined && started_at <= at) return { name: pause, started_at, ended_at: null };
+    }
+    return null;
   }
 
   async claimProbe(name: ProbePause, due: Timestamp, next: Timestamp): Promise<boolean> {

@@ -231,15 +231,25 @@ export interface FailureGroup {
 /**
  * A group's filing (design §7). `filed`: a new item with the group's runs. `commented`: it matched an open filed item; one comment
  * named `run_ids`, its runs not linked there before. `linked`: it matched one, all runs linked, nothing posted. `skipped`: past a cap,
- * the matched item closed in the last 30 days, no source can file, `needs_person`, or `host_sleep` (a stall after a host sleep), all
- * not filed. `withheld`: the egress scan flagged the body, nothing sent, rules kept. `failed`: the source call threw; retried later.
+ * the matched item closed in the last 30 days, no source can file, `needs_person`, `host_sleep` (a stall after a host sleep), or
+ * `pause` (every run finished during a `model_stall` or `network` pause), all not filed. `withheld`: the egress scan flagged the body, nothing sent, rules kept. `failed`: the source call threw; retried later.
  */
 export type ImproveFiling =
   | { status: "filed" | "linked"; ref: SourceRef }
   | { status: "commented"; ref: SourceRef; run_ids: RunId[] }
-  | { status: "skipped"; reason: "issue_cap" | "comment_cap" | "recently_closed" | "no_source" | "needs_person" | "host_sleep" }
+  | { status: "skipped"; reason: "issue_cap" | "comment_cap" | "recently_closed" | "no_source" | "needs_person" | "host_sleep" | "pause" }
   | { status: "withheld"; rules: string[] }
   | { status: "failed"; reason: "error" };
+
+/**
+ * One `model_stall` or `network` claim pause (design §7): when it began and when it ended, `ended_at` null while it
+ * is still in effect. The improver does not file the runs that finished inside one.
+ */
+export interface PauseInterval {
+  name: "model_stall" | "network";
+  started_at: Timestamp;
+  ended_at: Timestamp | null;
+}
 
 export type FiledPatternId = Brand<string, "FiledPatternId">;
 
