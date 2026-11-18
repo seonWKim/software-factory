@@ -3,7 +3,9 @@
 // expects to change; the controller adds each companion to `allowed_paths` before the answer is checked, so a
 // path limit never stops the implementer halfway.
 
-import { isCovered } from "./policy.js";
+import { isGatePath } from "./improver.js";
+import { floorTier, isCovered } from "./policy.js";
+import type { Floor } from "./settings.js";
 
 /** One `path_companions` entry of factory.config.json: when `files_to_change` names `when`, also allow `also`. */
 export interface PathCompanion {
@@ -30,6 +32,33 @@ export const INDEX_FOLDERS: readonly PathCompanion[] = [
   { when: "docs/design.md", also: ["docs/design/"] },
   { when: "docs/plugins.md", also: ["docs/plugins/"] },
 ];
+
+/**
+ * The built-in rules (decided 2026-11-18): the companions of one `files_to_change` path, read from the path alone,
+ * since triage has no clone. A design topic file adds its History file; a web view adds the i18n area file its name
+ * maps to (a shared component: the shell's); a source file adds the test named after it.
+ */
+const COMPANION_RULES: readonly ((file: string) => string[])[] = [
+  (file) => {
+    const topic = /^docs\/design\/([^/]+)\.md$/.exec(file)?.[1];
+    return topic === undefined ? [] : [`docs/design/history/${topic}.md`];
+  },
+  (file) => {
+    if (/^web\/src\/components\/.+\.tsx?$/.test(file)) return ["web/src/i18n/en/shell.ts"];
+    const view = /^web\/src\/views\/(?:([^/]+)\/[^/]+|([^/.-]+)[^/]*)\.tsx?$/.exec(file);
+    return view ? [`web/src/i18n/en/${view[1] ?? view[2]}.ts`] : [];
+  },
+  (file) => {
+    if (file.startsWith("tests/") || file.endsWith(".d.ts")) return [];
+    const m = /(?:^|\/)([^/.]+)[^/]*\.(tsx?)$/.exec(file);
+    return m && m[1] !== "index" ? [`tests/${m[1]}.test.${m[2]}`] : [];
+  },
+];
+
+/** True when a built-in rule may never add `path`: on the gate list (protected paths included) or under a floor. */
+export function refusedCompanion(path: string, floors: readonly Floor[]): boolean {
+  return isGatePath(path) || floorTier([path], floors) !== null;
+}
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const isStrs = (v: unknown): v is string[] => Array.isArray(v) && v.every((s) => typeof s === "string");
@@ -80,11 +109,12 @@ export function whenMatches(when: string, path: string): boolean {
 /**
  * The companion step, on the raw triage answer before parseTriage. Adds each companion path to the top-level
  * `allowed_paths` unless an allowed path already covers it: config entries whose `when` matches a
- * `files_to_change` path, and the doc index folders (INDEX_FOLDERS) when an index is named in either list.
+ * `files_to_change` path, the doc index folders (INDEX_FOLDERS) when an index is named in either list, and the
+ * built-in rules' paths for each `files_to_change` path, except a gate path or one under `floors`.
  * Phases' own `allowed_paths` are left alone: each phase's own triage applies the rule. An answer whose lists
  * are not string lists is returned as is, for parseTriage to reject. Never mutates `answer`.
  */
-export function applyCompanions(answer: unknown, companions: readonly PathCompanion[]): { answer: unknown; added: AddedPath[] } {
+export function applyCompanions(answer: unknown, companions: readonly PathCompanion[], floors: readonly Floor[] = []): { answer: unknown; added: AddedPath[] } {
   if (!isObj(answer) || !isStrs(answer.allowed_paths) || !isStrs(answer.files_to_change)) return { answer, added: [] };
   const files = answer.files_to_change;
   const allowed = [...answer.allowed_paths];
@@ -100,6 +130,9 @@ export function applyCompanions(answer: unknown, companions: readonly PathCompan
   }
   for (const c of INDEX_FOLDERS) {
     if (files.includes(c.when) || answer.allowed_paths.includes(c.when)) for (const p of c.also) add(p, c.when);
+  }
+  for (const f of files) {
+    for (const rule of COMPANION_RULES) for (const p of rule(f)) if (!refusedCompanion(p, floors)) add(p, f);
   }
   if (added.length === 0) return { answer, added };
   return { answer: { ...answer, allowed_paths: allowed }, added };
