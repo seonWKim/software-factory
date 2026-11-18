@@ -147,9 +147,15 @@ export interface WorkerDeps {
   toolEnv: Readonly<Record<string, string>>;
   /**
    * The host's CPU count (compose: `os.availableParallelism()`). Set: each run's agent and check commands get
-   * SF_TEST_WORKERS, this run's share of it (testWorkerShare). Absent: SF_TEST_WORKERS is not set.
+   * SF_TEST_WORKERS, this run's share of it (testWorkerShare): the CPUs over the runs running on this host at its
+   * claim (`hostRuns`), kept for the run. Absent: SF_TEST_WORKERS is not set.
    */
   cpus?: number;
+  /**
+   * The runs running on this host now, this one included: the pool's busy slots plus the busy slots of the other
+   * live worker processes on the host (their store rows). Read once at each claim. Absent (a lone Worker): 1.
+   */
+  hostRuns?: () => Promise<number>;
   /** Held while a claimed run executes, released after; never held while idle. */
   awake: KeepAwake;
   /**
