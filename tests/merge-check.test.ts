@@ -4,6 +4,7 @@
 // a counting sandbox for the call counts.
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -736,20 +737,22 @@ describe("merge check run: one rerun of the failing test files (fake sandbox)", 
   });
 });
 
-// End to end over a real git repo (as tests/merge-queue-flow.test.ts): a local change to web/ whose merged commit fails
-// the UI check leaves the merge queue, `main` does not move, the item's thread names the check, and the item goes back
-// to implement as a loop.
+// End to end over a real git repo (as tests/merge-queue-flow.test.ts). A local change to web/ whose merged commit fails
+// the UI check while `main` alone passes it leaves the merge queue, `main` does not move, the item's thread names the
+// check, and the item goes back to implement as a loop with the output tail kept. When `main` alone fails it too (red
+// main, design 03-risk), no change is blamed: the entries stay queued and are not checked again until `main` moves,
+// and one red_main alert and one fix item are stored for that base sha.
 describe("merge queue: a failing UI check (real git)", { timeout: 120_000 }, () => {
   const ME = "local:me@example.com" as UserId;
   const ident = ["-c", "user.name=t", "-c", "user.email=t@example.com"];
   const sh = (cwd: string, ...args: string[]) => git(cwd, ...args).trim();
 
-  it("keeps main where it was, removes the entry, names check:responsive in the thread and sends the item back", async () => {
+  /** A local factory over a real repo whose `check:responsive` script is `script`; `depth`: the merge queue's depth. */
+  async function uiFactory(script: string, depth = 1) {
     const root = mkdtempSync(join(tmpdir(), "sf-ui-check-"));
     const repo = join(root, "repo");
     sh(root, "init", "--quiet", "-b", "main", repo);
-    // The UI check fails on any merged commit.
-    writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "x", private: true, scripts: { "check:responsive": "exit 1" } }));
+    writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "x", private: true, scripts: { "check:responsive": script } }));
     sh(repo, "add", "-A");
     sh(repo, ...ident, "commit", "--quiet", "-m", "init");
     sh(repo, "checkout", "--quiet", "--detach");
@@ -757,7 +760,7 @@ describe("merge queue: a failing UI check (real git)", { timeout: 120_000 }, () 
     const project = localProject({ owner: "o", name: "r" });
     const pass = ["sh", "-c", "exit 0"];
     const cfg: FactoryConfig = {
-      ...config, project, local_only: true, merge_queue_depth: 1,
+      ...config, project, local_only: true, merge_queue_depth: depth,
       repo: { ...config.repo, path: repo, install_command: pass, test_command: pass, ui_check: { command: ["npm", "run", "check:responsive"], paths: ["web/", "src/ui/"] } },
     };
     const clock = new FakeClock();
@@ -791,26 +794,93 @@ describe("merge queue: a failing UI check (real git)", { timeout: 120_000 }, () 
     let n = 0;
     const cli = (a: CliAction) =>
       runLocalCli({ store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
+    /** A change to web/ reviewed and waiting for its merge. */
+    const ready = async (title: string) => {
+      const id = (await cli({ action: "create", title, bodyFile: "body.md" })).lines[0] as WorkItemId;
+      await step();
+      await cli({ action: "command", command: "approve", id, text: "" });
+      await step();
+      await step();
+      expect(await store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+      return id;
+    };
+    const merge = (id: WorkItemId) => cli({ action: "command", command: "merge", id, text: "" });
+    return { root, repo, store, controller, step, ready, merge };
+  }
 
-    const id = (await cli({ action: "create", title: "Web change", bodyFile: "body.md" })).lines[0] as WorkItemId;
-    await step();
-    await cli({ action: "command", command: "approve", id, text: "" });
-    await step();
-    await step();
-    expect(await store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
-    const mainBefore = sh(repo, "rev-parse", "main");
+  it("main passes alone: keeps main where it was, removes the entry, names check:responsive in the thread and sends the item back with the tail", async () => {
+    // The UI check fails only on a commit with the change's web/app.css: `main` alone passes it.
+    const f = await uiFactory("test ! -e web/app.css || { echo web/app.css breaks the layout; exit 1; }");
+    const id = await f.ready("Web change");
+    const mainBefore = sh(f.repo, "rev-parse", "main");
 
-    await cli({ action: "command", command: "merge", id, text: "" });
-    await step();
+    await f.merge(id);
+    await f.step();
 
-    expect(sh(repo, "rev-parse", "main")).toBe(mainBefore);
-    expect(await store.getWorkItem(id)).toMatchObject({ stage: "RUNNING", loop_count: 1, merge_sha: null });
-    const queue = await controller.unit("merge-queue");
+    expect(sh(f.repo, "rev-parse", "main")).toBe(mainBefore);
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "RUNNING", loop_count: 1, merge_sha: null });
+    const queue = await f.controller.unit("merge-queue");
     expect((await queue.entries(id)).map((e) => e.state)).toEqual(["removed"]);
-    const check = (await store.listRuns(id)).find((r) => r.kind === "merge-check")!;
-    expect(check.outcome).toMatchObject({ status: "succeeded", data: { result: "red", command: "npm run check:responsive" } });
-    const refused = (await store.listItemMessages(id)).filter((m) => m.marker.startsWith("<!-- factory:refused:")).map((m) => m.body);
+    const check = (await f.store.listRuns(id)).find((r) => r.kind === "merge-check")!;
+    expect(check.outcome).toMatchObject({ status: "succeeded", data: { result: "red", why: "checks", command: "npm run check:responsive" } });
+    const failed = (await f.store.listStateChanges(id)).find((c) => c.reason === "merge_check_failed");
+    expect(failed?.detail).toMatchObject({ command: "npm run check:responsive", output_tail: expect.stringContaining("web/app.css breaks the layout") });
+    const refused = (await f.store.listItemMessages(id)).filter((m) => m.marker.startsWith("<!-- factory:refused:")).map((m) => m.body);
     expect(refused.join("\n")).toContain("`npm run check:responsive`");
     expect(refused.join("\n")).toContain("did not move and the change left the merge queue");
+    expect((await f.store.listAlerts({ limit: 10 })).some((a) => a.pattern === "red_main")).toBe(false);
+  });
+
+  it("main fails alone: the queued changes stay queued with no loop, one red_main alert and one fix item for the base sha, and no check again until main moves", async () => {
+    const f = await uiFactory("echo main is broken; exit 1", 2);
+    const first = await f.ready("Web change one");
+    const second = await f.ready("Web change two");
+    const main = sh(f.repo, "rev-parse", "main");
+
+    await f.merge(first);
+    await f.merge(second);
+    await f.step();
+
+    const queue = await f.controller.unit("merge-queue");
+    for (const id of [first, second]) {
+      expect(sh(f.repo, "rev-parse", "main")).toBe(main);
+      expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", loop_count: 0, merge_sha: null });
+      expect((await queue.entries(id)).map((e) => e.state)).toEqual(["queued"]);
+      expect((await f.store.listStateChanges(id)).map((c) => c.reason)).not.toContain("merge_check_failed");
+      const check = (await f.store.listRuns(id)).find((r) => r.kind === "merge-check")!;
+      expect(check.outcome).toMatchObject({
+        status: "succeeded", data: { result: "red", why: "base_red", command: "npm run check:responsive", base_sha: main, output_tail: expect.stringContaining("main is broken") },
+      });
+    }
+    // Both changes failed on the same base: one alert and one fix item, keyed on its sha.
+    const alerts = async () => (await f.store.listAlerts({ limit: 50 })).filter((a) => a.pattern === "red_main");
+    expect((await alerts()).map((a) => a.pattern_key)).toEqual([`red_main:${main}`]);
+    const fixes = async () => (await f.store.db.all("SELECT intent_key FROM outbound_actions WHERE action = 'file_fix_item'")).map((r) => r.intent_key);
+    expect(await fixes()).toEqual([`file_fix_item:red_main:${main}`]);
+    await f.controller.tickOutbox();
+    const filedId = `local-filed-${createHash("sha256").update(`<!-- factory:red-main:${main} -->`).digest("hex").slice(0, 16)}`;
+    const filed = await f.store.getWorkItemBySource("local", filedId);
+    expect(filed).toMatchObject({ requester_id: "system:controller" });
+    expect(filed!.title).toContain(main.slice(0, 12));
+
+    // Held while main is unchanged: more ticks run no check and store nothing more.
+    const checks = async () => (await Promise.all([first, second].map((id) => f.store.listRuns(id)))).flat().filter((r) => r.kind === "merge-check").length;
+    const before = await checks();
+    await queue.queueStep();
+    await f.step();
+    await queue.queueStep();
+    expect(await checks()).toBe(before);
+    expect(await alerts()).toHaveLength(1);
+    expect(await fixes()).toHaveLength(1);
+    expect((await queue.entries(first)).map((e) => e.state)).toEqual(["queued"]);
+
+    // `main` moves: the head entry is checked again.
+    sh(f.repo, "checkout", "--quiet", "main");
+    writeFileSync(join(f.repo, "fix.txt"), "a fix\n");
+    sh(f.repo, "add", "-A");
+    sh(f.repo, ...ident, "commit", "--quiet", "-m", "a fix");
+    sh(f.repo, "checkout", "--quiet", "--detach");
+    await queue.queueStep();
+    expect(await checks()).toBeGreaterThan(before);
   });
 });

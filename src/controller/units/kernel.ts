@@ -89,6 +89,8 @@ export type ControllerWrite =
    * mode is manual; while it is still auto (the first stop's settings write failed) it sets manual.
    */
   | { kind: "stop_auto"; alert: Parameters<Store["recordAlert"]>[0]; dedupe_ms: number; project: string; level: string; actor: string; mode_change: number | null }
+  /** An alert (e.g. `red_main`, design 03-risk), stored unless its pattern key alerted within `dedupe_ms`. */
+  | { kind: "alert"; alert: Parameters<Store["recordAlert"]>[0]; dedupe_ms: number }
   /**
    * Runs whose lease expired, requeued after the retry backoff or failed at max_attempts (design §5 Restarts);
    * `then` decides the writes that follow from what expired (the reaper's log lines).
@@ -229,6 +231,7 @@ export class Kernel {
       else if (w.kind === "link_delivery") await store.linkDelivery(w.seq);
       else if (w.kind === "cli_mirrored") await store.markCliCommandMirrored(w.key);
       else if (w.kind === "stop_auto") await this.stopAuto(w);
+      else if (w.kind === "alert") await store.recordAlert(w.alert, w.dedupe_ms);
       else if (w.kind === "app_request_handled") await store.markAppCommandRequest(w.seq, w.refusal);
       else if (w.kind === "standing_rule") await store.putStandingRule(w.rule);
       else if (w.kind === "standing_proposal") await store.recordStandingProposal(w.proposal);
@@ -255,6 +258,11 @@ export class Kernel {
   /** `/link <code>`: the code's one conditional redeem (used once, counted on a failure), committed here. */
   redeemLinkCode(...a: Parameters<Store["redeemLinkCode"]>): ReturnType<Store["redeemLinkCode"]> {
     return this.d.store.redeemLinkCode(...a);
+  }
+
+  /** The first configured source, in `plugins.source` order, that can file an item (`fileIssue`); null when none can. */
+  filer(): SourceType | null {
+    return this.sources.find((s) => typeof s.fileIssue === "function")?.type ?? null;
   }
 
   /** Whether this process runs an adapter of `type` (a synced source's own command is applied only there). */

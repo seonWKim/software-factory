@@ -5,6 +5,7 @@
 import type { SourceRef } from "../../core/types.js";
 import { GIT_TARGET, TACIT_TARGET, type ActionRow } from "../intents.js";
 import { deliverGit, gitAccepts } from "./local-git.js";
+import type { SourceAdapter } from "../../interfaces/source-adapter.js";
 import { act, sourceNotice, type Delivery, type DeliveryTarget, type TargetDeps } from "./target.js";
 
 const GITHUB = "github_issue";
@@ -15,9 +16,15 @@ function typeOf(d: Delivery): string {
   return d.kind === "comment" ? d.source_type : d.row.source_type;
 }
 
-/** A split's phase filed under its parent (RFC 0015 M7). */
+/** A split's phase filed under its parent (RFC 0015 M7), or a red base's fix item (design 03-risk). */
 function filing(d: Delivery): boolean {
-  return d.kind === "action" && d.row.action === "file_sub_issue";
+  return d.kind === "action" && (d.row.action === "file_sub_issue" || d.row.action === "file_fix_item");
+}
+
+/** Whether `a` files what `d` asks: a sub-issue (`fileSubIssue`) or a standalone fix item (`fileIssue`). */
+function files(a: SourceAdapter | null, d: Delivery): boolean {
+  if (a === null || d.kind !== "action") return false;
+  return (d.row.action === "file_fix_item" ? a.fileIssue : a.fileSubIssue) !== undefined;
 }
 
 /** An owner notice for an adapter in `notify_channels`: only the notify target takes it. */
@@ -93,9 +100,10 @@ export function buildTargets(t: TargetDeps): DeliveryTarget[] {
       },
     },
     {
-      // A split's phase filed as a sub-issue of its parent; the source looks for its marker first (RFC 0015 M7).
+      // A split's phase filed as a sub-issue of its parent, or a red base's fix item; the source looks for its marker
+      // first (RFC 0015 M7).
       name: "github-issue",
-      accepts: (d) => filing(d) && typeOf(d) === GITHUB && adapter(GITHUB)?.fileSubIssue !== undefined,
+      accepts: (d) => filing(d) && typeOf(d) === GITHUB && files(adapter(GITHUB), d),
       deliver: (d) => {
         if (d.kind !== "action") throw new Error("github-issue delivers filings only");
         return act(adapter(GITHUB)!, d.row);
@@ -132,8 +140,8 @@ export function buildTargets(t: TargetDeps): DeliveryTarget[] {
       deliver: (d) => (d.kind === "comment" ? adapter(SLACK)!.postComment(d.target, d.body, d.marker) : act(adapter(SLACK)!, d.row)),
     },
     {
-      // A local item's surface is the store itself: nothing to write, but a split's phase is filed through the local
-      // source, which derives its ref (no network call). A merge queue landing and its base push are the factory
+      // A local item's surface is the store itself: nothing to write, but a split's phase and a red base's fix item
+      // are filed through the local source (no network call). A merge queue landing and its base push are the factory
       // repo's (RFC 0015 M8), through the git the runtime gave this process.
       name: "local",
       accepts: (d) =>
