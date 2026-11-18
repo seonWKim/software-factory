@@ -60,6 +60,8 @@ interface Opts {
   config?: Partial<FactoryConfig>;
   /** The supervisor's restart list the alarm step reads. */
   restarts?: () => Promise<readonly ChildRestart[]>;
+  /** `repo.ui_check`: run at merge on a change to its paths, and on the new base tip after an automatic merge. */
+  ui_check?: FactoryConfig["repo"]["ui_check"];
 }
 
 async function autoFactory(opts: Opts = {}) {
@@ -76,7 +78,7 @@ async function autoFactory(opts: Opts = {}) {
     ...config,
     project,
     local_only: true,
-    repo: { ...config.repo, path: repo, install_command: OK, test_command: opts.test_command ?? OK },
+    repo: { ...config.repo, path: repo, install_command: OK, test_command: opts.test_command ?? OK, ...(opts.ui_check ? { ui_check: opts.ui_check } : {}) },
     ...opts.config,
   };
   const clock = new FakeClock();
@@ -383,6 +385,39 @@ describe("auto mode: stop conditions", { timeout: 60_000 }, () => {
     const next = await f.create();
     await f.step();
     expect(await f.store.getWorkItem(next)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
+  });
+
+  it("red main from the UI check: after an auto merge it runs on the new base tip; a failure raises one red_main alert on that tip, files its fix item and stops auto mode", async () => {
+    // The change touches no UI path, so its merge check runs no UI check; the base tip's check after the merge does.
+    const f = await autoFactory({ ui_check: { command: ["sh", "-c", "echo layout broken; exit 1"], paths: ["web/"] } });
+    await f.setting("auto_merge_max_tier", 3);
+    await f.mode("auto");
+    const first = await f.create();
+    await f.step();
+    await f.approveRun(first);
+    expect(await f.store.getWorkItem(first)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
+    await stopped(f, "red_main");
+    const tip = git(f.repo, "rev-parse", "main");
+    const red = (await f.store.listAlerts({ limit: 10 })).filter((a) => a.pattern === "red_main");
+    expect(red.map((a) => a.pattern_key)).toEqual([`red_main:${tip}`]);
+    expect(red[0]!.detail).toContain("`sh -c echo layout broken; exit 1` exited 1 on the new tip of `main`");
+    const fixes = await f.store.db.all("SELECT intent_key FROM outbound_actions WHERE action = 'file_fix_item'");
+    expect(fixes.map((r) => r.intent_key)).toEqual([`file_fix_item:red_main:${tip}`]);
+  });
+
+  it("red main at the merge check in auto mode: the change stays queued, one red_main alert is stored and auto mode stops", async () => {
+    const f = await autoFactory({ spec: { allowed_paths: ["web/"], files_to_change: ["web/app.css"] }, ui_check: { command: ["sh", "-c", "exit 1"], paths: ["web/"] } });
+    await f.setting("auto_merge_max_tier", 3);
+    await f.mode("auto");
+    const main = git(f.repo, "rev-parse", "main");
+    const id = await f.create();
+    await f.step();
+    await f.approveRun(id);
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", loop_count: 0, merge_sha: null });
+    expect(git(f.repo, "rev-parse", "main")).toBe(main);
+    expect((await (await f.controller.unit("merge-queue")).entries(id)).map((e) => e.state)).toEqual(["queued"]);
+    expect((await f.store.listAlerts({ limit: 10 })).filter((a) => a.pattern === "red_main").map((a) => a.pattern_key)).toEqual([`red_main:${main}`]);
+    await stopped(f, "red_main");
   });
 
   it("a burst of agent-run failures leaves the mode auto: the alarm is open and the failing item is held", async () => {

@@ -99,7 +99,7 @@ import type {
   WorkerProcess,
   WorkerProcessReport,
 } from "../../../interfaces/factory-store.js";
-import { LINK_CODE_MAX_FAILURES, LINK_CODE_TTL_MS, TABLE_PAGE_DEFAULT, TABLE_PAGE_MAX } from "../../../interfaces/factory-store.js";
+import { CAPPED_KINDS, LINK_CODE_MAX_FAILURES, LINK_CODE_TTL_MS, SHORT_KINDS, TABLE_PAGE_DEFAULT, TABLE_PAGE_MAX } from "../../../interfaces/factory-store.js";
 import { type ChildRestart, migrationPendingError } from "../../../interfaces/updater.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
 import type { Row, SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
@@ -111,7 +111,7 @@ import {
 } from "./rows.js";
 import * as filed from "./filed-patterns.js";
 import * as settingsSql from "./settings.js";
-import { placeholders, pruneDeliveredOutbox, pruneHandledCommands, pruneHistory } from "./retention.js";
+import { PAUSE_END_INSERT, PAUSE_INSERT_ROW, pauseAt, placeholders, pruneDeliveredOutbox, pruneHandledCommands, pruneHistory } from "./retention.js";
 import * as signals from "./signals.js";
 import * as evaluations from "./merge-evaluations.js";
 import * as proposals from "./command-proposals.js";
@@ -530,13 +530,9 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
       // implement-type claims only, and so does a failed push_access or pr_api preflight check; a GitHub rate
       // limit pauses implement-type and review claims (design §5 Restarts). All are rows of claim_pauses, read
       // under the lock.
-      const pauses = new Map(
-        (
-          await tx.all("SELECT name, resume_at FROM worker_claim_pauses WHERE name IN (?, ?, ?, ?, ?, ?, ?, ?)", [
-            RATE_LIMIT_PAUSE, FORGE_AUTH_PAUSE, PREFLIGHT_ACCESS_PAUSE, GITHUB_RATE_LIMIT, MODEL_STALL, MODEL_ANSWERED, NETWORK, NETWORK_ANSWERED,
-          ])
-        ).map((r) => [r.name as string, r.resume_at as string]),
-      );
+      const pauseNames = [RATE_LIMIT_PAUSE, FORGE_AUTH_PAUSE, PREFLIGHT_ACCESS_PAUSE, GITHUB_RATE_LIMIT, MODEL_STALL, MODEL_ANSWERED, NETWORK, NETWORK_ANSWERED];
+      const pauseRows = await tx.all(`SELECT name, resume_at FROM worker_claim_pauses WHERE name IN (${placeholders(pauseNames.length)})`, pauseNames);
+      const pauses = new Map(pauseRows.map((r) => [r.name as string, r.resume_at as string]));
       const active = (name: ClaimPauseName) => (pauses.get(name) ?? "") > now;
       if (active(RATE_LIMIT_PAUSE)) return null;
       // A stall or a dead network pauses every claim until a probe passes, not until a time (design §5 Restarts).
@@ -550,11 +546,8 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
 
       // Items with an implement-type run in progress (architecture §4, one branch writer per item). Items whose
       // allowed_paths overlap do run side by side; their conflicts are resolved at merge.
-      const busy = new Set(
-        (
-          await tx.all(`SELECT work_item_id FROM worker_runs WHERE status = 'running' AND kind IN (${writeKinds})`, [...IMPLEMENT_KINDS])
-        ).map((r) => r.work_item_id as string),
-      );
+      const writing = await tx.all(`SELECT work_item_id FROM worker_runs WHERE status = 'running' AND kind IN (${writeKinds})`, [...IMPLEMENT_KINDS]);
+      const busy = new Set(writing.map((r) => r.work_item_id as string));
       // Open sessions (design §5, 2026-11-01): an implement-type run waits while its item has one or overlaps one.
       const sessions = (await this.runningPaths(tx, [INTERACTIVE])).map((r) => ({ id: r.work_item_id as string, paths: parseList(r.allowed_paths) }));
       const overlapsSession = async (itemId: string): Promise<boolean> => {
@@ -563,8 +556,8 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
         return it !== null && sessions.some((x) => pathsOverlap(it.allowed_paths, x.paths).length > 0);
       };
 
-      // Queued runs by kind rank (runs that lead to a human decision first), then created_at, then insertion
-      // order (design §5 Parallel workers). not_before: a retry waits out its backoff, whichever worker looks; a held item's (05-alarms) waits for its release.
+      // Queued runs by kind rank (CLAIM_ORDER: merge check and resolve first, implement last), then created_at, then insertion
+      // order (design §5 Coordination). not_before: a retry waits out its backoff, whichever worker looks; a held item's (05-alarms) waits for its release.
       const rank = CLAIM_ORDER.map((_, i) => `WHEN ? THEN ${i}`).join(" ");
       const queued = await tx.all(
         `SELECT r.id, r.kind, r.work_item_id FROM worker_runs r
@@ -575,10 +568,10 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
       );
       // Coordination (design §5, 2026-11-03): read once, only when an implement run is a candidate.
       const settings = input.coordination ?? DEFAULT_COORDINATION;
-      const coord = queued.some((q) => q.kind === "implement")
-        ? await this.coordinationContext(tx, queued, busy, settings)
-        : null;
+      const coord = queued.some((q) => q.kind === "implement") ? await this.coordinationContext(tx, queued, busy, settings) : null;
+      const fits = input.workers ? await this.slotCheck(tx, input.workers) : () => true; // the cap: implement and resolve wait at `workers`, short runs get one slot beyond
       for (const next of queued) {
+        if (!fits(next.kind as RunKind)) continue;
         // An implement-type run waits while its own item has one running, or while the forge refuses the
         // credentials; it stays queued. Triage and review never wait.
         const writer = (IMPLEMENT_KINDS as readonly string[]).includes(next.kind as string);
@@ -608,6 +601,14 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
       }
       return null;
     });
+  }
+
+  /** The slot cap (design §5, 2026-11-18): which kinds fit, by the running runs of this process's loops read under the claim lock. */
+  private async slotCheck(tx: SqlExecutor, { count, owners }: NonNullable<ClaimInput["workers"]>): Promise<(kind: RunKind) => boolean> {
+    const sql = `SELECT kind FROM worker_runs WHERE status = 'running' AND lease_owner IN (${placeholders(owners.length)})`;
+    const running = (await tx.all(sql, [...owners])).map((r) => r.kind as RunKind);
+    const beyond = count > 0 && running.length === count && running.every((k) => CAPPED_KINDS.includes(k));
+    return (kind) => running.length < count || (beyond && SHORT_KINDS.includes(kind));
   }
 
   /**
@@ -750,10 +751,7 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
     }
   }
 
-  async pauseClaims(
-    resume_at: Timestamp,
-    name: ClaimPauseName = RATE_LIMIT_PAUSE,
-  ): Promise<{ extended: boolean; started?: boolean; resume_at: Timestamp }> {
+  async pauseClaims(resume_at: Timestamp, name: ClaimPauseName = RATE_LIMIT_PAUSE): Promise<{ extended: boolean; started?: boolean; resume_at: Timestamp }> {
     // `started` for every name but rate_limit: the rate-limit pause's result stays exactly as it was (out of this change).
     const result = (extended: boolean, started: boolean, at: Timestamp) =>
       name === RATE_LIMIT_PAUSE ? { extended, resume_at: at } : { extended, started, resume_at: at };
@@ -781,10 +779,9 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
   }
 
   /**
-   * A probe pause, `model_stall` or `network` (design §5 Restarts), under the claim lock so a claim, a failure and a
-   * probe never interleave. It is in effect while its row's time (the next probe) is after its answered row, whatever
-   * the clock says. Not in effect: this call starts one (`started`) and writes when it began (its since row). In
-   * effect: only a later probe time moves it.
+   * A probe pause, `model_stall` or `network` (design §5 Restarts), under the claim lock so a claim, a failure and a probe never interleave.
+   * It is in effect while its row's time (the next probe) is after its answered row, whatever the clock says. Not in effect: this call
+   * starts one (`started`) and writes when it began (its since row). In effect: only a later probe time moves it.
    */
   private async pauseForProbe(pause: ProbePause, resume_at: Timestamp): Promise<{ extended: boolean; started: boolean; resume_at: Timestamp }> {
     const { since: sinceRow } = PROBE_PAUSES[pause];
@@ -852,8 +849,8 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
   }
 
   /**
-   * Ends a probe pause as a passing probe does, under the claim lock: its row and its answered row both move to the
-   * earlier of the probe time and now. Never a future answer, so a failure right after starts a pause.
+   * Ends a probe pause as a passing probe does, under the claim lock: its row and its answered row both move to the earlier of the probe
+   * time and now. Never a future answer, so a failure right after starts a pause. The pause history gets it, from its since row to now (design §7).
    */
   private async endProbe(pause: ProbePause): Promise<{ ended: boolean }> {
     return this.db.transaction(async (tx) => {
@@ -862,6 +859,7 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
       const now = this.now();
       const at = current < now ? current : now;
       await this.setPauseRows(tx, [[pause, at], [PROBE_PAUSES[pause].answered, at]]);
+      await this.insertOnce(tx, PAUSE_END_INSERT, [pause, now, PROBE_PAUSES[pause].since]);
       return { ended: true };
     });
   }
@@ -1660,6 +1658,8 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
   pruneDeliveredOutbox(older_than_ms: number, limit: number) { return pruneDeliveredOutbox(this.db, this.after(-older_than_ms), limit); } // ./retention.ts
   pruneHandledCommands(older_than_ms: number, limit: number) { return pruneHandledCommands(this.db, this.after(-older_than_ms), limit); }
   pruneHistory(older_than_ms: number, limit: number) { return pruneHistory(this.db, this.after(-older_than_ms), this.now(), limit); }
+  recordEndedPause(p: Parameters<FactoryStore["recordEndedPause"]>[0]) { return this.insertOnce(this.db, PAUSE_INSERT_ROW, [p.name, p.started_at, p.ended_at]); } // ./retention.ts
+  pauseAt(at: Timestamp) { return pauseAt(this.db, at); }
 
   // Forge budget (design 05-sources, call budget)
 
@@ -2722,11 +2722,10 @@ function rowToWorkerPause(r: Row): WorkerPause {
 }
 
 /**
- * claimRun's kind rank (design §5 Parallel workers): runs that lead to a human decision first (review takes a PR
- * toward ready-to-merge, triage gives the owner a spec), then the branch writers, resolve last. Within a kind,
- * created_at, then insertion order.
+ * claimRun's kind rank (design §5 Coordination, 2026-11-18): merge check, then resolve, to move changes to merge; then review and
+ * triage; then the branch writers, implement last; improve after all. Within a kind, created_at, then insertion order.
  */
-const CLAIM_ORDER: readonly RunKind[] = ["review", "triage", "update", "implement", "resolve"];
+const CLAIM_ORDER: readonly RunKind[] = ["merge-check", "resolve", "review", "triage", "update", "implement"];
 
 /** A JSON string array column (allowed_paths). */
 function parseList(value: unknown): string[] {

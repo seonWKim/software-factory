@@ -18,7 +18,7 @@ import { AGENT_STALLED, FORGE_AUTH, GITHUB_RATE_LIMIT, GITHUB_RATE_LIMITED, gith
 import { incompleteLabel, lastPrNotes, prBody } from "../core/pr-body.js";
 import type { MergeIO } from "../core/mechanical.js";
 import { Read, type ToolSpec } from "../core/tools/index.js";
-import { type Run, type RunOutcome, type RunUsage, type Timestamp, type WorkItem, type WorkerId, usageTokens } from "../core/types.js";
+import { type Run, type RunKind, type RunOutcome, type RunUsage, type Timestamp, type WorkItem, type WorkerId, usageTokens } from "../core/types.js";
 import { type AgentRunResult, type AgentRunSpec, type PackCheckPoint, type PackMcpServer, type PackChecks, type PackGate, type PackRefusal, PROVIDER_SETUP, SESSION_ROLES, TOOLS_NOT_EXPOSED, toolsNotExposedMessage } from "../interfaces/agent-runner.js";
 import type { KeepAwake } from "../interfaces/keep-awake.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
@@ -46,6 +46,7 @@ export class Worker {
   lastSleep: { due: number; woke: number } | null = null;
 
   runModels: { table: ModelTable; names?: ModelNames } | undefined;
+  /** The kind of the run this loop holds, from claim to release (the pool's slot beyond `workers`); null while idle. */ holding: RunKind | null = null;
 
   /** The pause request and agent sessions of the run being executed. Scratch for one execute() call only. */
   readonly scratch = new WeakMap<Run, RunScratch>();
@@ -85,9 +86,7 @@ export class Worker {
     return this.d.host ?? this.d.id.split(":")[0]!;
   }
 
-  /**
-   * The claim loop: each tick claims and executes runs until none is left, then waits the live tick_ms. A tick after a wait checks for a host sleep first.
-   */
+  /** The claim loop: each tick claims and executes runs until none is left, then waits the live tick_ms. A tick after a wait checks for a host sleep first. */
   async run(signal: AbortSignal): Promise<void> {
     await this.every("claim", () => this.live.config().tick_ms, signal, async (t) => {
       if (t.due) await this.checkWake(Date.parse(t.due), Date.parse(t.now), null);
@@ -173,18 +172,18 @@ export class Worker {
     if (this.d.active && !this.d.active()) return false;
     this.cfg = this.live.config();
     if (this.d.settings) this.runModels = this.live.models();
-    // The coordination threshold and weights (design §5, 2026-11-03); absent from the config: the defaults.
+    // Coordination weights (design §5, 2026-11-03; absent: the defaults) and the pool's slot cap (design §5 2026-11-18; a lone Worker: none).
     const run = await this.d.store.claimRun({
-      worker_id: this.d.id,
-      kinds: KINDS,
-      lease_ms: this.cfg.lease_ms,
-      ...(this.cfg.coordination ? { coordination: this.cfg.coordination } : {}),
+      worker_id: this.d.id, kinds: KINDS, lease_ms: this.cfg.lease_ms, ...(this.cfg.coordination ? { coordination: this.cfg.coordination } : {}),
+      ...(this.plugins.peers ? { workers: { count: this.live.workers(), owners: this.plugins.peers } } : {}),
     });
     if (!run?.lease) return false;
+    this.holding = run.kind;
     await this.d.awake.hold().catch((err: unknown) => this.awakeFailed("hold", err));
     try {
       await this.execute(run, run.lease.token);
     } finally {
+      this.holding = null;
       await this.d.awake.release().catch((err: unknown) => this.awakeFailed("release", err));
     }
     return true;
@@ -1035,6 +1034,7 @@ export interface WorkerPlugins {
   hooks?: readonly HookDescriptor[];
   pack_checks?: PackChecks;
   /** Refuses each imported MCP server a run is granted as `not_started` (design 11-plugin-import, owner answer 1); absent: none. */ imported_mcp_refusals?: (servers: readonly PackMcpServer[]) => Promise<readonly PackGrantRefusal[]>;
+  /** Every loop id of this Worker's pool, its own included: the claim caps their running runs (ClaimInput.workers); absent: no cap. */ peers?: readonly WorkerId[];
 }
 
 /** A run an enabled `before_run` hook or a pack check refused (a veto, a timeout or an error): a task failure, not retried as infra. */

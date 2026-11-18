@@ -12,6 +12,7 @@ import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { ChildRestart } from "../src/interfaces/updater.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { alarmCommand, alarmText, alarmsFor, openAlarms } from "../src/ui/alarms.js";
 import { FakeAuth, FakeSource, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
@@ -499,5 +500,23 @@ describe("alarms: a run refused by the pack grant check", () => {
     await store.transition({ id: held.id, expected_version: held.version, actor: system, reason: "retry_requested", patch: { blocked_on: "none", blocked_reason: null } });
     await c.tickAlarms();
     expect(await store.getWorkItem(run.work_item_id)).toMatchObject({ blocked_on: "none" });
+  });
+});
+
+// Red main (design 03-risk): the base fails a check on its own. The controller stores one alert per failing base sha in
+// any mode; the status views name it and its fix hint names the sha. It holds up no item's runs.
+describe("alarms: red main", () => {
+  it("alarmText shows the red_main alert and the fix hint names the failing base sha", async () => {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    const r = await store.recordAlert({ pattern: "red_main", pattern_key: `red_main:${sha}`, error_code: "red_main", count: 1, detail: "`npm run check:responsive` exited 1" }, ALERT_DEDUPE_MS);
+    expect(r.created).toBe(true);
+    const [open] = await openAlarms(store, clock.now());
+    expect(open).toMatchObject({ pattern: "red_main", pattern_key: `red_main:${sha}` });
+    expect(alarmText(open!)).toBe("Alarm: the base branch fails its checks on its own at `0123456789ab`; merge-queue changes wait until it moves");
+    expect(alarmCommand(open!)).toContain(`Fix the base branch at ${sha}`);
+    const { item } = await store.createWorkItem(issue(900), system);
+    expect(alarmsFor([open!], item, [])).toEqual([]);
   });
 });

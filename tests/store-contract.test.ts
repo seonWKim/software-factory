@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { serverDescriptor } from "../src/import/mcp-servers.js";
 import { canonicalJson, descriptionHash } from "../src/packs/pack-entries.store.js";
 import { checkPackGrants } from "../src/packs/pack-grants.js";
-import type { HostSleep, RunId, RunKind, Timestamp, UserId, WorkItemId } from "../src/core/types.js";
+import type { HostSleep, RunId, RunKind, Timestamp, UserId, WorkerId, WorkItemId } from "../src/core/types.js";
 import { projectLabelCursor } from "../src/core/project.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
@@ -1101,6 +1101,56 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       await expect(store.endClaimPause("model_stall_since")).rejects.toThrow(/not a pause/);
       await expect(store.endClaimPause("model_answered")).rejects.toThrow(/not a pause/);
     });
+
+    describe("pause history (design 07-self-improvement)", () => {
+      const at = (iso: string) => iso as Timestamp;
+      const historyRows = async (store: FactoryStore) => (await store.listTableRows({ table: "controller_pause_history", limit: 200 }))!.rows;
+
+      it("pauseAt matches an ended pause from its start, inclusive, to its end, exclusive", async () => {
+        const { store } = await make();
+        const outage = { name: "model_stall" as const, started_at: at("2026-11-16T17:00:00.000Z"), ended_at: at("2026-11-16T19:30:00.000Z") };
+        expect(await store.recordEndedPause(outage)).toBe(true);
+        expect(await store.pauseAt(at("2026-11-16T16:59:59.999Z"))).toBeNull();
+        expect(await store.pauseAt(outage.started_at)).toEqual(outage);
+        expect(await store.pauseAt(at("2026-11-16T19:29:59.999Z"))).toEqual(outage);
+        expect(await store.pauseAt(outage.ended_at)).toBeNull();
+      });
+
+      it("a pause is stored once: a second record of the same pause is a no-op and never overwrites the row", async () => {
+        const { store } = await make();
+        const p = { name: "network" as const, started_at: at("2026-11-16T17:00:00.000Z"), ended_at: at("2026-11-16T17:10:00.000Z") };
+        expect(await store.recordEndedPause(p)).toBe(true);
+        expect(await store.recordEndedPause({ ...p, ended_at: at("2026-11-16T18:00:00.000Z") })).toBe(false);
+        expect(await historyRows(store)).toEqual([expect.objectContaining({ name: "network", started_at: p.started_at, ended_at: p.ended_at })]);
+      });
+
+      it.each(["model_stall", "network"] as const)("ending a %s pause records it once, from its since row to now; while open, pauseAt matches it", async (pause) => {
+        const { store, clock } = await make();
+        const started_at = clock.now().toISOString() as Timestamp;
+        await store.pauseClaims(later(clock, 1_000), pause);
+        clock.advance(5_000);
+        // Still open, past its probe time: a time from its start on matches, with no end yet.
+        expect(await store.pauseAt(started_at)).toEqual({ name: pause, started_at, ended_at: null });
+        expect(await store.pauseAt(at(new Date(Date.parse(started_at) - 1).toISOString()))).toBeNull();
+        expect(await historyRows(store)).toEqual([]);
+        const ended_at = clock.now().toISOString() as Timestamp;
+        expect(await store.endClaimPause(pause)).toEqual({ ended: true });
+        expect(await store.endClaimPause(pause)).toEqual({ ended: false });
+        expect(await historyRows(store)).toEqual([expect.objectContaining({ name: pause, started_at, ended_at })]);
+        expect(await store.pauseAt(started_at)).toEqual({ name: pause, started_at, ended_at });
+        expect(await store.pauseAt(ended_at)).toBeNull();
+      });
+
+      it("the other claim pauses are not pause history", async () => {
+        const { store, clock } = await make();
+        for (const pause of ["rate_limit", "forge_auth", "preflight_access", "github_rate_limit"] as const) {
+          await store.pauseClaims(later(clock, 60_000), pause);
+          expect(await store.pauseAt(clock.now().toISOString() as Timestamp)).toBeNull();
+          await store.endClaimPause(pause);
+        }
+        expect(await historyRows(store)).toEqual([]);
+      });
+    });
   });
 
   describe("run input", () => {
@@ -1700,7 +1750,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
   });
 
   describe("claim order: kind rank, then created_at, then insertion order", () => {
-    const ALL_KINDS: RunKind[] = ["triage", "implement", "review", "update", "resolve"];
+    const ALL_KINDS: RunKind[] = ["triage", "implement", "review", "update", "resolve", "merge-check"];
     const claim = (store: FactoryStore, worker_id = w1) => store.claimRun({ worker_id, kinds: ALL_KINDS, lease_ms: LEASE });
     const enqueue = (store: FactoryStore, n: number, kind: RunKind, not_before?: string) =>
       store.createWorkItem(issue(n), system, { enqueue: { kind, idempotency_key: `${n}:${kind}`, not_before: not_before as never } });
@@ -1717,15 +1767,23 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       ]);
     });
 
-    it("ranks review, triage, update, implement, resolve, whatever their age", async () => {
+    it("a queued merge check, created after an older implement, is claimed first", async () => {
       const { store, clock } = await make();
-      for (const [n, kind] of (["resolve", "implement", "update", "triage", "review"] as RunKind[]).entries()) {
+      await enqueue(store, 1, "implement");
+      clock.advance(1_000);
+      await enqueue(store, 2, "merge-check");
+      expect([(await claim(store))?.kind, (await claim(store))?.kind]).toEqual(["merge-check", "implement"]);
+    });
+
+    it("ranks merge-check, resolve, review, triage, update, implement, whatever their age", async () => {
+      const { store, clock } = await make();
+      for (const [n, kind] of (["implement", "update", "triage", "review", "resolve", "merge-check"] as RunKind[]).entries()) {
         await enqueue(store, n + 1, kind);
         clock.advance(1_000);
       }
       const order: (RunKind | undefined)[] = [];
-      for (let i = 0; i < 5; i++) order.push((await claim(store))?.kind);
-      expect(order).toEqual(["review", "triage", "update", "implement", "resolve"]);
+      for (let i = 0; i < 6; i++) order.push((await claim(store))?.kind);
+      expect(order).toEqual(["merge-check", "resolve", "review", "triage", "update", "implement"]);
     });
 
     it("within one kind, the oldest queued run is claimed first; equal created_at breaks on insertion order", async () => {
@@ -1756,10 +1814,86 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       }
       const order: (string | undefined)[] = [];
       for (let i = 0; i < 5; i++) order.push((await claim(store))?.idempotency_key);
-      expect(order).toEqual(["13:review", "12:triage", "14:update", "10:implement", "11:resolve"]);
+      expect(order).toEqual(["11:resolve", "13:review", "12:triage", "14:update", "10:implement"]);
       expect(await claim(store)).toBeNull();
       const held = (await store.listRunsByStatus(["queued"], 10)).map((r) => r.idempotency_key).sort();
       expect(held).toEqual(["1:implement", "2:update"]);
+    });
+  });
+
+  describe("claim cap: implement and resolve wait at `workers`; short runs take one slot beyond", () => {
+    const ALL_KINDS: RunKind[] = ["triage", "implement", "review", "update", "resolve", "merge-check"];
+    /** One process's loops: p:0 … p:3, so three `workers` and the first loop above them. */
+    const owners = [0, 1, 2, 3].map((n) => `p:${n}` as WorkerId);
+    const claim = (store: FactoryStore, worker_id: WorkerId, workers?: number) =>
+      store.claimRun({ worker_id, kinds: ALL_KINDS, lease_ms: LEASE, ...(workers !== undefined ? { workers: { count: workers, owners } } : {}) });
+    const enqueue = (store: FactoryStore, n: number, kind: RunKind) =>
+      store.createWorkItem(issue(n), system, { enqueue: { kind, idempotency_key: `${n}:${kind}` } });
+    /** Fills the first slots: kinds[i] runs on item i + 1, leased by p:i. */
+    const fill = async (store: FactoryStore, kinds: RunKind[]) => {
+      for (const [i, kind] of kinds.entries()) {
+        await enqueue(store, i + 1, kind);
+        expect((await claim(store, owners[i]!, kinds.length))?.kind).toBe(kind);
+      }
+    };
+
+    it("with workers 3 on three implement runs, a merge check is still claimed and a fourth implement is not", async () => {
+      const { store } = await make();
+      await fill(store, ["implement", "implement", "implement"]);
+      await enqueue(store, 4, "implement");
+      await enqueue(store, 5, "merge-check");
+      expect((await claim(store, owners[3]!, 3))?.idempotency_key).toBe("5:merge-check");
+      expect(await claim(store, owners[3]!, 3)).toBeNull();
+      expect((await store.listRunsByStatus(["queued"], 10)).map((r) => r.idempotency_key)).toEqual(["4:implement"]);
+    });
+
+    it("a queued resolve is not claimed while `workers` implement or resolve runs are running", async () => {
+      const { store } = await make();
+      await fill(store, ["implement", "resolve"]);
+      await enqueue(store, 3, "resolve");
+      expect(await claim(store, owners[2]!, 2)).toBeNull();
+      expect((await store.listRunsByStatus(["queued"], 10)).map((r) => r.idempotency_key)).toEqual(["3:resolve"]);
+    });
+
+    for (const short of ["review", "triage"] as RunKind[]) {
+      it(`with every slot on implement or resolve, a queued ${short} takes one slot beyond; update and implement do not`, async () => {
+        const { store } = await make();
+        await fill(store, ["implement", "resolve"]);
+        await enqueue(store, 3, "update");
+        await enqueue(store, 4, "implement");
+        await enqueue(store, 5, short);
+        expect((await claim(store, owners[2]!, 2))?.kind).toBe(short);
+        // Only one slot beyond `workers`.
+        await enqueue(store, 6, "merge-check");
+        expect(await claim(store, owners[3]!, 2)).toBeNull();
+        const queued = (await store.listRunsByStatus(["queued"], 10)).map((r) => r.idempotency_key).sort();
+        expect(queued).toEqual(["3:update", "4:implement", "6:merge-check"]);
+      });
+    }
+
+    it("a slot holding a short run leaves no slot beyond for another short run", async () => {
+      const { store } = await make();
+      await fill(store, ["implement", "review"]);
+      await enqueue(store, 3, "triage");
+      expect(await claim(store, owners[2]!, 2)).toBeNull();
+    });
+
+    it("counts only this process's lease owners, read from the store", async () => {
+      const { store } = await make();
+      await fill(store, ["implement"]);
+      // Another process's running implement leaves this process's one free slot alone.
+      await enqueue(store, 2, "implement");
+      expect((await claim(store, "q:0" as WorkerId))?.kind).toBe("implement");
+      await enqueue(store, 3, "implement");
+      expect(await claim(store, owners[1]!, 1)).toBeNull();
+      expect((await claim(store, owners[1]!, 2))?.idempotency_key).toBe("3:implement");
+    });
+
+    it("with no worker count, nothing is capped: only the claim order applies", async () => {
+      const { store } = await make();
+      await fill(store, ["implement", "implement", "implement"]);
+      await enqueue(store, 4, "implement");
+      expect((await claim(store, owners[3]!))?.idempotency_key).toBe("4:implement");
     });
   });
 
@@ -1808,6 +1942,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "controller_notices", // owner notices: src/controller/migrations/20261112T0900-controller-notices
       "controller_notice_messages", "controller_notice_questions", // Slack notice records: 20261112T2100-controller-notice-messages
       "controller_projects", "controller_task_projects", // task projects: 20261113T1300-controller-task-projects
+      "controller_pause_history", // ended model-stall and network pauses (design 07-self-improvement): 20261118T1200-controller-pause-history
       "ext_packs_approvals", // approvals of pack entries: src/state/migrations/20261111T1600-state-ext-packs-approvals
       "ext_packs_entries", // pack tool and MCP server entries: src/state/migrations/20261111T1201-state-ext-packs-entries
       "ext_skill_refs", // imported skill references (design 11-plugin-import): src/state/migrations/20261115T1200-state-ext-skill-refs
@@ -2553,7 +2688,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect((await store.pruneHistory(1, 100)).controller_alerts).toBe(1);
     });
 
-    it("state_changes, verdicts and runs are never deleted", async () => {
+    it("state_changes, verdicts, runs and the pause history are never deleted", async () => {
       const { store, clock } = await make();
       const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "o/r#1:triage" } });
       await store.transition({ id: item.id, expected_version: 1, actor: system, reason: "x", patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "9" } });
@@ -2561,7 +2696,8 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
         id: item.id, expected_version: 2, actor: human, verdict: "accept", severity: "none", reason: null, comment_id: "c1", target: "pr", implicit: false, pr_head: null,
       });
       expect(v.ok).toBe(true);
-      const kept = ["controller_state_changes", "controller_verdicts", "worker_runs"];
+      await store.recordEndedPause({ name: "model_stall", started_at: "2026-01-01T00:00:00.000Z" as Timestamp, ended_at: "2026-01-01T01:00:00.000Z" as Timestamp });
+      const kept = ["controller_state_changes", "controller_verdicts", "worker_runs", "controller_pause_history"];
       const counts = async () => Object.fromEntries((await store.listTables()).filter((t) => kept.includes(t.name)).map((t) => [t.name, t.rows]));
       const before = await counts();
       expect(Object.values(before).every((n) => n > 0)).toBe(true);

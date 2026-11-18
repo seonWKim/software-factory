@@ -59,23 +59,25 @@ async function world(start = "2026-03-04T01:00:00.000Z") {
 }
 
 describe("improve: pushbacks as signals", () => {
-  it("two pushbacks on the same pattern produce one improver proposal: one group, one draft, one filed item", async () => {
+  it("three pushbacks on the same pattern produce one improver proposal: one group, one draft, one filed item", async () => {
     const w = await world();
     const a = await w.specced();
     const b = await w.specced();
     const c = await w.specced();
+    const d = await w.specced();
     await w.pushback(a.item, "spec_revision_requested", "Keep the existing CLI flag");
     await w.pushback(b.item, "spec_rejected", "keep the existing   CLI flag");
     await w.pushback(c.item, "spec_revision_requested", "split the test");
+    await w.pushback(d.item, "spec_revision_requested", "KEEP the existing CLI flag");
 
     const { report, llm } = await w.improve();
     const pushbackGroups = report.groups.filter((g) => g.error_code === PUSHBACK);
     expect(pushbackGroups).toEqual([
-      expect.objectContaining({ detail: "keep the existing cli flag", run_ids: [a.run.id, b.run.id], work_item_ids: [a.item.id, b.item.id] }),
+      expect.objectContaining({ detail: "keep the existing cli flag", run_ids: [a.run.id, b.run.id, d.run.id], work_item_ids: [a.item.id, b.item.id, d.item.id] }),
     ]);
     expect(pushbackGroups[0]!.draft).toMatchObject({ status: "drafted", cause: "specs drop CLI flags" });
     expect(llm.requests).toHaveLength(1);
-    expect(llm.requests[0]!.messages[0]!.content).toContain("Runs the owner pushed back on with these words: 2");
+    expect(llm.requests[0]!.messages[0]!.content).toContain("Runs the owner pushed back on with these words: 3");
     // A one-off pushback stays a one-run pattern: no proposal.
     expect(report.patterns).toEqual([expect.objectContaining({ error_code: PUSHBACK, detail: "split the test", run_ids: [c.run.id] })]);
 

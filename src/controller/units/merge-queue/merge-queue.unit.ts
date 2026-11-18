@@ -5,8 +5,10 @@
 // are checked at once (speculative depth; solo default 1). The head lands once its check passed, through the
 // `before_merge` hooks; red removes the entry with the reason and rebuilds the entries behind it. A red for failing
 // checks also sends the item back to an implement run as a loop (counted by loop_count, limited by max_loops); any
-// other red leaves it at merge_pending. A check that does not come back in time is ended by the delayed
-// MergeCheckTimedOut message the unit emits when it starts it.
+// other red leaves it at merge_pending. A red base (`base_red`: the UI check fails on the base alone, design 03-risk)
+// blames no change: the entry stays queued, held until the base moves, and red main is raised once per base sha. A
+// check that does not come back in time is ended by the delayed MergeCheckTimedOut message the unit emits when it
+// starts it.
 //
 // Crash safety: every write is keyed or conditional, so each step may run again. A checking entry whose run is
 // missing (the process died before it was queued) gets it again. The landing is an outbound delivery keyed by the
@@ -106,9 +108,14 @@ export class MergeQueueUnit {
     const head = live[0];
     if (q.state === "merging" || head?.state === "passed" || head?.state === "merging") return this.land(q, head);
     const window = live.slice(0, this.c.k.cfg.merge_queue_depth);
+    // An entry held on a red base, and every queued entry behind it, waits until the base moves (design 03-risk).
+    let held = false;
+    let tip: Promise<string | null> | null = null;
     for (const [i, e] of window.entries()) {
       const upTo = window.slice(0, i + 1).map((x) => items.get(x.entry_id));
       if (!upTo.every((it) => it !== undefined)) continue;
+      if (e.state === "queued" && e.base_sha !== null && (await (tip ??= this.c.unit("local-merge").baseTip())) === e.base_sha) held = true;
+      if (e.state === "queued" && held) continue;
       if (e.state === "queued") await this.check(e, upTo as WorkItem[]);
       else if (e.state === "checking" && e.run_key !== null) await this.ensureRun(e.entry_id, e.run_key, upTo as WorkItem[]);
     }
@@ -183,6 +190,7 @@ export class MergeQueueUnit {
     if (d.result !== "green") {
       const base = this.c.k.cfg.repo.base_branch;
       if (d.why === "checks") return this.checksRed(e, run, d);
+      if (d.why === "base_red") return this.baseRed(e, d);
       const why = `the merged commit conflicts in ${(Array.isArray(d.conflicts) ? d.conflicts : []).map((f) => `\`${String(f)}\``).join(", ")}`;
       return this.red(e, `${why}, so \`${base}\` did not move and the change left the merge queue; fix it on the branch and run the merge again`);
     }
@@ -321,7 +329,7 @@ export class MergeQueueUnit {
    * A red check for failing checks on the merged result: the item goes back to an implement run as a loop
    * (`merge_check_failed`: stage RUNNING, loop_count + 1, the run keyed by the new loop), or at `max_loops` blocks on
    * a human; then the entry leaves with the reason. Both name the failing tests, or with none the command and its exit
-   * text. The item first, conditional on it still waiting for the merge: a crash after it leaves an entry whose item
+   * text; the state change keeps the output tail. The item first, conditional on it still waiting for the merge: a crash after it leaves an entry whose item
    * no longer waits, which the next step removes; a repeat changes nothing.
    */
   private async checksRed(e: MergeQueueEntry, run: Run, d: Record<string, unknown>): Promise<void> {
@@ -330,6 +338,8 @@ export class MergeQueueUnit {
     const tests = (Array.isArray(d.failing_tests) ? d.failing_tests : []).map(String);
     const command = String(d.command);
     const how = String(d.how);
+    // The tail as the run kept it (egress-scanned there; null when flagged).
+    const tail = typeof d.output_tail === "string" ? d.output_tail : null;
     const what = tests.length > 0
       ? `the merged commit failed its checks; failing tests: ${tests.map((t) => `\`${t.replace(/`/g, "'")}\``).join(", ")}`
       : `\`${command}\` ${how} on the merged commit`;
@@ -337,7 +347,7 @@ export class MergeQueueUnit {
     await this.c.unit("transitions").decide(e.work_item_id as WorkItemId, (it) => {
       if (!this.c.unit("commands").merge.waits(it)) return null;
       const loop = it.loop_count + 1;
-      const detail = { entry_id: e.entry_id, run_id: run.id, command, how, failing_tests: JSON.stringify(tests) };
+      const detail = { entry_id: e.entry_id, run_id: run.id, command, how, failing_tests: JSON.stringify(tests), output_tail: tail };
       if (loop >= limit) {
         next = `that makes ${loop} loops (limit \`max_loops\` = ${limit}), so the factory started no implement run; a human needs to decide`;
         return { patch: { blocked_on: "human", blocked_reason: "max_loops" }, actor: SYSTEM, reason: "max_loops", detail };
@@ -352,6 +362,32 @@ export class MergeQueueUnit {
       };
     });
     return this.red(e, `${what}, so \`${base}\` did not move and the change left the merge queue; ${next}`);
+  }
+
+  /**
+   * A red base (`base_red`, design 03-risk): the UI check failed on the base alone too, so the change is not to blame.
+   * The entry goes back to queued, held on the base tip the controller reads now (else the checked base): no loop,
+   * no removal, and it is not checked again until the base moves (`advance`). The entries checked with it ahead are
+   * rebuilt. Then red main is raised on the checked base: one alert, one fix item, and auto mode stopped in auto mode.
+   * Conditional on the entry's run, so a repeat or a late result changes nothing.
+   */
+  private async baseRed(e: MergeQueueEntry, d: Record<string, unknown>): Promise<void> {
+    const lm = this.c.unit("local-merge");
+    const checked = String(d.base_sha);
+    const hold = (await lm.baseTip()) ?? checked;
+    if (!(await this.store().move(e.entry_id, "checking", "queued", { base_sha: hold }, e.run_key ?? undefined))) return;
+    await this.rebuild(e);
+    const base = this.c.k.cfg.repo.base_branch;
+    const tail = typeof d.output_tail === "string" && d.output_tail !== "" ? `\n\n\`\`\`\n${d.output_tail.replace(/```/g, "'''")}\n\`\`\`` : "";
+    const what = `\`${String(d.command)}\` ${String(d.how)} on \`${base}\` at \`${checked}\` with no change merged onto it`;
+    const item = await lm.item(e.work_item_id as WorkItemId);
+    if (item) {
+      await this.c.unit("outbox").post(item, item.source,
+        `${what}, so the change is not to blame: it stays in the merge queue and is checked again once \`${base}\` moves.`,
+        `<!-- factory:merge-held:${e.merge_key}:${checked} -->`);
+    }
+    await this.c.k.guard("red main", () => lm.redMain(this.c.k.project(), checked, `${what}.${tail}`));
+    await this.advance();
   }
 
   /** A red check of the entry's current run: it leaves with the reason, the entries behind it are rebuilt, the queue moves on. */

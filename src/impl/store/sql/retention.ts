@@ -1,9 +1,10 @@
 // The retention deletes (design 08-retention), kept out of sql-factory-store.ts so that file stays within its line
 // budget. Each class deletes a bounded batch per table: a select of keys (SQLite has no DELETE ... LIMIT), then a
 // delete by key with the guards checked again, so a second pass on the same rows deletes nothing. Cutoffs come from
-// the store's clock, as timestamps.
+// the store's clock, as timestamps. Also the pause history the deletes never touch (design 07-self-improvement).
 
 import type { Timestamp } from "../../../core/types.js";
+import type { PauseInterval } from "../../../interfaces/factory-store.js";
 import { ALERT_DEDUPE_MS } from "../../../core/alarms.js";
 import { PROBE_PAUSES } from "../../../core/policy.js";
 import { COMMANDS_CURSOR } from "../../../inbound/index.js";
@@ -63,17 +64,37 @@ export async function pruneHandledCommands(db: SqlDriver, before: Timestamp, lim
   return { inbound_commands: await prune(db, "inbound_commands", ["seq"], guard + legacy, params, limit, guard) };
 }
 
-/**
- * A claim pause row that no probe pause in effect needs: a probe pause (`model_stall`, `network`) is in effect while
- * its row is after its answered row, whatever the clock says, so its three rows stay until a probe answered it.
- */
+/** Whether probe pause `pause` (`model_stall`, `network`) is in effect: its row is after its answered row, whatever the clock says. */
+function probeInEffect(pause: string, answeredRow: string): string {
+  const answered = `COALESCE((SELECT a.resume_at FROM worker_claim_pauses a WHERE a.name = '${answeredRow}'), '')`;
+  return `EXISTS (SELECT 1 FROM worker_claim_pauses p WHERE p.name = '${pause}' AND p.resume_at > ${answered})`;
+}
+
+/** A claim pause row that no probe pause in effect needs: a probe pause's three rows stay until a probe answered it. */
 const PAUSE_ENDED = Object.entries(PROBE_PAUSES)
-  .map(([pause, rows]) => {
-    const answered = `COALESCE((SELECT a.resume_at FROM worker_claim_pauses a WHERE a.name = '${rows.answered}'), '')`;
-    const inEffect = `EXISTS (SELECT 1 FROM worker_claim_pauses p WHERE p.name = '${pause}' AND p.resume_at > ${answered})`;
-    return `(name NOT IN ('${pause}', '${rows.since}', '${rows.answered}') OR NOT ${inEffect})`;
-  })
+  .map(([pause, rows]) => `(name NOT IN ('${pause}', '${rows.since}', '${rows.answered}') OR NOT ${probeInEffect(pause, rows.answered)})`)
   .join(" AND ");
+
+/**
+ * The pause history (design 07-self-improvement): one `controller_pause_history` row per ended `model_stall` or `network`
+ * pause, append-only and never pruned, unique per (name, started_at) so a pause is stored once and never overwritten.
+ * PAUSE_INSERT_ROW takes (name, started_at, ended_at); PAUSE_END_INSERT takes (name, ended_at, its since row's name).
+ */
+export const PAUSE_INSERT_ROW = "INSERT INTO controller_pause_history (name, started_at, ended_at) VALUES (?, ?, ?)";
+export const PAUSE_END_INSERT = "INSERT INTO controller_pause_history (name, started_at, ended_at) SELECT ?, resume_at, ? FROM worker_claim_pauses WHERE name = ?";
+
+/** The pause in effect at `at`: an ended one with started_at <= at < ended_at, else one still in effect whose since row is not after `at`. */
+export async function pauseAt(db: SqlDriver, at: Timestamp): Promise<PauseInterval | null> {
+  const sql = "SELECT name, started_at, ended_at FROM controller_pause_history WHERE started_at <= ? AND ended_at > ? ORDER BY started_at, name LIMIT 1";
+  const [ended] = await db.all(sql, [at, at]);
+  if (ended) return { name: ended.name as PauseInterval["name"], started_at: ended.started_at as Timestamp, ended_at: ended.ended_at as Timestamp };
+  for (const [pause, rows] of Object.entries(PROBE_PAUSES)) {
+    const open = `SELECT resume_at FROM worker_claim_pauses WHERE name = ? AND resume_at <= ? AND ${probeInEffect(pause, rows.answered)}`;
+    const [since] = await db.all(open, [rows.since, at]);
+    if (since) return { name: pause as PauseInterval["name"], started_at: since.resume_at as Timestamp, ended_at: null };
+  }
+  return null;
+}
 
 /** Passports a live passport (expires after `now`) names as its parent, its parent's parent and so on. */
 const LIVE_ANCESTORS =
