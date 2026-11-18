@@ -21,12 +21,14 @@ import {
   parseAddArgs,
   parseRunArgs,
   readPrRecord,
+  replayCases,
   replayPrompt,
   runCases,
 } from "../src/golden.js";
 import { RoleCatalog, rolesShortOfGolden } from "../src/runtime/index.js";
 import { defineRole } from "../src/shared/role.js";
 import reviewRole from "../src/worker/roles/review.role.js";
+import implementRole from "../src/worker/roles/implement.role.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubClient } from "../src/impl/github/github-client.js";
@@ -649,6 +651,56 @@ describe("cases in role folders", () => {
     expect(report.cases[0]).toMatchObject({ input_tokens: 120, output_tokens: 30, wall_ms: 1500 });
     expect(formatReport(report)).toContain("case 1 (should_pass): pass, match; input_tokens 120, output_tokens 30, wall_ms 1500");
     expect(formatReport(report)).toContain("total (review, 1 cases): input_tokens 120, output_tokens 30, wall_ms 1500");
+  });
+});
+
+describe("implement cases (eval on change)", () => {
+  const IMPLEMENT_ROLES = new RoleCatalog([{ file: "worker/roles/implement.role.ts", descriptor: implementRole }]);
+  const SEEDED = join(REPO, "src", "worker", "roles", "implement", "golden", "643");
+  /** A runner whose implement run "changes" `files` in the replay sandbox. */
+  const changing = (sandbox: FakeSandbox, files: () => string[]) => new FakeRunner({
+    implement: () => {
+      sandbox.changedFiles = files();
+      return { output: null };
+    },
+  });
+
+  it("replays the seeded implement case from its base commit, with the spec alone and no review schema, passing when it changes the case's files", async () => {
+    const sandbox = new FakeSandbox();
+    const runner = changing(sandbox, () => ["scripts/build.mjs", "tsconfig.migrations.json"]);
+    const deps = runDeps(runner, { rolesDir: join(REPO, "src", "worker", "roles"), roles: IMPLEMENT_ROLES, sandbox });
+    const report = await runCases(deps, { role: "implement" });
+    expect(report.cases.map((c) => [c.id, c.expect, c.verdict, c.findings])).toEqual([["643", "should_pass", "pass", []]]);
+    const spec = runner.specs[0]!;
+    expect(spec.role).toBe("implement");
+    expect(spec.prompt).toBe(await readFile(join(SEEDED, "instruction.md"), "utf8"));
+    expect(spec.output_schema).toBeUndefined();
+    expect(spec.system_prompt).toBe("prompt implement.md");
+    const base = JSON.parse(await readFile(join(SEEDED, "case.json"), "utf8")).base_sha as string;
+    expect(sandbox.gitCalls).toEqual([`checkout --detach ${base}`, "add --intent-to-add --all", `diff --name-only -z ${base}`]);
+    expect(sandbox.destroyed).toBe(1);
+  });
+
+  it("scores a replay that misses a file of the case's diff as a miss, naming the file, and a failed git step as errored", async () => {
+    const sandbox = new FakeSandbox();
+    const deps = runDeps(changing(sandbox, () => ["scripts/build.mjs"]), { rolesDir: join(REPO, "src", "worker", "roles"), roles: IMPLEMENT_ROLES, sandbox });
+    const miss = await runCases(deps, { role: "implement" });
+    expect(miss.cases.map((c) => [c.verdict, c.findings])).toEqual([["bug", ["not changed: tsconfig.migrations.json"]]]);
+    sandbox.failGit = ["checkout"];
+    const errored = await runCases({ ...deps, clock: new FakeClock(new Date("2026-11-01T13:00:00.000Z")) }, { role: "implement" });
+    expect(errored.cases.map((c) => c.verdict)).toEqual(["errored"]);
+  });
+
+  it("replays only the given case ids, each `replays` times under its own run id, as replayCases' pass list", async () => {
+    const runner = byCase({ "1": { output: REVIEW_BUG }, "2": { output: REVIEW_PASS }, "3": { output: REVIEW_PASS } });
+    const deps = runDeps(runner);
+    for (const id of ["1", "2", "3"]) await writeCase(deps.casesDir, id, "should_flag");
+    expect(await replayCases(deps, "review", ["1", "2"], 2)).toEqual([
+      { id: "1", passed: true }, { id: "1", passed: true }, { id: "2", passed: false }, { id: "2", passed: false },
+    ]);
+    const runIds = runner.specs.map((s) => s.run_id);
+    expect(new Set(runIds).size).toBe(4);
+    expect(runIds[0]).toBe("golden_2026-11-01T12:00:00.000Z_1");
   });
 });
 

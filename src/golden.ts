@@ -1,9 +1,9 @@
-// Golden sets per role (design §6 Measurement): known-bad and known-good factory PRs, replayed through the
-// runner with the role descriptor's prompt and tools and the review schema, scored as pass rate, catch rate and
-// false-alarm rate. Cases live in the role's folder (`src/worker/roles/<name>/golden/<case-id>/`, found by
-// goldenCasesByRole); results live under the state dir, never in the store. Nothing here writes to GitHub, builds a ToolBroker, or pushes. `compareCases` replays the
-// same cases twice through `runCases` (base prompt, head prompt) and applies GOLDEN_MARGIN; it runs locally
-// only (design §6, owner decision 2026-11-07: no model credential in GitHub Actions).
+// Golden sets per role (design §6 Measurement): known-bad and known-good factory PRs, replayed through the runner with the
+// role descriptor's prompt and tools (a review case with the review schema, an implement case on the files it changes),
+// scored as pass, catch and false-alarm rate. Cases live in `src/worker/roles/<name>/golden/<case-id>/` (goldenCasesByRole);
+// results files live under the state dir (the eval-on-change gate's verdicts are in the store: src/controller/golden-gate/).
+// Nothing here writes to GitHub, builds a ToolBroker, or pushes. `compareCases` replays the same cases twice through
+// `runCases` (base prompt, head prompt) and applies GOLDEN_MARGIN; it runs locally only (owner decision 2026-11-07).
 
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -61,11 +61,7 @@ const REVERT_REASONS = new Set(["reverted", "fixed_forward"]);
  * The PR's record, through the store APIs: `getWorkItemByPr` and `listStateChanges` (the merge/close rows
  * and the revert/fix-forward rows). Null when PR `pr` in `project` (a project key) is not a factory PR. Read-only.
  */
-export async function readPrRecord(
-  store: Pick<FactoryStore, "getWorkItemByPr" | "listStateChanges">,
-  project: string,
-  pr: number,
-): Promise<{ item: WorkItem; record: PrRecord } | null> {
+export async function readPrRecord(store: Pick<FactoryStore, "getWorkItemByPr" | "listStateChanges">, project: string, pr: number): Promise<{ item: WorkItem; record: PrRecord } | null> {
   const item = await store.getWorkItemByPr(project, String(pr));
   if (!item) return null;
   const changes = await store.listStateChanges(item.id);
@@ -74,27 +70,14 @@ export async function readPrRecord(
 
   let outcome: PrOutcome;
   if (item.stage === "CLOSED" && item.close_reason === "rejected") outcome = "rejected";
-  else if (item.stage === "CLOSED" && item.close_reason === "completed") {
-    outcome = revert ? (revert.reason as "reverted" | "fixed_forward") : "clean_merge";
-  } else outcome = "held";
+  else if (item.stage === "CLOSED" && item.close_reason === "completed") outcome = revert ? (revert.reason as "reverted" | "fixed_forward") : "clean_merge";
+  else outcome = "held";
 
-  const sources = [human, outcome === "reverted" || outcome === "fixed_forward" ? revert : null].filter(
-    (c): c is StateChange => c !== null,
-  );
-  return {
-    item,
-    record: {
-      pr_number: pr,
-      work_item_id: item.id,
-      outcome,
-      human_verdict: human ? { reason: human.reason, actor_id: human.actor.id, record_id: human.id } : null,
-      revert_reason:
-        revert && (outcome === "reverted" || outcome === "fixed_forward")
-          ? { reason: revert.reason, record_id: revert.id, detail: revert.detail }
-          : null,
-      source_record_ids: sources.map((c) => c.id),
-    },
-  };
+  const reverted = outcome === "reverted" || outcome === "fixed_forward" ? revert : null;
+  const sources = [human, reverted].filter((c): c is StateChange => c !== null);
+  const human_verdict = human ? { reason: human.reason, actor_id: human.actor.id, record_id: human.id } : null;
+  const revert_reason = reverted ? { reason: reverted.reason, record_id: reverted.id, detail: reverted.detail } : null;
+  return { item, record: { pr_number: pr, work_item_id: item.id, outcome, human_verdict, revert_reason, source_record_ids: sources.map((c) => c.id) } };
 }
 
 /**
@@ -202,16 +185,8 @@ export async function addCase(deps: AddDeps, opts: AddOptions): Promise<{ dir: s
   const expect = decideExpect(record.outcome, requested);
 
   const diff = await deps.github.pullDiff(pr);
-  const kase: GoldenCase = {
-    id,
-    pr_number: pr,
-    work_item_id: item.id,
-    expect,
-    outcome: record.outcome,
-    human_verdict: record.human_verdict,
-    revert_reason: record.revert_reason,
-    source_record_ids: record.source_record_ids,
-  };
+  const { outcome, human_verdict, revert_reason, source_record_ids } = record;
+  const kase: GoldenCase = { id, pr_number: pr, work_item_id: item.id, expect, outcome, human_verdict, revert_reason, source_record_ids };
   const files: Record<string, string> = {
     [CASE_DIFF]: diff,
     [CASE_INSTRUCTION]: renderSpec(item),
@@ -354,7 +329,7 @@ export interface GoldenReport extends Rates {
 }
 
 /** Whether a completed case's verdict is what it expects: `bug` for should_flag, `pass` for should_pass. */
-const matches = (r: Pick<CaseResult, "expect" | "verdict">) => r.verdict === (r.expect === "should_flag" ? "bug" : "pass");
+export const matches = (r: Pick<CaseResult, "expect" | "verdict">) => r.verdict === (r.expect === "should_flag" ? "bug" : "pass");
 
 /**
  * pass_rate = completed runs whose verdict matches expect / completed runs; catch_rate = flagged / completed
@@ -402,6 +377,7 @@ interface LoadedCase {
   work_item_id: string;
   diff: string;
   spec: string;
+  base_sha: string | null; // an implement case's start: the commit its change started from (case.json `base_sha`)
 }
 
 /** The role's descriptor, refusing a role with none or with no prompt (it calls no model, so nothing to replay). */
@@ -416,16 +392,16 @@ function roleFor(deps: Pick<GoldenRunDeps, "roles">, name: string): RoleDescript
  * The role's cases (goldenCasesByRole), sorted by id; with `only`, just the cases tagged with one of those
  * prompts. A malformed case fails the whole run before any agent runs.
  */
-async function loadCases(rolesDir: string, role: RoleDescriptor & { prompt: string }, only?: readonly string[]): Promise<LoadedCase[]> {
+async function loadCases(rolesDir: string, role: RoleDescriptor & { prompt: string }, only?: readonly string[], ids?: readonly string[]): Promise<LoadedCase[]> {
   const out: LoadedCase[] = [];
-  for (const id of goldenCasesByRole(rolesDir).get(role.name) ?? []) {
+  for (const id of (goldenCasesByRole(rolesDir).get(role.name) ?? []).filter((i) => !ids || ids.includes(i))) {
     const dir = join(rolesDir, role.name, "golden", id);
-    const meta = JSON.parse(await readFile(join(dir, "case.json"), "utf8")) as { expect?: string; work_item_id?: string; prompts?: unknown };
+    const meta = JSON.parse(await readFile(join(dir, "case.json"), "utf8")) as { expect?: string; work_item_id?: string; prompts?: unknown; base_sha?: unknown };
     const expect = checkExpect(typeof meta.expect === "string" ? meta.expect : "", `case ${id}: expect`)!;
     const prompts = casePrompts(meta.prompts, id) ?? [role.prompt];
     if (only && !prompts.some((p) => only.includes(p))) continue;
     const work_item_id = typeof meta.work_item_id === "string" ? meta.work_item_id : `golden_${id}`;
-    out.push({ id, expect, prompts, work_item_id, diff: await readFile(join(dir, CASE_DIFF), "utf8"), spec: await readFile(join(dir, CASE_INSTRUCTION), "utf8") });
+    out.push({ id, expect, prompts, work_item_id, base_sha: typeof meta.base_sha === "string" ? meta.base_sha : null, diff: await readFile(join(dir, CASE_DIFF), "utf8"), spec: await readFile(join(dir, CASE_INSTRUCTION), "utf8") });
   }
   return out;
 }
@@ -434,17 +410,17 @@ async function loadCases(rolesDir: string, role: RoleDescriptor & { prompt: stri
 export const replayPrompt = (c: Pick<LoadedCase, "spec" | "diff">) => `${c.spec}\n\n## Diff\n\n\`\`\`diff\n${c.diff}\n\`\`\``;
 
 /**
- * Replays every case of `role` once each, then writes the results file. Each case gets its own detached
- * sandbox (`branch: null`), destroyed after. No doc index, so a replay does not depend on the docs at run time.
+ * Replays every case of `role` (with `ids`, only those) `replays` times each (default once), then writes the results file. Each
+ * replay gets its own detached sandbox (`branch: null`), destroyed after. No doc index: a replay does not depend on the docs.
  */
-export async function runCases(deps: GoldenRunDeps, opts: { role: string; prompts?: readonly string[] }): Promise<GoldenReport> {
+export async function runCases(deps: GoldenRunDeps, opts: { role: string; prompts?: readonly string[]; ids?: readonly string[]; replays?: number }): Promise<GoldenReport> {
   const role = roleFor(deps, opts.role);
-  const cases = await loadCases(deps.rolesDir, role, opts.prompts);
+  const cases = await loadCases(deps.rolesDir, role, opts.prompts, opts.ids);
   const system = await deps.prompt(role.prompt);
   const stamp = deps.clock.now().toISOString();
   const signal = deps.signal ?? new AbortController().signal;
   const results: CaseResult[] = [];
-  for (const c of cases) results.push(await runOne(deps, role, system, c, stamp, signal));
+  for (const c of cases) for (let n = 0; n < (opts.replays ?? 1); n++) results.push(await runOne(deps, role, system, c, `${stamp}_${c.id}${n > 0 ? `_${n}` : ""}`, signal));
 
   const rates = computeRates(results);
   const sum = (k: keyof GoldenReport["totals"]) => results.reduce((n, r) => n + r[k], 0);
@@ -465,36 +441,43 @@ function casePrompts(v: unknown, id: string): string[] | null {
   return v as string[];
 }
 
-async function runOne(deps: GoldenRunDeps, role: RoleDescriptor, system: string, c: LoadedCase, stamp: string, signal: AbortSignal): Promise<CaseResult> {
+/** The gate's replay (src/controller/golden-gate/): each replay of the role's `ids` cases, as its case id and whether it matched. */
+export const replayCases = async (deps: GoldenRunDeps, role: string, ids: readonly string[], replays: number) => (await runCases(deps, { role, ids, replays })).cases.map((c) => ({ id: c.id, passed: matches(c) }));
+
+async function runOne(deps: GoldenRunDeps, role: RoleDescriptor, system: string, c: LoadedCase, key: string, signal: AbortSignal): Promise<CaseResult> {
   const { repo } = deps.config;
   const started = deps.clock.now().getTime();
   const out: CaseResult = { id: c.id, expect: c.expect, verdict: "errored", findings: [], input_tokens: 0, output_tokens: 0, wall_ms: 0 };
+  const env = gitIdentity(deps.config.agent_git_identity);
   let handle: SandboxHandle | null = null;
   try {
     handle = await deps.sandbox.create({ repo: repo.path, branch: null, base_ref: repo.base_branch });
     const kind = role.name as RunKind;
+    const implement = kind === "implement";
+    if (implement && c.base_sha !== null) await git(deps.sandbox, handle, ["checkout", "--detach", c.base_sha], env);
     const result = await deps.runner.run({
-      run_id: `golden_${stamp}_${c.id}` as RunId,
+      run_id: `golden_${key}` as RunId,
       work_item_id: c.work_item_id as WorkItemId,
       role: kind,
       sandbox: handle,
       system_prompt: system,
-      prompt: replayPrompt(c),
+      prompt: implement ? c.spec : replayPrompt(c),
       tools: toolsNamed(role.tools),
       tool_grants: [],
       lease_token: 0,
-      env_allowlist: gitIdentity(deps.config.agent_git_identity),
+      env_allowlist: env,
       deny_paths: deps.config.deny_paths,
       writable_paths: [],
       // The role's run class (cases carry no tier or loop: tier 5's entry, no retry bump), so golden results
       // match production; a role with no model_by entry replays on the standard class.
       model_class: isModelRunKind(kind) ? modelClassFor(deps.model_by ?? DEFAULT_MODEL_TABLE, kind, null, 0) : "standard",
       timeout_ms: deps.config.run_timeout_ms,
-      output_schema: REVIEW_SCHEMA,
+      ...(implement ? {} : { output_schema: REVIEW_SCHEMA }),
       signal,
     });
     Object.assign(out, { input_tokens: result.usage.input_tokens, output_tokens: result.usage.output_tokens });
-    const review = result.status === "completed" ? parseReview(result.output) : null;
+    if (implement && result.status === "completed") Object.assign(out, await implementVerdict(deps.sandbox, handle, c, env));
+    const review = !implement && result.status === "completed" ? parseReview(result.output) : null;
     // Scored on the verdict alone: unverified checks never make a case flagged (issue #222).
     if (review?.ok) Object.assign(out, { verdict: review.value.verdict, findings: review.value.findings.map(findingLine) });
   } catch {
@@ -674,6 +657,21 @@ async function scanAll(scanner: EgressScanner, channel: EgressChannel, contents:
 
 function gitIdentity(id: { name: string; email: string }): Record<string, string> {
   return { GIT_AUTHOR_NAME: id.name, GIT_AUTHOR_EMAIL: id.email, GIT_COMMITTER_NAME: id.name, GIT_COMMITTER_EMAIL: id.email };
+}
+
+/** A git command in a replay's sandbox, its output; a non-zero exit throws, so the replay is errored. */
+async function git(sandbox: Sandbox, h: SandboxHandle, args: readonly string[], env: Record<string, string>): Promise<string> {
+  const r = await sandbox.exec(h, ["git", ...args], { env });
+  if (r.exit_code !== 0) throw new GoldenError(`git ${args[0]} failed in the replay sandbox`);
+  return r.stdout;
+}
+
+/** An implement replay passes when its tree changed every file its case's diff.patch changes; each one missed is a finding. */
+async function implementVerdict(sandbox: Sandbox, h: SandboxHandle, c: LoadedCase, env: Record<string, string>): Promise<Pick<CaseResult, "verdict" | "findings">> {
+  await git(sandbox, h, ["add", "--intent-to-add", "--all"], env);
+  const changed = (await git(sandbox, h, ["diff", "--name-only", "-z", c.base_sha ?? h.base_sha ?? "HEAD"], env)).split("\0");
+  const missed = [...c.diff.matchAll(/^diff --git a\/\S+ b\/(\S+)$/gm)].map((m) => m[1]!).filter((p) => !changed.includes(p));
+  return { verdict: missed.length === 0 ? "pass" : "bug", findings: missed.map((p) => `not changed: ${p}`) };
 }
 
 const exists = (p: string): Promise<boolean> => stat(p).then(() => true, () => false);
