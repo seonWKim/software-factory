@@ -1,5 +1,7 @@
 ## History
 
+- **A split parent closes once every recorded phase is closed** (2026-11-18). Before: `closeSplitIfDone` closed a `phases_open` parent only when every recorded phase was `CLOSED` / `completed`, always as completed with no merge sha; a phase closed any other way (rejected, won't do) kept the parent open with no end, so its dependents never started (wi_34339813, #317).
+
 - **`/retry` releases a held phase** (2026-11-12). Before: a held phase fell under the generic "other blocked" command phase, so `/retry` did nothing on it, and a phase whose previous phase closed without a merge (rejected as superseded by other work) stayed held forever and had to be refiled by hand (#598, phase 3 of #569 after #595 was rejected).
 
 - **A split spec is approved on an item from any source** (2026-11-12). Before: `/approve` on a split spec whose parent's source had no `fileSubIssue` (a Slack thread) was refused ("this source cannot file sub-issues, so a split spec cannot be approved here; reply `/revise <feedback>` to get a spec without phases"), and "Local tasks split too" listed Slack as not built, so a large Slack ask had to be refiled by hand as local tasks.

@@ -1,5 +1,6 @@
 ## History
 
+- **A split parent counts as merged when its last recorded phase closed `completed`** (decision changed 2026-11-18). Before: a split parent closed `completed` with no merge sha counted as merged only when every recorded phase closed `completed` (`itemMerged`), the rule that then closed the parent; a parent with a rejected phase never closed, so its dependents waited forever.
 - **Learned weights count only conflicts inside `conflict_window_days`** (decision changed 2026-11-18). Before: all recorded conflicts count: the claim and `conflictCounts` read every `controller_file_conflicts` row of the project, with no time limit, so a file kept its learned weight (up to 4.0) after the work that conflicted on it had moved elsewhere.
 - **Local items honour `Depends on:` lines naming wi_ or tk_ ids** (decision changed 2026-11-18). Before: dependencies came only from the GitHub source (`Depends on: #N` lines, sub-issues, blocked-by links); the `local` source had no dependency links, so a local item got no edges and never held, and "sources other than GitHub" were listed under "Not in this decision".
 - **Migration renumbering removed** (decision changed 2026-11-13, #659 phase 2). The decision that changed: Migration renumbering, in code. Before, this sentence stood:
