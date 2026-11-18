@@ -1,5 +1,6 @@
 ## History
 
+- **Invalid implement answers failed at once** (decision changed 2026-11-18, "An invalid implement answer gets one repair turn"). Before: an implement answer that did not match the output schema failed the run with `invalid_output` at once, and its commits went with the run folder, so the retry started the work again from the base.
 - **Every held stall pattern had a fix item** (decision changed 2026-11-15, the host sleep exception in "Once the probe answers, a stall pattern holds only its items"). Before: every known stall pattern of two or more runs held its items, and the doc said a held item always has a pattern the improver files a fix for; a stall pattern caused by a host sleep, which now files no fix, would have held its items forever.
 - **Failed run outcomes** (new decision, 2026-11-11). Before: a failed run's decision the WorkItem state table refused was dropped with a warning and retried on every tick, and nothing found an item left RUNNING with no run to move it.
 - **`model_stall` scope** (decision changed 2026-11-10, issue #504). Before: a passing probe only ended the pause, so an item whose runs stalled again on every retry paused all claims each time (on 2026-11-09, one pattern held every item for about four hours).
