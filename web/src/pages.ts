@@ -1,5 +1,5 @@
 import { CalendarCheck, CalendarDays, Database, HeartPulse, ListTodo, Puzzle, ScrollText, Settings, Waypoints, type LucideIcon } from "lucide-react";
-import { REDIRECTS } from "./page-redirects";
+import { REDIRECTS } from "./page-redirects.js";
 
 /** Where a page sits in the sidebar: the Tasks block, the System block (Work, Health), the bottom block (Rules, Plugins, Settings), or nowhere (a routable page with no sidebar link: Runners and Data, linked from Settings > Advanced). */
 export type PageGroup = "tasks" | "system" | "bottom" | "hidden";
