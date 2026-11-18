@@ -24,6 +24,7 @@ import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { Sandbox } from "../src/interfaces/sandbox.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import { autoResolveKey } from "../src/core/policy.js";
+import { NODE_PROBE, offNode, onNode } from "../src/worker/runs/merge-check/node-version.js";
 import {
   FakeAuth, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, cleanScanner, config, fakeRepoLookup, pipeline, prompts, silent,
   triageSpec,
@@ -697,6 +698,118 @@ describe("merge check run: one rerun of the failing test files (fake sandbox)", 
     const ui = await rerunRun({ "npm run check:responsive": [{ exit: 1, out: FAIL }] }, { ui: true });
     expect(ui.commands).toEqual(["npm ci", "npm test", "npm run lint", "npm run check:responsive"]);
     expect(ui.outcome).toMatchObject({ data: { result: "red", command: "npm run check:responsive" } });
+  });
+});
+
+// Install and checks run on the project's Node major (.nvmrc, else package.json engines), as CI does, not on the
+// worker's own Node. The runtime lookup is the fake sandbox's reply to the probe command: no Node is installed and no
+// network is used. A Node that is not there fails the run with checks_env naming it; it never passes on another one.
+describe("merge check run: the project's Node version (fake sandbox, fake runtime)", () => {
+  type Files = { ".nvmrc"?: string; "package.json"?: string };
+
+  /** `files`: the merged commit's files; `probe`: what the runtime lookup prints; `exits`: replies by command. */
+  async function nodeRun(files: Files, probe: string, exits: Record<string, { exit: number; out?: string }[]> = {}) {
+    const repo = { ...config.repo, check_commands: [["npm", "run", "typecheck"], ["npm", "test"]] };
+    const f = await pipeline({ config: { repo } });
+    const exec = f.sandbox.exec.bind(f.sandbox);
+    const argvs: string[][] = [];
+    const probes: string[][] = [];
+    f.sandbox.exec = async (h, cmd, eo) => {
+      const r = await exec(h, cmd, eo);
+      const read = cmd[0] === "git" && cmd[1] === "cat-file" ? /:(.+)$/.exec(cmd.at(-1)!)?.[1] : undefined;
+      if (read !== undefined) {
+        const text = files[read as keyof Files];
+        return text === undefined ? { ...r, exit_code: 128, stderr: `fatal: path '${read}' does not exist` } : { ...r, stdout: text };
+      }
+      if (cmd[0] === "sh" && cmd[2] === NODE_PROBE) {
+        probes.push([...cmd]);
+        return { ...r, stdout: probe };
+      }
+      if (cmd[0] === "git") return r;
+      argvs.push([...cmd]);
+      const reply = exits[offNode(cmd).join(" ")]?.shift();
+      return reply ? { ...r, exit_code: reply.exit, stdout: reply.out ?? "" } : r;
+    };
+    const { item } = await f.store.createWorkItem(issue(7), system);
+    const moved = await f.store.transition({
+      id: item.id, expected_version: item.version, actor: system, reason: "test_setup", patch: {},
+      enqueue: { kind: "merge-check", idempotency_key: "mc-1", input: { merge_check: { base_ref: "main", branches: [`factory/${item.id}`] } } },
+    });
+    if (!moved.ok) throw new Error("setup");
+    expect(await f.w1.tick()).toBe(true);
+    const outcome = (await f.runs(moved.item, "merge-check"))[0]!.outcome;
+    return { argvs, probes, outcome };
+  }
+
+  const project = ["npm ci", "npm run typecheck", "npm test"];
+  const NODE22 = "/fake/nvm/versions/node/v22.13.0/bin";
+
+  it("with .nvmrc 22 and a Node 25 worker, install and every check run on the Node 22 install the lookup found", async () => {
+    const r = await nodeRun({ ".nvmrc": "22\n" }, `current=v25.3.0\nfound=/fake/nvm/versions/node/v22.1.0/bin\nfound=${NODE22}\n`);
+    expect(r.probes.map((p) => p.at(-1))).toEqual(["22"]);
+    expect(r.argvs.map((c) => offNode(c).join(" "))).toEqual(project);
+    for (const c of r.argvs) expect(onNode({ bin: NODE22, version: "v22" }, offNode(c))).toEqual(c);
+    expect(r.argvs.every((c) => c.includes(NODE22))).toBe(true);
+    expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "green", node: "Node v22 (.nvmrc)" } });
+  });
+
+  it("the wrapper puts the chosen Node's folder first on PATH and runs the project's command as it is", () => {
+    const cmd = onNode({ bin: NODE22, version: "v22" }, ["npm", "test"]);
+    const out = execFileSync(cmd[0]!, [...cmd.slice(1, 4), "sh", "-c", 'printf "%s|%s" "${PATH%%:*}" "$1"', "x", "arg"], { encoding: "utf8" });
+    expect(out).toBe(`${NODE22}|arg`);
+    expect(offNode(cmd)).toEqual(["npm", "test"]);
+    expect(onNode({ bin: null, version: "v22.13.0" }, ["npm", "test"])).toEqual(["npm", "test"]);
+  });
+
+  it("with .nvmrc 22 and a worker already on Node 22, the commands run as they are", async () => {
+    const r = await nodeRun({ ".nvmrc": "v22.13.0\n" }, "current=v22.13.0\n");
+    expect(r.argvs.map((c) => c.join(" "))).toEqual(project);
+    expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "green", node: "Node v22.13.0 (.nvmrc)" } });
+  });
+
+  it("with .nvmrc 22 and no Node 22 installed, the run fails with checks_env naming the version needed and the one found", async () => {
+    const r = await nodeRun({ ".nvmrc": "22\n" }, "current=v25.3.0\n");
+    expect(r.argvs).toEqual([]);
+    expect(r.outcome).toMatchObject({ status: "failed", error_code: "checks_env" });
+    const detail = r.outcome?.status === "failed" ? r.outcome.detail : "";
+    expect(detail).toContain("Node 22 (from .nvmrc)");
+    expect(detail).toContain("found Node v25.3.0");
+  });
+
+  it("a missing Node with no node on the worker at all says so", async () => {
+    const r = await nodeRun({ ".nvmrc": "22" }, "current=\n");
+    expect(r.outcome).toMatchObject({ status: "failed", error_code: "checks_env" });
+    expect(r.outcome?.status === "failed" ? r.outcome.detail : "").toContain("found no Node");
+  });
+
+  it("with no .nvmrc, the major comes from package.json engines", async () => {
+    const r = await nodeRun({ "package.json": JSON.stringify({ engines: { node: ">=22.13" } }) }, "current=v25.3.0\n");
+    expect(r.probes.map((p) => p.at(-1))).toEqual(["22"]);
+    expect(r.outcome).toMatchObject({ status: "failed", error_code: "checks_env" });
+    expect(r.outcome?.status === "failed" ? r.outcome.detail : "").toContain("Node 22 (from package.json engines)");
+  });
+
+  it("an .nvmrc naming no major (lts/*) falls back to package.json engines", async () => {
+    const r = await nodeRun({ ".nvmrc": "lts/*\n", "package.json": JSON.stringify({ engines: { node: "^22" } }) }, "current=v22.2.0\n");
+    expect(r.probes.map((p) => p.at(-1))).toEqual(["22"]);
+    expect(r.outcome).toMatchObject({ status: "succeeded", data: { node: "Node v22.2.0 (package.json engines)" } });
+  });
+
+  it("with neither file naming a version, the checks run on the worker's Node and the result says so", async () => {
+    const r = await nodeRun({ "package.json": JSON.stringify({ name: "x" }) }, "current=v25.3.0\n");
+    expect(r.probes).toEqual([]);
+    expect(r.argvs.map((c) => c.join(" "))).toEqual(project);
+    expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "green", node: expect.stringContaining("the worker's Node") } });
+  });
+
+  it("a failing check on the chosen Node is named by the project's command, and its rerun runs on that Node too", async () => {
+    const FAIL = " FAIL  tests/a.test.ts > suite > case\n";
+    const r = await nodeRun({ ".nvmrc": "22" }, `current=v25.3.0\nfound=${NODE22}\n`, {
+      "npm test": [{ exit: 1, out: FAIL }], "npm test -- tests/a.test.ts": [{ exit: 1, out: FAIL }],
+    });
+    expect(r.argvs.map((c) => offNode(c).join(" "))).toEqual([...project, "npm test -- tests/a.test.ts"]);
+    expect(r.argvs.every((c) => c.includes(NODE22))).toBe(true);
+    expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "red", why: "checks", command: "npm test", node: "Node v22 (.nvmrc)" } });
   });
 });
 
