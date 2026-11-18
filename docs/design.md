@@ -67,20 +67,23 @@ index. Add a line here only for a new topic file. Topic files keep the old secti
 - [08-retention.md](design/08-retention.md): the daily retention pass and its periods.
 
 ## 9. Status page
-- [09-status-page.md](design/09-status-page.md): the read-only status page, its guards, the "Needs you" list.
-- [09-health.md](design/09-health.md): the Health panel and the read-only schema probe.
-- [09-dashboard-app.md](design/09-dashboard-app.md): the dashboard app shell, JSON API, `/app/`, responsive check.
-- [09-dashboard-tasks.md](design/09-dashboard-tasks.md): the Tasks page, Calendar page, Needs you, Project switcher.
-- [09-dashboard-rules.md](design/09-dashboard-rules.md): the Rules page: verdicts, Applied rules, Promote, Retire, Run now.
+- [09-status-page.md](design/09-status-page.md): the read-only status page, its guards.
+- [09-health.md](design/09-health.md): the Health panel, schema probe.
+- [09-dashboard-app.md](design/09-dashboard-app.md): index of the dashboard topic files, one per page.
+- [09-dashboard-shell.md](design/09-dashboard-shell.md): sidebar, top bar, shared components, API.
+- [09-dashboard-activity.md](design/09-dashboard-activity.md): the Activity page.
+- [09-dashboard-runners.md](design/09-dashboard-runners.md): the Runners page, Migrate now.
+- [09-dashboard-tasks.md](design/09-dashboard-tasks.md): Tasks, Calendar, Needs you, Project switcher.
+- [09-dashboard-rules.md](design/09-dashboard-rules.md): the Rules page: verdicts, Promote, Retire.
 - [09-dashboard-settings.md](design/09-dashboard-settings.md): the Settings page and the Plugins page.
-- [09-dashboard-system.md](design/09-dashboard-system.md): the Work tree, Workers, Failures, Spend and Data pages.
-- [09-dashboard-item.md](design/09-dashboard-item.md): the item page: thread, transcripts, why an item waits.
-- [09-dashboard-item-commands.md](design/09-dashboard-item-commands.md): item commands: decision box, buttons, dialogs, Merge button.
-- [09-status-banner.md](design/09-status-banner.md): the banner that shows what the update supervisor is doing.
-- [09-notifications.md](design/09-notifications.md): owner notices: `controller_notices`, kinds, quiet hours.
-- [09-desktop-app.md](design/09-desktop-app.md): the macOS app that runs the supervisor and shows the dashboard.
-- [09-brand-and-tokens.md](design/09-brand-and-tokens.md): the one token source, generated `tokens.css`, the no-hex rule.
-- [09-dashboard-complexity.md](design/09-dashboard-complexity.md): audit of the dashboard's pages, simplification proposals.
+- [09-dashboard-system.md](design/09-dashboard-system.md): Work, Workers, Failures, Spend, Data.
+- [09-dashboard-item.md](design/09-dashboard-item.md): the item page: thread, transcripts.
+- [09-dashboard-item-commands.md](design/09-dashboard-item-commands.md): item commands, dialogs, Merge button.
+- [09-status-banner.md](design/09-status-banner.md): the supervisor status banner.
+- [09-notifications.md](design/09-notifications.md): owner notices, kinds, quiet hours.
+- [09-desktop-app.md](design/09-desktop-app.md): the macOS app for the supervisor and dashboard.
+- [09-brand-and-tokens.md](design/09-brand-and-tokens.md): the token source, `tokens.css`, the no-hex rule.
+- [09-dashboard-complexity.md](design/09-dashboard-complexity.md): audit of the dashboard's pages.
 
 ## 10. Event-driven factory
 - [10-event-driven.md](design/10-event-driven.md): the RFC 0015 move, tables, migrations, journaled runs, merge queue.
