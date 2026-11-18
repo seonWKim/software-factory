@@ -648,12 +648,12 @@ export class Worker {
 
   /**
    * The check list in the run folder (or `o.cwd` inside it) with the check env: the tool env and the slot env
-   * (worker index, test workers). That env never reaches an agent. Stops at the first failure. `o.commands`: the list to run; absent, the configured checks.
+   * (worker index, test workers), plus `o.env`. That env never reaches an agent. Stops at the first failure. `o.commands`: the list to run; absent, the configured checks.
    */
-  async runCheckList(run: Run, handle: SandboxHandle, signal: AbortSignal, o: { commands?: string[][]; cwd?: string } = {}): Promise<CheckRound> {
+  async runCheckList(run: Run, handle: SandboxHandle, signal: AbortSignal, o: { commands?: string[][]; cwd?: string; env?: Record<string, string> } = {}): Promise<CheckRound> {
     const round = await runChecks({
       sandbox: this.d.sandbox, handle, commands: o.commands ?? checkCommands(this.cfg.repo), ...(o.cwd === undefined ? {} : { cwd: o.cwd }),
-      env: { ...this.d.toolEnv, ...this.slotEnv() }, timeout_ms: this.cfg.run_timeout_ms, signal, redact: [],
+      env: { ...this.d.toolEnv, ...this.slotEnv(), ...o.env }, timeout_ms: this.cfg.run_timeout_ms, signal, redact: [],
     });
     if (signal.aborted) throw new RunFailure("lease_lost", "run aborted", true);
     return round;

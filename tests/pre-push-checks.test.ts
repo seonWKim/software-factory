@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
+import type { Floor } from "../src/core/settings.js";
 import { failingTestFiles, withTestFiles } from "../src/core/checks.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { WorkItem, WorkerId } from "../src/core/types.js";
@@ -125,17 +126,22 @@ async function setup(opts: {
   fix?: AgentStep;
   scanner?: PatternEgressScanner;
   max_attempts?: number;
+  /** Files committed to the base branch before the item starts. */
+  base?: Record<string, string>;
+  floors?: Floor[];
 } = {}) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const root = repos.copy();
   const origin = join(root, "origin.git");
   const repo = join(root, "repo");
+  for (const [path, content] of Object.entries(opts.base ?? {})) commitFile(repo, path, content, `base: ${path}`);
+  if (opts.base) git(repo, "push", "--quiet", "origin", "HEAD:main");
 
   const cfg: FactoryConfig = {
     ...config,
     repo: { ...config.repo, path: repo, check_commands: opts.checks ?? CHECKS },
-    settings: { ...config.settings, defaults: { ...config.settings.defaults, max_attempts: opts.max_attempts ?? 3 } },
+    settings: { ...config.settings, defaults: { ...config.settings.defaults, max_attempts: opts.max_attempts ?? 3, ...(opts.floors ? { floors: opts.floors } : {}) } },
   };
   let implementCount = 0;
   const fixSteps: AgentRunSpec[] = [];
@@ -471,7 +477,7 @@ describe("check commands get the tool env and the slot env only", { timeout: 60_
     const item = await f.approveAndImplement();
     expect(item).toMatchObject({ stage: "REVIEW", change_ref: "42" });
     expect(f.checkExecs().length).toBeGreaterThan(CHECKS.length);
-    const allowed = new Set(["PATH", "HOME", "GIT_CONFIG_GLOBAL", "SF_WORKER_INDEX", "SF_TEST_WORKERS"]);
+    const allowed = new Set(["PATH", "HOME", "GIT_CONFIG_GLOBAL", "SF_WORKER_INDEX", "SF_TEST_WORKERS", "SF_RATCHET_SHRINK"]);
     const database = /MYSQL|DATABASE|_DB_|DB_URL/;
     for (const e of f.checkExecs()) {
       for (const k of Object.keys(e.env)) expect(allowed.has(k), `${e.cmd}: ${k}`).toBe(true);
@@ -482,5 +488,71 @@ describe("check commands get the tool env and the slot env only", { timeout: 60_
     const body = f.broker.prBody();
     expect(body).toContain("Checked before push:");
     expect(body).not.toMatch(/skipped/i);
+  });
+});
+
+// Ratchet shrink mode before push (design 04-pre-push-gates, pre-push checks): the checks run with SF_RATCHET_SHRINK=1,
+// and the known-violations lists they lowered are committed alone, then the gates run again before any push.
+describe("implement run: the factory lowers shrunk ratchet counts before push", { timeout: 60_000 }, () => {
+  const LIST = "tests/architecture/known-violations/rule.json";
+  // Stands in for tests/architecture/lib.ts's ratchetCounts: the budget of src/a.txt is its line count.
+  const RATCHET = ["node", "-e", `
+    const fs = require("fs"); const f = ${JSON.stringify(LIST)};
+    const known = JSON.parse(fs.readFileSync(f, "utf8")); const n = fs.readFileSync("src/a.txt", "utf8").split("\\n").length - 1;
+    if (n > known["src/a.txt"]) { console.log("grew: src/a.txt"); process.exit(1); }
+    if (n < known["src/a.txt"]) {
+      if (process.env.SF_RATCHET_SHRINK !== "1") { console.log("fell_but_list_not_lowered: src/a.txt"); process.exit(1); }
+      fs.writeFileSync(f, JSON.stringify({ ...known, "src/a.txt": n }, null, 2) + "\\n");
+    }`, "ratchet"];
+  const listed = (n: number) => JSON.stringify({ "src/a.txt": n }, null, 2) + "\n";
+  const LOWER = "Lower the shrunk known-violations counts";
+
+  it("a shrunk count is lowered to the real count and committed alone before push, with no agent edit", async () => {
+    const f = await setup({ checks: [RATCHET], base: { [LIST]: listed(3) } });
+    const item = await f.approveAndImplement();
+    expect(item).toMatchObject({ stage: "REVIEW", change_ref: "42" });
+    const branch = `refs/heads/factory/${item.id}`;
+    expect(git(f.origin, "show", `${branch}:${LIST}`) + "\n").toBe(listed(1));
+    expect(git(f.origin, "log", "-1", "--format=%s", branch)).toBe(LOWER);
+    expect(git(f.origin, "show", "--name-only", "--format=", branch).trim()).toBe(LIST);
+    // The agent never touched the list: only the lowering commit did.
+    expect(git(f.origin, "log", "--format=%s", `main..${branch}`, "--", LIST)).toBe(LOWER);
+    expect(f.fixSteps).toHaveLength(0);
+    expect(f.sandbox.execs.find((e) => e.cmd.startsWith("node -e"))!.env.SF_RATCHET_SHRINK).toBe("1");
+    expect((await f.store.listHandoffs(item.id)).map((h) => h.worked_on)).toEqual(["implementer edits a (1)", LOWER]);
+    expect((await f.implementRuns(item.id))[0]!.outcome).toMatchObject({ status: "succeeded", data: { commits: 2 } });
+  });
+
+  it("a count that grew still fails: grew, the list is not raised, checks_failed and nothing pushed", async () => {
+    const f = await setup({
+      checks: [RATCHET], base: { [LIST]: listed(1) },
+      implement: (wd) => commitFile(wd, "src/a.txt", "1\n2\n3\n", "a grows"),
+    });
+    const item = await f.approveAndImplement();
+    const run = (await f.implementRuns(item.id))[0]!;
+    expect(run.outcome).toMatchObject({ status: "failed", error_code: "checks_failed" });
+    expect(f.fixSteps[0]!.prompt).toContain("grew: src/a.txt");
+    expect(f.remoteHas(`refs/heads/factory/${item.id}`)).toBe(false);
+    expect(f.broker.pushes()).not.toContain(`factory/${item.id}`);
+    const wip = `refs/heads/factory/wip/${item.id}/${run.id}`;
+    expect(git(f.origin, "show", `${wip}:${LIST}`) + "\n").toBe(listed(1));
+    expect(git(f.origin, "log", "--format=%s", wip)).not.toContain(LOWER);
+  });
+
+  it("the lowering commit goes through the gates again: a floor on the lists blocks the push", async () => {
+    const f = await setup({ checks: [RATCHET], base: { [LIST]: listed(3) }, floors: [{ prefix: "tests/architecture/known-violations/", tier: 4 }] });
+    const item = await f.approveAndImplement();
+    const run = (await f.implementRuns(item.id))[0]!;
+    expect(run.outcome).toMatchObject({ status: "succeeded", data: { floor_block: true, required_tier: 4, floor_paths: [{ path: LIST }] } });
+    expect(f.remoteHas(`refs/heads/factory/${item.id}`)).toBe(false);
+    expect(f.broker.pushes()).toEqual([]);
+  });
+
+  it("no commit when the checks lowered nothing", async () => {
+    const f = await setup({ checks: [RATCHET], base: { [LIST]: listed(1) } });
+    const item = await f.approveAndImplement();
+    expect(item).toMatchObject({ stage: "REVIEW", change_ref: "42" });
+    const branch = `refs/heads/factory/${item.id}`;
+    expect(git(f.origin, "log", "--format=%s", `main..${branch}`)).toBe("implementer edits a (1)");
   });
 });

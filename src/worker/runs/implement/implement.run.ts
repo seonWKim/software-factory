@@ -195,7 +195,9 @@ async function implement(
     const head = (await w.git(handle, ["rev-parse", "HEAD"])).trim();
     throw await keepAt(err, head, conflicts);
   }
-  if (checked.fixed || packFixed) {
+  // The lists the checks' shrink mode lowered (design §4) are committed alone; like a fix, they go through every gate again.
+  const lowered = await commitWorktree(w, handle, "Lower the shrunk known-violations counts", [RATCHET_LISTS]);
+  if (checked.fixed || packFixed || lowered) {
     await countFixCommits();
     // The fix commit goes through every gate again, on the final diff.
     const postFixPrePush = await prePushGates(w, run, item, handle, sync.baseSha, conflicts);
@@ -321,14 +323,7 @@ async function overBudget(
   const commits = (await w.git(handle, ["rev-list", `${start}..HEAD`])).split("\n").filter(Boolean).length;
   if (commits === 0) return failure;
   return keepWip(w, run, item, ctx, handle, failure, {
-    branch: wipBranchFor(item, w.cfg.branch_prefix, run.id),
-    head,
-    commits,
-    summary: "",
-    next_steps: BUDGET_NEXT_STEPS,
-    conflicts: [],
-    missing: [],
-    deviations: [],
+    branch: wipBranchFor(item, w.cfg.branch_prefix, run.id), head, commits, summary: "", next_steps: BUDGET_NEXT_STEPS, conflicts: [], missing: [], deviations: [],
   }, false);
 }
 
@@ -371,13 +366,13 @@ async function keepStopped(
 }
 
 /**
- * Commits the worktree's changes (tracked and untracked, not ignored) as one WIP commit, with trusted git calls after the agent stopped. True when there were any.
+ * Commits the worktree's changes under `paths` (all when none; tracked and untracked, not ignored) as one commit, with trusted git calls after the agent stopped. True when there were any.
  */
-async function commitWorktree(w: Worker, handle: SandboxHandle, message: string): Promise<boolean> {
-  const dirty = (await w.git(handle, ["status", "--porcelain", "-z", "--untracked-files=all"])) !== "";
-  if (!dirty) return false;
-  await w.git(handle, [...NO_HOOKS, "add", "-A"]);
-  await w.gitWith(handle, [...NO_HOOKS, "commit", "--quiet", "--no-verify", "-m", message], gitIdentity(w.cfg.agent_git_identity));
+async function commitWorktree(w: Worker, handle: SandboxHandle, message: string, paths: string[] = []): Promise<boolean> {
+  const only = paths.length ? ["--", ...paths] : [];
+  if ((await w.git(handle, ["status", "--porcelain", "-z", "--untracked-files=all", ...only])) === "") return false;
+  await w.git(handle, [...NO_HOOKS, "add", "-A", ...only]);
+  await w.gitWith(handle, [...NO_HOOKS, "commit", "--quiet", "--no-verify", "-m", message, ...only], gitIdentity(w.cfg.agent_git_identity));
   return true;
 }
 
@@ -766,8 +761,8 @@ async function mergeConflict(
  * implement prompt with the failing command and its output tail; the agent commits the fix), then the whole
  * list runs again. On a second failure the failing test files run again on the base commit (failsOnBase):
  * when they fail there too, the run fails with `checks_env`; otherwise one comment names the command and the
- * run fails with `checks_failed`. Returns the passing round's results and whether a fix step ran; the caller then runs the
- * scope, size and floor gates again on the final diff.
+ * run fails with `checks_failed`. Both rounds run in ratchet shrink mode (SHRINK_ENV). Returns the passing round's results and whether a
+ * fix step ran; the caller commits the lowered lists, then runs the scope, size and floor gates again on the final diff.
  */
 async function checksBeforePush(
   w: Worker,
@@ -778,7 +773,7 @@ async function checksBeforePush(
   s: FixContext,
 ): Promise<{ results: CheckResult[]; fixed: boolean }> {
   await cleanTree(w, handle);
-  const first = await w.runCheckList(run, handle, signal);
+  const first = await w.runCheckList(run, handle, signal, SHRINK_ENV);
   if (!first.failed) return { results: first.results, fixed: false };
   // A missing install is the host's, not the branch's: no fix step, and an infra failure (issue #229).
   const missing = toolchainMissing(first.failed.tail);
@@ -789,7 +784,7 @@ async function checksBeforePush(
   }
   await fixStep(w, run, item, handle, signal, s, first.failed);
   await cleanTree(w, handle);
-  const second = await w.runCheckList(run, handle, signal);
+  const second = await w.runCheckList(run, handle, signal, SHRINK_ENV);
   if (!second.failed) return { results: second.results, fixed: true };
   const onBase = await failsOnBase(w, run, handle, signal, s.baseSha, second.failed);
   if (onBase) return checksEnv(w, run, item, second.failed, onBase);
@@ -870,6 +865,10 @@ async function fixStep(
   if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
   await w.distrustAgentGit(handle, s.dirs);
 }
+
+/** The architecture ratchet lists, and the env under which the pre-push checks lower (never raise) them (design §4). */
+const RATCHET_LISTS = "tests/architecture/known-violations/";
+const SHRINK_ENV = { env: { SF_RATCHET_SHRINK: "1" } };
 
 /** `checks_failed` (a task failure): one comment naming the command, keyed on the run; nothing is pushed. */
 async function checksFailed(w: Worker, run: Run, item: WorkItem, first: CheckResult, second: CheckResult): Promise<never> {
