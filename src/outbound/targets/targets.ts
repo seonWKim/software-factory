@@ -5,7 +5,6 @@
 import type { SourceRef } from "../../core/types.js";
 import { GIT_TARGET, TACIT_TARGET, type ActionRow } from "../intents.js";
 import { deliverGit, gitAccepts } from "./local-git.js";
-import type { SourceAdapter } from "../../interfaces/source-adapter.js";
 import { act, sourceNotice, type Delivery, type DeliveryTarget, type TargetDeps } from "./target.js";
 
 const GITHUB = "github_issue";
@@ -21,8 +20,10 @@ function filing(d: Delivery): boolean {
   return d.kind === "action" && (d.row.action === "file_sub_issue" || d.row.action === "file_fix_item");
 }
 
+type Adapter = NonNullable<ReturnType<TargetDeps["byType"]["get"]>>;
+
 /** Whether `a` files what `d` asks: a sub-issue (`fileSubIssue`) or a standalone fix item (`fileIssue`). */
-function files(a: SourceAdapter | null, d: Delivery): boolean {
+function files(a: Adapter | null, d: Delivery): boolean {
   if (a === null || d.kind !== "action") return false;
   return (d.row.action === "file_fix_item" ? a.fileIssue : a.fileSubIssue) !== undefined;
 }

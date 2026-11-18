@@ -855,6 +855,9 @@ describe("merge queue: a failing UI check (real git)", { timeout: 120_000 }, () 
     // Both changes failed on the same base: one alert and one fix item, keyed on its sha.
     const alerts = async () => (await f.store.listAlerts({ limit: 50 })).filter((a) => a.pattern === "red_main");
     expect((await alerts()).map((a) => a.pattern_key)).toEqual([`red_main:${main}`]);
+    // Manual mode: the alert is raised, and there is no auto mode to stop.
+    expect((await f.store.listAlerts({ limit: 50 })).some((a) => a.pattern === "auto_stopped")).toBe(false);
+    expect((await f.store.listSettingChanges(50)).filter((c) => c.key === "mode")).toEqual([]);
     const fixes = async () => (await f.store.db.all("SELECT intent_key FROM outbound_actions WHERE action = 'file_fix_item'")).map((r) => r.intent_key);
     expect(await fixes()).toEqual([`file_fix_item:red_main:${main}`]);
     await f.controller.tickOutbox();

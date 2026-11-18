@@ -99,9 +99,8 @@ export interface NewRun {
 }
 
 /** The patterns the alarm step looks for across items (design 05-alarms); `spend_budget`: spend passed 80% or 100% of a budget (06-spend). */
-/** `auto_stopped`: a stop condition set auto mode back to manual (design 03-risk); the controller stores it, not the alarm step. */
+/** `auto_stopped`: a stop condition set auto mode back to manual; `red_main`: the base fails a check on its own, keyed on its sha (design 03-risk). The controller stores both. */
 /** `dead_letter`: the bus dead-lettered a message (RFC 0015 §5.4); the controller's dead-letter-alarm handler stores it. */
-/** `red_main`: the base branch fails a check on its own (design 03-risk); keyed on the base sha, stored by the controller in any mode. */
 export type AlertPattern = "repeated_error" | "zero_tokens" | "child_restarts" | "auto_stopped" | "dead_letter" | "spend_budget" | "red_main";
 
 /** An alert as the alarm step builds it; the store adds `id` and `created_at`. */
