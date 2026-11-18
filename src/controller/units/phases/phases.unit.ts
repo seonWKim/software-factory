@@ -264,9 +264,9 @@ export class PhasesUnit {
 
   /**
    * Moves split specs along (design 2026-11-01). A split whose phases are being filed goes on (`advanceSplit`). A
-   * held phase whose previous phase is CLOSED / completed is released into triage. A split parent whose phases are all CLOSED / completed gets one comment, is closed as
-   * completed on its source, then CLOSED / completed in the store. A phase closed any other way keeps the next
-   * phase held and the parent open. Safe on any replica and safe to repeat: every step re-reads the store, the
+   * held phase whose previous phase is CLOSED / completed is released into triage. A split parent whose recorded phases are all CLOSED gets one comment, is closed on its source,
+   * then CLOSED in the store: completed when its last phase closed completed, else rejected (closeSplitIfDone). A
+   * phase closed any other way keeps the next phase held. Safe on any replica and safe to repeat: every step re-reads the store, the
    * comment is keyed, closing a closed issue changes nothing, and each transition is conditional.
    */
   async tickPhases(): Promise<void> {
@@ -361,30 +361,50 @@ export class PhasesUnit {
     return ids ? phases.filter((p) => ids.includes(p.source.id)) : phases;
   }
 
+  /** The recorded phase with the highest phase number: the one whose close decides how the parent closes. */
+  async lastPhase(parentId: WorkItemId): Promise<WorkItem | null> {
+    const phases = await this.recordedPhases(parentId);
+    return phases.reduce<WorkItem | null>((last, p) => (last === null || (p.phase ?? 0) > (last.phase ?? 0) ? p : last), null);
+  }
+
+  /**
+   * Closes split parent `id` once every recorded phase is CLOSED, whatever each phase's close reason (design
+   * 04-split-specs, 2026-11-18). The last phase decides how: closed completed, the parent closes completed with that
+   * phase's merge sha; closed any other way, the parent closes rejected and its source issue is closed as a rejected
+   * item's is. Its dependents are re-checked either way (design 05-dependencies).
+   */
   async closeSplitIfDone(id: WorkItemId): Promise<void> {
     const it = await this.c.k.d.store.getWorkItem(id);
     if (!it || !splitOpen(it)) return;
-    // How many phases the approval filed: the store's phase rows must all exist and all be closed as completed.
+    // How many phases the approval filed: the store's phase rows must all exist and all be closed.
     const approved = (await this.c.k.d.store.listStateChanges(id)).filter((c) => c.reason === SPLIT_APPROVED).at(-1);
     const ids = parseSubIssues(approved?.detail);
     if (!ids) return;
     const phases = await this.recordedPhases(id);
-    if (phases.length < ids.length || !phases.every(completed)) return;
+    if (phases.length < ids.length || !phases.every((p) => p.stage === "CLOSED")) return;
     if (!this.c.k.adapterFor(it.source, "closeIssue")) return;
-    await this.c.unit("outbox").comment(it, `split-done:${it.id}`,
-      `Closed because all ${ids.length} phases of this split were closed as completed.`);
-    await this.c.unit("outbox").close(it, "completed");
+    const last = await this.lastPhase(id);
+    const merged = completed(last);
+    const done = phases.filter(completed).length;
+    await this.c.unit("outbox").comment(it, `split-done:${it.id}`, merged
+      ? done === ids.length
+        ? `Closed because all ${ids.length} phases of this split were closed as completed.`
+        : `Closed because all ${ids.length} phases of this split were closed and the last phase was closed as completed (${done} of ${ids.length} completed).`
+      : `Closed because all ${ids.length} phases of this split were closed and the last phase closed without a merge. The factory closed this issue as not planned.`);
+    if (merged) await this.c.unit("outbox").close(it, "completed");
+    else await this.c.unit("outbox").close(it);
+    const merge_sha = merged ? (last?.merge_sha ?? null) : null;
     await this.c.unit("transitions").decide(id, (cur) =>
       splitOpen(cur)
         ? {
-            patch: { stage: "CLOSED", close_reason: "completed", blocked_on: "none", blocked_reason: null },
+            patch: { stage: "CLOSED", close_reason: merged ? "completed" : "rejected", merge_sha, blocked_on: "none", blocked_reason: null },
             actor: SYSTEM,
-            reason: "split_completed",
-            detail: { phases: ids.length },
+            reason: merged ? "split_completed" : "split_rejected",
+            detail: { phases: ids.length, completed: done },
           }
         : null,
     );
-    // Its dependents count it merged now that its phases are (design §5).
+    // Its dependents count it merged, or get the dependency_closed hold, now that its phases are closed (design §5).
     await this.c.k.guard("dependents", () => this.c.unit("coordination").releaseDependents(it.source.id));
   }
 }
