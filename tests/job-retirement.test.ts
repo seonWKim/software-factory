@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { ALERT_DEDUPE_MS } from "../src/core/alarms.js";
+import { ALERT_DEDUPE_MS, alarmStep } from "../src/core/alarms.js";
+import { ALARM_DEFAULTS, STALL_DEFAULTS } from "../src/core/config.js";
 import {
   JOB_RETIRE_PREFIX, RETIRE_NOOP_RUNS, type JobRun, type ScheduledJob, type ScheduledJobs, decideRetirement, dueForRetirement, retirementStep,
 } from "../src/core/job-retirement.js";
 import type { Timestamp } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { FakeAuth, cleanScanner, config, silent } from "./helpers/fakes.js";
-import { newStore } from "./helpers/store.js";
+import { cleanScanner, silent } from "./helpers/fakes.js";
+import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
 // Design 05-alarms: a scheduled job whose target is gone and that did nothing RETIRE_NOOP_RUNS times in a row gets
 // one retirement proposal, an alert the owner answers with /approve or /reject.
@@ -40,13 +40,13 @@ class FakeJobs implements ScheduledJobs {
 async function setup() {
   const { store, clock } = await newStore();
   const jobs = new FakeJobs(clock);
-  const deps = { store, scanner: cleanScanner, clock, log: silent, jobs };
+  const deps = { store, scanner: cleanScanner, log: silent, jobs };
   const proposals = async () => (await store.listAlerts({ limit: 50 })).filter((a) => a.pattern_key.startsWith(JOB_RETIRE_PREFIX));
   /** One run of `id` a day, then a retirement step. */
   const day = async (id: string, noop: boolean) => {
     clock.advance(24 * HOUR);
     jobs.run(id, noop);
-    return retirementStep(deps);
+    return retirementStep(deps, clock.now());
   };
   return { store, clock, jobs, deps, proposals, day };
 }
@@ -75,7 +75,7 @@ describe("job retirement: the check", () => {
 
 describe("job retirement: the proposal", () => {
   it("a job whose target is gone and that no-ops 3 times in a row gets one proposal; the job is not disabled", async () => {
-    const { jobs, deps, proposals, day } = await setup();
+    const { jobs, deps, proposals, day, clock } = await setup();
     jobs.add("improve-daily", false);
     await day("improve-daily", true);
     await day("improve-daily", true);
@@ -89,7 +89,7 @@ describe("job retirement: the proposal", () => {
     expect(jobs.jobs.get("improve-daily")!.disabled).toBe(false);
 
     // Two steps at once, and more no-ops days later: still the one proposal.
-    await Promise.all([retirementStep(deps), retirementStep(deps)]);
+    await Promise.all([retirementStep(deps, clock.now()), retirementStep(deps, clock.now())]);
     await day("improve-daily", true);
     expect(await proposals()).toHaveLength(1);
   });
@@ -147,10 +147,14 @@ describe("job retirement: the owner's answer", () => {
 });
 
 describe("job retirement: guards", () => {
-  it("reads the store only for its alert, and calls no model, forge or sandbox", async () => {
+  it("reads the store only for its alert", async () => {
     const { store, clock } = await newStore();
     const jobs = new FakeJobs(clock);
     jobs.add("j", false);
+    for (let i = 0; i < RETIRE_NOOP_RUNS; i++) {
+      clock.advance(24 * HOUR);
+      jobs.run("j", true);
+    }
     const used: string[] = [];
     const watched = new Proxy(store, {
       get: (t, p) => {
@@ -162,22 +166,24 @@ describe("job retirement: guards", () => {
         };
       },
     }) as FactoryStore;
-    const throwing = <T extends object>(name: string, own: Record<string, unknown> = {}): T =>
-      new Proxy(own, {
-        get: (t, p) => (p in t || p === "then" ? (t as Record<string | symbol, unknown>)[p] : () => { throw new Error(`${name}.${String(p)} called`); }),
-      }) as T;
-    const c = new ControllerRole({
-      store: watched, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner, jobs,
-      sources: [throwing("source", { type: "github_issue", intake: "poll" })], llm: throwing("llm"), sandbox: throwing("sandbox"),
-    });
+    expect(await retirementStep({ store: watched, scanner: cleanScanner, log: silent, jobs }, clock.now())).toHaveLength(1);
+    expect(new Set(used)).toEqual(new Set(["recordAlert"]));
+  });
+
+  it("runs in the alarm step, as of the step's injected clock", async () => {
+    const { store, clock } = await newStore();
+    const jobs = new FakeJobs(clock);
+    jobs.add("j", false);
     for (let i = 0; i < RETIRE_NOOP_RUNS; i++) {
       clock.advance(24 * HOUR);
       jobs.run("j", true);
     }
-    await c.tickJobRetirement();
-    expect(new Set(used)).toEqual(new Set(["recordAlert"]));
-    const [p] = (await store.listAlerts({ limit: 10 })).filter((a) => a.pattern_key.startsWith(JOB_RETIRE_PREFIX));
-    expect(await c.decideJobRetirement(p!, "approve")).toBe(true);
-    expect(jobs.jobs.get("j")!.disabled).toBe(true);
+    // A run that did something, an hour ahead of the step's clock: it does not count yet.
+    clock.advance(HOUR);
+    jobs.run("j", false);
+    clock.advance(-HOUR);
+    const deps = { store, scanner: cleanScanner, clock, log: silent, project: PROJECT_KEY, jobs };
+    const settings = { ...ALARM_DEFAULTS, probe_interval_ms: STALL_DEFAULTS.probe_interval_ms };
+    expect((await alarmStep(deps, settings)).map((a) => a.pattern_key)).toContain(`${JOB_RETIRE_PREFIX}j`);
   });
 });

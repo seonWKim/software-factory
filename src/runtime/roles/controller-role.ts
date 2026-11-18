@@ -13,10 +13,8 @@ import {
 import {
   CONTROLLER, CONTROLLER_EVENTS, CONTROLLER_EVENT_KINDS, type ControllerContext, type ControllerEvent, type ControllerReader, type ControllerWrite, type Decisions, type ControllerUnits, Kernel, Router, type UnitName, type UnitOperations,
 } from "../../controller/index.js";
-import type { Alert } from "../../interfaces/factory-store.js";
 import type { ControllerDeps, GitHubBudgetStatus } from "../../core/controller-deps.js";
 import type { FactoryConfig } from "../../core/config.js";
-import { type RetirementVerdict, type ScheduledJobs, decideRetirement, retirementStep } from "../../core/job-retirement.js";
 import { TickLease, syncLeaseName, syncLeaseOps } from "../../core/lease.js";
 import { Listener } from "../../core/listener.js";
 import { errorText } from "../../core/log.js";
@@ -52,8 +50,6 @@ export interface ControllerRoleDeps extends ControllerDeps {
    * tests. Absent: the config's `hooks` (none unless the owner lists some), as the worker's `before_run`.
    */
   hooks?: { readonly enabled: readonly string[]; readonly list?: readonly HookDescriptor[] };
-  /** The scheduled jobs the retirement step reads (design 05-alarms). Absent: no job is proposed for retirement. */
-  jobs?: ScheduledJobs;
 }
 
 type ComponentBus = EventBus & Inbox & Relay;
@@ -218,7 +214,6 @@ export class ControllerRole implements Decisions {
     this.decide(units, r);
     // The daily retention pass (design 08-retention), tried each poll interval; the store's day mark makes it daily.
     units.schedule("retention", () => this.kernel.cfg.poll_interval_ms, () => this.tickRetention());
-    if (this.role.jobs) units.schedule("job-retirement", () => this.kernel.cfg.poll_interval_ms, () => this.tickJobRetirement());
     // The label, never the key: log lines and comments name a project by its readable path.
     this.role.log.info("controller started", { project: this.kernel.cfg.project.label });
     await Promise.all([
@@ -316,17 +311,6 @@ export class ControllerRole implements Decisions {
   async tickAlarms(): Promise<void> {
     await this.kernel.live.refresh();
     await (await this.router()).unit("alarms").alarmsStep();
-  }
-
-  /** One retirement step (design 05-alarms): a proposal for each scheduled job whose target is gone and that no-ops. */
-  async tickJobRetirement(): Promise<void> {
-    const d = this.role;
-    if (d.jobs) await retirementStep({ store: d.store, scanner: d.scanner, clock: d.clock, log: d.log, jobs: d.jobs });
-  }
-
-  /** The owner's `/approve` (disable the job) or `/reject` (keep it) on a retirement proposal; false: not one. */
-  async decideJobRetirement(alert: Pick<Alert, "pattern_key">, verdict: RetirementVerdict): Promise<boolean> {
-    return this.role.jobs ? decideRetirement({ jobs: this.role.jobs, log: this.role.log }, alert, verdict) : false;
   }
 
   /** One daily improve step (design §7): the current UTC day's improve run, queued once. */

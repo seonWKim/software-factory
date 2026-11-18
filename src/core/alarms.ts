@@ -13,6 +13,7 @@
 import { groupFailures, normalizeDetail, patternKey, sleepAlertKey, stalledBySleep } from "./improver.js";
 import type { Logger } from "./log.js";
 import { AGENT_STALLED, MODEL_STALL } from "./policy.js";
+import { type ScheduledJobs, retirementStep } from "./job-retirement.js";
 import { DAY_MS, dayStart, spendTotals, utcDay, weekStart } from "./spend.js";
 import {
   type FailureGroup, type FiledPattern, RECURRING_FAILURE, type Run, type RunKind, type RunOutcome, type SourceRef, type StateChange, type Timestamp, type WorkItem, type WorkItemId,
@@ -157,6 +158,8 @@ export interface AlarmDeps {
   hold?: (p: HeldPattern) => Promise<void>;
   /** Posts on a filed item through its source, once per marker. Absent: no comment. */
   comment?: (ref: SourceRef, body: string, marker: string) => Promise<void>;
+  /** The scheduled jobs the retirement check reads (src/core/job-retirement.ts). Absent: none is proposed. */
+  jobs?: ScheduledJobs;
 }
 
 /**
@@ -164,8 +167,10 @@ export interface AlarmDeps {
  * unless it alerted within ALERT_DEDUPE_MS. A detail the egress scanner flags is dropped; the code and count stay.
  * A new zero-token alert starts the model_stall pause, first probe after `probe_interval_ms`; a new repeated-error
  * alert holds the items it hit (`hold`), so the failing items wait for a person and auto mode goes on. Each recurring
- * pattern re-raises first (`reraise`), then each failed run of an open filed pattern holds its item (`holdFiled`). Returns the alerts this call stored. Safe to run twice and on several
- * replicas at once: the store's conditional insert dedupes.
+ * pattern re-raises first (`reraise`), then each failed run of an open filed pattern holds its item (`holdFiled`), then
+ * each grant refusal holds its item and alerts (`holdRefused`). Last, each scheduled job whose target is gone and that
+ * no-ops is proposed for retirement (`retirementStep`, with `jobs`). Returns the alerts this call stored. Safe to run
+ * twice and on several replicas at once: the store's conditional insert dedupes.
  */
 export async function alarmStep(d: AlarmDeps, settings: AlarmSettings & { probe_interval_ms: number; spend?: SpendBudgets }): Promise<Alert[]> {
   const now = d.clock.now();
@@ -191,6 +196,7 @@ export async function alarmStep(d: AlarmDeps, settings: AlarmSettings & { probe_
     }
   }
   if (settings.spend) stored.push(...(await spendStep(d, settings.spend)));
+  if (d.jobs) stored.push(...(await retirementStep({ ...d, jobs: d.jobs }, now)));
   return stored;
 }
 

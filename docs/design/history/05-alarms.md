@@ -1,5 +1,6 @@
 ## History
 
+- **Grant refusals and job retirement** (decision changed 2026-11-18). Before: a run refused by a grant check (`pack_tool_refused`, `not_granted`) was one more failed run, held and alerted only as a repeated error on `alarm_repeat_count` items, and no path proposed retiring a scheduled job whose target was gone.
 - **What a hold shows** (decision changed 2026-11-15). Before: the explanation of a held item read "Waiting for a person: recurring_failure" and its decision box "recurring failure", with no command and no word on the failure behind the hold.
 - **Open filed item and `/retry`** (decision changed 2026-11-11, issue #511 follow-up). Before: a filed item not in the store counted as open with no time bound, so a filed issue closed or never labelled before intake held its pattern's items for good, and no command lifted a hold; the re-raise held every item its pattern hit in the hour, even one whose hold a person had cleared.
 - **Hold at the first matching run, for a person** (decision changed 2026-11-11, issue #511). Before: a filed pattern's items were held only by the re-raise, after `alarm_repeat_count` new failures within the hour, and every hold was `blocked_on: upstream`, so it did not ask a person; the release read `blocked_on: upstream` items.
