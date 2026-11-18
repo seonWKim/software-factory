@@ -593,11 +593,8 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   /** Replaces the groups of report `id` (their filing written after the report), and its patterns when given (`hotspot` rows' filing). Unknown ID: no change. */
   setImproveGroups(id: ImproveReportId, groups: ImproveReport["groups"], patterns?: ImproveReport["patterns"]): Promise<void>;
   getFiledPattern(project: string, pattern_key: string): Promise<FiledPattern | null>;
-  /**
-   * Claims (project, pattern key) for `input.report_id` with no item; a row there is kept, unless `from.replace` names its report
-   * (then refiled, no item or outcome) or `from.restart` matches a half-done claim as read (its claim time set to now).
-   * Of two callers one gets `taken`.
-   */
+  /** Claims (project, pattern key) for `input.report_id` with no item; a row there is kept, unless `from.replace` names its report
+   * (then refiled, no item or outcome) or `from.restart` matches a half-done claim as read (its claim time set to now). Of two callers one gets `taken`. */
   takeFiledPattern(input: NewFiledPattern, from?: { replace: ImproveReportId } | { restart: Pick<FiledPattern, "report_id" | "created_at"> }): Promise<{ row: FiledPattern; taken: boolean }>;
   /** The oldest item of `project` titled exactly `title`, not CLOSED, or null (design §7: a hot file's open fix item). Read-only. */
   getOpenWorkItemByTitle(project: string, title: string): Promise<WorkItem | null>;
