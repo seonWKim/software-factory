@@ -17,6 +17,7 @@ import { keyHelp, keyLabel } from "../lib/key-label.js";
 import { MergeButton } from "./item-commands.js";
 import { SettingsRow } from "./settings-row.js";
 import { withNodes } from "./standing.js";
+import { Disclosure } from "../components/ui/disclosure.js";
 
 // The Settings page's write pieces (useWrite, Outcome) and its typed form of the file-only keys (design 08-settings,
 // phase 3 of "Settings without editing factory.config.json"). Each file-only key has a typed control and a restart
@@ -288,8 +289,7 @@ const shownJson = (v: Json | undefined): string => (v === undefined ? t("setting
 /** The raw key name behind a Details toggle, under a row's human label; a guard plugin's Details also says "guard". */
 export function KeyNameDetails({ name, guard }: { name: string; guard?: boolean }) {
   return (
-    <details>
-      <summary className="cursor-pointer text-xs text-text-2">{t("settings.details")}</summary>
+    <Disclosure summary={t("settings.details")}>
       <KeyValue
         className="mt-1"
         items={[
@@ -297,7 +297,7 @@ export function KeyNameDetails({ name, guard }: { name: string; guard?: boolean 
           ...(guard ? [{ key: "guard", term: t("settings.file.guard"), value: "" }] : []),
         ]}
       />
-    </details>
+    </Disclosure>
   );
 }
 

@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { isHttpUrl } from "../../lib/format.js";
 import { LINK_CLASS } from "./link-style.js";
+import { Disclosure } from "./disclosure.js";
 
 // A small markdown renderer for spec text (design §9): headings, paragraphs, lists, fenced code, inline code,
 // bold, links and a `<details><summary>…</summary>` fold on lines of their own. It builds React elements only,
@@ -130,10 +131,9 @@ function renderBlock(b: Block, n: number): ReactNode {
       return <pre key={n} className="overflow-x-auto rounded-control bg-surface-2 p-3 font-mono text-xs leading-normal"><code>{b.text}</code></pre>;
     case "details":
       return (
-        <details key={n} className="rounded-control border border-border px-3 py-2">
-          <summary className="cursor-pointer font-medium text-text-1">{inline(b.summary)}</summary>
+        <Disclosure key={n} summary={inline(b.summary)}>
           <div className="mt-2 space-y-3">{renderBlocks(b.body)}</div>
-        </details>
+        </Disclosure>
       );
   }
 }

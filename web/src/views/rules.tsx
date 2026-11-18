@@ -1,5 +1,4 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { ChevronDown } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import {
   API, type AgentsHomeView, type AppliedRule, type ImproveGroupView, type ImproveView, type RetiredRule, type RuleDetail, type RuleEvidence, type RuleRow, type RuleVerdict, type RulesView,
@@ -21,13 +20,14 @@ import { Textarea } from "../components/ui/textarea.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { ApprovalsSection } from "./standing.js";
+import { Disclosure } from "../components/ui/disclosure.js";
 
 // The Rules page (design 09-dashboard-app.md and 07-self-improvement.md, issue #571), under one PageHeader that says what
 // the page is for and how many entries wait, at most max-w-3xl wide, with a "How this works" disclosure. Only entries
 // the ledger has not judged (judged null) wait: they are counted and shown in two groups, rule candidates (`C-…`) and
 // structure proposals (`P-…`), each under one line saying what promoting one does; judged ones collapse into one
 // "N decided" line, and with none waiting an EmptyState gives the next step. A card lists its title (an IdDetails: the ID in its tooltip) and a StatusBadge
-// (open, pending, held, or the judged decision). "Why and where" (aria-expanded, a chevron) reads the entry's
+// (open, pending, held, or the judged decision). "Why and where" (a Disclosure) reads the entry's
 // detail on demand through GET /api/v1/rules/entry?id=, never on page load: a description, what it would change,
 // before → after, why, the evidence (newest first, 3 shown, the rest behind "Show all N"), where it applies and the
 // related applied rules (sharing an incident ID or naming the target file), each part left out when it has nothing.
@@ -333,7 +333,6 @@ function EntryDetail({ entry, applied }: { entry: RuleRow; applied: AppliedRule[
 
 function RuleCard({ entry, applied, token }: { entry: RuleRow; applied: AppliedRule[]; token: string | null }) {
   const [open, setOpen] = useState<RuleVerdict | null>(null);
-  const [detail, setDetail] = useState(false);
   const noDraft = isClass(entry.id) && entry.draft === null;
   return (
     <li data-rule={entry.id} className="space-y-2 p-3">
@@ -354,11 +353,9 @@ function RuleCard({ entry, applied, token }: { entry: RuleRow; applied: AppliedR
           {proposalLine(entry.kind, entry.target)}
         </p>
       )}
-      <Button variant="ghost" size="sm" aria-expanded={detail} onClick={() => setDetail(!detail)}>
-        {t("rules.showDetail")}
-        <ChevronDown aria-hidden className={`size-4 motion-safe:transition-transform ${detail ? "rotate-180" : ""}`} />
-      </Button>
-      {detail && <EntryDetail entry={entry} applied={applied} />}
+      <Disclosure lazy summary={t("rules.showDetail")}>
+        <EntryDetail entry={entry} applied={applied} />
+      </Disclosure>
       {entry.judged === null && entry.draft_error !== null && (
         <p data-draft-error className="text-xs text-pretty break-words text-pill-bad-fg">
           {t("rules.draftError", { error: entry.draft_error })}
@@ -533,15 +530,14 @@ function AppliedClass({ rule, id, token, round }: { rule: AppliedRule; id: strin
           ))}
         </ul>
       )}
-      <details>
-        <summary className="cursor-pointer text-xs text-text-2">{t("rules.appliedDetails")}</summary>
+      <Disclosure summary={t("rules.appliedDetails")}>
         <dl className="mt-2 grid grid-cols-[5rem_minmax(0,1fr)] gap-x-3 gap-y-2">
           <AppliedPart label="rules.appliedDefault">{md(rule.default)}</AppliedPart>
           <AppliedPart label="rules.appliedException">{md(rule.exceptions)}</AppliedPart>
           <AppliedPart label="rules.appliedIncidents">{evidence(rule.incidents)}</AppliedPart>
           <AppliedPart label="rules.appliedJudged">{rule.judged === null ? null : <p className="text-sm">{rule.judged}</p>}</AppliedPart>
         </dl>
-      </details>
+      </Disclosure>
       {retiring && token !== null && <RetireDialog id={id} name={ruleName(rule)} token={token} onClose={() => setRetiring(false)} />}
     </li>
   );
@@ -570,8 +566,7 @@ function Applied({ applied, token, collapsed }: { applied: NonNullable<RulesView
   const shown = rules.filter((r) => matches(r, q));
   return (
     <Section title={t("rules.groupApplied")} count={rules.length} action={suggest}>
-      <details open={!collapsed}>
-        <summary className="cursor-pointer text-xs text-pretty text-text-2">{t("rules.appliedShow")}</summary>
+      <Disclosure defaultOpen={!collapsed} summary={t("rules.appliedShow")}>
         <div className="mt-2 space-y-2">
           <p data-group-line className={muted}>
             {t("rules.groupAppliedLine")} {t("rules.appliedOrder")}
@@ -592,7 +587,7 @@ function Applied({ applied, token, collapsed }: { applied: NonNullable<RulesView
             </div>
           )}
         </div>
-      </details>
+      </Disclosure>
     </Section>
   );
 }
@@ -602,8 +597,7 @@ function Retired({ retired }: { retired: RetiredRule[] }) {
   if (retired.length === 0) return null;
   return (
     <Section title={t("rules.groupRetired")} count={retired.length}>
-      <details data-retired>
-        <summary className="cursor-pointer text-xs text-pretty text-text-2">{t("rules.retiredShow")}</summary>
+      <Disclosure data-retired summary={t("rules.retiredShow")}>
         <ul aria-label={t("rules.groupRetired")} className="mt-2 divide-y divide-border rounded-control border border-border">
           {retired.map((r) => (
             <li key={r.id} data-retired-rule={r.id} className="space-y-1 p-3">
@@ -612,7 +606,7 @@ function Retired({ retired }: { retired: RetiredRule[] }) {
             </li>
           ))}
         </ul>
-      </details>
+      </Disclosure>
     </Section>
   );
 }
@@ -643,10 +637,9 @@ export function RulesPage() {
   return (
     <div className={`${PAGE_WIDTH} space-y-4`}>
       <PageHeader title={title} description={t("rules.pageDescription")} actions={<span data-waiting className="text-sm font-medium tabular-nums">{t("rules.waiting", { count: waiting.length })}</span>} />
-      <details data-how className="rounded-control border border-border px-3 py-2">
-        <summary className="cursor-pointer text-sm font-medium">{t("rules.how")}</summary>
+      <Disclosure data-how summary={t("rules.how")}>
         <p className={`mt-2 ${muted}`}>{t("rules.footer")}</p>
-      </details>
+      </Disclosure>
       {v.judge !== null && <Notice tone="warn">{t("rules.readOnly")}{v.judge}</Notice>}
       {v.error !== null && <Notice tone="bad">{v.error}</Notice>}
       <ApprovalsSection />
@@ -670,15 +663,14 @@ export function RulesPage() {
           );
         })}
         {decided.length > 0 && (
-          <details data-decided className="mt-6">
-            <summary className="cursor-pointer text-sm font-semibold">{t("rules.decided", { count: decided.length })}</summary>
+          <Disclosure data-decided className="mt-6" summary={t("rules.decided", { count: decided.length })}>
             <p className={`my-2 ${muted}`}>{t("rules.judgedHint")}</p>
             <ul aria-label={t("rules.decidedList")} className="divide-y divide-border rounded-control border border-border">
               {decided.map((e) => (
                 <RuleCard key={e.id} entry={e} applied={applied} token={token} />
               ))}
             </ul>
-          </details>
+          </Disclosure>
         )}
         {v.applied !== null && <Applied applied={v.applied} token={token} collapsed={waiting.length > 0} />}
         {v.retired && <Retired retired={v.retired} />}

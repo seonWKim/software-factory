@@ -9,6 +9,7 @@ import { Textarea } from "../../components/ui/textarea.js";
 import { t } from "../../i18n/index.js";
 import { Outcome, StringListControl, useWrite } from "../settings-file-keys.js";
 import { HOLD_CHOICE, HOLD_CHOICES, HOLD_MODES, SHORT_OBJECT, type HoldChoice, type HoldDraft, asObject, entries, holdOf, pretty, stringItems, stringOf, summaryOf } from "./values.js";
+import { Disclosure } from "../../components/ui/disclosure.js";
 
 const TIERS = ["cheap", "standard", "strong"] as const;
 /** message_style (design 04-agents): what it does in one line, and an example. */
@@ -134,10 +135,9 @@ export function Editor({ row, label, value, token, project, floating = false }: 
     );
     control =
       obj !== null && entries(obj).length > SHORT_OBJECT ? (
-        <details>
-          <summary className="cursor-pointer text-xs text-pretty break-words text-text-2">{summaryOf(obj, "settings.keysSummaryEdit")}</summary>
+        <Disclosure summary={summaryOf(obj, "settings.keysSummaryEdit")}>
           <div className="mt-2">{form}</div>
-        </details>
+        </Disclosure>
       ) : (
         form
       );

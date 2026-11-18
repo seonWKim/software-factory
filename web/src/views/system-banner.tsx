@@ -10,6 +10,7 @@ import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { BASE } from "../pages.js";
 import { AutoStopNote, alarmAnchor } from "./settings/general.js";
+import { Disclosure } from "../components/ui/disclosure.js";
 
 /**
  * Shown while the app was built from another revision than the server it talks to runs (design §9): the tab
@@ -172,10 +173,9 @@ function AlarmRow({ action }: { action: SystemAction }) {
     <li data-check="alarm" {...(stop ? { id: alarmAnchor(stop.alert_id) } : {})} className={NEED_ROW}>
       <div className="min-w-0 grow basis-64 space-y-1">
         <p data-alarm-summary title={action.text} className="truncate text-sm font-medium text-text-1">{action.text}</p>
-        <details data-alarm-full className="min-w-0 text-xs text-text-2">
-          <summary className="cursor-pointer">{t("needs.alarmFull")}</summary>
-          <p className="mt-1 text-pretty wrap-anywhere">{action.text}</p>
-        </details>
+        <Disclosure data-alarm-full summary={t("needs.alarmFull")}>
+          <p className="mt-1 text-xs text-pretty wrap-anywhere text-text-2">{action.text}</p>
+        </Disclosure>
         {stop && <AutoStopLine stop={stop} />}
       </div>
       {stop ? (
