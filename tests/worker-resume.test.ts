@@ -33,6 +33,17 @@ function publishWip(f: Harness, run: Run): string {
   return wip.branch;
 }
 
+/** The base moved and merging it conflicts in src/a.ts (the fake's own merge rule does not see the hooks-off form). */
+function conflictOnMerge(f: Harness): void {
+  f.sandbox.ancestorExit = 1;
+  f.sandbox.conflicts = ["src/a.ts"];
+  const exec = f.sandbox.exec.bind(f.sandbox);
+  f.sandbox.exec = async (h, cmd, o) => {
+    const r = await exec(h, cmd, o);
+    return cmd.slice(1).join(" ").startsWith("-c core.hooksPath=/dev/null merge --no-ff") ? { ...r, exit_code: 1 } : r;
+  };
+}
+
 describe("wip branch on a failed last step", () => {
   it("a failed branch store leaves the commits on a wip branch under the prefix, and the run fails with its code", async () => {
     const { f, pushes } = await setup();
@@ -122,33 +133,31 @@ describe("wip branch on a failed last step", () => {
     expect(f.agentCalls("implement")).toBe(1);
   });
 
-  it("on a resumed run, a base merge conflict fails with merge_conflict and makes no agent call", async () => {
-    const { f } = await setup();
+  it("on a resumed run, a base merge conflict runs one resolve step and no implement step; a passing resolve pushes the branch", async () => {
+    const { f, pushes } = await setup();
     f.broker.responses[STORE_BRANCH] = [PUSH_FAILED];
     const it0 = await f.submit();
     await f.step();
     const [failed] = await f.runs(it0, "implement");
     publishWip(f, failed!);
-    // The base moved and merging it conflicts (the fake's own merge rule does not see the hooks-off form).
-    f.sandbox.ancestorExit = 1;
-    f.sandbox.conflicts = ["src/a.ts"];
-    const exec = f.sandbox.exec.bind(f.sandbox);
-    f.sandbox.exec = async (h, cmd, o) => {
-      const r = await exec(h, cmd, o);
-      return cmd.slice(1).join(" ").startsWith("-c core.hooksPath=/dev/null merge --no-ff") ? { ...r, exit_code: 1 } : r;
+    conflictOnMerge(f);
+    // The resolve step fixes the conflict: no unmerged path is left.
+    f.runner.script.resolve = () => {
+      f.sandbox.conflicts = [];
+      return { output: { summary: "resolved", next_steps: "n" } };
     };
+    const callsBefore = f.runner.specs.length;
     f.clock.advance(f.config.retry_base_ms);
-    const pushesBefore = f.broker.calls.filter((c) => c.name === "forge.push_branch").length;
-    const storesBefore = f.broker.stores.length;
-    await f.w1.tick();
-    const retry = (await f.runs(it0, "implement"))[1]!;
-    expect(retry.outcome).toMatchObject({ status: "failed", error_code: "merge_conflict" });
+    await f.step();
+    expect(f.runner.specs.slice(callsBefore)[0]!.role).toBe("resolve");
     expect(f.agentCalls("implement")).toBe(1);
-    // Nothing pushed by the resumed run: not the PR branch, not a new wip branch.
-    expect(f.broker.calls.filter((c) => c.name === "forge.push_branch")).toHaveLength(pushesBefore);
-    expect(f.broker.stores).toHaveLength(storesBefore);
-    const comment = (await runComments(f.store, it0.id)).filter((c) => c.marker === `<!-- factory:merge-conflict:${retry.id} -->`);
-    expect(comment.map((c) => c.body)).toEqual([expect.stringContaining("resumed from its wip branch")]);
+    expect(f.agentCalls("resolve")).toBe(1);
+    const resolve = f.runner.specs.find((s) => s.role === "resolve")!;
+    expect(resolve.prompt).toContain("### `src/a.ts`");
+    const retry = (await f.runs(it0, "implement"))[1]!;
+    expect(retry.outcome).toMatchObject({ status: "succeeded", data: { pr_pending: true, conflicts: ["src/a.ts"] } });
+    expect(pushes.at(-1)).toEqual({ branch: `factory/${it0.id}`, head: HEAD });
+    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW" });
   });
 
   it("a wip branch that is gone or moved is not trusted: the retry runs the agent again", async () => {
@@ -162,6 +171,94 @@ describe("wip branch on a failed last step", () => {
     await f.step();
     expect(f.agentCalls("implement")).toBe(2);
     expect(await f.item(it0)).toMatchObject({ stage: "REVIEW" });
+    expect(f.log.lines.some((l) => l.msg.includes("wip branch"))).toBe(true);
+  });
+});
+
+// Design §5 Restarts: a base merge conflict the run could not resolve keeps the implementer's commits on the wip
+// branch, so the retry resolves the conflict on them instead of building the change again.
+describe("wip branch on a merge conflict", () => {
+  /** A first implement run whose base merge conflicts and whose conflict step and resolve step both leave it. */
+  async function conflicted() {
+    const { f, pushes } = await setup();
+    conflictOnMerge(f);
+    f.runner.script.resolve = () => ({ output: { summary: "not resolved", next_steps: "n" } });
+    const it0 = await f.submit();
+    await f.step();
+    const [failed] = await f.runs(it0, "implement");
+    return { f, pushes, it0, failed: failed! };
+  }
+  /** The retry's resolve step clears the conflict. */
+  const resolves = (f: Harness) => {
+    f.runner.script.resolve = () => {
+      f.sandbox.conflicts = [];
+      return { output: { summary: "resolved", next_steps: "n" } };
+    };
+  };
+
+  it("keeps the implementer's last commit on the wip branch only, and the retry carries it", async () => {
+    const { f, pushes, it0, failed } = await conflicted();
+    expect(failed.outcome).toMatchObject({ status: "failed", error_code: "merge_conflict", conflicts: ["src/a.ts"] });
+    const wip = (failed.outcome as Failed).wip!;
+    expect(wip).toMatchObject({ branch: `factory/wip/${it0.id}/${failed.id}`, head: HEAD, commits: 2, summary: "the summary" });
+    // HEAD went back on the implementer's last commit before the wip push; nothing else was stored, no PR.
+    expect(pushes).toEqual([{ branch: wip.branch, head: HEAD }]);
+    expect(f.broker.calls.filter((c) => c.name === "forge.open_change")).toEqual([]);
+    expect(f.broker.calls.filter((c) => c.name === "forge.push_branch").map((c) => (c.args as { branch: string }).branch)).toEqual([wip.branch]);
+    const comment = (await runComments(f.store, it0.id)).filter((c) => c.marker === `<!-- factory:merge-conflict:${failed.id} -->`);
+    expect(comment.map((c) => c.body)).toEqual([expect.stringContaining(`\`${wip.branch}\``)]);
+    expect(comment[0]!.body).not.toContain("Nothing was pushed.");
+    const retry = (await f.runs(it0, "implement"))[1]!;
+    expect(retry).toMatchObject({ status: "queued" });
+    expect(retry.input?.wip).toEqual(wip);
+  });
+
+  it("the retry starts with no implement agent step: its first agent call is the resolve role, on the saved commits", async () => {
+    const { f, pushes, it0, failed } = await conflicted();
+    const branch = publishWip(f, failed);
+    const implementCalls = f.agentCalls("implement");
+    const callsBefore = f.runner.specs.length;
+    resolves(f);
+    f.sandbox.head = "somewhere-else\n";
+    f.clock.advance(f.config.retry_base_ms);
+    await f.step();
+    expect(f.runner.specs.slice(callsBefore).map((s) => s.role)[0]).toBe("resolve");
+    expect(f.agentCalls("implement")).toBe(implementCalls);
+    expect(f.sandbox.gitCalls).toContain(`-c core.hooksPath=/dev/null checkout --quiet -f -B factory/${it0.id} ${HEAD}`);
+    const retry = (await f.runs(it0, "implement"))[1]!;
+    expect(retry.outcome).toMatchObject({ status: "succeeded", data: { pr_pending: true, commits: 2 } });
+    expect(pushes.map((p) => p.branch)).toEqual([branch, `factory/${it0.id}`]);
+    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW" });
+  });
+
+  it("a retry whose resolve step fails too fails with merge_conflict, keeps the same wip branch and pushes no new one", async () => {
+    const { f, pushes, it0, failed } = await conflicted();
+    const branch = publishWip(f, failed);
+    const implementCalls = f.agentCalls("implement");
+    const resolveCalls = f.agentCalls("resolve");
+    const before = pushes.length;
+    f.clock.advance(f.config.retry_base_ms);
+    await f.step();
+    const retry = (await f.runs(it0, "implement"))[1]!;
+    expect(retry.outcome).toMatchObject({ status: "failed", error_code: "merge_conflict", conflicts: ["src/a.ts"], wip: { branch, head: HEAD } });
+    expect(f.agentCalls("implement")).toBe(implementCalls);
+    expect(f.agentCalls("resolve")).toBe(resolveCalls + 1);
+    expect(pushes.slice(before)).toEqual([]);
+    const comment = (await runComments(f.store, it0.id)).filter((c) => c.marker === `<!-- factory:merge-conflict:${retry.id} -->`);
+    expect(comment.map((c) => c.body)).toEqual([expect.stringContaining(`\`${branch}\``)]);
+    expect((await f.runs(it0, "implement"))[2]!.input?.wip?.branch).toBe(branch);
+  });
+
+  it("a retry whose wip branch is gone runs the implement agent again", async () => {
+    const { f, it0 } = await conflicted();
+    const callsBefore = f.runner.specs.length;
+    resolves(f);
+    f.clock.advance(f.config.retry_base_ms);
+    await f.step();
+    const first = f.runner.specs.slice(callsBefore)[0]!;
+    expect(first.role).toBe("implement");
+    expect(first.prompt).not.toContain("## Merge conflicts");
+    expect((await f.runs(it0, "implement"))[1]!.outcome).toMatchObject({ status: "succeeded" });
     expect(f.log.lines.some((l) => l.msg.includes("wip branch"))).toBe(true);
   });
 });

@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import type { WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
+import type { Run, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
 import { Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -13,6 +13,11 @@ import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/s
 import { STORE_BRANCH, type ToolBroker, type ToolCallContext, type ToolDescriptor, type ToolResult } from "../src/interfaces/tool-broker.js";
 import { FakeForge, FAKE_GITHUB_TOOLS, FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, cleanScanner, config, gates, issueRef, runComments, silent } from "./helpers/fakes.js";
 import { git, gitTemplate } from "./helpers/git-fixture.js";
+import { conflictAsk } from "../src/worker/runs/implement/conflict-ask.js";
+import { testPathsOnly } from "../src/core/auto-grant.js";
+import { failingTestFiles } from "../src/core/checks.js";
+import { NEEDS_HUMAN_MAX_CHARS, NEEDS_HUMAN_MAX_PATHS } from "../src/core/outputs.js";
+import { isCovered } from "../src/core/policy.js";
 import { newStore } from "./helpers/store.js";
 
 // Sync before push (design §4, decided 2026-11-01): an implement run merges the freshly fetched
@@ -69,7 +74,14 @@ class GitPushBroker implements ToolBroker {
   names() {
     return this.calls.map((c) => c.name);
   }
+  /** The branches outbound pushed to the forge, in order. */
+  pushed(): string[] {
+    return this.calls.filter((c) => c.name === "forge.push_branch").map((c) => String(c.args.branch));
+  }
 }
+
+/** The wip branch a failed run kept its commits on (design §5 Restarts). */
+const wipOf = (run: Run) => (run.outcome?.status === "failed" ? run.outcome.wip : undefined);
 
 /** The implement run's gate comments, handed to outbound as thread entries (RFC 0015 M7). */
 async function gateComments(f: { store: Parameters<typeof runComments>[0] }, id: WorkItemId) {
@@ -304,24 +316,31 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     ]);
   });
 
-  it("conflicts left after the agent's step fail the run with merge_conflict: nothing pushed, no handoffs, a comment on the issue", async () => {
+  it("conflicts left after the agent's step fail the run with merge_conflict: the commits go to the wip branch only, no handoffs, a comment on the issue", async () => {
     const f = await setup({ moveMain: MAIN_EDITS_A, resolve: () => undefined });
     const item = await f.approveAndImplement();
 
     const runs = await f.implementRuns(item.id);
-    expect(runs[0]!.outcome).toMatchObject({ status: "failed", error_code: "merge_conflict", infra: false });
+    expect(runs[0]!.outcome).toMatchObject({ status: "failed", error_code: "merge_conflict", infra: false, conflicts: ["src/a.txt"] });
     expect(runs.map((r) => r.status)).toEqual(["failed", "queued"]); // a task failure: retried after backoff
     expect(await f.store.getWorkItem(item.id)).toMatchObject({ stage: "RUNNING", blocked_on: "none", restart_count: 0 });
-    expect(f.broker.names()).not.toContain("forge.push_branch");
+    // The implementer's last commit, not the conflicted merge, is kept on the wip branch; the PR branch gets nothing.
+    const wip = wipOf(runs[0]!)!;
+    expect(wip).toMatchObject({ branch: `factory/wip/${item.id}/${runs[0]!.id}`, commits: 1 });
+    expect(f.broker.pushed()).toEqual([wip.branch]);
     expect(f.broker.names()).not.toContain("forge.open_change");
     expect(f.remoteHas(`refs/heads/factory/${item.id}`)).toBe(false);
+    expect(f.remote(`refs/heads/${wip.branch}`)).toBe(wip.head);
+    expect(git(f.origin, "log", "-1", "--format=%s", wip.head)).toBe("implementer edits a (1)");
+    expect(runs[1]!.input?.wip).toEqual(wip);
     expect(await f.store.listHandoffs(item.id)).toEqual([]);
 
     const [c] = (await gateComments(f, item.id));
     expect(c!.number).toBe(5);
     expect(c!.marker).toBe(`<!-- factory:merge-conflict:${runs[0]!.id} -->`);
     expect(c!.body).toContain("- `src/a.txt`");
-    expect(c!.body).toContain("Nothing was pushed");
+    expect(c!.body).toContain(`wip branch \`${wip.branch}\``);
+    expect(c!.body).not.toContain("Nothing was pushed.");
   });
 
   it("tests failing after the resolution fail the run with merge_conflict and push nothing", async () => {
@@ -335,9 +354,81 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     }
     expect(f.conflictSteps).toHaveLength(1);
     expect(f.resolveSteps).toHaveLength(1);
-    expect(f.broker.names()).not.toContain("forge.push_branch");
+    expect(f.broker.pushed()).toEqual([wipOf(run)!.branch]);
     expect(await f.store.listHandoffs(item.id)).toEqual([]);
-    expect((await gateComments(f, item.id))[0]!.body).toContain("Nothing was pushed");
+    expect((await gateComments(f, item.id))[0]!.body).toContain(`wip branch \`${wipOf(run)!.branch}\``);
+  });
+
+  // A resolution whose checks fail only on test files it may not edit asks for them (design 05-merge-conflict, 2026-11-18).
+  /** A test command that fails, naming `files` as vitest does, while src/a.txt holds a merge resolution. */
+  const failsOn = (...files: string[]) => ["sh", "-c", `if grep -q merged src/a.txt; then ${files.map((f) => `echo ' FAIL  ${f} > keeps a'; `).join("")}echo 'AssertionError: expected a'; exit 1; fi`];
+  const retryA: AgentStep = (wd) => write(wd, "src/a.txt", "a merged by the retry\n");
+
+  it("a resolution failing only on a test file outside allowed_paths ends in a needs_human ask for it, pushes nothing, and is granted once", async () => {
+    const f = await setup({ moveMain: MAIN_EDITS_A, resolve: resolveA, retry: retryA, testCommand: failsOn("tests/b.test.ts") });
+    const item = await f.approveAndImplement();
+    const [first] = await f.implementRuns(item.id);
+    expect(first!.outcome).toMatchObject({ status: "succeeded", data: { needs_human: { paths: ["tests/b.test.ts"] } } });
+    if (first!.outcome?.status === "succeeded") expect(String((first!.outcome.data.needs_human as { reason: string }).reason)).toContain("tests/b.test.ts");
+    expect(f.resolveSteps).toHaveLength(1); // the retry ran first
+    expect((await gateComments(f, item.id)).filter((c) => c.marker.includes("merge-conflict"))).toEqual([]);
+    // The controller's once-only test-path grant (auto_grant_test_paths, on by default) runs the item again; that run
+    // starts from the base, so the first run's resolution was never pushed.
+    expect((await f.store.getWorkItem(item.id))!.allowed_paths).toEqual([...spec.allowed_paths, "tests/b.test.ts"]);
+    expect((await f.implementRuns(item.id)).map((r) => r.id)).toContain(first!.id);
+    expect(f.implementCount()).toBe(2);
+    expect(git(f.origin, "show", `refs/heads/factory/${item.id}:src/a.txt`)).toBe("a from the implementer, run 2");
+  });
+
+  it("the retry prompt names each failing test and quotes the check output tail in a fence", async () => {
+    const f = await setup({ moveMain: MAIN_EDITS_A, resolve: resolveA, retry: retryA, testCommand: failsOn("tests/b.test.ts", "tests/c.test.ts") });
+    await f.approveAndImplement();
+    const prompt = f.resolveSteps[0]!.prompt;
+    const section = prompt.slice(prompt.indexOf("## Earlier attempt in this run"));
+    expect(section).toContain("tests failed after the resolution (`sh -c");
+    expect(section).toContain("- `tests/b.test.ts > keeps a`");
+    expect(section).toContain("- `tests/c.test.ts > keeps a`");
+    expect(section.indexOf("tests/b.test.ts > keeps a")).toBeLessThan(section.indexOf("tests/c.test.ts > keeps a"));
+    expect(section).toMatch(/```text\n[^`]*AssertionError: expected a\n+```$/);
+  });
+
+  it("a resolution failing on a test file covered by allowed_paths, or on a gate-list file, still fails with merge_conflict", async () => {
+    for (const file of ["src/b.test.ts", "tests/architecture/settings-monotonic.test.ts"]) {
+      const cmd = ["sh", "-c", `if grep -q merged src/a.txt; then echo ' FAIL  ${file} > keeps a'; exit 1; fi`];
+      const f = await setup({ moveMain: MAIN_EDITS_A, resolve: resolveA, retry: retryA, testCommand: cmd });
+      const item = await f.approveAndImplement();
+      const run = (await f.implementRuns(item.id))[0]!;
+      expect(run.outcome, file).toMatchObject({ status: "failed", error_code: "merge_conflict", infra: false });
+      if (run.outcome?.status === "failed") {
+        expect(run.outcome.detail).toBe("tests failed after the resolution (`" + cmd.join(" ") + "` exited 1); the retry as a resolve step failed too: tests failed after the resolution (`" + cmd.join(" ") + "` exited 1); conflicting files: src/a.txt");
+      }
+      expect(f.broker.pushed()).toEqual([wipOf(run)!.branch]);
+    }
+  });
+
+  it("asks only when every failing file is a test file by test_globs and outside allowed_paths", () => {
+    const failed = (...files: string[]) => ({ command: ["npm", "test"], how: "exited 1", tail: files.map((f) => ` FAIL  ${f} > x`).join("\n") });
+    /** The rules implement.run.ts passes in, with the switch on and `globs` as test_globs. */
+    const rules = (allowed: string[], globs = ["tests/**"]) => ({
+      failingTestFiles, covered: (p: string) => isCovered(p, allowed), grantable: (ps: readonly string[]) => testPathsOnly(ps, globs),
+      maxPaths: NEEDS_HUMAN_MAX_PATHS, maxChars: NEEDS_HUMAN_MAX_CHARS,
+    });
+    expect(conflictAsk(failed("tests/b.test.ts"), rules(["src/"]))).toMatchObject({ paths: ["tests/b.test.ts"] });
+    expect(conflictAsk(failed("tests/b.test.ts"), rules(["src/"]))!.reason).toContain("`npm test` exited 1");
+    expect(conflictAsk(failed("lib/b.test.ts"), rules(["src/"]))).toBeNull(); // not a test file by test_globs
+    expect(conflictAsk(failed("tests/b.test.ts", "lib/b.test.ts"), rules(["src/"]))).toBeNull();
+    expect(conflictAsk(failed("tests/b.test.ts"), rules(["tests/b.test.ts"]))).toBeNull(); // covered
+    expect(conflictAsk({ ...failed(), tail: "exit 3" }, rules(["src/"]))).toBeNull(); // no test file named
+    expect(conflictAsk(undefined, rules(["src/"]))).toBeNull(); // not a check failure
+    const many = Array.from({ length: NEEDS_HUMAN_MAX_PATHS + 1 }, (_, i) => `tests/t${i}.test.ts`);
+    expect(conflictAsk(failed(...many), rules(["src/"]))).toBeNull(); // more than one ask carries
+    expect(conflictAsk(failed("tests/b.test.ts"), { ...rules(["src/"]), grantable: () => false })).toBeNull(); // auto_grant_test_paths off
+  });
+
+  it("a resolution failing on an out-of-scope test file and on a covered one still fails with merge_conflict", async () => {
+    const f = await setup({ moveMain: MAIN_EDITS_A, resolve: resolveA, retry: retryA, testCommand: failsOn("tests/b.test.ts", "src/b.test.ts") });
+    const item = await f.approveAndImplement();
+    expect((await f.implementRuns(item.id))[0]!.outcome).toMatchObject({ status: "failed", error_code: "merge_conflict" });
   });
 
   it("a resolution left unstaged (markers staged, clean file in the working tree) fails with merge_conflict and pushes nothing", async () => {
@@ -353,10 +444,10 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     expect(run.outcome).toMatchObject({ status: "failed", error_code: "merge_conflict", infra: false });
     if (run.outcome?.status === "failed") expect(run.outcome.detail).toContain("not staged");
     expect(f.sandbox.execs.some((c) => c.startsWith("sh -c"))).toBe(false); // tests never ran on an unstaged tree
-    expect(f.broker.names()).not.toContain("forge.push_branch");
+    expect(f.broker.pushed()).toEqual([wipOf(run)!.branch]);
     expect(f.remoteHas(`refs/heads/factory/${item.id}`)).toBe(false);
     expect(await f.store.listHandoffs(item.id)).toEqual([]);
-    expect((await gateComments(f, item.id))[0]!.body).toContain("Nothing was pushed");
+    expect((await gateComments(f, item.id))[0]!.body).toContain(`wip branch \`${wipOf(run)!.branch}\``);
   });
 
   it("an agent that commits the markers itself and fixes only the working tree fails with merge_conflict", async () => {
@@ -371,8 +462,10 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     const item = await f.approveAndImplement();
     const run = (await f.implementRuns(item.id))[0]!;
     expect(run.outcome).toMatchObject({ status: "failed", error_code: "merge_conflict", infra: false });
-    expect(f.broker.names()).not.toContain("forge.push_branch");
+    expect(f.broker.pushed()).toEqual([wipOf(run)!.branch]);
     expect(f.remoteHas(`refs/heads/factory/${item.id}`)).toBe(false);
+    // The agent's commit of the markers is not kept: the wip branch is the implementer's last commit.
+    expect(git(f.origin, "log", "-1", "--format=%s", wipOf(run)!.head)).toBe("implementer edits a (1)");
   });
 
   it("merge_conflict counts toward max_attempts and the last-attempt comment names the code with its label", async () => {
@@ -473,9 +566,35 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     expect(run.outcome).toMatchObject({ status: "failed", error_code: "merge_conflict", infra: false });
     if (run.outcome?.status === "failed") expect(run.outcome.detail).toContain("conflict markers left in: src/a.txt");
     expect(f.sandbox.execs.some((c) => c.startsWith("sh -c"))).toBe(false);
-    expect(f.broker.names()).not.toContain("forge.push_branch");
+    expect(f.broker.pushed()).toEqual([wipOf(run)!.branch]);
     expect(f.remoteHas(`refs/heads/factory/${item.id}`)).toBe(false);
     expect(await f.store.listHandoffs(item.id)).toEqual([]);
+  });
+
+  it("the retry after merge_conflict resolves on the kept commits with one resolve step and pushes the merge", async () => {
+    let resolves = 0;
+    const f = await setup({
+      moveMain: MAIN_EDITS_A,
+      resolve: () => undefined,
+      // The failed run's resolve step leaves the conflict; the retry's resolves it.
+      retry: (wd) => (resolves++ === 0 ? undefined : write(wd, "src/a.txt", "a merged on the retry\n")),
+    });
+    const item = await f.approveAndImplement();
+    const [failed] = await f.implementRuns(item.id);
+    const wip = wipOf(failed!)!;
+    f.clock.advance(f.cfg.retry_max_ms);
+    await f.step();
+    const branch = `refs/heads/factory/${item.id}`;
+    expect((await f.implementRuns(item.id))[1]!.outcome).toMatchObject({ status: "succeeded", data: { conflicts: ["src/a.txt"] } });
+    expect(f.implementCount()).toBe(1); // the work was not rebuilt
+    expect(f.conflictSteps).toHaveLength(1); // the failed run's only
+    expect(f.resolveSteps).toHaveLength(2);
+    expect(f.resolveSteps[1]!.prompt).toContain("### `src/a.txt`");
+    expect(f.resolveSteps[1]!.prompt).not.toContain("## Earlier attempt in this run");
+    expect(f.contains(branch, wip.head)).toBe(true);
+    expect(f.contains(branch, f.remote("refs/heads/main"))).toBe(true);
+    expect(git(f.origin, "show", `${branch}:src/a.txt`)).toBe("a merged on the retry");
+    expect(f.broker.pushed()).toEqual([wip.branch, `factory/${item.id}`]);
   });
 
   it("a failed conflict step and a failed retry on an open PR push nothing: the PR branch is unchanged", async () => {
@@ -495,8 +614,8 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     expect(runs.map((r) => r.status)).toEqual(["succeeded", "failed", "queued"]);
     expect(runs[1]!.outcome).toMatchObject({ status: "failed", error_code: "merge_conflict" });
     expect(f.resolveSteps).toHaveLength(1);
-    // One push only: the first run's. The PR branch is what that push left.
-    expect(f.broker.names().filter((n) => n === "forge.push_branch")).toHaveLength(1);
+    // One push to the PR branch only: the first run's. The PR branch is what that push left; the failed run's commits are on its wip branch.
+    expect(f.broker.pushed()).toEqual([`factory/${item.id}`, wipOf(runs[1]!)!.branch]);
     expect(git(f.origin, "show", `${branch}:src/a.txt`)).toBe("a from the implementer, run 1");
     expect(git(f.origin, "log", "-1", "--format=%s", branch)).toContain("Merge origin/main");
     expect(f.contains(branch, f.remote("refs/heads/main"))).toBe(false);

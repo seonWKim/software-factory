@@ -12,6 +12,7 @@ import {
   type CoordinationSettings, type DependencyLink, type Hold, type Holder,
   DEFAULT_COORDINATION,
   claimDecision,
+  conflictWindowStart,
   holdOutcome,
   holdsOn,
   shortRef,
@@ -566,8 +567,8 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
         [...kinds, now, RECURRING_FAILURE, ...CLAIM_ORDER],
       );
       // Coordination (design §5, 2026-11-03): read once, only when an implement run is a candidate.
-      const coord = queued.some((q) => q.kind === "implement") ? await this.coordinationContext(tx, queued, busy) : null;
       const settings = input.coordination ?? DEFAULT_COORDINATION;
+      const coord = queued.some((q) => q.kind === "implement") ? await this.coordinationContext(tx, queued, busy, settings) : null;
       const fits = input.workers ? await this.slotCheck(tx, input.workers) : () => true; // the cap: implement and resolve wait at `workers`, short runs get one slot beyond
       for (const next of queued) {
         if (!fits(next.kind as RunKind)) continue;
@@ -615,7 +616,7 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
    * items with an implement-type run running, every open PR's item, the queued items' dependency edges (with
    * the state of the work item each points to), recorded conflicts and the stored claim decisions.
    */
-  private async coordinationContext(tx: SqlExecutor, queued: Row[], busy: ReadonlySet<string>): Promise<CoordContext> {
+  private async coordinationContext(tx: SqlExecutor, queued: Row[], busy: ReadonlySet<string>, s: CoordinationSettings): Promise<CoordContext> {
     const runs = queued.filter((q) => q.kind === "implement");
     const ids = [...new Set([...runs.map((q) => q.work_item_id as string), ...busy])];
     const items = new Map<string, WorkItem>();
@@ -636,20 +637,7 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
       const merged = e.state === "merged" || (e.stage === "CLOSED" && e.close_reason === "completed" && e.merge_sha !== null);
       if (!merged) unmet.add(e.work_item_id as string);
     }
-    const projects = [...new Set([...items.values()].map((it) => it.project))];
-    const conflicts = new Map<string, Map<string, number>>();
-    if (projects.length > 0) {
-      const rows = await tx.all(
-        `SELECT project_key, path, COUNT(*) AS n FROM controller_file_conflicts WHERE project_key IN (${placeholders(projects.length)})
-         GROUP BY project_key, path`,
-        projects,
-      );
-      for (const r of rows) {
-        const m = conflicts.get(r.project_key as string) ?? new Map<string, number>();
-        m.set(r.path as string, Number(r.n));
-        conflicts.set(r.project_key as string, m);
-      }
-    }
+    const conflicts = await this.conflictsByProject(tx, [...new Set([...items.values()].map((it) => it.project))], conflictWindowStart(this.clock.now(), s));
     const runIds = runs.map((q) => q.id as string);
     const decisions = new Map<string, ClaimDecision>();
     for (const r of await tx.all(`SELECT * FROM controller_claim_decisions WHERE run_id IN (${placeholders(runIds.length)})`, runIds)) {
@@ -1400,9 +1388,18 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
     });
   }
 
-  async conflictCounts(project: string): Promise<Map<string, number>> {
-    const rows = await this.db.all("SELECT path, COUNT(*) AS n FROM controller_file_conflicts WHERE project_key = ? GROUP BY path", [project]);
-    return new Map(rows.map((r) => [r.path as string, Number(r.n)]));
+  async conflictCounts(project: string, since?: Timestamp): Promise<Map<string, number>> {
+    return (await this.conflictsByProject(this.db, [project], since)).get(project) ?? new Map();
+  }
+
+  /** Recorded conflicts per project and path, only rows at or after `since` when given (design 05-dependencies). */
+  private async conflictsByProject(q: SqlExecutor, projects: readonly string[], since?: Timestamp): Promise<Map<string, Map<string, number>>> {
+    const out = new Map<string, Map<string, number>>();
+    const when = since === undefined ? "" : "AND at >= ?";
+    const rows = projects.length === 0 ? [] : await q.all(`SELECT project_key, path, COUNT(*) AS n FROM controller_file_conflicts
+       WHERE project_key IN (${placeholders(projects.length)}) ${when} GROUP BY project_key, path`, since === undefined ? [...projects] : [...projects, since]);
+    for (const r of rows) out.set(r.project_key as string, (out.get(r.project_key as string) ?? new Map<string, number>()).set(r.path as string, Number(r.n)));
+    return out;
   }
 
   listClaimDecisions(id: WorkItemId): Promise<ClaimDecision[]> { return this.claimDecisionsWhere("work_item_id = ?", [id]); }
