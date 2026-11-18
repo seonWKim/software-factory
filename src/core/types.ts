@@ -209,10 +209,8 @@ export interface ImproveWindow {
   window_end: Timestamp;
 }
 
-/**
- * Failed runs that share an error code and a normalized detail (design §7). `detail` is the normalized text,
- * never the raw detail. Run IDs in finish order; item IDs distinct, in the order their first run finished.
- */
+/** Failed runs that share an error code and a normalized detail (design §7). `detail` is the normalized text, never the raw
+ * detail. Run IDs in finish order; item IDs distinct, in the order their first run finished. */
 export interface FailureGroup {
   error_code: string;
   detail: string;
@@ -226,6 +224,8 @@ export interface FailureGroup {
   filing?: ImproveFiling;
   /** A `hotspot` row only (detail: the file): the items a coordination hold kept back on the file, each once. */
   held_item_ids?: WorkItemId[];
+  /** A `hotspot` row only: each counted run's finish time and each held item's claim decision time, by ID. Absent on older rows. */
+  counted_at?: Record<string, Timestamp>;
 }
 
 /**
