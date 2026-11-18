@@ -35,8 +35,8 @@ export const INDEX_FOLDERS: readonly PathCompanion[] = [
 
 /**
  * The built-in rules (decided 2026-11-18): the companions of one `files_to_change` path, read from the path alone,
- * since triage has no clone. A design topic file adds its History file; a web view adds the i18n area file its name
- * maps to (a shared component: the shell's); a source file adds the test named after it.
+ * since triage has no clone. A design topic file adds its History file; a web view or component adds the i18n area
+ * file its name maps to; a source file under `src/` adds the test named after it.
  */
 const COMPANION_RULES: readonly ((file: string) => string[])[] = [
   (file) => {
@@ -44,13 +44,14 @@ const COMPANION_RULES: readonly ((file: string) => string[])[] = [
     return topic === undefined ? [] : [`docs/design/history/${topic}.md`];
   },
   (file) => {
-    if (/^web\/src\/components\/.+\.tsx?$/.test(file)) return ["web/src/i18n/en/shell.ts"];
-    const view = /^web\/src\/views\/(?:([^/]+)\/[^/]+|([^/.-]+)[^/]*)\.tsx?$/.exec(file);
-    return view ? [`web/src/i18n/en/${view[1] ?? view[2]}.ts`] : [];
+    const area =
+      /^web\/src\/components\/([^/.]+)\.tsx$/.exec(file)?.[1] ??
+      /^web\/src\/views\/(?:([^/]+)\/[^/]+|([^/.-]+)[^/]*)\.tsx$/.exec(file)?.slice(1).find((a) => a !== undefined);
+    return area === undefined ? [] : [`web/src/i18n/en/${area}.ts`];
   },
   (file) => {
-    if (file.startsWith("tests/") || file.endsWith(".d.ts")) return [];
-    const m = /(?:^|\/)([^/.]+)[^/]*\.(tsx?)$/.exec(file);
+    if (file.endsWith(".d.ts")) return [];
+    const m = /^src\/(?:.+\/)?([^/.]+)[^/]*\.(tsx?)$/.exec(file);
     return m && m[1] !== "index" ? [`tests/${m[1]}.test.${m[2]}`] : [];
   },
 ];
@@ -110,11 +111,12 @@ export function whenMatches(when: string, path: string): boolean {
  * The companion step, on the raw triage answer before parseTriage. Adds each companion path to the top-level
  * `allowed_paths` unless an allowed path already covers it: config entries whose `when` matches a
  * `files_to_change` path, the doc index folders (INDEX_FOLDERS) when an index is named in either list, and the
- * built-in rules' paths for each `files_to_change` path, except a gate path or one under `floors`.
+ * built-in rules' paths for each `files_to_change` path, except a gate path or one under `floors` (the project's
+ * tier floors, required so no caller skips the refusal).
  * Phases' own `allowed_paths` are left alone: each phase's own triage applies the rule. An answer whose lists
  * are not string lists is returned as is, for parseTriage to reject. Never mutates `answer`.
  */
-export function applyCompanions(answer: unknown, companions: readonly PathCompanion[], floors: readonly Floor[] = []): { answer: unknown; added: AddedPath[] } {
+export function applyCompanions(answer: unknown, companions: readonly PathCompanion[], floors: readonly Floor[]): { answer: unknown; added: AddedPath[] } {
   if (!isObj(answer) || !isStrs(answer.allowed_paths) || !isStrs(answer.files_to_change)) return { answer, added: [] };
   const files = answer.files_to_change;
   const allowed = [...answer.allowed_paths];

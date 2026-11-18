@@ -34,6 +34,7 @@ describe("applyCompanions", () => {
     const { answer: a, added } = applyCompanions(
       answer({ allowed_paths: ["src/impl/store/sqlite/"], files_to_change: ["src/impl/store/sqlite/schema.ts"] }),
       SCHEMA,
+      [],
     );
     // Config entries come first; the built-in rules' paths (design 04-triage.md) follow them.
     expect((a as { allowed_paths: string[] }).allowed_paths.slice(0, 3)).toEqual([
@@ -49,7 +50,7 @@ describe("applyCompanions", () => {
 
   it("matches a path under a `when` folder, and a `when` folder under a named folder", () => {
     const folder: PathCompanion[] = [{ when: "src/x/", also: ["docs/x.md"] }];
-    const paths = (allowed: string, file: string) => applyCompanions(answer({ allowed_paths: [allowed], files_to_change: [file] }), folder).added.map((a) => a.path);
+    const paths = (allowed: string, file: string) => applyCompanions(answer({ allowed_paths: [allowed], files_to_change: [file] }), folder, []).added.map((a) => a.path);
     expect(paths("src/x/", "src/x/a.ts")).toContain("docs/x.md");
     expect(paths("src/", "src/")).toEqual(["docs/x.md"]);
     expect(paths("src/y/", "src/y/a.ts")).not.toContain("docs/x.md");
@@ -57,7 +58,7 @@ describe("applyCompanions", () => {
 
   it("a `when` named only in allowed_paths adds nothing", () => {
     const a = answer({ allowed_paths: ["src/impl/store/sqlite/schema.ts"], files_to_change: [] });
-    expect(applyCompanions(a, SCHEMA).added).toEqual([]);
+    expect(applyCompanions(a, SCHEMA, []).added).toEqual([]);
   });
 
   it.each([
@@ -68,7 +69,7 @@ describe("applyCompanions", () => {
       answer({ allowed_paths: [index], files_to_change: [index] }),
       answer({ allowed_paths: ["src/", index], files_to_change: ["src/a.ts"] }),
     ]) {
-      const out = applyCompanions(a, []);
+      const out = applyCompanions(a, [], []);
       const paths = (out.answer as { allowed_paths: string[] }).allowed_paths;
       expect(paths).toContain(index);
       expect(paths).toContain(folder);
@@ -78,7 +79,7 @@ describe("applyCompanions", () => {
 
   it("an answer with no `when` path and no index is unchanged, and so is its rendered spec", () => {
     const raw = answer({});
-    const out = applyCompanions(raw, SCHEMA);
+    const out = applyCompanions(raw, SCHEMA, []);
     expect(out.answer).toBe(raw);
     expect(out.added).toEqual([]);
     const spec = parseTriage(raw);
@@ -95,11 +96,13 @@ describe("applyCompanions", () => {
         files_to_change: ["src/impl/store/sqlite/schema.ts", "src/interfaces/factory-store.ts"],
       }),
       both,
+      [],
     );
     expect(out.added).toEqual([]);
     const twice = applyCompanions(
       answer({ allowed_paths: ["src/impl/store/sqlite/schema.ts", "src/interfaces/factory-store.ts"], files_to_change: ["src/impl/store/sqlite/schema.ts", "src/interfaces/factory-store.ts"] }),
       both,
+      [],
     );
     expect(twice.added.map((a) => a.path).slice(0, 2)).toEqual(["src/impl/store/sql/sql-factory-store.ts", "tests/store-contract.test.ts"]);
     expect(twice.added.filter((a) => a.path === "tests/store-contract.test.ts")).toHaveLength(1);
@@ -111,7 +114,7 @@ describe("applyCompanions", () => {
       files_to_change: ["src/impl/store/sqlite/schema.ts", "tests/store-contract.test.ts"],
     });
     expect(parseTriage(raw).ok).toBe(false);
-    expect(parseTriage(applyCompanions(raw, SCHEMA).answer).ok).toBe(true);
+    expect(parseTriage(applyCompanions(raw, SCHEMA, []).answer).ok).toBe(true);
   });
 
   it("leaves the phases' allowed_paths alone", () => {
@@ -119,13 +122,13 @@ describe("applyCompanions", () => {
       { title: "a", problem: "p", done_criteria: ["d"], allowed_paths: ["src/impl/store/sqlite/schema.ts"] },
       { title: "b", problem: "p", done_criteria: ["d"], allowed_paths: ["docs/design.md"] },
     ];
-    const out = applyCompanions(answer({ allowed_paths: ["src/impl/store/sqlite/schema.ts"], files_to_change: ["src/impl/store/sqlite/schema.ts"], phases }), SCHEMA);
+    const out = applyCompanions(answer({ allowed_paths: ["src/impl/store/sqlite/schema.ts"], files_to_change: ["src/impl/store/sqlite/schema.ts"], phases }), SCHEMA, []);
     expect((out.answer as { phases: unknown }).phases).toEqual(phases);
   });
 
   it("returns a malformed answer as is", () => {
     for (const bad of [null, "x", { allowed_paths: "src/" , files_to_change: [] }]) {
-      expect(applyCompanions(bad, SCHEMA)).toEqual({ answer: bad, added: [] });
+      expect(applyCompanions(bad, SCHEMA, [])).toEqual({ answer: bad, added: [] });
     }
   });
 });
@@ -149,7 +152,7 @@ describe("built-in companion rules", () => {
     ["web/src/views/tasks.tsx", "web/src/i18n/en/tasks.ts"],
     ["web/src/views/settings-calendar.tsx", "web/src/i18n/en/settings.ts"],
     ["web/src/views/settings/editor.tsx", "web/src/i18n/en/settings.ts"],
-    ["web/src/components/ui/copy.tsx", "web/src/i18n/en/shell.ts"],
+    ["web/src/components/rules.tsx", "web/src/i18n/en/rules.ts"],
   ])("a web view or component %s adds its i18n area file %s", (file, area) => {
     const { paths, added } = allowedAfter([file]);
     expect(paths).toContain(area);
@@ -160,7 +163,7 @@ describe("built-in companion rules", () => {
     ["src/core/hotspots.ts", "tests/hotspots.test.ts"],
     ["src/migrate-drain.ts", "tests/migrate-drain.test.ts"],
     ["src/cli/handlers/plugins/plugins.command.ts", "tests/plugins.test.ts"],
-    ["web/src/views/data.tsx", "tests/data.test.tsx"],
+    ["src/ui/page.tsx", "tests/page.test.tsx"],
   ])("a source file %s adds its covering test %s by name", (file, test) => {
     const { paths, added } = allowedAfter([file]);
     expect(paths).toContain(test);
@@ -168,7 +171,7 @@ describe("built-in companion rules", () => {
   });
 
   it("a test, a doc or a non-source file adds no test", () => {
-    for (const file of ["tests/hotspots.test.ts", "docs/setup.md", "schema/sqlite.sql", "src/types.d.ts", "src/index.ts"]) {
+    for (const file of ["tests/hotspots.test.ts", "docs/setup.md", "schema/sqlite.sql", "src/types.d.ts", "src/index.ts", "web/src/views/data.tsx", "scripts/x.ts"]) {
       expect(allowedAfter([file]).added.filter((a) => a.path.startsWith("tests/"))).toEqual([]);
     }
   });
@@ -176,6 +179,7 @@ describe("built-in companion rules", () => {
   it("a path already covered is not added again", () => {
     const out = applyCompanions(
       answer({ allowed_paths: ["docs/design/", "tests/"], files_to_change: ["docs/design/04-triage.md", "src/core/hotspots.ts"] }),
+      [],
       [],
     );
     expect(out.added).toEqual([]);
@@ -196,23 +200,23 @@ describe("built-in companion rules", () => {
       { prefix: "tests/hotspots.test.ts", tier: 4 },
       { prefix: "web/src/i18n/", tier: 3 },
     ];
-    const { paths, added } = allowedAfter(["docs/design/04-triage.md", "src/core/hotspots.ts", "web/src/views/tasks.tsx"], floors);
+    const { paths, added } = allowedAfter(["docs/design/04-triage.md", "src/core/hotspots.ts", "web/src/views/tasks.tsx", "src/core/policy.ts"], floors);
     for (const p of ["docs/design/history/04-triage.md", "tests/hotspots.test.ts", "web/src/i18n/en/tasks.ts"]) {
       expect(paths).not.toContain(p);
     }
     expect(added.filter((a) => refusedCompanion(a.path, floors))).toEqual([]);
-    // The test rule's other output, not under a floor, is still added.
-    expect(paths).toContain("tests/tasks.test.tsx");
+    // A rule's path not under a floor is still added.
+    expect(paths).toContain("tests/policy.test.ts");
   });
 
   it("a config entry is not refused: the refusal is the built-in rules' only", () => {
-    const out = applyCompanions(answer({ allowed_paths: ["docs/a.md"], files_to_change: ["docs/a.md"] }), [{ when: "docs/a.md", also: ["prompts/x.md"] }]);
+    const out = applyCompanions(answer({ allowed_paths: ["docs/a.md"], files_to_change: ["docs/a.md"] }), [{ when: "docs/a.md", also: ["prompts/x.md"] }], []);
     expect(out.added).toEqual([{ path: "prompts/x.md", because: "docs/a.md" }]);
   });
 
   it("each added path is listed in the spec under the path_companions heading with the file that caused it", () => {
     const raw = answer({ allowed_paths: ["docs/design/04-triage.md"], files_to_change: ["docs/design/04-triage.md"] });
-    const out = applyCompanions(raw, []);
+    const out = applyCompanions(raw, [], []);
     const spec = parseTriage(out.answer);
     if (!spec.ok) throw new Error("parse");
     const text = renderSpec(spec.value, 2, { added: out.added });
@@ -222,7 +226,7 @@ describe("built-in companion rules", () => {
 
   it("an answer that matches no rule keeps the same allowed_paths and the same spec text", () => {
     const raw = answer({ allowed_paths: ["README.md"], files_to_change: ["README.md"] });
-    const out = applyCompanions(raw, []);
+    const out = applyCompanions(raw, [], []);
     expect(out.answer).toBe(raw);
     expect(out.added).toEqual([]);
     const before = parseTriage(raw), after = parseTriage(out.answer);
@@ -284,7 +288,7 @@ describe("path_companions load check", () => {
     // Issue #315: the checked-in pairs for the store interface, the config keys and a design topic file.
     const allowedFor = async (file: string): Promise<string[]> => {
       const loaded = await loadConfig(root(SQLITE));
-      const out = applyCompanions(answer({ allowed_paths: [file], files_to_change: [file] }), loaded.config.path_companions ?? []);
+      const out = applyCompanions(answer({ allowed_paths: [file], files_to_change: [file] }), loaded.config.path_companions ?? [], []);
       return (out.answer as { allowed_paths: string[] }).allowed_paths;
     };
 
@@ -380,6 +384,17 @@ describe("the controller's triage branch", () => {
     expect(body).toContain("- `src/impl/store/sql/sql-factory-store.ts`: added because the spec names `src/impl/store/sqlite/schema.ts`");
     expect(body).toContain("- `tests/store-contract.test.ts`: added because the spec names `src/impl/store/sqlite/schema.ts`");
     expect(body).toContain("- `tests/schema.test.ts`: added because the spec names `src/impl/store/sqlite/schema.ts`");
+  });
+
+  it("passes the project's floors, so a rule's path under a floor is refused", async () => {
+    const f = await setup({ settings: { ...config.settings, defaults: { ...config.settings.defaults, floors: [{ prefix: "tests/hotspots", tier: 4 }] } } });
+    const it0 = await f.intake(4);
+    await f.triage(answer({ tier: 3, allowed_paths: ["src/core/hotspots.ts", "src/core/policy.ts"], files_to_change: ["src/core/hotspots.ts", "src/core/policy.ts"] }));
+    const it1 = await f.get(it0);
+    expect(it1.allowed_paths).not.toContain("tests/hotspots.test.ts");
+    expect(it1.allowed_paths).toContain("tests/policy.test.ts");
+    expect(it1.tier).toBe(3);
+    expect(f.specBody()).not.toContain("`tests/hotspots.test.ts`");
   });
 
   it("an added path under a floor raises the tier", async () => {
