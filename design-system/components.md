@@ -126,6 +126,10 @@ A copy element: the shown text (`children`, else `value`) in `font-mono text-xs`
 
 A readable name (`label`, e.g. "worker 3" or "you") as a plain button on the shared Tooltip: the full `id` shows in the tooltip on hover and keyboard focus (not in the DOM while hidden), and a click copies it and shows "Copied" in place of the label for 1.5 s, on the same line, so the row height never changes. No disclosure; with no clipboard a click does nothing. The copy logic is one helper shared with CopyButton. Pages use it so no raw ID shows in running text (design 09-dashboard-app).
 
+## Disclosure
+
+A native `<details>` with a `<summary>`: one chevron marker (turned down when open), one label style (`text-xs text-text-2`, no box). Props: `summary` (the visible label), `children` (the body), `defaultOpen` (starts open; default closed), `lazy` (mount the body only while open, for a body that reads something on demand), `onToggle(open)`, and `className` (a margin only) and `data-*` passed to the `<details>`. `aria-expanded` is on the summary and follows the open state; click, Enter and Space toggle it. Use it only for long content (more than ~3 lines or a list): decision rule 2 in `patterns.md`, never a single value. Write no raw `<details>` in `web/src/views/`; Markdown folds through it too.
+
 ## KeyValue
 
 A `dl` of label → value pairs (`items`: `key`, `term`, `value`), `text-xs`, terms in `text-2`. Default: two columns (term, then value that wraps anywhere); `stacked`: term above value, for a dialog. A term with `code` is a code identifier and shows in monospace; values are plain text, monospace only for ids, SHAs, paths, commands, code and SQL. `valueProps` and extra `data-*` props pass through to the dd and dl. No interactive states.

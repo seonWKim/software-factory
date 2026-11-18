@@ -20,6 +20,7 @@ import { Description, SettingsRow } from "../settings-row.js";
 import { withNodes } from "../standing.js";
 import { Editor } from "./editor.js";
 import { SHORT_OBJECT, asObject, entries, stringOf, summaryOf } from "./values.js";
+import { Disclosure } from "../../components/ui/disclosure.js";
 
 const PR_ONLY_TITLE = t("settings.prOnlyTitle");
 const SOURCE_TONE: Record<string, string> = { override: "needs_approval", file: "", default: "" };
@@ -34,10 +35,9 @@ function JsonValue({ text }: { text: string }) {
   const list = <KeyValue data-entries items={entries(obj).map(([k, v]) => ({ key: k, term: k, value: v, code: true }))} className="gap-x-2" />;
   if (entries(obj).length <= SHORT_OBJECT) return list;
   return (
-    <details>
-      <summary className="cursor-pointer text-xs text-pretty break-words text-text-2">{summaryOf(obj)}</summary>
+    <Disclosure summary={summaryOf(obj)}>
       <div className="mt-1">{list}</div>
-    </details>
+    </Disclosure>
   );
 }
 
@@ -90,14 +90,13 @@ function LearnedLayer({ row, learned, view }: { row: SettingRow; learned: Learne
           <span className="tabular-nums">{t("settings.setAgo", { time: ago(learned.set_at, now) })}</span>
         </p>
         {runs.length > 0 && (
-          <details>
-            <summary className="cursor-pointer">{t(runs.length === 1 ? "settings.fromRunOne" : "settings.fromRunMany", { count: runs.length })}</summary>
+          <Disclosure summary={t(runs.length === 1 ? "settings.fromRunOne" : "settings.fromRunMany", { count: runs.length })}>
             <ul className="mt-1 font-mono break-all">
               {runs.map((id) => (
                 <li key={id}>{id}</li>
               ))}
             </ul>
-          </details>
+          </Disclosure>
         )}
       </div>
       <ResetButton row={row} label={label} token={view.csrf_token} project={view.repo} learned />
@@ -111,8 +110,7 @@ const SECTION_KEYS: Readonly<Record<string, MessageKey>> = { notice_kinds: "sett
 /** One row's Details: the key name, where its value comes from, the file's value and when a change applies. */
 function KeyDetails({ row }: { row: SettingRow }) {
   return (
-    <details data-details>
-      <summary className="cursor-pointer text-xs text-text-2">{t("settings.details")}</summary>
+    <Disclosure data-details summary={t("settings.details")}>
       <KeyValue
         className="mt-2"
         items={[
@@ -131,7 +129,7 @@ function KeyDetails({ row }: { row: SettingRow }) {
           { key: "applies", term: t("settings.colAppliesAt"), value: <span className="text-text-2">{row.applies_at}</span> },
         ]}
       />
-    </details>
+    </Disclosure>
   );
 }
 

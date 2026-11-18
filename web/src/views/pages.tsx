@@ -30,6 +30,7 @@ import { type SupervisorActionName, SupervisorActions } from "./system-banner.js
 import { Thread } from "./thread.js";
 import { transcriptPath } from "./transcript.js";
 import { HELD, ItemsTree, type TreeFilter, type View, VIEW_KEY, buildTree, defaultExpanded, itemMatches, parentIds, useExpanded } from "./tree.js";
+import { Disclosure } from "../components/ui/disclosure.js";
 
 /** "host slept N min" for a host sleep's gap, at least 1 min (only gaps over 60 s are recorded). */
 export const sleptText = (gap_ms: number): string => t("host.slept", { min: Math.max(1, Math.round(gap_ms / 60_000)) });
@@ -432,15 +433,14 @@ export function ItemPage({ id }: { id: string }) {
           </div>
         ))}
       </dl>
-      <details data-ids className="mt-2 text-sm">
-        <summary className="cursor-pointer text-text-2">{t("ids.summary")}</summary>
+      <Disclosure data-ids className="mt-2" summary={t("ids.summary")}>
         <dl className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
           <dt className="text-xs text-text-2">{t("ids.item")}</dt>
           <dd className="min-w-0"><CopyText value={item.id} what="item ID" /></dd>
           <dt className="text-xs text-text-2">{t("ids.source")}</dt>
           <dd className="min-w-0"><CopyText value={item.source.id} what="source ID" /></dd>
         </dl>
-      </details>
+      </Disclosure>
       <Thread entries={q.data.thread ?? []} now={now} />
       <Phases phases={item.phases ?? []} />
       {item.merge_check && (
@@ -779,10 +779,9 @@ export function HealthPage() {
         <Section title={t("health.checks", { time: ago(health.data.checked_at, now) })} count={checks.length}>
           <CheckList checks={open} />
           {fine.length > 0 && (
-            <details data-testid="ok-checks" className="mt-2 text-sm">
-              <summary className="cursor-pointer text-text-2">{t("health.okCount", { count: fine.length })}</summary>
+            <Disclosure data-testid="ok-checks" className="mt-2" summary={t("health.okCount", { count: fine.length })}>
               <CheckList checks={fine} />
-            </details>
+            </Disclosure>
           )}
         </Section>
       )}

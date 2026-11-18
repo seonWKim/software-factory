@@ -88,6 +88,8 @@ async function show() {
 }
 
 const card = (id: string) => document.querySelector<HTMLElement>(`[data-rule="${id}"]`)!;
+/** A card's "Why and where" toggle: the summary of its Disclosure. */
+const whyToggle = (id: string) => within(card(id)).getByText("Why and where").closest("summary")!;
 const dialog = () => document.querySelector<HTMLDialogElement>("dialog[data-dialog]")!;
 const sent = () => posts.map((p) => JSON.parse(String(p.init.body)));
 
@@ -136,7 +138,7 @@ describe("Rules page", () => {
     };
     await show();
     await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
-    const toggle = within(card("C-012")).getByRole("button", { name: "Why and where" });
+    const toggle = whyToggle("C-012");
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(toggle);
     await waitFor(() => expect(card("C-012").querySelector("[data-detail-part]")).not.toBeNull(), SLOW);
@@ -157,7 +159,7 @@ describe("Rules page", () => {
     detail = { id: "P-0007", error: null, detail: { id: "P-0007" } };
     await show();
     await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
-    fireEvent.click(within(card("P-0007")).getByRole("button", { name: "Why and where" }));
+    fireEvent.click(whyToggle("P-0007"));
     await waitFor(() => expect(card("P-0007").querySelector("[data-detail-part]")).not.toBeNull(), SLOW);
     const part = (name: string) => card("P-0007").querySelector(`[data-detail-part="${name}"]`);
     expect(part("what")!.textContent).toContain("Kind: edit-asset");
@@ -176,7 +178,7 @@ describe("Rules page", () => {
       detail = answerWith;
       await show();
       await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
-      fireEvent.click(within(card("C-012")).getByRole("button", { name: "Why and where" }));
+      fireEvent.click(whyToggle("C-012"));
       await waitFor(() => expect(card("C-012").querySelector("[data-rule-detail]")).not.toBeNull(), SLOW);
       expect(card("C-012").querySelector("[data-rule-detail]")!.textContent).toBe("The detail could not be read.");
       expect(card("C-012").querySelector("[data-rule-title]")!.textContent).toBe("Keep existing CLI flags.");
@@ -222,7 +224,8 @@ describe("Rules page", () => {
     await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
     expect(card("C-012").querySelector("[data-judged]")!.textContent).toBe("Judged: promote");
     expect(card("C-012").textContent).not.toContain("Pending");
-    expect(within(card("C-012")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Why and where"]);
+    expect(within(card("C-012")).queryAllByRole("button")).toEqual([]);
+    expect(whyToggle("C-012")).not.toBeNull();
     expect(card("C-013").querySelector("[data-draft-error]")!.textContent).toContain("evolve show exited 1");
     expect((within(card("C-013")).getByRole("button", { name: "Promote" }) as HTMLButtonElement).disabled).toBe(true);
     expect((within(card("C-013")).getByRole("button", { name: "Hold" }) as HTMLButtonElement).disabled).toBe(false);
@@ -311,7 +314,8 @@ describe("Rules page", () => {
     await show();
     expect((await screen.findByRole("alert", {}, SLOW)).textContent).toContain("Only the owner");
     // Read-only: the detail opens, but no verdict button shows.
-    expect(within(card("C-012")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Why and where"]);
+    expect(within(card("C-012")).queryAllByRole("button")).toEqual([]);
+    expect(whyToggle("C-012")).not.toBeNull();
   });
 
   const HOMES = [{ path: "/Users/me/agents", missing: "bin/evolve" }, { path: "/Users/me/.agents", missing: null }];
@@ -561,7 +565,8 @@ describe("Rules page", () => {
     await show();
     await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
     const buttons = within(card("C-012")).getAllByRole("button").map((b) => b.textContent);
-    expect(buttons).toEqual(["Why and where", "Promote", "Hold", "Reject"]);
+    expect(buttons).toEqual(["Promote", "Hold", "Reject"]);
+    expect(whyToggle("C-012")).not.toBeNull();
     expect(within(card("C-012")).getByRole("button", { name: "Promote" }).className).toContain("bg-accent");
     expect(within(card("C-012")).getByRole("button", { name: "Reject" }).className).toContain("text-failed");
     const off = within(card("C-013")).getByRole("button", { name: "Promote" });
