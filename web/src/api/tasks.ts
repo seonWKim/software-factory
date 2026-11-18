@@ -106,9 +106,9 @@ export async function postTaskBuild(token: string, id: string): Promise<{ ok: tr
   return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
-/** POST /api/v1/tasks: quick-add words under the page's own `tk_` ID (a resend stores one task). A refusal comes back as `{ ok: false, error }`. */
-export async function postTaskAdd(token: string, id: string, words: string): Promise<{ ok: true } | { ok: false; error: string }> {
-  const r = await postJson<{ error?: string }>(API.tasks, token, { id, words });
+/** POST /api/v1/tasks: quick-add words under the page's own `tk_` ID, with the tab's project slug when one is selected (a resend stores one task). A refusal comes back as `{ ok: false, error }`. */
+export async function postTaskAdd(token: string, id: string, words: string, project: string | null = null): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await postJson<{ error?: string }>(API.tasks, token, project === null ? { id, words } : { id, words, project });
   return r.ok ? { ok: true } : { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
 }
 

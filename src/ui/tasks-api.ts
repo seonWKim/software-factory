@@ -211,19 +211,23 @@ async function orProjectRefused(write: () => Promise<ApiResult>): Promise<ApiRes
 }
 
 /**
- * POST /api/v1/tasks with `{ id, words }`, after the request guards: 400 for a body that is not one, words the
- * parser refuses (its reason) or a `+slug` naming an unknown or archived project; 503 when the page has no actor; else 200 with the stored task (the one already stored
+ * POST /api/v1/tasks with `{ id, words }` and optionally `project` (a slug: the Tasks page's tab, the task's project unless
+ * the words name one with `+slug`), after the request guards: 400 for a body that is not one, words the
+ * parser refuses (its reason) or a project, typed or sent, that is unknown or archived; 503 when the page has no actor; else 200 with the stored task (the one already stored
  * under that ID on a retry). The title leaves through the Withholder, as on the other routes.
  */
 export async function writeTask(d: UiDeps, body: unknown): Promise<ApiResult> {
   const actor = d.commands?.actor ?? null;
   if (actor === null) return OFF;
-  const b = parseBody(body, ["id", "words"]);
+  // `project` is optional: the Tasks page's tab. A `+slug` in the words replaces it.
+  const tabbed = typeof body === "object" && body !== null && "project" in body;
+  const b = parseBody(body, tabbed ? ["id", "words", "project"] : ["id", "words"]);
   if ("error" in b) return refused(400, b.error);
   const parsed = parseQuickAdd(b.words);
   if (!parsed.ok) return { status: 400, value: { error: parsed.reason } };
+  const projects = parsed.task.projects ?? (tabbed ? [(b as { project: string }).project] : undefined);
   return orProjectRefused(async () => {
-    const task = await d.store.addTask({ ...parsed.task, id: b.id, created_by: actor });
+    const task = await d.store.addTask({ ...parsed.task, ...(projects ? { projects } : {}), id: b.id, created_by: actor });
     const title = (await new Withholder(d.scanner).plain(task.title)).text;
     return { status: 200, value: { task: { ...task, title } } };
   });
