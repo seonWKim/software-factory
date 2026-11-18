@@ -18,6 +18,7 @@ import type { Worker } from "../../runner.js";
 import { RESUME_LOST, fetchBundle, saveBundle } from "../../bundle.js";
 import { decisionsSection } from "../../../shared/command-notes.js";
 import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
+import { repairedAnswer, type KeepWork } from "./implement-repair.js";
 import { conflictAsk, conflictRetryLines, outputLines } from "./conflict-ask.js";
 
 /**
@@ -93,15 +94,12 @@ async function implement(
       const watch: DiffBudget = { limits, stop: new AbortController(), over: null };
       const stopWatch = new AbortController();
       const watching = watchDiff(w, run, handle, baseSha, dirs, watch, stopWatch.signal);
-      const result = await w.agent(run, item, handle, AbortSignal.any([signal, watch.stop.signal]), {
-        prompt,
-        model_class: model,
-        output_schema: IMPLEMENT_SCHEMA,
-        // None: the run's git folder is inside its workdir. Never the owner's checkout or its .git (architecture §5).
-        writable_paths: [],
-        env_allowlist: gitIdentity(w.cfg.agent_git_identity),
-        gate_hooks: gateHooks(w, run, item, start, baseSha),
-      }, plan ? `resumed-${ctx.lease_token}` : undefined, {
+      // The spec of the step's turns, built per turn. writable_paths: none, as the run's git folder is inside its
+      // workdir. Never the owner's checkout or its .git (architecture §5).
+      const turn = () => ({ model_class: model, output_schema: IMPLEMENT_SCHEMA, writable_paths: [],
+        env_allowlist: gitIdentity(w.cfg.agent_git_identity), gate_hooks: gateHooks(w, run, item, start, baseSha) });
+      const result = await w.agent(run, item, handle, AbortSignal.any([signal, watch.stop.signal]), { prompt, ...turn() },
+        plan ? `resumed-${ctx.lease_token}` : undefined, {
         pausable: true, resume: plan?.session ?? kept,
       }).catch(async (err: unknown) => {
         stopWatch.abort();
@@ -120,8 +118,8 @@ async function implement(
       await watching;
       // A runner that finished the step although the check had stopped it: the run still fails, before any sync.
       if (watch.over) throw await overBudget(w, run, item, handle, ctx, start, dirs, watch);
-      const out = parseImplement(result.output);
-      if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
+      const keep: KeepWork = (f, next) => keepStopped(w, run, item, handle, ctx, start, dirs, f, next);
+      const out = await repairedAnswer(w, run, item, handle, signal, turn(), parseImplement, result, keep);
       await w.distrustAgentGit(handle, dirs);
       // The agent asked for a human (data, not a failure): no sync, no gates, no push, no PR. Its commits go with the run folder; none is kept on a wip branch.
       if (out.value.needs_human) return { needs_human: out.value.needs_human };
@@ -344,7 +342,7 @@ async function overBudget(
  */
 async function keepStopped(
   w: Worker,
-  run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, start: string, dirs: string, failure: RunFailure,
+  run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, start: string, dirs: string, failure: RunFailure, next_steps = STOPPED_NEXT_STEPS,
 ): Promise<RunFailure> {
   await w.distrustAgentGit(handle, dirs);
   await commitWorktree(w, handle, `wip: stopped run ${run.id} (${failure.code})`);
@@ -360,7 +358,7 @@ async function keepStopped(
     head,
     commits,
     summary: "",
-    next_steps: STOPPED_NEXT_STEPS,
+    next_steps,
     conflicts: [],
     missing: [],
     deviations: [],
