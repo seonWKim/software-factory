@@ -1,5 +1,7 @@
 ## History
 
+- **A UI failure checks the base alone** (decision changed 2026-11-18). Before: a failing UI check was a red merge-check result with `why: checks` whatever the base did, so the queue removed the entry and sent the item back to implement (or to a human at `max_loops`) even when the base failed the same check alone; a failure with no output kept an empty tail, and the queue's `merge_check_failed` state change kept no tail.
+
 - **The implementer runs the type check and its related tests** (decision changed 2026-11-18). Before: `prompts/implement.md` read "Run the project's checks before finishing, in this order: {{check_commands}}.", so the implementer ran the full check list and the worker ran it again before every push (78 full `npm test` runs in 51 implement runs since 2026-11-17, median 4.5 min, about 31% of implement time). Now the prompt asks for the type check and the test files related to the change (the agent picks them), through the project's scripts; the worker's full run before push (`{{check_commands}}`, in order) and its fix step stay the gate. Target after merge, over 48 h: median implement run time down by at least 4 min, `checks_failed` rate at or below 5%; if the rate is higher, tune the related-test wording.
 
 - **Sync before push, both steps failing** (decision changed 2026-11-18). Before: both conflict steps failing always failed the run with `merge_conflict`, failing checks included, and the resolve-step retry's prompt named only the first step's failure in one sentence.
