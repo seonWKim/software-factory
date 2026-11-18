@@ -522,11 +522,23 @@ describe("merge check: composition", () => {
 describe("merge check run: the UI check (fake sandbox)", () => {
   const ui_check = { command: ["npm", "run", "check:responsive"], paths: ["web/", "src/ui/"] };
 
-  async function mergeCheckRun(o: { ui_check?: typeof ui_check; changed: string[]; exits?: Record<string, number> }) {
+  /** `ui`: the UI check's reply in the merged checkout (the first) and in the base's (the second): an exit and output, or a throw. */
+  type UiReply = { exit: number; out?: string } | "throw";
+  async function mergeCheckRun(o: { ui_check?: typeof ui_check; changed: string[]; exits?: Record<string, number>; ui?: { merged: UiReply; base?: UiReply } }) {
     const repo = { ...config.repo, check_commands: [["npm", "run", "typecheck"], ["npm", "test"]], ...(o.ui_check ? { ui_check: o.ui_check } : {}) };
     const f = await pipeline({ config: { repo } });
     f.sandbox.changedFiles = o.changed;
     Object.assign(f.sandbox.exits, o.exits ?? {});
+    const exec = f.sandbox.exec.bind(f.sandbox);
+    const handles: string[] = [];
+    f.sandbox.exec = async (h, cmd, eo) => {
+      const r = await exec(h, cmd, eo);
+      if (!handles.includes(h.id)) handles.push(h.id);
+      if (!o.ui || cmd.join(" ") !== "npm run check:responsive") return r;
+      const reply = handles.indexOf(h.id) === 0 ? o.ui.merged : (o.ui.base ?? { exit: 0 });
+      if (reply === "throw") throw new Error("spawn npm ENOENT");
+      return { ...r, exit_code: reply.exit, stdout: reply.out ?? "" };
+    };
     const { item } = await f.store.createWorkItem(issue(7), system);
     const moved = await f.store.transition({
       id: item.id, expected_version: item.version, actor: system, reason: "test_setup", patch: {},
@@ -536,7 +548,8 @@ describe("merge check run: the UI check (fake sandbox)", () => {
     expect(await f.w1.tick()).toBe(true);
     const run = (await f.runs(moved.item, "merge-check"))[0]!;
     const diffs = f.sandbox.gitCalls.filter((c) => c.startsWith("diff --name-only") && !c.includes("--diff-filter=U"));
-    return { commands: f.sandbox.commands, diffs, outcome: run.outcome };
+    const data = run.outcome?.status === "succeeded" ? run.outcome.data : {};
+    return { commands: f.sandbox.commands, diffs, outcome: run.outcome, data, created: f.sandbox.created, gitCalls: f.sandbox.gitCalls, destroyed: f.sandbox.destroyed };
   }
 
   it("a merged result touching web/ runs the UI check after the install command and the checks", async () => {
@@ -563,9 +576,31 @@ describe("merge check run: the UI check (fake sandbox)", () => {
     expect(r.diffs).toEqual([]);
   });
 
-  it("a failing UI check is a red result naming the command", async () => {
-    const r = await mergeCheckRun({ ui_check, changed: ["web/a.css"], exits: { "npm run check:responsive": 1 } });
-    expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "red", why: "checks", command: "npm run check:responsive" } });
+  it("a failing UI check runs once more on the base alone, in a fresh checkout at the base; a base that passes leaves the change's red result", async () => {
+    const out = " FAIL  tests/ui.test.ts > page > layout\nlayout broken at 375px\n";
+    const r = await mergeCheckRun({ ui_check, changed: ["web/a.css"], ui: { merged: { exit: 1, out } } });
+    expect(r.commands).toEqual(["npm ci", "npm run typecheck", "npm test", "npm run check:responsive", "npm ci", "npm run check:responsive"]);
+    expect(r.created.map((c) => [c.branch, c.base_ref])).toEqual([[null, "main"], [null, "main"]]);
+    expect(r.gitCalls.filter((c) => c.includes("checkout --quiet --detach"))).toEqual([expect.stringMatching(/checkout --quiet --detach base$/)]);
+    expect(r.destroyed).toBe(2);
+    expect(r.outcome).toMatchObject({
+      status: "succeeded",
+      data: { result: "red", why: "checks", command: "npm run check:responsive", how: "exited 1", failing_tests: ["tests/ui.test.ts > page > layout"], output_tail: out },
+    });
+  });
+
+  it("a UI check that fails on the base too is red with why base_red, the command and the base's output tail", async () => {
+    const r = await mergeCheckRun({ ui_check, changed: ["web/a.css"], ui: { merged: { exit: 1, out: "merged\n" }, base: { exit: 1, out: "main is broken\n" } } });
+    expect(r.outcome).toMatchObject({
+      status: "succeeded", data: { result: "red", why: "base_red", command: "npm run check:responsive", how: "exited 1", output_tail: "main is broken\n", base_sha: "base" },
+    });
+  });
+
+  it("a UI-check failure with no output keeps its reason as the tail: a command that could not run, or its exit", async () => {
+    const thrown = await mergeCheckRun({ ui_check, changed: ["web/a.css"], ui: { merged: "throw" } });
+    expect(thrown.data).toMatchObject({ result: "red", why: "checks", how: "could not run: spawn npm ENOENT", output_tail: "could not run: spawn npm ENOENT" });
+    const silentExit = await mergeCheckRun({ ui_check, changed: ["web/a.css"], ui: { merged: { exit: 1 }, base: { exit: 2 } } });
+    expect(silentExit.data).toMatchObject({ result: "red", why: "base_red", how: "exited 2", output_tail: "exited 2" });
   });
 
   it("a failing check stops the run before the UI check", async () => {
@@ -695,7 +730,8 @@ describe("merge check run: one rerun of the failing test files (fake sandbox)", 
     expect(install.commands).toEqual(["npm ci"]);
     expect(install.outcome).toMatchObject({ data: { result: "red", command: "npm ci" } });
     const ui = await rerunRun({ "npm run check:responsive": [{ exit: 1, out: FAIL }] }, { ui: true });
-    expect(ui.commands).toEqual(["npm ci", "npm test", "npm run lint", "npm run check:responsive"]);
+    // The UI check's one more run is on the base alone (after its install command), never a rerun of test files.
+    expect(ui.commands).toEqual(["npm ci", "npm test", "npm run lint", "npm run check:responsive", "npm ci", "npm run check:responsive"]);
     expect(ui.outcome).toMatchObject({ data: { result: "red", command: "npm run check:responsive" } });
   });
 });

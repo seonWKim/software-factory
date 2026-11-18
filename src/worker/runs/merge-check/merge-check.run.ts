@@ -6,6 +6,9 @@
 // red result names the failing tests and keeps the output tail, as the implement run's `checks_failed` does.
 // A failing check list whose output names failing test files reruns only those files once, with the same command
 // (design §4); a passing rerun goes on, and the green result lists the flaky tests for the improve report (design §7).
+// A failing UI check runs once more on the base alone, in a fresh checkout at the checked base: when the base fails
+// it too, the result is `base_red` (red main, design 03-risk), not this change's failing checks. A UI check's
+// failure always keeps an output tail: with no output, its reason (a command that could not run, its exit).
 
 import { NO_HOOKS, RunFailure, failingTestNames, gitIdentity } from "../../support.js";
 import type { Worker } from "../../runner.js";
@@ -29,7 +32,8 @@ function inputOf(run: RunCall["run"]): { base_ref: string; branches: string[] } 
   return i;
 }
 
-async function mergeCheck(w: Worker, { run, item, signal }: RunCall): Promise<Record<string, unknown>> {
+async function mergeCheck(w: Worker, c: RunCall): Promise<Record<string, unknown>> {
+  const { run, item, signal } = c;
   const { base_ref, branches } = inputOf(run);
   const handle = await w.route(item).sandbox.create({ repo: w.cfg.repo.path, branch: null, base_ref }).catch((err: unknown) => {
     throw new RunFailure("git_failed", `worktree: ${err instanceof Error ? err.message : "unknown"}`, true);
@@ -57,15 +61,35 @@ async function mergeCheck(w: Worker, { run, item, signal }: RunCall): Promise<Re
     const ui = w.cfg.repo.ui_check;
     const changed = ui ? (await w.git(handle, ["diff", "--name-only", "-z", "--no-renames", base_sha, merged_sha])).split("\0").filter(Boolean) : [];
     const uiCheck = ui && changed.some((f) => ui.paths.some((p) => f.startsWith(p))) ? [[...ui.command]] : null;
-    const red = async (failed: Failed) => ({ result: "red", why: "checks", ...(await failure(w, failed)), base_sha, merged_sha });
+    const red = async (failed: Failed, ui = false) => ({ result: "red", why: "checks", ...(await failure(w, failed, ui)), base_sha, merged_sha });
     const install = await w.runCheckList(run, handle, signal, { commands: [[...w.cfg.repo.install_command]] });
     if (install.failed) return red(install.failed);
     const list = await checkList(w, run, handle, signal);
     if (list.failed) return red(list.failed);
     const uiFailed = uiCheck ? (await w.runCheckList(run, handle, signal, { commands: uiCheck })).failed : null;
-    if (uiFailed) return red(uiFailed);
+    if (uiFailed) {
+      const onBase = await baseUiCheck(w, c, base_ref, base_sha, uiCheck!);
+      if (onBase) return { result: "red", why: "base_red", ...(await failure(w, onBase, true)), base_sha };
+      return red(uiFailed, true);
+    }
     const flaky = list.flaky.length > 0 ? { flaky_tests: list.flaky } : {};
     return { result: "green", base_sha, merged_sha, heads, ...flaky };
+  } finally {
+    await w.d.sandbox.destroy(handle);
+  }
+}
+
+/**
+ * The UI check once more on the base alone (red main, design 03-risk): a fresh checkout of `base_ref`, pinned to the
+ * checked `base_sha`, the install command, then the UI check. Returns its failure, or null when the base passes.
+ */
+async function baseUiCheck(w: Worker, { run, item, signal }: RunCall, base_ref: string, base_sha: string, uiCheck: string[][]): Promise<Failed | null> {
+  const handle = await w.route(item).sandbox.create({ repo: w.cfg.repo.path, branch: null, base_ref }).catch((err: unknown) => {
+    throw new RunFailure("git_failed", `worktree: ${err instanceof Error ? err.message : "unknown"}`, true);
+  });
+  try {
+    await w.git(handle, [...NO_HOOKS, "checkout", "--quiet", "--detach", base_sha]);
+    return (await w.runCheckList(run, handle, signal, { commands: [[...w.cfg.repo.install_command], ...uiCheck] })).failed;
   } finally {
     await w.d.sandbox.destroy(handle);
   }
@@ -95,16 +119,18 @@ async function checkList(w: Worker, run: RunCall["run"], handle: NonNullable<Run
 
 /**
  * What a failed check says: its command and exit text, the failing tests by name (`file > name`, at most 10, as
- * the implement run names them) and its output tail (at most CHECK_TAIL_CHARS, 2000). The tail goes through the
+ * the implement run names them) and its output tail (at most CHECK_TAIL_CHARS, 2000). A UI check's empty tail is
+ * its reason (`how`: could not run, or its exit), so every UI-check failure keeps one. The tail goes through the
  * egress scan first; a flagged tail is withheld whole (null), and the names are kept.
  */
-async function failure(w: Worker, failed: Failed): Promise<Record<string, unknown>> {
-  const clean = failed.tail === "" || (await w.d.scanner.scan("run_outcome", failed.tail)).clean;
+async function failure(w: Worker, failed: Failed, ui = false): Promise<Record<string, unknown>> {
+  const tail = ui && failed.tail === "" ? failed.how : failed.tail;
+  const clean = tail === "" || (await w.d.scanner.scan("run_outcome", tail)).clean;
   return {
     command: failed.command.join(" "),
     how: failed.how,
     failing_tests: failingTestNames(failed.tail),
-    output_tail: clean ? failed.tail : null,
+    output_tail: clean ? tail : null,
   };
 }
 
