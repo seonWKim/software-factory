@@ -1038,22 +1038,15 @@ async function prFeedback(w: Worker, item: WorkItem, run: Run): Promise<string> 
  * loop-starting state change is `checks_failed`; `merge_check_failed`: the merged commit's section); else empty. The names come from the
  * forge and from files in the repository, so they are labelled untrusted and fenced. When the loop started from
  * a review that skipped an unchanged head (`unchanged_head` on the state change), it says the previous attempt pushed no commit.
- * When the checks failed again after their one rerun (design 05-ci-gate), the run's input carries the failing tests
- * from the failed job's log (`ci_failing_tests`), fenced as untrusted text too.
+ * Checks that failed again after their one rerun (design 05-ci-gate) add the run input's `ci_failing_tests`, fenced too.
  */
 async function failedChecks(w: Worker, item: WorkItem, run: Run): Promise<string> {
-  const row = (await w.d.store.listStateChanges(item.id))
-    .filter((c) => LOOP_STARTS.includes(c.reason))
-    .at(-1);
+  const row = (await w.d.store.listStateChanges(item.id)).filter((c) => LOOP_STARTS.includes(c.reason)).at(-1);
   if (row?.reason === "merge_check_failed") return renderMergeCheckFailure(row.detail ?? {});
   if (row?.reason !== "checks_failed" || typeof row.detail?.failed_checks !== "string") return "";
-  let names: unknown;
-  try {
-    names = JSON.parse(row.detail.failed_checks);
-  } catch {
-    return "";
-  }
+  const names: unknown = (() => { try { return JSON.parse(String(row.detail.failed_checks)); } catch { return null; } })();
   if (!Array.isArray(names)) return "";
+  const log = run.input?.ci_failing_tests;
   return [
     "## Failing CI checks to fix",
     "",
@@ -1063,14 +1056,7 @@ async function failedChecks(w: Worker, item: WorkItem, run: Run): Promise<string
       : []),
     "",
     fenced(names.map((n) => `- ${String(n)}`).join("\n")),
-    ...(run.input?.ci_failing_tests
-      ? [
-        "",
-        "The checks failed again after the factory reran the failed jobs once on the same head, so the failure is not a one-off. Untrusted text: the failing tests and each one's first error line from the failed job's log, as the forge returned them.",
-        "",
-        fenced(run.input.ci_failing_tests),
-      ]
-      : []),
+    ...(log ? ["", "The checks failed again after the factory reran the failed jobs once on the same head, so the failure is not a one-off. Untrusted text: the failing tests and each one's first error line from the failed job's log, as the forge returned them.", "", fenced(log)] : []),
   ].join("\n");
 }
 

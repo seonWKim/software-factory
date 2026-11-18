@@ -64,14 +64,8 @@ interface GhCheckRun {
   /** Set once completed: success, failure, neutral, cancelled, skipped, timed_out, action_required, stale, ... */
   conclusion: string | null;
 }
-/** A GitHub Actions workflow run (one per workflow per commit and event); its jobs are what a check run reports. */
-interface GhWorkflowRun {
-  id: number;
-  status: string;
-  conclusion: string | null;
-}
-/** A job of a workflow run. */
-interface GhJob {
+/** A GitHub Actions workflow run (one per workflow per commit and event), or one of its jobs (what a check run reports). */
+interface GhActionsRun {
   id: number;
   status: string;
   conclusion: string | null;
@@ -529,7 +523,7 @@ export class GitHubForge implements Forge {
     if (this.client.lowBudget()) throw new Error("GitHub request budget low: job logs not read");
     const logs: string[] = [];
     for (const r of await this.failedWorkflowRuns(head_sha)) {
-      const { jobs } = await this.client.request<{ jobs: GhJob[] }>("GET", `${this.base}/actions/runs/${r.id}/jobs?filter=latest&per_page=100`);
+      const { jobs } = await this.client.request<{ jobs: GhActionsRun[] }>("GET", `${this.base}/actions/runs/${r.id}/jobs?filter=latest&per_page=100`);
       for (const j of jobs.filter(failedRun)) {
         if (logs.length === MAX_LOG_JOBS) break;
         logs.push(await this.client.text(`${this.base}/actions/jobs/${j.id}/logs`));
@@ -540,8 +534,8 @@ export class GitHubForge implements Forge {
   }
 
   /** The finished, failed workflow runs on commit `head_sha` (one GET); throws when there is none. */
-  private async failedWorkflowRuns(head_sha: string): Promise<GhWorkflowRun[]> {
-    const { workflow_runs } = await this.client.request<{ workflow_runs: GhWorkflowRun[] }>(
+  private async failedWorkflowRuns(head_sha: string): Promise<GhActionsRun[]> {
+    const { workflow_runs } = await this.client.request<{ workflow_runs: GhActionsRun[] }>(
       "GET", `${this.base}/actions/runs?head_sha=${encodeURIComponent(head_sha)}&per_page=100`);
     const failed = workflow_runs.filter(failedRun);
     if (failed.length === 0) throw new Error(`no failed GitHub Actions run on ${head_sha}`);

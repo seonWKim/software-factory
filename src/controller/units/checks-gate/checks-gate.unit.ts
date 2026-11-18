@@ -5,12 +5,13 @@ import { prNumber } from "../../../core/change-ref.js";
 import { redact } from "../../../core/checks.js";
 import { errorText } from "../../../core/log.js";
 import { parseReview } from "../../../core/outputs.js";
-import { runKey, branchFor } from "../../../core/policy.js";
 import { failingTestDetails } from "../../../core/output-summary.js";
 import { lastPrNotes } from "../../../core/pr-body.js";
-import { type Run, type RunId, type RunInput, type Tier, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { BaseChecks, PrChecks } from "../../../interfaces/forge.js";
-import { type Decision, SYSTEM, UNCHANGED_HEAD, CHECKS_FAILED, CHECKS_FAILED_UPDATE, footerAfter, updateKey } from "../support.js";
+import {
+  type Decision, type Run, type RunId, type RunInput, type Tier, type WorkItem, type WorkItemId, SYSTEM, UNCHANGED_HEAD, CHECKS_FAILED, CHECKS_FAILED_UPDATE,
+  branchFor, footerAfter, runKey, updateKey,
+} from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
