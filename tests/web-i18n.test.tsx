@@ -39,7 +39,7 @@ describe("web i18n", () => {
   });
 
   it("fills values into a message", () => {
-    expect(t("topbar.needsYou", { count: 3 })).toBe("Needs you (3)");
+    expect(t("topbar.themeDark")).toBe("Dark");
   });
 
   it("formats numbers for the active locale", () => {

@@ -200,6 +200,15 @@ describe("OverflowMenu and Tooltip", () => {
     expect(screen.queryByRole("menu")).toBeNull();
   });
 
+  it("takes an icon for its button and marks the checked item", () => {
+    render(<OverflowMenu label="Pick" icon={<svg data-testid="ic" />} items={[{ label: "A", checked: true, onSelect: vi.fn() }, { label: "B", checked: false, onSelect: vi.fn() }]} />);
+    const button = screen.getByRole("button", { name: "Pick" });
+    expect(button.textContent).not.toContain("⋯");
+    expect(button.querySelector("[data-testid=ic]")).toBeTruthy();
+    fireEvent.click(button);
+    expect(screen.getAllByRole("menuitem").map((i) => i.getAttribute("aria-checked"))).toEqual(["true", "false"]);
+  });
+
   it("closes on Esc and on a click outside", () => {
     render(<OverflowMenu label="More" items={[{ label: "Edit", onSelect: vi.fn() }]} />);
     fireEvent.click(screen.getByRole("button", { name: "More" }));

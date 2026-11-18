@@ -7,7 +7,7 @@ import { App } from "../web/src/App.js";
 
 // The Needs you section of the Tasks page (design 09-dashboard-app), which /app/ opens: its count, compact rows grouped
 // Merge, Approve, Answer or fix, one primary action per row with the "⋯" menu last, and j, k, Enter and p on the rows.
-// Its count, the sidebar badge and the top-bar chip are the same number for the same data: the overview's needs_you
+// Its count, and the sidebar badge are the same number for the same data: the overview's needs_you
 // counts the rows the section lists (design 09-status-page; tests/ui-system-actions.test.ts checks the server's side).
 
 const AT = "2026-11-12T00:00:00.000Z";
@@ -195,18 +195,20 @@ describe("the Needs you count is its rows (design 09-status-page)", () => {
     overview = { ...overview, needs_you, system_actions: checks };
     list = items;
     mount();
-    const chip = await screen.findByTestId("needs-you");
-    await waitFor(() => expect(chip.textContent).not.toContain("…"));
-    const badge = document.querySelector('aside a[href="/app/tasks"] span.ml-auto')!.textContent;
+    const badgeEl = await waitFor(() => {
+      const el = document.querySelector('aside a[href="/app/tasks"] span.ml-auto');
+      if (!el) throw new Error("no badge yet");
+      return el;
+    });
+    const badge = badgeEl.textContent;
     const section = await screen.findByRole("region", { name: "Needs you" });
     const rows = [...section.querySelectorAll<HTMLElement>("li[data-key], li[data-check]")];
-    return { rows, count: Number(section.querySelector("h2 + span")!.textContent), badge: Number(badge), chip: chip.textContent };
+    return { rows, count: Number(section.querySelector("h2 + span")!.textContent), badge: Number(badge) };
   }
 
-  it("one waiting item and one open alarm: 2 rows (the alarm under Check), 2 on the badge and 2 on the chip", async () => {
+  it("one waiting item and one open alarm: 2 rows (the alarm under Check), 2 on the badge", async () => {
     const n = await numbers(2, [MERGE], [ALARM(4)]);
     expect([n.rows.length, n.count, n.badge]).toEqual([2, 2, 2]);
-    expect(n.chip).toBe("Needs you (2)");
     const check = within(screen.getByRole("region", { name: "Needs you" })).getByRole("list", { name: "Check" });
     expect([...check.querySelectorAll("li")].map((r) => r.getAttribute("data-check"))).toEqual(["alarm"]);
   });

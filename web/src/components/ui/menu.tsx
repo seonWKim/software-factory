@@ -1,3 +1,4 @@
+import { Check } from "lucide-react";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { cn } from "../../lib/cn.js";
 import { Button } from "./button.js";
@@ -12,10 +13,15 @@ export interface MenuItem {
   onSelect(): void;
   danger?: boolean;
   disabled?: boolean;
+  /** Set on a list that picks one of its items: the current one is true, the others false (aria-checked, a check mark). */
+  checked?: boolean;
 }
 
-/** A "more" button that opens a list of actions; Esc, a click outside or choosing an item closes it. */
-export function OverflowMenu({ label, items }: { label: string; items: readonly MenuItem[] }) {
+/**
+ * A button that opens a list of actions; Esc, a click outside or choosing an item closes it. The button shows "⋯"
+ * unless `icon` is given (a picker such as the theme menu); items with `checked` mark the current choice.
+ */
+export function OverflowMenu({ label, items, icon }: { label: string; items: readonly MenuItem[]; icon?: ReactNode }) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const id = useId();
@@ -33,7 +39,7 @@ export function OverflowMenu({ label, items }: { label: string; items: readonly 
   return (
     <div ref={root} className="relative inline-block">
       <Button variant="ghost" size="icon" aria-label={label} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined} onClick={() => setOpen(!open)}>
-        <span aria-hidden>⋯</span>
+        {icon ?? <span aria-hidden>⋯</span>}
       </Button>
       {open && (
         <ul id={id} role="menu" aria-label={label} className="absolute right-0 z-10 mt-1 min-w-40 rounded-control border border-border bg-surface py-1 shadow">
@@ -42,19 +48,21 @@ export function OverflowMenu({ label, items }: { label: string; items: readonly 
               <button
                 type="button"
                 role="menuitem"
+                aria-checked={item.checked}
                 disabled={item.disabled}
                 onClick={() => {
                   setOpen(false);
                   item.onSelect();
                 }}
                 className={cn(
-                  "block w-full px-3 py-1.5 text-left text-sm enabled:hover:bg-surface-2",
+                  "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm enabled:hover:bg-surface-2",
                   FOCUS,
                   "focus-visible:-outline-offset-2",
                   DISABLED,
                   item.danger && "text-pill-bad-fg",
                 )}
               >
+                {item.checked !== undefined && <Check aria-hidden className={cn("size-4 shrink-0", !item.checked && "invisible")} />}
                 {item.label}
               </button>
             </li>

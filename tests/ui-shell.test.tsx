@@ -123,6 +123,9 @@ afterEach(() => {
   focusManager.setFocused(undefined);
 });
 
+/** Waits for the overview: the sidebar Tasks entry shows the waiting count as its badge. */
+const waitBadge = () => screen.findByRole("link", { name: "Tasks" }).then((a) => vi.waitFor(() => expect(a.textContent).toBe("Tasks4")));
+
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -135,7 +138,7 @@ function mount() {
 describe("app shell", () => {
   it("shows the sidebar pages, Needs you (N) from /api/v1/overview, and fetches only /api/v1/* URLs", async () => {
     mount();
-    expect(await screen.findByText("Needs you (4)")).toBeTruthy();
+    await waitBadge();
     // No Needs you entry and no Factory group: Tasks leads, with the waiting count as its badge.
     expect(screen.queryByRole("navigation", { name: "Factory" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Needs you" })).toBeNull();
@@ -153,7 +156,7 @@ describe("app shell", () => {
 
   it("the sidebar top shows the mark and the wordmark Gongbang", async () => {
     mount();
-    await screen.findByText("Needs you (4)");
+    await waitBadge();
     const sidebar = screen.getByRole("complementary", { name: "Sidebar" });
     const brand = sidebar.querySelector("p")!;
     expect(brand.textContent).toBe("Gongbang");
@@ -168,7 +171,7 @@ describe("app shell", () => {
 
   it("polls every 3 s while visible and stops while the document is hidden", async () => {
     mount();
-    await screen.findByText("Needs you (4)");
+    await waitBadge();
     const first = fetched.length;
     await act(async () => void (await vi.advanceTimersByTimeAsync(POLL_MS * 2 + 100)));
     expect(fetched.length).toBeGreaterThanOrEqual(first + 2);
@@ -200,20 +203,44 @@ describe("app shell", () => {
     };
   }
   const isDark = () => document.documentElement.classList.contains("dark");
-  const choose = (name: string) => fireEvent.click(within(screen.getByRole("radiogroup", { name: "Theme" })).getByRole("radio", { name }));
+  const openMenu = () => fireEvent.click(within(document.querySelector("header")!).getByRole("button", { name: "Theme" }));
+  const choose = (name: string) => {
+    openMenu();
+    fireEvent.click(within(screen.getByRole("menu", { name: "Theme" })).getByRole("menuitem", { name }));
+  };
+  const checked = () => screen.getAllByRole("menuitem").filter((i) => i.getAttribute("aria-checked") === "true").map((i) => i.textContent);
 
-  it("offers System, Light and Dark, System by default", async () => {
+  it("offers one Theme button that opens System, Light and Dark, System checked by default", async () => {
     mount();
-    await screen.findByText("Needs you (4)");
-    const group = screen.getByRole("radiogroup", { name: "Theme" });
-    expect(within(group).getAllByRole("radio").map((r) => r.getAttribute("aria-label"))).toEqual(["System", "Light", "Dark"]);
-    expect(within(group).getByRole("radio", { name: "System" }).getAttribute("aria-checked")).toBe("true");
+    await waitBadge();
+    const header = document.querySelector("header")!;
+    expect(within(header).getAllByRole("button", { name: "Theme" })).toHaveLength(1);
+    expect(screen.queryByRole("radiogroup", { name: "Theme" })).toBeNull();
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(within(header).getByRole("button", { name: "Theme" }).getAttribute("aria-expanded")).toBe("false");
+    openMenu();
+    expect(within(header).getByRole("button", { name: "Theme" }).getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["System", "Light", "Dark"]);
+    expect(checked()).toEqual(["System"]);
+  });
+
+  it("the menu closes on choosing, on Escape and on a click outside", async () => {
+    mount();
+    await waitBadge();
+    choose("Light");
+    expect(screen.queryByRole("menu")).toBeNull();
+    openMenu();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    openMenu();
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole("menu")).toBeNull();
   });
 
   it("with no saved choice, a dark system scheme renders dark", async () => {
     stubScheme(true);
     mount();
-    await screen.findByText("Needs you (4)");
+    await waitBadge();
     expect(isDark()).toBe(true);
     expect(localStorage.getItem(THEME_KEY)).toBeNull();
   });
@@ -221,7 +248,7 @@ describe("app shell", () => {
   it("System follows a change of the system scheme with no reload", async () => {
     const scheme = stubScheme(false);
     mount();
-    await screen.findByText("Needs you (4)");
+    await waitBadge();
     expect(isDark()).toBe(false);
     act(() => scheme.set(true));
     expect(isDark()).toBe(true);
@@ -232,7 +259,7 @@ describe("app shell", () => {
   it("Light or Dark overrides the system and removes the listener; System follows it again and clears the stored value", async () => {
     const scheme = stubScheme(false);
     mount();
-    await screen.findByText("Needs you (4)");
+    await waitBadge();
     expect(scheme.listeners()).toBe(1);
     choose("Dark");
     expect(isDark()).toBe(true);
@@ -265,9 +292,10 @@ describe("app shell", () => {
     stubScheme(true);
     localStorage.setItem(THEME_KEY, "light");
     mount();
-    await screen.findByText("Needs you (4)");
+    await waitBadge();
     expect(isDark()).toBe(false);
-    expect(screen.getByRole("radio", { name: "Light" }).getAttribute("aria-checked")).toBe("true");
+    openMenu();
+    expect(checked()).toEqual(["Light"]);
   });
 
   it("the banner link takes the banner's own text token and is used by the revision banner", () => {
@@ -283,7 +311,8 @@ describe("app shell", () => {
     expect(storedChoice()).toBe("light");
     paintChoice(storedChoice()); // what web/src/main.tsx does at startup
     mount();
-    expect(screen.getByRole("radio", { name: "Light" }).getAttribute("aria-checked")).toBe("true");
+    openMenu();
+    expect(checked()).toEqual(["Light"]);
     expect(document.documentElement.classList.contains("dark")).toBe(false);
     cleanup();
     stubScheme(false);
@@ -291,7 +320,8 @@ describe("app shell", () => {
     expect(storedChoice()).toBe("dark");
     paintChoice(storedChoice());
     mount();
-    expect(screen.getByRole("radio", { name: "Dark" }).getAttribute("aria-checked")).toBe("true");
+    openMenu();
+    expect(checked()).toEqual(["Dark"]);
     expect(document.documentElement.classList.contains("dark")).toBe(true);
   });
 });
@@ -331,7 +361,7 @@ describe("sidebar", () => {
 
   it("Settings is a row at the bottom of the sidebar, selected while open, and no longer a top-bar link", async () => {
     mount();
-    await screen.findByText("Needs you (4)");
+    await waitBadge();
     expect(within(document.querySelector("header")!).queryByRole("link", { name: "Settings" })).toBeNull();
     const side = screen.getByRole("complementary", { name: "Sidebar" });
     const row = within(side).getByRole("link", { name: "Settings" });
@@ -399,7 +429,7 @@ describe("sidebar in the icon-only layout", () => {
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
     try {
       mount();
-      await screen.findByText("Needs you (4)");
+      await waitBadge();
       for (const nav of [screen.getByRole("navigation", { name: "Tasks" }), screen.getByRole("navigation", { name: "System" })]) {
         const links = [...nav.querySelectorAll("a")];
         expect(links.length).toBeGreaterThan(0);
@@ -415,20 +445,72 @@ describe("sidebar in the icon-only layout", () => {
   });
 });
 
-describe("top bar on a narrow screen", () => {
+describe("top bar", () => {
   // jsdom has no layout, so this checks the classes that keep the bar inside a 390px screen (checked by screenshot).
-  it("wraps, keeps the icon buttons at full size, and shows only Ns of the age, which still reads in full", async () => {
+  it("wraps and keeps the icon buttons at full size", async () => {
     mount();
-    await screen.findByText("Needs you (4)");
+    await waitBadge();
     const header = document.querySelector("header")!;
     expect(header.className.split(" ")).toContain("flex-wrap");
-    for (const el of [within(header).getByRole("button", { name: "Refresh" }), within(header).getByRole("radio", { name: "Dark" })]) {
-      expect(el.className.split(" ")).toContain("shrink-0");
+    expect(within(header).getByRole("button", { name: "Refresh" }).className.split(" ")).toContain("shrink-0");
+  });
+
+  it("has no Needs you chip and no age text; the sidebar Tasks badge keeps the count", async () => {
+    mount();
+    await waitBadge();
+    const header = document.querySelector("header")!;
+    expect(screen.queryByTestId("needs-you")).toBeNull();
+    expect(header.textContent).not.toMatch(/Needs you \(/);
+    expect(header.textContent).not.toMatch(/updated|ago/);
+    expect(header.textContent).not.toContain("not updated yet");
+    expect(screen.getByRole("link", { name: "Tasks" }).textContent).toBe("Tasks4");
+  });
+
+  it("shows update failed when the overview request fails", async () => {
+    const saved = RESPONSES["/api/v1/overview"];
+    delete RESPONSES["/api/v1/overview"];
+    try {
+      mount();
+      expect(await within(document.querySelector("header")!).findByText("update failed")).toBeTruthy();
+    } finally {
+      RESPONSES["/api/v1/overview"] = saved;
     }
-    const age = header.querySelector("[aria-live]")!;
-    expect(age.textContent).toMatch(/^updated \d+s ago$/);
-    const hidden = [...age.querySelectorAll("span")].map((s) => [s.textContent, s.className]);
-    expect(hidden).toEqual([["updated ", "max-sm:sr-only"], [" ago", "max-sm:sr-only"]]);
+  });
+
+  it("the Refresh icon spins while a query is fetching and not otherwise", async () => {
+    mount();
+    await waitBadge();
+    const icon = () => within(document.querySelector("header")!).getByRole("button", { name: "Refresh" }).querySelector("svg")!;
+    await vi.waitFor(() => expect(icon().classList.contains("animate-spin")).toBe(false));
+    vi.mocked(fetch).mockImplementation(() => new Promise<Response>(() => undefined));
+    fireEvent.click(within(document.querySelector("header")!).getByRole("button", { name: "Refresh" }));
+    await vi.waitFor(() => expect(icon().classList.contains("animate-spin")).toBe(true));
+  });
+
+  it("the mode switch tooltip says what auto does, on hover and on focus, and keeps an auto stop's reason above it", async () => {
+    const AUTO = "Auto approves specs below tier 4 and merges reviewed local changes up to the auto-merge tier. Tier 4 and the gate list wait for a person.";
+    const row = { key: "mode", description: "", kind: "mode", value: "manual", source: "default", file_value: null, default_value: "manual", applies_at: "", project_settable: false, projects: [] };
+    const view = { as_of: AT, csrf_token: "c", repo: "o/r", project: null, project_keys: [], keys: [row], pr_only: [], ignored: [], history: [] };
+    (RESPONSES as Record<string, unknown>)["/api/v1/settings"] = view;
+    try {
+      mount();
+      const wrap = (await screen.findByTestId("mode")).parentElement!;
+      fireEvent.mouseEnter(wrap);
+      expect(screen.getByRole("tooltip").textContent).toBe(AUTO);
+      fireEvent.mouseLeave(wrap);
+      expect(screen.queryByRole("tooltip")).toBeNull();
+      fireEvent.focus(wrap);
+      expect(screen.getByRole("tooltip")).toBeTruthy();
+      cleanup();
+      (RESPONSES as Record<string, unknown>)["/api/v1/settings"] = { ...view, auto_stop: { alert_id: "a", at: AT, cause: "red_main" } };
+      mount();
+      fireEvent.mouseEnter((await screen.findByTestId("mode")).parentElement!);
+      const text = screen.getByRole("tooltip").textContent!;
+      expect(text.startsWith("Back to manual at")).toBe(true);
+      expect(text.endsWith(AUTO)).toBe(true);
+    } finally {
+      delete (RESPONSES as Record<string, unknown>)["/api/v1/settings"];
+    }
   });
 });
 
@@ -1071,14 +1153,13 @@ describe("system actions, revisions and the tab title (issue #311)", () => {
 
   it("the tab title leads with the Needs you count, and has no prefix at 0", async () => {
     mount();
-    await screen.findByText("Needs you (4)");
+    await waitBadge();
     await vi.waitFor(() => expect(document.title).toBe("(4) Tasks · Gongbang"));
     cleanup();
     const before = overview.needs_you;
     overview.needs_you = 0;
     try {
       mount();
-      await screen.findByText("Needs you (0)");
       await vi.waitFor(() => expect(document.title).toBe("Tasks · Gongbang"));
     } finally {
       overview.needs_you = before;

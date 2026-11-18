@@ -1,18 +1,18 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useIsFetching, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Monitor, Moon, RefreshCw, Search, Sun } from "lucide-react";
 import { type JSX, useEffect, useState } from "react";
 import { API, type Overview, POLL_MS, WEB_REV, getJson } from "./api.js";
 import { Brand } from "./components/ui/brand.js";
 import { Button } from "./components/ui/button.js";
+import { OverflowMenu } from "./components/ui/menu.js";
 import { type MessageKey } from "./i18n/en.js";
-import { t, withUnit } from "./i18n/index.js";
+import { t } from "./i18n/index.js";
 import { cn } from "./lib/cn.js";
 import { useShortcuts } from "./keys.js";
 import { Link, NavProvider, useLocationPath } from "./nav.js";
 import { BASE, type PageDef, pagesIn, redirectFor, routeFor } from "./pages.js";
 import { HelpDialog, SearchDialog } from "./search.js";
 import { type ThemeChoice, applyChoice, saveChoice, storedChoice } from "./theme.js";
-import { useNow } from "./views/common.js";
 import { DataPage } from "./views/data.js";
 import { HealthPage, ItemPage, ItemsPage, RunnersPage } from "./views/pages.js";
 import { PluginsPage } from "./views/plugins.js";
@@ -23,18 +23,6 @@ import { TranscriptView, transcriptRoute } from "./views/transcript.js";
 import { RulesPage } from "./views/rules.js";
 import { CalendarPage } from "./views/calendar.js";
 import { TasksPage } from "./views/tasks.js";
-
-/** "updated Ns ago", ticking each second; below sm only "Ns" shows, the rest stays for screen readers. */
-function Ago({ at }: { at: number }) {
-  const now = useNow();
-  if (at === 0) return <>{t("topbar.notUpdated")}</>;
-  return (
-    <>
-      <span className="max-sm:sr-only">{t("topbar.updated")}</span>
-      {withUnit(Math.max(0, Math.floor((now - at) / 1000)), "s")}<span className="max-sm:sr-only">{t("topbar.ago")}</span>
-    </>
-  );
-}
 
 const VIEWS: Record<string, () => JSX.Element> = {
   items: ItemsPage,
@@ -78,36 +66,25 @@ function SideLinks({ label, pages, current, badges = {} }: { label: string; page
   );
 }
 
-const THEME_CHOICES: readonly { choice: ThemeChoice; label: MessageKey; Icon: typeof Sun }[] = [
-  { choice: "system", label: "topbar.themeSystem", Icon: Monitor },
-  { choice: "light", label: "topbar.themeLight", Icon: Sun },
-  { choice: "dark", label: "topbar.themeDark", Icon: Moon },
+const THEME_CHOICES: readonly { choice: ThemeChoice; label: MessageKey }[] = [
+  { choice: "system", label: "topbar.themeSystem" },
+  { choice: "light", label: "topbar.themeLight" },
+  { choice: "dark", label: "topbar.themeDark" },
 ];
 
-/** System, Light or Dark: one radio group, the chosen one pressed. */
+/** One Theme button that opens System, Light and Dark, the current choice checked. */
 function ThemeControl({ choice, onChoose }: { choice: ThemeChoice; onChoose: (c: ThemeChoice) => void }) {
+  const Icon = choice === "light" ? Sun : choice === "dark" ? Moon : Monitor;
   return (
-    <div role="radiogroup" aria-label={t("topbar.theme")} className="flex shrink-0 gap-1">
-      {THEME_CHOICES.map(({ choice: c, label, Icon }) => (
-        <Button
-          key={c}
-          role="radio"
-          aria-checked={choice === c}
-          variant="ghost"
-          size="icon"
-          aria-label={t(label)}
-          title={t(label)}
-          className="shrink-0"
-          onClick={() => onChoose(c)}
-        >
-          <Icon aria-hidden className="size-4" />
-        </Button>
-      ))}
-    </div>
+    <OverflowMenu
+      label={t("topbar.theme")}
+      icon={<Icon aria-hidden className="size-4" />}
+      items={THEME_CHOICES.map(({ choice: c, label }) => ({ label: t(label), checked: choice === c, onSelect: () => onChoose(c) }))}
+    />
   );
 }
 
-/** The app (design §9): sidebar, top bar with "Needs you (N)", which links to the landing page, and the current page. */
+/** The app (design §9): sidebar, top bar (mode, update failed, search, refresh, theme) and the current page. */
 export function App() {
   const overview = useQuery({
     queryKey: [API.overview],
@@ -117,6 +94,7 @@ export function App() {
     refetchIntervalInBackground: false,
   });
   const client = useQueryClient();
+  const fetching = useIsFetching();
   const [choice, setChoice] = useState<ThemeChoice>(storedChoice);
   // System listens for the system colour scheme; the cleanup removes that listener when the choice changes.
   useEffect(() => applyChoice(choice), [choice]);
@@ -167,25 +145,15 @@ export function App() {
         <div data-scroll-root className="flex min-w-0 flex-1 flex-col overflow-y-auto">
           {/* Wraps instead of widening the page on a narrow screen. */}
           <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-2">
-            <Link
-              href={BASE}
-              data-testid="needs-you"
-              className={cn(
-                "shrink-0 rounded-control px-2 py-1 text-sm font-medium whitespace-nowrap tabular-nums",
-                needs ? "bg-pill-bad-bg text-pill-bad-fg" : "bg-surface-2",
-              )}
-            >
-              {t("topbar.needsYou", { count: needs ?? "…" })}
-            </Link>
             <ModeSwitch floating />
-            <span className="ml-auto shrink-0 text-sm whitespace-nowrap text-text-2 tabular-nums" aria-live="polite">
-              {overview.isError ? t("topbar.updateFailed") : <Ago at={overview.dataUpdatedAt} />}
+            <span className="ml-auto shrink-0 text-sm whitespace-nowrap text-text-2" aria-live="polite">
+              {overview.isError ? t("topbar.updateFailed") : null}
             </span>
             <Button variant="ghost" size="icon" aria-label={t("search.open")} className="shrink-0" onClick={() => setDialog("search")}>
               <Search aria-hidden className="size-4" />
             </Button>
             <Button variant="ghost" size="icon" aria-label={t("topbar.refresh")} className="shrink-0" onClick={() => void client.invalidateQueries()}>
-              <RefreshCw aria-hidden className="size-4" />
+              <RefreshCw aria-hidden className={cn("size-4", fetching > 0 && "animate-spin motion-reduce:animate-none")} />
             </Button>
             <ThemeControl choice={choice} onChoose={choose} />
           </header>
