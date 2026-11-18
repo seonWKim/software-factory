@@ -1,13 +1,14 @@
 import type { ModelClass } from "../../../core/model-choice.js";
-import { checkCommands, checkedLines, commandText, runChecks } from "../../../core/checks.js";
-import { IMPLEMENT_SCHEMA, type NeedsHuman, parseImplement } from "../../../core/outputs.js";
-import { branchFor } from "../../../core/policy.js";
+import { type CheckResult, checkCommands, checkedLines, commandText, failingTestFiles, runChecks } from "../../../core/checks.js";
+import { IMPLEMENT_SCHEMA, NEEDS_HUMAN_MAX_CHARS, NEEDS_HUMAN_MAX_PATHS, type NeedsHuman, parseImplement } from "../../../core/outputs.js";
+import { branchFor, isCovered, parseAutoResolveKey } from "../../../core/policy.js";
 import { mergeAppendedConflicts } from "../../../core/mechanical.js";
-import { type ConflictFile, renderResolvePrompt, resolveScopeViolations } from "../../../core/resolve.js";
+import { type ConflictFile, RESOLVE_TESTS_FAILED, lastResolveFailure, renderResolvePrompt, resolveScopeViolations } from "../../../core/resolve.js";
 import type { Run, WorkItem } from "../../../core/types.js";
 import type { SandboxHandle } from "../../../interfaces/sandbox.js";
 import type { ToolCallContext } from "../../../interfaces/tool-broker.js";
-import { NO_HOOKS, RunFailure, gitIdentity, specQuery, tail } from "../../support.js";
+import { NO_HOOKS, RunFailure, failingTestNames, gitIdentity, specQuery, tail } from "../../support.js";
+import { conflictAsk } from "../implement/conflict-ask.js";
 import type { Worker } from "../../runner.js";
 import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
 import { RESUME_LOST, fetchBundle, saveBundle } from "../../bundle.js";
@@ -23,7 +24,8 @@ import { RESUME_LOST, fetchBundle, saveBundle } from "../../bundle.js";
  * conflict markers in that tree, then the worker commits that exact tree itself as a merge of the branch tip
  * and the base, checks it out clean, and runs the install and test commands on it. HEAD must still be that
  * commit afterwards. Only then push through the broker (same branch, same PR, never a force push). Any
- * failure throws: nothing is pushed and the controller re-blocks the item.
+ * failure throws: nothing is pushed and the controller re-blocks the item. A failed check stores its failing
+ * tests and output tail; one that fails only in test files the run could not edit asks for them instead.
  */
 async function resolve(w: Worker, run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal, model: ModelClass, step: RunCall["step"]) {
   if (item.change_ref === null && !w.route(item).local) throw new RunFailure("no_pr", "work item has no PR");
@@ -119,8 +121,10 @@ async function mergeAndResolve(
         files.push({ path, text: r.exit_code === 0 ? r.stdout : "" });
       }
       const notes = run.input?.notes ?? "";
+      // An automatic attempt after a failed one gets that run's failing tests and output tail (design 05-merge-conflict).
+      const earlier = parseAutoResolveKey(run.idempotency_key) ? lastResolveFailure(await w.d.store.listRuns(item.id), run.id) : null;
       const result = await w.agent(run, item, handle, signal, {
-        prompt: await w.withIndex(renderResolvePrompt(item, baseRef, files, notes), specQuery(item)),
+        prompt: await w.withIndex(renderResolvePrompt(item, baseRef, files, notes, earlier), specQuery(item)),
         model_class: model,
         output_schema: IMPLEMENT_SCHEMA,
         writable_paths: [gitDir],
@@ -148,8 +152,12 @@ async function mergeAndResolve(
 
     const head = await commitResolution(w, handle, { tree, tipSha, baseSha, branch, message: `Merge ${baseRef} into ${branch}` }, identity);
     // install_command first, then the check list (design §4).
-    await gate(w, handle, repo.install_command, signal);
-    for (const cmd of checkCommands(repo)) await gate(w, handle, cmd, signal);
+    const failed = await gates(w, handle, [repo.install_command, ...checkCommands(repo)], signal);
+    if (failed) {
+      const ask = testPathsAsk(w, item, conflicts, failed);
+      if (ask) return { needs_human: ask };
+      throw await testsFailed(w, failed);
+    }
     // The gate commands run repo code: they must not have moved HEAD off the commit they checked.
     const now = (await w.git(handle, ["rev-parse", "HEAD"])).trim();
     if (now !== head) throw new RunFailure("head_moved", `HEAD moved from ${head.slice(0, 8)} to ${now.slice(0, 8)} during the gates`);
@@ -225,20 +233,54 @@ async function commitResolution(
   return head;
 }
 
-/** One gate command (install, or a check) in the sandbox with the worker's tool env and slot env. Non-zero: `tests_failed`. */
-async function gate(w: Worker, handle: SandboxHandle, cmd: readonly string[], signal: AbortSignal): Promise<void> {
+/** The gate commands (install, then each check) in order in the sandbox with the worker's tool env and slot env; the first failure, or null. */
+async function gates(w: Worker, handle: SandboxHandle, commands: readonly (readonly string[])[], signal: AbortSignal): Promise<CheckResult | null> {
   const round = await runChecks({
     sandbox: w.d.sandbox,
     handle,
-    commands: [cmd],
+    commands,
     env: { ...w.d.toolEnv, ...w.slotEnv() },
     timeout_ms: w.cfg.run_timeout_ms,
     signal,
     redact: [],
   });
   if (signal.aborted) throw new RunFailure("lease_lost", "run aborted", true);
-  const f = round.failed;
-  if (f) throw new RunFailure("tests_failed", `\`${commandText(f.command)}\` ${f.how}`, false, f.tail ? { output_tail: f.tail } : {});
+  return round.failed;
+}
+
+/**
+ * The ask for a resolution whose checks failed only in test files it could not edit (neither a conflicting file nor
+ * under allowed_paths), by the implement run's rules (conflictAsk); null when it stays `tests_failed`.
+ */
+function testPathsAsk(w: Worker, item: WorkItem, conflicts: readonly string[], failed: CheckResult): NeedsHuman | null {
+  const ask = conflictAsk(failed, {
+    failingTestFiles,
+    covered: (p) => conflicts.includes(p) || isCovered(p, item.allowed_paths),
+    grantable: (ps) => w.live.autoGrantable(item.project, ps),
+    maxPaths: NEEDS_HUMAN_MAX_PATHS,
+    maxChars: NEEDS_HUMAN_MAX_CHARS,
+  });
+  if (!ask) return null;
+  const reason = `The resolve run merged the base, but the checks failed (\`${commandText(failed.command)}\` ${failed.how}) only in test files outside the allowed paths: ${ask.paths.join(", ")}. Nothing was pushed.`;
+  return {
+    reason: reason.length > NEEDS_HUMAN_MAX_CHARS ? `${reason.slice(0, NEEDS_HUMAN_MAX_CHARS - 1)}…` : reason,
+    question: "Allow these test files (`/resolve` with a `+paths` line naming them), so the resolve run can run again and update them with the merge?",
+    paths: ask.paths,
+  };
+}
+
+/**
+ * `tests_failed`: the command and exit text, then the failing tests by name (at most 10, as the merge check names
+ * them) in the detail and in `failing_tests`, and the output tail in `output_tail` after the egress scan; a flagged
+ * tail is withheld (null) as the merge check withholds it, and the names are kept.
+ */
+async function testsFailed(w: Worker, failed: CheckResult): Promise<RunFailure> {
+  const failing_tests = failingTestNames(failed.tail);
+  const clean = failed.tail === "" || (await w.d.scanner.scan("run_outcome", failed.tail)).clean;
+  const named = failing_tests.length > 0 ? `; failing tests: ${failing_tests.join(", ")}` : "";
+  // output_tail is null when withheld, as in the merge check's outcome; RunFailure's extra types only a string.
+  const extra = { failing_tests, output_tail: clean ? failed.tail : null } as RunFailure["extra"];
+  return new RunFailure(RESOLVE_TESTS_FAILED, `\`${commandText(failed.command)}\` ${failed.how}${named}`.slice(0, 500), false, extra);
 }
 
 export default defineRunKind({

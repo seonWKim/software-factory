@@ -3,8 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   AUTO_RESOLVE_LIMIT, autoResolveAttempts, autoResolveKey, nextAutoResolveAttempt, parseAutoResolveKey, runKey, scopeViolations,
 } from "../src/core/policy.js";
-import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine, renderResolvePrompt, resolveScopeViolations } from "../src/core/resolve.js";
-import type { Run, StateChange } from "../src/core/types.js";
+import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine, lastResolveFailure, renderResolvePrompt, resolveScopeViolations } from "../src/core/resolve.js";
+import type { Run, StateChange, WorkItem } from "../src/core/types.js";
+import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
+import { pipeline, runComments } from "./helpers/fakes.js";
+import { issue, system } from "./helpers/store.js";
 
 // Pure rules of automatic conflict resolution (design §5 Merge conflict, decided 2026-11-02).
 
@@ -138,5 +141,121 @@ describe("resolve prompt", () => {
   it("names the PR, or a local item's branch when it has none", () => {
     expect(renderResolvePrompt({ ...item, change_ref: "42" }, "origin/main", [], "").split("\n")[0]).toBe("# Resolve merge conflicts: work item wi_1, PR #42");
     expect(renderResolvePrompt({ ...item, change_ref: null }, "origin/main", [], "").split("\n")[0]).toBe("# Resolve merge conflicts: work item wi_1, local branch");
+  });
+});
+
+// A resolve run whose checks fail (design 05-merge-conflict, 2026-11-18): it keeps the failing tests and the
+// output tail, the next automatic attempt's prompt carries them, and a failure only in test files it could not
+// edit asks for them. Fakes only: no model, no remote.
+describe("a resolve run whose checks fail", () => {
+  const OUTPUT = [" FAIL  tests/a.test.ts > keeps both sides", " FAIL  tests/b.test.ts > counts", "Test Files  2 failed"].join("\n");
+
+  /** A pipeline whose `npm test` exits 1 printing `output`, a conflicted merge on src/a.ts, and the resolve agent scripted. */
+  async function failing(output = OUTPUT, scanner?: EgressScanner) {
+    const f = await pipeline(scanner ? { scanner } : {});
+    f.runner.script.resolve = () => ({ output: { summary: "resolved", next_steps: "none" } });
+    Object.assign(f.sandbox, { mergeExit: 1, conflicts: ["src/a.ts"], resolveChanged: ["src/a.ts"] });
+    f.sandbox.files["src/a.ts"] = "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> origin/main\n";
+    f.sandbox.exits["npm test"] = 1;
+    const exec = f.sandbox.exec.bind(f.sandbox);
+    f.sandbox.exec = async (h, cmd, o) => {
+      const r = await exec(h, cmd, o);
+      return cmd.join(" ") === "npm test" ? { ...r, stdout: output } : r;
+    };
+    return f;
+  }
+
+  /** An item with PR 42, RUNNING, and one queued resolve run keyed `key` (a function of the item id). */
+  async function withResolve(f: Awaited<ReturnType<typeof pipeline>>, allowed: string[], key: (id: string) => string): Promise<WorkItem> {
+    const { item } = await f.store.createWorkItem(issue(7), system);
+    const moved = await f.store.transition({
+      id: item.id, expected_version: item.version, actor: system, reason: "test_setup",
+      patch: { stage: "RUNNING", change_ref: "42", allowed_paths: allowed },
+      enqueue: { kind: "resolve", idempotency_key: key(item.id), input: { notes: "" } },
+    });
+    if (!moved.ok) throw new Error("setup");
+    return moved.item;
+  }
+
+  it("stores failing_tests and output_tail in its failed outcome, and the item comment names the failing tests", async () => {
+    const f = await failing();
+    const item = await withResolve(f, ["src/", "tests/"], (id) => `${id}:resolve:l0:r1`);
+    await f.w1.tick();
+    const run = (await f.runs(item, "resolve"))[0]!;
+    expect(run.outcome).toMatchObject({
+      status: "failed", error_code: "tests_failed", conflicts: ["src/a.ts"],
+      failing_tests: ["tests/a.test.ts > keeps both sides", "tests/b.test.ts > counts"], output_tail: OUTPUT,
+    });
+    expect(run.outcome?.status === "failed" && run.outcome.detail).toBe(
+      "`npm test` exited 1; failing tests: tests/a.test.ts > keeps both sides, tests/b.test.ts > counts",
+    );
+    expect(f.broker.stores).toEqual([]);
+    await f.controller.tickRuns();
+    const comment = (await runComments(f.store, item.id)).find((c) => c.marker === `<!-- factory:run-failed:${run.id} -->`);
+    expect(comment?.body).toContain("failing tests: tests/a.test.ts > keeps both sides, tests/b.test.ts > counts");
+  });
+
+  it("withholds a tail the egress scan flags, as the merge check does, and keeps the names", async () => {
+    const flagging: EgressScanner = {
+      scan: async (channel, text) => (text.includes("SECRETISH") ? { clean: false, findings: [{ rule: "test", channel }] } : { clean: true }),
+    };
+    const f = await failing(`${OUTPUT}\nSECRETISH`, flagging);
+    const item = await withResolve(f, ["src/", "tests/"], (id) => `${id}:resolve:l0:r1`);
+    await f.w1.tick();
+    const run = (await f.runs(item, "resolve"))[0]!;
+    expect(run.outcome).toMatchObject({ status: "failed", error_code: "tests_failed", output_tail: null });
+    expect(run.outcome).toHaveProperty("failing_tests", ["tests/a.test.ts > keeps both sides", "tests/b.test.ts > counts"]);
+  });
+
+  it("the next automatic attempt's prompt contains the failing tests and the output tail", async () => {
+    const f = await failing();
+    const item = await withResolve(f, ["src/", "tests/"], (id) => autoResolveKey(id, "basesha", 1));
+    await f.w1.tick();
+    await f.controller.tickRuns();
+    expect((await f.runs(item, "resolve")).map((r) => r.idempotency_key)).toEqual([
+      autoResolveKey(item.id, "basesha", 1), autoResolveKey(item.id, "basesha", 2),
+    ]);
+    await f.w1.tick();
+    const prompts = f.runner.specs.filter((s) => s.role === "resolve").map((s) => s.prompt);
+    expect(prompts[0]).not.toContain("The last resolve attempt failed");
+    expect(prompts[1]).toContain("## The last resolve attempt failed its checks");
+    expect(prompts[1]).toContain("- `tests/a.test.ts > keeps both sides`");
+    expect(prompts[1]).toContain("- `tests/b.test.ts > counts`");
+    expect(prompts[1]).toContain(OUTPUT);
+  });
+
+  it("failing only in test files outside the allowed paths asks for those paths and pushes nothing", async () => {
+    const f = await failing();
+    const item = await withResolve(f, ["src/"], (id) => `${id}:resolve:l0:r1`);
+    await f.w1.tick();
+    const run = (await f.runs(item, "resolve"))[0]!;
+    expect(run.outcome).toMatchObject({ status: "succeeded", data: { needs_human: { paths: ["tests/a.test.ts", "tests/b.test.ts"] } } });
+    expect(run.outcome?.status === "succeeded" && String((run.outcome.data.needs_human as { reason: string }).reason)).toContain("outside the allowed paths");
+    expect(f.broker.stores).toEqual([]);
+    expect(f.broker.calls).toEqual([]);
+  });
+});
+
+describe("the last failed resolve run", () => {
+  const failedRun = (id: string, extra: Record<string, unknown>, code = "tests_failed") =>
+    ({ id, kind: "resolve", outcome: { status: "failed", error_code: code, detail: "", infra: false, ...extra } }) as unknown as Run;
+
+  it("is the most recent failed resolve run other than this one; another failure code gives nothing", () => {
+    const runs = [
+      failedRun("r1", { failing_tests: ["tests/old.test.ts > x"], output_tail: "old" }),
+      failedRun("r2", { failing_tests: ["tests/new.test.ts > y"], output_tail: "new" }),
+      failedRun("r3", {}),
+    ];
+    expect(lastResolveFailure(runs, "r3" as never)).toEqual({ failing_tests: ["tests/new.test.ts > y"], output_tail: "new" });
+    expect(lastResolveFailure([...runs.slice(0, 2), failedRun("r4", { output_tail: "transcript" }, "invalid_output")], "r9" as never)).toBeNull();
+    expect(lastResolveFailure([failedRun("r1", { output_tail: null, failing_tests: [] })], "r9" as never)).toBeNull();
+  });
+
+  it("an older run with only a tail still gives its tail; a withheld tail keeps the names", () => {
+    expect(lastResolveFailure([failedRun("r1", { output_tail: "boom" })], "r9" as never)).toEqual({ failing_tests: [], output_tail: "boom" });
+    const p = renderResolvePrompt({ id: "wi_1" as never, problem: "p", done_criteria: [], scope: "", allowed_paths: [], change_ref: null, source: { type: "local", id: "l", link: "" } },
+      "origin/main", [], "", { failing_tests: ["tests/a.test.ts > b"], output_tail: null });
+    expect(p).toContain("- `tests/a.test.ts > b`");
+    expect(p).not.toContain("Its output, last lines");
   });
 });

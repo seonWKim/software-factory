@@ -7,7 +7,7 @@ import { CODE_VERSION_ENV } from "../src/interfaces/updater.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import type { Logger } from "../src/core/log.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
-import { type RunKind, usageTokens } from "../src/core/types.js";
+import { type RunKind, type WorkerId, usageTokens } from "../src/core/types.js";
 import { CountedKeepAwake, WorkerPool } from "../src/worker/index.js";
 import { testWorkerShare } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
@@ -51,7 +51,7 @@ function gatedRunner(events: string[]) {
   return { runner, gates, started: () => started };
 }
 
-async function setup(opts: { workers: number; queued: number; awake?: (events: string[]) => KeepAwake; log?: Logger; indexBase?: number }) {
+async function setup(opts: { workers: number; maxWorkers?: number; queued: number; awake?: (events: string[]) => KeepAwake; log?: Logger; indexBase?: number }) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   for (let i = 1; i <= opts.queued; i++) {
@@ -61,7 +61,7 @@ async function setup(opts: { workers: number; queued: number; awake?: (events: s
   const { runner, gates, started } = gatedRunner(events);
   const claimRun = vi.spyOn(store, "claimRun");
   const completeRun = vi.spyOn(store, "completeRun");
-  const cfg: FactoryConfig = { ...config, workers: opts.workers };
+  const cfg: FactoryConfig = { ...config, workers: opts.workers, ...(opts.maxWorkers !== undefined ? { max_workers: opts.maxWorkers } : {}) };
   const pool = new WorkerPool({
     id_prefix: "host:42", store, sandbox: new FakeSandbox(), runner, broker: new FakeBroker(), storage: new MemoryStorage(),
     clock, config: cfg, prompts, log: opts.log ?? silent, scanner: cleanScanner, toolEnv: {},
@@ -198,6 +198,42 @@ describe("worker pool", () => {
     for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
     expect(s.started()).toBe(1);
     expect(await s.running()).toHaveLength(1);
+    stop.abort();
+    s.gates[0]!();
+    await loops;
+  });
+
+  it("with every slot on an implement run, the first loop above `workers` claims one short run, never a second", async () => {
+    const s = await setup({ workers: 1, maxWorkers: 3, queued: 2 });
+    // Slot 0 holds an implement run (a 30-minute build): running in the store, held by its loop.
+    await s.store.createWorkItem(issue(100), system, { enqueue: { kind: "implement", idempotency_key: "100:implement" } });
+    expect((await s.store.claimRun({ worker_id: "host:42:0" as WorkerId, kinds: ["implement"], lease_ms: 3_600_000 }))?.kind).toBe("implement");
+    s.pool.workers[0]!.holding = "implement";
+    const stop = new AbortController();
+    const loops = s.pool.run(stop.signal);
+    await waitFor(() => s.started() === 1, "a triage run in the slot beyond");
+    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+    expect(s.started()).toBe(1);
+    expect(await s.store.listRunsByStatus(["queued"], 10)).toHaveLength(1);
+    const owners = ["host:42:0", "host:42:1", "host:42:2"];
+    const pooled = s.claimRun.mock.calls.slice(1).map(([input]) => input); // the first is this test's own claim
+    expect(pooled.every((input) => input.workers?.count === 1 && input.workers.owners.join() === owners.join())).toBe(true);
+    // The loop above `workers` claims; the one after it never runs.
+    expect(pooled.map((input) => input.worker_id)).toContain("host:42:1");
+    expect(pooled.map((input) => input.worker_id)).not.toContain("host:42:2");
+    stop.abort();
+    s.gates[0]!();
+    await loops;
+  });
+
+  it("while a slot holds a short run, the loop above `workers` does not claim", async () => {
+    const s = await setup({ workers: 1, maxWorkers: 3, queued: 2 });
+    const stop = new AbortController();
+    const loops = s.pool.run(stop.signal);
+    await waitFor(() => s.started() === 1, "a triage run in flight");
+    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+    expect(s.started()).toBe(1);
+    expect(new Set(s.claimRun.mock.calls.map(([input]) => input.worker_id))).toEqual(new Set(["host:42:0"]));
     stop.abort();
     s.gates[0]!();
     await loops;
