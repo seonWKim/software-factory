@@ -10,7 +10,7 @@ import { mergeAppendedConflicts } from "../../../core/mechanical.js";
 import { type ConflictFile, renderResolvePrompt } from "../../../core/resolve.js";
 import { errorText } from "../../../core/log.js";
 import type { Run, RunResume, WipRef, WorkItem } from "../../../core/types.js";
-import type { AgentRunResult, AgentRunSpec, GateHooks, PackRefusal } from "../../../interfaces/agent-runner.js";
+import type { AgentRunSpec, GateHooks, PackRefusal } from "../../../interfaces/agent-runner.js";
 import type { SandboxHandle } from "../../../interfaces/sandbox.js";
 import { PREFLIGHT, type ToolCallContext } from "../../../interfaces/tool-broker.js";
 import { BUDGET_NEXT_STEPS, type ContinueWip, DIFF_CHECK_MS, type DiffBudget, type FixContext, LOOP_STARTS, MAX_CONFLICT_COMMITS, MAX_PR_FILES, NO_COMMITS_DETAIL, NO_HOOKS, PAUSE_NEXT_STEPS, type ResumePlan, RunFailure, RunPaused, STOPPED_CODES, STOPPED_NEXT_STEPS, WIP_TEXT_CHARS, continues, failingTestNames, fenced, gitIdentity, hasTool, prTitle, renderBudget, renderContinueNewSession, renderMergeCheckFailure, renderNewSessionResume, renderRequest, renderSessionResume, renderWorkItem, runCommits, scopeReply, specQuery, tail } from "../../support.js";
@@ -18,6 +18,7 @@ import type { Worker } from "../../runner.js";
 import { RESUME_LOST, fetchBundle, saveBundle } from "../../bundle.js";
 import { decisionsSection } from "../../../shared/command-notes.js";
 import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
+import { repairedAnswer } from "./implement-repair.js";
 
 /**
  * The implement run. Before any agent: the preflight (push access, PR API, base fetch). A retry whose input
@@ -119,16 +120,7 @@ async function implement(
       await watching;
       // A runner that finished the step although the check had stopped it: the run still fails, before any sync.
       if (watch.over) throw await overBudget(w, run, item, handle, ctx, start, dirs, watch);
-      let out = parseImplement(result.output);
-      // An invalid answer gets one repair turn in the same session (design §5 Restarts); still invalid, its commits go to a wip branch.
-      const repair = out.ok ? null : await repairAnswer(w, run, item, handle, signal, model, out.error).catch(async (err: unknown) => {
-        throw err instanceof RunFailure && STOPPED_CODES.includes(err.code) && !signal.aborted ? await keepStopped(w, run, item, handle, ctx, start, dirs, err) : err;
-      });
-      if (repair) out = parseImplement(repair.output);
-      if (!out.ok) {
-        const failure = new RunFailure("invalid_output", out.error, false, { output_tail: tail((repair ?? result).transcript) });
-        throw await keepStopped(w, run, item, handle, ctx, start, dirs, failure, INVALID_NEXT_STEPS);
-      }
+      const out = await repairedAnswer(w, run, item, handle, signal, { model_class: model, output_schema: IMPLEMENT_SCHEMA, writable_paths: [], env_allowlist: gitIdentity(w.cfg.agent_git_identity), gate_hooks: gateHooks(w, run, item, start, baseSha) }, parseImplement, result,(f, next) => keepStopped(w, run, item, handle, ctx, start, dirs, f, next));
       await w.distrustAgentGit(handle, dirs);
       // The agent asked for a human (data, not a failure): no sync, no gates, no push, no PR. Its commits go with the run folder; none is kept on a wip branch.
       if (out.value.needs_human) return { needs_human: out.value.needs_human };
@@ -323,14 +315,25 @@ async function branchDiff(w: Worker, handle: SandboxHandle, baseSha: string, dir
  * no PR), and the run fails with `diff_too_large`, its detail giving both counts and both limits. No sync,
  * gate, check or later agent step runs. No commits: nothing is pushed.
  */
-async function overBudget(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, start: string, dirs: string, b: DiffBudget): Promise<RunFailure> {
+async function overBudget(
+  w: Worker,
+  run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, start: string, dirs: string, b: DiffBudget,
+): Promise<RunFailure> {
   const failure = new RunFailure("diff_too_large", sizeDetail(b.over!, b.limits));
   await w.distrustAgentGit(handle, dirs);
   const head = (await w.git(handle, ["rev-parse", "HEAD"])).trim();
   const commits = (await w.git(handle, ["rev-list", `${start}..HEAD`])).split("\n").filter(Boolean).length;
   if (commits === 0) return failure;
-  const wip = { branch: wipBranchFor(item, w.cfg.branch_prefix, run.id), head, commits, summary: "", next_steps: BUDGET_NEXT_STEPS, conflicts: [], missing: [], deviations: [] };
-  return keepWip(w, run, item, ctx, handle, failure, wip, false);
+  return keepWip(w, run, item, ctx, handle, failure, {
+    branch: wipBranchFor(item, w.cfg.branch_prefix, run.id),
+    head,
+    commits,
+    summary: "",
+    next_steps: BUDGET_NEXT_STEPS,
+    conflicts: [],
+    missing: [],
+    deviations: [],
+  }, false);
 }
 
 /**
@@ -339,12 +342,11 @@ async function overBudget(w: Worker, run: Run, item: WorkItem, handle: SandboxHa
  * commit, and the commits since `start` go to the run's wip branch (no PR branch push, no PR), marked `continue`
  * so the retry runs the agent on them. When the sandbox can reattach and the runner stores sessions, the folder
  * and the agent session are kept on this host for a `--resume` there. No commits: nothing is pushed, the retry
- * starts fresh. A failed wip push keeps the original failure with no wip ref, and nothing is kept. An answer still
- * invalid after its repair turn keeps its commits the same way, with its own `next_steps`.
+ * starts fresh. A failed wip push keeps the original failure with no wip ref, and nothing is kept.
  */
 async function keepStopped(
-  w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, start: string, dirs: string, failure: RunFailure,
-  next_steps = STOPPED_NEXT_STEPS,
+  w: Worker,
+  run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, start: string, dirs: string, failure: RunFailure, next_steps = STOPPED_NEXT_STEPS,
 ): Promise<RunFailure> {
   await w.distrustAgentGit(handle, dirs);
   await commitWorktree(w, handle, `wip: stopped run ${run.id} (${failure.code})`);
@@ -356,22 +358,20 @@ async function keepStopped(
     ? { id: s.step_session, host: w.host, folder: handle.id, start, base_sha: handle.base_sha ?? null }
     : null;
   const wip: ContinueWip = {
-    branch: wipBranchFor(item, w.cfg.branch_prefix, run.id), head, commits, summary: "", next_steps, conflicts: [], missing: [], deviations: [],
-    continue: true, ...(session ? { session } : {}),
+    branch: wipBranchFor(item, w.cfg.branch_prefix, run.id),
+    head,
+    commits,
+    summary: "",
+    next_steps,
+    conflicts: [],
+    missing: [],
+    deviations: [],
+    continue: true,
+    ...(session ? { session } : {}),
   };
   const kept = await keepWip(w, run, item, ctx, handle, failure, wip, false);
   if (session && kept.extra.wip && s) s.kept = { folder: handle.id, session: session.id };
   return kept;
-}
-
-const INVALID_NEXT_STEPS = "the final answer did not match the output schema, also after a repair turn: continue from the wip head and give the final answer";
-
-/** The repair turn (design §5 Restarts): one turn in the step's stored session asking only for the answer. Null: the runner keeps no session. */
-async function repairAnswer(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, signal: AbortSignal, model: ModelClass, error: string): Promise<AgentRunResult | null> {
-  const session = w.scratch.get(run)?.step_session;
-  if (!session || !(await w.d.runner.hasSession?.(session).catch(() => false))) return null;
-  const prompt = `## Your final answer did not match the required format\n\nThe factory could not read it (${error.slice(0, 200)}). Do not change, commit or run anything more: give only your final answer again, in the required format, with \`summary\` and \`next_steps\` filled in (or \`needs_human\` or \`spec_conflict\` if you meant that).`;
-  return w.agent(run, item, handle, signal, { prompt, model_class: model, output_schema: IMPLEMENT_SCHEMA, writable_paths: [], env_allowlist: gitIdentity(w.cfg.agent_git_identity) }, "repair", { resume: session });
 }
 
 /**
@@ -393,7 +393,16 @@ async function commitWorktree(w: Worker, handle: SandboxHandle, message: string)
  * git bundle in shared storage for a resume on another host, only when their patch text scans clean. Nothing
  * is pushed anywhere. Returns the pause, filled with its resume point.
  */
-async function pauseImplement(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, start: string, dirs: string, p: RunPaused): Promise<RunPaused> {
+async function pauseImplement(
+  w: Worker,
+  run: Run,
+  item: WorkItem,
+  handle: SandboxHandle,
+  ctx: ToolCallContext,
+  start: string,
+  dirs: string,
+  p: RunPaused,
+): Promise<RunPaused> {
   await w.distrustAgentGit(handle, dirs);
   const dirty = await commitWorktree(w, handle, `wip: paused run ${run.id}`);
   const head = (await w.git(handle, ["rev-parse", "HEAD"])).trim();

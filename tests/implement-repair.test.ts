@@ -68,6 +68,11 @@ describe("an invalid implement answer gets one repair turn", () => {
     expect(repair!.prompt).toContain("Do not change, commit or run anything more");
     expect(repair!.prompt).not.toContain("## Diff budget");
     expect(repair!.sandbox.id).toBe(first!.sandbox.id);
+    // The first turn's paths, environment and gate hooks.
+    expect(repair!.writable_paths).toEqual(first!.writable_paths);
+    expect(repair!.env_allowlist).toEqual(first!.env_allowlist);
+    expect(repair!.gate_hooks).toEqual(first!.gate_hooks);
+    expect(repair!.gate_hooks).toBeDefined();
   });
 
   it("two invalid answers with commits: invalid_output, the commits on the run's wip branch with continue", async () => {
