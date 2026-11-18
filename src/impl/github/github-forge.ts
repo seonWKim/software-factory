@@ -64,6 +64,18 @@ interface GhCheckRun {
   /** Set once completed: success, failure, neutral, cancelled, skipped, timed_out, action_required, stale, ... */
   conclusion: string | null;
 }
+/** A GitHub Actions workflow run (one per workflow per commit and event); its jobs are what a check run reports. */
+interface GhWorkflowRun {
+  id: number;
+  status: string;
+  conclusion: string | null;
+}
+/** A job of a workflow run. */
+interface GhJob {
+  id: number;
+  status: string;
+  conclusion: string | null;
+}
 interface GhStatus {
   context: string;
   /** error, failure, pending, success. */
@@ -99,6 +111,8 @@ interface Cursor {
 const CHECK_PAGES = 3;
 /** Check-run conclusions that do not fail the gate. */
 const PASSING_CONCLUSIONS = new Set(["success", "neutral", "skipped"]);
+/** Failed jobs whose logs one failedJobLog reads. */
+const MAX_LOG_JOBS = 3;
 /** Closed-PR pages read past a cursor or back to `github.history_since`, 100 each, newest-updated first. */
 const CLOSED_PULL_PAGES = 5;
 
@@ -497,6 +511,44 @@ export class GitHubForge implements Forge {
   }
 
   /**
+   * Reruns the failed jobs (`rerun-failed-jobs`) of each failed workflow run on `head_sha`: one GET of the commit's
+   * workflow runs, then one POST per failed run. Needs the token's Actions write permission. Not held back by the
+   * request budget: it is a write the gate makes once per head. None failed: throws, nothing is rerun.
+   */
+  async rerunFailedJobs(head_sha: string): Promise<void> {
+    const failed = await this.failedWorkflowRuns(head_sha);
+    for (const r of failed) await this.client.request("POST", `${this.base}/actions/runs/${r.id}/rerun-failed-jobs`);
+  }
+
+  /**
+   * The logs of the failed jobs (latest attempt) of the failed workflow runs on `head_sha`, at most MAX_LOG_JOBS,
+   * joined: one GET per run for its jobs, one plain-text GET per log (`GitHubApi.text`, which follows the download
+   * redirect). Needs the token's Actions read permission. Under the budget threshold it reads nothing and throws.
+   */
+  async failedJobLog(head_sha: string): Promise<string> {
+    if (this.client.lowBudget()) throw new Error("GitHub request budget low: job logs not read");
+    const logs: string[] = [];
+    for (const r of await this.failedWorkflowRuns(head_sha)) {
+      const { jobs } = await this.client.request<{ jobs: GhJob[] }>("GET", `${this.base}/actions/runs/${r.id}/jobs?filter=latest&per_page=100`);
+      for (const j of jobs.filter(failedRun)) {
+        if (logs.length === MAX_LOG_JOBS) break;
+        logs.push(await this.client.text(`${this.base}/actions/jobs/${j.id}/logs`));
+      }
+    }
+    if (logs.length === 0) throw new Error(`no failed GitHub Actions job on ${head_sha}`);
+    return logs.join("\n");
+  }
+
+  /** The finished, failed workflow runs on commit `head_sha` (one GET); throws when there is none. */
+  private async failedWorkflowRuns(head_sha: string): Promise<GhWorkflowRun[]> {
+    const { workflow_runs } = await this.client.request<{ workflow_runs: GhWorkflowRun[] }>(
+      "GET", `${this.base}/actions/runs?head_sha=${encodeURIComponent(head_sha)}&per_page=100`);
+    const failed = workflow_runs.filter(failedRun);
+    if (failed.length === 0) throw new Error(`no failed GitHub Actions run on ${head_sha}`);
+    return failed;
+  }
+
+  /**
    * Each check on the PR's current head commit (commitCheckResults). Under the budget threshold it reads nothing
    * and throws, so the review prompt says the results could not be read.
    */
@@ -525,7 +577,7 @@ export class GitHubForge implements Forge {
     return [
       ...runs.map((r): PrCheckResult => ({
         name: r.name,
-        result: r.status !== "completed" ? "pending" : PASSING_CONCLUSIONS.has(r.conclusion ?? "") ? "passed" : "failed",
+        result: r.status !== "completed" ? "pending" : failedRun(r) ? "failed" : "passed",
       })),
       ...status.statuses.map((s): PrCheckResult => ({
         name: s.context,
@@ -533,6 +585,11 @@ export class GitHubForge implements Forge {
       })),
     ];
   }
+}
+
+/** A finished workflow run or job whose conclusion fails the gate (the check-run rule). */
+function failedRun(r: { status: string; conclusion: string | null }): boolean {
+  return r.status === "completed" && !PASSING_CONCLUSIONS.has(r.conclusion ?? "");
 }
 
 /**

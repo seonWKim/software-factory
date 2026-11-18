@@ -48,3 +48,11 @@ describe("GitHubClient.text", () => {
     await expect(gone.gh.text("/repos/o/r/actions/jobs/9/logs")).rejects.toThrow(/410/);
   });
 });
+
+describe("GitHubClient.request", () => {
+  it("a write answered with an empty body (a rerun's 201) returns undefined; a JSON body is parsed", async () => {
+    const { gh } = client([new Response("", { status: 201 }), new Response('{"id":1}', { status: 201 })]);
+    expect(await gh.request("POST", "/repos/o/r/actions/runs/7/rerun-failed-jobs")).toBeUndefined();
+    expect(await gh.request("POST", "/repos/o/r/x")).toEqual({ id: 1 });
+  });
+});

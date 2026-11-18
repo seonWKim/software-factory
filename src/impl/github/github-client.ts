@@ -297,7 +297,9 @@ export class GitHubClient implements GitHubApi {
   async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const res = await this.send(method, path, body);
     if (res.status === 204) return undefined as T;
-    return (await res.json()) as T;
+    // A write may answer with no body at all (e.g. 201 from a rerun): undefined, like a 204.
+    const text = await res.text();
+    return (text === "" ? undefined : JSON.parse(text)) as T;
   }
 
   /**
