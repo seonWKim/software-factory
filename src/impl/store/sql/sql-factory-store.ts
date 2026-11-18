@@ -1226,27 +1226,21 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
     await this.db.run(`UPDATE controller_improve_reports SET failure_groups = ?${patterns ? ", patterns = ?" : ""} WHERE id = ?`, [JSON.stringify(groups), ...(patterns ? [JSON.stringify(patterns)] : []), id]);
   }
 
-  // Filed patterns (design 07-self-improvement): in ./filed-patterns.ts, but the claim.
+  // Filed patterns (design 07-self-improvement): in ./filed-patterns.ts.
   getFiledPattern(project: string, pattern_key: string): Promise<FiledPattern | null> {
     return filed.getFiledPattern(this.db, project, pattern_key);
   }
 
   async claimFiledPattern(input: NewFiledPattern, replace?: ImproveReportId): Promise<FiledPattern> {
-    const now = this.now();
-    await this.insertOnce(
-      this.db,
-      `INSERT INTO controller_filed_patterns (id, project_key, pattern_key, error_code, detail, report_id, filed_ref, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`,
-      [newId("fp"), input.project, input.pattern_key, input.error_code, input.detail, input.report_id, now],
-    );
-    if (replace !== undefined && replace !== input.report_id) {
-      await this.db.run(
-        `UPDATE controller_filed_patterns SET report_id = ?, filed_ref = NULL, error_code = ?, detail = ?, created_at = ?, outcome = NULL, outcome_at = NULL
-         WHERE project_key = ? AND pattern_key = ? AND report_id = ?`,
-        [input.report_id, input.error_code, input.detail, now, input.project, input.pattern_key, replace],
-      );
-    }
-    return (await this.getFiledPattern(input.project, input.pattern_key))!;
+    return (await this.takeFiledPattern(input, replace === undefined ? undefined : { replace })).row;
+  }
+
+  takeFiledPattern(input: NewFiledPattern, from?: filed.TakeFrom): Promise<{ row: FiledPattern; taken: boolean }> {
+    return filed.takeFiledPattern(this.db, (sql, params) => this.insertOnce(this.db, sql, params), input, this.now(), from);
+  }
+
+  getOpenWorkItemByTitle(project: string, title: string): Promise<WorkItem | null> {
+    return filed.getOpenWorkItemByTitle(this.db, project, title);
   }
 
   setFiledPatternRef(id: FiledPatternId, report_id: ImproveReportId, ref: SourceRef): Promise<void> {

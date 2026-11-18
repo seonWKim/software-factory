@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { serverDescriptor } from "../src/import/mcp-servers.js";
 import { canonicalJson, descriptionHash } from "../src/packs/pack-entries.store.js";
 import { checkPackGrants } from "../src/packs/pack-grants.js";
-import type { HostSleep, RunId, RunKind, Timestamp, UserId, WorkerId, WorkItemId } from "../src/core/types.js";
+import type { HostSleep, ImproveReportId, RunId, RunKind, Timestamp, UserId, WorkerId, WorkItemId } from "../src/core/types.js";
 import { projectLabelCursor } from "../src/core/project.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
@@ -516,6 +516,61 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       const failed = (await store.getRun(first.id))!;
       expect(failed.status).toBe("failed");
       expect(failed.finished_at).toBe(clock.now().toISOString());
+    });
+  });
+
+  describe("filed pattern takes and open items by title (design 07-self-improvement)", () => {
+    /** `n` improve reports on one item's runs, a second apart. */
+    async function reports(n: number) {
+      const { store, clock } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      const out = [];
+      for (let i = 0; i < n; i++) {
+        const { run } = await store.enqueueRun({ work_item_id: item.id, kind: "improve", idempotency_key: `improve-${i}` });
+        out.push((await store.recordImproveReport({ run_id: run.id, project: PROJECT_KEY, window_start: "2026-03-04T00:00:00.000Z" as Timestamp, window_end: "2026-03-05T00:00:00.000Z" as Timestamp, groups: [], patterns: [] })).report);
+        clock.advance(1_000);
+      }
+      return { store, clock, reports: out };
+    }
+    const input = (report_id: ImproveReportId) => ({ project: PROJECT_KEY, pattern_key: "k", error_code: "hotspot", detail: "web/src/pages.ts", report_id });
+
+    it("of two takes of a new pattern only the one that inserted it is taken; both get the stored row", async () => {
+      const { store, reports: [a, b] } = await reports(2);
+      const [x, y] = await Promise.all([store.takeFiledPattern(input(a!.id)), store.takeFiledPattern(input(b!.id))]);
+      expect([x.taken, y.taken].sort()).toEqual([false, true]);
+      expect(x.row).toEqual(y.row);
+      expect(x.row).toMatchObject({ filed_ref: null, report_id: (x.taken ? a : b)!.id });
+    });
+
+    it("a restart of a half-done claim, as read, is taken once, keeps its report and starts its claim time again", async () => {
+      const { store, clock, reports: [a, b, c] } = await reports(3);
+      const { row } = await store.takeFiledPattern(input(a!.id));
+      clock.advance(60_000);
+      const first = await store.takeFiledPattern(input(b!.id), { restart: row });
+      expect(first).toMatchObject({ taken: true, row: { id: row.id, report_id: a!.id, filed_ref: null, created_at: clock.now().toISOString() } });
+      // A second caller that read the same claim lost the race: its claim time has moved on.
+      expect(await store.takeFiledPattern(input(c!.id), { restart: row })).toEqual({ taken: false, row: first.row });
+    });
+
+    it("a replace takes the row from the named report once, with no item", async () => {
+      const { store, reports: [a, b, c] } = await reports(3);
+      const { row } = await store.takeFiledPattern(input(a!.id));
+      await store.setFiledPatternRef(row.id, a!.id, { type: "local", id: "old", link: "" });
+      expect(await store.takeFiledPattern(input(b!.id), { replace: a!.id })).toMatchObject({ taken: true, row: { id: row.id, report_id: b!.id, filed_ref: null } });
+      expect(await store.takeFiledPattern(input(c!.id), { replace: a!.id })).toMatchObject({ taken: false, row: { report_id: b!.id } });
+    });
+
+    it("getOpenWorkItemByTitle finds an item of the project with that exact title not CLOSED", async () => {
+      const { store } = await make();
+      const title = "Reduce conflicts on web/src/pages.ts";
+      expect(await store.getOpenWorkItemByTitle(PROJECT_KEY, title)).toBeNull();
+      const { item: closed } = await store.createWorkItem({ ...issue(1), title }, system);
+      await store.transition({ id: closed.id, expected_version: 1, actor: system, reason: "x", patch: { stage: "CLOSED", close_reason: "completed" } });
+      await store.createWorkItem({ ...issue(2), title, project: OTHER_PROJECT_KEY }, system);
+      await store.createWorkItem({ ...issue(3), title: `${title}x` }, system);
+      expect(await store.getOpenWorkItemByTitle(PROJECT_KEY, title)).toBeNull();
+      const { item: open } = await store.createWorkItem({ ...issue(4), title }, system);
+      expect((await store.getOpenWorkItemByTitle(PROJECT_KEY, title))!.id).toBe(open.id);
     });
   });
 

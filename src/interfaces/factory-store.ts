@@ -593,12 +593,12 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   /** Replaces the groups of report `id` (their filing written after the report), and its patterns when given (`hotspot` rows' filing). Unknown ID: no change. */
   setImproveGroups(id: ImproveReportId, groups: ImproveReport["groups"], patterns?: ImproveReport["patterns"]): Promise<void>;
   getFiledPattern(project: string, pattern_key: string): Promise<FiledPattern | null>;
-  /**
-   * Claims the filing of (project, pattern key) for `input.report_id`, with no item yet. A row already there is
-   * returned unchanged, unless `replace` names its report: then that row is claimed for `input.report_id` with
-   * no item and no outcome (a refiled pattern), a conditional update, so of two claims one wins. Returns the row as stored.
-   */
+  /** Claims (project, pattern key) for `input.report_id` with no item; a row there is kept, unless `replace` names its report: then refiled, no item or outcome. */
   claimFiledPattern(input: NewFiledPattern, replace?: ImproveReportId): Promise<FiledPattern>;
+  /** As claimFiledPattern (`from.replace`), or `from.restart` (a half-done claim as read) gets its claim time set to now. Of two callers one gets `taken`. */
+  takeFiledPattern(input: NewFiledPattern, from?: { replace: ImproveReportId } | { restart: Pick<FiledPattern, "report_id" | "created_at"> }): Promise<{ row: FiledPattern; taken: boolean }>;
+  /** The oldest item of `project` titled exactly `title`, not CLOSED, or null (design §7: a hot file's open fix item). Read-only. */
+  getOpenWorkItemByTitle(project: string, title: string): Promise<WorkItem | null>;
   /** Sets the item of the row `id` while `report_id` still holds it; a row another report claimed is left alone. */
   setFiledPatternRef(id: FiledPatternId, report_id: ImproveReportId, ref: SourceRef): Promise<void>;
   /** The filed patterns of `project` that have an item and no outcome yet, oldest first. Read-only. */
