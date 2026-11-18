@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
+import type { Floor } from "../src/core/settings.js";
 import { failingTestFiles, withTestFiles } from "../src/core/checks.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { WorkItem, WorkerId } from "../src/core/types.js";
@@ -127,7 +128,7 @@ async function setup(opts: {
   max_attempts?: number;
   /** Files committed to the base branch before the item starts. */
   base?: Record<string, string>;
-  floors?: { prefix: string; tier: number }[];
+  floors?: Floor[];
 } = {}) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
@@ -137,11 +138,10 @@ async function setup(opts: {
   for (const [path, content] of Object.entries(opts.base ?? {})) commitFile(repo, path, content, `base: ${path}`);
   if (opts.base) git(repo, "push", "--quiet", "origin", "HEAD:main");
 
-  const { defaults } = config.settings;
   const cfg: FactoryConfig = {
     ...config,
     repo: { ...config.repo, path: repo, check_commands: opts.checks ?? CHECKS },
-    settings: { ...config.settings, defaults: { ...defaults, max_attempts: opts.max_attempts ?? 3, floors: opts.floors ?? defaults.floors } },
+    settings: { ...config.settings, defaults: { ...config.settings.defaults, max_attempts: opts.max_attempts ?? 3, ...(opts.floors ? { floors: opts.floors } : {}) } },
   };
   let implementCount = 0;
   const fixSteps: AgentRunSpec[] = [];

@@ -210,6 +210,15 @@ describe("prompts/implement.md: the ratchet lists (design 05-restarts, 2026-11-1
   });
 });
 
+describe("prompts/review.md: the ratchet lists (design 04-pre-push-gates, 2026-11-18)", () => {
+  it("names the known-violations exception as prompts/implement.md does and says a shrink is never a finding", () => {
+    const exception = "The architecture ratchet lists (`tests/architecture/known-violations/*.json`) are the exception: known-violations lists are always editable to shrink (never to grow)";
+    expect(prompt("implement")).toContain(exception);
+    const line = prompt("review").split("\n").find((l) => l.includes(exception)) ?? "";
+    expect(line).toContain("a shrink of a known-violations list is never a finding");
+  });
+});
+
 describe("prompts/implement.md: checks before finishing (design 04-pre-push-gates, 2026-11-18)", () => {
   const lines = prompt("implement").split("\n");
   const rule = lines.find((l) => l.includes(CHECK_COMMANDS_PLACEHOLDER)) ?? "";
