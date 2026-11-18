@@ -1,5 +1,6 @@
 ## History
 
+- **A resumed run's base merge conflict** (decision changed 2026-11-18, "A base merge conflict keeps its commits on the wip branch"). Before: on a resumed run a base merge conflict failed with `merge_conflict` at once, with no agent step; and a `merge_conflict` kept no commits on a wip branch, so its retry ran the implement agent again from the base.
 - **Every held stall pattern had a fix item** (decision changed 2026-11-15, the host sleep exception in "Once the probe answers, a stall pattern holds only its items"). Before: every known stall pattern of two or more runs held its items, and the doc said a held item always has a pattern the improver files a fix for; a stall pattern caused by a host sleep, which now files no fix, would have held its items forever.
 - **Failed run outcomes** (new decision, 2026-11-11). Before: a failed run's decision the WorkItem state table refused was dropped with a warning and retried on every tick, and nothing found an item left RUNNING with no run to move it.
 - **`model_stall` scope** (decision changed 2026-11-10, issue #504). Before: a passing probe only ended the pause, so an item whose runs stalled again on every retry paused all claims each time (on 2026-11-09, one pattern held every item for about four hours).
