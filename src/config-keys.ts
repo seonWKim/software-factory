@@ -14,7 +14,7 @@ import { SLACK_KEYS, slackConfigProblems } from "./impl/source/slack-config.js";
 /**
  * Top-level keys the core config reads that FileConfig (src/compose.ts) does not list. The coordination keys (FactoryConfig.coordination, design §5,
  * 2026-11-03, with `mechanical_paths` and `mechanical_weight` from issue #297, `hold_policy` and `hotspot_mode`
- * from issue #314) are checked here at load
+ * from issue #314, `conflict_window_days` from design 05-dependencies) are checked here at load
  * (`coordinationProblems`) and read by compose.ts through `coordinationConfig`. `cli_user` (issue #200): the factory user ID the
  * local CLI commands act as, read by src/core/config.ts. `capabilities` (design 08-settings, 2026-11-13): the skill folders the
  * Settings page's Capabilities list reads (`capabilitiesConfig`). `conflict_hotspot_threshold` (design 07-self-improvement): a settable key
@@ -79,6 +79,7 @@ export const TOP_LEVEL_KEYS = [
   "mechanical_weight",
   "hold_policy",
   "hotspot_mode",
+  "conflict_window_days",
   "tool_grants",
   "defaults",
   "projects",
