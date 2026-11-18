@@ -5,7 +5,9 @@
 // is gone, so the lists only shrink. Two forms: a list of named violations (`ratchet`), or a count budget per key
 // (`ratchetCounts`), which a new violation exceeds whatever the JSON names. A rule with no violations left is a
 // hard rule: its test expects none and reads no list. `SF_RATCHET_UPDATE=1 npm test -- tests/architecture`
-// rewrites the lists: use it only to shrink them, and say so in the commit.
+// rewrites the lists: use it only to shrink them, and say so in the commit. `SF_RATCHET_SHRINK=1` (the implement
+// run's pre-push checks, design 04-pre-push-gates) only lowers them: a fallen count is set to the real count (its key
+// removed at 0), a name no longer found is removed. It never raises a value or adds a key, so growth still fails.
 
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -14,7 +16,22 @@ import { expect } from "vitest";
 export const REPO = join(import.meta.dirname, "..", "..");
 export const SRC = join(REPO, "src");
 const KNOWN = join(import.meta.dirname, "known-violations");
-const UPDATE = process.env.SF_RATCHET_UPDATE === "1";
+
+/** Where the lists live and the env that picks the mode; tests pass their own. */
+export interface RatchetOptions { dir?: string; env?: Readonly<Record<string, string | undefined>> }
+
+function listFile(test: string, o: RatchetOptions): { file: string; update: boolean; shrink: boolean } {
+  const env = o.env ?? process.env;
+  return { file: join(o.dir ?? KNOWN, `${test}.json`), update: env.SF_RATCHET_UPDATE === "1", shrink: env.SF_RATCHET_SHRINK === "1" };
+}
+
+function readList<T>(file: string, empty: T): T {
+  return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : empty;
+}
+
+function writeList(file: string, value: unknown): void {
+  writeFileSync(file, JSON.stringify(value, null, 2) + "\n");
+}
 
 /**
  * The components of the target layout (RFC 0015 §6.1) that exist so far. Folders under src/ not listed here
@@ -70,37 +87,40 @@ export function codeOnly(text: string): string {
     .replace(/\/\/[^\n]*/g, (m) => " ".repeat(m.length));
 }
 
-/** Fails on violations not in the known list, and on listed ones that are fixed. */
-export function ratchet(test: string, found: readonly string[]): void {
-  const file = join(KNOWN, `${test}.json`);
+/** Fails on violations not in the known list, and on listed ones that are fixed (shrink mode: removes those). */
+export function ratchet(test: string, found: readonly string[], o: RatchetOptions = {}): void {
+  const { file, update, shrink } = listFile(test, o);
   const current = [...new Set(found)].sort();
-  if (UPDATE) {
-    writeFileSync(file, JSON.stringify(current, null, 2) + "\n");
-    return;
-  }
-  const known: string[] = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : [];
+  if (update) return writeList(file, current);
+  let known: string[] = readList(file, []);
+  if (shrink && known.some((v) => !current.includes(v))) writeList(file, (known = known.filter((v) => current.includes(v))));
   const added = current.filter((v) => !known.includes(v));
   const fixed = known.filter((v) => !current.includes(v));
   expect({ new_violations: added, fixed_but_still_listed: fixed }).toEqual({ new_violations: [], fixed_but_still_listed: [] });
 }
 
-/** Budget form: a count per key may only fall. A fall must be written back (the list shrinks with the code). */
-export function ratchetCounts(test: string, found: Readonly<Record<string, number>>): void {
+/**
+ * Budget form: a count per key may only fall. A fall must be written back (the list shrinks with the code); shrink
+ * mode writes it back itself, lowering only the keys that fell (removed at 0), so a growth still fails.
+ */
+export function ratchetCounts(test: string, found: Readonly<Record<string, number>>, o: RatchetOptions = {}): void {
+  const { file, update, shrink } = listFile(test, o);
   const current = positiveCounts(found);
-  if (UPDATE) {
-    writeFileSync(join(KNOWN, `${test}.json`), JSON.stringify(current, null, 2) + "\n");
-    return;
+  if (update) return writeList(file, current);
+  if (shrink) {
+    const known: Record<string, number> = readList(file, {});
+    const lowered = Object.fromEntries(Object.entries(known).map(([k, n]) => [k, Math.min(n, current[k] ?? 0)] as const).filter(([, n]) => n > 0));
+    if (JSON.stringify(lowered) !== JSON.stringify(known)) writeList(file, lowered);
   }
-  expect(countDrift(test, current)).toEqual({ grew: [], fell_but_list_not_lowered: [] });
+  expect(countDrift(test, current, o)).toEqual({ grew: [], fell_but_list_not_lowered: [] });
 }
 
 /**
  * How `found` differs from the budgets in known-violations/<test>.json: keys over their budget (a key with no
  * budget has 0), and budgets the count fell below. Both must be empty for the ratchet to pass.
  */
-export function countDrift(test: string, found: Readonly<Record<string, number>>): { grew: string[]; fell_but_list_not_lowered: string[] } {
-  const file = join(KNOWN, `${test}.json`);
-  const known: Record<string, number> = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+export function countDrift(test: string, found: Readonly<Record<string, number>>, o: RatchetOptions = {}): { grew: string[]; fell_but_list_not_lowered: string[] } {
+  const known: Record<string, number> = readList(listFile(test, o).file, {});
   const current = positiveCounts(found);
   const grew = Object.entries(current).filter(([k, n]) => n > (known[k] ?? 0)).map(([k, n]) => `${k}: ${known[k] ?? 0} → ${n}`);
   const fell = Object.entries(known).filter(([k, n]) => (current[k] ?? 0) < n).map(([k, n]) => `${k}: ${n} → ${current[k] ?? 0}`);
