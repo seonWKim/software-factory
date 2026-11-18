@@ -1,18 +1,20 @@
-// Golden set for the reviewer (design §6 Measurement): known-bad and known-good factory PRs, replayed
-// through the same runner, prompt, schema and tools as the worker's review run, scored as catch rate and
-// false-alarm rate. Cases live in the repo (`golden/cases/<pr>/`); results live under the state dir, never
-// in the store. Nothing here writes to GitHub, builds a ToolBroker, or pushes. `compareCases` replays the
+// Golden sets per role (design §6 Measurement): known-bad and known-good factory PRs, replayed through the
+// runner with the role descriptor's prompt and tools and the review schema, scored as pass rate, catch rate and
+// false-alarm rate. Cases live in the role's folder (`src/worker/roles/<name>/golden/<case-id>/`, found by
+// goldenCasesByRole); results live under the state dir, never in the store. Nothing here writes to GitHub, builds a ToolBroker, or pushes. `compareCases` replays the
 // same cases twice through `runCases` (base prompt, head prompt) and applies GOLDEN_MARGIN; it runs locally
 // only (design §6, owner decision 2026-11-07: no model credential in GitHub Actions).
 
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { LoadedConfig, Prompts } from "./core/config.js";
-import { DEFAULT_MODEL_TABLE, type ModelTable, modelClassFor } from "./core/model-choice.js";
+import { DEFAULT_MODEL_TABLE, type ModelTable, isModelRunKind, modelClassFor } from "./core/model-choice.js";
 import type { ProjectRef } from "./core/project.js";
 import { REVIEW_SCHEMA, findingLine, parseReview } from "./core/outputs.js";
-import type { RunId, StateChange, WorkItem, WorkItemId } from "./core/types.js";
+import type { RunId, RunKind, StateChange, WorkItem, WorkItemId } from "./core/types.js";
+import { ROLES_DIR, goldenCasesByRole, loadRoles } from "./runtime/index.js";
+import { ROLE_NAME, type RoleDescriptor } from "./shared/role.js";
 import { toolsNamed } from "./worker/index.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
 import type { Clock } from "./interfaces/clock.js";
@@ -23,13 +25,6 @@ import type { SecretStore } from "./interfaces/secret-store.js";
 
 export const EXPECTS = ["should_flag", "should_pass"] as const;
 export type Expect = (typeof EXPECTS)[number];
-
-/**
- * The tool names of the worker's review run (`WRITE_TOOLS` in src/worker/support.ts), resolved to the shared
- * tool specs with `toolsNamed`.
- * tests/golden.test.ts checks this against a real Worker review run, so a drift fails the tests.
- */
-export const REVIEW_HARNESS_TOOLS: readonly string[] = ["Bash", "Read", "Edit", "Write", "Glob", "Grep"];
 
 /** Thrown for every refusal. Messages carry rule names and codes, never matched text. */
 export class GoldenError extends Error {}
@@ -140,20 +135,23 @@ function checkPr(pr: string): number {
 
 export interface AddOptions {
   pr: string;
+  /** The role whose folder gets the case; `--role`, else review. */
+  role: string;
   expect?: string;
   force?: boolean;
 }
 
 export function parseAddArgs(args: readonly string[]): AddOptions {
-  const usage = "usage: factory golden add <pr> [--expect should_flag|should_pass] [--force]";
-  const out: AddOptions = { pr: "", force: false };
+  const usage = "usage: factory golden add <pr> [--role <name>] [--expect should_flag|should_pass] [--force]";
+  const out: AddOptions = { pr: "", role: "review", force: false };
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     if (a === "--force") out.force = true;
-    else if (a === "--expect") {
+    else if (a === "--expect" || a === "--role") {
       const v = args[++i];
       if (v === undefined) throw new GoldenError(usage);
-      out.expect = checkExpect(v)!;
+      if (a === "--role") out.role = checkRole(v);
+      else out.expect = checkExpect(v)!;
     } else if (a.startsWith("--")) throw new GoldenError(`unknown option ${a}; ${usage}`);
     else if (out.pr === "") out.pr = a;
     else throw new GoldenError(usage);
@@ -169,8 +167,8 @@ export interface AddDeps {
   /** Read-only. GitHubClient.pullDiff bound to the configured repo. */
   github: { pullDiff(pr: number): Promise<string> };
   scanner: EgressScanner;
-  /** `<repo>/golden/cases`. */
-  casesDir: string;
+  /** `<repo>/src/worker/roles`. */
+  rolesDir: string;
 }
 
 export interface GoldenCase {
@@ -185,7 +183,7 @@ export interface GoldenCase {
 }
 
 /**
- * Writes `golden/cases/<pr>/` (diff.patch, spec.md, case.json). Every file is G5-scanned with channel
+ * Writes `src/worker/roles/<role>/golden/<pr>/` (instruction.md, environment/diff.patch, case.json). Every file is G5-scanned with channel
  * `commit` first (the files are meant to be committed); any finding writes nothing. The files are written
  * to a temp sibling and renamed into place, so a failure never leaves a partial case.
  */
@@ -193,8 +191,10 @@ export async function addCase(deps: AddDeps, opts: AddOptions): Promise<{ dir: s
   const pr = checkPr(opts.pr);
   const requested = checkExpect(opts.expect);
   const id = String(pr);
-  const dir = join(deps.casesDir, id);
-  if ((await exists(dir)) && !opts.force) throw new GoldenError(`golden/cases/${id} already exists; pass --force to replace it`);
+  const golden = join(deps.rolesDir, checkRole(opts.role), "golden");
+  const dir = join(golden, id);
+  const rel = `${ROLES_DIR}/${opts.role}/golden/${id}`;
+  if ((await exists(dir)) && !opts.force) throw new GoldenError(`${rel} already exists; pass --force to replace it`);
 
   const found = await readPrRecord(deps.store, deps.project.key, pr);
   if (!found) throw new GoldenError(`PR #${pr} has no factory work item in ${deps.project.label}`);
@@ -202,7 +202,7 @@ export async function addCase(deps: AddDeps, opts: AddOptions): Promise<{ dir: s
   const expect = decideExpect(record.outcome, requested);
 
   const diff = await deps.github.pullDiff(pr);
-  const golden: GoldenCase = {
+  const kase: GoldenCase = {
     id,
     pr_number: pr,
     work_item_id: item.id,
@@ -213,23 +213,34 @@ export async function addCase(deps: AddDeps, opts: AddOptions): Promise<{ dir: s
     source_record_ids: record.source_record_ids,
   };
   const files: Record<string, string> = {
-    "diff.patch": diff,
-    "spec.md": renderSpec(item),
-    "case.json": `${JSON.stringify(golden, null, 2)}\n`,
+    [CASE_DIFF]: diff,
+    [CASE_INSTRUCTION]: renderSpec(item),
+    "case.json": `${JSON.stringify(kase, null, 2)}\n`,
   };
-  await scanAll(deps.scanner, "commit", Object.values(files), `golden/cases/${id}`);
+  await scanAll(deps.scanner, "commit", Object.values(files), rel);
 
-  await mkdir(deps.casesDir, { recursive: true });
-  const tmp = join(deps.casesDir, `.${id}.tmp-${randomBytes(4).toString("hex")}`);
+  await mkdir(golden, { recursive: true });
+  const tmp = join(golden, `.${id}.tmp-${randomBytes(4).toString("hex")}`);
   try {
-    await mkdir(tmp);
-    for (const [name, content] of Object.entries(files)) await writeFile(join(tmp, name), content);
+    for (const [name, content] of Object.entries(files)) {
+      await mkdir(dirname(join(tmp, name)), { recursive: true });
+      await writeFile(join(tmp, name), content);
+    }
     if (opts.force) await rm(dir, { recursive: true, force: true });
     await rename(tmp, dir);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
-  return { dir, case: golden };
+  return { dir, case: kase };
+}
+
+/** A case's files besides case.json: the work item spec, and the diff under review. */
+const CASE_INSTRUCTION = "instruction.md";
+const CASE_DIFF = join("environment", "diff.patch");
+
+function checkRole(name: string): string {
+  if (!ROLE_NAME.test(name)) throw new GoldenError(`role "${name}" must be a kebab-case role name`);
+  return name;
 }
 
 /** The work item spec, in the same form the worker gives the reviewer (`renderWorkItem` with the spec). */
@@ -258,26 +269,19 @@ export function renderSpec(item: WorkItem): string {
 // ---------------------------------------------------------------------------------------------------------
 // golden run
 
-export const GOLDEN_AGENTS = ["reviewer"] as const;
-export type GoldenAgent = (typeof GOLDEN_AGENTS)[number];
-
-/** The prompt file (under `prompts/`) each agent's replay uses: a case without a `prompts` tag gets its agent's. */
-export const AGENT_PROMPT: Record<GoldenAgent, string> = { reviewer: "review.md" };
-
-function checkAgent(agent: string | undefined): GoldenAgent {
-  if (agent !== "reviewer") throw new GoldenError(`only --agent reviewer is supported (got ${agent === undefined ? "none" : JSON.stringify(agent)})`);
-  return agent;
-}
-
-export function parseRunArgs(args: readonly string[]): { agent: GoldenAgent } {
-  const i = args.indexOf("--agent");
-  const extra = args.filter((a, j) => a !== "--agent" && j !== i + 1);
-  if (extra.length > 0) throw new GoldenError(`unknown argument ${extra[0]}; usage: factory golden run --agent reviewer`);
-  return { agent: checkAgent(i >= 0 ? args[i + 1] : undefined) };
+export function parseRunArgs(args: readonly string[]): { role: string } {
+  const m = args.length === 1 ? /^role\/(.*)$/.exec(args[0]!) : null;
+  if (!m) throw new GoldenError(`usage: factory golden run role/<name> (got ${args.map((a) => JSON.stringify(a)).join(" ") || "none"})`);
+  return { role: checkRole(m[1]!) };
 }
 
 export interface GoldenRunDeps {
-  casesDir: string;
+  /** `<repo>/src/worker/roles`: each role's cases are under `<name>/golden/`. */
+  rolesDir: string;
+  /** The discovered role descriptors: a replay takes its prompt and tools from the role's. */
+  roles: { get(name: string): RoleDescriptor | null };
+  /** A prompt file's text (a name under prompts/, e.g. "review.md"), as the worker gives it. */
+  prompt(file: string): Promise<string>;
   /** `<state_dir>/golden/results`. */
   resultsDir: string;
   sandbox: Sandbox;
@@ -285,9 +289,7 @@ export interface GoldenRunDeps {
   scanner: EgressScanner;
   clock: Clock;
   config: Pick<LoadedConfig, "repo" | "deny_paths" | "run_timeout_ms" | "agent_git_identity">;
-  /** prompts/review.md: the worker's review system prompt. */
-  reviewPrompt: string;
-  /** `model_by` from config: the replay uses the review run's class. Absent: the default table. */
+  /** `model_by` from config: the replay uses the role's run class. Absent: the default table. */
   model_by?: ModelTable;
   signal?: AbortSignal;
 }
@@ -311,17 +313,11 @@ export async function buildGoldenRunDeps(
   const scanner = await p.scanner(secrets);
   const sandbox = await p.sandbox();
   const runner = await p.runner(sandbox, secrets);
-  return {
-    casesDir: join(loaded.root, "golden", "cases"),
-    resultsDir: join(loaded.stateDir, "golden", "results"),
-    sandbox,
-    runner,
-    scanner,
-    clock,
-    config: loaded.config,
-    reviewPrompt: loaded.prompts.review,
-    ...(loaded.model_by ? { model_by: loaded.model_by } : {}),
-  };
+  // The loaded prompts carry their placeholders filled; a prompt file outside them is read as it is.
+  const loadedPrompts: Record<string, string | undefined> = { ...loaded.prompts };
+  const prompt = async (file: string) => loadedPrompts[file.replace(/\.md$/, "")] ?? readFile(join(loaded.root, "prompts", file), "utf8");
+  const resultsDir = join(loaded.stateDir, "golden", "results");
+  return { rolesDir: join(loaded.root, ROLES_DIR), roles: await loadRoles(), prompt, resultsDir, sandbox, runner, scanner, clock, config: loaded.config, ...(loaded.model_by ? { model_by: loaded.model_by } : {}) };
 }
 
 export type Verdict = "bug" | "pass" | "errored";
@@ -332,6 +328,8 @@ export interface CaseResult {
   verdict: Verdict;
   /** One line per finding: a code finding's text, a spec finding's text marked `(spec)` (issue #222). */
   findings: string[];
+  /** The runner's usage (0 when the run never started), and the time from sandbox create to destroy. */
+  input_tokens: number; output_tokens: number; wall_ms: number;
 }
 
 export interface Rate {
@@ -341,62 +339,57 @@ export interface Rate {
   value: number | null;
 }
 
-export interface ClassCounts {
-  total: number;
-  completed: number;
-  flagged: number;
-  errored: number;
-}
+export interface ClassCounts { total: number; completed: number; flagged: number; errored: number }
 
 export interface Rates {
   counts: Record<Expect, ClassCounts>;
-  rates: { catch_rate: Rate; false_alarm_rate: Rate };
+  rates: { pass_rate: Rate; catch_rate: Rate; false_alarm_rate: Rate };
 }
 
 export interface GoldenReport extends Rates {
+  role: string;
   cases: CaseResult[];
+  totals: Pick<CaseResult, "input_tokens" | "output_tokens" | "wall_ms">;
   results_file: string;
 }
 
+/** Whether a completed case's verdict is what it expects: `bug` for should_flag, `pass` for should_pass. */
+const matches = (r: Pick<CaseResult, "expect" | "verdict">) => r.verdict === (r.expect === "should_flag" ? "bug" : "pass");
+
 /**
- * catch_rate = flagged / completed should_flag runs; false_alarm_rate = flagged / completed should_pass
- * runs. Flagged means verdict `bug`. Errored runs (failed, or invalid output) count in neither rate.
+ * pass_rate = completed runs whose verdict matches expect / completed runs; catch_rate = flagged / completed
+ * should_flag runs; false_alarm_rate = flagged / completed should_pass runs. Flagged means verdict `bug`.
+ * Errored runs (failed, or invalid output) count in no rate.
  */
-export function computeRates(results: readonly CaseResult[]): Rates {
+export function computeRates(results: readonly Pick<CaseResult, "expect" | "verdict">[]): Rates {
   const counts = (e: Expect): ClassCounts => {
     const mine = results.filter((r) => r.expect === e);
     const completed = mine.filter((r) => r.verdict !== "errored");
-    return {
-      total: mine.length,
-      completed: completed.length,
-      flagged: completed.filter((r) => r.verdict === "bug").length,
-      errored: mine.length - completed.length,
-    };
+    return { total: mine.length, completed: completed.length, flagged: completed.filter((r) => r.verdict === "bug").length, errored: mine.length - completed.length };
   };
-  const rate = (c: ClassCounts): Rate => ({
-    numerator: c.flagged,
-    denominator: c.completed,
-    value: c.completed === 0 ? null : c.flagged / c.completed,
-  });
+  const rate = (numerator: number, denominator: number): Rate => ({ numerator, denominator, value: denominator === 0 ? null : numerator / denominator });
   const flag = counts("should_flag");
   const pass = counts("should_pass");
-  return {
-    counts: { should_flag: flag, should_pass: pass },
-    rates: { catch_rate: rate(flag), false_alarm_rate: rate(pass) },
-  };
+  const completed = results.filter((r) => r.verdict !== "errored");
+  const rates = { pass_rate: rate(completed.filter(matches).length, completed.length), catch_rate: rate(flag.flagged, flag.completed), false_alarm_rate: rate(pass.flagged, pass.completed) };
+  return { counts: { should_flag: flag, should_pass: pass }, rates };
 }
 
 function formatRate(name: string, r: Rate): string {
   return r.value === null ? `${name}: n/a (${r.numerator}/${r.denominator})` : `${name}: ${r.numerator}/${r.denominator} = ${r.value.toFixed(3)}`;
 }
 
+const usageText = (u: GoldenReport["totals"]) => `input_tokens ${u.input_tokens}, output_tokens ${u.output_tokens}, wall_ms ${u.wall_ms}`;
+
 export function formatReport(report: GoldenReport): string {
   const { should_flag: f, should_pass: p } = report.counts;
   return [
-    ...report.cases.map((c) => `  case ${c.id} (${c.expect}): ${c.verdict}`),
+    ...report.cases.map((c) => `  case ${c.id} (${c.expect}): ${c.verdict}, ${c.verdict === "errored" ? "n/a" : matches(c) ? "match" : "miss"}; ${usageText(c)}`),
+    `total (${report.role}, ${report.cases.length} cases): ${usageText(report.totals)}`,
+    formatRate("pass_rate", report.rates.pass_rate),
     formatRate("catch_rate", report.rates.catch_rate),
     formatRate("false_alarm_rate", report.rates.false_alarm_rate),
-    `errored: ${f.errored + p.errored} (should_flag ${f.errored}, should_pass ${p.errored}), excluded from both rates`,
+    `errored: ${f.errored + p.errored} (should_flag ${f.errored}, should_pass ${p.errored}), excluded from every rate`,
     `results: ${report.results_file}`,
   ].join("\n");
 }
@@ -404,62 +397,64 @@ export function formatReport(report: GoldenReport): string {
 interface LoadedCase {
   id: string;
   expect: Expect;
-  /** The prompt files the case replays (`case.json` `prompts`, else the agent's prompt). */
+  /** The prompt files the case replays (`case.json` `prompts`, else the role's prompt). */
   prompts: string[];
   work_item_id: string;
   diff: string;
   spec: string;
 }
 
+/** The role's descriptor, refusing a role with none or with no prompt (it calls no model, so nothing to replay). */
+function roleFor(deps: Pick<GoldenRunDeps, "roles">, name: string): RoleDescriptor & { prompt: string } {
+  const role = deps.roles.get(name);
+  if (!role) throw new GoldenError(`role ${name} has no descriptor (src/worker/roles/${name}.role.ts)`);
+  if (role.prompt === null) throw new GoldenError(`role ${name} calls no model (prompt: null); it has no golden replay`);
+  return role as RoleDescriptor & { prompt: string };
+}
+
 /**
- * Every case under `casesDir`, sorted by id; with `only`, just the cases tagged with one of those prompts.
- * A malformed case fails the whole run before any agent runs.
+ * The role's cases (goldenCasesByRole), sorted by id; with `only`, just the cases tagged with one of those
+ * prompts. A malformed case fails the whole run before any agent runs.
  */
-async function loadCases(casesDir: string, agent: GoldenAgent, only?: readonly string[]): Promise<LoadedCase[]> {
-  if (!(await exists(casesDir))) return [];
-  const ids = (await readdir(casesDir, { withFileTypes: true }))
-    .filter((e) => e.isDirectory() && !e.name.startsWith("."))
-    .map((e) => e.name)
-    .sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
+async function loadCases(rolesDir: string, role: RoleDescriptor & { prompt: string }, only?: readonly string[]): Promise<LoadedCase[]> {
   const out: LoadedCase[] = [];
-  for (const id of ids) {
-    const dir = join(casesDir, id);
+  for (const id of goldenCasesByRole(rolesDir).get(role.name) ?? []) {
+    const dir = join(rolesDir, role.name, "golden", id);
     const meta = JSON.parse(await readFile(join(dir, "case.json"), "utf8")) as { expect?: string; work_item_id?: string; prompts?: unknown };
     const expect = checkExpect(typeof meta.expect === "string" ? meta.expect : "", `case ${id}: expect`)!;
-    const prompts = casePrompts(meta.prompts, id) ?? [AGENT_PROMPT[agent]];
+    const prompts = casePrompts(meta.prompts, id) ?? [role.prompt];
     if (only && !prompts.some((p) => only.includes(p))) continue;
-    out.push({
-      id,
-      expect,
-      prompts,
-      work_item_id: typeof meta.work_item_id === "string" ? meta.work_item_id : `golden_${id}`,
-      diff: await readFile(join(dir, "diff.patch"), "utf8"),
-      spec: await readFile(join(dir, "spec.md"), "utf8"),
-    });
+    const work_item_id = typeof meta.work_item_id === "string" ? meta.work_item_id : `golden_${id}`;
+    out.push({ id, expect, prompts, work_item_id, diff: await readFile(join(dir, CASE_DIFF), "utf8"), spec: await readFile(join(dir, CASE_INSTRUCTION), "utf8") });
   }
   return out;
 }
 
+/** The replay prompt: the stored spec plus the stored diff, in the worker's review layout. */
+export const replayPrompt = (c: Pick<LoadedCase, "spec" | "diff">) => `${c.spec}\n\n## Diff\n\n\`\`\`diff\n${c.diff}\n\`\`\``;
+
 /**
- * Replays every case through the reviewer, once each, then writes the results file. Each case gets its
- * own detached sandbox (`branch: null`), destroyed after. The prompt is the stored spec plus the stored
- * diff, in the worker's review layout; no doc index, so a replay does not depend on the docs at run time.
+ * Replays every case of `role` once each, then writes the results file. Each case gets its own detached
+ * sandbox (`branch: null`), destroyed after. No doc index, so a replay does not depend on the docs at run time.
  */
-export async function runCases(deps: GoldenRunDeps, opts: { agent: string; prompts?: readonly string[] }): Promise<GoldenReport> {
-  const agent = checkAgent(opts.agent);
-  const cases = await loadCases(deps.casesDir, agent, opts.prompts);
+export async function runCases(deps: GoldenRunDeps, opts: { role: string; prompts?: readonly string[] }): Promise<GoldenReport> {
+  const role = roleFor(deps, opts.role);
+  const cases = await loadCases(deps.rolesDir, role, opts.prompts);
+  const system = await deps.prompt(role.prompt);
   const stamp = deps.clock.now().toISOString();
   const signal = deps.signal ?? new AbortController().signal;
   const results: CaseResult[] = [];
-  for (const c of cases) results.push(await runOne(deps, c, stamp, signal));
+  for (const c of cases) results.push(await runOne(deps, role, system, c, stamp, signal));
 
   const rates = computeRates(results);
-  const body = `${JSON.stringify({ at: stamp, agent: opts.agent, cases: results, ...rates }, null, 2)}\n`;
+  const sum = (k: keyof GoldenReport["totals"]) => results.reduce((n, r) => n + r[k], 0);
+  const totals = { input_tokens: sum("input_tokens"), output_tokens: sum("output_tokens"), wall_ms: sum("wall_ms") };
+  const body = `${JSON.stringify({ at: stamp, role: role.name, cases: results, totals, ...rates }, null, 2)}\n`;
   await scanAll(deps.scanner, "run_outcome", [body], "the results file");
   await mkdir(deps.resultsDir, { recursive: true });
   const file = join(deps.resultsDir, `${stamp.replace(/[:.]/g, "-")}.json`);
   await writeFile(file, body, { flag: "wx" });
-  return { ...rates, cases: results, results_file: file };
+  return { ...rates, role: role.name, cases: results, totals, results_file: file };
 }
 
 function casePrompts(v: unknown, id: string): string[] | null {
@@ -470,42 +465,45 @@ function casePrompts(v: unknown, id: string): string[] | null {
   return v as string[];
 }
 
-async function runOne(deps: GoldenRunDeps, c: LoadedCase, stamp: string, signal: AbortSignal): Promise<CaseResult> {
+async function runOne(deps: GoldenRunDeps, role: RoleDescriptor, system: string, c: LoadedCase, stamp: string, signal: AbortSignal): Promise<CaseResult> {
   const { repo } = deps.config;
-  const errored: CaseResult = { id: c.id, expect: c.expect, verdict: "errored", findings: [] };
+  const started = deps.clock.now().getTime();
+  const out: CaseResult = { id: c.id, expect: c.expect, verdict: "errored", findings: [], input_tokens: 0, output_tokens: 0, wall_ms: 0 };
   let handle: SandboxHandle | null = null;
   try {
     handle = await deps.sandbox.create({ repo: repo.path, branch: null, base_ref: repo.base_branch });
+    const kind = role.name as RunKind;
     const result = await deps.runner.run({
       run_id: `golden_${stamp}_${c.id}` as RunId,
       work_item_id: c.work_item_id as WorkItemId,
-      role: "review",
+      role: kind,
       sandbox: handle,
-      system_prompt: deps.reviewPrompt,
-      prompt: `${c.spec}\n\n## Diff\n\n\`\`\`diff\n${c.diff}\n\`\`\``,
-      tools: toolsNamed(REVIEW_HARNESS_TOOLS),
+      system_prompt: system,
+      prompt: replayPrompt(c),
+      tools: toolsNamed(role.tools),
       tool_grants: [],
       lease_token: 0,
       env_allowlist: gitIdentity(deps.config.agent_git_identity),
       deny_paths: deps.config.deny_paths,
       writable_paths: [],
-      // The review run's class (cases carry no tier or loop: tier 5's entry, no retry bump), so golden
-      // results match production review.
-      model_class: modelClassFor(deps.model_by ?? DEFAULT_MODEL_TABLE, "review", null, 0),
+      // The role's run class (cases carry no tier or loop: tier 5's entry, no retry bump), so golden results
+      // match production; a role with no model_by entry replays on the standard class.
+      model_class: isModelRunKind(kind) ? modelClassFor(deps.model_by ?? DEFAULT_MODEL_TABLE, kind, null, 0) : "standard",
       timeout_ms: deps.config.run_timeout_ms,
       output_schema: REVIEW_SCHEMA,
       signal,
     });
-    if (result.status !== "completed") return errored;
-    const review = parseReview(result.output);
-    if (!review.ok) return errored;
+    Object.assign(out, { input_tokens: result.usage.input_tokens, output_tokens: result.usage.output_tokens });
+    const review = result.status === "completed" ? parseReview(result.output) : null;
     // Scored on the verdict alone: unverified checks never make a case flagged (issue #222).
-    return { id: c.id, expect: c.expect, verdict: review.value.verdict, findings: review.value.findings.map(findingLine) };
+    if (review?.ok) Object.assign(out, { verdict: review.value.verdict, findings: review.value.findings.map(findingLine) });
   } catch {
-    return errored;
+    // errored, with whatever usage was read
   } finally {
     if (handle) await deps.sandbox.destroy(handle);
+    out.wall_ms = deps.clock.now().getTime() - started;
   }
+  return out;
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -532,16 +530,20 @@ export const PROMPT_CODE_PATHS: readonly string[] = [
   "src/impl/llm/",
 ];
 
-/** The prompt files a change to `changed` (repo-relative paths) can affect; `null` (no change list) means all. */
+/**
+ * The prompt files a change to `changed` (repo-relative paths) can affect; `null` (no change list) means all.
+ * A path under a role's golden folder (`src/worker/roles/<name>/golden/`) is a case, not prompt code.
+ */
 export function affectedPrompts(changed: readonly string[] | null, all: readonly string[]): string[] {
   if (changed === null) return [...all];
-  const code = changed.some((f) => PROMPT_CODE_PATHS.some((p) => (p.endsWith("/") ? f.startsWith(p) : f === p)));
+  const code = changed.filter((f) => !/^src\/worker\/roles\/[^/]+\/golden\//.test(f)).some((f) => PROMPT_CODE_PATHS.some((p) => (p.endsWith("/") ? f.startsWith(p) : f === p)));
   if (code) return [...all];
   return all.filter((name) => changed.includes(`prompts/${name}`));
 }
 
 export interface CompareOptions {
-  agent: GoldenAgent;
+  /** The role whose cases replay: `--agent reviewer` (the only agent, until compare takes `role/<name>`) is review. */
+  role: string;
   /** Path of the base prompt file (the head prompt is the repo's current one). */
   base: string;
   /** `--since <ref>`: the changed paths are read from git against this ref; absent: the repo's base branch. */
@@ -552,7 +554,7 @@ export interface CompareOptions {
 
 export function parseCompareArgs(args: readonly string[]): CompareOptions {
   const usage = "usage: factory golden compare --base <file> [--agent reviewer] [--since <ref> | --all]";
-  let agent: string | undefined = "reviewer";
+  let agent = "reviewer";
   let base: string | undefined;
   let since: string | undefined;
   let all = false;
@@ -570,13 +572,14 @@ export function parseCompareArgs(args: readonly string[]): CompareOptions {
     else throw new GoldenError(`unknown argument ${a}; ${usage}`);
   }
   if (base === undefined || (all && since !== undefined)) throw new GoldenError(usage);
-  return { agent: checkAgent(agent), base, ...(since !== undefined ? { since } : {}), all };
+  if (agent !== "reviewer") throw new GoldenError(`only --agent reviewer is supported (got ${JSON.stringify(agent)})`);
+  return { role: "review", base, ...(since !== undefined ? { since } : {}), all };
 }
 
 export type CompareOutcome = "pass" | "fail" | "skipped";
 
 export interface CompareReport {
-  agent: GoldenAgent;
+  role: string;
   outcome: CompareOutcome;
   /** Why it skipped or failed; null on a pass. */
   reason: string | null;
@@ -591,14 +594,8 @@ export interface CompareReport {
 
 /** Fails when the catch rate drops, or the false-alarm rate rises, by more than `margin`. Null rates skip. */
 export function compareRates(base: Rates["rates"], head: Rates["rates"], margin = GOLDEN_MARGIN): { outcome: CompareOutcome; reason: string | null } {
-  const na = (
-    [
-      ["base catch_rate", base.catch_rate],
-      ["base false_alarm_rate", base.false_alarm_rate],
-      ["head catch_rate", head.catch_rate],
-      ["head false_alarm_rate", head.false_alarm_rate],
-    ] as const
-  ).filter(([, r]) => r.value === null);
+  const sides = [["base", base], ["head", head]] as const;
+  const na = sides.flatMap(([n, r]) => [[`${n} catch_rate`, r.catch_rate], [`${n} false_alarm_rate`, r.false_alarm_rate]] as const).filter(([, r]) => r.value === null);
   if (na.length > 0) return { outcome: "skipped", reason: `n/a rate (no completed case): ${na.map(([n]) => n).join(", ")}` };
   // A tiny epsilon so a change of exactly the margin passes despite floating point.
   const over = (d: number) => d > margin + 1e-9;
@@ -611,17 +608,16 @@ export function compareRates(base: Rates["rates"], head: Rates["rates"], margin 
 }
 
 /**
- * Replays the cases of the prompts `changed` affects through `runCases`, once with `basePrompt` and once
- * with the head prompt (`deps.reviewPrompt`), and compares the rates. Skips (no replay) when the change
+ * Replays the role's cases of the prompts `changed` affects through `runCases`, once with `basePrompt` and once
+ * with the head prompt (`deps.prompt`), and compares the rates. Skips (no replay) when the change
  * touches no prompt or prompt code, when no case is tagged with an affected prompt, or (after the replay)
  * when a rate is n/a. Every outcome is recorded in `compare.json` (G5-scanned, channel `run_outcome`).
  */
 export async function compareCases(
   deps: GoldenRunDeps,
-  opts: { agent: GoldenAgent; basePrompt: string; changed: readonly string[] | null },
+  opts: { role: string; basePrompt: string; changed: readonly string[] | null },
 ): Promise<CompareReport> {
-  const agent = checkAgent(opts.agent);
-  const prompt = AGENT_PROMPT[agent];
+  const { name: role, prompt } = roleFor(deps, opts.role);
   const dir = join(deps.resultsDir, `compare-${deps.clock.now().toISOString().replace(/[:.]/g, "-")}`);
   const prompts = affectedPrompts(opts.changed, [prompt]);
   let base: Rates["rates"] | null = null;
@@ -629,18 +625,17 @@ export async function compareCases(
   let verdict: { outcome: CompareOutcome; reason: string | null };
   if (prompts.length === 0) {
     verdict = { outcome: "skipped", reason: `the change touches neither prompts/${prompt} nor the code that fills or sends prompts` };
-  } else if ((await loadCases(deps.casesDir, agent, prompts)).length === 0) {
-    verdict = { outcome: "skipped", reason: `no golden cases tagged ${prompts.join(", ")} in golden/cases` };
+  } else if ((await loadCases(deps.rolesDir, roleFor(deps, role), prompts)).length === 0) {
+    verdict = { outcome: "skipped", reason: `no golden cases tagged ${prompts.join(", ")} in ${ROLES_DIR}/${role}/golden` };
   } else {
     // The same replay path for both sides; each side keeps its own results file.
-    const run = (reviewPrompt: string, side: string) =>
-      runCases({ ...deps, reviewPrompt, resultsDir: join(dir, side) }, { agent, prompts });
-    base = (await run(opts.basePrompt, "base")).rates;
-    head = (await run(deps.reviewPrompt, "head")).rates;
+    const run = (p: GoldenRunDeps["prompt"], side: string) => runCases({ ...deps, prompt: p, resultsDir: join(dir, side) }, { role, prompts });
+    base = (await run(async () => opts.basePrompt, "base")).rates;
+    head = (await run(deps.prompt, "head")).rates;
     verdict = compareRates(base, head);
   }
   const record_file = join(dir, "compare.json");
-  const report: CompareReport = { agent, ...verdict, margin: GOLDEN_MARGIN, prompts, base, head, record_file };
+  const report: CompareReport = { role, ...verdict, margin: GOLDEN_MARGIN, prompts, base, head, record_file };
   const body = `${JSON.stringify({ ...report, record_file: undefined }, null, 2)}\n`;
   await scanAll(deps.scanner, "run_outcome", [body], "the compare record");
   await mkdir(dir, { recursive: true });
@@ -653,7 +648,7 @@ export function formatCompare(r: CompareReport): string {
   const side = (name: string, rates: Rates["rates"] | null) =>
     rates ? [`- ${name}: ${formatRate("catch_rate", rates.catch_rate)}; ${formatRate("false_alarm_rate", rates.false_alarm_rate)}`] : [];
   return [
-    `## golden compare (${r.agent}): ${r.outcome}`,
+    `## golden compare (${r.role}): ${r.outcome}`,
     "",
     ...(r.outcome === "skipped" ? [`Comparison skipped: ${r.reason}.`] : []),
     ...(r.outcome === "fail" ? [`Failed: ${r.reason}.`] : []),
@@ -681,9 +676,4 @@ function gitIdentity(id: { name: string; email: string }): Record<string, string
   return { GIT_AUTHOR_NAME: id.name, GIT_AUTHOR_EMAIL: id.email, GIT_COMMITTER_NAME: id.name, GIT_COMMITTER_EMAIL: id.email };
 }
 
-async function exists(p: string): Promise<boolean> {
-  return stat(p).then(
-    () => true,
-    () => false,
-  );
-}
+const exists = (p: string): Promise<boolean> => stat(p).then(() => true, () => false);

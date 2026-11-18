@@ -4,7 +4,7 @@
   "controller/units/run-results/run-results.unit.ts": 1161,
   "core/settings.ts": 774,
   "core/types.ts": 734,
-  "golden.ts": 690,
+  "golden.ts": 680,
   "impl/github/github-issue-source.ts": 719,
   "impl/runner/claude-code-runner.ts": 661,
   "impl/store/sql/sql-factory-store.ts": 2869,

@@ -213,7 +213,7 @@ export const PROTECTED_PATHS: Readonly<Record<string, readonly string[]>> = {
     // them (`tests/`) touches the gate list too, so a spec allowing all of `tests/` always needs the owner.
     "tests/architecture/",
   ],
-  prompts: ["prompts/", "golden/"],
+  prompts: ["prompts/"],
   permissions: [
     "src/core/authorize.ts", "src/impl/auth/", ".claude/",
     "src/worker/roles/", "src/shared/role.ts", "src/identity/",

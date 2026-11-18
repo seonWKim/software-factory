@@ -218,7 +218,7 @@ describe("built-in companion rules", () => {
 
   it("refuses every gate path, protected path and floor path a rule could give", () => {
     const protectedPaths = Object.values(PROTECTED_PATHS).flat();
-    for (const p of [...GATE_PATHS, ...protectedPaths, "tests/architecture/lib.test.ts", "golden/cases/1/spec.md"]) {
+    for (const p of [...GATE_PATHS, ...protectedPaths, "tests/architecture/lib.test.ts", "src/worker/roles/review/golden/1/instruction.md"]) {
       expect(refusedCompanion(p, [])).toBe(true);
     }
     expect(refusedCompanion("tests/hotspots.test.ts", [])).toBe(false);

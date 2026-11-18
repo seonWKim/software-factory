@@ -8,6 +8,7 @@ import { parseImplement, parseReview, type ReviewOutput } from "../src/core/outp
 import type { Run, WorkerId, WorkItem } from "../src/core/types.js";
 import { Worker, reviewComment } from "../src/worker/index.js";
 import { type GoldenRunDeps, runCases } from "../src/golden.js";
+import { loadRoles } from "../src/runtime/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -313,12 +314,12 @@ describe("the PR review comment", () => {
 describe("golden replay on the new shape", () => {
   it("scores kind findings by verdict; unverified items never flag a case", async () => {
     const tmp = await mkdtemp(join(tmpdir(), "sf-review-routing-"));
-    const casesDir = join(tmp, "cases");
+    const rolesDir = join(tmp, "roles");
     for (const [id, expectValue] of [["1", "should_flag"], ["2", "should_pass"]] as const) {
-      const dir = join(casesDir, id);
-      await mkdir(dir, { recursive: true });
-      await writeFile(join(dir, "diff.patch"), "diff --git a/x b/x\n");
-      await writeFile(join(dir, "spec.md"), `spec for ${id}`);
+      const dir = join(rolesDir, "review", "golden", id);
+      await mkdir(join(dir, "environment"), { recursive: true });
+      await writeFile(join(dir, "environment", "diff.patch"), "diff --git a/x b/x\n");
+      await writeFile(join(dir, "instruction.md"), `spec for ${id}`);
       await writeFile(join(dir, "case.json"), JSON.stringify({ id, expect: expectValue }));
     }
     const runner = new FakeRunner({
@@ -329,13 +330,14 @@ describe("golden replay on the new shape", () => {
       }),
     });
     const deps = {
-      casesDir, resultsDir: join(tmp, "results"), sandbox: new FakeSandbox(), runner, scanner: cleanScanner,
-      clock: new FakeClock(new Date("2026-11-07T00:00:00.000Z")), config, reviewPrompt: prompts.review,
+      rolesDir, roles: await loadRoles(), prompt: async () => prompts.review,
+      resultsDir: join(tmp, "results"), sandbox: new FakeSandbox(), runner, scanner: cleanScanner,
+      clock: new FakeClock(new Date("2026-11-07T00:00:00.000Z")), config,
     } as unknown as GoldenRunDeps;
-    const report = await runCases(deps, { agent: "reviewer" });
+    const report = await runCases(deps, { role: "review" });
     expect(report.cases).toEqual([
-      { id: "1", expect: "should_flag", verdict: "bug", findings: ["off by one", "(spec) needs docs"] },
-      { id: "2", expect: "should_pass", verdict: "pass", findings: [] },
+      { id: "1", expect: "should_flag", verdict: "bug", findings: ["off by one", "(spec) needs docs"], input_tokens: 10, output_tokens: 5, wall_ms: 0 },
+      { id: "2", expect: "should_pass", verdict: "pass", findings: [], input_tokens: 10, output_tokens: 5, wall_ms: 0 },
     ]);
     expect(report.rates.catch_rate.value).toBe(1);
     expect(report.rates.false_alarm_rate.value).toBe(0);

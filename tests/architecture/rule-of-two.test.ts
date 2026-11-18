@@ -4,7 +4,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { isGatePath } from "../../src/core/improver.js";
 import { MODEL_RUN_KINDS } from "../../src/core/model-choice.js";
 import { READ_TOOLS, WRITE_TOOLS } from "../../src/worker/index.js";
-import { type RoleCatalog, loadRoles, rolesShortOfGolden } from "../../src/runtime/index.js";
+import { ROLES_DIR, type RoleCatalog, loadRoles, rolesShortOfGolden } from "../../src/runtime/index.js";
 import { type RoleDescriptor, approvalRefusal, defineRole, roleProblems, ruleOfTwoRefusal } from "../../src/shared/role.js";
 import { AUTO_ACTOR } from "../../src/core/policy.js";
 import type { UserId } from "../../src/core/types.js";
@@ -94,7 +94,7 @@ describe("rule-of-two", () => {
   });
 
   it("each role ships its golden cases (ratchet)", () => {
-    const short = rolesShortOfGolden(roles, join(REPO, "golden", "cases"));
+    const short = rolesShortOfGolden(roles, join(REPO, ROLES_DIR));
     ratchet("rule-of-two", short.map((s) => `golden-cases-missing|worker/roles/${s.role}.role.ts|${s.role}`));
   });
 });
