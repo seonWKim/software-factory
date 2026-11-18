@@ -9,7 +9,7 @@ import type { TickSource } from "../shared/ticks/tick-generator.js";
 import { CAPPED_KINDS, type FactoryStore } from "../interfaces/factory-store.js";
 import type { KeepAwake } from "../interfaces/keep-awake.js";
 
-export interface WorkerPoolDeps extends Omit<WorkerDeps, "id" | "index" | "active"> {
+export interface WorkerPoolDeps extends Omit<WorkerDeps, "id" | "index" | "active" | "hostRuns"> {
   /**
    * `<host>:<pid>`. Worker n's id is `<id_prefix>:<n>`. The pool has `config.max_workers` slots (absent:
    * `config.workers`); how many of them claim is the live `workers` setting, capped at that.
@@ -90,7 +90,7 @@ export class WorkerPool {
     this.workers = peers.map((id, i) => {
       const index = index_base + i;
       const slotAwake = this.slotAwake[i]!;
-      return new Worker({ ...shared, settings, id, index, awake: slotAwake, active: () => this.claims(i) }, {
+      return new Worker({ ...shared, settings, id, index, awake: slotAwake, active: () => this.claims(i), hostRuns: () => this.hostRuns() }, {
         ...(engines ? { engines } : {}), ...(ticks ? { ticks } : {}), ...(pack_checks ? { pack_checks } : {}), ...(imported_mcp_refusals ? { imported_mcp_refusals } : {}),
         peers,
       });
@@ -107,6 +107,22 @@ export class WorkerPool {
   /** Slots holding a run now. */
   busy(): number {
     return this.slotAwake.filter((a) => a.busy).length;
+  }
+
+  /**
+   * Runs running on this host now (design §5 Parallel workers): this pool's busy slots plus the busy slots of the
+   * other worker processes on the same host, from their store rows fresh within `lease_ms` (at most one tick old).
+   * A failed read counts this pool alone (logged); it never stops a run.
+   */
+  async hostRuns(): Promise<number> {
+    const own = this.busy();
+    try {
+      const rows = await this.d.store.listWorkerProcesses(this.live.values().lease_ms);
+      return own + rows.filter((p) => p.host === this.host && p.process_id !== this.process_id).reduce((n, p) => n + p.busy, 0);
+    } catch (err) {
+      this.d.log.warn("worker process read failed; test share counts this process only", { error: errorText(err) });
+      return own;
+    }
   }
 
   /** Slots that may claim now: the live `workers`, capped at the slot count. */
