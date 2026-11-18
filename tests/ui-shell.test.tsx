@@ -217,7 +217,9 @@ describe("app shell", () => {
     expect(within(header).getAllByRole("button", { name: "Theme" })).toHaveLength(1);
     expect(screen.queryByRole("radiogroup", { name: "Theme" })).toBeNull();
     expect(screen.queryByRole("menu")).toBeNull();
+    expect(within(header).getByRole("button", { name: "Theme" }).getAttribute("aria-expanded")).toBe("false");
     openMenu();
+    expect(within(header).getByRole("button", { name: "Theme" }).getAttribute("aria-expanded")).toBe("true");
     expect(screen.getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["System", "Light", "Dark"]);
     expect(checked()).toEqual(["System"]);
   });
@@ -1158,7 +1160,6 @@ describe("system actions, revisions and the tab title (issue #311)", () => {
     overview.needs_you = 0;
     try {
       mount();
-      await vi.waitFor(() => expect(document.title).toBe("Tasks · Gongbang"));
       await vi.waitFor(() => expect(document.title).toBe("Tasks · Gongbang"));
     } finally {
       overview.needs_you = before;

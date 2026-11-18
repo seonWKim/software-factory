@@ -38,7 +38,7 @@ export function OverflowMenu({ label, items, icon }: { label: string; items: rea
   }, [open]);
   return (
     <div ref={root} className="relative inline-block">
-      <Button variant="ghost" size="icon" aria-label={label} aria-haspopup="menu" aria-expanded={icon === undefined ? open : undefined} aria-controls={open ? id : undefined} onClick={() => setOpen(!open)}>
+      <Button variant="ghost" size="icon" aria-label={label} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined} onClick={() => setOpen(!open)}>
         {icon ?? <span aria-hidden>⋯</span>}
       </Button>
       {open && (
