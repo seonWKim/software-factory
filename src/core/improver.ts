@@ -354,13 +354,13 @@ function groupMessage(g: FailureGroup, tails: { run_id: RunId; text: string }[])
 
 /** At most this many new items, and this many comments, per improve run (design §7): largest groups first. */
 export const MAX_FILED_ISSUES = 3;
-/** A filed item closed this recently still matches its pattern: no new item, no comment. */
-const RECENT_MS = 30 * DAY_MS;
+/** A filed item closed this recently still matches its pattern: no new item, no comment. A claim with no item yet is in flight this long. */
+const RECENT_MS = 30 * DAY_MS, FILING_WAIT_MS = 10 * 60_000;
 
 /** What filing needs. `file`: the first source that can file, null when none can. `comment`: once per marker. */
 export interface FilingDeps {
-  store: Pick<FactoryStore, "getFiledPattern" | "claimFiledPattern" | "setFiledPatternRef" | "listImproveReports" | "setImproveGroups" | "getWorkItemBySource"
-    | "recordAlert" | "listHostSleeps" | "getRun" | "pauseAt">;
+  store: Pick<FactoryStore, "getFiledPattern" | "takeFiledPattern" | "setFiledPatternRef" | "listImproveReports" | "setImproveGroups" | "getWorkItemBySource"
+    | "getOpenWorkItemByTitle" | "recordAlert" | "listHostSleeps" | "getRun" | "pauseAt">;
   scanner: EgressScanner;
   clock: Clock;
   file: ((input: IssueInput) => Promise<SourceRef>) | null;
@@ -393,14 +393,13 @@ function commentMarker(key: string, report: string): string {
  * Files the groups of `report` (design §7) and stores each group's filing on the report. First, a stall group one of whose runs held
  * a host sleep (`stalledBySleep`) is not filed or commented: one information alert (`host_sleep`). Then its runs that failed in a
  * model-stall or network pause are left out (`outsidePauses`): none left, `skipped` with `pause`; under FILE_MIN, no filing (report only).
- * Of the rest, a group whose pattern has an open filed item gets one comment naming its runs not linked there yet (none: `linked`); one whose item
- * closed in the last 30 days is skipped; one whose draft needs a person or touches the gate list is not filed but
- * goes to Needs you as an alert with the cause (`needs_person`); any other is filed as a fix item, which runs
- * without a person, its runs listed and its marker in the body. At most MAX_FILED_ISSUES new items and as many comments; the rest are skipped with the cap as reason.
- * Every body passes the egress scan first: a flagged one is not sent and is recorded `withheld` with its rules.
- * Then each `hotspot` row of the patterns alike, same caps, no pause or FILE_MIN check: "Reduce conflicts on <file>", no draft (a gate file still waits for a person's merge).
- * Safe to run twice: a filing is claimed in filed_patterns before the call and its marker looked up by the source,
- * and a comment is posted once per marker.
+ * Of the rest, a group whose pattern has an open filed item gets one comment naming its runs not linked there yet (none: `linked`); one whose item closed
+ * in the last 30 days is skipped; one whose draft needs a person or touches the gate list goes to Needs you as an alert with the cause (`needs_person`); any
+ * other is filed as a fix item, which runs without a person, its runs and marker in the body. At most MAX_FILED_ISSUES new items and as many comments, the rest
+ * skipped with the cap as reason. Every body passes the egress scan first: a flagged one is not sent and is recorded `withheld` with its rules. Then each
+ * `hotspot` row alike, same caps, no pause or FILE_MIN check: "Reduce conflicts on <file>", no draft, skipped (`open_item`) while the store holds an open item
+ * of that title. Safe to run twice: one caller takes the filing in filed_patterns before the call, and the source looks its marker up first; a claim with no
+ * item yet is another caller's for FILING_WAIT_MS (`in_flight`), then taken up again under its own marker. A comment is posted once per marker.
  */
 export async function fileReport(d: FilingDeps, report: ImproveReport): Promise<ImproveReport> {
   const caps = { issues: 0, comments: 0 };
@@ -432,8 +431,7 @@ async function fileGroup(d: FilingDeps, report: ImproveReport, all: FailureGroup
   const g = isHotspot(all) ? all : await outsidePauses(d.store, all);
   if (!isHotspot(g) && g.run_ids.length === 0) return { status: "skipped", reason: "pause" };
   if (!isHotspot(g) && (g.run_ids.length < FILE_MIN.runs || g.work_item_ids.length < FILE_MIN.items)) return undefined;
-  const file = d.file;
-  const person = needsPerson(g.draft);
+  const file = d.file, person = needsPerson(g.draft);
   if (!file && !person) return { status: "skipped", reason: "no_source" };
   const row = await d.store.getFiledPattern(report.project, key);
   if (row?.filed_ref && row.report_id !== report.id) {
@@ -448,15 +446,17 @@ async function fileGroup(d: FilingDeps, report: ImproveReport, all: FailureGroup
   }
   if (person) return toPerson(d, g, key);
   if (!file) return { status: "skipped", reason: "no_source" };
-  if (caps.issues >= MAX_FILED_ISSUES) return { status: "skipped", reason: "issue_cap" };
   const title = isHotspot(g) ? `Reduce conflicts on ${g.detail}` : `Recurring failure: ${g.error_code} in ${g.run_ids.length} runs`;
+  if (isHotspot(g) && (await d.store.getOpenWorkItemByTitle(report.project, title))) return { status: "skipped", reason: "open_item" };
+  if (caps.issues >= MAX_FILED_ISSUES) return { status: "skipped", reason: "issue_cap" };
   const body = isHotspot(g) ? hotspotBody(g) : issueBody(g);
   const scan = await d.scanner.scan("comment", `${title}\n\n${body}`);
   if (!scan.clean) return { status: "withheld", rules: [...new Set(scan.findings.map((f) => f.rule))] };
-  // A half-done claim (no item yet) is finished under its own report's marker; an item closed long ago is replaced.
-  const claim = row && !row.filed_ref ? row
-    : await d.store.claimFiledPattern({ project: report.project, pattern_key: key, error_code: g.error_code, detail: g.detail, report_id: report.id }, row?.report_id);
+  if (row && !row.filed_ref && d.clock.now().getTime() - Date.parse(row.created_at) < FILING_WAIT_MS) return { status: "skipped", reason: "in_flight" };
+  const input = { project: report.project, pattern_key: key, error_code: g.error_code, detail: g.detail, report_id: report.id };
+  const { row: claim, taken } = await d.store.takeFiledPattern(input, row ? (row.filed_ref ? { replace: row.report_id } : { restart: row }) : undefined);
   if (claim.filed_ref) return { status: "linked", ref: claim.filed_ref };
+  if (!taken) return { status: "skipped", reason: "in_flight" };
   caps.issues++;
   const ref = await file({ project: report.project, requester_id: IMPROVER.id as UserId, title, body, marker: issueMarker(key, claim.report_id) });
   await d.store.setFiledPatternRef(claim.id, claim.report_id, ref);

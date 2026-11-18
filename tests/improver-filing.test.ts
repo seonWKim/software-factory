@@ -19,6 +19,7 @@ import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 import { AGENT_STALLED } from "../src/core/policy.js";
+import { HOTSPOT } from "../src/core/hotspots.js";
 import { FakeAuth, FakeBroker, FakeSandbox, MemoryStorage, PROJECT, alice, config, issueRef, pipeline, prompts, silent, triageSpec } from "./helpers/fakes.js";
 import { RecordingGitHubClient } from "./helpers/github.js";
 
@@ -43,9 +44,12 @@ const BOT = { id: 4242, login: "software-factory[bot]", type: "Bot" };
 class IssuesClient extends RecordingGitHubClient {
   issues: { id: number; number: number; title: string; body: string; labels: string[]; user: typeof BOT; updated_at: string }[] = [];
   failAfterFiling = false;
+  /** Lets other callers run before a POST lands, as GitHub's round trip does: a caller listing meanwhile sees no issue. */
+  slowPosts = false;
   override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     if (method === "POST" && path === "/repos/o/r/issues") {
       this.calls.push({ method, path, body });
+      if (this.slowPosts) await new Promise((r) => setTimeout(r, 20));
       const n = 100 + this.issues.length;
       const b = body as { title: string; body: string; labels?: string[] };
       const issue = { id: 9000 + n, number: n, title: b.title, body: b.body, labels: b.labels ?? [], user: BOT, updated_at: "2026-03-05T06:00:00Z" };
@@ -289,7 +293,7 @@ describe("improve filing: enterprise, the GitHub source", () => {
     expect(client.posts()).toBe(1);
   });
 
-  it("a filing that failed part way is retried by the next run: the marker is found and no second issue is filed", async () => {
+  it("a create whose response was lost waits out its claim, then the next run finds it by its marker and sends no second create", async () => {
     const { client, ...w } = await github();
     for (let i = 0; i < 3; i++) await w.fail("checks_failed");
     w.clock.set("2026-03-05T06:00:00.000Z");
@@ -297,7 +301,13 @@ describe("improve filing: enterprise, the GitHub source", () => {
     const first = await w.improve();
     expect(first.groups[0]!.filing).toEqual({ status: "failed", reason: "error" });
     expect(await w.store.getFiledPattern(PROJECT.key, patternKey(first.groups[0]!))).toMatchObject({ report_id: first.id, filed_ref: null });
+    // Inside the wait the claim is still in flight: no lookup, no create.
+    const calls = client.calls.length;
+    w.clock.advance(9 * 60_000);
+    expect((await w.improve()).groups[0]!.filing).toEqual({ status: "skipped", reason: "in_flight" });
+    expect(client.calls.length).toBe(calls);
 
+    w.clock.advance(2 * 60_000);
     const second = await w.improve();
     expect(client.posts()).toBe(1);
     expect(second.groups[0]!.filing).toMatchObject({ status: "filed", ref: { id: "o/r#100" } });
@@ -374,14 +384,14 @@ describe("improve filing: fix specs", () => {
     expect(await w.store.listAlerts({ limit: 10 })).toHaveLength(2);
   });
 
-  it("a draft that needs no person and touches no gate path gets one fix item with its triage run queued; two replicas file it once", async () => {
+  it("a draft that needs no person and touches no gate path gets one fix item with its triage run queued; of two replicas one files it", async () => {
     const w = await local();
     const runs = [await w.fail("checks_failed"), await w.fail("checks_failed"), await w.fail("checks_failed")];
     const report = await draftedReport(w.store, w.clock, [await groupOf(w.store, "checks_failed", runs, drafted({ touches: ["tests/x.test.ts"] }))]);
     const source = w.sources[0]!;
     const d = { store: w.store, scanner: w.scanner, clock: w.clock, file: source.fileIssue!.bind(source), comment: async () => {} };
     const [a, b] = await Promise.all([fileReport(d, report), fileReport(d, report)]);
-    expect([a.groups[0]!.filing?.status, b.groups[0]!.filing?.status]).toEqual(["filed", "filed"]);
+    expect([a.groups[0]!.filing, b.groups[0]!.filing]).toEqual(expect.arrayContaining([{ status: "skipped", reason: "in_flight" }, expect.objectContaining({ status: "filed" })]));
     const items = await filedItems(w.store);
     expect(items).toHaveLength(1);
     expect((await w.store.listRuns(items[0]!.id)).map((r) => [r.kind, r.status])).toEqual([["triage", "queued"]]);
@@ -391,7 +401,7 @@ describe("improve filing: fix specs", () => {
 /** Files a pattern as GitHub issue `n` (design §7), so the item intake takes in for it is its fix item. Returns its marker. */
 async function fileAs(store: FactoryStore, clock: FakeClock, n: number): Promise<string> {
   const report = await draftedReport(store, clock, []);
-  const row = await store.claimFiledPattern({ project: PROJECT.key, pattern_key: `k${n}`, error_code: "checks_failed", detail: "d", report_id: report.id });
+  const row = (await store.takeFiledPattern({ project: PROJECT.key, pattern_key: `k${n}`, error_code: "checks_failed", detail: "d", report_id: report.id })).row;
   await store.setFiledPatternRef(row.id, row.report_id, issueRef(n));
   return issueMarker(row.pattern_key, row.report_id);
 }
@@ -482,7 +492,7 @@ describe("improve filing: a stall group that followed a host sleep", () => {
     await slept(w, runs[0]!);
     const report = await draftedReport(w.store, w.clock, [{ ...(await groupOf(w.store, AGENT_STALLED, runs, { status: "skipped", reason: "call_cap" })), detail: "silent" }]);
     const earlier = await draftedReport(w.store, w.clock, []);
-    const row = await w.store.claimFiledPattern({ project: PROJECT.key, pattern_key: patternKey(report.groups[0]!), error_code: AGENT_STALLED, detail: "silent", report_id: earlier.id });
+    const row = (await w.store.takeFiledPattern({ project: PROJECT.key, pattern_key: patternKey(report.groups[0]!), error_code: AGENT_STALLED, detail: "silent", report_id: earlier.id })).row;
     await w.store.setFiledPatternRef(row.id, row.report_id, issueRef(7));
     const comments: string[] = [];
     const done = await fileReport({ store: w.store, scanner: w.scanner, clock: w.clock, file: null, comment: async (_r, body) => void comments.push(body) }, report);
@@ -624,5 +634,79 @@ describe("improve filing: a pattern files at 3 runs on 2 items, outside model-st
     const done = await fileReport({ store: w.store, scanner: w.scanner, clock: w.clock, file: source.fileIssue!.bind(source), comment: async () => {} }, report);
     expect(done.groups[0]!.filing).toEqual({ status: "skipped", reason: "pause" });
     expect(await filedItems(w.store)).toEqual([]);
+  });
+});
+
+// Improve report ir_04e8a6fc313c4336b946eb00bef0207a (2026-11-18) claimed one issue per hot file, but GitHub got two for
+// web/src/pages.ts (#701, #702) and two for web/src/views/pages.tsx (#703, #704): two callers filed the same claim.
+describe("improve filing: one hot file is filed once", () => {
+  const FILE = "web/src/pages.ts";
+  const TITLE = `Reduce conflicts on ${FILE}`;
+  const hot: FailureGroup = { error_code: HOTSPOT, detail: FILE, run_ids: [], work_item_ids: [], held_item_ids: [] };
+  async function hotspots() {
+    const { client, ...w } = await github();
+    const source = w.sources[0]!;
+    const d = { store: w.store, scanner: w.scanner, clock: w.clock, file: source.fileIssue!.bind(source), comment: async () => {} };
+    /** A new report (on a manual improve run) holding FILE's hot-file row, not filed yet; the clock moves a second. */
+    const report = async (): Promise<ImproveReport> => {
+      const { run } = await enqueueImprove(w, PROJECT.key, "manual");
+      w.clock.advance(1_000);
+      return (await w.store.recordImproveReport({ run_id: run.id, project: PROJECT.key, ...manualWindow(w.clock.now()), groups: [], patterns: [hot] })).report;
+    };
+    const filing = (r: ImproveReport) => r.patterns[0]!.filing;
+    return { client, w, d, report, filing };
+  }
+
+  it("two reports filing the same hot file at the same time send one create, not two", async () => {
+    const { client, d, report, filing } = await hotspots();
+    client.slowPosts = true;
+    const reports = [await report(), await report()];
+    const done = await Promise.all(reports.map((r) => fileReport(d, r)));
+    expect(client.posts()).toBe(1);
+    expect(done.map(filing)).toEqual(expect.arrayContaining([{ status: "skipped", reason: "in_flight" }, { status: "filed", ref: expect.objectContaining({ id: "o/r#100" }) }]));
+  });
+
+  it("two replicas filing one report's hot file at the same time send one create", async () => {
+    const { client, d, report } = await hotspots();
+    client.slowPosts = true;
+    const r = await report();
+    await Promise.all([fileReport(d, r), fileReport(d, r)]);
+    expect(client.posts()).toBe(1);
+    expect(client.issues.map((i) => i.title)).toEqual([TITLE]);
+  });
+
+  it("an unfinished claim of another report, younger than the wait, skips the file with no source call; after the wait it is filed under its marker", async () => {
+    const { client, w, d, report, filing } = await hotspots();
+    const first = await report();
+    const claim = (await w.store.takeFiledPattern({ project: PROJECT.key, pattern_key: patternKey(hot), error_code: HOTSPOT, detail: FILE, report_id: first.id })).row;
+    w.clock.advance(9 * 60_000);
+    expect(filing(await fileReport(d, await report()))).toEqual({ status: "skipped", reason: "in_flight" });
+    expect(client.calls).toEqual([]);
+
+    w.clock.advance(60_000);
+    const later = await fileReport(d, await report());
+    expect(client.posts()).toBe(1);
+    expect(client.issues[0]!.body).toContain(issueMarker(patternKey(hot), first.id));
+    expect(filing(later)).toEqual({ status: "filed", ref: expect.objectContaining({ id: "o/r#100" }) });
+    expect(await w.store.getFiledPattern(PROJECT.key, patternKey(hot))).toMatchObject({ id: claim.id, report_id: first.id, filed_ref: { id: "o/r#100" } });
+  });
+
+  it(`an open item titled "${TITLE}" in the store stops the filing: skipped with open_item, no source call, nothing claimed`, async () => {
+    const { client, w, d, report, filing } = await hotspots();
+    const { item } = await w.store.createWorkItem({ ...issue(7), title: TITLE }, system);
+    await w.store.transition({ id: item.id, expected_version: item.version, actor: system, reason: "x", patch: { stage: "RUNNING" } });
+    expect(filing(await fileReport(d, await report()))).toEqual({ status: "skipped", reason: "open_item" });
+    expect(client.calls).toEqual([]);
+    expect(await w.store.getFiledPattern(PROJECT.key, patternKey(hot))).toBeNull();
+  });
+
+  it("a closed item of that title, or an open one in another project or with another title, does not stop the filing", async () => {
+    const { client, w, d, report, filing } = await hotspots();
+    const { item } = await w.store.createWorkItem({ ...issue(7), title: TITLE }, system);
+    await w.store.transition({ id: item.id, expected_version: item.version, actor: system, reason: "x", patch: { stage: "CLOSED", close_reason: "completed" } });
+    await w.store.createWorkItem({ ...issue(8), title: TITLE, project: "github:github.com:R_kgDOrepo2" }, system);
+    await w.store.createWorkItem({ ...issue(9), title: `Reduce conflicts on ${FILE}x` }, system);
+    expect(filing(await fileReport(d, await report()))).toEqual({ status: "filed", ref: expect.objectContaining({ id: "o/r#100" }) });
+    expect(client.posts()).toBe(1);
   });
 });

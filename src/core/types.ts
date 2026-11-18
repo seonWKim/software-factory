@@ -227,15 +227,15 @@ export interface FailureGroup {
 }
 
 /**
- * A group's filing (design §7). `filed`: a new item with the group's runs. `commented`: it matched an open filed item; one comment
- * named `run_ids`, its runs not linked there before. `linked`: it matched one, all runs linked, nothing posted. `skipped`: past a cap, the matched
- * item closed in the last 30 days, no source can file, `needs_person`, `host_sleep` (a stall after a host sleep), or `pause` (every run failed
- * in a model-stall or network pause), all not filed. `withheld`: the egress scan flagged the body, nothing sent, rules kept. `failed`: the source call threw; retried later.
+ * A group's filing (design §7). `filed`: a new item with the group's runs. `commented`: it matched an open filed item; one comment named `run_ids`, its runs
+ * not linked there before. `linked`: it matched one, all runs linked, nothing posted. `skipped`: past a cap, the matched item closed in the last 30 days, no source
+ * can file, `needs_person`, `host_sleep` (a stall after a host sleep), `pause` (every run failed in a model-stall or network pause), `in_flight` (another caller is
+ * filing it) or `open_item` (a hot file with an open item of its title), all not filed. `withheld`: the egress scan flagged the body. `failed`: the call threw.
  */
 export type ImproveFiling =
   | { status: "filed" | "linked"; ref: SourceRef }
   | { status: "commented"; ref: SourceRef; run_ids: RunId[] }
-  | { status: "skipped"; reason: "issue_cap" | "comment_cap" | "recently_closed" | "no_source" | "needs_person" | "host_sleep" | "pause" }
+  | { status: "skipped"; reason: "issue_cap" | "comment_cap" | "recently_closed" | "no_source" | "needs_person" | "host_sleep" | "pause" | "in_flight" | "open_item" }
   | { status: "withheld"; rules: string[] }
   | { status: "failed"; reason: "error" };
 
