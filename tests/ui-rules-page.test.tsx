@@ -97,7 +97,7 @@ describe("Rules page", () => {
     expect(PAGES.map((p) => p.path)).toContain("rules");
   });
 
-  it("groups candidates and proposals, each under its line; each card shows its title, state, ID and what it would change", async () => {
+  it("groups candidates and proposals, each under its line; each card shows its title (ID in its tooltip), state and what it would change", async () => {
     await show();
     const classes = await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
     const proposals = screen.getByRole("list", { name: "Structure proposals" });
@@ -111,13 +111,17 @@ describe("Rules page", () => {
     ]);
     expect(card("C-012").querySelector("[data-rule-title]")!.textContent).toBe("Keep existing CLI flags.");
     expect(card("C-012").textContent).toContain("Pending");
-    expect(card("C-012").textContent).toContain("C-012");
+    // The ID is not printed; it is in the tooltip of the title.
+    expect(card("C-012").textContent).not.toContain("C-012");
+    fireEvent.mouseEnter(card("C-012").querySelector("[data-id]")!.parentElement!);
+    expect(within(card("C-012")).getByRole("tooltip").textContent).toBe("C-012");
+    fireEvent.mouseLeave(card("C-012").querySelector("[data-id]")!.parentElement!);
     // The card does not repeat its title in a "Rule: …" line; a proposal still says its kind and target.
     expect(card("C-012").querySelector("[data-rule-what]")).toBeNull();
     expect(card("C-012").textContent).not.toContain("Rule:");
-    // Title first, then the state badge, then the ID.
+    // Title first, then the state badge.
     const order = [...card("C-012").firstElementChild!.children].map((c) => c.textContent);
-    expect(order).toEqual(["Keep existing CLI flags.", "Pending", "C-012"]);
+    expect(order).toEqual(["Keep existing CLI flags.", "Pending"]);
     expect(card("P-0007").textContent).toContain("Held");
     expect(card("P-0007").querySelector("[data-rule-title]")!.textContent).toBe("Split the review prompt");
     expect(card("P-0007").querySelector("[data-rule-what]")!.textContent).toBe("edit-asset: prompts/review.md");
@@ -222,7 +226,7 @@ describe("Rules page", () => {
     await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
     expect(card("C-012").querySelector("[data-judged]")!.textContent).toBe("Judged: promote");
     expect(card("C-012").textContent).not.toContain("Pending");
-    expect(within(card("C-012")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Why and where"]);
+    expect(within(card("C-012")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Keep existing CLI flags.", "Why and where"]);
     expect(card("C-013").querySelector("[data-draft-error]")!.textContent).toContain("evolve show exited 1");
     expect((within(card("C-013")).getByRole("button", { name: "Promote" }) as HTMLButtonElement).disabled).toBe(true);
     expect((within(card("C-013")).getByRole("button", { name: "Hold" }) as HTMLButtonElement).disabled).toBe(false);
@@ -311,7 +315,7 @@ describe("Rules page", () => {
     await show();
     expect((await screen.findByRole("alert", {}, SLOW)).textContent).toContain("Only the owner");
     // Read-only: the detail opens, but no verdict button shows.
-    expect(within(card("C-012")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Why and where"]);
+    expect(within(card("C-012")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Keep existing CLI flags.", "Why and where"]);
   });
 
   const HOMES = [{ path: "/Users/me/agents", missing: "bin/evolve" }, { path: "/Users/me/.agents", missing: null }];
@@ -402,7 +406,8 @@ describe("Rules page", () => {
     const applied = await screen.findByRole("list", { name: "Applied" }, SLOW);
     expect(screen.getAllByRole("region").map((r) => r.getAttribute("aria-label")).at(-1)).toBe("Applied");
     const c = applied.querySelector<HTMLElement>('[data-applied="C-001"]')!.textContent!;
-    for (const part of ["C-001", "summary first", "모든 문서", "2026-11-13", "Open with a summary.", "not given", "2: T-1, T-2"]) expect(c).toContain(part);
+    expect(c).not.toContain("C-001");
+    for (const part of ["summary first", "모든 문서", "2026-11-13", "Open with a summary.", "not given", "2: T-1, T-2"]) expect(c).toContain(part);
     // Details are a label/value list.
     expect([...applied.querySelectorAll('[data-applied="C-001"] dt')].map((d) => d.textContent)).toEqual(["Default", "Exception", "Evidence", "Judged"]);
     expect(applied.querySelector("[data-applied-raw]")!.textContent).toBe("## Notes\njust words");
@@ -455,6 +460,7 @@ describe("Rules page", () => {
     expect(applied("C-001").querySelector("textarea, input")).toBeNull();
     fireEvent.click(within(applied("C-001")).getByRole("button", { name: "Retire" }));
     expect(applied("C-001").querySelector("textarea, input")).toBeNull();
+    expect(within(dialog()).getByRole("heading", { level: 2 }).textContent).toBe("Retire: summary first");
     const confirm = within(dialog()).getByRole("button", { name: "Send retire" }) as HTMLButtonElement;
     expect(confirm.disabled).toBe(true);
     fireEvent.change(within(dialog()).getByRole("textbox", { name: "Reason" }), { target: { value: "covered by C-002" } });
@@ -482,7 +488,7 @@ describe("Rules page", () => {
     const details = region.querySelector<HTMLDetailsElement>("details[data-retired]")!;
     expect(details.open).toBe(false);
     expect(details.querySelector("summary")!.textContent).toBe("Show retired rules");
-    expect(details.querySelector('[data-retired-rule="C-007"]')!.textContent).toBe("C-007Retired 2026-11-14: covered by C-001");
+    expect(details.querySelector('[data-retired-rule="C-007"]')!.textContent).toBe("Retired ruleRetired 2026-11-14: covered by C-001");
     cleanup();
     current = view({ applied: APPLIED, retired: [] });
     await show();
@@ -561,7 +567,7 @@ describe("Rules page", () => {
     await show();
     await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
     const buttons = within(card("C-012")).getAllByRole("button").map((b) => b.textContent);
-    expect(buttons).toEqual(["Why and where", "Promote", "Hold", "Reject"]);
+    expect(buttons).toEqual(["Keep existing CLI flags.", "Why and where", "Promote", "Hold", "Reject"]);
     expect(within(card("C-012")).getByRole("button", { name: "Promote" }).className).toContain("bg-accent");
     expect(within(card("C-012")).getByRole("button", { name: "Reject" }).className).toContain("text-failed");
     const off = within(card("C-013")).getByRole("button", { name: "Promote" });
@@ -569,14 +575,15 @@ describe("Rules page", () => {
     expect((await screen.findByRole("tooltip")).textContent).toContain("Promote is off");
   });
 
-  it("the verdict dialog titles the verdict and ID, shows the full title and detail above the fields, and labels the reason as it reads", async () => {
+  it("the verdict dialog titles the verdict and the entry title, shows the full title and detail above the fields, and labels the reason as it reads", async () => {
     const long = "A".repeat(80);
     current = view({ entries: [{ id: "C-037", title: long, state: "pending", judged: null, draft: { default: "d", exception: "e", incidents: ["T-1"], scope: "s" }, draft_error: null }] });
     detail = { id: "C-037", error: null, detail: { id: "C-037", incidents: 2, scope: "software" } };
     await show();
     await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
     fireEvent.click(within(card("C-037")).getByRole("button", { name: "Promote" }));
-    expect(within(dialog()).getByRole("heading", { level: 2 }).textContent).toBe("Promote C-037");
+    expect(within(dialog()).getByRole("heading", { level: 2 }).textContent).toBe(`Promote: ${long}`);
+    expect(dialog().querySelector("h2")!.textContent).not.toContain("C-037");
     expect(dialog().querySelector("[data-dialog-summary]")!.textContent).toBe(long);
     await waitFor(() => expect(dialog().querySelector("[data-detail-part]")).not.toBeNull(), SLOW);
     const all = dialog().innerHTML;

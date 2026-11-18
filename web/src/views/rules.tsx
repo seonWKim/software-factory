@@ -7,6 +7,7 @@ import {
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
+import { IdDetails } from "../components/ui/copy.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { KeyValue } from "../components/ui/key-value.js";
 import { Field } from "../components/ui/field.js";
@@ -25,8 +26,8 @@ import { ApprovalsSection } from "./standing.js";
 // the page is for and how many entries wait, at most max-w-3xl wide, with a "How this works" disclosure. Only entries
 // the ledger has not judged (judged null) wait: they are counted and shown in two groups, rule candidates (`C-…`) and
 // structure proposals (`P-…`), each under one line saying what promoting one does; judged ones collapse into one
-// "N decided" line, and with none waiting an EmptyState gives the next step. A card lists its title, a StatusBadge
-// (open, pending, held, or the judged decision) and its ID. "Why and where" (aria-expanded, a chevron) reads the entry's
+// "N decided" line, and with none waiting an EmptyState gives the next step. A card lists its title (an IdDetails: the ID in its tooltip) and a StatusBadge
+// (open, pending, held, or the judged decision). "Why and where" (aria-expanded, a chevron) reads the entry's
 // detail on demand through GET /api/v1/rules/entry?id=, never on page load: a description, what it would change,
 // before → after, why, the evidence (newest first, 3 shown, the rest behind "Show all N"), where it applies and the
 // related applied rules (sharing an incident ID or naming the target file), each part left out when it has nothing.
@@ -39,7 +40,7 @@ import { ApprovalsSection } from "./standing.js";
 // Only the owner sends. With the ledger off the page is an EmptyState whose action is Turn on (stores `integrations`,
 // the plugin name only, through POST /api/v1/settings, then loads the rules), and an agents home picker over the
 // known homes (AGENTS_HOME when set, ~/.agents) shows the chosen one's check: both CLIs executable, else the missing file.
-// Applied lists the promoted rules file in the file's order, one compact row per rule (ID, name, scope, judged date,
+// Applied lists the promoted rules file in the file's order, one compact row per rule (name with its ID in a tooltip, scope, judged date,
 // the "Suggested to retire" badge and Retire) that expands to a label/value list, with a search over ID, name, default
 // and scope; it is collapsed while something waits. Suggest reads each class's retire suggestions on demand. Then a
 // collapsed Retired list. Scope and the encoded-elsewhere lines render through Markdown.
@@ -91,7 +92,7 @@ function useSendVerdict(token: string, onClose: () => void) {
   const client = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const send = async (body: Parameters<typeof postRuleVerdict>[1], label: string) => {
+  const send = async (body: Parameters<typeof postRuleVerdict>[1], label: string, title: string) => {
     setBusy(true);
     setError(null);
     try {
@@ -100,7 +101,7 @@ function useSendVerdict(token: string, onClose: () => void) {
         setError(r.error);
         return;
       }
-      announceStatus(t("rules.sent", { label, id: body.id }));
+      announceStatus(t("rules.sent", { label, title }));
       await client.invalidateQueries({ queryKey: [API.rules] });
       onClose();
     } catch (err) {
@@ -141,13 +142,13 @@ function VerdictDialog({ entry, applied, verdict, token, onClose }: { entry: Rul
   const label = t(VERDICTS.find((v) => v.verdict === verdict)!.label);
   return (
     <Dialog
-      title={t("rules.dialogTitle", { label, id: entry.id })}
+      title={t("rules.dialogTitle", { label, title: entry.title })}
       consequence={t(promote ? "rules.consequencePromoteClass" : CONSEQUENCE[verdict])}
       confirmLabel={t("rules.send", { label: label.toLowerCase() })}
       confirmDisabled={busy || reason.trim() === "" || (promote && Object.values(rule).includes("")) || noLines}
       danger={verdict === "reject"}
       error={error}
-      onConfirm={() => void send({ id: entry.id, verdict, reason: reason.trim(), ...(promote ? rule : {}) }, label)}
+      onConfirm={() => void send({ id: entry.id, verdict, reason: reason.trim(), ...(promote ? rule : {}) }, label, entry.title)}
       onClose={onClose}
     >
       <p data-dialog-summary className="min-w-0 text-sm font-medium text-pretty break-words whitespace-pre-wrap">
@@ -168,19 +169,19 @@ function VerdictDialog({ entry, applied, verdict, token, onClose }: { entry: Rul
 }
 
 /** Retire of an applied class: the required reason, then the verdict (the server removes the rule's block first). */
-function RetireDialog({ id, token, onClose }: { id: string; token: string; onClose: () => void }) {
+function RetireDialog({ id, name, token, onClose }: { id: string; name: string; token: string; onClose: () => void }) {
   const [reason, setReason] = useState("");
   const { busy, error, send } = useSendVerdict(token, onClose);
   const label = t("rules.retire");
   return (
     <Dialog
-      title={t("rules.dialogTitle", { label, id })}
+      title={t("rules.dialogTitle", { label, title: name })}
       consequence={t(CONSEQUENCE.retire)}
       confirmLabel={t("rules.send", { label: label.toLowerCase() })}
       confirmDisabled={busy || reason.trim() === ""}
       danger
       error={error}
-      onConfirm={() => void send({ id, verdict: "retire", reason: reason.trim() }, label)}
+      onConfirm={() => void send({ id, verdict: "retire", reason: reason.trim() }, label, name)}
       onClose={onClose}
     >
       <ReasonField id={id} value={reason} onChange={setReason} />
@@ -244,6 +245,9 @@ function Evidence({ items }: { items: RuleEvidence[] }) {
 /** Lines of a file, kept as written. */
 const fileLines = "rounded-control bg-surface p-2 font-mono text-xs break-words whitespace-pre-wrap";
 
+/** An applied rule's name, else its default, else "not given". */
+const ruleName = (r: AppliedRule): string => r.name || r.default || t("rules.notGiven");
+
 /** The applied rules that share an incident ID with the entry or name its target file. */
 function related(applied: AppliedRule[], ids: ReadonlySet<string>, target: string | undefined): AppliedRule[] {
   return applied.filter(
@@ -303,7 +307,7 @@ function Detail({ entry, d, applied }: { entry: RuleRow; d: RuleDetail; applied:
             <ul key="list" className="space-y-0.5">
               {overlaps.map((r, i) => (
                 <li key={r.id ?? `raw${i}`} data-related={r.id ?? ""} className={line}>
-                  {r.id !== null ? <><span className="font-mono text-xs">{r.id}</span> {r.name}</> : r.raw?.split("\n")[0]}
+                  {r.id !== null ? <IdDetails label={ruleName(r)} id={r.id} what="rule ID" /> : r.raw?.split("\n")[0]}
                 </li>
               ))}
             </ul>
@@ -335,7 +339,7 @@ function RuleCard({ entry, applied, token }: { entry: RuleRow; applied: AppliedR
     <li data-rule={entry.id} className="space-y-2 p-3">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <p data-rule-title className="min-w-0 text-sm font-medium text-pretty break-words whitespace-pre-wrap">
-          {entry.title}
+          <IdDetails label={entry.title} id={entry.id} what="rule ID" />
         </p>
         {entry.judged !== null ? (
           <span data-judged>
@@ -344,7 +348,6 @@ function RuleCard({ entry, applied, token }: { entry: RuleRow; applied: AppliedR
         ) : (
           <StatusBadge level={STATE_LEVEL[entry.state]} size="sm">{STATE_LABEL[entry.state] ? t(STATE_LABEL[entry.state]!) : entry.state}</StatusBadge>
         )}
-        <span className="font-mono text-xs break-all text-text-2">{entry.id}</span>
       </div>
       {!isClass(entry.id) && (
         <p data-rule-what className={muted}>
@@ -509,8 +512,9 @@ function AppliedClass({ rule, id, token, round }: { rule: AppliedRule; id: strin
   return (
     <li data-applied={id} className="space-y-1 p-3">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <span className="font-mono text-xs break-all text-text-2">{id}</span>
-        <p className="min-w-0 text-sm font-medium text-pretty break-words">{rule.name}</p>
+        <p className="min-w-0 text-sm font-medium text-pretty break-words">
+          <IdDetails label={ruleName(rule)} id={id} what="rule ID" />
+        </p>
         {suggested.length > 0 && <Badge level="needs_approval">{t("rules.suggested")}</Badge>}
         {rule.judged !== null && <span className={`${muted} tabular-nums`}>{rule.judged}</span>}
         <div className="ml-auto">
@@ -538,7 +542,7 @@ function AppliedClass({ rule, id, token, round }: { rule: AppliedRule; id: strin
           <AppliedPart label="rules.appliedJudged">{rule.judged === null ? null : <p className="text-sm">{rule.judged}</p>}</AppliedPart>
         </dl>
       </details>
-      {retiring && token !== null && <RetireDialog id={id} token={token} onClose={() => setRetiring(false)} />}
+      {retiring && token !== null && <RetireDialog id={id} name={ruleName(rule)} token={token} onClose={() => setRetiring(false)} />}
     </li>
   );
 }
@@ -603,7 +607,7 @@ function Retired({ retired }: { retired: RetiredRule[] }) {
         <ul aria-label={t("rules.groupRetired")} className="mt-2 divide-y divide-border rounded-control border border-border">
           {retired.map((r) => (
             <li key={r.id} data-retired-rule={r.id} className="space-y-1 p-3">
-              <span className="font-mono text-xs break-all text-text-2">{r.id}</span>
+              <p className="text-sm font-medium"><IdDetails label={t("rules.retiredRule")} id={r.id} what="rule ID" /></p>
               <p className={line}>{t("rules.retiredOn", { date: r.date, reason: r.reason })}</p>
             </li>
           ))}
