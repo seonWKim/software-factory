@@ -433,10 +433,7 @@ async function loadCases(rolesDir: string, role: RoleDescriptor & { prompt: stri
 /** The replay prompt: the stored spec plus the stored diff, in the worker's review layout. */
 export const replayPrompt = (c: Pick<LoadedCase, "spec" | "diff">) => `${c.spec}\n\n## Diff\n\n\`\`\`diff\n${c.diff}\n\`\`\``;
 
-/**
- * Replays every case of `role` (with `ids`, only those) `replays` times each (default once), then writes the results file. Each
- * replay gets its own detached sandbox (`branch: null`), destroyed after. No doc index: a replay does not depend on the docs.
- */
+/** Replays every case of `role` (with `ids`, only those) `replays` times each (default once), then writes the results file. Each replay gets its own detached sandbox (`branch: null`), destroyed after. No doc index: a replay does not depend on the docs. */
 export async function runCases(deps: GoldenRunDeps, opts: { role: string; prompts?: readonly string[]; ids?: readonly string[]; replays?: number }): Promise<GoldenReport> {
   const role = roleFor(deps, opts.role);
   const cases = await loadCases(deps.rolesDir, role, opts.prompts, opts.ids);
