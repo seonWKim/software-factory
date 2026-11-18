@@ -1,5 +1,5 @@
 import { isUnder, pathsOverlap } from "./policy.js";
-import type { DependencyKind, DependencyState, SharedPath, SourceRef } from "./types.js";
+import type { DependencyKind, DependencyState, SharedPath, SourceRef, Timestamp } from "./types.js";
 
 /**
  * Coordination (design §5, decided 2026-11-03): when an implement run may start next to other work. Pure: no
@@ -94,6 +94,16 @@ export interface CoordinationSettings {
   hold_policy: HoldPolicy;
   /** `hotspot_mode`: whether a hold on a hotspot follows `hold_policy` or always stays held. */
   hotspot_mode: HotspotMode;
+  /** `conflict_window_days`: the claim counts only conflicts recorded this many days before it (design 05-dependencies). */
+  conflict_window_days: number;
+}
+
+/** Default `conflict_window_days`: older conflicts add no learned weight. */
+export const DEFAULT_CONFLICT_WINDOW_DAYS = 3;
+
+/** The oldest conflict time a claim at `now` counts: `conflict_window_days` before it. */
+export function conflictWindowStart(now: Date, s: Pick<CoordinationSettings, "conflict_window_days">): Timestamp {
+  return new Date(now.getTime() - s.conflict_window_days * 86_400_000).toISOString() as Timestamp;
 }
 
 export const DEFAULT_COORDINATION: CoordinationSettings = {
@@ -104,9 +114,10 @@ export const DEFAULT_COORDINATION: CoordinationSettings = {
   mechanical_weight: DEFAULT_MECHANICAL_WEIGHT,
   hold_policy: DEFAULT_HOLD_POLICY,
   hotspot_mode: "policy",
+  conflict_window_days: DEFAULT_CONFLICT_WINDOW_DAYS,
 };
 
-/** A file's weight from its recorded conflicts: 1.0 below two, then 1.0 + 0.5 per conflict, at most 4.0. */
+/** A file's weight from its recorded conflicts (inside `conflict_window_days`): 1.0 below two, then 1.0 + 0.5 per conflict, at most 4.0. */
 export function learnedWeight(conflicts: number): number {
   if (conflicts < LEARNED_FROM) return BASE_WEIGHT;
   return Math.min(LEARNED_CAP, BASE_WEIGHT + LEARNED_STEP * conflicts);

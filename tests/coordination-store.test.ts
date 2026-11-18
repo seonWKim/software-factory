@@ -153,6 +153,78 @@ describe.each(BACKENDS)("coordination in the store: $name", ({ make }) => {
     });
   });
 
+  describe("conflict window (conflict_window_days)", () => {
+    const DAY = 24 * 60 * 60_000;
+    const record = async (store: FactoryStore, path: string, keys: string[]) => {
+      for (const k of keys) await store.recordConflicts({ project: PROJECT_KEY, paths: [path], event_key: k });
+    };
+
+    it("conflicts all older than the window give no learned weight: an ordinary file weighs 1.0 and two items run side by side", async () => {
+      const { store, clock } = await make();
+      await record(store, "lib/x.ts", ["e1", "e2", "e3", "e4", "e5", "e6"]);
+      clock.advance(3 * DAY + 1);
+      const a = await item(store, clock, 1, { files_to_change: ["lib/x.ts"] });
+      const b = await item(store, clock, 2, { files_to_change: ["lib/x.ts"] });
+      const [x, y] = await Promise.all([claim(store, w1), claim(store, w2)]);
+      expect(new Set([x?.work_item_id, y?.work_item_id])).toEqual(new Set([a, b]));
+      expect(await store.listClaimDecisions(b)).toEqual([]);
+      // The rows stay: read without a window they all still count.
+      expect((await store.conflictCounts(PROJECT_KEY)).get("lib/x.ts")).toBe(6);
+    });
+
+    it("a hotspot whose conflicts are all old weighs the hotspot weight and still holds the same-file overlap", async () => {
+      const { store, clock } = await make();
+      await record(store, WORKER, ["e1", "e2", "e3", "e4", "e5", "e6"]);
+      clock.advance(3 * DAY + 1);
+      await item(store, clock, 1, { files_to_change: [WORKER] });
+      const b = await item(store, clock, 2, { files_to_change: [WORKER] });
+      expect(await claim(store)).not.toBeNull();
+      expect(await claim(store, w2)).toBeNull();
+      expect((await store.listClaimDecisions(b))[0]).toMatchObject({
+        decision: "held", cost: 3, shared: [{ path: WORKER, weight: 3, conflicts: 0, hotspot: true }],
+      });
+    });
+
+    it("three recent conflicts inside the window still hold a same-file overlap; old ones beside them are not counted", async () => {
+      const { store, clock } = await make();
+      await record(store, "lib/x.ts", ["old1", "old2", "old3", "old4"]);
+      clock.advance(2 * DAY);
+      await record(store, "lib/x.ts", ["new1", "new2", "new3"]);
+      clock.advance(2 * DAY); // the old four are 4 days old, the new three 2 days old
+      await item(store, clock, 1, { files_to_change: ["lib/x.ts"] });
+      const b = await item(store, clock, 2, { files_to_change: ["lib/x.ts"] });
+      expect(await claim(store)).not.toBeNull();
+      expect(await claim(store, w2)).toBeNull();
+      expect((await store.listClaimDecisions(b))[0]).toMatchObject({ cost: 2.5, shared: [{ path: "lib/x.ts", weight: 2.5, conflicts: 3 }] });
+    });
+
+    it("two recent conflicts raise the weight to 2.0 as before; the window comes from the claim's settings", async () => {
+      const { store, clock } = await make();
+      await record(store, "lib/x.ts", ["e1", "e2"]);
+      clock.advance(DAY);
+      await item(store, clock, 1, { files_to_change: ["lib/x.ts", "lib/y.ts"] });
+      const b = await item(store, clock, 2, { files_to_change: ["lib/x.ts", "lib/y.ts"] });
+      // 2.0 + 1.0 = 3.0 holds under the default 3-day window.
+      expect(await claim(store)).not.toBeNull();
+      expect(await claim(store, w2)).toBeNull();
+      expect((await store.listClaimDecisions(b))[0]).toMatchObject({ cost: 3, shared: [{ path: "lib/x.ts", weight: 2, conflicts: 2 }, { path: "lib/y.ts", weight: 1 }] });
+      // A one-day window no longer counts them (a day and the item set-up time have passed): 2.0 runs.
+      const coordination = { ...DEFAULT_COORDINATION, conflict_window_days: 1 };
+      expect(await store.claimRun({ worker_id: w2, kinds: ALL, lease_ms: LEASE, coordination })).toMatchObject({ work_item_id: b });
+    });
+
+    it("conflictCounts with since counts only rows at or after it; rows before stay in the table", async () => {
+      const { store, clock } = await make();
+      await record(store, "lib/x.ts", ["e1"]);
+      clock.advance(DAY);
+      const since = clock.now().toISOString() as never;
+      await record(store, "lib/x.ts", ["e2"]);
+      await record(store, "lib/y.ts", ["e3"]);
+      expect(await store.conflictCounts(PROJECT_KEY, since)).toEqual(new Map([["lib/x.ts", 1], ["lib/y.ts", 1]]));
+      expect(await store.conflictCounts(PROJECT_KEY)).toEqual(new Map([["lib/x.ts", 2], ["lib/y.ts", 1]]));
+    });
+  });
+
   describe("open PRs", () => {
     it("an open PR holds a conflicting waiting item with no run active for the PR's item; the PR's stored file list is used", async () => {
       const { store, clock } = await make();
