@@ -159,8 +159,8 @@
   auto approval, so the dials, a standing rule and a parent's `phases_auto_approve` approval run as before. Solo and
   enterprise: the same; the person's command passes their passport check as any `/approve`. `src/shared/role.ts`
   joined `src/worker/roles/` on the gate list. No role approves what it proposes, and no
-  principal approves its own proposal (`approvalRefusal`). A golden case names its role in `case.json` (`role`; none
-  means `review`). `src/worker/roles/` is on the gate list, so a role's facts change only by an owner merge
+  principal approves its own proposal (`approvalRefusal`). A golden case belongs to the role whose folder holds it
+  (`src/worker/roles/<name>/golden/<case-id>/`; changed 2026-11-18, issue #492, see History). `src/worker/roles/` is on the gate list, so a role's facts change only by an owner merge
   (`tests/architecture/rule-of-two.test.ts`; triage, implement and resolve have no golden cases yet, listed in its
   ratchet). Every agent step takes its system prompt (the role's file under `prompts/`) and its tools from its role
   (`Worker.roleSpec`; the run kind's role, or `resolve` for implement's conflict retry); a run kind names neither. A

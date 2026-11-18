@@ -570,7 +570,7 @@ describe("golden run", () => {
   });
 });
 
-/** sha256 of each case's replay prompt, built from its spec.md and diff.patch before they moved out of golden/cases. */
+/** sha256 of each case's replay prompt, built from its spec.md and diff.patch before they moved to the review role folder. */
 const PRE_MOVE_PROMPT_SHA256: Record<string, string> = {
   "399": "9cab6e2536f1095ddab4e19bc70a75206829eb3de0696d1f7081957b77782e79",
   "408": "bab6f8b233f5c7128ddb50fc393f3e2dd6c3b92bde2ccdcef3851d3ade276817",
@@ -590,7 +590,7 @@ const PRE_MOVE_PROMPT_SHA256: Record<string, string> = {
 };
 
 describe("cases in role folders", () => {
-  it("replays each moved review case with the same prompt it had in golden/cases", async () => {
+  it("replays each moved review case with the same prompt it had before the move", async () => {
     const runner = new FakeRunner({ review: () => ({ output: REVIEW_PASS }) });
     const report = await runCases(runDeps(runner, { rolesDir: join(REPO, "src", "worker", "roles") }), { role: "review" });
     const ids = report.cases.map((c) => c.id);
