@@ -369,10 +369,10 @@ async function keepStopped(
  * Commits the worktree's changes under `paths` (all when none; tracked and untracked, not ignored) as one commit, with trusted git calls after the agent stopped. True when there were any.
  */
 async function commitWorktree(w: Worker, handle: SandboxHandle, message: string, paths: string[] = []): Promise<boolean> {
-  const dirty = (await w.git(handle, ["status", "--porcelain", "-z", "--untracked-files=all", "--", ...paths])) !== "";
-  if (!dirty) return false;
-  await w.git(handle, [...NO_HOOKS, "add", "-A", "--", ...paths]);
-  await w.gitWith(handle, [...NO_HOOKS, "commit", "--quiet", "--no-verify", "-m", message, "--", ...paths], gitIdentity(w.cfg.agent_git_identity));
+  const only = paths.length ? ["--", ...paths] : [];
+  if ((await w.git(handle, ["status", "--porcelain", "-z", "--untracked-files=all", ...only])) === "") return false;
+  await w.git(handle, [...NO_HOOKS, "add", "-A", ...only]);
+  await w.gitWith(handle, [...NO_HOOKS, "commit", "--quiet", "--no-verify", "-m", message, ...only], gitIdentity(w.cfg.agent_git_identity));
   return true;
 }
 
