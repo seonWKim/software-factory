@@ -166,10 +166,12 @@ export class CommandsUnit {
     }
     const synced = syncedCommand(c);
     if (synced) {
-      // A source's own command (issue #284): applied only where that source's adapter runs, and a failure is logged
-      // and passed like a polled event's, so a sync plugin's outage never holds the local commands after it.
-      const e = synced.event;
-      if (e && this.c.k.hasAdapter(synced.source.type)) await this.c.k.guard(`event:${e.kind}`, () => this.c.dispatch(e));
+      // A source's own command (issue #284): applied only where its adapter runs, a failure logged and passed like a polled
+      // event's, so a sync plugin's outage never holds later local commands. A `/merge` skips the comment mapping (no case).
+      const e = synced.event, who = { provider: "github" as const, subject: c.actor.slice("github:".length) };
+      if (!this.c.k.hasAdapter(synced.source.type)) return;
+      if (c.command === MERGE_COMMAND) await this.c.k.guard("event:merge", () => this.c.unit("pr-events").mergeComment(c.key, who, synced.source, c.args.pr));
+      else if (e) await this.c.k.guard(`event:${e.kind}`, () => this.c.dispatch(e));
       return;
     }
     const id = c.args.item;
@@ -177,12 +179,10 @@ export class CommandsUnit {
     const item = await this.c.k.reader.getWorkItem(id as WorkItemId);
     // Any source's item (design 05-sources, CLI intake): identity provider `local`, judged by the local auth plugin; never waits on its source.
     if (!item) return;
-    // A proposal's confirm press (proposals.ts) and `factory merge <id>` (local items only) skip the comment mapping.
+    // A proposal's confirm press (proposals.ts) and `factory merge <id>` skip the comment mapping.
     if (c.command === CONFIRM_COMMAND) return confirmProposal(this.c, c, item, { event: (r, s) => proposalEvent(r, s, localIdentity(c.actor)), say: refusalText });
-    if (c.command === MERGE_COMMAND) {
-      if (item.source.type === LOCAL_SOURCE) await this.c.unit("local-merge").mergeLocal(item.id, localIdentity(c.actor), c.key);
-      return;
-    }
+    if (c.command === MERGE_COMMAND && item.source.type === LOCAL_SOURCE) return void (await this.c.unit("local-merge").mergeLocal(item.id, localIdentity(c.actor), c.key));
+    if (c.command === MERGE_COMMAND) return this.c.unit("pr-events").mergeCommand(item, localIdentity(c.actor), c.key, item.source);
     const e = commandEvent(c, item.source);
     if (e) await this.c.dispatch(e);
   }

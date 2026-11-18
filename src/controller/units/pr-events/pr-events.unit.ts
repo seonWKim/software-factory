@@ -4,17 +4,19 @@
 import { prNumber } from "../../../core/change-ref.js";
 import { errorText } from "../../../core/log.js";
 import { SKIP_LABEL, floorTier, workItemIdFromBranch } from "../../../core/policy.js";
-import { type Actor, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
+import { type Actor, type SourceRef, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { ForgeEvent } from "../../../interfaces/forge.js";
 import { prMergeOutcome, type ActionRow } from "../../../outbound/index.js";
 import { SYSTEM, updateKey, awaitingMerge } from "../support.js";
-import type { Ctx } from "../context.js";
+import type { ControllerEvent, Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
 type PrOpenEvent = Extract<ForgeEvent, { kind: "change_open" }>;
 type PrFinishedEvent = Extract<ForgeEvent, { kind: "change_merged" | "change_closed" }>;
 /** The actor of a person's push whose commit author does not resolve to a user (design 2026-11-01). */
 const PR_SYNC: Actor = { kind: "system", id: "system:pr-sync" };
+/** A sender's identity on a source (provider and subject), resolved to a user by the auth unit. */
+type Identity = Extract<ControllerEvent, { kind: "spec_approved" }>["approver"];
 
 /** The forge's PR events: merged or closed, opened (adopt, record a pushed head), unmergeable (an update run). */
 export class PrEventsUnit {
@@ -70,17 +72,19 @@ export class PrEventsUnit {
   }
 
   /**
-   * The PR merge (design §9, the Merge button): an app `merge` request on an item with a PR. Authorized by the local
-   * auth plugin for `approve_merge`, as the local merge is; refused before anything is stored for an item not
+   * The PR merge (design §9, the Merge button): an app `merge` request on an item with a PR, or a merge command row
+   * (`/merge` comment, `factory merge`) on a non-local item, whose sender `who` is an external identity resolved here
+   * (design 04-gate-commands, 2026-11-18). Authorized for `approve_merge`, as the local merge is; refused before anything is stored for an item not
    * waiting for a merge, with no forge selected or with no recorded head. Otherwise one `merge_pr` action, keyed by
    * the request, asks outbound to merge the PR with a merge commit only at the head the review passed
    * (`last_head_sha`), so a moved head is refused by the forge and nothing moves; its result comes back as
    * `prMergeDelivered`. Returns the refusal (the caller posts it), or null when the merge is requested.
    */
-  async requestPrMerge(id: WorkItemId, who: { user_id: UserId }, key: string, detail: Record<string, unknown>): Promise<string | null> {
+  async requestPrMerge(id: WorkItemId, who: { user_id: UserId } | Identity, key: string, detail: Record<string, unknown>): Promise<string | null> {
     const item = await this.c.k.reader.getWorkItem(id);
     if (!item) return "the work item was not found";
-    const principal = await this.c.unit("auth").allowed({ user_id: who.user_id }, "approve_merge", item.id);
+    const auth = this.c.unit("auth");
+    const principal = "user_id" in who ? await auth.allowed({ user_id: who.user_id }, "approve_merge", item.id) : await auth.authorize(who, "approve_merge", item.id);
     if ("refuse" in principal) return principal.refuse;
     // The merge gate (core request-transition, through the commands unit): waiting for its merge, a PR, a forge, a reviewed head.
     const forge = this.c.k.forge;
@@ -92,6 +96,33 @@ export class PrEventsUnit {
       args: { pr, head_sha: head, change_ref: item.change_ref, by: principal.user_id, reply_key: key, detail: JSON.stringify(detail) },
     } }] });
     return null;
+  }
+
+  /**
+   * A merge command row on a non-local item (design 04-gate-commands, 2026-11-18): a `/merge` comment or `factory merge
+   * <id>`. It ends in the PR merge (requestPrMerge: approve_merge, the merge gate, one `merge_pr` action keyed on the
+   * row) or one refusal posted on `target` under `factory:refused:<row key>`, the marker a later forge refusal uses too.
+   */
+  async mergeCommand(item: WorkItem, who: Identity, key: string, target: SourceRef): Promise<void> {
+    const refusal = await this.requestPrMerge(item.id, who, key, { command_key: key });
+    if (refusal === null) return;
+    this.c.k.d.log.info("command refused", { work_item_id: item.id, command: "merge", reason: refusal.slice(0, 300) });
+    await this.c.unit("outbox").post(item, target, `\`/merge\` was not applied: ${refusal}.`, `<!-- factory:refused:${key} -->`);
+  }
+
+  /**
+   * A `/merge` comment row from the forge's poll (key `github:<comment id>`): its item is the PR's for a comment on a
+   * PR's conversation (`pr`), else the issue's. A comment on an issue that is no work item is ignored, as any command
+   * there is; any other gets mergeCommand's outcome and 👀.
+   */
+  async mergeComment(key: string, who: Identity, source: SourceRef, pr: unknown): Promise<void> {
+    const p = pr as Partial<Record<"change_ref" | "head_branch", unknown>> | undefined;
+    const item = typeof p?.change_ref === "string" && typeof p.head_branch === "string"
+      ? await this.c.unit("commands").itemOfPr({ change_ref: p.change_ref, head_branch: p.head_branch })
+      : await this.c.k.reader.getWorkItemBySource(source.type, source.id);
+    if (!item) return;
+    await this.mergeCommand(item, who, key, source);
+    await this.c.unit("outbox").markSeen(source, key.slice(key.indexOf(":") + 1));
   }
 
   /**
