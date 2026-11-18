@@ -1,17 +1,17 @@
 import { useIsFetching, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Monitor, Moon, RefreshCw, Search, Sun } from "lucide-react";
+import { RefreshCw, Search } from "lucide-react";
 import { type JSX, useEffect, useState } from "react";
 import { API, type Overview, POLL_MS, WEB_REV, getJson } from "./api.js";
 import { Brand } from "./components/ui/brand.js";
 import { Button } from "./components/ui/button.js";
-import { OverflowMenu } from "./components/ui/menu.js";
-import { type MessageKey } from "./i18n/en.js";
 import { t } from "./i18n/index.js";
 import { cn } from "./lib/cn.js";
 import { useShortcuts } from "./keys.js";
-import { Link, NavProvider, useLocationPath } from "./nav.js";
-import { BASE, type PageDef, pagesIn, redirectFor, routeFor } from "./pages.js";
+import { NavProvider, useLocationPath } from "./nav.js";
+import { BASE, pagesIn, redirectFor, routeFor } from "./pages.js";
 import { HelpDialog, SearchDialog } from "./search.js";
+import { SideLinks, pageLabel } from "./shell/sidebar.js";
+import { ThemeControl } from "./shell/top-bar.js";
 import { type ThemeChoice, applyChoice, saveChoice, storedChoice } from "./theme.js";
 import { DataPage } from "./views/data.js";
 import { HealthPage, ItemPage, ItemsPage, RunnersPage } from "./views/pages.js";
@@ -35,54 +35,6 @@ const VIEWS: Record<string, () => JSX.Element> = {
   data: DataPage,
   plugins: PluginsPage,
 };
-
-/** A page's name in the active locale: its menu name and its heading. */
-const pageLabel = (p: PageDef) => t(`page.${p.key}` as MessageKey);
-
-const LINK_ROW = "flex items-center gap-2 px-2 py-1.5 text-sm";
-
-/** One sidebar group of page links, with no visible title; `label` is its accessible name. */
-function SideLinks({ label, pages, current, badges = {} }: { label: string; pages: readonly PageDef[]; current: PageDef; badges?: Readonly<Record<string, number | undefined>> }) {
-  return (
-    <nav aria-label={label}>
-      <ul className="space-y-1">
-        {pages.map((p) => (
-          <li key={p.path}>
-            <Link
-              href={BASE + p.path}
-              aria-current={p === current ? "page" : undefined}
-              title={pageLabel(p)}
-              aria-label={pageLabel(p)}
-              className={cn(LINK_ROW, "rounded-control hover:bg-surface-2", p === current && "bg-surface-2 font-medium")}
-            >
-              <p.icon aria-hidden className="size-4 shrink-0" />
-              <span className="max-sm:sr-only">{pageLabel(p)}</span>
-              {!!badges[p.path] && <span className="ml-auto rounded-pill bg-pill-bad-bg px-1.5 text-xs font-medium text-pill-bad-fg tabular-nums max-sm:sr-only">{badges[p.path]}</span>}
-            </Link>
-          </li>
-        ))}
-      </ul>
-    </nav>
-  );
-}
-
-const THEME_CHOICES: readonly { choice: ThemeChoice; label: MessageKey }[] = [
-  { choice: "system", label: "topbar.themeSystem" },
-  { choice: "light", label: "topbar.themeLight" },
-  { choice: "dark", label: "topbar.themeDark" },
-];
-
-/** One Theme button that opens System, Light and Dark, the current choice checked. */
-function ThemeControl({ choice, onChoose }: { choice: ThemeChoice; onChoose: (c: ThemeChoice) => void }) {
-  const Icon = choice === "light" ? Sun : choice === "dark" ? Moon : Monitor;
-  return (
-    <OverflowMenu
-      label={t("topbar.theme")}
-      icon={<Icon aria-hidden className="size-4" />}
-      items={THEME_CHOICES.map(({ choice: c, label }) => ({ label: t(label), checked: choice === c, onSelect: () => onChoose(c) }))}
-    />
-  );
-}
 
 /** The app (design §9): sidebar, top bar (mode, update failed, search, refresh, theme) and the current page. */
 export function App() {
