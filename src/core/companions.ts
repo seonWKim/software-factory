@@ -36,7 +36,8 @@ export const INDEX_FOLDERS: readonly PathCompanion[] = [
 /**
  * The built-in rules (decided 2026-11-18): the companions of one `files_to_change` path, read from the path alone,
  * since triage has no clone. A design topic file adds its History file; a web view or component adds the i18n area
- * file its name maps to; a source file under `src/` adds the test named after it.
+ * file its name maps to; a source file under `src/` adds the test named after it; a migration directly under
+ * `src/<owner>/migrations/` adds that owner's `src/<owner>/table-docs.ts`.
  */
 const COMPANION_RULES: readonly ((file: string) => string[])[] = [
   (file) => {
@@ -53,6 +54,10 @@ const COMPANION_RULES: readonly ((file: string) => string[])[] = [
     if (file.endsWith(".d.ts")) return [];
     const m = /^src\/(?:.+\/)?([^/.]+)[^/]*\.(tsx?)$/.exec(file);
     return m && m[1] !== "index" ? [`tests/${m[1]}.test.${m[2]}`] : [];
+  },
+  (file) => {
+    const owner = /^src\/([^/]+)\/migrations\/[^/]+\.ts$/.exec(file)?.[1];
+    return owner === undefined ? [] : [`src/${owner}/table-docs.ts`];
   },
 ];
 

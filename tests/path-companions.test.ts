@@ -176,6 +176,37 @@ describe("built-in companion rules", () => {
     }
   });
 
+  it("a migration under src/<owner>/migrations/ adds its owner's table-docs file, naming the migration", () => {
+    const migration = "src/worker/migrations/20261120T1000-worker-x.migration.ts";
+    const { paths, added } = allowedAfter([migration]);
+    expect(paths).toContain("src/worker/table-docs.ts");
+    expect(added).toContainEqual({ path: "src/worker/table-docs.ts", because: migration });
+  });
+
+  it("a controller migration does not add src/controller/table-docs.ts: a gate path is refused, with nothing added in its place", () => {
+    const migration = "src/controller/migrations/20261120T1000-x.migration.ts";
+    expect(refusedCompanion("src/controller/table-docs.ts", [])).toBe(true);
+    const { paths, added } = allowedAfter([migration]);
+    expect(paths).not.toContain("src/controller/table-docs.ts");
+    expect(added.filter((a) => a.path.includes("table-docs"))).toEqual([]);
+    // Only the covering-test rule's path is added for it.
+    expect(added.filter((a) => a.because === migration)).toEqual([{ path: "tests/20261120T1000-x.test.ts", because: migration }]);
+  });
+
+  it("a file that is not a .ts file directly under src/<owner>/migrations/ adds no table-docs file", () => {
+    for (const file of ["src/worker/x.ts", "docs/x.md", "src/worker/migrations/x.sql", "src/worker/migrations/sub/x.ts", "src/migrations/x.ts", "tests/worker/migrations/x.ts"]) {
+      expect(allowedAfter([file]).added.filter((a) => a.path.includes("table-docs"))).toEqual([]);
+    }
+  });
+
+  it("the spec lists a rule-added table-docs file with the migration that caused it", () => {
+    const migration = "src/worker/migrations/20261120T1000-worker-x.migration.ts";
+    const out = applyCompanions(answer({ allowed_paths: [migration], files_to_change: [migration] }), [], []);
+    const spec = parseTriage(out.answer);
+    if (!spec.ok) throw new Error("parse");
+    expect(renderSpec(spec.value, 2, { added: out.added })).toContain(`- \`src/worker/table-docs.ts\`: added because the spec names \`${migration}\``);
+  });
+
   it("a path already covered is not added again", () => {
     const out = applyCompanions(
       answer({ allowed_paths: ["docs/design/", "tests/"], files_to_change: ["docs/design/04-triage.md", "src/core/hotspots.ts"] }),
