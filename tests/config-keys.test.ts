@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildUiParts, loadConfig, uiUserId } from "../src/compose.js";
+import { goldenConfig } from "../src/core/config.js";
 import type { CliIdentity } from "../src/core/local-cli.js";
 import type { UserId } from "../src/core/types.js";
 import {
@@ -534,5 +535,41 @@ describe("retention (design 08-retention)", () => {
       expect(err.message).toContain(`retention.${key} must be an integer of 0 or more`);
     }
     expect((await loadError({ ...SQLITE, retention: 30 })).message).toContain("retention must be an object");
+  });
+});
+
+describe("golden (design 06-measurement, eval on change)", () => {
+  it("is a top-level key; absent, startup succeeds and the gate is off", async () => {
+    expect(TOP_LEVEL_KEYS).toContain("golden");
+    const { golden: _set, ...rest } = SQLITE as Record<string, unknown>;
+    const loaded = await loadConfig(root(rest));
+    expect(goldenConfig(loaded.file)).toBeNull();
+  });
+
+  it("defaults replays to 1 and regression_margin to 0.05, and loads the values set, 0 and 1 included", async () => {
+    await loadConfig(root({ ...SQLITE, golden: {} }));
+    expect(goldenConfig({ golden: {} })).toEqual({ replays: 1, regression_margin: 0.05 });
+    await loadConfig(root({ ...SQLITE, golden: { replays: 5, regression_margin: 0 } }));
+    expect(goldenConfig({ golden: { replays: 5, regression_margin: 0 } })).toEqual({ replays: 5, regression_margin: 0 });
+    expect(goldenConfig({ golden: { regression_margin: 1 } })).toEqual({ replays: 1, regression_margin: 1 });
+  });
+
+  it("fails startup on any other value", async () => {
+    const bad = [
+      { replays: 0 }, { replays: -1 }, { replays: 1.5 }, { replays: "2" }, { replays: null },
+      { regression_margin: -0.01 }, { regression_margin: 1.01 }, { regression_margin: "0.1" }, { regression_margin: null },
+    ];
+    for (const golden of [...bad, "on", [], null, 3]) {
+      const err = await loadError({ ...SQLITE, golden });
+      expect(err, JSON.stringify(golden)).toBeInstanceOf(ConfigKeyError);
+      expect(err.message).toContain("golden must be an object whose replays is an integer ≥ 1 (default 1) and whose regression_margin is a number from 0 to 1");
+      expect(() => goldenConfig({ golden })).toThrow(/golden must be an object/);
+    }
+  });
+
+  it("an unknown key under golden fails at load with a suggestion", async () => {
+    const err = await loadError({ ...SQLITE, golden: { replay: 3 } });
+    expect(err.message).toContain('unknown config key "replay" at golden.replay');
+    expect(err.message).toContain('did you mean "replays"?');
   });
 });

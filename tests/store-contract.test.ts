@@ -2995,6 +2995,38 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
     });
   });
 
+  describe("golden fingerprints (SQLite 44, design 06-measurement)", () => {
+    const verdict = (fingerprint: string, v: "pass" | "regression", pass_rate: number, failing_cases: string[] = []) => ({
+      entity_id: "skill/tests-first", fingerprint, verdict: v, pass_rate, failing_cases,
+    });
+
+    it("the migration that creates the table is in MIGRATIONS", () => {
+      expect(MIGRATIONS.some((m) => m.includes("CREATE TABLE IF NOT EXISTS controller_golden_fingerprints"))).toBe(true);
+    });
+
+    it("an entity never evaluated reads as null; a pass is its last verdict and its base", async () => {
+      const { store, clock } = await make();
+      expect(await store.getGoldenFingerprint("skill/tests-first")).toBeNull();
+      const stored = await store.recordGoldenVerdict(verdict("fp1", "pass", 0.75));
+      expect(stored).toEqual({ ...verdict("fp1", "pass", 0.75), base_fingerprint: "fp1", base_rate: 0.75, at: clock.now().toISOString() });
+      expect(await store.getGoldenFingerprint("skill/tests-first")).toEqual(stored);
+      expect(await store.getGoldenFingerprint("skill/other")).toBeNull();
+    });
+
+    it("a regression replaces the last verdict and keeps the base; a later pass moves the base", async () => {
+      const { store, clock } = await make();
+      await store.recordGoldenVerdict(verdict("fp1", "pass", 1));
+      clock.advance(1000);
+      expect(await store.recordGoldenVerdict(verdict("fp2", "regression", 0, ["643"]))).toEqual({
+        ...verdict("fp2", "regression", 0, ["643"]), base_fingerprint: "fp1", base_rate: 1, at: clock.now().toISOString(),
+      });
+      // The same verdict again (another replica) leaves one row, unchanged.
+      expect((await store.recordGoldenVerdict(verdict("fp2", "regression", 0, ["643"]))).base_fingerprint).toBe("fp1");
+      const moved = await store.recordGoldenVerdict(verdict("fp3", "pass", 0.5));
+      expect([moved.fingerprint, moved.verdict, moved.base_fingerprint, moved.base_rate, moved.failing_cases]).toEqual(["fp3", "pass", "fp3", 0.5, []]);
+    });
+  });
+
   describe("app command requests (migration 23)", () => {
     const owner = "github:1" as UserId;
     const req = (key: string, over: { command?: string; args?: Record<string, unknown> } = {}) => ({

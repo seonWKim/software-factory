@@ -9,6 +9,9 @@ import type { SourceEvent } from "../../interfaces/source-adapter.js";
 
 // The split, delivery and gate states the approve gate checks live in core, shared with the dashboard's request path.
 export { DELIVERY_FAILED, FLOOR_TIER, RULE_OF_TWO, awaitingMerge, splitFiling, splitOpen } from "../../core/commands.js";
+// Types the controller files outside units/ take from here (the golden gate), so they import no legacy module themselves.
+export type { WorkItem } from "../../core/types.js";
+export type { FactoryStore, GoldenFingerprint } from "../../interfaces/factory-store.js";
 
 /** The actor of auto mode's approvals, merges and stops (design 03-risk). */
 export const AUTO: Actor = { kind: "system", id: AUTO_ACTOR };

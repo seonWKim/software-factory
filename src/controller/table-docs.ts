@@ -12,6 +12,8 @@ export const TABLE_DOCS: Readonly<Record<string, string>> = {
   controller_dependency_edges: "Links between work items (one depends on another) and whether each is met.",
   controller_file_conflicts: "Files a change conflicted on, per project, used to weigh coordination cost.",
   controller_filed_patterns: "Failure patterns the improve run filed as work items, and what came of each.",
+  controller_golden_fingerprints: "Each entity's last golden gate run: its content hash, verdict, pass rate and failing cases, and its base.",
+  "controller_golden_fingerprints.base_fingerprint": "The content hash of the entity's last passing run, which the next run is compared with.",
   controller_handoffs: "The handoff a run left: its commit, what it worked on and the next steps.",
   controller_improve_reports: "Improve run reports: the failure groups and patterns found over a time window.",
   controller_inbox: "Bus messages the controller already handled, kept so a message is handled once.",

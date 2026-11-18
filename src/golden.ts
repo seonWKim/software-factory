@@ -14,6 +14,7 @@ import type { ProjectRef } from "./core/project.js";
 import { REVIEW_SCHEMA, findingLine, parseReview } from "./core/outputs.js";
 import type { RunId, RunKind, StateChange, WorkItem, WorkItemId } from "./core/types.js";
 import { ROLES_DIR, goldenCasesByRole, loadRoles } from "./runtime/index.js";
+import { implementReplayRunner } from "./controller/golden-gate/implement-replay.js";
 import { ROLE_NAME, type RoleDescriptor } from "./shared/role.js";
 import { toolsNamed } from "./worker/index.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
@@ -311,8 +312,7 @@ export async function buildGoldenRunDeps(
   const clock = await p.clock();
   const secrets = await p.secrets();
   const scanner = await p.scanner(secrets);
-  const sandbox = await p.sandbox();
-  const runner = await p.runner(sandbox, secrets);
+  const sandbox = await p.sandbox(), runner = implementReplayRunner(await p.runner(sandbox, secrets), sandbox, join(loaded.root, ROLES_DIR));
   // The loaded prompts carry their placeholders filled; a prompt file outside them is read as it is.
   const loadedPrompts: Record<string, string | undefined> = { ...loaded.prompts };
   const prompt = async (file: string) => loadedPrompts[file.replace(/\.md$/, "")] ?? readFile(join(loaded.root, "prompts", file), "utf8");
@@ -416,9 +416,9 @@ function roleFor(deps: Pick<GoldenRunDeps, "roles">, name: string): RoleDescript
  * The role's cases (goldenCasesByRole), sorted by id; with `only`, just the cases tagged with one of those
  * prompts. A malformed case fails the whole run before any agent runs.
  */
-async function loadCases(rolesDir: string, role: RoleDescriptor & { prompt: string }, only?: readonly string[]): Promise<LoadedCase[]> {
+async function loadCases(rolesDir: string, role: RoleDescriptor & { prompt: string }, only?: readonly string[], ids?: readonly string[]): Promise<LoadedCase[]> {
   const out: LoadedCase[] = [];
-  for (const id of goldenCasesByRole(rolesDir).get(role.name) ?? []) {
+  for (const id of (goldenCasesByRole(rolesDir).get(role.name) ?? []).filter((i) => !ids || ids.includes(i))) {
     const dir = join(rolesDir, role.name, "golden", id);
     const meta = JSON.parse(await readFile(join(dir, "case.json"), "utf8")) as { expect?: string; work_item_id?: string; prompts?: unknown };
     const expect = checkExpect(typeof meta.expect === "string" ? meta.expect : "", `case ${id}: expect`)!;
@@ -433,18 +433,15 @@ async function loadCases(rolesDir: string, role: RoleDescriptor & { prompt: stri
 /** The replay prompt: the stored spec plus the stored diff, in the worker's review layout. */
 export const replayPrompt = (c: Pick<LoadedCase, "spec" | "diff">) => `${c.spec}\n\n## Diff\n\n\`\`\`diff\n${c.diff}\n\`\`\``;
 
-/**
- * Replays every case of `role` once each, then writes the results file. Each case gets its own detached
- * sandbox (`branch: null`), destroyed after. No doc index, so a replay does not depend on the docs at run time.
- */
-export async function runCases(deps: GoldenRunDeps, opts: { role: string; prompts?: readonly string[] }): Promise<GoldenReport> {
+/** Replays every case of `role` (with `ids`, only those) `replays` times each (default once), then writes the results file. Each replay gets its own detached sandbox (`branch: null`), destroyed after. No doc index: a replay does not depend on the docs. */
+export async function runCases(deps: GoldenRunDeps, opts: { role: string; prompts?: readonly string[]; ids?: readonly string[]; replays?: number }): Promise<GoldenReport> {
   const role = roleFor(deps, opts.role);
-  const cases = await loadCases(deps.rolesDir, role, opts.prompts);
+  const cases = await loadCases(deps.rolesDir, role, opts.prompts, opts.ids);
   const system = await deps.prompt(role.prompt);
   const stamp = deps.clock.now().toISOString();
   const signal = deps.signal ?? new AbortController().signal;
   const results: CaseResult[] = [];
-  for (const c of cases) results.push(await runOne(deps, role, system, c, stamp, signal));
+  for (const c of cases) for (let n = 0; n < (opts.replays ?? 1); n++) results.push(await runOne(deps, role, system, c, `${stamp}_${c.id}${n > 0 ? `_${n}` : ""}`, signal));
 
   const rates = computeRates(results);
   const sum = (k: keyof GoldenReport["totals"]) => results.reduce((n, r) => n + r[k], 0);
@@ -465,7 +462,7 @@ function casePrompts(v: unknown, id: string): string[] | null {
   return v as string[];
 }
 
-async function runOne(deps: GoldenRunDeps, role: RoleDescriptor, system: string, c: LoadedCase, stamp: string, signal: AbortSignal): Promise<CaseResult> {
+async function runOne(deps: GoldenRunDeps, role: RoleDescriptor, system: string, c: LoadedCase, key: string, signal: AbortSignal): Promise<CaseResult> {
   const { repo } = deps.config;
   const started = deps.clock.now().getTime();
   const out: CaseResult = { id: c.id, expect: c.expect, verdict: "errored", findings: [], input_tokens: 0, output_tokens: 0, wall_ms: 0 };
@@ -474,7 +471,7 @@ async function runOne(deps: GoldenRunDeps, role: RoleDescriptor, system: string,
     handle = await deps.sandbox.create({ repo: repo.path, branch: null, base_ref: repo.base_branch });
     const kind = role.name as RunKind;
     const result = await deps.runner.run({
-      run_id: `golden_${stamp}_${c.id}` as RunId,
+      run_id: `golden_${key}` as RunId,
       work_item_id: c.work_item_id as WorkItemId,
       role: kind,
       sandbox: handle,
