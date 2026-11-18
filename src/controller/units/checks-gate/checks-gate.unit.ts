@@ -2,9 +2,11 @@
 // Moved out of the legacy controller (RFC 0015 M5); it reads through the kernel's reader and writes through the kernel.
 
 import { prNumber } from "../../../core/change-ref.js";
+import { redact } from "../../../core/checks.js";
 import { errorText } from "../../../core/log.js";
 import { parseReview } from "../../../core/outputs.js";
 import { runKey, branchFor } from "../../../core/policy.js";
+import { failingTestDetails } from "../../../core/output-summary.js";
 import { lastPrNotes } from "../../../core/pr-body.js";
 import { type Run, type RunId, type RunInput, type Tier, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { BaseChecks, PrChecks } from "../../../interfaces/forge.js";
@@ -14,6 +16,14 @@ import { controllerUnit } from "../context.js";
 
 /** blocked_reason (with `blocked_on: ci`) of a reviewed PR whose checks have not finished (design §5 CI gate). */
 const CHECKS_PENDING = "checks_pending";
+/**
+ * blocked_reason (with `blocked_on: ci`) while a PR head's failed CI jobs rerun once (design 05-ci-gate, Rerun once);
+ * also the reason of the state change that records the rerun, its detail's `rerun_head` the head rerun.
+ */
+const CHECKS_RERUN = "checks_rerun";
+/** Failing tests, and characters, of a failed job's log kept for the implement run's input. */
+const MAX_FAILING_TESTS = 10;
+const MAX_FAILING_CHARS = 4000;
 /** blocked_reason prefix (with `blocked_on: ci`) of a PR whose every failed check fails on the base too; the first name follows. */
 const MAIN_RED = "main is red: ";
 /** Items waiting on checks looked at per tick. */
@@ -21,9 +31,9 @@ const CHECKS_BATCH = 50;
 /** Check names kept per decision and per review input, and characters per name. */
 const MAX_CHECK_NAMES = 20;
 const MAX_CHECK_NAME_CHARS = 100;
-/** A reviewed PR whose checks have not finished (design §5 CI gate). */
+/** A reviewed PR whose checks have not finished (design §5 CI gate), or whose failed jobs rerun (design 05-ci-gate). */
 function waitingOnChecks(it: WorkItem): boolean {
-  return it.stage === "REVIEW" && it.blocked_on === "ci" && it.blocked_reason === CHECKS_PENDING;
+  return it.stage === "REVIEW" && it.blocked_on === "ci" && (it.blocked_reason === CHECKS_PENDING || it.blocked_reason === CHECKS_RERUN);
 }
 /** A reviewed PR waiting for its base to turn green (design 05-ci-gate, Red main). */
 function waitingOnMain(it: WorkItem): boolean {
@@ -48,8 +58,9 @@ export class ChecksGateUnit {
   /**
    * The CI gate (design §5): a PR that passed review is offered for a human merge only once its checks
    * passed. Pending (or the source could not say): the item waits in `REVIEW` with `blocked_on: ci` /
-   * `checks_pending`, and tickChecks looks again. Failed: checksFailed (an update first, a red-base wait, an
-   * unchanged-head block, or back to implement like a review bug), with the failing check names on the state change.
+   * `checks_pending`, and tickChecks looks again. Failed: checksFailed (an update first, a red-base wait, a
+   * failed-jobs rerun once, an unchanged-head block, or back to implement like a review bug), with the failing check
+   * names on the state change.
    * `review` is the review that passed; its id keys the comments, so a re-decide posts each once.
    * `ackRun` acks the run being applied (that review, or an update run); tickChecks passes null.
    */
@@ -101,7 +112,8 @@ export class ChecksGateUnit {
    * merge check conflicts for the reviewed head gets one update run first (keyed as from the merge check, no loop
    * counted), and the item waits in REVIEW on `checks_failed_update`. When every failed check also fails on the base
    * branch, the item waits in REVIEW on `main is red: <first name>` (no run, no loop); the checks step reads it again.
-   * A review that skipped an unchanged head blocks on a human with `unchanged_head` (no run, no loop). Otherwise
+   * A first failure on the reviewed head reruns its failed jobs once and waits in REVIEW on `checks_rerun` (no run, no
+   * loop); back to implement after that rerun, the run's input carries the failing tests of the failed job's log. A review that skipped an unchanged head blocks on a human with `unchanged_head` (no run, no loop). Otherwise
    * back to implement like a review bug (loop_count + 1), or at `max_loops` a block on a human. The state change of
    * a review that skipped an unchanged head carries `unchanged_head: true`.
    */
@@ -146,6 +158,19 @@ export class ChecksGateUnit {
         `PR #${it.change_ref} passed review but its checks failed${list}, and the same checks fail on \`${base}\`. The factory starts no loop: it waits, and goes on by itself once \`${base}\` is green again.`);
       return { patch: { ...fields, blocked_on: "ci", blocked_reason }, actor: SYSTEM, reason: "main_red", detail, ...ack };
     }
+    const head = typeof data.head_sha === "string" ? data.head_sha : "";
+    const rerun = await this.rerunOnce(it, head);
+    if (rerun === "rerun") {
+      await this.checksComment(it, `checks-rerun:${reviewRunId}`, names, (list) =>
+        `PR #${it.change_ref} passed review but its checks failed${list}. The factory reran the failed jobs once on the same head and waits for them; if they fail again, it sends the change back to the implementer.`);
+      return {
+        patch: { ...fields, blocked_on: "ci", blocked_reason: CHECKS_RERUN },
+        actor: SYSTEM,
+        reason: CHECKS_RERUN,
+        detail: { ...detail, rerun_head: head },
+        ...ack,
+      };
+    }
     if (data.no_agent === UNCHANGED_HEAD) {
       const patch = { ...fields, blocked_on: "human" as const, blocked_reason: UNCHANGED_HEAD };
       await this.checksComment(it, `unchanged-head:${reviewRunId}`, names, (list) =>
@@ -160,6 +185,7 @@ export class ChecksGateUnit {
       return { patch, actor: SYSTEM, reason: "max_loops", detail, ...ack };
     }
     const next = { ...it, loop_count: loop };
+    const tests = rerun === "reran" ? await this.failingTests(it, head) : null;
     await this.checksComment(it, `checks-failed:${reviewRunId}`, names, (list) =>
       `PR #${it.change_ref} passed review but its checks failed${list}. The factory sent it back to the implementer (loop ${loop} of ${this.c.k.cfg.max_loops}).`);
     return {
@@ -168,8 +194,62 @@ export class ChecksGateUnit {
       reason: "checks_failed",
       detail,
       ...ack,
-      enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
+      enqueue: { kind: "implement", idempotency_key: runKey(next, "implement"), ...(tests ? { input: { ci_failing_tests: tests } } : {}) },
     };
+  }
+
+  /**
+   * Rerun once (design 05-ci-gate): with a forge that can rerun and a known reviewed `head`, the first failure on that
+   * head reruns its failed jobs ("rerun"). The rerun is recorded only by the `checks_rerun` state change the caller
+   * writes, in the store with the item, so a restart or another replica never reruns the same head again: a failure
+   * after it is "reran". No such forge, no head, or a rerun that throws (logged; e.g. a token without the Actions
+   * write permission): "none", nothing recorded, the path as before.
+   */
+  private async rerunOnce(it: WorkItem, head: string): Promise<"rerun" | "reran" | "none"> {
+    const forge = this.c.k.reader.forge;
+    if (!forge?.rerunFailedJobs || head === "") return "none";
+    const reran = (await this.c.k.reader.listStateChanges(it.id)).some((c) => c.reason === CHECKS_RERUN && c.detail?.rerun_head === head);
+    if (reran) return "reran";
+    try {
+      await forge.rerunFailedJobs(head);
+      return "rerun";
+    } catch (err) {
+      this.c.k.d.log.warn("rerunning failed CI jobs failed", { work_item_id: it.id, head_sha: head, error: errorText(err) });
+      return "none";
+    }
+  }
+
+  /**
+   * The failing tests in the failed job's log of `head`, for the implement run's input: each vitest `FAIL` line with
+   * its first error line, at most MAX_FAILING_TESTS tests and MAX_FAILING_CHARS characters, whole tests only. Forge
+   * text (G5): every test name and message the egress scan flags is redacted before the cut. Null when the forge has no log read, the
+   * read throws (logged; e.g. a token without the Actions read permission), or the log names no failing test.
+   */
+  private async failingTests(it: WorkItem, head: string): Promise<string | null> {
+    const forge = this.c.k.reader.forge;
+    if (!forge?.failedJobLog) return null;
+    let log: string;
+    try {
+      log = await forge.failedJobLog(head);
+    } catch (err) {
+      this.c.k.d.log.warn("reading the failed CI job's log failed", { work_item_id: it.id, head_sha: head, error: errorText(err) });
+      return null;
+    }
+    const tests = failingTestDetails(log, MAX_FAILING_TESTS);
+    const flagged: string[] = [];
+    for (const text of tests.flatMap((t) => (t.message ? [t.test, t.message] : [t.test]))) {
+      if (!(await this.c.k.reader.scan("tool_result", text)).clean) flagged.push(text);
+    }
+    const blocks = tests.map((t) => [`FAIL ${redact(t.test, flagged)}`, ...(t.message ? [`  ${redact(t.message, flagged)}`] : [])].join("\n"));
+    const kept: string[] = [];
+    let chars = 0;
+    for (const block of blocks) {
+      chars += block.length + (kept.length ? 1 : 0);
+      if (chars > MAX_FAILING_CHARS) break;
+      kept.push(block);
+    }
+    if (kept.length === 0 && blocks.length > 0) kept.push(blocks[0]!.slice(0, MAX_FAILING_CHARS));
+    return kept.length ? kept.join("\n") : null;
   }
 
   /**

@@ -193,6 +193,12 @@ export interface RunInput {
    * not read.
    */
   ci_checks?: PrCheckResult[] | null;
+  /**
+   * An implement run's failing tests from the failed CI job's log, when its PR head's checks failed again after the
+   * one rerun (design 05-ci-gate): vitest `FAIL` lines, each with its first error line, at most 10 tests and 4,000
+   * characters, redacted. Untrusted forge text. Absent: none were read (no log, or the check names only).
+   */
+  ci_failing_tests?: string;
   /** A merge-check run's base and the branches merged onto it in queue order, this change last (RFC 0015 M8). */
   merge_check?: { base_ref: string; branches: string[] };
 }
