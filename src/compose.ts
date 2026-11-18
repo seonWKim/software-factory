@@ -872,7 +872,7 @@ export async function build(
     prompts: loaded.prompts,
     log: new ConsoleLogger(clock, "worker"),
     toolEnv: baseEnv(),
-    // Split over the claiming slots as SF_TEST_WORKERS, so parallel test runs do not each take every CPU.
+    // Split over the runs running on this host at each claim as SF_TEST_WORKERS, so parallel test runs do not each take every CPU.
     cpus: availableParallelism(),
     models: { table: loaded.model_by, names: loaded.models },
     awake, capability, guidance: joinGuidance([new PackGuidance(loaded.packs), new LearnedRules(tacit)]), // packs' rules, then promoted rules (design 07)
