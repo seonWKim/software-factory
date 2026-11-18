@@ -210,6 +210,21 @@ describe("prompts/implement.md: the ratchet lists (design 05-restarts, 2026-11-1
   });
 });
 
+describe("prompts/implement.md: checks before finishing (design 04-pre-push-gates, 2026-11-18)", () => {
+  const lines = prompt("implement").split("\n");
+  const rule = lines.find((l) => l.includes(CHECK_COMMANDS_PLACEHOLDER)) ?? "";
+
+  it("asks for the type check and the test files related to the change, through the project's own scripts", () => {
+    expect(rule).toMatch(/Before finishing, run the type-check command .*and the test files related to your change/);
+    expect(rule).toMatch(/through the project's own scripts, never the test runner directly/);
+  });
+
+  it("says the factory runs the full check list before it pushes, so the agent does not run all of it", () => {
+    expect(rule).toMatch(/The factory runs the full check list before it pushes, so do not run all of it yourself/);
+    expect(rule).not.toMatch(/Run the project's checks before finishing/);
+  });
+});
+
 describe("prompts/improve.md (issue #307)", () => {
   const text = prompt("improve");
   const produce = text.slice(text.indexOf("Produce:"));
