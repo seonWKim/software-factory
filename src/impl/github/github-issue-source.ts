@@ -2,6 +2,7 @@ import { prNumber } from "../../core/change-ref.js";
 import { type CommandPr, githubCommand, githubCommentKey, syncedCommand } from "../../core/command-inbox.js";
 import { parseComment } from "../../core/commands.js";
 import { type DependencyLink, type DependencySource, parseDependsOn } from "../../core/coordination.js";
+import { MERGE_COMMAND } from "../../core/local-merge.js";
 import { incompleteLabel } from "../../core/pr-body.js";
 import { workItemIdFromBranch } from "../../core/policy.js";
 import { type ListedReaction, REACTION_WINDOW_MS, changeComments, newReactionEvents } from "../../core/reaction-verdict.js";
@@ -330,10 +331,10 @@ export class GitHubIssueSource implements PollSource, DependencySource {
       const target = await this.verdictTarget(n);
       if (!target) return null;
       if (target.kind === "pr") pr = { change_ref: target.change_ref, head_branch: target.head_branch };
-    } else if (onPr && parsed.kind === "command" && (parsed.name === "revise" || parsed.name === "resolve")) {
-      // `/revise`: any PR of this repository (factory or adopted); `/resolve`: factory PRs only.
-      pr = await this.pullHead(base, n, parsed.name === "resolve");
-      if (!pr) return null;
+    } else if (onPr && (parsed.kind === "command" ? parsed.name === "revise" || parsed.name === "resolve" : parsed.word === MERGE_COMMAND)) {
+      // `/revise`, `/merge`: any PR of this repository (factory or adopted); `/resolve`: factory PRs only. A `/merge` whose PR is gone keeps its row with no PR, which the controller answers.
+      pr = await this.pullHead(base, n, parsed.kind === "command" && parsed.name === "resolve");
+      if (!pr && parsed.kind === "command") return null;
     }
     const command = githubCommand({
       comment_id: cm.id, user_id: cm.user.id, source, pr,
@@ -352,9 +353,7 @@ export class GitHubIssueSource implements PollSource, DependencySource {
    */
   private async recordComment(r: ReadComment): Promise<SourceEvent[]> {
     const { cm, source, command, pr } = r;
-    const plain: SourceEvent[] = command
-      ? []
-      : [{ kind: "plain_comment", source, comment_id: String(cm.id), author: identity(cm.user), body: cm.body }];
+    const plain: SourceEvent[] = command ? [] : [{ kind: "plain_comment", source, comment_id: String(cm.id), author: identity(cm.user), body: cm.body }];
     if (!this.store) {
       const e = command ? syncedCommand(command)?.event : null;
       return e ? [e] : plain;

@@ -3,7 +3,8 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { githubCommand } from "../src/core/command-inbox.js";
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../src/interfaces/auth-provider.js";
-import { FakeForge, FakeSandbox, FakeSource, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
+import { runLocalCli } from "../src/core/local-cli.js";
+import { FakeForge, FakeSandbox, FakeSlackPollSource, FakeSource, cleanScanner, config, issueRef, silent, slackRef } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
 // A merge command from the command inbox on a non-local item (design 04-gate-commands, 2026-11-18): a GitHub `/merge`
@@ -32,17 +33,18 @@ class Roles implements AuthProvider {
 async function harness(opts: { forge?: boolean } = {}) {
   const { store, clock } = await newStore();
   const source = new FakeSource();
+  const slack = new FakeSlackPollSource();
   const forge = new FakeForge();
   const sandbox = new FakeSandbox();
   const roles = new Roles();
   const controller = new ControllerRole({
-    store, sources: [source], forge: opts.forge === false ? null : forge, sandbox, auth: roles, clock, config, log: silent, scanner: cleanScanner,
+    store, sources: [source, slack], forge: opts.forge === false ? null : forge, sandbox, auth: roles, clock, config, log: silent, scanner: cleanScanner,
   });
   const actor = { kind: "system" as const, id: "system:test" };
   let n = 0;
-  /** A tier-4 GitHub item on its own issue in `patch`'s state, with PR #42 reviewed at `head`. */
-  const itemIn = async (patch: WorkItemPatch = READY, head: string | null = "h1"): Promise<WorkItem> => {
-    const { item } = await store.createWorkItem({ source: issueRef(++n), requester_id: REQUESTER, project: PROJECT_KEY, problem: "p", resources: [] }, actor);
+  /** A tier-4 item on its own issue (or `src`) in `patch`'s state, with PR #42 reviewed at `head`. */
+  const itemIn = async (patch: WorkItemPatch = READY, head: string | null = "h1", src?: SourceRef): Promise<WorkItem> => {
+    const { item } = await store.createWorkItem({ source: src ?? issueRef(++n), requester_id: REQUESTER, project: PROJECT_KEY, problem: "p", resources: [] }, actor);
     const r = await store.transition({ id: item.id, expected_version: item.version, actor, reason: "setup", patch: { change_ref: "42", ...patch, tier: 4 } });
     if (!r.ok) throw new Error("setup failed");
     if (head !== null) await store.recordPrHead({ id: item.id, expected_head: null, head_sha: head, manual: null });
@@ -69,7 +71,16 @@ async function harness(opts: { forge?: boolean } = {}) {
   const queueEntries = async () => store.db.all("SELECT * FROM controller_merge_queue_entries");
   const posted = async (it: WorkItem, key: string) =>
     (await store.listItemMessages(it.id)).filter((m) => m.marker === `<!-- factory:refused:${key} -->`).map((m) => m.body);
-  return { store, forge, sandbox, roles, controller, itemIn, comment, cli, mergeActions, queueEntries, posted };
+  /** `factory merge <id>` typed by the owner in a terminal, through the CLI itself. Its printed lines. */
+  const terminal = async (it: WorkItem): Promise<{ code: number; lines: string[] }> => {
+    const r = await runLocalCli(
+      { store, identity: { user: OWNER, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "", newId: () => `t${++comments}` },
+      { action: "command", command: "merge", id: it.id, text: "" },
+    );
+    await controller.tickCommands();
+    return r;
+  };
+  return { store, source, slack, forge, sandbox, roles, controller, itemIn, comment, cli, terminal, mergeActions, queueEntries, posted };
 }
 
 describe("a /merge comment row on a tier-4 GitHub PR item at merge_pending (inbound command 1056)", () => {
@@ -161,5 +172,63 @@ describe("`factory merge <id>` on a non-local item", () => {
     const key = await h.cli(it1);
     expect(await h.mergeActions()).toEqual([]);
     expect(await h.posted(it1, key)).toEqual([expect.stringContaining("is not waiting for a merge")]);
+  });
+});
+
+describe("a merge of a Slack-sourced item's PR (PR #692, item wi_26d4d6e4)", () => {
+  it("a /merge on the PR's conversation finds the item by the PR and merges it", async () => {
+    const h = await harness();
+    const it1 = await h.itemIn(READY, "h1", slackRef(1));
+    const key = await h.comment(it1);
+
+    const actions = await h.mergeActions();
+    expect(actions.map((a) => a.intent_key)).toEqual([`merge_pr:${it1.id}:${key}`]);
+    expect(JSON.parse(actions[0]!.args)).toMatchObject({ pr: 42, head_sha: "h1", change_ref: "42", by: OWNER, reply_key: key });
+    await h.controller.tickOutbox();
+    expect(h.forge.mergeCalls).toEqual([{ pr: 42, head_sha: "h1", method: "merge" }]);
+    expect(await h.store.getWorkItem(it1.id)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
+  });
+
+  it("`factory merge <id>` stores its row with no refusal and takes the same merge_pr path", async () => {
+    const h = await harness();
+    const it1 = await h.itemIn(READY, "h1", slackRef(2));
+    const r = await h.terminal(it1);
+    expect(r.code).toBe(0);
+    const rows = await h.store.listCliCommandsAfter(0, 10);
+    expect(rows).toEqual([expect.objectContaining({ command: "merge", args: { item: it1.id } })]);
+    expect((await h.mergeActions()).map((a) => a.intent_key)).toEqual([`merge_pr:${it1.id}:${rows[0]!.key}`]);
+    await h.controller.tickOutbox();
+    expect(await h.store.getWorkItem(it1.id)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
+  });
+});
+
+describe("`factory merge <id>` on a GitHub-sourced item (decision 2)", () => {
+  it("stores its row with no mirror flag, so no /merge comment is posted on the issue", async () => {
+    const h = await harness();
+    const it1 = await h.itemIn();
+    expect((await h.terminal(it1)).code).toBe(0);
+    expect(await h.store.listCliCommandsAfter(0, 10)).toEqual([expect.objectContaining({ command: "merge" })]);
+    expect(await h.store.listUnmirroredCliCommands(10)).toEqual([]);
+    await h.controller.tickOutbox();
+    expect(h.source.comments.filter((c) => c.body.includes("/merge"))).toEqual([]);
+  });
+});
+
+describe("a /merge comment that matches no work item", () => {
+  it("gets exactly one reply on its own conversation, also when the row is delivered twice", async () => {
+    const h = await harness();
+    const row = githubCommand({ comment_id: 5000, user_id: 7, command: "merge", text: "", source: issueRef(77), pr: { change_ref: "77", head_branch: "someone/topic" } });
+    await h.store.appendCliCommand(row);
+    await h.controller.tickCommands();
+    await h.controller.tickCommands();
+    await h.controller.tickOutbox();
+    await h.controller.tickOutbox();
+    expect(await h.mergeActions()).toEqual([]);
+    const marker = `<!-- factory:refused:${row.key} -->`;
+    const posts = (await h.store.db.all("SELECT target, args FROM outbound_actions WHERE action = 'post'")) as { target: string; args: string }[];
+    expect(posts.filter((p) => p.args.includes(marker))).toHaveLength(1);
+    expect(h.source.comments.filter((c) => c.marker === marker)).toEqual([
+      expect.objectContaining({ source: issueRef(77), body: "`/merge` was not applied: no work item matches this comment." }),
+    ]);
   });
 });

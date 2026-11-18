@@ -111,17 +111,17 @@ export class PrEventsUnit {
   }
 
   /**
-   * A `/merge` comment row from the forge's poll (key `github:<comment id>`): its item is the PR's for a comment on a
-   * PR's conversation (`pr`), else the issue's. A comment on an issue that is no work item is ignored, as any command
-   * there is; any other gets mergeCommand's outcome and 👀.
+   * A `/merge` comment row from the forge's poll (key `github:<comment id>`): its item is the one whose PR has the
+   * row's change ref (`pr`, read by the poll for a comment on a PR's conversation), whatever its source, else the
+   * issue's. A matched item gets mergeCommand's outcome; an unmatched comment one reply on its own conversation
+   * under `factory:refused:<row key>` (design 04-gate-commands, 2026-11-18). Either way the comment gets 👀.
    */
   async mergeComment(key: string, who: Identity, source: SourceRef, pr: unknown): Promise<void> {
-    const p = pr as Partial<Record<"change_ref" | "head_branch", unknown>> | undefined;
-    const item = typeof p?.change_ref === "string" && typeof p.head_branch === "string"
-      ? await this.c.unit("commands").itemOfPr({ change_ref: p.change_ref, head_branch: p.head_branch })
-      : await this.c.k.reader.getWorkItemBySource(source.type, source.id);
-    if (!item) return;
-    await this.mergeCommand(item, who, key, source);
+    const ref = (pr as { change_ref?: unknown } | undefined)?.change_ref;
+    const byPr = typeof ref === "string" ? await this.c.k.reader.getWorkItemByPr(this.c.k.project(), ref) : null;
+    const item = byPr !== null && byPr.change_ref === ref ? byPr : await this.c.k.reader.getWorkItemBySource(source.type, source.id);
+    if (item) await this.mergeCommand(item, who, key, source);
+    else await this.c.unit("outbox").postWithoutItem(source, "`/merge` was not applied: no work item matches this comment.", `<!-- factory:refused:${key} -->`);
     await this.c.unit("outbox").markSeen(source, key.slice(key.indexOf(":") + 1));
   }
 
