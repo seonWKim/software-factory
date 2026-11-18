@@ -409,31 +409,50 @@ describe("alarms: recurring patterns", () => {
   });
 });
 
-describe("alarms: a run refused by a grant check", () => {
+describe("alarms: a run refused by the pack grant check", () => {
   const GRANT = "pack:tool:docs";
-  const refused = (code = "pack_tool_refused"): RunOutcome => ({ status: "failed", error_code: code, detail: `pack tools refused: ${GRANT} not_approved`, infra: false });
+  const OTHER = "pack:mcp:search";
+  const DETAIL = `pack tools refused: ${GRANT} not_approved, ${OTHER} no_entry`;
+  const refused = (detail = DETAIL): RunOutcome => ({ status: "failed", error_code: "pack_tool_refused", detail, infra: false });
+  const own = async (store: FactoryStore) => (await store.listAlerts({ limit: 10 })).filter((a) => a.pattern_key.startsWith(GRANT_REFUSED_PREFIX));
 
-  it("holds its item for a person at the first refusal and stores one alert that names the refused grant", async () => {
+  it("the stored run ends failed with pack_tool_refused and its message names each refused grant", async () => {
+    const { store } = await newStore();
+    const run = await finish(store, refused());
+    const stored = await store.getRun(run.id);
+    expect(stored?.status).toBe("failed");
+    expect(stored?.outcome).toMatchObject({ status: "failed", error_code: "pack_tool_refused" });
+    const detail = (stored!.outcome as Extract<RunOutcome, { status: "failed" }>).detail;
+    expect(detail).toContain(GRANT);
+    expect(detail).toContain(OTHER);
+  });
+
+  it("holds its item for a person at the first refusal, with the pattern key, and stores one alert that names the refused grants", async () => {
+    const { store, clock } = await newStore();
+    const run = await finish(store, refused());
+    await controller(store, clock, { source: new FakeSource() }).tickAlarms();
+    const key = patternKey({ error_code: "pack_tool_refused", detail: normalizeDetail(DETAIL) });
+    expect(await store.getWorkItem(run.work_item_id)).toMatchObject({ blocked_on: "human", blocked_reason: RECURRING_FAILURE });
+    const holds = (await store.listStateChanges(run.work_item_id)).filter((c) => c.reason === RECURRING_FAILURE);
+    expect(holds.map((c) => c.detail?.pattern_key)).toEqual([key]);
+    const alerts = await own(store);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatchObject({ pattern: "repeated_error", pattern_key: `${GRANT_REFUSED_PREFIX}${key}`, error_code: "pack_tool_refused", count: 1 });
+    expect(alerts[0]!.detail).toContain(GRANT);
+    expect(alerts[0]!.detail).toContain(OTHER);
+  });
+
+  it("a second step writes no second hold, and with no merged fix item the release leaves the item held", async () => {
     const { store, clock } = await newStore();
     const c = controller(store, clock, { source: new FakeSource() });
     const run = await finish(store, refused());
     await c.tickAlarms();
-    const item = await store.getWorkItem(run.work_item_id);
-    expect(item).toMatchObject({ blocked_on: "human", blocked_reason: RECURRING_FAILURE });
-    expect((await store.getRun(run.id))?.status).toBe("failed");
-    const alerts = (await store.listAlerts({ limit: 10 })).filter((a) => a.pattern_key.startsWith(GRANT_REFUSED_PREFIX));
-    expect(alerts).toHaveLength(1);
-    expect(alerts[0]).toMatchObject({ pattern: "repeated_error", error_code: "pack_tool_refused", count: 1 });
-    expect(alerts[0]!.detail).toContain(GRANT);
-    expect(alerts[0]!.pattern_key).toBe(`${GRANT_REFUSED_PREFIX}${patternKey({ error_code: "pack_tool_refused", detail: normalizeDetail(`pack tools refused: ${GRANT} not_approved`) })}`);
-  });
-
-  it("a not_granted refusal of a scheduled improve run is held too", async () => {
-    const { store, clock } = await newStore();
-    const run = await finish(store, refused("not_granted"), "improve");
-    await controller(store, clock, { source: new FakeSource() }).tickAlarms();
+    clock.advance(MIN);
+    await c.tickAlarms();
     expect(await store.getWorkItem(run.work_item_id)).toMatchObject({ blocked_on: "human", blocked_reason: RECURRING_FAILURE });
-    expect((await store.listAlerts({ limit: 10 })).map((a) => a.error_code)).toContain("not_granted");
+    const changes = await store.listStateChanges(run.work_item_id);
+    expect(changes.filter((ch) => ch.reason === RECURRING_FAILURE)).toHaveLength(1);
+    expect(changes.map((ch) => ch.reason)).not.toContain("recurring_failure_released");
   });
 
   it("two alarm steps store one alert; the pattern alerts again only after the one-hour re-raise window", async () => {
@@ -441,19 +460,34 @@ describe("alarms: a run refused by a grant check", () => {
     await finish(store, refused());
     const deps = { store, scanner: cleanScanner, clock, log: silent, project: PROJECT_KEY };
     const settings = { ...ALARM_DEFAULTS, probe_interval_ms: STALL_DEFAULTS.probe_interval_ms };
-    const own = async () => (await store.listAlerts({ limit: 10 })).filter((a) => a.pattern_key.startsWith(GRANT_REFUSED_PREFIX));
     const [a, b] = await Promise.all([alarmStep(deps, settings), alarmStep(deps, settings)]);
     expect([...a, ...b].filter((x) => x.pattern_key.startsWith(GRANT_REFUSED_PREFIX))).toHaveLength(1);
-    expect(await own()).toHaveLength(1);
+    expect(await own(store)).toHaveLength(1);
     clock.advance(RERAISE_WINDOW_MS - MIN);
     await finish(store, refused());
     await alarmStep(deps, settings);
-    expect(await own()).toHaveLength(1);
+    expect(await own(store)).toHaveLength(1);
     clock.advance(MIN);
     await alarmStep(deps, settings);
-    const alerts = await own();
+    const alerts = await own(store);
     expect(alerts).toHaveLength(2);
     expect(alerts[0]!.pattern_key).toBe(alerts[1]!.pattern_key);
+  });
+
+  it("the alert detail is scanned on the ui channel first; a flagged detail is stored as NULL", async () => {
+    const { store, clock } = await newStore();
+    await finish(store, refused(`pack tools refused: ${GRANT} secret_value`));
+    const scanned: { channel: string; content: string }[] = [];
+    const scanner: EgressScanner = {
+      async scan(channel, content) {
+        scanned.push({ channel, content });
+        return content.includes("secret_value") ? { clean: false, findings: [{ rule: "test", channel }] } : { clean: true };
+      },
+    };
+    await alarmStep({ store, scanner, clock, log: silent, project: PROJECT_KEY }, { ...ALARM_DEFAULTS, probe_interval_ms: STALL_DEFAULTS.probe_interval_ms });
+    expect(scanned).toContainEqual({ channel: "ui", content: `pack tools refused: ${GRANT} secret_value` });
+    const [alert] = await own(store);
+    expect(alert).toMatchObject({ error_code: "pack_tool_refused", count: 1, detail: null });
   });
 
   it("a hold a person lifted is not put back by the same refused run", async () => {
