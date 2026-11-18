@@ -317,7 +317,8 @@ export interface LoadedConfig {
   budget_min_sample?: number;
   /**
    * Coordination (design §5, 2026-11-03): `max_coordination_cost`, `hotspot_paths`, `hotspot_weight`,
-   * `mechanical_paths` and `mechanical_weight` (issue #297), `hold_policy` and `hotspot_mode` (issue #314) from
+   * `mechanical_paths` and `mechanical_weight` (issue #297), `hold_policy` and `hotspot_mode` (issue #314),
+   * `conflict_window_days` (design 05-dependencies) from
    * factory.config.json, checked at load by
    * `coordinationConfig` and passed in by compose.ts. Absent: DEFAULT_COORDINATION.
    */
@@ -491,6 +492,7 @@ export const COORDINATION_KEYS = [
   "mechanical_weight",
   "hold_policy",
   "hotspot_mode",
+  "conflict_window_days",
 ] as const;
 
 /**
@@ -499,7 +501,8 @@ export const COORDINATION_KEYS = [
  * a negative or a non-numeric value fails at startup, like the other numeric keys. `hotspot_paths` is a list of
  * non-empty paths (a folder ends in `/`), and so is `mechanical_paths`. `mechanical_weight` must be a number above
  * 0 and below 1.0 (issue #297): a mechanical path weighs less than any ordinary shared file. `hold_policy` is
- * checked by `parseHoldPolicy`, and `hotspot_mode` is `policy` or `hold` (issue #314).
+ * checked by `parseHoldPolicy`, and `hotspot_mode` is `policy` or `hold` (issue #314). `conflict_window_days`
+ * (design 05-dependencies) must be a positive integer.
  */
 export function coordinationProblems(raw: unknown): string[] {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return [];
@@ -532,6 +535,10 @@ export function coordinationProblems(raw: unknown): string[] {
   if (r.hotspot_mode !== undefined && !(HOTSPOT_MODES as readonly unknown[]).includes(r.hotspot_mode)) {
     problems.push(`hotspot_mode must be ${HOTSPOT_MODES.map((m) => `"${m}"`).join(" or ")} (got ${JSON.stringify(r.hotspot_mode) ?? String(r.hotspot_mode)})`);
   }
+  const days = r.conflict_window_days;
+  if (days !== undefined && (typeof days !== "number" || !Number.isInteger(days) || days < 1)) {
+    problems.push(`conflict_window_days must be a positive integer (got ${JSON.stringify(days) ?? String(days)})`);
+  }
   return problems;
 }
 
@@ -548,6 +555,7 @@ export function coordinationConfig(raw: unknown): CoordinationSettings {
     mechanical_weight: (r.mechanical_weight as number | undefined) ?? DEFAULT_COORDINATION.mechanical_weight,
     hold_policy: r.hold_policy === undefined ? DEFAULT_COORDINATION.hold_policy : parseHoldPolicy(r.hold_policy),
     hotspot_mode: (r.hotspot_mode as HotspotMode | undefined) ?? DEFAULT_COORDINATION.hotspot_mode,
+    conflict_window_days: (r.conflict_window_days as number | undefined) ?? DEFAULT_COORDINATION.conflict_window_days,
   };
 }
 

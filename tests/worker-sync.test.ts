@@ -13,6 +13,11 @@ import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/s
 import { STORE_BRANCH, type ToolBroker, type ToolCallContext, type ToolDescriptor, type ToolResult } from "../src/interfaces/tool-broker.js";
 import { FakeForge, FAKE_GITHUB_TOOLS, FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, cleanScanner, config, gates, issueRef, runComments, silent } from "./helpers/fakes.js";
 import { git, gitTemplate } from "./helpers/git-fixture.js";
+import { conflictAsk } from "../src/worker/runs/implement/conflict-ask.js";
+import { testPathsOnly } from "../src/core/auto-grant.js";
+import { failingTestFiles } from "../src/core/checks.js";
+import { NEEDS_HUMAN_MAX_CHARS, NEEDS_HUMAN_MAX_PATHS } from "../src/core/outputs.js";
+import { isCovered } from "../src/core/policy.js";
 import { newStore } from "./helpers/store.js";
 
 // Sync before push (design §4, decided 2026-11-01): an implement run merges the freshly fetched
@@ -352,6 +357,78 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     expect(f.broker.pushed()).toEqual([wipOf(run)!.branch]);
     expect(await f.store.listHandoffs(item.id)).toEqual([]);
     expect((await gateComments(f, item.id))[0]!.body).toContain(`wip branch \`${wipOf(run)!.branch}\``);
+  });
+
+  // A resolution whose checks fail only on test files it may not edit asks for them (design 05-merge-conflict, 2026-11-18).
+  /** A test command that fails, naming `files` as vitest does, while src/a.txt holds a merge resolution. */
+  const failsOn = (...files: string[]) => ["sh", "-c", `if grep -q merged src/a.txt; then ${files.map((f) => `echo ' FAIL  ${f} > keeps a'; `).join("")}echo 'AssertionError: expected a'; exit 1; fi`];
+  const retryA: AgentStep = (wd) => write(wd, "src/a.txt", "a merged by the retry\n");
+
+  it("a resolution failing only on a test file outside allowed_paths ends in a needs_human ask for it, pushes nothing, and is granted once", async () => {
+    const f = await setup({ moveMain: MAIN_EDITS_A, resolve: resolveA, retry: retryA, testCommand: failsOn("tests/b.test.ts") });
+    const item = await f.approveAndImplement();
+    const [first] = await f.implementRuns(item.id);
+    expect(first!.outcome).toMatchObject({ status: "succeeded", data: { needs_human: { paths: ["tests/b.test.ts"] } } });
+    if (first!.outcome?.status === "succeeded") expect(String((first!.outcome.data.needs_human as { reason: string }).reason)).toContain("tests/b.test.ts");
+    expect(f.resolveSteps).toHaveLength(1); // the retry ran first
+    expect((await gateComments(f, item.id)).filter((c) => c.marker.includes("merge-conflict"))).toEqual([]);
+    // The controller's once-only test-path grant (auto_grant_test_paths, on by default) runs the item again; that run
+    // starts from the base, so the first run's resolution was never pushed.
+    expect((await f.store.getWorkItem(item.id))!.allowed_paths).toEqual([...spec.allowed_paths, "tests/b.test.ts"]);
+    expect((await f.implementRuns(item.id)).map((r) => r.id)).toContain(first!.id);
+    expect(f.implementCount()).toBe(2);
+    expect(git(f.origin, "show", `refs/heads/factory/${item.id}:src/a.txt`)).toBe("a from the implementer, run 2");
+  });
+
+  it("the retry prompt names each failing test and quotes the check output tail in a fence", async () => {
+    const f = await setup({ moveMain: MAIN_EDITS_A, resolve: resolveA, retry: retryA, testCommand: failsOn("tests/b.test.ts", "tests/c.test.ts") });
+    await f.approveAndImplement();
+    const prompt = f.resolveSteps[0]!.prompt;
+    const section = prompt.slice(prompt.indexOf("## Earlier attempt in this run"));
+    expect(section).toContain("tests failed after the resolution (`sh -c");
+    expect(section).toContain("- `tests/b.test.ts > keeps a`");
+    expect(section).toContain("- `tests/c.test.ts > keeps a`");
+    expect(section.indexOf("tests/b.test.ts > keeps a")).toBeLessThan(section.indexOf("tests/c.test.ts > keeps a"));
+    expect(section).toMatch(/```text\n[^`]*AssertionError: expected a\n+```$/);
+  });
+
+  it("a resolution failing on a test file covered by allowed_paths, or on a gate-list file, still fails with merge_conflict", async () => {
+    for (const file of ["src/b.test.ts", "tests/architecture/settings-monotonic.test.ts"]) {
+      const cmd = ["sh", "-c", `if grep -q merged src/a.txt; then echo ' FAIL  ${file} > keeps a'; exit 1; fi`];
+      const f = await setup({ moveMain: MAIN_EDITS_A, resolve: resolveA, retry: retryA, testCommand: cmd });
+      const item = await f.approveAndImplement();
+      const run = (await f.implementRuns(item.id))[0]!;
+      expect(run.outcome, file).toMatchObject({ status: "failed", error_code: "merge_conflict", infra: false });
+      if (run.outcome?.status === "failed") {
+        expect(run.outcome.detail).toBe("tests failed after the resolution (`" + cmd.join(" ") + "` exited 1); the retry as a resolve step failed too: tests failed after the resolution (`" + cmd.join(" ") + "` exited 1); conflicting files: src/a.txt");
+      }
+      expect(f.broker.pushed()).toEqual([wipOf(run)!.branch]);
+    }
+  });
+
+  it("asks only when every failing file is a test file by test_globs and outside allowed_paths", () => {
+    const failed = (...files: string[]) => ({ command: ["npm", "test"], how: "exited 1", tail: files.map((f) => ` FAIL  ${f} > x`).join("\n") });
+    /** The rules implement.run.ts passes in, with the switch on and `globs` as test_globs. */
+    const rules = (allowed: string[], globs = ["tests/**"]) => ({
+      failingTestFiles, covered: (p: string) => isCovered(p, allowed), grantable: (ps: readonly string[]) => testPathsOnly(ps, globs),
+      maxPaths: NEEDS_HUMAN_MAX_PATHS, maxChars: NEEDS_HUMAN_MAX_CHARS,
+    });
+    expect(conflictAsk(failed("tests/b.test.ts"), rules(["src/"]))).toMatchObject({ paths: ["tests/b.test.ts"] });
+    expect(conflictAsk(failed("tests/b.test.ts"), rules(["src/"]))!.reason).toContain("`npm test` exited 1");
+    expect(conflictAsk(failed("lib/b.test.ts"), rules(["src/"]))).toBeNull(); // not a test file by test_globs
+    expect(conflictAsk(failed("tests/b.test.ts", "lib/b.test.ts"), rules(["src/"]))).toBeNull();
+    expect(conflictAsk(failed("tests/b.test.ts"), rules(["tests/b.test.ts"]))).toBeNull(); // covered
+    expect(conflictAsk({ ...failed(), tail: "exit 3" }, rules(["src/"]))).toBeNull(); // no test file named
+    expect(conflictAsk(undefined, rules(["src/"]))).toBeNull(); // not a check failure
+    const many = Array.from({ length: NEEDS_HUMAN_MAX_PATHS + 1 }, (_, i) => `tests/t${i}.test.ts`);
+    expect(conflictAsk(failed(...many), rules(["src/"]))).toBeNull(); // more than one ask carries
+    expect(conflictAsk(failed("tests/b.test.ts"), { ...rules(["src/"]), grantable: () => false })).toBeNull(); // auto_grant_test_paths off
+  });
+
+  it("a resolution failing on an out-of-scope test file and on a covered one still fails with merge_conflict", async () => {
+    const f = await setup({ moveMain: MAIN_EDITS_A, resolve: resolveA, retry: retryA, testCommand: failsOn("tests/b.test.ts", "src/b.test.ts") });
+    const item = await f.approveAndImplement();
+    expect((await f.implementRuns(item.id))[0]!.outcome).toMatchObject({ status: "failed", error_code: "merge_conflict" });
   });
 
   it("a resolution left unstaged (markers staged, clean file in the working tree) fails with merge_conflict and pushes nothing", async () => {

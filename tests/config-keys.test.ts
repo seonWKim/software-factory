@@ -319,6 +319,21 @@ describe("coordination config (design §5, 2026-11-03)", () => {
     expect((await loadError({ ...SQLITE, mechanical_paths: "docs/" })).message).toContain("mechanical_paths must be a list of non-empty paths");
   });
 
+  it("conflict_window_days defaults to 3 and is read from factory.config.json", async () => {
+    const { coordinationConfig } = await import("../src/core/config.js");
+    expect(TOP_LEVEL_KEYS).toContain("conflict_window_days");
+    expect(coordinationConfig({}).conflict_window_days).toBe(3);
+    expect((await loadConfig(root(SQLITE))).config.coordination).toMatchObject({ conflict_window_days: 3 });
+    const custom = await loadConfig(root({ ...SQLITE, conflict_window_days: 7 }));
+    expect(custom.config.coordination).toMatchObject({ conflict_window_days: 7 });
+  });
+
+  it.each([0, -1, 1.5, "3", null])("conflict_window_days %j fails at startup: it must be a positive integer", async (value) => {
+    const err = await loadError({ ...SQLITE, conflict_window_days: value });
+    expect(err).toBeInstanceOf(ConfigKeyError);
+    expect(err.message).toContain("conflict_window_days must be a positive integer");
+  });
+
   it("the checked-in config loads with the coordination keys", async () => {
     await expect(loadConfig(root(SQLITE))).resolves.toBeTruthy();
   });

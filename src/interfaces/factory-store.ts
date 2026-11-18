@@ -641,8 +641,8 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   setDependencyState(id: WorkItemId, depends_on: string, state: DependencyState): Promise<boolean>;
   /** Records one conflict on each path; a path already recorded for this event_key counts once. Returns the new rows. */
   recordConflicts(input: RecordConflictsInput): Promise<number>;
-  /** Recorded conflicts per path in `project`. Read-only. */
-  conflictCounts(project: string): Promise<Map<string, number>>;
+  /** Recorded conflicts per path in `project`; with `since`, only those at or after it (design 05-dependencies). Read-only. */
+  conflictCounts(project: string, since?: Timestamp): Promise<Map<string, number>>;
   /** The item's claim decisions, oldest first; ...Since: every item's written at or after `since` (the improver's hotspot count, design §7). Read-only. */
   listClaimDecisions(id: WorkItemId): Promise<ClaimDecision[]>; listClaimDecisionsSince(since: Timestamp): Promise<ClaimDecision[]>;
   /** The latest claim decision of each of the items that has one, in one read (the Items page, one read for every row). Read-only. */
