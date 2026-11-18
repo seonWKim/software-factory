@@ -204,6 +204,19 @@ export interface Forge {
    */
   baseChecks?(): Promise<BaseChecks>;
   /**
+   * Reruns only the failed CI jobs of commit `head_sha` (a PR head whose checks failed), on that same commit. Called by
+   * the CI gate at most once per PR head, before it sends the item back to implement (design 05-ci-gate, Rerun once).
+   * A write. Throws when nothing can be rerun (no failed job, e.g. only a commit status failed) or the forge refuses
+   * it (e.g. a token without the right to rerun); the gate then takes the path it takes without it. Absent: no rerun.
+   */
+  rerunFailedJobs?(head_sha: string): Promise<void>;
+  /**
+   * The log text of the failed CI jobs of commit `head_sha` (their latest attempt), read after a rerun failed again,
+   * for the implement run's input (design 05-ci-gate). Untrusted, unredacted text: the caller cuts and redacts it.
+   * Throws when no failed job's log can be read. Read-only. Absent: the implement run gets the check names only.
+   */
+  failedJobLog?(head_sha: string): Promise<string>;
+  /**
    * Each check on PR `pr`'s current head commit with its result; empty when none ran. Read when a review is
    * queued, for the review prompt (design §4, issue #223). Throws when the forge cannot be read. Read-only.
    */

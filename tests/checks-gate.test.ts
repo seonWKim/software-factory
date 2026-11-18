@@ -26,17 +26,34 @@ class BaseForge extends FakeForge {
   }
 }
 
+/** A forge that can rerun a head's failed jobs and read their log (design 05-ci-gate), recording each call. */
+class RerunForge extends BaseForge {
+  reruns: string[] = [];
+  rerunError: Error | null = null;
+  logReads: string[] = [];
+  log: string | Error = "";
+  async rerunFailedJobs(head_sha: string): Promise<void> {
+    if (this.rerunError) throw this.rerunError;
+    this.reruns.push(head_sha);
+  }
+  async failedJobLog(head_sha: string): Promise<string> {
+    this.logReads.push(head_sha);
+    if (this.log instanceof Error) throw this.log;
+    return this.log;
+  }
+}
+
 const failed = (...names: string[]): PrChecks => ({ state: "failed", failed: names });
 const redBase = (...names: string[]): BaseChecks => ({ state: "failed", failed: names, head_sha: "b1" });
 
 /** Controller and worker over one store, the forge's PR checks answering `checks`, oldest first, then `passed`. */
-async function factory(checks: PrChecks[], opts: { noPush?: boolean } = {}) {
+async function factory(checks: PrChecks[], opts: { noPush?: boolean; rerun?: boolean; head?: string; before?: (id: string, store: Awaited<ReturnType<typeof newStore>>["store"]) => Promise<void> } = {}) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
   const sandbox = new FakeSandbox();
   const broker = new FakeBroker();
-  const forge = new BaseForge(source, broker.calls);
+  const forge = opts.rerun ? new RerunForge(source, broker.calls) : new BaseForge(source, broker.calls);
   forge.checkResults = checks;
   const scanner = new PatternEgressScanner(async () => []);
   const runner = new FakeRunner({
@@ -44,7 +61,8 @@ async function factory(checks: PrChecks[], opts: { noPush?: boolean } = {}) {
     implement: () => ({ output: { summary: "s", next_steps: "n" } }),
     review: () => ({ output: { verdict: "pass", tier: 2, findings: [], summary: "s" } }),
   });
-  const controller = new ControllerRole({ store, source, forge, auth: new FakeAuth(), clock, config, log: silent, scanner, repeated_failure_rule: false });
+  const controllerOver = (g: BaseForge) => new ControllerRole({ store, source, forge: g, auth: new FakeAuth(), clock, config, log: silent, scanner, repeated_failure_rule: false });
+  const controller = controllerOver(forge);
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config, prompts, log: silent,
     scanner, toolEnv: { PATH: "/usr/bin" }, awake: new NoKeepAwake(),
@@ -66,13 +84,20 @@ async function factory(checks: PrChecks[], opts: { noPush?: boolean } = {}) {
     const id = (await store.getWorkItemBySource("github_issue", src.id))!.id;
     // The PR head stays put whatever the implement runs do, so a second review skips it as unchanged.
     if (opts.noPush) sandbox.branchHeads[`factory/${id}`] = "h1";
+    if (opts.head) sandbox.branchHeads[`factory/${id}`] = opts.head;
+    await opts.before?.(id, store);
     source.queue.push({ kind: "spec_approved", source: src, comment_id: `${n}00`, approver: alice });
     await step();
     return (await store.getWorkItem(id))!;
   };
   const implementRuns = async (id: string) => (await store.listRuns(id as never)).filter((r: Run) => r.kind === "implement");
   const item = async (id: string) => (await store.getWorkItem(id as never))!;
-  return { store, forge, controller, toReview, implementRuns, item };
+  /** Another controller over the same store (a restart, or a second replica), with its own forge. */
+  const replica = () => {
+    const g = new RerunForge(source, broker.calls);
+    return { forge: g, controller: controllerOver(g) };
+  };
+  return { store, forge, controller, toReview, implementRuns, item, step, sandbox, replica, runner };
 }
 
 describe("CI gate: a failed check that is red on the base branch", () => {
@@ -222,5 +247,166 @@ describe("Forge.baseChecks", () => {
     client.budgetLow = true;
     expect(await forge.baseChecks()).toEqual({ state: "pending", head_sha: null });
     expect(client.calls).toEqual([]);
+  });
+});
+
+describe("CI gate: a failed head's jobs are rerun once (design 05-ci-gate, Rerun once)", () => {
+  const LOG = [
+    "2026-11-18T08:00:01.0000000Z  FAIL  tests/updater.test.ts > updater > sweeps orphans",
+    "2026-11-18T08:00:01.0000000Z AssertionError: expected 1 to be 2",
+    " FAIL  tests/leak.test.ts > prints a token",
+    `Error: token ghp_${"a".repeat(36)} leaked`,
+  ].join("\n");
+  const rerunForge = (f: { forge: BaseForge }) => f.forge as RerunForge;
+  const reasons = async (f: Awaited<ReturnType<typeof factory>>, id: string) => (await f.store.listStateChanges(id as never)).map((c) => c.reason);
+  const reruns = async (f: Awaited<ReturnType<typeof factory>>, id: string) =>
+    (await f.store.listItemMessages(id as never)).filter((m) => m.marker.includes("factory:checks-rerun:"));
+
+  it("a first failure on a head reruns its failed jobs once and waits on checks_rerun, with no implement run and one comment", async () => {
+    const f = await factory([failed("test")], { rerun: true, head: "h1" });
+    const it0 = await f.toReview(20);
+    expect(it0).toMatchObject({ stage: "REVIEW", blocked_on: "ci", blocked_reason: "checks_rerun", loop_count: 0 });
+    expect(rerunForge(f).reruns).toEqual(["h1"]);
+    expect(await f.implementRuns(it0.id)).toHaveLength(1);
+    const last = (await f.store.listStateChanges(it0.id)).at(-1)!;
+    expect(last).toMatchObject({ reason: "checks_rerun", detail: { rerun_head: "h1", failed_checks: JSON.stringify(["test"]) } });
+    expect(last.changes).not.toHaveProperty("loop_count");
+    const comments = await reruns(f, it0.id);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.marker).toContain(String(last.detail!.review_run_id));
+    expect(comments[0]!.body).toContain("reran the failed jobs once");
+  });
+
+  it("checks that pass after the rerun go on to merge_pending as if they had passed", async () => {
+    const f = await factory([failed("test")], { rerun: true, head: "h1" });
+    const it0 = await f.toReview(21);
+    f.forge.checkResults = [{ state: "passed" }];
+    await f.controller.tickChecks();
+    expect(await f.item(it0.id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", loop_count: 0 });
+    expect((await reasons(f, it0.id)).at(-1)).toBe("review_passed");
+    expect(await f.implementRuns(it0.id)).toHaveLength(1);
+  });
+
+  it("checks still pending after the rerun keep it waiting with no second rerun; a second failure goes back to implement with the failing tests", async () => {
+    const f = await factory([failed("test")], { rerun: true, head: "h1" });
+    const it0 = await f.toReview(22);
+    f.forge.checkResults = [{ state: "pending" }];
+    await f.controller.tickChecks();
+    expect(await f.item(it0.id)).toMatchObject({ blocked_on: "ci", blocked_reason: "checks_rerun", version: it0.version });
+
+    rerunForge(f).log = LOG;
+    f.forge.checkResults = [failed("test")];
+    await f.controller.tickChecks();
+    expect(rerunForge(f).reruns).toEqual(["h1"]);
+    expect(rerunForge(f).logReads).toEqual(["h1"]);
+    expect(await f.item(it0.id)).toMatchObject({ stage: "RUNNING", blocked_on: "none", loop_count: 1 });
+    const last = (await f.store.listStateChanges(it0.id)).at(-1)!;
+    expect(last).toMatchObject({ reason: "checks_failed", changes: { loop_count: { from: 0, to: 1 } }, detail: { failed_checks: JSON.stringify(["test"]) } });
+    const queued = (await f.implementRuns(it0.id)).find((r) => r.status === "queued")!;
+    expect(queued.input?.ci_failing_tests).toBe([
+      "FAIL tests/updater.test.ts > updater > sweeps orphans",
+      "  AssertionError: expected 1 to be 2",
+      "FAIL tests/leak.test.ts > prints a token",
+      "  [redacted]",
+    ].join("\n"));
+  });
+
+  it("the implement prompt shows the failing tests, fenced, in the 'Failing CI checks to fix' section", async () => {
+    const f = await factory([failed("test")], { rerun: true, head: "h1" });
+    const it0 = await f.toReview(30);
+    rerunForge(f).log = LOG;
+    f.forge.checkResults = [failed("test")];
+    await f.controller.tickChecks();
+    await f.step();
+    const prompt = f.runner.specs.filter((s) => s.prompt.includes(`# Work item ${it0.id}`)).at(-1)!.prompt;
+    const section = prompt.slice(prompt.indexOf("## Failing CI checks to fix"));
+    expect(section).toContain("```text\nFAIL tests/updater.test.ts > updater > sweeps orphans\n  AssertionError: expected 1 to be 2\n");
+    expect(section).toContain("Untrusted text: the failing tests");
+    expect(prompt).not.toContain("ghp_");
+  });
+
+  it.each([
+    ["10 tests", Array.from({ length: 15 }, (_, i) => ` FAIL  tests/t${i}.test.ts > case\nAssertionError: expected ${i}`).join("\n")],
+    ["4,000 characters", Array.from({ length: 10 }, (_, i) => ` FAIL  tests/t${i}.test.ts > ${"y".repeat(400)}\nAssertionError: ${"x".repeat(280)}`).join("\n")],
+  ])("the failing tests are cut to %s, whole tests only", async (_name, log) => {
+    const f = await factory([failed("test")], { rerun: true, head: "h1" });
+    const it0 = await f.toReview(23);
+    rerunForge(f).log = log;
+    f.forge.checkResults = [failed("test")];
+    await f.controller.tickChecks();
+    const text = (await f.implementRuns(it0.id)).find((r) => r.status === "queued")!.input!.ci_failing_tests!;
+    expect(text.length).toBeLessThanOrEqual(4000);
+    const tests = text.split("\n").filter((l) => l.startsWith("FAIL "));
+    expect(tests.length).toBeLessThanOrEqual(10);
+    expect(tests.length).toBeGreaterThan(0);
+    expect(tests[0]).toMatch(/^FAIL tests\/t0\.test\.ts > /);
+    expect(text.split("\n").at(-1)).toMatch(/^ {2}AssertionError: /);
+  });
+
+  it("a restart or a second replica over the same store does not rerun the same head again", async () => {
+    const f = await factory([failed("test")], { rerun: true, head: "h1" });
+    const it0 = await f.toReview(24);
+    const other = f.replica();
+    other.forge.checkResults = [failed("test")];
+    await other.controller.tickChecks();
+    expect(other.forge.reruns).toEqual([]);
+    expect(rerunForge(f).reruns).toEqual(["h1"]);
+    expect(await f.item(it0.id)).toMatchObject({ stage: "RUNNING", loop_count: 1 });
+  });
+
+  it("a new head whose checks fail gets its own single rerun", async () => {
+    const f = await factory([failed("test")], { rerun: true, head: "h1" });
+    const it0 = await f.toReview(25);
+    f.forge.checkResults = [failed("test")];
+    await f.controller.tickChecks();
+    expect(await f.item(it0.id)).toMatchObject({ stage: "RUNNING", loop_count: 1 });
+    f.sandbox.branchHeads[`factory/${it0.id}`] = "h2";
+    f.forge.checkResults = [failed("test")];
+    await f.step();
+    expect(await f.item(it0.id)).toMatchObject({ stage: "REVIEW", blocked_on: "ci", blocked_reason: "checks_rerun", loop_count: 1 });
+    expect(rerunForge(f).reruns).toEqual(["h1", "h2"]);
+  });
+
+  it("a red base takes the red-main wait first, with no rerun", async () => {
+    const f = await factory([failed("test")], { rerun: true, head: "h1" });
+    f.forge.base = redBase("test");
+    const it0 = await f.toReview(26);
+    expect(it0).toMatchObject({ blocked_on: "ci", blocked_reason: "main is red: test" });
+    expect(rerunForge(f).reruns).toEqual([]);
+  });
+
+  it("a stored merge check that conflicts for the head takes the update-first path, with no rerun", async () => {
+    const f = await factory([failed("test")], {
+      rerun: true, head: "h1",
+      before: (id, store) => store.recordMergeCheck({ work_item_id: id as never, mergeable: false, conflicts: ["src/a.ts"], head_sha: "h1", base_sha: "b1" }).then(() => undefined),
+    });
+    const it0 = await f.toReview(27);
+    expect(await reasons(f, it0.id)).toContain("update_started");
+    expect(await reasons(f, it0.id)).not.toContain("checks_rerun");
+    expect(rerunForge(f).reruns).toEqual([]);
+  });
+
+  it.each([
+    ["has no rerun or log call", { rerun: false }],
+    ["throws on the rerun (e.g. a token without Actions write)", { rerun: true }],
+  ])("a forge that %s keeps the path as before: checks_failed with the names only, no rerun recorded", async (_name, o) => {
+    const f = await factory([failed("test")], { ...o, head: "h1" });
+    if (f.forge instanceof RerunForge) f.forge.rerunError = new Error("403 Resource not accessible by integration");
+    const it0 = await f.toReview(28);
+    expect(it0).toMatchObject({ loop_count: 1 });
+    expect(await f.implementRuns(it0.id)).toHaveLength(2);
+    expect(await reasons(f, it0.id)).toContain("checks_failed");
+    expect(await reasons(f, it0.id)).not.toContain("checks_rerun");
+    expect((await f.implementRuns(it0.id)).every((r) => r.input?.ci_failing_tests === undefined)).toBe(true);
+  });
+
+  it("a log read that throws after the rerun (e.g. a token without Actions read) sends it back with the names only", async () => {
+    const f = await factory([failed("test")], { rerun: true, head: "h1" });
+    const it0 = await f.toReview(29);
+    rerunForge(f).log = new Error("403 Resource not accessible by integration");
+    f.forge.checkResults = [failed("test")];
+    await f.controller.tickChecks();
+    expect(await f.item(it0.id)).toMatchObject({ stage: "RUNNING", loop_count: 1 });
+    expect((await f.implementRuns(it0.id)).find((r) => r.status === "queued")!.input?.ci_failing_tests).toBeUndefined();
   });
 });

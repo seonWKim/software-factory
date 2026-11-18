@@ -1,5 +1,7 @@
 ## History
 
+- **Rerun once** (decision changed 2026-11-18; changed step 4 "Otherwise" of the 2026-11-16 decision). Before: failed checks on a factory PR, past conflict first, red main and an unchanged head, went straight back to implement ("`loop_count + 1` and an implement run, or `max_loops`, as before") with the check names only, and the decision said "Not detected: failing tests outside the diff on a check that is not red on base (the forge gives check names only; follow-up issue)". A flaky test cost a loop, and wi_88435e43 (PR #699) stopped for a human to read the CI log.
+
 - **Slowest test files on main** (new decision, 2026-11-09, issue #469). Before: job `test` printed only vitest's default output, so nothing ranked the slow test files.
 
 - **Unchanged head and red main** (decision changed 2026-11-16; changed "Unchanged head" of the 2026-11-08 decision). Before: failed checks after a review that skipped an unchanged head took the same path as any failed checks (`checks_failed`, `loop_count + 1`, `RUNNING`, a new implement run; at `max_loops` a block on a human with `max_loops`), with `unchanged_head: true` in the detail and the next implement prompt saying `The previous attempt pushed no commit`; and failed checks that also failed on the base branch looped like any others. Work item wi_4baead09 (#369) used four loops on a red main this way.

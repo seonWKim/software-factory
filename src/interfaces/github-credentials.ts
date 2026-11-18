@@ -56,6 +56,8 @@ export interface GitHubApi {
   /** The token's expiry; null: it never expires. */
   tokenExpiration(repo: RepoPath): Promise<Date | null>;
   repoIdentity(repo: RepoPath): Promise<RepoIdentity>;
+  /** A plain-text GET (a CI job's log), following the forge's download redirect without the token. Read-only. */
+  text(path: string): Promise<string>;
   /** A change's unified diff. Read-only. */
   pullDiff(repo: RepoPath, number: number): Promise<string>;
   /** True while optional reads should wait for the rate-limit reset. */

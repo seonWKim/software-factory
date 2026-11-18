@@ -297,7 +297,9 @@ export class GitHubClient implements GitHubApi {
   async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const res = await this.send(method, path, body);
     if (res.status === 204) return undefined as T;
-    return (await res.json()) as T;
+    // A write may answer with no body at all (e.g. 201 from a rerun): undefined, like a 204.
+    const text = await res.text();
+    return (text === "" ? undefined : JSON.parse(text)) as T;
   }
 
   /**
@@ -330,7 +332,22 @@ export class GitHubClient implements GitHubApi {
     return res.text();
   }
 
-  private async send(method: string, path: string, body?: unknown, accept = "application/vnd.github+json"): Promise<Response> {
+  /**
+   * A plain-text GET (a job's log, design 05-ci-gate): the body as text, never parsed as JSON. GitHub answers a job-logs
+   * read with a redirect to a short-lived download URL; it is followed here with no token (the URL carries its own
+   * signature), so the token never goes to another host. Throws a GitHubError on a refusal at either step.
+   */
+  async text(path: string): Promise<string> {
+    const res = await this.send("GET", path, undefined, "application/vnd.github+json", "manual");
+    const location = res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
+    if (location === null) return res.text();
+    const moved = await this.fetchFn(location, { method: "GET", headers: { "User-Agent": "software-factory" } });
+    if (!moved.ok) throw new GitHubError(moved.status, `GitHub GET ${path} → redirect → ${moved.status}`);
+    return moved.text();
+  }
+
+  /** `redirect: "manual"`: a 3xx answer is returned as it is (for `text`), not followed and not an error. */
+  private async send(method: string, path: string, body?: unknown, accept = "application/vnd.github+json", redirect: "follow" | "manual" = "follow"): Promise<Response> {
     await this.refreshSharedBudget();
     const r = this.rate;
     if (r && r.remaining <= 0 && this.now() < Date.parse(r.reset_at)) {
@@ -352,6 +369,7 @@ export class GitHubClient implements GitHubApi {
         ...(body !== undefined && { "Content-Type": "application/json" }),
       },
       ...(body !== undefined && { body: JSON.stringify(body) }),
+      ...(redirect === "manual" && { redirect }),
     });
     if (this.readRate(res.headers)) await this.writeShared();
     if (res.status !== 304) this.count();
@@ -360,7 +378,7 @@ export class GitHubClient implements GitHubApi {
       this.cache.set(key, cached);
       return new Response(cached.body, { status: 200, headers: cached.headers });
     }
-    if (!res.ok) {
+    if (!res.ok && !(redirect === "manual" && res.status >= 300 && res.status < 400)) {
       const text = await res.text().catch(() => "");
       const reset = rateLimitReset(res.status, res.headers, text, this.now());
       if (reset) throw new GitHubRateLimitError(res.status, `GitHub ${method} ${path} → ${res.status} rate limited until ${reset}`, reset);

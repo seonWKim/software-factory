@@ -207,6 +207,75 @@ describe("GitHubForge.prChecks", () => {
 });
 
 
+describe("GitHubForge: rerunFailedJobs and failedJobLog (design 05-ci-gate)", () => {
+  const LOG = "2026-11-18T08:00:00Z  FAIL  tests/a.test.ts > b\nAssertionError: expected 1 to be 2\n";
+  /** Head "h1"'s workflow runs: 7 failed, 8 passed, 9 still running; run 7's latest jobs: 70 failed, 71 passed. */
+  class ActionsClient extends FakeClient {
+    workflowRuns = [
+      { id: 7, status: "completed", conclusion: "failure" },
+      { id: 8, status: "completed", conclusion: "success" },
+      { id: 9, status: "in_progress", conclusion: null },
+    ];
+    override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+      this.calls.push({ method, path, body });
+      const bare = path.split("?")[0]!;
+      if (method === "GET" && bare === "/repos/o/r/actions/runs") return { total_count: this.workflowRuns.length, workflow_runs: this.workflowRuns } as T;
+      if (method === "POST" && bare === "/repos/o/r/actions/runs/7/rerun-failed-jobs") return undefined as T;
+      if (method === "GET" && bare === "/repos/o/r/actions/runs/7/jobs") {
+        return { total_count: 2, jobs: [{ id: 70, status: "completed", conclusion: "failure" }, { id: 71, status: "completed", conclusion: "success" }] } as T;
+      }
+      throw new Error(`unexpected ${method} ${path}`);
+    }
+  }
+  function make() {
+    const client = new ActionsClient();
+    client.texts["/repos/o/r/actions/jobs/70/logs"] = LOG;
+    return { client, forge: forgeOf(client) };
+  }
+
+  it("reruns only the failed jobs of each failed workflow run on the head, once each", async () => {
+    const { client, forge } = make();
+    await forge.rerunFailedJobs("h1");
+    expect(client.calls.map((c) => [c.method, c.path])).toEqual([
+      ["GET", "/repos/o/r/actions/runs?head_sha=h1&per_page=100"],
+      ["POST", "/repos/o/r/actions/runs/7/rerun-failed-jobs"],
+    ]);
+  });
+
+  it("throws, rerunning nothing, when the head has no failed workflow run (e.g. only a commit status failed)", async () => {
+    const { client, forge } = make();
+    client.workflowRuns = client.workflowRuns.filter((r) => r.id !== 7);
+    await expect(forge.rerunFailedJobs("h1")).rejects.toThrow(/no failed GitHub Actions run/);
+    expect(client.calls.filter((c) => c.method === "POST")).toEqual([]);
+  });
+
+  it("reads the log of each failed job of the latest attempt as plain text", async () => {
+    const { client, forge } = make();
+    expect(await forge.failedJobLog("h1")).toBe(LOG);
+    expect(client.calls.map((c) => [c.method, c.path])).toEqual([
+      ["GET", "/repos/o/r/actions/runs?head_sha=h1&per_page=100"],
+      ["GET", "/repos/o/r/actions/runs/7/jobs?filter=latest&per_page=100"],
+      ["GET", "/repos/o/r/actions/jobs/70/logs"],
+    ]);
+  });
+
+  it("a refused log read (a token without Actions read) throws; under the request budget it reads nothing and throws", async () => {
+    const refused = make();
+    delete refused.client.texts["/repos/o/r/actions/jobs/70/logs"];
+    await expect(refused.forge.failedJobLog("h1")).rejects.toThrow();
+    const low = make();
+    low.client.lowBudget = () => true;
+    await expect(low.forge.failedJobLog("h1")).rejects.toThrow(/budget/);
+    expect(low.client.calls).toEqual([]);
+  });
+
+  it("a head sha is sent encoded", async () => {
+    const { client, forge } = make();
+    await forge.rerunFailedJobs("a&b").catch(() => undefined);
+    expect(client.calls[0]!.path).toBe("/repos/o/r/actions/runs?head_sha=a%26b&per_page=100");
+  });
+});
+
 describe("GitHubForge: pull requests the factory did not open (design 2026-11-01)", () => {
   const bob = { id: 2, login: "bob", type: "User" };
   const pull = (number: number, ref: string, o: Record<string, unknown> = {}) => ({

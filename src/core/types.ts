@@ -187,12 +187,10 @@ export interface RunInput {
   session?: SessionRecord;
   /** An improve run's report window (design §7), fixed at enqueue so a retry reports the same runs. */
   improve?: ImproveWindow;
-  /**
-   * A review run's CI results (design §4, issue #223), read through the forge when the review was queued: one
-   * entry per check (empty: no check ran), null when the read failed. Absent (an older row, a human `/retry`):
-   * not read.
-   */
+  /** A review run's CI results (design §4, issue #223) read when it was queued: empty, none ran; null, the read failed; absent, not read. */
   ci_checks?: PrCheckResult[] | null;
+  /** An implement run's failing tests from the failed CI job's log after its one rerun (design 05-ci-gate), redacted, untrusted. */
+  ci_failing_tests?: string;
   /** A merge-check run's base and the branches merged onto it in queue order, this change last (RFC 0015 M8). */
   merge_check?: { base_ref: string; branches: string[] };
 }

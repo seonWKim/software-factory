@@ -68,7 +68,7 @@ Tokens never appear on screen, in shell history, in command arguments, or in the
 The factory acts on GitHub as your GitHub App, so issues, comments, pushes and PRs show the App's bot as author.
 
 - Put the App's ID in the secret file as `GITHUB_APP_ID` (`npm run setup` asks for it) and its private key in `github-app.pem` next to the secret file (`~/.config/software-factory/`, mode 600).
-- Install the App on the repository. **Repository permissions:** Contents, Issues and Pull requests: read and write; Metadata: read. Everything else: no access.
+- Install the App on the repository. **Repository permissions:** Contents, Issues and Pull requests: read and write; Actions: read and write (the CI gate reruns a PR's failed jobs once and reads a failed job's log); Metadata: read. Everything else: no access.
 - After changing the App's permissions, accept them on the installation (Settings → Applications → Installed GitHub Apps → Review request). `npm run factory -- doctor` names any permission still missing.
 
 To use your own account instead, set `plugins.github_auth` to `token` and create the token below.
@@ -86,10 +86,11 @@ GitHub → Settings → Developer settings → Personal access tokens → **Fine
 | Pull requests | Read and write |
 | Checks | Read-only (the CI gate reads the PR's check runs) |
 | Commit statuses | Read-only (the CI gate reads the PR's commit statuses) |
+| Actions | Read and write (the CI gate reruns a PR head's failed jobs once, and reads the failed job's log after a second failure) |
 | Metadata | Read-only (added automatically) |
 | Everything else | No access |
 
-`npm run setup` does not list Checks and Commit statuses yet; add them by hand. Without them the factory cannot read a PR's checks, logs `reading PR checks failed`, and the PR waits in review.
+`npm run setup` does not list Checks, Commit statuses and Actions yet; add them by hand. Without Checks and Commit statuses the factory cannot read a PR's checks, logs `reading PR checks failed`, and the PR waits in review. Without Actions it logs `rerunning failed CI jobs failed` or `reading the failed CI job's log failed`, and a failed check goes back to the implementer with the check names only.
 
 ## After setup
 
