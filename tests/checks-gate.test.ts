@@ -97,7 +97,7 @@ async function factory(checks: PrChecks[], opts: { noPush?: boolean; rerun?: boo
     const g = new RerunForge(source, broker.calls);
     return { forge: g, controller: controllerOver(g) };
   };
-  return { store, forge, controller, toReview, implementRuns, item, step, sandbox, replica };
+  return { store, forge, controller, toReview, implementRuns, item, step, sandbox, replica, runner };
 }
 
 describe("CI gate: a failed check that is red on the base branch", () => {
@@ -309,6 +309,20 @@ describe("CI gate: a failed head's jobs are rerun once (design 05-ci-gate, Rerun
       "FAIL tests/leak.test.ts > prints a token",
       "  [redacted]",
     ].join("\n"));
+  });
+
+  it("the implement prompt shows the failing tests, fenced, in the 'Failing CI checks to fix' section", async () => {
+    const f = await factory([failed("test")], { rerun: true, head: "h1" });
+    const it0 = await f.toReview(30);
+    rerunForge(f).log = LOG;
+    f.forge.checkResults = [failed("test")];
+    await f.controller.tickChecks();
+    await f.step();
+    const prompt = f.runner.specs.filter((s) => s.prompt.includes(`# Work item ${it0.id}`)).at(-1)!.prompt;
+    const section = prompt.slice(prompt.indexOf("## Failing CI checks to fix"));
+    expect(section).toContain("```text\nFAIL tests/updater.test.ts > updater > sweeps orphans\n  AssertionError: expected 1 to be 2\n");
+    expect(section).toContain("Untrusted text: the failing tests");
+    expect(prompt).not.toContain("ghp_");
   });
 
   it.each([

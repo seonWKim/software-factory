@@ -20,7 +20,7 @@ export function firstErrorLine(text: string): string | null {
   return null;
 }
 
-/** A CI log line's leading timestamp (GitHub Actions writes one before every line). */
+/** A CI log line's leading timestamp (a CI service may write one before every line). */
 const LOG_TIME = /^\d{4}-\d\d-\d\dT[\d:.]+Z ?/;
 /** A line naming an error: `AssertionError: ...`, `TypeError: ...`, `Error: ...`. */
 const ASSERTION_LINE = /\b(?:[A-Z][A-Za-z]*)?Error\b/;

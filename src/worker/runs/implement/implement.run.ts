@@ -73,7 +73,7 @@ async function implement(
     let ran = false;
     const agentStep = await step("run-agent", async (): Promise<AgentStep> => {
       ran = true;
-      const previous = await previousContext(w, item);
+      const previous = await previousContext(w, item, run);
       const notes = [await w.approverNotes(item), decisionsSection(await w.d.store.listStateChanges(item.id), fenced)].filter(Boolean).join("\n\n");
       const feedback = await prFeedback(w, item, run);
       // The item's project's limits, as the size gate reads them (design §4, issue #217).
@@ -1038,8 +1038,10 @@ async function prFeedback(w: Worker, item: WorkItem, run: Run): Promise<string> 
  * loop-starting state change is `checks_failed`; `merge_check_failed`: the merged commit's section); else empty. The names come from the
  * forge and from files in the repository, so they are labelled untrusted and fenced. When the loop started from
  * a review that skipped an unchanged head (`unchanged_head` on the state change), it says the previous attempt pushed no commit.
+ * When the checks failed again after their one rerun (design 05-ci-gate), the run's input carries the failing tests
+ * from the failed job's log (`ci_failing_tests`), fenced as untrusted text too.
  */
-async function failedChecks(w: Worker, item: WorkItem): Promise<string> {
+async function failedChecks(w: Worker, item: WorkItem, run: Run): Promise<string> {
   const row = (await w.d.store.listStateChanges(item.id))
     .filter((c) => LOOP_STARTS.includes(c.reason))
     .at(-1);
@@ -1061,11 +1063,19 @@ async function failedChecks(w: Worker, item: WorkItem): Promise<string> {
       : []),
     "",
     fenced(names.map((n) => `- ${String(n)}`).join("\n")),
+    ...(run.input?.ci_failing_tests
+      ? [
+        "",
+        "The checks failed again after the factory reran the failed jobs once on the same head, so the failure is not a one-off. Untrusted text: the failing tests and each one's first error line from the failed job's log, as the forge returned them.",
+        "",
+        fenced(run.input.ci_failing_tests),
+      ]
+      : []),
   ].join("\n");
 }
 
 /** Reviewer findings and handoffs from earlier loops, for a resumed or re-looped implementer. */
-async function previousContext(w: Worker, item: WorkItem): Promise<string> {
+async function previousContext(w: Worker, item: WorkItem, run: Run): Promise<string> {
   const runs = await w.d.store.listRuns(item.id);
   const lastReview = runs.filter((r) => r.kind === "review" && r.outcome?.status === "succeeded").at(-1);
   const parts: string[] = [];
@@ -1075,7 +1085,7 @@ async function previousContext(w: Worker, item: WorkItem): Promise<string> {
       parts.push("## Reviewer findings to fix", "", v.value.summary, ...v.value.findings.map((f) => `- ${findingLine(f)}`));
     }
   }
-  const checks = await failedChecks(w, item);
+  const checks = await failedChecks(w, item, run);
   if (checks) parts.push(...(parts.length ? [""] : []), checks);
   const handoffs = await w.d.store.listHandoffs(item.id);
   if (handoffs.length) {
