@@ -29,11 +29,12 @@ export const WORKER_INDEX_ENV = "SF_WORKER_INDEX";
 export const TEST_WORKERS_ENV = "SF_TEST_WORKERS";
 
 /**
- * One run's share of the host's CPUs: the CPUs split evenly over the claiming slots, at least 1. Ten slots on ten
- * CPUs give 1 each, so ten test runs at once start ten test workers in all, not a hundred.
+ * One run's share of the host's CPUs: the CPUs over the runs running on this host when it is claimed (this one
+ * included), rounded down, at most cpus - 1 and at least 1. A lone run on ten CPUs gets 9; three running runs get 3
+ * each. Computed once at claim and kept for the run (design §5 Parallel workers).
  */
-export function testWorkerShare(cpus: number, slots: number): number {
-  return Math.max(1, Math.floor(cpus / Math.max(1, slots)));
+export function testWorkerShare(cpus: number, runs: number): number {
+  return Math.max(1, Math.min(cpus - 1, Math.floor(cpus / Math.max(1, runs))));
 }
 
 /** Git hooks off for every command the worker runs after an agent step (merge, commit, checkout). */

@@ -47,7 +47,7 @@ export class Worker {
 
   runModels: { table: ModelTable; names?: ModelNames } | undefined;
   /** The kind of the run this loop holds, from claim to release (the pool's slot beyond `workers`); null while idle. */ holding: RunKind | null = null;
-
+  /** SF_TEST_WORKERS of the run this loop holds, fixed at its claim after the hold, so the pool counts it busy (design §5 Parallel workers); null while idle or with no `cpus`. */ testWorkers: number | null = null;
   /** The pause request and agent sessions of the run being executed. Scratch for one execute() call only. */
   readonly scratch = new WeakMap<Run, RunScratch>();
 
@@ -181,9 +181,10 @@ export class Worker {
     this.holding = run.kind;
     await this.d.awake.hold().catch((err: unknown) => this.awakeFailed("hold", err));
     try {
+      if (this.d.cpus !== undefined) this.testWorkers = testWorkerShare(this.d.cpus, this.d.hostRuns ? await this.d.hostRuns() : 1);
       await this.execute(run, run.lease.token);
     } finally {
-      this.holding = null;
+      this.holding = this.testWorkers = null;
       await this.d.awake.release().catch((err: unknown) => this.awakeFailed("release", err));
     }
     return true;
@@ -910,12 +911,11 @@ export class Worker {
     return new Date(this.d.clock.now().getTime() + ms).toISOString() as Timestamp;
   }
 
-  /** SF_WORKER_INDEX for the agent and the update test command; empty for a Worker outside a pool. */
   /** SF_WORKER_INDEX and SF_TEST_WORKERS, each when known: for the agent and the check commands. Not secrets. */
   slotEnv(): Record<string, string> {
     return {
       ...(this.d.index === undefined ? {} : { [WORKER_INDEX_ENV]: String(this.d.index) }),
-      ...(this.d.cpus === undefined ? {} : { [TEST_WORKERS_ENV]: String(testWorkerShare(this.d.cpus, this.live.workers())) }),
+      ...(this.testWorkers === null ? {} : { [TEST_WORKERS_ENV]: String(this.testWorkers) }),
     };
   }
 

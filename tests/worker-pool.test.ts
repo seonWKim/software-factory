@@ -7,7 +7,7 @@ import { CODE_VERSION_ENV } from "../src/interfaces/updater.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import type { Logger } from "../src/core/log.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
-import { type RunKind, type WorkerId, usageTokens } from "../src/core/types.js";
+import { type RunKind, type Timestamp, type WorkerId, usageTokens } from "../src/core/types.js";
 import { CountedKeepAwake, WorkerPool } from "../src/worker/index.js";
 import { testWorkerShare } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
@@ -503,7 +503,7 @@ describe("SF_WORKER_INDEX", () => {
       ...(indexBase !== undefined ? { index_base: indexBase } : {}),
       ...(cpus !== undefined ? { cpus } : {}),
     });
-    return { pool, sandbox, runner, store, item };
+    return { pool, sandbox, runner, store, item, clock };
   }
 
   it("reaches the agent's environment as the worker's index", async () => {
@@ -527,27 +527,62 @@ describe("SF_WORKER_INDEX", () => {
     expect(sandbox.testEnvs).toEqual([{ PATH: "/usr/bin", SF_WORKER_INDEX: "1" }]);
   });
 
-  it("with the host's CPUs known, SF_TEST_WORKERS (the CPUs over the claiming slots) reaches the agent and the test command", async () => {
+  it("with the host's CPUs known, a run alone on its host gets SF_TEST_WORKERS = cpus - 1 in the agent's and the test command's env", async () => {
     const triage = await poolWith("triage", 3, undefined, 10);
     expect(await triage.pool.workers[0]!.tick()).toBe(true);
-    expect(triage.runner.specs[0]!.env_allowlist).toMatchObject({ SF_WORKER_INDEX: "0", SF_TEST_WORKERS: "3" });
+    expect(triage.runner.specs[0]!.env_allowlist).toMatchObject({ SF_WORKER_INDEX: "0", SF_TEST_WORKERS: "9" });
     const update = await poolWith("update", 2, undefined, 10);
     expect(await update.pool.workers[1]!.tick()).toBe(true);
-    expect(update.sandbox.testEnvs).toEqual([{ PATH: "/usr/bin", SF_WORKER_INDEX: "1", SF_TEST_WORKERS: "5" }]);
+    expect(update.sandbox.testEnvs).toEqual([{ PATH: "/usr/bin", SF_WORKER_INDEX: "1", SF_TEST_WORKERS: "9" }]);
+  });
+
+  /** A busy row of another worker process, reported now. */
+  const row = (process_id: string, host: string, busy: number) => ({ process_id, pid: 1, host, slots: 3, max_slots: 3, busy, index_base: 0, started_at: "2026-11-18T00:00:00.000Z" as Timestamp });
+
+  it("counts the runs running on this host at claim: the pool's busy slots and other processes' fresh rows on the same host", async () => {
+    const { pool, runner, store } = await poolWith("triage", 3, undefined, 10);
+    await store.reportWorkerProcess(row("host:7", "host", 1));
+    await store.reportWorkerProcess(row("host:8", "host", 1));
+    // One busy slot in this pool: the run being claimed.
+    expect(await pool.workers[0]!.tick()).toBe(true);
+    expect(runner.specs[0]!.env_allowlist).toMatchObject({ SF_TEST_WORKERS: "3" });
+  });
+
+  it("does not count rows from another host or rows older than lease_ms", async () => {
+    const { pool, runner, store, clock } = await poolWith("triage", 3, undefined, 10);
+    await store.reportWorkerProcess(row("host:7", "host", 2));
+    clock.advance(config.lease_ms + 1);
+    await store.reportWorkerProcess(row("other:9", "other", 3));
+    expect(await pool.workers[0]!.tick()).toBe(true);
+    expect(runner.specs[0]!.env_allowlist).toMatchObject({ SF_TEST_WORKERS: "9" });
+  });
+
+  it("keeps a run's share when another run starts on the host during it", async () => {
+    const { pool, runner, store } = await poolWith("triage", 3, undefined, 10);
+    let during: Record<string, string> = {};
+    runner.script.triage = async () => {
+      await store.reportWorkerProcess(row("host:7", "host", 2));
+      during = pool.workers[0]!.slotEnv();
+      return { output: triageSpec };
+    };
+    expect(await pool.workers[0]!.tick()).toBe(true);
+    expect(runner.specs[0]!.env_allowlist).toMatchObject({ SF_TEST_WORKERS: "9" });
+    expect(during).toMatchObject({ SF_TEST_WORKERS: "9" });
+    expect(await pool.hostRuns()).toBe(2);
   });
 });
 
 describe("testWorkerShare", () => {
-  it("splits the CPUs evenly over the slots, rounding down, never below 1", () => {
-    expect(testWorkerShare(10, 1)).toBe(10);
+  it("splits the CPUs over the running runs, rounding down, at most cpus - 1, never below 1", () => {
+    expect(testWorkerShare(10, 1)).toBe(9);
     expect(testWorkerShare(10, 3)).toBe(3);
     expect(testWorkerShare(10, 10)).toBe(1);
     expect(testWorkerShare(4, 10)).toBe(1);
     expect(testWorkerShare(1, 1)).toBe(1);
   });
 
-  it("treats zero slots as one", () => {
-    expect(testWorkerShare(8, 0)).toBe(8);
+  it("treats zero runs as one", () => {
+    expect(testWorkerShare(8, 0)).toBe(7);
   });
 });
 
