@@ -36,7 +36,8 @@ export const INDEX_FOLDERS: readonly PathCompanion[] = [
 /**
  * The built-in rules (decided 2026-11-18): the companions of one `files_to_change` path, read from the path alone,
  * since triage has no clone. A design topic file adds its History file; a web view or component adds the i18n area
- * file its name maps to; a source file under `src/` adds the test named after it; a migration directly under
+ * file its name maps to and the generated catalog barrel `web/src/i18n/en.ts` (`npm run i18n:catalog`), so a new
+ * area file can be joined in; a source file under `src/` adds the test named after it; a migration directly under
  * `src/<owner>/migrations/` adds that owner's `src/<owner>/table-docs.ts`.
  */
 const COMPANION_RULES: readonly ((file: string) => string[])[] = [
@@ -48,7 +49,7 @@ const COMPANION_RULES: readonly ((file: string) => string[])[] = [
     const area =
       /^web\/src\/components\/([^/.]+)\.tsx$/.exec(file)?.[1] ??
       /^web\/src\/views\/(?:([^/]+)\/[^/]+|([^/.-]+)[^/]*)\.tsx$/.exec(file)?.slice(1).find((a) => a !== undefined);
-    return area === undefined ? [] : [`web/src/i18n/en/${area}.ts`];
+    return area === undefined ? [] : [`web/src/i18n/en/${area}.ts`, "web/src/i18n/en.ts"];
   },
   (file) => {
     if (file.endsWith(".d.ts")) return [];
