@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+// @ts-nocheck -- tsconfig.test.json has no DOM or JSX; like the other ui tests this file typechecks under the web config.
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Disclosure } from "../web/src/components/ui/disclosure.js";
