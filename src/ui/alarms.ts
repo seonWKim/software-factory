@@ -38,6 +38,7 @@ export function alarmText(a: Alert): string {
   if (a.pattern === "auto_stopped") return `Alarm: back to manual at ${utcMinute(a.created_at)}: ${AUTO_STOP_TEXT[a.error_code] ?? a.error_code}`;
   if (a.pattern === "dead_letter") return `Alarm: a message on ${deadLetterTopic(a)} was dead-lettered (${DEAD_LETTER_TEXT[a.error_code] ?? a.error_code})`;
   if (a.pattern === "spend_budget") return `Alarm: spending passed ${spendOf(a).pct}% of the ${spendOf(a).period} budget`;
+  if (a.pattern === "red_main") return `Alarm: the base branch fails its checks on its own at \`${redMainSha(a).slice(0, 12)}\`; merge-queue changes wait until it moves`;
   return `Alarm: the factory restarted ${a.count} times in ${RESTART_WINDOW_MS / 60_000} minutes`;
 }
 
@@ -90,12 +91,18 @@ function spendOf(a: Alert): { period: string; pct: string } {
   return { period, pct };
 }
 
+/** The failing base sha of a red_main alert, from its key `red_main:<sha>`. */
+function redMainSha(a: Alert): string {
+  return a.pattern_key.slice("red_main:".length);
+}
+
 /** Where the operator looks into the alarm; no command resolves one (it closes once its pattern stops). */
 export function alarmCommand(a: Alert): string {
   if (a.pattern === "spend_budget") return "Spend page (/app/spend)";
   if (a.pattern === "repeated_error") return "Failures page (/app/failures)";
   if (a.pattern === "zero_tokens") return "factory llm-check";
   if (a.pattern === "auto_stopped") return "Turn auto back on in Settings (/app/settings) after the cause is fixed, or factory mode auto";
+  if (a.pattern === "red_main") return `Fix the base branch at ${redMainSha(a)} (a fix item is filed for it); queued changes are checked again once it moves`;
   if (a.pattern === "dead_letter") return `bus_${deadLetterTopic(a).replace(/\./g, "_")}_dead_letters (replay once the cause is fixed)`;
   return "factory doctor";
 }
@@ -112,8 +119,8 @@ export function alarmsFor(open: readonly Alert[], it: WorkItem, runs: readonly R
   const active = runs.some((r) => r.status === "queued" || r.status === "running");
   return open.filter((a) => {
     if (a.pattern === "child_restarts") return active;
-    // A stop of auto mode, a dead letter or a spend alert holds up no item: Needs you shows the alarm.
-    if (a.pattern === "auto_stopped" || a.pattern === "dead_letter" || a.pattern === "spend_budget") return false;
+    // A stop of auto mode, a dead letter, a spend alert or red main holds up no run of the item: Needs you shows the alarm.
+    if (a.pattern === "auto_stopped" || a.pattern === "dead_letter" || a.pattern === "spend_budget" || a.pattern === "red_main") return false;
     if (last === null || Date.parse(last.finished_at!) < Date.parse(a.created_at) - ALERT_DEDUPE_MS) return false;
     if (a.pattern === "repeated_error") return last.outcome?.status === "failed" && last.outcome.error_code === a.error_code;
     return (MODEL_RUN_KINDS as readonly string[]).includes(last.kind) && runTokenCount(last) === 0;

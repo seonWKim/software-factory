@@ -4,6 +4,7 @@
 // a counting sandbox for the call counts.
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -523,11 +524,23 @@ describe("merge check: composition", () => {
 describe("merge check run: the UI check (fake sandbox)", () => {
   const ui_check = { command: ["npm", "run", "check:responsive"], paths: ["web/", "src/ui/"] };
 
-  async function mergeCheckRun(o: { ui_check?: typeof ui_check; changed: string[]; exits?: Record<string, number> }) {
+  /** `ui`: the UI check's reply in the merged checkout (the first) and in the base's (the second): an exit and output, or a throw. */
+  type UiReply = { exit: number; out?: string } | "throw";
+  async function mergeCheckRun(o: { ui_check?: typeof ui_check; changed: string[]; exits?: Record<string, number>; ui?: { merged: UiReply; base?: UiReply } }) {
     const repo = { ...config.repo, check_commands: [["npm", "run", "typecheck"], ["npm", "test"]], ...(o.ui_check ? { ui_check: o.ui_check } : {}) };
     const f = await pipeline({ config: { repo } });
     f.sandbox.changedFiles = o.changed;
     Object.assign(f.sandbox.exits, o.exits ?? {});
+    const exec = f.sandbox.exec.bind(f.sandbox);
+    const handles: string[] = [];
+    f.sandbox.exec = async (h, cmd, eo) => {
+      const r = await exec(h, cmd, eo);
+      if (!handles.includes(h.id)) handles.push(h.id);
+      if (!o.ui || cmd.join(" ") !== "npm run check:responsive") return r;
+      const reply = handles.indexOf(h.id) === 0 ? o.ui.merged : (o.ui.base ?? { exit: 0 });
+      if (reply === "throw") throw new Error("spawn npm ENOENT");
+      return { ...r, exit_code: reply.exit, stdout: reply.out ?? "" };
+    };
     const { item } = await f.store.createWorkItem(issue(7), system);
     const moved = await f.store.transition({
       id: item.id, expected_version: item.version, actor: system, reason: "test_setup", patch: {},
@@ -537,7 +550,8 @@ describe("merge check run: the UI check (fake sandbox)", () => {
     expect(await f.w1.tick()).toBe(true);
     const run = (await f.runs(moved.item, "merge-check"))[0]!;
     const diffs = f.sandbox.gitCalls.filter((c) => c.startsWith("diff --name-only") && !c.includes("--diff-filter=U"));
-    return { commands: f.sandbox.commands, diffs, outcome: run.outcome };
+    const data = run.outcome?.status === "succeeded" ? run.outcome.data : {};
+    return { commands: f.sandbox.commands, diffs, outcome: run.outcome, data, created: f.sandbox.created, gitCalls: f.sandbox.gitCalls, destroyed: f.sandbox.destroyed };
   }
 
   it("a merged result touching web/ runs the UI check after the install command and the checks", async () => {
@@ -564,9 +578,31 @@ describe("merge check run: the UI check (fake sandbox)", () => {
     expect(r.diffs).toEqual([]);
   });
 
-  it("a failing UI check is a red result naming the command", async () => {
-    const r = await mergeCheckRun({ ui_check, changed: ["web/a.css"], exits: { "npm run check:responsive": 1 } });
-    expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "red", why: "checks", command: "npm run check:responsive" } });
+  it("a failing UI check runs once more on the base alone, in a fresh checkout at the base; a base that passes leaves the change's red result", async () => {
+    const out = " FAIL  tests/ui.test.ts > page > layout\nlayout broken at 375px\n";
+    const r = await mergeCheckRun({ ui_check, changed: ["web/a.css"], ui: { merged: { exit: 1, out } } });
+    expect(r.commands).toEqual(["npm ci", "npm run typecheck", "npm test", "npm run check:responsive", "npm ci", "npm run check:responsive"]);
+    expect(r.created.map((c) => [c.branch, c.base_ref])).toEqual([[null, "main"], [null, "main"]]);
+    expect(r.gitCalls.filter((c) => c.includes("checkout --quiet --detach"))).toEqual([expect.stringMatching(/checkout --quiet --detach base$/)]);
+    expect(r.destroyed).toBe(2);
+    expect(r.outcome).toMatchObject({
+      status: "succeeded",
+      data: { result: "red", why: "checks", command: "npm run check:responsive", how: "exited 1", failing_tests: ["tests/ui.test.ts > page > layout"], output_tail: out },
+    });
+  });
+
+  it("a UI check that fails on the base too is red with why base_red, the command and the base's output tail", async () => {
+    const r = await mergeCheckRun({ ui_check, changed: ["web/a.css"], ui: { merged: { exit: 1, out: "merged\n" }, base: { exit: 1, out: "main is broken\n" } } });
+    expect(r.outcome).toMatchObject({
+      status: "succeeded", data: { result: "red", why: "base_red", command: "npm run check:responsive", how: "exited 1", output_tail: "main is broken\n", base_sha: "base" },
+    });
+  });
+
+  it("a UI-check failure with no output keeps its reason as the tail: a command that could not run, or its exit", async () => {
+    const thrown = await mergeCheckRun({ ui_check, changed: ["web/a.css"], ui: { merged: "throw" } });
+    expect(thrown.data).toMatchObject({ result: "red", why: "checks", how: "could not run: spawn npm ENOENT", output_tail: "could not run: spawn npm ENOENT" });
+    const silentExit = await mergeCheckRun({ ui_check, changed: ["web/a.css"], ui: { merged: { exit: 1 }, base: { exit: 2 } } });
+    expect(silentExit.data).toMatchObject({ result: "red", why: "base_red", how: "exited 2", output_tail: "exited 2" });
   });
 
   it("a failing check stops the run before the UI check", async () => {
@@ -696,7 +732,8 @@ describe("merge check run: one rerun of the failing test files (fake sandbox)", 
     expect(install.commands).toEqual(["npm ci"]);
     expect(install.outcome).toMatchObject({ data: { result: "red", command: "npm ci" } });
     const ui = await rerunRun({ "npm run check:responsive": [{ exit: 1, out: FAIL }] }, { ui: true });
-    expect(ui.commands).toEqual(["npm ci", "npm test", "npm run lint", "npm run check:responsive"]);
+    // The UI check's one more run is on the base alone (after its install command), never a rerun of test files.
+    expect(ui.commands).toEqual(["npm ci", "npm test", "npm run lint", "npm run check:responsive", "npm ci", "npm run check:responsive"]);
     expect(ui.outcome).toMatchObject({ data: { result: "red", command: "npm run check:responsive" } });
   });
 });
@@ -813,20 +850,22 @@ describe("merge check run: the project's Node version (fake sandbox, fake runtim
   });
 });
 
-// End to end over a real git repo (as tests/merge-queue-flow.test.ts): a local change to web/ whose merged commit fails
-// the UI check leaves the merge queue, `main` does not move, the item's thread names the check, and the item goes back
-// to implement as a loop.
+// End to end over a real git repo (as tests/merge-queue-flow.test.ts). A local change to web/ whose merged commit fails
+// the UI check while `main` alone passes it leaves the merge queue, `main` does not move, the item's thread names the
+// check, and the item goes back to implement as a loop with the output tail kept. When `main` alone fails it too (red
+// main, design 03-risk), no change is blamed: the entries stay queued and are not checked again until `main` moves,
+// and one red_main alert and one fix item are stored for that base sha.
 describe("merge queue: a failing UI check (real git)", { timeout: 120_000 }, () => {
   const ME = "local:me@example.com" as UserId;
   const ident = ["-c", "user.name=t", "-c", "user.email=t@example.com"];
   const sh = (cwd: string, ...args: string[]) => git(cwd, ...args).trim();
 
-  it("keeps main where it was, removes the entry, names check:responsive in the thread and sends the item back", async () => {
+  /** A local factory over a real repo whose `check:responsive` script is `script`; `depth`: the merge queue's depth. */
+  async function uiFactory(script: string, depth = 1) {
     const root = mkdtempSync(join(tmpdir(), "sf-ui-check-"));
     const repo = join(root, "repo");
     sh(root, "init", "--quiet", "-b", "main", repo);
-    // The UI check fails on any merged commit.
-    writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "x", private: true, scripts: { "check:responsive": "exit 1" } }));
+    writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "x", private: true, scripts: { "check:responsive": script } }));
     sh(repo, "add", "-A");
     sh(repo, ...ident, "commit", "--quiet", "-m", "init");
     sh(repo, "checkout", "--quiet", "--detach");
@@ -834,7 +873,7 @@ describe("merge queue: a failing UI check (real git)", { timeout: 120_000 }, () 
     const project = localProject({ owner: "o", name: "r" });
     const pass = ["sh", "-c", "exit 0"];
     const cfg: FactoryConfig = {
-      ...config, project, local_only: true, merge_queue_depth: 1,
+      ...config, project, local_only: true, merge_queue_depth: depth,
       repo: { ...config.repo, path: repo, install_command: pass, test_command: pass, ui_check: { command: ["npm", "run", "check:responsive"], paths: ["web/", "src/ui/"] } },
     };
     const clock = new FakeClock();
@@ -868,26 +907,96 @@ describe("merge queue: a failing UI check (real git)", { timeout: 120_000 }, () 
     let n = 0;
     const cli = (a: CliAction) =>
       runLocalCli({ store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
+    /** A change to web/ reviewed and waiting for its merge. */
+    const ready = async (title: string) => {
+      const id = (await cli({ action: "create", title, bodyFile: "body.md" })).lines[0] as WorkItemId;
+      await step();
+      await cli({ action: "command", command: "approve", id, text: "" });
+      await step();
+      await step();
+      expect(await store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+      return id;
+    };
+    const merge = (id: WorkItemId) => cli({ action: "command", command: "merge", id, text: "" });
+    return { root, repo, store, controller, step, ready, merge };
+  }
 
-    const id = (await cli({ action: "create", title: "Web change", bodyFile: "body.md" })).lines[0] as WorkItemId;
-    await step();
-    await cli({ action: "command", command: "approve", id, text: "" });
-    await step();
-    await step();
-    expect(await store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
-    const mainBefore = sh(repo, "rev-parse", "main");
+  it("main passes alone: keeps main where it was, removes the entry, names check:responsive in the thread and sends the item back with the tail", async () => {
+    // The UI check fails only on a commit with the change's web/app.css: `main` alone passes it.
+    const f = await uiFactory("test ! -e web/app.css || { echo web/app.css breaks the layout; exit 1; }");
+    const id = await f.ready("Web change");
+    const mainBefore = sh(f.repo, "rev-parse", "main");
 
-    await cli({ action: "command", command: "merge", id, text: "" });
-    await step();
+    await f.merge(id);
+    await f.step();
 
-    expect(sh(repo, "rev-parse", "main")).toBe(mainBefore);
-    expect(await store.getWorkItem(id)).toMatchObject({ stage: "RUNNING", loop_count: 1, merge_sha: null });
-    const queue = await controller.unit("merge-queue");
+    expect(sh(f.repo, "rev-parse", "main")).toBe(mainBefore);
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "RUNNING", loop_count: 1, merge_sha: null });
+    const queue = await f.controller.unit("merge-queue");
     expect((await queue.entries(id)).map((e) => e.state)).toEqual(["removed"]);
-    const check = (await store.listRuns(id)).find((r) => r.kind === "merge-check")!;
-    expect(check.outcome).toMatchObject({ status: "succeeded", data: { result: "red", command: "npm run check:responsive" } });
-    const refused = (await store.listItemMessages(id)).filter((m) => m.marker.startsWith("<!-- factory:refused:")).map((m) => m.body);
+    const check = (await f.store.listRuns(id)).find((r) => r.kind === "merge-check")!;
+    expect(check.outcome).toMatchObject({ status: "succeeded", data: { result: "red", why: "checks", command: "npm run check:responsive" } });
+    const failed = (await f.store.listStateChanges(id)).find((c) => c.reason === "merge_check_failed");
+    expect(failed?.detail).toMatchObject({ command: "npm run check:responsive", output_tail: expect.stringContaining("web/app.css breaks the layout") });
+    const refused = (await f.store.listItemMessages(id)).filter((m) => m.marker.startsWith("<!-- factory:refused:")).map((m) => m.body);
     expect(refused.join("\n")).toContain("`npm run check:responsive`");
     expect(refused.join("\n")).toContain("did not move and the change left the merge queue");
+    expect((await f.store.listAlerts({ limit: 10 })).some((a) => a.pattern === "red_main")).toBe(false);
+  });
+
+  it("main fails alone: the queued changes stay queued with no loop, one red_main alert and one fix item for the base sha, and no check again until main moves", async () => {
+    const f = await uiFactory("echo main is broken; exit 1", 2);
+    const first = await f.ready("Web change one");
+    const second = await f.ready("Web change two");
+    const main = sh(f.repo, "rev-parse", "main");
+
+    await f.merge(first);
+    await f.merge(second);
+    await f.step();
+
+    const queue = await f.controller.unit("merge-queue");
+    for (const id of [first, second]) {
+      expect(sh(f.repo, "rev-parse", "main")).toBe(main);
+      expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", loop_count: 0, merge_sha: null });
+      expect((await queue.entries(id)).map((e) => e.state)).toEqual(["queued"]);
+      expect((await f.store.listStateChanges(id)).map((c) => c.reason)).not.toContain("merge_check_failed");
+      const check = (await f.store.listRuns(id)).find((r) => r.kind === "merge-check")!;
+      expect(check.outcome).toMatchObject({
+        status: "succeeded", data: { result: "red", why: "base_red", command: "npm run check:responsive", base_sha: main, output_tail: expect.stringContaining("main is broken") },
+      });
+    }
+    // Both changes failed on the same base: one alert and one fix item, keyed on its sha.
+    const alerts = async () => (await f.store.listAlerts({ limit: 50 })).filter((a) => a.pattern === "red_main");
+    expect((await alerts()).map((a) => a.pattern_key)).toEqual([`red_main:${main}`]);
+    // Manual mode: the alert is raised, and there is no auto mode to stop.
+    expect((await f.store.listAlerts({ limit: 50 })).some((a) => a.pattern === "auto_stopped")).toBe(false);
+    expect((await f.store.listSettingChanges(50)).filter((c) => c.key === "mode")).toEqual([]);
+    const fixes = async () => (await f.store.db.all("SELECT intent_key FROM outbound_actions WHERE action = 'file_fix_item'")).map((r) => r.intent_key);
+    expect(await fixes()).toEqual([`file_fix_item:red_main:${main}`]);
+    await f.controller.tickOutbox();
+    const filedId = `local-filed-${createHash("sha256").update(`<!-- factory:red-main:${main} -->`).digest("hex").slice(0, 16)}`;
+    const filed = await f.store.getWorkItemBySource("local", filedId);
+    expect(filed).toMatchObject({ requester_id: "system:controller" });
+    expect(filed!.title).toContain(main.slice(0, 12));
+
+    // Held while main is unchanged: more ticks run no check and store nothing more.
+    const checks = async () => (await Promise.all([first, second].map((id) => f.store.listRuns(id)))).flat().filter((r) => r.kind === "merge-check").length;
+    const before = await checks();
+    await queue.queueStep();
+    await f.step();
+    await queue.queueStep();
+    expect(await checks()).toBe(before);
+    expect(await alerts()).toHaveLength(1);
+    expect(await fixes()).toHaveLength(1);
+    expect((await queue.entries(first)).map((e) => e.state)).toEqual(["queued"]);
+
+    // `main` moves: the head entry is checked again.
+    sh(f.repo, "checkout", "--quiet", "main");
+    writeFileSync(join(f.repo, "fix.txt"), "a fix\n");
+    sh(f.repo, "add", "-A");
+    sh(f.repo, ...ident, "commit", "--quiet", "-m", "a fix");
+    sh(f.repo, "checkout", "--quiet", "--detach");
+    await queue.queueStep();
+    expect(await checks()).toBeGreaterThan(before);
   });
 });

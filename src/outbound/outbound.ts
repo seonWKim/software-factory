@@ -374,7 +374,7 @@ export class Outbound {
   }
 
   /**
-   * G5 on an action's text: a post's body, a PR's or a filed sub-issue's title and body, a tacit capture's pushback and
+   * G5 on an action's text: a post's body, a PR's, a filed sub-issue's or a fix item's title and body, a tacit capture's pushback and
    * proposal (a flagged one goes out as the notice only; a sub-issue keeps its marker, so a retry finds it).
    */
   private async scannedAction(row: ActionRow): Promise<ActionRow> {
@@ -383,10 +383,11 @@ export class Outbound {
       const id = String(row.args.session);
       return { ...row, args: { ...row.args, pushback: await this.scanned(String(row.args.pushback), id), proposal: await this.scanned(String(row.args.proposal), id) } };
     }
-    if (row.action === "file_sub_issue") {
+    if (row.action === "file_sub_issue" || row.action === "file_fix_item") {
       const text = `${String(row.args.title)}\n${String(row.args.body)}`;
       const notice = await this.scanned(text, row.target.id);
-      return notice === text ? row : { ...row, args: { ...row.args, title: `Factory split phase ${String(row.args.phase)}`, body: notice } };
+      const title = row.action === "file_fix_item" ? `Fix the base branch at ${String(row.args.base_sha).slice(0, 12)}` : `Factory split phase ${String(row.args.phase)}`;
+      return notice === text ? row : { ...row, args: { ...row.args, title, body: notice } };
     }
     if (row.action !== "pr") return row;
     const text = [row.args.title, row.args.body, ...Object.keys(row.args.labels ? (JSON.parse(String(row.args.labels)) as object) : {})].join("\n");

@@ -2,7 +2,7 @@
 // through the source adapter or the forge that holds its credentials (G2). Outbound is the only caller of their
 // write calls (tests/architecture/forge-writes.test.ts).
 
-import type { SourceRef } from "../../core/types.js";
+import type { SourceRef, UserId } from "../../core/types.js";
 import type { Forge, PrMergeResult } from "../../interfaces/forge.js";
 import type { SourceAdapter, SourceNotice } from "../../interfaces/source-adapter.js";
 import type { ActionRow } from "../intents.js";
@@ -45,9 +45,9 @@ export interface TacitCapture {
 }
 
 /**
- * An action on `adapter`: the status label, the 👀, the close, a post with no thread entry, or a split's phase filed
- * under its parent (the adapter finds one already filed by its marker first, so a retry after a lost response
- * files no second one; the filed item's source id is the delivery's `ref`).
+ * An action on `adapter`: the status label, the 👀, the close, a post with no thread entry, a split's phase filed
+ * under its parent, or a red base's fix item (the adapter finds one already filed by its marker first, so a retry
+ * after a lost response files no second one; the filed item's source id is the delivery's `ref`).
  */
 export async function act(adapter: SourceAdapter, row: ActionRow): Promise<{ url: string | null; ref?: string }> {
   const a = row.args;
@@ -66,6 +66,13 @@ export async function act(adapter: SourceAdapter, row: ActionRow): Promise<{ url
     case "file_sub_issue": {
       if (!adapter.fileSubIssue) throw new Error(`the ${adapter.type} source cannot file sub-issues`);
       const ref = await adapter.fileSubIssue({ parent: row.target, title: String(a.title), body: String(a.body), marker: String(a.marker) });
+      return { url: ref.link, ref: ref.id };
+    }
+    case "file_fix_item": {
+      if (!adapter.fileIssue) throw new Error(`the ${adapter.type} source cannot file items`);
+      const ref = await adapter.fileIssue({
+        project: String(a.project), requester_id: String(a.requester_id) as UserId, title: String(a.title), body: String(a.body), marker: String(a.marker),
+      });
       return { url: ref.link, ref: ref.id };
     }
     case "close_pr":
