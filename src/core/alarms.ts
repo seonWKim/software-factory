@@ -6,14 +6,16 @@
 // for a person at once. A failure pattern that already alerted or was filed re-raises, at most once an hour, when it
 // keeps failing: its items are held and its filed item gets a comment. The same step checks the spend budgets
 // (design 06-spend): 80% and 100% of a daily or weekly budget alert once each per period, and never stop, pause or
-// hold anything. No forge, LLM or sandbox call; every text is scanned first.
+// hold anything. A run a grant check refused holds its item for a person at once and alerts once an hour, so an
+// unattended run that could not reach its tools is never a silent no-op. No forge, LLM or sandbox call; every text
+// is scanned first.
 
 import { groupFailures, normalizeDetail, patternKey, sleepAlertKey, stalledBySleep } from "./improver.js";
 import type { Logger } from "./log.js";
 import { AGENT_STALLED, MODEL_STALL } from "./policy.js";
 import { DAY_MS, dayStart, spendTotals, utcDay, weekStart } from "./spend.js";
 import {
-  type FailureGroup, type FiledPattern, RECURRING_FAILURE, type Run, type RunKind, type SourceRef, type StateChange, type Timestamp, type WorkItem, type WorkItemId,
+  type FailureGroup, type FiledPattern, RECURRING_FAILURE, type Run, type RunKind, type RunOutcome, type SourceRef, type StateChange, type Timestamp, type WorkItem, type WorkItemId,
   runTokenCount,
 } from "./types.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -35,6 +37,14 @@ export const RERAISE_WINDOW_MS = 3_600_000;
 export const FILED_INTAKE_MS = 3_600_000;
 /** The newest alerts a re-raise reads for a pattern's last alert and last re-raise: far more than one hour stores. */
 const ALERTS_READ = 100;
+/**
+ * The error codes of a run a grant check refused: a pack entry it may not have (the worker's `pack_tool_refused`,
+ * src/packs/pack-grants.ts) or a tool outside its grants (the tool gate's `not_granted`, src/impl/runner/tool-bridge.ts).
+ * Named here because src/core imports nothing outside it.
+ */
+export const GRANT_REFUSALS: readonly string[] = ["pack_tool_refused", "not_granted"];
+/** The key prefix of a grant refusal's alert; the improver's pattern key follows. */
+export const GRANT_REFUSED_PREFIX = "grant_refused:";
 /** The run kinds whose work is an agent's, so a run with no tokens means the model did nothing. */
 const AGENT_RUN_KINDS: readonly RunKind[] = ["triage", "implement", "review", "resolve"];
 
@@ -164,6 +174,7 @@ export async function alarmStep(d: AlarmDeps, settings: AlarmSettings & { probe_
   // Before this step's own alerts, so a pattern's new 6-hour alert never hides the re-raise it is due.
   const stored = await reraise(d, runs, now, settings.alarm_repeat_count);
   await holdFiled(d, runs, now);
+  stored.push(...(await holdRefused(d, runs, now)));
   for (const { held, ...f } of detectAlarms({ runs, restarts, now, settings })) {
     // G5: alerts reach the status page, so the detail is scanned as UI text, never stored unscanned.
     const scan = await d.scanner.scan("ui", f.detail);
@@ -291,6 +302,42 @@ async function holdFiled(d: AlarmDeps, runs: readonly Run[], now: Date): Promise
     const items = await unheld(d, runsOf(g, byId), key, filed.created_at);
     if (items.length > 0) await d.hold({ pattern_key: key, work_item_ids: items });
   }
+}
+
+/**
+ * Each grant refusal of the last RERAISE_WINDOW_MS (a failed run with a GRANT_REFUSALS code, of any kind) holds its item for a person at its first run, and its pattern (the improver's key of the code
+ * and normalized detail) stores one `repeated_error` alert, key `grant_refused:<key>`, at most once per
+ * RERAISE_WINDOW_MS. The detail is the newest run's, which names the refused grant. The hold is the recurring one
+ * (`unheld`, then a conditional transition), so `/retry` lifts it and a second step writes nothing. Returns the alerts
+ * it stored.
+ */
+async function holdRefused(d: AlarmDeps, runs: readonly Run[], now: Date): Promise<Alert[]> {
+  const since = now.getTime() - RERAISE_WINDOW_MS;
+  const groups = new Map<string, Run[]>();
+  for (const r of runs) {
+    const o = r.outcome;
+    if (r.status !== "failed" || o?.status !== "failed" || !GRANT_REFUSALS.includes(o.error_code)) continue;
+    if (r.finished_at === null || Date.parse(r.finished_at) < since) continue;
+    const key = patternKey({ error_code: o.error_code, detail: normalizeDetail(o.detail) });
+    groups.set(key, [...(groups.get(key) ?? []), r]);
+  }
+  const stored: Alert[] = [];
+  for (const [key, group] of [...groups.entries()].sort(([a], [b]) => cmp(a, b))) {
+    if (d.hold) {
+      const items = await unheld(d, group, key, null);
+      if (items.length > 0) await d.hold({ pattern_key: key, work_item_ids: items });
+    }
+    const newest = [...group].sort((a, b) => cmp(b.finished_at!, a.finished_at!))[0]!.outcome as Extract<RunOutcome, { status: "failed" }>;
+    const scan = await d.scanner.scan("ui", newest.detail);
+    const r = await d.store.recordAlert(
+      { pattern: "repeated_error", pattern_key: `${GRANT_REFUSED_PREFIX}${key}`, error_code: newest.error_code, count: group.length, detail: scan.clean ? newest.detail : null },
+      RERAISE_WINDOW_MS,
+    );
+    if (!r.created) continue;
+    stored.push(r.alert);
+    d.log.warn("alarm: a run was refused by a grant check", { alert_id: r.alert.id, error_code: newest.error_code, count: group.length });
+  }
+  return stored;
 }
 
 /** `g`'s runs, read from `byId`. */

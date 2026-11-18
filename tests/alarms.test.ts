@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { ALERT_DEDUPE_MS, RERAISE_WINDOW_MS, RESTART_WINDOW_MS, alarmStep, detectAlarms } from "../src/core/alarms.js";
+import { ALERT_DEDUPE_MS, GRANT_REFUSED_PREFIX, RERAISE_WINDOW_MS, RESTART_WINDOW_MS, alarmStep, detectAlarms } from "../src/core/alarms.js";
 import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS } from "../src/core/config.js";
 import { type ControllerDeps } from "../src/core/controller-deps.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
-import { enqueueImprove, manualWindow, patternKey } from "../src/core/improver.js";
+import { enqueueImprove, manualWindow, normalizeDetail, patternKey } from "../src/core/improver.js";
 import { AGENT_STALLED } from "../src/core/policy.js";
 import { RECURRING_FAILURE, type RunKind, type RunOutcome, type Timestamp, type WorkerId } from "../src/core/types.js";
 import type { LLMProvider } from "../src/interfaces/llm-provider.js";
@@ -406,5 +406,64 @@ describe("alarms: recurring patterns", () => {
       claimed.add(r.work_item_id);
     }
     expect(claimed).toEqual(new Set([other.id, unknown.work_item_id]));
+  });
+});
+
+describe("alarms: a run refused by a grant check", () => {
+  const GRANT = "pack:tool:docs";
+  const refused = (code = "pack_tool_refused"): RunOutcome => ({ status: "failed", error_code: code, detail: `pack tools refused: ${GRANT} not_approved`, infra: false });
+
+  it("holds its item for a person at the first refusal and stores one alert that names the refused grant", async () => {
+    const { store, clock } = await newStore();
+    const c = controller(store, clock, { source: new FakeSource() });
+    const run = await finish(store, refused());
+    await c.tickAlarms();
+    const item = await store.getWorkItem(run.work_item_id);
+    expect(item).toMatchObject({ blocked_on: "human", blocked_reason: RECURRING_FAILURE });
+    expect((await store.getRun(run.id))?.status).toBe("failed");
+    const alerts = (await store.listAlerts({ limit: 10 })).filter((a) => a.pattern_key.startsWith(GRANT_REFUSED_PREFIX));
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatchObject({ pattern: "repeated_error", error_code: "pack_tool_refused", count: 1 });
+    expect(alerts[0]!.detail).toContain(GRANT);
+    expect(alerts[0]!.pattern_key).toBe(`${GRANT_REFUSED_PREFIX}${patternKey({ error_code: "pack_tool_refused", detail: normalizeDetail(`pack tools refused: ${GRANT} not_approved`) })}`);
+  });
+
+  it("a not_granted refusal of a scheduled improve run is held too", async () => {
+    const { store, clock } = await newStore();
+    const run = await finish(store, refused("not_granted"), "improve");
+    await controller(store, clock, { source: new FakeSource() }).tickAlarms();
+    expect(await store.getWorkItem(run.work_item_id)).toMatchObject({ blocked_on: "human", blocked_reason: RECURRING_FAILURE });
+    expect((await store.listAlerts({ limit: 10 })).map((a) => a.error_code)).toContain("not_granted");
+  });
+
+  it("two alarm steps store one alert; the pattern alerts again only after the one-hour re-raise window", async () => {
+    const { store, clock } = await newStore();
+    await finish(store, refused());
+    const deps = { store, scanner: cleanScanner, clock, log: silent, project: PROJECT_KEY };
+    const settings = { ...ALARM_DEFAULTS, probe_interval_ms: STALL_DEFAULTS.probe_interval_ms };
+    const own = async () => (await store.listAlerts({ limit: 10 })).filter((a) => a.pattern_key.startsWith(GRANT_REFUSED_PREFIX));
+    const [a, b] = await Promise.all([alarmStep(deps, settings), alarmStep(deps, settings)]);
+    expect([...a, ...b].filter((x) => x.pattern_key.startsWith(GRANT_REFUSED_PREFIX))).toHaveLength(1);
+    expect(await own()).toHaveLength(1);
+    clock.advance(RERAISE_WINDOW_MS - MIN);
+    await finish(store, refused());
+    await alarmStep(deps, settings);
+    expect(await own()).toHaveLength(1);
+    clock.advance(MIN);
+    await alarmStep(deps, settings);
+    const alerts = await own();
+    expect(alerts).toHaveLength(2);
+    expect(alerts[0]!.pattern_key).toBe(alerts[1]!.pattern_key);
+  });
+
+  it("a hold a person lifted is not put back by the same refused run", async () => {
+    const { store, clock } = await newStore();
+    const c = controller(store, clock, { source: new FakeSource() });
+    const run = await finish(store, refused());
+    await c.tickAlarms();
+    const held = (await store.getWorkItem(run.work_item_id))!;
+    await store.transition({ id: held.id, expected_version: held.version, actor: system, reason: "retry_requested", patch: { blocked_on: "none", blocked_reason: null } });
+    await c.tickAlarms();
+    expect(await store.getWorkItem(run.work_item_id)).toMatchObject({ blocked_on: "none" });
   });
 });
