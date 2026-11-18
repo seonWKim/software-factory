@@ -226,6 +226,8 @@ export interface FailureGroup {
   filing?: ImproveFiling;
   /** A `hotspot` row only (detail: the file): the items a coordination hold kept back on the file, each once. */
   held_item_ids?: WorkItemId[];
+  /** A `hotspot` row only: each counted run's finish time and each held item's claim decision time, by ID. Absent on older rows. */
+  counted_at?: Record<string, Timestamp>;
 }
 
 /**
