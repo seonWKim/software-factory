@@ -4,8 +4,9 @@
 // another worker needs.
 //
 // The first read waits for the first refresh only. After that a read never waits: it returns the last result. While
-// started, a refresh runs every `interval_ms` if a read happened in the last `IDLE_MS`; the first read after that
-// idle window returns the last result and starts a refresh. A refresh that throws keeps the last good result and
+// started, a refresh runs every `interval_ms` if a read of any snapshot sharing its `Activity` happened in the last
+// `IDLE_MS`; the first read after that idle window returns the last result and starts a refresh of every started
+// snapshot that shares it. A refresh that throws keeps the last good result and
 // its time; with no good result yet, the first read gets the error.
 
 /** The part of a Clock the snapshot uses (structural, so any Clock fits). */
@@ -17,6 +18,39 @@ interface Clock {
 /** No refresh runs unless a read happened within this time: an idle owner's page costs no remote call. */
 export const IDLE_MS = 10 * 60_000;
 
+/**
+ * When the page was last read, shared by the snapshots of one UI server: a read of either route keeps both refreshing.
+ * The read that ends an idle window wakes every started snapshot that shares it.
+ */
+export class Activity {
+  private last_read: number | null = null;
+  private readonly wakers = new Set<() => void>();
+
+  constructor(
+    private readonly clock: Pick<Clock, "now">,
+    private readonly idle_ms = IDLE_MS,
+  ) {}
+
+  /** A read happened within the idle window. */
+  inUse(): boolean {
+    return this.last_read !== null && this.clock.now().getTime() - this.last_read < this.idle_ms;
+  }
+
+  /** Records a read. When it ends an idle window, wakes every subscriber and returns true. */
+  touch(): boolean {
+    const woke = !this.inUse();
+    this.last_read = this.clock.now().getTime();
+    if (woke) for (const w of this.wakers) w();
+    return woke;
+  }
+
+  /** Calls `wake` on each read that ends an idle window; returns the unsubscribe. */
+  onWake(wake: () => void): () => void {
+    this.wakers.add(wake);
+    return () => this.wakers.delete(wake);
+  }
+}
+
 export interface Snapshot<T> {
   value: T;
   /** When the refresh that produced `value` finished. */
@@ -26,14 +60,13 @@ export interface Snapshot<T> {
 export class BackgroundSnapshot<T> {
   private last: Snapshot<T> | null = null;
   private inflight: Promise<Snapshot<T>> | null = null;
-  private last_read: number | null = null;
-  private loop: AbortController | null = null;
+  private loop: { abort: AbortController; unsubscribe: () => void } | null = null;
 
   constructor(
     private readonly refresh: () => Promise<T>,
     private readonly clock: Clock,
     private readonly interval_ms: number,
-    private readonly idle_ms = IDLE_MS,
+    private readonly activity = new Activity(clock),
   ) {}
 
   /** One refresh at a time: a caller during a run shares it. A failure leaves the last good result. */
@@ -53,33 +86,33 @@ export class BackgroundSnapshot<T> {
 
   /** The last result; only the first read (no result yet) waits for a refresh, and gets its error if it fails. */
   async read(): Promise<Snapshot<T>> {
-    const now = this.clock.now().getTime();
-    const idle = this.last_read === null || now - this.last_read >= this.idle_ms;
-    this.last_read = now;
+    const woke = this.activity.touch();
     if (this.last === null) return this.run();
-    if (idle) this.refreshInBackground();
+    if (woke) this.refreshInBackground();
     return this.last;
   }
 
-  /** Starts the interval; a second start does nothing. */
+  /** Starts the interval and the wake on the first read after idle; a second start does nothing. */
   start(): void {
     if (this.loop) return;
-    const loop = (this.loop = new AbortController());
+    const abort = new AbortController();
+    this.loop = { abort, unsubscribe: this.activity.onWake(() => this.refreshInBackground()) };
     void (async () => {
-      while (!loop.signal.aborted) {
+      while (!abort.signal.aborted) {
         try {
-          await this.clock.sleep(this.interval_ms, loop.signal);
+          await this.clock.sleep(this.interval_ms, abort.signal);
         } catch {
           return;
         }
-        if (this.last_read !== null && this.clock.now().getTime() - this.last_read < this.idle_ms) this.refreshInBackground();
+        if (this.activity.inUse()) this.refreshInBackground();
       }
     })();
   }
 
-  /** Stops the interval. A refresh already running finishes; none starts from the timer. */
+  /** Stops the interval and the wake. A refresh already running finishes; none starts from the timer. */
   stop(): void {
-    this.loop?.abort();
+    this.loop?.abort.abort();
+    this.loop?.unsubscribe();
     this.loop = null;
   }
 }

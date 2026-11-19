@@ -38,6 +38,7 @@ import { TASKS_PATH, TASK_WRITES, readTasks } from "./tasks-api.js";
 import { RULES_PATH, RULE_ENTRY_PATH, RULE_VERDICT_PATH, readRuleEntry, readRules, writeRuleVerdict } from "./rules-api.js";
 import { IMPROVE_RUN_PATH, type ImproveRunDeps, improveRunWired, runImproveNow } from "./improve-api.js";
 import { NOTICES_PATH, readNotices } from "./notices-api.js";
+import { Activity } from "./background-refresh.js";
 import { PLUGINS_PATH, readPlugins, startPluginsSnapshot } from "./plugins-api.js";
 import { PLUGINS_IMPORT_PATH, readPluginsImport, writePluginsImport } from "./plugins-import-api.js";
 import { CALENDAR_CONNECT_PATH, CALENDAR_DISCONNECT_PATH, CALENDAR_PATH, readCalendarStatus, writeCalendar } from "./calendar-api.js";
@@ -276,8 +277,10 @@ export interface UiServer {
 /** Listens on 127.0.0.1:`port` (0 picks a free port). */
 export async function startUi(d: ServerDeps, port: number): Promise<UiServer> {
   // The Health and Plugins reads answer from background snapshots, refreshed after each successful write (design 09-health).
-  d.health.start();
-  const plugins = startPluginsSnapshot(d);
+  // One Activity: a read of either route keeps both refreshing.
+  const activity = new Activity(d.clock);
+  d.health.start(activity);
+  const plugins = startPluginsSnapshot(d, activity);
   const refreshAll = () => {
     d.health.refresh();
     plugins.refresh();

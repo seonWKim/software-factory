@@ -25,7 +25,7 @@ import { storeSql } from "../impl/store/sql/store-sql.js";
 import { McpToolListsStore, approvedImportedServers, requestMcpToolLists } from "../import/mcp-tool-lists.js";
 import { PackEntriesStore } from "../packs/pack-entries.store.js";
 import type { SkillRefSource, SkillState } from "../runtime/capabilities/capabilities.js";
-import { BackgroundSnapshot } from "./background-refresh.js";
+import { type Activity, BackgroundSnapshot } from "./background-refresh.js";
 import { HEALTH_MIN_INTERVAL_MS } from "./health.js";
 import { type CapabilityDeps, type UiCapabilitySources, capabilityRows, settingsSources } from "./capabilities-api.js";
 import type { ApiDeps, ApiResult } from "./api.js";
@@ -207,13 +207,14 @@ const snapshots = new WeakMap<ApiDeps, BackgroundSnapshot<Awaited<ReturnType<typ
 /**
  * Installs the background snapshot of the Plugins read for `d` (design 09-dashboard-settings, 2026-11-19): the same
  * builder (`pluginRows`) runs on an interval while the page is in use and on `refresh()`, and GET /api/v1/plugins
- * answers from its last result. Returns the handle the server uses after a write and on close. A server without
- * settings has no Plugins route, so nothing is installed.
+ * answers from its last result. `activity` is shared with the Health snapshot, so a read of either route keeps both
+ * refreshing. Returns the handle the server uses after a write and on close. A server without settings has no
+ * Plugins route, so nothing is installed.
  */
-export function startPluginsSnapshot(d: ApiDeps): { refresh(): void; stop(): void } {
+export function startPluginsSnapshot(d: ApiDeps, activity?: Activity): { refresh(): void; stop(): void } {
   const settings = d.settings;
   if (!settings) return { refresh: () => undefined, stop: () => undefined };
-  const snap = new BackgroundSnapshot(() => discover(d, settings), d.clock, HEALTH_MIN_INTERVAL_MS);
+  const snap = new BackgroundSnapshot(() => discover(d, settings), d.clock, HEALTH_MIN_INTERVAL_MS, activity);
   snapshots.set(d, snap);
   snap.start();
   return {

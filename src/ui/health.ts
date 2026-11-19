@@ -9,7 +9,7 @@ import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { type Check, type CheckStatus, checkStatus } from "../setup.js";
-import { BackgroundSnapshot } from "./background-refresh.js";
+import { type Activity, BackgroundSnapshot } from "./background-refresh.js";
 import { Withholder } from "./withhold.js";
 
 export const HEALTH_MIN_INTERVAL_MS = 60_000;
@@ -102,10 +102,11 @@ export class HealthMonitor {
   /**
    * From now on `report` answers from the last run at once and the checks run in the background (design 09-health,
    * 2026-11-19): every `min_interval_ms` while the page is in use, and after `refresh()`. The first report waits for
-   * the first run only; a run that throws keeps the last good one. Not started: the on-demand behaviour above.
+   * the first run only; a run that throws keeps the last good one. `activity` is shared with the other routes' snapshots,
+   * so a read of any of them keeps this one refreshing. Not started: the on-demand behaviour above.
    */
-  start(): void {
-    this.snapshot ??= new BackgroundSnapshot(() => this.execute(this.clock.now()), this.clock, this.min_interval_ms);
+  start(activity?: Activity): void {
+    this.snapshot ??= new BackgroundSnapshot(() => this.execute(this.clock.now()), this.clock, this.min_interval_ms, activity);
     this.snapshot.start();
   }
 

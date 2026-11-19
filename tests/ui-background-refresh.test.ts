@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { type Check } from "../src/setup.js";
-import { BackgroundSnapshot, IDLE_MS } from "../src/ui/background-refresh.js";
+import { Activity, BackgroundSnapshot, IDLE_MS } from "../src/ui/background-refresh.js";
 import { HEALTH_MIN_INTERVAL_MS, HealthMonitor } from "../src/ui/health.js";
 import { startPluginsSnapshot } from "../src/ui/plugins-api.js";
 import { type ApiDeps, startUi } from "../src/ui/server.js";
@@ -99,6 +99,36 @@ describe("BackgroundSnapshot", () => {
     clock.advance(10 * 60_000);
     await flush();
     expect(n).toBe(stopped);
+  });
+
+  it("snapshots sharing an Activity: reads of one keep the other refreshing, and an idle read wakes both", async () => {
+    const clock = new FakeClock();
+    const activity = new Activity(clock);
+    let a = 0;
+    let b = 0;
+    const read = new BackgroundSnapshot(async () => ++a, clock, 60_000, activity);
+    const other = new BackgroundSnapshot(async () => ++b, clock, 60_000, activity);
+    read.start();
+    other.start();
+    await read.read();
+    await other.read();
+    const before = b;
+    for (let i = 0; i < 15; i++) {
+      clock.advance(60_000);
+      await flush();
+      await read.read(); // only the first snapshot is read
+    }
+    expect(b).toBeGreaterThanOrEqual(before + 15); // the other kept refreshing past the 10-minute idle window
+    clock.advance(IDLE_MS + 60_000);
+    await flush();
+    const idleA = a;
+    const idleB = b;
+    await read.read(); // the read that ends the idle window refreshes both
+    await flush();
+    expect(a).toBe(idleA + 1);
+    expect(b).toBe(idleB + 1);
+    read.stop();
+    other.stop();
   });
 });
 
@@ -227,5 +257,38 @@ describe("Plugins snapshot and the UI server", () => {
       await flush();
     }
     expect(g.state.runs).toBe(1);
+  });
+
+  it("the server: a Health read keeps Plugins refreshing; a successful POST refreshes both, a refused one does not", async () => {
+    const clock = new FakeClock();
+    const g = gate();
+    const slow = { on: false, fail: false, calls: 0 };
+    const d = await pluginDeps(clock, slow);
+    const ui = await startUi({ ...d, health: new HealthMonitor(g.run, clock) }, 0);
+    try {
+      const base = `http://127.0.0.1:${ui.port}`;
+      expect((await fetch(`${base}/api/v1/plugins`)).status).toBe(200);
+      expect(slow.calls).toBe(1);
+      for (let i = 0; i < 12; i++) {
+        clock.advance(HEALTH_MIN_INTERVAL_MS);
+        await flush();
+        expect((await fetch(`${base}/api/v1/health`)).status).toBe(200);
+      }
+      expect(slow.calls).toBeGreaterThanOrEqual(12); // refreshed past the idle window by Health reads alone
+      const settings = (await (await fetch(`${base}/api/v1/settings`)).json()) as { csrf_token: string };
+      const headers = { "content-type": "application/json", origin: base, "x-csrf-token": settings.csrf_token };
+      const runs = g.state.runs;
+      const calls = slow.calls;
+      const refused = await fetch(`${base}/api/v1/settings`, { method: "POST", headers: { ...headers, "x-csrf-token": "" }, body: JSON.stringify({ action: "set", key: "max_loops", value: "2" }) });
+      expect(refused.status).toBe(403);
+      await flush();
+      expect([g.state.runs, slow.calls]).toEqual([runs, calls]);
+      const ok = await fetch(`${base}/api/v1/settings`, { method: "POST", headers, body: JSON.stringify({ action: "set", key: "max_loops", value: "2" }) });
+      expect(ok.status).toBe(200);
+      await flush();
+      expect([g.state.runs, slow.calls]).toEqual([runs + 1, calls + 1]);
+    } finally {
+      await ui.close();
+    }
   });
 });
