@@ -169,6 +169,20 @@ describe("app pages", () => {
     }
   });
 
+  it("every page's h1 is in the page title type, and every h2 is the title of a Card (Health's Spend and Failures too)", async () => {
+    const names: Record<string, string> = { tasks: "Tasks", calendar: "Calendar", items: "Work", runners: "Runners", health: "Health", rules: "Rules", plugins: "Plugins", data: "Data", settings: "Settings" };
+    const outside = () => screen.queryAllByRole("heading", { level: 2 }).filter((h) => !h.closest("section.rounded-card.bg-surface.shadow-sm")).map((h) => h.textContent);
+    for (const [path, name] of Object.entries(names)) {
+      history.replaceState(null, "", `/app/${path}`);
+      mount();
+      expect((await screen.findByRole("heading", { level: 1, name })).className).toContain("text-xl font-semibold");
+      if (path === "health") await screen.findByRole("heading", { level: 2, name: "Failures" });
+      if (path === "items") await screen.findByRole("table", { name: "Running now" });
+      expect(outside(), path).toEqual([]);
+      cleanup();
+    }
+  });
+
   it("each page's heading matches its menu name", async () => {
     const names: Record<string, string> = { items: "Work", runners: "Runners", health: "Health", data: "Data", settings: "Settings" };
     for (const [path, name] of Object.entries(names)) {
