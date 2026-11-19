@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { SegmentedControl } from "../web/src/components/ui/segmented-control.js";
 
 // The shared segmented control (docs/design/09-brand-and-tokens.md): one row that never wraps, the selected segment
-// marked with aria-pressed and filled with the accent in both themes.
+// marked with aria-pressed and neutral (surface fill, border-strong ring, text-1) in both themes.
 
 afterEach(cleanup);
 
@@ -35,13 +35,14 @@ describe("SegmentedControl", () => {
     expect(pressed()).toEqual(["Upcoming"]);
   });
 
-  it("stays one row (no wrap) and fills the selected segment with the accent, from tokens only", () => {
+  it("stays one row (no wrap) and marks the selected segment neutral (surface, border-strong ring, text-1), from tokens only", () => {
     render(<Host />);
     const group = screen.getByRole("group", { name: "View" }).className.split(/\s+/);
     expect(group).toEqual(expect.arrayContaining(["inline-flex", "flex-nowrap", "border", "border-border-strong"]));
     expect(group).not.toContain("flex-wrap");
     const segment = screen.getByRole("button", { name: "Today" }).className.split(/\s+/);
-    expect(segment).toEqual(expect.arrayContaining(["whitespace-nowrap", "min-h-7", "aria-pressed:bg-accent", "aria-pressed:text-on-solid"]));
+    expect(segment).toEqual(expect.arrayContaining(["whitespace-nowrap", "min-h-7", "aria-pressed:bg-surface", "aria-pressed:text-text-1", "aria-pressed:ring-border-strong"]));
+    expect(segment.join(" ")).not.toContain("accent");
     expect(readFileSync("web/src/components/ui/segmented-control.tsx", "utf8")).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
   });
 });

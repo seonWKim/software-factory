@@ -4,7 +4,7 @@ import { API, type TaskRow, postTaskBuild } from "../../api.js";
 import { Button } from "../../components/ui/button.js";
 import { FOCUS } from "../../components/ui/control.js";
 import { announceStatus } from "../../components/ui/dialog.js";
-import { LINK_CLASS } from "../../components/ui/link-style.js";
+import { ID_CLASS, LINK_CLASS } from "../../components/ui/link-style.js";
 import { OverflowMenu } from "../../components/ui/menu.js";
 import { StatusBadge } from "../../components/ui/notice.js";
 import type { MessageKey } from "../../i18n/en.js";
@@ -139,7 +139,15 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
             onClose={close}
           />
         ) : (
-          <p className={cn("text-sm text-pretty break-words", overdue && "font-medium text-pill-bad-fg", done && "text-text-2 line-through")}>{task.title}</p>
+          <p className={cn("text-sm text-pretty break-words", overdue && "font-medium text-pill-bad-fg", done && "text-text-2 line-through")}>
+            {task.work_item_id !== null ? (
+              <Link href={itemPath(task.work_item_id)} className={LINK_CLASS}>
+                {task.title}
+              </Link>
+            ) : (
+              task.title
+            )}
+          </p>
         )}
         <p className={cn(muted, "flex flex-wrap gap-x-3 gap-y-1")}>
           {overdue && <StatusBadge level="stuck" size="sm">{t("tasks.overdue")}</StatusBadge>}
@@ -175,7 +183,7 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
         {task.work_item_id !== null ? (
           <>
             <WorkState id={task.work_item_id} title={task.title} open={!done} />
-            <Link href={itemPath(task.work_item_id)} className={cn(LINK_CLASS, "font-mono text-xs break-all")}>
+            <Link href={itemPath(task.work_item_id)} className={cn(ID_CLASS, "text-xs break-all")}>
               {task.work_item_id}
             </Link>
           </>

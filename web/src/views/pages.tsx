@@ -11,7 +11,7 @@ import { Input } from "../components/ui/input.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
 import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
 import { Notice, PageHeader, StatusBadge } from "../components/ui/notice.js";
-import { LINK_CLASS } from "../components/ui/link-style.js";
+import { ID_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import { FailuresSection } from "./failures.js";
 import { SpendSection } from "./spend.js";
 import { Markdown } from "../components/ui/markdown.js";
@@ -397,7 +397,7 @@ export function ItemPage({ id }: { id: string }) {
       <nav aria-label={t("item.breadcrumb")} className="mb-1 text-sm">
         <Link href={`${BASE}items`} className={LINK_CLASS}>{t("page.work")}</Link>
         <span className="text-text-3"> / </span>
-        <Link href={itemPath(item.id)} aria-current="page" title={item.source.id} className={cn("inline-block max-w-[16ch] truncate align-bottom tabular-nums", LINK_CLASS)}>{short}</Link>
+        <Link href={itemPath(item.id)} aria-current="page" title={item.source.id} className={cn("inline-block max-w-[16ch] truncate align-bottom tabular-nums", ID_CLASS)}>{short}</Link>
       </nav>
       <PageHeader title={item.title ?? short} actions={runs.some(isInteractiveRun) ? <InteractiveBadge /> : undefined} />
       {item.parent_id && (
