@@ -52,8 +52,11 @@ const DIALOGS = [...FORMS, "verdict"];
 /** The commands the "…" menu holds on the item page: they are rare, so they are no buttons in the decision row. */
 const MENU = ["reject", "verdict"];
 type FormName = "reject" | "revise" | "verdict";
-/** The commands a Needs-you row shows as its one primary button: what the state asks for. */
-const PRIMARY = ["approve", "retry", "resolve"];
+/**
+ * The commands a decision's one primary button can be, in the order the state asks for them: Retry last, so a block
+ * reason that accepts Approve or Answer never shows Retry first.
+ */
+const PRIMARY = ["approve", "resolve", "retry"];
 
 /** The verdicts a person gives, as `/verdict` takes them, with their button labels. */
 const VERDICTS = [["accept", "commands.accept"], ["changes", "commands.changes"], ["reject", "commands.reject"]] as const satisfies readonly (readonly [string, MessageKey])[];
@@ -213,8 +216,25 @@ export function useCommandSend(id: string) {
   return { session, on: !!token && session.data?.commands_enabled === true, busy, local, send };
 }
 
-/** The command the state asks for: the first of approve, retry and resolve the viewer may send. */
-export const primaryOf = (commands: readonly ItemCommand[]) => commands.find((c) => PRIMARY.includes(c.name) && c.allowed);
+/** A command row with a permission ask's paths (the item API's `paths`, src/ui/commands.ts ItemCommandRow). */
+type AcceptedCommand = ItemCommand & { paths?: readonly string[] };
+/** The paths a permission ask names on `c`, which its button sends as `+paths`; none for any other command. */
+export const pathsOf = (c: ItemCommand): readonly string[] => (c as AcceptedCommand).paths ?? [];
+
+/** The note `c` sends: its permission ask's `+paths <path>...` line first (design §4, issue #280), then `note`. */
+export function withPaths(c: ItemCommand, note: string): string {
+  const paths = pathsOf(c);
+  return paths.length === 0 ? note : [`+paths ${paths.join(" ")}`, note.trim()].filter((l) => l !== "").join("\n");
+}
+
+/**
+ * The command the state asks for, of those the viewer may send: the one that allows a permission ask's paths, else
+ * the first of approve, resolve and retry (PRIMARY order, not the API's), so Retry only when neither other applies.
+ */
+export function primaryOf(commands: readonly ItemCommand[]): ItemCommand | undefined {
+  const rank = (c: ItemCommand) => PRIMARY.indexOf(c.name) - (pathsOf(c).length > 0 ? PRIMARY.length : 0);
+  return commands.filter((c) => PRIMARY.includes(c.name) && c.allowed).sort((a, b) => rank(a) - rank(b))[0];
+}
 
 /**
  * `factory <command> <short number>` for a terminal: the item's short number on the page, the full command (with the
@@ -565,6 +585,10 @@ function VerdictDialog({ title, busy, error, returnFocusTo, onSend, onClose }: C
 
 /** A Needs-you row's primary button label, in sentence case; `resolve` answers what the item asked. */
 const PRIMARY_LABEL: Record<string, MessageKey> = { approve: "needs.actApprove", retry: "needs.actRetry", resolve: "needs.actAnswer" };
+/** The label of a primary that allows a permission ask's paths (it sends them as `+paths`). */
+const ALLOW_LABEL: Record<string, MessageKey> = { approve: "needs.actAllowApprove", retry: "needs.actAllowRetry", resolve: "needs.actAllowAnswer" };
+/** The primary button's label for `c`: what it does, naming the permission it gives when it carries paths. */
+export const primaryLabel = (c: ItemCommand): string => t((pathsOf(c).length > 0 ? ALLOW_LABEL : PRIMARY_LABEL)[c.name]!);
 /** The key that presses a row's primary button when the row is selected (never Merge). */
 export const PRIMARY_KEY = "p";
 
@@ -649,7 +673,7 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
       {group === "merge" ? (
         <span data-command="merge" className="inline-flex items-center gap-2">
           <Tooltip text={merge && !merge.enabled && merge.reason ? merge.reason : source === "local" ? t("commands.mergeLocal") : t("commands.mergePr")}>
-            <Button variant="secondary" disabled={off || checking || merging || !merge?.enabled} onClick={() => void send("merge", "")}>
+            <Button variant="secondary" data-action="merge" disabled={off || checking || merging || !merge?.enabled} onClick={() => void send("merge", "")}>
               {checking ? t("needs.checking") : queued ? merge?.reason : merging ? t("commands.merging") : t("commands.merge")}
             </Button>
           </Tooltip>
@@ -657,14 +681,16 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
         </span>
       ) : primary ? (
         <span data-command={primary.name} className="inline-flex">
-          <Tooltip text={t("needs.withKey", { label: t(PRIMARY_LABEL[primary.name]!), key: PRIMARY_KEY })}>
-            <Button variant="secondary" data-shortcut={PRIMARY_KEY} disabled={off} onClick={() => void send(primary.name, "")}>
-              {t(PRIMARY_LABEL[primary.name]!)}
+          <Tooltip text={pathsOf(primary).length > 0
+            ? t("needs.allowPaths", { paths: pathsOf(primary).join(", "), key: PRIMARY_KEY })
+            : t("needs.withKey", { label: primaryLabel(primary), key: PRIMARY_KEY })}>
+            <Button variant="secondary" data-shortcut={PRIMARY_KEY} data-action={primary.name} disabled={off} onClick={() => void send(primary.name, withPaths(primary, ""))}>
+              {primaryLabel(primary)}
             </Button>
           </Tooltip>
         </span>
       ) : (
-        <Link href={itemPath(id)} data-command="open" className={cn("inline-flex min-h-8 items-center rounded-control border border-border-strong bg-surface px-3 text-sm font-medium text-text-1 hover:bg-surface-2", FOCUS)}>
+        <Link href={itemPath(id)} data-command="open" data-action="open" className={cn("inline-flex min-h-8 items-center rounded-control border border-border-strong bg-surface px-3 text-sm font-medium text-text-1 hover:bg-surface-2", FOCUS)}>
           {t("needs.actOpen")}
         </Link>
       )}
