@@ -53,6 +53,32 @@ describe("Needs you", () => {
     }
   });
 
+  it("from the third identical stop (repeated_stop) the primary is Revise, else Reject, not Retry; a permission ask still comes first; neither allowed keeps the order", async () => {
+    const rep = (n: string, extra: object = {}) => command(n, { repeated_stop: true, ...extra });
+    s.items = [
+      item("wi_v", { title: "Revise it", item_phase: "needs_you", commands: ["retry", "reject", "revise"].map((n) => rep(n)) }),
+      item("wi_j", { title: "Reject it", item_phase: "needs_you", commands: ["retry", "reject"].map((n) => rep(n)) }),
+      item("wi_k", { title: "Revise not allowed", item_phase: "needs_you", commands: [rep("retry"), rep("revise", { allowed: false, reason: "no role" }), rep("reject")] }),
+      item("wi_q", { title: "Asked paths", item_phase: "needs_you", commands: [rep("retry", { paths: ["docs/y.md"] }), rep("revise"), rep("reject")] }),
+      item("wi_z", { title: "Neither allowed", item_phase: "needs_you", commands: [rep("retry"), rep("revise", { allowed: false, reason: "no" }), rep("reject", { allowed: false, reason: "no" })] }),
+      item("wi_once", { title: "Not repeated", item_phase: "needs_you", commands: ["retry", "revise", "reject"].map((n) => command(n)) }),
+    ];
+    await show();
+    const want = {
+      wi_v: ["Revise", "revise"], wi_j: ["Reject", "reject"], wi_k: ["Reject", "reject"], wi_q: ["Allow and retry", "retry"], wi_z: ["Retry", "retry"], wi_once: ["Retry", "retry"],
+    };
+    for (const [id, [label, action]] of Object.entries(want)) {
+      const b = await primaryOf(id);
+      expect({ id, label: b.textContent, action: b.dataset.action }).toEqual({ id, label, action });
+    }
+    // Revise needs feedback: its primary opens the form and sends nothing yet.
+    const b = await primaryOf("wi_v");
+    await waitFor(() => expect(b.disabled).toBe(false), SLOW);
+    fireEvent.click(b);
+    expect(await screen.findByRole("dialog", {}, SLOW)).toBeTruthy();
+    expect(s.posts.some((p) => p.url.endsWith("/commands"))).toBe(false);
+  });
+
   it("a permission ask shows the command that allows its paths, not Retry, and sends them as +paths", async () => {
     const paths = ["web/src/x.tsx", "docs/y.md"];
     s.items = [item("wi_p", {

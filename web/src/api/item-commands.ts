@@ -85,6 +85,8 @@ export interface ItemCommand {
   allowed: boolean;
   /** Why not, in the controller's refusal words; null when allowed. */
   reason: string | null;
+  /** The item stopped the same way three times or more: its main action is Revise or Reject, not Retry (primaryOf). */
+  repeated_stop?: boolean;
 }
 
 /** A stored proposal with its pending commands, each as its typed line and the item it is for. */

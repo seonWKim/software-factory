@@ -26,7 +26,8 @@
 import { randomUUID } from "node:crypto";
 import { COMMAND_TABLE } from "../core/command-table.js";
 import {
-  COMMANDS, type CommandName, ROW_LABELS, commandPhase, commandSpec, commandsFor, itemCommandState, latestSpec, mergeQueued, mergeRoute, phaseLabel, requestTransition,
+  COMMANDS, type CommandName, ROW_LABELS, commandPhase, commandSpec, commandsFor, itemCommandState, latestSpec, mergeQueued, mergeRoute, noFilesRefusal, phaseLabel,
+  refusalText, requestTransition,
 } from "../core/commands.js";
 import { refusalReply } from "../core/authorize.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, isProposalId, parseProposalMarker, typed } from "../core/interpret.js";
@@ -36,7 +37,7 @@ import { RESTART_COMMAND, mergedIntoBase } from "../core/restart.js";
 import { parseNeedsHuman } from "../core/outputs.js";
 import { phaseOf } from "../core/phase.js";
 import { isCovered } from "../core/policy.js";
-import type { Run, UserId, WorkItem, WorkItemId } from "../core/types.js";
+import type { Run, StateChange, UserId, WorkItem, WorkItemId } from "../core/types.js";
 import type { AuthDecision } from "../interfaces/auth-provider.js";
 import type { AppCommandRequest } from "../interfaces/factory-store.js";
 import { answersDetail, splitAnswers } from "../shared/command-notes.js";
@@ -217,7 +218,7 @@ const APPLIED_NOW: readonly string[] = ["approve", MERGE_COMMAND];
 async function applyNow(d: UiDeps, r: AppCommandRequest, item: WorkItem): Promise<Record<string, unknown>> {
   const c = d.commands;
   if (!c?.allowed || !APPLIED_NOW.includes(r.command)) return {};
-  const done = await requestTransition({
+  const done = (r.command === "approve" ? await noFilesApprove(d, c.allowed, r, item) : null) ?? await requestTransition({
     store: d.store, scanner: d.scanner, allowed: c.allowed, answers: { split: splitAnswers, detail: answersDetail }, changeName: c.changeName ?? String, forge: c.forge, localMerge: c.localMerge,
   }, r, item);
   const it = done.item;
@@ -228,6 +229,22 @@ async function applyNow(d: UiDeps, r: AppCommandRequest, item: WorkItem): Promis
     state: { stage: it.stage, blocked_on: it.blocked_on, blocked_reason: it.blocked_reason, phase: phaseLabel(commandPhase(it)), label },
     refusal,
   };
+}
+
+/**
+ * An Approve of a spec that changes no file in this repo (design 04-spec-gate-commands, 2026-11-20): refused with the
+ * controller's reply (core noFilesRefusal) once the owner check passed, the request marked handled so the controller
+ * posts nothing; null for any other approve, which requestTransition answers (a failed owner check too).
+ */
+async function noFilesApprove(
+  d: UiDeps, allowed: NonNullable<UiCommands["allowed"]>, r: AppCommandRequest, item: WorkItem,
+): Promise<{ outcome: "refused"; item: WorkItem; label: null; refusal: string } | null> {
+  const it = (await d.store.getWorkItem(item.id)) ?? item;
+  const reason = noFilesRefusal(it, await d.store.listRuns(it.id));
+  if (reason === null || !(await allowed("approve_spec")).allow) return null;
+  const refusal = refusalText("/approve", reason);
+  await d.store.markAppCommandRequest(r.seq, refusal);
+  return { outcome: "refused", item: it, label: null, refusal };
 }
 
 /** GET /api/v1/session: the per-process token, whether commands are on, and who they act as; null (a 404) when not wired. */
@@ -243,7 +260,11 @@ export type PageAction = "approve_spec" | "approve_merge";
  * The page actor's grant of one action: allowed, or refused with the controller's reply (refusalReply). `restart`:
  * the server offers Restart app (UiCommands.restart), carried here because the item API hands itemCommands the grant.
  */
-export type ActorGrant = ({ allow: true } | { allow: false; reason: string }) & { restart?: boolean };
+export type ActorGrant = ({ allow: true } | { allow: false; reason: string }) & {
+  restart?: boolean;
+  /** The item's state changes, for the rows' `repeated_stop` (stopCount); carried here for the same reason. Absent: not read. */
+  changes?: (id: WorkItemId) => Promise<readonly StateChange[]>;
+};
 
 /**
  * Whether the page's actor holds `action`, as the controller checks it for an app command (design §9): the owner check
@@ -254,7 +275,7 @@ export type ActorGrant = ({ allow: true } | { allow: false; reason: string }) & 
  */
 export function actorGrant(d: UiDeps, action: PageAction): () => Promise<ActorGrant> {
   let asked: Promise<ActorGrant> | null = null;
-  const restart = d.commands?.restart === true ? { restart: true } : {};
+  const restart = { ...(d.commands?.restart === true ? { restart: true } : {}), changes: (id: WorkItemId) => d.store.listStateChanges(id) };
   const ask = async (): Promise<ActorGrant> => {
     const c = d.commands;
     if (c?.actor == null || !c.allowed) return action === "approve_spec" ? { allow: true, ...restart } : { allow: false, reason: NOT_MERGER, ...restart };
@@ -277,6 +298,19 @@ export interface ItemCommandRow {
    * allowed paths, which the decision's button sends as `+paths`. Absent when the item holds no such ask.
    */
   paths?: string[];
+  /** The item stopped the same way REPEATED_STOP times or more (stopCount): the page's main action is Revise or Reject, not Retry. Absent otherwise. */
+  repeated_stop?: true;
+}
+
+/** The identical stops from which an item's main action is Revise or Reject (design 09-dashboard-item-commands, 2026-11-20). */
+export const REPEATED_STOP = 3;
+/** The commands that answer a stop (a failed or asking run); only an item where one applies counts its stops. */
+const STOP_COMMANDS: readonly string[] = ["retry", "resolve"];
+
+/** How many state changes set the item's current blocked_reason, the current stop included (0 when it has none). */
+export function stopCount(it: Pick<WorkItem, "blocked_reason">, changes: readonly StateChange[]): number {
+  if (it.blocked_reason === null) return 0;
+  return changes.filter((c) => c.changes.blocked_reason?.to === it.blocked_reason).length;
 }
 
 /** What the `restart` row says it does. */
@@ -316,12 +350,14 @@ export async function itemCommands(
 ): Promise<ItemCommandRow[]> {
   const reason = grant.allow ? null : await text(grant.reason);
   const paths = await askedPaths(it, runs, text);
-  const rows: ItemCommandRow[] = commandsFor(itemCommandState(it, runs))
-    .filter((c) => APP_COMMANDS.includes(c.name))
-    .map((c) => ({
-      name: c.name, usage: c.usage, description: c.description, allowed: grant.allow, reason,
-      ...(paths.length > 0 && PATHS_COMMANDS.includes(c.name) ? { paths } : {}),
-    }));
+  const cmds = commandsFor(itemCommandState(it, runs)).filter((c) => APP_COMMANDS.includes(c.name));
+  // A stop answered by Retry or Answer, blocked on a person: its state changes say how often it stopped this way.
+  const stops = it.blocked_on === "human" && grant.changes && cmds.some((c) => STOP_COMMANDS.includes(c.name)) ? stopCount(it, await grant.changes(it.id)) : 0;
+  const rows: ItemCommandRow[] = cmds.map((c) => ({
+    name: c.name, usage: c.usage, description: c.description, allowed: grant.allow, reason,
+    ...(paths.length > 0 && PATHS_COMMANDS.includes(c.name) ? { paths } : {}),
+    ...(stops >= REPEATED_STOP ? { repeated_stop: true as const } : {}),
+  }));
   if (grant.restart === true && mergedIntoBase(it)) rows.push({ name: RESTART_COMMAND, usage: RESTART_COMMAND, description: RESTART_DESCRIPTION, allowed: grant.allow, reason });
   return rows;
 }
