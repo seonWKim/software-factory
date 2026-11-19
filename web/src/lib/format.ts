@@ -1,6 +1,6 @@
 import type { Why } from "../api.js";
 import { type MessageKey, en } from "../i18n/en.js";
-import { formatInteger, t, withUnit } from "../i18n/index.js";
+import { formatInteger, locale, t, withUnit } from "../i18n/index.js";
 
 // Display helpers. Pure: `now` is passed in, so a test can fix it.
 
@@ -63,6 +63,17 @@ export function localDateTime(at: string): string {
   const d = new Date(at);
   if (Number.isNaN(d.getTime())) return at;
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+/** A whole number grouped by thousands in the active locale ("4,844"). */
+export function groupedInteger(n: number): string {
+  return new Intl.NumberFormat(locale(), { maximumFractionDigits: 0 }).format(n);
+}
+
+/** An ISO time as the viewer's local clock time ("9:51 PM"); the text itself when it is not one. */
+export function localClock(at: string): string {
+  const d = new Date(at);
+  return Number.isNaN(d.getTime()) ? at : new Intl.DateTimeFormat(locale(), { hour: "numeric", minute: "2-digit" }).format(d);
 }
 
 /** A local item id: `local-` (or `local-filed-`), its hex id, then its phase suffixes (`-phase-N`, nested). */

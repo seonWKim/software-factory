@@ -153,3 +153,35 @@ describe("overview factory.workers", () => {
     expect(await overview({ override: "50" })).toMatchObject({ workers: 10, workers_source: "override" });
   });
 });
+
+// The Failures card on Health in plain words (design 09-health, 2026-11-20): its title names no error code, and each
+// group's title is its failure.* entry's title; the code is behind Details. Rendered on the server from a filled query
+// cache; the module loads by a path in a variable (tsconfig.test.json has no JSX or DOM).
+const WEB_FAILURES = "../web/src/views/failures.js";
+
+describe("Failures card: plain titles", () => {
+  it("titles the card and each group with no error code outside Details", async () => {
+    const { createElement } = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
+    const { FailuresSection } = (await import(WEB_FAILURES)) as { FailuresSection: () => unknown };
+    const at = "2026-11-07T08:30:00.000Z";
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const runs = [{ id: "run_1", work_item_id: "wi_1", kind: "implement", attempt: 1, detail: "x", worker: null, finished_at: at }];
+    client.setQueryData(["/api/v1/failures?window=24h"], { as_of: at, window: "24h", cap: 200, total: 1, capped: false, groups: [{ code: "tests_failed", count: 1, last_seen: at, items: 1, runs }] });
+    client.setQueryData(["/api/v1/items"], { items: [] });
+    const saved = (globalThis as { location?: unknown }).location;
+    (globalThis as { location?: unknown }).location = { search: "" };
+    try {
+      const html = renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(FailuresSection as never))).replace(/<!-- -->/g, "");
+      const visible = html.replace(/<details data-raw[\s\S]*?<\/details>/g, "");
+      expect(visible).toContain(`>${en["failures.title"]}<`);
+      expect(en["failures.title"]).toBe("Failed runs by cause");
+      expect(visible).toContain(`>${en["failure.tests_failed.title"]}<`);
+      expect(visible).not.toMatch(/error code|tests_failed/);
+      expect(html).toContain("tests_failed");
+    } finally {
+      (globalThis as { location?: unknown }).location = saved;
+    }
+  });
+});
