@@ -61,6 +61,16 @@ function BuildButton({ task, token }: { task: TaskRow; token: string }) {
   );
 }
 
+/** The title, a link to the built task's item (the ID beside it links too); an unbuilt task's title is plain text. */
+function TitleLink({ task, className }: { task: TaskRow; className: string }) {
+  const title = <p className={className}>{task.title}</p>;
+  return task.work_item_id === null ? title : (
+    <Link href={itemPath(task.work_item_id)} className={cn("block", LINK_CLASS)}>
+      {title}
+    </Link>
+  );
+}
+
 export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { task: TaskRow; overdue?: boolean; sub?: boolean }) {
   const { token, titles, completed } = useContext(Rows);
   const row = useRef<HTMLLIElement>(null);
@@ -139,15 +149,7 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
             onClose={close}
           />
         ) : (
-          <p className={cn("text-sm text-pretty break-words", overdue && "font-medium text-pill-bad-fg", done && "text-text-2 line-through")}>
-            {task.work_item_id !== null ? (
-              <Link href={itemPath(task.work_item_id)} className={LINK_CLASS}>
-                {task.title}
-              </Link>
-            ) : (
-              task.title
-            )}
-          </p>
+          <TitleLink task={task} className={cn("text-sm text-pretty break-words", overdue && "font-medium text-pill-bad-fg", done && "text-text-2 line-through")} />
         )}
         <p className={cn(muted, "flex flex-wrap gap-x-3 gap-y-1")}>
           {overdue && <StatusBadge level="stuck" size="sm">{t("tasks.overdue")}</StatusBadge>}
