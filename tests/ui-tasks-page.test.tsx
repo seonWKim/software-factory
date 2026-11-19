@@ -11,7 +11,9 @@ import { PAGES, routeFor } from "../web/src/pages.js";
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
 // loaded by a specifier the node check skips (as tests/ui-rules-page.test.tsx does).
 const PAGE_MODULE = "../web/src/views/tasks.js";
-const { TasksPage, dayLabel } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { TasksPage: FunctionComponent; dayLabel: (date: string) => string };
+const GROUPS_MODULE = "../web/src/views/tasks/groups.js";
+const { TasksPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { TasksPage: FunctionComponent };
+const { dayLabel } = (await import(/* @vite-ignore */ GROUPS_MODULE)) as { dayLabel: (date: string) => string };
 
 // The Tasks page (design 02-tasks, one list): every task over GET /api/v1/tasks in the groups overdue (in red), today,
 // later days by date and no date, paged 20 to a page; a done task is struck through, with Reopen; Build this posts the

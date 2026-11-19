@@ -10,7 +10,7 @@ import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { BASE } from "../pages.js";
-import { dayLabel } from "./tasks.js";
+import { dayLabel } from "./tasks/groups.js";
 
 // The Calendar page (design 09-dashboard-app, Calendar page): the stored calendar events of one week or one month,
 // read-only, from GET /api/v1/calendar/events with the first and last day shown. Week: Monday to Sunday as seven rows.
