@@ -173,7 +173,7 @@ describe("item page: links and runs", () => {
     expect(cells[0]).toContain("triage");
     expect(cells[0]).toContain("run_triage_1");
     expect(cells[1]).toContain("2");
-    expect(cells[2]).toBe("succeeded");
+    expect(cells[2]).toBe("Succeeded");
   });
 });
 

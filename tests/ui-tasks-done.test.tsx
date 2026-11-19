@@ -37,7 +37,7 @@ describe("done tasks stay, struck through (design 02-tasks, done tasks stay)", (
     expect(title("tk_built").className.split(" ")).toContain("line-through");
     expect(within(card("tk_built")).getByRole("link", { name: "wi_1" })).toBeTruthy();
     expect(within(card("tk_built")).getByRole("button", { name: "Reopen: tk_built" })).toBeTruthy();
-    expect(card("tk_built").textContent).toContain("done 2026-11-12");
+    expect(card("tk_built").textContent).toContain("Done 2026-11-12");
     expect(title("tk_inbox").className.split(" ")).not.toContain("line-through");
   });
 
@@ -54,12 +54,12 @@ describe("done tasks stay, struck through (design 02-tasks, done tasks stay)", (
     await show();
     expect(title("tk_rejected").className.split(" ")).toContain("line-through");
     expect(within(card("tk_rejected")).queryByRole("checkbox")).toBeNull();
-    expect(within(card("tk_rejected")).getByText("rejected")).toBeTruthy();
-    expect(within(card("tk_wont")).getByText("not planned")).toBeTruthy();
-    expect(within(card("tk_closed")).getByText("closed")).toBeTruthy();
-    for (const id of ["tk_merged", "tk_open"]) for (const reason of ["rejected", "not planned", "closed"]) expect(within(card(id)).queryByText(reason)).toBeNull();
+    expect(within(card("tk_rejected")).getByText("Rejected")).toBeTruthy();
+    expect(within(card("tk_wont")).getByText("Not planned")).toBeTruthy();
+    expect(within(card("tk_closed")).getByText("Closed")).toBeTruthy();
+    for (const id of ["tk_merged", "tk_open"]) for (const reason of ["Rejected", "Not planned", "Closed"]) expect(within(card(id)).queryByText(reason)).toBeNull();
     // Beside the done time, in the row's details line: no new column.
-    expect(within(card("tk_rejected")).getByText("rejected").parentElement).toBe(within(card("tk_rejected")).getByText("done 2026-11-12", { exact: false }).parentElement);
+    expect(within(card("tk_rejected")).getByText("Rejected").parentElement).toBe(within(card("tk_rejected")).getByText("Done 2026-11-12", { exact: false }).parentElement);
   });
 
   it("Reopen posts { id } to the reopen route with the token; the row shows open again", async () => {

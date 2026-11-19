@@ -16,8 +16,7 @@ import { Tabs } from "../components/ui/tabs.js";
 import { useUrlParam } from "../lib/url-param.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { ago } from "../lib/format.js";
-import { useNow } from "./common.js";
+import { When, useNow } from "./common.js";
 import { ModelsTab } from "./plugins-models.js";
 import { MergeButton } from "./item-commands.js";
 import { withNodes } from "./standing.js";
@@ -118,7 +117,7 @@ function NameCell({ name, description, fresh = false }: { name: string; descript
 const Roles = ({ roles }: { roles: readonly string[] }) => <span className="text-xs text-pretty">{roles.length > 0 ? roles.join(", ") : t("plugins.noRole")}</span>;
 
 function LastUsed({ at, now }: { at: string | null; now: number }) {
-  return <span className="text-xs tabular-nums whitespace-nowrap">{at ? t("time.ago", { time: ago(at, now) }) : t("plugins.never")}</span>;
+  return <span className="text-xs tabular-nums whitespace-nowrap">{at ? <When at={at} now={now} /> : t("plugins.never")}</span>;
 }
 
 const STATUS: Record<McpStatus, { label: MessageKey; level: string | undefined }> = {

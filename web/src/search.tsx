@@ -52,10 +52,13 @@ function CommandHelp({ filter = "" }: { filter?: string }) {
   );
 }
 
+/** The page whose raw names are meant for developers: ⌘K lists it as a developer page. */
+const DEVELOPER_PAGE = "data";
+
 interface Hit {
   to: string;
   label: string;
-  group: "search.pages" | "search.items";
+  group: "search.pages" | "search.developer" | "search.items";
 }
 
 /** The items any list of the page has loaded, by id. */
@@ -101,7 +104,7 @@ export function SearchDialog({ navigate, onClose }: { navigate: (to: string) => 
   useEffect(() => input.current?.focus(), []);
   const hits = useMemo<Hit[]>(() => {
     const all: Hit[] = [
-      ...PAGES.map((p) => ({ to: BASE + p.path, label: t(`page.${p.key}` as MessageKey), group: "search.pages" as const })),
+      ...PAGES.map((p) => ({ to: BASE + p.path, label: t(`page.${p.key}` as MessageKey), group: (p.path === DEVELOPER_PAGE ? "search.developer" : "search.pages") as Hit["group"] })),
       ...loadedItems(client).map((i) => ({ to: itemPath(i.id), label: i.title ?? i.id, group: "search.items" as const })),
     ];
     const q = text.trim().toLowerCase();
