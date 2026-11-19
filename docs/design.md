@@ -1,10 +1,8 @@
 # Software factory: design index
 
-The design of the factory. Living document: change it when a decision changes.
-
 Read this index first, then open only the topic files your change touches. Each topic file states its current
 decision first; replaced decisions are in `history/<topic>.md`. A design change edits the topic file, never this
-index. Add a line here only for a new topic file. Topic files keep the old section numbers: "§5" means `05-*`.
+index; add a line here only for a new topic file. Old section numbers stay: "§5" is `05-*`.
 
 ## 1. Shape
 - [01-shape.md](design/01-shape.md): the flow from intake to the human gate and post-merge.
@@ -55,6 +53,7 @@ index. Add a line here only for a new topic file. Topic files keep the old secti
 ## 7. Self-improvement
 - [07-self-improvement.md](design/07-self-improvement.md): how the factory changes its own behaviour, the doc index in the prompt.
 - [07-improve-report.md](design/07-improve-report.md): the improve report, Run now, retire suggestions, improve triggers.
+- [07-design-learnings.md](design/07-design-learnings.md): UI corrections kept as design learnings.
 
 ## 8. Operations
 - [08-plugins.md](design/08-plugins.md): named plugins and the registry, login plugin, secret names.

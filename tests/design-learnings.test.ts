@@ -3,6 +3,8 @@
 // read of the last 40 active lines; the counting into one proposal per kind; the tagging call with a fake model; and the
 // local target's one-commit append. No live model, no network.
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   type DesignLearning, DESIGN_KINDS, LEARNINGS_HEAD, activeLines, captureDesignLearning, captureKey, isDesignFinding, pageOf, parseKind,
@@ -79,6 +81,10 @@ describe("capture", () => {
 });
 
 describe("the append-only file", () => {
+  it("the checked-in design-system/learnings.md starts with the head the factory writes", () => {
+    expect(readFileSync(join(import.meta.dirname, "..", "design-system", "learnings.md"), "utf8").startsWith(LEARNINGS_HEAD)).toBe(true);
+  });
+
   it("appending a line leaves every earlier line byte-identical, and a line the file holds is not appended again", () => {
     const first = appendNew(null, LEARNINGS_HEAD, ["- L1 · 2026-11-20 · wi_1 · page: tasks · built: a · owner: too big"])!;
     expect(first.text.startsWith(LEARNINGS_HEAD)).toBe(true);
