@@ -3362,7 +3362,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
     it("createProject stores the cleaned name, its slug and the Clock's time, and answers a repeated ID as stored", async () => {
       const { store } = await make(new FakeClock("2026-11-14T09:00:00.000Z"));
       const r = await store.createProject({ id: "pj_a", name: "  Home   repairs ", created_by: by });
-      const project = { id: "pj_a", slug: "home-repairs", name: "Home repairs", created_by: by, created_at: "2026-11-14T09:00:00.000Z", archived_at: null };
+      const project = { id: "pj_a", slug: "home-repairs", name: "Home repairs", created_by: by, created_at: "2026-11-14T09:00:00.000Z", archived_at: null, base_folder: null };
       expect(r).toEqual({ ok: true, project });
       expect(await store.createProject({ id: "pj_a", name: "Something else", created_by: by })).toEqual({ ok: true, project });
       expect(await store.getProject("pj_a")).toEqual(project);
@@ -3432,6 +3432,21 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect(await links(store)).toEqual(linked);
       expect(await store.archiveProject("pj_nope")).toEqual({ ok: false, reason: "not_found" });
       expect(await store.restoreProject("pj_nope")).toEqual({ ok: false, reason: "not_found" });
+    });
+
+    it("setProjectFolder stores the folder on an active project and refuses an unknown or archived one, writing nothing", async () => {
+      const { store } = await make();
+      await store.createProject({ id: "pj_a", name: "Home", created_by: by });
+      await store.createProject({ id: "pj_b", name: "Work", created_by: by });
+      expect(await store.setProjectFolder("pj_a", "/srv/home")).toMatchObject({ ok: true, project: { id: "pj_a", base_folder: "/srv/home" } });
+      expect(await store.setProjectFolder("pj_a", "/srv/home")).toMatchObject({ ok: true, project: { base_folder: "/srv/home" } });
+      expect(await store.getProject("pj_a")).toMatchObject({ base_folder: "/srv/home" });
+      expect(await store.getProject("pj_b")).toMatchObject({ base_folder: null });
+      expect(await store.setProjectFolder("pj_nope", "/srv/x")).toEqual({ ok: false, reason: "not_found" });
+      await store.archiveProject("pj_b");
+      expect(await store.setProjectFolder("pj_b", "/srv/work")).toEqual({ ok: false, reason: "archived" });
+      expect(await store.getProject("pj_b")).toMatchObject({ base_folder: null });
+      expect(await store.getProjectBySlug("home")).toMatchObject({ base_folder: "/srv/home" });
     });
 
     it("addTaskToProject links once, refuses an unknown task or project and an archived project; removeTaskFromProject unlinks once", async () => {

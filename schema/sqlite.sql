@@ -606,7 +606,7 @@ CREATE TABLE controller_projects (
     created_by   TEXT NOT NULL,
     created_at   TEXT NOT NULL,
     archived_at  TEXT
-  );
+  , base_folder TEXT);
 
 CREATE TABLE controller_signals (
     id            TEXT PRIMARY KEY,
