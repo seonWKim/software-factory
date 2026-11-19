@@ -254,7 +254,7 @@ export const health = {
   "efficiency.noItems": "No item finished this week.",
   "efficiency.noCost": "No item finished this week has a known cost.",
   "efficiency.untitled": "Untitled item",
-  "tree.waitsFor": "waits for {label}",
+  "tree.waitsFor": "Waits for {title}",
   "tree.queue": " · queue {position}",
   "tree.pr": "PR #{ref}",
   "tree.collapse": "Collapse",
