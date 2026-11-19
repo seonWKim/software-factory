@@ -37,29 +37,32 @@ describe("done tasks stay, struck through (design 02-tasks, done tasks stay)", (
     expect(title("tk_built").className.split(" ")).toContain("line-through");
     expect(within(card("tk_built")).getByRole("link", { name: "wi_1" })).toBeTruthy();
     expect(within(card("tk_built")).getByRole("button", { name: "Reopen: tk_built" })).toBeTruthy();
-    expect(card("tk_built").textContent).toContain("done 2026-11-12");
+    expect(card("tk_built").textContent).toContain("Done 2026-11-12");
     expect(title("tk_inbox").className.split(" ")).not.toContain("line-through");
   });
 
-  it("a task whose work item closed without a merge shows done with the item's close reason beside it, in the row's details", async () => {
+  it("a task whose work item closed without a merge shows the item's close reason in the row's details, done or open", async () => {
     s.current = view({
       projects: [{
         list: null,
         tasks: [
-          done("tk_rejected", { work_item_id: "wi_r", close_reason: "rejected" }), done("tk_wont", { work_item_id: "wi_w", close_reason: "wont_do" }),
-          done("tk_closed", { work_item_id: "wi_c", close_reason: "completed" }), done("tk_merged", { work_item_id: "wi_m", close_reason: null }), row("tk_open"),
+          done("tk_closed", { work_item_id: "wi_c", close_reason: "completed" }), done("tk_merged", { work_item_id: "wi_m", close_reason: null }),
+          done("tk_old", { work_item_id: "wi_o", close_reason: "rejected" }),
+          row("tk_rejected", { work_item_id: "wi_r", close_reason: "rejected" }), row("tk_wont", { work_item_id: "wi_w", close_reason: "wont_do" }), row("tk_open"),
         ],
       }],
     });
     await show();
-    expect(title("tk_rejected").className.split(" ")).toContain("line-through");
-    expect(within(card("tk_rejected")).queryByRole("checkbox")).toBeNull();
-    expect(within(card("tk_rejected")).getByText("rejected")).toBeTruthy();
-    expect(within(card("tk_wont")).getByText("not planned")).toBeTruthy();
-    expect(within(card("tk_closed")).getByText("closed")).toBeTruthy();
-    for (const id of ["tk_merged", "tk_open"]) for (const reason of ["rejected", "not planned", "closed"]) expect(within(card(id)).queryByText(reason)).toBeNull();
-    // Beside the done time, in the row's details line: no new column.
-    expect(within(card("tk_rejected")).getByText("rejected").parentElement).toBe(within(card("tk_rejected")).getByText("done 2026-11-12", { exact: false }).parentElement);
+    // A rejected or wont_do close leaves the task open: not struck through, its checkbox still there, the reason beside it.
+    expect(title("tk_rejected").className.split(" ")).not.toContain("line-through");
+    expect(within(card("tk_rejected")).getByRole("checkbox", { name: "Complete: tk_rejected" })).toBeTruthy();
+    expect(within(card("tk_rejected")).getByText("Rejected")).toBeTruthy();
+    expect(within(card("tk_wont")).getByText("Not planned")).toBeTruthy();
+    expect(within(card("tk_wont")).getByRole("checkbox", { name: "Complete: tk_wont" })).toBeTruthy();
+    // A done task keeps its reason beside the done time (a task closed before 2026-11-19 by a rejected item).
+    expect(within(card("tk_closed")).getByText("Closed")).toBeTruthy();
+    expect(within(card("tk_old")).getByText("Rejected").parentElement).toBe(within(card("tk_old")).getByText("Done 2026-11-12", { exact: false }).parentElement);
+    for (const id of ["tk_merged", "tk_open"]) for (const reason of ["Rejected", "Not planned", "Closed"]) expect(within(card(id)).queryByText(reason)).toBeNull();
   });
 
   it("Reopen posts { id } to the reopen route with the token; the row shows open again", async () => {

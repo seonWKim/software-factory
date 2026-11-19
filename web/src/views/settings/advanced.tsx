@@ -10,11 +10,11 @@ import { KeyValue } from "../../components/ui/key-value.js";
 import { Table } from "../../components/ui/parts.js";
 import type { MessageKey } from "../../i18n/en.js";
 import { t } from "../../i18n/index.js";
-import { ago, duration } from "../../lib/format.js";
+import { duration } from "../../lib/format.js";
 import { Link } from "../../nav.js";
 import { BASE } from "../../pages.js";
 import { keyHelp, keyLabel } from "../../lib/key-label.js";
-import { useNow } from "../common.js";
+import { When, useNow } from "../common.js";
 import { FileKeysSection, KeyNameDetails, Outcome, editableKeys, useWrite } from "../settings-file-keys.js";
 import { Description, SettingsRow } from "../settings-row.js";
 import { withNodes } from "../standing.js";
@@ -90,7 +90,7 @@ function LearnedLayer({ row, learned, view }: { row: SettingRow; learned: Learne
         <p className="text-pretty">
           {t("settings.learned")} <span className="font-mono">{learned.value}</span>{" "}
           <Badge level={learned.source === "learned" ? "needs_approval" : undefined}>{learned.source === "learned" ? t("settings.inForce") : t("settings.ignoredTighter", { source: learned.source })}</Badge>{" "}
-          <span className="tabular-nums">{t("settings.setAgo", { time: ago(learned.set_at, now) })}</span>
+          <span className="tabular-nums"><When at={learned.set_at} now={now} label="settings.setAgo" /></span>
         </p>
         {runs.length > 0 && (
           <Disclosure summary={t(runs.length === 1 ? "settings.fromRunOne" : "settings.fromRunMany", { count: runs.length })}>
@@ -113,7 +113,7 @@ const SECTION_KEYS: Readonly<Record<string, MessageKey>> = { notice_kinds: "sett
 /** One row's Details: the key name, where its value comes from, the file's value and when a change applies. */
 function KeyDetails({ row }: { row: SettingRow }) {
   return (
-    <Disclosure data-details summary={t("settings.details")}>
+    <Disclosure data-details data-raw summary={t("settings.details")}>
       <KeyValue
         className="mt-2"
         items={[
@@ -175,7 +175,7 @@ function ValueCell({ row, view }: { row: SettingRow; view: SettingsView }) {
       <Duration settingKey={row.key} value={row.value} />
       {row.key === "workers" && row.max !== undefined && (
         <p className="mt-1 text-xs text-text-2">
-          {row.capped_at ? t("settings.workersRangeCapped", { max: row.max, capped: row.capped_at }) : t("settings.workersRange", { max: row.max })}
+          {withNodes(row.capped_at ? "settings.workersRangeCapped" : "settings.workersRange", { key: <code>{"max_workers"}</code> }, { max: row.max, capped: row.capped_at ?? "" })}
         </p>
       )}
       {row.project_settable && (
@@ -295,7 +295,7 @@ export function AdvancedTab({ view: v }: { view: SettingsView }) {
         <DataTable
           label={t("settings.history")}
           columns={[
-            { key: "at", header: t("col.when"), className: "tabular-nums whitespace-nowrap", render: (c) => t("time.ago", { time: ago(c.at, now) }) },
+            { key: "at", header: t("col.when"), className: "tabular-nums whitespace-nowrap", render: (c) => <When at={c.at} now={now} /> },
             { key: "actor", header: t("settings.colWho"), className: "font-mono text-xs" },
             { key: "key", header: t("settings.colKey"), className: "text-sm", render: (c) => `${keyLabel(c.key)}${c.project ? t("settings.forProject", { project: c.project }) : ""}` },
             {

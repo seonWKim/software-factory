@@ -16,6 +16,8 @@
 // `merge` fields are built here too.
 // `merge` (design §9, the Merge button) is an app command beside the item commands, with no note: the local merge
 // of `factory merge` for a local item, the PR's merge on the forge for any other.
+// `restart` (design 09-dashboard-item-commands, the Restart app button) is an app command with no note too: on a
+// merged item when `repo.restart_command` is set (UiCommands.restart), the same request `factory restart` stores.
 // The command box (design 09-dashboard-app) sends `sentence` with the words as its note, for the controller's
 // plain-words reader; a pending proposal's Confirm all sends `proposal_confirm` and its Cancel `proposal_cancel`, each
 // with `proposal`, the proposal ID only. The item API's `proposals` lists the item's pending proposals, found by the
@@ -30,6 +32,7 @@ import { refusalReply } from "../core/authorize.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, isProposalId, parseProposalMarker, typed } from "../core/interpret.js";
 import { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND } from "../core/local-cli.js";
 import { MERGE_COMMAND } from "../core/local-merge.js";
+import { RESTART_COMMAND, mergedIntoBase } from "../core/restart.js";
 import { parseNeedsHuman } from "../core/outputs.js";
 import { phaseOf } from "../core/phase.js";
 import { isCovered } from "../core/policy.js";
@@ -66,6 +69,8 @@ export interface UiCommands {
   mergeRequested?: (id: WorkItemId) => Promise<boolean>;
   /** How a refusal names the item's PR, as the controller names it (`PR #N`); set by compose.ts buildUiParts, so ui writes no change-ref form. Absent: the bare ref. */
   changeName?: (change_ref: string) => string;
+  /** Whether `repo.restart_command` is set, so a merged item offers Restart app; set by compose.ts buildUiParts. Absent: not offered. */
+  restart?: boolean;
 }
 
 /** The largest commands body read. A command and a 2000-character note fit well inside it. */
@@ -74,17 +79,20 @@ export const MAX_COMMAND_BODY = 16 * 1024;
 export const MAX_NOTE = 2000;
 /** The replies the item API lists: the newest this many of the item's requests. */
 export const REPLIES_LIMIT = 50;
-/** A command the page may send: an item command, or the local merge, which has no comment command. */
-export type AppCommand = CommandName | typeof MERGE_COMMAND;
+/** A command the page may send: an item command, the local merge or the restart, neither of which has a comment command. */
+export type AppCommand = CommandName | typeof MERGE_COMMAND | typeof RESTART_COMMAND;
 const COMMENT_NAMES: readonly string[] = COMMANDS.map((c) => c.name);
 /**
  * Commands the page may send: every item command but `/help` and the account command `/link`, then the command
- * table's other item commands (`merge`), so a new item command in the table reaches the page too.
+ * table's other item commands (`merge`), so a new item command in the table reaches the page too, then `restart`.
  */
 export const APP_COMMANDS: readonly AppCommand[] = [
   ...COMMANDS.map((c) => c.name).filter((n) => n !== "help" && n !== "link"),
   ...COMMAND_TABLE.filter((c) => c.item && !COMMENT_NAMES.includes(c.name)).map((c) => c.name as AppCommand),
+  RESTART_COMMAND,
 ];
+/** Commands that take no note. */
+const NO_NOTE: readonly AppCommand[] = [MERGE_COMMAND, RESTART_COMMAND];
 /** Commands that need text: the reason or the feedback. */
 const NEEDS_TEXT: readonly AppCommand[] = ["reject", "revise"];
 
@@ -153,7 +161,7 @@ export function parseCommand(body: unknown): PageRequest | { error: string } {
   const note = typeof b.note === "string" ? b.note : "";
   if (note.length > MAX_NOTE) return { error: `note must be at most ${MAX_NOTE} characters` };
   const text = note.trim();
-  if (command === MERGE_COMMAND && text !== "") return { error: "merge takes no note" };
+  if (NO_NOTE.includes(command) && text !== "") return { error: `${command} takes no note` };
   if (NEEDS_TEXT.includes(command) && text === "") return { error: `${command} needs text: ${command === "reject" ? "your reason" : "your feedback"}` };
   return text === "" ? { command } : { command, note: text };
 }
@@ -231,8 +239,11 @@ export function readSession(d: UiDeps, now: Date): Record<string, unknown> | nul
 /** The actions the page asks about for its actor: approve_spec for the item commands, approve_merge for Merge. */
 export type PageAction = "approve_spec" | "approve_merge";
 
-/** The page actor's grant of one action: allowed, or refused with the controller's reply (refusalReply). */
-export type ActorGrant = { allow: true } | { allow: false; reason: string };
+/**
+ * The page actor's grant of one action: allowed, or refused with the controller's reply (refusalReply). `restart`:
+ * the server offers Restart app (UiCommands.restart), carried here because the item API hands itemCommands the grant.
+ */
+export type ActorGrant = ({ allow: true } | { allow: false; reason: string }) & { restart?: boolean };
 
 /**
  * Whether the page's actor holds `action`, as the controller checks it for an app command (design §9): the owner check
@@ -243,18 +254,19 @@ export type ActorGrant = { allow: true } | { allow: false; reason: string };
  */
 export function actorGrant(d: UiDeps, action: PageAction): () => Promise<ActorGrant> {
   let asked: Promise<ActorGrant> | null = null;
+  const restart = d.commands?.restart === true ? { restart: true } : {};
   const ask = async (): Promise<ActorGrant> => {
     const c = d.commands;
-    if (c?.actor == null || !c.allowed) return action === "approve_spec" ? { allow: true } : { allow: false, reason: NOT_MERGER };
+    if (c?.actor == null || !c.allowed) return action === "approve_spec" ? { allow: true, ...restart } : { allow: false, reason: NOT_MERGER, ...restart };
     const decision = await c.allowed(action);
-    return decision.allow ? { allow: true } : { allow: false, reason: refusalReply(decision.reason) };
+    return decision.allow ? { allow: true, ...restart } : { allow: false, reason: refusalReply(decision.reason), ...restart };
   };
   return () => (asked ??= ask());
 }
 
 /** One entry of the item API's `commands`: a command that applies now, and whether the viewer may send it. */
 export interface ItemCommandRow {
-  name: CommandName;
+  name: CommandName | typeof RESTART_COMMAND;
   usage: string;
   description: string;
   allowed: boolean;
@@ -267,6 +279,8 @@ export interface ItemCommandRow {
   paths?: string[];
 }
 
+/** What the `restart` row says it does. */
+const RESTART_DESCRIPTION = "Run repo.restart_command in the repo's base checkout, so the running app serves the merged code; its result is posted in the thread";
 /** The commands that take `+paths` (design §4, issue #280). */
 const PATHS_COMMANDS: readonly string[] = ["approve", "retry", "resolve"];
 
@@ -294,19 +308,22 @@ async function askedPaths(it: WorkItem, runs: readonly Run[], text: (v: string) 
  * the Withholder: it names a user ID). Every command but `merge` (its own button) needs approve_spec, as the
  * controller checks it; `/verdict`'s record_verdict comes with the same role. Not `/help`: it answers a comment and the
  * page cannot send it (APP_COMMANDS), so a button for it could only be refused. A permission ask's paths go on the
- * commands that take `+paths` (askedPaths).
+ * commands that take `+paths` (askedPaths). A merged item gets `restart` (the Restart app button) when the server
+ * offers it (`grant.restart`), with the same grant as the item commands.
  */
 export async function itemCommands(
   it: WorkItem, runs: readonly Run[], grant: ActorGrant, text: (v: string) => Promise<string | null>,
 ): Promise<ItemCommandRow[]> {
   const reason = grant.allow ? null : await text(grant.reason);
   const paths = await askedPaths(it, runs, text);
-  return commandsFor(itemCommandState(it, runs))
+  const rows: ItemCommandRow[] = commandsFor(itemCommandState(it, runs))
     .filter((c) => APP_COMMANDS.includes(c.name))
     .map((c) => ({
       name: c.name, usage: c.usage, description: c.description, allowed: grant.allow, reason,
       ...(paths.length > 0 && PATHS_COMMANDS.includes(c.name) ? { paths } : {}),
     }));
+  if (grant.restart === true && mergedIntoBase(it)) rows.push({ name: RESTART_COMMAND, usage: RESTART_COMMAND, description: RESTART_DESCRIPTION, allowed: grant.allow, reason });
+  return rows;
 }
 
 /**
@@ -319,7 +336,7 @@ export async function itemCommands(
 export async function needsYouCommands(d: UiDeps, it: WorkItem, grant: () => Promise<ActorGrant>, text: (v: string) => Promise<string | null>) {
   const runs = phaseOf(it) === "agent_needs_human" ? await d.store.listRuns(it.id) : [];
   const all = await itemCommands(it, runs, await grant(), text);
-  return all.filter((c) => c.name === "verdict" || (c.name !== "budget" && commandSpec(c.name).changes_state));
+  return all.filter((c) => c.name === "verdict" || (c.name !== "budget" && c.name !== RESTART_COMMAND && commandSpec(c.name).changes_state));
 }
 
 /**

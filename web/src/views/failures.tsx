@@ -7,10 +7,9 @@ import { LINK_CLASS } from "../components/ui/link-style.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { t } from "../i18n/index.js";
-import { ago } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
-import { WorkerName, useNow } from "./common.js";
+import { RawDetails, When, WorkerName, useNow } from "./common.js";
 import { Card, CardSection } from "../components/ui/card.js";
 import { EmptyState } from "../components/ui/notice.js";
 
@@ -44,7 +43,7 @@ function Group({ group, now, titles }: { group: FailureGroup; now: number; title
     { key: "attempt", header: t("col.attempt"), numeric: false, className: "tabular-nums" },
     { key: "detail", header: t("col.detail"), className: "max-w-md text-xs break-words", render: (r) => r.detail || "–" },
     { key: "worker", header: t("col.worker"), render: (r) => <WorkerName id={r.worker} /> },
-    { key: "when", header: t("col.when"), className: "tabular-nums whitespace-nowrap", render: (r) => t("time.ago", { time: ago(r.finished_at, now) }) },
+    { key: "when", header: t("col.when"), className: "tabular-nums whitespace-nowrap", render: (r) => <When at={r.finished_at} now={now} /> },
   ];
   return (
     <li className="rounded-control border border-border" data-testid="failure-group">
@@ -57,14 +56,16 @@ function Group({ group, now, titles }: { group: FailureGroup; now: number; title
         <span className="font-semibold">{copy.title}</span>
         <span className="tabular-nums">{t(group.count === 1 ? "failures.runOne" : "failures.runMany", { count: group.count })}</span>
         <span className="tabular-nums text-text-2">{t(group.items === 1 ? "failures.itemOne" : "failures.itemMany", { count: group.items })}</span>
-        <span className="tabular-nums text-text-2">{t("failures.lastSeen", { time: t("time.ago", { time: ago(group.last_seen, now) }) })}</span>
-        {copy.title !== group.code && <span className="basis-full font-mono text-xs text-text-2" data-testid="failure-code">{group.code}</span>}
+        <span className="tabular-nums text-text-2"><When at={group.last_seen} now={now} label="failures.lastSeen" /></span>
         <span className="basis-full text-pretty text-text-2">{copy.meaning}</span>
         <span className="basis-full text-pretty">{copy.next}</span>
       </Button>
       <p className="px-3 pb-2 text-sm">
         <Link href={workPath(group)} className={LINK_CLASS}>{t("failures.viewItems")}</Link>
       </p>
+      {copy.title !== group.code && (
+        <RawDetails className="px-3 pb-2"><span className="font-mono text-xs" data-testid="failure-code">{group.code}</span></RawDetails>
+      )}
       {open && (
         <div className="border-t border-border p-2">
           <DataTable label={t("failures.runsFailed", { code: group.code })} columns={columns} rows={group.runs} rowKey={(r) => r.id} empty={t("failures.empty")} />

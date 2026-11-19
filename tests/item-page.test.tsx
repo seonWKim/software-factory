@@ -173,7 +173,7 @@ describe("item page: links and runs", () => {
     expect(cells[0]).toContain("triage");
     expect(cells[0]).toContain("run_triage_1");
     expect(cells[1]).toContain("2");
-    expect(cells[2]).toBe("succeeded");
+    expect(cells[2]).toBe("Succeeded");
   });
 });
 
@@ -409,6 +409,15 @@ describe("item page: the Reject and Revise dialogs (issue #527)", () => {
     }]));
     const row = await found('[data-outcome-of="revise"]');
     await waitFor(() => expect(within(row).getByRole("status").textContent).toBe("sent"));
+  });
+
+  it("Revise's five comment boxes have distinct accessible names, one per section", async () => {
+    serve();
+    mount("/app/items/wi_r");
+    const form = await open("revise");
+    const names = within(form).getAllByRole("textbox").map((t) => t.getAttribute("aria-label"));
+    expect(names).toEqual(["In short", "Problem", "Done when", "Scope", "Allowed paths"].map((s) => `Comment on ${s}`));
+    expect(new Set(names).size).toBe(names.length);
   });
 
   it("Revise stays disabled while no section has a comment; a blank comment does not count", async () => {

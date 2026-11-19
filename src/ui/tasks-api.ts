@@ -1,7 +1,8 @@
 // The plain tasks' routes (design 02-tasks): GET /api/v1/tasks, the Tasks page's views (open tasks and the done tasks of the
 // done window) with the stored calendar events; POST /api/v1/tasks/edit,
 // /done, /reopen, /delete and /sub, the page's row actions, each calling the store method of its CLI command (`factory task
-// edit`, `done`, `reopen`, `delete`, `sub`), so the page and the CLI cannot diverge; POST /api/v1/tasks/build,
+// edit`, `done`, `reopen`, `delete`, `sub`), so the page and the CLI cannot diverge; POST /api/v1/tasks/body, the
+// description dialog (the store's setTaskBody); POST /api/v1/tasks/build,
 // its Build this button (task-build.ts, the same action as `factory task build`); POST /api/v1/tasks/create, a task in a
 // project built at once (createProjectTask, the same action as `factory task create --project`); and POST /api/v1/tasks, which
 // stores one plain task from quick-add words, for the desktop shell's quick-add box. The words go through the same parser as `factory task add` (src/core/quick-add.ts)
@@ -14,7 +15,7 @@ import { readCalendar } from "../calendar/index.js";
 import { needsDueDate, parseQuickAdd, parseQuickEdit } from "../core/quick-add.js";
 import { buildTask, createProjectTask } from "../core/task-build.js";
 import { isProjectSlug } from "../core/projects.js";
-import { ProjectRefused, type Task, type TaskStore, doneWindow, projectRefusal, taskViews } from "../core/tasks.js";
+import { MAX_TASK_BODY, ProjectRefused, type Task, type TaskStore, doneWindow, projectRefusal, taskBody, taskViews } from "../core/tasks.js";
 import type { CloseReason } from "../core/types.js";
 import { TASK_LIST_LIMIT } from "../core/local-cli.js";
 import type { ApiResult } from "./api.js";
@@ -32,6 +33,7 @@ export const TASK_DONE_PATH = "/api/v1/tasks/done";
 export const TASK_REOPEN_PATH = "/api/v1/tasks/reopen";
 export const TASK_DELETE_PATH = "/api/v1/tasks/delete";
 export const TASK_SUB_PATH = "/api/v1/tasks/sub";
+export const TASK_BODY_PATH = "/api/v1/tasks/body";
 
 /** A caller-chosen task ID: `tk_` and 8 to 64 URL-safe characters (the CLI's own `tk_<random>`). */
 const TASK_ID = /^tk_[A-Za-z0-9_-]{8,64}$/;
@@ -39,12 +41,12 @@ const TASK_ID = /^tk_[A-Za-z0-9_-]{8,64}$/;
 const MAX_ID = 200;
 /** The longest quick-add text taken; a task title is a line, not a document. */
 export const MAX_WORDS = 1000;
-/** The longest work request body POST /api/v1/tasks/create takes. */
-const MAX_BODY = 20_000;
 
-/** Each task's or event's title through the Withholder, as on the other routes. */
-async function shown<T extends { title: string }>(w: Withholder, rows: readonly T[]): Promise<T[]> {
-  return Promise.all(rows.map(async (t) => ({ ...t, title: (await w.plain(t.title)).text })));
+/** Each task's or event's title, and a task's description, through the Withholder, as on the other routes. */
+async function shown<T extends { title: string; body?: string | null }>(w: Withholder, rows: readonly T[]): Promise<T[]> {
+  return Promise.all(rows.map(async (t) => ({
+    ...t, title: (await w.plain(t.title)).text, ...(typeof t.body === "string" ? { body: (await w.plain(t.body)).text } : {}),
+  })));
 }
 
 /**
@@ -53,7 +55,7 @@ async function shown<T extends { title: string }>(w: Withholder, rows: readonly 
  * tasks stay) at the server's clock, in its time zone, with the calendar events stored by the last syncs placed in Today
  * and Upcoming, and `calendar`, each source's last sync time and whether its last sync failed. Each task row carries
  * `projects`, the slugs of its active task projects, and `active_projects` lists the active projects (slug and name)
- * for the page's project switcher, and `close_reason`, a done task's linked item's close reason when it closed without a merge
+ * for the page's project switcher, and `close_reason`, a linked task's item's close reason (open or done) when it closed without a merge
  * (closeReasons; else null). With `project` (a slug, `?project=`) the views hold only the tasks, open or done, linked to
  * that project: 400 for a value that is not a slug or an archived project, 404 for an unknown one. Reads the stored
  * copy only: no source is called and nothing is written. `csrf_token` and `can_build` for Build this (null and false
@@ -85,13 +87,14 @@ export async function readTasks(d: UiDeps, project: string | null = null): Promi
 }
 
 /**
- * The close reason of each done task's linked work item, read from the item now (design 02-tasks: nothing is stored on
- * the task), only for an item closed without a merge; a merged item's row shows its state instead.
+ * The close reason of each linked task's work item, open or done, read from the item now (design 02-tasks: nothing is
+ * stored on the task), only for an item closed without a merge; a merged item's row shows its state instead. An open
+ * task's item closed as rejected or wont_do says so on the row.
  */
 async function closeReasons(d: UiDeps, tasks: readonly Task[]): Promise<Map<string, CloseReason>> {
   const out = new Map<string, CloseReason>();
   for (const t of tasks) {
-    if (t.done_at === null || t.work_item_id === null) continue;
+    if (t.work_item_id === null) continue;
     const item = await d.store.getWorkItem(t.work_item_id);
     if (item?.stage === "CLOSED" && item.close_reason !== null && item.merge_sha === null) out.set(t.id, item.close_reason);
   }
@@ -176,7 +179,7 @@ type Field = "id" | "words" | "parent" | "title" | "body" | "project";
 function fieldError(k: Field, v: unknown, stored: boolean): string | null {
   if (k === "words") return typeof v === "string" && v.length <= MAX_WORDS ? null : `words must be a string of at most ${MAX_WORDS} characters`;
   if (k === "title") return typeof v === "string" && v.trim() !== "" && v.length <= MAX_WORDS ? null : `title must be a non-empty string of at most ${MAX_WORDS} characters`;
-  if (k === "body") return typeof v === "string" && v.length <= MAX_BODY ? null : `body must be a string of at most ${MAX_BODY} characters`;
+  if (k === "body") return typeof v === "string" && v.length <= MAX_TASK_BODY ? null : `body must be a string of at most ${MAX_TASK_BODY} characters`;
   if (k === "project") return typeof v === "string" && isProjectSlug(v) ? null : "project must be a project slug, e.g. home-repairs";
   // Any stored ID: a chat-added task's ID is its message's, not the tk_<random> quick-add takes.
   if (k === "parent" || stored) return typeof v === "string" && v !== "" && v.length <= MAX_ID ? null : `${k} must be a task ID of at most ${MAX_ID} characters`;
@@ -254,6 +257,23 @@ export async function writeTaskEdit(d: UiDeps, body: unknown): Promise<ApiResult
   });
 }
 
+/**
+ * POST /api/v1/tasks/body with `{ id, body }`, the store's setTaskBody: the task's description, trimmed, an empty one
+ * stored as none (taskBody). A built task's work item keeps the text it was built with. 400 for a body that is not one
+ * or a description over MAX_TASK_BODY; 404 for an unknown task; 409 for a done one; else 200 with the stored task.
+ * Every refusal writes nothing.
+ */
+export async function writeTaskBody(d: UiDeps, body: unknown): Promise<ApiResult> {
+  if ((d.commands?.actor ?? null) === null) return OFF;
+  const b = parseBody(body, ["id", "body"], true);
+  if ("error" in b) return refused(400, b.error);
+  const text = taskBody(b.body);
+  if (!text.ok) return refused(400, text.reason);
+  const r = await d.store.setTaskBody(b.id, text.body);
+  if (r.ok) return { status: 200, value: { task: (await shown(new Withholder(d.scanner), [r.task]))[0] } };
+  return r.reason === "done" ? refused(409, "the task is done: a done task's description cannot be edited") : unknown(b.id);
+}
+
 /** POST /api/v1/tasks/done with `{ id }`, the store's completeTask as `factory task done`: 404 for an unknown task; else 200, `completed` false when it was already done. */
 export async function writeTaskDone(d: UiDeps, body: unknown): Promise<ApiResult> {
   if ((d.commands?.actor ?? null) === null) return OFF;
@@ -322,6 +342,7 @@ export const TASK_WRITES: Readonly<Record<string, (d: UiDeps, body: unknown) => 
   [TASK_REOPEN_PATH]: writeTaskReopen,
   [TASK_DELETE_PATH]: writeTaskDelete,
   [TASK_SUB_PATH]: writeTaskSub,
+  [TASK_BODY_PATH]: writeTaskBody,
   [TASK_PROJECT_PATH]: writeTaskProject,
   [PROJECTS_PATH]: writeProject,
 };

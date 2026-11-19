@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Sessions, parseTarget } from "../src/core/session.js";
-import type { Run, RunKind, Tier, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
+import { settingValues } from "../src/core/settings.js";
+import type { Run, RunKind, Tier, UserId, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { STORE_BRANCH } from "../src/interfaces/tool-broker.js";
 import { FileSessionFiles, githubIssues, parseSessionArgs, runSession } from "../src/session-cmd.js";
@@ -169,6 +170,45 @@ describe("session start", () => {
       expect((await h.start((await h.running(3, ["src/c/"])).id)).ok).toBe(true);
     });
 
+    it("when another item's running run overlaps: its queued implement run stays queued, no attempt and no state change", async () => {
+      const h = await harness();
+      const other = await h.running(2, ["src/a/x.ts"]);
+      await h.enqueue(other, "implement", "i2");
+      await h.store.claimRun({ worker_id: W1, kinds: ["implement"], lease_ms: 60_000 });
+      const it0 = await h.running(1, ["src/a/"]);
+      await h.enqueue(it0, "implement", "i1");
+      const before = await h.item(it0.id);
+      const changes = (await h.store.listStateChanges(it0.id)).length;
+      const r = await h.start(it0.id);
+      expect(r.ok).toBe(false);
+      expect(r.lines.join("\n")).toMatch(/overlaps the allowed_paths/);
+      expect((await h.runs(it0.id, "implement")).map((x) => [x.status, x.attempt, x.outcome])).toEqual([["queued", 0, null]]);
+      expect((await h.item(it0.id)).version).toBe(before.version);
+      expect(await h.store.listStateChanges(it0.id)).toHaveLength(changes);
+      await h.controller.tickRuns(); // nothing finished, so nothing counts toward max_attempts
+      expect(await h.item(it0.id)).toMatchObject({ version: before.version, blocked_on: "none" });
+    });
+
+    it("for a running interactive or implement run: the item's queued runs stay queued, in the store's own check too", async () => {
+      const h = await harness();
+      const busy = await h.running(1, ["src/t1/"]);
+      await h.enqueue(busy, "implement", "i1");
+      await h.store.claimRun({ worker_id: W1, kinds: ["implement"], lease_ms: 60_000 });
+      await h.enqueue(busy, "update", "u1");
+      const open = await h.running(2, ["src/t2/"]);
+      expect((await h.start(open.id)).ok).toBe(true);
+      await h.enqueue(open, "implement", "i2");
+      for (const [it0, why] of [[busy, "implement_run"], [open, "session_open"]] as const) {
+        expect(await unchanged(h, it0.id)).toMatch(/running implement run|already has an open session/);
+        const cur = await h.item(it0.id);
+        const r = await h.store.startSession({
+          id: it0.id, expected_version: cur.version, actor: { kind: "user", id: "github:1" as UserId }, patch: {}, reason: "session_started", detail: {}, owner: "o", lease_ms: 60_000, transcript_url: null,
+        });
+        expect(r).toMatchObject({ ok: false, reason: why });
+        expect((await h.runs(it0.id)).filter((x) => x.status === "queued")).toHaveLength(1);
+      }
+    });
+
     it("with an invalid --spec file, checked by the triage parser", async () => {
       const h = await harness();
       const { item: it0 } = await h.store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t1" } });
@@ -197,6 +237,28 @@ describe("session start", () => {
     expect((await h.store.listStateChanges(it0.id)).at(-1)!.detail).toMatchObject({ spec_source: "owner" });
   });
 
+
+  it("a run cancelled by an accepted takeover is no attempt: taking over more often than max_attempts never holds the item", async () => {
+    const h = await harness();
+    const it0 = await h.running(1);
+    await h.enqueue(it0, "implement", "i1");
+    for (let n = 0; n <= settingValues(h.cfg.project.key, h.cfg.settings).max_attempts; n++) {
+      const queued = (await h.runs(it0.id, "implement")).filter((x) => x.status === "queued");
+      expect(queued).toHaveLength(1);
+      const r = await h.start(it0.id);
+      expect(r.ok).toBe(true);
+      const cancelled = (await h.store.getRun(queued[0]!.id))!;
+      expect(cancelled).toMatchObject({ status: "cancelled", outcome: { status: "failed", error_code: "interactive_takeover", infra: false } });
+      // One state change: the start itself, naming the run it took over.
+      expect((await h.store.listStateChanges(it0.id)).at(-1)).toMatchObject({ reason: "session_started", detail: { taken_over: cancelled.id } });
+      await h.controller.tickRuns();
+      const applied = (await h.store.listStateChanges(it0.id)).find((c) => c.detail?.run_id === cancelled.id && c.reason !== "session_started");
+      expect(applied?.detail).toMatchObject({ task_failures: 0 });
+      expect((await h.item(it0.id)).blocked_reason).not.toBe("max_attempts");
+      await h.sessions.abandon({ id: it0.id });
+      await h.controller.tickRuns();
+    }
+  });
 
   it("a worker never claims a queued implement-type run whose item overlaps an open session, nor an interactive run", async () => {
     const h = await harness();

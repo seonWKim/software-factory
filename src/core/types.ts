@@ -174,7 +174,7 @@ export type StateChangeDetail = Record<string, string | number | boolean | null>
  * plain model call (no tools) per group of two or more runs for a draft cause and fix. It belongs to its project's
  * system work item, queued daily and by `factory improve`.
  */
-export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual" | "interactive" | "improve" | "merge-check";
+export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual" | "interactive" | "improve" | "merge-check" | "restart";
 
 /**
  * What the controller hands a run beyond the work item. `notes`: a human's `/resolve` text, untrusted. `wip`: the

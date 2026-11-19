@@ -13,6 +13,7 @@ import { Switch } from "../components/ui/switch.js";
 import { Textarea } from "../components/ui/textarea.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
+import { termLabel } from "../lib/format.js";
 import { keyHelp, keyLabel } from "../lib/key-label.js";
 import { MergeButton } from "./item-commands.js";
 import { SettingsRow } from "./settings-row.js";
@@ -264,7 +265,7 @@ function FieldsControl({ spec, draft, label, onChange }: { spec: Extract<Spec, {
   return (
     <div className="flex w-full flex-wrap items-start gap-x-4 gap-y-3">
       {Object.entries(spec.fields).map(([k, sub], i) => (
-        <Field key={k} label={<span className="font-mono text-xs">{k}</span>} htmlFor={`${uid}-${i}`} className={sub.kind === "list" || sub.kind === "pairs" || sub.kind === "json" || sub.kind === "fields" ? "w-full" : ""}>
+        <Field key={k} label={<span className="text-xs">{termLabel(k)}</span>} htmlFor={`${uid}-${i}`} className={sub.kind === "list" || sub.kind === "pairs" || sub.kind === "json" || sub.kind === "fields" ? "w-full" : ""}>
           <Control spec={sub} id={`${uid}-${i}`} draft={draft[k] ?? toDraft(sub, undefined)} label={`${label} ${k}`} onChange={(next) => onChange({ ...draft, [k]: next })} />
         </Field>
       ))}
@@ -290,7 +291,7 @@ const shownJson = (v: Json | undefined): string => (v === undefined ? t("setting
 /** The raw key name behind a Details toggle, under a row's human label; a guard plugin's Details also says "guard". */
 export function KeyNameDetails({ name, guard }: { name: string; guard?: boolean }) {
   return (
-    <Disclosure summary={t("settings.details")}>
+    <Disclosure data-raw summary={t("settings.details")}>
       <KeyValue
         className="mt-1"
         items={[

@@ -1,5 +1,6 @@
 ## History
 
+- **On a Tasks row the ID and the title are both links** (2026-11-19, owner answer "Title and ID are both links", until wi_6fee2cb6 the same day; replaced by the description dialog decision). A built task's title links to its item page with `LINK_CLASS` and its mono ID with `ID_CLASS` (`text-3`), both from `link-style.ts`; an unbuilt task's title stays plain text.
 - **Tasks used Sections and Calendar a bare heading** (until 2026-11-19, the Cards decision at the top). Before: Needs you and the open tasks were `Section`s with no surface, row states were `StatusBadge`, and the calendar's period was an h2 in the controls column above an unframed week or month.
 - **Quick add on a project tab sent no project** (decision changed 2026-11-18, the quick-add decision at the top). Before: the page posted `{ id, words }` whatever the tab, so the task was stored with no project unless the words had `+slug`, and the tab's list did not show it.
 - **The "+" was a bordered button beside the project tabs** (decision changed 2026-11-15, the Project tabs line above). Before: `Button` (secondary, `size-8`) in a flex row next to `Tabs`, outside the tab row's box. The dialog, the create API and the `project` parameter did not change.
