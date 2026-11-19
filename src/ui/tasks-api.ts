@@ -53,7 +53,7 @@ async function shown<T extends { title: string }>(w: Withholder, rows: readonly 
  * tasks stay) at the server's clock, in its time zone, with the calendar events stored by the last syncs placed in Today
  * and Upcoming, and `calendar`, each source's last sync time and whether its last sync failed. Each task row carries
  * `projects`, the slugs of its active task projects, and `active_projects` lists the active projects (slug and name)
- * for the page's project switcher, and `close_reason`, a done task's linked item's close reason when it closed without a merge
+ * for the page's project switcher, and `close_reason`, a linked task's item's close reason (open or done) when it closed without a merge
  * (closeReasons; else null). With `project` (a slug, `?project=`) the views hold only the tasks, open or done, linked to
  * that project: 400 for a value that is not a slug or an archived project, 404 for an unknown one. Reads the stored
  * copy only: no source is called and nothing is written. `csrf_token` and `can_build` for Build this (null and false
@@ -85,13 +85,14 @@ export async function readTasks(d: UiDeps, project: string | null = null): Promi
 }
 
 /**
- * The close reason of each done task's linked work item, read from the item now (design 02-tasks: nothing is stored on
- * the task), only for an item closed without a merge; a merged item's row shows its state instead.
+ * The close reason of each linked task's work item, open or done, read from the item now (design 02-tasks: nothing is
+ * stored on the task), only for an item closed without a merge; a merged item's row shows its state instead. An open
+ * task's item closed as rejected or wont_do says so on the row.
  */
 async function closeReasons(d: UiDeps, tasks: readonly Task[]): Promise<Map<string, CloseReason>> {
   const out = new Map<string, CloseReason>();
   for (const t of tasks) {
-    if (t.done_at === null || t.work_item_id === null) continue;
+    if (t.work_item_id === null) continue;
     const item = await d.store.getWorkItem(t.work_item_id);
     if (item?.stage === "CLOSED" && item.close_reason !== null && item.merge_sha === null) out.set(t.id, item.close_reason);
   }
