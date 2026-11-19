@@ -1,5 +1,6 @@
 ## History
 
+- **Pages used Section, two badges and Empty; the page title was `text-lg`** (until 2026-11-19, the shared page pieces decision at the top). Before: `Section` (`parts.tsx`) was a heading row with no surface, border or shadow; `Badge` was a small square label and `StatusBadge` a pill with a dot, both on `LEVEL_TONE`; `Empty` was a one-line dashed box beside `EmptyState` (no icon, explanation as children); `PageHeader`'s h1 was `text-lg`.
 - **The catalog barrel was a hand-written list** (replaced 2026-11-18 by the generated barrel decision at the top of 09-dashboard-shell.md). Before: `web/src/i18n/en.ts` imported the eight area files by hand and spread them on one line, so every item that added an area file edited the same import list and spread line.
 
 - **Show/hide sections were hand-written `<details>` and a button** (replaced 2026-11-18 by the shared Disclosure decision at the top of 09-dashboard-shell.md). Before: each view wrote its own `<details>` with its own classes (a bordered box for "How this works", a bare triangle for "Show applied rules", `mt-2`/`mt-6` margins), and a Rules card's "Why and where" was a ghost button with a chevron and `aria-expanded`.

@@ -1,5 +1,6 @@
 # 09-health
 
+- **Health's tabs were Sections; Claim pauses a bare list** (until 2026-11-19, the Cards decision at the top). Before: each tab was a `Section` with no surface, and the Claim pauses tab showed its list with no heading.
 - **A Health section on the server-rendered page** (until 2026-11-16, the API-only decision at the top). Before: `/` (later `/classic`) showed the checks as a Health section with a refresh link (`?health=refresh`, still at most one run a minute) and, for a user who may approve, the Run now button; `HealthMonitor.section` built it, and page loads counted toward the 60 s limit beside the API.
 
 ## History
