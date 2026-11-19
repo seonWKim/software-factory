@@ -9,7 +9,7 @@ import { splitThresholds } from "../src/core/split.js";
 import type { Timestamp } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
-import { runSession, sessionDeps } from "../src/session-cmd.js";
+import { SESSION_USAGE, runSession, sessionDeps } from "../src/session-cmd.js";
 import { FakeAuth, FakeBroker, FakeSandbox, PROJECT, cleanScanner, config } from "./helpers/fakes.js";
 import { newStore } from "./helpers/store.js";
 
@@ -64,5 +64,21 @@ describe("factory session through sessionDeps", () => {
     const { store } = await newStore(clock);
     const { parts: p } = await parts(store, clock);
     expect((await start(p)).join("\n")).not.toContain("phases");
+  });
+
+  it("an interactive task on a local item gets the local route (its broker and sandbox), so local tasks are not refused", async () => {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const { parts: p } = await parts(store, clock);
+    const deps = sessionDeps(p, mkdtempSync(join(tmpdir(), "session-cmd-")), new AbortController().signal);
+    // Without it, Sessions.forgeForLocal refuses every local item (a local item is committed only through the local broker).
+    expect((deps.sessions as unknown as { d: { local?: unknown } }).d.local).toBe(p.local);
+  });
+
+  it("the CLI takes `interactive` and keeps `session` as the same command, and its help names interactive tasks", async () => {
+    const { default: command } = await import("../src/cli/handlers/session/session.command.js");
+    expect(command.names).toEqual(["interactive", "session"]);
+    expect(SESSION_USAGE).toMatch(/^factory interactive start/);
+    expect(SESSION_USAGE).toContain("an interactive task");
   });
 });

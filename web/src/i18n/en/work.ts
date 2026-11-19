@@ -281,4 +281,5 @@ export const work = {
   "commands.verdict": "Verdict",
   "commands.commandSent": "Command sent: {command}",
   "commands.more": "More commands",
+  "run.interactive": "Interactive task",
 } as const;

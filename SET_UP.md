@@ -236,13 +236,15 @@ By default the factory is in **manual** mode: a person approves every spec and m
 
 Both need `approve_merge` on the project: the owner (you, after your first writing command) has it with no setup. The Settings page and the dashboard's top bar show the mode with a switch, and the auto-merge tier next to it. A failing check on the base branch after an automatic merge, a failure alarm or a budget checkpoint sets the mode back to manual, with one alarm in Needs you and one audit row by `system:auto`.
 
-### Your own LLM session (`factory session`)
+### Interactive tasks: you handle an item in your own LLM session (`factory interactive`)
 
-Work you do with an LLM in your own terminal can go through the factory too, as one `interactive` run on the work item: a lease, your user ID as its actor, your token count and notes, and a worker's gates before anything is pushed. A worker never claims an implement or update run whose item overlaps your open session, and a session does not start over a running one.
+An interactive task is a work item you handle yourself, in your own Claude (or other LLM) session, instead of a worker. `factory interactive` and `factory session` are the same command. It works for local tasks and GitHub issues alike. Starting one on an item whose implement or update run is only queued takes the item over: those queued runs are cancelled. A running one still refuses. The dashboard shows an "Interactive task" badge on the item while it is open.
+
+Work you do with an LLM in your own terminal goes through the factory as one `interactive` run on the work item: a lease, your user ID as its actor, your token count and notes, and a worker's gates before anything is pushed. A worker never claims an implement or update run whose item overlaps your open session, and a session does not start over a running one.
 
 ```bash
-npm run --silent factory -- session start 12 [--spec spec.json] [--transcript <url>] [--as <github login>]   # issue #12 or a wi_… id
-npm run --silent factory -- session status | note "<text>" [--tokens <n>] [--transcript <url>] | finish [--tokens <n>] | abandon [--tokens <n>]
+npm run --silent factory -- interactive start 12 [--spec spec.json] [--transcript <url>] [--as <github login>]   # issue #12 or a wi_… id
+npm run --silent factory -- interactive status | note "<text>" [--tokens <n>] [--transcript <url>] | finish [--tokens <n>] | abandon [--tokens <n>]
 ```
 
 - `start` creates the work item if the issue has none (only with `--spec`), records the run, makes a run folder on the item's branch and prints its path: work and commit there. It stays in the foreground and keeps the lease; Ctrl-C stops it, the lease expires, the reaper ends the run (`session_lost`) and the item is released. `--spec <file>`: your own spec for a NEW item, in the triage output format (checked by the same parser; no phases); the queued triage run is cancelled. `--transcript <url>`: an http or https link, stored after the leak scan. `--as <login>`: your GitHub login (default `repo.owner`), mapped to your user ID as for commands; you need write permission. Refused, with nothing changed, for an item that is closed, in review, waiting for `/approve`, without allowed paths, with a queued or running implement or update run or an open session, or overlapping another item's running implement run.
