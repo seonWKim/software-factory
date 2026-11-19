@@ -411,6 +411,15 @@ describe("item page: the Reject and Revise dialogs (issue #527)", () => {
     await waitFor(() => expect(within(row).getByRole("status").textContent).toBe("sent"));
   });
 
+  it("Revise's five comment boxes have distinct accessible names, one per section", async () => {
+    serve();
+    mount("/app/items/wi_r");
+    const form = await open("revise");
+    const names = within(form).getAllByRole("textbox").map((t) => t.getAttribute("aria-label"));
+    expect(names).toEqual(["In short", "Problem", "Done when", "Scope", "Allowed paths"].map((s) => `Comment on ${s}`));
+    expect(new Set(names).size).toBe(names.length);
+  });
+
   it("Revise stays disabled while no section has a comment; a blank comment does not count", async () => {
     serve();
     mount("/app/items/wi_r");
