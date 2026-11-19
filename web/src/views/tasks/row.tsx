@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { type KeyboardEvent, useContext, useRef, useState } from "react";
 import { API, type TaskRow, postTaskBuild } from "../../api.js";
 import { Button } from "../../components/ui/button.js";
+import { Checkbox } from "../../components/ui/checkbox.js";
 import { FOCUS } from "../../components/ui/control.js";
 import { announceStatus } from "../../components/ui/dialog.js";
 import { ID_CLASS, LINK_CLASS } from "../../components/ui/link-style.js";
@@ -143,17 +144,12 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
       className={cn("flex flex-wrap items-start justify-between gap-x-3 gap-y-2 p-3", FOCUS, "focus-visible:-outline-offset-2", sub && "pl-10")}
     >
       {token !== null && !done && (
-        // The shared Button as a checkbox: components/ui has no checkbox, and a raw input is not used outside it.
-        <Button
-          size="icon"
-          role="checkbox"
-          aria-checked={checked}
+        <Checkbox
+          checked={checked}
           aria-label={t("tasks.complete", { title: task.title })}
           disabled={action.busy}
-          onClick={() => void complete()}
-        >
-          <span aria-hidden>{checked ? "✓" : ""}</span>
-        </Button>
+          onChange={() => void complete()}
+        />
       )}
       <div className="min-w-0 flex-1 space-y-1">
         {mode === "edit" ? (
