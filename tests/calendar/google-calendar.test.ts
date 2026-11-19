@@ -9,6 +9,7 @@ import {
   CALENDAR_READONLY_SCOPE,
   EVENTS_API,
   GoogleCalendarSource,
+  INVALID_GRANT,
   type HttpClient,
   type HttpRequest,
   TOKEN_URL,
@@ -390,6 +391,24 @@ describe("google-calendar: secrets and errors", () => {
     for (const text of [...lines, stored]) {
       for (const value of Object.values(SECRETS)) expect(text).not.toContain(value);
     }
+  });
+
+  it("a 400 token refresh with invalid_grant stores only that code: never Google's body or a secret value", async () => {
+    const { store } = await newStore(new FakeClock(NOW));
+    const db = (store as unknown as { db: SqlDriver }).db;
+    const { http, source, clock } = setup();
+    http.token = () => ({ status: 400, body: { error: "invalid_grant", error_description: `Token has been expired or revoked. BODY-MARKER ${SECRETS.GOOGLE_REFRESH_TOKEN}` } });
+    const [out] = await syncCalendars(db, [{ name: "google-calendar", source }], clock.now().getTime());
+    expect(out).toMatchObject({ ok: false, error: INVALID_GRANT });
+    const rows = await db.all("SELECT error FROM calendar_sync_state WHERE source = 'google-calendar'");
+    expect(rows).toEqual([{ error: "invalid_grant" }]);
+    for (const leak of ["BODY-MARKER", "expired or revoked", ...Object.values(SECRETS)]) expect(JSON.stringify(rows)).not.toContain(leak);
+  });
+
+  it("a 400 token refresh with another error code keeps the plain step error", async () => {
+    const { http, source, clock } = setup();
+    http.token = () => ({ status: 400, body: { error: "invalid_client", error_description: "BODY-MARKER" } });
+    expect(await errorOf(source.events(syncWindow(clock)))).toBe("google-calendar: token refresh failed (HTTP 400)");
   });
 
   it("a failed token refresh or read throws, so the sync stores the error and keeps the last events", async () => {
