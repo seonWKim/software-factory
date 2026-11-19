@@ -1,13 +1,13 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type RefObject, useContext, useRef, useState } from "react";
-import { API, type ProjectChoice, type TaskRow, postTaskAction, postTaskProject } from "../../api.js";
+import { API, type ProjectChoice, type TaskRow, postTaskProject } from "../../api.js";
 import { Button } from "../../components/ui/button.js";
 import { Dialog, announceStatus } from "../../components/ui/dialog.js";
 import { Field } from "../../components/ui/field.js";
 import { Input } from "../../components/ui/input.js";
 import { t } from "../../i18n/index.js";
 import { cn } from "../../lib/cn.js";
-import { Rows, createProject, muted } from "./shared.js";
+import { Rows, createProject, muted, useTaskAction } from "./shared.js";
 
 /**
  * The delete confirm: the shared Dialog with danger set; it deletes only on confirm, and a refusal stays in it with its
@@ -15,15 +15,10 @@ import { Rows, createProject, muted } from "./shared.js";
  * with sub-tasks", which deletes them with the task (design 02-tasks-page), so no confirm leads to the store's refusal.
  */
 export function DeleteDialog({ task, token, returnFocusTo, onClose }: { task: TaskRow; token: string; returnFocusTo: RefObject<HTMLElement | null>; onClose: () => void }) {
-  const { busy, error, setError, send } = useSend();
+  const action = useTaskAction(token);
   const subs = task.open_sub_tasks ?? 0;
   const confirm = async () => {
-    const deleted = await send(async () => {
-      const r = await postTaskAction(token, "delete", subs > 0 ? { id: task.id, with_sub_tasks: true } : { id: task.id });
-      if (!r.ok) setError(r.error);
-      return r.ok;
-    });
-    if (deleted) {
+    if (await action.run("delete", subs > 0 ? { id: task.id, with_sub_tasks: true } : { id: task.id })) {
       announceStatus(t("tasks.deleted", { title: task.title }));
       onClose();
     }
@@ -34,8 +29,8 @@ export function DeleteDialog({ task, token, returnFocusTo, onClose }: { task: Ta
       title={t("tasks.deleteTitle", { title: task.title })}
       consequence={t("tasks.deleteConsequence")}
       confirmLabel={t(subs > 0 ? "tasks.deleteWithSubs" : "tasks.delete")}
-      confirmDisabled={busy}
-      error={error}
+      confirmDisabled={action.busy}
+      error={action.error}
       returnFocusTo={returnFocusTo}
       onConfirm={() => void confirm()}
       onClose={onClose}
@@ -43,29 +38,6 @@ export function DeleteDialog({ task, token, returnFocusTo, onClose }: { task: Ta
       {subs > 0 && <p data-open-sub-tasks={subs}>{t(subs === 1 ? "tasks.deleteSubsOne" : "tasks.deleteSubsMany", { count: subs })}</p>}
     </Dialog>
   );
-}
-
-/** One write at a time: its refusal or failure stays in the dialog, and a write that answers true reloads the tasks. */
-function useSend() {
-  const client = useQueryClient();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const send = async (write: () => Promise<boolean>): Promise<boolean> => {
-    if (busy) return false;
-    setBusy(true);
-    setError(null);
-    try {
-      if (!(await write())) return false;
-      await client.invalidateQueries({ queryKey: [API.tasks] });
-      return true;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      return false;
-    } finally {
-      setBusy(false);
-    }
-  };
-  return { busy, error, setError, send };
 }
 
 /**
@@ -76,10 +48,25 @@ function useSend() {
  */
 export function ProjectsDialog({ task, token, returnFocusTo, onClose }: { task: TaskRow; token: string; returnFocusTo: RefObject<HTMLElement | null>; onClose: () => void }) {
   const { projects } = useContext(Rows);
+  const client = useQueryClient();
   const attempt = useRef<{ id: string; words: string } | null>(null);
   const [linked, setLinked] = useState<ReadonlySet<string>>(() => new Set(task.projects ?? []));
   const [name, setName] = useState("");
-  const { busy, error, setError, send } = useSend();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  /** One write at a time; its refusal or failure stays in the dialog. */
+  const send = async (write: () => Promise<boolean>) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      if (await write()) await client.invalidateQueries({ queryKey: [API.tasks] });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
   const link = async (p: ProjectChoice, add: boolean): Promise<boolean> => {
     const r = await postTaskProject(token, task.id, p.slug, add);
     if (!r.ok) {
