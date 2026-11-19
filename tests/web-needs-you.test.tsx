@@ -25,7 +25,7 @@ const MERGE = row("m1", "ready_to_merge", "Ship the parser", {
 const CHECKING = row("m2", "ready_to_merge", "Ship the lexer", { merge: { enabled: true, reason: null }, merge_check: { state: "checking", conflicts: [], head_sha: null, base_sha: null, checked_at: null } });
 const APPROVE = row("a1", "needs_approval", "Approve the spec", { commands: ["approve", "reject", "revise"].map(cmd) });
 const RETRY = row("r1", "needs_you", "Fix the build", { commands: ["retry", "reject"].map(cmd), need: { reason: WHY, anchor: null } });
-const NOTHING = row("n1", "needs_you", "Look at this", { commands: [] });
+const NOTHING = row("n1", "needs_you", "Look at this", { commands: [], need: { reason: "failed: spec_conflict", anchor: null } });
 const DEP = row("5b2b", "running", "Add the input component", { blocked_on: "none", need: undefined });
 
 let list: object[];
@@ -150,6 +150,18 @@ describe("the Needs you section", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Allow input.tsx and retry" }));
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]).toEqual({ url: "/api/v1/items/wi_r1/commands", body: { command: "retry", note: "+paths web/src/components/ui/input.tsx" } });
+  });
+
+  it("shows a reason that is only a status code as a chip beside the badge, not as a line under it", async () => {
+    mount();
+    const lists = await ready();
+    const row = rowsOf(lists[2]!)[1]!;
+    const need = row.querySelector<HTMLElement>("[data-need]")!;
+    expect(need.tagName).toBe("SPAN");
+    expect(need.querySelector("[data-level], span")!.textContent).toBe("failed: spec_conflict");
+    expect(row.querySelector("p[data-need]")).toBeNull();
+    // A sentence stays a line.
+    expect(rowsOf(lists[2]!)[0]!.querySelector("[data-need]")!.tagName).toBe("P");
   });
 
   it("moves between rows with j and k, opens the item with Enter, presses the primary action with p (never Merge)", async () => {

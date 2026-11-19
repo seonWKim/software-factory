@@ -31,6 +31,8 @@ const STATE_OF: Record<string, MessageKey> = {
 const stateKey = (it: ItemRow): MessageKey | null => (it.item_phase === "closed" ? (it.close_reason === "completed" ? "tasks.state.merged" : null) : (STATE_OF[it.item_phase] ?? null));
 
 /** An Answer-or-fix item's reason (the need's, else the why's en.ts text); empty for Merge and Approve, which say it with the badge. */
+/** A reason that is only a short status code ("failed: spec_conflict"): shown as a chip beside the badge, not as a line. */
+const CODE_REASON = /^[a-z][a-z ]{0,20}: [a-z0-9_.-]{1,40}$/i;
 const needReason = (it: ItemRow): string => (needGroup(it) === "answer" ? (it.need?.reason ?? (it.why ? whyText(it.why) : "")) : "");
 
 /**
@@ -90,6 +92,7 @@ function WorkRow({ it }: { it: ItemRow }) {
   const cmd = useCommandSend(it.id);
   const checking = it.merge_check?.state === "checking";
   const reason = needReason(it);
+  const chip = CODE_REASON.test(reason);
   return (
     <li data-key={it.id} className={NEED_ROW}>
       <div className="min-w-0 grow basis-64 space-y-1">
@@ -102,8 +105,19 @@ function WorkRow({ it }: { it: ItemRow }) {
         <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <Badge level={it.item_phase}>{LEVEL_LABELS[it.item_phase] ?? it.item_phase}</Badge>
           {it.merge_check && !checking && it.merge_check.state !== "mergeable" && <MergeCheckNote check={it.merge_check} />}
+          {chip && (
+            <span data-need title={reason}>
+              {it.need?.anchor ? (
+                <Link href={`${itemPath(it.id)}#${it.need.anchor}`} className="rounded-pill hover:opacity-80">
+                  <Badge>{reason}</Badge>
+                </Link>
+              ) : (
+                <Badge>{reason}</Badge>
+              )}
+            </span>
+          )}
         </span>
-        {reason !== "" && (
+        {reason !== "" && !chip && (
           <p data-need title={reason} className="line-clamp-2 text-xs break-words text-text-2">
             {it.need?.anchor ? <Link href={`${itemPath(it.id)}#${it.need.anchor}`} className={LINK_CLASS}>{reason}</Link> : reason}
           </p>
