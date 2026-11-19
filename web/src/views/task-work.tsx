@@ -30,9 +30,9 @@ const STATE_OF: Record<string, MessageKey> = {
 
 const stateKey = (it: ItemRow): MessageKey | null => (it.item_phase === "closed" ? (it.close_reason === "completed" ? "tasks.state.merged" : null) : (STATE_OF[it.item_phase] ?? null));
 
-/** An Answer-or-fix item's reason (the need's, else the why's en.ts text); empty for Merge and Approve, which say it with the badge. */
 /** A reason that is only a short status code ("failed: spec_conflict"): shown as a chip beside the badge, not as a line. */
 const CODE_REASON = /^[a-z][a-z ]{0,20}: [a-z0-9_.-]{1,40}$/i;
+/** An Answer-or-fix item's reason (the need's, else the why's en.ts text); empty for Merge and Approve, which say it with the badge. */
 const needReason = (it: ItemRow): string => (needGroup(it) === "answer" ? (it.need?.reason ?? (it.why ? whyText(it.why) : "")) : "");
 
 /**
