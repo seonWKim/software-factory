@@ -23,7 +23,7 @@ async function setup(project: string | null = PROJECT_KEY) {
   const { store } = await newStore(clock);
   let n = 0;
   const d: LocalCliDeps = {
-    store, identity: { user: USER, from: "git user.email" }, project: async () => project, read: async () => "  the body  \n", newId: () => `id${++n}`, uiPort: 4310,
+    store, identity: { user: USER, from: "git user.email" }, project: async () => project, read: async () => "  the body  \n", newId: () => `id${++n}`, ui: {},
   };
   const run = (word: string, ...args: string[]) => {
     const a = parseLocalCliArgs(word, args);

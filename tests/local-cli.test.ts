@@ -101,7 +101,7 @@ describe("parseLocalCliArgs", () => {
 describe("task create", () => {
   it("creates one local work item with its triage run queued and prints its ID, its link and the next step", async () => {
     const { store, d, reads } = await setup();
-    const r = await runLocalCli({ ...d, uiPort: 4310 }, { action: "create", title: "Add a gate", bodyFile: "body.md" });
+    const r = await runLocalCli({ ...d, ui: {} }, { action: "create", title: "Add a gate", bodyFile: "body.md" });
     expect(r.code).toBe(0);
     expect(r.lines).toEqual([r.lines[0], `http://127.0.0.1:4310/app/items/${r.lines[0]}`, "triage queued; you'll be asked to approve the spec"]);
     const item = (await store.getWorkItem(r.lines[0] as WorkItemId))!;
@@ -116,7 +116,7 @@ describe("task create", () => {
 
   it("the link uses the configured ui.port; with no port (a chat caller) only the ID and the next step print", async () => {
     const { d } = await setup();
-    const linked = await runLocalCli({ ...d, uiPort: 5123 }, { action: "create", title: "t", bodyFile: "b" });
+    const linked = await runLocalCli({ ...d, ui: { port: 5123 } }, { action: "create", title: "t", bodyFile: "b" });
     expect(linked.lines[1]).toBe(`http://127.0.0.1:5123/app/items/${linked.lines[0]}`);
     const bare = await runLocalCli(d, { action: "create", title: "t", bodyFile: "b" });
     expect(bare.lines).toEqual([bare.lines[0], CREATE_NEXT_STEP]);

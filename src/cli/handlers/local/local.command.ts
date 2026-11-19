@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { uiPort } from "../../../compose.js";
 import { CLI_TOP_WORDS, HELP_WORD, cliName, cliUsageLines, parseLocalCliArgs, runLocalCli } from "../../../core/local-cli.js";
 import { storeProjectResolver } from "../../../ui/settings-api.js";
 import { defineCommand } from "../../command.js";
@@ -37,7 +36,7 @@ export default defineCommand({
           read: (path) => readFile(path, "utf8"),
           newId: () => randomUUID(),
           cli,
-          uiPort: uiPort(loaded.file.ui),
+          ui: loaded.file.ui ?? {},
         },
         action,
       );

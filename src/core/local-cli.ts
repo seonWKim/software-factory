@@ -75,25 +75,16 @@ export function isCliCommandKey(key: string): boolean {
   return key.startsWith(CLI_KEY_PREFIX);
 }
 
-/** The environment variable a project's wrapper (`gb`, say) sets to its own command name, for the CLI's hints. */
+/** Set by a project's wrapper (`gb`, say) to its own command name; the CLI's hints start with it (design 05-sources). */
 export const CLI_NAME_ENV = "FACTORY_CLI_NAME";
-
-/** The command name the hints use when no wrapper names itself: chat replies and `/help` always use it. */
-export const DEFAULT_CLI_NAME = "factory";
-
+/** The hints' command name when no wrapper names itself: chat replies and `/help` always use it. */ export const DEFAULT_CLI_NAME = "factory";
 /** The command name the CLI's hints start with: CLI_NAME_ENV when it is one word, else DEFAULT_CLI_NAME. */
 export function cliName(env: Readonly<Record<string, string | undefined>>): string {
   const v = env[CLI_NAME_ENV]?.trim();
   return v !== undefined && /^\S+$/.test(v) ? v : DEFAULT_CLI_NAME;
 }
-
-/** The line `task create` ends with: what happens to the new item next. */
-export const CREATE_NEXT_STEP = "triage queued; you'll be asked to approve the spec";
-
-/** An item's page on the status page, which listens on loopback at `ui.port` (design 05-sources, CLI intake). */
-export function itemLink(port: number, id: WorkItemId): string {
-  return `http://127.0.0.1:${port}/app/items/${id}`;
-}
+/** `task create`'s last line: what happens to the new item next. */ export const CREATE_NEXT_STEP = "triage queued; you'll be asked to approve the spec";
+const UI_PORT = 4310; // `ui.port` unset: compose.ts DEFAULT_UI_PORT, which core cannot import
 
 /** The top-level words `factory` hands to this module: the table's task, project and item commands (with `confirm`). */
 export const CLI_TOP_WORDS = topWords(["task", "item"]);
@@ -301,10 +292,9 @@ export interface LocalCliDeps {
    * source already shows it in its thread, so its row is not mirrored there. Absent: the CLI.
    */
   origin?: string;
-  /** The command name the hints start with (cliName); absent: DEFAULT_CLI_NAME, as chat callers leave it. */
-  cli?: string;
-  /** The status page's `ui.port`: `task create` prints the new item's link on it. Absent: no link (chat callers). */
-  uiPort?: number;
+  cli?: string; // the hints' command name (cliName); absent: DEFAULT_CLI_NAME, as chat callers leave it
+  /** factory.config.json's `ui` (validated at load): `task create` prints the item's loopback link on its port. Absent: no link (chat). */
+  ui?: { port?: number };
 }
 
 export interface CliResult {
@@ -320,10 +310,8 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
   const user = d.identity.user;
   const cli = d.cli ?? DEFAULT_CLI_NAME;
   // The new item's ID first (scripts read it), then its link and what happens next.
-  const created = (id: WorkItemId, ...rest: string[]): CliResult => ({
-    code: 0,
-    lines: [id, ...rest, ...(d.uiPort !== undefined ? [itemLink(d.uiPort, id)] : []), CREATE_NEXT_STEP],
-  });
+  const link = (id: WorkItemId) => (d.ui ? [`http://127.0.0.1:${d.ui.port ?? UI_PORT}/app/items/${id}`] : []);
+  const created = (id: WorkItemId, ...rest: string[]): CliResult => ({ code: 0, lines: [id, ...rest, ...link(id), CREATE_NEXT_STEP] });
   // The first identity to write becomes the local owner (issue #318); anonymous never does.
   const claim = async () => (user === ANONYMOUS_USER ? null : d.store.claimOwner(user));
   switch (a.action) {
@@ -451,10 +439,7 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       // its own (design 04-gate-commands), so neither is mirrored.
       const mirror = a.command !== "verdict" && a.command !== MERGE_COMMAND && item.source.type !== "local" && item.source.type !== d.origin;
       const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: a.command, args, ...(mirror ? { mirror } : {}) });
-      return {
-        code: 0,
-        lines: [`stored \`${name}\` for ${item.id} as ${user} (command ${command.seq}); the controller applies it on its next poll, see \`${cli} task show ${item.id}\``],
-      };
+      return { code: 0, lines: [`stored \`${name}\` for ${item.id} as ${user} (command ${command.seq}); the controller applies it on its next poll, see \`${cli} task show ${item.id}\``] };
     }
     case "confirm": {
       const rows = await d.store.listCommandProposals(a.proposal);
@@ -568,8 +553,7 @@ export interface SentenceDeps {
   refusal: () => Promise<string | null>;
   /** A new random ID: the proposal's. */
   newId: () => string;
-  /** The command name the hints start with (cliName); absent: DEFAULT_CLI_NAME. */
-  cli?: string;
+  cli?: string; // the hints' command name (cliName); absent: DEFAULT_CLI_NAME
 }
 
 /** The words of `factory <words...>` as one sentence, or why they are none: a sentence has at least two words. */
