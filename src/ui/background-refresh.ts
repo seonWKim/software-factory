@@ -8,7 +8,11 @@
 // idle window returns the last result and starts a refresh. A refresh that throws keeps the last good result and
 // its time; with no good result yet, the first read gets the error.
 
-import type { Clock } from "../interfaces/clock.js";
+/** The part of a Clock the snapshot uses (structural, so any Clock fits). */
+interface Clock {
+  now(): Date;
+  sleep(ms: number, signal?: AbortSignal): Promise<void>;
+}
 
 /** No refresh runs unless a read happened within this time: an idle owner's page costs no remote call. */
 export const IDLE_MS = 10 * 60_000;
