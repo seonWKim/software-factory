@@ -1,6 +1,37 @@
 import type { FactoryStore } from "../interfaces/factory-store.js";
+import { dependsOnLines } from "./coordination.js";
 import { ProjectRefused, type Task, projectRefusal } from "./tasks.js";
-import type { UserId, WorkItem } from "./types.js";
+import type { UserId, WorkItem, WorkItemId } from "./types.js";
+
+/**
+ * The dependency edge of a local item (design 05-dependencies): a `Depends on: <id>` line in its problem, naming a
+ * wi_ (work item) or tk_ (task) id. `task create --depends-on`, an approved yes to triage's "Depends on wi_X? yes/no"
+ * and `/hold <id>` all write this one line; the local source reads it.
+ */
+export const dependsOnLine = (id: string): string => `Depends on: ${id}`;
+
+/** A wi_ or tk_ id as `--depends-on` and `/hold` take it. */
+export const LOCAL_ID = /^(?:wi|tk)_[\w-]+$/;
+
+/** The wi_ and tk_ ids on the `Depends on:` lines of `text`, in order, each once. */
+export function dependsOnIds(text: string): string[] {
+  return [...new Set(dependsOnLines(text).flatMap((l) => [...l.matchAll(/\b(?:wi|tk)_[\w-]+/g)].map((m) => m[0])))];
+}
+
+/** `text` with a `Depends on:` line for each of `ids` it does not name yet, after a blank line; `text` itself when none is missing. */
+export function withDependsOn(text: string, ids: readonly string[]): string {
+  const have = dependsOnIds(text);
+  const missing = [...new Set(ids)].filter((id) => !have.includes(id));
+  return missing.length === 0 ? text : [text.trimEnd(), missing.map(dependsOnLine).join("\n")].filter((t) => t !== "").join("\n\n");
+}
+
+/** The local work item a wi_ id names, or the one task tk_'s build made; null for none, or an item that is not local. */
+export async function localItemOf(store: Pick<FactoryStore, "getTask" | "getWorkItem">, id: string): Promise<WorkItem | null> {
+  if (!LOCAL_ID.test(id)) return null;
+  const wi = id.startsWith("tk_") ? (await store.getTask(id))?.work_item_id ?? null : (id as WorkItemId);
+  const item = wi ? await store.getWorkItem(wi) : null;
+  return item?.source.type === "local" ? item : null;
+}
 
 /**
  * Build this (design 02-tasks, issue #607): a plain task sent to intake as one local work item, the link stored on

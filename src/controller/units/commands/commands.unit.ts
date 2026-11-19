@@ -6,7 +6,7 @@
 
 import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
 import {
-  APPROVED_RUN_QUEUED, APP_REQUEST, CHECKPOINT_REFUSAL, CLOSED_REFUSAL, HOLD_PATHS, appliesLocally, appliesOnPr, approveCheck, approvesHold, awaitingSpec, commandFooter, commandNote, commandPhase, commandSpec,
+  APPROVED_RUN_QUEUED, APP_REQUEST, CHECKPOINT_REFUSAL, CLOSED_REFUSAL, HOLD_PATHS, HOLD_REQUESTED, applies, appliesLocally, appliesOnPr, approveCheck, approvesHold, awaitingSpec, commandFooter, commandNote, commandPhase, commandSpec,
   commandState, failedRunKind, floorCommand, floorTierNeeded, helpReply, parseLink, phaseLabel, refusalText, ruleOfTwoCommand, scanNote, specDecision,
   specNotWaiting, unknownCommandReply, withTag, localMergeRefusal, mergeReturned, prMergeRefusal, queuedRun, awaitingMerge,
 } from "../../../core/commands.js";
@@ -17,6 +17,8 @@ import { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity } from "../../.
 import { specKind } from "../../../core/standing.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpretMessage, interpretReply, interpretTexts, openItems, proposalEvent } from "../../../core/interpret.js";
 import { type Actor, type RunKind, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
+import { LOCAL_ID } from "../../../core/task-build.js";
+import type { ExternalIdentity } from "../../../interfaces/auth-provider.js";
 import type { AppCommandRequest, CliCommand, FactoryStore, RedeemLinkResult } from "../../../interfaces/factory-store.js";
 import type { ForgeEvent } from "../../../interfaces/forge.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
@@ -33,6 +35,8 @@ type ResolveEvent = Extract<SourceEvent, { kind: "resolve_requested" }>;
 type PrReviewEvent = Extract<ForgeEvent, { kind: "pr_changes_requested" }>;
 type InfoEvent = Extract<SourceEvent, { kind: "help_requested" | "unknown_command" }>;
 type PlainCommentEvent = Extract<SourceEvent, { kind: "plain_comment" }>;
+/** `/hold <id>`'s command name (design 05-dependencies): applied from its inbox row or app request, with no comment event. */
+const HOLD = "hold";
 /** Tells applyCommand to re-read the item and try again (a version conflict or a concurrent answer). */
 const RETRY = Symbol("retry");
 /** Why a `/link` code was refused, as the reply says it. Never names the code. */
@@ -183,6 +187,8 @@ export class CommandsUnit {
     if (c.command === CONFIRM_COMMAND) return confirmProposal(this.c, c, item, { event: (r, s) => proposalEvent(r, s, localIdentity(c.actor)), say: refusalText });
     if (c.command === MERGE_COMMAND && item.source.type === LOCAL_SOURCE) return void (await this.c.unit("local-merge").mergeLocal(item.id, localIdentity(c.actor), c.key));
     if (c.command === MERGE_COMMAND) return this.c.unit("pr-events").mergeCommand(item, localIdentity(c.actor), c.key, item.source);
+    // `/hold <id>` (design 05-dependencies) has no comment event of its own: it is applied here, from the row.
+    if (c.command === HOLD) return void (await this.holdCommand(item, { who: localIdentity(c.actor) }, c.key, typeof c.args.text === "string" ? c.args.text : ""));
     const e = commandEvent(c, item.source);
     if (e) await this.c.dispatch(e);
   }
@@ -498,8 +504,39 @@ export class CommandsUnit {
     await answerPlain(this.c, item, e, async () => commandFooter(await this.stateOf(item)));
   }
 
-  /** The dashboard's Confirm all, Cancel or sentence (proposals.ts appProposal); undefined for any other app command. */
+  /**
+   * `/hold <id>` from the command inbox or an app request (`app`: its user): the owner check, then the phase (a local
+   * item whose implement run asked for a human), the ID, and the hold itself (CoordinationUnit.holdUntil), which
+   * names why when it refuses. A refusal from the inbox is posted once in the item's thread, keyed on the row; an
+   * app request's is returned to its caller, which posts it.
+   */
+  async holdCommand(item: WorkItem, from: { who: ExternalIdentity } | { app: UserId }, key: string, text: string): Promise<string | null> {
+    const refusal = await this.hold(item, from, key, text);
+    if (refusal !== null && "who" in from) {
+      this.c.k.d.log.info("command refused", { work_item_id: item.id, command: HOLD, reason: refusal });
+      await this.c.unit("outbox").post(item, item.source, refusalText(`/${HOLD}`, refusal), `<!-- factory:refused:${key} -->`);
+    }
+    return refusal;
+  }
+
+  private async hold(item: WorkItem, from: { who: ExternalIdentity } | { app: UserId }, key: string, text: string): Promise<string | null> {
+    const auth = this.c.unit("auth");
+    const principal = "who" in from ? await auth.authorize(from.who, "approve_spec", item.id) : await auth.allowed({ user_id: from.app }, "approve_spec", item.id);
+    if ("refuse" in principal) return principal.refuse;
+    // Applied already (the row read again after a restart): nothing more to do or say.
+    if ((await this.c.k.reader.listStateChanges(item.id)).some((c) => c.reason === HOLD_REQUESTED && c.detail?.comment_id === key)) return null;
+    const state = await this.stateOf(item);
+    if (!applies(commandSpec(HOLD), state)) {
+      return `the item is ${phaseLabel(state.phase)}; \`/hold <id>\` applies only to a local item whose implement run asked for a human`;
+    }
+    const [id = "", ...more] = text.trim().split(/\s+/).filter((w) => w !== "");
+    if (!LOCAL_ID.test(id) || more.length > 0) return "`/hold` takes one ID, of the local item to wait for: `/hold wi_…` or `/hold tk_…`";
+    return this.c.unit("coordination").holdUntil(item, { kind: "user", id: principal.user_id }, id, key);
+  }
+
+  /** The dashboard's Confirm all, Cancel or sentence (proposals.ts appProposal), and `hold`; undefined for any other app command. */
   appProposal(r: AppCommandRequest, item: WorkItem, key: string): Promise<string | null> | undefined {
+    if (r.command === HOLD) return this.holdCommand(item, { app: r.actor }, key, typeof r.args.note === "string" ? r.args.note : "");
     const kind = r.command === CONFIRM_COMMAND ? "confirm" : r.command === CANCEL_APP_COMMAND ? "cancel" : r.command === SENTENCE_APP_COMMAND ? "sentence" : null;
     const who = localIdentity(r.actor);
     return kind ? appProposal(this.c, r, item, key, kind, { who, event: (row, s) => proposalEvent(row, s, who), say: refusalText, footer: async () => commandFooter(await this.stateOf(item)) }) : undefined;

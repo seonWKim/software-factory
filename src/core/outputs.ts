@@ -69,6 +69,23 @@ export interface SpecDecision {
 export const MIN_OPTIONS = 2;
 export const MAX_OPTIONS = 4;
 
+/**
+ * Triage's dependency proposal (design 04-triage): a request that says it runs after another local item is asked as
+ * this yes/no decision, never as free text. An approved yes writes the item's `Depends on: <id>` line (design 05-dependencies).
+ */
+export const dependencyQuestion = (id: string): string => `Depends on ${id}? yes/no`;
+const DEPENDENCY_QUESTION = /^\s*Depends on ((?:wi|tk)_[\w-]+)\?\s*yes\/no\s*$/i;
+/** The options of a dependency proposal, whatever triage wrote. */
+const YES_NO = ["yes", "no"];
+
+/** The wi_ or tk_ id a dependency proposal's question names; null for any other question. */
+export function proposedDependency(question: string): string | null {
+  return DEPENDENCY_QUESTION.exec(question)?.[1] ?? null;
+}
+
+/** Whether an answer to a dependency proposal is yes (`yes`, `Yes, wait`); anything else is no. */
+export const answersYes = (answer: string | null): boolean => /^\s*yes\b/i.test(answer ?? "");
+
 /** One phase of a split spec. On /approve it becomes a sub-issue and then an ordinary work item. */
 export interface TriagePhase {
   title: string;
@@ -376,7 +393,8 @@ function parseQuestion(d: Record<string, unknown>, at: string): SpecDecision | s
   if (!isStr(d.question) || d.question.trim() === "") return `${at}.question: must be a non-empty string`;
   if (!isStr(d.reason) || d.reason.trim() === "") return `${at}.reason: must be a non-empty string`;
   if (d.default !== undefined && d.default !== null && !isStr(d.default)) return `${at}.default: must be a string`;
-  const options = d.options ?? [];
+  // A dependency proposal is always yes/no (design 04-triage); its default must be one of the two.
+  const options = proposedDependency(d.question) !== null ? YES_NO : d.options ?? [];
   if (!isStrs(options) || options.some((o) => o.trim() === "") || (options.length > 0 && (options.length < MIN_OPTIONS || options.length > MAX_OPTIONS))) {
     return `${at}.options: must be [] or ${MIN_OPTIONS} to ${MAX_OPTIONS} non-empty strings`;
   }

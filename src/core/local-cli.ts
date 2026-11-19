@@ -11,7 +11,7 @@ import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpretMes
 import { needsDueDate, parseQuickAdd, parseQuickEdit } from "./quick-add.js";
 import { type Project, projectSlug } from "./projects.js";
 import { ProjectRefused, type TaskEdit, type TaskFields, projectRefusal, taskLine } from "./tasks.js";
-import { NO_PROJECT_KEY, buildTask, createLocalItem, createProjectTask } from "./task-build.js";
+import { LOCAL_ID, NO_PROJECT_KEY, buildTask, createLocalItem, createProjectTask, localItemOf, withDependsOn } from "./task-build.js";
 
 /**
  * The writer side of local intake (issue #200; design 05-sources.md, "CLI intake"). `factory task create`
@@ -20,7 +20,7 @@ import { NO_PROJECT_KEY, buildTask, createLocalItem, createProjectTask } from ".
  * done` completes one and `task reopen` undoes that, `task edit`, `task delete` and `task sub` change, remove and nest one (design 02-tasks: no
  * work item, no triage); `project …` keeps the task projects and `task project` links a task to one, unlinks it or moves it
  * (design 02-tasks, task projects); `task list` and `task show` read the store; `approve`,
- * `retry`, `revise`, `reject`, `resolve` and `verdict` append one row to the CLI command log (`command_inbox`) and change no item
+ * `retry`, `revise`, `reject`, `resolve`, `hold` and `verdict` append one row to the CLI command log (`command_inbox`) and change no item
  * state, for an item of any source; `approve` first runs the controller's phase check (`approveRefusal`) and refuses
  * with its text before any write (issue #528), and `verdict` its parser and closed-item check (`verdictRefusal`,
  * issue #523). `confirm <proposal-id>` appends one `proposal_confirm` row for a stored proposal with a pending command
@@ -92,14 +92,17 @@ export const CONFIRM_WORD = "confirm";
 export const SENTENCE_APP_COMMAND = "sentence";
 export const CANCEL_APP_COMMAND = "proposal_cancel";
 
-const ITEM_COMMANDS = ["approve", "retry", "revise", "reject", "resolve", "verdict"] as const;
+const ITEM_COMMANDS = ["approve", "retry", "revise", "reject", "resolve", "verdict", "hold"] as const;
 
 /** `merge` is the local merge (src/core/local-merge.ts); the others are the comment commands of the same name. */
 export type ItemCommand = (typeof ITEM_COMMANDS)[number] | typeof MERGE_COMMAND;
 
 export type CliAction =
-  /** `project`: the `--project` task project's slug; left out, the work item only. */
-  | { action: "create"; title: string; bodyFile: string; project?: string }
+  /**
+   * `project`: the `--project` task project's slug; left out, the work item only. `depends_on`: the `--depends-on`
+   * wi_ or tk_ id, written as a `Depends on:` line in the item's problem (design 05-dependencies).
+   */
+  | { action: "create"; title: string; bodyFile: string; project?: string; depends_on?: string }
   | { action: "add"; task: TaskFields }
   | { action: "done"; id: string }
   | { action: "reopen"; id: string }
@@ -119,6 +122,10 @@ export type CliAction =
   | { action: "command"; command: ItemCommand; id: WorkItemId; text: string }
   | { action: "help"; id: WorkItemId | null }
   | { action: "confirm"; proposal: string };
+
+/** `task create --help`: its flags, `--depends-on` among them. */
+const CREATE_HELP = "--title <t> --body-file <f> [--project <project_slug>] [--depends-on <id>]. `--depends-on <id>` writes a " +
+  "`Depends on: <id>` line in the item's problem, so its implement run waits until that local item (wi_…, or a built task tk_…) merges";
 
 /** This module's commands, from the command table (src/core/command-table.ts). */
 const LOCAL_COMMANDS = COMMAND_TABLE.filter((c) => (CLI_TOP_WORDS as readonly string[]).includes(c.name.split(" ")[0]!));
@@ -183,19 +190,23 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
     if (sub === "build") return rest.length === 1 && rest[0] ? { action: "build", id: rest[0] } : bad("task build needs one task ID");
     if (sub === "show") return rest.length === 1 && rest[0] ? { action: "show", id: rest[0] as WorkItemId } : bad("task show needs one work item ID");
     if (sub === "create") {
+      if (rest.includes("--help")) return bad(`task create: ${CREATE_HELP}`);
       const flags: Record<string, string> = {};
       for (let i = 0; i < rest.length; i += 2) {
         const k = rest[i]!;
         const v = rest[i + 1];
-        if (!["--title", "--body-file", "--project"].includes(k) || v === undefined || k in flags) return bad(`task create: unexpected ${JSON.stringify(k)}`);
+        if (!["--title", "--body-file", "--project", "--depends-on"].includes(k) || v === undefined || k in flags) return bad(`task create: unexpected ${JSON.stringify(k)}`);
         flags[k] = v;
       }
       const title = flags["--title"]?.trim();
       const bodyFile = flags["--body-file"];
       if (!title || !bodyFile) return bad("task create needs --title <t> and --body-file <f>");
-      if (flags["--project"] === undefined) return { action: "create", title, bodyFile };
+      const dependsOn = flags["--depends-on"]?.trim();
+      if (dependsOn !== undefined && !LOCAL_ID.test(dependsOn)) return bad("task create: --depends-on needs a work item (wi_…) or task (tk_…) ID");
+      const create = { action: "create" as const, title, bodyFile, ...(dependsOn !== undefined ? { depends_on: dependsOn } : {}) };
+      if (flags["--project"] === undefined) return create;
       const project = projectSlug(flags["--project"].replace(/^\+/, ""));
-      return project === null ? bad("task create: --project needs a project slug, e.g. home-repairs") : { action: "create", title, bodyFile, project };
+      return project === null ? bad("task create: --project needs a project slug, e.g. home-repairs") : { ...create, project };
     }
     return bad(`unknown task command ${JSON.stringify(sub ?? "")}`);
   }
@@ -204,6 +215,7 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
     const [id, ...rest] = args;
     if (!id) return bad(`${word} needs a work item ID`);
     const text = rest.join(" ").trim();
+    if (word === "hold" && (rest.length !== 1 || !LOCAL_ID.test(rest[0]!))) return bad("hold needs a work item ID and the ID of the local item to wait for (wi_… or tk_…)");
     if (word === "verdict") {
       const v = parseVerdict(text);
       if (!v.ok) return bad(v.refuse.includes(VERDICT_USAGE) ? v.refuse : `${v.refuse}; the expected format is ${VERDICT_USAGE}`);
@@ -300,7 +312,12 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
     case "create": {
       const project = await d.project();
       if (project === null) return fail(NO_PROJECT_KEY);
-      const body = (await d.read(a.bodyFile)).trim();
+      // `--depends-on` names a local item now, or nothing is written (design 05-dependencies).
+      if (a.depends_on !== undefined && (await localItemOf(d.store, a.depends_on)) === null) {
+        return fail(`--depends-on ${a.depends_on} names no local work item or built task, so nothing was created`);
+      }
+      const read = (await d.read(a.bodyFile)).trim();
+      const body = a.depends_on === undefined ? read : withDependsOn(read, [a.depends_on]);
       if (a.project !== undefined) {
         const r = await createProjectTask(d.store, { task_id: `tk_${d.newId()}`, title: a.title, body, slug: a.project, project, user });
         if (!r.ok) return fail(r.reason);
