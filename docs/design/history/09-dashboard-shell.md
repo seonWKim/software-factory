@@ -1,5 +1,6 @@
 ## History
 
+- **The help dialog listed only the shortcuts, and the search only pages and items** (decision changed 2026-11-19, the command help decision at the top of 09-dashboard-shell.md). Before: `?` showed the keyboard shortcuts and `⌘K` searched the pages and the loaded items; the item commands were explained only on the item page (button titles with their `/command` usage and "From a terminal: `factory <command> <short number>`").
 - **The catalog barrel was a hand-written list** (replaced 2026-11-18 by the generated barrel decision at the top of 09-dashboard-shell.md). Before: `web/src/i18n/en.ts` imported the eight area files by hand and spread them on one line, so every item that added an area file edited the same import list and spread line.
 
 - **Show/hide sections were hand-written `<details>` and a button** (replaced 2026-11-18 by the shared Disclosure decision at the top of 09-dashboard-shell.md). Before: each view wrote its own `<details>` with its own classes (a bordered box for "How this works", a bare triangle for "Show applied rules", `mt-2`/`mt-6` margins), and a Rules card's "Why and where" was a ghost button with a chevron and `aria-expanded`.

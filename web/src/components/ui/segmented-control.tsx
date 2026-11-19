@@ -4,7 +4,8 @@ import { FOCUS } from "./control.js";
 interface SegmentedControlProps<T extends string> {
   /** The group's accessible name, e.g. "Task view". */
   label: string;
-  options: readonly { id: T; label: string }[];
+  /** `action`: the segment's `data-action`, the command a segment sends (a decision's buttons carry one each). */
+  options: readonly { id: T; label: string; action?: string }[];
   value: T;
   onChange: (id: T) => void;
   className?: string;
@@ -27,6 +28,7 @@ export function SegmentedControl<T extends string>({ label, options, value, onCh
           key={o.id}
           type="button"
           aria-pressed={o.id === value}
+          {...(o.action ? { "data-action": o.action } : {})}
           onClick={() => onChange(o.id)}
           className={cn(
             "inline-flex min-h-7 items-center rounded-control px-3 text-sm font-medium whitespace-nowrap motion-safe:transition-colors",

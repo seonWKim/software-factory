@@ -1,59 +1,47 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type MouseEvent, type ReactNode, type RefObject, useId, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useId, useRef, useState } from "react";
 import {
-  API, type CommandReply, type ThreadEntry, type ItemCommand, type ItemDetail, type ItemRow, type MergeReadiness, POLL_MS, type RequestState, type Session, getJson,
+  API, type CommandReply, type ItemCommand, type ItemDetail, type ItemRow, type MergeReadiness, POLL_MS, type RequestState, type Session, getJson,
   mergeInFlight, mergeReturned, plainRefusal, postCommand, showsMerge, useApi,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
-import { CopyText } from "../components/ui/copy.js";
 import { FOCUS } from "../components/ui/control.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
-import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Field } from "../components/ui/field.js";
 import { Radio } from "../components/ui/radio.js";
-import { OverflowMenu, Tooltip } from "../components/ui/menu.js";
-import { SegmentedControl } from "../components/ui/segmented-control.js";
+import { type MenuItem, OverflowMenu, Tooltip } from "../components/ui/menu.js";
 import { Select } from "../components/ui/select.js";
 import { Textarea } from "../components/ui/textarea.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
-import { shortSource } from "../lib/format.js";
 import { Link } from "../nav.js";
-import { PAGE_COMMANDS_PATH, itemPath } from "../pages.js";
-import { type Outcome, OutcomeText, PendingProposals, SENTENCE } from "./command-box.js";
-import { PersonName } from "./common.js";
-import { summaryOf, threadOrder } from "./thread.js";
-import {
-  ApproveDialog, type DecisionChoice, DecisionsPanel, InShort, RejectDialog, ReviseDialog, approvePhase, chosenAnswers, commandLabel, initialChoices, type CommandDialogProps,
-} from "./item-decisions.js";
+import { itemPath } from "../pages.js";
+import { type Outcome, OutcomeText, PendingProposals } from "./command-box.js";
+import { RejectDialog, ReviseDialog, commandLabel, type CommandDialogProps } from "./item-decisions.js";
 
-// The item page's decision box (design §9, issues #228, #526; compact since 2026-11-15, design 09-dashboard-app):
-// shown only while the item waits for the owner (why.next_actor is human), with the newest factory message as its
-// context ("Show in thread"), In short, the decisions as questions, one note box and one row of buttons built from the
-// item API's `commands`: the primary action first (Merge, else Approve, Retry or Answer), the Good/Bad control, Feedback,
-// the other commands, then the "…" menu with Verdict and Reject. A command the viewer's grants do not allow (`allowed`
-// false, issue #453) is disabled with the controller's reason in plain text. Reject, revise, verdict and approve (in an
-// approve phase) open the one shared Dialog; verdict (issue #523) is an Accept, Changes or Reject choice with a severity
-// and a reason sent as `<kind> <severity> <reason>` (verdictNote). Good is accept/none and Bad changes/minor, Feedback
-// changes/none with the note box's text (oneTapNote), the same verdict request as Slack's buttons store. Every other
-// command carries the note box's text (tokens for budget, the approve note); Ctrl/⌘+Enter sends it as a `sentence`
-// request, whose proposed commands the item's pending proposals show with Confirm all and Cancel. A send is
-// POST /api/v1/items/:id/commands with the token from GET /api/v1/session. Approve and Merge are applied while the request
+// Item commands (design §9, issues #228, #526; design 09-dashboard-item-commands): the sends, outcomes and dialogs
+// the item page's DecisionCard (decision-card.tsx) and the Needs you rows share. A send is POST
+// /api/v1/items/:id/commands with the token from GET /api/v1/session. Approve and Merge are applied while the request
 // is handled (design 09-dashboard-app, 2026-11-15): the response's state goes into the item and list queries at once and
 // the row reads its label ("Approved", "Merging…") or the refusal; the controller applies every other command on its
-// next tick, and the item's `replies` say how that went. Feedback a `/revise` queued while implementing is listed until the run
-// that applies it starts (pendingFeedback).
+// next tick, and the item's `replies` say how that went. A command the viewer's grants do not allow (`allowed` false,
+// issue #453) is disabled with the controller's reason in plain text. Reject, revise and verdict open the one shared
+// Dialog; verdict (issue #523) is an Accept, Changes or Reject choice with a severity and a reason sent as
+// `<kind> <severity> <reason>` (verdictNote). A permission ask's paths (the item API's `paths`) go with the command
+// that allows them as `+paths` (withPaths). Feedback a `/revise` queued while implementing is listed until the run that
+// applies it starts (pendingFeedback).
 
-/** Commands sent from their own dialog, not with the note box. */
-const FORMS = ["reject", "revise"];
-/** Every command that opens a dialog from a button: those, and verdict (its Accept, Changes or Reject choice). */
-const DIALOGS = [...FORMS, "verdict"];
-/** The commands the "…" menu holds on the item page: they are rare, so they are no buttons in the decision row. */
-const MENU = ["reject", "verdict"];
-type FormName = "reject" | "revise" | "verdict";
-/** The commands a Needs-you row shows as its one primary button: what the state asks for. */
-const PRIMARY = ["approve", "retry", "resolve"];
+/** Every command that opens a dialog from a button: reject and revise (their forms), and verdict (its Accept, Changes or Reject choice). */
+export const DIALOGS = ["reject", "revise", "verdict"];
+/** The commands the item's "…" menu holds (on the DecisionCard too): they are rare, so they are no buttons in its row. */
+export const MENU = ["reject", "verdict"];
+export type FormName = "reject" | "revise" | "verdict";
+/**
+ * The commands a decision's one primary button can be, in the order the state asks for them: Retry last, so a block
+ * reason that accepts Approve or Answer never shows Retry first.
+ */
+const PRIMARY = ["approve", "resolve", "retry"];
 
 /** The verdicts a person gives, as `/verdict` takes them, with their button labels. */
 const VERDICTS = [["accept", "commands.accept"], ["changes", "commands.changes"], ["reject", "commands.reject"]] as const satisfies readonly (readonly [string, MessageKey])[];
@@ -119,7 +107,7 @@ export function pendingFeedback(timeline: ItemDetail["timeline"]): QueuedFeedbac
 }
 
 /** The feedback queued for the implementer, listed until the run that applies it starts; nothing when none waits. */
-function QueuedFeedbackList({ timeline }: { timeline: ItemDetail["timeline"] | undefined }) {
+export function QueuedFeedbackList({ timeline }: { timeline: ItemDetail["timeline"] | undefined }) {
   const pending = pendingFeedback(timeline ?? []);
   if (pending.length === 0) return null;
   return (
@@ -144,6 +132,19 @@ function QueuedFeedbackList({ timeline }: { timeline: ItemDetail["timeline"] | u
  */
 export type LocalSend = { seq: number; label?: string | null; refusal?: string | null } | { error: string };
 
+
+/**
+ * Command `c` as an entry of a "…" menu: its label (with the controller's reason when the viewer may not send it, then
+ * disabled), its `data-action`, and `onSelect`. `off`: commands are off or a send is under way.
+ */
+export function menuEntry(c: ItemCommand, off: boolean, onSelect: () => void): MenuItem {
+  return {
+    label: c.allowed ? commandLabel(c.name) : `${commandLabel(c.name)}: ${plainRefusal(c.reason ?? "not allowed")}`,
+    disabled: off || !c.allowed,
+    action: c.name,
+    onSelect,
+  };
+}
 
 /** The text beside a button the viewer's grants do not allow: the controller's reason, in plain words. */
 export function notAllowed(c: ItemCommand): Outcome {
@@ -213,267 +214,70 @@ export function useCommandSend(id: string) {
   return { session, on: !!token && session.data?.commands_enabled === true, busy, local, send };
 }
 
-/** The command the state asks for: the first of approve, retry and resolve the viewer may send. */
-export const primaryOf = (commands: readonly ItemCommand[]) => commands.find((c) => PRIMARY.includes(c.name) && c.allowed);
+/** A command row with a permission ask's paths (the item API's `paths`, src/ui/commands.ts ItemCommandRow). */
+type AcceptedCommand = ItemCommand & { paths?: readonly string[] };
+/** The paths a permission ask names on `c`, which its button sends as `+paths`; none for any other command. */
+export const pathsOf = (c: ItemCommand): readonly string[] => (c as AcceptedCommand).paths ?? [];
+
+/** The note `c` sends: its permission ask's `+paths <path>...` line first (design §4, issue #280), then `note`. */
+export function withPaths(c: ItemCommand, note: string): string {
+  const paths = pathsOf(c);
+  return paths.length === 0 ? note : [`+paths ${paths.join(" ")}`, note.trim()].filter((l) => l !== "").join("\n");
+}
 
 /**
- * `factory <command> <short number>` for a terminal: the item's short number on the page, the full command (with the
- * item's ID, which the CLI takes) behind the Copy button.
+ * The command the state asks for, of those the viewer may send: the one that allows a permission ask's paths, else
+ * the first of approve, resolve and retry (PRIMARY order, not the API's), so Retry only when neither other applies.
  */
-function CliHint({ command, id, short }: { command: string; id: string; short: string }) {
-  return (
-    <p data-cli-hint className="mt-3 flex flex-wrap items-baseline gap-x-2 text-xs text-text-2">
-      <span>{t("decide.cli")}</span>
-      <CopyText value={`factory ${command} ${id}`} what="command">{`factory ${command} ${short}`}</CopyText>
-    </p>
-  );
+export function primaryOf(commands: readonly ItemCommand[]): ItemCommand | undefined {
+  const rank = (c: ItemCommand) => PRIMARY.indexOf(c.name) - (pathsOf(c).length > 0 ? PRIMARY.length : 0);
+  return commands.filter((c) => PRIMARY.includes(c.name) && c.allowed).sort((a, b) => rank(a) - rank(b))[0];
 }
 
-/** Opens the thread entry `anchor` (`msg-<seq>`) in the page; the link's href is the same fragment. */
-function showInThread(e: MouseEvent<HTMLAnchorElement>, anchor: string) {
-  const el = document.getElementById(anchor);
-  if (!el) return;
-  e.preventDefault();
-  el.scrollIntoView?.({ block: "start" });
-  history.replaceState(history.state, "", `#${anchor}`);
-}
-
-/** The newest factory message of the thread, as the context of the decision: its one-line summary and its anchor. */
-function ThreadContext({ thread }: { thread: readonly ThreadEntry[] | undefined }) {
-  const latest = threadOrder(thread ?? []).find((m) => m.role === "factory");
-  if (!latest) return null;
+/**
+ * The item's commands while it waits for nobody (running, or the factory's turn; the DecisionCard holds them while
+ * the owner is next): its reason, the feedback queued for it, a line when no command applies, and the "…" menu with
+ * Reject and Verdict, so any open item can still be rejected; then its pending proposals.
+ */
+export function ItemCommands({ id, commands, reason = null }: { id: string; commands: readonly ItemCommand[]; reason?: ReactNode }) {
+  const { on: enabled, busy, local, send: post } = useCommandSend(id);
+  const [open, setOpen] = useState<FormName | null>(null);
+  const wrap = useRef<HTMLDivElement>(null);
+  // The OverflowMenu owns its button, so the dialogs hand focus back to it by looking it up when they close.
+  const moreButton = { get current() { return wrap.current?.querySelector<HTMLElement>("[aria-haspopup=menu]") ?? null; } } as RefObject<HTMLElement | null>;
+  const data = useApi<ItemDetail>(API.item(id)).data;
+  const detail = data?.item;
+  // Verdict and Reject: in the "…" menu, one the viewer may not send disabled with its reason.
+  const menuItems = commands.filter((c) => MENU.includes(c.name)).map((c) => menuEntry(c, !enabled || busy, () => setOpen(c.name as FormName)));
   return (
-    <div data-decide-context className="mt-2 text-sm text-pretty text-text-1">
-      <p className="line-clamp-2 break-words">{summaryOf(latest.body)}</p>
-      <a href={`#${latest.anchor}`} onClick={(e) => showInThread(e, latest.anchor)} className={LINK_CLASS}>
-        {t("decide.showInThread")}
-      </a>
+    <div ref={wrap} className="mt-2">
+      {reason}
+      <QueuedFeedbackList timeline={data?.timeline} />
+      {commands.length === 0 && !showsMerge(detail?.merge) && (
+        <p data-commands-none className="mt-2 text-sm text-pretty text-text-2">
+          {t("commands.none")}
+        </p>
+      )}
+      {menuItems.length > 0 && <div data-item-menu className="mt-2 flex"><OverflowMenu label={t("commands.more")} items={menuItems} /></div>}
+      <PendingProposals proposals={data?.proposals ?? []} enabled={enabled} busy={busy} outcomes={(proposal) => commandOutcome([], proposal, local[proposal])} send={post} />
+      {open !== null && (
+        <CommandDialog
+          command={open}
+          title={detail?.title ?? id}
+          pr={detail?.change_ref ?? null}
+          busy={busy || !enabled}
+          error={local[open] && "error" in local[open] ? local[open].error : null}
+          returnFocusTo={moreButton}
+          onSend={(text) => void post(open, text).then((ok) => ok && setOpen(null))}
+          onClose={() => setOpen(null)}
+        />
+      )}
     </div>
   );
 }
 
-/**
- * The item page's decision area. The reason (the why sentence) shows always. "What you need to decide" shows only
- * while the item waits for the owner (why.next_actor is human): the context (the newest factory message, with its
- * "Show in thread" link), In short, the decisions, one note box (Ctrl/⌘+Enter reads it as a sentence) with the item's
- * pending proposals, and one row: the primary action (Merge, else Approve, Retry or Answer), the Good/Bad control,
- * Feedback, the other commands and the "…" menu. Reject and Verdict live in that menu (outside the box too, so an
- * item that waits for nobody can still be rejected).
- */
-export function ItemCommands({ id, commands, replies, reason = null }: { id: string; commands: readonly ItemCommand[]; replies: readonly CommandReply[]; reason?: ReactNode }) {
-  const { session, on: enabled, busy, local, send: post } = useCommandSend(id);
-  const [note, setNote] = useState("");
-  const [open, setOpen] = useState<FormName | "approve" | null>(null);
-  const wrap = useRef<HTMLDivElement>(null);
-  // The OverflowMenu owns its button, so the dialogs hand focus back to it by looking it up when they close.
-  const moreButton = { get current() { return wrap.current?.querySelector<HTMLElement>("[aria-haspopup=menu]") ?? null; } } as RefObject<HTMLElement | null>;
-  const opener = useRef<HTMLElement | null>(null);
-  const [picked, setPicked] = useState<DecisionChoice[] | null>(null);
-  // The page's own item query (same key and options), read here for its `merge`, `why` and its waiting spec.
-  const data = useApi<ItemDetail>(API.item(id)).data;
-  const detail = data?.item;
-  const merge = detail?.merge;
-  const showMerge = showsMerge(merge);
-  const phase = approvePhase(detail?.blocked_reason);
-  // Only a spec at the gate is answered; the floor block, the Rule of Two and a held run approve no decisions.
-  const decisions = phase === "spec_pending" || phase === "max_revisions" ? (data?.spec?.decisions ?? []) : [];
-  const choices = picked ?? initialChoices(decisions);
-  const answers = chosenAnswers(decisions, choices);
-  const waiting = detail?.why?.next_actor === "human";
-  const off = session.isError || session.data?.commands_enabled === false;
-  const itemTitle = detail?.title ?? id;
-  const primary = primaryOf(commands);
-  const proposals = (
-    <PendingProposals
-      proposals={data?.proposals ?? []}
-      enabled={enabled}
-      busy={busy}
-      outcomes={(proposal) => commandOutcome([], proposal, local[proposal])}
-      send={post}
-    />
-  );
-
-  /** Sends `command` with `text` (a form's) or, without it, the note box's. */
-  const send = async (command: string, text?: string) => {
-    if (!(await post(command, text ?? note))) return;
-    if (text === undefined) setNote("");
-    else setOpen(null);
-    setPicked(null);
-  };
-  const dialogs = (
-    <>
-      {open === "approve" && phase !== null && (
-        <ApproveDialog
-          title={`${commandLabel("approve")} ${itemTitle}`}
-          phase={phase}
-          answers={answers}
-          note={note}
-          busy={busy || !enabled}
-          error={local.approve && "error" in local.approve ? local.approve.error : null}
-          returnFocusTo={opener}
-          onSend={(text) => void send("approve", text)}
-          onClose={() => setOpen(null)}
-        />
-      )}
-      {open !== null && open !== "approve" && (
-        <CommandDialog
-          command={open}
-          title={itemTitle}
-          pr={detail?.change_ref ?? null}
-          busy={busy || !enabled}
-          error={local[open] && "error" in local[open] ? local[open].error : null}
-          returnFocusTo={open === "verdict" || open === "reject" ? moreButton : opener}
-          onSend={(t) => void send(open, t)}
-          onClose={() => setOpen(null)}
-        />
-      )}
-    </>
-  );
-  // Verdict and Reject: in the "…" menu, one the viewer may not send disabled with its reason.
-  const menuItems = commands.filter((c) => MENU.includes(c.name)).map((c) => ({
-    label: c.allowed ? commandLabel(c.name) : `${commandLabel(c.name)}: ${plainRefusal(c.reason ?? "not allowed")}`,
-    disabled: !enabled || busy || !c.allowed,
-    onSelect: () => setOpen(c.name as FormName),
-  }));
-  const menu = menuItems.length > 0 && <OverflowMenu label={t("commands.more")} items={menuItems} />;
-
-  // An item that waits for nobody (running, or the factory's turn): its reason, the "…" menu and no box.
-  if (!waiting) {
-    return (
-      <div ref={wrap} className="mt-2">
-        {reason}
-        <QueuedFeedbackList timeline={data?.timeline} />
-        {commands.length === 0 && !showMerge && (
-          <p data-commands-none className="mt-2 text-sm text-pretty text-text-2">
-            {t("commands.none")}
-          </p>
-        )}
-        {menu && <div data-item-menu className="mt-2 flex">{menu}</div>}
-        {proposals}
-        {dialogs}
-      </div>
-    );
-  }
-
-  const verdict = commands.find((c) => c.name === "verdict");
-  const verdictOff = !enabled || busy || !verdict?.allowed;
-  const tap = (choice: OneTapChoice) => {
-    const text = oneTapNote(choice, note);
-    if (text !== null && !verdictOff) void post("verdict", text).then((ok) => ok && setNote(""));
-  };
-  const feedback = oneTapNote("feedback", note);
-  const rest = commands.filter((c) => c !== primary && !MENU.includes(c.name));
-  const outcomes = [
-    ...commands.map((c) => ({ name: c.name, outcome: c.allowed ? commandOutcome(replies, c.name, local[c.name]) : notAllowed(c) })),
-    { name: SENTENCE, outcome: commandOutcome(replies, SENTENCE, local[SENTENCE]) },
-  ].filter((o) => o.outcome !== null);
-
-  const button = (c: ItemCommand) => {
-    const opensDialog = DIALOGS.includes(c.name) || (c.name === "approve" && phase !== null);
-    // Applied at once (its label shows): not sent again before the item's new state arrives.
-    const sent = local[c.name];
-    const outcome = c.allowed ? commandOutcome(replies, c.name, sent) : notAllowed(c);
-    const disabled = !enabled || busy || !c.allowed || (!!sent && "label" in sent && !!sent.label && outcome?.text === sent.label);
-    return (
-      <span key={c.name} data-command={c.name} className="inline-flex">
-        <Button
-          variant={c === primary && !showMerge ? "primary" : "secondary"}
-          disabled={disabled}
-          title={`${c.usage}: ${c.description}`}
-          {...(opensDialog ? { "aria-haspopup": "dialog" as const } : {})}
-          onClick={(e) => {
-            opener.current = e.currentTarget;
-            if (!opensDialog) void send(c.name);
-            else setOpen(c.name as FormName | "approve");
-          }}
-        >
-          {commandLabel(c.name)}
-        </Button>
-      </span>
-    );
-  };
-
-  return (
-    <section
-      ref={wrap}
-      aria-label={t("decide.title")}
-      data-decide
-      className="mt-3 rounded-card border border-pill-warn-fg bg-pill-warn-bg p-3 text-text-1"
-    >
-      <h2 className="mb-1 text-balance text-sm font-semibold">{t("decide.title")}</h2>
-      {reason}
-      <ThreadContext thread={data?.thread} />
-      <InShort spec={data?.spec} />
-      <QueuedFeedbackList timeline={data?.timeline} />
-      <section aria-label={t("commands.label")} className="mt-3">
-        {off && (
-          <p role="status" data-commands-off className="mb-2 text-sm text-pretty text-text-2">
-            {t("commands.offBefore")}
-            <Link href={PAGE_COMMANDS_PATH} className={LINK_CLASS}>
-              {t("commands.offSettings")}
-            </Link>
-            {t("commands.offAfter")}
-          </p>
-        )}
-        {enabled && session.data?.actor && (
-          <p data-commands-actor className="mb-2 text-xs text-pretty text-text-2">
-            {t("commands.actingAs")}<PersonName id={session.data.actor} viewer={session.data.actor} />{t("commands.actorFrom", { source: session.data.actor_source === "config" ? t("commands.sourceConfig") : t("commands.sourceEnv") })}
-          </p>
-        )}
-        <DecisionsPanel decisions={decisions} choices={choices} onChange={(i, c) => setPicked(choices.map((x, j) => (j === i ? c : x)))} />
-        <Textarea
-          aria-label={t("commands.note")}
-          rows={3}
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          onKeyDown={(e) => {
-            // Ctrl/⌘+Enter: the note is read as a sentence; the factory proposes the commands it names (below).
-            if (!(e.ctrlKey || e.metaKey) || e.key !== "Enter") return;
-            e.preventDefault();
-            if (enabled && !busy && note.trim() !== "") void send(SENTENCE);
-          }}
-          placeholder={t("commands.notePlaceholder")}
-          className="mb-3 block w-full max-w-xl"
-        />
-        <div className="flex flex-wrap items-center gap-2">
-          {showMerge ? <span data-command="merge" className="inline-flex"><MergeButton id={id} source={detail?.source.type} merge={merge} replies={replies} returned={mergeReturned(data)} /></span> : primary && button(primary)}
-          {verdict && (
-            <span data-verdict className="inline-flex">
-              <SegmentedControl<OneTapChoice | "">
-                label={t("commands.verdict")}
-                options={[{ id: "good", label: t("commands.good") }, { id: "bad", label: t("commands.bad") }]}
-                value=""
-                onChange={(choice) => choice !== "" && tap(choice)}
-              />
-            </span>
-          )}
-          {verdict && (
-            <Button
-              variant="secondary"
-              data-verdict-tap="feedback"
-              disabled={verdictOff || feedback === null}
-              title={`${verdict.usage}: ${verdict.description}${t("commands.needFeedback")}`}
-              onClick={() => feedback !== null && tap("feedback")}
-            >
-              {t("commands.feedback")}
-            </Button>
-          )}
-          {rest.map(button)}
-          {menu}
-        </div>
-        <div className="mt-2 flex flex-col items-start gap-1">
-          {outcomes.map((o) => <div key={o.name} data-outcome-of={o.name}><OutcomeText outcome={o.outcome} /></div>)}
-        </div>
-        {proposals}
-        {primary && detail && <CliHint command={primary.name} id={id} short={shortSource(detail.source.id)} />}
-        {dialogs}
-      </section>
-    </section>
-  );
-}
-
-/** The dialog for `command` (reject, revise or verdict), the same on the Floor and the item page. `title` is the item's. */
-function CommandDialog({ command, title, pr, ...props }: Omit<CommandDialogProps, "title"> & { command: FormName; title: string; pr: string | null }) {
+/** The dialog for `command` (reject, revise or verdict), the same in Needs you and on the item page. `title` is the item's. */
+export function CommandDialog({ command, title, pr, ...props }: Omit<CommandDialogProps, "title"> & { command: FormName; title: string; pr: string | null }) {
   const full = `${commandLabel(command)} ${title}`;
   if (command === "reject") return <RejectDialog title={full} pr={pr} {...props} />;
   if (command === "revise") return <ReviseDialog title={full} {...props} />;
@@ -504,6 +308,7 @@ export function MergeButton({ id, source, merge, replies = [], returned = null }
     <span data-merge={merge.enabled ? "enabled" : "disabled"} className="inline-flex flex-wrap items-center gap-2">
       <Button
         variant="primary"
+        data-action="merge"
         disabled={!merge.enabled || !on || merging}
         title={source === "local"
           ? t("commands.mergeLocal")
@@ -565,6 +370,10 @@ function VerdictDialog({ title, busy, error, returnFocusTo, onSend, onClose }: C
 
 /** A Needs-you row's primary button label, in sentence case; `resolve` answers what the item asked. */
 const PRIMARY_LABEL: Record<string, MessageKey> = { approve: "needs.actApprove", retry: "needs.actRetry", resolve: "needs.actAnswer" };
+/** The label of a primary that allows a permission ask's paths (it sends them as `+paths`). */
+const ALLOW_LABEL: Record<string, MessageKey> = { approve: "needs.actAllowApprove", retry: "needs.actAllowRetry", resolve: "needs.actAllowAnswer" };
+/** The primary button's label for `c`: what it does, naming the permission it gives when it carries paths. */
+export const primaryLabel = (c: ItemCommand): string => t((pathsOf(c).length > 0 ? ALLOW_LABEL : PRIMARY_LABEL)[c.name]!);
 /** The key that presses a row's primary button when the row is selected (never Merge). */
 export const PRIMARY_KEY = "p";
 
@@ -635,11 +444,7 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
   };
   const canRetry = commands.some((c) => c.name === "retry" && c.allowed);
   const items = [
-    ...others.map((c) => ({
-      label: c.allowed ? commandLabel(c.name) : `${commandLabel(c.name)}: ${plainRefusal(c.reason ?? "not allowed")}`,
-      disabled: off || !c.allowed,
-      onSelect: () => (DIALOGS.includes(c.name) ? setOpen(c.name as FormName) : void send(c.name, "")),
-    })),
+    ...others.map((c) => menuEntry(c, off, () => (DIALOGS.includes(c.name) ? setOpen(c.name as FormName) : void send(c.name, withPaths(c, ""))))),
     ...allow.map((a) => ({ label: a.label, disabled: off || !canRetry, onSelect: () => void send("retry", a.note) })),
   ];
   // Applied at once (Approve): the row's label, e.g. "Approved", until the list's next read moves the row on.
@@ -649,7 +454,7 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
       {group === "merge" ? (
         <span data-command="merge" className="inline-flex items-center gap-2">
           <Tooltip text={merge && !merge.enabled && merge.reason ? merge.reason : source === "local" ? t("commands.mergeLocal") : t("commands.mergePr")}>
-            <Button variant="secondary" disabled={off || checking || merging || !merge?.enabled} onClick={() => void send("merge", "")}>
+            <Button variant="secondary" data-action="merge" disabled={off || checking || merging || !merge?.enabled} onClick={() => void send("merge", "")}>
               {checking ? t("needs.checking") : queued ? merge?.reason : merging ? t("commands.merging") : t("commands.merge")}
             </Button>
           </Tooltip>
@@ -657,14 +462,16 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
         </span>
       ) : primary ? (
         <span data-command={primary.name} className="inline-flex">
-          <Tooltip text={t("needs.withKey", { label: t(PRIMARY_LABEL[primary.name]!), key: PRIMARY_KEY })}>
-            <Button variant="secondary" data-shortcut={PRIMARY_KEY} disabled={off} onClick={() => void send(primary.name, "")}>
-              {t(PRIMARY_LABEL[primary.name]!)}
+          <Tooltip text={pathsOf(primary).length > 0
+            ? t("needs.allowPaths", { paths: pathsOf(primary).join(", "), key: PRIMARY_KEY })
+            : t("needs.withKey", { label: primaryLabel(primary), key: PRIMARY_KEY })}>
+            <Button variant="secondary" data-shortcut={PRIMARY_KEY} data-action={primary.name} disabled={off} onClick={() => void send(primary.name, withPaths(primary, ""))}>
+              {primaryLabel(primary)}
             </Button>
           </Tooltip>
         </span>
       ) : (
-        <Link href={itemPath(id)} data-command="open" className={cn("inline-flex min-h-8 items-center rounded-control border border-border-strong bg-surface px-3 text-sm font-medium text-text-1 hover:bg-surface-2", FOCUS)}>
+        <Link href={itemPath(id)} data-command="open" data-action="open" className={cn("inline-flex min-h-8 items-center rounded-control border border-border-strong bg-surface px-3 text-sm font-medium text-text-1 hover:bg-surface-2", FOCUS)}>
           {t("needs.actOpen")}
         </Link>
       )}

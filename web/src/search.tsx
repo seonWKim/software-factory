@@ -10,8 +10,47 @@ import { t } from "./i18n/index.js";
 import { type MessageKey } from "./i18n/en.js";
 import { BASE, PAGES, itemPath } from "./pages.js";
 
-// ⌘K search (design §9): the pages and the items the page has already loaded (the cached /api/v1/items reads).
-// No search endpoint and no request of its own.
+// ⌘K search (design §9): the pages and the items the page has already loaded (the cached /api/v1/items reads),
+// and the command help. No search endpoint and no request of its own.
+//
+// The command help (design 09-dashboard-item-commands): every item command, from a static list, as it is typed on a
+// source or in a terminal, with what it does. The item page's DecisionCard has a button for each one an item accepts;
+// the help is behind ? (with the shortcuts) and ⌘K (filtered by the search text), never in a page's body.
+
+/** Every item command as it is typed, with what it does (static: the same list whatever page or item is open). */
+const COMMAND_HELP: readonly { usage: string; what: MessageKey }[] = [
+  { usage: "/approve [notes]", what: "commands.help.approve" },
+  { usage: "/revise <feedback>", what: "commands.help.revise" },
+  { usage: "/reject <reason>", what: "commands.help.reject" },
+  { usage: "/retry", what: "commands.help.retry" },
+  { usage: "/resolve [notes]", what: "commands.help.resolve" },
+  { usage: "+paths <path>...", what: "commands.help.paths" },
+  { usage: "/verdict accept|changes|reject <severity> <reason>", what: "commands.help.verdict" },
+  { usage: "/budget [tokens]", what: "commands.help.budget" },
+  { usage: "/standing [accept|decline <rule>]", what: "commands.help.standing" },
+  { usage: "factory merge <item>", what: "commands.help.merge" },
+];
+
+/** The command help: each command whose usage or text holds `filter` (all when it is empty), and how to type them. */
+function CommandHelp({ filter = "" }: { filter?: string }) {
+  const q = filter.trim().toLowerCase();
+  const shown = COMMAND_HELP.filter((c) => !q || c.usage.toLowerCase().includes(q) || t(c.what).toLowerCase().includes(q));
+  if (shown.length === 0) return null;
+  return (
+    <section aria-label={t("commands.label")} data-command-help className="mt-3">
+      <h2 className="mb-1 text-sm font-semibold">{t("commands.label")}</h2>
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1">
+        {shown.map((c) => (
+          <div key={c.usage} className="contents">
+            <dt><code className="font-mono text-xs break-all">{c.usage}</code></dt>
+            <dd>{t(c.what)}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="mt-2 text-xs text-text-2">{t("commands.helpWhere")}</p>
+    </section>
+  );
+}
 
 interface Hit {
   to: string;
@@ -115,11 +154,12 @@ export function SearchDialog({ navigate, onClose }: { navigate: (to: string) => 
           ))}
         </ul>
       )}
+      <CommandHelp filter={text} />
     </Dialog>
   );
 }
 
-/** The list of every shortcut. */
+/** The list of every shortcut, then the command help. */
 export function HelpDialog({ onClose }: { onClose: () => void }) {
   return (
     <Dialog label={t("keys.title")} onClose={onClose}>
@@ -132,6 +172,7 @@ export function HelpDialog({ onClose }: { onClose: () => void }) {
           </div>
         ))}
       </dl>
+      <CommandHelp />
     </Dialog>
   );
 }
