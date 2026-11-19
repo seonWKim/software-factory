@@ -22,6 +22,7 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Worker } from "../src/worker/index.js";
 import { FakeRunner, MemoryStorage, cleanScanner, config, prompts, silent } from "./helpers/fakes.js";
 import { newStore } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // The file-only key writer (design 08-settings): one key of factory.config.json, one commit on a new local branch
 // factory/<id> made without a checkout, one local item waiting for the owner's merge, one audit row. Everything runs
@@ -260,7 +261,7 @@ describe("factory merge lands a filed config edit", { timeout: 60_000 }, () => {
     // The owner claims the factory first, as any local CLI command does.
     let n = 0;
     const cli = (a: Parameters<typeof runLocalCli>[1]) =>
-      runLocalCli({ store, identity: { user: ME, from: "git user.email" }, project: async () => PROJECT.key, read: async () => "", newId: () => `id${++n}` }, a);
+      runLocalCli({ answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: ME, from: "git user.email" }, project: async () => PROJECT.key, read: async () => "", newId: () => `id${++n}` }, a);
     await store.claimOwner(ME);
 
     const mainBefore = git(r.repo, "rev-parse", "main");

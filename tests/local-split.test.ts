@@ -10,6 +10,7 @@ import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { SubIssueInput } from "../src/interfaces/source-adapter.js";
 import { FakeAuth, FakeSlackPollSource, cleanScanner, config, silent, slackRef, triageSpec } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore, system, w1 } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // Split specs on a local task (design 04): with only the `local` source, `factory approve <parent>` files each
 // phase as a local work item (source id `<parent>-phase-<n>`), holds the later ones, and closes the parent last.
@@ -44,7 +45,7 @@ async function setup() {
   const controller = new ControllerRole({ store, sources: [local], auth, clock, config, log: silent, scanner: cleanScanner });
   let n = 0;
   const cli = (a: CliAction) => {
-    const d: LocalCliDeps = { store, identity: { user: ME, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "the body", newId: () => `id${++n}` };
+    const d: LocalCliDeps = { answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: ME, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "the body", newId: () => `id${++n}` };
     return runLocalCli(d, a);
   };
   const triaged = async () => {

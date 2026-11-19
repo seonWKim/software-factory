@@ -11,6 +11,7 @@ import { proposalPress } from "../src/impl/source/slack-commands.js";
 import { COMMAND_PROPOSALS_SQLITE } from "../src/impl/store/sql/command-proposals.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // Stored command proposals (design 04-gate-commands, issue #584): the table in both schemas, the reply's marker, the
 // proposal ID and the press values, and the controller's confirm path for `factory confirm` (one row as the CLI
@@ -95,7 +96,7 @@ describe("command proposals: the controller applies a `factory confirm`", () => 
     });
     await store.claimOwner(OWNER);
     let n = 0;
-    const cli = (user: UserId): LocalCliDeps => ({ store, identity: { user, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "", newId: () => `k${++n}` });
+    const cli = (user: UserId): LocalCliDeps => ({ answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "", newId: () => `k${++n}` });
     const at = async (n: number, patch: WorkItemPatch = SPEC_PENDING): Promise<WorkItem> => {
       const { item } = await store.createWorkItem(issue(n), system);
       const r = await store.transition({ id: item.id, expected_version: item.version, actor: system, reason: "test_setup", patch });
@@ -130,7 +131,7 @@ describe("command proposals: the controller applies a `factory confirm`", () => 
 
     const version = (await h.store.getWorkItem(a.id))!.version;
     // A second confirm: the CLI says nothing is pending and stores nothing; a row stored anyway (a race) applies nothing.
-    const again = await runLocalCli({ store: h.store, identity: { user: OWNER, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "", newId: () => "race" }, { action: "confirm", proposal: PROP });
+    const again = await runLocalCli({ answers: { split: splitAnswers, detail: answersDetail }, store: h.store, identity: { user: OWNER, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "", newId: () => "race" }, { action: "confirm", proposal: PROP });
     expect(again.lines[0]).toContain("nothing was applied");
     await h.store.appendCliCommand({ key: "cli:race", actor: OWNER, command: CONFIRM_COMMAND, args: { item: a.id, proposal: PROP } });
     await h.controller.tickCommands();

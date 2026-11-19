@@ -20,6 +20,7 @@ import { newCsrfToken } from "../src/ui/settings-api.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent, waitFor } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 import { classifierAnswer } from "./helpers/classifier.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // App command requests (issues #245, #282): a request row in the store is a new entry point to the comment command
 // path. It lands in the command inbox too; each controller tick reads the inbox and applies `approve` with the same permission check and
@@ -457,7 +458,7 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
     const byCli = await h.itemIn(SPEC_PENDING, 2);
     expect(names(await listed(page(h, me), byPage))).toEqual(["approve", "reject", "revise"]);
     await h.request("app-solo", me, "approve", { work_item_id: byPage.id });
-    const cli = { store: h.store, identity: { user: me, from: "git user.email" as const }, project: async () => PROJECT_KEY, read: async () => "", newId: () => "solo" };
+    const cli = { answers: { split: splitAnswers, detail: answersDetail }, store: h.store, identity: { user: me, from: "git user.email" as const }, project: async () => PROJECT_KEY, read: async () => "", newId: () => "solo" };
     expect((await runLocalCli(cli, { action: "command", command: "approve", id: byCli.id, text: "" })).code).toBe(0);
     await h.controller.tickCommands();
     for (const it of [byPage, byCli]) expect((await h.store.getWorkItem(it.id))!.stage).toBe("RUNNING");

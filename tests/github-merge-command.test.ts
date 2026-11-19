@@ -6,6 +6,7 @@ import type { AuthDecision, AuthProvider, ExternalIdentity, Principal } from "..
 import { runLocalCli } from "../src/core/local-cli.js";
 import { FakeForge, FakeSandbox, FakeSlackPollSource, FakeSource, cleanScanner, config, issueRef, silent, slackRef } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // A merge command from the command inbox on a non-local item (design 04-gate-commands, 2026-11-18): a GitHub `/merge`
 // comment row or `factory merge <id>`. Before, the row went through the comment-event mapping, which has no `merge`
@@ -74,7 +75,7 @@ async function harness(opts: { forge?: boolean } = {}) {
   /** `factory merge <id>` typed by the owner in a terminal, through the CLI itself. Its printed lines. */
   const terminal = async (it: WorkItem): Promise<{ code: number; lines: string[] }> => {
     const r = await runLocalCli(
-      { store, identity: { user: OWNER, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "", newId: () => `t${++comments}` },
+      { answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: OWNER, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "", newId: () => `t${++comments}` },
       { action: "command", command: "merge", id: it.id, text: "" },
     );
     await controller.tickCommands();

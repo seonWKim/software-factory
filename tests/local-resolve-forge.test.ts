@@ -18,6 +18,7 @@ import { LocalSource } from "../src/impl/source/local-source.js";
 import { autoResolveKey } from "../src/core/policy.js";
 import { FakeBroker, FakeForge, FakeRunner, MemoryStorage, cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes.js";
 import { newStore } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // A local item's automatic resolve with a forge selected (design §5 Merge conflict, decision changed 2026-11-12):
 // the controller's sandbox fetches origin, but a local item's branch and the local base are read from the factory
@@ -91,7 +92,7 @@ async function forgeFactory(opts: { resolve?: ConstructorParameters<typeof FakeR
   };
   let n = 0;
   const cli = (a: CliAction) =>
-    runLocalCli({ store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
+    runLocalCli({ answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
   const messages = async (id: WorkItemId, prefix: string) =>
     (await store.listItemMessages(id)).filter((m) => m.marker.startsWith(prefix)).map((m) => m.body);
   const toMergePending = async () => {
