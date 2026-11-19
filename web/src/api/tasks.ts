@@ -1,4 +1,4 @@
-// The Tasks page: GET /api/v1/tasks (useTasks), POST /api/v1/tasks (postTaskAdd), /api/v1/tasks/build (postTaskBuild),
+// The Tasks page: GET /api/v1/tasks (useTasks), GET /api/v1/tasks/preview (getTaskPreview), POST /api/v1/tasks (postTaskAdd), /api/v1/tasks/build (postTaskBuild),
 // the row actions under /api/v1/tasks (postTaskAction: edit, done, reopen, delete and sub), POST /api/v1/projects
 // (postProject), POST /api/v1/tasks/project (postTaskProject) and POST /api/v1/tasks/body (postTaskBody).
 
@@ -17,7 +17,7 @@ export interface TaskRow {
   /** `YYYY-MM-DD`, or null. */
   due_date: string | null;
   due_time: string | null;
-  /** How long it takes, in minutes; null: planned as 30 minutes (absent from an older server). */
+  /** How long it takes, in minutes; null: none was given, and the row shows none (absent from an older server). */
   duration_minutes?: number | null;
   recurrence: string | null;
   /** The work item Build this made from it, or null. */
@@ -99,6 +99,30 @@ export function useTasks<T>(project: string | null) {
     refetchInterval: POLL_MS,
     refetchIntervalInBackground: false,
   });
+}
+
+/**
+ * `/api/v1/tasks/preview`: what quick add would store for the words (the server's parser, the due day resolved at its
+ * clock), with `unread`, the title words it did not understand; or the parser's reason for refusing them.
+ */
+export type TaskPreview =
+  | {
+    ok: true;
+    title: string;
+    due_date: string | null;
+    due_time: string | null;
+    recurrence: string | null;
+    projects: string[];
+    priority: number | null;
+    list: string | null;
+    duration_minutes: number | null;
+    unread: string[];
+  }
+  | { ok: false; reason: string };
+
+/** GET /api/v1/tasks/preview: the quick-add field's live preview. Writes nothing. */
+export function getTaskPreview(words: string): Promise<TaskPreview> {
+  return getJson<TaskPreview>(API.taskPreview(words));
 }
 
 /** POST /api/v1/tasks/build: Build this. The work item's ID; a refusal (409, 503, …) comes back as `{ ok: false, error }`. */
