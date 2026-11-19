@@ -1,168 +1,195 @@
 // @vitest-environment jsdom
-/// <reference lib="dom" />
-/// <reference lib="dom.iterable" />
+// @ts-nocheck -- tsconfig.test.json has no DOM or JSX; like the other ui tests this file typechecks under the web config.
+// The Workers page (design 09-dashboard-workers) in the app at /app/workers: the 1h/6h/24h window switch (6h first),
+// the 10-second refresh, bars and nodes with the shared Tooltip on hover and keyboard focus, a node's hover
+// lighting its edges and its runs, a click opening the item, the left-out and no-dependency counts, and no control
+// that edits anything.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { type FunctionComponent, createElement } from "react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Failures, WorkersView } from "../web/src/api.js";
+import { App } from "../web/src/App.js";
 
-// The Workers, Failures and Floor pages (issue #312): one row per worker process with a draining badge and
-// slot counts, the effective worker count once, failed runs grouped by code, and the Floor's failed count
-// linking to the Failures view. Built with createElement and a loader the node check skips, as the Settings
-// page test does (tsconfig.test.json is checked without JSX).
-const mod = async (name: string) => (await import(/* @vite-ignore */ `../web/src/views/${name}.js`)) as Record<string, FunctionComponent>;
-const pages = await mod("pages");
-const WorkersPage = pages.RunnersPage!;
-const ActivityPage = pages.ActivityPage!;
-const FailuresSection = (await mod("failures")).FailuresSection!;
-
-const AT = new Date().toISOString();
-const proc = (n: number, extra: object = {}) => ({
-  process_id: `h${n}:${n}`, pid: 100 + n, host: `host-${n}`, slots: 3, max_slots: 4, busy: 1, idle: 2, index_base: 0, started_at: AT, reported_at: AT, runs: [], ...extra,
+const AT = "2026-11-20T12:00:00.000Z";
+const at = (h: number) => new Date(Date.parse(AT) - h * 3_600_000).toISOString();
+const run = (id: string, item: string, title: string, extra: object) => ({
+  id, kind: "implement", work_item_id: item, attempt: 1, owner: null, heartbeat_at: null, lease_expires_at: null, created_at: at(5),
+  started_at: at(2), finished_at: at(1), status: "succeeded", item_title: title, item_stage: "RUNNING", error_code: null, model: null, cost_usd: null, ...extra,
 });
-const workers: WorkersView = {
-  as_of: AT,
-  workers: [],
-  processes: [
-    proc(1, { runs: [{ id: "run_1", kind: "implement", work_item_id: "wi_1", worker_id: "h1:1:0", started_at: AT }] }),
-    proc(2, { slots: 0, busy: 2, idle: 0, max_slots: 4 }),
+const RUNS = {
+  as_of: AT, window: "6h",
+  runs: [
+    run("r_run", "wi_dep", "Needs base", { status: "running", started_at: at(1), finished_at: null }),
+    run("r_fail", "wi_base", "Base work", { kind: "review", status: "failed", error_code: "checks_failed", model: "opus", cost_usd: 1.25 }),
+    run("r_nostart", "wi_base", "Base work", { status: "failed", started_at: null }),
+    run("r_q", "wi_dep", "Needs base", { status: "queued", started_at: null, finished_at: null }),
   ],
 };
-const overview = {
-  as_of: AT, stages: {}, needs_you: 0, running: 0, queued: 0, last_24h: { succeeded: 1, failed: 7, tokens: 0 },
-  factory: { state: "running", rev: "aaaaaaa1111", target_rev: null, child_pid: 7, since: AT, workers: 10, workers_source: "override", error: null, pending: [] },
+const GRAPH = {
+  as_of: AT,
+  nodes: [
+    { id: "wi_base", title: "Base work", stage: "RUNNING", blocked_reason: null },
+    { id: "wi_dep", title: "Needs base", stage: "READY", blocked_reason: "dependency_pending" },
+    { id: "wi_alone", title: "On its own", stage: "NEW", blocked_reason: null },
+  ],
+  edges: [{ from: "wi_base", to: "wi_dep", kind: "dependency" }],
 };
-const group = (code: string, n: number) => ({
-  code, count: n, last_seen: AT, items: 1,
-  runs: Array.from({ length: n }, (_, i) => ({ id: `r_${code}_${i}`, work_item_id: "wi_9", kind: "implement", attempt: i + 1, detail: `${code} detail ${i}`, worker: "h1:1:0", finished_at: AT })),
-});
-const failures = (window: string): Failures => ({
-  as_of: AT, window: window as "24h", cap: 500, total: 3, capped: false,
-  groups: [group("tests_failed", 2), group("made_up_code", 1)],
-});
+const RESPONSES: Record<string, unknown> = {
+  "/api/v1/overview": { as_of: AT, stages: {}, needs_you: 0, running: 1, queued: 1, last_24h: { succeeded: 0, failed: 1, tokens: 0 }, system_actions: [] },
+  "/api/v1/runs": RUNS,
+  "/api/v1/items/graph": GRAPH,
+};
 
 let fetched: string[] = [];
-let overrides: Record<string, unknown> = {};
+
 beforeEach(() => {
   fetched = [];
-  overrides = {};
-  history.replaceState(null, "", "/app/");
   vi.stubGlobal("fetch", vi.fn(async (url: string) => {
     fetched.push(url);
-    const body: Record<string, unknown> = {
-      "/api/v1/workers": workers, "/api/v1/overview": overview, "/api/v1/runs": { as_of: AT, runs: [] }, "/api/v1/queue": { as_of: AT, queue: [] },
-      "/api/v1/items": { as_of: AT, total: 0, items: [], facets: { allStates: 0, state: {} }, counts: { open: 0, running: 1 } }, "/api/v1/pauses": { pauses: [], csrf_token: null },
-      "/api/v1/failures?window=24h": failures("24h"), "/api/v1/failures?window=7d": failures("7d"), ...overrides,
-    };
-    return url in body
-      ? new Response(JSON.stringify(body[url]), { status: 200, headers: { "content-type": "application/json" } })
-      : new Response(JSON.stringify({ error: "Not found." }), { status: 404 });
+    const body = RESPONSES[url.split("?")[0]!];
+    if (body === undefined) return new Response(JSON.stringify({ error: "Not found." }), { status: 404 });
+    return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
   }));
+  vi.stubGlobal("scrollTo", () => undefined);
+  const m = new Map<string, string>();
+  vi.stubGlobal("localStorage", { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v), removeItem: (k: string) => void m.delete(k) });
 });
+
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
+  document.documentElement.classList.remove("dark");
 });
 
-function show(page: FunctionComponent) {
-  render(createElement(QueryClientProvider, { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) }, createElement(page)));
+async function mountWorkers() {
+  history.replaceState(null, "", "/app/workers");
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><App /></QueryClientProvider>);
+  await screen.findByRole("heading", { level: 1, name: "Workers" });
+  await screen.findByRole("list", { name: "Runs over time, one row per lane" });
+  await screen.findByRole("list", { name: "Dependency graph, prerequisites on the left" });
 }
 
-describe("Workers page", () => {
-  it("shows a row per process; the draining one has a badge and 0 slots", async () => {
-    show(WorkersPage);
-    const rows = await screen.findAllByTestId("worker-process");
-    expect(rows).toHaveLength(2);
-    expect(rows[0]!.textContent).not.toContain("draining");
-    expect(rows[1]!.textContent).toContain("draining");
-    expect(rows[1]!.querySelector("[data-slots]")!.textContent).toBe("2 busy, 0 idle, 0 slots, max 4");
+const bar = (id: string) => document.querySelector(`[data-run="${id}"]`) as HTMLElement;
+const node = (id: string) => document.querySelector(`[data-node="${id}"]`) as HTMLElement;
+
+describe("the Workers page", () => {
+  it("opens at /app/workers, in the sidebar's System block after Health, and stays there", async () => {
+    await mountWorkers();
+    const system = screen.getByRole("navigation", { name: "System" });
+    const hrefs = [...system.querySelectorAll("a")].map((a) => a.getAttribute("href"));
+    expect(hrefs.indexOf("/app/workers")).toBe(hrefs.indexOf("/app/health") + 1);
+    expect(within(system).getByRole("link", { name: "Workers" })).toBeTruthy();
+    expect(location.pathname).toBe("/app/workers");
   });
 
-  it("shows busy, idle, max slots, host, pid, start time and the process's runs", async () => {
-    show(WorkersPage);
-    const first = (await screen.findAllByTestId("worker-process"))[0]!;
-    expect(first.querySelector("[data-slots]")!.textContent).toBe("1 busy, 2 idle, 3 slots, max 4");
-    expect(first.textContent).toContain("host-1");
-    expect(first.textContent).toContain("pid 101");
-    expect(first.textContent).toContain("started");
-    expect(within(first).getByRole("link", { name: "wi_1" }).getAttribute("href")).toBe("/app/items/wi_1");
+  it("has window buttons 1h, 6h and 24h with 6h pressed, and a switch reads the other window", async () => {
+    await mountWorkers();
+    const group = screen.getByRole("group", { name: "Time window" });
+    const buttons = within(group).getAllByRole("button");
+    expect(buttons.map((b) => b.textContent)).toEqual(["1h", "6h", "24h"]);
+    expect(within(group).getByRole("button", { name: "6h" }).getAttribute("aria-pressed")).toBe("true");
+    expect(fetched).toContain("/api/v1/runs?window=6h");
+    expect(fetched).toContain("/api/v1/items/graph?window=6h");
+    fireEvent.click(within(group).getByRole("button", { name: "1h" }));
+    await vi.waitFor(() => expect(fetched).toContain("/api/v1/runs?window=1h"));
+    expect(fetched).toContain("/api/v1/items/graph?window=1h");
+    expect(within(group).getByRole("button", { name: "1h" }).getAttribute("aria-pressed")).toBe("true");
   });
 
-  it("shows the effective worker count once, with its source", async () => {
-    show(WorkersPage);
-    await screen.findAllByTestId("worker-process");
-    const line = await screen.findByTestId("effective-workers");
-    expect(line.textContent).toBe("Worker setting: 10 (override)");
-    // No other place on the page states a worker count.
-    expect(document.body.textContent!.match(/\b10\b/g)).toHaveLength(1);
-    expect(screen.getByTestId("factory-banner").textContent).not.toMatch(/workers/);
+  it("reads again every 10 seconds while visible", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    await mountWorkers();
+    const count = () => fetched.filter((u) => u === "/api/v1/runs?window=6h").length;
+    const before = count();
+    await act(async () => void (await vi.advanceTimersByTimeAsync(10_000)));
+    await vi.waitFor(() => expect(count()).toBeGreaterThan(before));
   });
 
-  it("answers without `processes` (an older server) with an empty list", async () => {
-    overrides["/api/v1/workers"] = { as_of: AT, workers: [] };
-    show(WorkersPage);
-    expect(await screen.findByText("No worker process is reporting.")).not.toBeNull();
-  });
-});
-
-describe("Activity", () => {
-  it("links the failed count in the last 24 hours to Failures with the 24h window", async () => {
-    show(ActivityPage);
-    const link = await screen.findByRole("link", { name: "7" });
-    expect(link.getAttribute("href")).toBe("/app/failures?window=24h");
-  });
-});
-
-describe("Failures page", () => {
-  it("titles each group in plain words with the code as small text, a meaning, a next step and a link to its items on Work", async () => {
-    show(FailuresSection);
-    const groups = await screen.findAllByTestId("failure-group");
-    expect(groups).toHaveLength(2);
-    expect(groups[0]!.textContent).toContain("Checks or tests failed");
-    expect(within(groups[0]!).getByTestId("failure-code").textContent).toBe("tests_failed");
-    expect(groups[0]!.textContent).toContain("2 runs");
-    expect(groups[0]!.textContent).toContain("1 item");
-    expect(groups[0]!.textContent).toContain("The checks or tests failed on the change.");
-    expect(groups[0]!.textContent).toContain("Read the failing checks");
-    expect(within(groups[0]!).getByRole("link", { name: "View items on Work" }).getAttribute("href")).toBe("/app/items?ids=wi_9");
-    expect(fetched).toContain("/api/v1/failures?window=24h");
+  it("draws a bar per started run coloured by kind and styled by status, and says how many runs it left out", async () => {
+    await mountWorkers();
+    expect(bar("r_run").className).toContain("bg-kind-implement");
+    expect(bar("r_run").className).toContain("animate-pulse");
+    expect(bar("r_fail").className).toContain("bg-kind-review");
+    expect(bar("r_fail").className).toContain("border-failed");
+    expect(bar("r_nostart")).toBeNull();
+    expect(bar("r_q")).toBeNull();
+    expect(document.querySelector("[data-left-out]")!.textContent).toBe("Left out (no start time): 1");
+    expect(document.querySelector("[data-now]")).toBeTruthy();
+    const legend = screen.getByRole("list", { name: "Legend" });
+    for (const k of ["Triage", "Implement", "Review", "Resolve", "Merge check", "Other"]) expect(within(legend).getByText(k)).toBeTruthy();
   });
 
-  it("a code with no copy shows the raw code and a generic line", async () => {
-    show(FailuresSection);
-    const g = (await screen.findAllByTestId("failure-group"))[1]!;
-    expect(g.textContent).toContain("made_up_code");
-    expect(g.textContent).toContain("This error code has no plain description yet.");
-    expect(within(g).queryByTestId("failure-code")).toBeNull();
+  it("the timeline scrolls inside its card instead of widening the page", async () => {
+    await mountWorkers();
+    const plot = screen.getByRole("list", { name: "Runs over time, one row per lane" });
+    expect(plot.closest(".overflow-x-auto")).toBeTruthy();
+    expect(plot.closest("section")!.contains(plot.closest(".overflow-x-auto"))).toBe(true);
   });
 
-  it("expands a group to its runs, each item linked to its page", async () => {
-    show(FailuresSection);
-    const g = (await screen.findAllByTestId("failure-group"))[0]!;
-    expect(within(g).queryByRole("table")).toBeNull();
-    fireEvent.click(within(g).getByRole("button", { expanded: false }));
-    const table = within(g).getByRole("table", { name: "Runs failed with tests_failed" });
-    expect(table.textContent).toContain("tests_failed detail 1");
-    expect(table.querySelector("details")).toBeNull();
-    fireEvent.mouseEnter(table.querySelector("[data-id]")!.parentElement!);
-    expect(within(table).getByRole("tooltip").textContent).toBe("h1:1:0");
-    expect(within(table).getAllByRole("link", { name: "wi_9" })[0]!.getAttribute("href")).toBe("/app/items/wi_9");
+  it("hovering or focusing a bar opens its tooltip; a click opens the item", async () => {
+    await mountWorkers();
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    fireEvent.mouseEnter(bar("r_fail").parentElement!);
+    const tip = screen.getByRole("tooltip");
+    expect(tip.textContent).toContain("Base work");
+    expect(tip.textContent).toContain("wi_base");
+    expect(tip.textContent).toContain("Model: opus");
+    expect(tip.textContent).toContain("Cost: $1.25");
+    fireEvent.mouseLeave(bar("r_fail").parentElement!);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    fireEvent.focus(bar("r_run"));
+    expect(screen.getByRole("tooltip").textContent).toContain("Running for");
+    fireEvent.blur(bar("r_run"));
+    fireEvent.click(bar("r_run"));
+    await vi.waitFor(() => expect(location.pathname).toBe("/app/items/wi_dep"));
   });
 
-  it("reads the window from the link and switches to 7 days", async () => {
-    history.replaceState(null, "", "/app/failures?window=7d");
-    show(FailuresSection);
-    await screen.findAllByTestId("failure-group");
-    expect(fetched).toContain("/api/v1/failures?window=7d");
-    expect(within(screen.getByRole("group", { name: "Window" })).getByRole("button", { name: "Last 7 days" }).getAttribute("aria-pressed")).toBe("true");
-    fireEvent.click(screen.getByRole("button", { name: "Last 24 hours" }));
-    await vi.waitFor(() => expect(fetched).toContain("/api/v1/failures?window=24h"));
+  it("draws only items with an edge, counts the rest, and a node's hover lights its edges and its runs", async () => {
+    await mountWorkers();
+    expect(node("wi_base")).toBeTruthy();
+    expect(node("wi_dep")).toBeTruthy();
+    expect(node("wi_alone")).toBeNull();
+    expect(document.querySelector("[data-alone]")!.textContent).toBe("1 items with no dependencies");
+    const edge = document.querySelector('[data-edge="wi_base>wi_dep"]')!;
+    expect(edge.getAttribute("data-highlight")).toBeNull();
+    fireEvent.mouseEnter(node("wi_dep"));
+    fireEvent.mouseEnter(node("wi_dep").parentElement!);
+    expect(edge.getAttribute("data-highlight")).toBe("true");
+    expect(bar("r_run").getAttribute("data-highlight")).toBe("true");
+    expect(bar("r_fail").getAttribute("data-highlight")).toBeNull();
+    const tip = screen.getByRole("tooltip");
+    expect(tip.textContent).toContain("Needs base");
+    expect(tip.textContent).toContain("wi_dep");
+    expect(tip.textContent).toContain("Stage: specced, not started");
+    expect(tip.textContent).toContain("Blocked: dependency pending");
+    fireEvent.mouseLeave(node("wi_dep"));
+    expect(edge.getAttribute("data-highlight")).toBeNull();
   });
 
-  it("states the cap when runs were left out", async () => {
-    overrides["/api/v1/failures?window=24h"] = { ...failures("24h"), total: 800, capped: true };
-    show(FailuresSection);
-    expect((await screen.findByTestId("failures-cap")).textContent).toBe("Showing the newest 500 of 800 failed runs in this window.");
+  it("keyboard focus on a node opens its tooltip and lights its runs; a click opens the item", async () => {
+    await mountWorkers();
+    fireEvent.focus(node("wi_base"));
+    expect(screen.getByRole("tooltip").textContent).toContain("Base work");
+    expect(bar("r_fail").getAttribute("data-highlight")).toBe("true");
+    fireEvent.blur(node("wi_base"));
+    expect(bar("r_fail").getAttribute("data-highlight")).toBeNull();
+    fireEvent.click(node("wi_base"));
+    await vi.waitFor(() => expect(location.pathname).toBe("/app/items/wi_base"));
+  });
+
+  it("has no control that edits anything: its only buttons are the window switch", async () => {
+    await mountWorkers();
+    const main = document.querySelector("main")!;
+    const group = within(main).getByRole("group", { name: "Time window" });
+    for (const b of within(main).getAllByRole("button")) expect(group.contains(b)).toBe(true);
+    expect(main.querySelector("input, select, textarea, form")).toBeNull();
+  });
+
+  it("renders in dark too", async () => {
+    document.documentElement.classList.add("dark");
+    await mountWorkers();
+    expect(bar("r_fail")).toBeTruthy();
+    expect(node("wi_dep")).toBeTruthy();
   });
 });

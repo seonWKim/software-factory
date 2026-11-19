@@ -5,14 +5,14 @@
 // node is left out. Titles and blocked reasons pass the Withholder (the caller's `text`); ids, stages and kinds are
 // store codes and go out as they are.
 
-import type { Run, Stage, WorkItem, WorkItemId } from "../core/types.js";
+import type { Run, Stage, Timestamp, WorkItem, WorkItemId } from "../core/types.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { LIST_LIMIT } from "./list.js";
 
 const HOUR_MS = 60 * 60 * 1000;
 
 /** The windows the page offers, by name. */
-export const WINDOWS: Readonly<Record<string, number>> = { "1h": HOUR_MS, "6h": 6 * HOUR_MS, "24h": 24 * HOUR_MS };
+const WINDOWS: Readonly<Record<string, number>> = { "1h": HOUR_MS, "6h": 6 * HOUR_MS, "24h": 24 * HOUR_MS };
 
 /** The window's length for a `window` value, or null when the value is not one of WINDOWS. */
 export function windowMs(value: string): number | null {
@@ -51,7 +51,7 @@ export interface GraphEdge {
 
 /** GET /api/v1/items/graph for a window of `ms`: every node and every edge between two nodes, each edge once. */
 export async function itemGraph(c: GraphCtx, ms: number): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
-  const since = new Date(c.now.getTime() - ms).toISOString();
+  const since = new Date(c.now.getTime() - ms).toISOString() as Timestamp;
   const open = await c.store.listWorkItemsWhere({ exclude_closed: true, limit: LIST_LIMIT });
   const closed = await c.store.listWorkItemsWhere({ stage: "CLOSED", updated_since: since, limit: LIST_LIMIT });
   const items = new Map<WorkItemId, WorkItem>();

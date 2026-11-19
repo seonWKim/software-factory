@@ -16,6 +16,10 @@ export const API = {
     return `/api/v1/items/${encodeURIComponent(id)}/runs/${encodeURIComponent(run)}/transcript${q ? `?${q}` : ""}`;
   },
   runs: "/api/v1/runs",
+  /** The runs with those finished in the window (1h, 6h or 24h), for the Workers page's timeline. */
+  runsIn: (window: string) => `/api/v1/runs?window=${window}`,
+  /** The items and their dependency edges for the window, for the Workers page's graph. */
+  itemGraph: (window: string) => `/api/v1/items/graph?window=${window}`,
   queue: "/api/v1/queue",
   workers: "/api/v1/workers",
   health: "/api/v1/health",

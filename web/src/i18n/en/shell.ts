@@ -12,6 +12,7 @@ export const shell = {
   "page.activity": "Activity",
   "page.runners": "Runners",
   "page.health": "Health",
+  "page.workers": "Workers",
   "page.failures": "Failures",
   "page.spend": "Spend",
   "page.rules": "Rules",
