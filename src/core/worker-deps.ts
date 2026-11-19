@@ -18,7 +18,7 @@ import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore, RunIntent } from "../interfaces/factory-store.js";
 import type { KeepAwake } from "../interfaces/keep-awake.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
-import type { Sandbox } from "../interfaces/sandbox.js";
+import type { ExecResult, Sandbox } from "../interfaces/sandbox.js";
 import type { SharedStorage } from "../interfaces/shared-storage.js";
 import type { RunPassportIssuer, ToolBroker } from "../interfaces/tool-broker.js";
 
@@ -205,4 +205,10 @@ export interface WorkerDeps {
    * comment goes to the item's own source, as the controller's PR comments do.
    */
   prRef?: (pr: number) => SourceRef;
+  /**
+   * Runs `cmd` on the host, outside any sandbox, with no shell (compose: runProcess): the restart run's
+   * `repo.restart_command` in the repo's base checkout (design 04-gate-commands, restart). It rejects when the
+   * command cannot start. Absent: a restart run fails with `no_host_exec`.
+   */
+  host_exec?: (cmd: readonly string[], opts: { cwd: string; env: Readonly<Record<string, string>>; timeout_ms: number; signal: AbortSignal }) => Promise<ExecResult>;
 }

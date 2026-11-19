@@ -39,6 +39,8 @@ export interface NewTask extends TaskFields {
   id: string;
   /** The CLI user's ID from the environment, never a display name. */
   created_by: UserId;
+  /** The task's description as taskBody stores it (trimmed; null: none); left out: none. */
+  body?: string | null;
 }
 
 export interface Task extends Omit<TaskFields, "due" | "duration_minutes" | "projects"> {
@@ -58,6 +60,18 @@ export interface Task extends Omit<TaskFields, "due" | "duration_minutes" | "pro
   parent_task_id: string | null;
   /** When the reminder at the task's time was sent (the sent-marker); null until then, and again once the time changes. */
   reminded_at: Timestamp | null;
+  /** The description (design 02-tasks): below the title in the problem of the work item Build this makes; null: none. */
+  body: string | null;
+}
+
+/** The longest task description stored, after trimming. */
+export const MAX_TASK_BODY = 20_000;
+
+/** A description as stored: trimmed, null when empty (cleared); refused when longer than MAX_TASK_BODY. Pure. */
+export function taskBody(raw: string): { ok: true; body: string | null } | { ok: false; reason: string } {
+  const body = raw.trim();
+  if (body.length > MAX_TASK_BODY) return { ok: false, reason: `a description must be at most ${MAX_TASK_BODY} characters` };
+  return { ok: true, body: body === "" ? null : body };
 }
 
 /** The fields an edit names (`parseQuickEdit`); every field left out keeps its stored value. `projects` adds links, never removes one. */
@@ -87,6 +101,8 @@ export type UpdateTaskResult =
   | { ok: false; reason: "not_found" | "done" }
   /** The edit leaves a recurring task with no due date, which quick-add refuses too. */
   | { ok: false; reason: "needs_due_date"; recurrence: Recurrence };
+
+export type SetTaskBodyResult = { ok: true; task: Task } | { ok: false; reason: "not_found" | "done" };
 
 export type DeleteTaskResult =
   /**
@@ -151,6 +167,8 @@ export interface TaskStore extends ProjectStore {
    * `edit.projects` in the same transaction; a refusal writes nothing, and an unknown or archived project throws ProjectRefused.
    */
   updateTask(id: string, edit: TaskEdit): Promise<UpdateTaskResult>;
+  /** Sets the description (taskBody's value) of an open task, conditional on done_at unset; a refusal writes nothing. */
+  setTaskBody(id: string, body: string | null): Promise<SetTaskBodyResult>;
   /**
    * Deletes the row. Refused while it has open sub-tasks; its done sub-tasks are detached (parent_task_id null) in the
    * same transaction. With `with_sub_tasks`, every sub-task, open and done, is deleted with it in the same transaction
@@ -312,7 +330,7 @@ export interface TaskDay {
  * The dashboard's views of the tasks, open and done (the done window's, design 02-tasks, done tasks stay), and the
  * stored calendar events (design 02-tasks), each task placed by its due date, a done one as an open one, and each event
  * by the local days it overlaps, against `now`'s calendar date in this process's time zone, so the day ends at local
- * midnight. Today: overdue tasks (due before today; open, or done today) first, then today's tasks and events, then the
+ * midnight. Today: overdue tasks (open and due before today; a done task is never overdue) first, then today's tasks and events, then the
  * open undated tasks created on today's local date.
  * Upcoming: today through UPCOMING_DAYS days after it, one entry per day that has a task or an event (the Tasks page
  * shows the days after today). Projects: every task, undated included, by its
@@ -377,8 +395,8 @@ export function calendarDays(events: readonly CalendarEventInput[], from: string
 export function taskViews(tasks: readonly Task[], now: Date, events: readonly CalendarEventInput[] = []): TaskViews {
   const today = localDate(now);
   const sorted = [...tasks].sort(byDue);
-  // A task done today stays where it was; one done earlier is no longer overdue.
-  const overdue = (t: Task) => t.due_date !== null && t.due_date < today && (t.done_at === null || localDate(new Date(t.done_at)) === today);
+  // A done task is never overdue, also one done today; the page lists a done past-due task under Done.
+  const overdue = (t: Task) => t.due_date !== null && t.due_date < today && t.done_at === null;
   const day = (date: string) => dayEntries(sorted.filter((t) => t.due_date === date), eventsOn(events, date));
   // An open undated task added today is listed in Today, after the dated ones (byDue sorts undated last).
   const addedToday = (t: Task) => t.due_date === null && t.done_at === null && localDate(new Date(t.created_at)) === today;

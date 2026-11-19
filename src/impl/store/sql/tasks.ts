@@ -4,7 +4,7 @@
 // No CLI or chat logic: the methods take plain arguments, so an HTTP route can call them too.
 
 import {
-  type AddSubTaskResult, type CompleteTaskResult, type DeleteTaskResult, type DoneTasks, type DoneWindow, type NewTask, type Recurrence, type ReopenTaskResult, type Task, type TaskEdit, type TaskPriority,
+  type AddSubTaskResult, type CompleteTaskResult, type DeleteTaskResult, type DoneTasks, type DoneWindow, type NewTask, type Recurrence, type ReopenTaskResult, type SetTaskBodyResult, type Task, type TaskEdit, type TaskPriority,
   type TaskTime, type UpdateTaskResult, applyTaskEdit, dueDate, nextDueDate, reminderDays, reminderDue,
 } from "../../../core/tasks.js";
 import type { NewNotice } from "../../../core/notifications.js";
@@ -15,7 +15,7 @@ import { linkTaskProjects, unlinkTask } from "./projects.js";
 import { newId } from "./rows.js";
 
 const COLUMNS =
-  "id, title, list, priority, due_date, due_time, recurrence, created_by, created_at, done_at, parent_id, work_item_id, parent_task_id, duration_minutes, reminded_at";
+  "id, title, list, priority, due_date, due_time, recurrence, created_by, created_at, done_at, parent_id, work_item_id, parent_task_id, duration_minutes, reminded_at, body";
 
 const text = (v: unknown): string | null => (v == null ? null : String(v));
 
@@ -26,6 +26,7 @@ function rowToTask(r: Row): Task {
     created_by: String(r.created_by) as UserId, created_at: String(r.created_at) as Timestamp, done_at: text(r.done_at) as Timestamp | null,
     parent_id: text(r.parent_id), work_item_id: text(r.work_item_id) as WorkItemId | null, parent_task_id: text(r.parent_task_id),
     duration_minutes: r.duration_minutes == null ? null : Number(r.duration_minutes), reminded_at: text(r.reminded_at) as Timestamp | null,
+    body: text(r.body),
   };
 }
 
@@ -37,9 +38,9 @@ async function select(db: SqlExecutor, column: "id" | "parent_id", value: string
 /** Inserts `t` unless a row has its ID (or, for an occurrence, its parent); false when it inserted nothing. */
 async function insert(db: SqlDriver, tx: SqlExecutor, t: Task): Promise<boolean> {
   try {
-    await tx.run(`INSERT INTO controller_tasks (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+    await tx.run(`INSERT INTO controller_tasks (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
       t.id, t.title, t.list, t.priority, t.due_date, t.due_time, t.recurrence, t.created_by, t.created_at, t.done_at, t.parent_id, t.work_item_id,
-      t.parent_task_id, t.duration_minutes, t.reminded_at,
+      t.parent_task_id, t.duration_minutes, t.reminded_at, t.body,
     ]);
     return true;
   } catch (err) {
@@ -53,7 +54,7 @@ function newRow(t: NewTask, now: Date, parent_task_id: string | null): Task {
   return {
     id: t.id, title: t.title, list: t.list, priority: t.priority, due_date: t.due === null ? null : dueDate(t.due, now), due_time: t.due_time,
     recurrence: t.recurrence, created_by: t.created_by, created_at: now.toISOString() as Timestamp, done_at: null, parent_id: null,
-    work_item_id: null, parent_task_id, duration_minutes: t.duration_minutes ?? null, reminded_at: null,
+    work_item_id: null, parent_task_id, duration_minutes: t.duration_minutes ?? null, reminded_at: null, body: t.body ?? null,
   };
 }
 
@@ -96,6 +97,17 @@ export async function updateTask(db: SqlDriver, id: string, edit: TaskEdit, now:
       [next.title, next.list, next.priority, next.due_date, next.due_time, next.recurrence, next.duration_minutes, next.reminded_at, id],
     );
     await linkTaskProjects(tx, id, edit.projects ?? [], now.toISOString() as Timestamp);
+    return { ok: true, task: (await select(tx, "id", id))! } as const;
+  });
+}
+
+/** Writes the description where the task is still open; the same description again writes the same value. */
+export async function setTaskBody(db: SqlDriver, id: string, body: string | null): Promise<SetTaskBodyResult> {
+  return db.transaction(async (tx) => {
+    const task = await select(tx, "id", id);
+    if (task === null) return { ok: false, reason: "not_found" } as const;
+    if (task.done_at !== null) return { ok: false, reason: "done" } as const;
+    await tx.run("UPDATE controller_tasks SET body = ? WHERE id = ? AND done_at IS NULL", [body, id]);
     return { ok: true, task: (await select(tx, "id", id))! } as const;
   });
 }

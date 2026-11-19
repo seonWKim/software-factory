@@ -1,6 +1,6 @@
-// The Tasks page: GET /api/v1/tasks (useTasks), POST /api/v1/tasks (postTaskAdd), /api/v1/tasks/build (postTaskBuild),
+// The Tasks page: GET /api/v1/tasks (useTasks), GET /api/v1/tasks/preview (getTaskPreview), POST /api/v1/tasks (postTaskAdd), /api/v1/tasks/build (postTaskBuild),
 // the row actions under /api/v1/tasks (postTaskAction: edit, done, reopen, delete and sub), POST /api/v1/projects
-// (postProject) and POST /api/v1/tasks/project (postTaskProject).
+// (postProject), POST /api/v1/tasks/project (postTaskProject) and POST /api/v1/tasks/body (postTaskBody).
 
 import { useQuery } from "@tanstack/react-query";
 import { t } from "../i18n/index.js";
@@ -17,11 +17,13 @@ export interface TaskRow {
   /** `YYYY-MM-DD`, or null. */
   due_date: string | null;
   due_time: string | null;
-  /** How long it takes, in minutes; null: planned as 30 minutes (absent from an older server). */
+  /** How long it takes, in minutes; null: none was given, and the row shows none (absent from an older server). */
   duration_minutes?: number | null;
   recurrence: string | null;
   /** The work item Build this made from it, or null. */
   work_item_id: string | null;
+  /** Its description (design 02-tasks), below the title in the work item Build this makes; null or absent: none. */
+  body?: string | null;
   /** The task this is a sub-task of (one level), or null. */
   parent_task_id?: string | null;
   /** How many open sub-tasks it has, over every stored task (absent from an older server): the delete dialog reads it before it opens. */
@@ -101,6 +103,30 @@ export function useTasks<T>(project: string | null) {
   });
 }
 
+/**
+ * `/api/v1/tasks/preview`: what quick add would store for the words (the server's parser, the due day resolved at its
+ * clock), with `unread`, the title words it did not understand; or the parser's reason for refusing them.
+ */
+export type TaskPreview =
+  | {
+    ok: true;
+    title: string;
+    due_date: string | null;
+    due_time: string | null;
+    recurrence: string | null;
+    projects: string[];
+    priority: number | null;
+    list: string | null;
+    duration_minutes: number | null;
+    unread: string[];
+  }
+  | { ok: false; reason: string };
+
+/** GET /api/v1/tasks/preview: the quick-add field's live preview. Writes nothing. */
+export function getTaskPreview(words: string): Promise<TaskPreview> {
+  return getJson<TaskPreview>(API.taskPreview(words));
+}
+
 /** POST /api/v1/tasks/build: Build this. The work item's ID; a refusal (409, 503, …) comes back as `{ ok: false, error }`. */
 export async function postTaskBuild(token: string, id: string): Promise<{ ok: true; work_item_id: string } | { ok: false; error: string }> {
   const r = await postJson<{ work_item_id?: string; error?: string }>(API.taskBuild, token, { id });
@@ -125,6 +151,12 @@ export async function postProject(token: string, id: string, name: string): Prom
 export async function postTaskProject(token: string, id: string, project: string, add: boolean): Promise<{ ok: true; changed: boolean } | { ok: false; error: string }> {
   const r = await postJson<{ changed?: boolean; error?: string }>(API.taskProject, token, { id, project, add });
   return r.ok ? { ok: true, changed: r.value.changed ?? false } : { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+}
+
+/** POST /api/v1/tasks/body: the task's description (empty clears it). A refusal (400, 404, 409, …) comes back as `{ ok: false, error }`. */
+export async function postTaskBody(token: string, id: string, body: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await postJson<{ error?: string }>(`${API.tasks}/body`, token, { id, body });
+  return r.ok ? { ok: true } : { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
 /**

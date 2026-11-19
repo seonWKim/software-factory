@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { CLI_TOP_WORDS, HELP_WORD, cliUsageLines, parseLocalCliArgs, runLocalCli } from "../../../core/local-cli.js";
+import { CLI_TOP_WORDS, HELP_WORD, cliName, cliUsageLines, parseLocalCliArgs, runLocalCli } from "../../../core/local-cli.js";
 import { storeProjectResolver } from "../../../ui/settings-api.js";
 import { defineCommand } from "../../command.js";
 import { lastRefusedLines, refusalHint } from "./refused.js";
@@ -23,6 +23,8 @@ export default defineCommand({
       return 1;
     }
     const identity = await ctx.identity();
+    // The wrapper's command name (FACTORY_CLI_NAME, else `factory`), read as src/main.ts reads it for the sentence form.
+    const cli = cliName(process.env);
     return ctx.withStore(async (store, loaded) => {
       const { owner, name } = loaded.config.repo;
       const resolveProject = storeProjectResolver(store, { owner, name });
@@ -33,12 +35,14 @@ export default defineCommand({
           project: async () => (await resolveProject())?.key ?? null,
           read: (path) => readFile(path, "utf8"),
           newId: () => randomUUID(),
+          cli,
+          ui: loaded.file.ui ?? {},
         },
         action,
       );
       // A refused command's answer for the CLI sender (design 04-gate-commands, 2026-11-13).
       if (r.code === 0 && action.action === "show") r.lines.push(...lastRefusedLines(await store.listItemMessages(action.id)));
-      if (r.code === 0 && action.action === "command") r.lines.push(refusalHint(action.id));
+      if (r.code === 0 && action.action === "command") r.lines.push(refusalHint(action.id, cli));
       for (const line of r.lines) (r.code === 0 ? console.log : console.error)(line);
       return r.code;
     });

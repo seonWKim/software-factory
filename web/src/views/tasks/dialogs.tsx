@@ -1,10 +1,11 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type RefObject, useContext, useRef, useState } from "react";
-import { API, type ProjectChoice, type TaskRow, postTaskProject } from "../../api.js";
-import { Button } from "../../components/ui/button.js";
+import { API, type ProjectChoice, type TaskRow, postTaskBody, postTaskProject } from "../../api.js";
+import { Checkbox } from "../../components/ui/checkbox.js";
 import { Dialog, announceStatus } from "../../components/ui/dialog.js";
 import { Field } from "../../components/ui/field.js";
 import { Input } from "../../components/ui/input.js";
+import { Textarea } from "../../components/ui/textarea.js";
 import { t } from "../../i18n/index.js";
 import { cn } from "../../lib/cn.js";
 import { Rows, createProject, muted, useTaskAction } from "./shared.js";
@@ -36,6 +37,55 @@ export function DeleteDialog({ task, token, returnFocusTo, onClose }: { task: Ta
       onClose={onClose}
     >
       {subs > 0 && <p data-open-sub-tasks={subs}>{t(subs === 1 ? "tasks.deleteSubsOne" : "tasks.deleteSubsMany", { count: subs })}</p>}
+    </Dialog>
+  );
+}
+
+/**
+ * The description dialog, opened by the task's title: the shared Dialog with one Textarea; Save posts the text (the
+ * server trims it, and an empty one clears it), Cancel closes it and posts nothing. A refusal stays in the dialog with its
+ * reason. A built task's dialog says its work item keeps the text it was built with. It renders into document.body, so
+ * the row keeps its height.
+ */
+export function DescriptionDialog({ task, token, returnFocusTo, onClose }: { task: TaskRow; token: string; returnFocusTo: RefObject<HTMLElement | null>; onClose: () => void }) {
+  const client = useQueryClient();
+  const [text, setText] = useState(task.body ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const id = `task-description-${task.id}`;
+  const save = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await postTaskBody(token, task.id, text);
+      if (!r.ok) {
+        setError(r.error);
+        return;
+      }
+      await client.invalidateQueries({ queryKey: [API.tasks] });
+      announceStatus(t("tasks.descriptionSaved", { title: task.title }));
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Dialog
+      title={task.title}
+      consequence={task.work_item_id === null ? t("tasks.descriptionHint") : t("tasks.descriptionBuilt", { id: task.work_item_id })}
+      confirmLabel={t("tasks.save")}
+      confirmDisabled={busy}
+      error={error}
+      returnFocusTo={returnFocusTo}
+      onConfirm={() => void save()}
+      onClose={onClose}
+    >
+      <Field label={t("tasks.description")} htmlFor={id}>
+        <Textarea id={id} rows={8} value={text} disabled={busy} onChange={(e) => setText(e.target.value)} />
+      </Field>
     </Dialog>
   );
 }
@@ -114,10 +164,7 @@ export function ProjectsDialog({ task, token, returnFocusTo, onClose }: { task: 
             const checked = linked.has(p.slug);
             return (
               <li key={p.slug} data-project={p.slug} className="flex items-center gap-3 px-3 py-2">
-                {/* The shared Button as a checkbox, as on the task row: components/ui has no checkbox. */}
-                <Button size="icon" role="checkbox" aria-checked={checked} aria-label={p.name} disabled={busy} onClick={() => void send(() => link(p, !checked))}>
-                  <span aria-hidden>{checked ? "✓" : ""}</span>
-                </Button>
+                <Checkbox checked={checked} aria-label={p.name} disabled={busy} onChange={() => void send(() => link(p, !checked))} />
                 <span className="min-w-0 flex-1 text-sm break-words">{p.name}</span>
                 <span className={cn(muted, "break-all")}>+{p.slug}</span>
               </li>
