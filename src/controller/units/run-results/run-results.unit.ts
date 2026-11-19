@@ -2,7 +2,7 @@
 // Moved out of the legacy controller (RFC 0015 M5); it reads through the kernel's reader and writes through the kernel.
 
 import { prNumber } from "../../../core/change-ref.js";
-import { commandFooter, commandState, retryPathsReply, withholdReplyLines } from "../../../core/commands.js";
+import { NO_FILES_REFUSAL, changesNoFile, commandFooter, commandState, retryPathsReply, withholdReplyLines } from "../../../core/commands.js";
 import { type NeedsHuman, type ReviewOutput, SPEC_CONFLICT, type TriageOutput, findingLine, parseNeedsHuman, parseReview, parseTriage, specFindings } from "../../../core/outputs.js";
 import { AGENT_NEEDS_HUMAN, AUTO_ACTOR, AUTO_RESOLVE_LIMIT, autoApproveRefusal, REPEATED_FAILURE, type FailureClass, failureLine, repeatsFastInfraFailure, repeatsLastFailure, preflightCheck, PREFLIGHT_ACCESS, autoResolveAttempts, autoResolveKey, effectiveTier, failureClass, floorTier, isCovered, needsSpecApproval, nextAutoResolveAttempt, parseAutoResolveKey, retryDelayMs, retryKey, retryNotBefore, GITHUB_RATE_LIMITED, runKey, sameStep, takenOver, FORGE_AUTH, NO_AUTO_RETRY, CHECKS_ENV, CHECKS_ENV_LIMIT, SESSION_RELEASED } from "../../../core/policy.js";
 import { FIX_SPEC_APPROVED, gatePathTouched } from "../../../core/improver.js"; import { autoApprovalDetail, ownerAnswersFor } from "../../../shared/command-notes.js";
@@ -182,6 +182,8 @@ export class RunResultsUnit {
             token_cost: tokens,
           };
           const missing = droppedValues(spec, it.issue_text), answers = droppedAnswers(spec, await ownerAnswersFor(it, (id) => this.c.k.reader.listStateChanges(id))), held = missing.length + answers.length > 0; // dropped request values or owner answers: no approval without /approve below
+          // A spec that changes no file in this repo is never approved, by a person or without one (design 04-spec-gate-commands, 2026-11-20).
+          const noFiles = changesNoFile(spec), waitsAnyway = held || noFiles;
           // Each approval below without a person's reply: the spec comment with its note, no answer block and `footer`, RUNNING, the implement run queued.
           const approved = async (note: readonly string[], how: { actor: Actor; reason: string; detail?: StateChangeDetail }, footer = footerAfter(it, { stage: "RUNNING" })): Promise<Decision> => {
             const patch = { ...fields, stage: "RUNNING" as const };
@@ -190,7 +192,7 @@ export class RunResultsUnit {
             return { patch: { ...patch, spec_comment_url: url }, ...how, ack_run: run.id, enqueue: { kind: "implement", idempotency_key: runKey({ ...it, ...fields }, "implement") } };
           };
           // A split spec always waits for a human: its /approve files issues on the source.
-          const byParent = !spec.phases && (await this.c.unit("phases").approvedByParent(it));
+          const byParent = !spec.phases && !noFiles && (await this.c.unit("phases").approvedByParent(it));
           if (byParent) {
             // phases_auto_approve: the owner's /approve of the split covers this phase's spec (design 2026-11-01), held values or answers too.
             const next = { ...it, ...fields };
@@ -210,7 +212,7 @@ export class RunResultsUnit {
               enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
             };
           }
-          if (!held && !spec.phases && !needsSpecApproval(tier, this.c.k.cfg.dials)) {
+          if (!waitsAnyway && !spec.phases && !needsSpecApproval(tier, this.c.k.cfg.dials)) {
             const next = { ...it, ...fields };
             return {
               patch: { ...fields, stage: "RUNNING" },
@@ -221,7 +223,7 @@ export class RunResultsUnit {
             };
           }
           // The factory's fix for a recurring failure runs without a person (design §7); a gate-path change still waits for a person's merge.
-          const fix = spec.phases || held ? null : await this.c.unit("improve").fixPattern(it);
+          const fix = spec.phases || waitsAnyway ? null : await this.c.unit("improve").fixPattern(it);
           if (fix) {
             const gate = gatePathTouched(spec.allowed_paths);
             return approved([
@@ -230,7 +232,7 @@ export class RunResultsUnit {
             ], { actor: SYSTEM, reason: FIX_SPEC_APPROVED, detail: { pattern_key: fix.pattern_key } });
           }
           // A standing rule approves a tier 1 spec that would wait here, never one that touches protected paths.
-          const rule = spec.phases || held ? null : await this.c.unit("standing").standingRule(it, tier, spec.allowed_paths);
+          const rule = spec.phases || waitsAnyway ? null : await this.c.unit("standing").standingRule(it, tier, spec.allowed_paths);
           if (rule) {
             const id = ruleId(rule.gate, rule.tier);
             return approved([
@@ -243,7 +245,7 @@ export class RunResultsUnit {
             });
           }
           // Auto mode (design 03-risk): a spec it may approve starts with each decision's default; any other waits.
-          const auto = spec.phases || held ? null : await this.c.unit("local-merge").autoMode(it.project);
+          const auto = spec.phases || waitsAnyway ? null : await this.c.unit("local-merge").autoMode(it.project);
           // Auto mode approves under the controller's service passport (RFC 0015 §8).
           const refusal = auto
             ? autoApproveRefusal({ tier, decisions: spec.decision_items ?? [], gate_path: gatePathTouched(spec.allowed_paths) })
@@ -257,9 +259,12 @@ export class RunResultsUnit {
             }, autoApprovedFooter(commandState({ ...it, stage: "RUNNING" }), tier, this.c.k.d.clock.now().toISOString()));
           }
           const patch = { ...fields, stage: "READY" as const, blocked_on: "human" as const, blocked_reason: "spec_pending" };
-          const waits = held ? heldNote(missing, answers) : auto ? `Auto mode is on, but this spec waits for \`/approve\`: ${refusal}.\n\n` : "";
+          const waits = noFiles ? `This spec cannot be approved: ${NO_FILES_REFUSAL}.\n\n`
+            : held ? heldNote(missing, answers) : auto ? `Auto mode is on, but this spec waits for \`/approve\`: ${refusal}.\n\n` : "";
+          // No `/approve` in the footer of a spec that changes no file: only `/revise` and `/reject` apply to it.
+          const footer = noFiles ? commandFooter(commandState({ ...it, ...patch }), ["approve"]) : footerAfter(it, patch);
           const url = await this.c.unit("outbox").comment(it, `spec:${run.id}`,
-            renderSpec(spec, tier, { floor, previous: it.tier, added }, `${waits}${footerAfter(it, patch)}`, { missing, answers }), "spec_comment_url");
+            renderSpec(spec, tier, { floor, previous: it.tier, added }, `${waits}${footer}`, { missing, answers }), "spec_comment_url");
           return {
             patch: { ...patch, spec_comment_url: url },
             actor: SYSTEM,

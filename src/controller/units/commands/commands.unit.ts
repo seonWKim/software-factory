@@ -6,7 +6,7 @@
 
 import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
 import {
-  APPROVED_RUN_QUEUED, APP_REQUEST, CHECKPOINT_REFUSAL, CLOSED_REFUSAL, HOLD_PATHS, appliesLocally, appliesOnPr, approveCheck, approvesHold, awaitingSpec, commandFooter, commandNote, commandPhase, commandSpec,
+  APPROVED_RUN_QUEUED, APP_REQUEST, CHECKPOINT_REFUSAL, CLOSED_REFUSAL, HOLD_PATHS, RECHECK_AFTER_MS, RECHECK_PATHS_REFUSAL, appliesLocally, noFilesRefusal, appliesOnPr, approveCheck, approvesHold, awaitingSpec, commandFooter, commandNote, commandPhase, commandSpec,
   commandState, failedRunKind, floorCommand, floorTierNeeded, helpReply, parseLink, phaseLabel, refusalText, ruleOfTwoCommand, scanNote, specDecision,
   specNotWaiting, unknownCommandReply, withTag, localMergeRefusal, mergeReturned, prMergeRefusal, queuedRun, awaitingMerge,
 } from "../../../core/commands.js";
@@ -566,6 +566,9 @@ export class CommandsUnit {
     }
     // `/approve` (design §4): the approve gate every source shares (core request-transition), a split's filing claimed here.
     if (e.kind === "spec_approved") {
+      // A spec that changes no file in this repo is never approved (design 04-spec-gate-commands, 2026-11-20).
+      const noFiles = noFilesRefusal(it, await this.c.k.reader.listRuns(it.id));
+      if (noFiles) return { refuse: noFiles };
       const a = await approveCheck(this.c.k.reader, it, { actor, note, paths, comment_id: e.comment_id, tag, widen: (p) => this.widen(it, p), answers: NOTE_ANSWERS });
       return a && "split" in a ? this.c.unit("phases").approveSplit(it, a.split, actor, a.note, e.comment_id, a.tag) : a;
     }
@@ -574,7 +577,7 @@ export class CommandsUnit {
     if (it.blocked_reason === FLOOR_TIER) return floorCommand(e.kind, it, actor, await floorTierNeeded(this.c.k.reader, it), note, this.widen(it, paths));
     if (it.blocked_reason === RULE_OF_TWO) return ruleOfTwoCommand(e.kind, it, actor, note, paths, await this.c.k.reader.listStateChanges(it.id));
     if (e.kind === "spec_rejected") return this.reject(e, it, actor);
-    if (e.kind === "retry_requested") return commandPhase(it) === "phase_hold" ? this.c.unit("phases").retryPhase(it, actor, note, paths) : retry(it, actor, await this.retryKind(it), note, paths.length > 0 ? this.widen(it, paths) : null);
+    if (e.kind === "retry_requested") return commandPhase(it) === "phase_hold" ? this.c.unit("phases").retryPhase(it, actor, note, paths) : this.retryOrRecheck(it, actor, note, paths);
     const phase = commandPhase(it);
     // At the review loop limit too: a human chose to go back through triage or to close (design §4).
     const afterFailure = phase === "too_large" || phase === "failed_implement" || phase === "agent_needs_human" || phase === "repeated_failure" ||
@@ -616,6 +619,30 @@ export class CommandsUnit {
         };
       }
     }
+  }
+
+  /**
+   * `/retry` that starts a run (design 04-spec-gate-commands, 2026-11-20): as `retry` while the item's last state
+   * change is at most RECHECK_AFTER_MS old (the injected Clock). Older, the premise is checked again first: the item
+   * goes back to NEW with one triage run under a new key (restart_count + 1, loop_count 0 at max_loops) and then
+   * waits at the spec gate for `/approve`; a `+paths` there is refused. A refusal, or a retry that only lifts a hold,
+   * is as before.
+   */
+  async retryOrRecheck(it: WorkItem, actor: Actor, note: string | null, paths: readonly string[]): Promise<Decision | Refusal> {
+    const plain = retry(it, actor, await this.retryKind(it), note, paths.length > 0 ? this.widen(it, paths) : null);
+    if (!plain || "refuse" in plain || !plain.enqueue) return plain;
+    const last = (await this.c.k.reader.listStateChanges(it.id)).at(-1);
+    if (!last || this.c.k.d.clock.now().getTime() - Date.parse(last.at) <= RECHECK_AFTER_MS) return plain;
+    if (paths.length > 0) return { refuse: RECHECK_PATHS_REFUSAL };
+    const next = { ...it, restart_count: it.restart_count + 1 };
+    return {
+      patch: { stage: "NEW", blocked_on: "none", blocked_reason: null, restart_count: next.restart_count, ...(it.blocked_reason === "max_loops" ? { loop_count: 0 } : {}) },
+      actor,
+      reason: "retry_requested",
+      detail: { premise_recheck: true, previous_blocked_reason: it.blocked_reason, ...(note ? { note } : {}) },
+      // restart_count is new on every retry, so no earlier run used this key.
+      enqueue: { kind: "triage", idempotency_key: `${runKey(next, "triage")}:recheck` },
+    };
   }
 
   /**

@@ -4,6 +4,7 @@ import { type TriageOutput, parseTriage } from "./outputs.js";
 import { type ItemPhase, isClosedPhase, phaseOf } from "./phase.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind } from "./policy.js";
 import type { Run, RunKind, WorkItem } from "./types.js";
+import { awaitingSpec } from "./request-transition.js";
 export * from "./request-transition.js"; // the approve and merge gates' shared checks (design 04-gate-commands)
 
 /**
@@ -555,6 +556,32 @@ export function dependencyHoldRefusal(held: string | null): string {
 export function specNotWaiting(phase: CommandPhase): string {
   return `the spec is not waiting for approval (the item is ${phaseLabel(phase)})`;
 }
+
+/**
+ * The reason for `/approve` on a spec that changes no file in this repo (its files_to_change is empty; design
+ * 04-spec-gate-commands, 2026-11-20): the controller and the dashboard refuse it, and the spec comment says it.
+ */
+export const NO_FILES_REFUSAL =
+  "the spec changes no file in this repo (its files_to_change is empty), so there is nothing to implement; " +
+  "reply `/revise <feedback>` for a spec that changes a file here, or `/reject <reason>` to close";
+
+/** Whether `spec` changes no file in this repo: one spec (not a split) whose files_to_change is empty. */
+export function changesNoFile(spec: TriageOutput | null): boolean {
+  return spec !== null && !spec.phases && spec.files_to_change.length === 0;
+}
+
+/** NO_FILES_REFUSAL when `it` waits at the spec gate on a spec that changes no file, else null. Store reads only: the caller passes the runs. */
+export function noFilesRefusal(it: WorkItem, runs: readonly Run[]): string | null {
+  return awaitingSpec(it) && changesNoFile(latestSpec(runs)) ? NO_FILES_REFUSAL : null;
+}
+
+/** How old an item's last state change may be before `/retry` re-checks its premise with a triage run first (design 04-spec-gate-commands). */
+export const RECHECK_AFTER_MS = 24 * 60 * 60 * 1000;
+
+/** The reason for `/retry +paths` on an item whose retry re-checks its premise first. */
+export const RECHECK_PATHS_REFUSAL =
+  "the item's last change is more than a day old, so `/retry` re-checks its premise with a new triage run first, and `+paths` does not apply to that; " +
+  "reply `/retry` without `+paths`, then `/approve +paths <path>...` on the new spec";
 
 /**
  * Why `/approve` cannot apply to `it` whatever its runs say, in the controller's words; null when the controller may
