@@ -903,6 +903,26 @@ describe("updater: git-worktree status file", () => {
     expect(read()).toMatchObject({ state: "stopped", child_pid: null });
   });
 
+  it("previous_rev names the revision the new child replaced: null on the first start, kept over a crash restart", async () => {
+    const file = join(mkdtempSync(join(tmpdir(), "sf-status-")), "supervisor.json");
+    const read = () => JSON.parse(readFileSync(file, "utf8")) as { state: string; rev: string | null; previous_rev: string | null };
+    const { world, launcher, clock, updater } = setup({ statusFile: file });
+    await updater.start();
+    expect(read()).toMatchObject({ state: "running", rev: "c1", previous_rev: null });
+
+    world.push("c2", ["src/core/worker.ts"]);
+    await updater.poll();
+    expect(read()).toMatchObject({ state: "running", rev: "c2", previous_rev: "c1" });
+
+    // The same revision started again after a crash replaces nothing: previous_rev stays c1.
+    launcher.children[1]!.exit(1);
+    await waitFor(() => read().state === "crashed", "crashed status");
+    clock.advance(30_000);
+    await updater.poll();
+    expect(read()).toMatchObject({ state: "running", rev: "c2", previous_rev: "c1" });
+    await updater.shutdown();
+  });
+
   it("a child that exits on its own is crashed with its error; repeated crashes keep the first time", async () => {
     const file = join(mkdtempSync(join(tmpdir(), "sf-status-")), "supervisor.json");
     const read = () => JSON.parse(readFileSync(file, "utf8")) as { state: string; error: string | null; since: string; child_pid: number | null };
