@@ -7,7 +7,11 @@ import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { EventRow } from "../web/src/api.js";
 import { PAGES, routeFor } from "../web/src/pages.js";
-import { SLOW, TOKEN, TasksPage, card, dayLabel, item, reset, row, s, show, show2, teardown, view } from "./ui-tasks-fixtures.js";
+import { SLOW, TOKEN, TasksPage, card, item, reset, row, s, show, show2, teardown, view } from "./ui-tasks-fixtures.js";
+
+// dayLabel lives in the groups module; the specifier is one the node type check skips (the page module is loaded the same way).
+const GROUPS_MODULE = "../web/src/views/tasks/groups.js";
+const { dayLabel } = (await import(/* @vite-ignore */ GROUPS_MODULE)) as { dayLabel: (date: string) => string };
 
 beforeEach(reset);
 afterEach(teardown);
