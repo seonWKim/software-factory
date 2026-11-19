@@ -17,6 +17,12 @@
   --failed: #B91C1C;
   --focus: #1D4ED8;
   --on-solid: #FFFFFF;
+  --kind-triage: #7C3AED;
+  --kind-implement: #0369A1;
+  --kind-review: #B45309;
+  --kind-resolve: #BE185D;
+  --kind-merge-check: #047857;
+  --kind-other: #6B7280;
   --pill-ok-bg: #E8F2EC;
   --pill-ok-fg: #0E5328;
   --pill-ok-border: #ADD3BB;
@@ -71,6 +77,12 @@
   --failed: #F87171;
   --focus: #60A5FA;
   --on-solid: #17171A;
+  --kind-triage: #A78BFA;
+  --kind-implement: #38BDF8;
+  --kind-review: #FBBF24;
+  --kind-resolve: #F472B6;
+  --kind-merge-check: #34D399;
+  --kind-other: #9CA3AF;
   --pill-ok-bg: #284335;
   --pill-ok-fg: #4ADE80;
   --pill-ok-border: #33764E;

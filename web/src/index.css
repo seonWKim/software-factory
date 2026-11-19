@@ -26,6 +26,12 @@
   --color-failed: var(--failed);
   --color-focus: var(--focus);
   --color-on-solid: var(--on-solid);
+  --color-kind-triage: var(--kind-triage);
+  --color-kind-implement: var(--kind-implement);
+  --color-kind-review: var(--kind-review);
+  --color-kind-resolve: var(--kind-resolve);
+  --color-kind-merge-check: var(--kind-merge-check);
+  --color-kind-other: var(--kind-other);
   --color-pill-ok-bg: var(--pill-ok-bg);
   --color-pill-ok-fg: var(--pill-ok-fg);
   --color-pill-ok-border: var(--pill-ok-border);

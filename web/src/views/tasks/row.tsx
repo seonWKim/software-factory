@@ -23,8 +23,6 @@ import { Badge } from "../../components/ui/badge.js";
 /** A linked task's item's close reason, as the row says it in its details line, open or done (design 02-tasks). */
 const closedKey = (reason: NonNullable<TaskRow["close_reason"]>): MessageKey =>
   reason === "rejected" ? "tasks.closedRejected" : reason === "wont_do" ? "tasks.closedNotPlanned" : "tasks.closedOther";
-/** A timed task with no stored duration shows this long. */
-const DEFAULT_MINUTES = 30;
 
 /** Build this: one POST; its refusal stays beside the button until the next try. */
 function BuildButton({ task, token }: { task: TaskRow; token: string }) {
@@ -101,7 +99,8 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
   const [checked, setChecked] = useState(false);
   const parent = task.parent_task_id ?? null;
   const due = task.due_date === null ? null : task.due_time === null ? task.due_date : `${task.due_date} ${task.due_time}`;
-  const minutes = task.due_time === null ? null : (task.duration_minutes ?? DEFAULT_MINUTES);
+  // A timed task's stored duration; none stored: none shown.
+  const minutes = task.due_time === null ? null : (task.duration_minutes ?? null);
   const close = () => {
     setMode("view");
     action.setError(null);
@@ -178,6 +177,11 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
           {minutes !== null && <span className="tabular-nums">{t("tasks.minutes", { minutes })}</span>}
           {task.priority !== null && <span>!{task.priority}</span>}
           {task.list !== null && <span className="break-all">#{task.list}</span>}
+          {(task.projects ?? []).map((p) => (
+            <span key={p} className="break-all">
+              +{p}
+            </span>
+          ))}
           {task.recurrence !== null && <span>{t("tasks.every", { recurrence: task.recurrence })}</span>}
         </p>
         {mode === "sub" && (
