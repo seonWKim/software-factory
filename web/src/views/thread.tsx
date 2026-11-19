@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
 import type { ThreadEntry } from "../api.js";
 import { Button } from "../components/ui/button.js";
-import { Badge, Empty, Section } from "../components/ui/parts.js";
 import { Markdown } from "../components/ui/markdown.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { ago } from "../lib/format.js";
+import { Card } from "../components/ui/card.js";
+import { Badge } from "../components/ui/badge.js";
+import { EmptyState } from "../components/ui/notice.js";
 
 // The item page's thread (design §9, issue #286; newest first since 2026-11-13): every entry of the item API's
 // `thread`, newest first by time (the store's seq breaks a tie), each with its author ID, channel and time, its body
@@ -101,14 +103,14 @@ export function Thread({ entries, now }: { entries: readonly ThreadEntry[]; now:
   const newestFactory = shown.find((m) => m.role === "factory")?.anchor;
   const hash = hashId();
   return (
-    <Section title={t("thread.title")} count={shown.length}>
-      {shown.length === 0 ? <Empty>{t("thread.empty")}</Empty> : (
+    <Card title={t("thread.title")} count={shown.length}>
+      {shown.length === 0 ? <EmptyState title={t("thread.empty")} /> : (
         <ol aria-label={t("thread.title")} className="space-y-4">
           {shown.map((m, i) => (
             <Message key={m.anchor} m={m} now={now} open={i === 0 || m.anchor === newestFactory || ASKS.includes(m.kind) || m.anchor === hash} />
           ))}
         </ol>
       )}
-    </Section>
+    </Card>
   );
 }

@@ -2,7 +2,7 @@
 
 The dashboard's design source. Decisions: `docs/design/09-brand-and-tokens.md`.
 
-- `tokens.json` is the one token source (colours, pills, type with line heights, spacing, radius), all colours as hex.
+- `tokens.json` is the one token source (colours, pills, type with line heights, the type roles, spacing, radius, shadows `sm` and `lg` per theme), all colours as hex.
 - `web/src/tokens.css` is generated from it: `npm run build:tokens`. Never edit it.
 - `foundations.md` states the colour, type, spacing and radius scales with the values `tokens.json` gives them.
 - `components.md` has a section for every shared component under `web/src/components/ui`: purpose, variants, sizes and states.
@@ -10,9 +10,12 @@ The dashboard's design source. Decisions: `docs/design/09-brand-and-tokens.md`.
 - `writing.md` states the rules for the words on a page and for `t()`.
 - `dx.md` lists the build steps, each check with its test and npm script, and the PR checklist for UI changes.
 - `icon.svg` is the master mark of Gongbang.
-- `tests/design-system.test.ts` checks the generated file matches, that text pairs meet WCAG AA (4.5:1) in both themes, and that no raw form element appears in `web/src/` outside `components/ui/`.
+- Every page is a `PageHeader` (page title `text-xl` semibold) over `Card` blocks (section title `text-base` semibold), with `Badge` for states and `EmptyState` for empty lists (`components.md`).
+- `tests/design-system.test.ts` checks the generated file matches, that every text colour and every Badge tone meets WCAG AA (4.5:1) in both themes, and that no raw form element appears in `web/src/` outside `components/ui/`.
 
 ## Changelog
+
+- 2026-11-19: the type roles (page title `xl` semibold, section title `base` semibold, body `sm`, meta `xs`) and `shadow-sm` and `shadow-lg` in `tokens.json`; `index.css` maps every type step to `text-<step>`. New `Card` and `CardSection` replace `Section`; `Badge` is the one pill badge (the square `Badge` and `StatusBadge` merged); `EmptyState` gains an icon, takes its text as `description`, and replaces `Empty`; `PageHeader`'s title is `text-xl` semibold. The contrast test also checks pill text on cards and the page, and every Badge tone.
 
 - 2026-11-12: `patterns.md`, `writing.md` and `dx.md`: the guides for pages, words and building a page.
 - 2026-11-12: `foundations.md` and `components.md`, and the missing components (OverflowMenu, Notice, EmptyState, Kbd, Tooltip, StatusBadge, PageHeader, DataTable); Select, Input, Textarea, Field, ButtonRow and Radio are the control set's.

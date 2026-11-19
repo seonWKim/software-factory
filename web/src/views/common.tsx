@@ -2,13 +2,13 @@ import { useEffect, useState } from "react";
 import { API, type ItemRow, type MergeCheckView, type Overview, type QueueRow, type RunRow, type Session, type Why, mergeCheckLabel, showsMerge, useApi } from "../api.js";
 import { IdDetails } from "../components/ui/copy.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
-import { Badge } from "../components/ui/parts.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, isHttpUrl, isWorkerId, shortSource, until, whyText, workerName } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
+import { Badge } from "../components/ui/badge.js";
 
 /** Date.now(), ticking each second, for "Ns ago" texts. */
 export function useNow(): number {

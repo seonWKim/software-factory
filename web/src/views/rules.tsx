@@ -1,3 +1,4 @@
+import { ScrollText } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import {
@@ -14,13 +15,15 @@ import { Input } from "../components/ui/input.js";
 import { Markdown } from "../components/ui/markdown.js";
 import { Tooltip } from "../components/ui/menu.js";
 import { Radio } from "../components/ui/radio.js";
-import { Badge, ErrorNote, Loading, Section } from "../components/ui/parts.js";
-import { EmptyState, Notice, PageHeader, StatusBadge } from "../components/ui/notice.js";
+import { ErrorNote, Loading } from "../components/ui/parts.js";
+import { EmptyState, Notice, PageHeader } from "../components/ui/notice.js";
 import { Textarea } from "../components/ui/textarea.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { ApprovalsSection } from "./standing.js";
 import { Disclosure } from "../components/ui/disclosure.js";
+import { Card } from "../components/ui/card.js";
+import { Badge } from "../components/ui/badge.js";
 
 // The Rules page (design 09-dashboard-app.md and 07-self-improvement.md, issue #571), under one PageHeader that says what
 // the page is for and how many entries wait, at most max-w-3xl wide, with a "How this works" disclosure. Only entries
@@ -342,10 +345,10 @@ function RuleCard({ entry, applied, token }: { entry: RuleRow; applied: AppliedR
         </p>
         {entry.judged !== null ? (
           <span data-judged>
-            <StatusBadge level="ready_to_merge" size="sm">{t("rules.judged", { decision: entry.judged })}</StatusBadge>
+            <Badge level="ready_to_merge">{t("rules.judged", { decision: entry.judged })}</Badge>
           </span>
         ) : (
-          <StatusBadge level={STATE_LEVEL[entry.state]} size="sm">{STATE_LABEL[entry.state] ? t(STATE_LABEL[entry.state]!) : entry.state}</StatusBadge>
+          <Badge level={STATE_LEVEL[entry.state]}>{STATE_LABEL[entry.state] ? t(STATE_LABEL[entry.state]!) : entry.state}</Badge>
         )}
       </div>
       {!isClass(entry.id) && (
@@ -456,9 +459,8 @@ function LedgerOff({ view }: { view: RulesView }) {
             </Button>
           )
         }
-      >
-        {canTurnOn ? t("rules.turnOnHint") : undefined}
-      </EmptyState>
+        description={canTurnOn ? t("rules.turnOnHint") : undefined}
+      />
       {view.home !== null && <HomePicker home={view.home} />}
       {view.judge !== null && <Notice tone="warn">{view.judge}</Notice>}
       {error !== null && <Notice tone="bad">{error}</Notice>}
@@ -565,7 +567,7 @@ function Applied({ applied, token, collapsed }: { applied: NonNullable<RulesView
   const q = query.trim().toLowerCase();
   const shown = rules.filter((r) => matches(r, q));
   return (
-    <Section title={t("rules.groupApplied")} count={rules.length} action={suggest}>
+    <Card title={t("rules.groupApplied")} count={rules.length} action={suggest}>
       <Disclosure defaultOpen={!collapsed} summary={t("rules.appliedShow")}>
         <div className="mt-2 space-y-2">
           <p data-group-line className={muted}>
@@ -588,7 +590,7 @@ function Applied({ applied, token, collapsed }: { applied: NonNullable<RulesView
           )}
         </div>
       </Disclosure>
-    </Section>
+    </Card>
   );
 }
 
@@ -596,7 +598,7 @@ function Applied({ applied, token, collapsed }: { applied: NonNullable<RulesView
 function Retired({ retired }: { retired: RetiredRule[] }) {
   if (retired.length === 0) return null;
   return (
-    <Section title={t("rules.groupRetired")} count={retired.length}>
+    <Card title={t("rules.groupRetired")} count={retired.length}>
       <Disclosure data-retired summary={t("rules.retiredShow")}>
         <ul aria-label={t("rules.groupRetired")} className="mt-2 divide-y divide-border rounded-control border border-border">
           {retired.map((r) => (
@@ -607,7 +609,7 @@ function Retired({ retired }: { retired: RetiredRule[] }) {
           ))}
         </ul>
       </Disclosure>
-    </Section>
+    </Card>
   );
 }
 
@@ -643,13 +645,13 @@ export function RulesPage() {
       {v.judge !== null && <Notice tone="warn">{t("rules.readOnly")}{v.judge}</Notice>}
       {v.error !== null && <Notice tone="bad">{v.error}</Notice>}
       <ApprovalsSection />
-      {waiting.length === 0 && v.error === null && <EmptyState title={t("rules.emptyTitle")}>{t("rules.empty")}</EmptyState>}
+      {waiting.length === 0 && v.error === null && <EmptyState icon={ScrollText} title={t("rules.emptyTitle")} description={t("rules.empty")} />}
       <div>
         {GROUPS.map((g) => {
           const entries = waiting.filter((e) => isClass(e.id) === g.classes);
           return (
             entries.length > 0 && (
-              <Section key={g.title} title={t(g.title)} count={entries.length}>
+              <Card key={g.title} title={t(g.title)} count={entries.length}>
                 <p data-group-line className={`mb-2 ${muted}`}>
                   {t(g.line)}
                 </p>
@@ -658,7 +660,7 @@ export function RulesPage() {
                     <RuleCard key={e.id} entry={e} applied={applied} token={token} />
                   ))}
                 </ul>
-              </Section>
+              </Card>
             )
           );
         })}
@@ -754,7 +756,7 @@ function Improve({ view }: { view: ImproveView }) {
   const r = view.report;
   return (
     <div id="improve" data-improve>
-      <Section title={t("rules.improveTitle")} count={r?.groups.length}>
+      <Card title={t("rules.improveTitle")} count={r?.groups.length}>
         <div className="space-y-2">
           {r === null ? (
             <p className={muted}>{t("rules.improveNone")}</p>
@@ -776,7 +778,7 @@ function Improve({ view }: { view: ImproveView }) {
           )}
           {view.run_now && view.csrf_token !== null && <RunNow token={view.csrf_token} />}
         </div>
-      </Section>
+      </Card>
     </div>
   );
 }

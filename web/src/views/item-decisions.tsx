@@ -4,11 +4,11 @@ import type { RefObject } from "react";
 import { Dialog } from "../components/ui/dialog.js";
 import { Input } from "../components/ui/input.js";
 import { Markdown } from "../components/ui/markdown.js";
-import { Section } from "../components/ui/parts.js";
 import { Radio } from "../components/ui/radio.js";
 import { Textarea } from "../components/ui/textarea.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
+import { Card } from "../components/ui/card.js";
 
 // The item page's spec panel (design §9, issue #526): the waiting spec's In short above Commands, and its decisions
 // as questions to answer before `approve`. A decision with options is a radio group with the default selected and
@@ -73,11 +73,11 @@ const PHASES: Record<ApprovePhase, { what: MessageKey; next: MessageKey }> = {
 export function InShort({ spec }: { spec: WaitingSpec | null | undefined }) {
   if (!spec?.in_short) return null;
   return (
-    <Section title={t("decisions.inShort")}>
+    <Card title={t("decisions.inShort")}>
       <div data-in-short>
         <Markdown text={spec.in_short} />
       </div>
-    </Section>
+    </Card>
   );
 }
 

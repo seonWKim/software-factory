@@ -3,8 +3,7 @@ import { API, type ItemRow, type Items, type Overview, type SystemAction, useApi
 import { Button } from "../components/ui/button.js";
 import { Dialog } from "../components/ui/dialog.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
-import { ErrorNote, Section } from "../components/ui/parts.js";
-import { StatusBadge } from "../components/ui/notice.js";
+import { ErrorNote } from "../components/ui/parts.js";
 import type { MessageKey } from "../i18n/en.js";
 import { LEVEL_LABELS, shortSource, whyText } from "../lib/format.js";
 import { t } from "../i18n/index.js";
@@ -14,6 +13,8 @@ import { type NeedGroup, MergeCheckNote, allowEntries, needGroup, needsYou } fro
 import { ItemCommands, NeedActions, SendErrors, useCommandSend } from "./item-commands.js";
 import { FloorStatus } from "./pages.js";
 import { CheckRow, NEED_ROW } from "./system-banner.js";
+import { Card } from "../components/ui/card.js";
+import { Badge } from "../components/ui/badge.js";
 
 /** The five states a built task shows on its row, from its work item's level (src/ui/priority.ts); a closed item is "merged" only when it closed as completed. */
 const STATE_OF: Record<string, MessageKey> = {
@@ -55,7 +56,7 @@ export function WorkState({ id, title, open: taskOpen }: { id: string; title: st
   if (taskOpen && needsYou([it]).length > 0) {
     return (
       <>
-        <StatusBadge level={it.item_phase} size="sm">{t(key)}</StatusBadge>
+        <Badge level={it.item_phase}>{t(key)}</Badge>
         <RowActions it={it} cmd={cmd} />
       </>
     );
@@ -63,7 +64,7 @@ export function WorkState({ id, title, open: taskOpen }: { id: string; title: st
   return (
     <>
       <Button size="sm" aria-label={t("tasks.stateOpen", { title })} onClick={() => setOpen(true)}>
-        <StatusBadge level={it.item_phase} size="sm">{t(key)}</StatusBadge>
+        <Badge level={it.item_phase}>{t(key)}</Badge>
       </Button>
       {open && (
         <Dialog title={it.title ?? title} confirmLabel={t("tasks.stateClose")} onConfirm={() => setOpen(false)} onClose={() => setOpen(false)}>
@@ -98,7 +99,7 @@ function WorkRow({ it }: { it: ItemRow }) {
           {it.change_ref !== null && <span className="shrink-0 text-xs text-text-2 tabular-nums">#{it.change_ref}</span>}
         </span>
         <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <StatusBadge level={it.item_phase} size="sm">{LEVEL_LABELS[it.item_phase] ?? it.item_phase}</StatusBadge>
+          <Badge level={it.item_phase}>{LEVEL_LABELS[it.item_phase] ?? it.item_phase}</Badge>
           {it.merge_check && !checking && it.merge_check.state !== "mergeable" && <MergeCheckNote check={it.merge_check} />}
         </span>
         {reason !== "" && (
@@ -158,9 +159,9 @@ export function NeedsYou({ project, linked }: { project: string | null; linked: 
   return (
     <>
       {linked !== null && count > 0 && (
-        <Section title={t("page.needs")} count={count}>
+        <Card title={t("page.needs")} count={count}>
           <NeedsList items={needs} checks={checks} />
-        </Section>
+        </Card>
       )}
       {status}
     </>

@@ -2,22 +2,8 @@ import { Children, Fragment, type ReactNode, createContext, isValidElement, useC
 import { t } from "../../i18n/index.js";
 import { cn } from "../../lib/cn.js";
 
-// Small shared pieces for the pages: a section with a heading, a data table, a level badge and the loading
-// and error states. Plain Tailwind; no component library.
-
-/** A titled block. With no `title` the count shows alone and `label` names the region (`title` wins when both are given). */
-export function Section({ title, label, count, children, action }: { title?: string; label?: string; count?: number | undefined; children: ReactNode; action?: ReactNode }) {
-  return (
-    <section aria-label={title ?? label} className="mt-6 first:mt-0">
-      <div className="mb-2 flex items-baseline gap-2">
-        {title !== undefined && <h2 className="text-balance text-sm font-semibold">{title}</h2>}
-        {count !== undefined && <span className="text-sm text-text-3 tabular-nums">{count}</span>}
-        {action && <div className="ml-auto">{action}</div>}
-      </div>
-      {children}
-    </section>
-  );
-}
+// Small shared pieces for the pages: a data table and the loading and error states. Plain Tailwind; no component
+// library. Blocks are Card (card.tsx), badges Badge (badge.tsx), empty lists EmptyState (notice.tsx).
 
 /** Tailwind's `sm` breakpoint: below it every Table is a list of cards. */
 export const SM_PX = 640;
@@ -106,35 +92,6 @@ export function Td({ children, className, ...attrs }: { children?: ReactNode; cl
   return <td {...attrs} className={cn("px-3 py-2 align-top", className)}>{children}</td>;
 }
 
-/** The one status colour map: a level name to its token classes. Badge and StatusBadge both read it. */
-export const LEVEL_TONE: Record<string, string> = {
-  ready_to_merge: "bg-pill-ok-bg text-pill-ok-fg",
-  needs_approval: "bg-pill-warn-bg text-pill-warn-fg",
-  needs_you: "bg-pill-bad-bg text-pill-bad-fg",
-  needs_triage: "bg-pill-warn-bg text-pill-warn-fg",
-  stuck: "bg-pill-bad-bg text-pill-bad-fg",
-  running: "bg-pill-info-bg text-pill-info-fg",
-  blocked_by_task: "bg-surface-2 text-text-1",
-};
-
-/** The token classes for a level; a level with no tone is neutral. */
-export function toneOf(level: string | undefined): string {
-  return (level && LEVEL_TONE[level]) ?? "bg-surface-2 text-text-1";
-}
-
-export function Badge({ level, children }: { level?: string | undefined; children: ReactNode }) {
-  return (
-    <span
-      className={cn(
-        "inline-block rounded-control px-1.5 py-0.5 text-xs font-medium whitespace-nowrap",
-        toneOf(level),
-      )}
-    >
-      {children}
-    </span>
-  );
-}
-
 /** A row-shaped placeholder while the first read is in flight. */
 export function Loading({ rows = 3 }: { rows?: number }) {
   return (
@@ -152,8 +109,4 @@ export function ErrorNote({ error }: { error: unknown }) {
       {t("common.couldNotLoad", { message: error instanceof Error ? error.message : String(error) })}
     </p>
   );
-}
-
-export function Empty({ children }: { children: ReactNode }) {
-  return <p className="rounded-control border border-dashed border-border-strong px-3 py-4 text-sm text-pretty text-text-2">{children}</p>;
 }
