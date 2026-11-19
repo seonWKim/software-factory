@@ -19,7 +19,9 @@ import { dayLabel } from "./tasks/groups.js";
 // Month: a Monday-first grid, up to 3 events a day and then "+N more". Previous and next move by one week or month;
 // Today returns to the period holding today in the browser's time zone. A day the last syncs did not cover shows
 // "Not synced", never an empty day. A source whose last sync failed is named with its last sync time, and its stored
-// events stay listed. With no calendar connected the empty state links to the Integrations tab of Settings.
+// events stay listed. A connected calendar that has not synced yet is named with "Not synced yet". The read lists the
+// calendars the live `calendar` setting connects, as Settings → Integrations does; only with none connected the empty
+// state links to the Integrations tab of Settings.
 
 const VIEWS = [
   { id: "week", label: t("calendarPage.week") },
@@ -162,14 +164,30 @@ function StaleCalendars({ calendar }: { calendar: readonly CalendarSync[] }) {
   );
 }
 
+/** The connected sources with no sync yet (none failed either): their days are unknown until the first sync. */
+function UnsyncedCalendars({ unsynced }: { unsynced: readonly CalendarSync[] }) {
+  if (unsynced.length === 0) return null;
+  return (
+    <Notice tone="info" title={t("calendar.neverSynced")}>
+      {unsynced.map((c) => (
+        <p key={c.source} data-calendar-unsynced={c.source} className="text-pretty break-words">
+          {c.source}
+        </p>
+      ))}
+    </Notice>
+  );
+}
+
 function Events({ v, view, label }: { v: CalendarEvents; view: View; label: string }) {
   if (v.calendar.length === 0) {
     return <EmptyState icon={CalendarDays} title={t("calendarPage.emptyNone")} action={<Link href={CONNECT_PATH} className={cn(LINK_CLASS, "text-sm")}>{t("calendarPage.connect")}</Link>} />;
   }
+  const unsynced = v.calendar.filter((c) => c.synced_at === null && !c.failed);
   return (
     <>
       <StaleCalendars calendar={v.calendar} />
-      {v.days.every((d) => !d.synced) && <Notice tone="info">{t("calendarPage.periodNotSynced")}</Notice>}
+      <UnsyncedCalendars unsynced={unsynced} />
+      {unsynced.length === 0 && v.days.every((d) => !d.synced) && <Notice tone="info">{t("calendarPage.periodNotSynced")}</Notice>}
       {view === "week" ? <WeekDays label={label} days={v.days} /> : <MonthGrid label={label} days={v.days} />}
     </>
   );

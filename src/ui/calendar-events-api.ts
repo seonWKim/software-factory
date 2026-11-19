@@ -16,11 +16,11 @@
 import { type SourceSync, readCalendar } from "../calendar/index.js";
 import { syncWindow } from "../calendar/calendar-sync.js";
 import { validDate } from "../core/quick-add.js";
+import { type SettingsBase, resolveSettings } from "../core/settings.js";
 import { calendarDays, dayBounds } from "../core/tasks.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
 import type { ApiResult } from "./api.js";
 import type { UiDeps } from "./deps.js";
-import { effectiveGlobal } from "./settings-api.js";
 import { Withholder } from "./withhold.js";
 
 export const CALENDAR_EVENTS_PATH = "/api/v1/calendar/events";
@@ -59,11 +59,22 @@ function synced(sources: readonly SourceSync[], date: string): boolean {
   });
 }
 
+/** Without the Settings wiring no file values: overrides and defaults decide, as settings-api.ts effectiveGlobal. */
+const NO_FILE: SettingsBase = { file: {}, layers: { defaults: {}, projects: {} } };
+
+/**
+ * The connected calendars: the live `calendar` setting, resolved as Settings' calendar flow resolves it. Read here
+ * through core, not settings-api.ts, so this read loads without the Settings routes' modules.
+ */
+async function connectedCalendars(d: UiDeps): Promise<ReadonlySet<string>> {
+  return new Set(resolveSettings(d.settings?.base ?? NO_FILE, await d.store.listSettingOverrides()).values.calendar);
+}
+
 /** GET /api/v1/calendar/events: 400 with the reason for a bad range; else 200 with each day's events and synced flag. */
 export async function readCalendarEvents(d: UiDeps, from: string | null, to: string | null): Promise<ApiResult> {
   const error = rangeError(from, to);
   if (error !== null) return { status: 400, value: { error } };
-  const connected = new Set((await effectiveGlobal(d, "calendar")).value);
+  const connected = await connectedCalendars(d);
   const stored = await readCalendar(storeSql(d.store));
   const rows = new Map(stored.sources.map((s) => [s.source, s]));
   const sources = [...connected].sort().map((source) => rows.get(source) ?? { source, synced_at: null, failed: false });

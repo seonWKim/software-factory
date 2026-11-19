@@ -5,8 +5,17 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
+import { syncCalendars } from "../src/calendar/index.js";
+import { storeSql } from "../src/impl/store/sql/store-sql.js";
+import { readCalendarEvents } from "../src/ui/calendar-events-api.js";
+import type { UiDeps } from "../src/ui/deps.js";
+import type { HealthMonitor } from "../src/ui/health.js";
 import type { CalendarEvents, CalendarSync, EventRow } from "../web/src/api.js";
 import { PAGES, routeFor } from "../web/src/pages.js";
+import { FakeCalendarSource, calendarEvent } from "./calendar/fakes.js";
+import { newStore } from "./helpers/store.js";
 
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
 // loaded by a specifier the node check skips (as tests/ui-tasks-page.test.tsx does).
@@ -194,5 +203,58 @@ describe("Calendar page", () => {
     show();
     const link = await screen.findByRole("link", { name: "Connect a calendar in Settings" }, SLOW);
     expect(link.getAttribute("href")).toBe("/app/settings?tab=integrations#calendar");
+  });
+});
+
+// The same page over the real read of GET /api/v1/calendar/events (src/ui/calendar-events-api.ts readCalendarEvents;
+// server.ts and health.ts are not loaded here: jsdom cannot load the Settings modules they import) on a test store: the live
+// `calendar` setting says which calendars are connected, as on Settings → Integrations, and a sync row exists only
+// once a sync ran. The 2026-11-19 report: Settings said google-calendar was connected, the Calendar page said "No
+// calendar is connected", because the page's list came from the sync rows.
+describe("Calendar page over the server read", () => {
+  const at = (day: number, h: number) => new Date(2026, 10, day, h).toISOString();
+
+  /** A store with `connected` as the live `calendar` setting; `sync` runs one calendar sync of google-calendar first. */
+  async function serve(connected: string[], sync: boolean) {
+    const clock = new FakeClock(new Date(2026, 10, 12, 9, 0));
+    const { store } = await newStore(clock);
+    await store.setSettingOverride({ key: "calendar", project: "", value: JSON.stringify(connected), actor: "owner@example.com" });
+    if (sync) {
+      const source = new FakeCalendarSource([calendarEvent("review", { starts_at: at(13, 14), ends_at: at(13, 15) })]);
+      await syncCalendars(storeSql(store), [{ name: "google-calendar", source }], clock.now().getTime());
+    }
+    const d: UiDeps = { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: 300_000, health: {} as HealthMonitor };
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const q = new URL(url, "http://127.0.0.1").searchParams;
+      const r = await readCalendarEvents(d, q.get("from"), q.get("to"));
+      return new Response(JSON.stringify(r.value), { status: r.status, headers: { "content-type": "application/json" } });
+    }));
+  }
+
+  it("a connected, synced calendar shows its stored events", async () => {
+    await serve(["google-calendar"], true);
+    show();
+    await screen.findByText("event review", undefined, SLOW);
+    expect(entries()).toEqual(["google-calendar:review"]);
+    expect(screen.queryByText("No calendar is connected.")).toBeNull();
+    expect(screen.queryByText("Not synced yet")).toBeNull();
+  });
+
+  it("a connected calendar that never synced says \"Not synced yet\", not \"No calendar is connected\"", async () => {
+    await serve(["google-calendar"], false);
+    show();
+    const notice = (await screen.findByText("Not synced yet", undefined, SLOW)).closest("[role=status]");
+    expect(notice?.querySelector('[data-calendar-unsynced="google-calendar"]')?.textContent).toBe("google-calendar");
+    expect(screen.queryByText("No calendar is connected.")).toBeNull();
+    expect(screen.queryByRole("link", { name: "Connect a calendar in Settings" })).toBeNull();
+  });
+
+  it("with no calendar connected, even with old sync rows and events, the empty state links to Settings → Integrations", async () => {
+    await serve([], true);
+    show();
+    const link = await screen.findByRole("link", { name: "Connect a calendar in Settings" }, SLOW);
+    expect(link.getAttribute("href")).toBe("/app/settings?tab=integrations#calendar");
+    expect(screen.getByText("No calendar is connected.")).toBeTruthy();
+    expect(entries()).toEqual([]);
   });
 });
