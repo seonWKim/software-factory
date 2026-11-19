@@ -148,8 +148,24 @@ export interface ReviewOutput {
   unverified?: string[];
   /** A UI change whose build, type-check or screenshots could not run: header "needs a human look", no auto merge. Left out when unset. */
   ui_unverified?: boolean;
+  /**
+   * Done-when lines the diff builds differently, each with its reason from the work item (design 04-agents). Left
+   * out when empty, so an older review parses to the same value; read it with `builtDifferentlyOf`.
+   */
+  built_differently?: BuiltDifferently[];
   summary: string;
   needs_human?: NeedsHuman;
+}
+
+/** A done-when line the change builds differently, and the reason the work item gives for it. */
+export interface BuiltDifferently {
+  line: string;
+  reason: string;
+}
+
+/** The review's done-when lines built differently; [] when it has none. */
+export function builtDifferentlyOf(r: Pick<ReviewOutput, "built_differently">): BuiltDifferently[] {
+  return r.built_differently ?? [];
 }
 
 /** The review's unverified checks; [] when it has none. */
@@ -318,6 +334,19 @@ export const REVIEW_SCHEMA = {
     },
     unverified: { ...strings, description: "Checks you could not run or confirm. Never makes the verdict bug." },
     ui_unverified: { type: "boolean", description: "True only when a change to UI paths could not have its build, type-check or screenshots run." },
+    built_differently: {
+      type: "array",
+      description: "Done-when lines the diff builds differently. Empty or absent when every line is built as written.",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["line", "reason"],
+        properties: {
+          line: { type: "string", description: "The done-when line." },
+          reason: { type: "string", description: "The reason, taken only from the work item (its decisions or owner notes). Empty when it gives none: that is a code finding and the verdict bug." },
+        },
+      },
+    },
     summary: { type: "string" },
     needs_human: NEEDS_HUMAN_SCHEMA,
   },
@@ -585,13 +614,24 @@ export function parseReview(v: unknown): Validation<ReviewOutput> {
   const unverified = v.unverified ?? [];
   if (!isStrs(unverified)) return { ok: false, error: "unverified" };
   if (v.ui_unverified !== undefined && typeof v.ui_unverified !== "boolean") return { ok: false, error: "ui_unverified" };
+  const differently = v.built_differently ?? [];
+  if (!Array.isArray(differently) || !differently.every((d) => isObj(d) && isStr(d.line) && isStr(d.reason))) return { ok: false, error: "built_differently" };
+  const built: BuiltDifferently[] = [];
+  for (const d of differently as BuiltDifferently[]) {
+    const line = d.line.trim();
+    const reason = d.reason.trim();
+    // A line built differently with no reason in the work item is a defect (design 04-agents): a code finding.
+    if (line && reason) built.push({ line, reason });
+    else if (line) parsed.push({ kind: "code", text: `built differently from the spec with no reason in the work item: ${line}` });
+  }
   const ask = parseNeedsHuman(v.needs_human);
   if (!ask.ok) return ask;
   return {
     ok: true,
     value: {
-      verdict, tier, findings: parsed, summary, ...(unverified.length > 0 ? { unverified } : {}),
-      ...(v.ui_unverified === true ? { ui_unverified: true } : {}), ...(ask.value ? { needs_human: ask.value } : {}),
+      verdict: parsed.length > findings.length ? "bug" : verdict, tier, findings: parsed, summary, ...(unverified.length > 0 ? { unverified } : {}),
+      ...(v.ui_unverified === true ? { ui_unverified: true } : {}), ...(built.length > 0 ? { built_differently: built } : {}),
+      ...(ask.value ? { needs_human: ask.value } : {}),
     },
   };
 }
