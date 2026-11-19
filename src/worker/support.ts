@@ -192,8 +192,9 @@ export interface RunScratch {
 }
 
 /**
- * The run kinds whose first agent step the toolchain's warm_command runs before (design 05-sandbox.md, issue
- * #334): the ones that build and run checks. Triage only reads, so it warms nothing.
+ * The run kinds the toolchain's warm_command runs for, once per run (design 05-sandbox.md, issue #334): the ones
+ * that build and run checks. Implement and review warm before their first agent step; resolve warms the branch tip
+ * before its merge, since the merged tree may not build until its conflicts are fixed. Triage only reads.
  */
 export const WARM_KINDS: readonly RunKind[] = ["implement", "review", "resolve"];
 

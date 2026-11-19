@@ -709,15 +709,18 @@ export class Worker {
   }
 
   /**
-   * The toolchain's warm step (design 05-sandbox.md, issue #334): `warm_command` in the run folder before the
-   * run's first agent step, as the worker (its tool env: the owner's HOME and caches, and the network), with the
+   * The toolchain's warm step (design 05-sandbox.md, issue #334), once per run of a warm kind: `warm_command` in
+   * the run folder before the run's first agent step (a resolve run calls it itself, on the branch tip before its
+   * merge), as the worker (its tool env: the owner's HOME and caches, and the network), with the
    * slot env and no credential or test database. It fills the caches the agent then reads offline. A failure ends the run before any agent starts, naming the command.
    */
-  async warm(run: Run, handle: SandboxHandle, signal: AbortSignal, cmd: readonly string[]): Promise<void> {
+  async warmOnce(run: Run, handle: SandboxHandle, signal: AbortSignal): Promise<void> {
+    const s = this.scratch.get(run);
+    if (!this.cfg.toolchain || !s || s.warmed || !WARM_KINDS.includes(run.kind)) return;
     const round = await runChecks({
       sandbox: this.d.sandbox,
       handle,
-      commands: [cmd],
+      commands: [this.cfg.toolchain.warm_command],
       env: { ...this.d.toolEnv, ...this.slotEnv() },
       timeout_ms: this.cfg.run_timeout_ms,
       signal,
@@ -728,6 +731,7 @@ export class Worker {
     if (f) {
       throw new RunFailure(WARM_FAILED, `toolchain warm_command \`${commandText(f.command)}\` ${f.how}; no agent started`, true, f.tail ? { output_tail: f.tail } : {});
     }
+    s.warmed = true;
   }
 
   async agent(
@@ -759,10 +763,7 @@ export class Worker {
     if (tool_grants.length > 0 && !this.d.runner.exposes_tools) {
       throw new RunFailure(TOOLS_NOT_EXPOSED, toolsNotExposedMessage(tool_grants));
     }
-    if (this.cfg.toolchain && s && !s.warmed && WARM_KINDS.includes(run.kind)) {
-      await this.warm(run, handle, signal, this.cfg.toolchain.warm_command);
-      s.warmed = true;
-    }
+    await this.warmOnce(run, handle, signal);
     if (session) s?.sessions.add(session.id);
     if (s) s.step_session = session?.id ?? null;
     // The system prompt and tools are the role's (src/worker/roles/<role>.role.ts), never the run kind's own choice.
