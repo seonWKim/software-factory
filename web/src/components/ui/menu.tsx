@@ -15,6 +15,8 @@ export interface MenuItem {
   disabled?: boolean;
   /** Set on a list that picks one of its items: the current one is true, the others false (aria-checked, a check mark). */
   checked?: boolean;
+  /** The item's `data-action`: the command it sends (a decision's actions carry one each). */
+  action?: string;
 }
 
 /**
@@ -49,6 +51,7 @@ export function OverflowMenu({ label, items, icon }: { label: string; items: rea
                 type="button"
                 role="menuitem"
                 aria-checked={item.checked}
+                {...(item.action ? { "data-action": item.action } : {})}
                 disabled={item.disabled}
                 onClick={() => {
                   setOpen(false);

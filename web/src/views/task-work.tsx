@@ -11,7 +11,8 @@ import { t } from "../i18n/index.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
 import { type NeedGroup, MergeCheckNote, allowEntries, needGroup, needsYou } from "./common.js";
-import { ItemCommands, NeedActions, SendErrors, useCommandSend } from "./item-commands.js";
+import { ItemDecision } from "./decision-card.js";
+import { NeedActions, SendErrors, useCommandSend } from "./item-commands.js";
 import { FloorStatus } from "./pages.js";
 import { CheckRow, NEED_ROW } from "./system-banner.js";
 
@@ -68,7 +69,7 @@ export function WorkState({ id, title, open: taskOpen }: { id: string; title: st
       {open && (
         <Dialog title={it.title ?? title} confirmLabel={t("tasks.stateClose")} onConfirm={() => setOpen(false)} onClose={() => setOpen(false)}>
           <Link href={itemPath(id)} className={LINK_CLASS}>{t("tasks.stateFull")}</Link>
-          <ItemCommands id={id} commands={it.commands ?? []} replies={[]} />
+          <ItemDecision id={id} commands={it.commands ?? []} replies={[]} />
         </Dialog>
       )}
     </>

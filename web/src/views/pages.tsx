@@ -25,7 +25,7 @@ import { LEVEL_LABELS, ago, isHttpUrl, shortRev, shortSource, tokens } from "../
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
 import { InteractiveBadge, ItemsTable, MergeCheckNote, byId, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
-import { ItemCommands } from "./item-commands.js";
+import { ItemDecision } from "./decision-card.js";
 import { type SupervisorActionName, SupervisorActions } from "./system-banner.js";
 import { Thread } from "./thread.js";
 import { transcriptPath } from "./transcript.js";
@@ -375,7 +375,11 @@ export function ItemsPage() {
   );
 }
 
-/** One work item: its state, command buttons, thread, runs (with errors) and timeline. */
+/**
+ * One work item (design 09-dashboard-item): its title, then its decision (the DecisionCard while the owner is next,
+ * else its reason and "…" menu), its facts, the current run with its live state, the thread (collapsed after its
+ * first message), the runs (with errors) and the timeline.
+ */
 export function ItemPage({ id }: { id: string }) {
   const now = useNow();
   const q = useApi<ItemDetail>(API.item(id));
@@ -405,7 +409,7 @@ export function ItemPage({ id }: { id: string }) {
           {t("item.phase", { phase: item.phase ?? "?" })} <Link href={itemPath(item.parent_id)} className={LINK_CLASS}>{t("item.splitParent")}</Link>
         </p>
       )}
-      <ItemCommands
+      <ItemDecision
         id={item.id}
         commands={q.data.commands ?? []}
         replies={q.data.replies ?? []}
@@ -441,6 +445,7 @@ export function ItemPage({ id }: { id: string }) {
           <dd className="min-w-0"><CopyText value={item.source.id} what="source ID" /></dd>
         </dl>
       </Disclosure>
+      <CurrentRun runs={runs} itemId={item.id} hasTranscript={(run) => (transcripts[run]?.length ?? 0) > 0} now={now} />
       <Thread entries={q.data.thread ?? []} now={now} />
       <Phases phases={item.phases ?? []} />
       {item.merge_check && (
@@ -505,6 +510,24 @@ export function ItemPage({ id }: { id: string }) {
         </ol>
       </Section>
     </>
+  );
+}
+
+/** The item's queued or running run, newest first, with its live state (the item query polls); nothing when none is. */
+function CurrentRun({ runs, itemId, hasTranscript, now }: { runs: ItemDetail["runs"]; itemId: string; hasTranscript: (run: string) => boolean; now: number }) {
+  const run = [...runs].reverse().find((r) => r.status === "running" || r.status === "queued");
+  if (!run) return null;
+  return (
+    <Section title={t("item.currentRun")}>
+      <p data-current-run={run.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+        <span className="font-medium">{runKindLabel(run.kind)}</span>
+        <Badge level={run.status === "running" ? "running" : undefined}>{run.status}</Badge>
+        <span className="tabular-nums">{t("item.attempt", { attempt: run.attempt })}</span>
+        <WorkerName id={run.attempts?.at(-1)?.worker_id} />
+        {run.started_at && <span className="text-text-2 tabular-nums">{t("item.startedAgo", { time: ago(run.started_at, now) })}</span>}
+        {hasTranscript(run.id) && <Link href={transcriptPath(itemId, run.id)} className={LINK_CLASS}>{t("item.transcript")}</Link>}
+      </p>
+    </Section>
   );
 }
 
