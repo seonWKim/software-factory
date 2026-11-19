@@ -1,4 +1,5 @@
-// The local merge, base pushes, auto mode's merges, its stop conditions and red main.
+// The local merge, base pushes, auto mode's merges, its stop conditions and red main; after a merge, the restart
+// command (Restart app, `factory restart`) and the merge reply's run hint.
 // Moved out of the legacy controller (RFC 0015 M5); the merge and the base push are outbound deliveries (M8), the
 // conflict probe and the red-main check are still inline (unit-purity ratchet).
 
@@ -6,10 +7,12 @@ import { checkCommands } from "../../../core/checks.js";
 import { ALERT_DEDUPE_MS } from "../../../core/alarms.js";
 import { modeOf } from "../../../core/settings.js";
 import { AUTO_ACTOR, autoMergeRefusal, branchFor } from "../../../core/policy.js";
-import { LOCAL_SOURCE, MERGE_COMMAND, canMergeLocal, canReadLocal, canSyncBase } from "../../../core/local-merge.js";
+import {
+  LOCAL_SOURCE, MERGE_COMMAND, RESTART_DONE, RESTART_REQUESTED, RUN_HINT_ENTRIES, canMergeLocal, canReadLocal, canSyncBase, restartRefusal, restartReply, restartRunKey, runHint,
+} from "../../../core/local-merge.js";
 import { gatePathTouched } from "../../../core/improver.js";
 import { lastPrNotes } from "../../../core/pr-body.js";
-import { type Actor, type SourceRef, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
+import { type Actor, type Run, type SourceRef, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { ExternalIdentity } from "../../../interfaces/auth-provider.js";
 import { LOCAL_GIT_HOST, basePushOutcome, basePushTarget, gitTarget, type ActionRow } from "../../../outbound/index.js";
 import { AUTO, SYSTEM, awaitingMerge } from "../support.js";
@@ -176,10 +179,43 @@ export class LocalMergeUnit {
     const body = [
       `Merged \`${branch}\` into the local \`${repo.base_branch}\`${how} as \`${r.sha.slice(0, 12)}\` (${push ? "its push to origin is queued" : "no push"}). The item is closed.`,
       ...(stale ? [`\`${repo.base_branch}\` is checked out with uncommitted changes in ${stale}: that checkout was not updated (its HEAD is detached where it was); switch it back to \`${repo.base_branch}\` when ready.`] : []),
+      // How to run the result (design 04-gate-commands, restart): the Restart app button, or where the repo says how.
+      repo.restart_command !== undefined
+        ? `To run the merged code, press Restart app on the item's page or run \`factory restart ${item.id}\`.`
+        : runHint((await this.c.k.d.repo_entries?.(RUN_HINT_ENTRIES)) ?? []),
     ];
     await this.c.unit("outbox").post(item, item.source, body.join("\n\n"), `<!-- factory:local-merged:${key} -->`);
     await this.c.k.guard("dependents", () => this.c.unit("coordination").releaseDependents(item.source.id));
     return "landed";
+  }
+
+  /**
+   * `restart` (design 04-gate-commands, restart): the app request of the item page's Restart app button and of
+   * `factory restart <id>`, by the factory user `user_id`. The owner check (approve_spec, as every item command), then
+   * restartRefusal: `repo.restart_command` set and the item merged into the base. Then one restart run is queued on
+   * the item, keyed on the request, with `tag` (the request's seq) on its state change and no item field changed;
+   * `restarted` posts its result. Safe to run twice: the run's key. Returns the refusal, or null.
+   */
+  async restart(item: WorkItem, user_id: UserId, key: string, tag: StateChangeDetail): Promise<string | null> {
+    const principal = await this.c.unit("auth").allowed({ user_id }, "approve_spec", item.id);
+    if ("refuse" in principal) return principal.refuse;
+    const actor: Actor = { kind: "user", id: principal.user_id };
+    return this.c.unit("transitions").decide(item.id, (it) => {
+      const refuse = restartRefusal(it, this.c.k.cfg.repo.restart_command);
+      if (refuse !== null) return { refuse };
+      return { patch: {}, actor, reason: RESTART_REQUESTED, detail: tag, enqueue: { kind: "restart", idempotency_key: restartRunKey(key) } };
+    });
+  }
+
+  /**
+   * A finished restart run: its result (exit status and output tail, or why it did not run) posted once in the item's
+   * thread, keyed on the run, then the run acknowledged with no item field changed: a failure is the owner's to read,
+   * never a retry or a block.
+   */
+  async restarted(run: Run): Promise<void> {
+    const item = await this.c.k.reader.getWorkItem(run.work_item_id);
+    if (item) await this.c.unit("outbox").post(item, item.source, restartReply(run), `<!-- factory:restart:${run.id} -->`);
+    await this.c.unit("transitions").decide(run.work_item_id, () => ({ patch: {}, actor: SYSTEM, reason: RESTART_DONE, ack_run: run.id }));
   }
 
   /**

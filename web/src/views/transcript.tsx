@@ -9,10 +9,10 @@ import { LINK_CLASS } from "../components/ui/link-style.js";
 import { cn } from "../lib/cn.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { ago } from "../lib/format.js";
+import { duration, errorLabel, runStatusLabel } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
-import { runKindLabel } from "./common.js";
+import { When, runKindLabel } from "./common.js";
 import { Card } from "../components/ui/card.js";
 import { Badge } from "../components/ui/badge.js";
 
@@ -142,13 +142,14 @@ function Outcome({ run, now }: { run: TranscriptPage["run"]; now: number }) {
       )}
     >
       <p className="font-medium">
-        {failed ? t("transcript.failed", { code: o.error_code ?? t("transcript.unknown") }) : o ? t("transcript.succeeded") : t("transcript.noOutcome", { status: run.status })}
+        {failed ? t("transcript.failed", { code: o.error_code ? errorLabel(o.error_code) : t("transcript.unknown") }) : o ? t("transcript.succeeded") : t("transcript.noOutcome", { status: runStatusLabel(run.status) })}
       </p>
       {failed && o.detail && <p>{o.detail}</p>}
       {!failed && o?.summary && <p>{o.summary}</p>}
       <p className="mt-1 text-xs opacity-80 tabular-nums">
-        {t("transcript.runLine", { kind: runKindLabel(run.kind), attempt: run.attempt, worker: run.worker_id ?? "–", started: run.started_at ? `${ago(run.started_at, now)}${t("topbar.ago")}` : "–" })}
-        {run.started_at && run.finished_at ? t("transcript.took", { time: ago(run.started_at, Date.parse(run.finished_at)) }) : ""}
+        {t("transcript.runLine", { kind: runKindLabel(run.kind), attempt: run.attempt, worker: run.worker_id ?? "–" })}
+        {run.started_at && <> · <When at={run.started_at} now={now} label="item.startedAgo" /></>}
+        {run.started_at && run.finished_at ? t("transcript.took", { time: duration(Date.parse(run.finished_at) - Date.parse(run.started_at)) }) : ""}
       </p>
     </div>
   );

@@ -3297,7 +3297,21 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       const it1 = await seed(store, 2, ["src/b/"]);
       const q = await store.transition({ id: it1.id, expected_version: it1.version, actor: system, reason: "x", patch: {}, enqueue: { kind: "implement", idempotency_key: "i2" } });
       if (!q.ok) throw new Error(q.reason);
-      expect(await start(store, q.item)).toMatchObject({ ok: false, reason: "implement_run", run_id: q.enqueued!.id });
+      // A queued implement-type run is taken over in the same transaction, with the takeover outcome (no attempt).
+      const t = await start(store, q.item);
+      if (!t.ok) throw new Error(t.reason);
+      expect(t.taken_over).toEqual([q.enqueued!.id]);
+      expect(t.state_change.detail).toMatchObject({ taken_over: q.enqueued!.id, run_id: t.run.id });
+      expect(await store.getRun(q.enqueued!.id)).toMatchObject({ status: "cancelled", outcome: { status: "failed", error_code: "interactive_takeover", infra: false } });
+      // A running implement-type run refuses, and the item's queued runs stay queued.
+      const it3 = await seed(store, 4, ["src/c/"]);
+      const w = await store.transition({ id: it3.id, expected_version: it3.version, actor: system, reason: "x", patch: { stage: "RUNNING" }, enqueue: { kind: "implement", idempotency_key: "i4" } });
+      if (!w.ok) throw new Error(w.reason);
+      expect((await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))?.id).toBe(w.enqueued!.id);
+      const u = await store.transition({ id: it3.id, expected_version: w.item.version, actor: system, reason: "x", patch: {}, enqueue: { kind: "update", idempotency_key: "u4" } });
+      if (!u.ok) throw new Error(u.reason);
+      expect(await start(store, u.item)).toMatchObject({ ok: false, reason: "implement_run", run_id: w.enqueued!.id });
+      expect((await store.getRun(u.enqueued!.id))!.status).toBe("queued");
       const it2 = await seed(store, 3, ["src/a/x.ts"]);
       const before = JSON.stringify([await store.listRuns(it2.id), await store.listStateChanges(it2.id)]);
       expect(await start(store, it2)).toMatchObject({ ok: false, reason: "overlap", work_item_id: it0.id, paths: ["src/a/x.ts"] });
