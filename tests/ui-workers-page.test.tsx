@@ -6,15 +6,17 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Failures, WorkersView } from "../web/src/api.js";
+import { LocalToolBroker } from "../src/impl/broker/local-tool-broker.js";
 
-// The Workers, Failures and Floor pages (issue #312): one row per worker process with a draining badge and
-// slot counts, the effective worker count once, failed runs grouped by code, and the Floor's failed count
+// The Workers, Failures and Floor pages (issue #312): one row per worker process with its running count and a
+// "Finishing up" badge while it drains, the effective worker count once, failed runs grouped by code, and the Floor's failed count
 // linking to the Failures view. Built with createElement and a loader the node check skips, as the Settings
 // page test does (tsconfig.test.json is checked without JSX).
 const mod = async (name: string) => (await import(/* @vite-ignore */ `../web/src/views/${name}.js`)) as Record<string, FunctionComponent>;
 const pages = await mod("pages");
 const WorkersPage = pages.RunnersPage!;
 const ActivityPage = pages.ActivityPage!;
+const PluginsPage = (await mod("plugins")).PluginsPage!;
 const FailuresSection = (await mod("failures")).FailuresSection!;
 
 const AT = new Date().toISOString();
@@ -32,6 +34,16 @@ const workers: WorkersView = {
 const overview = {
   as_of: AT, stages: {}, needs_you: 0, running: 0, queued: 0, last_24h: { succeeded: 1, failed: 7, tokens: 0 },
   factory: { state: "running", rev: "aaaaaaa1111", target_rev: null, child_pid: 7, since: AT, workers: 10, workers_source: "override", error: null, pending: [] },
+};
+// The Plugins page's read: a pack MCP server, a broker tool with its own description, and an imported server that did not start.
+const plugins = {
+  as_of: AT, csrf_token: "tok",
+  mcp: [{ name: "docs", description: "Searches the docs.", source: "pack", status: "approved" }],
+  skills: [],
+  tools: [
+    { name: "git.store_branch", description: new LocalToolBroker({} as never).allTools()[0]!.description, read_only: false, origin: "broker", roles: [], last_used: null },
+    { name: "mcp:chrome-devtools", description: "Couldn't start chrome-devtools", read_only: false, origin: "mcp", roles: [], last_used: null },
+  ],
 };
 const group = (code: string, n: number) => ({
   code, count: n, last_seen: AT, items: 1,
@@ -52,7 +64,7 @@ beforeEach(() => {
     fetched.push(url);
     const body: Record<string, unknown> = {
       "/api/v1/workers": workers, "/api/v1/overview": overview, "/api/v1/runs": { as_of: AT, runs: [] }, "/api/v1/queue": { as_of: AT, queue: [] },
-      "/api/v1/items": { as_of: AT, total: 0, items: [], facets: { allStates: 0, state: {} }, counts: { open: 0, running: 1 } }, "/api/v1/pauses": { pauses: [], csrf_token: null },
+      "/api/v1/items": { as_of: AT, total: 0, items: [], facets: { allStates: 0, state: {} }, counts: { open: 0, running: 1 } }, "/api/v1/pauses": { pauses: [], csrf_token: null }, "/api/v1/plugins": plugins,
       "/api/v1/failures?window=24h": failures("24h"), "/api/v1/failures?window=7d": failures("7d"), ...overrides,
     };
     return url in body
@@ -65,44 +77,118 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** snake_case tokens and the internal words of the plain-words list: pid, slots, override, draining, revision, HEAD, outbound, origin/main. */
+const INTERNAL_WORDS = /\b[a-z]+_[a-z_]+\b|\b(pid|slots?|override|draining|revision|HEAD|outbound)\b|origin\/main/i;
+
+/** The page's text without its Details disclosures and code elements, text nodes joined by a space. */
+function visibleText(root: HTMLElement, skip?: string): string {
+  const copy = root.cloneNode(true) as HTMLElement;
+  copy.querySelectorAll(["[data-raw], code, script, style", skip].filter(Boolean).join(", ")).forEach((n) => n.remove());
+  const words: string[] = [];
+  const walker = document.createTreeWalker(copy, NodeFilter.SHOW_TEXT);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) words.push(n.textContent ?? "");
+  return words.join(" ");
+}
+
 function show(page: FunctionComponent) {
   render(createElement(QueryClientProvider, { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) }, createElement(page)));
 }
 
 describe("Workers page", () => {
-  it("shows a row per process; the draining one has a badge and 0 slots", async () => {
+  it("shows a row per process; the draining one says it is finishing up, with its running count", async () => {
     show(WorkersPage);
     const rows = await screen.findAllByTestId("worker-process");
     expect(rows).toHaveLength(2);
-    expect(rows[0]!.textContent).not.toContain("draining");
-    expect(rows[1]!.textContent).toContain("draining");
-    expect(rows[1]!.querySelector("[data-slots]")!.textContent).toBe("2 busy, 0 idle, 0 slots, max 4");
+    expect(rows[0]!.textContent).not.toContain("Finishing up before it stops");
+    expect(rows[1]!.textContent).not.toContain("draining");
+    expect(rows[1]!.textContent).toContain("Finishing up before it stops");
+    expect(rows[1]!.querySelector("[data-line]")!.textContent).toBe("host-2 · running 2");
   });
 
-  it("shows busy, idle, max slots, host, pid, start time and the process's runs", async () => {
+  it("each row's main line is the host and running of slots; pid and max slots sit behind Details", async () => {
     show(WorkersPage);
     const first = (await screen.findAllByTestId("worker-process"))[0]!;
-    expect(first.querySelector("[data-slots]")!.textContent).toBe("1 busy, 2 idle, 3 slots, max 4");
-    expect(first.textContent).toContain("host-1");
-    expect(first.textContent).toContain("pid 101");
+    expect(first.querySelector("[data-line]")!.textContent).toBe("host-1 · running 1 of 3");
     expect(first.textContent).toContain("started");
+    const details = first.querySelector("[data-raw]")!;
+    expect(details.textContent).toContain("pid 101");
+    expect(details.textContent).toContain("max slots 4");
     expect(within(first).getByRole("link", { name: "wi_1" }).getAttribute("href")).toBe("/app/items/wi_1");
   });
 
-  it("shows the effective worker count once, with its source", async () => {
+  it("names the factory's own host This Mac; another host keeps its name", async () => {
+    overrides["/api/v1/workers"] = { ...workers, processes: [proc(1, { pid: 7, busy: 3, idle: 0 }), proc(2)] };
+    show(WorkersPage);
+    const rows = await screen.findAllByTestId("worker-process");
+    expect(rows[0]!.querySelector("[data-line]")!.textContent).toBe("This Mac · running 3 of 3");
+    expect(rows[1]!.querySelector("[data-line]")!.textContent).toBe("host-2 · running 1 of 3");
+  });
+
+  it("states the factory line with the short version and a compact start time", async () => {
+    overrides["/api/v1/overview"] = { ...overview, factory: { ...overview.factory, rev: "3dc0029abcdef", since: new Date(Date.now() - 11 * 60_000 - 5_000).toISOString() } };
+    show(WorkersPage);
+    await screen.findAllByTestId("worker-process");
+    expect(screen.getByTestId("factory-banner").textContent).toContain("Running version 3dc0029 · started 11m ago");
+  });
+
+  it("shows the effective worker count once, in words with its source", async () => {
     show(WorkersPage);
     await screen.findAllByTestId("worker-process");
     const line = await screen.findByTestId("effective-workers");
-    expect(line.textContent).toBe("Worker setting: 10 (override)");
+    expect(line.textContent).toBe("Up to 10 tasks at once (changed in Settings)");
     // No other place on the page states a worker count.
     expect(document.body.textContent!.match(/\b10\b/g)).toHaveLength(1);
     expect(screen.getByTestId("factory-banner").textContent).not.toMatch(/workers/);
+  });
+
+  it.each([
+    ["file", 3, "Up to 3 tasks at once (set in the config file)"],
+    ["default", 1, "Up to 1 task at once (default)"],
+  ])("a %s worker setting says where it comes from", async (source, count, text) => {
+    overrides["/api/v1/overview"] = { ...overview, factory: { ...overview.factory, workers: count, workers_source: source } };
+    show(WorkersPage);
+    expect((await screen.findByTestId("effective-workers")).textContent).toBe(text);
+  });
+
+  it("the code-revision line names the version and how it compares with the latest code, in plain words", async () => {
+    for (const [behind, badge] of [[0, "Up to date with the latest code"], [4, "4 commits behind the latest code"]] as const) {
+      overrides["/api/v1/overview"] = { ...overview, factory: { ...overview.factory, rev: "3dc0029abcdef", behind } };
+      show(WorkersPage);
+      const line = await screen.findByTestId("code-revision");
+      expect(line.textContent).toBe(`Running version 3dc0029${badge}`);
+      expect(line.textContent).not.toContain("origin/main");
+      cleanup();
+    }
   });
 
   it("answers without `processes` (an older server) with an empty list", async () => {
     overrides["/api/v1/workers"] = { as_of: AT, workers: [] };
     show(WorkersPage);
     expect(await screen.findByText("No worker process is reporting.")).not.toBeNull();
+  });
+});
+
+describe("plain words on the Runners and Plugins pages", () => {
+  it("the Runners page shows no snake_case token or internal word outside Details", async () => {
+    overrides["/api/v1/overview"] = { ...overview, factory: { ...overview.factory, behind: 2 } };
+    show(WorkersPage);
+    await screen.findAllByTestId("worker-process");
+    await screen.findByTestId("code-revision");
+    expect(INTERNAL_WORDS.exec(visibleText(document.body))?.[0] ?? null).toBeNull();
+  });
+
+  it("the Plugins page's MCP and Tools tabs show no snake_case token or internal word outside Details and tool names", async () => {
+    show(PluginsPage);
+    await screen.findByRole("table", { name: "MCP" });
+    expect(INTERNAL_WORDS.exec(visibleText(document.body))?.[0] ?? null).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Tools" }));
+    const tools = await screen.findByRole("table", { name: "Tools" });
+    // A tool's name is the identifier agents call it by (git.store_branch): the scan skips it, not its description.
+    const text = visibleText(document.body, "td:first-child > div > span:first-child");
+    expect(text).toContain("Can change things · not given to any agent");
+    expect(text).toContain("Couldn't start chrome-devtools");
+    expect(INTERNAL_WORDS.exec(text)?.[0] ?? null).toBeNull();
+    expect(tools.textContent).toContain("git.store_branch");
   });
 });
 
