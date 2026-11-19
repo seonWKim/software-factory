@@ -19,7 +19,7 @@ import type { Nested } from "./groups.js";
 import { ALERT, Rows, idFor, muted, useTaskAction } from "./shared.js";
 import { Badge } from "../../components/ui/badge.js";
 
-/** A done task's linked item's close reason, as the row says it beside the done time (design 02-tasks). */
+/** A linked task's item's close reason, as the row says it in its details line, open or done (design 02-tasks). */
 const closedKey = (reason: NonNullable<TaskRow["close_reason"]>): MessageKey =>
   reason === "rejected" ? "tasks.closedRejected" : reason === "wont_do" ? "tasks.closedNotPlanned" : "tasks.closedOther";
 /** A timed task with no stored duration shows this long. */
@@ -154,7 +154,7 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
         <p className={cn(muted, "flex flex-wrap gap-x-3 gap-y-1")}>
           {overdue && <Badge level="stuck">{t("tasks.overdue")}</Badge>}
           {task.done_at != null && <span className="tabular-nums">{t("tasks.doneAt", { at: localDateTime(task.done_at) })}</span>}
-          {done && task.close_reason != null && <span>{t(closedKey(task.close_reason))}</span>}
+          {task.close_reason != null && <span>{t(closedKey(task.close_reason))}</span>}
           {parent !== null && !sub && titles.has(parent) && <span className="break-words">{t("tasks.subOf", { title: titles.get(parent)! })}</span>}
           {due !== null && <span className={cn("tabular-nums", overdue && "text-pill-bad-fg")}>{t("tasks.due", { due })}</span>}
           {minutes !== null && <span className="tabular-nums">{t("tasks.minutes", { minutes })}</span>}
