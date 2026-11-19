@@ -209,7 +209,7 @@ export function ItemsTable({ items, now, label, empty, plugins }: { items: reado
       render: (it) => (
         <>
           <Badge level={it.item_phase}>{LEVEL_LABELS[it.item_phase] ?? it.item_phase}</Badge>
-          {isInteractive(it) && <> <InteractiveBadge /></>}
+          {isInteractiveRun(it.run) && <> <InteractiveBadge /></>}
           {it.merge_check && <MergeCheckNote check={it.merge_check} />}
         </>
       ),
@@ -232,8 +232,8 @@ export function ItemsTable({ items, now, label, empty, plugins }: { items: reado
 /** A run kind as people read it: an `interactive` run is an interactive task (a person handles the item in their own session). */
 export const runKindLabel = (kind: string): string => (kind === "interactive" ? t("run.interactive") : kind);
 
-/** Whether a person is handling the item right now: its current run is an interactive task that is running. */
-export const isInteractive = (it: Pick<ItemRow, "run">): boolean => it.run?.kind === "interactive" && it.run.status === "running";
+/** Whether a person is handling the item right now through this run: an interactive task that is running. */
+export const isInteractiveRun = (run: { kind: string; status: string } | null | undefined): boolean => run?.kind === "interactive" && run.status === "running";
 
 /** The badge an item shows while a person handles it as an interactive task. */
 export function InteractiveBadge() {
