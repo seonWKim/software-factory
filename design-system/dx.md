@@ -31,7 +31,7 @@ The raw-controls check applies to every file under `web/src` outside `components
 - [ ] Composed from `components/ui`; no raw `<button>`, `<select>`, `<textarea>` or `<input>`.
 - [ ] A new shared component has a section in `components.md`.
 - [ ] Layout follows `patterns.md`: one primary action, a state for loading, empty and error.
-- [ ] Text follows `writing.md`: sentence case, a next step, no raw IDs, no command as the main text, compact times.
+- [ ] Text follows `writing.md`: sentence case, a next step, no raw IDs, no command as the main text, compact times, no code names outside Details, the glossary's words.
 - [ ] Every text is in `en.ts` and read with `t()`.
 - [ ] Colours are token classes; no hex.
 - [ ] Usable by keyboard, with a visible focus ring and a visible label on every field.
