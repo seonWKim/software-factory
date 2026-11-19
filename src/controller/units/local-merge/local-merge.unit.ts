@@ -8,7 +8,7 @@ import { ALERT_DEDUPE_MS } from "../../../core/alarms.js";
 import { modeOf } from "../../../core/settings.js";
 import { AUTO_ACTOR, autoMergeRefusal, branchFor } from "../../../core/policy.js";
 import {
-  LOCAL_SOURCE, MERGE_COMMAND, RESTART_DONE, RESTART_REQUESTED, RUN_HINT_ENTRIES, canMergeLocal, canReadLocal, canSyncBase, restartRefusal, restartReply, restartRunKey, runHint,
+  LOCAL_SOURCE, MERGE_COMMAND, RESTART_DONE, RESTART_REQUESTED, RUN_HINT_ENTRIES, canAppendLocal, canMergeLocal, canReadLocal, canSyncBase, restartRefusal, restartReply, restartRunKey, runHint,
 } from "../../../core/local-merge.js";
 import { gatePathTouched } from "../../../core/improver.js";
 import { lastPrNotes } from "../../../core/pr-body.js";
@@ -223,6 +223,22 @@ export class LocalMergeUnit {
    * one base land in order and only an outbound that flushes this host makes them (design 10-event-driven, Git
    * destinations). Its base pushes have their own destination (`basePushTarget`).
    */
+  /** Whether this controller's sandbox can append to a file on the local base (design 07-design-learnings). */
+  canAppend(): boolean {
+    return canAppendLocal(this.c.k.d.sandbox);
+  }
+
+  /**
+   * Lines appended to `path` on the local base in one commit (design 07-design-learnings): one `append_lines` action,
+   * keyed `key`, to the base's git destination, so it lands in order with the merges on that base. Safe to run twice: the key.
+   */
+  async appendToBase(key: string, a: { path: string; head: string; lines: readonly string[]; branch: string; message: string }): Promise<void> {
+    const base_ref = this.c.k.cfg.repo.base_branch;
+    await this.c.k.commit({ writes: [{ kind: "intent", action: {
+      action: "append_lines", target: this.gitDestination(), key, args: { base_ref, path: a.path, head: a.head, lines: JSON.stringify(a.lines), branch: a.branch, message: a.message },
+    } }] });
+  }
+
   private gitDestination(): SourceRef {
     return gitTarget(this.gitHost(), this.c.k.cfg.repo.base_branch);
   }

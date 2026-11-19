@@ -6,6 +6,7 @@
 export { learnFromReport } from "./learned-settings.js";
 export { FLAKY_TEST, PUSHBACK, type Pushback, groupFailures, normalizeDetail } from "./failure-groups.js";
 export { NO_SCORER, type Grade, type GradeSubject, type Scorer, improvePrompts, scoreRun, scorerFor } from "./scorer.js";
+export { type DesignLearningSource, LEARNINGS_HEAD, LEARNINGS_PATH, captureDesignLearning, captureKey, isDesignFinding, learnDesign, renderLine } from "./design-learnings.js";
 
 import { cyrb53 } from "./hash.js";
 import { PUSHBACK, flakyTests, groupFailures, pushbacksIn, reviewable } from "./failure-groups.js";

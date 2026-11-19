@@ -1,4 +1,4 @@
-import { type Grade, type GradeSubject, type ImproveDeps, improvePrompts, learnFromReport, runImprove, scoreRun, scorerFor } from "../../../core/improver.js";
+import { type Grade, type GradeSubject, type ImproveDeps, improvePrompts, learnDesign, learnFromReport, runImprove, scoreRun, scorerFor } from "../../../core/improver.js";
 import type { Run, WorkItem } from "../../../core/types.js";
 import { factoryGit } from "../../../impl/broker/trusted-git.js";
 import { addUsage } from "../../support.js";
@@ -8,7 +8,8 @@ import { DEFAULT_TIMEOUTS, defineRunKind } from "../../run-kind.js";
 /**
  * The improve run (design §7): no sandbox, no agent. One plain model call per group, with no tools; its usage
  * counts toward the run's. Stores one report; the outcome names it. Then, only in the daily run and only from the
- * stored report, the learner may write one tighter max_diff_lines for the project (design 08-settings).
+ * stored report, the learner may write one tighter max_diff_lines for the project (design 08-settings). Last, with a
+ * model, the project's design learnings are tagged and counted; the outcome lists the proposals due (design 07-design-learnings).
  */
 async function improve(w: Worker, run: Run, item: WorkItem, signal: AbortSignal): Promise<Record<string, unknown>> {
   const metered = meteredLlm(w, run);
@@ -22,9 +23,11 @@ async function improve(w: Worker, run: Run, item: WorkItem, signal: AbortSignal)
     item,
   );
   const learned = await learnFromReport({ store: w.d.store, layers: w.cfg.settings }, run, report);
+  const design = metered ? await learnDesign({ store: w.d.store, llm: metered, signal }, item.project) : null;
   return {
     report_id: report.id, groups: report.groups.length, patterns: report.patterns.length,
     ...(learned ? { learned: { key: learned.key, old_value: learned.old_value, new_value: learned.new_value } } : {}),
+    ...(design ? { design } : {}),
   };
 }
 
