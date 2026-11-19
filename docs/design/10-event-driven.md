@@ -2,8 +2,8 @@
 
 The factory is moving to independent, restartable actors that talk only through messages on a bus (RFC 0015,
 kept outside the repo with the other RFCs). The RFC 0015 progress record, kept in the RFC repo with the
-RFCs (outside this repository), holds the snapshot of the move; its open items are rows in `ARCHITECTURE.md`
-section 7. This file holds the decisions already in
+RFCs (outside this repository), holds the snapshot of the move; its open items are rows in `docs/architecture-open-items.md`.
+This file holds the decisions already in
 force.
 
 ## Current decisions
