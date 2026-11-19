@@ -13,7 +13,6 @@
 import { phaseOf } from "../core/phase.js";
 import { readProjectLabel } from "../core/project-labels.js";
 import { conflictCounts } from "../core/resolve.js";
-import { outcomeCost } from "../core/types.js";
 import type { HostSleep, Run, RunAttempt, Stage, StateChange, Timestamp, WorkItem, WorkItemId } from "../core/types.js";
 import { itemAlarms, openAlarms } from "./alarms.js";
 import { actorGrant, itemCommands, itemProposals, itemReplies, mergeReadiness, needsYouCommands, readSession, waitingSpec } from "./commands.js";
@@ -39,7 +38,7 @@ import { latestWhyAnchor, threadRows } from "./thread.js";
 import type { Why } from "./why.js";
 import { displayName } from "./names.js";
 import { Withholder } from "./withhold.js";
-import { WINDOW_ERROR, itemGraph, runModel, windowMs } from "./graph.js";
+import { itemGraph, windowRuns } from "./graph.js";
 import type { MergeCheck } from "../interfaces/factory-store.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -73,7 +72,7 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
     case "/overview":
       return ok(await overview(c, url.searchParams));
     case "/items": return (await projectFilterRefusal(d.store, url.searchParams.get("project"))) ?? items(c, url.searchParams);
-    case "/runs": return runs(c, url.searchParams.get("window"));
+    case "/runs": return windowRuns({ store: d.store, text: (v, ch) => c.text(v, ch), now: c.now }, url.searchParams.get("window"), (r) => runRow(c, r));
     case "/queue": return ok(await queue(c));
     case "/workers": return ok(await workers(c));
     case "/unreviewed-merges": return unreviewedMerges(c, url.searchParams);
@@ -96,10 +95,8 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
       return pauses(d);
     case "/standing":
       return ok(await readStanding(d));
-    case "/items/graph": { // before the /items/:id pattern below, which would read "graph" as an item id
-      const ms = windowMs(url.searchParams.get("window") ?? "6h");
-      return ms === null ? apiError(400, WINDOW_ERROR) : ok({ as_of: c.now.toISOString(), ...(await itemGraph({ store: d.store, text: (v) => c.text(v), now: c.now }, ms)) });
-    }
+    case "/items/graph": // before the /items/:id pattern below, which would read "graph" as an item id
+      return itemGraph({ store: d.store, text: (v) => c.text(v), now: c.now }, url.searchParams.get("window"));
   }
   const t = /^\/data\/tables\/([^/]+)$/.exec(path);
   if (t) {
@@ -545,38 +542,6 @@ async function runRow(c: ApiCtx, r: Run) {
     lease_expires_at: r.lease ? r.lease.expires_at : null,
     created_at: r.created_at,
   };
-}
-
-/**
- * GET /api/v1/runs: the running and queued runs. With `window` (1h, 6h or 24h; any other value is a 400) it adds the
- * runs finished in the window, and each run also carries what the Workers page's timeline shows: its finish time, its
- * item's title (through the Withholder) and stage, its error code when it failed, and its model and cost when known.
- */
-async function runs(c: ApiCtx, window: string | null): Promise<ApiResult> {
-  const ms = window === null ? null : windowMs(window);
-  if (window !== null && ms === null) return apiError(400, WINDOW_ERROR);
-  const s = c.d.store;
-  const list = [...(await s.listRunsByStatus(["running"], LIST_LIMIT)), ...(await s.listRunsByStatus(["queued"], LIST_LIMIT))];
-  const out = [];
-  if (ms === null) {
-    for (const r of list) out.push(await runRow(c, r));
-    return ok({ as_of: c.now.toISOString(), runs: out });
-  }
-  const items = new Map<WorkItemId, WorkItem | null>();
-  for (const r of [...list, ...(await s.listRunsFinishedWithin(ms))]) {
-    if (!items.has(r.work_item_id)) items.set(r.work_item_id, await s.getWorkItem(r.work_item_id));
-    const it = items.get(r.work_item_id) ?? null;
-    out.push({
-      ...(await runRow(c, r)),
-      finished_at: r.finished_at,
-      item_title: await c.text(it?.title || null),
-      item_stage: it?.stage ?? null,
-      error_code: r.outcome?.status === "failed" ? await c.text(r.outcome.error_code, "run_outcome") : null,
-      model: await c.text(runModel(r)),
-      cost_usd: outcomeCost(r.outcome),
-    });
-  }
-  return ok({ as_of: c.now.toISOString(), window, runs: out });
 }
 
 /** Queued runs, oldest first, each with why its item waits (what the Starts column shows). */
