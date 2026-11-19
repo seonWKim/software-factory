@@ -297,8 +297,7 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
     }
     await evaluations.onMergeTransition(tx, current, item, input.actor.id, now); // a merge stores its evaluation once (design §6)
     // A closed item (its PR merged or closed: the merge path's transition) holds nothing from this commit on, so the queued runs' decisions that name
-    // it go too; the next claim records what holds them now (design §5). An approval stays: it is the human's, for that run. A close as
-    // completed (merged or not) completes its linked tasks; a rejected or wont_do close leaves them open (design 02-tasks).
+    // it go too; the next claim records what holds them now (design §5). An approval stays: it is the human's, for that run. Only a completed close completes linked tasks (design 02-tasks).
     if (current.stage !== "CLOSED" && item.stage === "CLOSED") {
       if (item.close_reason === "completed") await tasks.completeLinkedTasks(this.db, tx, input.id, now);
       await tx.run(
