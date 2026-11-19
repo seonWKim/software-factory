@@ -98,11 +98,21 @@ describe("Calendar page", () => {
     expect(screen.queryByRole("button", { name: "Upcoming" })).toBeNull();
   });
 
+  it("one toolbar holds the view switch, then Previous, Next and Today", async () => {
+    show();
+    const toolbar = (await screen.findByRole("group", { name: "Calendar view" }, SLOW)).parentElement!;
+    expect(toolbar.hasAttribute("data-calendar-toolbar")).toBe(true);
+    expect(within(toolbar).getAllByRole("button").map((b) => b.textContent)).toEqual(["Week", "Month", "Previous", "Next", "Today"]);
+    expect(document.querySelectorAll("[data-calendar-toolbar]")).toHaveLength(1);
+  });
+
   it("Week shows Monday to Sunday of the current week, each day's events all-day first, then timed by time, with time or 'all day' and source", async () => {
     show();
     await shownRange("2026-11-09", "2026-11-15");
     expect(heading()).toBe("Nov 9 – 15, 2026");
     const week = screen.getByRole("list", { name: "Nov 9 – 15, 2026" });
+    expect(week.tagName).toBe("OL");
+    expect(week.className).toContain("grid-cols-7");
     expect([...week.querySelectorAll<HTMLElement>(":scope > li")].map((d) => d.dataset.day)).toEqual([
       "2026-11-09", "2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13", "2026-11-14", "2026-11-15",
     ]);

@@ -25,6 +25,7 @@ import { NEEDS_YOU } from "./priority.js";
 import { type PauseDeps, readPauses } from "./pause-api.js";
 import { failures } from "./failures.js";
 import { spend } from "./spend.js";
+import { efficiency } from "./efficiency.js";
 import { readGitHubBudget } from "./github-budget.js";
 import { effectiveGlobal, readSettings } from "./settings-api.js";
 import { readCapabilities } from "./capabilities-api.js";
@@ -73,13 +74,12 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
     case "/runs": return ok(await runs(c));
     case "/queue": return ok(await queue(c));
     case "/workers": return ok(await workers(c));
-    case "/unreviewed-merges":
-      return unreviewedMerges(c, url.searchParams);
-    case "/health":
-      return ok(await health(c));
+    case "/unreviewed-merges": return unreviewedMerges(c, url.searchParams);
+    case "/health": return ok(await health(c));
     case "/failures":
       return failures({ store: d.store, text: (v) => c.text(v, "run_outcome").then((t) => t!), now: c.now }, url.searchParams);
     case "/spend": return spend({ store: d.store, text: (v) => c.text(v).then((t) => t!), now: c.now }, url.searchParams);
+    case "/efficiency": return efficiency({ store: d.store, text: (v) => c.text(v).then((t) => t!), now: c.now });
     case "/settings": return d.settings ? ok(await readSettings(d, d.settings)) : apiError(404, "Not found.");
     case "/settings/capabilities": return d.settings ? ok(await readCapabilities(d, d.settings)) : apiError(404, "Not found.");
     case "/session": {
