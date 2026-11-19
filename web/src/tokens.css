@@ -50,6 +50,8 @@
   --r-box: 0.625rem;
   --r-card: 0.875rem;
   --r-pill: 9999px;
+  --sh-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --sh-lg: 0 12px 32px -8px rgb(0 0 0 / 0.16), 0 4px 8px -4px rgb(0 0 0 / 0.08);
 }
 
 .dark {
@@ -81,4 +83,6 @@
   --pill-info-bg: #2C394B;
   --pill-info-fg: #60A5FA;
   --pill-info-border: #3D5C85;
+  --sh-sm: 0 1px 2px 0 rgb(0 0 0 / 0.4);
+  --sh-lg: 0 12px 32px -8px rgb(0 0 0 / 0.6), 0 4px 8px -4px rgb(0 0 0 / 0.4);
 }

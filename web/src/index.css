@@ -49,6 +49,18 @@
   --spacing-6: var(--sp-6);
   --spacing-8: var(--sp-8);
   --spacing-12: var(--sp-12);
+  --text-xs: var(--fs-xs);
+  --text-xs--line-height: var(--lh-xs);
+  --text-sm: var(--fs-sm);
+  --text-sm--line-height: var(--lh-sm);
+  --text-base: var(--fs-base);
+  --text-base--line-height: var(--lh-base);
+  --text-lg: var(--fs-lg);
+  --text-lg--line-height: var(--lh-lg);
+  --text-xl: var(--fs-xl);
+  --text-xl--line-height: var(--lh-xl);
+  --shadow-sm: var(--sh-sm);
+  --shadow-lg: var(--sh-lg);
 }
 
 /* Nothing moves under prefers-reduced-motion (design §9): state is still shown by words and colour. */

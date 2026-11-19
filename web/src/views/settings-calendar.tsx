@@ -7,10 +7,12 @@ import { Dialog } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
-import { Badge, ErrorNote, Loading, Section } from "../components/ui/parts.js";
+import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { t } from "../i18n/index.js";
 import { ago } from "../lib/format.js";
 import { useNow } from "./common.js";
+import { Card } from "../components/ui/card.js";
+import { Badge } from "../components/ui/badge.js";
 
 // The Settings page's Calendar section (design 08-settings, 2026-11-13): each calendar plugin the server lists from
 // the registry's connect hooks, by its own name (this file names no provider), connected or not, with its last sync time
@@ -33,14 +35,14 @@ export function CalendarSection({ token }: { token: string }) {
   if (plugins.length === 0) return null;
   return (
     <div id="calendar">
-      <Section title={t("calendar.title")} count={plugins.length}>
+      <Card title={t("calendar.title")} count={plugins.length}>
         <p className="mb-2 text-sm text-pretty text-text-2">{t("calendar.hint")}</p>
         <ul className="space-y-4 text-sm">
           {plugins.map((p) => (
             <CalendarRow key={p.name} plugin={p} token={token} />
           ))}
         </ul>
-      </Section>
+      </Card>
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { API, type FileKeysView, type ItemDetail, type SettingsView, type SettingsWrite, postSettings, useApi } from "../api.js";
-import { Section, Table } from "../components/ui/parts.js";
+import { Table } from "../components/ui/parts.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { Dialog } from "../components/ui/dialog.js";
@@ -18,6 +18,7 @@ import { MergeButton } from "./item-commands.js";
 import { SettingsRow } from "./settings-row.js";
 import { withNodes } from "./standing.js";
 import { Disclosure } from "../components/ui/disclosure.js";
+import { Card, CardSection } from "../components/ui/card.js";
 
 // The Settings page's write pieces (useWrite, Outcome) and its typed form of the file-only keys (design 08-settings,
 // phase 3 of "Settings without editing factory.config.json"). Each file-only key has a typed control and a restart
@@ -424,7 +425,7 @@ export function FileKeysSection({ view }: { view: SettingsView }) {
   const specOf = (key: string): Spec | undefined => (key === "model_by" ? tierSpec(modelByShape) : SPECS[key]);
   const common = { token: view.csrf_token };
   return (
-    <Section title={t("settings.file.title")} count={fk.editable.length}>
+    <Card title={t("settings.file.title")} count={fk.editable.length}>
       <p className="mb-2 text-sm text-pretty text-text-2">{t("settings.file.intro")}</p>
       <Table label={t("settings.file.title")} head={head()}>
         {fk.editable.flatMap(({ key }) => {
@@ -438,9 +439,10 @@ export function FileKeysSection({ view }: { view: SettingsView }) {
           return [<FileKey key={key} {...common} name={key} label={keyLabel(key)} help={keyHelp(key, "")} spec={spec} value={file(key)} danger={DANGER_KEYS.has(key)} />];
         })}
       </Table>
-      <h3 className="mt-6 mb-2 text-balance text-sm font-semibold">{t("settings.file.readOnlyTitle")}</h3>
-      <ReadOnlyKeys keys={fk.read_only} />
-    </Section>
+      <CardSection title={t("settings.file.readOnlyTitle")}>
+        <ReadOnlyKeys keys={fk.read_only} />
+      </CardSection>
+    </Card>
   );
 }
 

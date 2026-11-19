@@ -1,5 +1,6 @@
 # 09-brand-and-tokens
 
+- **Type sizes were Tailwind's defaults and had no Tailwind mapping; no shadow tokens** (until 2026-11-19, the type-step decision at the top). Before: `index.css` mapped no `--text-*`, so `text-xl` was Tailwind's 20 px and not the `xl` step (28 px), the token-mapping test skipped `--fs-*` and `--lh-*`, and shadows were Tailwind's defaults.
 - **Select was a native select** (until 2026-11-17, the Select decision at the top). Before: `Select` wrapped a native `<select>` (`appearance-none`, with its own chevron), so the browser drew the option list; on macOS it opened over the field and hid the label above the next field, and tests drove it with `fireEvent.change` and read its `options`.
 - **The classic page kept its own colours and title** (until 2026-11-16, the no-server-rendered-colours decision at the top). Before: `/classic` and the error pages carried their own hex palette in `src/ui/html.ts` (light and dark, not from `tokens.json`), and the classic page was titled "software-factory status".
 

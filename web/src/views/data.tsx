@@ -6,8 +6,8 @@ import { ButtonRow } from "../components/ui/button-row.js";
 import { DataTable } from "../components/ui/data-table.js";
 import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
-import { Notice, PageHeader } from "../components/ui/notice.js";
-import { Empty, ErrorNote, Loading, Section } from "../components/ui/parts.js";
+import { Notice, PageHeader, EmptyState } from "../components/ui/notice.js";
+import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Select } from "../components/ui/select.js";
 import { Textarea } from "../components/ui/textarea.js";
@@ -15,6 +15,7 @@ import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
+import { Card } from "../components/ui/card.js";
 
 // The Data page (design §9, issue #239): one Autonomy line (design §6), the Ask box, then every store table on the
 // left with its row count, owner and one-line description, and one page of the chosen table's rows on the right,
@@ -70,7 +71,7 @@ export function DataPage() {
         </nav>
         <div className="min-w-0 flex-1">
           {table === null ? (
-            <Empty>{t("data.choose")}</Empty>
+            <EmptyState title={t("data.choose")} />
           ) : (
             <TableRows key={`${table}|${page}|${filter?.column ?? ""}|${filter?.value ?? ""}`} table={table} info={tables.data?.tables.find((x) => x.name === table) ?? null} page={page} setPage={setPage} filter={filter} setFilter={(f) => { setFilter(f); setPage(1); }} />
           )}
@@ -135,14 +136,11 @@ function TableRows({
   };
 
   return (
-    <section aria-label={t("data.table", { name: d.table })}>
-      <div className="mb-2 flex flex-wrap items-center gap-2">
-        <h2 className="font-mono text-sm font-semibold">{d.table}</h2>
-        <span className="text-sm text-text-3 tabular-nums" data-testid="data-range">
-          {t("data.range", { first, last, total: d.total })}
-        </span>
-        <FilterForm columns={d.columns.filter((c) => !d.hidden.includes(c))} filter={filter} setFilter={setFilter} />
-        <ButtonRow className="ml-auto">
+    <Card
+      title={d.table}
+      label={t("data.table", { name: d.table })}
+      action={
+        <ButtonRow>
           <Button size="sm" disabled={d.page <= 1} onClick={() => setPage(d.page - 1)}>
             {t("data.previous")}
           </Button>
@@ -153,10 +151,17 @@ function TableRows({
             {t("data.next")}
           </Button>
         </ButtonRow>
+      }
+    >
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <span className="text-sm text-text-3 tabular-nums" data-testid="data-range">
+          {t("data.range", { first, last, total: d.total })}
+        </span>
+        <FilterForm columns={d.columns.filter((c) => !d.hidden.includes(c))} filter={filter} setFilter={setFilter} />
       </div>
       <TableInfo info={info} />
       {d.rows.length === 0 ? (
-        <Empty>{filter ? t("data.noMatch") : t("data.empty")}</Empty>
+        <EmptyState title={filter ? t("data.noMatch") : t("data.empty")} />
       ) : (
         <DataTable
           label={d.table}
@@ -184,7 +189,7 @@ function TableRows({
           ]}
         />
       )}
-    </section>
+    </Card>
   );
 }
 
@@ -233,7 +238,7 @@ function AskBox({ token }: { token: string }) {
     }
   };
   return (
-    <Section title={t("data.ask.title")}>
+    <Card title={t("data.ask.title")}>
       <form onSubmit={(e) => void submit(e)} className="space-y-2">
         <Field label={t("data.ask.question")} htmlFor="data-ask-question" help={t("data.ask.help")}>
           <Textarea
@@ -253,7 +258,7 @@ function AskBox({ token }: { token: string }) {
         </ButtonRow>
       </form>
       {result && <AskAnswer result={result} />}
-    </Section>
+    </Card>
   );
 }
 
@@ -274,7 +279,7 @@ function AskAnswer({ result }: { result: DataAskResult }) {
         <>
           {result.answer !== null && <p className="text-sm font-medium" data-testid="data-ask-line">{result.answer}</p>}
           {result.truncated && <Notice>{t("data.ask.truncated", { count: result.rows.length })}</Notice>}
-          {result.rows.length === 0 ? <Empty>{t("data.ask.noRows")}</Empty> : <ResultTable columns={result.columns} rows={result.rows} />}
+          {result.rows.length === 0 ? <EmptyState title={t("data.ask.noRows")} /> : <ResultTable columns={result.columns} rows={result.rows} />}
         </>
       )}
     </div>

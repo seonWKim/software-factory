@@ -1,10 +1,11 @@
+import { CalendarCheck } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { API, type ProjectChoice, type TaskRow, type TasksView, postTaskAction, useTasks } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { announceStatus } from "../components/ui/dialog.js";
 import { EmptyState, PageHeader } from "../components/ui/notice.js";
-import { ErrorNote, Loading, Section } from "../components/ui/parts.js";
+import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { Pagination } from "../components/ui/pagination.js";
 import { Tabs } from "../components/ui/tabs.js";
 import { useUrlParam } from "../lib/url-param.js";
@@ -16,6 +17,7 @@ import { QuickAdd } from "./tasks/forms.js";
 import { PAGE_SIZE, groupsOf, hasTasks, pageOf } from "./tasks/groups.js";
 import { Group } from "./tasks/row.js";
 import { ALERT, Rows, muted } from "./tasks/shared.js";
+import { Card } from "../components/ui/card.js";
 
 // The Tasks page (design 02-tasks and 09-dashboard-app, issue #607): the owner's plain tasks, read through GET
 // /api/v1/tasks, as one list with no view tabs (design 02-tasks, one list): every task in the groups overdue (in red),
@@ -51,7 +53,7 @@ function OpenTasks({ v }: { v: TasksView }) {
   const page = Math.min(wanted, pages);
   return (
     <div className="space-y-3">
-      {total === 0 && <EmptyState title={t("tasks.emptyAll")} />}
+      {total === 0 && <EmptyState icon={CalendarCheck} title={t("tasks.emptyAll")} />}
       {pageOf(groups, page).map((g) => <Group key={g.key} title={g.title} rows={g.rows} overdue={g.overdue} />)}
       <Pagination page={page} pages={pages} onChange={setPage} />
     </div>
@@ -147,14 +149,14 @@ export function TasksPage() {
       </div>
       <NeedsYou project={project} linked={linked} />
       <div>
-        <Section label={t("tasks.listLabel")}>
+        <Card label={t("tasks.listLabel")}>
           <div className="space-y-3">
             {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <Rows.Provider value={{ token, titles, projects: known.current, completed: undo.completed }}>
                 <OpenTasks key={project ?? ""} v={v} />
               </Rows.Provider>}
             {v?.can_build && hasTasks(v) && <p className={muted}>{t("tasks.buildNote")}</p>}
           </div>
-        </Section>
+        </Card>
       </div>
     </div>
     </>

@@ -9,7 +9,8 @@ import { type Column, DataTable } from "../components/ui/data-table.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
-import { Notice, PageHeader, StatusBadge } from "../components/ui/notice.js";
+import { EMPTY_BOX, Notice, PageHeader } from "../components/ui/notice.js";
+import { cn } from "../lib/cn.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { Tabs } from "../components/ui/tabs.js";
 import { useUrlParam } from "../lib/url-param.js";
@@ -20,6 +21,8 @@ import { useNow } from "./common.js";
 import { ModelsTab } from "./plugins-models.js";
 import { MergeButton } from "./item-commands.js";
 import { withNodes } from "./standing.js";
+import { Badge } from "../components/ui/badge.js";
+import { Card } from "../components/ui/card.js";
 
 // The Plugins page (design 09-dashboard-app, 2026-11-16): what the agents can use, in four tabs (MCP, Skills, Tools, Models),
 // read from GET /api/v1/plugins, the rows `factory plugins list` prints. "Plugins" here are agent capabilities, never
@@ -105,7 +108,7 @@ function NameCell({ name, description, fresh = false }: { name: string; descript
     <div data-new={fresh ? "" : undefined} className="flex min-w-0 flex-col gap-0.5">
       <span className="flex min-w-0 flex-wrap items-center gap-1.5">
         <span className="text-xs wrap-anywhere">{name}</span>
-        {fresh && <StatusBadge size="sm" level="running">{t("plugins.new")}</StatusBadge>}
+        {fresh && <Badge level="running">{t("plugins.new")}</Badge>}
       </span>
       {description && <span className="text-xs text-pretty wrap-anywhere text-text-2">{description}</span>}
     </div>
@@ -125,7 +128,7 @@ const STATUS: Record<McpStatus, { label: MessageKey; level: string | undefined }
   missing: { label: "plugins.statusMissing", level: "stuck" },
 };
 
-const Status = ({ status }: { status: McpStatus }) => <StatusBadge size="sm" level={STATUS[status].level}>{t(STATUS[status].label)}</StatusBadge>;
+const Status = ({ status }: { status: McpStatus }) => <Badge level={STATUS[status].level}>{t(STATUS[status].label)}</Badge>;
 
 /** Approve, or Revoke once approved: one stored MCP server or pack tool. Off when the page cannot write. */
 function ApproveButton({ token, kind, name, status, report }: { token: string | null; kind: "mcp_server" | "tool"; name: string; status: McpStatus; report: Reporter }) {
@@ -288,9 +291,9 @@ function ImportDialog({ tab, token, report, onClose }: { tab: ListTab; token: st
                   {i.refused.length > 0 && <span className="text-xs text-pretty wrap-anywhere text-pill-bad-fg">{t("plugins.importRefused", { rules: i.refused.join(", ") })}</span>}
                 </div>
                 {i.imported && (
-                  <StatusBadge size="sm" level="ready_to_merge">
+                  <Badge level="ready_to_merge">
                     {t("plugins.imported")}
-                  </StatusBadge>
+                  </Badge>
                 )}
               </li>
             );
@@ -369,13 +372,13 @@ function TabList<Row extends { name: string; description: string | null }>(
 ) {
   const empty = rows.length === 0;
   return (
-    <>
-      <div className={empty ? "flex flex-col items-start gap-3 rounded-control border border-dashed border-border-strong px-4 py-6" : "contents"}>
+    <Card>
+      <div className={empty ? cn(EMPTY_BOX, "gap-3") : "mb-4"}>
         {empty && <p className="text-sm text-pretty text-text-2">{t(how)}</p>}
         <Actions view={view} tab={tab} report={report} />
       </div>
       {!empty && table(matching(rows, query), t("plugins.noMatch", { query: query.trim() }))}
-    </>
+    </Card>
   );
 }
 
@@ -411,8 +414,7 @@ function SkillFolders({ view, report }: { view: PluginsView; report: Reporter })
     setBusy(null);
   };
   return (
-    <section className="flex flex-col gap-2">
-      <h2 className="text-sm font-semibold">{t("plugins.skillFolders")}</h2>
+    <Card title={t("plugins.skillFolders")}>
       <ul aria-label={t("plugins.skillFolders")} className="flex flex-col gap-1">
         {folders.map((f) => (
           <li key={f} className="flex min-w-0 items-center justify-between gap-2">
@@ -423,9 +425,9 @@ function SkillFolders({ view, report }: { view: PluginsView; report: Reporter })
           </li>
         ))}
       </ul>
-      {folders.length === 0 && <p className="text-xs text-text-2">{t("plugins.noSkillFolder")}</p>}
-      {error && <p role="alert" className="text-xs text-pretty break-words text-pill-bad-fg">{error}</p>}
-    </section>
+      {folders.length === 0 && <p className="text-sm text-text-2">{t("plugins.noSkillFolder")}</p>}
+      {error && <p role="alert" className="mt-2 text-xs text-pretty break-words text-pill-bad-fg">{error}</p>}
+    </Card>
   );
 }
 
@@ -445,7 +447,7 @@ function SkillsTab({ view, query, now, report, fresh }: { view: PluginsView; que
         r.path === undefined ? null : (
           <div className="flex min-w-0 flex-col items-start gap-0.5">
             <span className="font-mono text-xs wrap-anywhere">{r.path}</span>
-            {(r.state === "missing" || r.state === "changed") && <StatusBadge size="sm" level="needs_you">{t(SKILL_STATE[r.state])}</StatusBadge>}
+            {(r.state === "missing" || r.state === "changed") && <Badge level="needs_you">{t(SKILL_STATE[r.state])}</Badge>}
           </div>
         ),
     },

@@ -9,8 +9,11 @@ import { ButtonRow } from "../web/src/components/ui/button-row.js";
 import { Field } from "../web/src/components/ui/field.js";
 import { Input } from "../web/src/components/ui/input.js";
 import { OverflowMenu, Tooltip } from "../web/src/components/ui/menu.js";
-import { EmptyState, Kbd, Notice, PageHeader, StatusBadge } from "../web/src/components/ui/notice.js";
-import { Badge, LEVEL_TONE, SM_PX } from "../web/src/components/ui/parts.js";
+import { Badge, LEVEL_TONE } from "../web/src/components/ui/badge.js";
+import { Card, CardSection } from "../web/src/components/ui/card.js";
+import { EmptyState, Kbd, Notice, PageHeader } from "../web/src/components/ui/notice.js";
+import { SM_PX } from "../web/src/components/ui/parts.js";
+import { Inbox } from "lucide-react";
 import { Radio } from "../web/src/components/ui/radio.js";
 import { Select } from "../web/src/components/ui/select.js";
 import { Textarea } from "../web/src/components/ui/textarea.js";
@@ -234,20 +237,53 @@ describe("OverflowMenu and Tooltip", () => {
 });
 
 describe("status and message pieces", () => {
-  it("StatusBadge takes its tone from LEVEL_TONE, as Badge does, at both sizes", () => {
+  it("Badge is a pill with a dot that takes its tone from LEVEL_TONE; a level with no tone is neutral", () => {
     for (const [level, tone] of Object.entries(LEVEL_TONE)) {
-      render(<><StatusBadge level={level} size="sm">s</StatusBadge><StatusBadge level={level}>m</StatusBadge><Badge level={level}>b</Badge></>);
-      for (const name of ["s", "m", "b"]) for (const c of tone.split(" ")) expect(screen.getByText(name).className).toContain(c);
+      render(<Badge level={level}>b</Badge>);
+      const badge = screen.getByText("b");
+      for (const c of tone.split(" ")) expect(badge.className).toContain(c);
+      expect(badge.className).toContain("rounded-pill");
+      expect(badge.getAttribute("data-level")).toBe(level);
+      expect(badge.querySelector("[aria-hidden]")!.className).toContain("bg-current");
       cleanup();
     }
-    render(<StatusBadge level="nope">x</StatusBadge>);
+    render(<Badge level="nope">x</Badge>);
     expect(screen.getByText("x").className).toContain("bg-surface-2");
   });
 
-  it("no second colour map: StatusBadge's source holds no tone classes", () => {
-    for (const f of readdirSync("web/src/components/ui").filter((n) => n.endsWith(".tsx") && n !== "parts.tsx")) {
-      expect(readFileSync(`web/src/components/ui/${f}`, "utf8"), f).not.toContain("ready_to_merge");
+  it("no second colour map or badge: only badge.tsx holds the tones, and Section, StatusBadge and Empty are gone", () => {
+    for (const f of readdirSync("web/src/components/ui").filter((n) => n.endsWith(".tsx") && n !== "badge.tsx")) {
+      const src = readFileSync(`web/src/components/ui/${f}`, "utf8");
+      expect(src, f).not.toContain("ready_to_merge");
+      expect(src, f).not.toMatch(/export function (Section|StatusBadge|Empty)\(/);
     }
+  });
+
+  it("Card is a region on the surface with a 1px border, the card radius, 24px padding and shadow-sm", () => {
+    render(<Card title="Runs" count={3} action={<button>More</button>}>Body</Card>);
+    const card = screen.getByRole("region", { name: "Runs" });
+    for (const c of ["bg-surface", "border", "border-border", "rounded-card", "sm:p-6", "shadow-sm"]) expect(card.className.split(" ")).toContain(c);
+    const title = screen.getByRole("heading", { level: 2, name: "Runs" });
+    expect(title.className).toContain("text-balance text-base font-semibold");
+    expect(card.textContent).toContain("3");
+    expect(screen.getByRole("button", { name: "More" })).toBeTruthy();
+  });
+
+  it("Card without a title is named by its label, or is no region at all; a label names a titled Card", () => {
+    const { rerender } = render(<Card label="Tasks">Body</Card>);
+    expect(screen.getByRole("region", { name: "Tasks" })).toBeTruthy();
+    expect(screen.queryByRole("heading")).toBeNull();
+    rerender(<Card>Body</Card>);
+    expect(screen.queryByRole("region")).toBeNull();
+    rerender(<Card title="work_items" label="Table work_items">Body</Card>);
+    expect(screen.getByRole("region", { name: "Table work_items" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 2, name: "work_items" })).toBeTruthy();
+  });
+
+  it("CardSection is an h3 in the section title's type inside a Card, not a region", () => {
+    render(<Card title="Spend"><CardSection title="Totals" count={2}>x</CardSection></Card>);
+    expect(screen.getByRole("heading", { level: 3, name: "Totals" }).className).toContain("text-balance text-base font-semibold");
+    expect(screen.getAllByRole("region").map((r) => r.getAttribute("aria-label"))).toEqual(["Spend"]);
   });
 
   it.each([["info", "status"], ["ok", "status"], ["warn", "alert"], ["bad", "alert"]])("Notice %s has role %s", (tone, role) => {
@@ -262,12 +298,18 @@ describe("status and message pieces", () => {
     expect(screen.getByRole("status").getAttribute("data-tone")).toBe("info");
   });
 
-  it("EmptyState shows with and without explanation and action", () => {
-    const { rerender } = render(<EmptyState title="Nothing" action={<button>Add</button>}>Add one.</EmptyState>);
+  it("EmptyState is centred and shows with and without icon, description and action", () => {
+    const { container, rerender } = render(<EmptyState icon={Inbox} title="Nothing" description="Add one." action={<button>Add</button>} />);
     expect(screen.getByText("Add one.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Add" })).toBeTruthy();
+    const box = container.querySelector("[data-empty]")!;
+    expect(box.className).toContain("items-center");
+    expect(box.className).toContain("text-center");
+    expect(box.querySelector("svg[aria-hidden]")).toBeTruthy();
     rerender(<EmptyState title="Nothing" />);
     expect(screen.queryByRole("button")).toBeNull();
+    expect(container.querySelector("svg")).toBeNull();
+    expect(screen.getByText("Nothing")).toBeTruthy();
   });
 
   it("Kbd renders a kbd element", () => {
@@ -275,9 +317,11 @@ describe("status and message pieces", () => {
     expect(screen.getByText("Esc").tagName).toBe("KBD");
   });
 
-  it("PageHeader has the h1 and optional description and actions", () => {
-    const { rerender } = render(<PageHeader title="Tasks" description="All of them" actions={<button>New</button>} />);
-    expect(screen.getByRole("heading", { level: 1, name: "Tasks" })).toBeTruthy();
+  it("PageHeader has the h1 in text-xl semibold and optional description and actions, in order", () => {
+    const { rerender } = render(<PageHeader title="Tasks" description="All of them" actions={<><button>Export</button><button>New</button></>} />);
+    expect(screen.getByRole("heading", { level: 1, name: "Tasks" }).className).toContain("text-xl font-semibold");
+    // The actions sit at the end, in the order given, so the primary one (last) ends the row.
+    expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual(["Export", "New"]);
     expect(screen.getByText("All of them")).toBeTruthy();
     expect(screen.getByRole("button", { name: "New" })).toBeTruthy();
     rerender(<PageHeader title="Tasks" />);

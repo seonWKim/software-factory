@@ -3,8 +3,8 @@ import { useEffect, useState } from "react";
 import { API, type StepFilter, type TranscriptPage, type TranscriptStep, getJson } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
-import { PageHeader } from "../components/ui/notice.js";
-import { Badge, Empty, ErrorNote, Loading, Section } from "../components/ui/parts.js";
+import { PageHeader, EmptyState } from "../components/ui/notice.js";
+import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { cn } from "../lib/cn.js";
 import type { MessageKey } from "../i18n/en.js";
@@ -13,6 +13,8 @@ import { ago } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
 import { runKindLabel } from "./common.js";
+import { Card } from "../components/ui/card.js";
+import { Badge } from "../components/ui/badge.js";
 
 // A run's stored transcript (design §9, issue #303), under /app/items/<id>/runs/<run>. The outcome first, then the
 // steps, one page (at most 64 KiB of the file) at a time. Every text is what the API gave: scanned on channel
@@ -231,11 +233,11 @@ export function TranscriptView({ itemId, runId }: { itemId: string; runId: strin
           ))}
         </ButtonRow>
       )}
-      <Section title={t("transcript.steps")} count={steps.length}>
+      <Card title={t("transcript.steps")} count={steps.length}>
         {first.format === "plain" && <p className="mb-2 text-xs text-text-2">{t("transcript.plainFormat")}</p>}
         {tail && first.earlier && <p className="mb-2 text-xs text-text-2">{t("transcript.tailNote")}</p>}
         {steps.length === 0 && !hasNextPage ? (
-          <Empty>{filter ? t("transcript.noneOfType") : t("transcript.noSteps")}</Empty>
+          <EmptyState title={filter ? t("transcript.noneOfType") : t("transcript.noSteps")} />
         ) : (
           <ol aria-label={t("transcript.stepsList")} className="min-w-0 space-y-2">
             {steps.map((s) => <StepView key={s.id} step={s} />)}
@@ -246,7 +248,7 @@ export function TranscriptView({ itemId, runId }: { itemId: string; runId: strin
             {isFetchingNextPage ? t("transcript.loading") : t("transcript.loadMore")}
           </Button>
         )}
-      </Section>
+      </Card>
     </>
   );
 }
