@@ -86,6 +86,16 @@ describe("shortcuts", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("⌘K lists the Data page with a developer-page label, and no other page with one", async () => {
+    mount();
+    await screen.findByText("First spec");
+    press("k", { metaKey: true });
+    const box = await screen.findByRole("dialog", { name: "Search" });
+    const data = screen.getAllByRole("option").find((o) => o.textContent?.startsWith("Data"))!;
+    expect(data.textContent).toBe("DataDeveloper page");
+    expect(box.textContent?.split("Developer page").length).toBe(2);
+  });
+
   it("? lists every shortcut, Escape closes it", () => {
     mount();
     press("?");

@@ -37,7 +37,7 @@ export const plugins = {
   "plugins.emptyTools": "No tool yet. Add a pack that holds tools, then approve each one here.",
   "plugins.add": "Add",
   "plugins.addTitle": "Add a pack",
-  "plugins.addConsequence": "Pick a pack folder, or one .json file from its tools or mcp_servers folder. What it holds is stored waiting for your approval.",
+  "plugins.addConsequence": "Pick a pack folder, or one .json file from the tools or MCP servers folder of the pack. What it holds is stored waiting for your approval.",
   "plugins.addSkillTitle": "Add a skill folder",
   "plugins.addSkillConsequence": "Pick a folder of skills, or a skill file in one. The change goes on a local branch; merge it to apply.",
   "plugins.path": "Path to a file or folder",

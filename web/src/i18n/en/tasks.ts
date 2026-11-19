@@ -30,7 +30,7 @@ export const tasks = {
   "tasks.projectsClose": "Close",
   "tasks.addedToProject": "{title} is in {name}.",
   "tasks.removedFromProject": "{title} is no longer in {name}.",
-  "tasks.doneAt": "done {at}",
+  "tasks.doneAt": "Done {at}",
   "tasks.closedRejected": "Rejected",
   "tasks.closedNotPlanned": "Not planned",
   "tasks.closedOther": "Closed",

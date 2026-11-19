@@ -37,7 +37,7 @@ describe("done tasks stay, struck through (design 02-tasks, done tasks stay)", (
     expect(title("tk_built").className.split(" ")).toContain("line-through");
     expect(within(card("tk_built")).getByRole("link", { name: "wi_1" })).toBeTruthy();
     expect(within(card("tk_built")).getByRole("button", { name: "Reopen: tk_built" })).toBeTruthy();
-    expect(card("tk_built").textContent).toContain("done 2026-11-12");
+    expect(card("tk_built").textContent).toContain("Done 2026-11-12");
     expect(title("tk_inbox").className.split(" ")).not.toContain("line-through");
   });
 
@@ -61,7 +61,7 @@ describe("done tasks stay, struck through (design 02-tasks, done tasks stay)", (
     expect(within(card("tk_wont")).getByRole("checkbox", { name: "Complete: tk_wont" })).toBeTruthy();
     // A done task keeps its reason beside the done time (a task closed before 2026-11-19 by a rejected item).
     expect(within(card("tk_closed")).getByText("Closed")).toBeTruthy();
-    expect(within(card("tk_old")).getByText("Rejected").parentElement).toBe(within(card("tk_old")).getByText("done 2026-11-12", { exact: false }).parentElement);
+    expect(within(card("tk_old")).getByText("Rejected").parentElement).toBe(within(card("tk_old")).getByText("Done 2026-11-12", { exact: false }).parentElement);
     for (const id of ["tk_merged", "tk_open"]) for (const reason of ["Rejected", "Not planned", "Closed"]) expect(within(card(id)).queryByText(reason)).toBeNull();
   });
 
