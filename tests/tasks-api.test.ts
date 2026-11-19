@@ -3,14 +3,14 @@
 // size, JSON), then the body; every refusal stores nothing. The caller chooses the task ID, so a retry stores one task.
 
 import { describe, expect, it } from "vitest";
-import { DONE_WINDOW_DAYS } from "../src/core/tasks.js";
+import { DONE_WINDOW_DAYS, MAX_TASK_BODY } from "../src/core/tasks.js";
 import type { UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, type UiRequest, respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
-import { TASKS_PATH, TASK_DONE_PATH, TASK_EDIT_PATH, TASK_REOPEN_PATH, TASK_SUB_PATH, TASK_WRITES } from "../src/ui/tasks-api.js";
+import { TASKS_PATH, TASK_BODY_PATH, TASK_DONE_PATH, TASK_EDIT_PATH, TASK_REOPEN_PATH, TASK_SUB_PATH, TASK_WRITES } from "../src/ui/tasks-api.js";
 import { PROJECTS_PATH, TASK_PROJECT_PATH } from "../src/ui/projects-api.js";
 import { newStore } from "./helpers/store.js";
 
@@ -491,5 +491,70 @@ describe("the dashboard's task project routes (design 02-tasks and 09-dashboard-
     expect(home.map((t) => t.id).sort()).toEqual([ID, "tk_home_done_0001"].sort());
     expect(home.find((t) => t.id === "tk_home_done_0001")!.done_at).not.toBeNull();
     expect(rows(JSON.parse((await get(s)).body)).map((t) => t.id)).toEqual(expect.arrayContaining(["tk_home_done_0001", "tk_away_done_0001"]));
+  });
+});
+
+describe("POST /api/v1/tasks/body: a task's description (design 02-tasks, description)", () => {
+  const save = (s: Awaited<ReturnType<typeof setup>>, body: unknown, over: Partial<UiRequest> = {}) => s.post(body, { url: TASK_BODY_PATH, ...over });
+  const rows = (s: Awaited<ReturnType<typeof setup>>) => s.store.db.all("SELECT * FROM controller_tasks ORDER BY id");
+
+  it("is a task write route", () => {
+    expect(TASK_WRITES[TASK_BODY_PATH]).toBeTypeOf("function");
+  });
+
+  it("stores the description trimmed and answers the task; GET /api/v1/tasks returns it", async () => {
+    const s = await setup();
+    await s.post({ id: ID, words: "call the bank" });
+    const r = await save(s, { id: ID, body: "  ask about the fee\nand the card  " });
+    expect(r.status).toBe(200);
+    expect(JSON.parse(r.body)).toMatchObject({ task: { id: ID, body: "ask about the fee\nand the card" } });
+    expect((await s.store.getTask(ID))!.body).toBe("ask about the fee\nand the card");
+    const read = JSON.parse((await respond(s.d, { method: "GET", url: TASKS_PATH, host: HOST })).body);
+    expect(read.projects[0].tasks[0]).toMatchObject({ id: ID, body: "ask about the fee\nand the card" });
+  });
+
+  it("an empty or blank description clears it", async () => {
+    const s = await setup();
+    await s.post({ id: ID, words: "call the bank" });
+    await save(s, { id: ID, body: "notes" });
+    expect((await save(s, { id: ID, body: "  \n " })).status).toBe(200);
+    expect((await s.store.getTask(ID))!.body).toBeNull();
+  });
+
+  it("takes MAX_TASK_BODY characters and refuses one more with 400, writing nothing", async () => {
+    const s = await setup();
+    await s.post({ id: ID, words: "call the bank" });
+    expect(MAX_TASK_BODY).toBe(20_000);
+    expect((await save(s, { id: ID, body: "a".repeat(MAX_TASK_BODY) })).status).toBe(200);
+    const before = await rows(s);
+    const r = await save(s, { id: ID, body: "b".repeat(MAX_TASK_BODY + 1) });
+    expect(r.status).toBe(400);
+    expect(await rows(s)).toEqual(before);
+  });
+
+  it("answers 404 for an unknown task and 409 for a done one, writing nothing", async () => {
+    const s = await setup();
+    await s.post({ id: ID, words: "call the bank" });
+    await save(s, { id: ID, body: "before" });
+    await s.store.completeTask(ID);
+    const before = await rows(s);
+    expect((await save(s, { id: "tk_nope_nope", body: "x" })).status).toBe(404);
+    const done = await save(s, { id: ID, body: "after" });
+    expect(done.status).toBe(409);
+    expect(await rows(s)).toEqual(before);
+  });
+
+  it("refuses a body that is not { id, body }, a request without the guards, and no actor, writing nothing", async () => {
+    const s = await setup();
+    await s.post({ id: ID, words: "call the bank" });
+    const before = await rows(s);
+    for (const b of [{ id: ID }, { id: ID, body: 7 }, { id: ID, body: "x", extra: 1 }, []]) expect((await save(s, b)).status, JSON.stringify(b)).toBe(400);
+    expect((await save(s, { id: ID, body: "x" }, { csrfToken: "stale" })).status).toBe(403);
+    expect((await save(s, { id: ID, body: "x" }, { origin: "https://evil.example" })).status).toBe(403);
+    expect((await save(s, { id: ID, body: "x" }, { contentType: "text/plain" })).status).toBe(415);
+    expect((await save(s, { id: ID, body: "x" }, { bodyTooLarge: true })).status).toBe(413);
+    expect(await rows(s)).toEqual(before);
+    const off = await setup({ actor: null });
+    expect((await save(off, { id: ID, body: "x" })).status).toBe(503);
   });
 });

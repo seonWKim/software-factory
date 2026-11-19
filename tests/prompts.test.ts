@@ -384,3 +384,93 @@ describe("prompts/review.md: a UI change that could not be checked (design 04-ag
     expect(text.slice(text.indexOf("Output:"))).toMatch(/^- ui_unverified: true only/m);
   });
 });
+
+// UI specs name components, a reference page and what stays fixed (wi_1303fdc2): the triage prompt asks for them,
+// the review prompt checks the diff against them, and the design system holds the table and the fixed list.
+const flat = (s: string): string => s.replace(/\s+/g, " ");
+
+describe("prompts/triage.md: a UI change names components, a reference page and what stays fixed", () => {
+  const rule = flat(bullet(prompt("triage"), "UI changes"));
+
+  it("asks, for a change under web/ with design-system/components.md, for the components each element uses by name", () => {
+    expect(rule).toMatch(/under `web\/`.*`design-system\/components\.md`/);
+    expect(rule).toMatch(/names the components each new or changed element uses, by name from `design-system\/components\.md`/);
+  });
+
+  it("asks for one existing page to match for layout and spacing", () => {
+    expect(rule).toMatch(/one existing page to match for layout and spacing/);
+  });
+
+  it("points to the Stays fixed list in design-system/README.md", () => {
+    expect(rule).toMatch(/"Stays fixed" list in `design-system\/README\.md`/);
+  });
+
+  it("says a need with no component says so", () => {
+    expect(rule).toMatch(/A need with no component says so/);
+  });
+});
+
+describe("prompts/review.md step 7: the diff against the named components and the Stays fixed list", () => {
+  const lines = prompt("review").split("\n");
+  const start = lines.findIndex((l) => l.startsWith("7. Design-system review:"));
+  const end = lines.findIndex((l, i) => i > start && /^\d+\. /.test(l));
+  const step = flat(lines.slice(start, end).join("\n"));
+
+  it("checks the diff against the components the spec names and the Stays fixed list", () => {
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(step).toMatch(/the components the spec names/);
+    expect(step).toMatch(/"Stays fixed" list in `design-system\/README\.md`/);
+  });
+
+  it("flags a hand-made element where the table names a component, as kind code naming the table row", () => {
+    expect(step).toMatch(/hand-made element .*"Which component for what" table names a component is a finding of kind `code` that names the table row/);
+  });
+});
+
+describe("design-system: the component table and the Stays fixed list", () => {
+  const root = join(import.meta.dirname, "..", "design-system");
+  const components = readFileSync(join(root, "components.md"), "utf8");
+  const readme = readFileSync(join(root, "README.md"), "utf8");
+  const sections = new Set([...components.matchAll(/^## (\w+)/gm)].map((m) => m[1]));
+  const tableAt = components.indexOf("## Which component for what");
+  const rows = components
+    .slice(tableAt)
+    .split("\n")
+    .filter((l) => l.startsWith("| ") && !l.startsWith("| Need") && !l.startsWith("|---"))
+    .map((l) => l.split("|").slice(1, -1).map((c) => c.trim()));
+  const row = (need: string) => rows.find((r) => r[0] === need);
+
+  it("opens with the table, before the first component section, with need, component and usage columns", () => {
+    expect(tableAt).toBeGreaterThanOrEqual(0);
+    expect(tableAt).toBeLessThan(components.indexOf("## Card"));
+    expect(components.slice(tableAt)).toMatch(/^\| Need \| Component \| Usage \|$/m);
+  });
+
+  it.each([
+    ["a state", "Badge"],
+    ["a row's extra actions", "OverflowMenu"],
+    ["input inside a list row", "Dialog"],
+  ])("maps %s to %s", (need, component) => {
+    expect(row(need)?.[1]).toContain(`\`${component}\``);
+  });
+
+  it("maps an on/off choice in a list to Checkbox, says none exists yet, a follow-up adds it and Switch serves until then", () => {
+    const r = row("an on/off choice in a list");
+    expect(r?.[1]).toMatch(/Checkbox/);
+    expect(r?.join(" ")).toMatch(/no Checkbox exists yet/i);
+    expect(r?.join(" ")).toMatch(/follow-up issue adds it/);
+    expect(r?.[1]).toContain("`Switch`");
+  });
+
+  it("names, in code, only components that have a section", () => {
+    for (const r of rows) for (const [, name] of r[1]!.matchAll(/`(\w+)`/g)) expect(sections.has(name), name).toBe(true);
+  });
+
+  it("README has a Stays fixed section with the four items", () => {
+    const at = readme.indexOf("## Stays fixed");
+    expect(at).toBeGreaterThanOrEqual(0);
+    const section = readme.slice(at, readme.indexOf("\n## ", at + 1));
+    for (const item of ["brand colour", "the one primary action per view", "page header and Card structure", "no raw IDs on a page"])
+      expect(section, item).toContain(item);
+  });
+});

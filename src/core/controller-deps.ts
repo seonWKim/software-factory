@@ -141,6 +141,11 @@ export interface ControllerDeps {
    */
   check_env?: Readonly<Record<string, string>>;
   /**
+   * Which of `names` (top-level entries such as `README.md`, `bin`) exist in the repo's base checkout: the merge
+   * reply's run hint when no `repo.restart_command` is set (design 04-gate-commands, restart). Absent: none found.
+   */
+  repo_entries?: (names: readonly string[]) => Promise<string[]>;
+  /**
    * The owner's tacit ledger (`plugins.tacit`, issue #570): a `/revise`, a `/reject` and a `changes` verdict each
    * record one capture intent, keyed by the command's comment ID, that outbound delivers to it. Absent, or not
    * `enabled` (the `none` plugin): nothing is captured and no intent recorded.

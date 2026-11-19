@@ -5,7 +5,7 @@ import { Markdown } from "../components/ui/markdown.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
-import { ago } from "../lib/format.js";
+import { When } from "./common.js";
 import { Card } from "../components/ui/card.js";
 import { Badge } from "../components/ui/badge.js";
 import { EmptyState } from "../components/ui/notice.js";
@@ -80,7 +80,7 @@ function Message({ m, now, open: initial }: { m: ThreadEntry; now: number; open:
         {owner && <span data-author-id className="font-mono">{m.author}</span>}
         <span data-channel>{t("thread.channel", { channel: CHANNELS[m.channel] ? t(CHANNELS[m.channel]!) : m.channel })}</span>
         <Badge>{m.kind}</Badge>
-        <time dateTime={m.at} title={m.at} className="ml-auto tabular-nums">{t("time.ago", { time: ago(m.at, now) })}</time>
+        <span className="ml-auto tabular-nums"><When at={m.at} now={now} /></span>
       </p>
       {folded ? (
         <p data-summary className="min-w-0 truncate px-3 py-2 text-sm sm:px-4">{summary}</p>

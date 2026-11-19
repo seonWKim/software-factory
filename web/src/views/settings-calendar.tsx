@@ -9,8 +9,7 @@ import { Input } from "../components/ui/input.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { t } from "../i18n/index.js";
-import { ago } from "../lib/format.js";
-import { useNow } from "./common.js";
+import { When, useNow } from "./common.js";
 import { Card } from "../components/ui/card.js";
 import { Badge } from "../components/ui/badge.js";
 
@@ -119,7 +118,7 @@ function CalendarRow({ plugin, token }: { plugin: CalendarPluginView; token: str
         <span className="font-medium wrap-anywhere">{plugin.name}</span>
         <Badge level={plugin.connected ? "ready_to_merge" : undefined}>{plugin.connected ? t("calendar.connected") : t("calendar.notConnected")}</Badge>
         <span className="text-xs text-text-2 tabular-nums">
-          {plugin.synced_at ? t("calendar.lastSync", { time: t("time.ago", { time: ago(plugin.synced_at, now) }) }) : t("calendar.neverSynced")}
+          {plugin.synced_at ? <When at={plugin.synced_at} now={now} label="calendar.lastSync" /> : t("calendar.neverSynced")}
         </span>
       </div>
       {reconnect ? (

@@ -25,7 +25,10 @@ Do:
    change under `web/`); other diffs are unaffected. For a change under `web/`, check the diff against
    `design-system/patterns.md` and `design-system/components.md`. Each rule it breaks is a finding of kind `code`
    that names the rule by its number (for example "breaks decision rule 2: one value behind a disclosure") and asks
-   for the change. Attach the `check:responsive` screenshots as evidence when they exist; when they do not, list
+   for the change. Check it also against the components the spec names and the "Stays fixed" list in
+   `design-system/README.md`; each fixed item it changes is a finding of kind `code`. A hand-made element where the
+   `design-system/components.md` "Which component for what" table names a component is a finding of kind `code`
+   that names the table row (for example "a hand-made checkbox: row 'an on/off choice in a list'"). Attach the `check:responsive` screenshots as evidence when they exist; when they do not, list
    them under `unverified`.
 8. UI changes: when the diff touches UI paths (`web/`, `src/ui/`, or the paths the project lists for its UI) and you
    could not run its build, its type-check or its screenshots, set `ui_unverified` to true and list each of those you

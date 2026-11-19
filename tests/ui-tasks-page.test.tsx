@@ -219,3 +219,65 @@ describe("Tasks page", () => {
     });
   });
 });
+
+describe("the description dialog (design 02-tasks and 09-dashboard-tasks)", () => {
+  const open = (id: string) => fireEvent.click(within(card(id)).getByRole("button", { name: `Description: ${id}` }));
+  const dialog = () => document.querySelector<HTMLDialogElement>("dialog[data-dialog]");
+
+  it("the title opens a dialog with the stored description in a textarea, outside the row, so the row keeps its children", async () => {
+    s.current = view({ today: { overdue: [row("tk_late", { due_date: "2026-11-10", body: "the old notes" })], due: [] } });
+    await show();
+    const before = card("tk_late").innerHTML;
+    open("tk_late");
+    const d = dialog()!;
+    expect(d).not.toBeNull();
+    expect(card("tk_late").contains(d)).toBe(false);
+    expect(card("tk_late").innerHTML).toBe(before);
+    expect((within(d).getByRole("textbox", { name: "Description" }) as HTMLTextAreaElement).value).toBe("the old notes");
+    expect(within(d).getByRole("button", { name: "Save" })).toBeTruthy();
+    expect(within(d).getByRole("button", { name: "Cancel" })).toBeTruthy();
+    expect(d.textContent).toContain("Build this sends the title and this description");
+  });
+
+  it("Save posts { id, body } with the token and closes the dialog", async () => {
+    await show();
+    open("tk_late");
+    fireEvent.change(within(dialog()!).getByRole("textbox", { name: "Description" }), { target: { value: "call before noon" } });
+    fireEvent.click(within(dialog()!).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(s.posts).toHaveLength(1));
+    expect(s.posts[0]!.url).toBe("/api/v1/tasks/body");
+    expect(new Headers(s.posts[0]!.init.headers).get("x-csrf-token")).toBe(TOKEN);
+    expect(JSON.parse(String(s.posts[0]!.init.body))).toEqual({ id: "tk_late", body: "call before noon" });
+    await waitFor(() => expect(dialog()).toBeNull(), SLOW);
+  });
+
+  it("a refusal stays in the dialog with its reason", async () => {
+    await show();
+    s.answer = { status: 409, body: { error: "the task is done: a done task's description cannot be edited" } };
+    open("tk_late");
+    fireEvent.click(within(dialog()!).getByRole("button", { name: "Save" }));
+    expect((await within(dialog()!).findByRole("alert", undefined, SLOW)).textContent).toContain("a done task's description");
+  });
+
+  it("Cancel closes it and posts nothing", async () => {
+    await show();
+    open("tk_late");
+    fireEvent.change(within(dialog()!).getByRole("textbox", { name: "Description" }), { target: { value: "not saved" } });
+    fireEvent.click(within(dialog()!).getByRole("button", { name: "Cancel" }));
+    expect(dialog()).toBeNull();
+    expect(s.posts).toEqual([]);
+  });
+
+  it("a built task's title opens the dialog too, which says the work item keeps the text it was built with; the ID still links", async () => {
+    await show();
+    expect(within(card("tk_built")).getByRole("link", { name: "wi_1" }).getAttribute("href")).toBe("/app/items/wi_1");
+    open("tk_built");
+    expect(dialog()!.textContent).toContain("Built as wi_1: the work item keeps the text it was built with");
+  });
+
+  it("with no commands actor the title opens nothing", async () => {
+    s.current = view({ csrf_token: null, can_build: false });
+    await show();
+    expect(within(card("tk_late")).queryByRole("button", { name: "Description: tk_late" })).toBeNull();
+  });
+});

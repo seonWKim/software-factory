@@ -1,6 +1,6 @@
 // The Tasks page: GET /api/v1/tasks (useTasks), POST /api/v1/tasks (postTaskAdd), /api/v1/tasks/build (postTaskBuild),
 // the row actions under /api/v1/tasks (postTaskAction: edit, done, reopen, delete and sub), POST /api/v1/projects
-// (postProject) and POST /api/v1/tasks/project (postTaskProject).
+// (postProject), POST /api/v1/tasks/project (postTaskProject) and POST /api/v1/tasks/body (postTaskBody).
 
 import { useQuery } from "@tanstack/react-query";
 import { t } from "../i18n/index.js";
@@ -22,6 +22,8 @@ export interface TaskRow {
   recurrence: string | null;
   /** The work item Build this made from it, or null. */
   work_item_id: string | null;
+  /** Its description (design 02-tasks), below the title in the work item Build this makes; null or absent: none. */
+  body?: string | null;
   /** The task this is a sub-task of (one level), or null. */
   parent_task_id?: string | null;
   /** The slugs of its active task projects (absent from an older server). */
@@ -123,6 +125,12 @@ export async function postProject(token: string, id: string, name: string): Prom
 export async function postTaskProject(token: string, id: string, project: string, add: boolean): Promise<{ ok: true; changed: boolean } | { ok: false; error: string }> {
   const r = await postJson<{ changed?: boolean; error?: string }>(API.taskProject, token, { id, project, add });
   return r.ok ? { ok: true, changed: r.value.changed ?? false } : { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+}
+
+/** POST /api/v1/tasks/body: the task's description (empty clears it). A refusal (400, 404, 409, …) comes back as `{ ok: false, error }`. */
+export async function postTaskBody(token: string, id: string, body: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await postJson<{ error?: string }>(`${API.tasks}/body`, token, { id, body });
+  return r.ok ? { ok: true } : { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
 /**

@@ -204,8 +204,8 @@ export interface LoadedConfig {
    * (design §4): the implement run before push (and in its merge-conflict step), the update run on the merged
    * branch, the resolve run after install. Absent: `[test_command]` (checkCommands in src/core/checks.ts).
    * `ui_check`: the UI check (design §4), run only by the merge-check run, after the install command and the checks,
-   * on a merged result that changes a path under one of its `paths` prefixes. Absent: off.
-   */
+   * on a merged result that changes a path under one of its `paths` prefixes. Absent: off. `restart_command`: argv
+   * the restart run runs in the base checkout (design 04-gate-commands, restart); absent: no Restart app, off. */
   repo: {
     owner: string;
     name: string;
@@ -214,7 +214,7 @@ export interface LoadedConfig {
     install_command: string[];
     test_command: string[];
     check_commands?: string[][];
-    ui_check?: UiCheck;
+    ui_check?: UiCheck; restart_command?: string[];
   };
   /**
    * True when config selects no forge plugin (design 05-sources, Local startup; set by the composition root from

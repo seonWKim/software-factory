@@ -1,10 +1,8 @@
 # Software factory: design index
 
-The design of the factory. Living document: change it when a decision changes.
-
-Read this index first, then open only the topic files your change touches. Each topic file states its current
-decision first; replaced decisions are in `history/<topic>.md`. A design change edits the topic file, never this
-index. Add a line here only for a new topic file. Topic files keep the old section numbers: "§5" means `05-*`.
+The living design. Read this index first, then open only the topic files your change touches. Each
+topic file states its current decision first; replaced decisions are in `history/<topic>.md`. A design change edits
+the topic file, never this index; add a line here only for a new topic file. "§5" means `05-*`.
 
 ## 1. Shape
 - [01-shape.md](design/01-shape.md): the flow from intake to the human gate and post-merge.
@@ -51,6 +49,7 @@ index. Add a line here only for a new topic file. Topic files keep the old secti
 - [06-measurement.md](design/06-measurement.md): the feedback rate, revert tracking, `factory stats`, the golden set.
 - [06-token-budget.md](design/06-token-budget.md): per-tier token budget checkpoints and what a run's tokens count.
 - [06-spend.md](design/06-spend.md): spend per day, week and item, and dollar budgets.
+- [06-efficiency.md](design/06-efficiency.md): items finished per period; tokens and time per item.
 
 ## 7. Self-improvement
 - [07-self-improvement.md](design/07-self-improvement.md): how the factory changes its own behaviour, the doc index in the prompt.

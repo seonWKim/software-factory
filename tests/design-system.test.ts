@@ -104,6 +104,19 @@ describe("design tokens", () => {
     expect(raw.test("<buttons> and <inputs>")).toBe(false);
   });
 
+  it('no role="checkbox" appears under web/src outside components/ui: a checkbox is the shared Checkbox', () => {
+    const raw = /role=(?:"checkbox"|'checkbox'|\{["']checkbox["']\})/;
+    const ui = join(WEB_SRC, "components", "ui");
+    const hits = files(WEB_SRC)
+      .filter((f) => /\.tsx?$/.test(f) && !f.startsWith(ui))
+      .filter((f) => raw.test(readFileSync(f, "utf8")));
+    expect(hits).toEqual([]);
+    // Self-check: a raw role="checkbox" is caught; the component and other roles are not.
+    expect(raw.test('<Button role="checkbox" aria-checked />')).toBe(true);
+    expect(raw.test("<div role={'checkbox'} />")).toBe(true);
+    expect(raw.test('<Checkbox aria-label="x" /> <Button role="switch" />')).toBe(false);
+  });
+
   it("no raw table element appears under web/src/views: tables are the shared Table, Tr and Td", () => {
     const raw = /<(?:table|thead|tbody|tfoot|tr|td|th|caption)(?=[\s/>])/;
     const hits = files(join(WEB_SRC, "views"))
@@ -130,7 +143,7 @@ describe("design tokens", () => {
     expect(button).toMatch(/icon: "size-8/);
     // Hover only on an enabled button, so a disabled one keeps its border and text colours.
     expect(button).not.toMatch(/(?<![\w:-])hover:/);
-    for (const [file, name] of [["select.tsx", "Select"], ["input.tsx", "Input"], ["textarea.tsx", "Textarea"], ["radio.tsx", "Radio"], ["field.tsx", "Field"], ["button-row.tsx", "ButtonRow"]] as const) {
+    for (const [file, name] of [["select.tsx", "Select"], ["input.tsx", "Input"], ["textarea.tsx", "Textarea"], ["radio.tsx", "Radio"], ["checkbox.tsx", "Checkbox"], ["field.tsx", "Field"], ["button-row.tsx", "ButtonRow"]] as const) {
       expect(ui(file)).toContain(`export function ${name}(`);
     }
     for (const file of ["button.tsx", "select.tsx", "input.tsx", "textarea.tsx", "radio.tsx"]) expect(ui(file)).toMatch(/\b(FOCUS|FIELD)\b/);

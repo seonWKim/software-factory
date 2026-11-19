@@ -14,7 +14,7 @@ export const rules = {
   "standing.pending": "Pending proposals",
   "standing.title": "Standing approvals",
   "standing.rules": "Standing rules",
-  "standing.intro": "A rule that is on approves the specs of its tier that wait at its gate without a reply. Changing one needs approve_spec.",
+  "standing.intro": "A rule that is on approves the specs of its tier that wait at its gate without a reply. Changing one needs the permission to approve specs.",
   "standing.noWrite": " This server has no write route; use /standing on a work item.",
   "rules.stateOpen": "Open",
   "rules.statePending": "Pending",
