@@ -166,6 +166,14 @@ const NOV7_VIEW: SpendView = {
   days: [NOV[NOV7]!], items: NOV_ITEMS.slice(0, 3), items_total: 3,
 };
 
+describe("Spend page: its note (design 09-health, 2026-11-20)", () => {
+  it("says what the costs are in one short sentence, with no code", async () => {
+    show(SpendSection);
+    const note = await screen.findByText("What the agent runs cost, by day (UTC).");
+    expect(note.textContent).not.toMatch(/\b[a-z]+_[a-z_]+\b/);
+  });
+});
+
 describe("Spend page: the daily chart", () => {
   beforeEach(() => {
     view = NOV_VIEW;
