@@ -13,6 +13,7 @@
   --color-bg: var(--bg);
   --color-surface: var(--surface);
   --color-surface-2: var(--surface-2);
+  --color-sidebar: var(--sidebar);
   --color-border: var(--border);
   --color-border-strong: var(--border-strong);
   --color-text-1: var(--text);
@@ -20,20 +21,34 @@
   --color-text-3: var(--text-3);
   --color-accent: var(--accent);
   --color-ember: var(--ember);
+  --color-running: var(--running);
+  --color-done: var(--done);
   --color-failed: var(--failed);
   --color-focus: var(--focus);
   --color-on-solid: var(--on-solid);
   --color-pill-ok-bg: var(--pill-ok-bg);
   --color-pill-ok-fg: var(--pill-ok-fg);
+  --color-pill-ok-border: var(--pill-ok-border);
   --color-pill-warn-bg: var(--pill-warn-bg);
   --color-pill-warn-fg: var(--pill-warn-fg);
+  --color-pill-warn-border: var(--pill-warn-border);
   --color-pill-bad-bg: var(--pill-bad-bg);
   --color-pill-bad-fg: var(--pill-bad-fg);
+  --color-pill-bad-border: var(--pill-bad-border);
   --color-pill-info-bg: var(--pill-info-bg);
   --color-pill-info-fg: var(--pill-info-fg);
+  --color-pill-info-border: var(--pill-info-border);
   --radius-control: var(--r-control);
+  --radius-box: var(--r-box);
   --radius-card: var(--r-card);
   --radius-pill: var(--r-pill);
+  --spacing-1: var(--sp-1);
+  --spacing-2: var(--sp-2);
+  --spacing-3: var(--sp-3);
+  --spacing-4: var(--sp-4);
+  --spacing-6: var(--sp-6);
+  --spacing-8: var(--sp-8);
+  --spacing-12: var(--sp-12);
 }
 
 /* Nothing moves under prefers-reduced-motion (design §9): state is still shown by words and colour. */

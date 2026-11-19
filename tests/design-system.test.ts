@@ -235,4 +235,17 @@ describe("the Gongbang mark in the dashboard", () => {
     expect(decisions).not.toMatch(/ApproveConfirm/);
     for (const name of ["ApproveDialog", "RejectDialog", "ReviseDialog", "VerdictDialog"]) expect(commands + decisions).toContain(`function ${name}(`);
   });
+
+  it("maps every token of tokens.css (but --fs-*, --lh-*) in index.css @theme inline, and sidebar links use FOCUS", () => {
+    const tokens = [...new Set([...readFileSync(join(WEB_SRC, "tokens.css"), "utf8").matchAll(/^\s+(--[\w-]+):/gm)].map((m) => m[1]!))];
+    const unmapped = (css: string) => tokens.filter((n) => !/^--(fs|lh)-/.test(n) && !css.includes(`var(${n})`));
+    const css = readFileSync(join(WEB_SRC, "index.css"), "utf8");
+    expect(unmapped(css)).toEqual([]);
+    // Self-check: a missing mapping is caught.
+    expect(unmapped(css.replace("var(--sidebar)", ""))).toEqual(["--sidebar"]);
+    const sidebar = readFileSync(join(WEB_SRC, "shell", "sidebar.tsx"), "utf8");
+    const focus = readFileSync(join(WEB_SRC, "components", "ui", "control.ts"), "utf8").match(/export const FOCUS =\s*"([^"]+)"/)![1]!;
+    expect(sidebar).toMatch(/LINK_ROW = `[^`]*\$\{FOCUS\}`/);
+    expect(focus).toContain("focus-visible:outline-focus");
+  });
 });
