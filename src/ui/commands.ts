@@ -30,7 +30,9 @@ import { refusalReply } from "../core/authorize.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, isProposalId, parseProposalMarker, typed } from "../core/interpret.js";
 import { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND } from "../core/local-cli.js";
 import { MERGE_COMMAND } from "../core/local-merge.js";
+import { parseNeedsHuman } from "../core/outputs.js";
 import { phaseOf } from "../core/phase.js";
+import { isCovered } from "../core/policy.js";
 import type { Run, UserId, WorkItem, WorkItemId } from "../core/types.js";
 import type { AuthDecision } from "../interfaces/auth-provider.js";
 import type { AppCommandRequest } from "../interfaces/factory-store.js";
@@ -258,6 +260,32 @@ export interface ItemCommandRow {
   allowed: boolean;
   /** Why the viewer may not send it, in the controller's refusal words (through the Withholder); null when allowed. */
   reason: string | null;
+  /**
+   * A permission ask's paths (approve, retry or resolve only): the paths the run's needs_human names outside the
+   * allowed paths, which the decision's button sends as `+paths`. Absent when the item holds no such ask.
+   */
+  paths?: string[];
+}
+
+/** The commands that take `+paths` (design §4, issue #280). */
+const PATHS_COMMANDS: readonly string[] = ["approve", "retry", "resolve"];
+
+/**
+ * The paths a permission ask names (design 09-dashboard-item-commands): at agent_needs_human, the latest ask's
+ * (needs_human of the newest succeeded run that has one, as src/ui/need.ts reads it) `paths` that no allowed path
+ * covers yet, each once (through `text`, the Withholder: a path the scan changes is left out); none for any other item.
+ */
+async function askedPaths(it: WorkItem, runs: readonly Run[], text: (v: string) => Promise<string | null>): Promise<string[]> {
+  if (phaseOf(it) !== "agent_needs_human") return [];
+  const asks = [...runs].reverse().flatMap((r) => {
+    if (r.outcome?.status !== "succeeded") return [];
+    const ask = parseNeedsHuman(r.outcome.data.needs_human);
+    return ask.ok && ask.value ? [ask.value] : [];
+  });
+  const named = [...new Set(asks[0]?.paths ?? [])].filter((p) => !isCovered(p, it.allowed_paths));
+  const shown: string[] = [];
+  for (const p of named) if ((await text(p)) === p) shown.push(p);
+  return shown;
 }
 
 /**
@@ -265,15 +293,20 @@ export interface ItemCommandRow {
  * whether the viewer's grant allows it and, when not, the reason the controller would refuse it with (through `text`,
  * the Withholder: it names a user ID). Every command but `merge` (its own button) needs approve_spec, as the
  * controller checks it; `/verdict`'s record_verdict comes with the same role. Not `/help`: it answers a comment and the
- * page cannot send it (APP_COMMANDS), so a button for it could only be refused.
+ * page cannot send it (APP_COMMANDS), so a button for it could only be refused. A permission ask's paths go on the
+ * commands that take `+paths` (askedPaths).
  */
 export async function itemCommands(
   it: WorkItem, runs: readonly Run[], grant: ActorGrant, text: (v: string) => Promise<string | null>,
 ): Promise<ItemCommandRow[]> {
   const reason = grant.allow ? null : await text(grant.reason);
+  const paths = await askedPaths(it, runs, text);
   return commandsFor(itemCommandState(it, runs))
     .filter((c) => APP_COMMANDS.includes(c.name))
-    .map((c) => ({ name: c.name, usage: c.usage, description: c.description, allowed: grant.allow, reason }));
+    .map((c) => ({
+      name: c.name, usage: c.usage, description: c.description, allowed: grant.allow, reason,
+      ...(paths.length > 0 && PATHS_COMMANDS.includes(c.name) ? { paths } : {}),
+    }));
 }
 
 /**

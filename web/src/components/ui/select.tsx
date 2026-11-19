@@ -203,7 +203,7 @@ export function Select({ id, "aria-label": ariaLabel, value, disabled, className
                   DISABLED,
                 )}
               >
-                <Check aria-hidden className={cn("size-4 shrink-0 text-accent", i !== selected && "invisible")} />
+                <Check aria-hidden className={cn("size-4 shrink-0 text-text-1", i !== selected && "invisible")} />
                 <span>{c.label}</span>
               </button>
             </li>

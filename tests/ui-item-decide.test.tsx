@@ -6,10 +6,11 @@ import axe from "axe-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../web/src/App.js";
 
-// The item page's "What you need to decide" box (design 09-dashboard-app): at the top, the reason, In short, each
-// open decision with its default, and the buttons that apply now (the one the state asks for is primary), plus the
-// same command for a terminal with the item's short number. Every control has a name; the severity choice has a
-// visible "Severity" label. The owner reads "you", a worker "worker N", their IDs behind a details element.
+// The item page's DecisionCard (design 09-dashboard-item-commands): first on the page while the owner is next, the
+// question (the reason), the evidence it is based on (the newest factory message, In short, a permission ask's
+// paths), then one button per action the decision takes, each with data-action and its command. The page body has no
+// command prose: the command help is behind ? and ⌘K. Every control has a name. The owner reads "you", a worker
+// "worker N", their IDs in a tooltip.
 
 const AT = "2026-11-12T00:00:00.000Z";
 const cmd = (name: string) => ({ name, usage: `/${name}`, description: name, allowed: true, reason: null });
@@ -42,11 +43,18 @@ const detail = (extra: object = {}) => ({
 });
 
 let body: Record<string, unknown>;
+/** The commands POSTs the page sent, with their JSON bodies. */
+let posts: { url: string; body: unknown }[];
 
 beforeEach(() => {
   body = detail();
-  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+  posts = [];
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     const path = url.split("?")[0]!;
+    if (init?.method === "POST") {
+      posts.push({ url, body: JSON.parse(String(init.body)) });
+      return new Response(JSON.stringify({ request_id: "app:1", seq: 1, command: "x", work_item_id: "wi_9f3c2a" }), { status: 202, headers: { "content-type": "application/json" } });
+    }
     const bodies: Record<string, unknown> = {
       "/api/v1/items/wi_9f3c2a": body,
       "/api/v1/session": { as_of: AT, csrf_token: "tok", commands_enabled: true, actor: "local:me", actor_source: "environment" },
@@ -70,7 +78,7 @@ function mount() {
   return render(<QueryClientProvider client={client}><App /></QueryClientProvider>);
 }
 
-/** The box, once the session has enabled its buttons. */
+/** The card, once the session has enabled its buttons. */
 async function box() {
   const decide = await screen.findByRole("region", { name: "What you need to decide" });
   await vi.waitFor(() => expect((within(decide).getByRole("button", { name: "Approve" }) as HTMLButtonElement).disabled).toBe(false));
@@ -79,7 +87,7 @@ async function box() {
 
 const FACTORY_MSG = { seq: 7, at: AT, kind: "spec", author: "factory", role: "factory", channel: "github_issue", anchor: "msg-7", body: "## Spec ready for approval\n\nLonger text of the spec." };
 
-describe("item page: What you need to decide", () => {
+describe("item page: DecisionCard", () => {
   it("an item in triage (next actor is the factory) renders no decision box, but still has its menu", async () => {
     body = detail({ item: item({ stage: "NEW", blocked_on: null, blocked_reason: null, why: { code: "triage", reason_code: "person", params: { reason: "Running triage" }, alarms: [], holder_id: null, next_actor: "factory", refs: [], ref_url: null } }), spec: null });
     mount();
@@ -90,17 +98,22 @@ describe("item page: What you need to decide", () => {
     expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
   });
 
-  it("at merge_pending renders one box whose first button is Merge, then Good/Bad, Feedback and the menu", async () => {
+  it("at merge_pending renders one card whose first button is Merge, then Good/Bad, Feedback and the menu, each action with data-action", async () => {
     body = detail({
       item: item({ stage: "MERGE_PENDING", blocked_reason: null, merge: { enabled: true, reason: null }, why: { code: "merge", reason_code: "person", params: { reason: "Ready to merge" }, alarms: [], holder_id: null, next_actor: "human", refs: [], ref_url: null } }),
       commands: ["verdict", "reject"].map(cmd), spec: null,
     });
     mount();
     const decide = await screen.findByRole("region", { name: "What you need to decide" });
-    expect(document.querySelectorAll("[data-decide]")).toHaveLength(1);
+    expect(document.querySelectorAll("[data-decision-card]")).toHaveLength(1);
     await vi.waitFor(() => expect((within(decide).getByRole("button", { name: "Merge" }) as HTMLButtonElement).disabled).toBe(false));
-    const row = within(decide).getByRole("button", { name: "Merge" }).closest("[data-command]")!.parentElement!;
-    expect([...row.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Merge", "Good", "Bad", "Feedback", "⋯"]);
+    const row = decide.querySelector("[data-decision-actions]")!;
+    const buttons = [...row.querySelectorAll("button")];
+    expect(buttons.map((b) => b.textContent)).toEqual(["Merge", "Good", "Bad", "Feedback", "⋯"]);
+    expect(buttons.slice(0, -1).map((b) => b.dataset.action)).toEqual(["merge", "verdict", "verdict", "verdict"]);
+    // The "…" menu's entries are actions too: Verdict and Reject, each with its command.
+    fireEvent.click(within(decide).getByRole("button", { name: "More commands" }));
+    expect(screen.getAllByRole("menuitem").map((m) => [m.textContent, m.dataset.action])).toEqual([["Verdict", "verdict"], ["Reject", "reject"]]);
     expect(decide.querySelectorAll("textarea")).toHaveLength(1);
   });
 
@@ -109,32 +122,104 @@ describe("item page: What you need to decide", () => {
     body = detail({ thread: [older, FACTORY_MSG] });
     mount();
     const decide = await box();
-    const context = decide.querySelector("[data-decide-context]") as HTMLElement;
+    const context = decide.querySelector("[data-decision-evidence] [data-decide-context]") as HTMLElement;
     expect(context.textContent).toContain("Spec ready for approval");
     expect(context.textContent).not.toContain("older");
     expect(within(context).getByRole("link", { name: "Show in thread" }).getAttribute("href")).toBe("#msg-7");
     expect(context.compareDocumentPosition(within(decide).getByRole("textbox", { name: "Note" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("at spec approval shows the box at the top with the reason, each open decision, Approve and Revise", async () => {
+  it("at spec approval renders the card first: the question, its evidence, then Approve, Revise and Reject, each sending its command", async () => {
     mount();
     const decide = await box();
-    // At the top: after the title, before the facts, the thread and the runs.
+    // First: after the title, before the facts, the thread, the runs and the timeline.
     const title = screen.getByRole("heading", { name: "Check the scope in CI" });
     expect(title.compareDocumentPosition(decide) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    for (const later of [screen.getByText("Tier"), screen.getByRole("region", { name: "Thread" }), screen.getByRole("region", { name: "Runs" })]) {
+    for (const later of [screen.getByText("Tier"), screen.getByRole("region", { name: "Thread" }), screen.getByRole("region", { name: "Runs" }), screen.getByRole("region", { name: "Timeline" })]) {
       expect(decide.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
-    expect(within(decide).getByTestId("why").textContent).toBe("Waiting for a person to approve the spec");
-    expect(within(decide).getByRole("region", { name: "In short" }).textContent).toContain("TO-BE: CI checks the scope.");
+    // The question, then the evidence, then the buttons.
+    const question = decide.querySelector("[data-decision-question]")!;
+    const evidence = decide.querySelector("[data-decision-evidence]")!;
+    const actions = decide.querySelector("[data-decision-actions]")!;
+    expect(within(question as HTMLElement).getByTestId("why").textContent).toBe("Waiting for a person to approve the spec");
+    expect(question.compareDocumentPosition(evidence) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(evidence.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(evidence as HTMLElement).getByRole("region", { name: "In short" }).textContent).toContain("TO-BE: CI checks the scope.");
     expect(within(decide).getByRole("radiogroup", { name: "1. Fail the job, or only warn?" })).toBeTruthy();
     expect((within(decide).getByRole("radio", { name: "Fail the job(default)" }) as HTMLInputElement).checked).toBe(true);
     expect((within(decide).getByRole("textbox", { name: "Answer 2" }) as HTMLInputElement).value).toBe("scope");
-    // The row reads Approve, Revise; approve, the one the state asks for, is first and the one primary button.
-    const buttons = ["Approve", "Revise"].map((n) => within(decide).getByRole("button", { name: n }));
+    // Approve and Revise, then Reject in the "…" menu; approve, the one the state asks for, is first and the one primary button.
+    const buttons = [...actions.querySelectorAll<HTMLButtonElement>("[data-command] > button")];
+    expect(buttons.map((b) => [b.textContent, b.dataset.action])).toEqual([["Approve", "approve"], ["Revise", "revise"]]);
     expect(buttons[0]!.className).toContain("bg-accent");
     expect(buttons[1]!.className).not.toContain("bg-accent");
-    expect(within(decide).queryByRole("button", { name: "Reject" })).toBeNull();
+    // Reject sends its existing command through the item commands route, after its dialog.
+    fireEvent.click(within(decide).getByRole("button", { name: "More commands" }));
+    const reject = screen.getByRole("menuitem", { name: "Reject" });
+    expect(reject.dataset.action).toBe("reject");
+    fireEvent.click(reject);
+    const dialog = screen.getByRole("dialog", { name: "Reject Check the scope in CI" });
+    fireEvent.click(within(dialog).getByRole("radio", { name: "duplicate" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Confirm reject" }));
+    await vi.waitFor(() => expect(posts).toEqual([{ url: "/api/v1/items/wi_9f3c2a/commands", body: { command: "reject", note: "duplicate" } }]));
+  });
+
+  it("is absent when no person is needed, and a command the item API marks not allowed is disabled and sends nothing", async () => {
+    body = detail({ commands: [{ ...cmd("approve"), allowed: false, reason: "not allowed (approve_spec)" }, cmd("revise")] });
+    mount();
+    const decide = await screen.findByRole("region", { name: "What you need to decide" });
+    await vi.waitFor(() => expect((within(decide).getByRole("button", { name: "Revise" }) as HTMLButtonElement).disabled).toBe(false));
+    const approve = within(decide).getByRole("button", { name: "Approve" }) as HTMLButtonElement;
+    expect(approve.dataset.action).toBe("approve");
+    expect(approve.disabled).toBe(true);
+    fireEvent.click(approve);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(posts).toEqual([]);
+  });
+
+  it("a permission ask shows the paths it asks for as evidence, and its button allows them with +paths", async () => {
+    const paths = ["web/src/x.tsx", "docs/y.md"];
+    body = detail({
+      item: item({ stage: "RUNNING", blocked_reason: "agent_needs_human", why: { code: "human", reason_code: "person", params: { reason: "May I edit these paths?" }, alarms: [], holder_id: null, next_actor: "human", refs: [], ref_url: null } }),
+      commands: [{ ...cmd("retry"), paths }, cmd("revise"), cmd("reject")], spec: null,
+    });
+    mount();
+    const decide = await screen.findByRole("region", { name: "What you need to decide" });
+    const evidence = decide.querySelector<HTMLElement>("[data-decision-evidence]")!;
+    expect([...evidence.querySelectorAll("[data-asked-paths] code")].map((c) => c.textContent)).toEqual(paths);
+    const allow = within(decide).getByRole("button", { name: "Allow and retry" }) as HTMLButtonElement;
+    expect(allow.dataset.action).toBe("retry");
+    expect(within(decide).queryByRole("button", { name: "Retry" })).toBeNull();
+    await vi.waitFor(() => expect(allow.disabled).toBe(false));
+    fireEvent.click(allow);
+    await vi.waitFor(() => expect(posts).toEqual([{ url: "/api/v1/items/wi_9f3c2a/commands", body: { command: "retry", note: "+paths web/src/x.tsx docs/y.md" } }]));
+  });
+
+  it("orders the page: the card, the current run, the thread (collapsed after its first message), the runs, the timeline", async () => {
+    const older = { ...FACTORY_MSG, seq: 3, anchor: "msg-3", at: "2026-11-11T00:00:00.000Z", body: "An older message." };
+    body = detail({
+      thread: [older, FACTORY_MSG],
+      runs: [...detail().runs, { id: "run_i1", kind: "implement", status: "running", attempt: 1, started_at: AT, finished_at: null, created_at: AT, tokens: 0, error: null, attempts: [{ attempt: 1, worker_id: "mac-mini:4242:2" }] }],
+    });
+    mount();
+    const order = [
+      await box(),
+      screen.getByRole("region", { name: "Current run" }),
+      screen.getByRole("region", { name: "Thread" }),
+      screen.getByRole("region", { name: "Runs" }),
+      screen.getByRole("region", { name: "Timeline" }),
+    ];
+    for (let i = 1; i < order.length; i++) expect(order[i - 1]!.compareDocumentPosition(order[i]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(order[1]!.textContent).toContain("running");
+    // The thread shows its first message; the rest wait behind one button.
+    const list = screen.getByRole("list", { name: "Thread" });
+    expect(list.dataset.collapsed).toBe("true");
+    expect(list.querySelector("li")!.id).toBe("msg-7");
+    const more = within(order[2]!).getByRole("button", { name: "Show 1 earlier message" });
+    expect(more.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(more);
+    expect(list.dataset.collapsed).toBe("false");
   });
 
   it("has no control without an accessible name", async () => {
@@ -146,16 +231,13 @@ describe("item page: What you need to decide", () => {
     expect(result.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.html).join(" | ")}`)).toEqual([]);
   });
 
-  it("the terminal hint names the item's short number; Copy copies the full command", async () => {
-    const copied: string[] = [];
-    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText: async (t: string) => void copied.push(t) } });
+  it("has no command prose in the page body: no /approve, /reject or /verdict text and no terminal line", async () => {
     mount();
-    const decide = await box();
-    const hint = decide.querySelector("[data-cli-hint]") as HTMLElement;
-    expect(hint.querySelector("code")!.textContent).toBe("factory approve #30");
-    expect(hint.textContent).not.toContain("wi_9f3c2a");
-    within(hint).getByRole("button", { name: "Copy command" }).click();
-    await vi.waitFor(() => expect(copied).toEqual(["factory approve wi_9f3c2a"]));
+    await box();
+    const main = document.querySelector("main")!;
+    expect(main.textContent).not.toMatch(/\/(approve|reject|verdict)\b/);
+    expect(main.textContent).not.toContain("From a terminal");
+    expect(main.querySelector("[data-cli-hint]")).toBeNull();
   });
 
   it("shows the owner as you and a worker as worker N, each ID in a tooltip on its name", async () => {

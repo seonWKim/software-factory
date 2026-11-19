@@ -4,7 +4,7 @@ import { IdDetails } from "../components/ui/copy.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
-import { LINK_CLASS } from "../components/ui/link-style.js";
+import { ID_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, isHttpUrl, isWorkerId, shortSource, until, whyText, workerName } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
@@ -48,13 +48,13 @@ export function PersonName({ id, name, viewer }: { id: string | null; name?: str
 export function SourceLink({ source, className, itemId }: { source: { id: string; link: string }; className?: string; itemId?: string }) {
   if (itemId !== undefined && !isHttpUrl(source.link)) {
     return (
-      <Link href={itemPath(itemId)} title={source.id} className={cn("max-w-[16ch] min-w-0 truncate tabular-nums", LINK_CLASS, className)}>
+      <Link href={itemPath(itemId)} title={source.id} className={cn("max-w-[16ch] min-w-0 truncate tabular-nums", ID_CLASS, className)}>
         {shortSource(source.id)}
       </Link>
     );
   }
   return (
-    <a href={source.link} target="_blank" rel="noreferrer" title={source.id} className={cn("max-w-[16ch] min-w-0 truncate tabular-nums", LINK_CLASS, className)}>
+    <a href={source.link} target="_blank" rel="noreferrer" title={source.id} className={cn("max-w-[16ch] min-w-0 truncate tabular-nums", ID_CLASS, className)}>
       {shortSource(source.id)}
     </a>
   );

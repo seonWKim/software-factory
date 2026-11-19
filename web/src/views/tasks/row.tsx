@@ -4,7 +4,7 @@ import { API, type TaskRow, postTaskBuild } from "../../api.js";
 import { Button } from "../../components/ui/button.js";
 import { FOCUS } from "../../components/ui/control.js";
 import { announceStatus } from "../../components/ui/dialog.js";
-import { LINK_CLASS } from "../../components/ui/link-style.js";
+import { ID_CLASS, LINK_CLASS } from "../../components/ui/link-style.js";
 import { OverflowMenu } from "../../components/ui/menu.js";
 import type { MessageKey } from "../../i18n/en.js";
 import { t } from "../../i18n/index.js";
@@ -58,6 +58,16 @@ function BuildButton({ task, token }: { task: TaskRow; token: string }) {
         </span>
       )}
     </span>
+  );
+}
+
+/** The title, a link to the built task's item (the ID beside it links too); an unbuilt task's title is plain text. */
+function TitleLink({ task, className }: { task: TaskRow; className: string }) {
+  const title = <p className={className}>{task.title}</p>;
+  return task.work_item_id === null ? title : (
+    <Link href={itemPath(task.work_item_id)} className={cn("block", LINK_CLASS)}>
+      {title}
+    </Link>
   );
 }
 
@@ -139,7 +149,7 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
             onClose={close}
           />
         ) : (
-          <p className={cn("text-sm text-pretty break-words", overdue && "font-medium text-pill-bad-fg", done && "text-text-2 line-through")}>{task.title}</p>
+          <TitleLink task={task} className={cn("text-sm text-pretty break-words", overdue && "font-medium text-pill-bad-fg", done && "text-text-2 line-through")} />
         )}
         <p className={cn(muted, "flex flex-wrap gap-x-3 gap-y-1")}>
           {overdue && <Badge level="stuck">{t("tasks.overdue")}</Badge>}
@@ -175,7 +185,7 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
         {task.work_item_id !== null ? (
           <>
             <WorkState id={task.work_item_id} title={task.title} open={!done} />
-            <Link href={itemPath(task.work_item_id)} className={cn(LINK_CLASS, "font-mono text-xs break-all")}>
+            <Link href={itemPath(task.work_item_id)} className={cn(ID_CLASS, "text-xs break-all")}>
               {task.work_item_id}
             </Link>
           </>

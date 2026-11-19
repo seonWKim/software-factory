@@ -3,7 +3,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { ItemCommands, commandOutcome } from "../web/src/views/item-commands.js";
+import { ItemDecision } from "../web/src/views/decision-card.js";
+import { commandOutcome } from "../web/src/views/item-commands.js";
 import { API } from "../web/src/api.js";
 import { AT, items, detail, RESPONSES, state, installShellFixtures, mount, cmd, SESSION, cap, button, settle } from "./ui-shell-fixtures.js";
 
@@ -15,16 +16,16 @@ const reply = (seq: number, command: string, handled: boolean, refusal: string |
 function mountCommands(commands = ["approve", "revise", "reject", "retry"].map(cmd), replies: ReturnType<typeof reply>[] = [], session: object | null = SESSION, nextActor = "human") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   if (session) client.setQueryData(["/api/v1/session"], session);
-  // The item the page already read: the decision box shows only when its why names the owner as next actor.
+  // The item the page already read: the DecisionCard shows only when its why names the owner as next actor.
   client.setQueryData(["/api/v1/items/wi_1"], { ...detail, item: { ...detail.item, why: { ...detail.item.why, next_actor: nextActor } } });
   return render(
     <QueryClientProvider client={client}>
-      <ItemCommands id="wi_1" commands={commands} replies={replies} />
+      <ItemDecision id="wi_1" commands={commands} replies={replies} />
     </QueryClientProvider>,
   );
 }
 const outcomeOf = (name: string) => document.querySelector(`[data-outcome-of="${name}"]`) as HTMLElement | null;
-/** Picks `name` (Reject or Verdict) from the item's "…" menu. */
+/** Picks `name` (Reject or Verdict) from the DecisionCard's "…" menu. */
 const fromMenu = (name: string) => {
   fireEvent.click(screen.getByRole("button", { name: "More commands" }));
   fireEvent.click(screen.getByRole("menuitem", { name: cap(name) }));
@@ -32,9 +33,11 @@ const fromMenu = (name: string) => {
 const typeNote = (text: string) => fireEvent.change(screen.getByRole("textbox", { name: "Note" }), { target: { value: text } });
 
 describe("item commands", () => {
-  it("shows one button per command, in the API's order, labelled with its name", () => {
+  it("shows one button per command, labelled with its name: the primary first (approve before retry), the rest in the API's order, each with data-action", () => {
     mountCommands(["retry", "approve", "budget"].map(cmd));
-    expect([...document.querySelectorAll("[data-command] > button")].map((b) => b.textContent)).toEqual(["Retry", "Approve", "Budget"]);
+    const buttons = [...document.querySelectorAll<HTMLButtonElement>("[data-command] > button")];
+    expect(buttons.map((b) => b.textContent)).toEqual(["Approve", "Retry", "Budget"]);
+    expect(buttons.map((b) => b.dataset.action)).toEqual(["approve", "retry", "budget"]);
   });
 
   it("verdict shows Good and Bad as one segmented control and Feedback as a button, each sending the verdict request; Feedback waits for the note box's text", async () => {
@@ -57,10 +60,13 @@ describe("item commands", () => {
     ]);
   });
 
-  it("Reject and Verdict are in the \"…\" menu, not buttons in the box, and open their dialogs", () => {
+  it("Reject and Verdict are in the \"…\" menu, not buttons in the card, each entry with data-action, and open their dialogs", () => {
     mountCommands(["approve", "verdict", "reject"].map(cmd));
     expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Verdict" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "More commands" }));
+    expect(screen.getAllByRole("menuitem").map((m) => m.dataset.action)).toEqual(["verdict", "reject"]);
+    fireEvent.click(screen.getByRole("button", { name: "More commands" }));
     fromMenu("verdict");
     expect(screen.getByRole("dialog", { name: "Verdict Spec waiting" })).toBeTruthy();
     fireEvent.click(button("Cancel"));
@@ -68,9 +74,9 @@ describe("item commands", () => {
     expect(screen.getByRole("dialog", { name: "Reject Spec waiting" })).toBeTruthy();
   });
 
-  it("an item that waits for nobody shows no decision box, only its \"…\" menu with Reject and Verdict", () => {
+  it("an item that waits for nobody shows no DecisionCard, only its \"…\" menu with Reject and Verdict", () => {
     mountCommands(["approve", "verdict", "reject"].map(cmd), [], SESSION, "factory");
-    expect(document.querySelector("[data-decide]")).toBeNull();
+    expect(document.querySelector("[data-decision-card]")).toBeNull();
     expect(screen.queryByRole("region", { name: "What you need to decide" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "More commands" }));
@@ -91,7 +97,7 @@ describe("item commands", () => {
     try {
       history.replaceState(null, "", "/app/items/wi_1");
       mount();
-      expect(await screen.findByRole("button", { name: "Approve" })).toBeTruthy();
+      expect((await screen.findByRole("button", { name: "Approve" })).dataset.action).toBe("approve");
       expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
       fireEvent.click(screen.getByRole("button", { name: "More commands" }));
       expect(screen.getByRole("menuitem", { name: "Reject" })).toBeTruthy();
@@ -209,3 +215,29 @@ describe("item commands", () => {
   });
 });
 
+
+describe("command help", () => {
+  const NAMES = ["/approve", "/revise", "/reject", "/retry", "/resolve", "/verdict"];
+  /** The command names the help lists: the first word of each entry's usage. */
+  const named = (help: HTMLElement) => [...help.querySelectorAll("dt code")].map((c) => c.textContent!.split(" ")[0]);
+
+  it("? opens the help with every command's name", async () => {
+    history.replaceState(null, "", "/app/items/wi_1");
+    mount();
+    await screen.findByRole("heading", { name: "Spec waiting" });
+    fireEvent.keyDown(document, { key: "?" });
+    const help = screen.getByRole("dialog", { name: "Keyboard shortcuts" });
+    expect(named(within(help).getByRole("region", { name: "Commands" }))).toEqual(expect.arrayContaining(NAMES));
+  });
+
+  it("⌘K opens the search, which lists the commands and filters them as you type", async () => {
+    history.replaceState(null, "", "/app/items/wi_1");
+    mount();
+    await screen.findByRole("heading", { name: "Spec waiting" });
+    fireEvent.keyDown(document, { key: "k", metaKey: true });
+    const search = screen.getByRole("dialog", { name: "Search" });
+    expect(named(within(search).getByRole("region", { name: "Commands" }))).toEqual(expect.arrayContaining(NAMES));
+    fireEvent.change(within(search).getByRole("searchbox"), { target: { value: "verdict" } });
+    expect(named(within(search).getByRole("region", { name: "Commands" }))).toEqual(["/verdict"]);
+  });
+});

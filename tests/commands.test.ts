@@ -57,6 +57,26 @@ describe("parseComment", () => {
 });
 
 describe("+paths (issue #280)", () => {
+  it("the item API puts a permission ask's paths on the commands that take +paths, the covered ones left out", async () => {
+    const it_ = {
+      stage: "RUNNING", blocked_on: "human", blocked_reason: "agent_needs_human", change_ref: null, allowed_paths: ["src/a.ts"],
+      source: { type: "github_issue", id: "o/r#1", link: "x" },
+    } as unknown as WorkItem;
+    const ask = (paths: string[]) => ({
+      kind: "implement", status: "succeeded",
+      outcome: { status: "succeeded", data: { needs_human: { reason: "outside the paths", question: "May I edit these paths?", paths } } },
+    });
+    const runs = [ask(["docs/old.md"]), ask(["src/a.ts", "web/b.tsx", "web/b.tsx"])] as never[];
+    const rows = await itemCommands(it_, runs, { allow: true }, async (v) => v);
+    const retry = rows.find((r) => r.name === "retry");
+    expect(retry?.paths).toEqual(["web/b.tsx"]);
+    for (const r of rows.filter((r) => !["approve", "retry", "resolve"].includes(r.name))) expect(r.paths, r.name).toBeUndefined();
+    // A path the Withholder changes is left out; an item that holds no ask gets none.
+    expect((await itemCommands(it_, runs, { allow: true }, async (v) => (v === "web/b.tsx" ? "[withheld]" : v))).find((r) => r.name === "retry")?.paths).toBeUndefined();
+    const plain = await itemCommands({ ...it_, blocked_reason: "spec_pending", stage: "READY" } as WorkItem, runs, { allow: true }, async (v) => v);
+    expect(plain.some((r) => r.paths !== undefined)).toBe(false);
+  });
+
   it("splits +paths and its paths off the first line; the lines below are the note", () => {
     expect(parseCommandPaths("+paths src/a.ts docs/b.md\nkeep it small\nand tested")).toEqual({ paths: ["src/a.ts", "docs/b.md"], note: "keep it small\nand tested" });
     expect(parseCommandPaths("+paths `src/a.ts` ./src/a.ts src/dir/")).toEqual({ paths: ["src/a.ts", "src/dir/"], note: "" });

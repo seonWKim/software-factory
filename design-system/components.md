@@ -60,7 +60,7 @@ A multi-line field on the same field classes as Input, padding-x 12 px and paddi
 
 ## Select
 
-A field 32 px high on the field classes (a `role=combobox` button that shows the current choice) with its own chevron (in `text-2`), which opens its own list, not the browser's: a `role=listbox` in the OverflowMenu's look (`surface`, 1 px `border`, `rounded-control`, shadow; items `text-sm`, hover and highlight `surface-2`, the shared `FOCUS` and `DISABLED` classes), the current choice `aria-selected` with an `accent` check mark. The list opens directly below the field, or above it when the viewport has no room below (a measured check, no positioning library). Options are `<option>` children (`value`, text, `disabled`, so a disabled placeholder works); `onChange` gets an event whose `target.value` is the picked value. Keys: Enter, Space or an arrow opens; ArrowDown and ArrowUp move the highlight; Enter picks; Esc closes and keeps the focus on the field; letters move the highlight to the first option starting with them. A click outside closes it. `wrapperClassName` sets the box around the field and its chevron (its width, its margin). One size. States: closed, open (below or above), focus-visible, `disabled`; option default, highlighted, selected, `disabled`.
+A field 32 px high on the field classes (a `role=combobox` button that shows the current choice) with its own chevron (in `text-2`), which opens its own list, not the browser's: a `role=listbox` in the OverflowMenu's look (`surface`, 1 px `border`, `rounded-control`, shadow; items `text-sm`, hover and highlight `surface-2`, the shared `FOCUS` and `DISABLED` classes), the current choice `aria-selected` with a `text-1` check mark. The list opens directly below the field, or above it when the viewport has no room below (a measured check, no positioning library). Options are `<option>` children (`value`, text, `disabled`, so a disabled placeholder works); `onChange` gets an event whose `target.value` is the picked value. Keys: Enter, Space or an arrow opens; ArrowDown and ArrowUp move the highlight; Enter picks; Esc closes and keeps the focus on the field; letters move the highlight to the first option starting with them. A click outside closes it. `wrapperClassName` sets the box around the field and its chevron (its width, its margin). One size. States: closed, open (below or above), focus-visible, `disabled`; option default, highlighted, selected, `disabled`.
 
 ## Field
 
@@ -96,7 +96,11 @@ A `role=switch` button with `aria-checked`, 20 by 36 px; the thumb moves by a cl
 
 ## SegmentedControl
 
-One choice among a few views (`role=group` with an `aria-label`): a 32 px box with a 1 px `border-strong` edge on `surface`, holding 28 px segments in one row that never wraps. Controlled by `value` and `onChange`; `options` gives each segment's `id` and label. States: selected (`aria-pressed`, `accent` fill, `on-solid` text), default (`text-2`), hover (`surface-2`, `text-1`), focus-visible.
+One choice among a few views (`role=group` with an `aria-label`): a 32 px box with a 1 px `border-strong` edge on `surface`, holding 28 px segments in one row that never wraps. Controlled by `value` and `onChange`; `options` gives each segment's `id` and label. States: selected (`aria-pressed`, `surface` fill, a `border-strong` ring, `text-1` text; neutral, never accent), default (`text-2`), hover (`surface-2`, `text-1`), focus-visible.
+
+## Link and ID
+
+`web/src/components/ui/link-style.ts` holds both. `LINK_CLASS` (`text-text-1 hover:underline`) is every link in the views, item titles included; the sidebar keeps its own. `ID_CLASS` (`font-mono text-text-3 hover:underline`) is an item or source ID, linked or not (Tasks row ID, source ID links, the item page header ID). Accent is never a text colour: only the primary Button and the selected-tab underline use it, and `tests/ui-link-style.test.tsx` fails on `text-accent` anywhere under `web/src`.
 
 ## Tabs
 

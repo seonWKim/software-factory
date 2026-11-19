@@ -28,6 +28,49 @@ describe("Needs you", () => {
     expect(el.textContent).not.toMatch(/Mergeable|spec ready/);
   });
 
+  const command = (name: string, extra: object = {}) => ({ name, usage: `/${name}`, description: name, allowed: true, reason: null, ...extra });
+  const primaryOf = async (id: string) => {
+    const row = (await section()).querySelector<HTMLElement>(`li[data-key="${id}"]`)!;
+    return row.querySelector<HTMLButtonElement>("[data-need-commands] [data-action]")!;
+  };
+
+  it("a row's primary is the approve or resolve its block reason accepts, whatever the API's order; Retry only when neither is accepted; each carries data-action", async () => {
+    s.items = [
+      item("wi_a", { title: "Approve first", item_phase: "needs_you", commands: ["retry", "reject", "approve"].map((n) => command(n)) }),
+      item("wi_r", { title: "Resolve first", item_phase: "needs_you", commands: ["retry", "resolve"].map((n) => command(n)) }),
+      item("wi_t", { title: "Only retry", item_phase: "needs_you", commands: ["retry", "revise"].map((n) => command(n)) }),
+      item("wi_n", { title: "Approve not allowed", item_phase: "needs_you", commands: [command("approve", { allowed: false, reason: "no role" }), command("retry")] }),
+      item("wi_m", { title: "Merge it", item_phase: "ready_to_merge", merge: { enabled: true, reason: null } }),
+      item("wi_o", { title: "Nothing to send", item_phase: "needs_you", commands: [command("reject")] }),
+    ];
+    await show();
+    const want = {
+      wi_a: ["Approve", "approve"], wi_r: ["Answer", "resolve"], wi_t: ["Retry", "retry"], wi_n: ["Retry", "retry"], wi_m: ["Merge", "merge"], wi_o: ["Open", "open"],
+    };
+    for (const [id, [label, action]] of Object.entries(want)) {
+      const b = await primaryOf(id);
+      expect({ id, label: b.textContent, action: b.dataset.action }).toEqual({ id, label, action });
+    }
+  });
+
+  it("a permission ask shows the command that allows its paths, not Retry, and sends them as +paths", async () => {
+    const paths = ["web/src/x.tsx", "docs/y.md"];
+    s.items = [item("wi_p", {
+      title: "May I edit these paths?", item_phase: "needs_you", need: { reason: "May I edit these paths?" },
+      commands: [command("retry", { paths }), command("revise"), command("reject")],
+    })];
+    await show();
+    const b = await primaryOf("wi_p");
+    expect(b.textContent).toBe("Allow and retry");
+    expect(b.textContent).not.toBe("Retry");
+    expect(b.dataset.action).toBe("retry");
+    await waitFor(() => expect(b.disabled).toBe(false), SLOW);
+    fireEvent.click(b);
+    await waitFor(() => expect(s.posts.some((p) => p.url.endsWith("/commands"))).toBe(true), SLOW);
+    const sent = s.posts.filter((p) => p.url.endsWith("/commands")).map((p) => JSON.parse(String(p.init.body)));
+    expect(sent).toEqual([{ command: "retry", note: "+paths web/src/x.tsx docs/y.md" }]);
+  });
+
   it("is not rendered when nothing waits", async () => {
     s.items = [item("wi_run", { title: "Busy", item_phase: "running" })];
     await show();
