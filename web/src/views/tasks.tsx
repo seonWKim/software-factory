@@ -12,6 +12,7 @@ import { useUrlParam } from "../lib/url-param.js";
 import { t } from "../i18n/index.js";
 import { type QuickAddKey, isUndo } from "../keys.js";
 import { NeedsYou } from "./task-work.js";
+import { ProjectFiles } from "./project-files.js";
 import { AddProjectDialog } from "./tasks/dialogs.js";
 import { QuickAdd } from "./tasks/forms.js";
 import { PAGE_SIZE, groupsOf, hasTasks, pageOf } from "./tasks/groups.js";
@@ -40,6 +41,9 @@ import { Card } from "../components/ui/card.js";
 // follows it too (GET /api/v1/items?project=<slug>): only the work items built from that project's tasks. Each open row's overflow
 // item Projects… opens the project dialog: a checkbox per active project adds or removes the task's link (POST
 // /api/v1/tasks/project) and New project creates one (POST /api/v1/projects) and puts the task in it.
+// On a project tab the row ends with Files (design 09-dashboard-tasks, the Files tab), a pressed-state Button in the row's
+// action slot kept in `?view=files` beside `?project=`: it shows that project's folder tree and editor (project-files.tsx)
+// in place of Quick add, Needs you and the list; pressing it again, or choosing any project tab, goes back to the tasks.
 // The page's order (design 09-dashboard-app): the project tabs, Quick add, Needs you, the list; the blocks
 // are spaced by one flex gap, the Section gap of design-system/patterns.md.
 
@@ -109,6 +113,12 @@ function ProjectTabs({ projects, value, onChange, action }: { projects: readonly
 
 export function TasksPage() {
   const [project, setProject] = useProjectParam();
+  const [view, setView] = useUrlParam("view", (v) => v === "files");
+  const files = view !== null && project !== null;
+  const chooseProject = (slug: string | null) => {
+    setView(null);
+    setProject(slug);
+  };
   const [adding, setAdding] = useState(false);
   const addButton = useRef<HTMLButtonElement>(null);
   const q = useTasks<TasksView & { add_key?: QuickAddKey }>(project);
@@ -130,15 +140,26 @@ export function TasksPage() {
         <ProjectTabs
           projects={known.current}
           value={project}
-          onChange={setProject}
+          onChange={chooseProject}
           action={
-            <Button ref={addButton} variant="ghost" size="icon" aria-label={t("tasks.addProject")} disabled={token === null} onClick={() => setAdding(true)}>
-              +
-            </Button>
+            <>
+              <Button ref={addButton} variant="ghost" size="icon" aria-label={t("tasks.addProject")} disabled={token === null} onClick={() => setAdding(true)}>
+                +
+              </Button>
+              {project !== null && (
+                <Button variant="ghost" size="sm" aria-pressed={files} className="ml-auto" onClick={() => setView(files ? null : "files")}>
+                  {t("tasks.files")}
+                </Button>
+              )}
+            </>
           }
         />
-        {adding && token !== null && <AddProjectDialog token={token} returnFocusTo={addButton} onCreated={setProject} onClose={() => setAdding(false)} />}
+        {adding && token !== null && <AddProjectDialog token={token} returnFocusTo={addButton} onCreated={chooseProject} onClose={() => setAdding(false)} />}
       </div>
+      {files ? (
+        !v ? <Loading rows={3} /> : <ProjectFiles project={project} name={known.current.find((p) => p.slug === project)?.name ?? `+${project}`} token={v.csrf_token} canWrite={v.can_build} />
+      ) : (
+      <>
       <div className="space-y-1">
         <QuickAdd token={v?.csrf_token ?? null} addKey={v?.add_key ?? "enter"} project={project} />
         {undo.error !== null && (
@@ -158,6 +179,8 @@ export function TasksPage() {
           </div>
         </Card>
       </div>
+      </>
+      )}
     </div>
     </>
   );
