@@ -146,6 +146,8 @@ export interface ReviewOutput {
    * an older review parses to the same value; read it with `unverifiedOf`.
    */
   unverified?: string[];
+  /** A UI change whose build, type-check or screenshots could not run: header "needs a human look", no auto merge. Left out when unset. */
+  ui_unverified?: boolean;
   summary: string;
   needs_human?: NeedsHuman;
 }
@@ -315,6 +317,7 @@ export const REVIEW_SCHEMA = {
       },
     },
     unverified: { ...strings, description: "Checks you could not run or confirm. Never makes the verdict bug." },
+    ui_unverified: { type: "boolean", description: "True only when a change to UI paths could not have its build, type-check or screenshots run." },
     summary: { type: "string" },
     needs_human: NEEDS_HUMAN_SCHEMA,
   },
@@ -581,12 +584,14 @@ export function parseReview(v: unknown): Validation<ReviewOutput> {
   }
   const unverified = v.unverified ?? [];
   if (!isStrs(unverified)) return { ok: false, error: "unverified" };
+  if (v.ui_unverified !== undefined && typeof v.ui_unverified !== "boolean") return { ok: false, error: "ui_unverified" };
   const ask = parseNeedsHuman(v.needs_human);
   if (!ask.ok) return ask;
   return {
     ok: true,
     value: {
-      verdict, tier, findings: parsed, summary, ...(unverified.length > 0 ? { unverified } : {}), ...(ask.value ? { needs_human: ask.value } : {}),
+      verdict, tier, findings: parsed, summary, ...(unverified.length > 0 ? { unverified } : {}),
+      ...(v.ui_unverified === true ? { ui_unverified: true } : {}), ...(ask.value ? { needs_human: ask.value } : {}),
     },
   };
 }

@@ -27,7 +27,12 @@ Do:
    that names the rule by its number (for example "breaks decision rule 2: one value behind a disclosure") and asks
    for the change. Attach the `check:responsive` screenshots as evidence when they exist; when they do not, list
    them under `unverified`.
-8. Recheck the risk tier (1–5) from what the diff actually does. Never lower it below the work item's tier.
+8. UI changes: when the diff touches UI paths (`web/`, `src/ui/`, or the paths the project lists for its UI) and you
+   could not run its build, its type-check or its screenshots, set `ui_unverified` to true and list each of those you
+   could not run under `unverified`, one line each, naming the command. For a done criterion about the UI, name the
+   widths the spec states (for example "no screenshots at 1280px and 390px"). A check the project runs at merge (named
+   in step 3) is not one of them. Leave `ui_unverified` out for any other diff.
+9. Recheck the risk tier (1–5) from what the diff actually does. Never lower it below the work item's tier.
 
 When to stop and ask (needs_human):
 - Return `needs_human` with a short `reason` and one `question` (plain text, at most 500 characters each) only when you cannot go on without the owner: missing credentials or permissions, a tool that fails the same way twice, a spec that contradicts the code, or a decision only the owner can make.
@@ -40,6 +45,7 @@ Output:
   - kind `code`: a defect the implementer can fix inside the spec (a bug, a failing test, an unmet criterion that the allowed paths can meet). It goes back to the implementer.
   - kind `spec`: a finding that needs the spec changed, not the code: a criterion that needs a file outside the allowed paths, or a criterion that conflicts with a repo rule. It sends the spec back to triage for a revision.
 - unverified: checks you could not run or confirm, one line each (for example "could not run the tests: listen EPERM in the sandbox"). They are listed on the change under "Not verified". Never put them in findings, and an unverified item never makes the verdict "bug" on its own. Empty when you verified everything.
+- ui_unverified: true only in the case of step 8: the change needs a human look, and it waits for a person's merge. Otherwise leave it out.
 - tier: your rechecked tier.
 - summary: two to four sentences.
 
