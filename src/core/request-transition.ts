@@ -15,6 +15,7 @@ import { prNumber } from "./change-ref.js";
 import { CHECKPOINT_REFUSAL, CLOSED_REFUSAL, commandPhase, dependencyHoldRefusal, latestSpec, parseCommandPaths, phaseLabel, refusalText, specNotWaiting } from "./commands.js";
 import { LOCAL_SOURCE } from "./local-merge.js";
 import { effectiveTier, runKey } from "./policy.js";
+import { MERGE_CONFLICT_PENDING } from "./resolve.js";
 import { PHASES_OPEN, SPLIT_FILING } from "./split.js";
 import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "./standing.js";
 import type { TriagePhase } from "./outputs.js";
@@ -292,6 +293,11 @@ export function awaitingMerge(it: Pick<WorkItem, "stage" | "blocked_on" | "block
   return (it.stage === "REVIEW" && it.blocked_on === "human" && it.blocked_reason === "merge_pending") || mergeQueued(it);
 }
 
+/** Parked on its merge conflict for a person (REVIEW / human / merge_conflict_pending): its automatic resolve stopped. */
+export function conflictParked(it: Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason">): boolean {
+  return it.stage === "REVIEW" && it.blocked_on === "human" && it.blocked_reason === MERGE_CONFLICT_PENDING;
+}
+
 /** Which merge an item takes (design 05-sources): a local item with no PR the local merge, any other its PR's merge. */
 export function mergeRoute(it: Pick<WorkItem, "source" | "change_ref">): "local" | "pr" {
   return it.source.type === LOCAL_SOURCE && it.change_ref === null ? "local" : "pr";
@@ -300,9 +306,13 @@ export function mergeRoute(it: Pick<WorkItem, "source" | "change_ref">): "local"
 /** How a refusal names a change by its ref: the forge's form (core writes no ref form of its own: tests/change-ref-forms). */
 export type ChangeName = (change_ref: string) => string;
 
-/** Why the local merge does not apply to `it` (`canMerge`: a sandbox that merges locally), or null. */
+/**
+ * Why the local merge does not apply to `it` (`canMerge`: a sandbox that merges locally), or null. A local item parked
+ * on its merge conflict passes too (design §5 Merge conflict, 2026-11-20): the controller probes its branch as it is,
+ * so a branch fixed by hand goes to a fresh review and one that still conflicts is refused with its files.
+ */
 export function localMergeRefusal(it: WorkItem, canMerge: boolean, name: ChangeName): string | null {
-  if (!awaitingMerge(it) || it.change_ref !== null) {
+  if (!(awaitingMerge(it) || conflictParked(it)) || it.change_ref !== null) {
     const at = [it.stage, it.blocked_reason].filter(Boolean).join(", ");
     return it.change_ref !== null
       ? `${it.id} has ${name(it.change_ref)}: merge the PR instead`

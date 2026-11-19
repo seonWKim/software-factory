@@ -1,6 +1,6 @@
 import { prNumber } from "../../../core/change-ref.js";
 import type { ModelClass } from "../../../core/model-choice.js";
-import { REVIEW_SCHEMA, parseReview, unverifiedOf } from "../../../core/outputs.js";
+import { REVIEW_SCHEMA, builtDifferentlyOf, parseReview, unverifiedOf } from "../../../core/outputs.js";
 import { branchFor } from "../../../core/policy.js";
 import type { Run, WorkItem } from "../../../core/types.js";
 import type { SandboxHandle } from "../../../interfaces/sandbox.js";
@@ -69,9 +69,10 @@ async function review(
   if (review.value.needs_human) return { needs_human: review.value.needs_human };
 
   const v = review.value;
-  // Finding and unverified text is scanned before it is posted or stored (issue #222): a flagged text keeps
-  // only the rule names, and the controller blocks the item on a human.
-  const scan = await w.d.scanner.scan("comment", [...v.findings.map((f) => f.text), ...unverifiedOf(v)].join("\n"));
+  // Finding, unverified and built-differently text is scanned before it is posted or stored (issue #222): a flagged
+  // text keeps only the rule names, and the controller blocks the item on a human.
+  const built = builtDifferentlyOf(v).flatMap((d) => [d.line, d.reason]);
+  const scan = await w.d.scanner.scan("comment", [...v.findings.map((f) => f.text), ...unverifiedOf(v), ...built].join("\n"));
   if (!scan.clean) return { egress_rules: [...new Set(scan.findings.map((f) => f.rule))] };
   // A thread entry once per marker; outbound posts it on the PR (RFC 0015 M7).
   await step("post-review", async () => {
