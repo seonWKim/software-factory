@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { NO_FILES_REFUSAL, RECHECK_AFTER_MS, RECHECK_PATHS_REFUSAL, parseComment, refusalText } from "../src/core/commands.js";
+import { NO_FILES_REFUSAL, RECHECK_PATHS_REFUSAL, parseComment, refusalText } from "../src/core/commands.js";
+import { RECHECK_AFTER_MS } from "../src/controller/units/commands/premise-recheck.js";
 import { githubCommand } from "../src/core/command-inbox.js";
 import { runLocalCli } from "../src/core/local-cli.js";
 import { parseTriage } from "../src/core/outputs.js";

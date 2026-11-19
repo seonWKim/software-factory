@@ -181,9 +181,7 @@ export class RunResultsUnit {
             tier,
             token_cost: tokens,
           };
-          const missing = droppedValues(spec, it.issue_text), answers = droppedAnswers(spec, await ownerAnswersFor(it, (id) => this.c.k.reader.listStateChanges(id))), held = missing.length + answers.length > 0; // dropped request values or owner answers: no approval without /approve below
-          // A spec that changes no file in this repo is never approved, by a person or without one (design 04-spec-gate-commands, 2026-11-20).
-          const noFiles = changesNoFile(spec), waitsAnyway = held || noFiles;
+          const missing = droppedValues(spec, it.issue_text), answers = droppedAnswers(spec, await ownerAnswersFor(it, (id) => this.c.k.reader.listStateChanges(id))), held = missing.length + answers.length > 0, noFiles = changesNoFile(spec), waitsAnyway = held || noFiles; // dropped request values or owner answers, or no file changed here (design 04-spec-gate-commands): no approval without a person
           // Each approval below without a person's reply: the spec comment with its note, no answer block and `footer`, RUNNING, the implement run queued.
           const approved = async (note: readonly string[], how: { actor: Actor; reason: string; detail?: StateChangeDetail }, footer = footerAfter(it, { stage: "RUNNING" })): Promise<Decision> => {
             const patch = { ...fields, stage: "RUNNING" as const };
@@ -259,12 +257,9 @@ export class RunResultsUnit {
             }, autoApprovedFooter(commandState({ ...it, stage: "RUNNING" }), tier, this.c.k.d.clock.now().toISOString()));
           }
           const patch = { ...fields, stage: "READY" as const, blocked_on: "human" as const, blocked_reason: "spec_pending" };
-          const waits = noFiles ? `This spec cannot be approved: ${NO_FILES_REFUSAL}.\n\n`
-            : held ? heldNote(missing, answers) : auto ? `Auto mode is on, but this spec waits for \`/approve\`: ${refusal}.\n\n` : "";
-          // No `/approve` in the footer of a spec that changes no file: only `/revise` and `/reject` apply to it.
-          const footer = noFiles ? commandFooter(commandState({ ...it, ...patch }), ["approve"]) : footerAfter(it, patch);
-          const url = await this.c.unit("outbox").comment(it, `spec:${run.id}`,
-            renderSpec(spec, tier, { floor, previous: it.tier, added }, `${waits}${footer}`, { missing, answers }), "spec_comment_url");
+          const waits = noFiles ? `This spec cannot be approved: ${NO_FILES_REFUSAL}.\n\n` : held ? heldNote(missing, answers) : auto ? `Auto mode is on, but this spec waits for \`/approve\`: ${refusal}.\n\n` : "";
+          const url = await this.c.unit("outbox").comment(it, `spec:${run.id}`, renderSpec(spec, tier, { floor, previous: it.tier, added }, // no `/approve` in a no-file spec's footer
+            `${waits}${noFiles ? commandFooter(commandState({ ...it, ...patch }), ["approve"]) : footerAfter(it, patch)}`, { missing, answers }), "spec_comment_url");
           return {
             patch: { ...patch, spec_comment_url: url },
             actor: SYSTEM,
