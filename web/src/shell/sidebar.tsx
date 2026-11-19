@@ -1,5 +1,6 @@
 import { type MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
+import { FOCUS } from "../components/ui/control.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { BASE, type PageDef } from "../pages.js";
@@ -7,7 +8,7 @@ import { BASE, type PageDef } from "../pages.js";
 /** A page's name in the active locale: its menu name and its heading. */
 export const pageLabel = (p: PageDef) => t(`page.${p.key}` as MessageKey);
 
-const LINK_ROW = "flex items-center gap-2 px-2 py-1.5 text-sm";
+export const LINK_ROW = `flex items-center gap-2 px-2 py-1.5 text-sm ${FOCUS}`;
 
 /** One sidebar group of page links, with no visible title; `label` is its accessible name. */
 export function SideLinks({ label, pages, current, badges = {} }: { label: string; pages: readonly PageDef[]; current: PageDef; badges?: Readonly<Record<string, number | undefined>> }) {
