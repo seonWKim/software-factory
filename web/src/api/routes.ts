@@ -45,6 +45,8 @@ export const API = {
   tasks: "/api/v1/tasks",
   /** The tasks' read, filtered to one task project's tasks when `project` is a slug. */
   tasksIn: (project: string | null) => (project === null ? "/api/v1/tasks" : `/api/v1/tasks?project=${encodeURIComponent(project)}`),
+  /** What quick add would store for these words, from the server's parser; writes nothing. */
+  taskPreview: (words: string) => `/api/v1/tasks/preview?words=${encodeURIComponent(words)}`,
   projects: "/api/v1/projects",
   taskProject: "/api/v1/tasks/project",
   calendar: "/api/v1/calendar",
