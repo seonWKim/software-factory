@@ -4,7 +4,6 @@ import { Button } from "../../components/ui/button.js";
 import { Input } from "../../components/ui/input.js";
 import { LINK_CLASS } from "../../components/ui/link-style.js";
 import { Tooltip } from "../../components/ui/menu.js";
-import { Section } from "../../components/ui/parts.js";
 import { Switch } from "../../components/ui/switch.js";
 import type { MessageKey } from "../../i18n/en.js";
 import { t } from "../../i18n/index.js";
@@ -13,6 +12,7 @@ import { BASE } from "../../pages.js";
 import { Outcome, useWrite } from "../settings-file-keys.js";
 import { Editor } from "./editor.js";
 import { stringItems, stringOf } from "./values.js";
+import { Card } from "../../components/ui/card.js";
 
 /** The kinds of wait on the owner that `notice_kinds` lists, in its order, each with its switch's label. */
 const NOTICE_KINDS = [
@@ -75,7 +75,7 @@ function NoticesSection({ view }: { view: SettingsView }) {
   const quiet = view.keys.find((k) => k.key === "quiet_hours");
   if (!kinds && !quiet) return null;
   return (
-    <Section title={t("settings.notices")}>
+    <Card title={t("settings.notices")}>
       <p className="mb-2 text-sm text-pretty text-text-2">
         {t("settings.noticesIntro")}
       </p>
@@ -83,7 +83,7 @@ function NoticesSection({ view }: { view: SettingsView }) {
         {kinds && <NoticeKinds row={kinds} token={view.csrf_token} />}
         {quiet && <QuietHours row={quiet} token={view.csrf_token} />}
       </div>
-    </Section>
+    </Card>
   );
 }
 
@@ -173,7 +173,7 @@ function ModeControl({ view, floating = false }: { view: SettingsView; floating?
 function ModeSection({ view }: { view: SettingsView }) {
   const tier = view.keys.find((k) => k.key === "auto_merge_max_tier");
   return (
-    <Section title={t("settings.mode")}>
+    <Card title={t("settings.mode")}>
       <p className="mb-2 text-sm text-pretty text-text-2">
         {t("settings.modeIntro")}
       </p>
@@ -191,7 +191,7 @@ function ModeSection({ view }: { view: SettingsView }) {
           </div>
         )}
       </div>
-    </Section>
+    </Card>
   );
 }
 

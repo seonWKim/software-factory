@@ -7,16 +7,16 @@ These are rules for new and changed pages. Existing pages move onto them in foll
 ## Page layout
 
 - One `PageHeader` at the top: the page title, an optional count, the page's one primary action at the end. Each page renders its own `PageHeader` (on the item and transcript pages with the item's or run's title); the app shell draws no title, so every page has exactly one h1.
-- Below it, `Section` blocks, each with an h2. One column of content at `sm` and below; the page never scrolls sideways.
+- Below it, `Card` blocks, each with an h2 (a sub-heading inside a card is a `CardSection`, never a raw heading). One column of content at `sm` and below; the page never scrolls sideways.
 - A page with views (tabs, Day / Upcoming) puts its view switcher in the row under the page title, before the content; a page filter that is a few named choices (the projects on Tasks) is a `Tabs` row directly under the title, above the view switcher; never between blocks of content or below them.
-- Blocks of one page are stacked in one flex column with a `gap-6` (the Section gap), not with `mb-*` or `mt-*` on each block.
+- Blocks of one page are stacked in one flex column with a `gap-6` (the Card gap), not with `mb-*` or `mt-*` on each block.
 - Spacing comes from the scale in `foundations.md` (gap and padding classes), never a pixel value.
 - Colours are token classes. No hex colour, no Tailwind palette class (`tests/design-system.test.ts`).
 
 ## List rows
 
 - A row starts with what the owner recognises: the item's title, not an ID.
-- Then its state as a `StatusBadge`, then the facts that decide what to do next, then the time (`writing.md`, compact times).
+- Then its state as a `Badge`, then the facts that decide what to do next, then the time (`writing.md`, compact times).
 - A table of rows uses `DataTable`: a table at `sm` and up, one card per row below it.
 - The row opens the item page. Row actions sit at the end of the row.
 - **C-050** (2026-11-15). An action's error shows on its own line below the row's content, full width, or in the shared `Notice` or toast; never in the actions column. The title keeps its space and truncates only at the row's real width; the status badge and the actions never overlap, at every `check:responsive` size. The Tasks page's Factory work row follows it (`SendErrors` on a `basis-full` line); the Needs you table moves onto it in a follow-up.
@@ -37,14 +37,14 @@ These are rules for new and changed pages. Existing pages move onto them in foll
 
 ## Status and system state
 
-- An item's state is a `StatusBadge`, with the level word the lists use. State is never colour alone: the badge carries a word.
+- An item's state is a `Badge`, with the level word the lists use. State is never colour alone: the badge carries a word.
 - A factory-wide state (paused, host asleep, a failing plugin) is a `Notice` at the top of the page, with the next step in it.
 - A short, harmless remark is a `Notice` at the info level; a failure that needs the owner is the failed level.
 
 ## Loading, empty and error states
 
 - Loading: `Loading` in the place the content will be. The page keeps its header.
-- Empty: `EmptyState` says what the page is for and what makes something appear here, with the next step as an action when there is one. `Empty` is the one-line version inside a section.
+- Empty: `EmptyState` says what the page is for and what makes something appear here, with the next step as an action when there is one. Inside a card, an empty list is an `EmptyState` with its title alone.
 - Error: `ErrorNote` says what failed in plain words and how to retry. It never shows a stack trace or a raw status code alone.
 - A refused action shows its reason beside the button that was pressed; in a list row, on its own line below the row (C-050).
 

@@ -1,10 +1,11 @@
 import type { SettingsView } from "../../api.js";
-import { Badge, Section } from "../../components/ui/parts.js";
 import { Switch } from "../../components/ui/switch.js";
 import { t } from "../../i18n/index.js";
 import { Outcome, useWrite } from "../settings-file-keys.js";
 import { CalendarSection } from "../settings-calendar.js";
 import { asObject } from "./values.js";
+import { Card } from "../../components/ui/card.js";
+import { Badge } from "../../components/ui/badge.js";
 
 /** Each integration's state; the Switch removes the `integrations` entry the dashboard stored (back to the config). */
 function IntegrationsSection({ view }: { view: SettingsView }) {
@@ -18,7 +19,7 @@ function IntegrationsSection({ view }: { view: SettingsView }) {
     void write(Object.keys(rest).length === 0 ? { action: "reset", key: row.key } : { action: "set", key: row.key, value: JSON.stringify(rest) });
   };
   return (
-    <Section title={t("settings.integrations")} count={integrations.length}>
+    <Card title={t("settings.integrations")} count={integrations.length}>
       <p className="mb-2 text-sm text-pretty text-text-2">
         {t("settings.integrationsHint")}
       </p>
@@ -36,7 +37,7 @@ function IntegrationsSection({ view }: { view: SettingsView }) {
         })}
       </ul>
       <Outcome error={error} done={done} />
-    </Section>
+    </Card>
   );
 }
 

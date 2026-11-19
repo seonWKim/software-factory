@@ -1,5 +1,6 @@
 ## History
 
+- **Tasks used Sections and Calendar a bare heading** (until 2026-11-19, the Cards decision at the top). Before: Needs you and the open tasks were `Section`s with no surface, row states were `StatusBadge`, and the calendar's period was an h2 in the controls column above an unframed week or month.
 - **Quick add on a project tab sent no project** (decision changed 2026-11-18, the quick-add decision at the top). Before: the page posted `{ id, words }` whatever the tab, so the task was stored with no project unless the words had `+slug`, and the tab's list did not show it.
 - **The "+" was a bordered button beside the project tabs** (decision changed 2026-11-15, the Project tabs line above). Before: `Button` (secondary, `size-8`) in a flex row next to `Tabs`, outside the tab row's box. The dialog, the create API and the `project` parameter did not change.
 - **The Tasks page had a view control, Today, Upcoming and All** (until 2026-11-15, the one list decision at the top). A `SegmentedControl` (`tasks.viewLabel`) picked one of three views, Today on load; each view had its own empty state (`tasks.emptyToday`, `tasks.emptyUpcoming`, `tasks.emptyAll`) and the timeline showed on Today only. The three views are one list now.

@@ -1,3 +1,4 @@
+import { ListTodo } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import {
@@ -9,8 +10,8 @@ import { ButtonRow } from "../components/ui/button-row.js";
 import { CopyText } from "../components/ui/copy.js";
 import { Input } from "../components/ui/input.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
-import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
-import { Notice, PageHeader, StatusBadge } from "../components/ui/notice.js";
+import { ErrorNote, Loading, Table, Td, Tr } from "../components/ui/parts.js";
+import { Notice, PageHeader, EmptyState } from "../components/ui/notice.js";
 import { ID_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import { FailuresSection } from "./failures.js";
 import { SpendSection } from "./spend.js";
@@ -31,6 +32,8 @@ import { Thread } from "./thread.js";
 import { transcriptPath } from "./transcript.js";
 import { HELD, ItemsTree, type TreeFilter, type View, VIEW_KEY, buildTree, defaultExpanded, itemMatches, parentIds, useExpanded } from "./tree.js";
 import { Disclosure } from "../components/ui/disclosure.js";
+import { Card } from "../components/ui/card.js";
+import { Badge } from "../components/ui/badge.js";
 
 /** "host slept N min" for a host sleep's gap, at least 1 min (only gaps over 60 s are recorded). */
 export const sleptText = (gap_ms: number): string => t("host.slept", { min: Math.max(1, Math.round(gap_ms / 60_000)) });
@@ -178,9 +181,9 @@ export function ClaimPauses({ now }: { now: number }) {
   if (q.isError) return <ErrorNote error={q.error} />;
   if (!q.data || q.data.pauses.length === 0) return null;
   return (
-    <Section title={t("pause.title")} count={q.data.pauses.length}>
+    <Card title={t("pause.title")} count={q.data.pauses.length}>
       <PauseList view={q.data} now={now} />
-    </Section>
+    </Card>
   );
 }
 
@@ -212,18 +215,18 @@ export function ActivityPage() {
   const map = useMemo(() => byId(items.data?.items), [items.data]);
   const o = overview.data;
   return (
-    <div className="mt-8">
-      <Section title={t("running.label")} count={o?.running}>
+    <div className="mt-6">
+      <Card title={t("running.label")} count={o?.running}>
         {runs.isError ? <ErrorNote error={runs.error} /> : !runs.data ? <Loading rows={2} /> : <RunningTable runs={runs.data.runs} items={map} now={now} />}
-      </Section>
+      </Card>
       {o && (o.unreviewed_merges_7d ?? 0) > 0 && (
-        <p data-testid="unreviewed-merges-line" className="mb-4 text-sm">
+        <p data-testid="unreviewed-merges-line" className="mt-4 text-sm">
           {t("activity.unreviewed", { count: o.unreviewed_merges_7d ?? 0 })}{" "}
           <Link href={`${BASE}health`} className={LINK_CLASS}>{t("activity.unreviewedLink")}</Link>
         </p>
       )}
       {o && (
-        <Section title={t("activity.last24h")}>
+        <Card title={t("activity.last24h")}>
           <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             {[
               [t("activity.succeeded"), String(o.last_24h.succeeded)],
@@ -239,7 +242,7 @@ export function ActivityPage() {
               </div>
             ))}
           </dl>
-        </Section>
+        </Card>
       )}
     </div>
   );
@@ -360,15 +363,19 @@ export function ItemsPage() {
         onChange={(id) => setState(id === ALL ? null : id)}
       />
       {queuedView ? (
-        <Section title={t("queue.title")} count={queue.data?.queue.length}>
+        <Card title={t("queue.title")} count={queue.data?.queue.length}>
           {queue.isError ? <ErrorNote error={queue.error} /> : !queue.data || !items.data ? <Loading rows={4} /> : <QueueTable queue={queue.data.queue} items={itemsById} now={now} />}
-        </Section>
-      ) : items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading rows={6} /> : tree ? (
-        nodes.length === 0 ? <Empty>{t("items.noMatch")}</Empty> : (
-          <ItemsTree nodes={nodes} rows={rows} now={now} expanded={expanded} onExpanded={setExpanded} />
-        )
+        </Card>
       ) : (
-        <ItemsTable items={ids ? rows.filter((r) => itemMatches(r, { ...filter, showClosed: true })) : items.data.items} now={now} label={t("items.label")} plugins={overview.data?.plugins} empty={t("items.noMatch")} />
+        <Card>
+          {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading rows={6} /> : tree ? (
+            nodes.length === 0 ? <EmptyState icon={ListTodo} title={t("items.noMatch")} /> : (
+              <ItemsTree nodes={nodes} rows={rows} now={now} expanded={expanded} onExpanded={setExpanded} />
+            )
+          ) : (
+            <ItemsTable items={ids ? rows.filter((r) => itemMatches(r, { ...filter, showClosed: true })) : items.data.items} now={now} label={t("items.label")} plugins={overview.data?.plugins} empty={t("items.noMatch")} />
+          )}
+        </Card>
       )}
       <ActivityPage />
     </>
@@ -421,7 +428,7 @@ export function ItemPage({ id }: { id: string }) {
       />
       <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
         {([
-          [t("col.state"), <StatusBadge level={level} size="sm">{LEVEL_LABELS[level] ?? level}{item.close_reason ? ` (${item.close_reason.replace(/_/g, " ")})` : ""}</StatusBadge>],
+          [t("col.state"), <Badge level={level}>{LEVEL_LABELS[level] ?? level}{item.close_reason ? ` (${item.close_reason.replace(/_/g, " ")})` : ""}</Badge>],
           [t("item.source"), isHttpUrl(item.source.link) ? <SourceLink source={item.source} className="inline-block align-bottom" /> : short],
           [t("item.tier"), item.tier ?? "–"],
           [t("col.pr"), item.change_ref === null ? "–" : <UrlOrText url={item.change_url} text={`#${item.change_ref}`} />],
@@ -449,7 +456,7 @@ export function ItemPage({ id }: { id: string }) {
       <Thread entries={q.data.thread ?? []} now={now} />
       <Phases phases={item.phases ?? []} />
       {item.merge_check && (
-        <Section title={t("item.mergeCheck")}>
+        <Card title={t("item.mergeCheck")}>
           <p className="text-sm" data-merge-check-detail>
             <MergeCheckNote check={item.merge_check} />
             {item.merge_check.base_sha && item.merge_check.checked_at && (
@@ -463,10 +470,10 @@ export function ItemPage({ id }: { id: string }) {
               {item.merge_check.conflicts.map((f) => <li key={f}>{f}</li>)}
             </ul>
           )}
-        </Section>
+        </Card>
       )}
-      <Section title={t("item.runs")} count={runs.length}>
-        {runs.length === 0 ? <Empty>{t("item.noRun")}</Empty> : (
+      <Card title={t("item.runs")} count={runs.length}>
+        {runs.length === 0 ? <EmptyState title={t("item.noRun")} /> : (
           <Table label={t("item.runs")} head={[t("item.kind"), t("col.attempt"), t("item.status"), t("item.error"), t("col.worker"), t("item.started"), t("item.took"), t("col.tokens"), t("item.transcript")]}>
             {[...runs].reverse().map((r) => (
               <Tr key={r.id} data-run={r.id}>
@@ -491,8 +498,8 @@ export function ItemPage({ id }: { id: string }) {
             ))}
           </Table>
         )}
-      </Section>
-      <Section title={t("item.timeline")} count={entries.length}>
+      </Card>
+      <Card title={t("item.timeline")} count={entries.length}>
         <ol className="space-y-1 text-sm">
           {entries.map((e) => {
             if (e.kind === "sleep") return (
@@ -508,7 +515,7 @@ export function ItemPage({ id }: { id: string }) {
             return <TimelineRow key={e.t.version} entry={e.t} now={now} viewer={viewer} />;
           })}
         </ol>
-      </Section>
+      </Card>
     </>
   );
 }
@@ -518,7 +525,7 @@ function CurrentRun({ runs, itemId, hasTranscript, now }: { runs: ItemDetail["ru
   const run = [...runs].reverse().find((r) => r.status === "running" || r.status === "queued");
   if (!run) return null;
   return (
-    <Section title={t("item.currentRun")}>
+    <Card title={t("item.currentRun")}>
       <p data-current-run={run.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
         <span className="font-medium">{runKindLabel(run.kind)}</span>
         <Badge level={run.status === "running" ? "running" : undefined}>{run.status}</Badge>
@@ -527,7 +534,7 @@ function CurrentRun({ runs, itemId, hasTranscript, now }: { runs: ItemDetail["ru
         {run.started_at && <span className="text-text-2 tabular-nums">{t("item.startedAgo", { time: ago(run.started_at, now) })}</span>}
         {hasTranscript(run.id) && <Link href={transcriptPath(itemId, run.id)} className={LINK_CLASS}>{t("item.transcript")}</Link>}
       </p>
-    </Section>
+    </Card>
   );
 }
 
@@ -535,7 +542,7 @@ function CurrentRun({ runs, itemId, hasTranscript, now }: { runs: ItemDetail["ru
 function Phases({ phases }: { phases: readonly PhaseRow[] }) {
   if (phases.length === 0) return null;
   return (
-    <Section title={t("item.phases")} count={phases.length}>
+    <Card title={t("item.phases")} count={phases.length}>
       <ol aria-label={t("item.phases")} className="space-y-1 text-sm">
         {phases.map((p) => (
           <li key={p.id} data-phase={p.phase} className="flex min-w-0 items-baseline gap-2">
@@ -545,7 +552,7 @@ function Phases({ phases }: { phases: readonly PhaseRow[] }) {
           </li>
         ))}
       </ol>
-    </Section>
+    </Card>
   );
 }
 
@@ -682,20 +689,20 @@ export function RunnersPage() {
             {t("runners.setting")} <span className="font-semibold tabular-nums">{f.workers}</span> ({WORKERS_SOURCE[f.workers_source] ?? f.workers_source})
           </p>
         )}
-        <Section title={t("runners.processes")} count={workers.data?.processes ? processes.length : undefined}>
+        <Card title={t("runners.processes")} count={workers.data?.processes ? processes.length : undefined}>
           {workers.isError ? <ErrorNote error={workers.error} /> : !workers.data ? <Loading rows={2} /> : workers.data.processes_error ? (
             <ErrorNote error={new Error(workers.data.processes_error)} />
           ) : processes.length === 0 ? (
-            <Empty>{t("runners.none")}</Empty>
+            <EmptyState title={t("runners.none")} />
           ) : (
             <ul aria-label={t("runners.processes")} className="space-y-2">
               {processes.map((p) => <ProcessRow key={p.process_id} p={p} items={map} now={now} />)}
             </ul>
           )}
-        </Section>
-        <Section title={t("running.label")} count={runs.data?.runs.filter((r) => r.status === "running").length}>
+        </Card>
+        <Card title={t("running.label")} count={runs.data?.runs.filter((r) => r.status === "running").length}>
           {runs.data ? <RunningTable runs={runs.data.runs} items={map} now={now} /> : <Loading rows={2} />}
-        </Section>
+        </Card>
       </div>
     </>
   );
@@ -726,7 +733,7 @@ type HealthTab = "checks" | "pauses" | "sleeps" | "merges" | "github";
  */
 function GitHubBudgetTab({ budget, tokenDays }: { budget: GitHubBudget; tokenDays: Overview["github_token_days"] }) {
   return (
-    <Section title={t("health.githubBudget")}>
+    <Card title={t("health.githubBudget")}>
       <div data-github-budget className="space-y-2 text-sm">
         {budget.state === "waiting" && <Notice tone="warn">{t("health.budgetWaiting", { reason: budget.wait_reason ?? budget.reset_at })}</Notice>}
         {budget.state === "low" && <Notice tone="warn">{t("health.budgetLow")}</Notice>}
@@ -737,7 +744,7 @@ function GitHubBudgetTab({ budget, tokenDays }: { budget: GitHubBudget; tokenDay
           <p data-token-days className="tabular-nums">{tokenDays === "unknown" ? t("health.tokenUnknown") : t("health.tokenDays", { days: tokenDays })}</p>
         )}
       </div>
-    </Section>
+    </Card>
   );
 }
 
@@ -799,20 +806,24 @@ export function HealthPage() {
       <CodeRevision factory={overview.data?.factory} />
       <Tabs label={t("health.tabs")} options={options} value={tab} onChange={pick} />
       {tab === "checks" && (
-        <Section title={t("health.checks", { time: ago(health.data.checked_at, now) })} count={checks.length}>
+        <Card title={t("health.checks", { time: ago(health.data.checked_at, now) })} count={checks.length}>
           <CheckList checks={open} />
           {fine.length > 0 && (
             <Disclosure data-testid="ok-checks" className="mt-2" summary={t("health.okCount", { count: fine.length })}>
               <CheckList checks={fine} />
             </Disclosure>
           )}
-        </Section>
+        </Card>
       )}
-      {tab === "pauses" && pauses.data && <PauseList view={pauses.data} now={now} />}
+      {tab === "pauses" && pauses.data && (
+        <Card title={t("pause.title")} count={pauses.data.pauses.length}>
+          <PauseList view={pauses.data} now={now} />
+        </Card>
+      )}
       {tab === "sleeps" && (
-        <Section title={t("health.sleeps")} count={sleeps.length}>
+        <Card title={t("health.sleeps")} count={sleeps.length}>
           {sleeps.length === 0 ? (
-            <Empty>{t("health.noSleep")}</Empty>
+            <EmptyState title={t("health.noSleep")} />
           ) : (
             <ul className="space-y-1 text-sm">
               {sleeps.map((h) => (
@@ -824,11 +835,11 @@ export function HealthPage() {
               ))}
             </ul>
           )}
-        </Section>
+        </Card>
       )}
       {tab === "merges" && (
         <div id="unreviewed-merges">
-          <Section title={t("health.merges")} count={mergeList?.length}>
+          <Card title={t("health.merges")} count={mergeList?.length}>
             {merges.isError ? <ErrorNote error={merges.error} /> : !mergeList ? <Loading rows={2} /> : (
               <DataTable
                 label={t("health.merges")}
@@ -843,7 +854,7 @@ export function HealthPage() {
                 empty={t("health.noMerges")}
               />
             )}
-          </Section>
+          </Card>
         </div>
       )}
       {tab === "github" && budget && <GitHubBudgetTab budget={budget} tokenDays={overview.data?.github_token_days} />}

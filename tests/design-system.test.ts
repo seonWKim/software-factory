@@ -39,6 +39,30 @@ describe("design tokens", () => {
     expect(css).toContain("prefers-reduced-motion: reduce");
   });
 
+  it("index.css maps every type step to text-<step> and both shadows to shadow-sm and shadow-lg", () => {
+    const css = readFileSync(join(WEB_SRC, "index.css"), "utf8");
+    for (const step of ["xs", "sm", "base", "lg", "xl"]) {
+      expect(css).toContain(`--text-${step}: var(--fs-${step});`);
+      expect(css).toContain(`--text-${step}--line-height: var(--lh-${step});`);
+    }
+    for (const size of ["sm", "lg"]) expect(css).toContain(`--shadow-${size}: var(--sh-${size});`);
+    const tokens = readFileSync(join(WEB_SRC, "tokens.css"), "utf8");
+    expect(tokens).toMatch(/:root \{[^}]*--sh-sm: [^;]+;[^}]*--sh-lg: [^;]+;/);
+    expect(tokens).toMatch(/\.dark \{[^}]*--sh-sm: [^;]+;[^}]*--sh-lg: [^;]+;/);
+  });
+
+  it("tokens.json names the type roles, and PageHeader and Card draw their titles in them", () => {
+    const json = JSON.parse(readFileSync(join(ROOT, "design-system", "tokens.json"), "utf8")) as { "type-roles": Record<string, { step: string; weight: string }> };
+    const roles = json["type-roles"];
+    expect(roles["page-title"]).toEqual({ step: "xl", weight: "semibold" });
+    expect(roles["section-title"]).toEqual({ step: "base", weight: "semibold" });
+    expect(roles.body).toEqual({ step: "sm", weight: "normal" });
+    expect(roles.meta).toEqual({ step: "xs", weight: "normal" });
+    const ui = (name: string) => readFileSync(join(WEB_SRC, "components", "ui", name), "utf8");
+    expect(ui("notice.tsx")).toMatch(/<h1 className="[^"]*\btext-xl font-semibold\b/);
+    expect(ui("card.tsx")).toMatch(/CARD_TITLE = "[^"]*\btext-base font-semibold"/);
+  });
+
   it("no file under web/src except tokens.css holds a hex colour", () => {
     // Six or eight digits always; three or four only with a letter a-f, so "#192" is not flagged.
     const hex = /#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|(?=[0-9]*[a-fA-F])[0-9a-fA-F]{3,4})\b/;
@@ -149,6 +173,19 @@ describe("contrast", () => {
   };
   const ratio = (a: string, b: string) => (Math.max(lum(a), lum(b)) + 0.05) / (Math.min(lum(a), lum(b)) + 0.05);
 
+  // Badge's tones, read as text (this suite is type-checked without JSX): each `bg-X text-Y` pair as token names.
+  const badgeTones = (): [string, string][] => {
+    const src = readFileSync(join(WEB_SRC, "components", "ui", "badge.tsx"), "utf8");
+    const token = (cls: string) => (cls === "text-1" ? "text" : cls);
+    return [...src.matchAll(/"bg-([\w-]+) text-([\w-]+)"/g)].map((m) => [token(m[1]!), token(m[2]!)]);
+  };
+
+  it("reads every Badge tone, the neutral one included", () => {
+    const tones = badgeTones();
+    for (const s of ["ok", "warn", "bad", "info"]) expect(tones).toContainEqual([`pill-${s}-bg`, `pill-${s}-fg`]);
+    expect(tones).toContainEqual(["surface-2", "text"]);
+  });
+
   for (const [theme, selector] of [["light", ":root"], ["dark", "\\.dark"]] as const) {
     it(`meets 4.5:1 in ${theme}`, () => {
       const root = block(":root");
@@ -159,7 +196,11 @@ describe("contrast", () => {
       const pairs: [string, string][] = [];
       for (const fg of ["text", "text-2", "text-3"]) for (const bg of ["bg", "surface", "surface-2", "sidebar"]) pairs.push([fg, bg]);
       for (const fg of ["accent", "running", "done", "failed"]) pairs.push([fg, "surface"]);
-      for (const s of ["ok", "warn", "bad", "info"]) pairs.push([`pill-${s}-fg`, `pill-${s}-bg`]);
+      for (const fg of ["accent", "running", "done", "failed"]) pairs.push([fg, "bg"]);
+      // A pill's text on its own fill, and on a card or the page (an inline error or warning line).
+      for (const s of ["ok", "warn", "bad", "info"]) for (const bg of [`pill-${s}-bg`, "surface", "bg"]) pairs.push([`pill-${s}-fg`, bg]);
+      // Every tone Badge draws (LEVEL_TONE and the neutral fallback): its text token on its fill token.
+      for (const [bg, fg] of badgeTones()) pairs.push([fg, bg]);
       // Text on a filled accent or failed background (a primary button, a destructive confirm).
       for (const bg of ["accent", "failed"]) pairs.push(["on-solid", bg]);
       for (const [fg, bg] of pairs) expect(ratio(t(fg), t(bg)), `${theme} ${fg} on ${bg}`).toBeGreaterThanOrEqual(4.5);
@@ -236,9 +277,9 @@ describe("the Gongbang mark in the dashboard", () => {
     for (const name of ["ApproveDialog", "RejectDialog", "ReviseDialog", "VerdictDialog"]) expect(commands + decisions).toContain(`function ${name}(`);
   });
 
-  it("maps every token of tokens.css (but --fs-*, --lh-*) in index.css @theme inline, and sidebar links use FOCUS", () => {
+  it("maps every token of tokens.css in index.css @theme inline, and sidebar links use FOCUS", () => {
     const tokens = [...new Set([...readFileSync(join(WEB_SRC, "tokens.css"), "utf8").matchAll(/^\s+(--[\w-]+):/gm)].map((m) => m[1]!))];
-    const unmapped = (css: string) => tokens.filter((n) => !/^--(fs|lh)-/.test(n) && !css.includes(`var(${n})`));
+    const unmapped = (css: string) => tokens.filter((n) => !css.includes(`var(${n})`));
     const css = readFileSync(join(WEB_SRC, "index.css"), "utf8");
     expect(unmapped(css)).toEqual([]);
     // Self-check: a missing mapping is caught.

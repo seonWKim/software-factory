@@ -5,12 +5,14 @@ import { Button } from "../components/ui/button.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
-import { Empty, ErrorNote, Loading, Section } from "../components/ui/parts.js";
+import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { t } from "../i18n/index.js";
 import { ago } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
 import { WorkerName, useNow } from "./common.js";
+import { Card, CardSection } from "../components/ui/card.js";
+import { EmptyState } from "../components/ui/notice.js";
 
 const WINDOWS = ["24h", "7d"] as const;
 type Window = (typeof WINDOWS)[number];
@@ -81,12 +83,11 @@ export function FailuresSection() {
   const items = useApi<Items>(API.items);
   const titles = useMemo(() => new Map((items.data?.items ?? []).flatMap((i) => (i.title ? [[i.id, i.title] as const] : []))), [items.data]);
   return (
-    <section id="failures" aria-label={t("page.failures")} className="mt-8">
-      <h2 className="mb-3 text-base font-semibold">{t("page.failures")}</h2>
+    <Card id="failures" title={t("page.failures")}>
       <SegmentedControl label={t("failures.window")} options={WINDOWS.map((w) => ({ id: w, label: t(WINDOW_LABELS[w]) }))} value={win} onChange={setWin} className="mb-6" />
-      <Section title={t("failures.title")} count={q.data?.total}>
+      <CardSection title={t("failures.title")} count={q.data?.total}>
         {q.isError ? <ErrorNote error={q.error} /> : !q.data ? <Loading rows={3} /> : q.data.groups.length === 0 ? (
-          <Empty>{t("failures.empty")}</Empty>
+          <EmptyState title={t("failures.empty")} />
         ) : (
           <>
             {q.data.capped && (
@@ -99,7 +100,7 @@ export function FailuresSection() {
             </ul>
           </>
         )}
-      </Section>
-    </section>
+      </CardSection>
+    </Card>
   );
 }

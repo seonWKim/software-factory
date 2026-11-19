@@ -1,3 +1,4 @@
+import { CalendarDays } from "lucide-react";
 import { useState } from "react";
 import { type CalendarDay, type CalendarEvents, type CalendarSync, type EventRow, useCalendarEvents } from "../api.js";
 import { Button } from "../components/ui/button.js";
@@ -5,6 +6,7 @@ import { ButtonRow } from "../components/ui/button-row.js";
 import { EmptyState, Notice, PageHeader } from "../components/ui/notice.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { ErrorNote, Loading, Table, Td, Tr } from "../components/ui/parts.js";
+import { Card } from "../components/ui/card.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
@@ -162,7 +164,7 @@ function StaleCalendars({ calendar }: { calendar: readonly CalendarSync[] }) {
 
 function Events({ v, view, label }: { v: CalendarEvents; view: View; label: string }) {
   if (v.calendar.length === 0) {
-    return <EmptyState title={t("calendarPage.emptyNone")} action={<Link href={CONNECT_PATH} className={cn(LINK_CLASS, "text-sm")}>{t("calendarPage.connect")}</Link>} />;
+    return <EmptyState icon={CalendarDays} title={t("calendarPage.emptyNone")} action={<Link href={CONNECT_PATH} className={cn(LINK_CLASS, "text-sm")}>{t("calendarPage.connect")}</Link>} />;
   }
   return (
     <>
@@ -195,9 +197,10 @@ export function CalendarPage() {
           </Button>
           <Button onClick={() => setFocus(new Date())}>{t("calendarPage.today")}</Button>
         </ButtonRow>
-        <h2 aria-live="polite" className="text-base font-semibold">{label}</h2>
       </div>
-      {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <Events v={v} view={view} label={label} />}
+      <Card title={label} live>
+        {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <Events v={v} view={view} label={label} />}
+      </Card>
     </div>
     </>
   );

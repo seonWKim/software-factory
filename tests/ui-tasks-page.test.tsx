@@ -172,7 +172,8 @@ describe("Tasks page", () => {
       expect(form.className).not.toMatch(/\bm[bt]-/);
       expect(factory.parentElement!.className).not.toMatch(/\bm[bt]-/);
       // The count shows with a word or not at all: never a bare number.
-      expect(view.firstElementChild!.querySelector("span")).toBeNull();
+      // The Card's title row (its count) is a span straight under one of its divs.
+      expect([...view.querySelectorAll(":scope > div > span")].map((x) => x.textContent)).not.toContainEqual(expect.stringMatching(/^\d+$/));
     });
 
     it("an empty list shows its message only, saying to add a task in the field above, with no button", async () => {
@@ -207,7 +208,7 @@ describe("Tasks page", () => {
       expect(document.body.textContent).toContain(BUILD);
     });
 
-    it("the overdue label is a StatusBadge", async () => {
+    it("the overdue label is a Badge", async () => {
       s.current = view({ today: { overdue: [row("tk_late", { due_date: "2026-11-10" })], due: [] } });
       const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
       render(createElement(QueryClientProvider, { client }, createElement(TasksPage)));

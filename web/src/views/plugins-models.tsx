@@ -1,10 +1,11 @@
 import { API, type CapabilitiesView, type CapabilityRow, useApi } from "../api.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
-import { StatusBadge } from "../components/ui/notice.js";
-import { ErrorNote, Loading, Section } from "../components/ui/parts.js";
+import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { t } from "../i18n/index.js";
 import { ago } from "../lib/format.js";
 import { useNow } from "./common.js";
+import { Card } from "../components/ui/card.js";
+import { Badge } from "../components/ui/badge.js";
 
 // The Plugins page's Models tab (design 09-dashboard-app, 2026-11-16; it was the Settings page's Providers section,
 // design 08-settings 2026-11-15): each provider entry of the capability list (a registered agent runner or LLM
@@ -34,7 +35,7 @@ export function ModelsTab() {
     {
       key: "state",
       header: t("settings.capColState"),
-      render: (r) => <StatusBadge size="sm" level={r.enabled ? "ready_to_merge" : undefined}>{r.enabled ? t("settings.capEnabled") : t("settings.capDisabled")}</StatusBadge>,
+      render: (r) => <Badge level={r.enabled ? "ready_to_merge" : undefined}>{r.enabled ? t("settings.capEnabled") : t("settings.capDisabled")}</Badge>,
     },
     { key: "roles", header: t("settings.capColRoles"), render: (r) => <span className="text-xs text-pretty">{r.roles.length > 0 ? r.roles.join(", ") : t("settings.capNoRole")}</span> },
     {
@@ -44,7 +45,7 @@ export function ModelsTab() {
     },
   ];
   return (
-    <Section title={title} count={rows?.length}>
+    <Card title={title} count={rows?.length}>
       <p className="mb-2 text-sm text-pretty text-text-2">{t("plugins.modelsHint")}</p>
       {q.isError ? (
         <ErrorNote error={q.error} />
@@ -53,6 +54,6 @@ export function ModelsTab() {
       ) : (
         <DataTable label={title} columns={columns} rows={rows} rowKey={(r) => r.id} empty={t("settings.providersEmpty")} />
       )}
-    </Section>
+    </Card>
   );
 }

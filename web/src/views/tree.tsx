@@ -5,7 +5,6 @@
 import { useState } from "react";
 import { Button, Tree, TreeItem, TreeItemContent } from "react-aria-components";
 import type { ItemRow } from "../api.js";
-import { Badge } from "../components/ui/parts.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
@@ -13,6 +12,7 @@ import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, shortSource } from "../lib/format.
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
 import { SourceLink, WhyText, WorkerName, runKindLabel } from "./common.js";
+import { Badge } from "../components/ui/badge.js";
 
 /** Browser storage keys: the chosen view, and the expanded rows (a list of item ids; absent: the default). */
 export const VIEW_KEY = "sf.items.view";

@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { cn } from "../../lib/cn.js";
-import { Empty, Table, Td, Tr } from "./parts.js";
+import { Table, Td, Tr } from "./parts.js";
+import { EmptyState } from "./notice.js";
 
 export interface Column<Row> {
   key: string;
@@ -21,7 +22,7 @@ const isEmpty = (v: unknown) => v === null || v === undefined || v === false || 
  * With `dataKey` each row carries `data-key` set to its `rowKey`, for links and tests that find a row by it.
  */
 export function DataTable<Row extends object>({ columns, rows, rowKey, label, empty, dataKey }: { columns: readonly Column<Row>[]; rows: readonly Row[]; rowKey(row: Row): string; label: string; empty: ReactNode; dataKey?: boolean }) {
-  if (rows.length === 0) return <Empty>{empty}</Empty>;
+  if (rows.length === 0) return <EmptyState title={empty} />;
   const value = (c: Column<Row>, row: Row): unknown => (c.render ? c.render(row) : (row as Record<string, unknown>)[c.key]);
   const shown = columns.filter((c) => rows.some((row) => !isEmpty(value(c, row))));
   const numeric = shown.map((c) => c.numeric ?? rows.map((row) => value(c, row)).filter((v) => !isEmpty(v)).every((v) => typeof v === "number"));

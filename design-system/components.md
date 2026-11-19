@@ -2,9 +2,13 @@
 
 The shared pieces in `web/src/components/ui`: plain React and Tailwind on the token classes of `foundations.md`, no component library. Each section gives the purpose, variants, sizes and states; `tests/web-ui-components.test.tsx` renders every one listed for the new components and checks that every exported component has a section here.
 
-## Section
+## Card
 
-A block of a page: an optional h2 `title`, an optional count and an optional action at the end. With no `title` the count shows alone and the `label` prop gives the region its name (`aria-label`); a caller that passes a `title` is unchanged. No variants or sizes.
+A block of a page (`card.tsx`): the `surface` background, a 1px `border`, the `card` radius, 24px padding (`p-6`; 16px below `sm`, so a 320px window keeps its content width) and `shadow-sm`. Optional h2 `title` in the section title role (`text-base font-semibold`, the exported `CARD_TITLE`), an optional `count` beside it and an optional `action` at the end of the title row. It is a region named by `label`, else by `title` (Data names its table Card "Table <name>" and titles it with the bare name); with neither it is a plain block. `id` gives it an anchor (`#spend`, `#failures`); `live` announces a title that changes (the calendar's period). Cards follow each other 24px apart. No variants or sizes.
+
+## CardSection
+
+A titled part inside a `Card`: an h3 in the same section title role, an optional `count` and `action`. Not a region of its own, so a page's list of regions stays its list of cards. Use it for a sub-heading in a card (Spend's Totals, the read-only file keys) instead of a raw heading.
 
 ## Table
 
@@ -24,11 +28,7 @@ A `Table` built from `columns` and `rows`, on `Table`, `Tr` and `Td`. A column i
 
 ## Badge
 
-A small label tinted by `level` (from `LEVEL_TONE`); an unknown level is neutral. Keeps its name for existing pages; new code uses `StatusBadge`.
-
-## StatusBadge
-
-A level's name as a pill with a dot, tone from `LEVEL_TONE`. Variants: one per level in `LEVEL_TONE`, and neutral for an unknown level. Sizes: `sm`, `md` (default).
+The one badge (`badge.tsx`): a short state as a pill with a dot, `text-xs` medium, tone from `LEVEL_TONE` (the pill tokens: `ok`, `warn`, `bad`, `info`); an unknown or missing level is neutral (`surface-2` with `text`). Carries `data-level`. Variants: one per level in `LEVEL_TONE`, and neutral. One size. `tests/design-system.test.ts` checks every tone it draws at 4.5:1 in both themes.
 
 ## Notice
 
@@ -36,11 +36,7 @@ An inline message. Variants (`tone`): `info` (default), `ok`, `warn`, `bad`. Opt
 
 ## EmptyState
 
-What a list shows when empty: a title, optional explanation, optional action. States: with or without explanation, with or without action.
-
-## Empty
-
-A one-line dashed box for an empty list. Plain text only; use `EmptyState` when there is an action.
+What a list shows when empty, centred in a dashed `rounded-box`: an optional `icon` (a lucide icon, 24px, `text-3`), a `title`, an optional `description` and an optional `action`. Every empty list uses it, `DataTable`'s `empty` too. States: with or without icon, description and action. A list whose action must keep its place in the tree (Plugins' Import, whose dialog stays open as the list fills) draws `EMPTY_BOX` itself.
 
 ## Loading
 
@@ -52,7 +48,7 @@ The "Could not load" message in the `bad` tone, role alert.
 
 ## PageHeader
 
-A page's h1 with an optional description and optional actions. States: with or without description, with or without actions; actions wrap below the title when narrow.
+The top of every page: the one h1 in the page title role (`text-xl font-semibold`), an optional description under it (`text-sm`, `text-2`) and optional actions at the end, the primary action last. 24px below it. States: with or without description, with or without actions; actions wrap below the title when narrow.
 
 ## Input
 

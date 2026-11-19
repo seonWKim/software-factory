@@ -6,7 +6,6 @@ import { FOCUS } from "../../components/ui/control.js";
 import { announceStatus } from "../../components/ui/dialog.js";
 import { ID_CLASS, LINK_CLASS } from "../../components/ui/link-style.js";
 import { OverflowMenu } from "../../components/ui/menu.js";
-import { StatusBadge } from "../../components/ui/notice.js";
 import type { MessageKey } from "../../i18n/en.js";
 import { t } from "../../i18n/index.js";
 import { cn } from "../../lib/cn.js";
@@ -18,6 +17,7 @@ import { DeleteDialog, ProjectsDialog } from "./dialogs.js";
 import { RowForm } from "./forms.js";
 import type { Nested } from "./groups.js";
 import { ALERT, Rows, idFor, muted, useTaskAction } from "./shared.js";
+import { Badge } from "../../components/ui/badge.js";
 
 /** A done task's linked item's close reason, as the row says it beside the done time (design 02-tasks). */
 const closedKey = (reason: NonNullable<TaskRow["close_reason"]>): MessageKey =>
@@ -152,7 +152,7 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
           <TitleLink task={task} className={cn("text-sm text-pretty break-words", overdue && "font-medium text-pill-bad-fg", done && "text-text-2 line-through")} />
         )}
         <p className={cn(muted, "flex flex-wrap gap-x-3 gap-y-1")}>
-          {overdue && <StatusBadge level="stuck" size="sm">{t("tasks.overdue")}</StatusBadge>}
+          {overdue && <Badge level="stuck">{t("tasks.overdue")}</Badge>}
           {task.done_at != null && <span className="tabular-nums">{t("tasks.doneAt", { at: localDateTime(task.done_at) })}</span>}
           {done && task.close_reason != null && <span>{t(closedKey(task.close_reason))}</span>}
           {parent !== null && !sub && titles.has(parent) && <span className="break-words">{t("tasks.subOf", { title: titles.get(parent)! })}</span>}

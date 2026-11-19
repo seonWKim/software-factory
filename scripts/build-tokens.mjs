@@ -15,6 +15,7 @@ const pills = (mode) =>
     ),
   );
 const typeScale = Object.entries(tokens.type).flatMap(([k, v]) => [[`fs-${k}`, v.size], [`lh-${k}`, v["line-height"]]]);
+const shadows = (mode) => decls(Object.entries(tokens.shadows[mode]).map(([k, v]) => [`sh-${k}`, v]));
 const scale = (prefix, map) => decls(Object.entries(map).map(([k, v]) => [`${prefix}-${k}`, v]));
 
 const block = (selector, lines) => `${selector} {\n${lines.join("\n")}\n}\n`;
@@ -28,8 +29,9 @@ export function render() {
       ...decls(typeScale),
       ...scale("sp", tokens.space),
       ...scale("r", tokens.radius),
+      ...shadows("light"),
     ]),
-    block(".dark", [...colors("dark"), ...pills("dark")]),
+    block(".dark", [...colors("dark"), ...pills("dark"), ...shadows("dark")]),
   ].join("\n");
 }
 

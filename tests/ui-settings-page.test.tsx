@@ -654,7 +654,7 @@ describe("Settings page: the typed form of the file-only keys (design 08-setting
     // The read-only keys' reason sits under the name as the description.
     expect(section.querySelector('tr[data-read-only="env"] p')!.textContent).toContain("locally or in the cloud");
     // The sub-heading is drawn like the section title.
-    for (const name of ["Read-only keys", "Change on a local branch"]) expect(screen.getByRole("heading", { name }).className).toContain("text-balance text-sm font-semibold");
+    for (const name of ["Read-only keys", "Change on a local branch"]) expect(screen.getByRole("heading", { name }).className).toContain("text-balance text-base font-semibold");
   });
 
   it("Save sends edit-file through the writer, then shows the branch and a Merge button that merges the item locally", async () => {

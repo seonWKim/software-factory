@@ -3,10 +3,11 @@ import { Fragment, type ReactNode, useState } from "react";
 import { API, type StandingProposalRow, type StandingRuleRow, type StandingView, postStanding, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
-import { ErrorNote, Section } from "../components/ui/parts.js";
+import { ErrorNote } from "../components/ui/parts.js";
 import { Switch } from "../components/ui/switch.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
+import { Card, CardSection } from "../components/ui/card.js";
 
 // Approvals on the Rules page (design 05-standing-approvals and §9, issue #300; moved from Settings 2026-11-16): an on
 // or off switch per standing rule with its gate, tier, threshold, who set it, when it was created and when it was
@@ -98,23 +99,21 @@ function ProposalItem({ proposal, token }: { proposal: StandingProposalRow; toke
 export function ApprovalsSection() {
   const standing = useApi<StandingView>(API.standing);
   const v = standing.data;
-  if (standing.isError) return <Section title={t("rules.approvals")}><ErrorNote error={standing.error} /></Section>;
+  if (standing.isError) return <Card title={t("rules.approvals")}><ErrorNote error={standing.error} /></Card>;
   if (!v || (v.proposals.length === 0 && v.rules.length === 0)) return null;
   return (
-    <Section title={t("rules.approvals")}>
+    <Card title={t("rules.approvals")}>
       {v.proposals.length > 0 && (
-        <div className="mb-4">
-          <h3 className="mb-2 text-sm font-semibold">{t("standing.pending")}</h3>
+        <CardSection title={t("standing.pending")}>
           <ul aria-label={t("standing.pending")} className="space-y-2">
             {v.proposals.map((p) => (
               <ProposalItem key={p.id} proposal={p} token={v.csrf_token} />
             ))}
           </ul>
-        </div>
+        </CardSection>
       )}
       {v.rules.length > 0 && (
-        <div>
-          <h3 className="mb-2 text-sm font-semibold">{t("standing.title")}</h3>
+        <CardSection title={t("standing.title")}>
           <p className={`mb-2 ${muted}`}>
             {t("standing.intro")}
             {v.csrf_token === null && t("standing.noWrite")}
@@ -124,8 +123,8 @@ export function ApprovalsSection() {
               <RuleItem key={r.rule} rule={r} token={v.csrf_token} />
             ))}
           </ul>
-        </div>
+        </CardSection>
       )}
-    </Section>
+    </Card>
   );
 }

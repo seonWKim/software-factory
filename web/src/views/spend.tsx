@@ -4,12 +4,13 @@ import { Button } from "../components/ui/button.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
 import { BANNER_LINK_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import { Tooltip } from "../components/ui/menu.js";
-import { ErrorNote, Loading, Section } from "../components/ui/parts.js";
+import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { locale, t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { tokens } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
+import { Card, CardSection } from "../components/ui/card.js";
 
 // The Spend page (design 06-spend): what the agent runs cost today, this week and over the last 30 days, one bar
 // per UTC day, and the tasks by cost. Every figure is the sum of the runs' stored costs (GET /api/v1/spend); a run
@@ -119,7 +120,7 @@ function Tasks({ view, day, onClear }: { view: SpendView; day: string | null; on
   const q = useApi<SpendView>(day === null ? API.spend : API.spendDay(day));
   const v = day === null ? view : q.data;
   return (
-    <Section title={t("spend.tasks")} count={v?.items_total}>
+    <CardSection title={t("spend.tasks")} count={v?.items_total}>
       {day !== null && (
         <div className="mb-2 flex flex-wrap items-center gap-2">
           <p className="text-sm text-pretty">{t("spend.filtered", { day })}</p>
@@ -138,17 +139,16 @@ function Tasks({ view, day, onClear }: { view: SpendView; day: string | null; on
           <DataTable columns={columns()} rows={v.items} rowKey={(r) => r.work_item_id} label={t("spend.tasks")} empty={day === null ? t("spend.tasksEmpty") : t("spend.dayEmpty", { day })} />
         </>
       )}
-    </Section>
+    </CardSection>
   );
 }
 
-/** The anchor and level-2 heading Health puts over the Spend section; its figures are the sections inside. */
+/** The Card Health puts the Spend figures in (its anchor and level-2 heading); the figures are its CardSections. */
 function SpendFrame({ children }: { children: ReactNode }) {
   return (
-    <section id="spend" aria-label={t("page.spend")} className="mt-8">
-      <h2 className="mb-3 text-base font-semibold">{t("page.spend")}</h2>
+    <Card id="spend" title={t("page.spend")}>
       {children}
-    </section>
+    </Card>
   );
 }
 
@@ -163,7 +163,7 @@ export function SpendSection() {
   const unknown = v.total.unknown;
   return (
     <SpendFrame>
-      <Section title={t("spend.totals")}>
+      <CardSection title={t("spend.totals")}>
         <dl className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Total label={t("spend.today")} total={sum(v.days.filter((d) => d.day === v.today))} />
           <Total label={t("spend.week")} total={sum(v.days.filter((d) => d.day >= v.week_start))} />
@@ -175,10 +175,10 @@ export function SpendSection() {
             {t(unknown === 1 ? "spend.unknownOne" : "spend.unknownMany", { count: unknown })}
           </p>
         )}
-      </Section>
-      <Section title={t("spend.chart")}>
+      </CardSection>
+      <CardSection title={t("spend.chart")}>
         <DailyChart days={v.days} selected={day} onSelect={setDay} />
-      </Section>
+      </CardSection>
       <Tasks view={v} day={day} onClear={() => setDay(null)} />
     </SpendFrame>
   );

@@ -36,7 +36,7 @@ Four tones, each with `bg`, `fg` and `border`. Classes: `bg-pill-<tone>-bg text-
 | `bad` | #F8E8E8 / #482F33 | #B91C1C / #FBAAAA | stuck, failed, destructive |
 | `info` | #E8EDFB / #2C394B | #1D4ED8 / #60A5FA | running, a note |
 
-A work item's level maps to a tone in one place, `LEVEL_TONE` in `web/src/components/ui/parts.tsx`. `Badge` and `StatusBadge` both read it; never write a second map.
+A work item's level maps to a tone in one place, `LEVEL_TONE` in `web/src/components/ui/badge.tsx`. `Badge` reads it; never write a second map.
 
 ## Type
 
@@ -45,8 +45,19 @@ A work item's level maps to a tone in one place, `LEVEL_TONE` in `web/src/compon
 | `xs` | 0.6875rem (11 px) | 0.875rem (14 px) | `text-xs` | badges, hints, small controls |
 | `sm` | 0.8125rem (13 px) | 1.125rem (18 px) | `text-sm` | body, tables, controls |
 | `base` | 0.9375rem (15 px) | 1.375rem (22 px) | `text-base` | reading text |
-| `lg` | 1.25rem (20 px) | 1.625rem (26 px) | `text-lg` | page title |
-| `xl` | 1.75rem (28 px) | 2.125rem (34 px) | `text-xl` | large figures |
+| `lg` | 1.25rem (20 px) | 1.625rem (26 px) | `text-lg` | large figures |
+| `xl` | 1.75rem (28 px) | 2.125rem (34 px) | `text-xl` | page title |
+
+`index.css` maps each step to its Tailwind class with its line height, so `text-xl` is the `xl` step, not Tailwind's default.
+
+The roles (`type-roles` in `tokens.json`):
+
+| Role | Step and weight | Where |
+|---|---|---|
+| page title | `text-xl font-semibold` | `PageHeader`'s h1 |
+| section title | `text-base font-semibold` | `Card`'s h2, `CardSection`'s h3 |
+| body | `text-sm` | text, tables, controls |
+| meta | `text-xs` | badges, hints, times, counts under a value |
 
 Numbers that line up in a column use `tabular-nums`.
 
@@ -59,9 +70,18 @@ Steps (Tailwind's unit is 0.25rem): `1` 0.25rem, `2` 0.5rem, `3` 0.75rem, `4` 1r
 | Step | Value | Class | Use |
 |---|---|---|---|
 | `control` | 0.375rem | `rounded-control` | buttons, inputs, tables, notices |
-| `box` | 0.625rem | | grouped boxes (no class yet) |
+| `box` | 0.625rem | `rounded-box` | grouped boxes, empty states |
 | `card` | 0.875rem | `rounded-card` | cards |
 | `pill` | 9999px | `rounded-pill` | badges, switches |
+
+## Shadow
+
+| Step | Light | Dark | Class | Use |
+|---|---|---|---|---|
+| `sm` | `0 1px 2px 0 rgb(0 0 0 / 0.05)` | `0 1px 2px 0 rgb(0 0 0 / 0.4)` | `shadow-sm` | cards |
+| `lg` | a 12 px soft drop at 16 % black, with a 4 px one at 8 % | the same at 60 % and 40 % | `shadow-lg` | dialogs and floating panels |
+
+Both live in `tokens.json` (`shadows`, per theme) and reach `tokens.css` as `--sh-sm` and `--sh-lg`.
 
 ## Breakpoint
 

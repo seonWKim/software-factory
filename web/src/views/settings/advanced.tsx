@@ -7,7 +7,7 @@ import { Field } from "../../components/ui/field.js";
 import { Input } from "../../components/ui/input.js";
 import { LINK_CLASS } from "../../components/ui/link-style.js";
 import { KeyValue } from "../../components/ui/key-value.js";
-import { Badge, Empty, Section, Table } from "../../components/ui/parts.js";
+import { Table } from "../../components/ui/parts.js";
 import type { MessageKey } from "../../i18n/en.js";
 import { t } from "../../i18n/index.js";
 import { ago, duration } from "../../lib/format.js";
@@ -21,6 +21,9 @@ import { withNodes } from "../standing.js";
 import { Editor } from "./editor.js";
 import { SHORT_OBJECT, asObject, entries, stringOf, summaryOf } from "./values.js";
 import { Disclosure } from "../../components/ui/disclosure.js";
+import { Card } from "../../components/ui/card.js";
+import { Badge } from "../../components/ui/badge.js";
+import { EmptyState } from "../../components/ui/notice.js";
 
 const PR_ONLY_TITLE = t("settings.prOnlyTitle");
 const SOURCE_TONE: Record<string, string> = { override: "needs_approval", file: "", default: "" };
@@ -135,7 +138,7 @@ function KeyDetails({ row }: { row: SettingRow }) {
 
 /** The settable keys table: one shared settings row per key; the Value cell holds the editors, the per-project layer and the learned value. */
 function KeysTable({ view }: { view: SettingsView }) {
-  if (view.keys.length === 0) return <Empty>{t("settings.noKeys")}</Empty>;
+  if (view.keys.length === 0) return <EmptyState title={t("settings.noKeys")} />;
   // The Reset column shows only while some key has an override to reset.
   const resets = view.keys.some((row) => row.source === "override");
   return (
@@ -231,7 +234,7 @@ function PageCommands() {
   const s = session.data;
   return (
     <div id="page-commands" ref={ref} className="mt-6 first:mt-0">
-      <Section title={t("settings.commandsTitle")}>
+      <Card title={t("settings.commandsTitle")}>
         <p className="text-sm text-pretty text-text-2">
           {s?.actor ? (
             withNodes("settings.cmdActsAs", { actor: <code>{s.actor}</code> }, { source: t(s.actor_source === "config" ? "settings.sourceConfig" : "settings.sourceEnvironment") })
@@ -239,7 +242,7 @@ function PageCommands() {
             t("settings.cmdOff")
           )}
         </p>
-      </Section>
+      </Card>
     </div>
   );
 }
@@ -257,13 +260,13 @@ export function AdvancedTab({ view: v }: { view: SettingsView }) {
         <Link href={`${BASE}runners`} className={LINK_CLASS}>{t("page.runners")}</Link>{" · "}
         <Link href={`${BASE}data`} className={LINK_CLASS}>{t("page.data")}</Link>
       </p>
-      <Section title={t("settings.settableKeys")} count={v.keys.length}>
+      <Card title={t("settings.settableKeys")} count={v.keys.length}>
         <p className="mb-2 text-sm text-pretty text-text-2">{t("settings.settableIntro")}</p>
         <ProjectLabel view={v} />
         <KeysTable view={v} />
-      </Section>
+      </Card>
       <FileKeysSection view={v} />
-      <Section title={PR_ONLY_TITLE} count={prOnly.length}>
+      <Card title={PR_ONLY_TITLE} count={prOnly.length}>
         <p className="mb-2 text-sm text-pretty text-text-2">
           {withNodes("settings.prOnlyIntro", { file: <code>{"factory.config.json"}</code> })}
         </p>
@@ -287,8 +290,8 @@ export function AdvancedTab({ view: v }: { view: SettingsView }) {
           empty={t("settings.noKeys")}
           dataKey
         />
-      </Section>
-      <Section title={t("settings.history")} count={v.history.length}>
+      </Card>
+      <Card title={t("settings.history")} count={v.history.length}>
         <DataTable
           label={t("settings.history")}
           columns={[
@@ -306,10 +309,10 @@ export function AdvancedTab({ view: v }: { view: SettingsView }) {
           rowKey={(c) => String(c.seq)}
           empty={t("settings.noHistory")}
         />
-      </Section>
+      </Card>
       <PageCommands />
       {v.ignored.length > 0 && (
-        <Section title={t("settings.ignoredOverrides")} count={v.ignored.length}>
+        <Card title={t("settings.ignoredOverrides")} count={v.ignored.length}>
           <ul className="space-y-1 text-sm">
             {v.ignored.map((i, n) => (
               <li key={n} className="text-pretty break-words">
@@ -318,7 +321,7 @@ export function AdvancedTab({ view: v }: { view: SettingsView }) {
               </li>
             ))}
           </ul>
-        </Section>
+        </Card>
       )}
     </>
   );
