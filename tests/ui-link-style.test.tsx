@@ -6,7 +6,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../web/src/App.js";
-import { LINK_CLASS } from "../web/src/components/ui/link-style.js";
+import { ID_CLASS, LINK_CLASS } from "../web/src/components/ui/link-style.js";
 import { ItemsTable } from "../web/src/views/common.js";
 
 // The shared link style (issue #270): every link in the views renders LINK_CLASS, except the sidebar.
@@ -66,7 +66,10 @@ function contentLinks(root: HTMLElement): HTMLAnchorElement[] {
 }
 function expectShared(links: HTMLAnchorElement[]) {
   expect(links.length).toBeGreaterThan(0);
-  for (const a of links) expect(a.className.split(/\s+/), a.outerHTML).toEqual(expect.arrayContaining(LINK_CLASS.split(" ")));
+  for (const a of links) {
+    const own = a.className.includes("font-mono") ? ID_CLASS : LINK_CLASS;
+    expect(a.className.split(/\s+/), a.outerHTML).toEqual(expect.arrayContaining(own.split(" ")));
+  }
 }
 
 describe("shared link style", () => {
@@ -87,7 +90,7 @@ describe("shared link style", () => {
     const page = await mountAt("items/wi_1", "Title 1");
     const source = contentLinks(page.container).find((a) => a.getAttribute("href") === "https://github.com/o/r/issues/1")!;
     expect(source.className).toContain("tabular-nums");
-    expect(source.className).not.toContain("text-text-3");
+    expect(source.className.split(/\s+/)).toEqual(expect.arrayContaining(ID_CLASS.split(" ")));
   });
 
   it("leaves the sidebar links on their own classes", async () => {
@@ -108,13 +111,15 @@ describe("shared link style", () => {
 
 });
 
-describe("no per-call-site link colour", () => {
+describe("accent is not a text colour", () => {
   const walk = (dir: string): string[] =>
-    readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name)) : e.name.endsWith(".tsx") ? [join(dir, e.name)] : []));
-  it("has no text-accent class in web/src/views", () => {
-    for (const f of walk("web/src/views")) expect(readFileSync(f, "utf8"), f).not.toMatch(/text-accent/);
+    readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name)) : /\.tsx?$/.test(e.name) ? [join(dir, e.name)] : []));
+  it("has no text-accent class anywhere under web/src", () => {
+    for (const f of walk("web/src")) expect(readFileSync(f, "utf8"), f).not.toMatch(/text-accent/);
   });
-  it("has the style in link-style.ts alone, as a token class", () => {
-    expect(LINK_CLASS).toContain("text-accent");
+  it("has link and ID styles in link-style.ts as token classes", () => {
+    expect(LINK_CLASS.split(" ")).toEqual(expect.arrayContaining(["text-text-1", "hover:underline"]));
+    expect(ID_CLASS.split(" ")).toEqual(expect.arrayContaining(["text-text-3", "font-mono"]));
+    expect(`${LINK_CLASS} ${ID_CLASS}`).not.toContain("accent");
   });
 });
