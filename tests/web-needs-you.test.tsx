@@ -152,6 +152,22 @@ describe("the Needs you section", () => {
     expect(posts[0]).toEqual({ url: "/api/v1/items/wi_r1/commands", body: { command: "retry", note: "+paths web/src/components/ui/input.tsx" } });
   });
 
+  it("after a click the primary button says it was sent and stays off, so the row never looks unchanged", async () => {
+    mount();
+    const lists = await ready();
+    const row = rowsOf(lists[1]!)[0]!;
+    const approve = within(row).getByRole("button", { name: "Approve" });
+    fireEvent.click(approve);
+    await waitFor(() => expect(posts).toHaveLength(1));
+    const sent = await waitFor(() => {
+      const b = row.querySelector<HTMLButtonElement>("[data-sent]");
+      if (!b) throw new Error("not sent yet");
+      return b;
+    });
+    expect(sent.textContent).toBe("Sent, waiting…");
+    expect(sent.disabled).toBe(true);
+  });
+
   it("moves between rows with j and k, opens the item with Enter, presses the primary action with p (never Merge)", async () => {
     mount();
     const lists = await ready();
