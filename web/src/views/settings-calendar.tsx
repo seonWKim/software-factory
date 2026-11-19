@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
-import { API, type CalendarPluginView, type CalendarView, postCalendarConnect, postCalendarDisconnect, useApi } from "../api.js";
+import { API, type CalendarPluginView, type CalendarView, RECONNECT_ERROR, postCalendarConnect, postCalendarDisconnect, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { Dialog } from "../components/ui/dialog.js";
@@ -20,6 +20,9 @@ import { useNow } from "./common.js";
 // answers which secrets that sign-in needs, a Dialog asks for them in password fields, and the values leave the page's
 // state once the attempt is sent. Either way the server answers the consent page, opened in a new tab (and linked, if the browser blocks it), and the section polls GET /api/v1/calendar
 // for the result. Disconnect asks first in the danger Dialog; nothing is sent until Confirm.
+// Beside the connect actions, a note (collapsed by default) explains the provider's unverified-app screen and the
+// 7-day expiry of a client in Testing status. A stored sync error of RECONNECT_ERROR (the sign-in expired or was
+// revoked) shows the reconnect line with the same note, open, in place of "Last error", and keeps the connect actions.
 
 export function CalendarSection({ token }: { token: string }) {
   const view = useApi<CalendarView>(API.calendar);
@@ -62,6 +65,7 @@ function CalendarRow({ plugin, token }: { plugin: CalendarPluginView; token: str
   const [error, setError] = useState<string | null>(null);
   const [consent, setConsent] = useState<string | null>(null);
   const signingIn = plugin.attempt?.state === "signing_in";
+  const reconnect = plugin.error === RECONNECT_ERROR;
   const refresh = () => client.invalidateQueries({ queryKey: [API.calendar] });
 
   /** The default sign-in with no argument; the own-client option with `own` (and, from its Dialog, the typed values). */
@@ -116,15 +120,17 @@ function CalendarRow({ plugin, token }: { plugin: CalendarPluginView; token: str
           {plugin.synced_at ? t("calendar.lastSync", { time: t("time.ago", { time: ago(plugin.synced_at, now) }) }) : t("calendar.neverSynced")}
         </span>
       </div>
-      {plugin.error && <p className="text-xs text-pretty break-words text-pill-bad-fg">{t("calendar.lastError", { error: plugin.error })}</p>}
+      {reconnect ? (
+        <p role="alert" className="text-xs font-medium text-pretty text-pill-bad-fg">
+          {t("calendar.reconnect")}
+        </p>
+      ) : (
+        plugin.error && <p className="text-xs text-pretty break-words text-pill-bad-fg">{t("calendar.lastError", { error: plugin.error })}</p>
+      )}
       {!plugin.connected && !plugin.default_client && <p className="text-xs text-pretty text-text-2">{t("calendar.noDefaultClient")}</p>}
       <Attempt plugin={plugin} consent={consent} />
       <ButtonRow>
-        {plugin.connected ? (
-          <Button variant="danger" disabled={busy || signingIn} aria-label={t("calendar.disconnectLabel", { name: plugin.name })} onClick={() => (setError(null), setConfirming(true))}>
-            {t("calendar.disconnect")}
-          </Button>
-        ) : (
+        {(!plugin.connected || reconnect) && (
           <>
             {plugin.default_client && (
               <Button disabled={busy || signingIn} aria-label={t("calendar.connectLabel", { name: plugin.name })} onClick={() => void connect()}>
@@ -141,7 +147,13 @@ function CalendarRow({ plugin, token }: { plugin: CalendarPluginView; token: str
             </Button>
           </>
         )}
+        {plugin.connected && (
+          <Button variant="danger" disabled={busy || signingIn} aria-label={t("calendar.disconnectLabel", { name: plugin.name })} onClick={() => (setError(null), setConfirming(true))}>
+            {t("calendar.disconnect")}
+          </Button>
+        )}
       </ButtonRow>
+      {(!plugin.connected || reconnect) && <ConnectNote key={String(reconnect)} open={reconnect} />}
       {error && asking === null && !confirming && (
         <p role="alert" className="text-xs text-pretty break-words text-pill-bad-fg">
           {error}
@@ -184,6 +196,23 @@ function CalendarRow({ plugin, token }: { plugin: CalendarPluginView; token: str
         />
       )}
     </li>
+  );
+}
+
+/** Why the provider's consent page may warn, and when a connect expires: collapsed beside Connect, open when reconnecting. */
+function ConnectNote({ open: start }: { open: boolean }) {
+  const [open, setOpen] = useState(start);
+  const id = useId();
+  return (
+    <div data-calendar-note>
+      <Button variant="ghost" size="sm" aria-expanded={open} aria-controls={id} onClick={() => setOpen(!open)} className={LINK_CLASS}>
+        {t("calendar.noteToggle")}
+      </Button>
+      <div id={id} hidden={!open} className="mt-1 space-y-1 text-xs text-pretty text-text-2">
+        <p>{t("calendar.noteUnverified")}</p>
+        <p>{t("calendar.noteTesting")}</p>
+      </div>
+    </div>
   );
 }
 

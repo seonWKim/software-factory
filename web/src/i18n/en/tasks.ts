@@ -110,4 +110,8 @@ export const tasks = {
   "calendar.connectedLater": "Connected; it syncs within 5 minutes.",
   "calendar.firstSyncFailed": "The first sync failed: {error}",
   "calendar.failed": "Not connected: {error}",
+  "calendar.noteToggle": "About Google's sign-in warning",
+  "calendar.noteUnverified": "Google may show \"Google hasn't verified this app\" for this client, the default one or your own. That is expected, and Continue is safe.",
+  "calendar.noteTesting": "A client in Testing status must be reconnected every 7 days, unless you set it to In production on the OAuth consent screen. For your own account that needs no verification.",
+  "calendar.reconnect": "Reconnect Google Calendar",
 } as const;

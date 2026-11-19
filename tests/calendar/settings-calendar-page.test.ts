@@ -174,6 +174,43 @@ describe("Calendar section", () => {
     expect(section.textContent!.split(error).length - 1).toBe(1);
   });
 
+  it("beside Connect, a note about the provider's sign-in warning starts collapsed and opens from its toggle", async () => {
+    const section = await show();
+    const toggle = within(section).getByRole("button", { name: "About Google's sign-in warning" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    const body = document.getElementById(toggle.getAttribute("aria-controls")!)!;
+    expect(body.hidden).toBe(true);
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(body.hidden).toBe(false);
+    expect(body.textContent).toContain('Google may show "Google hasn\'t verified this app" for this client, the default one or your own. That is expected, and Continue is safe.');
+    expect(body.textContent).toContain("A client in Testing status must be reconnected every 7 days, unless you set it to In production on the OAuth consent screen. For your own account that needs no verification.");
+  });
+
+  it("an invalid_grant sync error shows Reconnect Google Calendar with the note open, not the raw error, and keeps the connect actions", async () => {
+    view = { plugins: [plugin({ connected: true, synced_at: new Date().toISOString(), error: "invalid_grant" })] };
+    const section = await show();
+    const row = section.querySelector<HTMLElement>(`[data-calendar="${NAME}"]`)!;
+    await waitFor(() => expect(within(row).getByRole("alert").textContent).toBe("Reconnect Google Calendar"));
+    expect(row.textContent).not.toContain("Last error");
+    const toggle = within(row).getByRole("button", { name: "About Google's sign-in warning" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(document.getElementById(toggle.getAttribute("aria-controls")!)!.textContent).toContain("must be reconnected every 7 days");
+    within(row).getByRole("button", { name: `Connect ${NAME}` });
+    within(row).getByRole("button", { name: `Use my own client for ${NAME}` });
+    within(row).getByRole("button", { name: `Disconnect ${NAME}` });
+  });
+
+  it("any other sync error shows as Last error, with no reconnect state", async () => {
+    view = { plugins: [plugin({ connected: true, error: "google-calendar: token refresh failed (HTTP 401)" })] };
+    const section = await show();
+    const row = section.querySelector<HTMLElement>(`[data-calendar="${NAME}"]`)!;
+    expect(row.textContent).toContain("Last error: google-calendar: token refresh failed (HTTP 401)");
+    expect(row.textContent).not.toContain("Reconnect Google Calendar");
+    expect(within(row).queryByRole("button", { name: `Connect ${NAME}` })).toBeNull();
+    expect(within(row).queryByRole("button", { name: "About Google's sign-in warning" })).toBeNull();
+  });
+
   it("a refused connect shows its reason beside the button", async () => {
     await show();
     answers = [{ status: 403, body: { error: "Only the owner connects a calendar; you are local:other." } }];
