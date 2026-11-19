@@ -8,7 +8,7 @@ import { BASE, type PageDef } from "../pages.js";
 /** A page's name in the active locale: its menu name and its heading. */
 export const pageLabel = (p: PageDef) => t(`page.${p.key}` as MessageKey);
 
-export const LINK_ROW = `flex items-center gap-2 px-2 py-1.5 text-sm ${FOCUS}`;
+const LINK_ROW = `flex items-center gap-2 px-2 py-1.5 text-sm ${FOCUS}`;
 
 /** One sidebar group of page links, with no visible title; `label` is its accessible name. */
 export function SideLinks({ label, pages, current, badges = {} }: { label: string; pages: readonly PageDef[]; current: PageDef; badges?: Readonly<Record<string, number | undefined>> }) {
