@@ -290,6 +290,7 @@ export const work = {
   "commands.sendVerdict": "Send verdict",
   "commands.verdict": "Verdict",
   "commands.commandSent": "Command sent: {command}",
+  "commands.sentWaiting": "Sent, waiting…",
   "commands.more": "More commands",
   "commands.help.approve": "Approve the spec, a held run or a tier raise; the factory starts the next run.",
   "commands.help.revise": "Send feedback: triage writes a new spec, or the implementer applies it to its change.",
