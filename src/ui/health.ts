@@ -9,7 +9,7 @@ import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { type Check, type CheckStatus, checkStatus } from "../setup.js";
-import { type Activity, BackgroundSnapshot } from "./background-refresh.js";
+import { BackgroundSnapshot } from "./background-refresh.js";
 import { Withholder } from "./withhold.js";
 
 export const HEALTH_MIN_INTERVAL_MS = 60_000;
@@ -46,19 +46,25 @@ interface RawRun {
 
 /** What GET /api/health returns. Every `msg` has passed through the Withholder. */
 export interface HealthReport {
-  checked_at: string;
+  /** When the reported run finished; null while `pending`. */
+  checked_at: string | null;
   checks: { status: CheckStatus; msg: string }[];
+  /** No run has finished yet (the server's stored report, design 09-health): no checks, the page keeps its placeholder. */
+  pending: boolean;
+  /** A run is going: a newer report follows. */
+  refreshing: boolean;
 }
 
 /**
  * Runs the checks at most once per `min_interval_ms` per process (measured between run starts), whoever
- * asks: every read of the report counts. A request during a run waits for that run.
+ * asks: every read of the report counts. A request during a run waits for that run. After `serveStored()` (the UI
+ * server) a report never waits: it is the stored one, refreshed in the background (design 09-health, 2026-11-19).
  * In-process state on purpose: it is a per-process rate limit on a read-only probe, not shared state.
  */
 export class HealthMonitor {
   private last: RawRun | null = null;
   private inflight: Promise<RawRun> | null = null;
-  private snapshot: BackgroundSnapshot<RawRun> | null = null;
+  private stored: BackgroundSnapshot<RawRun> | null = null;
 
   constructor(
     private readonly run: () => Promise<Check[]>,
@@ -84,7 +90,7 @@ export class HealthMonitor {
     try {
       return await this.execute(started_at);
     } catch (err) {
-      return this.failed(started_at, err);
+      return this.failed(started_at, this.clock.now(), err);
     }
   }
 
@@ -94,49 +100,41 @@ export class HealthMonitor {
   }
 
   /** doctor would stop on this error; the report shows it as one FAIL instead (scanned like any message). */
-  private failed(started_at: Date, err: unknown): RawRun {
+  private failed(started_at: Date, checked_at: Date, err: unknown): RawRun {
     const checks = [{ ok: false, msg: `health checks could not finish: ${err instanceof Error ? err.message.slice(0, 120) : "error"}` }];
-    return { started_at, checked_at: this.clock.now(), checks };
+    return { started_at, checked_at, checks };
   }
 
   /**
-   * From now on `report` answers from the last run at once and the checks run in the background (design 09-health,
-   * 2026-11-19): every `min_interval_ms` while the page is in use, and after `refresh()`. The first report waits for
-   * the first run only; a run that throws keeps the last good one. `activity` is shared with the other routes' snapshots,
-   * so a read of any of them keeps this one refreshing. Not started: the on-demand behaviour above.
+   * From now on `report` answers from the stored run at once (design 09-health, 2026-11-19): `pending` before the
+   * first run ends, and a read starts a background run only when the stored one is `min_interval_ms` old or
+   * `refreshNow()` marked it stale. No timer. A run that throws keeps the last good one. A second call does nothing.
    */
-  start(activity?: Activity): void {
-    this.snapshot ??= new BackgroundSnapshot(() => this.execute(this.clock.now()), this.clock, this.min_interval_ms, activity);
-    this.snapshot.start();
+  serveStored(): void {
+    this.stored ??= new BackgroundSnapshot(() => this.execute(this.clock.now()), this.clock, this.min_interval_ms);
   }
 
-  /** Stops the background runs and goes back to checking on request. */
-  stop(): void {
-    this.snapshot?.stop();
-    this.snapshot = null;
+  /** After a write: marks the stored run stale and starts the next run now. Does nothing before `serveStored()`. */
+  refreshNow(): void {
+    this.stored?.markStale();
+    this.stored?.refreshInBackground();
   }
 
-  /** Starts a background run now (after a write); does nothing when not started. */
-  refresh(): void {
-    this.snapshot?.refreshInBackground();
-  }
-
-  private async current(): Promise<RawRun> {
-    if (!this.snapshot) return this.latest();
-    try {
-      return (await this.snapshot.read()).value;
-    } catch (err) {
-      return this.failed(this.clock.now(), err);
-    }
+  private async current(): Promise<{ run: RawRun | null; refreshing: boolean }> {
+    if (!this.stored) return { run: await this.latest(), refreshing: false };
+    const r = this.stored.read();
+    if (r.state === "ready") return { run: r.value, refreshing: r.refreshing };
+    if (r.state === "failed") return { run: this.failed(r.at, r.at, r.error), refreshing: false };
+    return { run: null, refreshing: true };
   }
 
   /** The checks for the API, every message through the Withholder. */
   async report(scanner: EgressScanner): Promise<HealthReport> {
-    const r = await this.current();
+    const { run, refreshing } = await this.current();
+    if (!run) return { checked_at: null, checks: [], pending: true, refreshing };
     const w = new Withholder(scanner);
     const checks = [];
-    for (const c of r.checks) checks.push({ status: checkStatus(c), msg: (await w.plain(c.msg)).text });
-    return { checked_at: r.checked_at.toISOString(), checks };
+    for (const c of run.checks) checks.push({ status: checkStatus(c), msg: (await w.plain(c.msg)).text });
+    return { checked_at: run.checked_at.toISOString(), checks, pending: false, refreshing };
   }
 }
-

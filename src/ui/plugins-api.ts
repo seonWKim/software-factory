@@ -25,7 +25,7 @@ import { storeSql } from "../impl/store/sql/store-sql.js";
 import { McpToolListsStore, approvedImportedServers, requestMcpToolLists } from "../import/mcp-tool-lists.js";
 import { PackEntriesStore } from "../packs/pack-entries.store.js";
 import type { SkillRefSource, SkillState } from "../runtime/capabilities/capabilities.js";
-import { type Activity, BackgroundSnapshot } from "./background-refresh.js";
+import { BackgroundSnapshot } from "./background-refresh.js";
 import { HEALTH_MIN_INTERVAL_MS } from "./health.js";
 import { type CapabilityDeps, type UiCapabilitySources, capabilityRows, settingsSources } from "./capabilities-api.js";
 import type { ApiDeps, ApiResult } from "./api.js";
@@ -171,17 +171,16 @@ async function skillFolders(s: UiSettings, w: Withholder): Promise<string[]> {
 export async function readPlugins(d: ApiDeps): Promise<ApiResult> {
   if (!d.settings) return { status: 404, value: { error: "Not found." } };
   const snap = snapshots.get(d);
-  const { value, as_of } = snap ? await snap.read() : { value: await discover(d, d.settings), as_of: d.clock.now() };
+  const r = snap ? snap.read() : { state: "ready" as const, value: await discover(d, d.settings), as_of: d.clock.now(), refreshing: false };
   const writer = d.settings.editFile?.fileKeys !== undefined;
+  // The tokens belong to this request, never to the stored lists.
+  const tokens = { csrf_token: d.pauses?.auth !== undefined ? d.pauses.csrfToken : null, settings_token: writer ? d.settings.csrfToken : null };
+  // Before the first listing ends (pending) or with no good one (failed): no lists, the page keeps its placeholder or
+  // shows the error with Retry (design 09-dashboard-settings, 2026-11-19).
+  if (r.state !== "ready") return { status: 200, value: { as_of: null, pending: r.state === "pending", failed: r.state === "failed", refreshing: r.state === "pending", ...tokens } };
   return {
     status: 200,
-    value: {
-      as_of: as_of.toISOString(),
-      // The tokens belong to this request, never to the snapshot.
-      csrf_token: d.pauses?.auth !== undefined ? d.pauses.csrfToken : null,
-      ...value,
-      settings_token: writer ? d.settings.csrfToken : null,
-    },
+    value: { as_of: r.as_of.toISOString(), pending: false, failed: false, refreshing: r.refreshing, csrf_token: tokens.csrf_token, ...r.value, settings_token: tokens.settings_token },
   };
 }
 
@@ -201,27 +200,24 @@ async function discover(d: ApiDeps, settings: UiSettings) {
   };
 }
 
-/** The snapshots the UI server installed, by the deps object its routes read with. None: the read is live. */
+/** The stored listings the UI server installed, by the deps object its routes read with. None: the read is live. */
 const snapshots = new WeakMap<ApiDeps, BackgroundSnapshot<Awaited<ReturnType<typeof discover>>>>();
 
 /**
- * Installs the background snapshot of the Plugins read for `d` (design 09-dashboard-settings, 2026-11-19): the same
- * builder (`pluginRows`) runs on an interval while the page is in use and on `refresh()`, and GET /api/v1/plugins
- * answers from its last result. `activity` is shared with the Health snapshot, so a read of either route keeps both
- * refreshing. Returns the handle the server uses after a write and on close. A server without settings has no
- * Plugins route, so nothing is installed.
+ * Installs the stored Plugins listing for `d` (design 09-dashboard-settings, 2026-11-19): GET /api/v1/plugins answers
+ * from it at once, and a read starts the same builder (`pluginRows`) in the background when the stored listing is
+ * HEALTH_MIN_INTERVAL_MS old. Returns the call the server makes after a successful write: mark the listing stale and
+ * start the next refresh now. A server without settings has no Plugins route, so nothing is installed.
  */
-export function startPluginsSnapshot(d: ApiDeps, activity?: Activity): { refresh(): void; stop(): void } {
+export function servePluginsStored(d: ApiDeps): { refreshNow(): void } {
   const settings = d.settings;
-  if (!settings) return { refresh: () => undefined, stop: () => undefined };
-  const snap = new BackgroundSnapshot(() => discover(d, settings), d.clock, HEALTH_MIN_INTERVAL_MS, activity);
+  if (!settings) return { refreshNow: () => undefined };
+  const snap = new BackgroundSnapshot(() => discover(d, settings), d.clock, HEALTH_MIN_INTERVAL_MS);
   snapshots.set(d, snap);
-  snap.start();
   return {
-    refresh: () => snap.refreshInBackground(),
-    stop: () => {
-      snap.stop();
-      snapshots.delete(d);
+    refreshNow: () => {
+      snap.markStale();
+      snap.refreshInBackground();
     },
   };
 }

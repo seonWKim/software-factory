@@ -535,6 +535,8 @@ describe("ui api: runs, queue, workers, overview, health", () => {
     expect(JSON.parse(old.body)).toEqual({
       checked_at: d.clock.now().toISOString(),
       checks: [{ status: "ok", msg: "secret file is outside the repository" }, { status: "fail", msg: "[withheld: github_token]" }],
+      pending: false,
+      refreshing: false,
     });
     expect(old.headers["content-type"]).toBe("application/json; charset=utf-8");
   });
@@ -557,7 +559,7 @@ describe("ui api: host sleeps (issue #218)", () => {
       expect(typeof s.gap_ms).toBe("number");
     }
     const old = JSON.parse((await get(d, "/api/health")).body) as Record<string, unknown>;
-    expect(Object.keys(old).sort()).toEqual(["checked_at", "checks"]);
+    expect(Object.keys(old).sort()).toEqual(["checked_at", "checks", "pending", "refreshing"]);
   });
 
   it("/health answers with an empty sleeps list when the sleeps read fails", async () => {
