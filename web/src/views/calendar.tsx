@@ -15,7 +15,7 @@ import { BASE } from "../pages.js";
 import { dayLabel } from "./tasks/groups.js";
 
 // The Calendar page (design 09-dashboard-app, Calendar page): the stored calendar events of one week or one month,
-// read-only, from GET /api/v1/calendar/events with the first and last day shown. Week: Monday to Sunday as seven rows.
+// read-only, from GET /api/v1/calendar/events with the first and last day shown. Week: Monday to Sunday as seven columns.
 // Month: a Monday-first grid, up to 3 events a day and then "+N more". Previous and next move by one week or month;
 // Today returns to the period holding today in the browser's time zone. A day the last syncs did not cover shows
 // "Not synced", never an empty day. A source whose last sync failed is named with its last sync time, and its stored
@@ -77,12 +77,13 @@ function EventCard({ event }: { event: EventRow }) {
 
 const NotSynced = () => <p data-not-synced className="text-xs text-text-2">{t("calendarPage.notSynced")}</p>;
 
-/** Week: the seven days as rows, each with its events, "No events", or "Not synced". */
+/** Week: the seven days as columns in one row (scrolling sideways inside the card on a narrow window), each with its events, "No events", or "Not synced". */
 function WeekDays({ label, days }: { label: string; days: readonly CalendarDay[] }) {
   return (
-    <ol aria-label={label} className="space-y-3">
+    <div className="overflow-x-auto">
+    <ol aria-label={label} className="grid min-w-[56rem] grid-cols-7 gap-2">
       {days.map((d) => (
-        <li key={d.date} data-day={d.date} className="space-y-1">
+        <li key={d.date} data-day={d.date} className="min-w-0 space-y-1">
           <h3 className="text-xs font-medium text-text-2">{dayLabel(d.date)}</h3>
           {!d.synced ? (
             <NotSynced />
@@ -98,6 +99,7 @@ function WeekDays({ label, days }: { label: string; days: readonly CalendarDay[]
         </li>
       ))}
     </ol>
+    </div>
   );
 }
 
@@ -186,7 +188,7 @@ export function CalendarPage() {
     <>
     <PageHeader title={t("page.calendar")} />
     <div className="flex flex-col gap-6">
-      <div className="flex flex-col items-start gap-2">
+      <div data-calendar-toolbar className="flex flex-wrap items-center gap-2">
         <SegmentedControl label={t("calendarPage.view")} options={VIEWS} value={view} onChange={setView} />
         <ButtonRow role="group" aria-label={t("calendarPage.period")}>
           <Button aria-label={t(view === "week" ? "calendarPage.previousWeek" : "calendarPage.previousMonth")} onClick={() => setFocus(step(view, focus, -1))}>
