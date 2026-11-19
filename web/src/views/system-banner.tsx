@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { API, type AutoStop, type MigrateDryRun, type SettingsView, type SupervisorView, type SystemAction, postMigrate, postSupervisor, useApi } from "../api.js";
+import { API, type AutoStop, type FactoryState, type MigrateDryRun, type SettingsView, type SupervisorView, type SystemAction, postMigrate, postSupervisor, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { FOCUS } from "../components/ui/control.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
@@ -22,6 +22,94 @@ export function RevisionBanner({ server, web }: { server: string | null | undefi
     <p role="alert" data-testid="revision-banner" className="border-b border-pill-warn-fg bg-pill-warn-bg px-4 py-2 text-sm text-pretty text-pill-warn-fg">
       {t("banner.outOfDate")}<a href="" className={BANNER_LINK_CLASS}>{t("banner.reload")}</a>{t("banner.restart")}<code className="font-mono">{"factory ui"}</code>
     </p>
+  );
+}
+
+/** This browser's last seen factory revision, and the revision whose update note waits for a Dismiss (design 09-dashboard-shell). */
+export const SEEN_REV_KEY = "sf-factory-rev";
+export const UPDATE_NOTE_KEY = "sf-update-note";
+
+/** Storage can throw (private mode, blocked site data): then nothing is stored and no note shows. */
+function stored(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function store(key: string, value: string | null): void {
+  try {
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch {
+    // no storage: nothing kept
+  }
+}
+
+/**
+ * Notes `rev` as seen and says whether its update note shows: when this browser had stored another revision, `rev` is
+ * an update, kept until Dismiss. A first visit (none stored) only stores it.
+ */
+function noteFor(rev: string): boolean {
+  const seen = stored(SEEN_REV_KEY);
+  if (seen !== rev) {
+    store(SEEN_REV_KEY, rev);
+    if (seen !== null) store(UPDATE_NOTE_KEY, rev);
+  }
+  return stored(UPDATE_NOTE_KEY) === rev;
+}
+
+const shortRev = (rev: string) => rev.slice(0, 7);
+
+/**
+ * One note after the factory moved to a new revision (design 09-dashboard-shell): "Updated to <rev>: N changes", the
+ * commit subjects behind a Changes toggle, and Dismiss, which this browser keeps for that revision. Without a count
+ * (git failed, or no previous_rev) it names the revision only.
+ */
+export function UpdateNote({ factory }: { factory: FactoryState | null | undefined }) {
+  const rev = factory?.rev ?? null;
+  const [shown, setShown] = useState<string | null>(null);
+  useEffect(() => setShown(rev !== null && noteFor(rev) ? rev : null), [rev]);
+  if (rev === null || shown !== rev) return null;
+  const count = factory?.changes?.count ?? null;
+  const subjects = count === null ? [] : (factory?.changes?.subjects ?? []);
+  const short = shortRev(rev);
+  const dismiss = () => {
+    store(UPDATE_NOTE_KEY, null);
+    setShown(null);
+  };
+  return (
+    <div role="status" data-testid="update-note" className="flex flex-wrap items-start gap-x-3 gap-y-1 border-b border-pill-info-border bg-pill-info-bg px-4 py-2 text-sm text-pill-info-fg">
+      <div className="min-w-0 grow basis-64">
+        <p data-update-text className="text-pretty">
+          {count === null ? t("update.noteNoCount", { rev: short }) : count === 1 ? t("update.noteOne", { rev: short }) : t("update.note", { rev: short, count })}
+        </p>
+        {subjects.length > 0 && (
+          <Disclosure summary={t("update.changes")}>
+            <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs wrap-anywhere">
+              {subjects.map((s, i) => <li key={i}>{s}</li>)}
+            </ul>
+            {count !== null && count > subjects.length && <p className="mt-1 text-xs">{t("update.more", { count: count - subjects.length })}</p>}
+          </Disclosure>
+        )}
+      </div>
+      <Button variant="ghost" size="sm" onClick={dismiss}>{t("update.dismiss")}</Button>
+    </div>
+  );
+}
+
+/**
+ * The running revision in the header (design 09-dashboard-shell): its short form, and "up to date" or "N behind" when the
+ * status file says (a separate code checkout). Hidden without a factory status or a running revision.
+ */
+export function FactoryRevision({ factory }: { factory: FactoryState | null | undefined }) {
+  if (!factory?.rev) return null;
+  const rev = shortRev(factory.rev);
+  const behind = factory.behind ?? null;
+  const text = behind === null ? rev : behind === 0 ? t("update.revCurrent", { rev }) : t("update.revBehind", { rev, count: behind });
+  return (
+    <span data-testid="factory-rev" title={t("update.revLabel")} className="shrink-0 font-mono text-xs whitespace-nowrap text-text-2">{text}</span>
   );
 }
 
