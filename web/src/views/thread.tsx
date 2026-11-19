@@ -17,6 +17,9 @@ import { ago } from "../lib/format.js";
 // entry, the newest factory message (what a Needs-you reason names, its anchor), asks the owner for something (kind spec or
 // coordination-hold) or is the one the URL's anchor names. A command reply shows up here once the controller writes it and
 // the item is read again (the send re-reads it, the poll too). Entries are keyed on their anchor (a verdict has no seq).
+// The thread itself is collapsed after its first (newest) message (design 09-dashboard-item): the earlier ones wait
+// behind one "Show N earlier messages" button, unless the URL's anchor names one of them (a link to it, the
+// DecisionCard's "Show in thread"), which opens them.
 
 /** The kinds of factory message that ask the owner for something: they always start expanded. */
 const ASKS: readonly string[] = ["spec", "coordination-hold"];
@@ -95,19 +98,37 @@ function Message({ m, now, open: initial }: { m: ThreadEntry; now: number; open:
   );
 }
 
+/** Whether the location's hash names an entry after the first: the earlier messages then show. */
+const namesEarlier = (shown: readonly ThreadEntry[]) => shown.slice(1).some((m) => m.anchor === hashId());
+
 export function Thread({ entries, now }: { entries: readonly ThreadEntry[]; now: number }) {
   useHashScroll(entries.length > 0);
   const shown = threadOrder(entries);
   const newestFactory = shown.find((m) => m.role === "factory")?.anchor;
   const hash = hashId();
+  const [all, setAll] = useState(() => namesEarlier(shown));
+  useEffect(() => {
+    const open = () => namesEarlier(threadOrder(entries)) && setAll(true);
+    addEventListener("hashchange", open);
+    return () => removeEventListener("hashchange", open);
+  }, [entries]);
+  const earlier = shown.length - 1;
+  const collapsed = earlier > 0 && !all;
   return (
     <Section title={t("thread.title")} count={shown.length}>
       {shown.length === 0 ? <Empty>{t("thread.empty")}</Empty> : (
-        <ol aria-label={t("thread.title")} className="space-y-4">
-          {shown.map((m, i) => (
-            <Message key={m.anchor} m={m} now={now} open={i === 0 || m.anchor === newestFactory || ASKS.includes(m.kind) || m.anchor === hash} />
-          ))}
-        </ol>
+        <>
+          <ol aria-label={t("thread.title")} data-collapsed={collapsed} className={cn("space-y-4", collapsed && "[&>li+li]:hidden")}>
+            {shown.map((m, i) => (
+              <Message key={m.anchor} m={m} now={now} open={i === 0 || m.anchor === newestFactory || ASKS.includes(m.kind) || m.anchor === hash} />
+            ))}
+          </ol>
+          {earlier > 0 && (
+            <Button variant="ghost" size="sm" className="mt-2" aria-expanded={!collapsed} onClick={() => setAll(collapsed)}>
+              {collapsed ? t(earlier === 1 ? "thread.showEarlierOne" : "thread.showEarlier", { count: earlier }) : t("thread.showNewest")}
+            </Button>
+          )}
+        </>
       )}
     </Section>
   );
