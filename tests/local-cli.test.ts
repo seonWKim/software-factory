@@ -120,6 +120,57 @@ describe("task create", () => {
   });
 });
 
+describe("task create --depends-on (design 05-dependencies, 2026-11-20)", () => {
+  it("--help lists --depends-on <id>, and the flag parses with a wi_ or tk_ ID only", () => {
+    const help = parseLocalCliArgs("task", ["create", "--help"]);
+    expect(help).toMatchObject({ error: expect.stringContaining("--depends-on <id>") });
+    expect((help as { error: string }).error).toContain("task create --title <t> --body-file <f> [--depends-on <id>]");
+    expect(parseLocalCliArgs("task", ["create", "--title", "T", "--body-file", "b.md", "--depends-on", "wi_abc"])).toEqual({
+      action: "create", title: "T", bodyFile: "b.md", depends_on: "wi_abc",
+    });
+    expect(parseLocalCliArgs("task", ["create", "--depends-on", "tk_1", "--title", "T", "--body-file", "b.md", "--project", "home"])).toEqual({
+      action: "create", title: "T", bodyFile: "b.md", depends_on: "tk_1", project: "home",
+    });
+    for (const bad of ["#12", "abc", ""]) {
+      expect(parseLocalCliArgs("task", ["create", "--title", "T", "--body-file", "b.md", "--depends-on", bad]), bad).toMatchObject({ error: expect.stringContaining("--depends-on") });
+    }
+  });
+
+  it("stores a `Depends on: <id>` line in the new item's problem", async () => {
+    const { store, run } = await setup();
+    const first = (await run({ action: "create", title: "First", bodyFile: "a.md" })).lines[0] as WorkItemId;
+    const r = await run({ action: "create", title: "Second", bodyFile: "b.md", depends_on: first });
+    expect(r.code).toBe(0);
+    const item = (await store.getWorkItem(r.lines[0] as WorkItemId))!;
+    expect(item.problem).toBe(`Second\n\nthe body\n\nDepends on: ${first}`);
+    expect(item.issue_text).toBe(item.problem);
+  });
+
+  it("refuses an ID that names no local item, with a message and nothing written", async () => {
+    const { store, run } = await setup();
+    await store.createWorkItem(issue(9), system);
+    const gh = (await store.listWorkItems(10))[0]!.id;
+    const before = await snapshot(store);
+    for (const id of ["wi_nosuch", "tk_nosuch", gh]) {
+      const r = await run({ action: "create", title: "Second", bodyFile: "b.md", depends_on: id });
+      expect(r, id).toEqual({ code: 1, lines: [`--depends-on ${id} names no local work item or built task, so nothing was created`] });
+    }
+    expect(await snapshot(store)).toEqual(before);
+  });
+});
+
+describe("hold", () => {
+  it("parses `hold <id> <wi_ or tk_ id>` and stores `/hold` for the controller; a missing or bad ID is refused", async () => {
+    expect(parseLocalCliArgs("hold", ["wi_a", "wi_b"])).toEqual({ action: "command", command: "hold", id: "wi_a", text: "wi_b" });
+    for (const args of [["wi_a"], ["wi_a", "soon"], ["wi_a", "wi_b", "wi_c"]]) expect(parseLocalCliArgs("hold", args), args.join(" ")).toHaveProperty("error");
+    const { store, run } = await setup();
+    const id = (await run({ action: "create", title: "First", bodyFile: "a.md" })).lines[0] as WorkItemId;
+    const r = await run({ action: "command", command: "hold", id, text: "wi_other" });
+    expect(r.code).toBe(0);
+    expect((await store.listCliCommandsAfter(0, 10)).map((c) => [c.command, c.args])).toEqual([["hold", { item: id, text: "wi_other" }]]);
+  });
+});
+
 describe("task list and task show", () => {
   it("list prints each local item's ID, title, stage and blocked reason; GitHub items are left out", async () => {
     const { store, run } = await setup();

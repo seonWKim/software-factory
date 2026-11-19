@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { OwnerAuth } from "../src/core/authorize.js";
 import { type DependencyLink, type DependencySource, parseDependsOn } from "../src/core/coordination.js";
-import { buildTask } from "../src/core/task-build.js";
+import { commandFooter, itemCommandState } from "../src/core/commands.js";
+import { dependencyQuestion } from "../src/core/outputs.js";
+import { buildTask, createLocalItem } from "../src/core/task-build.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 import type { DependencyState, SourceRef, UserId, WorkItemId, WorkItemPatch } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
@@ -37,6 +40,7 @@ async function setup(extra: SourceAdapter[] = []) {
   const controller = new ControllerRole({
     store, sources: [new LocalSource(store), ...extra], auth: new OwnerAuth(store), clock, config, log: silent, scanner: cleanScanner,
   });
+  await store.claimOwner(ME);
   let n = 0;
   /** A local item with `problem`, moved to `patch` (default: implementing with a queued implement run). */
   const item = async (problem: string, patch: WorkItemPatch = {}, implement = true): Promise<WorkItemId> => {
@@ -57,7 +61,40 @@ async function setup(extra: SourceAdapter[] = []) {
   const reasons = async (id: WorkItemId) => (await store.listStateChanges(id)).map((c) => c.reason);
   const merge = async (id: WorkItemId) =>
     (await controller.unit("local-merge")).merged(id, ME, `merge:${id}`, { sha: "m1", already: false, not_updated: [] }, {});
-  return { store, clock, controller, item, mergeable, claim, get, reasons, merge };
+  /**
+   * A local item filed with `body` and triaged: its spec's problem (`spec`) replaces the filed text, as triage's does,
+   * and `note`'s `N:` lines answer the spec's `decisions` on its approval, which queues the implement run.
+   */
+  const approved = async (body: string, spec: string, decisions: string[], note: string) => {
+    const { item: it } = await createLocalItem(store, { source_id: `local-dep-${++n}`, title: `item ${n}`, body, project: PROJECT_KEY, user: ME });
+    const split = splitAnswers(note, decisions.map((text) => ({ text, default: "yes" })));
+    if ("refuse" in split) throw new Error(split.refuse);
+    const r = await store.transition({
+      id: it.id, expected_version: it.version, actor: { kind: "user", id: ME }, reason: "spec_approved", detail: answersDetail(split.answers),
+      patch: { stage: "RUNNING", problem: spec, tier: 2, allowed_paths: ["lib/"], files_to_change: [`lib/${n}.ts`] },
+      enqueue: { kind: "implement", idempotency_key: `${it.id}:implement` },
+    });
+    if (!r.ok) throw new Error("setup");
+    return it.id;
+  };
+  /** Claims `id`'s implement run and finishes it with the agent asking for a human, then applies the result. */
+  const asks = async (id: WorkItemId, reason: string) => {
+    const run = await claim();
+    if (run?.work_item_id !== id) throw new Error("no implement run to claim");
+    await store.completeRun(run.id, run.lease!.token, { status: "succeeded", summary: "", data: { needs_human: { reason, question: "Should it wait?" } } });
+    await controller.tickRuns();
+    expect(await get(id)).toMatchObject({ blocked_on: "human", blocked_reason: "agent_needs_human" });
+  };
+  let cmd = 0;
+  /** `/hold <text>` on `id` from the CLI, applied by the controller; the reply it posted, if any. */
+  const hold = async (id: WorkItemId, text: string) => {
+    const key = `cli:hold-${++cmd}`;
+    await store.appendCliCommand({ key, actor: ME, command: "hold", args: { item: id, text } });
+    await controller.tickCommands();
+    await controller.tickOutbox();
+    return (await store.listItemMessages(id)).find((m) => m.marker === `<!-- factory:refused:${key} -->`)?.body ?? null;
+  };
+  return { store, clock, controller, item, mergeable, claim, get, reasons, merge, approved, asks, hold };
 }
 
 describe("local items: Depends on lines naming wi_ and tk_ ids (design 05-dependencies)", () => {
@@ -136,5 +173,104 @@ describe("local items: Depends on lines naming wi_ and tk_ ids (design 05-depend
 
   it("the GitHub parser reads the same lines and ignores wi_ and tk_ ids", () => {
     expect(parseDependsOn("Depends on: #12, wi_abc\n- depends on tk_x and o/other#4", "o/r")).toEqual(["o/r#12", "o/other#4"]);
+  });
+});
+
+describe("entry points that write the Depends on line (design 05-dependencies, 2026-11-20)", () => {
+  it("triage's proposal approved yes: the next coordination pass writes `Depends on: wi_X` and holds the item until wi_X merges", async () => {
+    const f = await setup();
+    const x = await f.mergeable();
+    const a = await f.approved(`the second part; run after ${x} merges`, "the spec's problem", [dependencyQuestion(x)], "1: yes");
+    await f.controller.tickCoordination();
+    expect((await f.get(a)).problem).toBe(`the spec's problem\n\nDepends on: ${x}`);
+    expect(await f.get(a)).toMatchObject({ blocked_on: "dependency", blocked_reason: `waiting for ${x} to merge` });
+    expect(await f.reasons(a)).toEqual(expect.arrayContaining(["depends_on_written", "dependency_hold"]));
+    expect(await f.claim()).toBeNull();
+    // A second pass writes nothing more.
+    await f.controller.tickCoordination();
+    expect((await f.reasons(a)).filter((r) => r === "depends_on_written")).toHaveLength(1);
+    expect(await f.merge(x)).toBe("landed");
+    expect(await f.get(a)).toMatchObject({ blocked_on: "none", blocked_reason: null });
+    expect(await f.claim()).toMatchObject({ work_item_id: a, kind: "implement" });
+  });
+
+  it("an approval that takes the default (yes) holds the same way", async () => {
+    const f = await setup();
+    const x = await f.mergeable();
+    const a = await f.approved(`after ${x} merges`, "spec", [dependencyQuestion(x)], "");
+    await f.controller.tickCoordination();
+    expect(await f.get(a)).toMatchObject({ blocked_on: "dependency", blocked_reason: `waiting for ${x} to merge` });
+  });
+
+  it("triage's proposal approved no: no Depends on line, the text stays as written, and the item is not held", async () => {
+    const f = await setup();
+    const x = await f.mergeable();
+    const a = await f.approved(`after ${x} merges`, `spec; it builds on ${x}`, [dependencyQuestion(x)], "1: no");
+    await f.controller.tickCoordination();
+    expect(await f.get(a)).toMatchObject({ problem: `spec; it builds on ${x}`, blocked_on: "none", blocked_reason: null });
+    expect(await f.reasons(a)).not.toContain("depends_on_written");
+    expect(await f.claim()).toMatchObject({ work_item_id: a });
+  });
+
+  it("`task create --depends-on`'s line, which triage's spec replaced, is written back from the filed text and holds the item", async () => {
+    const f = await setup();
+    const x = await f.mergeable();
+    const a = await f.approved(`the body\n\nDepends on: ${x}`, "the spec's problem", [], "");
+    await f.controller.tickCoordination();
+    expect(await f.get(a)).toMatchObject({ problem: `the spec's problem\n\nDepends on: ${x}`, blocked_on: "dependency", blocked_reason: `waiting for ${x} to merge` });
+  });
+
+  it("a local stop at agent_needs_human lists `/hold <id>` with its help text; a GitHub item's does not", async () => {
+    const f = await setup();
+    const x = await f.mergeable();
+    const a = await f.item("the second part");
+    await f.asks(a, `This builds on ${x}, which has not merged yet.`);
+    const footer = commandFooter(itemCommandState(await f.get(a), await f.store.listRuns(a)));
+    expect(footer).toContain("- `/hold <id>`: Hold until <id> merges");
+    expect(commandFooter({ phase: "agent_needs_human", has_pr: false, asked_by: "implement" })).not.toContain("/hold");
+    await f.controller.tickOutbox();
+    expect((await f.store.listItemMessages(a)).map((m) => m.body).join("\n")).toContain("`/hold <id>`");
+  });
+
+  it("`/hold <id>` appends the line, holds the item on `blocked_on: dependency` with a queued implement run, and the merge releases it", async () => {
+    const f = await setup();
+    const x = await f.mergeable();
+    const a = await f.item("the second part");
+    await f.asks(a, `needs ${x}`);
+    expect(await f.hold(a, x)).toBeNull();
+    const held = await f.get(a);
+    expect(held).toMatchObject({ problem: `the second part\n\nDepends on: ${x}`, blocked_on: "dependency", blocked_reason: `waiting for ${x} to merge` });
+    expect(await f.reasons(a)).toContain("hold_requested");
+    expect(await f.store.listDependencyEdges({ work_item_id: a })).toEqual([expect.objectContaining({ state: "open" })]);
+    expect((await f.store.listRuns(a)).filter((r) => r.status === "queued").map((r) => r.kind)).toEqual(["implement"]);
+    expect(await f.claim()).toBeNull();
+    // The same row read again changes nothing and says nothing.
+    await f.controller.tickCommands();
+    expect((await f.get(a)).version).toBe(held.version);
+    expect(await f.merge(x)).toBe("landed");
+    expect(await f.get(a)).toMatchObject({ blocked_on: "none", blocked_reason: null });
+    expect(await f.claim()).toMatchObject({ work_item_id: a, kind: "implement" });
+  });
+
+  it("`/hold` refuses an id naming no local item, the item itself, an item already merged, and a bad id, naming the reason; nothing changes", async () => {
+    const f = await setup();
+    const x = await f.mergeable();
+    const a = await f.item("the second part");
+    await f.asks(a, `needs ${x}`);
+    expect(await f.merge(x)).toBe("landed");
+    const before = await f.get(a);
+    expect(await f.hold(a, "wi_nosuch")).toBe("`/hold` was not applied: `wi_nosuch` names no local work item or built task.");
+    expect(await f.hold(a, a)).toBe(`\`/hold\` was not applied: \`${a}\` is this item itself, and an item cannot wait for itself.`);
+    expect(await f.hold(a, x)).toContain(`${x} is already merged`);
+    expect(await f.hold(a, "soon please")).toContain("`/hold` takes one ID");
+    expect(await f.get(a)).toEqual(before);
+  });
+
+  it("`/hold` on an item that is not stopped at agent_needs_human is refused with its phase", async () => {
+    const f = await setup();
+    const x = await f.mergeable();
+    const a = await f.item("implementing");
+    expect(await f.hold(a, x)).toContain("the item is implementing; `/hold <id>` applies only to a local item whose implement run asked for a human");
+    expect((await f.get(a)).blocked_on).toBe("none");
   });
 });
