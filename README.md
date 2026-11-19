@@ -12,7 +12,7 @@ A local-first software factory: agents take a work item from intake to a reviewe
 - **Guards:** agents never see secrets; credentialed writes go through outbound and the tool broker; every outgoing text is scanned for secrets; size, scope and protected-path gates run before a push.
 - **One owner, local first:** one person runs the factory on one machine with SQLite and no accounts; several worker processes of that owner share the SQLite file.
 
-Status: Phase 2 (the factory builds itself), with parts of Phase 3. Details: [`PLAN.md`](PLAN.md); the event-driven refactor (RFC 0015) landed on main on 2026-11-09; its progress record is kept in the RFC repo with the RFCs, outside this repository, and its open items are in [`ARCHITECTURE.md`](ARCHITECTURE.md) section 7.
+Status: Phase 2 (the factory builds itself), with parts of Phase 3. Details: [`PLAN.md`](PLAN.md); the event-driven refactor (RFC 0015) landed on main on 2026-11-09; its progress record is kept in the RFC repo with the RFCs, outside this repository, and its open items are in [`docs/architecture-open-items.md`](docs/architecture-open-items.md).
 
 ## Start
 
