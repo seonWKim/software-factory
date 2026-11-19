@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type JSX, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
-import { API, type Items } from "./api.js";
+import { API, type ItemRow, type Items, useApi } from "./api.js";
 import { Button } from "./components/ui/button.js";
 import { ButtonRow } from "./components/ui/button-row.js";
 import { Input } from "./components/ui/input.js";
@@ -10,8 +10,8 @@ import { t } from "./i18n/index.js";
 import { type MessageKey } from "./i18n/en.js";
 import { BASE, PAGES, itemPath } from "./pages.js";
 
-// ⌘K search (design §9): the pages and the items the page has already loaded (the cached /api/v1/items reads),
-// and the command help. No search endpoint and no request of its own.
+// ⌘K search (design §9): the pages, the items the page has already loaded (the cached /api/v1/items reads) and the
+// closed items of the existing closed=1 read, and the command help. No search endpoint.
 //
 // The command help (design 09-dashboard-item-commands): every item command, from a static list, as it is typed on a
 // source or in a terminal, with what it does. The item page's DecisionCard has a button for each one an item accepts;
@@ -58,16 +58,22 @@ const DEVELOPER_PAGE = "data";
 interface Hit {
   to: string;
   label: string;
-  group: "search.pages" | "search.developer" | "search.items";
+  group: "search.pages" | "search.developer" | "search.items" | "search.merged" | "search.closed";
 }
 
 /** The items any list of the page has loaded, by id. */
-function loadedItems(client: ReturnType<typeof useQueryClient>): { id: string; title: string | null }[] {
-  const seen = new Map<string, string | null>();
+function loadedItems(client: ReturnType<typeof useQueryClient>): ItemRow[] {
+  const seen = new Map<string, ItemRow>();
   for (const [, data] of client.getQueriesData<Items>({ predicate: (q) => typeof q.queryKey[0] === "string" && q.queryKey[0].startsWith(API.items) })) {
-    for (const i of data?.items ?? []) if (!seen.has(i.id)) seen.set(i.id, i.title);
+    for (const i of data?.items ?? []) if (!seen.has(i.id)) seen.set(i.id, i);
   }
-  return [...seen].map(([id, title]) => ({ id, title }));
+  return [...seen.values()];
+}
+
+/** An item's hit: a closed one is labelled Merged (completed) or Closed; a withheld title shows the id. */
+function itemHit(i: ItemRow): Hit {
+  const group = i.stage !== "CLOSED" ? "search.items" : i.close_reason === "completed" ? "search.merged" : "search.closed";
+  return { to: itemPath(i.id), label: i.title ?? i.id, group };
 }
 
 /** A modal frame: Escape and the Close button close it. */
@@ -102,14 +108,18 @@ export function SearchDialog({ navigate, onClose }: { navigate: (to: string) => 
   const [at, setAt] = useState(0);
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => input.current?.focus(), []);
+  // The closed items come from the existing closed=1 read (newest LIST_LIMIT), which the default read leaves out.
+  const closed = useApi<Items>(`${API.items}?closed=1`);
   const hits = useMemo<Hit[]>(() => {
+    const items = loadedItems(client).map(itemHit);
     const all: Hit[] = [
       ...PAGES.map((p) => ({ to: BASE + p.path, label: t(`page.${p.key}` as MessageKey), group: (p.path === DEVELOPER_PAGE ? "search.developer" : "search.pages") as Hit["group"] })),
-      ...loadedItems(client).map((i) => ({ to: itemPath(i.id), label: i.title ?? i.id, group: "search.items" as const })),
+      ...items.filter((h) => h.group === "search.items"),
+      ...items.filter((h) => h.group !== "search.items"),
     ];
     const q = text.trim().toLowerCase();
     return q ? all.filter((h) => h.label.toLowerCase().includes(q) || h.to.toLowerCase().includes(q)) : all;
-  }, [client, text]);
+  }, [client, text, closed.data]);
   const go = (h: Hit | undefined) => {
     if (!h) return;
     onClose();
