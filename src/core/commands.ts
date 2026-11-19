@@ -161,15 +161,10 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: "hold",
     usage: "/hold <id>",
-    description:
-      "Hold until <id> merges: writes a `Depends on: <id>` line in the item's problem and queues the implement run, which waits " +
+    description: "Hold until <id> merges: writes a `Depends on: <id>` line in the item's problem and queues the implement run, which waits " +
       "for <id> (a local wi_… item, or a built task tk_…) to merge and then starts on its own. Refused for an ID that names no local item, the item itself, or an item already merged",
     // Only a local item whose implement run asked for a human, e.g. because it needs another item first (design 05-dependencies).
-    phases: [],
-    local_phases: ["agent_needs_human"],
-    asked_by: ["implement"],
-    needs_pr: false,
-    changes_state: true,
+    phases: [], local_phases: ["agent_needs_human"], asked_by: ["implement"], needs_pr: false, changes_state: true,
   },
   {
     name: "budget",
@@ -225,9 +220,6 @@ export function commandSpec(name: CommandName): CommandSpec {
 
 /** blocked_reason prefix (with `blocked_on: human`) of an item whose dependency closed without a merge (design §5). */
 export { DEPENDENCY_CLOSED } from "./phase.js";
-
-/** State change reason of an applied `/hold <id>` (design 05-dependencies); its detail's `comment_id` is the command's key. */
-export const HOLD_REQUESTED = "hold_requested";
 
 /** Block reasons whose step `/retry` reads from the stage (or, for the agent blocks, from the item's runs first). */
 const STAGE_RETRY_REASONS: readonly (string | null)[] = ["max_attempts", "max_restart", AGENT_NEEDS_HUMAN, REPEATED_FAILURE];

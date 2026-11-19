@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { answersYes, dependencyQuestion, parseTriage, proposedDependency } from "../src/core/outputs.js";
+import { parseTriage } from "../src/core/outputs.js";
+import { answersYes, dependencyQuestion, proposedDependency } from "../src/core/task-build.js";
 import { triageSpec } from "./helpers/fakes.js";
 
 // Triage's dependency proposal (design 04-triage, 2026-11-20): a request that says it runs after another local item is
