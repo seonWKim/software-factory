@@ -159,6 +159,13 @@ export function pathWeight(path: string, conflicts: ReadonlyMap<string, number>,
   return { path, weight: Math.max(BASE_WEIGHT, learnedWeight(n), hotspot ? s.hotspot_weight : 0), conflicts: n, hotspot };
 }
 
+/**
+ * Shared index files a normal change never edits (design 05-dependencies, decided 2026-11-20): the design index
+ * (edited only to add a topic file) and the generated i18n catalog barrel (edited only for a new area file). A
+ * shared one counts only when both runs' lists name it; a folder that merely covers it claims nothing.
+ */
+export const UNCLAIMED_INDEXES: readonly string[] = ["docs/design.md", "web/src/i18n/en.ts"];
+
 /** The cost of running two items side by side: the shared paths with their weights, and their sum. */
 export function coordinationCost(
   a: readonly string[],
@@ -166,7 +173,8 @@ export function coordinationCost(
   conflicts: ReadonlyMap<string, number>,
   s: CoordinationSettings,
 ): { shared: SharedPath[]; cost: number } {
-  const shared = pathsOverlap(a, b).map((p) => pathWeight(p, conflicts, s));
+  const claimed = (p: string) => !UNCLAIMED_INDEXES.includes(p) || (a.includes(p) && b.includes(p));
+  const shared = pathsOverlap(a, b).filter(claimed).map((p) => pathWeight(p, conflicts, s));
   // Weights are multiples of 0.25 by default; rounding keeps a sum like 2.4999999 from slipping under a threshold.
   const cost = Math.round(shared.reduce((sum, p) => sum + p.weight, 0) * 1000) / 1000;
   return { shared, cost };
