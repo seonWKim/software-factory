@@ -35,11 +35,17 @@ export interface CalendarPluginView {
   /** This build carries the default sign-in a plain Connect takes; false: only the own-client option can connect. */
   default_client: boolean;
   synced_at: string | null;
-  /** The last sync's error; null after a success. */
+  /** The last sync's error; null after a success. RECONNECT_ERROR when the sign-in expired. */
   error: string | null;
   /** The sign-in this server process started, if any. */
   attempt: { state: "signing_in" | "connected" | "failed"; events: number | null; error: string | null } | null;
 }
+
+/**
+ * The stored sync error that means the sign-in expired or was revoked (the OAuth code a source stores alone, e.g. a
+ * client in Testing status after 7 days): the section asks to connect again instead of showing it raw.
+ */
+export const RECONNECT_ERROR = "invalid_grant";
 
 export interface CalendarView {
   plugins: CalendarPluginView[];

@@ -13,6 +13,11 @@ export const TOKEN_URL = "https://oauth2.googleapis.com/token";
 export const EVENTS_API = "https://www.googleapis.com/calendar/v3/calendars";
 /** The calendar read when `calendar_ids` lists none. */
 export const PRIMARY = "primary";
+/**
+ * The OAuth error code a token refresh answers when the refresh token is expired or revoked (a client in Testing status
+ * loses it after 7 days). It is thrown, and so stored, as the whole error: the dashboard shows its reconnect state for it.
+ */
+export const INVALID_GRANT = "invalid_grant";
 /** An access token is refreshed this long before Google says it expires. */
 const EXPIRY_MARGIN_MS = 60_000;
 
@@ -183,6 +188,7 @@ export class GoogleCalendarSource<N extends string> implements CalendarFeed {
       scope: CALENDAR_READONLY_SCOPE,
     }).toString();
     const res = await this.call(TOKEN_URL, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body }, "token refresh");
+    if (res.status === 400 && (await errorCode(res)) === INVALID_GRANT) throw new Error(INVALID_GRANT);
     if (res.status !== 200) throw fail(`token refresh failed (HTTP ${res.status})`);
     const answer = await json<{ access_token?: unknown; expires_in?: unknown; scope?: unknown }>(res, "token refresh");
     if (answer.scope !== CALENDAR_READONLY_SCOPE) throw fail("token refresh answered a scope other than calendar.readonly");
@@ -235,6 +241,12 @@ export async function json<T>(res: HttpResponse, what: string): Promise<T> {
   } catch {
     throw fail(`${what} answered a body that is not JSON`);
   }
+}
+
+/** The `error` code of an OAuth error body, read alone: the rest of the body is never kept. Null when there is none. */
+async function errorCode(res: HttpResponse): Promise<string | null> {
+  const body = await json<{ error?: unknown }>(res, "token refresh").catch(() => null);
+  return typeof body?.error === "string" ? body.error : null;
 }
 
 /** An all-day event's date is a local day: its instant is that day's local midnight. */

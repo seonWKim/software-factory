@@ -396,6 +396,10 @@ Filters (in the URL, so a filtered view can be bookmarked; each option shows how
 - `closed=1`: show closed items too
 - `q`: search the issue number (`#12` or `12`) and the title as shown
 
+### Google Calendar (optional)
+
+Settings → Calendar → Connect signs in through Google, with the factory's default client or your own ([calendar-source](docs/plugins/calendar-source.md)). Google may show "Google hasn't verified this app" for either client: that is expected, and Continue is safe. A client in Testing status must be reconnected every 7 days, unless you set it to In production on the OAuth consent screen, which needs no verification for your own account. When the sign-in expires, Settings → Calendar shows "Reconnect Google Calendar": press Connect again.
+
 ### Slack (optional: real-time threads)
 
 Off by default; nothing changes until you turn it on. Once on, mentioning the bot in a listed channel starts a work item from that thread, and the factory answers in the thread with the spec, status and buttons. PRs and code stay on GitHub.
