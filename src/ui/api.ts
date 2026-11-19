@@ -245,8 +245,8 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
   const workers = status && c.d.settings ? await effectiveGlobal(c.d, "workers") : status ? { value: status.workers, source: "file" as const } : null;
   const factory = status === undefined ? undefined : status === null ? null : {
     state: status.state,
-    rev: status.rev,
-    target_rev: status.target_rev,
+    rev: status.rev, previous_rev: status.previous_rev ?? null, target_rev: status.target_rev,
+    changes: status.changes ? { count: status.changes.count, subjects: await Promise.all(status.changes.subjects.map(async (v) => (await c.text(v))!)) } : null,
     child_pid: status.child_pid,
     since: status.since,
     workers: workers!.value,

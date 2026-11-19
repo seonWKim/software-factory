@@ -159,10 +159,8 @@ export class GitWorktreeUpdater implements Updater {
   private mainTriedFor: string | null = null;
   private closed = false;
   private readonly abort = new AbortController();
-  /** The revision the claiming child was started from. */
-  private runningRev: string | null = null;
-  /** The revision the claiming child's start replaced (design 08-self-update); null until a child replaced another. */
-  private previousRev: string | null = null;
+  private runningRev: string | null = null; // the revision the claiming child was started from
+  private previousRev: string | null = null; // the one that start replaced (previous_rev); null: none yet
   /** The last unexpected child exits, oldest first, for the status file (RESTART_HISTORY at most). */
   private restarts: ChildRestart[] = [];
   /** The last status written: a repeat of the same state keeps its `since`. */
@@ -537,9 +535,7 @@ export class GitWorktreeUpdater implements Updater {
     const older = this.live.filter((l) => !l.draining);
     this.live.push(started);
     this.current = started;
-    // A crash restart of the same revision replaces nothing: previous_rev stays.
-    if (this.runningRev !== null && this.runningRev !== rev) this.previousRev = this.runningRev;
-    this.runningRev = rev;
+    if (this.runningRev !== rev) [this.previousRev, this.runningRev] = [this.runningRev ?? this.previousRev, rev];
     void child.exited.then((code) => this.onExit(started, code));
     log.info("child started", { pid: child.pid, rev, dir, worker_index_base: base, workers: size });
     // In the same synchronous step as the launch, so a shutdown sees either no new child or every drain.
@@ -628,8 +624,7 @@ export class GitWorktreeUpdater implements Updater {
     else if (state !== "running") this.crash = null;
     const status: SupervisorStatus = {
       state,
-      rev: this.runningRev,
-      previous_rev: this.previousRev,
+      rev: this.runningRev, previous_rev: this.previousRev, // a crash restart of `rev` replaces nothing: previous_rev stays
       target_rev: target,
       child_pid: state === "stopped" || state === "crashed" ? null : this.childPid(),
       draining_pids: state === "stopped" ? [] : this.live.filter((l) => l.draining).map((l) => l.child.pid),
