@@ -366,3 +366,21 @@ describe("on this repo", () => {
     expect(rule).toMatch(/never run `npm install`, `npm ci`, or `npx` for a package that is not installed/);
   });
 });
+
+describe("prompts/review.md: a UI change that could not be checked (design 04-agents, 2026-11-19)", () => {
+  const text = prompt("review");
+
+  it("asks for ui_unverified and the unrun build, type-check and screenshots under unverified, with the spec's widths", () => {
+    const step = text.split("\n").findIndex((l) => l.includes("UI changes:"));
+    expect(step).toBeGreaterThanOrEqual(0);
+    const rule = text.split("\n").slice(step, step + 6).join(" ").replace(/\s+/g, " ");
+    expect(rule).toMatch(/`web\/`, `src\/ui\/`/);
+    expect(rule).toMatch(/build, its type-check or its screenshots, set `ui_unverified` to true/);
+    expect(rule).toMatch(/could not run under `unverified`, one line each, naming the command/);
+    expect(rule).toMatch(/name the widths the spec states \(for example .*1280px and 390px/);
+  });
+
+  it("lists ui_unverified among the output fields", () => {
+    expect(text.slice(text.indexOf("Output:"))).toMatch(/^- ui_unverified: true only/m);
+  });
+});
