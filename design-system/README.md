@@ -15,6 +15,8 @@ The dashboard's design source. Decisions: `docs/design/09-brand-and-tokens.md`.
 
 ## Changelog
 
+- 2026-11-19: `writing.md` gains "Plain words for everyone" (no code or machinery words on a page, values with meaning, local times, events as sentences, problems in three parts, short help, server text included) and a glossary.
+
 - 2026-11-19: the type roles (page title `xl` semibold, section title `base` semibold, body `sm`, meta `xs`) and `shadow-sm` and `shadow-lg` in `tokens.json`; `index.css` maps every type step to `text-<step>`. New `Card` and `CardSection` replace `Section`; `Badge` is the one pill badge (the square `Badge` and `StatusBadge` merged); `EmptyState` gains an icon, takes its text as `description`, and replaces `Empty`; `PageHeader`'s title is `text-xl` semibold. The contrast test also checks pill text on cards and the page, and every Badge tone.
 
 - 2026-11-12: `patterns.md`, `writing.md` and `dx.md`: the guides for pages, words and building a page.

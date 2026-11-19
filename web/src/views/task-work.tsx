@@ -66,7 +66,7 @@ export function WorkState({ id, title, open: taskOpen }: { id: string; title: st
   }
   return (
     <>
-      <Button size="sm" aria-label={t("tasks.stateOpen", { title })} onClick={() => setOpen(true)}>
+      <Button size="sm" variant="ghost" aria-label={t("tasks.stateOpen", { title })} onClick={() => setOpen(true)}>
         <Badge level={it.item_phase}>{t(key)}</Badge>
       </Button>
       {open && (
