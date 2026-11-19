@@ -113,7 +113,7 @@ describe("done tasks stay, struck through (design 02-tasks, done tasks stay)", (
     expect(ids("Done")).not.toContain("tk_now");
     expect(ids("Done")).not.toContain("tk_soon");
     expect(title("tk_past").className.split(" ")).toContain("line-through");
-    expect(card("tk_past").textContent).toContain("done 2026-11-12");
+    expect(card("tk_past").textContent).toContain("Done 2026-11-12");
   });
 
   it("a refused reopen shows its reason in the row, and the row stays done", async () => {
