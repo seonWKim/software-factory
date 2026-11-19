@@ -61,7 +61,10 @@ Produce:
   Docs: when the repository's docs are an index that links to topic files, read the index first, then open
   only the topic files that apply. The documentation targets are the topic files the change touches,
   not the index: name those in files_to_change and allowed_paths. A new topic file also needs its one line
-  in the index, so list the index then too.
+  in the index, so list the index then too, and only then.
+  Generated index files: a file generated from others that only imports them (a text catalog barrel built
+  from per-area files) is not a target either. Edit the area file the change touches; list the generated
+  file only when the change adds a new area file, so the factory allows it.
 - UI changes: for a change under `web/` in a project with `design-system/components.md`, the spec names the
   components each new or changed element uses, by name from `design-system/components.md` (its "Which component for
   what" table first), one existing page to match for layout and spacing, and the "Stays fixed" list in
@@ -83,6 +86,9 @@ Produce:
   least one, checkable by a reviewer) and its own allowed_paths (at least one, as narrow as allowed_paths).
   On approval each phase becomes its own issue with its own spec; the top-level fields still describe the
   whole change.
+  Split too, whatever the caps, when files_to_change claims more than about 15 files: two running items may
+  not share a file, so a large plan holds back every other item. Make smaller items linked by Depends on:
+  each phase waits for the one before it, and each claims only its own files in its allowed_paths.
 
 Output shape (values are placeholders; include `decisions` even when it is empty, leave `phases` out unless
 you split):
