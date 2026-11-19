@@ -15,14 +15,18 @@ import { lastPrNotes } from "../../../core/pr-body.js";
 import { type Actor, type Run, type SourceRef, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { ExternalIdentity } from "../../../interfaces/auth-provider.js";
 import { LOCAL_GIT_HOST, basePushOutcome, basePushTarget, gitTarget, type ActionRow } from "../../../outbound/index.js";
-import { conflictParked } from "../../../core/commands.js";
-import { AUTO, SYSTEM, awaitingMerge } from "../support.js";
+import { AUTO, CONFLICT_PENDING, SYSTEM, awaitingMerge } from "../support.js";
 import type { ControllerWrite } from "../kernel.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
 /** The reason of the state change that sends a branch fixed by hand to its fresh review. */
 const HAND_FIXED = "conflict_fixed_by_hand";
+/** Parked on its merge conflict for a person (REVIEW / human / merge_conflict_pending); checked here, not imported from
+ * core, to keep this unit off another legacy import (dependency-direction ratchet). */
+function conflictParked(it: Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason">): boolean {
+  return it.stage === "REVIEW" && it.blocked_on === "human" && it.blocked_reason === CONFLICT_PENDING;
+}
 /** mergeLocal's `who` for auto mode's merge: no person, actor `system:auto`. */
 const AUTO_MERGE = { auto: true } as const;
 
