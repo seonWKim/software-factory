@@ -1,7 +1,7 @@
-import { CalendarCheck, CalendarDays, Database, HeartPulse, ListTodo, Puzzle, ScrollText, Settings, Waypoints, type LucideIcon } from "lucide-react";
+import { CalendarCheck, CalendarDays, ChartGantt, Database, HeartPulse, ListTodo, Puzzle, ScrollText, Settings, Waypoints, type LucideIcon } from "lucide-react";
 import { REDIRECTS } from "./page-redirects.js";
 
-/** Where a page sits in the sidebar: the Tasks block, the System block (Work, Health), the bottom block (Rules, Plugins, Settings), or nowhere (a routable page with no sidebar link: Runners and Data, linked from Settings > Advanced). */
+/** Where a page sits in the sidebar: the Tasks block, the System block (Work, Health, Workers), the bottom block (Rules, Plugins, Settings), or nowhere (a routable page with no sidebar link: Runners and Data, linked from Settings > Advanced). */
 export type PageGroup = "tasks" | "system" | "bottom" | "hidden";
 
 /** One routable page. `key` names it in the English catalog (`page.<key>`), which also names its heading. */
@@ -19,6 +19,7 @@ export const PAGES: readonly PageDef[] = [
   { path: "calendar", label: "Calendar", key: "calendar", icon: CalendarDays, group: "tasks" },
   { path: "items", label: "Work", key: "work", icon: ListTodo, group: "system" },
   { path: "health", label: "Health", key: "health", icon: HeartPulse, group: "system" },
+  { path: "workers", label: "Workers", key: "workers", icon: ChartGantt, group: "system" },
   { path: "rules", label: "Rules", key: "rules", icon: ScrollText, group: "bottom" },
   { path: "plugins", label: "Plugins", key: "plugins", icon: Puzzle, group: "bottom" },
   { path: "settings", label: "Settings", key: "settings", icon: Settings, group: "bottom" },
@@ -39,7 +40,7 @@ function restOf(pathname: string): string {
   return pathname.startsWith(BASE) ? pathname.slice(BASE.length).split(/[?#]/)[0]!.replace(/\/+$/, "") : "";
 }
 
-/** The new location of an old page path (`/app/workers` → `/app/runners`), or null when it is not an old one. The old location's `search` carries over (`/app/failures?window=7d` → `/app/health?window=7d#failures`). */
+/** The new location of an old page path (`/app/queue` → `/app/items?state=queued`), or null when it is not an old one. The old location's `search` carries over (`/app/failures?window=7d` → `/app/health?window=7d#failures`). */
 export function redirectFor(pathname: string, search = ""): string | null {
   const to = REDIRECTS[restOf(pathname)];
   if (to === undefined) return null;
