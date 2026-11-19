@@ -15,15 +15,19 @@ import { FakeCalendarSource, calendarEvent } from "./fakes.js";
 
 // GET /api/v1/calendar/events (design 09-dashboard-app, Calendar page): the stored events of each local day from
 // `from` through `to`, a synced flag per day from each source's last successful sync window, and the sources' sync
-// state. Every time is built in the process's own time zone, so the tests hold in any zone. Fake sources only.
+// state of each connected source (the live `calendar` setting). Every time is built in the process's own time zone, so
+// the tests hold in any zone. Fake sources only.
 
 /** A local wall-clock instant on 2026-<month>-<day>, as ISO. */
 const at = (month: number, day: number, h = 0, m = 0) => new Date(2026, month - 1, day, h, m).toISOString();
 const NOW = new Date(2026, 10, 12, 9, 0);
 
-async function harness(calendar: { name: string; source: CalendarSource }[]) {
+/** `connected`: the live `calendar` setting, stored as an override as Settings' connect writes it; default every source. */
+async function harness(calendar: { name: string; source: CalendarSource }[], connected = calendar.map((c) => c.name)) {
   const clock = new FakeClock(NOW);
   const { store } = await newStore(clock);
+  const connect = (names: string[]) => store.setSettingOverride({ key: "calendar", project: "", value: JSON.stringify(names), actor: "owner@example.com" });
+  await connect(connected);
   const db = (store as unknown as { db: SqlDriver }).db;
   const role = new ControllerRole({ store, sources: [new FakeSource()], auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner, calendar });
   const sync = async () => (await role.unit("calendar")).calendarStep();
@@ -34,7 +38,7 @@ async function harness(calendar: { name: string; source: CalendarSource }[]) {
     const r = await respond(d, { method: "GET", url: `${CALENDAR_EVENTS_PATH}${query}`, host: "127.0.0.1:4310" });
     return { status: r.status, body: JSON.parse(r.body) as Record<string, unknown> };
   };
-  return { clock, db, sync, get };
+  return { clock, db, sync, get, connect };
 }
 
 interface Day {
@@ -146,5 +150,33 @@ describe("GET /api/v1/calendar/events", () => {
     expect(work.windows).toHaveLength(1);
     expect(writes).toEqual([]);
     expect(await tables()).toBe(before);
+  });
+
+  it("lists a connected source that has no sync row yet with synced_at null, so its days are not synced", async () => {
+    const { db, get } = await harness([], ["google-calendar"]);
+    expect(await db.all("SELECT * FROM calendar_sync_state")).toEqual([]);
+    const r = await get("?from=2026-11-12&to=2026-11-13");
+    expect(r.body.calendar).toEqual([{ source: "google-calendar", synced_at: null, failed: false }]);
+    expect((r.body.days as Day[]).map((d) => d.synced)).toEqual([false, false]);
+  });
+
+  it("leaves out a disconnected source with old sync rows, and its stored events", async () => {
+    const { sync, get, connect } = await harness([{ name: "work", source: new FakeCalendarSource(events) }, { name: "home", source: new FakeCalendarSource([calendarEvent("gym", { starts_at: at(11, 13, 7), ends_at: at(11, 13, 8) })]) }]);
+    await sync();
+    const before = await get("?from=2026-11-13&to=2026-11-13");
+    expect((before.body.days as Day[])[0]!.events.map((e) => e.source)).toContain("home");
+    await connect(["work"]);
+    const r = await get("?from=2026-11-13&to=2026-11-13");
+    expect(r.body.calendar).toEqual([{ source: "work", synced_at: NOW.toISOString(), failed: false }]);
+    expect(r.body.days).toMatchObject([{ date: "2026-11-13", synced: true, events: [{ id: "holiday" }, { id: "standup" }, { id: "lunch" }] }]);
+    expect((r.body.days as Day[])[0]!.events.map((e) => e.source)).not.toContain("home");
+  });
+
+  it("with no source connected, stored events and sync rows are not shown", async () => {
+    const { sync, get, connect } = await harness([{ name: "work", source: new FakeCalendarSource(events) }]);
+    await sync();
+    await connect([]);
+    const r = await get("?from=2026-11-13&to=2026-11-13");
+    expect(r.body).toMatchObject({ calendar: [], days: [{ date: "2026-11-13", synced: false, events: [] }] });
   });
 });

@@ -1,8 +1,13 @@
 // The Calendar page's read (design 09-dashboard-app, Calendar page): GET /api/v1/calendar/events?from=YYYY-MM-DD&to=YYYY-MM-DD
 // answers each local day from `from` through `to` with the stored events that overlap it (core/tasks.ts calendarDays,
-// in this server's time zone) and whether the day is synced, plus each calendar source's last sync (the same list GET
-// /api/v1/tasks answers as `calendar`). Read-only: it reads the stored copy the calendar sync left, calls no calendar
-// source and writes no row, so moving the page's period costs no remote call.
+// in this server's time zone) and whether the day is synced, plus each connected calendar's last sync as `calendar`.
+// Read-only: it reads the stored copy the calendar sync left, calls no calendar source and writes no row, so moving
+// the page's period costs no remote call.
+//
+// Connected means listed in the live `calendar` setting, the same resolve Settings → Integrations reads
+// (calendar-api.ts readCalendarStatus), not "has a sync row": a source gets its row only when its first sync claims
+// it, and a disconnect keeps the rows. So a connected source with no row yet is listed with synced_at null, and a
+// source no longer listed is left out with its stored events (design 09-dashboard-tasks, Calendar page).
 //
 // A day is synced only when every listed source has a successful sync whose window (calendar-sync.ts syncWindow, the
 // one the sync itself asks for) covers the whole local day; a source never synced leaves every day not synced. The
@@ -15,6 +20,7 @@ import { calendarDays, dayBounds } from "../core/tasks.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
 import type { ApiResult } from "./api.js";
 import type { UiDeps } from "./deps.js";
+import { effectiveGlobal } from "./settings-api.js";
 import { Withholder } from "./withhold.js";
 
 export const CALENDAR_EVENTS_PATH = "/api/v1/calendar/events";
@@ -57,9 +63,13 @@ function synced(sources: readonly SourceSync[], date: string): boolean {
 export async function readCalendarEvents(d: UiDeps, from: string | null, to: string | null): Promise<ApiResult> {
   const error = rangeError(from, to);
   if (error !== null) return { status: 400, value: { error } };
-  const calendar = await readCalendar(storeSql(d.store));
+  const connected = new Set((await effectiveGlobal(d, "calendar")).value);
+  const stored = await readCalendar(storeSql(d.store));
+  const rows = new Map(stored.sources.map((s) => [s.source, s]));
+  const sources = [...connected].sort().map((source) => rows.get(source) ?? { source, synced_at: null, failed: false });
   const w = new Withholder(d.scanner);
-  const events = await Promise.all(calendar.events.map(async (e) => ({ ...e, title: (await w.plain(e.title)).text })));
-  const days = calendarDays(events, from!, to!).map((day) => ({ ...day, synced: synced(calendar.sources, day.date) }));
-  return { status: 200, value: { from, to, days, calendar: calendar.sources } };
+  const kept = stored.events.filter((e) => connected.has(e.source));
+  const events = await Promise.all(kept.map(async (e) => ({ ...e, title: (await w.plain(e.title)).text })));
+  const days = calendarDays(events, from!, to!).map((day) => ({ ...day, synced: synced(sources, day.date) }));
+  return { status: 200, value: { from, to, days, calendar: sources } };
 }
