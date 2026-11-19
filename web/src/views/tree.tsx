@@ -9,10 +9,10 @@ import { FOCUS } from "../components/ui/control.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
-import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, shortSource } from "../lib/format.js";
+import { LEVEL_LABELS, NEEDS_YOU_LEVELS, duration, shortSource } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
-import { WhyText, WorkerName, runKindLabel } from "./common.js";
+import { When, WhyText, WorkerName, runKindLabel } from "./common.js";
 import { Badge } from "../components/ui/badge.js";
 
 /** Browser storage keys: the chosen view, and the expanded rows (a list of item ids; absent: the default). */
@@ -141,13 +141,13 @@ function Row({ node, now, byNumber, byId }: { node: TreeNode; now: number; byNum
         <span className="text-xs whitespace-nowrap tabular-nums" data-run>
           {runKindLabel(run.kind)} #{run.attempt}
           {run.status === "queued" && run.position !== null && t("tree.queue", { position: run.position })}
-          {run.started_at && run.status === "running" && ` · ${ago(run.started_at, now)}`}
+          {run.started_at && run.status === "running" && ` · ${duration(now - Date.parse(run.started_at))}`}
         </span>
       )}
       {it.change_ref !== null && (
         it.change_url ? <a href={it.change_url} target="_blank" rel="noreferrer" className={cn("text-xs tabular-nums", LINK_CLASS)}>{t("tree.pr", { ref: it.change_ref })}</a> : <span className="text-xs tabular-nums">{t("tree.pr", { ref: it.change_ref })}</span>
       )}
-      <span className="text-xs whitespace-nowrap tabular-nums text-text-2">{ago(it.updated_at, now)}</span>
+      <span className="text-xs whitespace-nowrap tabular-nums text-text-2"><When at={it.updated_at} now={now} /></span>
       <span className="flex basis-full flex-wrap gap-x-2 text-xs text-text-2 sm:basis-auto sm:text-sm">
         {it.why && <WhyText why={it.why} />}
         {run?.worker_id && <WorkerName id={run.worker_id} />}

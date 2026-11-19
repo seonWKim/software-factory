@@ -132,9 +132,11 @@ describe("item page: Runs section", () => {
     expect(head.indexOf("Kind")).toBeLessThan(head.indexOf("Attempt"));
     expect(head.indexOf("Worker")).toBeLessThan(head.indexOf("Tokens"));
     const failed = table.querySelector(`tr[data-run="${FAILED}"]`)!;
-    expect(failed.textContent).toContain("checks_failed");
+    expect(failed.textContent).toContain("Project checks failed");
+    // The raw code is behind Details (data-raw), not in the row's text.
+    expect(failed.querySelector("[data-raw]")?.textContent).toContain("checks_failed");
     const worker = failed.querySelector("[data-id]")!;
-    expect(failed.querySelector("details")).toBeNull();
+    expect(failed.querySelector("details:not([data-raw])")).toBeNull();
     fireEvent.mouseEnter(worker.parentElement!);
     expect(within(failed).getByRole("tooltip").textContent).toBe("host:1:0");
     expect(failed.textContent).toContain("1.5k");
@@ -151,7 +153,7 @@ describe("transcript view", () => {
   it("a failed run: the outcome at the top, then its steps in order", async () => {
     mount(`/app/items/${ITEM}/runs/${FAILED}`);
     const outcome = await screen.findByRole("status", { name: "Run outcome" });
-    expect(outcome.textContent).toContain("Failed: checks_failed");
+    expect(outcome.textContent).toContain("Failed: Project checks failed");
     expect(outcome.textContent).toContain("npm test failed");
     const steps = await stepsOf();
     // The outcome comes before the steps in the document.
