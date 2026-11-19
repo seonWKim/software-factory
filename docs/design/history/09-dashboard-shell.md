@@ -53,3 +53,5 @@
 - **A single theme toggle** (decision changed 2026-11-12). Before: one button switched between light and dark, read the stored value or the system preference once at load and stored `light` or `dark`, so a click pinned the page and a change of the system scheme was ignored. The toggle labels were "Switch to dark theme" and "Switch to light theme".
 
 - **Menu names and the Users page** (decision changed 2026-11-11). Before: the sidebar listed Floor, Work items, Workers, Queue, Health, Failures, Settings and Users, then Data in a Tools group; the Floor showed Needs you, Running now, Queue and the last 24 hours on one page; `/app/users` showed the local users with owner controls (issue #445); the shell had no keyboard handling.
+
+- **The search listed only the items the page had loaded** (decision changed 2026-11-20, the closed items decision at the top of 09-dashboard-shell.md). Before: `⌘K` filtered the pages and the cached open items, so a merged item was almost never found (the default items read leaves out closed ones). Now it also reads `items?closed=1`, lists closed hits last and labels them Merged or Closed.
