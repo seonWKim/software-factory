@@ -52,6 +52,18 @@ const DETAILS: Record<string, unknown> = {
     ],
     runs: [{ id: "run_triage_1", kind: "triage", status: "succeeded", attempt: 2, started_at: AT, finished_at: AT, created_at: AT, tokens: 10, error: null }],
   },
+  "/api/v1/items/wi_live": {
+    as_of: AT,
+    item: base("wi_live", 20, "Live interactive"),
+    timeline: [],
+    runs: [{ id: "run_i_1", kind: "interactive", status: "running", attempt: 1, started_at: AT, finished_at: null, created_at: AT, tokens: 0, error: null }],
+  },
+  "/api/v1/items/wi_done": {
+    as_of: AT,
+    item: base("wi_done", 21, "Finished interactive"),
+    timeline: [],
+    runs: [{ id: "run_i_2", kind: "interactive", status: "succeeded", attempt: 1, started_at: AT, finished_at: AT, created_at: AT, tokens: 0, error: null }],
+  },
   "/api/v1/items/wi_p1": {
     as_of: AT,
     item: base("wi_p1", 11, "First phase", { parent_id: "wi_parent", phase: 1, spec_comment_url: "[withheld: github_token]", change_ref: "14", change_url: "javascript:alert(1)" }),
@@ -607,5 +619,24 @@ describe("Markdown", () => {
   it("shows AS-IS and TO-BE on separate lines when they arrive in one paragraph", () => {
     const { container } = render(<Markdown text={"AS-IS: the old way →\nTO-BE: the new way"} />);
     expect([...container.querySelectorAll("p")].map((p) => p.textContent)).toEqual(["AS-IS: the old way", "TO-BE: the new way"]);
+  });
+});
+
+describe("item page: Interactive task badge", () => {
+  it("a running interactive run shows the badge in the header and the label as the run's kind", async () => {
+    mount("/app/items/wi_live");
+    const table = await screen.findByRole("table", { name: "Runs" });
+    const heading = screen.getByRole("heading", { level: 1 });
+    expect(within(heading.parentElement!.parentElement!).getByText("Interactive task")).toBeTruthy();
+    const cell = table.querySelector<HTMLElement>('tr[data-run="run_i_1"] td')!;
+    expect(cell.textContent).toContain("Interactive task");
+    expect(cell.textContent).not.toMatch(/\binteractive\b/);
+  });
+
+  it("a finished interactive run shows no header badge, only the kind label in the table", async () => {
+    mount("/app/items/wi_done");
+    const table = await screen.findByRole("table", { name: "Runs" });
+    expect(screen.getAllByText("Interactive task")).toHaveLength(1);
+    expect(table.querySelector('tr[data-run="run_i_2"] td')!.textContent).toContain("Interactive task");
   });
 });
