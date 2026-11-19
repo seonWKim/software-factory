@@ -31,7 +31,9 @@ export const PAGE_SIZE = 20;
 /**
  * Every task the read returned as the list's groups, in order: overdue, today, each later day by date, no date. The server
  * places overdue and today; a task it did not place there (a done one, or one of a later day) is put by its due date, which
- * compares as the ISO date text it is, so the page does no date arithmetic. Empty groups are left out.
+ * compares as the ISO date text it is, so the page does no date arithmetic. A sub-task whose parent is in the list goes in
+ * its parent's group, dated or not, so it shows under it (design 02-tasks-page); one whose parent is not stays in its own.
+ * Empty groups are left out.
  */
 export function groupsOf(v: TasksView): TaskGroup[] {
   const placed = new Set<string>();
@@ -52,7 +54,12 @@ export function groupsOf(v: TasksView): TaskGroup[] {
     ...[...days].sort(([a], [b]) => (a < b ? -1 : 1)).map(([date, tasks]) => ({ key: date, title: dayLabel(date), overdue: false, tasks })),
     { key: "none", title: t("tasks.noDate"), overdue: false, tasks: noDate },
   ];
-  return groups.filter((g) => g.tasks.length > 0).map((g) => ({ ...g, rows: nest(g.tasks) }));
+  const groupOf = new Map(groups.flatMap((g, i) => g.tasks.map((x) => [x.id, i] as const)));
+  const home = (x: TaskRow, own: number) => (x.parent_task_id == null ? undefined : groupOf.get(x.parent_task_id)) ?? own;
+  return groups
+    .map((g, i) => ({ ...g, tasks: groups.flatMap((h, j) => h.tasks.filter((x) => home(x, j) === i)) }))
+    .filter((g) => g.tasks.length > 0)
+    .map((g) => ({ ...g, rows: nest(g.tasks) }));
 }
 
 /** The groups' rows of one page (the rows past the page size go to the next), regrouped under their headings. */
