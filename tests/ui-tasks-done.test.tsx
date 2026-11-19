@@ -4,7 +4,7 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskRow } from "../web/src/api.js";
-import { SLOW, TOKEN, card, item, reset, row, s, show, teardown, view } from "./ui-tasks-fixtures.js";
+import { SLOW, TOKEN, card, item, reset, row, s, show, show2, teardown, view } from "./ui-tasks-fixtures.js";
 
 beforeEach(reset);
 afterEach(teardown);
@@ -82,8 +82,9 @@ describe("done tasks stay, struck through (design 02-tasks, done tasks stay)", (
   });
 
   it("a done row offers only Reopen: no checkbox, Build this, edit, sub-task, projects or delete; and it is not styled overdue", async () => {
+    // A done task the server still sent as overdue is listed under Done, so the page has no Overdue list to wait for.
     s.current = view({ today: { overdue: [done("tk_late", { due_date: "2026-11-10" })], due: [] } });
-    await show();
+    await show2();
     const c = within(card("tk_late"));
     expect(c.getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual(["Reopen: tk_late"]);
     expect(c.queryByRole("checkbox")).toBeNull();
@@ -95,6 +96,24 @@ describe("done tasks stay, struck through (design 02-tasks, done tasks stay)", (
     fireEvent.keyDown(card("tk_late"), { key: "Delete" });
     expect(card("tk_late").querySelector("form")).toBeNull();
     expect(document.querySelector("[data-dialog]")).toBeNull();
+  });
+
+  it("a done past-due task is under Done, after No date, struck through with its done time; never under Overdue", async () => {
+    s.current = view({
+      today: { overdue: [row("tk_late", { due_date: "2026-11-10" }), done("tk_sent", { due_date: "2026-11-09" })], due: [done("tk_now", { due_date: "2026-11-12" })] },
+      projects: [{ list: null, tasks: [done("tk_past", { due_date: "2026-11-11" }), done("tk_soon", { due_date: "2026-11-13" }), row("tk_inbox")] }],
+    });
+    await show();
+    const headings = screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent).filter((h) => !h!.startsWith("Timeline"));
+    expect(headings.slice(-2)).toEqual(["No date", "Done"]);
+    const group = (name: string) => screen.getByRole("heading", { name }).parentElement!;
+    const ids = (name: string) => [...group(name).querySelectorAll<HTMLElement>("[data-task]")].map((e) => e.dataset.task);
+    expect(ids("Overdue")).toEqual(["tk_late"]);
+    expect(ids("Done")).toEqual(expect.arrayContaining(["tk_past", "tk_sent"]));
+    expect(ids("Done")).not.toContain("tk_now");
+    expect(ids("Done")).not.toContain("tk_soon");
+    expect(title("tk_past").className.split(" ")).toContain("line-through");
+    expect(card("tk_past").textContent).toContain("done 2026-11-12");
   });
 
   it("a refused reopen shows its reason in the row, and the row stays done", async () => {

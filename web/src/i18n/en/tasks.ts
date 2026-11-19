@@ -48,6 +48,7 @@ export const tasks = {
   "tasks.todayDay": "Today, {day}",
   "tasks.emptyAll": "No open task. Add a task in the field above.",
   "tasks.noDate": "No date",
+  "tasks.doneGroup": "Done",
   "tasks.listLabel": "Open tasks",
   "tasks.state.spec": "Spec waiting",
   "tasks.state.running": "Running",
