@@ -48,6 +48,11 @@ Produce:
   companion file: a test, a migration step, a doc topic file. Allow each one, so the work does not stop
   at a path limit. The factory also adds the companions the repository declares (`path_companions` in
   factory.config.json) and says so in the spec.
+  Find where each piece lives now: grep for the component, function or text you name, and use the file the
+  code is in today, not one an older spec or note names. When a repository rule decides which file a new
+  entry goes in (for example a text key whose prefix picks its file), allow that file. When the change edits
+  the source of a generated file, allow the generated file too. Leave out an index or generated file that
+  the change does not alter: two items that list the same file wait for each other.
   A store schema change (a new table, column or migration) needs a migration, named and placed by the
   repository's own migration naming rule: allow the paths that rule names, so a path limit never stops the work
   halfway.
