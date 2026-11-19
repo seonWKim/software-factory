@@ -54,7 +54,7 @@ describe("task projects (design 09-dashboard-app, project switcher and dialog)",
     expect(await screen.findByRole("list", { name: "Overdue" }, SLOW)).toBeTruthy();
   });
 
-  it("ArrowRight on a project tab selects the next one: the s.filtered read, the URL and aria-selected follow", async () => {
+  it("ArrowRight on a project tab selects the next one: the filtered read, the URL and aria-selected follow", async () => {
     s.current = view({ active_projects: PROJECTS });
     s.filtered = { home: homeOnly() };
     await show();
