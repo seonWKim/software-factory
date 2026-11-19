@@ -11,7 +11,7 @@ import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
 import { EMPTY_BOX, Notice, PageHeader } from "../components/ui/notice.js";
 import { cn } from "../lib/cn.js";
-import { ErrorNote, Loading } from "../components/ui/parts.js";
+import { ErrorNote, Loading, type StoredFlags, useRefetchWhile } from "../components/ui/parts.js";
 import { Tabs } from "../components/ui/tabs.js";
 import { useUrlParam } from "../lib/url-param.js";
 import type { MessageKey } from "../i18n/en.js";
@@ -262,7 +262,7 @@ function ImportDialog({ tab, token, report, onClose }: { tab: ListTab; token: st
       {q.isError ? (
         <ErrorNote error={q.error} />
       ) : !q.data ? (
-        <Loading rows={2} />
+        <Loading rows={2} label="loading.pluginsImport" onRetry={() => void q.refetch()} />
       ) : items.length === 0 ? (
         <p className="text-sm text-pretty">{t("plugins.importNone")}</p>
       ) : (
@@ -512,7 +512,11 @@ export function PluginsPage() {
   const report = useReporter(tab, setLast);
   const outcome = last?.tab === tab ? last.report : null;
   const fresh = outcome?.fresh;
-  const q = useApi<PluginsView>(API.plugins, false);
+  // The server answers from its stored listing (design 09-dashboard-settings, 2026-11-19): pending before the first
+  // listing ends, failed with none good, refreshing while a newer one runs; the page reads again each second meanwhile.
+  const q = useApi<PluginsView & StoredFlags>(API.plugins, false);
+  useRefetchWhile(Boolean(q.data?.pending || q.data?.refreshing), q.refetch);
+  const listed = q.data && !q.data.pending && !q.data.failed ? q.data : null;
   const choose = (next: Tab) => {
     setQuery("");
     setLast(null);
@@ -533,15 +537,22 @@ export function PluginsPage() {
         {tab === "models" ? (
           <ModelsTab />
         ) : q.isError ? (
-          <ErrorNote error={q.error} />
-        ) : !q.data ? (
-          <Loading rows={3} />
-        ) : tab === "mcp" ? (
-          <McpTab view={q.data} query={query} report={report} fresh={fresh} />
-        ) : tab === "skills" ? (
-          <SkillsTab view={q.data} query={query} now={now} report={report} fresh={fresh} />
+          <ErrorNote error={q.error} onRetry={() => void q.refetch()} />
+        ) : q.data?.failed ? (
+          <ErrorNote error={new Error(t("loading.listFailed", { label: t("loading.plugins") }))} onRetry={() => void q.refetch()} />
+        ) : !listed ? (
+          <Loading rows={3} label="loading.plugins" onRetry={() => void q.refetch()} />
         ) : (
-          <ToolsTab view={q.data} query={query} now={now} report={report} />
+          <>
+            <p className="text-xs text-text-2">{t("plugins.asOf", { time: t("time.ago", { time: ago(listed.as_of, now) }) })}</p>
+            {tab === "mcp" ? (
+              <McpTab view={listed} query={query} report={report} fresh={fresh} />
+            ) : tab === "skills" ? (
+              <SkillsTab view={listed} query={query} now={now} report={report} fresh={fresh} />
+            ) : (
+              <ToolsTab view={listed} query={query} now={now} report={report} />
+            )}
+          </>
         )}
       </div>
     </>

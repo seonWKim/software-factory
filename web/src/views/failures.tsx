@@ -86,7 +86,7 @@ export function FailuresSection() {
     <Card id="failures" title={t("page.failures")}>
       <SegmentedControl label={t("failures.window")} options={WINDOWS.map((w) => ({ id: w, label: t(WINDOW_LABELS[w]) }))} value={win} onChange={setWin} className="mb-6" />
       <CardSection title={t("failures.title")} count={q.data?.total}>
-        {q.isError ? <ErrorNote error={q.error} /> : !q.data ? <Loading rows={3} /> : q.data.groups.length === 0 ? (
+        {q.isError ? <ErrorNote error={q.error} /> : !q.data ? <Loading rows={3} label="loading.failures" onRetry={() => void q.refetch()} /> : q.data.groups.length === 0 ? (
           <EmptyState title={t("failures.empty")} />
         ) : (
           <>

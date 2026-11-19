@@ -324,7 +324,7 @@ function Detail({ entry, d, applied }: { entry: RuleRow; d: RuleDetail; applied:
 /** The detail, read once when the card opens; "could not be read" when the ledger gave none or failed. */
 function EntryDetail({ entry, applied }: { entry: RuleRow; applied: AppliedRule[] }) {
   const q = useRuleEntry(entry.id, true);
-  if (q.isPending) return <Loading rows={2} />;
+  if (q.isPending) return <Loading rows={2} label="loading.ruleDetail" onRetry={() => void q.refetch()} />;
   const d = q.data?.detail ?? null;
   if (d !== null) return <Detail entry={entry} d={d} applied={applied} />;
   return (
@@ -618,7 +618,7 @@ export function RulesPage() {
   const v = rules.data;
   const title = t("page.rules");
   if (rules.isError) return <><PageHeader title={title} /><ErrorNote error={rules.error} /></>;
-  if (!v) return <><PageHeader title={title} /><Loading rows={3} /></>;
+  if (!v) return <><PageHeader title={title} /><Loading rows={3} label="loading.rules" onRetry={() => void rules.refetch()} /></>;
   if (!v.enabled) {
     return (
       <>

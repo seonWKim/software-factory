@@ -83,6 +83,25 @@ const rowsOf = (table: HTMLElement) => [...table.querySelectorAll("tbody > tr")]
 const selected = () => screen.getAllByRole("tab").find((t) => t.getAttribute("aria-selected") === "true")!.textContent;
 
 describe("Plugins page", () => {
+  it("pending: keeps the Plugin list placeholder and reads again until the stored list arrives, then shows its as-of line", async () => {
+    view = { as_of: null, pending: true, failed: false, csrf_token: null } as unknown as PluginsView;
+    show();
+    await waitFor(() => expect(screen.getByLabelText("Plugin list").getAttribute("aria-busy")).toBe("true"));
+    view = { ...FULL, as_of: new Date().toISOString() };
+    await waitFor(() => expect(screen.getByText("docs-search")).toBeTruthy(), { timeout: 3_000 });
+    expect(screen.getByText(/^Listed /)).toBeTruthy();
+  });
+
+  it("failed with no good list: the error with Retry, which reads again", async () => {
+    view = { as_of: null, pending: false, failed: true, csrf_token: null } as unknown as PluginsView;
+    show();
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(screen.getByRole("alert").textContent).toContain("Plugin list: the last refresh failed");
+    view = FULL;
+    fireEvent.click(retry);
+    await waitFor(() => expect(screen.getByText("docs-search")).toBeTruthy());
+  });
+
   it("has MCP, Skills, Tools and Models tabs; MCP is selected by default and lists each server's source, status and action", async () => {
     show();
     expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["MCP", "Skills", "Tools", "Models"]);

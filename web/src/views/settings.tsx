@@ -45,7 +45,7 @@ export function SettingsPage() {
   const settings = useApi<SettingsView>(API.settings);
   const [tab, setTab] = useTabParam();
   if (settings.isError) return <><PageHeader title={t("page.settings")} /><ErrorNote error={settings.error} /></>;
-  if (!settings.data) return <><PageHeader title={t("page.settings")} /><Loading rows={8} /></>;
+  if (!settings.data) return <><PageHeader title={t("page.settings")} /><Loading rows={8} label="loading.settings" onRetry={() => void settings.refetch()} /></>;
   const v = settings.data;
   return (
     <>

@@ -199,7 +199,7 @@ export function CalendarPage() {
         </ButtonRow>
       </div>
       <Card title={label} live>
-        {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <Events v={v} view={view} label={label} />}
+        {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} label="loading.calendar" onRetry={() => void q.refetch()} /> : <Events v={v} view={view} label={label} />}
       </Card>
     </div>
     </>

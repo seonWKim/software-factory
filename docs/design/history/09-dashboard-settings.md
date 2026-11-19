@@ -1,5 +1,6 @@
 ## History
 
+- **The first Plugins read waited, and a timer ran while the page was in use** (until 2026-11-19, wi_926cad13, the stored-listing decision at the top). Before: the first read after `startUi` waited for the first discovery (and failed with it), and while started a refresh ran every 60 s if the Plugins or Health route was read in the last 10 minutes (one shared `Activity`); closing the server stopped the timer.
 - **Settings and Plugins used Sections and raw headings** (until 2026-11-19, the Cards decision at the top). Before: Settings' blocks were `Section`s with no surface, "Read-only keys" a raw `text-sm` h3; Plugins' lists stood unframed with a left-aligned dashed empty box, and Skill folders was a raw `text-sm` h2.
 - **The Plugins read ran discovery on every request** (until 2026-11-19, the background snapshot decision at the top). Before: each `GET /api/v1/plugins` built the three lists itself and waited for them (about 5.5 s), with `as_of` the request's time.
 - **The Plugins page sat in its own sidebar group above System** (until 2026-11-18, the bottom-group decision at the top). Before: `PAGES` gave Plugins the group `plugins`, drawn as its own untitled block between Tasks and System.
