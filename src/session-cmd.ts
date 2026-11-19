@@ -12,9 +12,10 @@ import { baseEnv } from "./impl/process/run-process.js";
 import type { WorkItemId } from "./core/types.js";
 import type { ExternalIdentity } from "./interfaces/auth-provider.js";
 
-export const SESSION_USAGE = `factory session start <issue number | work item id> [--spec <file>] [--transcript <url>] [--as <github login>]
-                status | note [<text>] [--tokens <n>] [--transcript <url>] | finish [--tokens <n>] | abandon [--tokens <n>]
-  status, note, finish and abandon take a work item id first, or use the only open session here (SET_UP.md)`;
+export const SESSION_USAGE = `factory interactive start <issue number | work item id> [--spec <file>] [--transcript <url>] [--as <github login>]
+                    status | note [<text>] [--tokens <n>] [--transcript <url>] | finish [--tokens <n>] | abandon [--tokens <n>]
+  an interactive task: you handle the item in your own session (\`factory session\` is the same command)
+  status, note, finish and abandon take a work item id first, or use the only open interactive task here (SET_UP.md)`;
 
 export type SessionAction =
   | { cmd: "start"; target: string; spec?: string; transcript?: string; as?: string }
@@ -137,7 +138,7 @@ export async function runSession(d: SessionCmdDeps, a: SessionAction): Promise<n
 export function sessionDeps(p: SessionParts, stateDir: string, stop: AbortSignal): SessionCmdDeps {
   const { owner, name } = p.config.repo;
   const sessions = new Sessions({
-    store: p.store, sandbox: p.sandbox, broker: p.broker, scanner: p.scanner, auth: p.auth, clock: p.clock, config: p.config, learned: p.learned,
+    store: p.store, sandbox: p.sandbox, broker: p.broker, local: p.local, scanner: p.scanner, auth: p.auth, clock: p.clock, config: p.config, learned: p.learned,
     log: new ConsoleLogger(p.clock, "session"), files: new FileSessionFiles(join(stateDir, "sessions")), issues: githubIssues(p.github, { owner, name }),
     // The host part is this machine's stable host id: a finished session's push and PR go to `git:<host id>:<branch>`.
     toolEnv: baseEnv(), owner: `session:${hostId(stateDir)}:${process.pid}`,

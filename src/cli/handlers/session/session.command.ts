@@ -4,9 +4,10 @@ import { defineCommand } from "../../command.js";
 import { stopOnSignals } from "../../support.js";
 
 export default defineCommand({
-  names: ["session"],
-  usage: `  session start | status | note | finish | abandon
-               your own LLM session on a work item, as an interactive run: a worker's gates at finish (SET_UP.md)`,
+  names: ["interactive", "session"],
+  usage: `  interactive start | status | note | finish | abandon
+               an interactive task: you handle a work item in your own LLM session; a worker's gates at finish (SET_UP.md).
+               \`session\` is the same command`,
   async run(args, ctx) {
     const action = parseSessionArgs([...args]);
     if ("error" in action) {

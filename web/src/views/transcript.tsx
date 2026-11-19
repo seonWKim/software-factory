@@ -12,6 +12,7 @@ import { t } from "../i18n/index.js";
 import { ago } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
+import { runKindLabel } from "./common.js";
 
 // A run's stored transcript (design §9, issue #303), under /app/items/<id>/runs/<run>. The outcome first, then the
 // steps, one page (at most 64 KiB of the file) at a time. Every text is what the API gave: scanned on channel
@@ -144,7 +145,7 @@ function Outcome({ run, now }: { run: TranscriptPage["run"]; now: number }) {
       {failed && o.detail && <p>{o.detail}</p>}
       {!failed && o?.summary && <p>{o.summary}</p>}
       <p className="mt-1 text-xs opacity-80 tabular-nums">
-        {t("transcript.runLine", { kind: run.kind, attempt: run.attempt, worker: run.worker_id ?? "–", started: run.started_at ? `${ago(run.started_at, now)}${t("topbar.ago")}` : "–" })}
+        {t("transcript.runLine", { kind: runKindLabel(run.kind), attempt: run.attempt, worker: run.worker_id ?? "–", started: run.started_at ? `${ago(run.started_at, now)}${t("topbar.ago")}` : "–" })}
         {run.started_at && run.finished_at ? t("transcript.took", { time: ago(run.started_at, Date.parse(run.finished_at)) }) : ""}
       </p>
     </div>
@@ -206,7 +207,7 @@ export function TranscriptView({ itemId, runId }: { itemId: string; runId: strin
   return (
     <>
       <Back itemId={itemId} />
-      <PageHeader title={t("transcript.title", { kind: run.kind, attempt: run.attempt })} />
+      <PageHeader title={t("transcript.title", { kind: runKindLabel(run.kind), attempt: run.attempt })} />
       <Outcome run={run} now={now} />
       <ButtonRow className="mt-6" role="group" aria-label={t("transcript.stepType")}>
         {FILTERS.map((f) => (

@@ -209,6 +209,7 @@ export function ItemsTable({ items, now, label, empty, plugins }: { items: reado
       render: (it) => (
         <>
           <Badge level={it.item_phase}>{LEVEL_LABELS[it.item_phase] ?? it.item_phase}</Badge>
+          {isInteractiveRun(it.run) && <> <InteractiveBadge /></>}
           {it.merge_check && <MergeCheckNote check={it.merge_check} />}
         </>
       ),
@@ -228,11 +229,22 @@ export function ItemsTable({ items, now, label, empty, plugins }: { items: reado
   return <DataTable label={label} columns={columns} rows={items} rowKey={(it) => it.id} empty={empty} dataKey />;
 }
 
+/** A run kind as people read it: an `interactive` run is an interactive task (a person handles the item in their own session). */
+export const runKindLabel = (kind: string): string => (kind === "interactive" ? t("run.interactive") : kind);
+
+/** Whether a person is handling the item right now through this run: an interactive task that is running. */
+export const isInteractiveRun = (run: { kind: string; status: string } | null | undefined): boolean => run?.kind === "interactive" && run.status === "running";
+
+/** The badge an item shows while a person handles it as an interactive task. */
+export function InteractiveBadge() {
+  return <Badge level="running">{t("run.interactive")}</Badge>;
+}
+
 /** Running runs with their item, owner and heartbeat. */
 export function RunningTable({ runs, items, now }: { runs: readonly RunRow[]; items: ReadonlyMap<string, ItemRow>; now: number }) {
   const columns: Column<RunRow>[] = [
     { key: "item", header: t("col.item"), className: "max-w-md", render: (r) => <RunItemCell id={r.work_item_id} item={items.get(r.work_item_id)} /> },
-    { key: "kind", header: t("col.run") },
+    { key: "kind", header: t("col.run"), render: (r) => runKindLabel(r.kind) },
     { key: "attempt", header: t("col.attempt"), numeric: false, className: "tabular-nums" },
     { key: "worker", header: t("col.worker"), render: (r) => <WorkerName id={r.owner} /> },
     { key: "running_for", header: t("col.runningFor"), className: "tabular-nums", render: (r) => ago(r.started_at, now) },
@@ -246,7 +258,7 @@ export function QueueTable({ queue, items, now, limit }: { queue: readonly Queue
   const columns: Column<QueueRow>[] = [
     { key: "position", header: "#", numeric: false, className: "tabular-nums" },
     { key: "item", header: t("col.item"), className: "max-w-md", render: (q) => <RunItemCell id={q.work_item_id} item={items.get(q.work_item_id)} /> },
-    { key: "kind", header: t("col.run") },
+    { key: "kind", header: t("col.run"), render: (r) => runKindLabel(r.kind) },
     { key: "attempt", header: t("col.attempt"), numeric: false, className: "tabular-nums" },
     { key: "queued", header: t("col.queued"), className: "tabular-nums", render: (q) => t("time.ago", { time: ago(q.created_at, now) }) },
     { key: "starts", header: t("col.starts"), className: "tabular-nums", render: (q) => (q.why && q.why.code !== "queued" && q.why.code !== "not_before" ? <WhyText why={q.why} /> : until(q.not_before, now)) },

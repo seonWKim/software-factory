@@ -24,7 +24,7 @@ import { t } from "../i18n/index.js";
 import { LEVEL_LABELS, ago, isHttpUrl, shortRev, shortSource, tokens } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
-import { ItemsTable, MergeCheckNote, byId, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, useNow, useViewer } from "./common.js";
+import { InteractiveBadge, ItemsTable, MergeCheckNote, byId, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
 import { ItemCommands } from "./item-commands.js";
 import { type SupervisorActionName, SupervisorActions } from "./system-banner.js";
 import { Thread } from "./thread.js";
@@ -399,7 +399,7 @@ export function ItemPage({ id }: { id: string }) {
         <span className="text-text-3"> / </span>
         <Link href={itemPath(item.id)} aria-current="page" title={item.source.id} className={cn("inline-block max-w-[16ch] truncate align-bottom tabular-nums", LINK_CLASS)}>{short}</Link>
       </nav>
-      <PageHeader title={item.title ?? short} />
+      <PageHeader title={item.title ?? short} actions={runs.some(isInteractiveRun) ? <InteractiveBadge /> : undefined} />
       {item.parent_id && (
         <p data-testid="parent" className="mt-1 text-sm">
           {t("item.phase", { phase: item.phase ?? "?" })} <Link href={itemPath(item.parent_id)} className={LINK_CLASS}>{t("item.splitParent")}</Link>
@@ -466,7 +466,7 @@ export function ItemPage({ id }: { id: string }) {
             {[...runs].reverse().map((r) => (
               <Tr key={r.id} data-run={r.id}>
                 <Td className="min-w-40">
-                  {r.kind} <code className="font-mono text-xs break-all text-text-2">{r.id}</code>
+                  {runKindLabel(r.kind)} <code className="font-mono text-xs break-all text-text-2">{r.id}</code>
                 </Td>
                 <Td className="tabular-nums">{t("item.attempt", { attempt: r.attempt })}</Td>
                 <Td><Badge level={r.status === "running" ? "running" : r.status === "failed" ? "stuck" : undefined}>{r.status}</Badge></Td>
@@ -626,7 +626,7 @@ function ProcessRow({ p, items, now }: { p: WorkerProcess; items: ReadonlyMap<st
           {p.runs.map((r) => (
             <li key={r.id} className="flex flex-wrap gap-x-3">
               <Link href={itemPath(r.work_item_id)} className={LINK_CLASS}>{items.get(r.work_item_id)?.title || r.work_item_id}</Link>
-              <span>{r.kind}</span>
+              <span>{runKindLabel(r.kind)}</span>
               <WorkerName id={r.worker_id} />
               <span className="tabular-nums">{ago(r.started_at, now)}</span>
             </li>

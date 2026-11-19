@@ -7,7 +7,7 @@ import { parseTriage } from "./outputs.js";
 import { IMPLEMENT_KINDS, INTERACTIVE, SESSION_ABANDONED, SESSION_RELEASED, branchFor, effectiveTier, floorTier } from "./policy.js";
 import { NumstatError, diffGates, scopeGate } from "./pre-push.js";
 import { type LearnedSettingsSource, settingValues } from "./settings.js";
-import type { Run, RunId, SourceRef, SourceType, WorkItem, WorkItemId, WorkItemPatch } from "./types.js";
+import type { Actor, Run, RunId, SourceRef, SourceType, WorkItem, WorkItemId, WorkItemPatch } from "./types.js";
 import { type LocalRoute, TRUSTED_GIT_ENV, hasTool, prTitle, routeFor, runPushIntents } from "./worker-deps.js";
 import type { AuthProvider, ExternalIdentity } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -45,6 +45,8 @@ export interface SessionDeps {
 export interface SessionResult { ok: boolean; lines: string[] }
 
 export const SESSION_STARTED = "session_started";
+/** State-change reason when an interactive task cancels the item's queued implement or update runs to take it over. */
+export const INTERACTIVE_TAKEOVER = "interactive_takeover";
 const MAX_PR_FILES = 500;
 const refused = (...lines: string[]): SessionResult => ({ ok: false, lines });
 const LOCAL_NEEDS_LOCAL_BROKER = "a local item is committed only through the local broker, and this session was given only the forge's; nothing goes to the forge for it";
@@ -93,9 +95,13 @@ export class Sessions {
         enqueue: { kind: "triage", idempotency_key: `${issue.source.type}:${issue.source.id}:triage` },
       }));
     }
-    const it = item!;
+    let it = item!;
     const why = await this.startRefusal(it, spec !== null);
     if (why) return refused(`refused: ${why}`);
+    // Taking over (an interactive task): a worker run that is only queued is cancelled, so the person writes the branch.
+    const taken = await this.takeOver(it, actor);
+    if (typeof taken === "string") return refused(`refused: ${taken}`);
+    it = taken.item;
 
     // A NEW item takes the owner's spec (as triage would write it); a RUNNING one keeps its approved spec.
     const patch: WorkItemPatch = spec
@@ -118,9 +124,26 @@ export class Sessions {
     const file: SessionFile = { work_item_id: it.id, run_id: r.run.id, token: r.run.lease!.token, branch, folder: { id: handle.id, workdir: handle.workdir, base_sha: handle.base_sha ?? null } };
     await this.d.files.write(file);
     this.d.log.info("session started", { work_item_id: it.id, run_id: r.run.id, actor_id: actor.id, spec_source: source });
-    const lines = [`session started on ${it.id} (${it.source.id}), run ${r.run.id}, actor ${actor.id}`, `spec: ${source}${r.cancelled.length > 0 ? "; the queued triage run was cancelled" : ""}`];
+    const lines = [`interactive task started on ${it.id} (${it.source.id}), run ${r.run.id}, actor ${actor.id}`, `spec: ${source}${r.cancelled.length > 0 ? "; the queued triage run was cancelled" : ""}`];
+    if (taken.cancelled.length > 0) lines.push(`took over the item: cancelled the queued worker run${taken.cancelled.length > 1 ? "s" : ""} ${taken.cancelled.join(", ")}`);
     lines.push(`branch: ${branch}`, `run folder: ${handle.workdir}`, `lease until ${r.run.lease!.expires_at}; kept while this runs. Ctrl-C: the lease expires and the item is released.`);
-    return { ok: true, file, lines: [...(created ? [`created work item ${it.id} for ${it.source.id}`] : []), ...lines, `finish with: factory session finish ${it.id}`] };
+    return { ok: true, file, lines: [...(created ? [`created work item ${it.id} for ${it.source.id}`] : []), ...lines, `finish with: factory interactive finish ${it.id}`] };
+  }
+
+  /**
+   * An interactive task takes over an item whose implement or update run is only queued: those queued runs are
+   * cancelled in one transition (the controller acks them like any cancelled run), so no worker claims the branch.
+   * Returns the item to start on, or a refusal when the item moved meanwhile. Nothing queued: the item as it is.
+   */
+  private async takeOver(item: WorkItem, actor: Actor): Promise<{ item: WorkItem; cancelled: RunId[] } | string> {
+    const queued = (await this.d.store.listRuns(item.id)).filter((r) => IMPLEMENT_KINDS.includes(r.kind) && r.status === "queued");
+    if (queued.length === 0) return { item, cancelled: [] };
+    const r = await this.d.store.transition({
+      id: item.id, expected_version: item.version, patch: {}, actor, reason: INTERACTIVE_TAKEOVER,
+      detail: { runs: queued.map((q) => q.id).join(",") }, cancel_queued_runs: true,
+    });
+    if (!r.ok) return "the item changed while the interactive task was starting; run start again";
+    return { item: r.item, cancelled: r.cancelled };
   }
 
   private async startRefusal(item: WorkItem, withSpec: boolean): Promise<string | null> {
@@ -136,8 +159,8 @@ export class Sessions {
     const runs = await this.d.store.listRuns(item.id);
     const open = runs.find((r) => r.kind === INTERACTIVE && r.status === "running");
     if (open) return `the item already has an open session (run ${open.id})`;
-    const w = runs.find((r) => IMPLEMENT_KINDS.includes(r.kind) && (r.status === "queued" || r.status === "running"));
-    return w ? `the item has a ${w.status} ${w.kind} run (${w.id}); a session and a worker never write one branch` : null;
+    const w = runs.find((r) => IMPLEMENT_KINDS.includes(r.kind) && r.status === "running");
+    return w ? `the item has a running ${w.kind} run (${w.id}); an interactive task and a worker never write one branch` : null;
   }
 
   private async storeRefusal(r: Exclude<StartSessionResult, { ok: true }>): Promise<string> {

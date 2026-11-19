@@ -126,19 +126,31 @@ describe("session start", () => {
       expect(h.files.files.size).toBe(0);
     });
 
-    it("for an item with a queued or running implement-type run, or an open session", async () => {
+    it("for an item with a running implement-type run, or an open session", async () => {
       const h = await harness();
       const it0 = await h.running(1);
       await h.enqueue(it0, "implement", "i1");
-      expect(await unchanged(h, it0.id)).toMatch(/queued implement run/);
       await h.store.claimRun({ worker_id: W1, kinds: ["implement"], lease_ms: 60_000 });
       expect(await unchanged(h, it0.id)).toMatch(/running implement run/);
-      const it1 = await h.running(2, ["src/b/"]);
-      await h.enqueue(it1, "update", "u1");
-      expect(await unchanged(h, it1.id)).toMatch(/queued update run/);
       const it2 = await h.running(3, ["src/c/"]);
       expect((await h.start(it2.id)).ok).toBe(true);
       expect(await unchanged(h, it2.id)).toMatch(/already has an open session/);
+    });
+
+    it("never: a queued implement or update run is cancelled and the interactive task takes the item over", async () => {
+      const h = await harness();
+      for (const [n, kind] of [[1, "implement"], [2, "update"]] as const) {
+        const it0 = await h.running(n, [`src/t${n}/`]);
+        await h.enqueue(it0, kind, `${kind}-${n}`);
+        const r = await h.start(it0.id);
+        expect(r.ok).toBe(true);
+        expect(r.lines.join("\n")).toMatch(/took over the item: cancelled the queued worker run run_/);
+        const runs = await h.store.listRuns(it0.id);
+        expect(runs.find((x) => x.kind === kind)?.status).toBe("cancelled");
+        expect(runs.find((x) => x.kind === "interactive")?.status).toBe("running");
+        // No worker can claim the branch afterwards.
+        expect(await h.store.claimRun({ worker_id: W1, kinds: [kind], lease_ms: 60_000 })).toBeNull();
+      }
     });
 
     it("when a running implement-type run of another item has overlapping allowed_paths", async () => {

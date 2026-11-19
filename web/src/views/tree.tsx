@@ -12,7 +12,7 @@ import { cn } from "../lib/cn.js";
 import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, shortSource } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
-import { SourceLink, WhyText, WorkerName } from "./common.js";
+import { SourceLink, WhyText, WorkerName, runKindLabel } from "./common.js";
 
 /** Browser storage keys: the chosen view, and the expanded rows (a list of item ids; absent: the default). */
 export const VIEW_KEY = "sf.items.view";
@@ -137,7 +137,7 @@ function Row({ node, now, byNumber }: { node: TreeNode; now: number; byNumber: R
       )}
       {run && (
         <span className="text-xs whitespace-nowrap tabular-nums" data-run>
-          {run.kind} #{run.attempt}
+          {runKindLabel(run.kind)} #{run.attempt}
           {run.status === "queued" && run.position !== null && t("tree.queue", { position: run.position })}
           {run.started_at && run.status === "running" && ` · ${ago(run.started_at, now)}`}
         </span>
