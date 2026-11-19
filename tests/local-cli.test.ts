@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { cliUserConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import {
-  CLI_TOP_WORDS, type CliAction, type CliIdentity, type LocalCliDeps, cliCommandListMarkdown, cliIdentity, parseLocalCliArgs,
-  runLocalCli,
+  CLI_NAME_ENV, CLI_TOP_WORDS, CREATE_NEXT_STEP, type CliAction, type CliIdentity, type LocalCliDeps, cliCommandListMarkdown, cliIdentity, cliName,
+  parseLocalCliArgs, parseSentence, runLocalCli, runSentence,
 } from "../src/core/local-cli.js";
 import type { UserId, WorkItemId } from "../src/core/types.js";
 import { COMMAND_TABLE, SENTENCE_FORM, cliUsageOf } from "../src/core/command-table.js";
@@ -16,6 +16,8 @@ import { LocalSource } from "../src/impl/source/local-source.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeSource, cleanScanner, config, silent } from "./helpers/fakes.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
+import { classifierAnswer } from "./helpers/classifier.js";
+import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 
 // The writer side of local intake (issue #200): CLI commands that create local items, append item commands to
 // the command log, and print a task's state and messages. No GitHub call: the deps hold no GitHub client.
@@ -97,11 +99,11 @@ describe("parseLocalCliArgs", () => {
 });
 
 describe("task create", () => {
-  it("creates one local work item with its triage run queued and prints its ID", async () => {
-    const { store, run, reads } = await setup();
-    const r = await run({ action: "create", title: "Add a gate", bodyFile: "body.md" });
+  it("creates one local work item with its triage run queued and prints its ID, its link and the next step", async () => {
+    const { store, d, reads } = await setup();
+    const r = await runLocalCli({ ...d, uiPort: 4310 }, { action: "create", title: "Add a gate", bodyFile: "body.md" });
     expect(r.code).toBe(0);
-    expect(r.lines).toHaveLength(1);
+    expect(r.lines).toEqual([r.lines[0], `http://127.0.0.1:4310/app/items/${r.lines[0]}`, "triage queued; you'll be asked to approve the spec"]);
     const item = (await store.getWorkItem(r.lines[0] as WorkItemId))!;
     expect(item).toMatchObject({
       title: "Add a gate", requester_id: USER, project: PROJECT_KEY, problem: "Add a gate\n\nthe body", stage: "NEW",
@@ -110,6 +112,15 @@ describe("task create", () => {
     expect(reads).toEqual(["body.md"]);
     expect((await store.listRuns(item.id)).map((x) => [x.kind, x.status])).toEqual([["triage", "queued"]]);
     expect((await store.listStateChanges(item.id))[0]).toMatchObject({ reason: "intake", actor: { kind: "user", id: USER } });
+  });
+
+  it("the link uses the configured ui.port; with no port (a chat caller) only the ID and the next step print", async () => {
+    const { d } = await setup();
+    const linked = await runLocalCli({ ...d, uiPort: 5123 }, { action: "create", title: "t", bodyFile: "b" });
+    expect(linked.lines[1]).toBe(`http://127.0.0.1:5123/app/items/${linked.lines[0]}`);
+    const bare = await runLocalCli(d, { action: "create", title: "t", bodyFile: "b" });
+    expect(bare.lines).toEqual([bare.lines[0], CREATE_NEXT_STEP]);
+    expect(bare.lines[0]).toMatch(/^wi_/);
   });
 
   it("with no stored project it fails and creates nothing", async () => {
@@ -211,6 +222,68 @@ describe("approve, retry, revise, reject, resolve", () => {
       expect.objectContaining({ actor: USER, command: "approve", args: { item: gh.id, text: "ship it" }, mirror: true }),
     ]);
     expect((await store.listUnmirroredCliCommands(100)).map((c) => c.args.item)).toEqual([gh.id]);
+  });
+});
+
+describe("the command name in hints", () => {
+  it("cliName: the wrapper's FACTORY_CLI_NAME when it is one word, else factory", () => {
+    expect(CLI_NAME_ENV).toBe("FACTORY_CLI_NAME");
+    expect(cliName({ FACTORY_CLI_NAME: "gb" })).toBe("gb");
+    expect(cliName({ FACTORY_CLI_NAME: " gb " })).toBe("gb");
+    expect(cliName({})).toBe("factory");
+    expect(cliName({ FACTORY_CLI_NAME: "" })).toBe("factory");
+    expect(cliName({ FACTORY_CLI_NAME: "two words" })).toBe("factory");
+  });
+
+  it("with the name gb, every stored command's hint starts with gb; merge is stored as `gb merge`", async () => {
+    const { store, d } = await setup();
+    const gb = { ...d, cli: "gb" };
+    const id = (await runLocalCli(gb, { action: "create", title: "t", bodyFile: "b" })).lines[0] as WorkItemId;
+    await at(store, id);
+    for (const command of ["approve", "revise", "reject", "retry", "resolve"] as const) {
+      const r = await runLocalCli(gb, { action: "command", command, id, text: "" });
+      expect(r.lines).toEqual([expect.stringContaining(`stored \`/${command}\` for ${id}`)]);
+      expect(r.lines[0]).toMatch(new RegExp(`see \`gb task show ${id}\`$`));
+    }
+    const merge = await runLocalCli(gb, { action: "command", command: "merge", id, text: "" });
+    expect(merge.lines.join("\n")).toContain("`gb merge`");
+    expect(merge.lines.join("\n")).not.toContain("factory merge");
+  });
+
+  it("with no name, the hints say factory as before (chat callers pass none)", async () => {
+    const { store, run } = await setup();
+    const id = (await run({ action: "create", title: "t", bodyFile: "b" })).lines[0] as WorkItemId;
+    await at(store, id);
+    const r = await run({ action: "command", command: "approve", id, text: "" });
+    expect(r.lines[0]).toMatch(new RegExp(`see \`factory task show ${id}\`$`));
+    expect((await run({ action: "command", command: "merge", id, text: "" })).lines.join("\n")).toContain("`factory merge`");
+  });
+
+  it("the sentence form's hints use the name: the proposal's confirm line, the confirm reply, the work-request line", async () => {
+    const { store, d } = await setup();
+    const gh = (await store.createWorkItem(issue(3), system)).item;
+    await at(store, gh.id);
+    /** Answers the classifier with `command` and the interpreter with `answer`. */
+    const llm = (answer: Record<string, unknown>): LLMProvider => ({
+      async complete(req: LLMRequest): Promise<LLMResponse> {
+        return classifierAnswer(req) ?? { text: JSON.stringify(answer), parsed: answer, stop_reason: "end", usage: { input_tokens: 1, output_tokens: 1, cost_usd: null } };
+      },
+    });
+    const approve = llm({ kind: "commands", entries: [{ item: gh.id, command: "approve", args: "" }] });
+    const sd = { store, scanner: cleanScanner, identity: d.identity, refusal: async () => null, newId: () => "ab12", cli: "gb" };
+    const proposed = await runSentence({ ...sd, llm: approve }, "approve that one");
+    expect(proposed.lines[0]).toContain("run `gb confirm prop_ab12`");
+    const confirmed = await runLocalCli({ ...d, cli: "gb" }, { action: "confirm", proposal: "prop_ab12" });
+    expect(confirmed.lines[0]).toMatch(/^stored `gb confirm prop_ab12`/);
+    const request = await runSentence({ ...sd, llm: llm({ kind: "request", entries: [], text: "I can make this a task: a dark mode." }) }, "add a dark mode please");
+    expect(request.lines).toEqual([expect.stringContaining("`gb task create --title <t> --body-file <f>`")]);
+    const { cli: _, ...plain } = sd;
+    expect((await runSentence({ ...plain, newId: () => "cd34", llm: approve }, "approve that one")).lines[0]).toContain("run `factory confirm prop_cd34`");
+  });
+
+  it("the sentence form's usage error uses the name too", () => {
+    expect(parseSentence(["x"], "gb")).toEqual({ error: expect.stringContaining(`two words: gb ${SENTENCE_FORM}`) });
+    expect(parseSentence(["x"])).toEqual({ error: expect.stringContaining(`two words: factory ${SENTENCE_FORM}`) });
   });
 });
 

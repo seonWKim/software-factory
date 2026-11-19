@@ -75,6 +75,26 @@ export function isCliCommandKey(key: string): boolean {
   return key.startsWith(CLI_KEY_PREFIX);
 }
 
+/** The environment variable a project's wrapper (`gb`, say) sets to its own command name, for the CLI's hints. */
+export const CLI_NAME_ENV = "FACTORY_CLI_NAME";
+
+/** The command name the hints use when no wrapper names itself: chat replies and `/help` always use it. */
+export const DEFAULT_CLI_NAME = "factory";
+
+/** The command name the CLI's hints start with: CLI_NAME_ENV when it is one word, else DEFAULT_CLI_NAME. */
+export function cliName(env: Readonly<Record<string, string | undefined>>): string {
+  const v = env[CLI_NAME_ENV]?.trim();
+  return v !== undefined && /^\S+$/.test(v) ? v : DEFAULT_CLI_NAME;
+}
+
+/** The line `task create` ends with: what happens to the new item next. */
+export const CREATE_NEXT_STEP = "triage queued; you'll be asked to approve the spec";
+
+/** An item's page on the status page, which listens on loopback at `ui.port` (design 05-sources, CLI intake). */
+export function itemLink(port: number, id: WorkItemId): string {
+  return `http://127.0.0.1:${port}/app/items/${id}`;
+}
+
 /** The top-level words `factory` hands to this module: the table's task, project and item commands (with `confirm`). */
 export const CLI_TOP_WORDS = topWords(["task", "item"]);
 
@@ -281,6 +301,10 @@ export interface LocalCliDeps {
    * source already shows it in its thread, so its row is not mirrored there. Absent: the CLI.
    */
   origin?: string;
+  /** The command name the hints start with (cliName); absent: DEFAULT_CLI_NAME, as chat callers leave it. */
+  cli?: string;
+  /** The status page's `ui.port`: `task create` prints the new item's link on it. Absent: no link (chat callers). */
+  uiPort?: number;
 }
 
 export interface CliResult {
@@ -294,6 +318,12 @@ export const TASK_LIST_LIMIT = 200;
 export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliResult> {
   const fail = (line: string): CliResult => ({ code: 1, lines: [line] });
   const user = d.identity.user;
+  const cli = d.cli ?? DEFAULT_CLI_NAME;
+  // The new item's ID first (scripts read it), then its link and what happens next.
+  const created = (id: WorkItemId, ...rest: string[]): CliResult => ({
+    code: 0,
+    lines: [id, ...rest, ...(d.uiPort !== undefined ? [itemLink(d.uiPort, id)] : []), CREATE_NEXT_STEP],
+  });
   // The first identity to write becomes the local owner (issue #318); anonymous never does.
   const claim = async () => (user === ANONYMOUS_USER ? null : d.store.claimOwner(user));
   switch (a.action) {
@@ -305,11 +335,11 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
         const r = await createProjectTask(d.store, { task_id: `tk_${d.newId()}`, title: a.title, body, slug: a.project, project, user });
         if (!r.ok) return fail(r.reason);
         await claim();
-        return { code: 0, lines: [r.item.id, `task ${r.task.id} in +${a.project}`] };
+        return created(r.item.id, `task ${r.task.id} in +${a.project}`);
       }
       await claim();
       const { item } = await createLocalItem(d.store, { source_id: `local-${d.newId()}`, title: a.title, body, project, user });
-      return { code: 0, lines: [item.id] };
+      return created(item.id);
     }
     case "build": {
       const r = await buildTask(d.store, a.id, await d.project(), user);
@@ -410,7 +440,7 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
     case "command": {
       const item = await d.store.getWorkItem(a.id);
       if (!item) return fail(`no work item ${a.id}`);
-      const name = a.command === MERGE_COMMAND ? "factory merge" : `/${a.command}`;
+      const name = a.command === MERGE_COMMAND ? `${cli} merge` : `/${a.command}`;
       // The controller's phase check, before any write: the same refusal it would post (issues #528, #523).
       const refused = a.command === "approve" ? approveRefusal(item) : a.command === "verdict" ? verdictRefusal(item) : null;
       if (refused !== null) return fail(refusalText(name, refused));
@@ -423,7 +453,7 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: a.command, args, ...(mirror ? { mirror } : {}) });
       return {
         code: 0,
-        lines: [`stored \`${name}\` for ${item.id} as ${user} (command ${command.seq}); the controller applies it on its next poll, see \`factory task show ${item.id}\``],
+        lines: [`stored \`${name}\` for ${item.id} as ${user} (command ${command.seq}); the controller applies it on its next poll, see \`${cli} task show ${item.id}\``],
       };
     }
     case "confirm": {
@@ -439,7 +469,7 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       const args = { item: pending[0]!.work_item_id, proposal: a.proposal };
       const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: CONFIRM_COMMAND, args });
       const n = pending.length === 1 ? "its pending command" : `its ${pending.length} pending commands`;
-      return { code: 0, lines: [`stored \`factory confirm ${a.proposal}\` as ${user} (command ${command.seq}); the controller applies ${n} on its next poll`] };
+      return { code: 0, lines: [`stored \`${cli} confirm ${a.proposal}\` as ${user} (command ${command.seq}); the controller applies ${n} on its next poll`] };
     }
     case "help": {
       if (a.id === null) return { code: 0, lines: helpReply(null).split("\n") };
@@ -538,13 +568,15 @@ export interface SentenceDeps {
   refusal: () => Promise<string | null>;
   /** A new random ID: the proposal's. */
   newId: () => string;
+  /** The command name the hints start with (cliName); absent: DEFAULT_CLI_NAME. */
+  cli?: string;
 }
 
 /** The words of `factory <words...>` as one sentence, or why they are none: a sentence has at least two words. */
-export function parseSentence(args: readonly string[]): { text: string } | { error: string } {
+export function parseSentence(args: readonly string[], cli = DEFAULT_CLI_NAME): { text: string } | { error: string } {
   const text = args.join(" ").replace(/\s+/g, " ").trim();
   if (text.split(" ").length < 2) {
-    return { error: `unknown command ${JSON.stringify(text)}; a command in your own words takes at least two words: factory ${SENTENCE_FORM}` };
+    return { error: `unknown command ${JSON.stringify(text)}; a command in your own words takes at least two words: ${cli} ${SENTENCE_FORM}` };
   }
   if (text.length > INTERPRET_MAX_CHARS) return { error: `a command in your own words is at most ${INTERPRET_MAX_CHARS} characters` };
   return { text };
@@ -558,13 +590,14 @@ export function parseSentence(args: readonly string[]): { text: string } | { err
  */
 export async function runSentence(d: SentenceDeps, text: string): Promise<CliResult> {
   const fail = (line: string): CliResult => ({ code: 1, lines: [line] });
+  const cli = d.cli ?? DEFAULT_CLI_NAME;
   const refused = await d.refusal();
   if (refused !== null) return fail(`not read: ${refused}`);
   if (!(await d.scanner.scan("comment", text)).clean) return fail("not read: the words did not pass the egress scan, so they were not sent to the model");
   const items = openItems(await d.store.listWorkItemsWhere({ exclude_closed: true, limit: INTERPRET_MAX_ITEMS }));
   const result = await interpretMessage(text, items, d.llm, "top_level");
   for (const t of interpretTexts(result)) if (!(await d.scanner.scan("comment", t)).clean) return fail("the model's answer did not pass the egress scan, so it is not shown");
-  if (result.kind === "request") return { code: 0, lines: ["That reads as a work request, so nothing has changed: create it with `factory task create --title <t> --body-file <f>`."] };
+  if (result.kind === "request") return { code: 0, lines: [`That reads as a work request, so nothing has changed: create it with \`${cli} task create --title <t> --body-file <f>\`.`] };
   if (result.kind !== "commands") {
     const reply = interpretReply(result) ?? "The factory did not find a command in your words, so nothing changed.";
     return { code: 0, lines: reply.split("\n").filter((l) => !l.startsWith("<!--")) };
@@ -575,7 +608,7 @@ export async function runSentence(d: SentenceDeps, text: string): Promise<CliRes
   return {
     code: 0,
     lines: [
-      `proposal ${id}: nothing has changed. To apply every command, run \`factory ${CONFIRM_WORD} ${id}\`; or type a line on its item.`,
+      `proposal ${id}: nothing has changed. To apply every command, run \`${cli} ${CONFIRM_WORD} ${id}\`; or type a line on its item.`,
       ...result.proposals.map((p) => `  ${p.item.id}\t${typed(p)}`),
     ],
   };
