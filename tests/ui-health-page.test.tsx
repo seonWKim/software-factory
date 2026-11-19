@@ -65,8 +65,8 @@ describe("Health page: GitHub budget tab", () => {
     current = overview({ github_budget: budget(), github_token_days: 12 });
     const list = await show();
     const tab = await within(list).findByRole("tab", { name: "GitHub budget" }, SLOW);
-    // Added after the other tabs, which keep their order.
-    expect(tabNames(list).slice(-2)).toEqual([expect.stringContaining("Merged without review"), "GitHub budget"]);
+    // Added after the other tabs, which keep their order: Efficiency sits between Merged without review and it.
+    expect(tabNames(list).slice(-3)).toEqual([expect.stringContaining("Merged without review"), "Efficiency", "GitHub budget"]);
     fireEvent.click(tab);
     const panel = await screen.findByRole("region", { name: "GitHub budget" });
     expect(panel.textContent).toContain(`812 of 5000 calls left until ${RESET}`);
