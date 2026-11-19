@@ -2,7 +2,7 @@ import { ScrollText } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import {
-  API, type AgentsHomeView, type AppliedRule, type ImproveGroupView, type ImproveView, type RetiredRule, type RuleDetail, type RuleEvidence, type RuleRow, type RuleVerdict, type RulesView,
+  API, type AppliedRule, type ImproveGroupView, type ImproveView, type RetiredRule, type RuleDetail, type RuleEvidence, type RuleRow, type RuleVerdict, type RulesView,
   postImproveRun, postRuleVerdict, postSettings, useApi, useRuleEntry,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
@@ -14,12 +14,12 @@ import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
 import { Markdown } from "../components/ui/markdown.js";
 import { Tooltip } from "../components/ui/menu.js";
-import { Radio } from "../components/ui/radio.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { EmptyState, Notice, PageHeader } from "../components/ui/notice.js";
 import { Textarea } from "../components/ui/textarea.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
+import { AgentsHomePicker } from "./agents-home-picker.js";
 import { ApprovalsSection } from "./standing.js";
 import { Disclosure } from "../components/ui/disclosure.js";
 import { Card } from "../components/ui/card.js";
@@ -387,44 +387,6 @@ function RuleCard({ entry, applied, token }: { entry: RuleRow; applied: AppliedR
   );
 }
 
-/** The chosen home's check: both CLIs executable, else the first missing file; and whether the ledger reads it. */
-function HomeCheck({ home, inUse }: { home: AgentsHomeView; inUse: string }) {
-  return (
-    <div data-home-check className="space-y-2">
-      {home.missing === null ? (
-        <Notice tone="ok">{t("rules.homeOk", { path: home.path })}</Notice>
-      ) : (
-        <Notice tone="warn">{t("rules.homeMissingFile", { file: home.missing, path: home.path })}</Notice>
-      )}
-      {home.path !== inUse && <p className={muted}>{t("rules.homeNotUsed", { path: inUse })}</p>}
-    </div>
-  );
-}
-
-/**
- * The agents home picker: the known homes only (AGENTS_HOME when set, ~/.agents), the one in use chosen first, and the
- * chosen one's check. Choosing stores nothing.
- */
-function HomePicker({ home }: { home: AgentsHomeView & { homes?: AgentsHomeView[] } }) {
-  const homes = home.homes ?? [home];
-  const [chosen, setChosen] = useState(home.path);
-  const shown = homes.find((h) => h.path === chosen) ?? home;
-  return (
-    <div data-home className="space-y-2">
-      <Field label={t("rules.homePick")} help={t("rules.homePickHelp")}>
-        <div role="radiogroup" aria-label={t("rules.homePick")} className="space-y-1">
-          {homes.map((h) => (
-            <Radio key={h.path} name="agents-home" value={h.path} checked={h.path === chosen} onChange={() => setChosen(h.path)}>
-              <span className="font-mono break-all">{h.path === home.path ? t("rules.homeInUse", { path: h.path }) : h.path}</span>
-            </Radio>
-          ))}
-        </div>
-      </Field>
-      <HomeCheck home={shown} inUse={home.path} />
-    </div>
-  );
-}
-
 /** The ledger off: the agents home picker with its check, Turn on when the home in use is found, and why the viewer cannot turn it on. */
 function LedgerOff({ view }: { view: RulesView }) {
   const client = useQueryClient();
@@ -461,7 +423,7 @@ function LedgerOff({ view }: { view: RulesView }) {
         }
         description={canTurnOn ? t("rules.turnOnHint") : undefined}
       />
-      {view.home !== null && <HomePicker home={view.home} />}
+      {view.home !== null && <AgentsHomePicker home={view.home} />}
       {view.judge !== null && <Notice tone="warn">{view.judge}</Notice>}
       {error !== null && <Notice tone="bad">{error}</Notice>}
     </div>
