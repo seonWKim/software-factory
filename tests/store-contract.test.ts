@@ -3272,7 +3272,11 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       await store.addSubTask("tk_p", plain("tk_s2"));
       await store.addTask(plain("tk_other"));
       await store.completeTask("tk_s1");
+      const { item } = await store.createWorkItem(issue(9101), system);
+      await store.linkTask("tk_p", item.id);
+      await store.linkTask("tk_s2", item.id);
       const r = await store.deleteTask("tk_p", { with_sub_tasks: true });
+      expect(await store.getWorkItem(item.id)).toEqual(item);
       expect(r).toMatchObject({ ok: true, task: { id: "tk_p" }, detached: [] });
       expect(r.ok && r.deleted.map((s) => s.id)).toEqual(["tk_s1", "tk_s2"]);
       expect((await rows(store)).map((x) => x.id)).toEqual(["tk_other"]);

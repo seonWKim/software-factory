@@ -54,7 +54,8 @@ async function shown<T extends { title: string }>(w: Withholder, rows: readonly 
  * and Upcoming, and `calendar`, each source's last sync time and whether its last sync failed. Each task row carries
  * `projects`, the slugs of its active task projects, and `active_projects` lists the active projects (slug and name)
  * for the page's project switcher, and `close_reason`, a linked task's item's close reason (open or done) when it closed without a merge
- * (closeReasons; else null). With `project` (a slug, `?project=`) the views hold only the tasks, open or done, linked to
+ * (closeReasons; else null), and `open_sub_tasks`, how many open sub-tasks it has over every stored task (counted before the
+ * project filter), so the delete dialog knows before it opens. With `project` (a slug, `?project=`) the views hold only the tasks, open or done, linked to
  * that project: 400 for a value that is not a slug or an archived project, 404 for an unknown one. Reads the stored
  * copy only: no source is called and nothing is written. `csrf_token` and `can_build` for Build this (null and false
  * when the commands route is off). `add_key`, the quick-add field's submit key: the `tasks_add_key` setting's stored
@@ -69,7 +70,8 @@ export async function readTasks(d: UiDeps, project: string | null = null): Promi
   const listed = await shown(w, [...await d.store.listTasks(TASK_LIST_LIMIT), ...done]);
   const slugs = await d.store.listTaskProjectSlugs(listed.map((t) => t.id));
   const reasons = await closeReasons(d, listed);
-  const rows = listed.map((t) => ({ ...t, projects: slugs[t.id] ?? [], close_reason: reasons.get(t.id) ?? null }));
+  const subs = await d.store.countOpenSubTasks();
+  const rows = listed.map((t) => ({ ...t, projects: slugs[t.id] ?? [], close_reason: reasons.get(t.id) ?? null, open_sub_tasks: subs[t.id] ?? 0 }));
   const kept = project === null ? rows : rows.filter((t) => t.projects.includes(project));
   const active_projects = await Promise.all((await d.store.listProjects("active")).map(async (p) => ({ slug: p.slug, name: (await w.plain(p.name)).text })));
   const calendar = await readCalendar(storeSql(d.store));
@@ -281,14 +283,19 @@ export async function writeTaskReopen(d: UiDeps, body: unknown): Promise<ApiResu
 
 /**
  * POST /api/v1/tasks/delete with `{ id }`, the store's deleteTask as `factory task delete`: 404 for an unknown task;
- * 409 naming its open sub-tasks while it has any (nothing written); else 200.
+ * 409 naming its open sub-tasks while it has any (nothing written); else 200. With `with_sub_tasks: true` (the delete
+ * dialog's "delete with sub-tasks") every sub-task, open and done, is deleted with it in one transaction, and the 200
+ * names them in `deleted_sub_tasks`; a `with_sub_tasks` that is not a boolean is 400.
  */
 export async function writeTaskDelete(d: UiDeps, body: unknown): Promise<ApiResult> {
   if ((d.commands?.actor ?? null) === null) return OFF;
-  const b = parseBody(body, ["id"], true);
+  const flagged = typeof body === "object" && body !== null && "with_sub_tasks" in body;
+  const with_sub_tasks = flagged ? (body as { with_sub_tasks: unknown }).with_sub_tasks : false;
+  if (typeof with_sub_tasks !== "boolean") return refused(400, "with_sub_tasks must be true or false");
+  const b = parseBody(flagged ? Object.fromEntries(Object.entries(body).filter(([k]) => k !== "with_sub_tasks")) : body, ["id"], true);
   if ("error" in b) return refused(400, b.error);
-  const r = await d.store.deleteTask(b.id);
-  if (r.ok) return { status: 200, value: { task_id: r.task.id } };
+  const r = await d.store.deleteTask(b.id, { with_sub_tasks });
+  if (r.ok) return { status: 200, value: { task_id: r.task.id, deleted_sub_tasks: r.deleted.map((t) => t.id) } };
   if (r.reason === "not_found") return unknown(b.id);
   const titles = (await shown(new Withholder(d.scanner), r.sub_tasks)).map((t) => t.title).join(", ");
   return refused(409, `it has open sub-tasks (${titles}): complete or delete them first`);

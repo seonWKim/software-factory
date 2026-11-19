@@ -10,7 +10,7 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, type UiRequest, respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
-import { TASKS_PATH, TASK_DONE_PATH, TASK_EDIT_PATH, TASK_REOPEN_PATH, TASK_SUB_PATH, TASK_WRITES } from "../src/ui/tasks-api.js";
+import { TASKS_PATH, TASK_DELETE_PATH, TASK_DONE_PATH, TASK_EDIT_PATH, TASK_REOPEN_PATH, TASK_SUB_PATH, TASK_WRITES } from "../src/ui/tasks-api.js";
 import { PROJECTS_PATH, TASK_PROJECT_PATH } from "../src/ui/projects-api.js";
 import { newStore } from "./helpers/store.js";
 
@@ -491,5 +491,76 @@ describe("the dashboard's task project routes (design 02-tasks and 09-dashboard-
     expect(home.map((t) => t.id).sort()).toEqual([ID, "tk_home_done_0001"].sort());
     expect(home.find((t) => t.id === "tk_home_done_0001")!.done_at).not.toBeNull();
     expect(rows(JSON.parse((await get(s)).body)).map((t) => t.id)).toEqual(expect.arrayContaining(["tk_home_done_0001", "tk_away_done_0001"]));
+  });
+});
+
+describe("sub-tasks stay with their parent (design 02-tasks-page, delete with sub-tasks)", () => {
+  type S = Awaited<ReturnType<typeof setup>>;
+  const PARENT = "tk_parent_0000001";
+  const get = async (s: S, query = "") => JSON.parse((await respond(s.d, { method: "GET", url: `${TASKS_PATH}${query}`, host: HOST })).body);
+  const del = (s: S, body: unknown) => s.post(body, { url: TASK_DELETE_PATH });
+  const all = (s: S) => s.store.db.all("SELECT * FROM controller_tasks ORDER BY id");
+  const rows = (v: { projects: { tasks: { id: string; open_sub_tasks: number }[] }[] }) => v.projects.flatMap((p) => p.tasks);
+
+  /** A parent with two open sub-tasks and one done one; the parent is in Home, its sub-tasks in no project. */
+  async function seeded() {
+    const s = await setup();
+    await s.post({ id: PARENT, words: "move house tomorrow" });
+    for (const id of ["tk_sub_open_0001", "tk_sub_open_0002", "tk_sub_done_0001"]) await s.post({ parent: PARENT, id, words: id }, { url: TASK_SUB_PATH });
+    await s.post({ id: "tk_sub_done_0001" }, { url: TASK_DONE_PATH });
+    await s.post({ id: ID, words: "call the bank" });
+    await s.store.createProject({ id: "pj_home", name: "Home", created_by: ACTOR });
+    await s.store.addTaskToProject("pj_home", PARENT);
+    return s;
+  }
+
+  it("GET /api/v1/tasks gives each row open_sub_tasks, counted before the project filter", async () => {
+    const s = await seeded();
+    const v = rows(await get(s));
+    expect(v.find((t) => t.id === PARENT)!.open_sub_tasks).toBe(2);
+    expect(v.find((t) => t.id === ID)!.open_sub_tasks).toBe(0);
+    expect(v.find((t) => t.id === "tk_sub_open_0001")!.open_sub_tasks).toBe(0);
+    // Home holds the parent but none of its sub-tasks: the count is still theirs.
+    expect(rows(await get(s, "?project=home")).find((t) => t.id === PARENT)!.open_sub_tasks).toBe(2);
+  });
+
+  it("a plain delete of a parent with open sub-tasks still answers 409 naming them, writing nothing", async () => {
+    const s = await seeded();
+    const before = await all(s);
+    const r = await del(s, { id: PARENT });
+    expect(r.status).toBe(409);
+    expect(JSON.parse(r.body).error).toMatch(/it has open sub-tasks \(tk_sub_open_0001, tk_sub_open_0002\)/);
+    expect(await all(s)).toEqual(before);
+  });
+
+  it("with_sub_tasks true deletes the parent and every sub-task in one write, naming the deleted sub-tasks", async () => {
+    const s = await seeded();
+    const r = await del(s, { id: PARENT, with_sub_tasks: true });
+    expect(r.status).toBe(200);
+    const v = JSON.parse(r.body) as { task_id: string; deleted_sub_tasks: string[] };
+    expect(v.task_id).toBe(PARENT);
+    expect([...v.deleted_sub_tasks].sort()).toEqual(["tk_sub_done_0001", "tk_sub_open_0001", "tk_sub_open_0002"]);
+    expect((await all(s)).map((t) => t.id)).toEqual([ID]);
+  });
+
+  it("a parent with no open sub-tasks deletes with { id } as before", async () => {
+    const s = await setup();
+    await s.post({ id: PARENT, words: "move house" });
+    const r = await del(s, { id: PARENT });
+    expect(r.status).toBe(200);
+    expect(JSON.parse(r.body)).toMatchObject({ task_id: PARENT });
+    expect(await s.store.getTask(PARENT)).toBeNull();
+  });
+
+  it("a with_sub_tasks that is not a boolean is 400 and writes nothing", async () => {
+    const s = await seeded();
+    const before = await all(s);
+    for (const flag of ["true", 1, null, {}]) {
+      const r = await del(s, { id: PARENT, with_sub_tasks: flag });
+      expect(r.status, JSON.stringify(flag)).toBe(400);
+      expect(JSON.parse(r.body).error).toMatch(/with_sub_tasks must be true or false/);
+    }
+    expect((await del(s, { id: PARENT, with_sub_tasks: true, extra: 1 })).status).toBe(400);
+    expect(await all(s)).toEqual(before);
   });
 });
