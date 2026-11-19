@@ -62,6 +62,11 @@ Produce:
   only the topic files that apply. The documentation targets are the topic files the change touches,
   not the index: name those in files_to_change and allowed_paths. A new topic file also needs its one line
   in the index, so list the index then too.
+- UI changes: for a change under `web/` in a project with `design-system/components.md`, the spec names the
+  components each new or changed element uses, by name from `design-system/components.md` (its "Which component for
+  what" table first), one existing page to match for layout and spacing, and the "Stays fixed" list in
+  `design-system/README.md`. Put them in the done criteria. A need with no component says so, and names the item
+  that adds it or the component to use until then; never leave the element to be drawn by hand.
 - tier: risk 1–5. 1 = docs/tests only. 2 = small, local code change. 3 = behavior change in core logic,
   config, prompts, gates or permissions. 4 = security-relevant (secrets, auth, sandbox, tool broker).
   5 = needs a rollout plan. When unsure, pick the higher tier.

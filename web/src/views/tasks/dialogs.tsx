@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type RefObject, useContext, useRef, useState } from "react";
 import { API, type ProjectChoice, type TaskRow, postTaskBody, postTaskProject } from "../../api.js";
-import { Button } from "../../components/ui/button.js";
+import { Checkbox } from "../../components/ui/checkbox.js";
 import { Dialog, announceStatus } from "../../components/ui/dialog.js";
 import { Field } from "../../components/ui/field.js";
 import { Input } from "../../components/ui/input.js";
@@ -157,10 +157,7 @@ export function ProjectsDialog({ task, token, returnFocusTo, onClose }: { task: 
             const checked = linked.has(p.slug);
             return (
               <li key={p.slug} data-project={p.slug} className="flex items-center gap-3 px-3 py-2">
-                {/* The shared Button as a checkbox, as on the task row: components/ui has no checkbox. */}
-                <Button size="icon" role="checkbox" aria-checked={checked} aria-label={p.name} disabled={busy} onClick={() => void send(() => link(p, !checked))}>
-                  <span aria-hidden>{checked ? "✓" : ""}</span>
-                </Button>
+                <Checkbox checked={checked} aria-label={p.name} disabled={busy} onChange={() => void send(() => link(p, !checked))} />
                 <span className="min-w-0 flex-1 text-sm break-words">{p.name}</span>
                 <span className={cn(muted, "break-all")}>+{p.slug}</span>
               </li>

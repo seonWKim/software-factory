@@ -23,6 +23,8 @@ export const shell = {
   "search.pages": "Pages",
   "search.developer": "Developer page",
   "search.items": "Items",
+  "search.merged": "Merged",
+  "search.closed": "Closed",
   "search.none": "Nothing matches.",
   "keys.title": "Keyboard shortcuts",
   "keys.close": "Close",
