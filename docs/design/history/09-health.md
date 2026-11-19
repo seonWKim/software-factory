@@ -1,6 +1,7 @@
 # 09-health
 
 - **Health's tabs were Sections; Claim pauses a bare list** (until 2026-11-19, the Cards decision at the top). Before: each tab was a `Section` with no surface, and the Claim pauses tab showed its list with no heading.
+- **Health checks ran inside the request** (until 2026-11-19, the background snapshot decision at the top). Before: when the last run started 60 s ago or more, a `GET /api/health` or `/api/v1/health` ran the checks (GitHub calls included) and waited for them, so a read took about 4.5 s; a throwing check replaced the last report with one FAIL row. That behaviour remains for a monitor that is not started.
 - **A Health section on the server-rendered page** (until 2026-11-16, the API-only decision at the top). Before: `/` (later `/classic`) showed the checks as a Health section with a refresh link (`?health=refresh`, still at most one run a minute) and, for a user who may approve, the Run now button; `HealthMonitor.section` built it, and page loads counted toward the 60 s limit beside the API.
 
 ## History

@@ -25,6 +25,8 @@ import { storeSql } from "../impl/store/sql/store-sql.js";
 import { McpToolListsStore, approvedImportedServers, requestMcpToolLists } from "../import/mcp-tool-lists.js";
 import { PackEntriesStore } from "../packs/pack-entries.store.js";
 import type { SkillRefSource, SkillState } from "../runtime/capabilities/capabilities.js";
+import { type Activity, BackgroundSnapshot } from "./background-refresh.js";
+import { HEALTH_MIN_INTERVAL_MS } from "./health.js";
 import { type CapabilityDeps, type UiCapabilitySources, capabilityRows, settingsSources } from "./capabilities-api.js";
 import type { ApiDeps, ApiResult } from "./api.js";
 import type { UiSettings } from "./settings-api.js";
@@ -168,23 +170,58 @@ async function skillFolders(s: UiSettings, w: Withholder): Promise<string[]> {
  */
 export async function readPlugins(d: ApiDeps): Promise<ApiResult> {
   if (!d.settings) return { status: 404, value: { error: "Not found." } };
-  const user = d.pauses ? await d.pauses.principal() : null;
-  if (user !== null) await requestMcpToolLists(storeSql(d.store), () => d.clock.now().toISOString(), user);
-  const rows = await pluginRows(d, d.settings.base, await settingsSources(d.settings));
-  const stored = new Map((await entryRows(d, "tool")).map((t) => [`pack:tool:${t.name}`, t.status]));
-  const tool_status: Record<string, McpStatus> = {};
-  for (const t of rows.tools) if (t.origin === "pack") tool_status[t.name] = stored.get(t.name) ?? "waiting";
+  const snap = snapshots.get(d);
+  const { value, as_of } = snap ? await snap.read() : { value: await discover(d, d.settings), as_of: d.clock.now() };
   const writer = d.settings.editFile?.fileKeys !== undefined;
   return {
     status: 200,
     value: {
-      as_of: d.clock.now().toISOString(),
+      as_of: as_of.toISOString(),
+      // The tokens belong to this request, never to the snapshot.
       csrf_token: d.pauses?.auth !== undefined ? d.pauses.csrfToken : null,
-      ...rows,
-      skills: rows.skills.filter((r) => r.source === undefined || PAGE_SKILL_SOURCES.includes(r.source)),
-      tool_status,
-      skill_folders: await skillFolders(d.settings, new Withholder(d.scanner)),
+      ...value,
       settings_token: writer ? d.settings.csrfToken : null,
+    },
+  };
+}
+
+/** The slow part of the read, everything but the tokens: the three lists, each pack tool's status and the skill folders. */
+async function discover(d: ApiDeps, settings: UiSettings) {
+  const user = d.pauses ? await d.pauses.principal() : null;
+  if (user !== null) await requestMcpToolLists(storeSql(d.store), () => d.clock.now().toISOString(), user);
+  const rows = await pluginRows(d, settings.base, await settingsSources(settings));
+  const stored = new Map((await entryRows(d, "tool")).map((t) => [`pack:tool:${t.name}`, t.status]));
+  const tool_status: Record<string, McpStatus> = {};
+  for (const t of rows.tools) if (t.origin === "pack") tool_status[t.name] = stored.get(t.name) ?? "waiting";
+  return {
+    ...rows,
+    skills: rows.skills.filter((r) => r.source === undefined || PAGE_SKILL_SOURCES.includes(r.source)),
+    tool_status,
+    skill_folders: await skillFolders(settings, new Withholder(d.scanner)),
+  };
+}
+
+/** The snapshots the UI server installed, by the deps object its routes read with. None: the read is live. */
+const snapshots = new WeakMap<ApiDeps, BackgroundSnapshot<Awaited<ReturnType<typeof discover>>>>();
+
+/**
+ * Installs the background snapshot of the Plugins read for `d` (design 09-dashboard-settings, 2026-11-19): the same
+ * builder (`pluginRows`) runs on an interval while the page is in use and on `refresh()`, and GET /api/v1/plugins
+ * answers from its last result. `activity` is shared with the Health snapshot, so a read of either route keeps both
+ * refreshing. Returns the handle the server uses after a write and on close. A server without settings has no
+ * Plugins route, so nothing is installed.
+ */
+export function startPluginsSnapshot(d: ApiDeps, activity?: Activity): { refresh(): void; stop(): void } {
+  const settings = d.settings;
+  if (!settings) return { refresh: () => undefined, stop: () => undefined };
+  const snap = new BackgroundSnapshot(() => discover(d, settings), d.clock, HEALTH_MIN_INTERVAL_MS, activity);
+  snapshots.set(d, snap);
+  snap.start();
+  return {
+    refresh: () => snap.refreshInBackground(),
+    stop: () => {
+      snap.stop();
+      snapshots.delete(d);
     },
   };
 }

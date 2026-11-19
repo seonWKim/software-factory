@@ -9,6 +9,7 @@ import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { type Check, type CheckStatus, checkStatus } from "../setup.js";
+import { type Activity, BackgroundSnapshot } from "./background-refresh.js";
 import { Withholder } from "./withhold.js";
 
 export const HEALTH_MIN_INTERVAL_MS = 60_000;
@@ -57,6 +58,7 @@ export interface HealthReport {
 export class HealthMonitor {
   private last: RawRun | null = null;
   private inflight: Promise<RawRun> | null = null;
+  private snapshot: BackgroundSnapshot<RawRun> | null = null;
 
   constructor(
     private readonly run: () => Promise<Check[]>,
@@ -79,19 +81,58 @@ export class HealthMonitor {
   }
 
   private async runOnce(started_at: Date): Promise<RawRun> {
-    let checks: Check[];
     try {
-      checks = await this.run();
+      return await this.execute(started_at);
     } catch (err) {
-      // doctor would stop on this error; the report shows it as one FAIL instead (scanned like any message).
-      checks = [{ ok: false, msg: `health checks could not finish: ${err instanceof Error ? err.message.slice(0, 120) : "error"}` }];
+      return this.failed(started_at, err);
     }
+  }
+
+  private async execute(started_at: Date): Promise<RawRun> {
+    const checks = await this.run();
     return { started_at, checked_at: this.clock.now(), checks };
+  }
+
+  /** doctor would stop on this error; the report shows it as one FAIL instead (scanned like any message). */
+  private failed(started_at: Date, err: unknown): RawRun {
+    const checks = [{ ok: false, msg: `health checks could not finish: ${err instanceof Error ? err.message.slice(0, 120) : "error"}` }];
+    return { started_at, checked_at: this.clock.now(), checks };
+  }
+
+  /**
+   * From now on `report` answers from the last run at once and the checks run in the background (design 09-health,
+   * 2026-11-19): every `min_interval_ms` while the page is in use, and after `refresh()`. The first report waits for
+   * the first run only; a run that throws keeps the last good one. `activity` is shared with the other routes' snapshots,
+   * so a read of any of them keeps this one refreshing. Not started: the on-demand behaviour above.
+   */
+  start(activity?: Activity): void {
+    this.snapshot ??= new BackgroundSnapshot(() => this.execute(this.clock.now()), this.clock, this.min_interval_ms, activity);
+    this.snapshot.start();
+  }
+
+  /** Stops the background runs and goes back to checking on request. */
+  stop(): void {
+    this.snapshot?.stop();
+    this.snapshot = null;
+  }
+
+  /** Starts a background run now (after a write); does nothing when not started. */
+  refresh(): void {
+    this.snapshot?.refreshInBackground();
+  }
+
+  private async current(): Promise<RawRun> {
+    if (!this.snapshot) return this.latest();
+    try {
+      return (await this.snapshot.read()).value;
+    } catch (err) {
+      return this.failed(this.clock.now(), err);
+    }
   }
 
   /** The checks for the API, every message through the Withholder. */
   async report(scanner: EgressScanner): Promise<HealthReport> {
-    const r = await this.latest();
+    const r = await this.current();
     const w = new Withholder(scanner);
     const checks = [];
     for (const c of r.checks) checks.push({ status: checkStatus(c), msg: (await w.plain(c.msg)).text });

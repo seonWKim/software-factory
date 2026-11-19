@@ -38,7 +38,8 @@ import { TASKS_PATH, TASK_WRITES, readTasks } from "./tasks-api.js";
 import { RULES_PATH, RULE_ENTRY_PATH, RULE_VERDICT_PATH, readRuleEntry, readRules, writeRuleVerdict } from "./rules-api.js";
 import { IMPROVE_RUN_PATH, type ImproveRunDeps, improveRunWired, runImproveNow } from "./improve-api.js";
 import { NOTICES_PATH, readNotices } from "./notices-api.js";
-import { PLUGINS_PATH, readPlugins } from "./plugins-api.js";
+import { Activity } from "./background-refresh.js";
+import { PLUGINS_PATH, readPlugins, startPluginsSnapshot } from "./plugins-api.js";
 import { PLUGINS_IMPORT_PATH, readPluginsImport, writePluginsImport } from "./plugins-import-api.js";
 import { CALENDAR_CONNECT_PATH, CALENDAR_DISCONNECT_PATH, CALENDAR_PATH, readCalendarStatus, writeCalendar } from "./calendar-api.js";
 import { CALENDAR_EVENTS_PATH, readCalendarEvents } from "./calendar-events-api.js";
@@ -275,6 +276,19 @@ export interface UiServer {
 
 /** Listens on 127.0.0.1:`port` (0 picks a free port). */
 export async function startUi(d: ServerDeps, port: number): Promise<UiServer> {
+  // The Health and Plugins reads answer from background snapshots, refreshed after each successful write (design 09-health).
+  // One Activity: a read of either route keeps both refreshing.
+  const activity = new Activity(d.clock);
+  d.health.start(activity);
+  const plugins = startPluginsSnapshot(d, activity);
+  const refreshAll = () => {
+    d.health.refresh();
+    plugins.refresh();
+  };
+  const stopRefresh = () => {
+    d.health.stop();
+    plugins.stop();
+  };
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const one = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
     const base: UiRequest = { method: req.method, url: req.url, host: req.headers.host, csrfToken: one(req.headers[CSRF_HEADER]) };
@@ -286,6 +300,9 @@ export async function startUi(d: ServerDeps, port: number): Promise<UiServer> {
             origin: one(req.headers.origin),
             contentType: one(req.headers["content-type"]),
             ...b,
+          }).then((r) => {
+            if (r.status < 300) refreshAll();
+            return r;
           }),
         )
       : respond(d, base)
@@ -303,6 +320,9 @@ export async function startUi(d: ServerDeps, port: number): Promise<UiServer> {
       server.off("error", reject);
       resolve();
     });
+  }).catch((err: unknown) => {
+    stopRefresh();
+    throw err;
   });
   const addr = server.address() as AddressInfo;
   return {
@@ -310,6 +330,7 @@ export async function startUi(d: ServerDeps, port: number): Promise<UiServer> {
     port: addr.port,
     close: () =>
       new Promise<void>((resolve, reject) => {
+        stopRefresh();
         server.closeAllConnections();
         server.close((err) => (err ? reject(err) : resolve()));
       }),
