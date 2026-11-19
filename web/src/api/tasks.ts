@@ -29,8 +29,8 @@ export interface TaskRow {
   /** When it was done (ISO time): a done task of the last 30 days stays in the views, struck through; null or absent: open. */
   done_at?: string | null;
   /**
-   * A done task's linked work item's close reason, read from the item when the page is read, when it closed without a
-   * merge (design 02-tasks); null or absent otherwise.
+   * A linked task's work item's close reason, open or done, read from the item when the page is read, when it closed
+   * without a merge (design 02-tasks); null or absent otherwise.
    */
   close_reason?: "completed" | "duplicate" | "wont_do" | "failed" | "rejected" | null;
 }

@@ -207,7 +207,8 @@ export async function linkTask(db: SqlDriver, id: string, work_item_id: WorkItem
 
 /**
  * In `tx`: completes each open task linked to the item, as completeTask does each. The store's close transition calls it
- * in the item's own transaction (design 02-tasks), so a closed item never leaves its task open; a second call finds none open.
+ * in the item's own transaction when the item closes as completed (design 02-tasks), so a completed item never leaves its
+ * task open; a second call finds none open.
  */
 export async function completeLinkedTasks(db: SqlDriver, tx: SqlExecutor, work_item_id: WorkItemId, now: Timestamp): Promise<Task[]> {
   const open = await tx.all("SELECT id FROM controller_tasks WHERE work_item_id = ? AND done_at IS NULL ORDER BY id", [work_item_id]);

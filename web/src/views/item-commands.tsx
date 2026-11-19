@@ -449,6 +449,10 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
   ];
   // Applied at once (Approve): the row's label, e.g. "Approved", until the list's next read moves the row on.
   const applied = Object.entries(local).flatMap(([k, l]) => (k !== "merge" && "seq" in l && l.label && !l.refusal ? [l.label] : []));
+  // The primary command this row sent and the controller has not refused: its button says so and stays off until the
+  // list's next read moves the row on, so a click never looks like nothing happened.
+  const sentLocal = primary ? local[primary.name] : undefined;
+  const sent = sentLocal !== undefined && "seq" in sentLocal && !sentLocal.refusal ? sentLocal : null;
   return (
     <span ref={wrap} data-need-commands className="inline-flex flex-wrap items-center justify-end gap-2">
       {group === "merge" ? (
@@ -465,8 +469,8 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
           <Tooltip text={pathsOf(primary).length > 0
             ? t("needs.allowPaths", { paths: pathsOf(primary).join(", "), key: PRIMARY_KEY })
             : t("needs.withKey", { label: primaryLabel(primary), key: PRIMARY_KEY })}>
-            <Button variant="secondary" data-shortcut={PRIMARY_KEY} data-action={primary.name} disabled={off} onClick={() => void send(primary.name, withPaths(primary, ""))}>
-              {primaryLabel(primary)}
+            <Button variant="secondary" data-shortcut={PRIMARY_KEY} data-action={primary.name} data-sent={sent ? "" : undefined} disabled={off || sent !== null} onClick={() => void send(primary.name, withPaths(primary, ""))}>
+              {sent ? (sent.label ?? t("commands.sentWaiting")) : primaryLabel(primary)}
             </Button>
           </Tooltip>
         </span>
@@ -476,7 +480,7 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
         </Link>
       )}
       <OverflowMenu label={t("commands.more")} items={items.length > 0 ? items : [{ label: t("needs.noMore"), disabled: true, onSelect: () => undefined }]} />
-      {applied.map((text) => (
+      {applied.filter((text) => text !== sent?.label).map((text) => (
         <OutcomeText key={text} outcome={{ tone: "status", text }} />
       ))}
       {inlineErrors && <SendErrors local={local} />}
