@@ -5,13 +5,14 @@
 import { useState } from "react";
 import { Button, Tree, TreeItem, TreeItemContent } from "react-aria-components";
 import type { ItemRow } from "../api.js";
+import { FOCUS } from "../components/ui/control.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { LEVEL_LABELS, NEEDS_YOU_LEVELS, duration, shortSource } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
-import { SourceLink, When, WhyText, WorkerName, runKindLabel } from "./common.js";
+import { When, WhyText, WorkerName, runKindLabel } from "./common.js";
 import { Badge } from "../components/ui/badge.js";
 
 /** Browser storage keys: the chosen view, and the expanded rows (a list of item ids; absent: the default). */
@@ -106,34 +107,35 @@ export function defaultExpanded(nodes: readonly TreeNode[]): string[] {
   return nodes.flatMap((n) => (n.children.some((c) => c.item.item_phase !== "closed") ? [n.item.id, ...defaultExpanded(n.children)] : defaultExpanded(n.children)));
 }
 
-/** What an item waits for: the number to show and the item it names (null when it is not in the list). */
-function waitsFor(it: ItemRow, byNumber: ReadonlyMap<number, ItemRow>): { label: string; id: string | null } | null {
+/** The item another item waits for (a dependency, an earlier phase or a coordination hold), or null when none or not in the list. */
+function waitsFor(it: ItemRow, byNumber: ReadonlyMap<number, ItemRow>, byId: ReadonlyMap<string, ItemRow>): ItemRow | null {
   if (it.claim?.decision === "held" && !it.claim.approved && it.run?.status === "queued" && it.claim.holder) {
     const n = /^#(\d+)$/.exec(it.claim.holder)?.[1];
-    return { label: it.claim.holder, id: it.claim.holder_id ?? (n ? (byNumber.get(Number(n))?.id ?? null) : null) };
+    return (it.claim.holder_id ? byId.get(it.claim.holder_id) : undefined) ?? (n ? (byNumber.get(Number(n)) ?? null) : null);
   }
   const n = it.waiting_on_number;
   const waits = it.why?.code === "dependency" || (it.why?.code === "phase" && !!it.parent_id);
-  return waits && n ? { label: `#${n}`, id: byNumber.get(n)?.id ?? null } : null;
+  return waits && n ? (byNumber.get(n) ?? null) : null;
 }
 
-const CHIP = "rounded-control border border-border-strong px-1.5 py-0.5 text-xs whitespace-nowrap";
-
-function Row({ node, now, byNumber }: { node: TreeNode; now: number; byNumber: ReadonlyMap<number, ItemRow> }) {
+/**
+ * One item's row: its title (the link to it; never its id, design-system/writing.md), its state, the run, the PR and
+ * why it waits. A blocked item's state badge links to the item it waits for, named on hover.
+ */
+function Row({ node, now, byNumber, byId }: { node: TreeNode; now: number; byNumber: ReadonlyMap<number, ItemRow>; byId: ReadonlyMap<string, ItemRow> }) {
   const it = node.item;
-  const waits = waitsFor(it, byNumber);
+  const waits = waitsFor(it, byNumber, byId);
   const run = it.run;
+  const badge = <Badge level={it.item_phase}>{LEVEL_LABELS[it.item_phase] ?? it.item_phase}</Badge>;
   return (
     <div className={cn("flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-1 py-1", node.context && "text-text-2")}>
-      <SourceLink source={it.source} itemId={it.id} className="shrink-0" />
       <Link href={itemPath(it.id)} className={cn("min-w-0 truncate font-medium", LINK_CLASS)}>{it.title ?? shortSource(it.source.id)}</Link>
-      <Badge level={it.item_phase}>{LEVEL_LABELS[it.item_phase] ?? it.item_phase}</Badge>
-      {waits && (
-        waits.id ? (
-          <Link href={itemPath(waits.id)} className={cn(CHIP, LINK_CLASS)} data-waits-for>{t("tree.waitsFor", { label: waits.label })}</Link>
-        ) : (
-          <span className={CHIP} data-waits-for>{t("tree.waitsFor", { label: waits.label })}</span>
-        )
+      {waits ? (
+        <Link href={itemPath(waits.id)} data-waits-for title={t("tree.waitsFor", { title: waits.title ?? shortSource(waits.source.id) })} className={cn("rounded-pill", FOCUS)}>
+          {badge}
+        </Link>
+      ) : (
+        badge
       )}
       {run && (
         <span className="text-xs whitespace-nowrap tabular-nums" data-run>
@@ -158,7 +160,7 @@ function Row({ node, now, byNumber }: { node: TreeNode; now: number; byNumber: R
 const INDENT = ["pl-0", "pl-4", "pl-8", "pl-12", "pl-16"] as const;
 const indentFor = (level: number) => INDENT[Math.min(Math.max(level, 1), INDENT.length) - 1];
 
-function NodeItem(props: { node: TreeNode; now: number; byNumber: ReadonlyMap<number, ItemRow> }) {
+function NodeItem(props: { node: TreeNode; now: number; byNumber: ReadonlyMap<number, ItemRow>; byId: ReadonlyMap<string, ItemRow> }) {
   const { node } = props;
   return (
     <TreeItem id={node.item.id} textValue={node.item.title ?? node.item.source.id} className="outline-none data-[focus-visible]:ring-2 data-[focus-visible]:ring-focus">
@@ -213,6 +215,7 @@ export function ItemsTree({ nodes, rows, now, expanded, onExpanded }: {
   onExpanded: (ids: Iterable<string>) => void;
 }) {
   const byNumber = new Map<number, ItemRow>();
+  const byId = new Map(rows.map((r) => [r.id, r] as const));
   for (const r of rows) {
     const n = issueNumber(r);
     if (n !== null) byNumber.set(n, r);
@@ -225,7 +228,7 @@ export function ItemsTree({ nodes, rows, now, expanded, onExpanded }: {
       onExpandedChange={(keys) => onExpanded([...keys].map(String))}
       className="rounded-control border border-border text-sm"
     >
-      {nodes.map((n) => <NodeItem key={n.item.id} node={n} now={now} byNumber={byNumber} />)}
+      {nodes.map((n) => <NodeItem key={n.item.id} node={n} now={now} byNumber={byNumber} byId={byId} />)}
     </Tree>
   );
 }
