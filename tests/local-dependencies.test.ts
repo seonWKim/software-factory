@@ -219,6 +219,26 @@ describe("entry points that write the Depends on line (design 05-dependencies, 2
     expect(await f.get(a)).toMatchObject({ problem: `the spec's problem\n\nDepends on: ${x}`, blocked_on: "dependency", blocked_reason: `waiting for ${x} to merge` });
   });
 
+  it("an item whose links were read already is not backfilled; a later approval answering yes writes its line", async () => {
+    const f = await setup();
+    const x = await f.mergeable();
+    const a = await f.item("the spec, read before this change");
+    await f.controller.tickCoordination();
+    // Its filed text gains a line only in the store (an item from before this change): no pass writes it.
+    await f.store.db.run("UPDATE controller_work_items SET issue_text = ? WHERE id = ?", [`Depends on: ${x}`, a]);
+    f.clock.advance(1_000);
+    await f.controller.tickCoordination();
+    expect(await f.get(a)).toMatchObject({ problem: "the spec, read before this change", blocked_on: "none" });
+    // A new approval that answers the proposal yes (after a revision) does.
+    const cur = await f.get(a);
+    const split = splitAnswers("1: yes", [{ text: dependencyQuestion(x), default: "no" }]);
+    if ("refuse" in split) throw new Error(split.refuse);
+    f.clock.advance(1_000);
+    await f.store.transition({ id: a, expected_version: cur.version, actor: { kind: "user", id: ME }, reason: "spec_approved", detail: answersDetail(split.answers), patch: {} });
+    await f.controller.tickCoordination();
+    expect(await f.get(a)).toMatchObject({ problem: `the spec, read before this change\n\nDepends on: ${x}`, blocked_on: "dependency" });
+  });
+
   it("a local stop at agent_needs_human lists `/hold <id>` with its help text; a GitHub item's does not", async () => {
     const f = await setup();
     const x = await f.mergeable();

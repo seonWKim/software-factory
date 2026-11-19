@@ -6,7 +6,7 @@ import { type DependencyLink, type DependencyVerdict, dependencyReason, dependen
 import { AGENT_NEEDS_HUMAN, runKey } from "../../../core/policy.js";
 import { LOCAL_ID, dependsOnIds, localItemOf, wantedDependsOn, withDependsOn } from "../../../core/task-build.js";
 import { type Actor, type DependencyState, type SourceType, type Timestamp, type UserId, type WorkItem, type WorkItemId, type WorkItemPatch } from "../../../core/types.js";
-import { ownerAnswersFor } from "../../../shared/command-notes.js";
+import { ownerAnswersFor, storedAnswers } from "../../../shared/command-notes.js";
 import type { UnitOperations } from "../../router/unit.js";
 import { SYSTEM, completed, footerAfter, iso } from "../support.js";
 import type { Ctx } from "../context.js";
@@ -74,11 +74,16 @@ export class CoordinationUnit {
    * A local item's `Depends on:` lines its problem lacks (design 05-dependencies, 2026-11-20): one for each item the
    * owner answered yes to in triage's "Depends on wi_X? yes/no" on the approval that stored answers, and each line of
    * the request as filed (`task create --depends-on`), which triage's spec replaced. Written in one transition, its
-   * links then marked stale, so this pass reads them. An item of another source, or with every line already: unchanged.
+   * links then marked stale, so this pass reads them. Only while its links are unread, or after an approval newer
+   * than their read; an item of another source, or with every line already: unchanged.
    */
   async writeDependsOn(it: WorkItem): Promise<WorkItem> {
     if (it.source.type !== "local") return it;
-    const wanted = wantedDependsOn(it, await ownerAnswersFor(it, (id) => this.c.k.d.store.listStateChanges(id)));
+    // Only before its links are read, or after an approval since: an item whose links were read before this change is not backfilled.
+    const readAt = await this.c.k.d.store.dependencyLinksReadAt(it.id);
+    const changes = await this.c.k.d.store.listStateChanges(it.id);
+    if (readAt !== null && !changes.some((c) => Date.parse(c.at) > Date.parse(readAt) && storedAnswers(c.detail).length > 0)) return it;
+    const wanted = wantedDependsOn(it, await ownerAnswersFor(it, async (id) => (id === it.id ? changes : this.c.k.d.store.listStateChanges(id))));
     if (withDependsOn(it.problem, wanted) === it.problem) return it;
     await this.c.unit("transitions").decide(it.id, (cur) => {
       const problem = withDependsOn(cur.problem, wanted);

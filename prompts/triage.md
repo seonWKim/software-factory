@@ -29,6 +29,13 @@ Produce:
   decisions, and the human answers decision N with an `N: <answer>` line when approving. In auto mode the factory
   approves a spec with each default, unless a decision is owner-only. Always include the field: write
   `"decisions": []` when there are none. Do not repeat the done criteria here.
+- Dependencies: when the request says it must run after, builds on or waits for another item named by its id
+  (for example "after wi_X merges"), propose the dependency in the yes/no form, never as a free-text decision:
+  `{ "question": "Depends on wi_X? yes/no", "reason": "...", "options": ["yes", "no"], "default": "yes", "owner_only": false }`,
+  with the id as the request writes it (`wi_…` or `tk_…`). If the owner answers yes, the factory writes the
+  `Depends on: wi_X` line itself and holds the implement run until wi_X merges; if no, the text stays a note. Never
+  write a line starting with "Depends on" in `problem` yourself. A `Depends on:` line already in the request is
+  kept by the factory: do not ask about it.
 - Check the design against the principles in the repository's agent instructions (AGENTS.md or CLAUDE.md) before writing decisions. A design that breaks a principle goes under decisions, with the principle named. A point AGENTS.md or CLAUDE.md already decides is not a decision: follow it and don't ask about it.
 - Owner defaults: the owner's standing answers are listed at the end of this prompt, under "Owner defaults".
   When one answers a question you would ask, apply it instead of asking.
