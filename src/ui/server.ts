@@ -6,14 +6,16 @@
 // POST /api/v1/packs/approvals (design 11-packs, issue #589; packs-api.ts), POST /api/v1/rules/verdict (design §9,
 // issue #571; rules-api.ts) and the task routes (design 02-tasks; tasks-api.ts TASK_WRITES: POST /api/v1/tasks, the quick-add box,
 // /api/v1/tasks/build, Build this, /api/v1/tasks/edit, /done, /delete and /sub, the Tasks page's row actions, and
-// projects-api.ts's /api/v1/tasks/project and /api/v1/projects, its project dialog) and the
+// projects-api.ts's /api/v1/tasks/project and /api/v1/projects, its project dialog) and the project file routes (design 02-tasks,
+// project files; project-files.ts PROJECT_FILE_ROUTES: POST /api/v1/projects/folder, /api/v1/projects/files/tree, /read and /write,
+// the Files tab; its reads are POSTs too, so they pass every guard) and the
 // calendar routes (design 08-settings; calendar-api.ts: POST /api/v1/calendar/connect and /disconnect) and the Data page's Ask
 // (design 09-dashboard-app; data-ask.ts: POST /api/v1/data/ask) and the Plugins page's import (design 11-plugin-import;
 // plugins-import-api.ts: POST /api/v1/plugins/import) and Migrate now, Start and Restart now (design 08-self-update; migrate-api.ts:
 // POST /api/v1/migrate and POST /api/v1/supervisor), each guarded in this order: Host, then an Origin equal to the Host's own http origin, then Content-Type
 // application/json, then the per-process CSRF token in x-csrf-token; the resume, standing, improve, migrate and supervisor routes then
 // check the owner (approve_spec), the rules, calendar and Ask routes the owner, the pack approvals route approve_tool, the task routes
-// the commands actor, the plugins import the page's factory user. GET /api/v1/plugins/import (it reads the user's own
+// the commands actor (the project file routes only to set the folder and to save), the plugins import the page's factory user. GET /api/v1/plugins/import (it reads the user's own
 // Claude Code and Codex configs) also needs the CSRF token after the Host check. A POST to any
 // other path answers 405 as JSON; every other method answers 405 in its area's format. The Host header must name
 // 127.0.0.1 or localhost, so a page on another origin cannot read this one through DNS rebinding. Outside /app the
@@ -35,6 +37,7 @@ import { RESUME_PATH, resumePause } from "./pause-api.js";
 import { STANDING_PATH, writeStanding } from "./standing-api.js";
 import { PACK_APPROVALS_PATH, writePackApproval } from "./packs-api.js";
 import { TASKS_PATH, TASK_WRITES, readTasks } from "./tasks-api.js";
+import { MAX_FILE_BODY, PROJECT_FILE_ROUTES, PROJECT_FILE_WRITE_PATH } from "./project-files.js";
 import { RULES_PATH, RULE_ENTRY_PATH, RULE_VERDICT_PATH, readRuleEntry, readRules, writeRuleVerdict } from "./rules-api.js";
 import { IMPROVE_RUN_PATH, type ImproveRunDeps, improveRunWired, runImproveNow } from "./improve-api.js";
 import { NOTICES_PATH, readNotices } from "./notices-api.js";
@@ -77,7 +80,7 @@ export interface UiRequest {
   /** x-csrf-token: read for the write routes and for GET /api/v1/plugins/import. */
   csrfToken?: string | undefined;
   body?: string | undefined;
-  /** The body was longer than the route's limit (MAX_BODY, or MAX_COMMAND_BODY for commands) and was not read. */
+  /** The body was longer than the route's limit (MAX_BODY, MAX_COMMAND_BODY for commands, MAX_FILE_BODY for a file save) and was not read. */
   bodyTooLarge?: boolean;
 }
 
@@ -132,7 +135,7 @@ function areaError(area: "api" | "app" | "page", status: number, message: string
   return error(status, message, extra);
 }
 
-type WriteRoute = "settings" | "resume" | "standing" | "improve" | "packs" | "import" | "rules" | "tasks" | "calendar" | "ask" | "migrate" | "supervisor";
+type WriteRoute = "settings" | "resume" | "standing" | "improve" | "packs" | "import" | "rules" | "tasks" | "files" | "calendar" | "ask" | "migrate" | "supervisor";
 
 /**
  * The write route a request is for: POST to exactly /api/v1/settings when settings are wired, to exactly
@@ -153,6 +156,7 @@ function writeRoute(d: ServerDeps, req: UiRequest): WriteRoute | null {
   if (path === PLUGINS_IMPORT_PATH && d.pauses !== undefined) return "import";
   if (path === RULE_VERDICT_PATH && d.pauses !== undefined) return "rules";
   if (Object.hasOwn(TASK_WRITES, path) && d.commands !== undefined) return "tasks";
+  if (Object.hasOwn(PROJECT_FILE_ROUTES, path) && d.commands !== undefined) return "files";
   if ((path === CALENDAR_CONNECT_PATH || path === CALENDAR_DISCONNECT_PATH) && d.settings?.calendar !== undefined) return "calendar";
   if (path === DATA_ASK_PATH && d.settings?.ask !== undefined) return "ask";
   if (path === MIGRATE_PATH && d.pauses !== undefined && d.migrate !== undefined) return "migrate";
@@ -179,7 +183,7 @@ function mediaType(value: string | undefined): string {
 async function writePost(d: ServerDeps, req: UiRequest, route: WriteRoute): Promise<UiResponse> {
   const token =
     route === "settings" || route === "calendar" || route === "ask" ? d.settings!.csrfToken
-    : route === "tasks" ? d.commands!.token
+    : route === "tasks" || route === "files" ? d.commands!.token
     : d.pauses!.csrfToken;
   const own = `http://${(req.host ?? "").trim().toLowerCase()}`;
   if (req.origin === undefined || req.origin.trim().toLowerCase() !== own) {
@@ -204,6 +208,7 @@ async function writePost(d: ServerDeps, req: UiRequest, route: WriteRoute): Prom
     : route === "import" ? await writePluginsImport(d, d.pauses!, body)
     : route === "rules" ? await writeRuleVerdict(d, d.pauses!, body)
     : route === "tasks" ? await TASK_WRITES[pathOf(req.url)]!(d, body)
+    : route === "files" ? await PROJECT_FILE_ROUTES[pathOf(req.url)]!.run(d, body)
     : route === "calendar" ? await writeCalendar(d, pathOf(req.url), body)
     : route === "ask" ? await askData(d, d.settings!.ask!, body)
     : route === "migrate" ? await postMigrate(d.migrate!, d.pauses!, body)
@@ -229,7 +234,7 @@ export async function respond(d: ServerDeps, req: UiRequest): Promise<UiResponse
     return json(r.status, r.value);
   }
   // A POST anywhere else is a JSON 405, whatever the area: a script that posts reads one error format.
-  if (req.method === "POST") return areaError("api", 405, "Only the settings, item commands, pause resume, standing, improve run, pack approvals, plugins import, rule verdict, task, calendar, data ask, migrate and supervisor routes take a POST.", { allow: ALLOW });
+  if (req.method === "POST") return areaError("api", 405, "Only the settings, item commands, pause resume, standing, improve run, pack approvals, plugins import, rule verdict, task, project file, calendar, data ask, migrate and supervisor routes take a POST.", { allow: ALLOW });
   if (req.method !== "GET" && req.method !== "HEAD") return areaError(area, 405, "This page is read-only.", { allow: ALLOW });
 
   let url: URL;
@@ -293,15 +298,19 @@ export async function startUi(d: ServerDeps, port: number): Promise<UiServer> {
     const one = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
     const base: UiRequest = { method: req.method, url: req.url, host: req.headers.host, csrfToken: one(req.headers[CSRF_HEADER]) };
     const write = writeRoute(d, base) !== null || commandsWrite(base) !== null;
+    const path = pathOf(base.url);
+    // A project file read is a POST behind the write guards, but writes nothing: no snapshot refresh after it.
+    const refreshes = PROJECT_FILE_ROUTES[path]?.write ?? true;
+    const max = commandsWrite(base) !== null ? MAX_COMMAND_BODY : path === PROJECT_FILE_WRITE_PATH ? MAX_FILE_BODY : MAX_BODY;
     (write
-      ? readBody(req, commandsWrite(base) !== null ? MAX_COMMAND_BODY : MAX_BODY).then((b) =>
+      ? readBody(req, max).then((b) =>
           respond(d, {
             ...base,
             origin: one(req.headers.origin),
             contentType: one(req.headers["content-type"]),
             ...b,
           }).then((r) => {
-            if (r.status < 300) refreshAll();
+            if (r.status < 300 && refreshes) refreshAll();
             return r;
           }),
         )

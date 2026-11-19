@@ -20,11 +20,11 @@ const MAX_TASK_ID = 200;
 /** The longest project name taken before projectName cleans it. */
 const MAX_RAW_NAME = 1000;
 
-const OFF: ApiResult = { status: 503, value: { error: "Projects are off: this server is not on loopback, so it needs ui.user_id." } };
-const refused = (status: 400 | 404 | 409, error: string, extra: Record<string, unknown> = {}): ApiResult => ({ status, value: { error, ...extra } });
+export const OFF: ApiResult = { status: 503, value: { error: "Projects are off: this server is not on loopback, so it needs ui.user_id." } };
+export const refused = (status: 400 | 404 | 409 | 413, error: string, extra: Record<string, unknown> = {}): ApiResult => ({ status, value: { error, ...extra } });
 
 /** The body as an object with exactly `keys`, or why it is not one. */
-function fields(body: unknown, keys: readonly string[]): { ok: true; b: Record<string, unknown> } | { ok: false; error: string } {
+export function fields(body: unknown, keys: readonly string[]): { ok: true; b: Record<string, unknown> } | { ok: false; error: string } {
   if (typeof body !== "object" || body === null || Array.isArray(body)) return { ok: false, error: "the body must be a JSON object" };
   const b = body as Record<string, unknown>;
   const extra = Object.keys(b).find((k) => !keys.includes(k));
