@@ -208,7 +208,7 @@ describe("Tasks page", () => {
       expect(document.body.textContent).toContain(BUILD);
     });
 
-    it("the overdue label is a StatusBadge", async () => {
+    it("the overdue label is a Badge", async () => {
       s.current = view({ today: { overdue: [row("tk_late", { due_date: "2026-11-10" })], due: [] } });
       const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
       render(createElement(QueryClientProvider, { client }, createElement(TasksPage)));

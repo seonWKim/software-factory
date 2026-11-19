@@ -29,7 +29,7 @@ import { Badge } from "../components/ui/badge.js";
 // the page is for and how many entries wait, at most max-w-3xl wide, with a "How this works" disclosure. Only entries
 // the ledger has not judged (judged null) wait: they are counted and shown in two groups, rule candidates (`C-…`) and
 // structure proposals (`P-…`), each under one line saying what promoting one does; judged ones collapse into one
-// "N decided" line, and with none waiting an EmptyState gives the next step. A card lists its title (an IdDetails: the ID in its tooltip) and a StatusBadge
+// "N decided" line, and with none waiting an EmptyState gives the next step. A card lists its title (an IdDetails: the ID in its tooltip) and a Badge
 // (open, pending, held, or the judged decision). "Why and where" (a Disclosure) reads the entry's
 // detail on demand through GET /api/v1/rules/entry?id=, never on page load: a description, what it would change,
 // before → after, why, the evidence (newest first, 3 shown, the rest behind "Show all N"), where it applies and the
@@ -58,7 +58,7 @@ import { Badge } from "../components/ui/badge.js";
 const muted = "text-xs text-pretty text-text-2";
 
 const STATE_LABEL: Record<string, MessageKey> = { open: "rules.stateOpen", pending: "rules.statePending", held: "rules.stateHeld" };
-/** The StatusBadge level of each state, so open, pending and held look different. */
+/** The Badge level of each state, so open, pending and held look different. */
 const STATE_LEVEL: Record<string, string> = { open: "running", pending: "needs_approval" };
 /** The page's reading width. */
 const PAGE_WIDTH = "max-w-3xl";
