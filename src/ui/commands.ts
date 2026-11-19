@@ -275,12 +275,12 @@ export type ActorGrant = ({ allow: true } | { allow: false; reason: string }) & 
  */
 export function actorGrant(d: UiDeps, action: PageAction): () => Promise<ActorGrant> {
   let asked: Promise<ActorGrant> | null = null;
-  const restart = { ...(d.commands?.restart === true ? { restart: true } : {}), changes: (id: WorkItemId) => d.store.listStateChanges(id) };
+  const carried = { ...(d.commands?.restart === true ? { restart: true } : {}), changes: (id: WorkItemId) => d.store.listStateChanges(id) };
   const ask = async (): Promise<ActorGrant> => {
     const c = d.commands;
-    if (c?.actor == null || !c.allowed) return action === "approve_spec" ? { allow: true, ...restart } : { allow: false, reason: NOT_MERGER, ...restart };
+    if (c?.actor == null || !c.allowed) return action === "approve_spec" ? { allow: true, ...carried } : { allow: false, reason: NOT_MERGER, ...carried };
     const decision = await c.allowed(action);
-    return decision.allow ? { allow: true, ...restart } : { allow: false, reason: refusalReply(decision.reason), ...restart };
+    return decision.allow ? { allow: true, ...carried } : { allow: false, reason: refusalReply(decision.reason), ...carried };
   };
   return () => (asked ??= ask());
 }
