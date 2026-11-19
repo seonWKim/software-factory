@@ -148,25 +148,17 @@ export interface ReviewOutput {
   unverified?: string[];
   /** A UI change whose build, type-check or screenshots could not run: header "needs a human look", no auto merge. Left out when unset. */
   ui_unverified?: boolean;
-  /**
-   * Done-when lines the diff builds differently, each with its reason from the work item (design 04-agents). Left
-   * out when empty, so an older review parses to the same value; read it with `builtDifferentlyOf`.
-   */
+  /** Done-when lines built differently, each with its reason from the work item (design 04-agents). Left out when empty. */
   built_differently?: BuiltDifferently[];
   summary: string;
   needs_human?: NeedsHuman;
 }
 
 /** A done-when line the change builds differently, and the reason the work item gives for it. */
-export interface BuiltDifferently {
-  line: string;
-  reason: string;
-}
+export type BuiltDifferently = { line: string; reason: string };
 
 /** The review's done-when lines built differently; [] when it has none. */
-export function builtDifferentlyOf(r: Pick<ReviewOutput, "built_differently">): BuiltDifferently[] {
-  return r.built_differently ?? [];
-}
+export const builtDifferentlyOf = (r: Pick<ReviewOutput, "built_differently">): BuiltDifferently[] => r.built_differently ?? [];
 
 /** The review's unverified checks; [] when it has none. */
 export function unverifiedOf(r: Pick<ReviewOutput, "unverified">): string[] {
@@ -186,6 +178,8 @@ export function findingLine(f: ReviewFinding): string {
 const tierSchema = { type: "integer", minimum: 1, maximum: 5 };
 const strings = { type: "array", items: { type: "string" } };
 const count = { type: "integer", minimum: 0 };
+/** A closed object schema whose every property is required. */
+const closed = (properties: Record<string, unknown>) => ({ type: "object", additionalProperties: false, required: Object.keys(properties), properties });
 
 /** The most "Decisions for you" lines a spec shows (issue #229). */
 export const MAX_DECISIONS = 5;
@@ -213,18 +207,13 @@ export const TRIAGE_SCHEMA = {
     decisions: {
       type: "array",
       maxItems: MAX_DECISIONS,
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["question", "reason", "options", "default", "owner_only"],
-        properties: {
+      items: closed({
           question: { type: "string", description: "The question, in one line." },
           reason: { type: "string", description: "Why you ask: what the answer changes." },
           options: { ...strings, maxItems: MAX_OPTIONS, description: `[] for a free answer, or ${MIN_OPTIONS} to ${MAX_OPTIONS} answers to pick from.` },
           default: { type: "string", description: "The answer you propose, one of the options when there are any; the factory takes it when it approves on its own." },
           owner_only: { type: "boolean", description: "true when only the owner may answer: no default fits, or the choice is risky." },
-        },
-      },
+      }),
     },
     applied_defaults: { ...strings, maxItems: MAX_APPLIED_DEFAULTS },
     desired_output: { type: "string" },
@@ -239,17 +228,7 @@ export const TRIAGE_SCHEMA = {
     phases: {
       type: "array",
       maxItems: MAX_PHASES,
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["title", "problem", "done_criteria", "allowed_paths"],
-        properties: {
-          title: { type: "string" },
-          problem: { type: "string" },
-          done_criteria: { ...strings, minItems: 1 },
-          allowed_paths: { ...strings, minItems: 1 },
-        },
-      },
+      items: closed({ title: { type: "string" }, problem: { type: "string" }, done_criteria: { ...strings, minItems: 1 }, allowed_paths: { ...strings, minItems: 1 } }),
     },
   },
 };
@@ -322,30 +301,17 @@ export const REVIEW_SCHEMA = {
     tier: tierSchema,
     findings: {
       type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["kind", "text"],
-        properties: {
-          kind: { enum: ["code", "spec"], description: "code: fixable inside the spec. spec: needs the spec changed." },
-          text: { type: "string" },
-        },
-      },
+      items: closed({ kind: { enum: ["code", "spec"], description: "code: fixable inside the spec. spec: needs the spec changed." }, text: { type: "string" } }),
     },
     unverified: { ...strings, description: "Checks you could not run or confirm. Never makes the verdict bug." },
     ui_unverified: { type: "boolean", description: "True only when a change to UI paths could not have its build, type-check or screenshots run." },
     built_differently: {
       type: "array",
       description: "Done-when lines the diff builds differently. Empty or absent when every line is built as written.",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["line", "reason"],
-        properties: {
-          line: { type: "string", description: "The done-when line." },
-          reason: { type: "string", description: "The reason, taken only from the work item (its decisions or owner notes). Empty when it gives none: that is a code finding and the verdict bug." },
-        },
-      },
+      items: closed({
+        line: { type: "string", description: "The done-when line." },
+        reason: { type: "string", description: "The reason, taken only from the work item (its decisions or owner notes). Empty when it gives none: that is a code finding and the verdict bug." },
+      }),
     },
     summary: { type: "string" },
     needs_human: NEEDS_HUMAN_SCHEMA,
@@ -616,14 +582,10 @@ export function parseReview(v: unknown): Validation<ReviewOutput> {
   if (v.ui_unverified !== undefined && typeof v.ui_unverified !== "boolean") return { ok: false, error: "ui_unverified" };
   const differently = v.built_differently ?? [];
   if (!Array.isArray(differently) || !differently.every((d) => isObj(d) && isStr(d.line) && isStr(d.reason))) return { ok: false, error: "built_differently" };
-  const built: BuiltDifferently[] = [];
-  for (const d of differently as BuiltDifferently[]) {
-    const line = d.line.trim();
-    const reason = d.reason.trim();
-    // A line built differently with no reason in the work item is a defect (design 04-agents): a code finding.
-    if (line && reason) built.push({ line, reason });
-    else if (line) parsed.push({ kind: "code", text: `built differently from the spec with no reason in the work item: ${line}` });
-  }
+  const lines = (differently as BuiltDifferently[]).map((d) => ({ line: d.line.trim(), reason: d.reason.trim() })).filter((d) => d.line);
+  // A line built differently with no reason in the work item is a defect (design 04-agents): a code finding.
+  for (const d of lines) if (!d.reason) parsed.push({ kind: "code", text: `built differently from the spec with no reason in the work item: ${d.line}` });
+  const built = lines.filter((d) => d.reason);
   const ask = parseNeedsHuman(v.needs_human);
   if (!ask.ok) return ask;
   return {
