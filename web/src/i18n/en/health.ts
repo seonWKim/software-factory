@@ -222,7 +222,7 @@ export const health = {
   "health.budgetLow": "GitHub budget low: optional reads wait for the reset.",
   "health.tokenDays": "GitHub token: {days} days left.",
   "health.tokenUnknown": "GitHub token: days left not checked yet.",
-  "tree.waitsFor": "waits for {label}",
+  "tree.waitsFor": "Waits for {title}",
   "tree.queue": " · queue {position}",
   "tree.pr": "PR #{ref}",
   "tree.collapse": "Collapse",
