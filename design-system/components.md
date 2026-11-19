@@ -90,6 +90,10 @@ A short hint on hover and keyboard focus, hidden by Esc or leaving. Variants (`p
 
 The dashboard's one button. Variants: `primary` (accent background, `on-solid` text: the one main action of a view), `secondary` (default: `border-strong` border on `surface`), `ghost` (no border, `surface-2` on hover), `danger` (`failed` text); `danger` with `solid` is filled with the failed colour, only for a confirm dialog's destructive confirm. Sizes: `md` (default, at least 32 px high), `sm` (at least 28 px), `icon` (32 px square). States: default, hover (enabled only), focus-visible, pressed (`aria-pressed` or `aria-checked`: `surface-2` background), `disabled` (opacity 0.5). `type` defaults to `button`.
 
+## Checkbox
+
+A native `input type=checkbox` drawn from the tokens: a 16 px box (`size-4`) inside a 32 px hit area, a `text-2` border on `surface`, checked an `accent` border and an `accent` check mark. The label is `children` (visible, the accessible name) or an `aria-label`. `aria-checked` mirrors `checked`. One size. States: unchecked, checked, focus-visible, `disabled`.
+
 ## Switch
 
 A `role=switch` button with `aria-checked`, 20 by 36 px; the thumb moves by a class. Controlled by `checked` and `onCheckedChange`. One size. States: on (`text-1` track), off (`border-strong` track), focus-visible, `disabled`.
