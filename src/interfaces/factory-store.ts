@@ -328,8 +328,8 @@ export interface StartSessionInput {
 }
 
 export type StartSessionResult =
-  /** `cancelled`: the item's queued triage runs. */
-  | { ok: true; item: WorkItem; run: Run; state_change: StateChange; cancelled: RunId[] }
+  /** `cancelled`: the item's queued triage runs. `taken_over`: its queued implement-type runs the start cancelled. */
+  | { ok: true; item: WorkItem; run: Run; state_change: StateChange; cancelled: RunId[]; taken_over: RunId[] }
   | { ok: false; reason: "not_found" }
   | { ok: false; reason: "version_conflict"; current: WorkItem }
   | { ok: false; reason: "session_open" | "implement_run"; run_id: RunId }
@@ -551,9 +551,9 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
 
   /**
    * `session start` (design §5, 2026-11-01), one transaction under the claim lock. Refused with nothing written while
-   * the item has a running interactive run or a queued or running implement-type run, or a running implement-type or
-   * interactive run of another item overlaps its allowed_paths (after `patch`). Else: the transition, the item's
-   * queued triage runs cancelled, and one `interactive` run inserted running (attempt 1, lease token 1).
+   * the item has a running interactive or implement-type run, or a running implement-type or interactive run of another
+   * item overlaps its allowed_paths (after `patch`). Else: the transition (detail `taken_over`), the item's queued triage
+   * and implement-type runs cancelled (the latter with TAKEOVER_OUTCOME), one `interactive` run inserted running (attempt 1, lease token 1).
    */
   startSession(input: StartSessionInput): Promise<StartSessionResult>;
   /** Writes `update` on the interactive run while it is `running` with this `token`; lease_lost otherwise. */

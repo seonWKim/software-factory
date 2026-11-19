@@ -4,7 +4,7 @@
 import { prNumber } from "../../../core/change-ref.js";
 import { commandFooter, commandState, retryPathsReply, withholdReplyLines } from "../../../core/commands.js";
 import { type NeedsHuman, type ReviewOutput, SPEC_CONFLICT, type TriageOutput, findingLine, parseNeedsHuman, parseReview, parseTriage, specFindings } from "../../../core/outputs.js";
-import { AGENT_NEEDS_HUMAN, AUTO_ACTOR, AUTO_RESOLVE_LIMIT, autoApproveRefusal, REPEATED_FAILURE, type FailureClass, failureLine, repeatsFastInfraFailure, repeatsLastFailure, preflightCheck, PREFLIGHT_ACCESS, autoResolveAttempts, autoResolveKey, effectiveTier, failureClass, floorTier, isCovered, needsSpecApproval, nextAutoResolveAttempt, parseAutoResolveKey, retryDelayMs, retryKey, retryNotBefore, GITHUB_RATE_LIMITED, runKey, sameStep, FORGE_AUTH, NO_AUTO_RETRY, CHECKS_ENV, CHECKS_ENV_LIMIT, SESSION_RELEASED } from "../../../core/policy.js";
+import { AGENT_NEEDS_HUMAN, AUTO_ACTOR, AUTO_RESOLVE_LIMIT, autoApproveRefusal, REPEATED_FAILURE, type FailureClass, failureLine, repeatsFastInfraFailure, repeatsLastFailure, preflightCheck, PREFLIGHT_ACCESS, autoResolveAttempts, autoResolveKey, effectiveTier, failureClass, floorTier, isCovered, needsSpecApproval, nextAutoResolveAttempt, parseAutoResolveKey, retryDelayMs, retryKey, retryNotBefore, GITHUB_RATE_LIMITED, runKey, sameStep, takenOver, FORGE_AUTH, NO_AUTO_RETRY, CHECKS_ENV, CHECKS_ENV_LIMIT, SESSION_RELEASED } from "../../../core/policy.js";
 import { FIX_SPEC_APPROVED, gatePathTouched } from "../../../core/improver.js"; import { autoApprovalDetail, ownerAnswersFor } from "../../../shared/command-notes.js";
 import { dependencyStop } from "./dependency-stop.js"; import { autoGrant } from "./auto-grant.js";
 import { conflictCounts, conflictCountsLine } from "../../../core/resolve.js";
@@ -688,7 +688,7 @@ export class RunResultsUnit {
 
   /**
    * A failed triage, implement or review run (design §5 Restarts). Counts come from the run history of
-   * this step (the first run and its automatic retries): a rate limit is never an attempt; infra failures
+   * this step (the first run and its automatic retries): a rate limit or a run a takeover cancelled is never an attempt; infra failures
    * count toward max_restart (and add one to restart_count); task failures toward max_attempts. `checks_env`
    * spends neither: it is counted over the item's whole run history, and the one after CHECKS_ENV_LIMIT blocks
    * the item on a human (`run_failed:<kind>:checks_env`) with no retry. Under both
@@ -700,7 +700,7 @@ export class RunResultsUnit {
     const { max_restart, retry_base_ms, retry_max_ms } = this.c.k.cfg;
     const { max_attempts } = this.c.k.settings(it.project);
     const step = (await this.c.k.reader.listRuns(it.id)).filter(
-      (r) => r.kind === run.kind && sameStep(r.idempotency_key, run.idempotency_key) && (r.id === run.id || r.acknowledged_at !== null),
+      (r) => r.kind === run.kind && sameStep(r.idempotency_key, run.idempotency_key) && (r.id === run.id || r.acknowledged_at !== null) && !takenOver(r),
     );
     const count = (c: FailureClass) => step.filter((r) => failureClass(r.outcome) === c).length;
     const task = count("task");
@@ -721,8 +721,8 @@ export class RunResultsUnit {
       }
     }
     const limit = task >= max_attempts ? "max_attempts" : infra >= max_restart ? "max_restart" : null;
-    // Neither a rate limit, a stall nor a checks_env run is an attempt: they never reach a limit (design §5 Restarts).
-    if (cls !== "rate_limited" && cls !== "stalled" && cls !== "checks_env" && limit) {
+    // Neither a rate limit, a stall, a checks_env run nor a taken-over run is an attempt: they never reach a limit (design §5 Restarts).
+    if (cls !== "rate_limited" && cls !== "stalled" && cls !== "checks_env" && !takenOver(run) && limit) {
       const patch = { ...restart, blocked_on: "human" as const, blocked_reason: limit };
       const url = await this.lastAttemptComment(it, run, code, limit, limit === "max_attempts" ? task : infra, footerAfter(it, patch));
       return {
