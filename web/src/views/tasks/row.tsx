@@ -13,7 +13,7 @@ import { localDateTime } from "../../lib/format.js";
 import { Link } from "../../nav.js";
 import { itemPath } from "../../pages.js";
 import { WorkState } from "../task-work.js";
-import { DeleteDialog, ProjectsDialog } from "./dialogs.js";
+import { DeleteDialog, DescriptionDialog, ProjectsDialog } from "./dialogs.js";
 import { RowForm } from "./forms.js";
 import type { Nested } from "./groups.js";
 import { ALERT, Rows, idFor, muted, useTaskAction } from "./shared.js";
@@ -61,8 +61,26 @@ function BuildButton({ task, token }: { task: TaskRow; token: string }) {
   );
 }
 
-/** The title, a link to the built task's item (the ID beside it links too); an unbuilt task's title is plain text. */
-function TitleLink({ task, className }: { task: TaskRow; className: string }) {
+/**
+ * The title. On an open task the page can write, a button that opens the description dialog (a built task's item link
+ * stays on its state and ID); else a link to the built task's item, or plain text when it is not built.
+ */
+function Title({ task, className, onOpen }: { task: TaskRow; className: string; onOpen: (() => void) | null }) {
+  if (onOpen !== null) {
+    return (
+      // The title stays the paragraph's text; the shared Button lies over it, so the row keeps its height.
+      <p className={cn(className, "relative hover:underline")}>
+        {task.title}
+        <Button
+          variant="ghost"
+          aria-haspopup="dialog"
+          aria-label={t("tasks.descriptionLabel", { title: task.title })}
+          className="absolute inset-0 min-h-0! px-0! enabled:hover:bg-transparent!"
+          onClick={onOpen}
+        />
+      </p>
+    );
+  }
   const title = <p className={className}>{task.title}</p>;
   return task.work_item_id === null ? title : (
     <Link href={itemPath(task.work_item_id)} className={cn("block", LINK_CLASS)}>
@@ -78,7 +96,7 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
   const done = task.done_at != null;
   // A done task is not late, wherever it is placed.
   const overdue = inOverdue && !done;
-  const [mode, setMode] = useState<"view" | "edit" | "sub" | "delete" | "projects">("view");
+  const [mode, setMode] = useState<"view" | "edit" | "sub" | "delete" | "projects" | "description">("view");
   const [checked, setChecked] = useState(false);
   const parent = task.parent_task_id ?? null;
   const due = task.due_date === null ? null : task.due_time === null ? task.due_date : `${task.due_date} ${task.due_time}`;
@@ -149,7 +167,11 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
             onClose={close}
           />
         ) : (
-          <TitleLink task={task} className={cn("text-sm text-pretty break-words", overdue && "font-medium text-pill-bad-fg", done && "text-text-2 line-through")} />
+          <Title
+            task={task}
+            className={cn("text-sm text-pretty break-words", overdue && "font-medium text-pill-bad-fg", done && "text-text-2 line-through")}
+            onOpen={token !== null && !done ? () => setMode("description") : null}
+          />
         )}
         <p className={cn(muted, "flex flex-wrap gap-x-3 gap-y-1")}>
           {overdue && <Badge level="stuck">{t("tasks.overdue")}</Badge>}
@@ -175,7 +197,7 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
             onClose={close}
           />
         )}
-        {action.error !== null && mode !== "delete" && mode !== "projects" && (
+        {action.error !== null && mode !== "delete" && mode !== "projects" && mode !== "description" && (
           <p role="alert" className={ALERT}>
             {action.error}
           </p>
@@ -202,6 +224,7 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
       </div>
       {mode === "delete" && token !== null && <DeleteDialog task={task} token={token} returnFocusTo={row} onClose={close} />}
       {mode === "projects" && token !== null && <ProjectsDialog task={task} token={token} returnFocusTo={row} onClose={close} />}
+      {mode === "description" && token !== null && <DescriptionDialog task={task} token={token} returnFocusTo={row} onClose={close} />}
     </li>
   );
 }
