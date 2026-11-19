@@ -4,7 +4,7 @@
 
 import {
   type DesignLearningSource, FIX_SPEC_APPROVED, LEARNINGS_HEAD, LEARNINGS_PATH, captureDesignLearning, captureKey, enqueueImprove, isDesignFinding, renderLine,
-   fileReport, markerKey, settleOutcomes, triggerImprove, utcDay,
+  fileReport, markerKey, settleOutcomes, triggerImprove, utcDay,
 } from "../../../core/improver.js";
 import { type FiledPattern, type Run, type SourceRef, type Timestamp, type WorkItem } from "../../../core/types.js";
 import type { Ctx } from "../context.js";
@@ -80,17 +80,18 @@ export class ImproveUnit {
 
   /**
    * The project's design learnings not in design-system/learnings.md yet, appended to it on the local base in one
-   * commit for the improve run `run` (design 07-design-learnings). The action is stored before its lines are marked
-   * taken, so a crash between the two appends them again next time, and the append skips a line the file holds.
-   * No sandbox that can commit locally: the lines wait in the store.
+   * commit for the improve run `run` (design 07-design-learnings). The action, keyed by the run and its lines, is stored
+   * before the lines are marked taken, so a crash between the two appends them again next time, and the append skips a
+   * line the file holds. No sandbox that can commit locally: the lines wait in the store.
    */
   private async commitLearnings(run: Run): Promise<void> {
     const merge = this.c.unit("local-merge");
     if (!merge.canAppend()) return;
     const lines = (await this.c.k.d.store.listDesignLearnings(this.c.k.project())).filter((l) => l.batch === null);
     if (lines.length === 0) return;
-    await merge.appendToBase(`design_learnings:${run.id}`, {
-      path: LEARNINGS_PATH, head: LEARNINGS_HEAD, lines: lines.map(renderLine), branch: `${this.c.k.cfg.branch_prefix}design-learnings-${run.id}`,
+    const batch = `${run.id}-${lines[0]!.id}-${lines.at(-1)!.id}-${lines.length}`;
+    await merge.appendToBase(`design_learnings:${batch}`, {
+      path: LEARNINGS_PATH, head: LEARNINGS_HEAD, lines: lines.map(renderLine), branch: `${this.c.k.cfg.branch_prefix}design-learnings-${batch}`,
       message: `Design learnings: ${lines.length} new ${lines.length === 1 ? "line" : "lines"}\n\nAppended by improve run ${run.id} (design 07-design-learnings).`,
     });
     await this.c.k.d.store.markDesignLearningBatch(lines.map((l) => l.id), run.id);

@@ -190,5 +190,14 @@ describe("the improve run: counting and the batched commit", () => {
     const commits = h.repo.state.commits;
     await improve();
     expect(h.repo.state.commits).toBe(commits);
+
+    // The first run's report filed again after a newer line arrived: the newer line gets its own action and lands.
+    await h.itemIn(issueRef(3), SPEC_PENDING, WEB);
+    await h.send(revise(3, "put the chips under the title"));
+    await h.controller.applyRun((await h.store.getRun(first.id))!);
+    const file3 = h.repo.state.files[LEARNINGS_PATH]!;
+    expect(file3.slice(0, file2.length)).toBe(file2);
+    expect(file3).toContain("owner: put the chips under the title");
+    expect((await h.lines()).every((l) => l.batch !== null)).toBe(true);
   });
 });
