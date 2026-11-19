@@ -67,9 +67,13 @@ export class MergeQueueUnit {
   /**
    * Puts a ready, approved change at the end of the queue and starts its check when it is within the speculative
    * depth. `by` is the approver's user id or `system:auto`; `key` keys the replies (one entry per key, so a replayed
-   * command is the same entry). Returns the refusal (already in the queue), or null.
+   * command is the same entry). Returns the refusal (already in the queue, or an automatic merge of a change whose
+   * latest review could not check its UI: `ui_unverified`, design 04-agents), or null.
    */
   async enter(item: WorkItem, by: string, key: string, detail: Record<string, unknown>): Promise<string | null> {
+    if (by === AUTO.id && (await this.uiUnverified(item.id))) {
+      return `its review could not check the UI (\`ui_unverified\`), so it needs a human look; a person merges it: \`factory merge ${item.id}\` (approver role)`;
+    }
     const q = await this.queueOf();
     const entry_id = `mqe_${createHash("sha256").update(`${item.id}\n${key}`).digest("hex").slice(0, 24)}`;
     const r = await this.store().enter({ entry_id, queue_id: q.queue_id, work_item_id: item.id, entered_by: by, merge_key: key, detail });
@@ -82,6 +86,18 @@ export class MergeQueueUnit {
     }
     await this.advance();
     return null;
+  }
+
+  /**
+   * Whether the item's latest review verdict set `ui_unverified`: its UI change could not be checked. A later review
+   * that ran no agent (an unchanged head, an empty diff) holds no verdict, so it never counts and never clears the flag.
+   */
+  private async uiUnverified(id: WorkItemId): Promise<boolean> {
+    const last = (await this.c.k.reader.listRuns(id))
+      .filter((r) => r.kind === "review" && r.outcome?.status === "succeeded" && r.outcome.data.review != null)
+      .at(-1);
+    // Read the stored verdict's field directly (core/outputs.ts parses it the same way: true or absent).
+    return last?.outcome?.status === "succeeded" && (last.outcome.data.review as { ui_unverified?: unknown }).ui_unverified === true;
   }
 
   /**

@@ -415,13 +415,15 @@ export function renderContinueNewSession(wip: string): string {
 /** State change reasons that start an implement loop on an existing PR. */
 /**
  * The PR review comment (issue #222). Its header: `spec needs a change` when any finding is a spec finding,
- * `changes needed` for a bug verdict with code findings only, else `pass`. Unverified checks are listed under
- * their own heading, never as findings.
+ * `changes needed` for a bug verdict with code findings only, `needs a human look` for a passing UI change whose UI
+ * could not be checked (`ui_unverified`), else `pass`. Unverified checks are listed under their own heading, never
+ * as findings.
  */
 export function reviewComment(v: ReviewOutput): string {
   const spec = specFindings(v);
   const code = v.findings.filter((f) => f.kind === "code");
-  const header = spec.length > 0 ? "spec needs a change" : v.verdict === "bug" ? "changes needed" : "pass";
+  const header = spec.length > 0 ? "spec needs a change" : v.verdict === "bug" ? "changes needed"
+    : v.ui_unverified === true ? "needs a human look" : "pass";
   const unverified = unverifiedOf(v);
   return [
     `## Factory review: ${header}`,

@@ -1,5 +1,6 @@
 ## History
 
+- **A UI change the review could not check** (decision changed 2026-11-19). Before: the reviewer listed a UI change's unrun build, type-check and screenshots under `unverified`, which never changed the verdict, so the header read `pass` and auto mode could merge it with nobody having seen the UI; a project without `repo.ui_check` got no UI check at all.
 - **Owner answers** (decision changed 2026-11-12). Before: answers stored on an approval reached only the implement and review prompts; a spec conflict revision, a `/revise`, a re-triage or a split's phase specs started from the request's wording, nothing checked a re-written spec against the answers, and the values check flagged the answer syntax (`1: <answer>`) as a missing value.
 - **Given values** (decision changed 2026-11-12). Before: triage paraphrased the request into the spec with no rule on exact values, nothing compared the spec with the request, and the implement prompt was built from the spec alone, so a table, hex colour or number the spec dropped never reached the implementer.
 
