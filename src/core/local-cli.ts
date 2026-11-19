@@ -5,7 +5,8 @@ import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
 import { MERGE_COMMAND } from "./local-merge.js";
 import { COMMAND_TABLE, SENTENCE_FORM, cliUsageOf, commandLine, topWords } from "./command-table.js";
-import { approveRefusal, helpReply, itemCommandState, refusalText } from "./commands.js";
+import { approveRefusal, helpReply, itemCommandState, latestSpec, refusalText } from "./commands.js";
+import type { NoteAnswers } from "./request-transition.js";
 import { VERDICT_USAGE, parseVerdict, verdictRefusal } from "./verdict.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpretMessage, interpretReply, interpretTexts, isProposalId, openItems, typed } from "./interpret.js";
 import { needsDueDate, parseQuickAdd, parseQuickEdit } from "./quick-add.js";
@@ -295,6 +296,7 @@ export interface LocalCliDeps {
   cli?: string; // the hints' command name (cliName); absent: DEFAULT_CLI_NAME, as chat callers leave it
   /** factory.config.json's `ui` (validated at load): `task create` prints the item's loopback link on its port. Absent: no link (chat). */
   ui?: { port?: number };
+  answers: NoteAnswers<{ question: string; answer: string | null; accepted_default: boolean }>; // splitAnswers, answersDetail (src/shared/command-notes.ts)
 }
 
 export interface CliResult {
@@ -432,6 +434,10 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       // The controller's phase check, before any write: the same refusal it would post (issues #528, #523).
       const refused = a.command === "approve" ? approveRefusal(item) : a.command === "verdict" ? verdictRefusal(item) : null;
       if (refused !== null) return fail(refusalText(name, refused));
+      // `approve`'s `N: <answer>` lines, read as the controller will read them (issue #526): a bad line stores nothing;
+      // each decision is printed as the approval will store it, when it stores an `answers` detail.
+      const ans = d.answers.split(a.text, a.command === "approve" ? latestSpec(await d.store.listRuns(item.id))?.decision_items ?? [] : []);
+      if ("refuse" in ans) return fail(ans.refuse);
       await claim();
       const args: Record<string, unknown> = { item: item.id, ...(a.text !== "" ? { text: a.text } : {}) };
       // An item of a sync source gets the command mirrored on its issue later; a local item has no other surface, and
@@ -439,7 +445,8 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       // its own (design 04-gate-commands), so neither is mirrored.
       const mirror = a.command !== "verdict" && a.command !== MERGE_COMMAND && item.source.type !== "local" && item.source.type !== d.origin;
       const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: a.command, args, ...(mirror ? { mirror } : {}) });
-      return { code: 0, lines: [`stored \`${name}\` for ${item.id} as ${user} (command ${command.seq}); the controller applies it on its next poll, see \`${cli} task show ${item.id}\``] };
+      const stored = `stored \`${name}\` for ${item.id} as ${user} (command ${command.seq}); the controller applies it on its next poll, see \`${cli} task show ${item.id}\``;
+      return { code: 0, lines: [stored, ...("answers" in d.answers.detail(ans.answers) ? ans.answers.map((x, i) => `${i + 1}. ${x.question} → ${answerOf(x)}`) : [])] };
     }
     case "confirm": {
       const rows = await d.store.listCommandProposals(a.proposal);
@@ -504,20 +511,13 @@ async function runProject(
   }
 }
 
+/** A decision's answer as `approve` prints it: the answer and whose it is, or that it has neither answer nor default. */
+const answerOf = (x: { answer: string | null; accepted_default: boolean }) => x.answer === null ? "(no answer and no default)" : `${x.answer} (${x.accepted_default ? "default taken" : "your answer"})`;
+
 async function showLines(d: LocalCliDeps, item: WorkItem): Promise<string[]> {
   const out: string[] = [
-    `${item.id}  ${item.title ?? ""}`,
-    "",
-    "State",
-    `  stage: ${item.stage}`,
-    `  blocked_on: ${item.blocked_on}`,
-    `  blocked_reason: ${item.blocked_reason ?? "-"}`,
-    `  close_reason: ${item.close_reason ?? "-"}`,
-    `  tier: ${item.tier ?? "-"}`,
-    `  change_ref: ${item.change_ref ?? "-"}`,
-    `  version: ${item.version}`,
-    "",
-    "Spec",
+    `${item.id}  ${item.title ?? ""}`, "", "State", `  stage: ${item.stage}`, `  blocked_on: ${item.blocked_on}`, `  blocked_reason: ${item.blocked_reason ?? "-"}`,
+    `  close_reason: ${item.close_reason ?? "-"}`, `  tier: ${item.tier ?? "-"}`, `  change_ref: ${item.change_ref ?? "-"}`, `  version: ${item.version}`, "", "Spec",
   ];
   if (item.done_criteria === null) out.push("  (no spec yet)", `  problem: ${item.problem}`);
   else {
