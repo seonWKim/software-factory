@@ -9,7 +9,7 @@ import { locale, t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { tokens } from "../lib/format.js";
 import { Link } from "../nav.js";
-import { itemPath } from "../pages.js";
+import { BASE, itemPath } from "../pages.js";
 import { Card, CardSection } from "../components/ui/card.js";
 
 // The Spend page (design 06-spend): what the agent runs cost today, this week and over the last 30 days, one bar
@@ -20,18 +20,22 @@ import { Card, CardSection } from "../components/ui/card.js";
 /** A dollar amount in the active locale ("$12.50"). */
 const usd = (n: number): string => new Intl.NumberFormat(locale(), { style: "currency", currency: "USD" }).format(n);
 
+/** A budget in the active locale: whole dollars without cents, "$12.50" with them. */
+const budgetUsd = (n: number): string => new Intl.NumberFormat(locale(), { style: "currency", currency: "USD", minimumFractionDigits: Number.isInteger(n) ? 0 : 2 }).format(n);
+
 /** Totals of some days. */
 function sum(days: readonly SpendDay[]): SpendTotals {
   return days.reduce((a, d) => ({ cost_usd: a.cost_usd + d.cost_usd, tokens: a.tokens + d.tokens, runs: a.runs + d.runs, unknown: a.unknown + d.unknown }), { cost_usd: 0, tokens: 0, runs: 0, unknown: 0 });
 }
 
 /** One period's cost and tokens. */
-function Total({ label, total }: { label: string; total: SpendTotals }) {
+function Total({ label, total, budget }: { label: string; total: SpendTotals; budget?: { text: (spent: string, budget: string) => string; usd: number | null } }) {
   return (
     <div data-total={label} className="min-w-0 rounded-box border border-border bg-surface p-3">
       <dt className="text-xs text-text-2">{label}</dt>
       <dd className="mt-1 text-lg font-semibold tabular-nums">{usd(total.cost_usd)}</dd>
       <dd className="text-xs text-text-2 tabular-nums">{t("spend.tokens", { tokens: tokens(total.tokens) })}</dd>
+      {budget && <dd data-budget className="text-xs text-text-2 tabular-nums">{budget.usd === null ? t("spend.noBudget") : budget.text(usd(total.cost_usd), budgetUsd(budget.usd))}</dd>}
     </div>
   );
 }
@@ -165,11 +169,14 @@ export function SpendSection() {
     <SpendFrame>
       <CardSection title={t("spend.totals")}>
         <dl className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <Total label={t("spend.today")} total={sum(v.days.filter((d) => d.day === v.today))} />
-          <Total label={t("spend.week")} total={sum(v.days.filter((d) => d.day >= v.week_start))} />
+          <Total label={t("spend.today")} total={sum(v.days.filter((d) => d.day === v.today))} budget={{ usd: v.budgets.daily_usd, text: (spent, budget) => t("spend.budgetToday", { spent, budget }) }} />
+          <Total label={t("spend.week")} total={sum(v.days.filter((d) => d.day >= v.week_start))} budget={{ usd: v.budgets.weekly_usd, text: (spent, budget) => t("spend.budgetWeek", { spent, budget }) }} />
           <Total label={t("spend.last30")} total={v.total} />
         </dl>
         <p className="mt-2 text-xs text-pretty text-text-2">{t("spend.note")}</p>
+        <p data-testid="spend-budget-note" className="mt-1 text-xs text-pretty text-text-2">
+          {t("spend.budgetNote")} <Link href={`${BASE}settings`} className={LINK_CLASS}>{t("spend.budgetLink")}</Link>
+        </p>
         {unknown > 0 && (
           <p data-testid="spend-unknown" className="mt-1 text-sm text-pretty">
             {t(unknown === 1 ? "spend.unknownOne" : "spend.unknownMany", { count: unknown })}
