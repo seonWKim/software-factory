@@ -3,7 +3,7 @@
 // Everything goes through respond(), the server's whole request handling without a socket.
 
 import { describe, expect, it, vi } from "vitest";
-import { commandState, commandsFor } from "../src/core/commands.js";
+import { QUEUED_RUN, commandState, commandsFor } from "../src/core/commands.js";
 import { APP_COMMANDS, type PageAction } from "../src/ui/commands.js";
 import type { AuthDecision } from "../src/interfaces/auth-provider.js";
 import type { Timestamp, UserId, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
@@ -1785,5 +1785,32 @@ describe("POST /api/v1/pauses/resume: the refusal (design 05-restarts)", () => {
     expect(error.indexOf("/app/")).toBeLessThan(error.indexOf("factory resume rate_limit"));
     expect(await store.getClaimPause("rate_limit")).toBe(until);
     expect(log.info).not.toHaveBeenCalled();
+  });
+});
+
+describe("ui api: an Approve whose run the controller has not queued yet (design 09-dashboard-item-commands)", () => {
+  it("is queued, never Stuck, in the list and on the item page at 0.3 s, 1.5 s and 5 s; an idle item with no pending Approve stays Stuck", async () => {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const approved = await make(store, 1, "Approved");
+    // The request path's approval: the new state, with the run it leaves to the controller (QUEUED_RUN), and no run yet.
+    await store.transition({
+      id: approved.id, expected_version: approved.version, patch: { stage: "RUNNING" }, actor: system, reason: "spec_approved",
+      detail: { [QUEUED_RUN]: JSON.stringify({ kind: "implement", idempotency_key: "k1" }) },
+    });
+    const idle = await make(store, 2, "Idle");
+    await patch(store, idle, { stage: "RUNNING" });
+    const d: UiDeps = { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE, health: new HealthMonitor(async () => [], clock) };
+    const phase = async (id: WorkItemId) => ({
+      list: (await json<{ items: { id: string; item_phase: string }[] }>(d, "/api/v1/items")).items.find((i) => i.id === id)!.item_phase,
+      page: (await json<{ item: { item_phase: string } }>(d, `/api/v1/items/${encodeURIComponent(id)}`)).item.item_phase,
+    });
+    let at = 0;
+    for (const t of [300, 1500, 5000]) {
+      clock.advance(t - at);
+      at = t;
+      expect(await phase(approved.id)).toEqual({ list: "queued", page: "queued" });
+    }
+    expect(await phase(idle.id)).toEqual({ list: "stuck", page: "stuck" });
   });
 });

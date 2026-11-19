@@ -955,13 +955,18 @@ describe("the Merge button's Merging… state (item page and Needs-you row)", ()
     expect(mergeButton().disabled).toBe(true);
   });
 
-  it("on the item page: a Merge under way reads Checking…; one returned to merge_pending shows why beside Merge", async () => {
+  it("on the item page: a Merge under way reads Merge queued (position N), then Checking build; one returned to merge_pending shows why beside Merge", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const page = (merge: unknown, returned: string | null) =>
       wrap(client, createElement(views.MergeButton as never, { id: "wi_1", source: "local", merge, replies: [], returned }));
-    const view = rtl.render(page({ enabled: false, reason: "Checking…" }, null));
-    const checking = () => rtl.screen.getByRole("button", { name: "Checking…" }) as unknown as { disabled: boolean };
-    await rtl.waitFor(() => expect(checking().disabled).toBe(true));
+    const view = rtl.render(page({ enabled: false, reason: "Merge queued (position 2)" }, null));
+    const underWay = (name: string) => rtl.screen.getByRole("button", { name }) as unknown as { disabled: boolean };
+    await rtl.waitFor(() => expect(underWay("Merge queued (position 2)").disabled).toBe(true));
+    expect(rtl.screen.queryByRole("button", { name: "Merge" })).toBeNull();
+    view.rerender(page({ enabled: false, reason: "Checking build" }, null));
+    await rtl.waitFor(() => expect(underWay("Checking build").disabled).toBe(true));
+    // Each says where the merge is once: no status line repeats it beside the button.
+    expect(rtl.screen.getAllByText("Checking build")).toHaveLength(1);
     view.rerender(page(READY, "`src/a.ts` conflicts"));
     expect(mergeButton().textContent).toBe("Merge");
     expect(rtl.screen.getByText("src/a.ts conflicts")).toBeTruthy();

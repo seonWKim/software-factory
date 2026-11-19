@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { API, type ItemRow, type Items, type Overview, type SystemAction, useApi, useItems } from "../api.js";
+import { API, type ItemRow, type Items, type Overview, type SystemAction, mergeInFlight, useApi, useItems } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { Dialog } from "../components/ui/dialog.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
@@ -17,18 +17,29 @@ import { CheckRow, NEED_ROW } from "./system-banner.js";
 import { Card } from "../components/ui/card.js";
 import { Badge } from "../components/ui/badge.js";
 
-/** The five states a built task shows on its row, from its work item's level (src/ui/priority.ts); a closed item is "merged" only when it closed as completed. */
+/** The states a built task shows on its row, from its work item's level (src/ui/priority.ts); a closed item is "merged" only when it closed as completed. */
 const STATE_OF: Record<string, MessageKey> = {
   needs_approval: "tasks.state.spec",
   running: "tasks.state.running",
-  queued: "tasks.state.running",
   ready_to_merge: "tasks.state.merge",
   needs_you: "tasks.state.needs",
   needs_triage: "tasks.state.needs",
   stuck: "tasks.state.needs",
 };
 
-const stateKey = (it: ItemRow): MessageKey | null => (it.item_phase === "closed" ? (it.close_reason === "completed" ? "tasks.state.merged" : null) : (STATE_OF[it.item_phase] ?? null));
+/** A queued item is never Running: a queued triage run (or an approved one not queued yet) reads "Triage queued", any other "Queued". */
+const queuedKey = (it: ItemRow): MessageKey => ((it.run?.kind ?? it.kind) === "triage" ? "tasks.state.triageQueued" : "tasks.state.queued");
+
+const stateKey = (it: ItemRow): MessageKey | null => {
+  if (it.item_phase === "closed") return it.close_reason === "completed" ? "tasks.state.merged" : null;
+  return it.item_phase === "queued" ? queuedKey(it) : (STATE_OF[it.item_phase] ?? null);
+};
+
+/**
+ * The row's state words: a Merge under way says where it is, as the item page's button does (the server's pending
+ * request rule: "Merge queued (position N)", "Checking build"), with no Merge button; else the state's own words.
+ */
+const stateText = (it: ItemRow, key: MessageKey): string => (mergeInFlight(it.merge) ? it.merge.reason : t(key));
 
 /** An Answer-or-fix item's reason (the need's, else the why's en.ts text); empty for Merge and Approve, which say it with the badge. */
 const needReason = (it: ItemRow): string => (needGroup(it) === "answer" ? (it.need?.reason ?? (it.why ? whyText(it.why) : "")) : "");
@@ -57,7 +68,7 @@ export function WorkState({ id, title, open: taskOpen }: { id: string; title: st
   if (taskOpen && needsYou([it]).length > 0) {
     return (
       <>
-        <Badge level={it.item_phase}>{t(key)}</Badge>
+        <Badge level={it.item_phase}>{stateText(it, key)}</Badge>
         <RowActions it={it} cmd={cmd} />
       </>
     );
@@ -65,7 +76,7 @@ export function WorkState({ id, title, open: taskOpen }: { id: string; title: st
   return (
     <>
       <Button size="sm" variant="ghost" aria-label={t("tasks.stateOpen", { title })} onClick={() => setOpen(true)}>
-        <Badge level={it.item_phase}>{t(key)}</Badge>
+        <Badge level={it.item_phase}>{stateText(it, key)}</Badge>
       </Button>
       {open && (
         <Dialog title={it.title ?? title} confirmLabel={t("tasks.stateClose")} onConfirm={() => setOpen(false)} onClose={() => setOpen(false)}>

@@ -46,8 +46,13 @@ export const MERGE_QUEUED = "merge_queued";
 export const MERGE_REQUESTED = "merge_requested";
 /** The reason of a refused or failed merge: merge_queued → merge_pending, the refusal in its detail. */
 export const MERGE_RETURNED = "merge_returned";
-/** The row's words for a state the request path just recorded (design 09-dashboard-app). */
-export const ROW_LABELS = { approved: "Approved", merging: "Merging…", checking: "Checking…", merged: "Merged" } as const;
+/**
+ * The row's words for a state the request path just recorded (design 09-dashboard-app), and for a Merge under way:
+ * `checking` while the merge queue checks the item (merge_queued); a pending Merge's place is mergeQueuedLabel.
+ */
+export const ROW_LABELS = { approved: "Approved", merging: "Merging…", checking: "Checking build", merged: "Merged" } as const;
+/** A dashboard Merge stored and not handled yet, at its 1-based place among the Merges waiting for the controller. */
+export const mergeQueuedLabel = (position: number): string => `Merge queued (position ${position})`;
 /** Characters of an approval note kept on the state change (design §4). */
 const MAX_NOTE_CHARS = 2000;
 /** Characters of a merge refusal kept on its state change. */
@@ -335,6 +340,23 @@ export function mergeEntered(it: WorkItem, actor: Actor, seq: number): Transitio
 /** Whether a dashboard Merge for the item, other than request `seq`, is stored and not handled yet: the item reads "Merging…". */
 export function mergeRequested(requests: readonly AppCommandRequest[], seq: number | null = null): boolean {
   return requests.some((q) => q.command === "merge" && q.handled_at === null && q.seq !== seq && (seq === null || q.seq < seq));
+}
+
+/** The seq of the oldest dashboard Merge for the item stored and not handled yet, or null: its place in the merge line. */
+export function pendingMerge(requests: readonly AppCommandRequest[]): number | null {
+  return requests.reduce<number | null>((a, q) => (q.command === "merge" && q.handled_at === null && (a === null || q.seq < a) ? q.seq : a), null);
+}
+
+/**
+ * The run kind of a request-time approval whose run the controller has not queued yet, or null (design
+ * 09-dashboard-item-commands): the item's newest state change carries the run it left (QUEUED_RUN) and the item is
+ * open and unblocked. The controller's APPROVED_RUN_QUEUED change (or any later change) ends it. Read from the
+ * item's state changes only, so it costs no store read of its own.
+ */
+export function pendingApproval(it: Pick<WorkItem, "stage" | "blocked_on">, changes: readonly Pick<StateChange, "detail">[]): RunKind | null {
+  const newest = changes.at(-1);
+  if (!newest || it.stage === "CLOSED" || it.blocked_on !== "none") return null;
+  return queuedRun(newest)?.kind ?? null;
 }
 
 /** The newest dashboard Merge requests read for an item: enough to find one still pending. */

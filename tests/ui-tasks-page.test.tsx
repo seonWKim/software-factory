@@ -281,3 +281,34 @@ describe("the description dialog (design 02-tasks and 09-dashboard-tasks)", () =
     expect(within(card("tk_late")).queryByRole("button", { name: "Description: tk_late" })).toBeNull();
   });
 });
+
+// A built task's Work row says a queued run and a pressed Merge as their own states (design 09-dashboard-item-commands):
+// a queued triage is never Running, and a Merge under way reads the server's pending-request label with no Merge button.
+describe("a built task's Work row: queued and pending states", () => {
+  const run = (kind: string) => ({ kind, status: "queued", attempt: 1, worker_id: null, started_at: null, position: 1 });
+  const state = async (text: string) => within(card("tk_built")).findByText(text, {}, SLOW);
+
+  it("a queued triage run reads Triage queued, never Running", async () => {
+    s.items = [item("wi_1", { item_phase: "queued", blocked_on: "none", stage: "NEW", run: run("triage") })];
+    await show();
+    expect(await state("Triage queued")).toBeTruthy();
+    expect(within(card("tk_built")).queryByText("Running")).toBeNull();
+  });
+
+  it("a queued implement run, or an approved one the controller has not queued yet, reads Queued", async () => {
+    s.items = [item("wi_1", { item_phase: "queued", blocked_on: "none", stage: "RUNNING", run: null, kind: "implement" })];
+    await show();
+    expect(await state("Queued")).toBeTruthy();
+    expect(within(card("tk_built")).queryByText("Running")).toBeNull();
+  });
+
+  for (const reason of ["Merge queued (position 2)", "Checking build"]) {
+    it(`a Merge under way reads "${reason}" and hides the Merge button`, async () => {
+      s.items = [item("wi_1", { item_phase: "queued", blocked_on: "human", blocked_reason: "merge_pending", merge: { enabled: false, reason } })];
+      await show();
+      expect(await state(reason)).toBeTruthy();
+      expect(within(card("tk_built")).queryByRole("button", { name: "Merge" })).toBeNull();
+      expect(within(card("tk_built")).queryByText("Ready to merge")).toBeNull();
+    });
+  }
+});
