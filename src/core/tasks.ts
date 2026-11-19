@@ -89,8 +89,11 @@ export type UpdateTaskResult =
   | { ok: false; reason: "needs_due_date"; recurrence: Recurrence };
 
 export type DeleteTaskResult =
-  /** `detached`: its done sub-tasks, now plain tasks (parent_task_id null). */
-  | { ok: true; task: Task; detached: Task[] }
+  /**
+   * `detached`: its done sub-tasks, now plain tasks (parent_task_id null), on a plain delete. `deleted`: the sub-tasks,
+   * open and done, deleted with it (with_sub_tasks); empty on a plain delete.
+   */
+  | { ok: true; task: Task; detached: Task[]; deleted: Task[] }
   | { ok: false; reason: "not_found" }
   | { ok: false; reason: "open_sub_tasks"; sub_tasks: Task[] };
 
@@ -150,9 +153,12 @@ export interface TaskStore extends ProjectStore {
   updateTask(id: string, edit: TaskEdit): Promise<UpdateTaskResult>;
   /**
    * Deletes the row. Refused while it has open sub-tasks; its done sub-tasks are detached (parent_task_id null) in the
-   * same transaction. A work item linked to it is not touched.
+   * same transaction. With `with_sub_tasks`, every sub-task, open and done, is deleted with it in the same transaction
+   * instead (design 02-tasks). A work item linked to any of them is not touched.
    */
-  deleteTask(id: string): Promise<DeleteTaskResult>;
+  deleteTask(id: string, opts?: { with_sub_tasks?: boolean }): Promise<DeleteTaskResult>;
+  /** How many open sub-tasks each task has, over every stored task; a task with none is left out. Read-only. */
+  countOpenSubTasks(): Promise<Record<string, number>>;
   /** Inserts `t` as a sub-task of `parent_task_id` unless its ID is stored, linked as addTask links; refused under a sub-task (one level). */
   addSubTask(parent_task_id: string, t: NewTask): Promise<AddSubTaskResult>;
   /** The tasks whose reminder `now` sends (reminderDue), by time. Read-only. */

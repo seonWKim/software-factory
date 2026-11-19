@@ -3239,7 +3239,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       const { store } = await make();
       const t = await store.addTask(plain("tk_a"));
       await store.addTask(plain("tk_b"));
-      expect(await store.deleteTask("tk_a")).toEqual({ ok: true, task: t, detached: [] });
+      expect(await store.deleteTask("tk_a")).toEqual({ ok: true, task: t, detached: [], deleted: [] });
       const after = await rows(store);
       expect(after.map((r) => r.id)).toEqual(["tk_b"]);
       expect(await store.deleteTask("tk_a")).toEqual({ ok: false, reason: "not_found" });
@@ -3262,6 +3262,48 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       const r = await store.deleteTask("tk_p");
       expect(r.ok && r.detached.map((s) => [s.id, s.parent_task_id])).toEqual([["tk_s1", null], ["tk_s2", null]]);
       expect(await rows(store)).toEqual(done.filter((x) => x.id !== "tk_p").map((x) => ({ ...x, parent_task_id: null })));
+    });
+
+    it("deleteTask with with_sub_tasks deletes the parent and every sub-task, open and done, with their project links, in one write", async () => {
+      const { store } = await make();
+      await store.createProject({ id: "pj_home", name: "Home", created_by: by });
+      await store.addTask(plain("tk_p"));
+      await store.addSubTask("tk_p", plain("tk_s1", { projects: ["home"] }));
+      await store.addSubTask("tk_p", plain("tk_s2"));
+      await store.addTask(plain("tk_other"));
+      await store.completeTask("tk_s1");
+      const r = await store.deleteTask("tk_p", { with_sub_tasks: true });
+      expect(r).toMatchObject({ ok: true, task: { id: "tk_p" }, detached: [] });
+      expect(r.ok && r.deleted.map((s) => s.id)).toEqual(["tk_s1", "tk_s2"]);
+      expect((await rows(store)).map((x) => x.id)).toEqual(["tk_other"]);
+      expect(await store.listTaskProjectSlugs(["tk_s1"])).toEqual({});
+      expect(await store.deleteTask("tk_p", { with_sub_tasks: true })).toEqual({ ok: false, reason: "not_found" });
+    });
+
+    it("deleteTask with with_sub_tasks on a task with none deletes it alone; with_sub_tasks false refuses as a plain delete", async () => {
+      const { store } = await make();
+      await store.addTask(plain("tk_a"));
+      await store.addTask(plain("tk_p"));
+      await store.addSubTask("tk_p", plain("tk_s"));
+      expect(await store.deleteTask("tk_a", { with_sub_tasks: true })).toMatchObject({ ok: true, detached: [], deleted: [] });
+      const before = await rows(store);
+      expect(await store.deleteTask("tk_p", { with_sub_tasks: false })).toMatchObject({ ok: false, reason: "open_sub_tasks" });
+      expect(await rows(store)).toEqual(before);
+    });
+
+    it("countOpenSubTasks counts each parent's open sub-tasks over every stored task, leaving out done ones and parents with none", async () => {
+      const { store } = await make();
+      await store.addTask(plain("tk_p"));
+      await store.addTask(plain("tk_q"));
+      await store.addTask(plain("tk_r"));
+      await store.addSubTask("tk_p", plain("tk_p1"));
+      await store.addSubTask("tk_p", plain("tk_p2"));
+      await store.addSubTask("tk_q", plain("tk_q1"));
+      await store.completeTask("tk_q1");
+      const counts = await store.countOpenSubTasks();
+      expect(counts.tk_p).toBe(2);
+      expect(counts.tk_q).toBeUndefined();
+      expect(counts.tk_r).toBeUndefined();
     });
   });
 

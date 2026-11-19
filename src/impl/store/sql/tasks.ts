@@ -100,19 +100,37 @@ export async function updateTask(db: SqlDriver, id: string, edit: TaskEdit, now:
   });
 }
 
-/** In one transaction: refused while a sub-task is open; else detaches the done ones, drops its project links and deletes the row. */
-export async function deleteTask(db: SqlDriver, id: string): Promise<DeleteTaskResult> {
+/**
+ * In one transaction: refused while a sub-task is open, unless `with_sub_tasks`, which deletes every sub-task (open and
+ * done) and its project links with it; else detaches the done ones. Then drops its project links and deletes the row.
+ */
+export async function deleteTask(db: SqlDriver, id: string, opts: { with_sub_tasks?: boolean } = {}): Promise<DeleteTaskResult> {
   return db.transaction(async (tx) => {
     const task = await select(tx, "id", id);
     if (task === null) return { ok: false, reason: "not_found" } as const;
     const subs = (await tx.all(`SELECT ${COLUMNS} FROM controller_tasks WHERE parent_task_id = ? ORDER BY id`, [id])).map(rowToTask);
-    const open = subs.filter((s) => s.done_at === null);
-    if (open.length > 0) return { ok: false, reason: "open_sub_tasks", sub_tasks: open } as const;
-    if (subs.length > 0) await tx.run("UPDATE controller_tasks SET parent_task_id = NULL WHERE parent_task_id = ? AND done_at IS NOT NULL", [id]);
+    if (opts.with_sub_tasks === true) {
+      for (const s of subs) {
+        await unlinkTask(tx, s.id);
+        await tx.run("DELETE FROM controller_tasks WHERE id = ?", [s.id]);
+      }
+    } else {
+      const open = subs.filter((s) => s.done_at === null);
+      if (open.length > 0) return { ok: false, reason: "open_sub_tasks", sub_tasks: open } as const;
+      if (subs.length > 0) await tx.run("UPDATE controller_tasks SET parent_task_id = NULL WHERE parent_task_id = ? AND done_at IS NOT NULL", [id]);
+    }
     await unlinkTask(tx, id);
     await tx.run("DELETE FROM controller_tasks WHERE id = ?", [id]);
-    return { ok: true, task, detached: subs.map((s) => ({ ...s, parent_task_id: null })) } as const;
+    return opts.with_sub_tasks === true
+      ? ({ ok: true, task, detached: [], deleted: subs } as const)
+      : ({ ok: true, task, detached: subs.map((s) => ({ ...s, parent_task_id: null })), deleted: [] } as const);
   });
+}
+
+/** Read-only: each task's number of open sub-tasks, over every stored task; a task with none is left out. */
+export async function countOpenSubTasks(db: SqlDriver): Promise<Record<string, number>> {
+  const rows = await db.all("SELECT parent_task_id, COUNT(*) AS n FROM controller_tasks WHERE parent_task_id IS NOT NULL AND done_at IS NULL GROUP BY parent_task_id");
+  return Object.fromEntries(rows.map((r) => [String(r.parent_task_id), Number(r.n)]));
 }
 
 export async function listTasks(db: SqlDriver, limit: number): Promise<Task[]> {
