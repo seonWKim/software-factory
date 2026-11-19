@@ -22,7 +22,7 @@
 // CSP allows only the error page's own inline style (by hash) and no script.
 // Three areas, the same guards for each: the rest (/ redirects to the app, /api/health, the HTML error pages), the JSON API under
 // /api/v1 (api.ts, GET /api/v1/notices in notices-api.ts, GET /api/v1/rules and /api/v1/rules/entry in rules-api.ts, GET
-// /api/v1/tasks (`?project=<slug>`: the project switcher) in tasks-api.ts, GET /api/v1/plugins (the Plugins page) in plugins-api.ts and GET
+// /api/v1/tasks (`?project=<slug>`: the project switcher) and GET /api/v1/tasks/preview (the quick-add preview) in tasks-api.ts, GET /api/v1/plugins (the Plugins page) in plugins-api.ts and GET
 // /api/v1/calendar in calendar-api.ts, GET /api/v1/supervisor (what Migrate now, Start and Restart now may do) in migrate-api.ts, GET /api/v1/calendar/events (the Calendar page's range read) in
 // calendar-events-api.ts; errors as JSON) and the app under /app (app.ts; its own
 // CSP, errors as text).
@@ -36,7 +36,7 @@ import { CSRF_HEADER, SETTINGS_PATH, csrfMatches, writeSettings } from "./settin
 import { RESUME_PATH, resumePause } from "./pause-api.js";
 import { STANDING_PATH, writeStanding } from "./standing-api.js";
 import { PACK_APPROVALS_PATH, writePackApproval } from "./packs-api.js";
-import { TASKS_PATH, TASK_WRITES, readTasks } from "./tasks-api.js";
+import { TASKS_PATH, TASK_PREVIEW_PATH, TASK_WRITES, readTaskPreview, readTasks } from "./tasks-api.js";
 import { MAX_FILE_BODY, PROJECT_FILE_ROUTES, PROJECT_FILE_WRITE_PATH } from "./project-files.js";
 import { RULES_PATH, RULE_ENTRY_PATH, RULE_VERDICT_PATH, readRuleEntry, readRules, writeRuleVerdict } from "./rules-api.js";
 import { IMPROVE_RUN_PATH, type ImproveRunDeps, improveRunWired, runImproveNow } from "./improve-api.js";
@@ -258,6 +258,7 @@ export async function respond(d: ServerDeps, req: UiRequest): Promise<UiResponse
       : url.pathname === RULES_PATH ? await readRules(d)
       : url.pathname === RULE_ENTRY_PATH ? await readRuleEntry(d, url.searchParams.get("id"))
       : url.pathname === TASKS_PATH ? await readTasks(d, url.searchParams.get("project"))
+      : url.pathname === TASK_PREVIEW_PATH ? await readTaskPreview(d, url.searchParams.get("words"))
       : url.pathname === PLUGINS_PATH ? await readPlugins(d)
       : url.pathname === CALENDAR_PATH ? await readCalendarStatus(d)
       : url.pathname === SUPERVISOR_PATH && d.migrate !== undefined && d.pauses !== undefined ? await readSupervisor(d.migrate, d.pauses)

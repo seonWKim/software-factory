@@ -48,6 +48,12 @@ async function setup(opts: { actor?: UserId | null; wired?: boolean } = {}) {
 const ID = "tk_0123456789abcdef";
 
 describe("POST /api/v1/tasks", () => {
+  it("a timed task typed with no duration stores no duration (no default is written)", async () => {
+    const s = await setup();
+    expect((await s.post({ id: ID, words: "call bank tomorrow 09:00" })).status).toBe(200);
+    expect((await s.tasks())[0]).toMatchObject({ id: ID, due_time: "09:00", duration_minutes: null });
+  });
+
   it("stores one task with the parsed fields, created by the page's actor, and returns it", async () => {
     const s = await setup();
     const r = await s.post({ id: ID, words: "pay rent tomorrow 09:30 !1 #home every month" });

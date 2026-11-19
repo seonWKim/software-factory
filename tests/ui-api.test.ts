@@ -1787,3 +1787,52 @@ describe("POST /api/v1/pauses/resume: the refusal (design 05-restarts)", () => {
     expect(log.info).not.toHaveBeenCalled();
   });
 });
+
+describe("GET /api/v1/tasks/preview: the quick-add preview (design 09-dashboard-tasks)", () => {
+  /** A store whose every write throws, so the preview provably writes nothing. */
+  async function readOnly() {
+    const clock = new FakeClock(new Date("2026-11-12T09:00:00"));
+    const { store } = await newStore(clock);
+    const guarded = new Proxy(store, {
+      get(target, key, receiver) {
+        const v = Reflect.get(target, key, receiver) as unknown;
+        if (typeof key === "string" && /^(add|update|set|complete|delete|reopen|create|transition|save|pause)/.test(key)) {
+          return () => { throw new Error(`the preview wrote: ${key}`); };
+        }
+        return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+      },
+    });
+    const d: UiDeps = { store: guarded, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE, health: new HealthMonitor(async () => [], clock) };
+    return { d, store };
+  }
+  const preview = (words: string) => `/api/v1/tasks/preview?words=${encodeURIComponent(words)}`;
+
+  it("answers what quick add would store, with the date resolved, and the words it did not read", async () => {
+    const { d, store } = await readOnly();
+    const v = await json(d, preview("review PRs every week +backend tomorrow 09:00 !2"));
+    expect(v).toEqual({
+      ok: true, title: "review PRs every week", due_date: "2026-11-13", due_time: "09:00", recurrence: null, projects: ["backend"], priority: 2,
+      list: null, duration_minutes: null, unread: ["every week"],
+    });
+    expect(await store.listTasks(10)).toEqual([]);
+  });
+
+  it("every week as the last two words is the weekly repeat, with nothing unread", async () => {
+    const { d } = await readOnly();
+    expect(await json(d, preview("review PRs tomorrow every week"))).toMatchObject({ ok: true, title: "review PRs", recurrence: "week", unread: [] });
+  });
+
+  it("words the parser refuses answer 200 with the reason; no words or too many answer 400", async () => {
+    const { d } = await readOnly();
+    expect(await json(d, preview("standup 13pm"))).toEqual({ ok: false, reason: expect.stringContaining("not a time: 13pm") });
+    expect((await get(d, "/api/v1/tasks/preview")).status).toBe(400);
+    expect((await get(d, preview("x".repeat(1001)))).status).toBe(400);
+  });
+
+  it("the title leaves through the Withholder", async () => {
+    const { d } = await readOnly();
+    const r = await get(d, preview(`call ${SECRET} tomorrow`));
+    expect(r.status).toBe(200);
+    expect(r.body).not.toContain(SECRET);
+  });
+});

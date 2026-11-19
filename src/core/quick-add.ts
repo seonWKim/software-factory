@@ -7,18 +7,21 @@ import { type DueDay, type Recurrence, type TaskEdit, type TaskFields, type Task
  * - `today`, `tomorrow`, `YYYY-MM-DD`: the due day (today and tomorrow are resolved later, by the store's Clock);
  * - `HH:MM`, or `3pm`, `3:30pm`, `12am`: the due time (alone: due today); `at` right before a time is read with it,
  *   and anywhere else is a title word;
- * - `45m`, `1h`, `1h30m`: the duration (1 minute to a day; none given: DEFAULT_DURATION_MINUTES when planned);
+ * - `45m`, `1h`, `1h30m`: the duration (1 minute to a day; none given: none is stored);
  * - `!1` to `!3`: the priority, 1 the highest;
  * - `#label`: the list, its letters and digits of any script, `_` and `-`;
  * - `+slug`: a task project (src/core/projects.ts), its slug projectSlug of the word after `+`; several may be given,
  *   and the store refuses an unknown or archived one;
  * - `every day`, `every week`, `every month`: the recurrence, which needs a due day. It is read only when these two
- *   words end the text; any other `every …` (`on every UI review`, `every day standup`, `every monday`) is title words.
+ *   words end the text; any other `every …` (`on every UI review`, `every day standup`, `every monday`) is title words,
+ *   and parseQuickAdd reports it in `unread` (`every` with its next plain word), so the dashboard's preview can say
+ *   it was not understood.
  * Each field at most once, except `+slug`. Pure: no clock, no I/O. `task edit` reads the same words (`parseQuickEdit`), naming only
  * the fields they give.
  */
 
-export type QuickAddResult = { ok: true; task: TaskFields } | { ok: false; reason: string };
+/** `unread`: the title words that look like quick-add words but were not read (an `every …` that is no repeat), in order. */
+export type QuickAddResult = { ok: true; task: TaskFields; unread: string[] } | { ok: false; reason: string };
 export type QuickEditResult = { ok: true; edit: TaskEdit } | { ok: false; reason: string };
 
 const RECURRENCES: readonly Recurrence[] = ["day", "week", "month"];
@@ -59,13 +62,14 @@ function readDuration(w: string): number | { refused: string } | null {
 }
 
 /** The fields the words give (the title: the words left, "" when none), or the reason they are refused. */
-function scan(words: string): { ok: true; edit: TaskEdit; title: string } | { ok: false; reason: string } {
+function scan(words: string): { ok: true; edit: TaskEdit; title: string; unread: string[] } | { ok: false; reason: string } {
   const tokens = words.trim().split(/\s+/).filter((w) => w !== "");
   // The recurrence: only `every day|week|month` as the last two words.
   const [every, unit] = tokens.slice(-2).map((w) => w.toLowerCase());
   const recurrence = every === "every" && (RECURRENCES as readonly string[]).includes(unit ?? "") ? (unit as Recurrence) : null;
   if (recurrence !== null) tokens.splice(-2);
   const title: string[] = [];
+  const unread: string[] = [];
   let due: DueDay | null = null;
   let due_time: string | null = null;
   let duration_minutes: number | null = null;
@@ -112,6 +116,13 @@ function scan(words: string): { ok: true; edit: TaskEdit; title: string } | { ok
       const slug = projectSlug(w.slice(1));
       if (slug === null) return { ok: false, reason: `a project needs a name after +, e.g. +home, not ${w}` };
       if (!projects.includes(slug)) projects.push(slug);
+    } else if (lower === "every") {
+      // Not the repeat at the end: kept in the title with its next plain word, and reported unread.
+      const next = tokens[i + 1];
+      const pair = next !== undefined && /^\p{L}+$/u.test(next) && !["today", "tomorrow", "at"].includes(next.toLowerCase());
+      if (pair) i++;
+      title.push(...(pair ? [w, next] : [w]));
+      unread.push(pair ? `${w} ${next}` : w);
     } else title.push(w);
     if (refused !== null) return { ok: false, reason: refused };
   }
@@ -124,7 +135,7 @@ function scan(words: string): { ok: true; edit: TaskEdit; title: string } | { ok
   if (list !== null) edit.list = list;
   if (recurrence !== null) edit.recurrence = recurrence;
   if (projects.length > 0) edit.projects = projects;
-  return { ok: true, edit, title: title.join(" ") };
+  return { ok: true, edit, title: title.join(" "), unread };
 }
 
 /** Why a recurrence with no due date is refused, by quick-add and by an edit. */
@@ -137,7 +148,7 @@ export function parseQuickAdd(words: string): QuickAddResult {
   const { due = null, due_time = null, duration_minutes = null, priority = null, list = null, recurrence = null, projects } = s.edit;
   const day: DueDay | null = due === null && due_time !== null ? { days_from_today: 0 } : due;
   if (recurrence !== null && day === null) return { ok: false, reason: needsDueDate(recurrence) };
-  return { ok: true, task: { title: s.title, list, priority, due: day, due_time, duration_minutes, recurrence, ...(projects ? { projects } : {}) } };
+  return { ok: true, task: { title: s.title, list, priority, due: day, due_time, duration_minutes, recurrence, ...(projects ? { projects } : {}) }, unread: s.unread };
 }
 
 /** The fields an edit's words name, and only those: words with no title leave the title out. No words: refused. */

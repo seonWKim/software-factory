@@ -145,12 +145,12 @@ describe("Tasks page", () => {
       for (const r of document.querySelectorAll("[data-task]")) expect(r.hasAttribute("draggable")).toBe(false);
     });
 
-    it("a timed row still shows its duration: 30 minutes when none is stored, else the stored one", async () => {
+    it("a timed row shows a duration only when one is stored: no 30 min for a null duration", async () => {
       s.current = view({
         today: { overdue: [], due: [row("tk_call", { due_date: "2026-11-12", due_time: "15:00" }), row("tk_gym", { due_date: "2026-11-12", due_time: "18:00", duration_minutes: 90 })] },
       });
       await show2();
-      expect(card("tk_call").textContent).toContain("30 min");
+      expect(card("tk_call").textContent).not.toContain("min");
       expect(card("tk_gym").textContent).toContain("90 min");
     });
   });
