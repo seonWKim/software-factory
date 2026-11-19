@@ -15,8 +15,12 @@
 // the owner's reason, and for promote of a class their wording, default and exception, which the plugin encodes in the
 // owner's rules file before the verdict (a retire removes the class's block instead); promote of a proposal takes no
 // field beyond the reason: the plugin applies the proposal's current → proposed lines (as `show` gives them) to its
-// target file, then sends the verdict, all through `TacitLedger.verdict`
-// only: the page has no other write path and writes nothing to the store. The request guards
+// target file, then sends the verdict, all through `TacitLedger.verdict`. A proposal with no such lines (a change to
+// build, 2026-11-20) has only its verdict recorded, and then one plain task is stored to build it (`tk_` + the
+// proposal ID in lower case, its title, and a body with the rationale, change, target, evidence IDs and proposal ID):
+// the store's one write from this page. A retry finds that task, or the ledger's promote verdict, and sends nothing
+// twice. GET lists each proposal's task ID once it exists (`task`), and the entry read gives `cited`, the newest
+// ledger verdict of each evidence ID that has one. The request guards
 // (Host, Origin, Content-Type, CSRF token, body size, JSON) run in server.ts; then the owner check (decision 1 of #571:
 // the store's local owner only); every refusal comes before the ledger's CLI runs.
 //
@@ -36,6 +40,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { RULE_VERDICTS, type RuleVerdict } from "../core/learned-rules.js";
+import { MAX_TASK_BODY, taskBody } from "../core/tasks.js";
 import { isHotspot } from "../core/hotspots.js";
 import { errorText } from "../core/log.js";
 import { type RetireRule, retireSuggestions } from "../core/rule-retirement.js";
@@ -44,7 +49,8 @@ import { type AgentsHomeCheck, checkAgentsHome } from "../impl/tacit/agents-home
 import { LiveTacit } from "../runtime/live-tacit.js";
 import type { FailureGroup, ImproveReport, UserId } from "../core/types.js";
 import {
-  type TacitEntryDetail, type TacitEvidence, type TacitLedger, type TacitPendingEntry, type TacitPromotion, TacitRefusal, TacitSyncFailed, tacitIdKind,
+  type TacitEntryDetail, type TacitEvidence, type TacitLedger, type TacitPendingEntry, type TacitPromotion, TacitRefusal, TacitSyncFailed, hasLines,
+  proposalTaskId, tacitIdKind,
 } from "../interfaces/tacit-ledger.js";
 import type { ApiResult } from "./api.js";
 import { runNowButton } from "./improve-api.js";
@@ -84,12 +90,13 @@ export async function uiTacit(
   build: (name: string) => Promise<TacitLedger>,
   o: Omit<LiveOpts, "integrations" | "config"> & { config: Omit<LiveOpts["config"], "project"> },
 ): Promise<UiTacit> {
-  // The holder delegates no `show` or `retired`: the page reads them from the plugin the holder last built (a failed build keeps both).
+  // The holder delegates no `show`, `retired` or `decided`: the page reads them from the plugin the holder last built (a failed build keeps them).
   let inUse: TacitLedger | undefined;
   const live = await LiveTacit.start(configured, async (n) => (inUse = await build(n)), o.log);
   const ledger = Object.assign(live, {
     show: async (id: string) => (await inUse?.show?.(id)) ?? null,
     retired: async () => (await inUse?.retired?.()) ?? [],
+    decided: async (ids: readonly string[]) => (await inUse?.decided?.(ids)) ?? {},
   });
   const settings = new LiveSettings({ ...o, config: { ...o.config, project: { key: "", label: "" } }, integrations: [ledger] });
   return { ledger, settings, home: () => checkAgentsHome(process.env) };
@@ -152,7 +159,7 @@ export async function readRules(d: PauseDeps): Promise<ApiResult> {
     };
     shown.push({
       id: await text(e.id), title: await text(e.title), state: e.state, ...proposal, judged: e.judged ?? null, draft,
-      draft_error: e.draft_error === undefined ? null : await text(e.draft_error),
+      draft_error: e.draft_error === undefined ? null : await text(e.draft_error), task: await taskOf(d, e.id),
     });
   }
   return {
@@ -162,6 +169,12 @@ export async function readRules(d: PauseDeps): Promise<ApiResult> {
       error: error === null ? null : await text(error), csrf_token: d.pauses?.csrfToken ?? null, judge, home: null, turn_on: null, improve,
     },
   };
+}
+
+/** The ID of the task a promote of proposal `id` created, or null: none yet, or `id` is no proposal. A store read. */
+async function taskOf(d: PauseDeps, id: string): Promise<string | null> {
+  const task = tacitIdKind(id) === "proposal" ? proposalTaskId(id) : null;
+  return task !== null && (await d.store.getTask(task)) !== null ? task : null;
 }
 
 /**
@@ -309,7 +322,21 @@ export async function readRuleEntry(d: PauseDeps, rawId: string | null): Promise
   }
   if (detail.incidents !== undefined) shown.incidents = detail.incidents;
   if (detail.evidence !== undefined) shown.evidence = await Promise.all(detail.evidence.map((e) => withheld(e, text)));
-  return { status: 200, value: { id: shown.id, detail: shown, error: null, retire: reasons } };
+  return { status: 200, value: { id: shown.id, detail: shown, error: null, retire: reasons, cited: await citedVerdicts(tacit!, detail, text) } };
+}
+
+/** The newest ledger verdict of each evidence ID that has one (`TacitLedger.decided`); none on a failed read. */
+async function citedVerdicts(tacit: TacitLedger, detail: TacitEntryDetail, text: (v: string) => Promise<string>): Promise<Record<string, string>> {
+  const refs = [...new Set((detail.evidence ?? []).flatMap((e) => (e.ref === undefined ? [] : [e.ref])))];
+  let decided: Readonly<Record<string, string>> = {};
+  try {
+    decided = refs.length === 0 ? {} : ((await tacit.decided?.(refs)) ?? {});
+  } catch {
+    // No status when the verdict log cannot be read: the detail stays.
+  }
+  const out: Record<string, string> = {};
+  for (const [id, decision] of Object.entries(decided)) out[await text(id)] = await text(decision);
+  return out;
 }
 
 type VerdictBody = { id: string; verdict: RuleVerdict; reason: string; rule?: TacitPromotion };
@@ -328,6 +355,9 @@ function parseVerdict(body: unknown): VerdictBody | string {
   if (typeof b.reason !== "string" || b.reason.trim() === "" || b.reason.length > MAX_REASON) return `reason must be 1 to ${MAX_REASON} characters`;
   const v = { id: b.id.trim(), verdict: b.verdict as RuleVerdict, reason: b.reason.trim() };
   if (v.verdict === "retire" && tacitIdKind(v.id) !== "class") return "only a class (C-) is retired";
+  if (v.verdict === "promote" && tacitIdKind(v.id) === "proposal" && proposalTaskId(v.id) === null) {
+    return "a proposal ID to promote is P- followed by letters, digits, - or _ only";
+  }
   if (v.verdict !== "promote" || tacitIdKind(v.id) !== "class") {
     const given = RULE_FIELDS.find((k) => b[k] !== undefined);
     return given ? `only promote of a class (C-) takes a ${given}` : v;
@@ -354,14 +384,87 @@ export async function writeRuleVerdict(d: PauseDeps, p: UiPauses, body: unknown)
   if (!tacit?.enabled) return { status: 409, value: { error: "No tacit ledger is on: turn it on from the Rules page." } };
   const who = await ownerOf(d, p, "judges rules");
   if ("error" in who) return { status: 403, value: { error: who.error } };
+  if (v.verdict === "promote" && tacitIdKind(v.id) === "proposal") return promoteProposal(d, p, tacit, v, who.user);
+  // The owner's rule goes with a promoted class; the CLIs take no "by", so the log keeps who judged.
+  const failed = await sendVerdict(tacit, v);
+  if (failed !== null) return failed;
+  p.log.info("rule verdict sent", { id: v.id, verdict: v.verdict, actor: who.user, edited: v.rule !== undefined });
+  return { status: 200, value: { id: v.id, verdict: v.verdict } };
+}
+
+/** `TacitLedger.verdict`; null when it was recorded, else the refusal or failure as the route answers it. */
+async function sendVerdict(tacit: TacitLedger, v: VerdictBody): Promise<ApiResult | null> {
   try {
-    // The owner's rule goes with a promoted class; the CLIs take no "by", so the log keeps who judged.
     await tacit.verdict(v.id, v.verdict, v.reason, v.rule);
+    return null;
   } catch (err) {
     if (err instanceof TacitRefusal) return { status: 409, value: { error: `The ${v.verdict} was refused: ${errorText(err)}` } };
     if (err instanceof TacitSyncFailed) return { status: 502, value: { error: `The verdict was recorded, but sync-agents failed: ${errorText(err)}` } };
     return { status: 502, value: { error: `The ledger refused the verdict: ${errorText(err)}` } };
   }
-  p.log.info("rule verdict sent", { id: v.id, verdict: v.verdict, actor: who.user, edited: v.rule !== undefined });
-  return { status: 200, value: { id: v.id, verdict: v.verdict } };
+}
+
+/**
+ * Promote of a proposal. Its task stored already (a retry): nothing is sent or written. Else its detail is read: no
+ * detail or no target is refused before any verdict runs. With Now and Proposed lines the plugin applies them and
+ * sends the verdict, as before. With none (a change to build) the verdict is sent unless the ledger's newest verdict on
+ * it is a promote already (a retry after a lost response), and then one plain task is stored: `tk_` + the ID in lower
+ * case, the proposal's title, and a body with the rationale, change, target, evidence IDs and proposal ID. A refused
+ * or failed verdict stores no task.
+ */
+async function promoteProposal(d: PauseDeps, p: UiPauses, tacit: TacitLedger, v: VerdictBody, user: UserId): Promise<ApiResult> {
+  const taskId = proposalTaskId(v.id)!;
+  const done = { status: 200, value: { id: v.id, verdict: v.verdict, task_id: taskId } };
+  if ((await d.store.getTask(taskId)) !== null) return done;
+  let detail: TacitEntryDetail | null;
+  try {
+    detail = (await tacit.show?.(v.id)) ?? null;
+  } catch (err) {
+    return { status: 409, value: { error: `The promote was refused: the detail of ${v.id} could not be read: ${errorText(err)}` } };
+  }
+  if (detail?.target === undefined) return { status: 409, value: { error: `The promote was refused: ${v.id} has no target: nothing written` } };
+  if (hasLines(detail)) {
+    const failed = await sendVerdict(tacit, v);
+    if (failed !== null) return failed;
+    p.log.info("rule verdict sent", { id: v.id, verdict: v.verdict, actor: user, edited: false });
+    return { status: 200, value: { id: v.id, verdict: v.verdict } };
+  }
+  const recorded = (await tacit.decided?.([v.id]))?.[v.id] === "promote";
+  if (!recorded) {
+    const failed = await sendVerdict(tacit, v);
+    if (failed !== null) return failed;
+  }
+  const w = new Withholder(d.scanner);
+  const text = async (s: string) => (await w.plain(s)).text;
+  const title = await text(await proposalTitle(tacit, v.id, detail));
+  const body = taskBody((await text(buildBody(v.id, detail))).slice(0, MAX_TASK_BODY));
+  await d.store.addTask({
+    id: taskId, title, list: null, priority: null, due: null, due_time: null, recurrence: null, created_by: user, body: body.ok ? body.body : null,
+  });
+  p.log.info("rule verdict sent", { id: v.id, verdict: v.verdict, actor: user, edited: false, task: taskId, resent: !recorded });
+  return done;
+}
+
+/** The proposal's title as `pending` lists it; its description, else its ID, when it is not listed (or the read fails). */
+async function proposalTitle(tacit: TacitLedger, id: string, detail: TacitEntryDetail): Promise<string> {
+  try {
+    const listed = (await tacit.pending()).find((e) => e.id === id);
+    if (listed !== undefined) return listed.title;
+  } catch {
+    // The description stands in for a title the ledger could not list.
+  }
+  return detail.description ?? id;
+}
+
+/** The task body of a proposal to build: its rationale (root reason), change (description), target, evidence IDs and ID. */
+export function buildBody(id: string, d: TacitEntryDetail): string {
+  const evidence = [...new Set((d.evidence ?? []).flatMap((e) => (e.ref === undefined ? [] : [e.ref])))];
+  const rationale = d.root_reason ?? d.evidence?.find((e) => e.root_reason !== undefined)?.root_reason;
+  return [
+    `Rationale: ${rationale ?? "not given"}`,
+    `Change: ${d.description ?? "not given"}`,
+    `Target: ${d.target ?? "not given"}`,
+    `Evidence: ${evidence.length === 0 ? "none" : evidence.join(", ")}`,
+    `Proposal: ${id}`,
+  ].join("\n");
 }

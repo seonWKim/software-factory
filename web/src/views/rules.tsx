@@ -24,6 +24,9 @@ import { ApprovalsSection } from "./standing.js";
 import { Disclosure } from "../components/ui/disclosure.js";
 import { Card } from "../components/ui/card.js";
 import { Badge } from "../components/ui/badge.js";
+import { LINK_CLASS } from "../components/ui/link-style.js";
+import { Link } from "../nav.js";
+import { BASE } from "../pages.js";
 
 // The Rules page (design 09-dashboard-app.md and 07-self-improvement.md, issue #571), under one PageHeader that says what
 // the page is for and how many entries wait, at most max-w-3xl wide, with a "How this works" disclosure. Only entries
@@ -31,15 +34,19 @@ import { Badge } from "../components/ui/badge.js";
 // structure proposals (`P-…`), each under one line saying what promoting one does; judged ones collapse into one
 // "N decided" line, and with none waiting an EmptyState gives the next step. A card lists its title (an IdDetails: the ID in its tooltip) and a Badge
 // (open, pending, held, or the judged decision). "Why and where" (a Disclosure) reads the entry's
-// detail on demand through GET /api/v1/rules/entry?id=, never on page load: a description, what it would change,
-// before → after, why, the evidence (newest first, 3 shown, the rest behind "Show all N"), where it applies and the
-// related applied rules (sharing an incident ID or naming the target file), each part left out when it has nothing.
+// detail on demand through GET /api/v1/rules/entry?id=, never on page load, in one reading order (ReadingOrder, shared
+// by the card and the verdict dialog, 2026-11-20): what to promote (the change in one or two lines and the files it
+// touches), why (the root reason's first sentence), examples (each evidence ID with its date and one line: the quote,
+// else the agent's proposal, else the root reason; newest first, 3 shown, the rest behind "Show all N"), the status of
+// what it cites (each evidence ID's newest ledger verdict, none when unrecorded), then where it applies and the
+// related applied rules (sharing an incident ID or naming the target file), each part left out when it has nothing;
+// the long fields (the whole rationale, the Now and Proposed lines) sit in one Disclosure under them.
 // Promote (primary, with a Tooltip when off), Hold and Reject (danger, last) each open a dialog that shows the
 // entry's full title and that detail above a required reason;
 // Promote of a class also asks for the rule's wording, default and exception (prefilled from the class's draft);
-// Promote of a proposal shows its Now and Proposed lines (the detail's before → after) and sends only the reason on
-// confirm: the server applies the change through the plugin; a failed apply's error stays in the dialog. With no
-// lines to apply Send stays off and a Notice says why.
+// Promote of a proposal sends only the reason on confirm: with Now and Proposed lines the server applies the change
+// through the plugin; with none it records the verdict and creates a task to build it, which the card then links to
+// (`task`). A failure's error stays in the dialog.
 // Only the owner sends. With the ledger off the page is an EmptyState whose action is Turn on (stores `integrations`,
 // the plugin name only, through POST /api/v1/settings, then loads the rules), and an agents home picker over the
 // known homes (AGENTS_HOME when set, ~/.agents) shows the chosen one's check: both CLIs executable, else the missing file.
@@ -127,8 +134,8 @@ function ReasonField({ id, value, onChange }: { id: string; value: string; onCha
 
 /**
  * The verdict dialog: the entry's full title and its detail above the fields, then a reason, and for promote of a class the rule's wording (prefilled with its title) and its
- * default and exception (prefilled from its draft). Promote of a proposal shows its Now and Proposed lines in the
- * detail and is off until both are read.
+ * default and exception (prefilled from its draft). Promote of a proposal says what it will do once its detail is read:
+ * apply its Now and Proposed lines, or, with none, record the verdict and create a task to build it.
  */
 function VerdictDialog({ entry, applied, verdict, token, onClose }: { entry: RuleRow; applied: AppliedRule[]; verdict: RuleVerdict; token: string; onClose: () => void }) {
   const [reason, setReason] = useState("");
@@ -139,16 +146,17 @@ function VerdictDialog({ entry, applied, verdict, token, onClose }: { entry: Rul
   const promote = verdict === "promote" && isClass(entry.id);
   const applies = verdict === "promote" && !isClass(entry.id);
   const rule = { text: text.trim(), default: dflt.trim(), exception: exception.trim() };
-  // The same read as the detail above: a proposal applies only with both its Now and Proposed lines.
+  // The same read as the detail above: with both its Now and Proposed lines a proposal applies them, else it is built.
   const lines = useRuleEntry(entry.id, applies);
-  const noLines = applies && (lines.data?.detail?.current === undefined || lines.data.detail.proposed === undefined);
+  const d = lines.data?.detail;
+  const builds = applies && !lines.isPending && (d?.current === undefined || d.proposed === undefined);
   const label = t(VERDICTS.find((v) => v.verdict === verdict)!.label);
   return (
     <Dialog
       title={t("rules.dialogTitle", { label, title: entry.title })}
-      consequence={t(promote ? "rules.consequencePromoteClass" : CONSEQUENCE[verdict])}
+      consequence={t(promote ? "rules.consequencePromoteClass" : builds ? "rules.consequencePromoteBuild" : CONSEQUENCE[verdict])}
       confirmLabel={t("rules.send", { label: label.toLowerCase() })}
-      confirmDisabled={busy || reason.trim() === "" || (promote && Object.values(rule).includes("")) || noLines}
+      confirmDisabled={busy || reason.trim() === "" || (promote && Object.values(rule).includes("")) || (applies && lines.isPending)}
       danger={verdict === "reject"}
       error={error}
       onConfirm={() => void send({ id: entry.id, verdict, reason: reason.trim(), ...(promote ? rule : {}) }, label, entry.title)}
@@ -165,7 +173,6 @@ function VerdictDialog({ entry, applied, verdict, token, onClose }: { entry: Rul
           <RuleText id={`${entry.id}-exception`} label={t("rules.exception")} value={exception} onChange={setException} />
         </>
       )}
-      {noLines && !lines.isPending && <Notice tone="warn">{t("rules.applyNoLines")}</Notice>}
       <ReasonField id={entry.id} value={reason} onChange={setReason} />
     </Dialog>
   );
@@ -210,30 +217,44 @@ function DetailPart({ label, part, children }: { label: MessageKey; part: string
 
 const line = "text-sm text-pretty break-words whitespace-pre-wrap";
 const quote = `${line} border-l-2 border-border-strong pl-2`;
-/** How many incidents show before "Show all N". */
+/** How many examples show before "Show all N". */
 const EVIDENCE_SHOWN = 3;
 
-/** The incidents, newest first: the first EVIDENCE_SHOWN, the rest behind "Show all N". */
-function Evidence({ items }: { items: RuleEvidence[] }) {
+/** An example's one line: the owner's quote, else the agent's proposal, else the root reason (owner answer 2). */
+const exampleText = (e: RuleEvidence): string | undefined => e.quote ?? e.proposal ?? e.root_reason;
+
+/** The first sentence of `text` (up to its first `.`, `!`, `?` or `。` followed by a space or the end); all of it when it has none. */
+function firstSentence(text: string): string {
+  const m = /^[\s\S]*?[.!?。](?=\s|$)/.exec(text.trim());
+  return m === null ? text.trim() : m[0];
+}
+
+/** The examples, newest first, each with its ID, date and one line: the first EVIDENCE_SHOWN, the rest behind "Show all N". */
+function Examples({ items }: { items: RuleEvidence[] }) {
   const [all, setAll] = useState(false);
   const shown = all ? items : items.slice(0, EVIDENCE_SHOWN);
   return (
-    <DetailPart label="rules.detailEvidence" part="evidence">
+    <DetailPart label="rules.detailExamples" part="examples">
       {[
         <ol key="list" className="space-y-2">
-          {shown.map((e, i) => (
-            <li key={`${e.ref ?? ""}${i}`} data-evidence={e.ref ?? ""} className="min-w-0 space-y-0.5">
-              {(e.ref !== undefined || e.date !== undefined) && (
-                <p className="flex flex-wrap gap-x-2 text-xs text-text-2">
-                  {e.ref !== undefined && <span className="font-mono break-all">{e.ref}</span>}
-                  {e.date !== undefined && <span data-evidence-date className="tabular-nums">{e.date}</span>}
-                </p>
-              )}
-              {e.proposal !== undefined && <p className={line}>{t("rules.evidenceProposal", { proposal: e.proposal })}</p>}
-              {e.quote !== undefined && <blockquote data-quote className={quote}>{e.quote}</blockquote>}
-              {e.root_reason !== undefined && <p className={line}>{t("rules.detailRoot", { reason: e.root_reason })}</p>}
-            </li>
-          ))}
+          {shown.map((e, i) => {
+            const said = exampleText(e);
+            return (
+              <li key={`${e.ref ?? ""}${i}`} data-evidence={e.ref ?? ""} className="min-w-0 space-y-0.5">
+                {(e.ref !== undefined || e.date !== undefined) && (
+                  <p className="flex flex-wrap gap-x-2 text-xs text-text-2">
+                    {e.ref !== undefined && <span className="font-mono break-all">{e.ref}</span>}
+                    {e.date !== undefined && <span data-evidence-date className="tabular-nums">{e.date}</span>}
+                  </p>
+                )}
+                {said !== undefined && (
+                  <p data-example-text className={`${quote} line-clamp-2`}>
+                    {said}
+                  </p>
+                )}
+              </li>
+            );
+          })}
         </ol>,
         !all && items.length > EVIDENCE_SHOWN && (
           <Button key="all" variant="ghost" size="sm" onClick={() => setAll(true)}>
@@ -259,48 +280,53 @@ function related(applied: AppliedRule[], ids: ReadonlySet<string>, target: strin
 }
 
 /**
- * The detail in its order: a description, what it would change (a proposal's kind and target), before → after, why,
- * the evidence, where it applies, and the related applied rules. A part with nothing to show is left out; only "what"
- * says "not given".
+ * One entry's reading order, shared by the card and the verdict dialog: 1 what to promote (the change in one or two
+ * lines, a class's rule, and the files it touches), 2 why (how often, and the root reason's first sentence),
+ * 3 examples, 4 the status of what it cites (`cited`: each evidence ID's ledger verdict, none when unrecorded); then
+ * where it applies and the related applied rules. A part with nothing to show is left out. The long fields (the whole
+ * rationale and a proposal's Now and Proposed lines) sit in one Disclosure under them.
  */
-function Detail({ entry, d, applied }: { entry: RuleRow; d: RuleDetail; applied: AppliedRule[] }) {
+function ReadingOrder({ entry, d, cited, applied }: { entry: RuleRow; d: RuleDetail; cited: Record<string, string>; applied: AppliedRule[] }) {
   const kind = d.kind ?? entry.kind;
   const target = d.target ?? entry.target;
   const rule = d.default ?? entry.draft?.default;
   const exception = d.exceptions ?? entry.draft?.exception;
   const evidence = d.evidence ?? [];
-  const ids = new Set([...evidence.flatMap((e) => (e.ref === undefined ? [] : [e.ref])), ...(entry.draft?.incidents ?? [])]);
+  const refs = [...new Set(evidence.flatMap((e) => (e.ref === undefined ? [] : [e.ref])))];
+  const ids = new Set([...refs, ...(entry.draft?.incidents ?? [])]);
   const overlaps = related(applied, ids, target);
+  const statuses = refs.filter((r) => cited[r] !== undefined);
+  const why = d.root_reason === undefined ? undefined : firstSentence(d.root_reason);
+  const longReason = d.root_reason !== undefined && d.root_reason.trim() !== why;
   return (
     <div data-rule-detail className="min-w-0 space-y-3 rounded-control bg-surface-2 p-3">
-      {d.description !== undefined && <p data-detail-description className={line}>{d.description}</p>}
-      {!isClass(entry.id) && (
-        <DetailPart label="rules.detailWhat" part="what">
-          {kind === undefined && target === undefined
-            ? [<p key="none" className={muted}>{t("rules.notGiven")}</p>]
-            : [
-              kind !== undefined && <p key="kind" className={line}>{t("rules.whatKind", { kind })}</p>,
-              target !== undefined && <p key="target" className={`${line} font-mono`}>{t("rules.whatTarget", { target })}</p>,
-            ]}
-        </DetailPart>
-      )}
-      <DetailPart label="rules.detailChange" part="change">
+      <DetailPart label="rules.detailWhat" part="what">
         {[
+          d.description !== undefined && <p key="desc" data-detail-description className={`${line} line-clamp-2`}>{d.description}</p>,
           rule !== undefined && <p key="rule" className={line}>{t("rules.whatRule", { rule })}</p>,
           exception !== undefined && <p key="except" className={line}>{t("rules.whatExcept", { exceptions: exception })}</p>,
-          d.current !== undefined && <p key="nowl" className="text-xs text-text-2">{t("rules.changeNow")}</p>,
-          d.current !== undefined && <pre key="now" data-change="current" className={fileLines}>{d.current}</pre>,
-          d.proposed !== undefined && <p key="nextl" className="text-xs text-text-2">{t("rules.changeProposed")}</p>,
-          d.proposed !== undefined && <pre key="next" data-change="proposed" className={fileLines}>{d.proposed}</pre>,
+          kind !== undefined && <p key="kind" className={line}>{t("rules.whatKind", { kind })}</p>,
+          target !== undefined && <p key="target" className={`${line} font-mono`}>{t("rules.whatTarget", { target })}</p>,
         ]}
       </DetailPart>
       <DetailPart label="rules.detailWhy" part="why">
         {[
           d.incidents !== undefined && <p key="count" className={line}>{d.incidents === 1 ? t("rules.detailOnce") : t("rules.detailCount", { count: d.incidents })}</p>,
-          d.root_reason !== undefined && <p key="root" className={line}>{t("rules.detailRoot", { reason: d.root_reason })}</p>,
+          why !== undefined && <p key="root" className={line}>{t("rules.detailRoot", { reason: why })}</p>,
         ]}
       </DetailPart>
-      {evidence.length > 0 && <Evidence items={evidence} />}
+      {evidence.length > 0 && <Examples items={evidence} />}
+      <DetailPart label="rules.detailStatus" part="status">
+        {[
+          statuses.length > 0 && (
+            <ul key="list" className="space-y-0.5">
+              {statuses.map((r) => (
+                <li key={r} data-cited={r} className={line}>{t("rules.citedVerdict", { id: r, decision: cited[r]! })}</li>
+              ))}
+            </ul>
+          ),
+        ]}
+      </DetailPart>
       <DetailPart label="rules.detailWhere" part="where">
         {[d.scope !== undefined && <Markdown key="scope" text={d.scope} />]}
       </DetailPart>
@@ -317,6 +343,17 @@ function Detail({ entry, d, applied }: { entry: RuleRow; d: RuleDetail; applied:
           ),
         ]}
       </DetailPart>
+      {(longReason || d.current !== undefined || d.proposed !== undefined) && (
+        <Disclosure data-detail-long summary={t("rules.detailLong")}>
+          <div className="mt-2 space-y-1">
+            {longReason && <p data-rationale className={line}>{t("rules.detailRationale", { reason: d.root_reason! })}</p>}
+            {d.current !== undefined && <p className="text-xs text-text-2">{t("rules.changeNow")}</p>}
+            {d.current !== undefined && <pre data-change="current" className={fileLines}>{d.current}</pre>}
+            {d.proposed !== undefined && <p className="text-xs text-text-2">{t("rules.changeProposed")}</p>}
+            {d.proposed !== undefined && <pre data-change="proposed" className={fileLines}>{d.proposed}</pre>}
+          </div>
+        </Disclosure>
+      )}
     </div>
   );
 }
@@ -326,7 +363,7 @@ function EntryDetail({ entry, applied }: { entry: RuleRow; applied: AppliedRule[
   const q = useRuleEntry(entry.id, true);
   if (q.isPending) return <Loading rows={2} />;
   const d = q.data?.detail ?? null;
-  if (d !== null) return <Detail entry={entry} d={d} applied={applied} />;
+  if (d !== null) return <ReadingOrder entry={entry} d={d} cited={q.data?.cited ?? {}} applied={applied} />;
   return (
     <div data-rule-detail>
       <Notice tone="info">{t("rules.detailUnread")}</Notice>
@@ -354,6 +391,14 @@ function RuleCard({ entry, applied, token }: { entry: RuleRow; applied: AppliedR
       {!isClass(entry.id) && (
         <p data-rule-what className={muted}>
           {proposalLine(entry.kind, entry.target)}
+        </p>
+      )}
+      {entry.task != null && (
+        <p data-rule-task className={muted}>
+          {t("rules.task")}{" "}
+          <Link href={`${BASE}tasks`} className={`font-mono ${LINK_CLASS}`}>
+            {entry.task}
+          </Link>
         </p>
       )}
       <Disclosure lazy summary={t("rules.showDetail")}>

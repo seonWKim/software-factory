@@ -3,7 +3,8 @@
 // its CLIs and reads its promoted rules. The controller records each capture as an outbound intent, and outbound calls
 // `capture` (retried with backoff, its text through G5 first). `pending`, `show`, `verdict` and `rules` read and judge
 // the ledger (a promote of a class also writes the rule into the owner's rules file; a promote of a proposal applies its
-// proposed lines to its target file): the dashboard's Rules page and
+// proposed lines to its target file, or, with no lines to apply, only records the verdict and the Rules page creates a
+// task to build it): the dashboard's Rules page and
 // the learned rules in every prompt (issue #571) go through them only.
 
 /** One pushback as the factory knows it. The ledger's own fields (root reason, hypothesis, rule draft) stay empty. */
@@ -148,6 +149,20 @@ export interface TacitRetired {
 /** The verdicts a ledger takes. `retire` is for a class only. */
 export type TacitDecision = "hold" | "promote" | "reject" | "retire";
 
+/** Whether a proposal's detail gives both its current and its proposed lines, so a promote applies them to its target. */
+export const hasLines = (d: Pick<TacitEntryDetail, "current" | "proposed">): boolean => d.current !== undefined && d.proposed !== undefined;
+
+/** A proposal ID a task ID can be made from: `P-` and then letters, digits, `-` and `_` only. */
+const PROPOSAL_ID = /^P-[A-Za-z0-9_-]+$/;
+
+/**
+ * The task a promote of a proposal with no lines creates: `tk_` and the proposal ID in lower case, so a retry finds the
+ * same task. Null for an ID that does not fit PROPOSAL_ID (refused before anything runs).
+ */
+export function proposalTaskId(id: string): string | null {
+  return PROPOSAL_ID.test(id) ? `tk_${id.toLowerCase()}` : null;
+}
+
 /** Which CLI judges `id`: `class` for a `C-` ID, `proposal` for a `P-` ID, null for any other. */
 export function tacitIdKind(id: string): "class" | "proposal" | null {
   return id.startsWith("C-") ? "class" : id.startsWith("P-") ? "proposal" : null;
@@ -168,7 +183,8 @@ export interface TacitLedger {
   /**
    * Records the owner's verdict on entry `id` with their reason; `rule` is the owner's rule on a promote of a class,
    * which encodes it first; a promote of a proposal applies its proposed lines to its target file first (as `show`
-   * gives them); a retire of a class removes its block from the rules file first. Throws for an ID that is neither a
+   * gives them), or with no current and proposed lines (hasLines false) changes no file and only records the verdict
+   * with its target; a proposal with no target is refused; a retire of a class removes its block from the rules file first. Throws for an ID that is neither a
    * class nor a proposal, before any CLI runs; throws `TacitRefusal` when a promote or retire is refused with nothing
    * written or run, `TacitSyncFailed` when its verdict was recorded but the follow-up failed. A verdict that fails after
    * a write puts the file back.
@@ -180,4 +196,9 @@ export interface TacitLedger {
   applied?(): Promise<TacitApplied>;
   /** The retired classes, newest first, from the ledger's `retire` verdicts; the Rules page's Retired list. Reads only. Optional as `applied` is. */
   retired?(): Promise<readonly TacitRetired[]>;
+  /**
+   * The decision of the newest ledger verdict on each of `ids` that has one (an ID with none is left out), from the
+   * ledger's verdict log. Reads only. Optional as `retired` is.
+   */
+  decided?(ids: readonly string[]): Promise<Readonly<Record<string, string>>>;
 }

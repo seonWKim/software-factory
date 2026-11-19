@@ -15,10 +15,12 @@ const { RulesPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { RulesP
 
 // The Rules page (issue #571): the pending entries in two groups, rule candidates (C-) and structure proposals (P-),
 // each under its line on what promoting one does; each card with its title, state, ID and one line of what it would
-// change, and its detail (what, before → after, why, evidence, where, related; an empty part left out) read from GET /api/v1/rules/entry only when the card opens. Promote, Hold and Reject ask for a
+// change, and its detail in one reading order shared with the verdict dialog (what to promote, why, examples, status
+// of what it cites, where, related; an empty part left out; the long fields in a Disclosure) read from GET
+// /api/v1/rules/entry only when the card opens. Promote, Hold and Reject ask for a
 // reason in a dialog before they send; Promote of a class (C-) sends the owner's wording, default and exception (the
-// last two prefilled from its draft), Promote of a proposal (P-) shows its Now and Proposed lines and sends only the
-// reason. A judged entry shows its decision and no
+// last two prefilled from its draft), Promote of a proposal (P-) sends only the reason: it applies its Now and
+// Proposed lines, or with none records the verdict and creates a task, which the card then links to. A judged entry shows its decision and no
 // verdict buttons; a class whose draft could not be read offers no Promote. With the ledger off (design 08-settings): a
 // picker over the known agents homes shows the chosen one's check, and one primary Turn on, when the home in use is
 // found, writes the `integrations` entry through POST /api/v1/settings and loads the rules with no reload.
@@ -109,7 +111,7 @@ describe("Rules page", () => {
     const groups = screen.getAllByRole("region").map((r) => [r.getAttribute("aria-label"), r.querySelector("[data-group-line]")!.textContent]);
     expect(groups).toEqual([
       ["Rule candidates", "Promoting a candidate adds its rule to every run's prompt from the next run on."],
-      ["Structure proposals", "Promoting a proposal shows its before and after, then applies it to the target file once you confirm."],
+      ["Structure proposals", "Promoting a proposal applies its before and after to the target file once you confirm; one with no lines to apply gets a task to build it."],
     ]);
     expect(card("C-012").querySelector("[data-rule-title]")!.textContent).toBe("Keep existing CLI flags.");
     expect(card("C-012").textContent).toContain("Pending");
@@ -132,7 +134,7 @@ describe("Rules page", () => {
     expect(document.querySelector("[data-rule-detail]")).toBeNull();
   });
 
-  it("opening a card reads its detail on demand and shows before → after, why, evidence and where in that order", async () => {
+  it("opening a card reads its detail on demand and shows what to promote, why, examples and where in that order", async () => {
     detail = {
       id: "C-012", error: null,
       detail: {
@@ -149,13 +151,13 @@ describe("Rules page", () => {
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     expect(gets.filter((u) => u.includes("/rules/entry"))).toEqual(["/api/v1/rules/entry?id=C-012"]);
     const parts = [...card("C-012").querySelectorAll<HTMLElement>("[data-detail-part]")];
-    expect(parts.map((p) => p.dataset.detailPart)).toEqual(["change", "why", "evidence", "where"]);
-    expect(parts.map((p) => p.querySelector("h3")!.textContent)).toEqual(["Before → after", "Why", "Evidence", "Where it applies"]);
+    expect(parts.map((p) => p.dataset.detailPart)).toEqual(["what", "why", "examples", "where"]);
+    expect(parts.map((p) => p.querySelector("h3")!.textContent)).toEqual(["What to promote", "Why", "Examples", "Where it applies"]);
     expect(parts[0]!.textContent).toContain("Rule: Keep every existing CLI flag.");
     expect(parts[0]!.textContent).toContain("Except: a deprecated flag");
     const why = parts[1]!.textContent!;
     expect(why.indexOf("Came up 3 times.")).toBeLessThan(why.indexOf("Root reason: renames skip callers"));
-    expect(parts[2]!.querySelector("blockquote[data-quote]")!.textContent).toBe("keep --json");
+    expect(parts[2]!.querySelector("[data-example-text]")!.textContent).toBe("keep --json");
     expect(parts[3]!.textContent).toContain("software, CLI");
   });
 
@@ -168,7 +170,8 @@ describe("Rules page", () => {
     const part = (name: string) => card("P-0007").querySelector(`[data-detail-part="${name}"]`);
     expect(part("what")!.textContent).toContain("Kind: edit-asset");
     expect(part("what")!.textContent).toContain("Changes: prompts/review.md");
-    for (const name of ["why", "where", "change", "evidence", "related"]) expect(part(name)).toBeNull();
+    for (const name of ["why", "where", "examples", "status", "related"]) expect(part(name)).toBeNull();
+    expect(card("P-0007").querySelector("[data-detail-long]")).toBeNull();
     expect(card("P-0007").querySelector("[data-rule-detail]")!.textContent).not.toContain("not given");
     expect(card("P-0007").querySelector("[data-detail-description]")).toBeNull();
   });
@@ -251,7 +254,7 @@ describe("Rules page", () => {
     ]);
   });
 
-  it("promote of a proposal shows its Now and Proposed lines, asks for no wording or file, and sends only the reason; with no lines Send is off", async () => {
+  it("promote of a proposal shows its Now and Proposed lines, asks for no wording or file, and sends only the reason; with no lines it says a task is created and Send is on", async () => {
     current = view({
       entries: [{ id: "P-20261101-158e", title: "Quiet notify", state: "open", kind: "edit-asset", target: "private/bin/notify", judged: null, draft: null, draft_error: null },
         { id: "P-0009", title: "No lines", state: "open", kind: "edit-asset", target: "x.md", judged: null, draft: null, draft_error: null }],
@@ -276,9 +279,88 @@ describe("Rules page", () => {
     await waitFor(() => expect(document.querySelector("dialog[data-dialog]")).toBeNull());
 
     fireEvent.click(within(card("P-0009")).getByRole("button", { name: "Promote" }));
-    expect((await within(dialog()).findByRole("alert", {}, SLOW)).textContent).toBe("Promote is off: this proposal gives no Now and Proposed lines to apply.");
-    fireEvent.change(within(dialog()).getByRole("textbox", { name: "Reason" }), { target: { value: "x" } });
-    expect((within(dialog()).getByRole("button", { name: "Send promote" }) as HTMLButtonElement).disabled).toBe(true);
+    await waitFor(() => expect(dialog().querySelector("[data-dialog-consequence]")!.textContent).toBe("Promoting records the verdict and creates a task to build it."), SLOW);
+    expect(within(dialog()).queryByRole("alert")).toBeNull();
+    expect(dialog().textContent).not.toContain("Promote is off");
+    const send = within(dialog()).getByRole("button", { name: "Send promote" }) as HTMLButtonElement;
+    expect(send.disabled).toBe(true);
+    fireEvent.change(within(dialog()).getByRole("textbox", { name: "Reason" }), { target: { value: "build it" } });
+    expect(send.disabled).toBe(false);
+    fireEvent.click(send);
+    await waitFor(() => expect(posts).toHaveLength(2));
+    expect(sent()[1]).toEqual({ id: "P-0009", verdict: "promote", reason: "build it" });
+  });
+
+  it("a proposal's card links its task once the promote created it, and shows no task before", async () => {
+    current = view({
+      entries: [
+        { id: "P-0009", title: "Build a subcommand", state: "open", kind: "new-asset", target: "bin/evolve", judged: null, draft: null, draft_error: null, task: null },
+        { id: "P-0010", title: "Built", state: "open", kind: "new-asset", target: "bin/evolve", judged: "promote", draft: null, draft_error: null, task: "tk_p-0010" },
+      ],
+    });
+    await show();
+    await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
+    expect(card("P-0009").querySelector("[data-rule-task]")).toBeNull();
+    expect(card("P-0009").textContent).not.toContain("tk_");
+    const decided = document.querySelector<HTMLElement>("[data-decided]")!;
+    const task = decided.querySelector<HTMLElement>('[data-rule="P-0010"] [data-rule-task]')!;
+    expect(task.textContent).toBe("Task to build it: tk_p-0010");
+    expect(within(task).getByRole("link", { name: "tk_p-0010" }).getAttribute("href")).toBe("/app/tasks");
+  });
+
+  it("the card and the Promote dialog share one reading order: what, why, examples, status; each example's one line falls back from quote to proposal to root reason", async () => {
+    current = view({ entries: proposalEntry() });
+    const reason = "Notices wake the owner at night. They also hide the real alerts among the noise.";
+    detail = {
+      id: "P-20261103-34e9", error: null, cited: { "P-0003": "promote", "T-1": "hold" },
+      detail: {
+        id: "P-20261103-34e9", description: "Add quiet hours to evolve.", kind: "new-asset", target: "bin/evolve", root_reason: reason, incidents: 3,
+        evidence: [
+          { ref: "T-1", date: "2026-11-05", quote: "stop at 3am", proposal: "notify always", root_reason: "no quiet hours" },
+          { ref: "L-0042", date: "2026-11-03", proposal: "keep notifying", root_reason: "no quiet hours" },
+          { ref: "E-7", date: "2026-11-02", root_reason: "alerts drown" },
+          { ref: "P-0003", date: "2026-11-01", quote: "see the earlier proposal" },
+        ],
+      },
+    };
+    await show();
+    await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
+    const order = (root: HTMLElement) => [...root.querySelectorAll<HTMLElement>("[data-detail-part]")].map((p) => p.dataset.detailPart);
+    fireEvent.click(whyToggle("P-20261103-34e9"));
+    await waitFor(() => expect(card("P-20261103-34e9").querySelector("[data-detail-part]")).not.toBeNull(), SLOW);
+    expect(order(card("P-20261103-34e9"))).toEqual(["what", "why", "examples", "status"]);
+    fireEvent.click(within(card("P-20261103-34e9")).getByRole("button", { name: "Promote" }));
+    await waitFor(() => expect(dialog().querySelector("[data-detail-part]")).not.toBeNull(), SLOW);
+    expect(order(dialog())).toEqual(["what", "why", "examples", "status"]);
+    const part = (name: string) => dialog().querySelector<HTMLElement>(`[data-detail-part="${name}"]`)!;
+    expect(part("what").textContent).toContain("Add quiet hours to evolve.");
+    expect(part("what").textContent).toContain("Changes: bin/evolve");
+    // Why is the root reason's first sentence; the whole rationale waits in the Disclosure.
+    expect(part("why").textContent).toContain("Root reason: Notices wake the owner at night.");
+    expect(part("why").textContent).not.toContain("real alerts");
+    const long = dialog().querySelector<HTMLElement>("[data-detail-long]")!;
+    expect(long.querySelector("summary")!.getAttribute("aria-expanded")).toBe("false");
+    expect(long.querySelector("[data-rationale]")!.textContent).toBe(`Rationale: ${reason}`);
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Show all 4" }));
+    const examples = [...part("examples").querySelectorAll<HTMLElement>("[data-evidence]")].map((e) => [
+      e.dataset.evidence, e.querySelector("[data-evidence-date]")!.textContent, e.querySelector("[data-example-text]")!.textContent,
+    ]);
+    expect(examples).toEqual([
+      ["T-1", "2026-11-05", "stop at 3am"],
+      ["L-0042", "2026-11-03", "keep notifying"],
+      ["E-7", "2026-11-02", "alerts drown"],
+      ["P-0003", "2026-11-01", "see the earlier proposal"],
+    ]);
+    // Only a cited ID with a recorded verdict shows one, in the evidence's order.
+    expect([...part("status").querySelectorAll<HTMLElement>("[data-cited]")].map((c) => c.textContent)).toEqual(["T-1: hold", "P-0003: promote"]);
+  });
+
+  it("no status part when no cited ID has a recorded verdict", async () => {
+    current = view({ entries: proposalEntry() });
+    detail = { ...TWO_INCIDENTS, cited: {} };
+    await openDialog("Promote");
+    expect(dialog().querySelector('[data-detail-part="status"]')).toBeNull();
+    expect(dialog().querySelector('[data-detail-part="examples"]')).not.toBeNull();
   });
 
   it("a failed apply keeps the dialog open with the CLI's error", async () => {
@@ -627,9 +709,9 @@ describe("Rules page", () => {
     const items = [...dialog().querySelectorAll<HTMLElement>("[data-evidence]")];
     expect(items.map((i) => i.dataset.evidence)).toEqual(["T-20261104-b2", "L-0042"]);
     expect(items.map((i) => i.querySelector("[data-evidence-date]")!.textContent)).toEqual(["2026-11-04", "2026-11-01"]);
-    expect(items.map((i) => i.querySelector("blockquote[data-quote]")!.textContent)).toEqual(["stop at 3am", "too loud"]);
-    expect(items[0]!.textContent).toContain("Agent proposed: notify every hour");
-    expect(items[0]!.textContent).toContain("Root reason: no quiet hours");
+    // One line each: the owner's quote wins over the agent's proposal and the root reason.
+    expect(items.map((i) => i.querySelector("[data-example-text]")!.textContent)).toEqual(["stop at 3am", "too loud"]);
+    expect(items[0]!.textContent).not.toContain("notify every hour");
     expect(dialog().querySelector("[data-detail-description]")!.textContent).toBe("Quiet evolve's notices at night.");
     const all = dialog().innerHTML;
     expect(all.indexOf("data-evidence")).toBeLessThan(all.indexOf("<textarea"));
@@ -650,7 +732,7 @@ describe("Rules page", () => {
     expect(within(dialog()).queryByRole("button", { name: /Show all/ })).toBeNull();
   });
 
-  it("before → after shows a proposal's current and proposed lines only when the ledger carries them", async () => {
+  it("the Disclosure of long fields shows a proposal's current and proposed lines only when the ledger carries them", async () => {
     current = view({ entries: proposalEntry() });
     detail = { ...TWO_INCIDENTS, detail: { ...TWO_INCIDENTS.detail!, current: "notify always", proposed: "notify 08:00-22:00" } };
     await openDialog("Promote");
@@ -659,7 +741,8 @@ describe("Rules page", () => {
     cleanup();
     detail = TWO_INCIDENTS;
     await openDialog("Promote");
-    expect(dialog().querySelector('[data-detail-part="change"]')).toBeNull();
+    expect(dialog().querySelector("[data-change]")).toBeNull();
+    expect(dialog().querySelector("[data-detail-long]")).toBeNull();
   });
 
   it("Related lists the applied rules that share an incident ID or name the target file, and is left out when none match", async () => {
@@ -692,11 +775,11 @@ describe("Rules page", () => {
     const summary = dialog().querySelector<HTMLElement>("[data-dialog-summary]")!;
     expect(summary.textContent).toBe(title);
     // Wrapped, never cut or kept on one line: the summary and every quote break inside the dialog's width.
-    for (const el of [summary, ...dialog().querySelectorAll<HTMLElement>("blockquote[data-quote]")]) {
+    for (const el of [summary, ...dialog().querySelectorAll<HTMLElement>("[data-example-text]")]) {
       expect(el.className).toContain("break-words");
       expect(el.className).not.toMatch(/\b(truncate|whitespace-nowrap)\b/);
     }
-    expect(dialog().querySelectorAll("blockquote[data-quote]")).toHaveLength(2);
+    expect(dialog().querySelectorAll("[data-example-text]")).toHaveLength(2);
     expect(dialog().querySelector("[data-rule-detail]")!.className).toContain("min-w-0");
   });
 

@@ -52,9 +52,11 @@ export interface RuleRow {
   /** A proposal's kind (`promote-learning`, `edit-asset`, `new-asset`) and the asset it changes, when the ledger lists them. */
   kind?: string;
   target?: string;
+  /** The task a promote of this proposal created to build it (`tk_` + its ID in lower case); null before (absent from an older server). */
+  task?: string | null;
 }
 
-/** One incident behind an entry: its linked ID (T-, L-, E-), day, the agent's proposal, the owner's quote, its root reason. */
+/** One incident behind an entry: its linked ID (T-, L-, E-, P-), day, the agent's proposal, the owner's quote, its root reason. */
 export interface RuleEvidence {
   ref?: string;
   date?: string;
@@ -91,6 +93,8 @@ export interface RuleEntryView {
   detail: RuleDetail | null;
   error: string | null;
   retire?: string[] | null;
+  /** The newest ledger verdict of each evidence ID that has one; an ID with none is left out (absent from an older server). */
+  cited?: Record<string, string>;
 }
 
 /** One retired class from the ledger's retire verdicts: the owner's reason and the day (YYYY-MM-DD). */
@@ -194,8 +198,8 @@ export async function postStanding(
 
 /**
  * POST /api/v1/rules/verdict: a verdict with its reason, and for promote of a class (C-) the owner's wording, default
- * and exception. Promote of a proposal (P-) takes none: the server applies its current → proposed lines, and a failed
- * apply comes back as the error, with nothing written.
+ * and exception. Promote of a proposal (P-) takes none: the server applies its current → proposed lines, or with no
+ * lines records the verdict and creates a task to build it; a failure comes back as the error, with nothing written.
  */
 export async function postRuleVerdict(
   token: string,
