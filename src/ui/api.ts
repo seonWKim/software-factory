@@ -38,6 +38,7 @@ import { latestWhyAnchor, threadRows } from "./thread.js";
 import type { Why } from "./why.js";
 import { displayName } from "./names.js";
 import { Withholder } from "./withhold.js";
+import { itemGraph, windowRuns } from "./graph.js";
 import type { MergeCheck } from "../interfaces/factory-store.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -71,7 +72,7 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
     case "/overview":
       return ok(await overview(c, url.searchParams));
     case "/items": return (await projectFilterRefusal(d.store, url.searchParams.get("project"))) ?? items(c, url.searchParams);
-    case "/runs": return ok(await runs(c));
+    case "/runs": return windowRuns({ store: d.store, text: (v, ch) => c.text(v, ch), now: c.now }, url.searchParams.get("window"), (r) => runRow(c, r));
     case "/queue": return ok(await queue(c));
     case "/workers": return ok(await workers(c));
     case "/unreviewed-merges": return unreviewedMerges(c, url.searchParams);
@@ -94,6 +95,8 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
       return pauses(d);
     case "/standing":
       return ok(await readStanding(d));
+    case "/items/graph": // before the /items/:id pattern below, which would read "graph" as an item id
+      return itemGraph({ store: d.store, text: (v) => c.text(v), now: c.now }, url.searchParams.get("window"));
   }
   const t = /^\/data\/tables\/([^/]+)$/.exec(path);
   if (t) {
@@ -539,13 +542,6 @@ async function runRow(c: ApiCtx, r: Run) {
     lease_expires_at: r.lease ? r.lease.expires_at : null,
     created_at: r.created_at,
   };
-}
-
-async function runs(c: ApiCtx) {
-  const out = [];
-  for (const r of await c.d.store.listRunsByStatus(["running"], LIST_LIMIT)) out.push(await runRow(c, r));
-  for (const r of await c.d.store.listRunsByStatus(["queued"], LIST_LIMIT)) out.push(await runRow(c, r));
-  return { as_of: c.now.toISOString(), runs: out };
 }
 
 /** Queued runs, oldest first, each with why its item waits (what the Starts column shows). */

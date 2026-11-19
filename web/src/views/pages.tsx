@@ -23,7 +23,7 @@ import { cn } from "../lib/cn.js";
 import { useUrlParam } from "../lib/url-param.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { LEVEL_LABELS, duration, errorLabel, isHttpUrl, localDateTime, relativeTime, runStatusLabel, termLabel, shortRev, shortSource, tokens } from "../lib/format.js";
+import { LEVEL_LABELS, duration, errorLabel, groupedInteger, isHttpUrl, localClock, localDateTime, relativeTime, runStatusLabel, termLabel, shortRev, shortSource, tokens } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
 import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, When, byId, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
@@ -36,8 +36,11 @@ import { Disclosure } from "../components/ui/disclosure.js";
 import { Card } from "../components/ui/card.js";
 import { Badge } from "../components/ui/badge.js";
 
-/** "host slept N min" for a host sleep's gap, at least 1 min (only gaps over 60 s are recorded). */
-export const sleptText = (gap_ms: number): string => t("host.slept", { min: Math.max(1, Math.round(gap_ms / 60_000)) });
+/** A host sleep's gap in whole minutes, at least 1 (only gaps over 60 s are recorded). */
+const sleptMinutes = (gap_ms: number): number => Math.max(1, Math.round(gap_ms / 60_000));
+
+/** "host slept N min" for a host sleep's gap, on the item timeline. */
+export const sleptText = (gap_ms: number): string => t("host.slept", { min: sleptMinutes(gap_ms) });
 
 /** One active claim pause for the banner: what it stops, when it began (model stall) and when it ends or is checked next. */
 function pauseLine(p: PauseRow, now: number): string {
@@ -744,7 +747,10 @@ function CheckList({ checks }: { checks: Health["checks"] }) {
       {checks.map((c, i) => (
         <li key={i} className="flex items-baseline gap-2">
           <Badge level={HEALTH_TONE[c.status]}>{checkLabel(c.status)}</Badge>
-          <span className="min-w-0 text-pretty break-words">{c.msg}</span>
+          <span className="min-w-0 text-pretty break-words">
+            {c.msg}
+            {c.detail !== undefined && <RawDetails className="mt-1"><code className="font-mono text-xs whitespace-pre-wrap break-all">{c.detail}</code></RawDetails>}
+          </span>
         </li>
       ))}
     </ul>
@@ -754,47 +760,68 @@ function CheckList({ checks }: { checks: Health["checks"] }) {
 type HealthTab = "checks" | "pauses" | "sleeps" | "merges" | "efficiency" | "github";
 
 /**
- * The GitHub budget tab (design 09-dashboard-app, 2026-11-16): what the controller stored after its last poll, so no
- * GitHub call. Remaining of limit until reset_at, the counted calls (and the share when one is set), a banner while
- * waiting or low, and the token's days left when the last health run checked it.
+ * The GitHub budget tab (design 09-health, 2026-11-20): what the controller stored after its last poll, so no GitHub
+ * call. Remaining of limit grouped by thousands and the reset in the viewer's local time, the requests this factory
+ * made (and the share when one is set), a banner while waiting or low, the token's days left when the last health run
+ * checked it, and the stored fields (reset time, replica, wait reason) behind Details.
  */
 function GitHubBudgetTab({ budget, tokenDays }: { budget: GitHubBudget; tokenDays: Overview["github_token_days"] }) {
+  const reset = localClock(budget.reset_at);
+  const raw = { reset_at: budget.reset_at, replica_id: budget.replica_id, budget_share: budget.budget_share, wait_reason: budget.wait_reason };
   return (
     <Card title={t("health.githubBudget")}>
       <div data-github-budget className="space-y-2 text-sm">
-        {budget.state === "waiting" && <Notice tone="warn">{t("health.budgetWaiting", { reason: budget.wait_reason ?? budget.reset_at })}</Notice>}
+        {budget.state === "waiting" && <Notice tone="warn">{t("health.budgetWaiting", { reset })}</Notice>}
         {budget.state === "low" && <Notice tone="warn">{t("health.budgetLow")}</Notice>}
-        <p className="tabular-nums">{t("health.budgetLeft", { remaining: budget.remaining, limit: budget.limit, reset: budget.reset_at })}</p>
-        <p className="tabular-nums text-text-2">{t("health.budgetCounted", { counted: budget.counted })}</p>
-        {budget.share_limit !== null && <p className="tabular-nums text-text-2">{t("health.budgetShare", { share_limit: budget.share_limit, share: budget.budget_share })}</p>}
+        <p className="tabular-nums">{t("health.budgetLeft", { remaining: groupedInteger(budget.remaining), limit: groupedInteger(budget.limit), reset })}</p>
+        <p className="tabular-nums text-text-2">{t("health.budgetCounted", { counted: groupedInteger(budget.counted) })}</p>
+        {budget.share_limit !== null && <p className="tabular-nums text-text-2">{t("health.budgetShare", { share_limit: groupedInteger(budget.share_limit) })}</p>}
         {tokenDays !== null && tokenDays !== undefined && (
           <p data-token-days className="tabular-nums">{tokenDays === "unknown" ? t("health.tokenUnknown") : t("health.tokenDays", { days: tokenDays })}</p>
         )}
+        <RawDetails><code className="font-mono text-xs whitespace-pre-wrap break-all">{JSON.stringify(raw, null, 1)}</code></RawDetails>
       </div>
     </Card>
   );
 }
 
-/** One row per sleep event: entries with the same `woke_at` (one per worker) merge, the gap being the largest. */
-function groupSleeps(sleeps: readonly HostSleepRow[]): { woke_at: string; gap_ms: number; slots: number[] }[] {
-  const groups = new Map<string, { woke_at: string; gap_ms: number; slots: number[] }>();
+interface SleepGroup {
+  woke_at: string;
+  gap_ms: number;
+  workers: Set<string>;
+  /** The API entries behind the row, for its Details. */
+  raw: HostSleepRow[];
+}
+
+/**
+ * One row per sleep event: entries that woke in the same minute (one per worker, milliseconds apart) merge, the gap
+ * being the largest and the workers counted once each.
+ */
+function groupSleeps(sleeps: readonly HostSleepRow[]): SleepGroup[] {
+  const groups = new Map<string, SleepGroup>();
   for (const h of sleeps) {
-    const g = groups.get(h.woke_at) ?? { woke_at: h.woke_at, gap_ms: 0, slots: [] };
+    const minute = Math.floor(Date.parse(h.woke_at) / 60_000);
+    const key = Number.isNaN(minute) ? h.woke_at : String(minute);
+    const g = groups.get(key) ?? { woke_at: h.woke_at, gap_ms: 0, workers: new Set<string>(), raw: [] };
     g.gap_ms = Math.max(g.gap_ms, h.gap_ms);
-    const slot = /:(\d+)$/.exec(h.worker_id)?.[1];
-    if (slot !== undefined) g.slots.push(Number(slot));
-    groups.set(h.woke_at, g);
+    g.workers.add(h.worker_id);
+    g.raw.push(h);
+    groups.set(key, g);
   }
   return [...groups.values()];
 }
 
-/** "workers 0–4" for consecutive slots, "workers 0, 2" otherwise, "worker 3" for one. */
-function workersText(slots: readonly number[]): string {
-  const s = [...new Set(slots)].sort((a, b) => a - b);
-  if (s.length === 0) return "";
-  if (s.length === 1) return t("health.worker", { slots: String(s[0]) });
-  const run = s.every((n, i) => n === s[0]! + i);
-  return t("health.workers", { slots: run ? `${s[0]}–${s.at(-1)}` : s.join(", ") });
+/** "Computer slept 15 min at 6:18 PM; 4 workers paused": the largest gap, the local wake time and the distinct workers. */
+function sleepText(g: SleepGroup): string {
+  const n = g.workers.size;
+  return t("health.sleepRow", { min: sleptMinutes(g.gap_ms), time: localClock(g.woke_at), workers: t(n === 1 ? "health.pausedOne" : "health.pausedMany", { count: n }) });
+}
+
+/** The Checks card's title: all pass, or how many need attention, then when they ran ("All 27 checks pass · 4m ago"). */
+function checksTitle(total: number, attention: number, ago: string): string {
+  if (total === 0) return t("health.checks");
+  if (attention === 0) return t("health.allPass", { count: total, time: ago });
+  return t(attention === 1 ? "health.attentionOne" : "health.attentionMany", { count: attention, time: ago });
 }
 
 export function HealthPage() {
@@ -811,7 +838,7 @@ export function HealthPage() {
   if (!health.data) return <><PageHeader title={t("page.health")} /><Loading rows={6} /></>;
   const order = ["fail", "warn", "ok"];
   const checks = [...health.data.checks].sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
-  // Warn and fail rows stay in view; ok rows fold behind their count ("22 ok").
+  // Warn and fail rows stay in view; ok rows fold behind their count ("22 ok"), or behind "Show the checks" when the title already counts them.
   const open = checks.filter((c) => c.status !== "ok");
   const fine = checks.filter((c) => c.status === "ok");
   const sleeps = groupSleeps(health.data.sleeps ?? []);
@@ -834,11 +861,10 @@ export function HealthPage() {
       <CodeRevision factory={overview.data?.factory} />
       <Tabs label={t("health.tabs")} options={options} value={tab} onChange={pick} />
       {tab === "checks" && (
-        <Card title={t("health.checks")} count={checks.length}>
-          <p className="mb-2 text-xs text-text-2"><When at={health.data.checked_at} now={now} label="health.checkedAt" /></p>
+        <Card title={checksTitle(checks.length, open.length, relativeTime(health.data.checked_at, now))}>
           <CheckList checks={open} />
           {fine.length > 0 && (
-            <Disclosure data-testid="ok-checks" className="mt-2" summary={t("health.okCount", { count: fine.length })}>
+            <Disclosure data-testid="ok-checks" className={open.length > 0 ? "mt-2" : undefined} summary={open.length > 0 ? t("health.okCount", { count: fine.length }) : t("health.showChecks")}>
               <CheckList checks={fine} />
             </Disclosure>
           )}
@@ -856,10 +882,12 @@ export function HealthPage() {
           ) : (
             <ul className="space-y-1 text-sm">
               {sleeps.map((h) => (
-                <li key={h.woke_at} className="flex items-baseline gap-3" data-testid="host-sleep">
-                  <span className="font-medium">{sleptText(h.gap_ms)}</span>
-                  <span className="tabular-nums text-text-2"><When at={h.woke_at} now={now} label="health.sleepWhen" vars={{ when: h.woke_at.slice(0, 16).replace("T", " ") }} /></span>
-                  <span className="min-w-0 text-text-3">{workersText(h.slots)}</span>
+                <li key={h.woke_at} className="text-sm" data-testid="host-sleep">
+                  <span className="flex flex-wrap items-baseline gap-x-3">
+                    <span className="font-medium tabular-nums">{sleepText(h)}</span>
+                    <span className="tabular-nums text-text-2"><When at={h.woke_at} now={now} /></span>
+                  </span>
+                  <RawDetails className="mt-1"><code className="font-mono text-xs whitespace-pre-wrap break-all">{h.raw.map((r) => `${r.woke_at} ${r.worker_id} gap_ms=${r.gap_ms}`).join("\n")}</code></RawDetails>
                 </li>
               ))}
             </ul>
