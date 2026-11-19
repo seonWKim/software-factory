@@ -710,9 +710,8 @@ export class Worker {
 
   /**
    * The toolchain's warm step (design 05-sandbox.md, issue #334), once per run of a warm kind: `warm_command` in
-   * the run folder before the run's first agent step (a resolve run calls it itself, on the branch tip before its
-   * merge), as the worker (its tool env: the owner's HOME and caches, and the network), with the
-   * slot env and no credential or test database. It fills the caches the agent then reads offline. A failure ends the run before any agent starts, naming the command.
+   * the run folder before the first agent step (resolve calls it on the branch tip before its merge), as the worker
+   * (its tool env: the owner's HOME and caches, and the network), with the slot env and no credential or test database. It fills the caches the agent then reads offline. A failure ends the run before any agent starts, naming the command.
    */
   async warmOnce(run: Run, handle: SandboxHandle, signal: AbortSignal): Promise<void> {
     const s = this.scratch.get(run);
