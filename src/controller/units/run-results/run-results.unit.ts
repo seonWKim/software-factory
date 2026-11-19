@@ -687,19 +687,6 @@ export class RunResultsUnit {
   }
 
   /**
-   * The verdict of the item's latest succeeded review run that holds one, or null. A review that ran no agent
-   * (an unchanged head, an empty diff) holds none and never counts, the way the review run matches its head.
-   */
-  async latestVerdict(id: WorkItemId): Promise<ReviewOutput | null> {
-    const last = (await this.c.k.reader.listRuns(id))
-      .filter((r) => r.kind === "review" && r.outcome?.status === "succeeded" && r.outcome.data.review != null)
-      .at(-1);
-    if (last?.outcome?.status !== "succeeded") return null;
-    const parsed = parseReview(last.outcome.data.review);
-    return parsed.ok ? parsed.value : null;
-  }
-
-  /**
    * A failed triage, implement or review run (design §5 Restarts). Counts come from the run history of
    * this step (the first run and its automatic retries): a rate limit is never an attempt; infra failures
    * count toward max_restart (and add one to restart_count); task failures toward max_attempts. `checks_env`

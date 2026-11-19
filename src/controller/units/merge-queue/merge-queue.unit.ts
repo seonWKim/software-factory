@@ -90,10 +90,14 @@ export class MergeQueueUnit {
 
   /**
    * Whether the item's latest review verdict set `ui_unverified`: its UI change could not be checked. A later review
-   * that ran no agent (an unchanged head) holds no verdict, so it never clears the flag.
+   * that ran no agent (an unchanged head, an empty diff) holds no verdict, so it never counts and never clears the flag.
    */
   private async uiUnverified(id: WorkItemId): Promise<boolean> {
-    return (await this.c.unit("run-results").latestVerdict(id))?.ui_unverified === true;
+    const last = (await this.c.k.reader.listRuns(id))
+      .filter((r) => r.kind === "review" && r.outcome?.status === "succeeded" && r.outcome.data.review != null)
+      .at(-1);
+    // Read the stored verdict's field directly (core/outputs.ts parses it the same way: true or absent).
+    return last?.outcome?.status === "succeeded" && (last.outcome.data.review as { ui_unverified?: unknown }).ui_unverified === true;
   }
 
   /**
