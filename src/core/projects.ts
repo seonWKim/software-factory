@@ -43,9 +43,9 @@ export type CreateProjectResult = { ok: true; project: Project } | InvalidName |
 export type RenameProjectResult = { ok: true; project: Project } | { ok: false; reason: "not_found" } | InvalidName | SlugTaken;
 /** `changed`: false when it was in that state already (nothing written). */
 export type ArchiveProjectResult = { ok: true; project: Project; changed: boolean } | { ok: false; reason: "not_found" };
-/** `unlinked`: the IDs of the tasks that were in it, now in it no more; the tasks themselves are untouched. */
 /** Refused, with nothing written, for an unknown or archived project. */
 export type SetProjectFolderResult = { ok: true; project: Project } | { ok: false; reason: "not_found" | "archived" };
+/** `unlinked`: the IDs of the tasks that were in it, now in it no more; the tasks themselves are untouched. */
 export type DeleteProjectResult = { ok: true; project: Project; unlinked: string[] } | { ok: false; reason: "not_found" };
 /** `changed`: false when the task was in it already (nothing written). */
 export type AddTaskToProjectResult = { ok: true; changed: boolean } | { ok: false; reason: "project_not_found" | "task_not_found" | "archived" };
