@@ -73,6 +73,18 @@ describe("factory task add", () => {
   });
 });
 
+describe("addTask and the body field", () => {
+  it("writes the body it is given and reads it back; left out it is null; a repeated add keeps the stored row", async () => {
+    const { store } = await setup();
+    const added = await store.addTask(task({ id: "tk_p-0009", body: "Rationale: r\nProposal: P-0009" }));
+    expect(added.body).toBe("Rationale: r\nProposal: P-0009");
+    expect((await store.getTask("tk_p-0009"))!.body).toBe("Rationale: r\nProposal: P-0009");
+    expect((await store.addTask(task({ id: "tk_p-0009", body: "other" }))).body).toBe("Rationale: r\nProposal: P-0009");
+    expect((await store.addTask(task({ id: "tk_2" }))).body).toBeNull();
+    expect((await store.getTask("tk_2"))!.body).toBeNull();
+  });
+});
+
 describe("factory task list", () => {
   it("shows open tasks in a section after the work items; a done task is left out", async () => {
     const { store, cli, d } = await setup();

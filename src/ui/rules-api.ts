@@ -429,6 +429,8 @@ async function promoteProposal(d: PauseDeps, p: UiPauses, tacit: TacitLedger, v:
     p.log.info("rule verdict sent", { id: v.id, verdict: v.verdict, actor: user, edited: false });
     return { status: 200, value: { id: v.id, verdict: v.verdict } };
   }
+  // The title is read before the verdict: a judged proposal may leave the pending list.
+  const listedTitle = await proposalTitle(tacit, v.id, detail);
   const recorded = (await tacit.decided?.([v.id]))?.[v.id] === "promote";
   if (!recorded) {
     const failed = await sendVerdict(tacit, v);
@@ -436,8 +438,8 @@ async function promoteProposal(d: PauseDeps, p: UiPauses, tacit: TacitLedger, v:
   }
   const w = new Withholder(d.scanner);
   const text = async (s: string) => (await w.plain(s)).text;
-  const title = await text(await proposalTitle(tacit, v.id, detail));
-  const body = taskBody((await text(buildBody(v.id, detail))).slice(0, MAX_TASK_BODY));
+  const title = await text(listedTitle);
+  const body = taskBody((await buildBody(v.id, detail, text)).slice(0, MAX_TASK_BODY));
   await d.store.addTask({
     id: taskId, title, list: null, priority: null, due: null, due_time: null, recurrence: null, created_by: user, body: body.ok ? body.body : null,
   });
@@ -456,15 +458,13 @@ async function proposalTitle(tacit: TacitLedger, id: string, detail: TacitEntryD
   return detail.description ?? id;
 }
 
-/** The task body of a proposal to build: its rationale (root reason), change (description), target, evidence IDs and ID. */
-export function buildBody(id: string, d: TacitEntryDetail): string {
+/** The task body of a proposal to build, each value through `text`: rationale (root reason), change (description), target, evidence IDs and ID. */
+async function buildBody(id: string, d: TacitEntryDetail, text: (v: string) => Promise<string>): Promise<string> {
   const evidence = [...new Set((d.evidence ?? []).flatMap((e) => (e.ref === undefined ? [] : [e.ref])))];
   const rationale = d.root_reason ?? d.evidence?.find((e) => e.root_reason !== undefined)?.root_reason;
-  return [
-    `Rationale: ${rationale ?? "not given"}`,
-    `Change: ${d.description ?? "not given"}`,
-    `Target: ${d.target ?? "not given"}`,
-    `Evidence: ${evidence.length === 0 ? "none" : evidence.join(", ")}`,
-    `Proposal: ${id}`,
-  ].join("\n");
+  const fields: [string, string][] = [
+    ["Rationale", rationale ?? "not given"], ["Change", d.description ?? "not given"], ["Target", d.target ?? "not given"],
+    ["Evidence", evidence.length === 0 ? "none" : evidence.join(", ")], ["Proposal", id],
+  ];
+  return (await Promise.all(fields.map(async ([label, value]) => `${label}: ${await text(value)}`))).join("\n");
 }

@@ -5,7 +5,8 @@
 // applies: on confirm it replaces the proposal's current lines (from `evolve show`) with its proposed lines in its
 // target file, only when they occur there exactly once, then runs `evolve verdict <id> promote --reason <r>
 // --applied-to <target>`. A failed apply (a refusal, a non-zero exit, the timeout) leaves the file as it was and shows
-// the CLI's error in the dialog. The Rules page here talks to the real route (`respond`) over a stubbed fetch, and the
+// the CLI's error in the dialog. A proposal with no Now and Proposed lines (2026-11-20) changes no file: the verdict
+// runs with --applied-to its target, then the route stores one task to build it. The Rules page here talks to the real route (`respond`) over a stubbed fetch, and the
 // route to a temp agents home whose stub evolve takes only the real forms: no real home, no network.
 
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -205,15 +206,25 @@ describe("Rules page: promote of a proposal applies it", () => {
     expect(s.verdicts()).toEqual([]);
   }, 30_000);
 
-  it("a proposal with no proposed line: Send stays off and the dialog says why", async () => {
-    writeFileSync(join(s.root, "show"), `# P-0007 Split the review prompt\ntarget: ${TARGET}\ncurrent: Review the change.\n`);
-    await show(await deps());
+  it("a proposal with no proposed line is built: the dialog says so, the verdict runs once with --applied-to, no file changes, one task is stored", async () => {
+    writeFileSync(join(s.root, "show"), `# P-0007 Split the review prompt\ndescription: Split the prompt into two files.\ntarget: ${TARGET}\ncurrent: Review the change.\n`);
+    const d = await deps();
+    await show(d);
     await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
     fireEvent.click(within(card()).getByRole("button", { name: "Promote" }));
-    expect((await within(dialog()!).findByRole("alert", {}, SLOW)).textContent).toBe("Promote is off: this proposal gives no Now and Proposed lines to apply.");
-    fireEvent.change(within(dialog()!).getByRole("textbox", { name: "Reason" }), { target: { value: "x" } });
-    expect((within(dialog()!).getByRole("button", { name: "Send promote" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(posts).toEqual([]);
+    await waitFor(() => expect(dialog()!.querySelector("[data-dialog-consequence]")!.textContent).toBe("Promoting records the verdict and creates a task to build it."), SLOW);
+    expect(dialog()!.textContent).not.toContain("Promote is off");
+    fireEvent.change(within(dialog()!).getByRole("textbox", { name: "Reason" }), { target: { value: "build it" } });
+    const send = within(dialog()!).getByRole("button", { name: "Send promote" }) as HTMLButtonElement;
+    expect(send.disabled).toBe(false);
+    fireEvent.click(send);
+    await waitFor(() => expect(dialog()).toBeNull(), SLOW);
+    expect(posts).toEqual([{ id: "P-0007", verdict: "promote", reason: "build it" }]);
+    expect(s.target()).toBe(BEFORE);
+    expect(s.verdicts()).toEqual([`verdict promote ${TARGET}`]);
+    expect(await d.store.getTask("tk_p-0007")).toMatchObject({
+      title: "Split the review prompt", body: `Rationale: not given\nChange: Split the prompt into two files.\nTarget: ${TARGET}\nEvidence: none\nProposal: P-0007`,
+    });
   }, 30_000);
 
   it("the route refuses a target outside the home with nothing written and no verdict sent", async () => {

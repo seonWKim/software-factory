@@ -600,12 +600,27 @@ describe("plugin agents-home", () => {
     expect(s.argv()).toEqual(["evolve|show|P-0007", "evolve|verdict|P-0007|promote|--reason|good shape|--applied-to|private/bin/notify"]);
   });
 
+  it("a promote of a P- ID with no current or proposed line changes no file and runs only evolve verdict with --applied-to the target", async () => {
+    const base = "# P-0007 Quiet notify\nkind: new-asset\ndescription: add a quiet-hours subcommand\n";
+    for (const show of [`${base}target: private/bin/notify\n`, `${base}target: private/bin/notify\nproposed: b\n`, `${base}target: private/bin/notify\ncurrent: notify\n`]) {
+      const s = applyHome(show, "notify\nnotify --loud\n");
+      const before = snapshot(s.home);
+      await new AgentsHomeTacitLedger(s.home).verdict("P-0007", "promote", "build it");
+      expect(snapshot(s.home), show).toEqual(before);
+      expect(s.argv(), show).toEqual(["evolve|show|P-0007", "evolve|verdict|P-0007|promote|--reason|build it|--applied-to|private/bin/notify"]);
+    }
+    // The target need not exist: the change is built from a task.
+    const s = applyHome(`${base}target: private/bin/quiet-hours\n`);
+    await new AgentsHomeTacitLedger(s.home).verdict("P-0007", "promote", "build it");
+    expect(s.argv()[1]).toBe("evolve|verdict|P-0007|promote|--reason|build it|--applied-to|private/bin/quiet-hours");
+  });
+
   it("a promote of a P- ID is refused, with nothing written and no verdict sent, when its lines or target do not fit", async () => {
     const base = "# P-0007 Quiet notify\nkind: edit-asset\n";
     for (const [show, error] of [
       [`${base}current: a\nproposed: b\n`, /has no target line/],
-      [`${base}target: private/bin/notify\nproposed: b\n`, /has no current line/],
-      [`${base}target: private/bin/notify\ncurrent: notify\n`, /has no proposed line/],
+      [`${base}description: no lines and no target\n`, /has no target line/],
+      [`${base}target: /etc/passwd\n`, /is an absolute path/],
       [`${base}target: /etc/passwd\ncurrent: a\nproposed: b\n`, /is an absolute path/],
       [`${base}target: private/../../x\ncurrent: a\nproposed: b\n`, /has a \.\. segment/],
       [`${base}target: private/bin/none\ncurrent: a\nproposed: b\n`, /no private\/bin\/none in the agents home/],
@@ -630,6 +645,22 @@ describe("plugin agents-home", () => {
     writeFileSync(join(s.home, "bin", "evolve"), `#!/bin/sh\n[ "$1" = show ] && { cat "${join(s.root, "drafts", "P-0007")}"; exit 0; }\nsleep 5\n`);
     await expect(new AgentsHomeTacitLedger(s.home, 300).verdict("P-0007", "promote", "r")).rejects.toThrow(/evolve verdict stopped after 300 ms/);
     expect(s.file()).toBe(before);
+  });
+
+  it("decided gives each ID's newest ledger verdict, a proposal's too, and leaves out an ID with none; ledger.jsonl is only read", async () => {
+    const s = stubHome();
+    const dir = join(s.home, "private", "tacit");
+    mkdirSync(dir, { recursive: true });
+    const line = (id: string, ts: string, decision: string) => JSON.stringify({ type: "verdict", class: id, ts, decision, reason: "r", by: "owner", rule: "", encoded_to: "" });
+    writeFileSync(join(dir, "ledger.jsonl"), [
+      line("P-0003", "2026-11-10T10:00:00Z", "hold"), line("P-0003", "2026-11-12T10:00:00Z", "promote"), line("C-001", "2026-11-11T10:00:00Z", "reject"), "not json",
+    ].join("\n"));
+    const before = snapshot(s.home);
+    const ledger = new AgentsHomeTacitLedger(s.home);
+    expect(await ledger.decided(["P-0003", "C-001", "T-1", "L-2"])).toEqual({ "P-0003": "promote", "C-001": "reject" });
+    expect(snapshot(s.home)).toEqual(before);
+    expect(s.argv()).toEqual([]);
+    expect(await new AgentsHomeTacitLedger(stubHome().home).decided(["P-0003"])).toEqual({});
   });
 
   it("the stub evolve, as the real one, refuses a proposal promote without --applied-to and has no apply subcommand", () => {
