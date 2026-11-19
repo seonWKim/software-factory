@@ -1,0 +1,147 @@
+// GET /api/v1/efficiency (design 06-efficiency) over a store fake that has only the read methods the route may use:
+// the hourly, daily and weekly windows by merge time, the week-over-week change, the not-counted numbers, adopted
+// and unfinished items left out, titles through the Withholder, and a 405 for a POST (read-only).
+
+import { describe, expect, it } from "vitest";
+import type { MergeEvaluation } from "../src/core/merge-evaluation.js";
+import type { Run, RunOutcome, Timestamp, WorkItem, WorkItemId } from "../src/core/types.js";
+import type { FactoryStore } from "../src/interfaces/factory-store.js";
+import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
+import { HealthMonitor } from "../src/ui/health.js";
+import { type UiDeps, respond } from "../src/ui/server.js";
+
+const NOW = "2026-11-20T12:30:00.000Z"; // a Friday; its ISO week starts 2026-11-16
+const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
+const WEEK = 7 * DAY;
+const SECRET = `ghp_${"Ab3".repeat(12)}`;
+const iso = (ms: number) => new Date(ms).toISOString() as Timestamp;
+const ago = (ms: number) => Date.parse(NOW) - ms;
+const ok = (tokens: number, cost: number | null): RunOutcome => ({
+  status: "succeeded", summary: "ok", data: { tokens, usage: { input_tokens: tokens, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: cost, model: null } },
+});
+
+/** A store fake: items, runs and merge evaluations in memory, with only the read methods efficiency uses. Writes throw. */
+function fakeStore() {
+  const items = new Map<WorkItemId, WorkItem>();
+  const runs: Run[] = [];
+  const merges: MergeEvaluation[] = [];
+  let n = 0;
+  const reads = {
+    async listMergeEvaluations(since: Timestamp | null) { return merges.filter((m) => since === null || m.merged_at >= since); },
+    async getWorkItem(id: WorkItemId) { return items.get(id) ?? null; },
+    async listRuns(id: WorkItemId) { return runs.filter((r) => r.work_item_id === id); },
+    async listWorkItemsWhere(f: { stage?: string; updated_since?: Timestamp }) {
+      return [...items.values()].filter((i) => (!f.stage || i.stage === f.stage) && (!f.updated_since || i.updated_at >= f.updated_since));
+    },
+  };
+  const store = new Proxy(reads, {
+    get: (t, k) => (k in t ? t[k as keyof typeof t] : () => { throw new Error(`write or unexpected read: ${String(k)}`); }),
+  }) as unknown as FactoryStore;
+  return {
+    store,
+    /** A finished item created `took` before its merge `mergedAgo` ago, with runs of [hours, tokens, cost] each. */
+    finished(title: string, mergedAgo: number, took: number, runSpecs: [number, number | null, number | null][], over: Partial<WorkItem> = {}) {
+      const id = `wi_${++n}` as WorkItemId;
+      const merged = ago(mergedAgo);
+      items.set(id, { id, title, stage: "CLOSED", close_reason: "completed", origin: "factory", created_at: iso(merged - took), updated_at: iso(merged), ...over } as WorkItem);
+      let t = merged - took;
+      for (const [hours, tokens, cost] of runSpecs) {
+        runs.push({ id: `r${++n}`, work_item_id: id, kind: "implement", outcome: tokens === null ? null : ok(tokens, cost), started_at: iso(t), finished_at: iso(t + hours * HOUR), session_tokens: null } as Run);
+        t += hours * HOUR;
+      }
+      merges.push({ work_item_id: id, merged_at: iso(merged), title } as MergeEvaluation);
+      return id;
+    },
+    closed(close_reason: WorkItem["close_reason"], closedAgo: number) {
+      const id = `wi_${++n}` as WorkItemId;
+      items.set(id, { id, title: "x", stage: "CLOSED", close_reason, origin: "factory", created_at: iso(ago(closedAgo + HOUR)), updated_at: iso(ago(closedAgo)) } as WorkItem);
+    },
+  };
+}
+
+function deps(store: FactoryStore): UiDeps {
+  const clock = new FakeClock(NOW);
+  return { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: 60_000, health: new HealthMonitor(async () => [], clock) };
+}
+
+async function get(d: UiDeps) {
+  const r = await respond(d, { method: "GET", url: "/api/v1/efficiency", host: "127.0.0.1:4310" });
+  return { status: r.status, body: JSON.parse(r.body!) as Record<string, any> };
+}
+
+describe("GET /api/v1/efficiency", () => {
+  it("counts finished items by merge time in 24 hourly, 14 daily and 8 weekly bars with totals", async () => {
+    const f = fakeStore();
+    f.finished("A", HOUR / 4, DAY, [[1, 10, 1]]); // this hour
+    f.finished("B", 3 * HOUR, DAY, [[1, 10, 1]]); // today
+    f.finished("C", 2 * DAY, DAY, [[1, 10, 1]]); // this week, not the last 24 hours
+    f.finished("D", 10 * DAY, DAY, [[1, 10, 1]]); // last week
+    f.finished("E", 30 * DAY, DAY, [[1, 10, 1]]); // weeks ago, not in the 14 days
+    f.finished("F", 20 * WEEK, DAY, [[1, 10, 1]]); // older than the 8 weeks
+    const { status, body } = await get(deps(f.store));
+    expect(status).toBe(200);
+    expect(body.hours.bars).toHaveLength(24);
+    expect(body.hours.bars.at(-1)).toEqual({ start: "2026-11-20T12:00:00.000Z", count: 1 });
+    expect(body.hours.total).toBe(2);
+    expect(body.days.bars).toHaveLength(14);
+    expect(body.days.total).toBe(4);
+    expect(body.weeks.bars).toHaveLength(8);
+    expect(body.weeks.bars.at(-1).start).toBe("2026-11-16T00:00:00.000Z");
+    expect(body.weeks.total).toBe(5);
+    expect(body.week_figures.map((w: any) => w.finished)).toEqual(body.weeks.bars.map((b: any) => b.count));
+  });
+
+  it("gives each week's change from the week before, none when the week before had nothing", async () => {
+    const f = fakeStore();
+    // Last week: 2 items of 10 h total and 1000 tokens each. This week: 1 item of 8.2 h and 820 tokens.
+    f.finished("L1", WEEK, 10 * HOUR, [[2, 1000, 1]]);
+    f.finished("L2", WEEK + HOUR, 10 * HOUR, [[2, 1000, 2]]);
+    f.finished("T1", HOUR, 8.2 * HOUR, [[2, 820, 3]]);
+    const { body } = await get(deps(f.store));
+    const [before, last, cur] = body.week_figures.slice(-3);
+    expect(before.finished).toBe(0);
+    expect(last.finished_change).toBeNull();
+    expect(last.tokens.median_change).toBeNull();
+    expect(cur.current).toBe(true);
+    expect(cur.finished_change).toBe(-50);
+    expect(cur.tokens).toMatchObject({ median: 820, median_change: -18, p90_change: -18 });
+    expect(cur.total).toMatchObject({ median: 29_520_000, median_change: -18 }); // 8.2 hours
+    expect(cur.agent).toMatchObject({ median: 2 * HOUR, median_change: 0 });
+    expect(last.costliest.map((i: any) => i.title)).toEqual(["L2", "L1"]);
+  });
+
+  it("shows the not-counted numbers: runs without usage, items without timing, and the items left out", async () => {
+    const f = fakeStore();
+    f.finished("ok", HOUR, DAY, [[1, 100, 1]]);
+    f.finished("no usage", HOUR, DAY, [[1, 100, 1], [1, null, null]]);
+    f.closed("wont_do", DAY);
+    f.closed("rejected", DAY);
+    f.closed("failed", 2 * DAY);
+    f.finished("adopted", HOUR, DAY, [[1, 100, 1]], { origin: "adopted" });
+    const { body } = await get(deps(f.store));
+    const cur = body.week_figures.at(-1);
+    expect(cur.finished).toBe(2);
+    expect(cur.tokens).toMatchObject({ median: 100, not_counted: 1 });
+    expect(body.runs_without_usage).toBe(1);
+    expect(body.left_out).toEqual({ total: 3, cancelled: 1, rejected: 1, failed: 1 });
+  });
+
+  it("lists the week's slowest and costliest items with their titles through the Withholder", async () => {
+    const f = fakeStore();
+    f.finished("Fast", HOUR, HOUR * 2, [[1, 10, 5]]);
+    f.finished(`Slow ${SECRET}`, HOUR, DAY, [[1, 10, 1]]);
+    const { body } = await get(deps(f.store));
+    const cur = body.week_figures.at(-1);
+    expect(cur.slowest.map((i: any) => i.title)).toEqual(["[withheld: github_token]", "Fast"]);
+    expect(cur.costliest.map((i: any) => i.title)).toEqual(["Fast", "[withheld: github_token]"]);
+    expect(JSON.stringify(body)).not.toContain(SECRET);
+  });
+
+  it("is read-only: a POST gets 405", async () => {
+    const f = fakeStore();
+    const d = deps(f.store);
+    expect((await respond(d, { method: "POST", url: "/api/v1/efficiency", host: "127.0.0.1:4310" })).status).toBe(405);
+  });
+});
