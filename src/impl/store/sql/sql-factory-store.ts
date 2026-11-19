@@ -2712,10 +2712,10 @@ function rowToWorkerPause(r: Row): WorkerPause {
 }
 
 /**
- * claimRun's kind rank (design §5 Coordination, 2026-11-18): merge check, then resolve, to move changes to merge; then review and
- * triage; then the branch writers, implement last; improve after all. Within a kind, created_at, then insertion order.
+ * claimRun's kind rank (design §5 Coordination, 2026-11-18): a restart the owner asked for, then merge check, then resolve, to move changes to merge; then
+ * review and triage; then the branch writers, implement last; improve after all. Within a kind, created_at, then insertion order.
  */
-const CLAIM_ORDER: readonly RunKind[] = ["merge-check", "resolve", "review", "triage", "update", "implement"];
+const CLAIM_ORDER: readonly RunKind[] = ["restart", "merge-check", "resolve", "review", "triage", "update", "implement"];
 
 /** A JSON string array column (allowed_paths). */
 function parseList(value: unknown): string[] {

@@ -8,6 +8,9 @@ import type { NewThreadDelivery, ThreadLinkField } from "../interfaces/factory-s
 import type { Forge } from "../interfaces/forge.js";
 import type { Sandbox } from "../interfaces/sandbox.js";
 
+// What follows a merge: the restart command and the merge reply's run hint (design 04-gate-commands, restart).
+export * from "./restart.js";
+
 /**
  * The source type of items filed in the factory itself: the store holds their thread and state, so they need no
  * adapter (issue #282), and they take the local broker and the local merge, never the forge (design 05-sources).
