@@ -130,7 +130,14 @@ async function factory(answer: Record<string, unknown>) {
   };
   const messages = async (id: WorkItemId, prefix: string) => (await store.listItemMessages(id)).filter((m) => m.marker.startsWith(prefix)).map((m) => m.body);
   const merged = async (id: WorkItemId) => (await store.listStateChanges(id)).some((c) => c.reason === "local_merged");
-  return { repo, store, step, cli, reviewedInAutoMode, messages, merged };
+  /** Queues one more review of the item and keeps it waiting for a merge; its head is unchanged, so it runs no agent. */
+  const reviewAgain = async (id: WorkItemId, key: string) => {
+    const cur = (await store.getWorkItem(id))!;
+    const r = await store.transition({ id, expected_version: cur.version, patch: {}, actor: { kind: "system", id: "system:test" }, reason: "test_requeue", enqueue: { kind: "review", idempotency_key: key } });
+    expect(r.ok).toBe(true);
+    await step();
+  };
+  return { repo, store, step, cli, reviewedInAutoMode, reviewAgain, messages, merged };
 }
 
 describe("auto mode: the merge hold of a UI change that could not be checked", { timeout: 60_000 }, () => {
@@ -154,6 +161,22 @@ describe("auto mode: the merge hold of a UI change that could not be checked", {
     await f.step();
     await f.step();
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
+  });
+
+  it("a later review that skips an unchanged head keeps the hold: the flag comes from the latest verdict", async () => {
+    const f = await factory({ ...review(), ui_unverified: true, unverified: UNVERIFIED });
+    const mainBefore = git(f.repo, "rev-parse", "main");
+    const id = await f.reviewedInAutoMode();
+    await f.reviewAgain(id, "again-1");
+    await f.step();
+    const reviews = (await f.store.listRuns(id)).filter((r) => r.kind === "review");
+    expect(reviews.map((r) => r.outcome?.status === "succeeded" && r.outcome.data.no_agent)).toEqual([undefined, "unchanged_head"]);
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+    expect(await f.merged(id)).toBe(false);
+    expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
+    const held = await f.messages(id, "<!-- factory:refused:");
+    expect(held.length).toBeGreaterThan(0);
+    expect(held.every((m) => m.includes("`ui_unverified`"))).toBe(true);
   });
 
   it("without the flag (an older review's shape) the review reads pass and auto mode merges it as before", async () => {

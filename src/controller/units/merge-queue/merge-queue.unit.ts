@@ -88,11 +88,12 @@ export class MergeQueueUnit {
     return null;
   }
 
-  /** Whether the item's latest passed review set `ui_unverified`: its UI change could not be checked. */
+  /**
+   * Whether the item's latest review verdict set `ui_unverified`: its UI change could not be checked. A later review
+   * that ran no agent (an unchanged head) holds no verdict, so it never clears the flag.
+   */
   private async uiUnverified(id: WorkItemId): Promise<boolean> {
-    const review = await this.c.unit("run-results").latestReview(id);
-    const data = review?.outcome?.status === "succeeded" ? review.outcome.data.review : null;
-    return typeof data === "object" && data !== null && (data as { ui_unverified?: unknown }).ui_unverified === true;
+    return (await this.c.unit("run-results").latestVerdict(id))?.ui_unverified === true;
   }
 
   /**
