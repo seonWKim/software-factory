@@ -63,9 +63,9 @@ interface FactoryView {
   notice: boolean;
 }
 
-/** A factory sentence, with the raw names of its pauses behind Details. */
 const PILL_FG = { ok: "text-pill-ok-fg", warn: "text-pill-warn-fg", bad: "text-pill-bad-fg" } as const;
 
+/** A factory sentence, with the raw names of its pauses behind Details. */
 function FactoryText({ view }: { view: FactoryView }) {
   return <>{view.text}{view.raw && view.raw.length > 0 && <RawDetails className="mt-1" summaryTone={PILL_FG[view.tone]}><code className="font-mono">{view.raw.join(", ")}</code></RawDetails>}</>;
 }
