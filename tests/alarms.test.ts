@@ -121,6 +121,9 @@ describe("alarms: zero-token runs", () => {
     const alerts = await store.listAlerts({ limit: 10 });
     expect(alerts).toHaveLength(1);
     expect(alerts[0]).toMatchObject({ pattern: "zero_tokens", error_code: "zero_tokens", count: 3 });
+    // The detail adds only how the last run ended: the alarm sentence (alarmText) already says the streak.
+    expect(alerts[0]!.detail).toBe("the last failed with b");
+    expect(`${alarmText(alerts[0]!)}: ${alerts[0]!.detail}`).toBe("Alarm: 3 agent runs in a row used no tokens: the last failed with b");
     const probeAt = new Date(clock.now().getTime() + STALL_DEFAULTS.probe_interval_ms).toISOString();
     expect(await store.getClaimPause("model_stall")).toBe(probeAt);
   });
