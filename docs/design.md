@@ -1,8 +1,8 @@
 # Software factory: design index
 
-Read this index first, then open only the topic files your change touches. Each topic file states its current
-decision first; replaced decisions are in `history/<topic>.md`. A design change edits the topic file, never this
-index; add a line here only for a new topic file. Old section numbers stay: "§5" is `05-*`.
+The living design. Read this index first, then open only the topic files your change touches. Each
+topic file states its current decision first; replaced decisions are in `history/<topic>.md`. A design change edits
+the topic file, never this index; add a line here only for a new topic file. "§5" means `05-*`.
 
 ## 1. Shape
 - [01-shape.md](design/01-shape.md): the flow from intake to the human gate and post-merge.
@@ -11,19 +11,19 @@ index; add a line here only for a new topic file. Old section numbers stay: "§5
 - [02-work-item.md](design/02-work-item.md): the one work-item shape for every source.
 - [02-tasks.md](design/02-tasks.md): plain tasks, never work items: quick add, `task add`, repeats.
 - [02-tasks-page.md](design/02-tasks-page.md): what the Tasks page lists, edits and completes.
-- [02-tasks-calendar.md](design/02-tasks-calendar.md): the calendar component, its Google sync, events in task views.
+- [02-tasks-calendar.md](design/02-tasks-calendar.md): the calendar, its Google sync, events in task views.
 
 ## 3. Risk
 - [03-risk.md](design/03-risk.md): how the tier is set and rechecked, and the safety ratchet.
 
 ## 4. Agents
 - [04-agents.md](design/04-agents.md): the agent roles, model class per run kind and tier, "In short".
-- [04-gate-commands.md](design/04-gate-commands.md): the human commands, refusals, footers, app requests, verdict buttons.
-- [04-spec-gate-commands.md](design/04-spec-gate-commands.md): spec answers, `/revise` and `/resolve` forms, widening allowed paths.
+- [04-gate-commands.md](design/04-gate-commands.md): human commands, refusals, footers, app requests, verdict buttons.
+- [04-spec-gate-commands.md](design/04-spec-gate-commands.md): spec answers, `/revise`, `/resolve`, widening allowed paths.
 - [04-chat-commands.md](design/04-chat-commands.md): commands in your own words: classifier, chat answers, proposals.
 - [04-verdicts.md](design/04-verdicts.md): `/verdict` on every surface, implicit verdicts, pushback capture.
-- [04-closing-source-issue.md](design/04-closing-source-issue.md): closing the source issue stops the item, its runs and its PR; `/reject` at any open phase.
-- [04-pre-push-gates.md](design/04-pre-push-gates.md): the scope, size and floor gates before a push, and sync with the base.
+- [04-closing-source-issue.md](design/04-closing-source-issue.md): closing the source issue stops the item, runs and PR; `/reject` at any phase.
+- [04-pre-push-gates.md](design/04-pre-push-gates.md): scope, size and floor gates before a push, base sync.
 - [04-triage.md](design/04-triage.md): path companions, files triage adds to allowed paths, topic folders.
 - [04-split-specs.md](design/04-split-specs.md): size estimates, splitting a big spec into phases, the phase hold.
 
@@ -41,23 +41,24 @@ index; add a line here only for a new topic file. Old section numbers stay: "§5
 - [05-slack-intake.md](design/05-slack-intake.md): Slack presses, mentions, spec messages, replies, reactions.
 - [05-github-sync.md](design/05-github-sync.md): the GitHub client, PRs through the forge, sync records, call budget.
 - [05-stream-intake.md](design/05-stream-intake.md): local and stream intake, several sources, adopted PRs.
-- [05-interactive-sessions.md](design/05-interactive-sessions.md): a person's own LLM session on an item as an `interactive` run.
+- [05-interactive-sessions.md](design/05-interactive-sessions.md): a person's own LLM session as an `interactive` run.
 - [05-status-labels.md](design/05-status-labels.md): the eight status labels and when the controller sets them.
 - [05-standing-approvals.md](design/05-standing-approvals.md): what every spec decision records, the run check.
 
 ## 6. Measurement
-- [06-measurement.md](design/06-measurement.md): the feedback rate, revert tracking, `factory stats`, the golden set.
-- [06-token-budget.md](design/06-token-budget.md): per-tier token budget checkpoints and what a run's tokens count.
+- [06-measurement.md](design/06-measurement.md): feedback rate, revert tracking, `factory stats`, golden set.
+- [06-token-budget.md](design/06-token-budget.md): per-tier token budget checkpoints, what a run's tokens count.
 - [06-spend.md](design/06-spend.md): spend per day, week and item, and dollar budgets.
+- [06-efficiency.md](design/06-efficiency.md): items finished per period; tokens and time per item.
 
 ## 7. Self-improvement
-- [07-self-improvement.md](design/07-self-improvement.md): how the factory changes its own behaviour, the doc index in the prompt.
+- [07-self-improvement.md](design/07-self-improvement.md): how the factory changes itself, the doc index in the prompt.
 - [07-improve-report.md](design/07-improve-report.md): the improve report, Run now, retire suggestions, improve triggers.
-- [07-design-learnings.md](design/07-design-learnings.md): UI corrections kept as design learnings.
+- [07-design-learnings.md](design/07-design-learnings.md): UI corrections as learnings.
 
 ## 8. Operations
 - [08-plugins.md](design/08-plugins.md): named plugins and the registry, login plugin, secret names.
-- [08-self-update.md](design/08-self-update.md): running from a copy of the base branch, the start-then-drain update.
+- [08-self-update.md](design/08-self-update.md): running from a base-branch copy, the start-then-drain update.
 - [08-settings.md](design/08-settings.md): settings in layers that may only tighten a gate, runtime changes.
 - [08-settings-page.md](design/08-settings-page.md): the Settings page, file-only keys through a local branch.
 - [08-permissions.md](design/08-permissions.md): the owner's local check (`OwnerAuth`), identity, size limits.
@@ -68,20 +69,21 @@ index; add a line here only for a new topic file. Old section numbers stay: "§5
 ## 9. Status page
 - [09-status-page.md](design/09-status-page.md): the read-only status page, its guards.
 - [09-health.md](design/09-health.md): the Health panel, schema probe.
-- [09-dashboard-app.md](design/09-dashboard-app.md): index of the dashboard topic files, one per page.
+- [09-dashboard-app.md](design/09-dashboard-app.md): index of the dashboard page topics.
 - [09-dashboard-shell.md](design/09-dashboard-shell.md): sidebar, top bar, shared components, API.
 - [09-dashboard-activity.md](design/09-dashboard-activity.md): the Activity page.
 - [09-dashboard-runners.md](design/09-dashboard-runners.md): the Runners page, Migrate now.
 - [09-dashboard-tasks.md](design/09-dashboard-tasks.md): Tasks, Calendar, Needs you, Project switcher.
 - [09-dashboard-rules.md](design/09-dashboard-rules.md): the Rules page: verdicts, Promote, Retire.
-- [09-dashboard-settings.md](design/09-dashboard-settings.md): the Settings page and the Plugins page.
-- [09-dashboard-system.md](design/09-dashboard-system.md): Work, Workers, Failures, Spend, Data.
+- [09-dashboard-settings.md](design/09-dashboard-settings.md): the Settings and Plugins pages.
+- [09-dashboard-system.md](design/09-dashboard-system.md): Work, Failures, Spend, Data.
+- [09-dashboard-workers.md](design/09-dashboard-workers.md): run timeline, dependency graph.
 - [09-dashboard-item.md](design/09-dashboard-item.md): the item page: thread, transcripts.
 - [09-dashboard-item-commands.md](design/09-dashboard-item-commands.md): item commands, dialogs, Merge button.
-- [09-status-banner.md](design/09-status-banner.md): the supervisor status banner.
+- [09-status-banner.md](design/09-status-banner.md): the supervisor banner.
 - [09-notifications.md](design/09-notifications.md): owner notices, kinds, quiet hours.
-- [09-desktop-app.md](design/09-desktop-app.md): the macOS app for the supervisor and dashboard.
-- [09-brand-and-tokens.md](design/09-brand-and-tokens.md): the token source, `tokens.css`, the no-hex rule.
+- [09-desktop-app.md](design/09-desktop-app.md): the macOS app.
+- [09-brand-and-tokens.md](design/09-brand-and-tokens.md): design tokens, the no-hex rule.
 - [09-dashboard-complexity.md](design/09-dashboard-complexity.md): audit of the dashboard's pages.
 
 ## 10. Event-driven factory

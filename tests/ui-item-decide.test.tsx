@@ -212,6 +212,8 @@ describe("item page: DecisionCard", () => {
     ];
     for (let i = 1; i < order.length; i++) expect(order[i - 1]!.compareDocumentPosition(order[i]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(order[1]!.textContent).toContain("running");
+    // A running run links to its transcript before any of it is stored.
+    expect(within(order[1]!).getByRole("link", { name: "Transcript" }).getAttribute("href")).toMatch(/\/items\/[^/]+\/runs\/run_i1$/);
     // The thread shows its first message; the rest wait behind one button.
     const list = screen.getByRole("list", { name: "Thread" });
     expect(list.dataset.collapsed).toBe("true");

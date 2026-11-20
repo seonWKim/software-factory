@@ -71,7 +71,7 @@ describe("forge-auth pause", () => {
   });
 
   it("each pause posts one comment on the item whose run started it and logs one line", async () => {
-    const f = await pipeline();
+    const f = await pipeline({ config: { workers: 2 } });
     const a = await f.submit();
     const b = await f.submit();
     // Triage both: two implement runs queued.
@@ -151,7 +151,7 @@ describe("forge-auth pause", () => {
   });
 
   it("two workers refused at the same moment post one owner comment and log one line", async () => {
-    const f = await pipeline();
+    const f = await pipeline({ config: { workers: 2 } });
     const a = await f.submit();
     const b = await f.submit();
     await f.w1.tick();

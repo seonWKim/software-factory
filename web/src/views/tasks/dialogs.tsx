@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type RefObject, useContext, useRef, useState } from "react";
 import { API, type ProjectChoice, type TaskRow, postTaskBody, postTaskProject } from "../../api.js";
-import { Button } from "../../components/ui/button.js";
+import { Checkbox } from "../../components/ui/checkbox.js";
 import { Dialog, announceStatus } from "../../components/ui/dialog.js";
 import { Field } from "../../components/ui/field.js";
 import { Input } from "../../components/ui/input.js";
@@ -10,11 +10,16 @@ import { t } from "../../i18n/index.js";
 import { cn } from "../../lib/cn.js";
 import { Rows, createProject, muted, useTaskAction } from "./shared.js";
 
-/** The delete confirm: the shared Dialog with danger set; it deletes only on confirm, and a refusal stays in it with its reason. */
+/**
+ * The delete confirm: the shared Dialog with danger set; it deletes only on confirm, and a refusal stays in it with its
+ * reason. It reads the row's open sub-task count before it opens: with any, it says how many and its confirm is "Delete
+ * with sub-tasks", which deletes them with the task (design 02-tasks-page), so no confirm leads to the store's refusal.
+ */
 export function DeleteDialog({ task, token, returnFocusTo, onClose }: { task: TaskRow; token: string; returnFocusTo: RefObject<HTMLElement | null>; onClose: () => void }) {
   const action = useTaskAction(token);
+  const subs = task.open_sub_tasks ?? 0;
   const confirm = async () => {
-    if (await action.run("delete", { id: task.id })) {
+    if (await action.run("delete", subs > 0 ? { id: task.id, with_sub_tasks: true } : { id: task.id })) {
       announceStatus(t("tasks.deleted", { title: task.title }));
       onClose();
     }
@@ -24,13 +29,15 @@ export function DeleteDialog({ task, token, returnFocusTo, onClose }: { task: Ta
       danger
       title={t("tasks.deleteTitle", { title: task.title })}
       consequence={t("tasks.deleteConsequence")}
-      confirmLabel={t("tasks.delete")}
+      confirmLabel={t(subs > 0 ? "tasks.deleteWithSubs" : "tasks.delete")}
       confirmDisabled={action.busy}
       error={action.error}
       returnFocusTo={returnFocusTo}
       onConfirm={() => void confirm()}
       onClose={onClose}
-    />
+    >
+      {subs > 0 && <p data-open-sub-tasks={subs}>{t(subs === 1 ? "tasks.deleteSubsOne" : "tasks.deleteSubsMany", { count: subs })}</p>}
+    </Dialog>
   );
 }
 
@@ -157,10 +164,7 @@ export function ProjectsDialog({ task, token, returnFocusTo, onClose }: { task: 
             const checked = linked.has(p.slug);
             return (
               <li key={p.slug} data-project={p.slug} className="flex items-center gap-3 px-3 py-2">
-                {/* The shared Button as a checkbox, as on the task row: components/ui has no checkbox. */}
-                <Button size="icon" role="checkbox" aria-checked={checked} aria-label={p.name} disabled={busy} onClick={() => void send(() => link(p, !checked))}>
-                  <span aria-hidden>{checked ? "✓" : ""}</span>
-                </Button>
+                <Checkbox checked={checked} aria-label={p.name} disabled={busy} onChange={() => void send(() => link(p, !checked))} />
                 <span className="min-w-0 flex-1 text-sm break-words">{p.name}</span>
                 <span className={cn(muted, "break-all")}>+{p.slug}</span>
               </li>

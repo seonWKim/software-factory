@@ -29,20 +29,26 @@ export interface TaskGroup { key: string; title: string; overdue: boolean; rows:
 export const PAGE_SIZE = 20;
 
 /**
- * Every task the read returned as the list's groups, in order: overdue, today, each later day by date, no date. The server
- * places overdue and today; a task it did not place there (a done one, or one of a later day) is put by its due date, which
- * compares as the ISO date text it is, so the page does no date arithmetic. Empty groups are left out.
+ * Every task the read returned as the list's groups, in order: overdue, today, each later day by date, no date, done. The
+ * server places overdue and today; a task it did not place there (a done one, or one of a later day) is put by its due date,
+ * which compares as the ISO date text it is, so the page does no date arithmetic. A done task due before today is under
+ * Done, never Overdue; one due today or later stays in its day. A sub-task whose parent is in the list goes in its parent's
+ * group, dated or not, so it shows under it; one whose parent is not stays in its own (design 02-tasks-page). Empty groups
+ * are left out.
  */
 export function groupsOf(v: TasksView): TaskGroup[] {
   const placed = new Set<string>();
   const take = (tasks: readonly TaskRow[]) => tasks.filter((x) => !placed.has(x.id) && placed.add(x.id));
-  const overdue = take(v.today.overdue);
+  const overdue: TaskRow[] = [];
+  const done: TaskRow[] = [];
+  const past = (x: TaskRow) => (x.done_at != null ? done : overdue).push(x);
+  take(v.today.overdue).forEach(past);
   const today = take(tasksOf(v.today.due));
   const days = new Map<string, TaskRow[]>();
   const noDate: TaskRow[] = [];
   for (const x of take(v.projects.flatMap((p) => p.tasks))) {
     if (x.due_date === null) noDate.push(x);
-    else if (x.due_date < v.today_date) overdue.push(x);
+    else if (x.due_date < v.today_date) past(x);
     else if (x.due_date === v.today_date) today.push(x);
     else days.set(x.due_date, [...(days.get(x.due_date) ?? []), x]);
   }
@@ -51,8 +57,14 @@ export function groupsOf(v: TasksView): TaskGroup[] {
     { key: "today", title: t("tasks.todayDay", { day: dayLabel(v.today_date) }), overdue: false, tasks: today },
     ...[...days].sort(([a], [b]) => (a < b ? -1 : 1)).map(([date, tasks]) => ({ key: date, title: dayLabel(date), overdue: false, tasks })),
     { key: "none", title: t("tasks.noDate"), overdue: false, tasks: noDate },
+    { key: "done", title: t("tasks.doneGroup"), overdue: false, tasks: done },
   ];
-  return groups.filter((g) => g.tasks.length > 0).map((g) => ({ ...g, rows: nest(g.tasks) }));
+  const groupOf = new Map(groups.flatMap((g, i) => g.tasks.map((x) => [x.id, i] as const)));
+  const home = (x: TaskRow, own: number) => (x.parent_task_id == null ? undefined : groupOf.get(x.parent_task_id)) ?? own;
+  return groups
+    .map((g, i) => ({ ...g, tasks: groups.flatMap((h, j) => h.tasks.filter((x) => home(x, j) === i)) }))
+    .filter((g) => g.tasks.length > 0)
+    .map((g) => ({ ...g, rows: nest(g.tasks) }));
 }
 
 /** The groups' rows of one page (the rows past the page size go to the next), regrouped under their headings. */

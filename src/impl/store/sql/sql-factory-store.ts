@@ -116,7 +116,7 @@ import * as signals from "./signals.js";
 import * as evaluations from "./merge-evaluations.js";
 import * as proposals from "./command-proposals.js";
 import * as tasks from "./tasks.js";
-import { SqlProjectStore } from "./projects.js";
+import { SqlRunOutputStore } from "./run-output.js";
 import * as notices from "./notices.js";
 import * as noticeMessages from "./notice-messages.js";
 import * as posted from "./posted-comments.js";
@@ -125,9 +125,9 @@ import * as verdicts from "./verdicts.js";
 /**
  * FactoryStore over a SqlDriver (SQLite; `db` is public for components owning tables). Every write is one driver transaction. Correctness
  * never depends on the row locks alone: every state change is also a conditional UPDATE (version,
- * status, lease token), and uniqueness is enforced by keys, with a duplicate treated as "already there". Task projects: SqlProjectStore.
+ * status, lease token), and uniqueness is enforced by keys, with a duplicate treated as "already there". Task projects: SqlProjectStore, through SqlRunOutputStore.
  */
-export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
+export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
   constructor(db: SqlDriver, private readonly clock: Clock) {
     super(db, () => clock.now().toISOString() as Timestamp);
   }
@@ -393,11 +393,11 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
   addTask(t: Parameters<FactoryStore["addTask"]>[0]) { return tasks.addTask(this.db, t, this.clock.now()); }
   listTasks(limit: number) { return tasks.listTasks(this.db, limit); } listDoneTasks(w: Parameters<FactoryStore["listDoneTasks"]>[0]) { return tasks.listDoneTasks(this.db, w); }
   completeTask(id: string) { return tasks.completeTask(this.db, id, this.now()); } reopenTask(id: string) { return tasks.reopenTask(this.db, id); }
-  getTask(id: string) { return tasks.getTask(this.db, id); }
+  getTask(id: string) { return tasks.getTask(this.db, id); } countOpenSubTasks() { return tasks.countOpenSubTasks(this.db); }
   linkTask(id: string, work_item_id: WorkItemId) { return tasks.linkTask(this.db, id, work_item_id); }
   closeLinkedTasks(work_item_id: WorkItemId) { return tasks.closeLinkedTasks(this.db, work_item_id, this.now()); }
   updateTask(id: string, edit: Parameters<FactoryStore["updateTask"]>[1]) { return tasks.updateTask(this.db, id, edit, this.clock.now()); }
-  setTaskBody(id: string, body: string | null) { return tasks.setTaskBody(this.db, id, body); } deleteTask(id: string) { return tasks.deleteTask(this.db, id); }
+  setTaskBody(id: string, body: string | null) { return tasks.setTaskBody(this.db, id, body); } deleteTask(id: string, opts?: { with_sub_tasks?: boolean }) { return tasks.deleteTask(this.db, id, opts); }
   addSubTask(parent_task_id: string, t: Parameters<FactoryStore["addSubTask"]>[1]) { return tasks.addSubTask(this.db, parent_task_id, t, this.clock.now()); }
   listDueReminders(now: Date) { return tasks.listDueReminders(this.db, now); }
   remindTask(...a: Parameters<FactoryStore["remindTask"]>) { return tasks.remindTask(this.db, ...a); }
@@ -603,10 +603,9 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
     });
   }
 
-  /** The slot cap (design §5, 2026-11-18): which kinds fit, by the running runs of this process's loops read under the claim lock. */
-  private async slotCheck(tx: SqlExecutor, { count, owners }: NonNullable<ClaimInput["workers"]>): Promise<(kind: RunKind) => boolean> {
-    const sql = `SELECT kind FROM worker_runs WHERE status = 'running' AND lease_owner IN (${placeholders(owners.length)})`;
-    const running = (await tx.all(sql, [...owners])).map((r) => r.kind as RunKind);
+  /** The slot cap (design §5): which kinds fit, by every process's running runs (not interactive) under the claim lock. */
+  private async slotCheck(tx: SqlExecutor, { count }: NonNullable<ClaimInput["workers"]>): Promise<(kind: RunKind) => boolean> {
+    const running = (await tx.all(`SELECT kind FROM worker_runs WHERE status = 'running' AND kind <> 'interactive'`, [])).map((r) => r.kind as RunKind);
     const beyond = count > 0 && running.length === count && running.every((k) => CAPPED_KINDS.includes(k));
     return (kind) => running.length < count || (beyond && SHORT_KINDS.includes(kind));
   }

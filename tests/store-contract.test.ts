@@ -227,6 +227,26 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect(new Date(after.lease!.expires_at).getTime()).toBe(clock.now().getTime() + LEASE);
     });
 
+    it("last model output (design 05-restarts): stored by its lease holder, read across running runs, never by the heartbeat", async () => {
+      const { store, clock } = await queued();
+      await store.createWorkItem(issue(2), system, { enqueue: { kind: "triage", idempotency_key: "o/r#2:triage" } });
+      const a = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))!;
+      const b = (await store.claimRun({ worker_id: w2, kinds: ["triage"], lease_ms: LEASE }))!;
+      // A running run with no output yet (and the heartbeat) leaves it null.
+      expect(await store.heartbeat(a.id, a.lease!.token, LEASE)).toMatchObject({ ok: true });
+      expect(await store.latestRunningOutput()).toBeNull();
+      expect(await store.recordRunOutput(a.id, a.lease!.token)).toBe(true);
+      const first = clock.now().toISOString();
+      clock.advance(1_000);
+      expect(await store.recordRunOutput(b.id, b.lease!.token)).toBe(true);
+      expect(await store.latestRunningOutput()).toBe(clock.now().toISOString());
+      // A stale token writes nothing; a finished run is no longer read.
+      expect(await store.recordRunOutput(a.id, a.lease!.token + 1)).toBe(false);
+      await store.completeRun(b.id, b.lease!.token, ok);
+      expect(await store.recordRunOutput(b.id, b.lease!.token)).toBe(false);
+      expect(await store.latestRunningOutput()).toBe(first);
+    });
+
     it("host sleep: an expired lease nobody reclaimed is renewed by its holder (status and token decide, not the clock)", async () => {
       const { store, clock, item } = await queued();
       const run = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))!;
@@ -1878,10 +1898,10 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
 
   describe("claim cap: implement and resolve wait at `workers`; short runs take one slot beyond", () => {
     const ALL_KINDS: RunKind[] = ["triage", "implement", "review", "update", "resolve", "merge-check"];
-    /** One process's loops: p:0 … p:3, so three `workers` and the first loop above them. */
+    /** Loop ids: p:0 … p:3, so three `workers` and the first loop above them. The cap counts every process's runs. */
     const owners = [0, 1, 2, 3].map((n) => `p:${n}` as WorkerId);
     const claim = (store: FactoryStore, worker_id: WorkerId, workers?: number) =>
-      store.claimRun({ worker_id, kinds: ALL_KINDS, lease_ms: LEASE, ...(workers !== undefined ? { workers: { count: workers, owners } } : {}) });
+      store.claimRun({ worker_id, kinds: ALL_KINDS, lease_ms: LEASE, ...(workers !== undefined ? { workers: { count: workers } } : {}) });
     const enqueue = (store: FactoryStore, n: number, kind: RunKind) =>
       store.createWorkItem(issue(n), system, { enqueue: { kind, idempotency_key: `${n}:${kind}` } });
     /** Fills the first slots: kinds[i] runs on item i + 1, leased by p:i. */
@@ -1933,15 +1953,30 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect(await claim(store, owners[2]!, 2)).toBeNull();
     });
 
-    it("counts only this process's lease owners, read from the store", async () => {
+    it("counts every process's running runs: B waits while A holds `workers` implement runs, then claims when they finish", async () => {
       const { store } = await make();
-      await fill(store, ["implement"]);
-      // Another process's running implement leaves this process's one free slot alone.
-      await enqueue(store, 2, "implement");
-      expect((await claim(store, "q:0" as WorkerId))?.kind).toBe("implement");
-      await enqueue(store, 3, "implement");
-      expect(await claim(store, owners[1]!, 1)).toBeNull();
-      expect((await claim(store, owners[1]!, 2))?.idempotency_key).toBe("3:implement");
+      // Process A (a:0 … a:3) holds 4 running implement runs, as a process draining after a merge does.
+      const held = [];
+      for (let n = 1; n <= 4; n++) {
+        await enqueue(store, n, "implement");
+        held.push((await claim(store, `a:${n - 1}` as WorkerId, 4))!);
+      }
+      await enqueue(store, 5, "implement");
+      expect(await claim(store, "b:0" as WorkerId, 4)).toBeNull();
+      for (const run of held) await store.completeRun(run.id, run.lease!.token, { status: "succeeded", summary: "", data: {} });
+      expect((await claim(store, "b:0" as WorkerId, 4))?.idempotency_key).toBe("5:implement");
+    });
+
+    it("while another process holds `workers` implement runs, a review takes the one slot beyond and a triage then waits", async () => {
+      const { store } = await make();
+      for (let n = 1; n <= 4; n++) {
+        await enqueue(store, n, "implement");
+        expect((await claim(store, `a:${n - 1}` as WorkerId, 4))?.kind).toBe("implement");
+      }
+      await enqueue(store, 5, "review");
+      expect((await claim(store, "b:0" as WorkerId, 4))?.kind).toBe("review");
+      await enqueue(store, 6, "triage");
+      expect(await claim(store, "b:1" as WorkerId, 4)).toBeNull();
     });
 
     it("with no worker count, nothing is capped: only the claim order applies", async () => {
@@ -1998,7 +2033,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "controller_notice_messages", "controller_notice_questions", // Slack notice records: 20261112T2100-controller-notice-messages
       "controller_projects", "controller_task_projects", // task projects: 20261113T1300-controller-task-projects
       "controller_pause_history", // ended model-stall and network pauses (design 07-self-improvement): 20261118T1200-controller-pause-history
-      "controller_design_learnings", // owner corrections to UI changes (design 07-design-learnings): 20261120T1200-controller-design-learnings
+      "controller_design_learnings", // owner corrections to UI changes (design 07-design-learnings): 20261120T1201-controller-design-learnings
       "ext_packs_approvals", // approvals of pack entries: src/state/migrations/20261111T1600-state-ext-packs-approvals
       "ext_packs_entries", // pack tool and MCP server entries: src/state/migrations/20261111T1201-state-ext-packs-entries
       "ext_skill_refs", // imported skill references (design 11-plugin-import): src/state/migrations/20261115T1200-state-ext-skill-refs
@@ -3240,7 +3275,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       const { store } = await make();
       const t = await store.addTask(plain("tk_a"));
       await store.addTask(plain("tk_b"));
-      expect(await store.deleteTask("tk_a")).toEqual({ ok: true, task: t, detached: [] });
+      expect(await store.deleteTask("tk_a")).toEqual({ ok: true, task: t, detached: [], deleted: [] });
       const after = await rows(store);
       expect(after.map((r) => r.id)).toEqual(["tk_b"]);
       expect(await store.deleteTask("tk_a")).toEqual({ ok: false, reason: "not_found" });
@@ -3263,6 +3298,52 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       const r = await store.deleteTask("tk_p");
       expect(r.ok && r.detached.map((s) => [s.id, s.parent_task_id])).toEqual([["tk_s1", null], ["tk_s2", null]]);
       expect(await rows(store)).toEqual(done.filter((x) => x.id !== "tk_p").map((x) => ({ ...x, parent_task_id: null })));
+    });
+
+    it("deleteTask with with_sub_tasks deletes the parent and every sub-task, open and done, with their project links, in one write", async () => {
+      const { store } = await make();
+      await store.createProject({ id: "pj_home", name: "Home", created_by: by });
+      await store.addTask(plain("tk_p"));
+      await store.addSubTask("tk_p", plain("tk_s1", { projects: ["home"] }));
+      await store.addSubTask("tk_p", plain("tk_s2"));
+      await store.addTask(plain("tk_other"));
+      await store.completeTask("tk_s1");
+      const { item } = await store.createWorkItem(issue(9101), system);
+      await store.linkTask("tk_p", item.id);
+      await store.linkTask("tk_s2", item.id);
+      const r = await store.deleteTask("tk_p", { with_sub_tasks: true });
+      expect(await store.getWorkItem(item.id)).toEqual(item);
+      expect(r).toMatchObject({ ok: true, task: { id: "tk_p" }, detached: [] });
+      expect(r.ok && r.deleted.map((s) => s.id)).toEqual(["tk_s1", "tk_s2"]);
+      expect((await rows(store)).map((x) => x.id)).toEqual(["tk_other"]);
+      expect(await store.listTaskProjectSlugs(["tk_s1"])).toEqual({});
+      expect(await store.deleteTask("tk_p", { with_sub_tasks: true })).toEqual({ ok: false, reason: "not_found" });
+    });
+
+    it("deleteTask with with_sub_tasks on a task with none deletes it alone; with_sub_tasks false refuses as a plain delete", async () => {
+      const { store } = await make();
+      await store.addTask(plain("tk_a"));
+      await store.addTask(plain("tk_p"));
+      await store.addSubTask("tk_p", plain("tk_s"));
+      expect(await store.deleteTask("tk_a", { with_sub_tasks: true })).toMatchObject({ ok: true, detached: [], deleted: [] });
+      const before = await rows(store);
+      expect(await store.deleteTask("tk_p", { with_sub_tasks: false })).toMatchObject({ ok: false, reason: "open_sub_tasks" });
+      expect(await rows(store)).toEqual(before);
+    });
+
+    it("countOpenSubTasks counts each parent's open sub-tasks over every stored task, leaving out done ones and parents with none", async () => {
+      const { store } = await make();
+      await store.addTask(plain("tk_p"));
+      await store.addTask(plain("tk_q"));
+      await store.addTask(plain("tk_r"));
+      await store.addSubTask("tk_p", plain("tk_p1"));
+      await store.addSubTask("tk_p", plain("tk_p2"));
+      await store.addSubTask("tk_q", plain("tk_q1"));
+      await store.completeTask("tk_q1");
+      const counts = await store.countOpenSubTasks();
+      expect(counts.tk_p).toBe(2);
+      expect(counts.tk_q).toBeUndefined();
+      expect(counts.tk_r).toBeUndefined();
     });
   });
 

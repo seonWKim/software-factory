@@ -13,7 +13,18 @@ The dashboard's design source. Decisions: `docs/design/09-brand-and-tokens.md`.
 - Every page is a `PageHeader` (page title `text-xl` semibold) over `Card` blocks (section title `text-base` semibold), with `Badge` for states and `EmptyState` for empty lists (`components.md`).
 - `tests/design-system.test.ts` checks the generated file matches, that every text colour and every Badge tone meets WCAG AA (4.5:1) in both themes, and that no raw form element appears in `web/src/` outside `components/ui/`.
 
+## Stays fixed
+
+A UI change keeps these as they are. The triage spec lists them for a change under `web/`, and the review checks the diff against them.
+
+- brand colour
+- the one primary action per view
+- page header and Card structure
+- no raw IDs on a page
+
 ## Changelog
+
+- 2026-11-20: `components.md` opens with "Which component for what" (need, component, usage; Checkbox has no component yet, Switch until a follow-up issue adds it), and this file gains "Stays fixed". The triage and review prompts point to both.
 
 - 2026-11-19: `writing.md` gains "Plain words for everyone" (no code or machinery words on a page, values with meaning, local times, events as sentences, problems in three parts, short help, server text included) and a glossary.
 

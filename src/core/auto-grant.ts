@@ -1,4 +1,5 @@
-// Which paths an implement run's needs-human ask may be granted without the owner (design 05-restarts, 2026-11-15).
+// Which paths an implement run's needs-human ask may be granted without the owner (design 05-restarts, 2026-11-15;
+// a few ordinary files too since 2026-11-19).
 
 import { isGatePath } from "./improver.js";
 import { globToRegExp } from "./tools/search-tools.js";
@@ -18,4 +19,19 @@ function refused(path: string): boolean {
 export function testPathsOnly(paths: readonly string[], globs: readonly string[]): boolean {
   const res = globs.map(globToRegExp);
   return paths.length > 0 && paths.every((p) => !refused(p) && res.some((re) => re.test(p)));
+}
+
+/**
+ * At most this many ordinary (non-test) files are granted without the owner (decided 2026-11-19): enough for the
+ * usual miss (a text area file, a moved component, a generated doc), small enough that a wrong plan still reaches the
+ * owner.
+ */
+export const MAX_ORDINARY_GRANT = 3;
+
+/**
+ * Whether `paths` are a few ordinary files: 1 to MAX_ORDINARY_GRANT files (no folders, no globs), none on the gate
+ * list, CLAUDE.md or AGENTS.md. Test paths are judged by `testPathsOnly`, with no count limit.
+ */
+export function fewOrdinaryPaths(paths: readonly string[]): boolean {
+  return paths.length > 0 && paths.length <= MAX_ORDINARY_GRANT && paths.every((p) => !refused(p) && !p.endsWith("/") && !p.includes("*"));
 }

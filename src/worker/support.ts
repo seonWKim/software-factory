@@ -1,7 +1,7 @@
 import type { ModelClass } from "../core/model-choice.js";
 import type { DiffStat } from "../core/diff-gate.js";
 import { MAX_COMMAND_PATHS, retryPathsReply } from "../core/commands.js";
-import { type ReviewOutput, specFindings, unverifiedOf } from "../core/outputs.js";
+import { type ReviewOutput, builtDifferentlyOf, specFindings, unverifiedOf } from "../core/outputs.js";
 import { AGENT_STALLED, RATE_LIMITED } from "../core/policy.js";
 import { type LocalRoute, type PrText, TRUSTED_GIT_ENV, type WorkerDeps, hasTool, prTitle, routeFor, runPushIntents, threadDelivery } from "../core/worker-deps.js";
 import { failingTests, stripAnsi } from "../core/output-summary.js";
@@ -12,6 +12,25 @@ import type { SandboxHandle } from "../interfaces/sandbox.js";
 import { type DecisionAnswer, answerLines } from "../shared/command-notes.js";
 
 export { type LocalRoute, type PrText, TRUSTED_GIT_ENV, type WorkerDeps, hasTool, prTitle, routeFor, runPushIntents, threadDelivery };
+
+/** At most one write of a run's last model output time per this many ms, and per a tenth of stall_ms (design 05-restarts). */
+export const OUTPUT_RECORD_MS = 30_000;
+
+/**
+ * The runner's `on_output` for one agent step (design 05-restarts): stores the run's last model output time through
+ * the store, at once on the first output, then at most once per OUTPUT_RECORD_MS (or a tenth of `stall_ms`), so the
+ * controller can tell one silent run from a model that is down. Best effort: a failed write lets the next output try.
+ */
+export function outputRecorder(d: Pick<WorkerDeps, "store" | "clock">, run: Pick<Run, "id" | "lease">, stall_ms: number): () => void {
+  const every = Math.min(OUTPUT_RECORD_MS, Math.floor(stall_ms / 10));
+  let last = -Infinity;
+  return () => {
+    const now = d.clock.now().getTime();
+    if (!run.lease || now - last < every) return;
+    last = now;
+    d.store.recordRunOutput(run.id, run.lease.token).catch(() => { last = -Infinity; });
+  };
+}
 
 /** The run kinds `workers pause` stops mid-run (design §5 Pause). Others finish first; then the worker stops claiming. */
 export const PAUSABLE_KINDS: readonly RunKind[] = ["implement", "review"];
@@ -192,8 +211,9 @@ export interface RunScratch {
 }
 
 /**
- * The run kinds whose first agent step the toolchain's warm_command runs before (design 05-sandbox.md, issue
- * #334): the ones that build and run checks. Triage only reads, so it warms nothing.
+ * The run kinds the toolchain's warm_command runs for, once per run (design 05-sandbox.md, issue #334): the ones
+ * that build and run checks. Implement and review warm before their first agent step; resolve warms the branch tip
+ * before its merge, since the merged tree may not build until its conflicts are fixed. Triage only reads.
  */
 export const WARM_KINDS: readonly RunKind[] = ["implement", "review", "resolve"];
 
@@ -417,7 +437,7 @@ export function renderContinueNewSession(wip: string): string {
  * The PR review comment (issue #222). Its header: `spec needs a change` when any finding is a spec finding,
  * `changes needed` for a bug verdict with code findings only, `needs a human look` for a passing UI change whose UI
  * could not be checked (`ui_unverified`), else `pass`. Unverified checks are listed under their own heading, never
- * as findings.
+ * as findings; done-when lines built differently, with their reasons, under theirs, before the tier recheck.
  */
 export function reviewComment(v: ReviewOutput): string {
   const spec = specFindings(v);
@@ -425,6 +445,7 @@ export function reviewComment(v: ReviewOutput): string {
   const header = spec.length > 0 ? "spec needs a change" : v.verdict === "bug" ? "changes needed"
     : v.ui_unverified === true ? "needs a human look" : "pass";
   const unverified = unverifiedOf(v);
+  const built = builtDifferentlyOf(v);
   return [
     `## Factory review: ${header}`,
     "",
@@ -432,6 +453,9 @@ export function reviewComment(v: ReviewOutput): string {
     ...(code.length ? ["", ...(spec.length ? ["### Code", ""] : []), ...code.map((f) => `- ${f.text}`)] : []),
     ...(spec.length ? ["", "### Spec", "", ...spec.map((f) => `- ${f.text}`)] : []),
     ...(unverified.length ? ["", "### Not verified", "", ...unverified.map((u) => `- ${u}`)] : []),
+    ...(built.length
+      ? ["", "### Built differently from the spec", "", ...built.map((d) => `- built differently from the spec: ${d.line} — because ${d.reason}`)]
+      : []),
     "",
     `Tier recheck: ${v.tier}`,
   ].join("\n");

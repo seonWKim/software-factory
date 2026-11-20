@@ -48,6 +48,11 @@ Produce:
   companion file: a test, a migration step, a doc topic file. Allow each one, so the work does not stop
   at a path limit. The factory also adds the companions the repository declares (`path_companions` in
   factory.config.json) and says so in the spec.
+  Find where each piece lives now: grep for the component, function or text you name, and use the file the
+  code is in today, not one an older spec or note names. When a repository rule decides which file a new
+  entry goes in (for example a text key whose prefix picks its file), allow that file. When the change edits
+  the source of a generated file, allow the generated file too. Leave out an index or generated file that
+  the change does not alter: two items that list the same file wait for each other.
   A store schema change (a new table, column or migration) needs a migration, named and placed by the
   repository's own migration naming rule: allow the paths that rule names, so a path limit never stops the work
   halfway.
@@ -62,6 +67,11 @@ Produce:
   only the topic files that apply. The documentation targets are the topic files the change touches,
   not the index: name those in files_to_change and allowed_paths. A new topic file also needs its one line
   in the index, so list the index then too.
+- UI changes: for a change under `web/` in a project with `design-system/components.md`, the spec names the
+  components each new or changed element uses, by name from `design-system/components.md` (its "Which component for
+  what" table first), one existing page to match for layout and spacing, and the "Stays fixed" list in
+  `design-system/README.md`. Put them in the done criteria. A need with no component says so, and names the item
+  that adds it or the component to use until then; never leave the element to be drawn by hand.
 - tier: risk 1–5. 1 = docs/tests only. 2 = small, local code change. 3 = behavior change in core logic,
   config, prompts, gates or permissions. 4 = security-relevant (secrets, auth, sandbox, tool broker).
   5 = needs a rollout plan. When unsure, pick the higher tier.

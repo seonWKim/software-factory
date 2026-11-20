@@ -20,7 +20,7 @@ describe("app shell", () => {
     const tasks = screen.getByRole("navigation", { name: "Tasks" });
     expect([...tasks.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Tasks4", "Calendar"]);
     const nav = screen.getByRole("navigation", { name: "System" });
-    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Work", "Health"]);
+    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Work", "Health", "Workers"]);
     fireEvent.click(within(nav).getByText("Health"));
     expect(await screen.findByRole("heading", { level: 1, name: "Health" })).toBeTruthy();
     expect(location.pathname).toBe("/app/health");
@@ -228,7 +228,7 @@ describe("sidebar", () => {
     }
     const links = (name: string) => within(screen.getByRole("navigation", { name })).getAllByRole("link").map((a) => a.getAttribute("aria-label"));
     expect(links("Tasks")).toEqual(["Tasks", "Calendar"]);
-    expect(links("System")).toEqual(["Work", "Health"]);
+    expect(links("System")).toEqual(["Work", "Health", "Workers"]);
     expect(links("Setup")).toEqual(["Rules", "Plugins", "Settings"]);
     expect(document.querySelector("aside details, aside summary, aside [data-chevron]")).toBeNull();
     expect(screen.getByRole("navigation", { name: "System" }).closest("div")!.className.split(" ")).toEqual(expect.arrayContaining(["mt-3", "border-t", "pt-3"]));

@@ -24,7 +24,7 @@ import { issue, newStore, system } from "./helpers/store.js";
 const REV_A = "a".repeat(40);
 const REV_B = "b".repeat(40);
 
-interface Action { code: string; text: string; command: string; until: string | null; work_item_id: string | null }
+interface Action { code: string; text: string; command: string; until: string | null; work_item_id: string | null; pause?: string }
 interface Overview { needs_you: number; system_actions: Action[]; server_rev: string | null; github_token_days: number | "unknown" | null }
 
 afterEach(() => {
@@ -139,15 +139,26 @@ describe("system actions: GitHub token expiry from the last health run", () => {
 });
 
 describe("system actions: claim and worker pauses", () => {
-  it("a claim pause in effect is listed with its end time, the dashboard's Resume now first and its CLI command after", async () => {
+  it("a claim pause in effect is listed by its plain name, its pause and end time, Needs you's Resume now first and its CLI command after", async () => {
     const { overview, store, clock } = await setup();
     const until = new Date(clock.now().getTime() + 3_600_000).toISOString() as Timestamp;
     await store.pauseClaims(until, "rate_limit");
     const o = await overview();
-    const command = "Resume now on the Status page (/app/), or factory resume rate_limit";
-    expect(o.system_actions).toContainEqual({ code: "claim_pause", text: `Claim pause rate_limit in effect, until ${until}`, command, until });
+    const command = "Resume now in Needs you on Tasks, or factory resume rate_limit";
+    expect(o.system_actions).toContainEqual({ code: "claim_pause", text: "Usage or rate limit", command, until, pause: "rate_limit" });
     expect(command.indexOf("Resume now")).toBeLessThan(command.indexOf("factory resume"));
     expect(o.needs_you).toBe(1);
+  });
+
+  it("model_stall's row is named \"Model not answering\" and until is its next probe; no text names the Status page", async () => {
+    const { overview, store, clock } = await setup();
+    const probe = new Date(clock.now().getTime() + 60_000).toISOString() as Timestamp;
+    await store.pauseClaims(probe, "model_stall");
+    const row = (await overview()).system_actions.find((a) => a.code === "claim_pause")!;
+    expect(row).toMatchObject({ text: "Model not answering", pause: "model_stall", until: probe });
+    expect(row.text).not.toMatch(/model_stall|Claim pause|\d{4}-\d{2}-\d{2}T/);
+    expect(row.command).toContain("factory resume model_stall");
+    expect(row.command).not.toContain("Status page");
   });
 
   it("a worker pause is listed with `factory workers resume`, until it is resumed", async () => {

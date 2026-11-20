@@ -2,11 +2,10 @@ import type { TierHistory } from "../core/budget.js";
 import type { ChildRestart } from "./updater.js";
 import type { CoordinationSettings, DependencyLink } from "../core/coordination.js";
 import type {
-  Actor, BlockedOn, BudgetAnswer, BudgetCheckpoint, BudgetCheckpointId, ClaimDecision, ClaimPauseName, DependencyEdge, DependencyState, Tier,
-  Handoff, FiledPattern, FiledPatternId, HostSleep, ImproveReport, ImproveReportId, ImproveWindow, Run, RunAttempt, RunId, RunInput, RunKind,
-  RunOutcome, RunResume, RunStatus, SessionFinish, SourceRef, SourceType, StandingGate, StandingProposal, StandingRule, StateChange,
-  StateChangeDetail, Stage, Timestamp, UnreviewedMerge, UserId, Verdict, VerdictKind, VerdictSeverity, VerdictTarget, WorkItem, WorkItemId,
-  WorkItemPatch, WorkerId, WorkerPause } from "../core/types.js";
+  Actor, BlockedOn, BudgetAnswer, BudgetCheckpoint, BudgetCheckpointId, ClaimDecision, ClaimPauseName, DependencyEdge, DependencyState, Tier, Handoff,
+  FiledPattern, FiledPatternId, HostSleep, ImproveReport, ImproveReportId, ImproveWindow, Run, RunAttempt, RunId, RunInput, RunKind, RunOutcome, RunResume,
+  RunStatus, SessionFinish, SourceRef, SourceType, StandingGate, StandingProposal, StandingRule, StateChange, StateChangeDetail, Stage, Timestamp,
+  UnreviewedMerge, UserId, Verdict, VerdictKind, VerdictSeverity, VerdictTarget, WorkItem, WorkItemId, WorkItemPatch, WorkerId, WorkerPause } from "../core/types.js";
 import type { AuthAction, AuthResource, LinkedAccount } from "./auth-provider.js";
 import type { SourceEvent } from "./source-adapter.js";
 import type { StatsRecord } from "../core/stats.js";
@@ -17,6 +16,7 @@ import type { TaskStore } from "../core/tasks.js";
 import type { NoticeStore } from "../core/notifications.js";
 import type { DesignLearningStore } from "../core/design-learnings.js";
 import type { PostedCommentReads } from "../core/reaction-verdict.js";
+import type { RunOutputStore } from "../core/stall.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
@@ -274,7 +274,7 @@ export interface ClaimInput {
   lease_ms: number;
   /** The coordination threshold and weights (design §5, 2026-11-03). Absent: DEFAULT_COORDINATION. */
   coordination?: CoordinationSettings;
-  workers?: { count: number; owners: readonly WorkerId[] }; // The slot cap (design §5, 2026-11-18): live `workers`, every loop id of this process. Absent: none.
+  workers?: { count: number }; // The slot cap (design §5, 2026-11-18; per factory since 2026-11-20): the live `workers`, counted over every process's running runs. Absent: none.
 }
 /** The slot cap's kinds: any kind claims below `workers`; a short one also in one slot beyond while every slot holds a capped one. */
 export const SHORT_KINDS: readonly RunKind[] = ["merge-check", "review", "triage"], CAPPED_KINDS: readonly RunKind[] = ["implement", "resolve"];
@@ -354,7 +354,7 @@ export interface NoticeMessageStore {
   getNoticeQuestion(id: string): Promise<NoticeQuestion | null>;
 }
 
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, DesignLearningStore {
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, DesignLearningStore, RunOutputStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes

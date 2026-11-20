@@ -4,7 +4,7 @@
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TasksView } from "../web/src/api.js";
-import { SLOW, TOKEN, card, reset, row, s, show, show2, teardown, view } from "./ui-tasks-fixtures.js";
+import { SLOW, TOKEN, card, json, reset, row, s, show, show2, teardown, view } from "./ui-tasks-fixtures.js";
 
 beforeEach(reset);
 afterEach(teardown);
@@ -145,5 +145,78 @@ describe("quick add", () => {
     await show();
     expect(document.body.textContent).not.toContain("factory task add");
     expect(document.body.textContent).toContain("Build this sends a task to the factory.");
+  });
+
+  describe("the live preview (design 09-dashboard-tasks)", () => {
+    const PREVIEW = "/api/v1/tasks/preview?words=";
+    const parsed = (over: Record<string, unknown>) => ({
+      ok: true, title: "t", due_date: null, due_time: null, recurrence: null, projects: [], priority: null, list: null, duration_minutes: null, unread: [], ...over,
+    });
+    /** Answers GET /api/v1/tasks/preview from `answers` by words; records each asked words. */
+    function stubPreview(answers: Record<string, unknown>) {
+      const asked: string[] = [];
+      const base = fetch;
+      vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.startsWith(PREVIEW)) {
+          const words = decodeURIComponent(url.slice(PREVIEW.length));
+          asked.push(words);
+          return json(200, answers[words] ?? parsed({ title: words }));
+        }
+        return base(url, init);
+      }));
+      return asked;
+    }
+    const preview = () => document.querySelector<HTMLElement>("[data-quick-add-preview]");
+
+    it("shows date, time, repeat, project and priority as parsed, and the every … words it did not understand, before submit", async () => {
+      await show();
+      const words = "review PRs every week +backend tomorrow 09:00";
+      const asked = stubPreview({ [words]: parsed({ title: "review PRs every week", due_date: "2026-11-13", due_time: "09:00", projects: ["backend"], unread: ["every week"] }) });
+      type(words);
+      await waitFor(() => expect(preview()?.textContent).toContain("+backend"), SLOW);
+      const text = preview()!.textContent!;
+      for (const part of ["Date: 2026-11-13", "Time: 09:00", "Repeat: none", "Project: +backend", "Priority: none", "Not understood, kept in the title: every week"]) {
+        expect(text).toContain(part);
+      }
+      expect(asked).toEqual([words]);
+      expect(s.posts).toHaveLength(0);
+    });
+
+    it("updates as the owner types: every week at the end shows as the repeat", async () => {
+      await show();
+      const words = "review PRs tomorrow every week";
+      stubPreview({ [words]: parsed({ title: "review PRs", due_date: "2026-11-13", recurrence: "week", priority: 1 }) });
+      type("review PRs");
+      await waitFor(() => expect(preview()?.textContent).toContain("Repeat: none"), SLOW);
+      type(words);
+      await waitFor(() => expect(preview()?.textContent).toContain("Repeat: every week"), SLOW);
+      expect(preview()!.textContent).toContain("Priority: !1");
+      expect(preview()!.textContent).not.toContain("Not understood");
+    });
+
+    it("words the parser refuses show its reason in the preview; an empty field shows no preview", async () => {
+      await show();
+      stubPreview({ "standup 13pm": { ok: false, reason: "not a time: 13pm" } });
+      type("standup 13pm");
+      await waitFor(() => expect(preview()?.textContent).toContain("not a time: 13pm"), SLOW);
+      type("");
+      await waitFor(() => expect(preview()).toBeNull());
+    });
+
+    it("on a project tab with no +slug typed, the preview names the tab's project", async () => {
+      history.replaceState(null, "", "/app/tasks?project=home");
+      s.current = view({ active_projects: [{ slug: "home", name: "Home" }] });
+      s.filtered = { home: view({ active_projects: [{ slug: "home", name: "Home" }] }) };
+      await show2();
+      stubPreview({});
+      type("buy milk");
+      await waitFor(() => expect(preview()?.textContent).toContain("Project: +home"), SLOW);
+    });
+  });
+
+  it("the created row shows its project as +slug in its details line", async () => {
+    s.current = view({ today: { overdue: [row("tk_late", { due_date: "2026-11-10" })], due: [row("tk_pr", { title: "review PRs", projects: ["backend"] })] } });
+    await show();
+    expect(card("tk_pr").textContent).toContain("+backend");
   });
 });

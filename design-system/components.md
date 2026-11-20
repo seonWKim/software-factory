@@ -2,6 +2,17 @@
 
 The shared pieces in `web/src/components/ui`: plain React and Tailwind on the token classes of `foundations.md`, no component library. Each section gives the purpose, variants, sizes and states; `tests/web-ui-components.test.tsx` renders every one listed for the new components and checks that every exported component has a section here.
 
+## Which component for what
+
+Pick the component by the need, before drawing anything by hand. A UI spec names the row it uses; a hand-made element where a row names a component is a review finding. A need with no component says so and links the item that adds it.
+
+| Need | Component | Usage |
+|---|---|---|
+| a state | `Badge` | A short state as a pill, tone from its level; never a hand-made chip or a bordered Button. |
+| an on/off choice in a list | Checkbox (none yet: `Switch` until it exists) | One box per row that turns that row's choice on or off. No Checkbox exists yet; a follow-up issue adds it. Until then use `Switch`, never a Button drawn as a box. |
+| a row's extra actions | `OverflowMenu` | The row's secondary actions behind one "more" button at its end, so the row stays one line. |
+| input inside a list row | `Dialog` | A field a row action needs opens in a Dialog; the row's height never changes. |
+
 ## Card
 
 A block of a page (`card.tsx`): the `surface` background, a 1px `border`, the `card` radius, 24px padding (`p-6`; 16px below `sm`, so a 320px window keeps its content width) and `shadow-sm`. Optional h2 `title` in the section title role (`text-base font-semibold`, the exported `CARD_TITLE`), an optional `count` beside it and an optional `action` at the end of the title row. It is a region named by `label`, else by `title` (Data names its table Card "Table <name>" and titles it with the bare name); with neither it is a plain block. `id` gives it an anchor (`#spend`, `#failures`); `live` announces a title that changes (the calendar's period). Cards follow each other 24px apart. No variants or sizes.
@@ -89,6 +100,10 @@ A short hint on hover and keyboard focus, hidden by Esc or leaving. Variants (`p
 ## Button
 
 The dashboard's one button. Variants: `primary` (accent background, `on-solid` text: the one main action of a view), `secondary` (default: `border-strong` border on `surface`), `ghost` (no border, `surface-2` on hover), `danger` (`failed` text); `danger` with `solid` is filled with the failed colour, only for a confirm dialog's destructive confirm. Sizes: `md` (default, at least 32 px high), `sm` (at least 28 px), `icon` (32 px square). States: default, hover (enabled only), focus-visible, pressed (`aria-pressed` or `aria-checked`: `surface-2` background), `disabled` (opacity 0.5). `type` defaults to `button`.
+
+## Checkbox
+
+A native `input type=checkbox` drawn from the tokens: a 16 px box (`size-4`) inside a 32 px hit area, a `text-2` border on `surface`, checked an `accent` border and an `accent` check mark. The label is `children` (visible, the accessible name) or an `aria-label`. `aria-checked` mirrors `checked`. One size. States: unchecked, checked, focus-visible, `disabled`.
 
 ## Switch
 

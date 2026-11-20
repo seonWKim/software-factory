@@ -2,6 +2,7 @@
 // Dashboard shell tests: one queued count, app pages, unreviewed merges, system actions and revisions. Shared setup is in ui-shell-fixtures.tsx.
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { localDateTime } from "../web/src/lib/format.js";
 import { redirectFor } from "../web/src/pages.js";
 import { ItemsTable } from "../web/src/views/common.js";
 import { API } from "../web/src/api.js";
@@ -87,12 +88,12 @@ describe("app pages", () => {
     expect(screen.queryByRole("link", { name: "Users" })).toBeNull();
   });
 
-  it("the sidebar has exactly seven links; Activity, Failures, Spend, Runners and Data are not among them", () => {
+  it("the sidebar links Workers after Health; Activity, Failures, Spend, Runners and Data are not among them", () => {
     mount();
     const side = screen.getByRole("complementary", { name: "Sidebar" });
     const links = [...side.querySelectorAll("a")].filter((a) => a.getAttribute("href")?.startsWith("/app/") && a.getAttribute("href") !== "/app/");
     expect(links.map((a) => [a.getAttribute("aria-label"), a.getAttribute("href")])).toEqual([
-      ["Tasks", "/app/tasks"], ["Calendar", "/app/calendar"], ["Work", "/app/items"], ["Health", "/app/health"],
+      ["Tasks", "/app/tasks"], ["Calendar", "/app/calendar"], ["Work", "/app/items"], ["Health", "/app/health"], ["Workers", "/app/workers"],
       ["Rules", "/app/rules"], ["Plugins", "/app/plugins"], ["Settings", "/app/settings"],
     ]);
     for (const gone of ["Activity", "Failures", "Spend", "Runners", "Data"]) expect(within(side).queryByRole("link", { name: gone })).toBeNull();
@@ -118,20 +119,25 @@ describe("app pages", () => {
     }
   });
 
-  it("old paths redirect: /app/workers to Runners; /app/users is no longer an old path", async () => {
+  it("/app/workers opens the Workers page with no redirect; /app/runners still opens Runners; /app/users is no longer an old path", async () => {
     history.replaceState(null, "", "/app/workers");
     mount();
+    expect(await screen.findByRole("heading", { level: 1, name: "Workers" })).toBeTruthy();
+    expect(location.pathname).toBe("/app/workers");
+    expect(redirectFor("/app/workers")).toBeNull();
+    cleanup();
+    history.replaceState(null, "", "/app/runners");
+    mount();
     expect(await screen.findByRole("heading", { level: 1, name: "Runners" })).toBeTruthy();
-    await vi.waitFor(() => expect(location.pathname).toBe("/app/runners"));
+    expect(location.pathname).toBe("/app/runners");
     expect(redirectFor("/app/users")).toBeNull();
   });
 
-  it("/app/spend, /app/failures and /app/activity redirect, keeping the query; /app/queue and /app/workers still do", async () => {
+  it("/app/spend, /app/failures and /app/activity redirect, keeping the query; /app/queue still does", async () => {
     expect(redirectFor("/app/spend")).toBe("/app/health#spend");
     expect(redirectFor("/app/failures")).toBe("/app/health#failures");
     expect(redirectFor("/app/failures", "?window=7d")).toBe("/app/health?window=7d#failures");
     expect(redirectFor("/app/activity")).toBe("/app/items");
-    expect(redirectFor("/app/workers")).toBe("/app/runners");
     expect(redirectFor("/app/queue")).toBe("/app/items?state=queued");
     for (const [from, to] of [
       ["/app/spend", "/app/health#spend"],
@@ -220,7 +226,7 @@ describe("app pages", () => {
     mount();
     await screen.findByText("push access denied");
     const tabs = screen.getAllByRole("tab");
-    expect(tabs.map((x) => x.textContent!.replace(/\s*\(.*$/, ""))).toEqual(["Checks", "Host sleeps", "Merged without review"]);
+    expect(tabs.map((x) => x.textContent!.replace(/\s*\(.*$/, ""))).toEqual(["Checks", "Host sleeps", "Merged without review", "Efficiency"]);
     expect(tabs[0]!.getAttribute("aria-selected")).toBe("true");
     expect(tabs[0]!.textContent).toContain("(2)");
     expect(tabs[0]!.textContent).toContain("failing");
@@ -311,10 +317,10 @@ describe("system actions, revisions and the tab title (issue #311)", () => {
     }
   });
 
-  it("the Tasks page lists each system action with its command as a row in the Needs you section's Check group", async () => {
+  it("the Tasks page lists each system action as a row in the Needs you section's Check group; a claim pause draws no command", async () => {
     const actions = [
       { code: "migration_pending", text: "Schema at version 3 of 8", command: "Migrate now, or factory migrate", until: null, work_item_id: null },
-      { code: "claim_pause", text: "Claim pause rate_limit in effect, until 2026-11-07T01:00:00.000Z", command: "factory resume rate_limit", until: "2026-11-07T01:00:00.000Z", work_item_id: null },
+      { code: "claim_pause", text: "Usage or rate limit", command: "Resume now in Needs you on Tasks, or factory resume rate_limit", until: "2026-11-07T01:00:00.000Z", work_item_id: null, pause: "rate_limit" },
     ];
     (overview as Record<string, unknown>).system_actions = actions;
     try {
@@ -324,7 +330,11 @@ describe("system actions, revisions and the tab title (issue #311)", () => {
       expect(rows.map((r) => r.getAttribute("data-check"))).toEqual(["migration_pending", "claim_pause"]);
       expect(rows[0]!.textContent).toContain("Schema at version 3 of 8");
       expect(rows[0]!.querySelector("code")!.textContent).toBe("Migrate now, or factory migrate");
-      expect(rows[1]!.querySelector("code")!.textContent).toBe("factory resume rate_limit");
+      expect(rows[1]!.textContent).toContain("Usage or rate limit");
+      expect(rows[1]!.querySelector("time")!.getAttribute("datetime")).toBe("2026-11-07T01:00:00.000Z");
+      // The button is the action (decision 3): no CLI command under the pause.
+      expect(rows[1]!.querySelector("code")).toBeNull();
+      expect(rows[1]!.textContent).not.toContain("factory resume");
       // The rows are inside the Needs you section, not lines after it.
       expect(screen.getByRole("region", { name: "Needs you" }).contains(list)).toBe(true);
       expect(screen.queryByRole("list", { name: "System actions" })).toBeNull();
@@ -350,6 +360,26 @@ describe("system actions, revisions and the tab title (issue #311)", () => {
       expect(folded.querySelector("summary")!.textContent).toBe("22 ok");
       expect(folded.querySelectorAll("li")).toHaveLength(22);
       for (const msg of ["token expires in 2 days", "push access denied"]) expect(folded.textContent).not.toContain(msg);
+    } finally {
+      RESPONSES["/api/v1/health"] = saved;
+    }
+  });
+
+  it("Health shows a stall check's since and next probe as relative times with the local time on hover, never ISO", async () => {
+    const since = "2026-11-19T16:11:54.203Z";
+    const next = "2026-11-19T16:21:54.203Z";
+    const saved = RESPONSES["/api/v1/health"];
+    RESPONSES["/api/v1/health"] = { checked_at: AT, checks: [{ status: "fail", msg: "agents paused: model not answering", since, next }] };
+    try {
+      history.replaceState(null, "", "/app/health");
+      mount();
+      const row = (await screen.findByText(/agents paused: model not answering/)).closest("li")!;
+      const times = [...row.querySelectorAll("time")];
+      expect(times.map((t) => t.getAttribute("datetime"))).toEqual([since, next]);
+      expect(times.map((t) => t.getAttribute("title"))).toEqual([localDateTime(since), localDateTime(next)]);
+      expect(times[0]!.textContent).toMatch(/^started /);
+      expect(times[1]!.textContent).toMatch(/^next probe /);
+      expect(row.textContent).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}|UTC/);
     } finally {
       RESPONSES["/api/v1/health"] = saved;
     }

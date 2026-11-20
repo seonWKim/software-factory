@@ -9,13 +9,14 @@
 // and the task through the same store method, with the ID the caller chose, so a retry stores one task. The task is
 // created by the page's commands actor (UiCommands), whose per-process token the request carries. The request guards
 // (Host, Origin, Content-Type, CSRF token, body size, JSON) run in server.ts before writeTask is reached; every
-// refusal comes before the store write.
+// refusal comes before the store write. GET /api/v1/tasks/preview runs the same parser on the quick-add field's words
+// as the owner types, and writes nothing.
 
 import { readCalendar } from "../calendar/index.js";
 import { needsDueDate, parseQuickAdd, parseQuickEdit } from "../core/quick-add.js";
 import { buildTask, createProjectTask } from "../core/task-build.js";
 import { isProjectSlug } from "../core/projects.js";
-import { MAX_TASK_BODY, ProjectRefused, type Task, type TaskStore, doneWindow, projectRefusal, taskBody, taskViews } from "../core/tasks.js";
+import { MAX_TASK_BODY, ProjectRefused, type Task, type TaskStore, doneWindow, dueDate, projectRefusal, taskBody, taskViews } from "../core/tasks.js";
 import type { CloseReason } from "../core/types.js";
 import { TASK_LIST_LIMIT } from "../core/local-cli.js";
 import type { ApiResult } from "./api.js";
@@ -34,6 +35,7 @@ export const TASK_REOPEN_PATH = "/api/v1/tasks/reopen";
 export const TASK_DELETE_PATH = "/api/v1/tasks/delete";
 export const TASK_SUB_PATH = "/api/v1/tasks/sub";
 export const TASK_BODY_PATH = "/api/v1/tasks/body";
+export const TASK_PREVIEW_PATH = "/api/v1/tasks/preview";
 
 /** A caller-chosen task ID: `tk_` and 8 to 64 URL-safe characters (the CLI's own `tk_<random>`). */
 const TASK_ID = /^tk_[A-Za-z0-9_-]{8,64}$/;
@@ -56,7 +58,8 @@ async function shown<T extends { title: string; body?: string | null }>(w: Withh
  * and Upcoming, and `calendar`, each source's last sync time and whether its last sync failed. Each task row carries
  * `projects`, the slugs of its active task projects, and `active_projects` lists the active projects (slug and name)
  * for the page's project switcher, and `close_reason`, a linked task's item's close reason (open or done) when it closed without a merge
- * (closeReasons; else null). With `project` (a slug, `?project=`) the views hold only the tasks, open or done, linked to
+ * (closeReasons; else null), and `open_sub_tasks`, how many open sub-tasks it has over every stored task (counted before the
+ * project filter), so the delete dialog knows before it opens. With `project` (a slug, `?project=`) the views hold only the tasks, open or done, linked to
  * that project: 400 for a value that is not a slug or an archived project, 404 for an unknown one. Reads the stored
  * copy only: no source is called and nothing is written. `csrf_token` and `can_build` for Build this (null and false
  * when the commands route is off). `add_key`, the quick-add field's submit key: the `tasks_add_key` setting's stored
@@ -71,7 +74,8 @@ export async function readTasks(d: UiDeps, project: string | null = null): Promi
   const listed = await shown(w, [...await d.store.listTasks(TASK_LIST_LIMIT), ...done]);
   const slugs = await d.store.listTaskProjectSlugs(listed.map((t) => t.id));
   const reasons = await closeReasons(d, listed);
-  const rows = listed.map((t) => ({ ...t, projects: slugs[t.id] ?? [], close_reason: reasons.get(t.id) ?? null }));
+  const subs = await d.store.countOpenSubTasks();
+  const rows = listed.map((t) => ({ ...t, projects: slugs[t.id] ?? [], close_reason: reasons.get(t.id) ?? null, open_sub_tasks: subs[t.id] ?? 0 }));
   const kept = project === null ? rows : rows.filter((t) => t.projects.includes(project));
   const active_projects = await Promise.all((await d.store.listProjects("active")).map(async (p) => ({ slug: p.slug, name: (await w.plain(p.name)).text })));
   const calendar = await readCalendar(storeSql(d.store));
@@ -122,6 +126,37 @@ export async function inProject<T extends { item: { id: string } }>(store: Pick<
   if (project === null) return rows;
   const slugs = await store.listWorkItemProjectSlugs(rows.map((r) => r.item.id));
   return rows.filter((r) => slugs[r.item.id]?.includes(project) ?? false);
+}
+
+/**
+ * GET /api/v1/tasks/preview?words=<text>: what POST /api/v1/tasks would store for these words, from the same parser
+ * (parseQuickAdd), with the due day resolved at the server's clock: `ok`, the title, `due_date`, `due_time`,
+ * `recurrence`, `projects` (the `+slug`s typed), `priority`, `list`, `duration_minutes` and `unread`, the title words
+ * that look like quick-add words but were not read (an `every …` that does not end the text). Words the parser refuses
+ * answer 200 with `ok` false and its reason; no `words` or more than MAX_WORDS characters answer 400. Reads no store
+ * row and writes nothing; the title and unread words leave through the Withholder.
+ */
+export async function readTaskPreview(d: UiDeps, words: string | null): Promise<ApiResult> {
+  if (words === null || words.length > MAX_WORDS) return refused(400, `words must be a string of at most ${MAX_WORDS} characters`);
+  const parsed = parseQuickAdd(words);
+  if (!parsed.ok) return { status: 200, value: { ok: false, reason: parsed.reason } };
+  const w = new Withholder(d.scanner);
+  const { task } = parsed;
+  return {
+    status: 200,
+    value: {
+      ok: true,
+      title: (await w.plain(task.title)).text,
+      due_date: task.due === null ? null : dueDate(task.due, d.clock.now()),
+      due_time: task.due_time,
+      recurrence: task.recurrence,
+      projects: task.projects ?? [],
+      priority: task.priority,
+      list: task.list,
+      duration_minutes: task.duration_minutes ?? null,
+      unread: await Promise.all(parsed.unread.map(async (u) => (await w.plain(u)).text)),
+    },
+  };
 }
 
 /** The `tasks_add_key` setting: its stored global override when that is one of the choices, else the default (`enter`). */
@@ -300,14 +335,19 @@ export async function writeTaskReopen(d: UiDeps, body: unknown): Promise<ApiResu
 
 /**
  * POST /api/v1/tasks/delete with `{ id }`, the store's deleteTask as `factory task delete`: 404 for an unknown task;
- * 409 naming its open sub-tasks while it has any (nothing written); else 200.
+ * 409 naming its open sub-tasks while it has any (nothing written); else 200. With `with_sub_tasks: true` (the delete
+ * dialog's "delete with sub-tasks") every sub-task, open and done, is deleted with it in one transaction, and the 200
+ * names them in `deleted_sub_tasks`; a `with_sub_tasks` that is not a boolean is 400.
  */
 export async function writeTaskDelete(d: UiDeps, body: unknown): Promise<ApiResult> {
   if ((d.commands?.actor ?? null) === null) return OFF;
-  const b = parseBody(body, ["id"], true);
+  const flagged = typeof body === "object" && body !== null && "with_sub_tasks" in body;
+  const with_sub_tasks = flagged ? (body as { with_sub_tasks: unknown }).with_sub_tasks : false;
+  if (typeof with_sub_tasks !== "boolean") return refused(400, "with_sub_tasks must be true or false");
+  const b = parseBody(flagged ? Object.fromEntries(Object.entries(body).filter(([k]) => k !== "with_sub_tasks")) : body, ["id"], true);
   if ("error" in b) return refused(400, b.error);
-  const r = await d.store.deleteTask(b.id);
-  if (r.ok) return { status: 200, value: { task_id: r.task.id } };
+  const r = await d.store.deleteTask(b.id, { with_sub_tasks });
+  if (r.ok) return { status: 200, value: { task_id: r.task.id, deleted_sub_tasks: r.deleted.map((t) => t.id) } };
   if (r.reason === "not_found") return unknown(b.id);
   const titles = (await shown(new Withholder(d.scanner), r.sub_tasks)).map((t) => t.title).join(", ");
   return refused(409, `it has open sub-tasks (${titles}): complete or delete them first`);

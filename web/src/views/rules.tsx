@@ -1,24 +1,24 @@
 import { ScrollText } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, type RefObject, useRef, useState } from "react";
 import {
   API, type AppliedRule, type ImproveGroupView, type ImproveView, type RetiredRule, type RuleDetail, type RuleEvidence, type RuleRow, type RuleVerdict, type RulesView,
   postImproveRun, postRuleVerdict, postSettings, useApi, useRuleEntry,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
-import { ButtonRow } from "../components/ui/button-row.js";
 import { IdDetails } from "../components/ui/copy.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
-import { KeyValue } from "../components/ui/key-value.js";
+import { KeyValue, ValueBlock } from "../components/ui/key-value.js";
 import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
 import { Markdown } from "../components/ui/markdown.js";
-import { Tooltip } from "../components/ui/menu.js";
+import { OverflowMenu } from "../components/ui/menu.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { EmptyState, Notice, PageHeader } from "../components/ui/notice.js";
 import { Textarea } from "../components/ui/textarea.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
+import { localDateTime } from "../lib/format.js";
 import { AgentsHomePicker } from "./agents-home-picker.js";
 import { ApprovalsSection } from "./standing.js";
 import { Disclosure } from "../components/ui/disclosure.js";
@@ -34,7 +34,7 @@ import { Badge } from "../components/ui/badge.js";
 // detail on demand through GET /api/v1/rules/entry?id=, never on page load: a description, what it would change,
 // before → after, why, the evidence (newest first, 3 shown, the rest behind "Show all N"), where it applies and the
 // related applied rules (sharing an incident ID or naming the target file), each part left out when it has nothing.
-// Promote (primary, with a Tooltip when off), Hold and Reject (danger, last) each open a dialog that shows the
+// Promote (first, off with its reason in the row when the draft could not be read), Hold and Reject (danger, last), the items of the row's ⋯ menu, each open a dialog that shows the
 // entry's full title and that detail above a required reason;
 // Promote of a class also asks for the rule's wording, default and exception (prefilled from the class's draft);
 // Promote of a proposal shows its Now and Proposed lines (the detail's before → after) and sends only the reason on
@@ -130,7 +130,7 @@ function ReasonField({ id, value, onChange }: { id: string; value: string; onCha
  * default and exception (prefilled from its draft). Promote of a proposal shows its Now and Proposed lines in the
  * detail and is off until both are read.
  */
-function VerdictDialog({ entry, applied, verdict, token, onClose }: { entry: RuleRow; applied: AppliedRule[]; verdict: RuleVerdict; token: string; onClose: () => void }) {
+function VerdictDialog({ entry, applied, verdict, token, returnFocusTo, onClose }: { entry: RuleRow; applied: AppliedRule[]; verdict: RuleVerdict; token: string; returnFocusTo: RefObject<HTMLElement | null>; onClose: () => void }) {
   const [reason, setReason] = useState("");
   const [text, setText] = useState(entry.title);
   const [dflt, setDefault] = useState(entry.draft?.default ?? "");
@@ -153,6 +153,7 @@ function VerdictDialog({ entry, applied, verdict, token, onClose }: { entry: Rul
       error={error}
       onConfirm={() => void send({ id: entry.id, verdict, reason: reason.trim(), ...(promote ? rule : {}) }, label, entry.title)}
       onClose={onClose}
+      returnFocusTo={returnFocusTo}
     >
       <p data-dialog-summary className="min-w-0 text-sm font-medium text-pretty break-words whitespace-pre-wrap">
         {entry.title}
@@ -194,7 +195,10 @@ function RetireDialog({ id, name, token, onClose }: { id: string; name: string; 
 
 /** A proposal's kind and target as one line; a part the ledger did not list reads "not given". */
 const proposalLine = (kind: string | undefined, target: string | undefined): string =>
-  t("rules.whatProposal", { kind: kind ?? t("rules.notGiven"), target: target ?? t("rules.notGiven") });
+  t("rules.whatProposal", { kind: kind ?? t("rules.notGiven"), target: target === undefined ? t("rules.notGiven") : shortName(target) });
+
+/** A target's file name: its last path segment ("bin/evolve" is "evolve"); the full path stays in the detail. */
+const shortName = (target: string): string => target.split("/").filter(Boolean).pop() ?? target;
 
 /** One part of the detail: its label, then its lines; nothing at all when it has none. */
 function DetailPart({ label, part, children }: { label: MessageKey; part: string; children: ReactNode[] }) {
@@ -334,8 +338,29 @@ function EntryDetail({ entry, applied }: { entry: RuleRow; applied: AppliedRule[
   );
 }
 
-function RuleCard({ entry, applied, token }: { entry: RuleRow; applied: AppliedRule[]; token: string | null }) {
+/** A waiting proposal's first changed lines, by ID, from `GET /api/v1/rules`; a side the ledger did not give is absent. */
+type Excerpt = { before?: string; after?: string };
+
+/** A proposal's before and after lines, read without opening anything. */
+function ExcerptBlock({ excerpt }: { excerpt: Excerpt }) {
+  const sides = ([["before", "rules.before"], ["after", "rules.after"]] as const).filter(([k]) => excerpt[k] !== undefined);
+  return (
+    <div data-rule-excerpt className="grid gap-2 sm:grid-cols-2">
+      {sides.map(([k, label]) => (
+        <div key={k} data-excerpt={k} className="min-w-0 space-y-1">
+          <h3 className="text-xs font-semibold text-text-2">{t(label)}</h3>
+          <ValueBlock>{excerpt[k]}</ValueBlock>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function RuleCard({ entry, excerpt, applied, token }: { entry: RuleRow; excerpt?: Excerpt | undefined; applied: AppliedRule[]; token: string | null }) {
   const [open, setOpen] = useState<RuleVerdict | null>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  // The menu item that opened a dialog is gone when it closes: focus goes back to the menu's ⋯ button.
+  const menuButton = { get current() { return menu.current?.querySelector<HTMLElement>("button[aria-haspopup]") ?? null; } };
   const noDraft = isClass(entry.id) && entry.draft === null;
   return (
     <li data-rule={entry.id} className="space-y-2 p-3">
@@ -356,6 +381,7 @@ function RuleCard({ entry, applied, token }: { entry: RuleRow; applied: AppliedR
           {proposalLine(entry.kind, entry.target)}
         </p>
       )}
+      {excerpt !== undefined && <ExcerptBlock excerpt={excerpt} />}
       <Disclosure lazy summary={t("rules.showDetail")}>
         <EntryDetail entry={entry} applied={applied} />
       </Disclosure>
@@ -365,24 +391,16 @@ function RuleCard({ entry, applied, token }: { entry: RuleRow; applied: AppliedR
         </p>
       )}
       {token !== null && entry.judged === null && (
-        <ButtonRow className="pt-1">
-          {VERDICTS.map((v) => {
-            const button = (
-              <Button key={v.verdict} variant={v.variant} disabled={v.verdict === "promote" && noDraft} onClick={() => setOpen(v.verdict)}>
-                {t(v.label)}
-              </Button>
-            );
-            return v.verdict === "promote" && noDraft ? (
-              <Tooltip key={v.verdict} text={t("rules.promoteOff")}>
-                {button}
-              </Tooltip>
-            ) : (
-              button
-            );
-          })}
-        </ButtonRow>
+        <div ref={menu} className="pt-1">
+          <OverflowMenu
+            label={t("rules.actions", { title: entry.title })}
+            items={VERDICTS.map((v) => ({
+              label: t(v.label), action: v.verdict, danger: v.variant === "danger", disabled: v.verdict === "promote" && noDraft, onSelect: () => setOpen(v.verdict),
+            }))}
+          />
+        </div>
       )}
-      {open !== null && token !== null && <VerdictDialog entry={entry} applied={applied} verdict={open} token={token} onClose={() => setOpen(null)} />}
+      {open !== null && token !== null && <VerdictDialog entry={entry} applied={applied} verdict={open} token={token} returnFocusTo={menuButton} onClose={() => setOpen(null)} />}
     </li>
   );
 }
@@ -619,7 +637,7 @@ export function RulesPage() {
                 </p>
                 <ul aria-label={t(g.title)} className="divide-y divide-border rounded-control border border-border">
                   {entries.map((e) => (
-                    <RuleCard key={e.id} entry={e} applied={applied} token={token} />
+                    <RuleCard key={e.id} entry={e} excerpt={(v as RulesView & { excerpts?: Record<string, Excerpt> }).excerpts?.[e.id]} applied={applied} token={token} />
                   ))}
                 </ul>
               </Card>
@@ -726,7 +744,7 @@ function Improve({ view }: { view: ImproveView }) {
             <>
               <p data-improve-window className={`${muted} tabular-nums`}>
                 {t("rules.improveWindow", {
-                  start: r.window_start, end: r.window_end, created: r.created_at, groups: r.groups.length, runs: r.runs, patterns: r.patterns,
+                  start: localDateTime(r.window_start), end: localDateTime(r.window_end), created: localDateTime(r.created_at), groups: r.groups.length, runs: r.runs, patterns: r.patterns,
                 })}
               </p>
               {r.groups.length === 0 ? (
