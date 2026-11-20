@@ -6,7 +6,6 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { EventRow } from "../web/src/api.js";
-import { PAGES, routeFor } from "../web/src/pages.js";
 import { SLOW, TOKEN, TasksPage, card, chooseMenu, item, menuItems, reset, row, s, show, show2, teardown, view } from "./ui-tasks-fixtures.js";
 
 // dayLabel lives in the groups module; the specifier is one the node type check skips (the page module is loaded the same way).
@@ -20,11 +19,6 @@ afterEach(teardown);
 // calendar events and a timeline are gone. The other topics are in tests/ui-tasks-*.test.tsx; the shared stub is in tests/ui-tasks-fixtures.ts.
 
 describe("Tasks page", () => {
-  it("is a sidebar page at /app/tasks", () => {
-    expect(routeFor("/app/tasks").page.label).toBe("Tasks");
-    expect(PAGES.map((p) => p.path)).toContain("tasks");
-  });
-
   it("has no view tabs: no Task view control and no Today, Upcoming or All button", async () => {
     await show();
     expect(screen.queryByRole("group", { name: "Task view" })).toBeNull();

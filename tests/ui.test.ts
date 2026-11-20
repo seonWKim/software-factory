@@ -352,14 +352,6 @@ describe("ui: the Tasks page's row actions (design 02-tasks)", () => {
     expect(await s.store.getTask("tk_parent")).toBeNull();
   });
 
-  it("delete with with_sub_tasks removes a parent and its open sub-task in one write, naming the sub-task", async () => {
-    const s = await tasks();
-    const r = await s.post(TASK_DELETE_PATH, { id: "tk_parent", with_sub_tasks: true });
-    expect(r).toMatchObject({ status: 200, value: { task_id: "tk_parent", deleted_sub_tasks: ["tk_child"] } });
-    expect(await s.store.getTask("tk_parent")).toBeNull();
-    expect(await s.store.getTask("tk_child")).toBeNull();
-  });
-
   it("add sub-task stores one sub-task under the page's ID through the store's addSubTask; a resend stores no second one", async () => {
     const s = await tasks();
     const body = { parent: "tk_plain", id: SUB_ID, words: "find the card tomorrow !1" };

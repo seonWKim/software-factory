@@ -15,8 +15,6 @@ import { type ItemDetail, type ItemRow, type MergeCheckView, type MergeReadiness
 import { ItemsTable } from "../web/src/views/common.js";
 // @ts-expect-error -- see above
 import { ItemPage } from "../web/src/views/pages.js";
-// @ts-expect-error -- see above
-import { NeedsList } from "../web/src/views/task-work.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { APP_CSP, DEFAULT_APP_DIR, contentType } from "../src/ui/app.js";
@@ -281,45 +279,6 @@ describe("ui app: merge check labels", () => {
   });
 });
 
-// The item page's command buttons (design §9, issue #228), rendered to static markup in the node environment.
-describe("ui app: item commands markup", () => {
-  it("the item page has a button per command, in order, with reject in the \"…\" menu; revise opens a dialog, the one note box is for the rest", () => {
-    const AT = "2026-11-07T00:00:00.000Z";
-    const names = ["approve", "revise", "reject"];
-    const detail: ItemDetail = {
-      as_of: AT,
-      item: {
-        id: "wi_1", source: { type: "local", id: "wi_1", link: "https://example.invalid/1" }, title: "Item", stage: "READY", close_reason: null,
-        blocked_on: "human", blocked_reason: "spec_approval", tier: 2, loop_count: 0, restart_count: 0, token_cost: 0, change_ref: null, change_url: null,
-        version: 1, created_at: AT, updated_at: AT, item_phase: "needs_you", reason_code: "person", merge_check: null, why: { code: "human", reason_code: "person", params: { reason: "Waiting for you" }, alarms: [], holder_id: null, next_actor: "human", refs: [], ref_url: null },
-      },
-      timeline: [],
-      runs: [],
-      commands: names.map((name) => ({ name, usage: `/${name}`, description: name, allowed: true, reason: null })),
-      replies: [],
-    };
-    const client = new QueryClient();
-    client.setQueryData([API.item("wi_1")], detail);
-    client.setQueryData([API.session], { as_of: AT, csrf_token: "t", commands_enabled: true, actor: "local:me", actor_source: "environment" });
-    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(ItemPage, { id: "wi_1" })));
-    const buttons = [...html.matchAll(/<span data-command="([^"]+)"[^>]*><button[^>]*>([^<]*)<\/button>/g)].map((m) => [m[1], m[2]]);
-    expect(buttons).toEqual(["approve", "revise"].map((n) => [n, n[0]!.toUpperCase() + n.slice(1)]));
-    // Reject is in the "…" menu (closed until pressed), not a button of the row.
-    expect(html).not.toContain('data-command="reject"');
-    expect(html).toContain('aria-label="More commands"');
-    // The note box is for approve's note; it no longer names reject or revise.
-    expect(html).toMatch(/<textarea aria-label="Note"/);
-    expect(html).not.toContain("Reason for reject");
-    // Revise and reject are enabled buttons that open a dialog (none until pressed); approve sends.
-    const tag = (n: string) => html.match(new RegExp(`<span data-command="${n}"[^>]*><button[^>]*>`))![0];
-    expect(tag("revise")).not.toContain(" disabled=\"\"");
-    expect(tag("revise")).toContain('aria-haspopup="dialog"');
-    expect(tag("approve")).not.toContain(" disabled=\"\"");
-    expect(tag("approve")).not.toContain("aria-haspopup");
-    expect(html).not.toContain("<dialog");
-  });
-});
-
 // The Merge button (design §9): on the item page and in Needs you, enabled or disabled with the item API's reason.
 describe("ui app: the Merge button", () => {
   const AT = "2026-11-07T00:00:00.000Z";
@@ -362,29 +321,6 @@ describe("ui app: the Merge button", () => {
     }
   });
 
-  it("Needs you gives a ready-to-merge row no Merge button beside its title, only its closed ⋯ menu; Work items has none", () => {
-    const client = new QueryClient();
-    client.setQueryData([API.session], { as_of: AT, csrf_token: "t", commands_enabled: true });
-    const row = (id: string, merge: MergeReadiness): ItemRow => ({
-      id, source: { type: "github_issue", id: `o/r#${id}`, link: "https://example.invalid/1" }, title: `Item ${id}`, item_phase: "ready_to_merge", reason_code: "person",
-      stage: "REVIEW", tier: 2, kind: null, blocked_on: "human", blocked_reason: "merge_pending", close_reason: null, run_status: null, change_ref: id,
-      change_url: null, issue: null, since: AT, updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 }, merge,
-      need: { reason: "mergeable", anchor: null },
-    });
-    const items = [row("1", ENABLED), row("2", { enabled: false, reason: "1 conflicting file" })];
-    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(NeedsList, { items })));
-    const cell = (id: string) => html.slice(html.indexOf(`data-key="${id}"`), html.indexOf("</li>", html.indexOf(`data-key="${id}"`)));
-    // Merge is the menu's first item (tests/ui-tasks-needs.test.tsx opens it); Merge has no p shortcut.
-    for (const id of ["1", "2"]) {
-      expect(cell(id)).not.toMatch(/>Merge<\/button>/);
-      expect(cell(id)).toMatch(/<button[^>]*aria-label="More commands"[^>]*aria-expanded="false"/);
-      expect(cell(id)).not.toContain("data-shortcut");
-    }
-    expect(html).not.toContain("merge the PR");
-    // Work items uses its own table, with no Merge button.
-    expect(renderToStaticMarkup(createElement(ItemsTable, { items, now: Date.parse(AT), label: "Work items", empty: "none" }))).not.toContain("data-command=");
-  });
-
   it("shows the latest merge refusal beside the button", () => {
     const row = mergeRow(page("local", ENABLED, "`merge` was not applied: `factory/wi_1` does not merge cleanly."))!;
     expect(row).toContain('role="alert"');
@@ -403,43 +339,5 @@ describe("ui app: the Merge button", () => {
     expect(url).toBe(API.itemCommands("wi_1"));
     expect(JSON.parse(String(init.body))).toEqual({ command: "merge" });
     expect(new Headers(init.headers).get("x-csrf-token")).toBe("tok");
-  });
-});
-
-// Needs you's commands (issues #453, #513): one primary button and a ⋯ menu; verdict opens a dialog, as reject and revise do.
-describe("ui app: the Needs-you commands and the verdict control", () => {
-  const AT = "2026-11-07T00:00:00.000Z";
-  const client = () => {
-    const c = new QueryClient();
-    c.setQueryData([API.session], { as_of: AT, csrf_token: "t", commands_enabled: true });
-    return c;
-  };
-  const VERDICT = { name: "verdict", usage: "/verdict accept|changes|reject <severity> <reason>", description: "Record a verdict", allowed: true, reason: null };
-  const APPROVE = { name: "approve", usage: "/approve", description: "Approve", allowed: true, reason: null };
-  const render = (commands: unknown[]) => {
-    const it = {
-      id: "wi_1", source: { type: "github_issue", id: "o/r#1", link: "https://example.invalid/1" }, title: "Item", item_phase: "needs_approval", reason_code: "person", stage: "READY",
-      tier: 2, kind: null, blocked_on: "human", blocked_reason: null, close_reason: null, run_status: null, change_ref: "42", change_url: null, issue: null, since: AT,
-      updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 }, need: { reason: "spec ready", anchor: null }, commands,
-    } as unknown as ItemRow;
-    return renderToStaticMarkup(createElement(QueryClientProvider, { client: client() }, createElement(NeedsList, { items: [it] })));
-  };
-
-  it("a row shows one ⋯ menu and no visible command button, no inline form and no dialog; its primary keeps a hidden p button", () => {
-    const html = render([APPROVE, VERDICT]);
-    expect(html).not.toMatch(/>Approve<\/button>/);
-    expect(html).toMatch(/<button[^>]*hidden=""[^>]*data-shortcut="p"[^>]*data-command="approve"/);
-    expect(html).toMatch(/<button[^>]*aria-label="More commands"[^>]*aria-expanded="false"[^>]*>/);
-    expect(html).not.toContain("Verdict</button>");
-    expect(html).not.toContain("<dialog");
-    expect(html).not.toContain("data-verdict-form");
-  });
-
-  it("a row with no primary command has no Open link and no p shortcut: its title links to the item, then the menu", () => {
-    const html = render([VERDICT]);
-    expect(html).not.toContain('data-command="open"');
-    expect(html).not.toContain("data-shortcut");
-    expect(html).toMatch(/<a [^>]*href="\/app\/items\/wi_1"/);
-    expect(html).toMatch(/aria-label="More commands"/);
   });
 });

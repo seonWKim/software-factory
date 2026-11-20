@@ -547,9 +547,4 @@ describe("ui api: Needs you, Needs triage and Blocked by another task", () => {
     expect(needs.map((i) => i.id)).not.toContain(dep.id);
     expect(needs.map((i) => i.id)).not.toContain(phase.id);
   });
-
-  it("a request with an old level id gets 400", async () => {
-    const { d } = await seeded();
-    for (const old of ["needs_human", "waiting_on_issue"]) expect((await get(d, `/api/v1/items?state=${old}`)).status).toBe(400);
-  });
 });

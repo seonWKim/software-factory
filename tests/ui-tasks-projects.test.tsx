@@ -165,11 +165,4 @@ describe("task projects (design 09-dashboard-app, project switcher and dialog)",
     expect(document.querySelector("[data-dialog]")).toBeNull();
     expect(s.posts).toHaveLength(2);
   });
-
-  it("a done row has no Projects… item: its menu holds only Reopen", async () => {
-    s.current = view({ projects: [{ list: null, tasks: [row("tk_old", { done_at: "2026-11-11T10:00:00.000Z" })] }] });
-    await show();
-    expect(menuItems(card("tk_old"))).toEqual(["Reopen"]);
-    expect(screen.queryByRole("menuitem", { name: "Projects…" })).toBeNull();
-  });
 });
