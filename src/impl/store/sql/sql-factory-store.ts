@@ -393,11 +393,11 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
   addTask(t: Parameters<FactoryStore["addTask"]>[0]) { return tasks.addTask(this.db, t, this.clock.now()); }
   listTasks(limit: number) { return tasks.listTasks(this.db, limit); } listDoneTasks(w: Parameters<FactoryStore["listDoneTasks"]>[0]) { return tasks.listDoneTasks(this.db, w); }
   completeTask(id: string) { return tasks.completeTask(this.db, id, this.now()); } reopenTask(id: string) { return tasks.reopenTask(this.db, id); }
-  getTask(id: string) { return tasks.getTask(this.db, id); }
+  getTask(id: string) { return tasks.getTask(this.db, id); } countOpenSubTasks() { return tasks.countOpenSubTasks(this.db); }
   linkTask(id: string, work_item_id: WorkItemId) { return tasks.linkTask(this.db, id, work_item_id); }
   closeLinkedTasks(work_item_id: WorkItemId) { return tasks.closeLinkedTasks(this.db, work_item_id, this.now()); }
   updateTask(id: string, edit: Parameters<FactoryStore["updateTask"]>[1]) { return tasks.updateTask(this.db, id, edit, this.clock.now()); }
-  setTaskBody(id: string, body: string | null) { return tasks.setTaskBody(this.db, id, body); } deleteTask(id: string) { return tasks.deleteTask(this.db, id); }
+  setTaskBody(id: string, body: string | null) { return tasks.setTaskBody(this.db, id, body); } deleteTask(id: string, opts?: { with_sub_tasks?: boolean }) { return tasks.deleteTask(this.db, id, opts); }
   addSubTask(parent_task_id: string, t: Parameters<FactoryStore["addSubTask"]>[1]) { return tasks.addSubTask(this.db, parent_task_id, t, this.clock.now()); }
   listDueReminders(now: Date) { return tasks.listDueReminders(this.db, now); }
   remindTask(...a: Parameters<FactoryStore["remindTask"]>) { return tasks.remindTask(this.db, ...a); }

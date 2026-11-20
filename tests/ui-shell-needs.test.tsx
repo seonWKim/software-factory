@@ -21,14 +21,14 @@ describe("Floor banner and Needs-you Why (claim pauses)", () => {
   };
 
   it("with no pause the banner is unchanged", () => {
-    expect(bannerText([])).toContain("Factory running: revision aaaaaaa");
+    expect(bannerText([])).toContain("Running version aaaaaaa · started");
   });
 
-  it.each(["forge_auth", "preflight_access", "rate_limit"])("a %s pause replaces 'Factory running' and says when it ends", (name) => {
+  it.each(["forge_auth", "preflight_access", "rate_limit"])("a %s pause replaces 'Running version' and says when it ends", (name) => {
     const text = bannerText([{ name, ends_at: "2026-11-07T01:00:00.000Z" }]);
     expect(text).toContain(name);
     expect(text).toContain("until 2026-11-07T01:00:00.000Z");
-    expect(text).not.toContain("Factory running");
+    expect(text).not.toContain("Running version");
   });
 
   it("a model stall says when it began and when the next check is; a due check says so", () => {
