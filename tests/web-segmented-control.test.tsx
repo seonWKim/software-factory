@@ -43,6 +43,9 @@ describe("SegmentedControl", () => {
     const segment = screen.getByRole("button", { name: "Today" }).className.split(/\s+/);
     expect(segment).toEqual(expect.arrayContaining(["whitespace-nowrap", "min-h-7", "aria-pressed:bg-surface", "aria-pressed:text-text-1", "aria-pressed:ring-border-strong"]));
     expect(segment.join(" ")).not.toContain("accent");
+    // The ring sits inside the segment and its corner nests in the box's, so the two outlines never touch.
+    expect(segment).toEqual(expect.arrayContaining(["aria-pressed:ring-inset", "rounded-[calc(var(--radius-control)-2px)]"]));
+    expect(segment).not.toContain("rounded-control");
     expect(readFileSync("web/src/components/ui/segmented-control.tsx", "utf8")).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
   });
 });

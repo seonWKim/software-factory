@@ -21,7 +21,7 @@ const TOOLS: readonly ToolDescriptor[] = [
   {
     name: STORE_BRANCH,
     read_only: false,
-    description: "Store the current HEAD of a run folder in the factory repo, for outbound to push to its factory branch on the forge.",
+    description: "Saves the run's latest commit in this repository, so the factory can send it to the run's branch on GitHub.",
     input_schema: {
       type: "object",
       required: ["workdir", "branch", "base_ref"],

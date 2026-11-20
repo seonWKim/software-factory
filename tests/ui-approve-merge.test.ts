@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { refusalText, specNotWaiting } from "../src/core/commands.js";
 import { refusalReply } from "../src/core/authorize.js";
 import type { LocalMergeResult, LocalMergeSpec } from "../src/core/local-merge.js";
-import { APPROVED_RUN_QUEUED, MERGE_QUEUED, MERGE_REQUESTED, MERGE_RETURNED, MERGE_REQUESTS_READ, mergeRequested } from "../src/core/request-transition.js";
+import { APPROVED_RUN_QUEUED, MERGE_QUEUED, MERGE_REQUESTED, MERGE_RETURNED } from "../src/core/request-transition.js";
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import type { AuthDecision, AuthProvider, Principal } from "../src/interfaces/auth-provider.js";
@@ -228,10 +228,7 @@ describe("Approve applies while the request is handled", () => {
 function pageWith(h: Awaited<ReturnType<typeof harness>>, scanner: UiDeps["scanner"]): UiDeps {
   return {
     store: h.store, scanner, clock: h.clock, lease_ms: 60_000, health: new HealthMonitor(async () => [], h.clock),
-    commands: {
-      actor: OWNER, source: "config", token: TOKEN, allowed: (action) => h.roles.authorize({ user_id: OWNER }, action),
-      mergeRequested: async (id) => mergeRequested(await h.store.listAppCommandRequestsForItem(id, MERGE_REQUESTS_READ)),
-    },
+    commands: { actor: OWNER, source: "config", token: TOKEN, allowed: (action) => h.roles.authorize({ user_id: OWNER }, action) },
   };
 }
 
@@ -252,8 +249,8 @@ describe("Merge is answered while the request is handled; the controller queues 
     expect(await h.reasons(it1)).toEqual([]);
     expect(await h.runs(it1)).toEqual([]);
     expect(h.roles.asked).toEqual(["approve_merge"]);
-    // A poll before the controller's pass still reads "Merging…", not "Merge".
-    expect(await button(h, it1)).toEqual({ enabled: false, reason: "Merging…" });
+    // A poll before the controller's pass reads its place in line, not "Merge".
+    expect(await button(h, it1)).toEqual({ enabled: false, reason: "Merge queued (position 1)" });
 
     await h.controller.tickCommands();
     // In the queue: merge_queued, and its merged result is checked by a merge-check run.
@@ -262,7 +259,7 @@ describe("Merge is answered while the request is handled; the controller queues 
     expect(await h.runs(it1)).toEqual([{ kind: "merge-check", status: "queued" }]);
     expect(await h.request(r.seq)).toMatchObject({ refusal: null });
     expect((await h.request(r.seq))!.handled_at).not.toBeNull();
-    expect(await button(h, it1)).toEqual({ enabled: false, reason: "Checking…" });
+    expect(await button(h, it1)).toEqual({ enabled: false, reason: "Checking build" });
   });
 
   it("an item with a PR: Merging… before any tick, nothing written; the controller asks the forge, and the merge closes it", async () => {
@@ -273,7 +270,7 @@ describe("Merge is answered while the request is handled; the controller queues 
     expect(r).toMatchObject({ outcome: "queued", refusal: null, state: { blocked_reason: "merge_pending", label: "Merging…" } });
     expect(await h.state(it1)).toEqual({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
     expect(await h.reasons(it1)).toEqual([]);
-    expect(await button(h, it1)).toEqual({ enabled: false, reason: "Merging…" });
+    expect(await button(h, it1)).toEqual({ enabled: false, reason: "Merge queued (position 1)" });
 
     await h.controller.tickCommands();
     await h.controller.tickOutbox();
@@ -330,7 +327,7 @@ describe("Merge is answered while the request is handled; the controller queues 
     expect(await button(h, it1)).toEqual({ enabled: true, reason: null });
   });
 
-  it("the forge's refusal leaves a PR item at merge_pending and posts why; the button no longer reads Merging…", async () => {
+  it("the forge's refusal leaves a PR item at merge_pending and posts why; the button no longer reads Merge queued", async () => {
     const h = await harness();
     const it1 = await h.itemIn(issueRef(1), { ...READY, change_ref: "42" }, "h1");
     h.forge.prHeads[42] = "h2";
@@ -341,7 +338,7 @@ describe("Merge is answered while the request is handled; the controller queues 
     expect(await h.state(it1)).toEqual({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
     expect(await h.reasons(it1)).toEqual([]);
     expect((await h.posted(it1)).join("\n")).toContain("head moved");
-    expect((await button(h, it1)).reason).not.toBe("Merging…");
+    expect((await button(h, it1)).reason).not.toMatch(/^Merge queued/);
   });
 
   it("a refused Merge (not waiting) stores nothing, answers with the controller's words, and the controller posts nothing", async () => {
@@ -369,6 +366,81 @@ describe("Merge is answered while the request is handled; the controller queues 
     await h.controller.tickCommands();
     expect(await h.reasons(it1)).toEqual([]);
     expect(await h.runs(it1)).toEqual([]);
+  });
+});
+
+describe("a pending command shows as its own state; the stored state is unchanged (design 09-dashboard-item-commands)", () => {
+  type Row = { id: string; item_phase: string; kind: string | null; why: { reason_code: string; params: Record<string, unknown> }; merge: { enabled: boolean; reason: string | null } };
+  const get = async (deps: UiDeps, url: string) => JSON.parse((await respond(deps, { method: "GET", url, host: HOST })).body);
+  const row = async (h: Awaited<ReturnType<typeof harness>>, it: WorkItem): Promise<Row> =>
+    ((await get(pageWith(h, cleanScanner), "/api/v1/items")).items as Row[]).find((r) => r.id === it.id)!;
+  const page = async (h: Awaited<ReturnType<typeof harness>>, it: WorkItem): Promise<Row> => (await get(pageWith(h, cleanScanner), `/api/v1/items/${encodeURIComponent(it.id)}`)).item;
+
+  it("after an Approve and before its run is queued, polls at 0.3 s, 1.5 s and 5 s show it queued, never Stuck, in the list and on the item page", async () => {
+    const h = await harness();
+    const it1 = await h.itemIn(issueRef(1), SPEC_PENDING);
+    await h.post(it1, { command: "approve" });
+    expect(await h.runs(it1)).toEqual([]);
+
+    let at = 0;
+    for (const t of [300, 1500, 5000]) {
+      h.clock.advance(t - at);
+      at = t;
+      for (const view of [await row(h, it1), await page(h, it1)]) {
+        expect(view.item_phase).toBe("queued");
+        expect(view.why).toMatchObject({ reason_code: "queued", params: { kind: "implement" } });
+      }
+      expect((await row(h, it1)).kind).toBe("implement");
+    }
+    // The controller's pass queues the run: the item is queued by its run now, and the stored state never changed.
+    await h.controller.tickCommands();
+    expect(await h.runs(it1)).toEqual([{ kind: "implement", status: "queued" }]);
+    expect((await row(h, it1)).item_phase).toBe("queued");
+    expect(await h.state(it1)).toEqual({ stage: "RUNNING", blocked_on: "none", blocked_reason: null });
+  });
+
+  it("a stored Merge reads Merge queued (position N) in the list and on the item page, in request order; merge_queued reads Checking build", async () => {
+    const h = await harness();
+    const it1 = await h.itemIn(localRef(1), READY);
+    const it2 = await h.itemIn(localRef(2), READY);
+    await h.post(it2, { command: "merge" });
+    await h.post(it1, { command: "merge" });
+
+    for (const [it, n] of [[it2, 1], [it1, 2]] as const) {
+      for (const view of [await row(h, it), await page(h, it)]) {
+        expect(view.item_phase).toBe("queued");
+        expect(view.merge).toEqual({ enabled: false, reason: `Merge queued (position ${n})` });
+        expect(view.why).toMatchObject({ reason_code: "queued_at", params: { position: n } });
+      }
+    }
+    // Stored state is unchanged by the dashboard's request (owner answer: the controller moves it).
+    expect(await h.state(it1)).toEqual({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
+
+    // The controller's pass enters both into the merge queue, which checks them.
+    await h.controller.tickCommands();
+    for (const it of [it1, it2]) {
+      expect(await h.state(it)).toEqual({ stage: "REVIEW", blocked_on: "ci", blocked_reason: MERGE_QUEUED });
+      for (const view of [await row(h, it), await page(h, it)]) expect(view.merge).toEqual({ enabled: false, reason: "Checking build" });
+    }
+  });
+
+  it("the pending reads: one request read per listed item at merge_pending, none for any other item", async () => {
+    const h = await harness();
+    const waiting = [await h.itemIn(localRef(1), READY), await h.itemIn(localRef(2), READY)];
+    await h.itemIn(issueRef(3), SPEC_PENDING);
+    await h.itemIn(issueRef(4), { stage: "RUNNING", blocked_on: "none", blocked_reason: null });
+    await h.post(waiting[0]!, { command: "merge" });
+    const asked: string[] = [];
+    const store = new Proxy(h.store, {
+      get(target, key, receiver) {
+        const v = Reflect.get(target, key, receiver);
+        if (key !== "listAppCommandRequestsForItem" || typeof v !== "function") return typeof v === "function" ? v.bind(target) : v;
+        return (id: string, limit: number) => (asked.push(id), v.call(target, id, limit));
+      },
+    });
+    await get({ ...pageWith(h, cleanScanner), store }, "/api/v1/items");
+    expect(asked.sort()).toEqual(waiting.map((it) => it.id).sort());
+    expect(h.forge.mergeCalls).toEqual([]);
   });
 });
 

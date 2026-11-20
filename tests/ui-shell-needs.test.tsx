@@ -12,41 +12,22 @@ import { AT, overview, row, items, runs, RESPONSES, state, installShellFixtures,
 
 installShellFixtures();
 
-describe("Floor banner and Needs-you Why (claim pauses)", () => {
+describe("Runners banner and Needs-you reasons", () => {
   const NOW = Date.parse(AT);
   const running = { state: "running", rev: "aaaaaaa1111", target_rev: "aaaaaaa1111", child_pid: 7, since: AT, workers: 3, error: null, pending: [] } as never;
-  const bannerText = (pauses?: { name: string; ends_at: string; since?: string | null }[]) => {
-    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><FactoryBanner factory={running} now={NOW} pauses={pauses} /></QueryClientProvider>);
-    return screen.getByTestId("factory-banner").textContent;
-  };
 
-  it("with no pause the banner is unchanged", () => {
-    expect(bannerText([])).toContain("Factory running: revision aaaaaaa");
+  it("a running factory's banner says its version; it names no pause (a pause is its own Needs-you row)", () => {
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><FactoryBanner factory={running} now={NOW} /></QueryClientProvider>);
+    const text = screen.getByTestId("factory-banner").textContent;
+    expect(text).toContain("Running version aaaaaaa · started");
+    expect(text).not.toMatch(/Paused|model_stall/);
   });
 
-  it.each(["forge_auth", "preflight_access", "rate_limit"])("a %s pause replaces 'Factory running' and says when it ends", (name) => {
-    const text = bannerText([{ name, ends_at: "2026-11-07T01:00:00.000Z" }]);
-    expect(text).toContain(name);
-    expect(text).toContain("until 2026-11-07T01:00:00.000Z");
-    expect(text).not.toContain("Factory running");
-  });
-
-  it("a model stall says when it began and when the next check is; a due check says so", () => {
-    const pause = { name: "model_stall", since: "2026-11-06T23:00:00.000Z" };
-    const soon = bannerText([{ ...pause, ends_at: "2026-11-07T00:30:00.000Z" }]);
-    expect(soon).toContain("since 2026-11-06T23:00:00.000Z");
-    expect(soon).toContain("next check at 2026-11-07T00:30:00.000Z");
-    cleanup();
-    const due = bannerText([{ ...pause, ends_at: "2026-11-06T23:30:00.000Z" }]);
-    expect(due).toContain("the next check is due");
-    expect(due).not.toContain("2026-11-06T23:30:00.000Z");
-  });
-
-  it("an Answer-or-fix row shows the need's reason, not the badges, and no command to type", () => {
-    const need = { reason: "failed: diff_too_large" };
-    const failed = { blocked_on: "human", blocked_reason: "run_failed:implement:diff_too_large", need };
+  it("an Answer-or-fix row shows the need's reason, the failed run's message, and no command to type", () => {
+    const need = { reason: "no model credential in the secret file" };
+    const failed = { blocked_on: "human", blocked_reason: "run_failed:implement:exception", need };
     render(<QueryClientProvider client={new QueryClient()}><NeedsList items={[row(1, "needs_human", "Failed one", failed) as unknown as ItemRow]} /></QueryClientProvider>);
-    expect(document.querySelector("[data-need]")!.textContent).toBe("failed: diff_too_large");
+    expect(document.querySelector("[data-need]")!.textContent).toBe("no model credential in the secret file");
   });
 });
 

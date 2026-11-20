@@ -5,7 +5,7 @@ import type { RunKind, Timestamp } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { HttpNetworkProbe, probeTargets } from "../src/impl/network-probe/http-network-probe.js";
 import type { Selection } from "../src/plugin-api.js";
-import { modelStallChecks, modelStallLine } from "../src/ui/factory-status.js";
+import { localWithOffset, modelStallChecks, modelStallLine } from "../src/ui/factory-status.js";
 import { FakeAuth, FakeNetworkProbe, FakeSource, cleanScanner, config, recordingLog } from "./helpers/fakes.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 
@@ -91,8 +91,9 @@ describe("the network probe (fake clock)", () => {
     }
     expect(gaps).toEqual([30_000, 30_000, 60_000, 120_000, 240_000, 300_000]);
     expect(Date.parse((await store.getClaimPause("network"))!) - clock.now().getTime()).toBe(300_000);
-    expect(await modelStallLine(store)).toBe(`agents paused: network not reachable since ${iso(t0)}; runs start again once a probe passes`);
-    expect(await modelStallChecks(store)).toEqual([{ ok: false, msg: await modelStallLine(store) }]);
+    // The CLI line says the time in local time with its offset; the Health check sends the instant as a field.
+    expect(await modelStallLine(store)).toBe(`agents paused: network not reachable since ${localWithOffset(iso(t0))}; runs start again once a probe passes`);
+    expect(await modelStallChecks(store)).toEqual([{ ok: false, msg: "agents paused: network not reachable; runs start again once a probe passes", since: iso(t0) }]);
 
     // The next probe passes: the pause ends and claims resume.
     await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });

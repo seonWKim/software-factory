@@ -69,6 +69,8 @@ export const tasks = {
   "tasks.listLabel": "Open tasks",
   "tasks.state.spec": "Spec waiting",
   "tasks.state.running": "Running",
+  "tasks.state.queued": "Queued",
+  "tasks.state.triageQueued": "Triage queued",
   "tasks.state.merge": "Ready to merge",
   "tasks.state.needs": "Needs you",
   "tasks.state.merged": "Merged",
