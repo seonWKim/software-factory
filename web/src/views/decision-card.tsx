@@ -156,7 +156,7 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
         {question}
       </div>
       <div data-decision-evidence className="space-y-2">
-        <h3 className="text-xs font-medium text-text-2">{t("decide.evidence")}</h3>
+        <h3 className="text-xs font-medium text-pill-warn-fg">{t("decide.evidence")}</h3>
         <ThreadContext thread={data?.thread} />
         <InShort spec={data?.spec} />
         <AskedPaths paths={asked} />
@@ -164,7 +164,7 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
       </div>
       <section aria-label={t("commands.label")}>
         {off && (
-          <p role="status" data-commands-off className="mb-2 text-sm text-pretty text-text-2">
+          <p role="status" data-commands-off className="mb-2 text-sm text-pretty text-pill-warn-fg">
             {t("commands.offBefore")}
             <Link href={PAGE_COMMANDS_PATH} className={LINK_CLASS}>
               {t("commands.offSettings")}
@@ -173,7 +173,7 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
           </p>
         )}
         {enabled && session.data?.actor && (
-          <p data-commands-actor className="mb-2 text-xs text-pretty text-text-2">
+          <p data-commands-actor className="mb-2 text-xs text-pretty text-pill-warn-fg">
             {t("commands.actingAs")}<PersonName id={session.data.actor} viewer={session.data.actor} />{t("commands.actorFrom", { source: session.data.actor_source === "config" ? t("commands.sourceConfig") : t("commands.sourceEnv") })}
           </p>
         )}

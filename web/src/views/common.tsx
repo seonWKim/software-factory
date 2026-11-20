@@ -33,8 +33,8 @@ export function When({ at, now, label, vars }: { at: string | null | undefined; 
 }
 
 /** The raw fields of a row or card, behind one "Details" toggle: the only place a page shows a stored field name or code as it is stored (`data-raw`, skipped by tests/web-plain-words.test.tsx). */
-export function RawDetails({ children, className }: { children: ReactNode; className?: string }) {
-  return <Disclosure data-raw className={className} summary={t("details.raw")}>{children}</Disclosure>;
+export function RawDetails({ children, className, summaryTone }: { children: ReactNode; className?: string; summaryTone?: string }) {
+  return <Disclosure data-raw className={className} summaryTone={summaryTone} summary={t("details.raw")}>{children}</Disclosure>;
 }
 
 /** The viewer: the factory user the page's commands act as (the session's actor), null while unknown. */

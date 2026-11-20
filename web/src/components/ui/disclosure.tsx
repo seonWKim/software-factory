@@ -13,16 +13,18 @@ interface DisclosureProps extends Omit<HTMLAttributes<HTMLDetailsElement>, "chil
   lazy?: boolean;
   /** Called with the new state each time the reader opens or closes it. */
   onToggle?: (open: boolean) => void;
+  /** The summary's text colour; default `text-text-2`. A panel on a pill fill passes its own `text-pill-*-fg`. */
+  summaryTone?: string;
 }
 
 /**
  * The one show/hide section (docs/design/09-dashboard-shell.md, design-system/components.md): a native `<details>` with a
- * `<summary>` that has one chevron marker (turned down when open) and one label style (`text-xs text-text-2`). Use it only
+ * `<summary>` that has one chevron marker (turned down when open) and one label style (`text-xs`, `text-text-2` unless `summaryTone` sets another). Use it only
  * for long content (decision rule 2 in design-system/patterns.md). The open state is kept in React so `aria-expanded`
  * on the summary and the `open` attribute always agree; Enter and Space toggle it from the keyboard. Extra props
  * (`data-*`, `className` for a margin) go to the `<details>`.
  */
-export function Disclosure({ summary, children, defaultOpen = false, lazy = false, onToggle, className, ...rest }: DisclosureProps) {
+export function Disclosure({ summary, children, defaultOpen = false, lazy = false, onToggle, summaryTone = "text-text-2", className, ...rest }: DisclosureProps) {
   const [open, setOpen] = useState(defaultOpen);
   const toggle = () => {
     setOpen(!open);
@@ -48,7 +50,7 @@ export function Disclosure({ summary, children, defaultOpen = false, lazy = fals
         onClick={onClick}
         onKeyDown={onKeyDown}
         onKeyUp={onKeyUp}
-        className={cn("flex w-fit cursor-pointer list-none items-center gap-1 text-xs text-pretty text-text-2 [&::-webkit-details-marker]:hidden", FOCUS)}
+        className={cn("flex w-fit cursor-pointer list-none items-center gap-1 text-xs text-pretty [&::-webkit-details-marker]:hidden", FOCUS, summaryTone)}
       >
         <ChevronRight aria-hidden className={cn("size-4 shrink-0 motion-safe:transition-transform", open && "rotate-90")} />
         {summary}
