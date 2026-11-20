@@ -117,6 +117,7 @@ import * as evaluations from "./merge-evaluations.js";
 import * as proposals from "./command-proposals.js";
 import * as tasks from "./tasks.js";
 import { SqlRunOutputStore } from "./run-output.js";
+import { claimLock, endReservations, liveReservations, reservationOf } from "./reservations.js";
 import * as notices from "./notices.js";
 import * as noticeMessages from "./notice-messages.js";
 import * as posted from "./posted-comments.js";
@@ -520,12 +521,9 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
     const { seq } = this.db.dialect;
     const writeKinds = placeholders(IMPLEMENT_KINDS.length);
     return this.db.transaction(async (tx) => {
-      // The lock row first: claimers run the same-item check below one at a time, so two of them can never both
-      // see "nothing of this item is running" and claim two runs of one item. Only a claim moves a run to 'running',
-      // so the running set read under the lock stays true until this commits. (SQLite: BEGIN IMMEDIATE already
-      // serializes; the select is a no-op.)
-      await tx.all(`SELECT name FROM worker_claim_locks WHERE name = ?`, [CLAIM_LOCK]);
+      await claimLock(tx); // first: the same-item check below runs one claimer at a time
       const now = this.now();
+      const reserved = await liveReservations(tx, now); // a waiting session's NEW item: its runs stay queued (05-interactive-sessions)
       // A usage or rate limit pauses every claim, for every item, on every replica; a forge 401/403 pauses the
       // implement-type claims only, and so does a failed push_access or pr_api preflight check; a GitHub rate
       // limit pauses implement-type and review claims (design §5 Restarts). All are rows of claim_pauses, read
@@ -571,7 +569,7 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
       const coord = queued.some((q) => q.kind === "implement") ? await this.coordinationContext(tx, queued, busy, settings) : null;
       const fits = input.workers ? await this.slotCheck(tx, input.workers) : () => true; // the cap: implement and resolve wait at `workers`, short runs get one slot beyond
       for (const next of queued) {
-        if (!fits(next.kind as RunKind)) continue;
+        if (!fits(next.kind as RunKind) || reserved.has(next.work_item_id as string)) continue;
         // An implement-type run waits while its own item has one running, or while the forge refuses the
         // credentials; it stays queued. Triage and review never wait.
         const writer = (IMPLEMENT_KINDS as readonly string[]).includes(next.kind as string);
@@ -800,7 +798,7 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
 
   /** A probe pause's row and its answered row; `lock`: read under the claim lock first. */
   private async probeRows(tx: SqlExecutor, pause: ProbePause, lock: boolean): Promise<{ current?: Timestamp; answered?: Timestamp }> {
-    if (lock) await tx.all(`SELECT name FROM worker_claim_locks WHERE name = ?`, [CLAIM_LOCK]);
+    if (lock) await claimLock(tx);
     const answeredRow = PROBE_PAUSES[pause].answered;
     const rows = new Map(
       (await tx.all("SELECT name, resume_at FROM worker_claim_pauses WHERE name IN (?, ?)", [pause, answeredRow]))
@@ -883,7 +881,7 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
         return { paused: (await this.insertOnce(tx, PAUSE_INSERT, [ALL_WORKERS, by, now])) ? [ALL_WORKERS] : [] };
       }
       // Under the claim lock, so no claim moves a run to running between the read and the pause rows.
-      await tx.all(`SELECT name FROM worker_claim_locks WHERE name = ?`, [CLAIM_LOCK]);
+      await claimLock(tx);
       const already = new Set((await tx.all("SELECT worker_id FROM worker_pauses")).map((r) => r.worker_id as string));
       const running = await tx.all(
         `SELECT lease_owner FROM worker_runs WHERE status = 'running' AND lease_owner IS NOT NULL AND kind <> ? ORDER BY started_at DESC, ${seq} DESC`,
@@ -1057,10 +1055,12 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
     const { seq } = this.db.dialect;
     return this.db.transaction(async (tx): Promise<StartSessionResult> => {
       // The claim lock first, as claimRun takes it: no claim moves a run to running between these checks and the insert.
-      await tx.all(`SELECT name FROM worker_claim_locks WHERE name = ?`, [CLAIM_LOCK]);
+      await claimLock(tx);
       const current = await this.selectItem(tx, input.id);
       if (!current) return { ok: false, reason: "not_found" };
       if (current.version !== input.expected_version) return { ok: false, reason: "version_conflict", current };
+      const held = await reservationOf(tx, input.id, this.now());
+      if (held && held.owner !== input.owner) return { ok: false, reason: "reserved", reservation: held };
       const own = await tx.all(`SELECT id, kind, status FROM worker_runs WHERE work_item_id = ? AND status IN ('queued', 'running') ORDER BY created_at, ${seq}`, [input.id]);
       const open = own.find((r) => r.kind === INTERACTIVE && r.status === "running");
       if (open) return { ok: false, reason: "session_open", run_id: open.id as RunId };
@@ -1092,6 +1092,7 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
       const [taken_over, cancelled]: [RunId[], RunId[]] = [[], []];
       for (const r of own.filter((x) => x.status === "queued" && (writes(x) || x.kind === "triage")))
         if (await this.cancelRun(tx, r.id as RunId, "queued", now, writes(r) ? TAKEOVER_OUTCOME : null)) (writes(r) ? taken_over : cancelled).push(r.id as RunId);
+      await endReservations(tx, input.id);
       const state_change = await this.insertStateChange(tx, input.id, version, input.actor, input.reason, changes,
         { ...input.detail, run_id: runId, ...(taken_over.length > 0 ? { taken_over: taken_over.join(",") } : {}) });
       return { ok: true, item: (await this.selectItem(tx, input.id))!, run: (await this.selectRun(tx, runId))!, state_change, cancelled, taken_over };
@@ -2698,9 +2699,6 @@ interface CoordContext {
 
 /** Notes kept per session: the newest ones. */
 const MAX_SESSION_NOTES = 200;
-
-/** The one row in `claim_locks`: every claim takes it first (migration 7). */
-const CLAIM_LOCK = "claim";
 
 /** The `worker_pauses` row that pauses every worker loop (`workers pause --all`). */
 const ALL_WORKERS = "*" as const;
