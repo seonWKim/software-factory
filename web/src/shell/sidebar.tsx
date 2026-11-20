@@ -22,7 +22,7 @@ export function SideLinks({ label, pages, current, badges = {} }: { label: strin
               aria-current={p === current ? "page" : undefined}
               title={pageLabel(p)}
               aria-label={pageLabel(p)}
-              className={cn(LINK_ROW, "rounded-control hover:bg-surface-2", p === current && "bg-surface-2 font-medium")}
+              className={cn(LINK_ROW, "relative rounded-control hover:bg-surface-2", p === current && "bg-surface-2 font-medium before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-nav-active")}
             >
               <p.icon aria-hidden className="size-4 shrink-0" />
               <span className="max-sm:sr-only">{pageLabel(p)}</span>
