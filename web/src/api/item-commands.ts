@@ -75,6 +75,8 @@ export interface SpecDecision {
   default: string | null;
   reason: string | null;
   owner_only: boolean;
+  /** A layout decision: each option is a text sketch, shown in monospace. Absent on any other decision. */
+  layout?: boolean;
 }
 
 export interface ItemCommand {
