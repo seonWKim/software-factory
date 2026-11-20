@@ -4,7 +4,7 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ItemRow } from "../web/src/api.js";
-import { SLOW, TOKEN, card, item, reset, row, s, show, teardown, view } from "./ui-tasks-fixtures.js";
+import { SLOW, TOKEN, card, chooseMenu, item, menuItems, reset, row, s, show, teardown, view } from "./ui-tasks-fixtures.js";
 
 beforeEach(reset);
 afterEach(teardown);
@@ -14,7 +14,7 @@ afterEach(teardown);
 describe("Needs you", () => {
   const section = () => screen.findByRole("region", { name: "Needs you" }, SLOW);
 
-  it("lists a waiting item with no task as one compact list under its group label, with its count, its state once, its one primary action and no table header", async () => {
+  it("lists a waiting item with no task as one compact list under its group label, with its count, its state once, its primary command first in its menu and no table header", async () => {
     s.items = [item("wi_x", { title: "Approve the spec", item_phase: "needs_approval", commands: [{ name: "approve", usage: "/approve", description: "approve", allowed: true, reason: null }] }), item("wi_run", { title: "Busy", item_phase: "running" })];
     await show();
     const el = await section();
@@ -22,19 +22,24 @@ describe("Needs you", () => {
     expect(within(el).getByRole("heading", { name: "Approve" })).toBeTruthy();
     expect(el.querySelector("h2 + span")!.textContent).toBe("1");
     expect(within(el).getAllByText("Needs approval")).toHaveLength(1);
-    expect(within(el).getByRole("button", { name: "Approve" })).toBeTruthy();
+    const r = el.querySelector<HTMLElement>('li[data-key="wi_x"]')!;
+    // No button beside the title: the row's one visible control is its menu, Approve first in it (owner feedback 2026-11-20).
+    expect(within(r).getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual(["More commands"]);
+    expect(menuItems(r)[0]).toBe("Approve");
     expect(within(el).queryByText("Busy")).toBeNull();
     expect(el.querySelector("table, thead, th")).toBeNull();
     expect(el.textContent).not.toMatch(/Mergeable|spec ready/);
   });
 
   const command = (name: string, extra: object = {}) => ({ name, usage: `/${name}`, description: name, allowed: true, reason: null, ...extra });
+  /** The first item of a Needs you row's menu (the menu stays open). */
   const primaryOf = async (id: string) => {
     const row = (await section()).querySelector<HTMLElement>(`li[data-key="${id}"]`)!;
-    return row.querySelector<HTMLButtonElement>("[data-need-commands] [data-action]")!;
+    menuItems(row);
+    return row.querySelector<HTMLButtonElement>("[role=menu] [role=menuitem]")!;
   };
 
-  it("a row's primary is the approve or resolve its block reason accepts, whatever the API's order; Retry only when neither is accepted; each carries data-action", async () => {
+  it("a row's first menu item is the approve or resolve its block reason accepts, whatever the API's order; Retry only when neither is accepted; each carries data-action", async () => {
     s.items = [
       item("wi_a", { title: "Approve first", item_phase: "needs_you", commands: ["retry", "reject", "approve"].map((n) => command(n)) }),
       item("wi_r", { title: "Resolve first", item_phase: "needs_you", commands: ["retry", "resolve"].map((n) => command(n)) }),
@@ -45,12 +50,14 @@ describe("Needs you", () => {
     ];
     await show();
     const want = {
-      wi_a: ["Approve", "approve"], wi_r: ["Answer", "resolve"], wi_t: ["Retry", "retry"], wi_n: ["Retry", "retry"], wi_m: ["Merge", "merge"], wi_o: ["Open", "open"],
+      wi_a: ["Approve", "approve"], wi_r: ["Answer", "resolve"], wi_t: ["Retry", "retry"], wi_n: ["Retry", "retry"], wi_m: ["Merge", "merge"], wi_o: ["Reject", "reject"],
     };
     for (const [id, [label, action]] of Object.entries(want)) {
       const b = await primaryOf(id);
       expect({ id, label: b.textContent, action: b.dataset.action }).toEqual({ id, label, action });
     }
+    // With no primary command (only Reject) the row has no p shortcut.
+    expect((await section()).querySelector('li[data-key="wi_o"] [data-shortcut]')).toBeNull();
   });
 
   it("a permission ask shows the command that allows its paths, not Retry, and sends them as +paths", async () => {
@@ -78,11 +85,14 @@ describe("Needs you", () => {
     expect(screen.queryByRole("region", { name: "Needs you" })).toBeNull();
   });
 
-  it("a task whose work waits on a merge shows Merge on its row, and the item is a row of the section too", async () => {
+  it("a task whose work waits on a merge has Merge first in its row's one menu, before the task's own actions, and the item is a row of the section too", async () => {
     s.items = [item("wi_1", { title: "Ship it", item_phase: "ready_to_merge", merge: { enabled: true, reason: null }, merge_check: { state: "mergeable", conflicts: [], head_sha: "a", base_sha: "b", checked_at: "2026-11-12T00:00:00.000Z" } } as Partial<ItemRow>)];
     await show();
-    expect(await within(card("tk_built")).findByRole("button", { name: "Merge" }, SLOW)).toBeTruthy();
-    expect(within(card("tk_built")).getByText("Ready to merge")).toBeTruthy();
+    expect(await within(card("tk_built")).findByText("Ready to merge", {}, SLOW)).toBeTruthy();
+    expect(within(card("tk_built")).getAllByRole("button", { name: /More/ })).toHaveLength(1);
+    const items = menuItems(card("tk_built"));
+    expect(items[0]).toBe("Merge");
+    expect(items.slice(-2)).toEqual(["Projects…", "Delete"]);
     expect(within(card("tk_built")).queryByRole("button", { name: "Work item state: tk_built" })).toBeNull();
     const el = await section();
     expect([...el.querySelectorAll<HTMLElement>("li[data-key]")].map((r) => r.dataset.key)).toEqual(["wi_1"]);
@@ -129,9 +139,13 @@ describe("Needs you", () => {
     return (await section()).querySelector<HTMLElement>(`li[data-key="${id}"]`)!;
   };
   const pressMerge = async (row: HTMLElement) => {
-    const button = within(row).getByRole("button", { name: "Merge" });
-    await waitFor(() => expect(button.hasAttribute("disabled")).toBe(false), SLOW);
-    fireEvent.click(button);
+    // The session read turns the menu's Merge on; reopen the menu until it is.
+    await waitFor(() => {
+      menuItems(row);
+      const merge = row.querySelector<HTMLButtonElement>("[role=menu] [data-action=merge]")!;
+      expect(merge.disabled).toBe(false);
+    }, SLOW);
+    chooseMenu(row, "Merge");
   };
 
   it("a Merge refused for a stale token reads the session once, retries with the new token and shows the merge state, not the error", async () => {
@@ -141,14 +155,14 @@ describe("Needs you", () => {
     await show();
     const row = await workRow("wi_m");
     await pressMerge(row);
-    await waitFor(() => expect(within(row).getByRole("button", { name: "Merging…" })).toBeTruthy(), SLOW);
+    await waitFor(() => expect(row.querySelector("[data-need-commands]")!.textContent).toContain("Merging…"), SLOW);
     const sent = s.posts.filter((p) => p.url.endsWith("/commands")).map((p) => new Headers(p.init.headers).get("x-csrf-token"));
     expect(sent).toEqual([TOKEN, "tok_fresh"]);
     expect(s.sessionReads).toBe(2);
     expect(row.textContent).not.toContain(STALE.error);
   });
 
-  it("a Merge whose retry is refused again shows the error once, on its own full-width line below the row, outside the actions", async () => {
+  it("a Merge whose retry is refused again shows the error once, on its own line under the title and details, outside the menu", async () => {
     s.items = [mergeRow()];
     s.commandAnswers = [{ status: 403, body: STALE }];
     await show();
@@ -159,15 +173,17 @@ describe("Needs you", () => {
     expect(s.posts.filter((p) => p.url.endsWith("/commands")).map((p) => new Headers(p.init.headers).get("x-csrf-token"))).toEqual([TOKEN, TOKEN]);
     const actions = row.querySelector<HTMLElement>("[data-need-commands]")!;
     expect(actions.contains(error)).toBe(false);
-    // Its own line: a direct child of the row that takes the full width, after the content and the actions.
+    // Its own line in the content column, after the title and the details line; the menu cell stays one button wide.
     const line = error.closest<HTMLElement>("[data-row-error]")!;
-    expect(line.parentElement).toBe(row);
-    expect(line.className.split(" ")).toContain("basis-full");
-    const children = [...row.children];
-    expect(children.indexOf(line)).toBeGreaterThan(children.indexOf(actions.closest("li > *")!));
-    // The title keeps its space: it grows from a fixed basis instead of shrinking to nothing beside the actions.
+    const column = line.parentElement!;
+    expect(column.parentElement).toBe(row);
+    const children = [...column.children];
+    expect(children.indexOf(line)).toBeGreaterThan(children.indexOf(column.querySelector("[data-details]")!));
+    expect(row.querySelector("[data-row-menu]")!.contains(error)).toBe(false);
+    // The title keeps its space: one truncated line in a column that takes the rest of the row, the actions beside it.
     const title = within(row).getByRole("link", { name: "Task title that keeps its space" });
-    expect(title.closest("li > div")!.className.split(" ")).toEqual(expect.arrayContaining(["grow", "basis-64"]));
+    expect(title.className).toContain("truncate");
+    expect(title.closest("li > div")!.className.split(" ")).toEqual(expect.arrayContaining(["min-w-0", "flex-1"]));
   });
 
   it("a checkbox still completes a task with the section on the page", async () => {

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // Dashboard shell tests: items table, Running now and Queue, Floor links, why an item waits, open alarms. Shared setup is in ui-shell-fixtures.tsx.
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ItemsTable, QueueTable, RunningTable } from "../web/src/views/common.js";
 import { API, type Items, type ItemRow } from "../web/src/api.js";
@@ -196,7 +196,10 @@ describe("open alarms on the Tasks page and the why sentence (design 09-status-p
       const list = await screen.findByRole("list", { name: "Check" });
       const li = list.querySelector('[data-check="alarm"]') as HTMLElement;
       expect(li.querySelector("[data-alarm-summary]")!.textContent).toBe(action.text);
-      expect(within(li).getByRole("link", { name: "Open on Failures" }).getAttribute("href")).toBe("/app/failures");
+      // Its menu's one item opens Failures (data-action "failures"); the row has no link to it.
+      fireEvent.click(within(li).getByRole("button", { name: "More commands" }));
+      expect(within(li).getAllByRole("menuitem").map((m) => [m.textContent, m.getAttribute("data-action")])).toEqual([["Open on Failures", "failures"]]);
+      fireEvent.click(within(li).getByRole("button", { name: "More commands" }));
       expect(document.body.textContent).not.toContain("Open alarms");
       expect(screen.queryByRole("list", { name: "System actions" })).toBeNull();
       await resolve();
