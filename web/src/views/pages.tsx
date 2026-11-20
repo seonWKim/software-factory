@@ -28,6 +28,7 @@ import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
 import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, When, byId, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
 import { ItemDecision } from "./decision-card.js";
+import { ItemChangesTab, RecheckButton } from "./item-changes.js";
 import { type SupervisorActionName, SupervisorActions } from "./system-banner.js";
 import { Thread } from "./thread.js";
 import { transcriptPath } from "./transcript.js";
@@ -395,12 +396,14 @@ export function ItemsPage() {
 /**
  * One work item (design 09-dashboard-item): its title, then its decision (the DecisionCard while the owner is next,
  * else its reason and "…" menu), its facts, the current run with its live state, the thread (collapsed after its
- * first message), the runs (with errors) and the timeline.
+ * first message), the runs (with errors) and the timeline. An item with a branch has the tabs Overview (all of that
+ * below the facts) and Changes (item-changes.tsx), kept in `?tab=`.
  */
 export function ItemPage({ id }: { id: string }) {
   const now = useNow();
   const q = useApi<ItemDetail>(API.item(id));
   const viewer = useViewer();
+  const [tab, pickTab] = useUrlParam("tab", (v) => v === "changes");
   if (q.isError) return <><PageHeader title={t("app.workItem")} /><ErrorNote error={q.error} /></>;
   if (!q.data) return <><PageHeader title={t("app.workItem")} /><Loading rows={6} /></>;
   const { item, runs, timeline } = q.data;
@@ -462,6 +465,16 @@ export function ItemPage({ id }: { id: string }) {
           <dd className="min-w-0"><CopyText value={item.source.id} what="source ID" /></dd>
         </dl>
       </Disclosure>
+      {item.has_changes && (
+        <Tabs
+          className="mt-4"
+          label={t("item.views")}
+          options={[{ id: "overview", label: t("item.tabOverview") }, { id: "changes", label: t("item.tabChanges") }]}
+          value={tab === "changes" ? "changes" : "overview"}
+          onChange={(v) => pickTab(v === "changes" ? v : null)}
+        />
+      )}
+      {item.has_changes && tab === "changes" ? <div className="mt-4"><ItemChangesTab id={item.id} /></div> : <>
       <CurrentRun runs={runs} itemId={item.id} now={now} />
       <Thread entries={q.data.thread ?? []} now={now} />
       <Phases phases={item.phases ?? []} />
@@ -480,6 +493,7 @@ export function ItemPage({ id }: { id: string }) {
               {item.merge_check.conflicts.map((f) => <li key={f}>{f}</li>)}
             </ul>
           )}
+          {item.merge_check.recheck && <RecheckButton id={item.id} />}
         </Card>
       )}
       <Card title={t("item.runs")} count={runs.length}>
@@ -531,6 +545,7 @@ export function ItemPage({ id }: { id: string }) {
           })}
         </ol>
       </Card>
+      </>}
     </>
   );
 }

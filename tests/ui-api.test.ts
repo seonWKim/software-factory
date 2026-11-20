@@ -1992,8 +1992,8 @@ describe("ui api: Changes tab, Re-check and the overlap note (design 09-dashboar
     await patch(store, items.approve, { pr_files: ["src/b.ts"] }); // not ready: no note
     const rows = (await json<{ items: { id: string; overlaps?: unknown[] }[] }>(d, "/api/v1/items")).items;
     const of = (id: string) => rows.find((r) => r.id === id)!.overlaps;
-    expect(of(items.merge.id)).toEqual([{ id: other.id, title: "Other ready", paths: ["src/a.ts"] }]);
-    expect(of(other.id)).toEqual([{ id: items.merge.id, title: "Merge me", paths: ["src/a.ts"] }]);
+    expect(of(items.merge.id)).toEqual([{ id: other.id, title: "Other ready", source_id: other.source.id, paths: ["src/a.ts"] }]);
+    expect(of(other.id)).toEqual([{ id: items.merge.id, title: "Merge me", source_id: items.merge.source.id, paths: ["src/a.ts"] }]);
     expect(of(sameDir.id)).toEqual([]);
     expect(of(items.approve.id)).toEqual([]);
   });

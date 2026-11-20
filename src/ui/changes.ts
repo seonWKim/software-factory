@@ -123,6 +123,8 @@ export function needsRecheck(checked_at: string | null, base_at: string | null):
 export interface Overlap {
   id: WorkItemId;
   title: string | null;
+  /** Its source id, for its short number when it has no title. */
+  source_id: string;
   paths: string[];
 }
 
@@ -141,7 +143,7 @@ export async function overlapsOf(items: readonly WorkItem[], text: (v: string | 
       if (shared.length === 0) continue;
       const paths = [];
       for (const p of shared) paths.push((await text(p))!);
-      out.set(it.id, [...(out.get(it.id) ?? []), { id: other.id, title: await text(other.title || null), paths }]);
+      out.set(it.id, [...(out.get(it.id) ?? []), { id: other.id, title: await text(other.title || null), source_id: other.source.id, paths }]);
     }
   }
   return out;

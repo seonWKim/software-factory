@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { t } from "../i18n/index.js";
-import { POLL_MS, getJson } from "./client.js";
+import { POLL_MS, getJson, postJson } from "./client.js";
 import type { HostSleepRow } from "./health.js";
 import type { CommandReply, ItemCommand, ProposalView, ThreadEntry, WaitingSpec } from "./item-commands.js";
 import { API } from "./routes.js";
@@ -23,6 +23,42 @@ export interface MergeCheckView {
   head_sha: string | null;
   base_sha: string | null;
   checked_at: string | null;
+  /** The item page only: the check is older than the base's last commit, so the card offers Re-check. */
+  recheck?: boolean;
+}
+
+/** Another ready-to-merge item whose stored changed files share these exact paths with a row's item. */
+export interface ItemOverlap {
+  id: string;
+  title: string | null;
+  /** Its source id: its short number names it when it has no title. */
+  source_id: string;
+  paths: string[];
+}
+
+/** One changed file of an item's branch; both counts null for a binary file. A withheld path reads as the withheld marker. */
+export interface ChangedFile {
+  path: string;
+  added: number | null;
+  removed: number | null;
+}
+
+/**
+ * GET /api/v1/items/:id/changes: the files the item's head changes against the base, and with `?path=` that file's
+ * diff (`withheld`: `diff` is the withheld marker; `truncated`: cut at the server's limit).
+ */
+export interface ItemChanges {
+  as_of: string;
+  head_sha: string;
+  base_sha: string | null;
+  files: ChangedFile[];
+  file?: { path: string; diff: string; withheld: boolean; truncated: boolean };
+}
+
+/** POST Re-check: the item's stored merge check is removed; the card reads checking until the controller checks again. */
+export async function postRecheck(token: string, id: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await postJson<{ error?: string }>(API.mergeRecheck(id), token, {});
+  return r.ok ? { ok: true } : { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
 /** The short label shown next to a ready-to-merge item's state. */
@@ -124,6 +160,8 @@ export interface ItemRow {
   need?: { reason: string | null; anchor?: string | null };
   /** A Needs-you row's buttons: the state-changing commands that apply now (not budget), each allowed or not for the viewer. */
   commands?: ItemCommand[];
+  /** A ready-to-merge Needs-you row: the other ready items it shares changed files with (exact paths); empty for none. */
+  overlaps?: ItemOverlap[];
   why?: Why;
   /** The split parent (null for any other item) and this item's place among its phases. */
   parent_id?: string | null;
@@ -181,6 +219,8 @@ export interface ItemDetail {
     created_at: string;
     updated_at: string;
     merge_check?: MergeCheckView | null;
+    /** The item has a branch the server can read: the page shows the Changes tab. */
+    has_changes?: boolean;
     /** The Merge button: enabled, or disabled with the reason. */
     merge?: MergeReadiness;
     /** The item's phase on the pages (the list's `item_phase`) and its reason code. */

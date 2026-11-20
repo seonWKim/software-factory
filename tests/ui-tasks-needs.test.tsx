@@ -71,6 +71,31 @@ describe("Needs you", () => {
     expect(sent).toEqual([{ command: "retry", note: "+paths web/src/x.tsx docs/y.md" }]);
   });
 
+  it("notes each ready-to-merge item that shares a changed file with another ready item, naming the path and the other item", async () => {
+    const ready = { item_phase: "ready_to_merge", merge: { enabled: true, reason: null } };
+    s.items = [
+      item("wi_m1", { ...ready, title: "First ready", overlaps: [{ id: "wi_m2", title: "Second ready", source_id: "local:wi_m2", paths: ["src/a.ts"] }] }),
+      item("wi_m2", { ...ready, title: "Second ready", overlaps: [{ id: "wi_m1", title: "First ready", source_id: "local:wi_m1", paths: ["src/a.ts", "src/b.ts"] }] }),
+      item("wi_m3", { ...ready, title: "Alone", overlaps: [] }),
+    ];
+    await show();
+    const notes = await screen.findByRole("list", { name: "Ready to merge items that change the same files" }, SLOW);
+    const text = [...notes.querySelectorAll("li")].map((li) => li.textContent);
+    expect(text).toEqual([
+      "First ready and Second ready both change src/a.ts. Merge one first, then check the other.",
+      "Second ready and First ready both change 2 files, src/a.ts among them. Merge one first, then check the other.",
+    ]);
+    expect(notes.textContent).not.toContain("Alone");
+    expect(notes.querySelector("a")!.getAttribute("href")).toBe("/app/items/wi_m1");
+  });
+
+  it("shows no overlap note when no ready item shares a file", async () => {
+    s.items = [item("wi_m3", { item_phase: "ready_to_merge", merge: { enabled: true, reason: null }, title: "Alone", overlaps: [] })];
+    await show();
+    await screen.findByRole("region", { name: "Needs you" }, SLOW);
+    expect(screen.queryByRole("list", { name: "Ready to merge items that change the same files" })).toBeNull();
+  });
+
   it("is not rendered when nothing waits", async () => {
     s.items = [item("wi_run", { title: "Busy", item_phase: "running" })];
     await show();
