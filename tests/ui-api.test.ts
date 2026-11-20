@@ -550,10 +550,10 @@ describe("ui api: host sleeps (issue #218)", () => {
     }
     const v1 = await json<{ sleeps: Record<string, unknown>[] }>(d, "/api/v1/health");
     expect(v1.sleeps.map((s) => s.woke_at)).toEqual(Array.from({ length: 10 }, (_, i) => at((11 - i) * 1000)));
-    expect(v1.sleeps[0]).toEqual({ worker_id: w1, woke_at: at(11_000), gap_ms: 60_012, run_id: claimed.id });
-    expect(v1.sleeps[1]).toEqual({ worker_id: w1, woke_at: at(10_000), gap_ms: 60_011, run_id: null });
+    expect(v1.sleeps[0]).toEqual({ worker_id: w1, woke_at: at(11_000), gap_ms: 60_012, run_id: claimed.id, work_item_id: claimed.work_item_id, run_status: "running" });
+    expect(v1.sleeps[1]).toEqual({ worker_id: w1, woke_at: at(10_000), gap_ms: 60_011, run_id: null, work_item_id: null, run_status: null });
     for (const s of v1.sleeps) {
-      expect(Object.keys(s).sort()).toEqual(["gap_ms", "run_id", "woke_at", "worker_id"]);
+      expect(Object.keys(s).sort()).toEqual(["gap_ms", "run_id", "run_status", "woke_at", "work_item_id", "worker_id"]);
       expect(typeof s.gap_ms).toBe("number");
     }
     const old = JSON.parse((await get(d, "/api/health")).body) as Record<string, unknown>;
@@ -574,6 +574,22 @@ describe("ui api: host sleeps (issue #218)", () => {
     expect(v1.sleeps).toEqual([]);
     expect(v1.checks).toHaveLength(2);
     expect(JSON.stringify(v1)).not.toContain("no such table");
+  });
+
+  it("/health keeps a sleep row, without its item and status, when the run lookup fails", async () => {
+    const { d, store, claimed } = await seeded({
+      store: (s) => new Proxy(s, {
+        get(target, prop, receiver) {
+          if (prop === "getRun") return async () => { throw new Error("store down"); };
+          const v = Reflect.get(target, prop, receiver) as unknown;
+          return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+        },
+      }),
+    });
+    await store.recordHostSleep({ worker_id: w1, woke_at: at(1000), gap_ms: 120_000, run_id: claimed.id });
+    const v1 = await json<{ sleeps: unknown[]; checks: unknown[] }>(d, "/api/v1/health");
+    expect(v1.sleeps).toEqual([{ worker_id: w1, woke_at: at(1000), gap_ms: 120_000, run_id: claimed.id, work_item_id: null, run_status: null }]);
+    expect(v1.checks).toHaveLength(2);
   });
 
   it("item detail lists the sleeps recorded during that item's runs only, newest first", async () => {
@@ -985,17 +1001,26 @@ describe("ui api: the waiting spec's In short and decisions on GET /api/v1/items
     expect((JSON.parse(r.body) as Detail).spec).toEqual({
       in_short: IN_SHORT,
       decisions: [
-        { question: "Fail the job, or only warn?", options: ["Fail the job", "Only warn"], default: "Only warn", reason: "[withheld: github_token]", owner_only: false },
-        { question: "Name the step?", options: [], default: "scope", reason: "It shows in CI.", owner_only: true },
+        { question: "Fail the job, or only warn?", options: ["Fail the job", "Only warn"], default: "Only warn", reason: "[withheld: github_token]", owner_only: false, option_changes: [] },
+        { question: "Name the step?", options: [], default: "scope", reason: "It shows in CI.", owner_only: true, option_changes: [] },
       ],
     });
+  });
+
+  it("a layout decision carries its layout marker; the others have none", async () => {
+    const { d, store } = await seeded();
+    const layout = { question: "Which layout?", reason: "The page shape.", options: ["[Header]\n[Cards]", "[Header]\n[List]"], default: "[Header]\n[List]", owner_only: false, layout: true };
+    const it = await triaged(store, 53, { ...SPEC, decisions: [...SPEC.decisions, layout] }, { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" });
+    const body = await json<Detail>(d, `/api/v1/items/${encodeURIComponent(it.id)}`);
+    expect(body.spec!.decisions.map((x) => x.layout)).toEqual([undefined, undefined, true]);
+    expect(body.spec!.decisions[2]).toMatchObject({ question: "Which layout?", options: layout.options, default: layout.default });
   });
 
   it("a stored plain-text decision from an older triage is a question with no options, default or reason", async () => {
     const { d, store } = await seeded();
     const it = await triaged(store, 51, { ...SPEC, decisions: ["Ship behind a flag?"] }, { stage: "READY", blocked_on: "human", blocked_reason: "max_revisions" });
     const body = await json<Detail>(d, `/api/v1/items/${encodeURIComponent(it.id)}`);
-    expect(body.spec!.decisions).toEqual([{ question: "Ship behind a flag?", options: [], default: null, reason: null, owner_only: true }]);
+    expect(body.spec!.decisions).toEqual([{ question: "Ship behind a flag?", options: [], default: null, reason: null, owner_only: true, option_changes: [] }]);
   });
 
   it("is null for an item whose spec is not waiting for approval, or with no applied triage run", async () => {

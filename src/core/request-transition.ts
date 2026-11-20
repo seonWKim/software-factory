@@ -12,13 +12,15 @@ import type { AuthDecision } from "../interfaces/auth-provider.js";
 import { refusalReply } from "./authorize.js";
 import { BUDGET_CHECKPOINT } from "./budget.js";
 import { prNumber } from "./change-ref.js";
-import { CHECKPOINT_REFUSAL, CLOSED_REFUSAL, commandPhase, dependencyHoldRefusal, latestSpec, parseCommandPaths, phaseLabel, refusalText, specNotWaiting } from "./commands.js";
+import {
+  CHECKPOINT_REFUSAL, CLOSED_REFUSAL, commandPhase, dependencyHoldRefusal, latestSpec, parseCommandPaths, phaseLabel, refusalText, retryPathsReply, specNotWaiting,
+} from "./commands.js";
 import { LOCAL_SOURCE } from "./local-merge.js";
-import { effectiveTier, runKey } from "./policy.js";
+import { effectiveTier, isCovered, runKey } from "./policy.js";
 import { MERGE_CONFLICT_PENDING } from "./resolve.js";
 import { PHASES_OPEN, SPLIT_FILING } from "./split.js";
 import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "./standing.js";
-import type { TriagePhase } from "./outputs.js";
+import { type SpecDecision, type TriagePhase, optionChange } from "./outputs.js";
 import type { Actor, RunInput, RunKind, SpecKind, StateChange, StateChangeDetail, Tier, Timestamp, WorkItem, WorkItemPatch } from "./types.js";
 
 /** A transition as a check decides it: the store's input without the item and its version. */
@@ -144,14 +146,20 @@ export async function commandNote(
   return { note: note || null, paths: split.paths };
 }
 
+/** What the approve gate reads of one decision's answer: the answer given (else the default) and whether it is the default. */
+export interface GateAnswer {
+  answer: string | null;
+  accepted_default: boolean;
+}
+
 /** The decision answers of an approval note (src/shared/command-notes.ts): its parser and its state change detail. */
-export interface NoteAnswers<A> {
+export interface NoteAnswers<A extends GateAnswer> {
   split(note: string | null, decisions: readonly { text: string; default: string | null }[]): { note: string | null; answers: A[] } | Refused;
   detail(answers: readonly A[]): StateChangeDetail;
 }
 
 /** What an `/approve` carries into the approve gate. */
-export interface ApproveArgs<A> {
+export interface ApproveArgs<A extends GateAnswer> {
   actor: Actor;
   note: string | null;
   paths: readonly string[];
@@ -183,7 +191,7 @@ export async function floorTierNeeded(r: ItemReads, it: WorkItem): Promise<numbe
  * claimed it is answered: null), a dependency hold, a spec not waiting, `+paths` on a split, the decision answers;
  * then the transition: a split's filing (`split`, the controller's), else RUNNING with one implement run.
  */
-export async function approveCheck<A>(r: ItemReads, it: WorkItem, a: ApproveArgs<A>): Promise<ApproveChecked> {
+export async function approveCheck<A extends GateAnswer>(r: ItemReads, it: WorkItem, a: ApproveArgs<A>): Promise<ApproveChecked> {
   if (it.stage === "CLOSED") return { refuse: CLOSED_REFUSAL };
   if (it.blocked_reason === BUDGET_CHECKPOINT) return { refuse: CHECKPOINT_REFUSAL };
   if (it.blocked_reason === FLOOR_TIER) return floorCommand("spec_approved", it, a.actor, await floorTierNeeded(r, it), a.note, a.widen(a.paths));
@@ -204,6 +212,8 @@ export async function approveCheck<A>(r: ItemReads, it: WorkItem, a: ApproveArgs
   const ans = a.answers.split(a.note, spec?.decision_items ?? []);
   if ("refuse" in ans) return ans;
   if (phases) return { split: phases, note: ans.note, tag: ans.answers.length ? { ...a.tag, ...a.answers.detail(ans.answers) } : a.tag };
+  const uncovered = uncoveredOptionPaths(spec?.decision_items ?? [], ans.answers, [...it.allowed_paths, ...a.paths]);
+  if (uncovered.length > 0) return { refuse: optionPathsRefusal(uncovered) };
   const w = a.widen(a.paths);
   const detail = { ...(ans.note ? { note: ans.note } : {}), ...a.answers.detail(ans.answers), ...w.detail };
   return {
@@ -213,6 +223,33 @@ export async function approveCheck<A>(r: ItemReads, it: WorkItem, a: ApproveArgs
     ...(Object.keys(detail).length > 0 ? { detail } : {}),
     enqueue: { kind: "implement", idempotency_key: runKey(it, "implement") },
   };
+}
+
+/** A non-default answer's option paths outside the allowed paths: the decision's number and those paths. */
+export type UncoveredOption = { n: number; paths: string[] };
+
+/**
+ * The extra paths of each non-default answer's option (design 04-spec-gate-commands, 2026-11-21) that `allowed` does
+ * not cover, by decision. A default needs none: its paths are the spec's allowed_paths.
+ */
+export function uncoveredOptionPaths(decisions: readonly SpecDecision[], answers: readonly GateAnswer[], allowed: readonly string[]): UncoveredOption[] {
+  return decisions.flatMap((d, i) => {
+    const a = answers[i];
+    if (!a || a.accepted_default) return [];
+    const paths = (optionChange(d, a.answer)?.extra_paths ?? []).filter((p) => !isCovered(p, allowed));
+    return paths.length > 0 ? [{ n: i + 1, paths }] : [];
+  });
+}
+
+/**
+ * The one refusal of an approval whose answer needs a path outside the allowed paths: it names each path and the
+ * `/approve +paths` reply that allows them. Nothing widens on its own (owner answer, wi_80ba9d05).
+ */
+export function optionPathsRefusal(uncovered: readonly UncoveredOption[]): string {
+  const paths = [...new Set(uncovered.flatMap((u) => u.paths))];
+  const which = uncovered.map((u) => `decision ${u.n}`).join(", ");
+  const reply = retryPathsReply(paths, "/approve") ?? `/approve +paths ${paths.join(" ")}`;
+  return `the answer to ${which} needs ${paths.map((p) => `\`${p}\``).join(", ")} outside the allowed paths, so nothing was queued and nothing widened; reply \`${reply}\` with the same answers to allow ${paths.length === 1 ? "it" : "them"}, or pick another answer`;
 }
 
 /** The gate commands a block takes: approve, reject, revise, retry (the comment command events). */
@@ -381,7 +418,7 @@ export function mergeReturned(it: WorkItem, refusal: string, actor: Actor): Tran
 // The request path.
 
 /** What the request path needs: the store, the egress scanner, the owner check and the merge facts of this process. */
-export interface RequestDeps<A> {
+export interface RequestDeps<A extends GateAnswer> {
   store: Pick<FactoryStore, "getWorkItem" | "listRuns" | "listStateChanges" | "transition" | "markAppCommandRequest" | "listAppCommandRequestsForItem">;
   scanner: EgressScanner;
   /** The owner check of the request's actor: approve_spec for Approve, approve_merge for Merge. */
@@ -416,7 +453,7 @@ const MAX_TRIES = 5;
  * queue; an earlier pending Merge of the item, or one the controller queued, makes it `already_done`. A refusal or an
  * earlier request's transition marks the row handled here, so the controller posts nothing.
  */
-export async function requestTransition<A>(d: RequestDeps<A>, r: AppCommandRequest, item: WorkItem): Promise<RequestOutcome> {
+export async function requestTransition<A extends GateAnswer>(d: RequestDeps<A>, r: AppCommandRequest, item: WorkItem): Promise<RequestOutcome> {
   const merge = r.command === "merge";
   const name = merge ? "merge" : "/approve";
   const finish = async (it: WorkItem, refusal: string | null): Promise<RequestOutcome> => {

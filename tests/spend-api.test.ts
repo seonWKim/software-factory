@@ -41,6 +41,12 @@ async function get(d: UiDeps, path: string, method = "GET") {
 }
 
 describe("GET /api/v1/spend", () => {
+  it("answers the live budgets: a set daily one, an unset weekly one", async () => {
+    const { d, store } = await setup();
+    await store.setSettingOverride({ key: "spend.daily_budget_usd", project: "", value: "20", actor: "local:test" });
+    expect((await get(d, "/api/v1/spend")).body!.budgets).toEqual({ daily_usd: 20, weekly_usd: null });
+  });
+
   it("totals by UTC day and by item equal the sum of the stored costs", async () => {
     const { d, store, clock } = await setup();
     clock.advance(10 * HOUR); // 2026-01-01

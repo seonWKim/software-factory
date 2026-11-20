@@ -327,6 +327,40 @@ describe("host sleep: the app's pages", () => {
     expect(html).toContain("Host sleeps (1)");
   });
 
+  it("Health lists each run a sleep held once, with its item and status, and the keep-awake hint; an idle sleep has neither", async () => {
+    onTab("sleeps");
+    const { API } = (await import(WEB_API)) as { API: { health: string; unreviewedMerges: string } };
+    const run = { run_id: "run_1", work_item_id: "wi_7", run_status: "queued" };
+    const html = await renderPage("HealthPage", {
+      [API.health]: health([
+        { worker_id: "host:1:0", woke_at: AT, gap_ms: 5 * 60_000, ...run },
+        { worker_id: "host:1:1", woke_at: AT, gap_ms: 5 * 60_000, ...run },
+        { worker_id: "host:1:2", woke_at: "2026-11-07T07:00:00.000Z", gap_ms: 61_000, run_id: null, work_item_id: null, run_status: null },
+      ]),
+      [API.unreviewedMerges]: { as_of: AT, merges: [] },
+    });
+    const v = visible(html);
+    expect(v.match(/data-testid="host-sleep"/g)).toHaveLength(2);
+    expect(v.match(/data-testid="host-sleep-runs"/g)).toHaveLength(1);
+    expect(v.match(/>wi_7</g)).toHaveLength(1);
+    expect(v).toContain("Runs it held:");
+    expect(v).toMatch(/wi_7<\/a>: Queued/i);
+    expect(v.match(/Keep awake can stop/g)).toHaveLength(1);
+    expect(v).toContain('href="/app/settings?tab=advanced"');
+  });
+
+  it("Health keeps a sleep row without a run list when its run lookup gave nothing", async () => {
+    onTab("sleeps");
+    const { API } = (await import(WEB_API)) as { API: { health: string; unreviewedMerges: string } };
+    const html = await renderPage("HealthPage", {
+      [API.health]: health([{ worker_id: "host:1:0", woke_at: AT, gap_ms: 5 * 60_000, run_id: "run_1", work_item_id: null, run_status: null }]),
+      [API.unreviewedMerges]: { as_of: AT, merges: [] },
+    });
+    expect(html).toContain("Computer slept 5 min");
+    expect(html).not.toContain("Runs it held:");
+    expect(html).not.toContain("Keep awake can stop");
+  });
+
   it("Health shows an empty state when there are no sleeps", async () => {
     onTab("sleeps");
     const { API } = (await import(WEB_API)) as { API: { health: string; unreviewedMerges: string } };

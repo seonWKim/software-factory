@@ -148,7 +148,8 @@ describe("workers pause <n>", () => {
         }),
     });
     const workers = Array.from({ length: 5 }, (_, i) => new Worker({
-      id: `hostA:1:${i}` as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config, prompts,
+      // Five runs at once: the slot cap (every process's running runs, lone Workers too) must allow five.
+      id: `hostA:1:${i}` as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config: { ...config, workers: 5 }, prompts,
       log: recordingLog(), scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(),
     }));
     const items = [];

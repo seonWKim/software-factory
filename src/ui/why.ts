@@ -124,11 +124,6 @@ export function heldBy(decision: WhyInput["decision"], run: { id: string } | nul
   return decision?.decision === "held" && !decision.approved_by && run !== null && decision.run_id === run.id;
 }
 
-/** `2026-11-07 12:30 UTC` from an ISO time; the text as is when it is not one. */
-function when(iso: string): string {
-  return /^\d{4}-\d\d-\d\dT\d\d:\d\d/.test(iso) ? `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC` : iso;
-}
-
 function why(code: WhyCode, reason_code: ReasonCode, next_actor: NextActor, params: Why["params"] = {}, holder_id: string | null = null): Why {
   return { code, reason_code, params, next_actor, refs: refsOf(Object.values(params).join(" ")), alarms: [], holder_id };
 }
@@ -182,11 +177,11 @@ function human(i: WhyInput["item"], p: ItemPhase, failure: HeldFailure | null): 
 
 /** The claim pause that stops this run's kind, by the store's claim rule (sql-factory-store claimRun). */
 function pause(p: ClaimPauses, kind: RunKind): Why | null {
-  if (p.rate_limit) return why("paused", "paused_rate_limit", "factory", { until: when(p.rate_limit) });
+  if (p.rate_limit) return why("paused", "paused_rate_limit", "factory", { until: p.rate_limit });
   if (p.model_stall) return why("paused", "paused_model_stall", "factory");
   if (!IMPLEMENT_KINDS.includes(kind)) return null;
-  if (p.forge_auth) return why("paused", "paused_forge_auth", "human", { until: when(p.forge_auth) });
-  if (p.preflight_access) return why("paused", "paused_preflight", "human", { until: when(p.preflight_access) });
+  if (p.forge_auth) return why("paused", "paused_forge_auth", "human", { until: p.forge_auth });
+  if (p.preflight_access) return why("paused", "paused_preflight", "human", { until: p.preflight_access });
   return null;
 }
 
@@ -237,7 +232,7 @@ export function whyWaiting(x: WhyInput): Why {
   if (p === "dependency_hold") return dependency(i.blocked_reason);
   if (p === "phase_hold" || p === "phases_open" || p === "upstream_wait" || p === "ci_wait" || x.phases.waiting_on > 0) return splitWait(p, x.phases);
   if (heldBy(d, run)) return why("held", HOLDER[d!.holder_kind], "other_item", { holder: holderName(d!) }, holder);
-  if (run && x.not_before) return why("not_before", "not_before", "factory", { until: when(x.not_before) });
+  if (run && x.not_before) return why("not_before", "not_before", "factory", { until: x.not_before });
   if (run) return run.position ? why("queued", "queued_at", "factory", { position: run.position }) : why("queued", "queued", "factory", { kind: run.kind });
   return why("idle", "idle", "human");
 }
