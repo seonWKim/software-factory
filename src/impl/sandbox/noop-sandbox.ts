@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chmod, cp, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { BaseSyncResult, BaseSyncSpec, LocalMergeResult, LocalMergeSpec } from "../../core/local-merge.js";
-import type { ExecOptions, ExecResult, NewBranchCommit, NewBranchResult, Sandbox, SandboxHandle, SandboxSpec } from "../../interfaces/sandbox.js";
+import type { ChangedFile, ChangesRead, ChangesSpec, ExecOptions, ExecResult, NewBranchCommit, NewBranchResult, Sandbox, SandboxHandle, SandboxSpec } from "../../interfaces/sandbox.js";
 import { baseEnv, type RunProcessOptions, runProcess } from "../process/run-process.js";
 
 /** Runs one process; `runProcess` unless a test injects a fake. */
@@ -243,6 +243,36 @@ export class NoOpSandbox implements Sandbox {
     if (commit === null) return null;
     const r = await this.git(spec.repo, ["cat-file", "blob", `${commit}:${spec.path}`], false);
     return r.exit_code === 0 ? { commit, text: r.stdout } : null;
+  }
+
+  /**
+   * The trusted base (no fetch) and, given a head, `git diff --numstat <base>...<head>` and one file's patch: reads of
+   * objects only. No rename detection, external diff or textconv, so a repo's own config runs nothing here.
+   */
+  async readChanges(spec: ChangesSpec): Promise<ChangesRead> {
+    safeRef(spec.base_ref);
+    const ref = await this.git(spec.repo, ["rev-parse", "--verify", "--quiet", "--end-of-options", `${this.baseRef(spec.base_ref)}^{commit}`], false);
+    if (ref.exit_code !== 0) return { base: null, files: [], patch: null };
+    const sha = ref.stdout.trim();
+    const time = Number((await this.git(spec.repo, ["log", "-1", "--format=%ct", sha])).stdout.trim());
+    const base = { sha, committed_at: new Date(time * 1000).toISOString() };
+    if (spec.head_sha === undefined) return { base, files: [], patch: null };
+    if (!/^[0-9a-f]{40,64}$/.test(spec.head_sha)) throw new Error(`not a commit sha: ${JSON.stringify(spec.head_sha)}`);
+    const range = `${sha}...${spec.head_sha}`;
+    const diff = ["diff", "--no-renames", "--no-ext-diff", "--no-textconv", "--no-color"];
+    const files: ChangedFile[] = [];
+    for (const entry of (await this.git(spec.repo, [...diff, "--numstat", "-z", range])).stdout.split("\0")) {
+      const m = /^(-|\d+)\t(-|\d+)\t([\s\S]+)$/.exec(entry);
+      if (m) files.push({ path: m[3]!, added: m[1] === "-" ? null : Number(m[1]), removed: m[2] === "-" ? null : Number(m[2]) });
+    }
+    files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    if (spec.path === undefined) return { base, files, patch: null };
+    // A literal pathspec: the path is a file name, never a glob or magic.
+    const text = (await this.git(spec.repo, [...diff, range, "--", `:(literal)${spec.path}`])).stdout;
+    const bytes = Buffer.from(text, "utf8");
+    const max = spec.max_bytes ?? Infinity;
+    const patch = bytes.length > max ? { text: bytes.subarray(0, max).toString("utf8"), truncated: true } : { text, truncated: false };
+    return { base, files, patch };
   }
 
   /**
