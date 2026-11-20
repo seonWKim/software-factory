@@ -15,7 +15,13 @@ export function useRunTempRoot(env: NodeJS.ProcessEnv = process.env): () => void
   return () => {
     if (before === undefined) delete env.TMPDIR;
     else env.TMPDIR = before;
-    rmSync(root, { recursive: true, force: true });
+    // A process a test started can still be writing here (ENOTEMPTY), so retry; a folder still left is reported,
+    // never a failed run: the tests already passed or failed on their own.
+    try {
+      rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    } catch (e) {
+      console.warn(`test temp folder not fully removed: ${root} (${(e as Error).message})`);
+    }
   };
 }
 
