@@ -88,7 +88,7 @@ A 16 px radio circle drawn from the tokens with its label (the radio's accessibl
 
 ## OverflowMenu
 
-A "more" button (a `ghost` Button at size `icon`) that opens a menu of actions: items `{ label, onSelect, danger?, disabled? }`. States: closed, open; item default, `danger` (bad text), `disabled`. Esc, a click outside or choosing an item closes it.
+A "more" button (a `ghost` Button at size `icon`) that opens a menu of actions: items `{ label, onSelect, danger?, disabled? }`. States: closed, open; item default, `danger` (bad text), `disabled`. Esc, a click outside or choosing an item closes it. The list ends at the button's right edge; when that would put its left part past the left edge of the page content (`main`, else the viewport), so the sidebar would cover its labels, it starts at the button's left edge instead (a measured check when it opens, no positioning library).
 
 ## ListRow
 
