@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { API, type AutoStop, type MigrateDryRun, type SettingsView, type SupervisorView, type SystemAction, postMigrate, postSupervisor, useApi } from "../api.js";
+import { API, type AutoStop, type MigrateDryRun, type PausesView, type SettingsView, type SupervisorView, type SystemAction, postMigrate, postResume, postSupervisor, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { FOCUS } from "../components/ui/control.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
@@ -9,8 +9,8 @@ import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { BASE } from "../pages.js";
+import { When, useNow } from "./common.js";
 import { AutoStopNote, alarmAnchor } from "./settings/general.js";
-import { Disclosure } from "../components/ui/disclosure.js";
 
 /**
  * Shown while the app was built from another revision than the server it talks to runs (design §9): the tab
@@ -34,17 +34,70 @@ export const NEED_ROW = "flex flex-wrap items-center justify-between gap-x-3 gap
 const FAILURES = `${BASE}failures`;
 
 /**
- * One system action as a Needs-you row in the Check group (design 09-status-page): an open alarm (AlarmRow), else
- * its sentence and the command that clears it.
+ * One system action as a Needs-you row in the Check group (design 09-status-page): an open alarm (AlarmRow), a claim
+ * pause (PauseCheckRow), else its sentence and the command that clears it.
  */
 export function CheckRow({ action }: { action: SystemAction }) {
   if (action.code === "alarm") return <AlarmRow action={action} />;
+  if (action.code === "claim_pause" && action.pause) return <PauseCheckRow action={action} pause={action.pause} />;
   return (
     <li data-check={action.code} className={NEED_ROW}>
       <span className="min-w-0 grow basis-64 text-sm text-pretty wrap-anywhere text-text-1">{action.text}</span>
       <code className="min-w-0 font-mono text-xs wrap-anywhere text-text-2">{action.command}</code>
       {action.code === "migration_pending" && <SupervisorActions actions={["migrate"]} />}
     </li>
+  );
+}
+
+/**
+ * A claim pause's Needs-you row (design 09-dashboard-tasks): its plain name, when it is checked next (model_stall) or
+ * ends, as a relative time with the local time on hover, and Resume now. No CLI command: the button is the action.
+ */
+function PauseCheckRow({ action, pause }: { action: SystemAction; pause: string }) {
+  const now = useNow();
+  const token = useApi<PausesView>(API.pauses).data?.csrf_token ?? null;
+  const due = action.until !== null && Date.parse(action.until) <= now;
+  const stall = pause === "model_stall";
+  const label = stall ? (due ? "needs.pauseNextDue" : "needs.pauseNext") : due ? "needs.pauseEnded" : "needs.pauseEnds";
+  return (
+    <li data-check="claim_pause" data-pause={pause} className={NEED_ROW}>
+      <span className="min-w-0 grow basis-64 text-sm text-pretty wrap-anywhere text-text-1">
+        {action.text}
+        {action.until !== null && <span className="text-text-2">{" · "}<When at={action.until} now={now} label={label} /></span>}
+      </span>
+      <ResumeNow name={pause} token={token} />
+    </li>
+  );
+}
+
+/**
+ * "Resume now" for one claim pause, the one copy of its handler (the Tasks pause row and Health's pause list): posts
+ * `{ name }` with the page's CSRF token, then reloads the pauses and the overview. The endpoint's refusal shows beside
+ * the button. Nothing while the server has no resume route (`token` null).
+ */
+export function ResumeNow({ name, token }: { name: string; token: string | null }) {
+  const client = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (token === null) return null;
+  const resume = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await postResume(token, name);
+      if (!r.ok) setError(r.error);
+      else await Promise.all([client.invalidateQueries({ queryKey: [API.pauses] }), client.invalidateQueries({ queryKey: [API.overview] })]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <Button variant="secondary" disabled={busy} onClick={() => void resume()}>{t("pause.resume")}</Button>
+      {error && <span role="alert" className="text-xs text-pretty break-words text-pill-bad-fg">{error}</span>}
+    </>
   );
 }
 
@@ -163,8 +216,7 @@ function SupervisorDialog({ action, token, onClose }: { action: "start" | "resta
 }
 
 /**
- * An open alarm's row: its text on one line, the full text (with the detail) behind a toggle, and one primary action,
- * "Open on Failures". The auto-mode stop's alarm (design 03-risk) is the target of the Settings link to it and has
+ * An open alarm's row: its sentence once (with the detail), wrapped, and one primary action, "Open on Failures". The auto-mode stop's alarm (design 03-risk) is the target of the Settings link to it and has
  * "Turn auto back on" as its primary action, with Failures as a link. No dismiss: an alarm closes by itself.
  */
 function AlarmRow({ action }: { action: SystemAction }) {
@@ -172,10 +224,7 @@ function AlarmRow({ action }: { action: SystemAction }) {
   return (
     <li data-check="alarm" {...(stop ? { id: alarmAnchor(stop.alert_id) } : {})} className={NEED_ROW}>
       <div className="min-w-0 grow basis-64 space-y-1">
-        <p data-alarm-summary title={action.text} className="truncate text-sm font-medium text-text-1">{action.text}</p>
-        <Disclosure data-alarm-full summary={t("needs.alarmFull")}>
-          <p className="mt-1 text-xs text-pretty wrap-anywhere text-text-2">{action.text}</p>
-        </Disclosure>
+        <p data-alarm-summary className="text-sm font-medium text-pretty wrap-anywhere text-text-1">{action.text}</p>
         {stop && <AutoStopLine stop={stop} />}
       </div>
       {stop ? (

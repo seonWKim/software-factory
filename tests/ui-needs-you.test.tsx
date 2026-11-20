@@ -7,8 +7,8 @@ import { App } from "../web/src/App.js";
 
 // The Tasks page's Needs you section (design 09-dashboard-app; the Floor's list of design 09-status-page): one list first, one row per item that waits on the operator,
 // with its title, a one-line reason and the buttons that apply now. Items started past a deadlock are never rows and
-// never counted (decision 1). Each open alarm is its own row in the Check group: its text on one line, the full text
-// behind a toggle, and one primary action that opens it on Failures; no dismiss. A row with no stored reason says the
+// never counted (decision 1). Each open alarm is its own row in the Check group: its sentence once, wrapped, and one
+// primary action that opens it on Failures; no dismiss. A row with no stored reason says the
 // item's state and the next step.
 
 const AT = "2026-11-12T00:00:00.000Z";
@@ -106,21 +106,21 @@ describe("Needs you on the Tasks page", () => {
     }
   });
 
-  it("an alarm row shows its text on one line and the full text behind a toggle; a long text wraps and never widens the page", async () => {
+  it("an alarm row shows its sentence once, with no Full text toggle; a long text wraps and never widens the page", async () => {
     const long = `Alarm: checks_failed failed 4 runs on several items: ${"npm test exited 1 in packages/very-long-workspace-name/".repeat(5)}${"x".repeat(80)}`;
     expect(long.length).toBeGreaterThan(200);
     (responses["/api/v1/overview"] as { system_actions: unknown[] }).system_actions = [{ code: "alarm", text: long, command: "Failures page (/app/failures)", until: AT }];
     mount();
     const row = (await screen.findByRole("list", { name: "Check" })).querySelector<HTMLElement>('li[data-check="alarm"]')!;
     const summary = row.querySelector<HTMLElement>("[data-alarm-summary]")!;
-    expect(summary.className.split(" ")).toContain("truncate");
+    expect(summary.textContent).toBe(long);
+    expect(summary.className.split(" ")).toContain("wrap-anywhere");
+    expect(summary.className.split(" ")).not.toContain("truncate");
     expect(summary.closest("li > div")!.className.split(" ")).toEqual(expect.arrayContaining(["min-w-0", "grow", "basis-64"]));
-    const toggle = row.querySelector<HTMLDetailsElement>("details[data-alarm-full]")!;
-    expect(toggle.open).toBe(false);
-    expect(toggle.querySelector("summary")!.textContent).toBe("Full text");
-    const full = toggle.querySelector("p")!;
-    expect(full.textContent).toBe(long);
-    expect(full.className.split(" ")).toContain("wrap-anywhere");
+    // Decision 2: the sentence is printed once, so there is no toggle that prints it again.
+    expect(row.querySelector("details")).toBeNull();
+    expect(row.textContent).not.toContain("Full text");
+    expect(row.textContent!.split(long)).toHaveLength(2);
     expect(row.className.split(" ")).toContain("flex-wrap");
   });
 
