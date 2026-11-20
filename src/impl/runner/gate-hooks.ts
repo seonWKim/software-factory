@@ -4,7 +4,8 @@
 // Write) and on Stop; the script forwards the event over a local socket to this module in the runner's process,
 // which answers with the worker's own rules (isCovered, runCommits, diffStat and sizeDetail, runChecks) and the
 // egress scanner. Advisory only: a hook that crashes, times out or cannot reach the host allows, and the worker's
-// gates still decide. The on_tool_call pack checks (issue #494) are the exception: they fail closed, so with any
+// gates still decide. A Stop check that runs out its own limit (STOP_CHECK_MS) also allows, and the runner then fails
+// the run with `stop_check_timed_out`. The on_tool_call pack checks (issue #494) are the exception: they fail closed, so with any
 // enabled a PreToolUse that cannot get an answer refuses the edit. No secret value is written to the folder.
 
 import { appendFile, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
@@ -36,6 +37,16 @@ export const PATH_REFUSAL =
 const PRE_TOOL_TIMEOUT_S = 30;
 /** The most the on_tool_call pack checks of one edit may take together, under PRE_TOOL_TIMEOUT_S; past it the edit is refused. */
 export const ON_TOOL_CALL_BUDGET_MS = 25_000;
+/**
+ * The time limit of one Stop check (design §4): its git calls and the whole check list together. Its own limit, not
+ * the run's `timeout_ms`; past it the check is aborted (the sandbox kills its process group), the stop is allowed,
+ * and the run fails with `stop_check_timed_out` naming the check.
+ */
+export const STOP_CHECK_MS = 900_000;
+/** What Claude Code waits for the Stop hook beyond STOP_CHECK_MS, so the host's own limit always ends it first. */
+export const STOP_HOOK_SLACK_MS = 30_000;
+/** The failure detail's code word for a Stop check that ran out its limit. */
+export const STOP_CHECK_TIMED_OUT = "stop_check_timed_out";
 /** A request line longer than this is refused and the connection closed (the script sends no file content). */
 const MAX_REQUEST_BYTES = 64 * 1024;
 
@@ -119,6 +130,19 @@ export interface GateHooksOptions {
   sandbox: Sandbox;
   /** The egress scanner a failing check's output tail goes through. Absent: every tail is withheld. */
   scanner?: EgressScanner;
+  /** The Stop check's time limit. Absent: STOP_CHECK_MS. */
+  stop_check_ms?: number;
+}
+
+/** A Stop check that ran out its limit: the check it was running, and the limit. */
+export interface StopTimeout {
+  check: string;
+  ms: number;
+}
+
+/** The run's failure detail for a Stop check that ran out its limit; it names the check. */
+export function stopTimeoutDetail(t: StopTimeout): string {
+  return `${STOP_CHECK_TIMED_OUT}: the gate Stop check \`${t.check}\` ran past its ${t.ms} ms limit; it was stopped and its process group killed`;
 }
 
 export interface RunningGateHooks {
@@ -128,6 +152,12 @@ export interface RunningGateHooks {
   blocks(): Promise<GateBlock[]>;
   /** Whether a Stop check is running: the agent is silent while its Stop hook waits, so the stall clock holds. */
   checking(): boolean;
+  /** The time spent in Stop checks so far, the one running included: it does not count against the run timeout. */
+  checkMs(): number;
+  /** The most time this call's Stop checks can take together. */
+  maxCheckMs: number;
+  /** The Stop check that ran out its limit, if one did. */
+  stopTimeout(): StopTimeout | null;
   /** Stops the host, aborts a check in progress and removes the hook folder and socket. */
   close(): Promise<void>;
 }
@@ -147,6 +177,10 @@ export interface GateAnswerer {
   blocks(): Promise<GateBlock[]>;
   /** Whether a Stop request is being answered. */
   checking(): boolean;
+  /** The time spent answering Stop requests so far, the one being answered included. */
+  checkMs(): number;
+  /** The Stop check that ran out its limit, if one did; every later stop is allowed without a check. */
+  stopTimeout(): StopTimeout | null;
 }
 
 /**
@@ -159,11 +193,15 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
   const workdir = o.spec.sandbox.workdir;
   const workdirs = [workdir, await realpath(workdir).catch(() => workdir)];
   const counts = { pre_tool_use: 0, stop: 0 };
+  const limitMs = o.stop_check_ms ?? STOP_CHECK_MS;
   let stopsOpen = 0;
+  let stopSince = 0;
+  let stopTotal = 0;
+  let timedOut: StopTimeout | null = null;
   const blocksFile = join(o.dir, HOOK_BLOCKS);
 
-  const git = async (args: string[]): Promise<string> => {
-    const r = await o.sandbox.exec(o.spec.sandbox, ["git", ...args], { env: { ...g.check_env, ...TRUSTED_GIT_ENV }, signal });
+  const git = async (args: string[], sig: AbortSignal): Promise<string> => {
+    const r = await o.sandbox.exec(o.spec.sandbox, ["git", ...args], { env: { ...g.check_env, ...TRUSTED_GIT_ENV }, signal: sig });
     if (r.exit_code !== 0) throw new Error(`git ${args[0]} exited ${r.exit_code}`);
     return r.stdout;
   };
@@ -192,19 +230,24 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
     return { output: denyOutput(pathRefusal(g.allowed_paths)), block: { hook: "pre_tool_use", check: "allowed_paths" } };
   };
 
-  const stop = async (): Promise<Answer | null> => {
-    if (g.stop_blocks_used + counts.stop >= g.stop_checks) return null;
-    if ((await runCommits(git, g.start_sha, g.base_sha)).length === 0) {
+  // `at` names the check running, for the failure detail when the limit runs out.
+  const checks = async (sig: AbortSignal, at: (check: string) => void): Promise<Answer | null> => {
+    at("no_commits");
+    if ((await runCommits((args) => git(args, sig), g.start_sha, g.base_sha)).length === 0) {
       return stopBlock("no_commits", `${NO_COMMITS_DETAIL} since this run started, so the factory would fail the run with \`no_commits\`. Commit your work with \`git commit\`, then finish.`);
     }
-    const stat = diffStat(await git(["diff", "--numstat", "-z", "-M", `${g.base_sha}...HEAD`]));
+    at("diff_too_large");
+    const stat = diffStat(await git(["diff", "--numstat", "-z", "-M", `${g.base_sha}...HEAD`], sig));
     if (overSizeLimit(stat, g.limits)) {
       return stopBlock("diff_too_large", `${sizeDetail(stat, g.limits)}, so the factory would fail the run with \`diff_too_large\`. Make the committed change smaller, then finish.`);
     }
+    at(commandText(g.check_commands[0] ?? []));
     const round = await runChecks({
-      sandbox: o.sandbox, handle: o.spec.sandbox, commands: g.check_commands, env: { ...g.check_env }, timeout_ms: o.spec.timeout_ms, signal, redact: [],
+      sandbox: o.sandbox, handle: o.spec.sandbox, commands: g.check_commands, env: { ...g.check_env }, timeout_ms: limitMs, signal: sig, redact: [],
     });
-    if (!round.failed || signal.aborted) return null;
+    // Aborted: the check running is the failed one (it threw) or the one after the last that finished.
+    at(commandText(round.failed?.command ?? g.check_commands[round.results.length] ?? []));
+    if (!round.failed || sig.aborted) return null;
     const cmd = commandText(round.failed.command);
     return stopBlock(cmd, [
       `the check \`${cmd}\` failed (${round.failed.how}); the factory runs it before push. Fix the cause, run \`${cmd}\` yourself, commit the fix, then finish.`,
@@ -213,17 +256,36 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
     ].join("\n"));
   };
 
+  // The Stop check under its own limit (STOP_CHECK_MS): past it the check is aborted, which kills its process group,
+  // the stop is allowed and the timeout is kept for the runner. After one, no later stop runs a check.
+  const stop = async (): Promise<Answer | null> => {
+    if (timedOut || g.stop_blocks_used + counts.stop >= g.stop_checks) return null;
+    const limit = new AbortController();
+    const timer = setTimeout(() => limit.abort(), limitMs);
+    let check = "";
+    try {
+      const a = await checks(AbortSignal.any([signal, limit.signal]), (c) => (check = c)).catch((err: unknown) => {
+        if (!limit.signal.aborted) throw err;
+        return null;
+      });
+      return limit.signal.aborted ? null : a;
+    } finally {
+      clearTimeout(timer);
+      if (limit.signal.aborted && !signal.aborted) timedOut = { check, ms: limitMs };
+    }
+  };
+
   return {
     answer: async (req) => {
       const r = (typeof req === "object" && req !== null ? req : {}) as { event?: unknown; tool_name?: unknown; file_path?: unknown };
       try {
         if (r.event === "pre_tool_use") return await preToolUse(r.tool_name, r.file_path);
         if (r.event === "stop") {
-          stopsOpen++;
+          if (stopsOpen++ === 0) stopSince = Date.now();
           try {
             return await stop();
           } finally {
-            stopsOpen--;
+            if (--stopsOpen === 0) stopTotal += Date.now() - stopSince;
           }
         }
       } catch {
@@ -241,6 +303,8 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
       return text.split("\n").filter(Boolean).map((l) => JSON.parse(l) as GateBlock);
     },
     checking: () => stopsOpen > 0,
+    checkMs: () => stopTotal + (stopsOpen > 0 ? Date.now() - stopSince : 0),
+    stopTimeout: () => timedOut,
   };
 }
 
@@ -263,13 +327,19 @@ export async function startGateHooks(o: GateHooksOptions): Promise<RunningGateHo
     throw err;
   }
   const command = (event: string) => [process.execPath, script, event].map(shellQuote).join(" ");
+  const stopMs = (o.stop_check_ms ?? STOP_CHECK_MS) + STOP_HOOK_SLACK_MS;
+  const g = o.spec.gate_hooks;
   return {
     settings: {
       PreToolUse: [{ matcher: PATH_TOOLS.join("|"), hooks: [{ type: "command", command: command("pre_tool_use"), timeout: PRE_TOOL_TIMEOUT_S }] }],
-      Stop: [{ hooks: [{ type: "command", command: command("stop"), timeout: Math.max(1, Math.ceil(o.spec.timeout_ms / 1000)) }] }],
+      Stop: [{ hooks: [{ type: "command", command: command("stop"), timeout: Math.ceil(stopMs / 1000) }] }],
     },
     blocks: answers.blocks,
     checking: answers.checking,
+    checkMs: answers.checkMs,
+    // Each block runs one check, and the stop that is allowed one more.
+    maxCheckMs: (Math.max(0, g.stop_checks - g.stop_blocks_used) + 1) * stopMs,
+    stopTimeout: answers.stopTimeout,
     close: async () => {
       ctl.abort();
       await host.close();
