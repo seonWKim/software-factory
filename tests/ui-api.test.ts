@@ -1001,8 +1001,8 @@ describe("ui api: the waiting spec's In short and decisions on GET /api/v1/items
     expect((JSON.parse(r.body) as Detail).spec).toEqual({
       in_short: IN_SHORT,
       decisions: [
-        { question: "Fail the job, or only warn?", options: ["Fail the job", "Only warn"], default: "Only warn", reason: "[withheld: github_token]", owner_only: false },
-        { question: "Name the step?", options: [], default: "scope", reason: "It shows in CI.", owner_only: true },
+        { question: "Fail the job, or only warn?", options: ["Fail the job", "Only warn"], default: "Only warn", reason: "[withheld: github_token]", owner_only: false, option_changes: [] },
+        { question: "Name the step?", options: [], default: "scope", reason: "It shows in CI.", owner_only: true, option_changes: [] },
       ],
     });
   });
@@ -1020,7 +1020,7 @@ describe("ui api: the waiting spec's In short and decisions on GET /api/v1/items
     const { d, store } = await seeded();
     const it = await triaged(store, 51, { ...SPEC, decisions: ["Ship behind a flag?"] }, { stage: "READY", blocked_on: "human", blocked_reason: "max_revisions" });
     const body = await json<Detail>(d, `/api/v1/items/${encodeURIComponent(it.id)}`);
-    expect(body.spec!.decisions).toEqual([{ question: "Ship behind a flag?", options: [], default: null, reason: null, owner_only: true }]);
+    expect(body.spec!.decisions).toEqual([{ question: "Ship behind a flag?", options: [], default: null, reason: null, owner_only: true, option_changes: [] }]);
   });
 
   it("is null for an item whose spec is not waiting for approval, or with no applied triage run", async () => {
