@@ -339,7 +339,7 @@ export class ClaudeCodeRunner implements AgentRunner {
     const model = this.opts.models[spec.model_class];
     const stallMs = spec.stall_ms ?? DEFAULT_STALL_MS;
     const firstOutputMs = spec.first_output_ms ?? DEFAULT_FIRST_OUTPUT_MS;
-    const watch = new StallWatch(stallMs, firstOutputMs, hooks ? () => hooks.checking() : undefined);
+    const watch = new StallWatch(stallMs, firstOutputMs, hooks ? () => hooks.checking() : undefined, spec.on_output);
     let result: Awaited<ReturnType<Sandbox["exec"]>>, soFar = ""; // soFar: stdout so far, for the live transcript (spec.live)
     try {
       result = await this.opts.sandbox.exec(spec.sandbox, buildClaudeArgs(spec, model, this.opts.claudeBin, bridge, [tmp], hooks?.settings), {
@@ -499,7 +499,13 @@ class StallWatch {
   private seenModel = false;
   stalled: false | "first_output" | "silence" = false;
 
-  constructor(private readonly ms: number, private readonly firstOutputMs: number, private readonly held = () => false) {
+  constructor(
+    private readonly ms: number,
+    private readonly firstOutputMs: number,
+    private readonly held = () => false,
+    /** Called on each chunk with model output (design 05-restarts: the run's last output time). */
+    private readonly onModel?: () => void,
+  ) {
     this.arm();
   }
 
@@ -518,6 +524,7 @@ class StallWatch {
     for (const line of lines) if (this.track(line)) model = true;
     if (!model) return;
     this.seenModel = true;
+    this.onModel?.();
     this.arm();
   }
 
