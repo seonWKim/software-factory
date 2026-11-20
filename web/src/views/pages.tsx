@@ -35,6 +35,7 @@ import { HELD, ItemsTree, type TreeFilter, type View, VIEW_KEY, buildTree, defau
 import { Disclosure } from "../components/ui/disclosure.js";
 import { Card } from "../components/ui/card.js";
 import { Badge } from "../components/ui/badge.js";
+import { Tooltip } from "../components/ui/menu.js";
 
 /** A host sleep's gap in whole minutes, at least 1 (only gaps over 60 s are recorded). */
 const sleptMinutes = (gap_ms: number): number => Math.max(1, Math.round(gap_ms / 60_000));
@@ -669,7 +670,7 @@ function TimelineRow({ entry, now, viewer }: { entry: TimelineEntry; now: number
 
 /**
  * One live worker process: its host ("This Mac" for the factory's own host) and how many tasks it runs of its slots,
- * its start time, and while it drains "Finishing up before it stops". The pid and max slots sit behind Details.
+ * its start time, and while it drains "Finishing up before it stops". The pid and max slots show in the line's tooltip.
  */
 function ProcessRow({ p, local, items, now }: { p: WorkerProcess; local: boolean; items: ReadonlyMap<string, ItemRow>; now: number }) {
   const draining = p.slots === 0;
@@ -677,15 +678,14 @@ function ProcessRow({ p, local, items, now }: { p: WorkerProcess; local: boolean
   return (
     <li data-testid="worker-process" className="rounded-control border border-border px-3 py-2">
       <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
-        <span data-line className="tabular-nums">
-          {draining ? t("runners.lineDraining", { host, busy: p.busy }) : t("runners.line", { host, busy: p.busy, slots: p.slots })}
-        </span>
+        <Tooltip text={t("runners.details", { pid: p.pid, max: p.max_slots })}>
+          <span data-line tabIndex={0} className="tabular-nums">
+            {draining ? t("runners.lineDraining", { host, busy: p.busy }) : t("runners.line", { host, busy: p.busy, slots: p.slots })}
+          </span>
+        </Tooltip>
         <span className="tabular-nums text-text-2"><When at={p.started_at} now={now} label="runners.started" /></span>
         {draining && <Badge level="needs_approval">{t("runners.draining")}</Badge>}
       </div>
-      <RawDetails className="mt-1 text-xs">
-        <span className="tabular-nums">{t("runners.details", { pid: p.pid, max: p.max_slots })}</span>
-      </RawDetails>
       {p.runs.length > 0 && (
         <ul aria-label={t("runners.runsOf", { host: p.host, pid: p.pid })} className="mt-1 space-y-0.5 text-xs">
           {p.runs.map((r) => (

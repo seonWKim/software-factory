@@ -105,14 +105,16 @@ describe("Workers page", () => {
     expect(rows[1]!.querySelector("[data-line]")!.textContent).toBe("host-2 · running 2");
   });
 
-  it("each row's main line is the host and running of slots; pid and max slots sit behind Details", async () => {
+  it("each row's main line is the host and running of slots; pid and max slots show only in its tooltip", async () => {
     show(WorkersPage);
     const first = (await screen.findAllByTestId("worker-process"))[0]!;
-    expect(first.querySelector("[data-line]")!.textContent).toBe("host-1 · running 1 of 3");
+    const line = first.querySelector("[data-line]") as HTMLElement;
+    expect(line.textContent).toBe("host-1 · running 1 of 3");
     expect(first.textContent).toContain("started");
-    const details = first.querySelector("[data-raw]")!;
-    expect(details.textContent).toContain("pid 101");
-    expect(details.textContent).toContain("max slots 4");
+    expect(first.textContent).not.toContain("pid");
+    expect(first.querySelector("details")).toBeNull();
+    fireEvent.mouseEnter(line.parentElement!);
+    expect(within(first).getByRole("tooltip").textContent).toBe("pid 101 · max slots 4");
     expect(within(first).getByRole("link", { name: "wi_1" }).getAttribute("href")).toBe("/app/items/wi_1");
   });
 
@@ -169,7 +171,7 @@ describe("Workers page", () => {
 });
 
 describe("plain words on the Runners and Plugins pages", () => {
-  it("the Runners page shows no snake_case token or internal word outside Details", async () => {
+  it("the Runners page shows no snake_case token or internal word outside Details and tooltips", async () => {
     overrides["/api/v1/overview"] = { ...overview, factory: { ...overview.factory, behind: 2 } };
     show(WorkersPage);
     await screen.findAllByTestId("worker-process");
