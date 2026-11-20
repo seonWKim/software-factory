@@ -15,11 +15,18 @@ import { lastPrNotes } from "../../../core/pr-body.js";
 import { type Actor, type Run, type SourceRef, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { ExternalIdentity } from "../../../interfaces/auth-provider.js";
 import { LOCAL_GIT_HOST, basePushOutcome, basePushTarget, gitTarget, type ActionRow } from "../../../outbound/index.js";
-import { AUTO, SYSTEM, awaitingMerge } from "../support.js";
+import { AUTO, CONFLICT_PENDING, SYSTEM, awaitingMerge } from "../support.js";
 import type { ControllerWrite } from "../kernel.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
+/** The reason of the state change that sends a branch fixed by hand to its fresh review. */
+const HAND_FIXED = "conflict_fixed_by_hand";
+/** Parked on its merge conflict for a person (REVIEW / human / merge_conflict_pending); checked here, not imported from
+ * core, to keep this unit off another legacy import (dependency-direction ratchet). */
+function conflictParked(it: Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason">): boolean {
+  return it.stage === "REVIEW" && it.blocked_on === "human" && it.blocked_reason === CONFLICT_PENDING;
+}
 /** mergeLocal's `who` for auto mode's merge: no person, actor `system:auto`. */
 const AUTO_MERGE = { auto: true } as const;
 
@@ -35,18 +42,20 @@ const AUTO_MERGE_BATCH = 20;
 type AutoStop = "red_main" | "failure_alert" | "budget_checkpoint";
 
 /**
- * Why a branch that does not merge cleanly into the local base was not merged, with the conflicting files. `resolving`:
- * the automatic resolve started (design §5 Merge conflict); otherwise the person resolves it.
+ * Why a branch that does not merge cleanly into the local base was not merged, with the conflicting files. `next`:
+ * `resolving`, the automatic resolve started (design §5 Merge conflict); `parked`, the item waits on its conflict
+ * for a person, who resolves it by hand or with `factory resolve`; `person`, the person resolves it.
  */
-function conflictRefusal(id: WorkItemId, branch: string, base: string, conflicts: readonly string[], resolving: boolean): string {
+function conflictRefusal(id: WorkItemId, branch: string, base: string, conflicts: readonly string[], next: "resolving" | "parked" | "person"): string {
+  const byHand = `\`${branch}\` is a local branch of this repository: merge \`${base}\` into it and commit the resolution there, then run \`factory merge ${id}\` again`;
   return [
     `\`${branch}\` does not merge cleanly into the local \`${base}\`, so nothing moved. Conflicting files:`,
     "",
     ...conflicts.map((f) => `- \`${f}\``),
     "",
-    resolving
+    next === "resolving"
       ? `An automatic resolve run merges \`${base}\` into \`${branch}\`, resolves the conflicts and commits on the local branch; a fresh review follows, then run \`factory merge ${id}\` again`
-      : `\`${branch}\` is a local branch of this repository: merge \`${base}\` into it and commit the resolution there, then run \`factory merge ${id}\` again`,
+      : next === "parked" ? `Run \`factory resolve ${id}\` to let an agent resolve it, or: ${byHand}` : byHand,
   ].join("\n");
 }
 
@@ -90,8 +99,14 @@ export class LocalMergeUnit {
     else {
       const conflicts = await sandbox.localConflicts({ repo: repo.path, base_ref: repo.base_branch, branch });
       if (conflicts === null) refusal = `the factory repo has no local branch \`${branch}\``;
-      else if (conflicts.length > 0) refusal = conflictRefusal(item.id, branch, repo.base_branch, conflicts, await this.resolveRefused(item));
-      else {
+      else if (conflicts.length > 0 && conflictParked(item)) refusal = conflictRefusal(item.id, branch, repo.base_branch, conflicts, "parked");
+      else if (conflicts.length > 0) refusal = conflictRefusal(item.id, branch, repo.base_branch, conflicts, await this.resolveRefused(item) ? "resolving" : "person");
+      else if (conflictParked(item)) {
+        // Fixed by hand (design §5 Merge conflict, 2026-11-20): the branch as it is gets a fresh review first.
+        const r = await this.handFixed(item, principal.user_id, branch, detail);
+        if (r === null) return null;
+        refusal = r;
+      } else {
         // Ready and approved: the change enters the merge queue, which checks its merged result before it lands.
         const r = await this.c.unit("merge-queue").enter(item, auto ? AUTO_ACTOR : principal.user_id, key, detail);
         if (r === null) return null;
@@ -100,6 +115,33 @@ export class LocalMergeUnit {
     }
     await this.refused(item.id, auto ? AUTO_ACTOR : "", key, refusal);
     return refusal;
+  }
+
+  /**
+   * A local item parked on its merge conflict whose branch now merges cleanly into the local base (design §5 Merge
+   * conflict, 2026-11-20): the owner fixed it by hand. No resolve run: the item goes back to REVIEW with one fresh
+   * review keyed on the branch's head, so a second `factory merge` on the same head queues nothing new; the review's
+   * pass sets merge_pending, and `factory merge` then lands it. Returns the refusal, or null when the review is queued.
+   */
+  private async handFixed(item: WorkItem, by: string, branch: string, detail: Record<string, unknown>): Promise<string | null> {
+    const sandbox = this.c.k.d.sandbox;
+    const head = canReadLocal(sandbox) ? await sandbox.localBranch({ repo: this.c.k.cfg.repo.path, branch }) : null;
+    if (head === null) return `the head of \`${branch}\` could not be read; run \`factory merge ${item.id}\` again`;
+    const input = await this.c.unit("checks-gate").reviewInput(null, item.id);
+    const actor: Actor = by === AUTO_ACTOR ? AUTO : { kind: "user", id: by as UserId };
+    await this.c.unit("transitions").decide(item.id, (it) => (conflictParked(it) && it.change_ref === null
+      ? {
+          patch: { blocked_on: "none", blocked_reason: null },
+          actor,
+          reason: HAND_FIXED,
+          detail: { ...detail, branch, head_sha: head },
+          enqueue: { kind: "review", idempotency_key: `${item.id}:review:hand-fixed:${head}`, input },
+        }
+      : null));
+    await this.c.unit("outbox").post(item, item.source,
+      `\`${branch}\` (at \`${head.slice(0, 12)}\`) now merges cleanly into the local \`${this.c.k.cfg.repo.base_branch}\`. A fresh review of it runs next; once it passes, run \`factory merge ${item.id}\` again.`,
+      `<!-- factory:hand-fixed:${item.id}:${head} -->`);
+    return null;
   }
 
   /**

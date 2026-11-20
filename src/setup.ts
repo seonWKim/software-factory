@@ -43,11 +43,11 @@ export function neededSecrets(
 // doctor
 
 /**
- * `warn`: reported, but does not fail doctor. Used for hardening that local use may skip. `token_days`: the
- * GitHub token expiry check only, the whole days left. `fix`: how to fix a FAIL whose `msg` reports outside text
- * as it came (an error, a version), so the text itself stays as reported; other FAIL lines say it in `msg`.
+ * `warn`: not a doctor failure (hardening local use may skip). `token_days`: the token expiry check's whole days left. `fix`:
+ * how to fix a FAIL whose `msg` is outside text as it came (an error, a version). `plain`: Health's sentence, no path (doctor
+ * prints `msg`, Health shows it behind Details). `label`: a GitHub status label's name; Health folds those into one row.
  */
-export type Check = { ok: boolean; msg: string; warn?: boolean; token_days?: number; fix?: string };
+export type Check = { ok: boolean; msg: string; warn?: boolean; token_days?: number; fix?: string; plain?: string; label?: string };
 
 /** A check's result in one word: what doctor prints and the status page shows. */
 export type CheckStatus = "ok" | "warn" | "fail";
@@ -86,15 +86,15 @@ export async function doctorChecks(loaded: Loaded, opts: { github?: boolean } = 
   // Setup passes the person's GitHub answer, which a declined config diff leaves unwritten.
   const github = opts.github ?? loaded.config.local_only !== true;
   const checks: Check[] = [configFileCheck(loaded), ...settingsChecks(loaded), ...(await toolchainChecks(loaded.config))];
-  const add = (ok: boolean, msg: string, warn = false) => checks.push({ ok, msg, warn });
+  const add = (ok: boolean, msg: string, warn = false, plain?: string) => checks.push({ ok, msg, warn, ...(plain !== undefined && { plain }) });
 
   try {
     const s = await stat(loaded.secretsFile);
     const mode = (s.mode & 0o777).toString(8);
     const open = (s.mode & 0o077) !== 0;
-    add(!open, `secret file at ${loaded.secretsFile} is private (mode ${mode}${open ? `; run: chmod 600 ${loaded.secretsFile}` : ""})`);
+    add(!open, `secret file at ${loaded.secretsFile} is private (mode ${mode}${open ? `; run: chmod 600 ${loaded.secretsFile}` : ""})`, false, open ? "Your secret file can be read by other users; the fix is in Details" : "Your secret file is private");
   } catch {
-    add(false, `secret file exists at ${loaded.secretsFile} (run: npm run setup)`);
+    add(false, `secret file exists at ${loaded.secretsFile} (run: npm run setup)`, false, "Your secret file is missing (run: npm run setup)");
     return checks;
   }
   const inside = loaded.secretsFile.startsWith(loaded.root);
@@ -218,8 +218,8 @@ export async function tokenExpiryCheck(
 
 /** The one line that names the config file in use: `--config` / FACTORY_CONFIG, or the checked-in file. */
 export function configFileCheck(loaded: Pick<Loaded, "configFile" | "externalConfig">): Check {
-  const how = loaded.externalConfig === null ? "checked-in" : "--config / FACTORY_CONFIG";
-  return { ok: true, msg: `config file: ${loaded.configFile} (${how})` };
+  const external = loaded.externalConfig !== null;
+  return { ok: true, msg: `config file: ${loaded.configFile} (${external ? "--config / FACTORY_CONFIG" : "checked-in"})`, plain: external ? "Config file: the one --config or FACTORY_CONFIG names" : "Config file: the repository's own" };
 }
 
 /**
@@ -308,20 +308,20 @@ async function isMissing(members: readonly SecretDeclaration[], secrets: SecretS
 }
 
 /**
- * One check per status label and PR flag label. A missing one is a warning, never a FAIL: the factory creates it on first
- * use, so it only means setup has not run since status labels were added.
+ * One check per status label and PR flag label, each carrying its `label` (Health shows them as one row). A missing one
+ * is a warning, never a FAIL: the factory creates it on first use, so it only means setup has not run since status labels were added.
  */
 export async function statusLabelChecks(client: Pick<GitHubApi, "request">, repo: { owner: string; name: string }, prefix: string): Promise<Check[]> {
   const checks: Check[] = [];
   for (const l of [...statusLabels(prefix), ...prFlagLabels(prefix)]) {
     try {
       await client.request("GET", `/repos/${repo.owner}/${repo.name}/labels/${encodeURIComponent(l.name)}`);
-      checks.push({ ok: true, msg: `status label "${l.name}" exists` });
+      checks.push({ ok: true, msg: `status label "${l.name}" exists`, label: l.name });
     } catch (err) {
       const why = err instanceof GitHubError && err.status === 404
         ? "run: npm run setup"
         : `could not check: ${err instanceof Error ? err.message.slice(0, 120) : "error"}`;
-      checks.push({ ok: false, msg: `status label "${l.name}" exists (${why})`, warn: true });
+      checks.push({ ok: false, msg: `status label "${l.name}" exists (${why})`, warn: true, label: l.name });
     }
   }
   return checks;

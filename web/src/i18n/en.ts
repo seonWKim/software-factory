@@ -9,6 +9,7 @@ import { settings } from "./en/settings.js";
 import { shell } from "./en/shell.js";
 import { tasks } from "./en/tasks.js";
 import { work } from "./en/work.js";
+import { workers } from "./en/workers.js";
 
 export const en = {
   ...data,
@@ -19,6 +20,7 @@ export const en = {
   ...shell,
   ...tasks,
   ...work,
+  ...workers,
 } as const;
 
 export type MessageKey = keyof typeof en;

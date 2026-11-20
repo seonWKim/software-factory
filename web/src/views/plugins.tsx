@@ -5,6 +5,7 @@ import {
   getPluginsImport, postPackAdd, postPackApproval, postPluginsImport, postSettings, useApi,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { Checkbox } from "../components/ui/checkbox.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
@@ -272,17 +273,12 @@ function ImportDialog({ tab, token, report, onClose }: { tab: ListTab; token: st
             const on = i.imported || checked.has(key);
             return (
               <li key={key} data-import-item={i.name} className="flex items-start gap-3 px-3 py-2">
-                {/* The shared Button as a checkbox, as on the Tasks page: components/ui has no checkbox. */}
-                <Button
-                  size="icon"
-                  role="checkbox"
-                  aria-checked={on}
+                <Checkbox
+                  checked={on}
                   aria-label={t("plugins.importSelect", { name: i.name, source: t(SOURCE[i.source]) })}
                   disabled={busy || locked}
-                  onClick={() => toggle(key)}
-                >
-                  <span aria-hidden>{on ? "✓" : ""}</span>
-                </Button>
+                  onChange={() => toggle(key)}
+                />
                 <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <span className="text-xs wrap-anywhere">{i.name}</span>
                   <span className="text-xs text-pretty wrap-anywhere text-text-2">{i.path ?? t(SOURCE[i.source])}</span>

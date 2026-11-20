@@ -145,12 +145,12 @@ describe("Tasks page", () => {
       for (const r of document.querySelectorAll("[data-task]")) expect(r.hasAttribute("draggable")).toBe(false);
     });
 
-    it("a timed row still shows its duration: 30 minutes when none is stored, else the stored one", async () => {
+    it("a timed row shows a duration only when one is stored: no 30 min for a null duration", async () => {
       s.current = view({
         today: { overdue: [], due: [row("tk_call", { due_date: "2026-11-12", due_time: "15:00" }), row("tk_gym", { due_date: "2026-11-12", due_time: "18:00", duration_minutes: 90 })] },
       });
       await show2();
-      expect(card("tk_call").textContent).toContain("30 min");
+      expect(card("tk_call").textContent).not.toContain("min");
       expect(card("tk_gym").textContent).toContain("90 min");
     });
   });
@@ -216,6 +216,77 @@ describe("Tasks page", () => {
       const overdue = within(card("tk_late")).getByText("Overdue");
       expect(overdue.className).toContain("rounded-pill");
       expect(overdue.getAttribute("data-level")).toBe("stuck");
+    });
+  });
+
+  describe("sub-tasks stay with their parent (design 02-tasks-page)", () => {
+    const ids = (list: string) => [...screen.getByRole("list", { name: list }).querySelectorAll<HTMLElement>("[data-task]")].map((e) => e.dataset.task);
+    const parentDay = "2026-11-20";
+
+    it("an undated open sub-task shows right under its parent in the parent's date group, not under No date", async () => {
+      s.current = view({
+        today: { overdue: [], due: [] },
+        projects: [{ list: null, tasks: [row("tk_p", { due_date: parentDay }), row("tk_s", { parent_task_id: "tk_p" }), row("tk_free")] }],
+      });
+      await show2();
+      expect(ids(dayLabel(parentDay))).toEqual(["tk_p", "tk_s"]);
+      expect(card("tk_s").hasAttribute("data-sub")).toBe(true);
+      expect(ids("No date")).toEqual(["tk_free"]);
+    });
+
+    it("a sub-task with its own due date shows under its parent's date group, not its own date's", async () => {
+      s.current = view({
+        today: { overdue: [], due: [row("tk_s", { due_date: "2026-11-12", parent_task_id: "tk_p" })] },
+        projects: [{ list: null, tasks: [row("tk_s", { due_date: "2026-11-12", parent_task_id: "tk_p" }), row("tk_p", { due_date: parentDay }), row("tk_x", { due_date: "2026-11-12" })] }],
+      });
+      await show2();
+      expect(ids(dayLabel(parentDay))).toEqual(["tk_p", "tk_s"]);
+      expect(ids(`Today, ${dayLabel("2026-11-12")}`)).toEqual(["tk_x"]);
+    });
+
+    it("a sub-task whose parent is not in the list stays in its own date group, unindented", async () => {
+      s.current = view({
+        today: { overdue: [], due: [] },
+        projects: [{ list: null, tasks: [row("tk_s", { due_date: "2026-11-13", parent_task_id: "tk_gone" })] }],
+      });
+      await show2();
+      expect(ids(dayLabel("2026-11-13"))).toEqual(["tk_s"]);
+      expect(card("tk_s").hasAttribute("data-sub")).toBe(false);
+    });
+  });
+
+  describe("delete checks for open sub-tasks before it asks (design 02-tasks-page)", () => {
+    const openDelete = async (id: string) => {
+      card(id).focus();
+      fireEvent.keyDown(card(id), { key: "Delete" });
+      return within(await waitFor(() => document.querySelector<HTMLElement>("[data-dialog]")!));
+    };
+    const posted = () => s.posts.filter((p) => p.url === "/api/v1/tasks/delete").map((p) => JSON.parse(String(p.init.body)));
+
+    it("for a parent with open sub-tasks it says how many and its confirm, Delete with sub-tasks, posts with_sub_tasks", async () => {
+      s.current = view({
+        today: { overdue: [], due: [] },
+        projects: [{ list: null, tasks: [row("tk_p", { due_date: "2026-11-20", open_sub_tasks: 2 }), row("tk_s1", { parent_task_id: "tk_p" }), row("tk_s2", { parent_task_id: "tk_p" })] }],
+      });
+      s.answer = { status: 200, body: { task_id: "tk_p", deleted_sub_tasks: ["tk_s1", "tk_s2"] } };
+      await show2();
+      const d = await openDelete("tk_p");
+      expect(document.querySelector("[data-open-sub-tasks]")!.textContent).toContain("2 open sub-tasks");
+      expect(document.querySelector("[data-dialog-consequence]")!.textContent).toBe("The task leaves every view. This cannot be undone.");
+      expect(d.queryByRole("button", { name: "Delete" })).toBeNull();
+      fireEvent.click(d.getByRole("button", { name: "Delete with sub-tasks" }));
+      await waitFor(() => expect(posted()).toEqual([{ id: "tk_p", with_sub_tasks: true }]));
+    });
+
+    it("for a task with no open sub-tasks it is the plain Delete confirm, posting { id }", async () => {
+      s.current = view({ today: { overdue: [], due: [] }, projects: [{ list: null, tasks: [row("tk_p", { due_date: "2026-11-20", open_sub_tasks: 0 })] }] });
+      s.answer = { status: 200, body: { task_id: "tk_p", deleted_sub_tasks: [] } };
+      await show2();
+      const d = await openDelete("tk_p");
+      expect(document.querySelector("[data-open-sub-tasks]")).toBeNull();
+      expect(d.queryByRole("button", { name: "Delete with sub-tasks" })).toBeNull();
+      fireEvent.click(d.getByRole("button", { name: "Delete" }));
+      await waitFor(() => expect(posted()).toEqual([{ id: "tk_p" }]));
     });
   });
 });

@@ -11,7 +11,7 @@
   "impl/store/sqlite/schema.ts": 735,
   "impl/updater/git-worktree.ts": 903,
   "interfaces/factory-store.ts": 1348,
-  "ui/api.ts": 634,
-  "worker/runner.ts": 1055,
+  "ui/api.ts": 630,
+  "worker/runner.ts": 1056,
   "worker/runs/implement/implement.run.ts": 1110
 }

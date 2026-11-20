@@ -352,6 +352,14 @@ describe("ui: the Tasks page's row actions (design 02-tasks)", () => {
     expect(await s.store.getTask("tk_parent")).toBeNull();
   });
 
+  it("delete with with_sub_tasks removes a parent and its open sub-task in one write, naming the sub-task", async () => {
+    const s = await tasks();
+    const r = await s.post(TASK_DELETE_PATH, { id: "tk_parent", with_sub_tasks: true });
+    expect(r).toMatchObject({ status: 200, value: { task_id: "tk_parent", deleted_sub_tasks: ["tk_child"] } });
+    expect(await s.store.getTask("tk_parent")).toBeNull();
+    expect(await s.store.getTask("tk_child")).toBeNull();
+  });
+
   it("add sub-task stores one sub-task under the page's ID through the store's addSubTask; a resend stores no second one", async () => {
     const s = await tasks();
     const body = { parent: "tk_plain", id: SUB_ID, words: "find the card tomorrow !1" };
@@ -371,6 +379,7 @@ describe("ui: the Tasks page's row actions (design 02-tasks)", () => {
       [TASK_DELETE_PATH, { id: "tk_nope" }, 404, /no task tk_nope/],
       [TASK_SUB_PATH, { parent: "tk_nope", id: SUB_ID, words: "x" }, 404, /no task tk_nope/],
       [TASK_DELETE_PATH, { id: "tk_parent" }, 409, /open sub-tasks \(book the train\)/],
+      [TASK_DELETE_PATH, { id: "tk_parent", with_sub_tasks: "yes" }, 400, /with_sub_tasks must be true or false/],
       [TASK_SUB_PATH, { parent: "tk_child", id: SUB_ID, words: "deeper" }, 409, /sub-task cannot have sub-tasks/],
       [TASK_EDIT_PATH, { id: "tk_plain", words: "!7" }, 400, /priority must be/],
       [TASK_EDIT_PATH, { id: "tk_plain", words: "" }, 400, /nothing to change/],

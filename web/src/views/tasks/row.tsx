@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { type KeyboardEvent, useContext, useRef, useState } from "react";
 import { API, type TaskRow, postTaskBuild } from "../../api.js";
 import { Button } from "../../components/ui/button.js";
+import { Checkbox } from "../../components/ui/checkbox.js";
 import { FOCUS } from "../../components/ui/control.js";
 import { announceStatus } from "../../components/ui/dialog.js";
 import { ID_CLASS, LINK_CLASS } from "../../components/ui/link-style.js";
@@ -22,8 +23,6 @@ import { Badge } from "../../components/ui/badge.js";
 /** A linked task's item's close reason, as the row says it in its details line, open or done (design 02-tasks). */
 const closedKey = (reason: NonNullable<TaskRow["close_reason"]>): MessageKey =>
   reason === "rejected" ? "tasks.closedRejected" : reason === "wont_do" ? "tasks.closedNotPlanned" : "tasks.closedOther";
-/** A timed task with no stored duration shows this long. */
-const DEFAULT_MINUTES = 30;
 
 /** Build this: one POST; its refusal stays beside the button until the next try. */
 function BuildButton({ task, token }: { task: TaskRow; token: string }) {
@@ -100,7 +99,8 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
   const [checked, setChecked] = useState(false);
   const parent = task.parent_task_id ?? null;
   const due = task.due_date === null ? null : task.due_time === null ? task.due_date : `${task.due_date} ${task.due_time}`;
-  const minutes = task.due_time === null ? null : (task.duration_minutes ?? DEFAULT_MINUTES);
+  // A timed task's stored duration; none stored: none shown.
+  const minutes = task.due_time === null ? null : (task.duration_minutes ?? null);
   const close = () => {
     setMode("view");
     action.setError(null);
@@ -143,17 +143,12 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
       className={cn("flex flex-wrap items-start justify-between gap-x-3 gap-y-2 p-3", FOCUS, "focus-visible:-outline-offset-2", sub && "pl-10")}
     >
       {token !== null && !done && (
-        // The shared Button as a checkbox: components/ui has no checkbox, and a raw input is not used outside it.
-        <Button
-          size="icon"
-          role="checkbox"
-          aria-checked={checked}
+        <Checkbox
+          checked={checked}
           aria-label={t("tasks.complete", { title: task.title })}
           disabled={action.busy}
-          onClick={() => void complete()}
-        >
-          <span aria-hidden>{checked ? "✓" : ""}</span>
-        </Button>
+          onChange={() => void complete()}
+        />
       )}
       <div className="min-w-0 flex-1 space-y-1">
         {mode === "edit" ? (
@@ -182,6 +177,11 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
           {minutes !== null && <span className="tabular-nums">{t("tasks.minutes", { minutes })}</span>}
           {task.priority !== null && <span>!{task.priority}</span>}
           {task.list !== null && <span className="break-all">#{task.list}</span>}
+          {(task.projects ?? []).map((p) => (
+            <span key={p} className="break-all">
+              +{p}
+            </span>
+          ))}
           {task.recurrence !== null && <span>{t("tasks.every", { recurrence: task.recurrence })}</span>}
         </p>
         {mode === "sub" && (

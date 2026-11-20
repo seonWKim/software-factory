@@ -1,7 +1,7 @@
 import type { ModelClass } from "../core/model-choice.js";
 import type { DiffStat } from "../core/diff-gate.js";
 import { MAX_COMMAND_PATHS, retryPathsReply } from "../core/commands.js";
-import { type ReviewOutput, specFindings, unverifiedOf } from "../core/outputs.js";
+import { type ReviewOutput, builtDifferentlyOf, specFindings, unverifiedOf } from "../core/outputs.js";
 import { AGENT_STALLED, RATE_LIMITED } from "../core/policy.js";
 import { type LocalRoute, type PrText, TRUSTED_GIT_ENV, type WorkerDeps, hasTool, prTitle, routeFor, runPushIntents, threadDelivery } from "../core/worker-deps.js";
 import { failingTests, stripAnsi } from "../core/output-summary.js";
@@ -418,7 +418,7 @@ export function renderContinueNewSession(wip: string): string {
  * The PR review comment (issue #222). Its header: `spec needs a change` when any finding is a spec finding,
  * `changes needed` for a bug verdict with code findings only, `needs a human look` for a passing UI change whose UI
  * could not be checked (`ui_unverified`), else `pass`. Unverified checks are listed under their own heading, never
- * as findings.
+ * as findings; done-when lines built differently, with their reasons, under theirs, before the tier recheck.
  */
 export function reviewComment(v: ReviewOutput): string {
   const spec = specFindings(v);
@@ -426,6 +426,7 @@ export function reviewComment(v: ReviewOutput): string {
   const header = spec.length > 0 ? "spec needs a change" : v.verdict === "bug" ? "changes needed"
     : v.ui_unverified === true ? "needs a human look" : "pass";
   const unverified = unverifiedOf(v);
+  const built = builtDifferentlyOf(v);
   return [
     `## Factory review: ${header}`,
     "",
@@ -433,6 +434,9 @@ export function reviewComment(v: ReviewOutput): string {
     ...(code.length ? ["", ...(spec.length ? ["### Code", ""] : []), ...code.map((f) => `- ${f.text}`)] : []),
     ...(spec.length ? ["", "### Spec", "", ...spec.map((f) => `- ${f.text}`)] : []),
     ...(unverified.length ? ["", "### Not verified", "", ...unverified.map((u) => `- ${u}`)] : []),
+    ...(built.length
+      ? ["", "### Built differently from the spec", "", ...built.map((d) => `- built differently from the spec: ${d.line} — because ${d.reason}`)]
+      : []),
     "",
     `Tier recheck: ${v.tier}`,
   ].join("\n");

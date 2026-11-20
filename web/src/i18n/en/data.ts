@@ -5,7 +5,7 @@ export const data = {
   "spend.week": "This week",
   "spend.last30": "Last 30 days",
   "spend.tokens": "{tokens} tokens",
-  "spend.note": "The agent CLI's own cost per run, by UTC day of finish; not checked against the bill. A week starts on Monday.",
+  "spend.note": "What the agent runs cost, by day (UTC).",
   "spend.unknownOne": "{count} run reported no cost; it is counted apart, never as $0.",
   "spend.unknownMany": "{count} runs reported no cost; they are counted apart, never as $0.",
   "spend.chart": "Cost per UTC day",
