@@ -1,21 +1,24 @@
 // `factory session` (design §5, 2026-11-01): the CLI around src/core/session.ts. Open sessions are recorded under
-// <state_dir>/sessions/; the person's GitHub login maps to their account, then to a user ID as for a commenter.
+// <state_dir>/sessions/. The person is the CLI identity (no network call); `--as <login>` maps a GitHub login to its account
+// instead, only with the GitHub source on (design 05-interactive-sessions).
 
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { SessionParts } from "./compose.js";
 import { hostId } from "./runtime/host-id.js";
-import type { FactoryConfig } from "./core/config.js";
+import { type CliEnvironment, type CliIdentity, cliIdentity, localIdentity } from "./core/local-cli.js";
 import { type IssueLookup, type SessionFile, type SessionFiles, type SessionResult, Sessions } from "./core/session.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import { baseEnv } from "./impl/process/run-process.js";
-import type { WorkItemId } from "./core/types.js";
+import type { UserId, WorkItemId } from "./core/types.js";
 import type { ExternalIdentity } from "./interfaces/auth-provider.js";
 
 export const SESSION_USAGE = `factory interactive start <issue number | work item id> [--spec <file> [--wait]] [--transcript <url>] [--as <github login>]
                     status | note [<text>] [--tokens <n>] [--transcript <url>] | finish [--tokens <n>] | abandon [--tokens <n>]
   an interactive task: you handle the item in your own session (\`factory session\` is the same command)
   --wait: on a NEW item, reserve it (triage skips it) and start once no running run shares its files (at most 2 hours)
+  you act as the CLI identity (cli_user, else git user.email, else the OS user, else anonymous), with no GitHub call;
+  --as <login>: act as that GitHub account instead, checked on GitHub (needs the github-issues source)
   status, note, finish and abandon take a work item id first, or use the only open interactive task here (SET_UP.md)`;
 
 export type SessionAction =
@@ -111,9 +114,29 @@ export async function githubPerson(github: SessionGitHub, login: string): Promis
   return typeof u?.id === "number" ? { provider: "github", subject: String(u.id), login } : null;
 }
 
+const PROVIDERS: readonly string[] = ["github", "slack", "oidc"] satisfies readonly ExternalIdentity["provider"][];
+
+/** The identity a CLI user ID stands for: `github:<id>` is that GitHub account, as a lookup would give; anything else is local. */
+export function cliPerson(user: UserId): ExternalIdentity {
+  const at = user.indexOf(":");
+  const provider = user.slice(0, at);
+  return PROVIDERS.includes(provider) ? { provider: provider as ExternalIdentity["provider"], subject: user.slice(at + 1) } : localIdentity(user);
+}
+
+/** Who starts a session: the inputs of the CLI identity, and whether the GitHub source (`github-issues`) is on. */
+export interface SessionWho { cliUser: UserId | null; env: CliEnvironment; githubSource: boolean }
+
 /** `stop` aborts on Ctrl-C: `start` stops keeping the lease, `finish` stops the test command. */
 export interface SessionCmdDeps {
-  sessions: Sessions; config: FactoryConfig; github: SessionGitHub; readSpec(path: string): Promise<string>; print(line: string): void; stop: AbortSignal;
+  sessions: Sessions; identity: CliIdentity; githubSource: boolean; github: SessionGitHub; readSpec(path: string): Promise<string>; print(line: string): void; stop: AbortSignal;
+}
+
+/** The person a start acts as: the CLI identity with no network call, or with `--as` the GitHub account of that login. */
+async function startPerson(d: SessionCmdDeps, as: string | undefined): Promise<ExternalIdentity | { refuse: string }> {
+  if (as === undefined) return cliPerson(d.identity.user);
+  const without = `start without --as to act as ${d.identity.user}`;
+  if (!d.githubSource) return { refuse: `refused: --as ${JSON.stringify(as)} needs the GitHub source: turn it on (add "github-issues" to plugins.source in factory.config.json), or ${without}` };
+  return (await githubPerson(d.github, as)) ?? { refuse: `refused: no GitHub account ${JSON.stringify(as)} found: check the login, or ${without}` };
 }
 
 /** Runs one command; returns the exit code. `start` returns only when its heartbeat stops. */
@@ -125,9 +148,8 @@ export async function runSession(d: SessionCmdDeps, a: SessionAction): Promise<n
   if (a.cmd === "status") return out(await d.sessions.status(a.id));
   if (a.cmd === "note") return out(await d.sessions.note(a));
   if (a.cmd !== "start") return out(a.cmd === "finish" ? await d.sessions.finish({ ...a, signal: d.stop }) : await d.sessions.abandon(a));
-  const login = a.as ?? d.config.repo.owner;
-  const person = await githubPerson(d.github, login);
-  if (!person) return out({ ok: false, lines: [`refused: no GitHub account ${JSON.stringify(login)} (use --as <login>)`] });
+  const person = await startPerson(d, a.as);
+  if ("refuse" in person) return out({ ok: false, lines: [person.refuse] });
   const spec = a.spec === undefined ? undefined : await d.readSpec(a.spec).catch(() => null);
   if (spec === null) return out({ ok: false, lines: [`refused: cannot read the --spec file ${a.spec}`] });
   const wait = a.wait ? { wait: true, signal: d.stop, progress: d.print } : {};
@@ -139,8 +161,11 @@ export async function runSession(d: SessionCmdDeps, a: SessionAction): Promise<n
   return 0;
 }
 
-/** The command's deps from the built parts; the learned layer as a run's (08-settings). The lease owner is never a worker id, so `workers pause` skips it. */
-export function sessionDeps(p: SessionParts, stateDir: string, stop: AbortSignal): SessionCmdDeps {
+/**
+ * The command's deps from the built parts and `who` (the CLI supplies the environment); the learned layer as a run's (08-settings).
+ * The lease owner is never a worker id, so `workers pause` skips it.
+ */
+export function sessionDeps(p: SessionParts, stateDir: string, stop: AbortSignal, who: SessionWho): SessionCmdDeps {
   const { owner, name } = p.config.repo;
   const sessions = new Sessions({
     store: p.store, sandbox: p.sandbox, broker: p.broker, local: p.local, scanner: p.scanner, auth: p.auth, clock: p.clock, config: p.config, learned: p.learned,
@@ -148,5 +173,5 @@ export function sessionDeps(p: SessionParts, stateDir: string, stop: AbortSignal
     // The host part is this machine's stable host id: a finished session's push and PR go to `git:<host id>:<branch>`.
     toolEnv: baseEnv(), owner: `session:${hostId(stateDir)}:${process.pid}`,
   });
-  return { sessions, config: p.config, github: p.github, readSpec: (path) => readFile(path, "utf8"), print: (l) => console.log(l), stop };
+  return { sessions, identity: cliIdentity(who.cliUser, who.env), githubSource: who.githubSource, github: p.github, readSpec: (path) => readFile(path, "utf8"), print: (l) => console.log(l), stop };
 }
