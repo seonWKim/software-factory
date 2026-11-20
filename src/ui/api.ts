@@ -217,21 +217,21 @@ class ApiCtx {
 
 }
 
-/**
- * /api/v1/health: the HealthMonitor's report (exactly what /api/health returns) plus `sleeps`, the newest host
- * sleeps (design §5 Host sleep, §9). The sleeps read is a report, never a gate: when it fails (e.g. a
- * database without step 0025) the list is empty and the checks still answer.
- */
+/** /api/v1/health: the HealthMonitor's report plus `sleeps` (design §5, §9). A report, never a gate: a failed read gives an empty list. */
 async function health(c: ApiCtx) {
   const report = await c.d.health.report(c.d.scanner);
   const rows = await c.d.store.listHostSleeps({ limit: HEALTH_SLEEPS }).catch((): HostSleep[] => []);
-  return { ...report, sleeps: await sleepRows(c, rows) };
+  return { ...report, sleeps: await sleepRows(c, rows, true) };
 }
 
-/** Host sleeps as the API returns them: ids, a timestamp and a number, never free text. */
-async function sleepRows(c: ApiCtx, rows: readonly HostSleep[]) {
+/** Host sleeps as the API returns them: ids, a timestamp and a number. `runs` adds the held run's item and status (null if the lookup fails). */
+async function sleepRows(c: ApiCtx, rows: readonly HostSleep[], runs = false) {
   const out = [];
-  for (const h of rows) out.push({ worker_id: (await c.text(h.worker_id))!, woke_at: h.woke_at, gap_ms: h.gap_ms, run_id: h.run_id });
+  for (const h of rows) {
+    const run = runs && h.run_id ? await c.d.store.getRun(h.run_id).catch(() => null) : null;
+    const held = runs ? { work_item_id: run ? await c.text(run.work_item_id) : null, run_status: run?.status ?? null } : {};
+    out.push({ worker_id: (await c.text(h.worker_id))!, woke_at: h.woke_at, gap_ms: h.gap_ms, run_id: h.run_id, ...held });
+  }
   return out;
 }
 
