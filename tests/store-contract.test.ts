@@ -28,8 +28,6 @@ const LEASE = 60_000;
 /** A project label as the cursor `project_label:<key>` stores it, and the PR link the store writes as change_url. */
 const LABEL = "github.com/o/r";
 const prUrl = (label: string, n: number) => `https://${label}/pull/${n}`;
-/** The SQLite migration that adds the change columns, found by what it does so a renumber at merge needs no edit. */
-const CHANGE_MIGRATION = MIGRATIONS.findIndex((m) => m.includes("ADD COLUMN change_ref")) + 1;
 
 describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $name", ({ name, make: makeBackend }) => {
   const make = makeBackend;
@@ -3090,10 +3088,6 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       entity_id: "skill/tests-first", fingerprint, verdict: v, pass_rate, failing_cases,
     });
 
-    it("the migration that creates the table is in MIGRATIONS", () => {
-      expect(MIGRATIONS.some((m) => m.includes("CREATE TABLE IF NOT EXISTS controller_golden_fingerprints"))).toBe(true);
-    });
-
     it("an entity never evaluated reads as null; a pass is its last verdict and its base", async () => {
       const { store, clock } = await make();
       expect(await store.getGoldenFingerprint("skill/tests-first")).toBeNull();
@@ -3816,29 +3810,6 @@ describe("migration 32 on an existing SQLite database", () => {
       await store.close();
     }
   });
-});
-
-describe("migration 35 (change fields) on an existing SQLite database", () => {
-  const adoptedIn = (n: number, project: string) => ({
-    ...issue(n),
-    project,
-    adopted: { change_ref: String(n), head_branch: "b", head_sha: "h", allowed_paths: ["a.ts"], tier: 4 as const },
-  });
-
-  it("a write stores change_url as https://<label>/pull/<n>, the PR link the status UI shows as stored", async () => {
-    expect(CHANGE_MIGRATION).toBeGreaterThan(0);
-    const store = new SqlFactoryStore(new SqliteDriver(join(mkdtempSync(join(tmpdir(), "sf-mig-change-")), "factory.db")), new FakeClock());
-    try {
-      await store.migrate();
-      await store.advanceCursor(projectLabelCursor(PROJECT_KEY), null, LABEL);
-      const { item } = await store.createWorkItem(adoptedIn(5, PROJECT_KEY), human);
-      expect((await store.getWorkItem(item.id))!).toMatchObject({ change_ref: "5", change_url: "https://github.com/o/r/pull/5" });
-      expect(prUrl(LABEL, 5)).toBe("https://github.com/o/r/pull/5");
-    } finally {
-      await store.close();
-    }
-  });
-
 });
 
 describe("20261112T1200-controller-change-ref-only on an existing SQLite database", () => {

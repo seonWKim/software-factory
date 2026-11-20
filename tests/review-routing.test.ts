@@ -14,7 +14,6 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { ForgeEvent } from "../src/interfaces/forge.js";
-import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import {
   FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeForge, FakeSource, MemoryStorage,
   alice, cleanScanner, config, issueRef, prompts, runComments, silent, triageSpec,

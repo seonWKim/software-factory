@@ -10,7 +10,7 @@ import { GitHubClient, GitHubError } from "../src/impl/github/github-client.js";
 import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import type { ForgeEvent } from "../src/interfaces/forge.js";
-import type { SourceAdapter, SourceEvent } from "../src/interfaces/source-adapter.js";
+import type { SourceAdapter } from "../src/interfaces/source-adapter.js";
 import type { ExecResult } from "../src/interfaces/sandbox.js";
 import { FakeAuth, type FakeSandbox, FakeSource, alice, cleanScanner, config, pipeline, silent, triageSpec } from "./helpers/fakes.js";
 import { PROJECT_KEY, issue, newStore, system, w1 } from "./helpers/store.js";

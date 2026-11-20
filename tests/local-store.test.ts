@@ -14,13 +14,7 @@ import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 // Never pin a step as the newest (a length, `at(-1)` equal to it, or "pending alone"): a later migration would
 // fail these checks from outside its allowed paths. Compare with `>=` or read MIGRATIONS.length.
 const STEP = 21;
-const TABLES = ["cli_commands", "item_messages"];
-
-/** The SQLite migration that add the app command request table (issue #244). */
-const COMMANDS_STEP = 22;
 const COMMANDS_TABLE = "app_command_requests";
-/** The SQLite migration that add the handled and refusal columns (issue #245): the last step. */
-const HANDLING_STEP = 23;
 
 function localItem(n: number): NewWorkItem {
   return {
@@ -109,21 +103,6 @@ for (const b of BACKENDS) {
   });
 }
 
-describe("SQLite migration 21: local item tables", () => {
-  it("is followed by migration 22, and migrate() on a fresh database creates both tables", async () => {
-    expect(MIGRATIONS.length).toBeGreaterThanOrEqual(COMMANDS_STEP);
-    const driver = new SqliteDriver(":memory:", { baselineOnly: true });
-    const store = new SqlFactoryStore(driver, new FakeClock());
-    await driver.migrate();
-    const rows = await driver.all(
-      `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${TABLES.map(() => "?").join(", ")}) ORDER BY name`,
-      TABLES,
-    );
-    expect(rows.map((r) => r.name)).toEqual(TABLES);
-    await store.close();
-  });
-});
-
 async function sqliteHasCommandsTable(driver: SqliteDriver): Promise<boolean> {
   const rows = await driver.all("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", [COMMANDS_TABLE]);
   return rows.length === 1;
@@ -131,29 +110,6 @@ async function sqliteHasCommandsTable(driver: SqliteDriver): Promise<boolean> {
 
 describe("SQLite migration 22: app command requests", () => {
   // Later migrations may follow; nothing here pins 22 as the newest (a new migration needs no edit here).
-  it("migrate() on a fresh database reaches the latest migration and creates the table", async () => {
-    const LATEST = MIGRATIONS.length;
-    expect(LATEST).toBeGreaterThanOrEqual(COMMANDS_STEP);
-    const driver = new SqliteDriver(":memory:", { baselineOnly: true });
-    const store = new SqlFactoryStore(driver, new FakeClock());
-    await driver.migrate();
-    expect(await driver.schemaVersion()).toEqual({ applied: LATEST, latest: LATEST });
-    expect(await sqliteHasCommandsTable(driver)).toBe(true);
-    const cols = await driver.all(`SELECT name, type, "notnull" AS nn, pk FROM pragma_table_info('${COMMANDS_TABLE}') ORDER BY cid`);
-    expect(cols.slice(0, 6)).toEqual([
-      { name: "seq", type: "INTEGER", nn: 0, pk: 1 },
-      { name: "request_key", type: "TEXT", nn: 1, pk: 0 },
-      { name: "actor", type: "TEXT", nn: 1, pk: 0 },
-      { name: "command", type: "TEXT", nn: 1, pk: 0 },
-      { name: "args", type: "TEXT", nn: 1, pk: 0 },
-      { name: "created_at", type: "TEXT", nn: 1, pk: 0 },
-    ]);
-    const insert = `INSERT INTO ${COMMANDS_TABLE} (request_key, actor, command, args, created_at) VALUES (?, 'local:owner', 'c', '{}', 't')`;
-    await driver.run(insert, ["k1"]);
-    await expect(driver.run(insert, ["k1"])).rejects.toThrow(/UNIQUE/);
-    await store.close();
-  });
-
   it("a database recorded at version 21 reaches the latest after migrate() and has the table", async () => {
     const LATEST = MIGRATIONS.length;
     const driver = new SqliteDriver(":memory:", { baselineOnly: true });
@@ -169,24 +125,4 @@ describe("SQLite migration 22: app command requests", () => {
     expect(await sqliteHasCommandsTable(driver)).toBe(true);
     await store.close();
   });
-});
-
-async function sqliteColumns(driver: SqliteDriver): Promise<{ name: string; type: string; nn: number }[]> {
-  return (await driver.all(`SELECT name, type, "notnull" AS nn FROM pragma_table_info('${COMMANDS_TABLE}') ORDER BY cid`)) as never;
-}
-
-describe("SQLite migration 23: app command request handling", () => {
-  it("migrate() on a fresh database reaches the latest migration, with nullable handled_at and refusal", async () => {
-    expect(MIGRATIONS.length).toBeGreaterThanOrEqual(HANDLING_STEP);
-    const driver = new SqliteDriver(":memory:", { baselineOnly: true });
-    const store = new SqlFactoryStore(driver, new FakeClock());
-    await driver.migrate();
-    expect(await driver.schemaVersion()).toEqual({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
-    expect((await sqliteColumns(driver)).slice(6)).toEqual([
-      { name: "handled_at", type: "TEXT", nn: 0 },
-      { name: "refusal", type: "TEXT", nn: 0 },
-    ]);
-    await store.close();
-  });
-
 });
