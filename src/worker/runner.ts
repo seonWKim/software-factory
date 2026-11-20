@@ -837,11 +837,8 @@ export class Worker {
     if (result.status === "failed" && result.error?.startsWith(`${NETWORK_UNAVAILABLE}: `)) {
       throw new RunFailure(NETWORK_UNAVAILABLE, result.error.slice(NETWORK_UNAVAILABLE.length + 2), true);
     }
-    // `stalled` becomes `agent_stalled`: neither infra nor a task failure (failureClass, design §5 Restarts). The
-    // transcript's tail is kept so the next stall can be read, scanned on its own: a flagged tail is null, the code stays.
-    if (result.status !== "completed") {
-      const out = tail(result.transcript);
-      const clean = out === "" || (await this.d.scanner.scan("run_outcome", out)).clean;
+    if (result.status !== "completed") { // `stalled` → `agent_stalled` (failureClass, design §5 Restarts); tail scanned on its own, null when flagged.
+      const out = tail(result.transcript), clean = out === "" || (await this.d.scanner.scan("run_outcome", out)).clean;
       throw new RunFailure(`agent_${result.status}`, result.error ?? "", result.status === "timed_out", { output_tail: clean ? out : null } as RunFailure["extra"]);
     }
     await this.packChecks("after_agent", run, item, handle, signal);

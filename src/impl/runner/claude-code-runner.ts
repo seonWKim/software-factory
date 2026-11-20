@@ -95,17 +95,8 @@ function rulePath(p: string): string {
  * Bash checks no commands and the shared module has no web tools, so these stay with this runner.
  */
 const HARNESS_ONLY_DENY: readonly string[] = [
-  "Bash(gh:*)",
-  "Bash(security:*)",
-  "Bash(git push:*)",
-  "Bash(git credential:*)",
-  "Bash(printenv:*)",
-  "Bash(env)",
-  "Bash(mysql:*)",
-  "Bash(mysqldump:*)",
-  "Bash(mysqladmin:*)",
-  "WebFetch",
-  "WebSearch",
+  "Bash(gh:*)", "Bash(security:*)", "Bash(git push:*)", "Bash(git credential:*)", "Bash(printenv:*)", "Bash(env)",
+  "Bash(mysql:*)", "Bash(mysqldump:*)", "Bash(mysqladmin:*)", "WebFetch", "WebSearch",
 ];
 
 /**
@@ -191,12 +182,7 @@ export function buildHarnessSettings(
         ...(caches.length > 0 ? { allowRead: [...caches], denyWrite: [...caches] } : {}),
       },
       network: { allowLocalBinding: true },
-      credentials: {
-        envVars: [
-          { name: "GITHUB_TOKEN", mode: "deny" },
-          { name: "GH_TOKEN", mode: "deny" },
-        ],
-      },
+      credentials: { envVars: [{ name: "GITHUB_TOKEN", mode: "deny" }, { name: "GH_TOKEN", mode: "deny" }] },
     },
   };
 }
@@ -369,29 +355,16 @@ export class ClaudeCodeRunner implements AgentRunner {
     if (result.timed_out) return { status: "timed_out", output: null, transcript: result.stdout, usage, did_work };
 
     if (parsed === null) {
-      return {
-        status: "failed",
-        output: null,
-        transcript: result.stdout + result.stderr,
-        usage,
-        error: `claude exited ${result.exit_code} without JSON output`,
-        did_work,
-      };
+      const error = `claude exited ${result.exit_code} without JSON output`;
+      return { status: "failed", output: null, transcript: result.stdout + result.stderr, usage, error, did_work };
     }
 
     if (parsed.api_error_status === 429) {
       const text = typeof parsed.result === "string" ? parsed.result : "";
       const reset_at = parseRateLimitReset(text, (this.opts.now ?? (() => new Date()))());
-      return {
-        status: "rate_limited",
-        output: null,
-        transcript: result.stdout,
-        usage,
-        // The CLI's own text names when the limit resets (design §5 Restarts): kept, capped, for the failure detail.
-        error: text.trim().slice(0, RATE_LIMIT_DETAIL_CHARS) || "rate_limited",
-        did_work,
-        ...(reset_at ? { reset_at } : {}),
-      };
+      // The CLI's own text names when the limit resets (design §5 Restarts): kept, capped, for the failure detail.
+      const error = text.trim().slice(0, RATE_LIMIT_DETAIL_CHARS) || "rate_limited";
+      return { status: "rate_limited", output: null, transcript: result.stdout, usage, error, did_work, ...(reset_at ? { reset_at } : {}) };
     }
     if (parsed.is_error || result.exit_code !== 0) {
       return { status: "failed", output: null, transcript: result.stdout, usage, error: parsed.subtype ?? "error", did_work };
@@ -435,12 +408,7 @@ interface ClaudeJsonResult {
   result?: string;
   structured_output?: unknown;
   total_cost_usd?: number;
-  usage?: {
-    input_tokens?: number;
-    output_tokens?: number;
-    cache_read_input_tokens?: number;
-    cache_creation_input_tokens?: number;
-  };
+  usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
   /** Per-model usage, keyed by model name. */
   modelUsage?: Record<string, { costUSD?: number; outputTokens?: number } | null>;
   /** HTTP status of the API error that ended the run; 429 is a usage or rate limit. */
@@ -562,10 +530,7 @@ class StallWatch {
     else if (event.subtype === "task_updated" && TASK_END.has(status)) this.tasks.delete(id);
     else if (event.subtype === "background_tasks_changed" && Array.isArray(event.tasks)) {
       this.tasks.clear();
-      for (const [i, t] of (event.tasks as { id?: unknown; task_id?: unknown }[]).entries()) {
-        const key = t?.task_id ?? t?.id;
-        this.tasks.add(typeof key === "string" ? key : `#${i}`);
-      }
+      for (const [i, t] of (event.tasks as { id?: unknown; task_id?: unknown }[]).entries()) this.tasks.add(String(t?.task_id ?? t?.id ?? `#${i}`));
     } else return false;
     if (this.tasks.size > before) this.arm();
     return this.tasks.size < before;
@@ -585,11 +550,7 @@ class StallWatch {
   }
 }
 
-/**
- * Turns off the CLI's background tasks (`run_in_background`, auto-backgrounding) for every run, so a check runs in
- * the foreground as an open tool call (design §5 Restarts, the 2026-11-19 resolve stalls). StallWatch still holds
- * for a background task, in case a CLI version ignores this.
- */
+/** Turns off the CLI's background tasks for every run, so a check runs as an open tool call (design §5 Restarts). */
 const FOREGROUND_ENV: Readonly<Record<string, string>> = { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" };
 
 /** The `task_updated` statuses that end a background task. */
@@ -676,13 +637,8 @@ export function parseRateLimitReset(text: string, now: Date): string | null {
   if (ampm) hour = (hour % 12) + (ampm === "pm" ? 12 : 0);
   let wall: { h: number; m: number; s: number };
   try {
-    const parts = new Intl.DateTimeFormat("en-US", {
-      timeZone: m[4]?.trim(),
-      hourCycle: "h23",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    }).formatToParts(now);
+    const opts = { timeZone: m[4]?.trim(), hourCycle: "h23", hour: "2-digit", minute: "2-digit", second: "2-digit" } as const;
+    const parts = new Intl.DateTimeFormat("en-US", opts).formatToParts(now);
     const get = (t: string) => Number(parts.find((p) => p.type === t)?.value);
     wall = { h: get("hour"), m: get("minute"), s: get("second") };
   } catch {
