@@ -42,7 +42,6 @@ export const rules = {
   "rules.judgedHint": "The ledger has these verdicts; the list updates when the rule candidates are rebuilt.",
   "rules.decided": "{count} decided",
   "rules.decidedList": "Decided",
-  "rules.promoteOff": "Promote is off: the draft could not be read.",
   "rules.pageDescription": "Rule candidates and structure proposals from your pushbacks wait here for your verdict.",
   "rules.waiting": "{count} waiting",
   "rules.how": "How this works",
