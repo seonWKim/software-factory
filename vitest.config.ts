@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { defineConfig } from "vitest/config";
 
 // A factory run sets SF_TEST_WORKERS to its share of the host's CPUs (docs/design/05-coordination.md, Parallel
@@ -16,6 +17,9 @@ export default defineConfig({
     // .tsx tests are the web app's; each one sets `@vitest-environment jsdom` itself, so every other test keeps
     // the default node environment.
     include: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],
+    // Each run gets its own temp folder, removed when the run ends (tests/setup/temp-root.ts).
+    // Only when the file is there: tests/noop-sandbox.test.ts runs this config in a folder with just one test.
+    globalSetup: existsSync("tests/setup/temp-root.ts") ? ["tests/setup/temp-root.ts"] : [],
     exclude: ["node_modules", "dist", ".worktrees", ".factory", ".vite-cache"],
     // 15 s (2026-11-20; was 5 s): the factory's runs share the host, and at load 40 to 100 on 10 cores tests that take
     // 1 to 4 s alone timed out, failed merge checks and stopped auto mode on a green main (all 6787 passed at 30 s).
