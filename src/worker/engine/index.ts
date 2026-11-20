@@ -56,8 +56,8 @@ export interface ExecutionEngine {
   /**
    * Holds a run another claim path already leased to this worker under `run.lease_token` (the legacy store's
    * claimRun, until runs arrive as RunRequested), stamping code_version and deadline_at as `claim` does. `now` is
-   * the claiming tick. False when the lease is not that token's, or the run was journaled by code this worker
-   * cannot resume.
+   * the claiming tick. False when the lease is not that token's. A run journaled by code this worker cannot resume
+   * is held with its journal dropped, so it runs from the start.
    */
   adopt(run: RunRef, now: Tick): Promise<boolean>;
   /** Forgets a held run whose end another path stored (the legacy store's completeRun or pauseRun). */
