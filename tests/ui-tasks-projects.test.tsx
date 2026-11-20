@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SLOW, TOKEN, TasksPage, card, menuItems, reset, row, s, show, teardown, view } from "./ui-tasks-fixtures.js";
+import { SLOW, TOKEN, TasksPage, card, reset, row, s, show, teardown, view } from "./ui-tasks-fixtures.js";
 
 beforeEach(reset);
 afterEach(teardown);
