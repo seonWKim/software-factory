@@ -88,7 +88,7 @@ export function DecisionsPanel({
   if (decisions.length === 0) return null;
   return (
     <div data-decisions className="mb-3 space-y-3">
-      <p className="text-xs text-pretty text-text-2">
+      <p className="text-xs text-pretty text-pill-warn-fg">
         {t("decisions.intro")}
       </p>
       {decisions.map((d, i) => {
@@ -98,15 +98,15 @@ export function DecisionsPanel({
           <fieldset key={i} data-decision={i + 1} className="min-w-0 max-w-xl">
             <legend className="text-sm font-medium text-pretty break-words">
               {label}
-              {d.owner_only && <span className="ml-1 text-xs text-text-2">{t("decisions.ownerOnly")}</span>}
+              {d.owner_only && <span className="ml-1 text-xs text-pill-warn-fg">{t("decisions.ownerOnly")}</span>}
             </legend>
-            {d.reason && <p className="text-xs text-pretty break-words text-text-2">{d.reason}</p>}
+            {d.reason && <p className="text-xs text-pretty break-words text-pill-warn-fg">{d.reason}</p>}
             {d.options.length > 0 ? (
               <div role="radiogroup" aria-label={label} className="mt-1 space-y-1">
                 {d.options.map((o) => (
                   <Radio key={o} name={`decision-${i + 1}`} checked={!c.own && c.value === o} onChange={() => onChange(i, { own: false, value: o })}>
                     {o}
-                    {o === d.default && <span className="text-xs text-text-2">{t("decisions.default")}</span>}
+                    {o === d.default && <span className="text-xs text-pill-warn-fg">{t("decisions.default")}</span>}
                   </Radio>
                 ))}
                 <Radio name={`decision-${i + 1}`} checked={c.own} onChange={() => onChange(i, { own: true, value: c.own ? c.value : "" })}>
