@@ -169,8 +169,8 @@ export function SpendSection() {
     <SpendFrame>
       <CardSection title={t("spend.totals")}>
         <dl className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <Total label={t("spend.today")} total={sum(v.days.filter((d) => d.day === v.today))} budget={{ usd: v.budgets.daily_usd, text: (spent, budget) => t("spend.budgetToday", { spent, budget }) }} />
-          <Total label={t("spend.week")} total={sum(v.days.filter((d) => d.day >= v.week_start))} budget={{ usd: v.budgets.weekly_usd, text: (spent, budget) => t("spend.budgetWeek", { spent, budget }) }} />
+          <Total label={t("spend.today")} total={sum(v.days.filter((d) => d.day === v.today))} budget={{ usd: v.budgets?.daily_usd ?? null, text: (spent, budget) => t("spend.budgetToday", { spent, budget }) }} />
+          <Total label={t("spend.week")} total={sum(v.days.filter((d) => d.day >= v.week_start))} budget={{ usd: v.budgets?.weekly_usd ?? null, text: (spent, budget) => t("spend.budgetWeek", { spent, budget }) }} />
           <Total label={t("spend.last30")} total={v.total} />
         </dl>
         <p className="mt-2 text-xs text-pretty text-text-2">{t("spend.note")}</p>
