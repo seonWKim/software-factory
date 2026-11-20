@@ -5,8 +5,7 @@ import type {
   Actor, BlockedOn, BudgetAnswer, BudgetCheckpoint, BudgetCheckpointId, ClaimDecision, ClaimPauseName, DependencyEdge, DependencyState, Tier,
   Handoff, FiledPattern, FiledPatternId, HostSleep, ImproveReport, ImproveReportId, ImproveWindow, Run, RunAttempt, RunId, RunInput, RunKind,
   RunOutcome, RunResume, RunStatus, SessionFinish, SourceRef, SourceType, StandingGate, StandingProposal, StandingRule, StateChange,
-  StateChangeDetail, Stage, Timestamp, UnreviewedMerge, UserId, Verdict, VerdictKind, VerdictSeverity, VerdictTarget, WorkItem, WorkItemId,
-  WorkItemPatch, WorkerId, WorkerPause,
+  StateChangeDetail, Stage, Timestamp, UnreviewedMerge, UserId, Verdict, VerdictKind, VerdictSeverity, VerdictTarget, WorkItem, WorkItemId, WorkItemPatch, WorkerId, WorkerPause,
 } from "../core/types.js";
 import type { AuthAction, AuthResource, LinkedAccount } from "./auth-provider.js";
 import type { SourceEvent } from "./source-adapter.js";
@@ -17,6 +16,7 @@ import type { CommandProposalStore } from "../core/interpret.js";
 import type { TaskStore } from "../core/tasks.js";
 import type { NoticeStore } from "../core/notifications.js";
 import type { PostedCommentReads } from "../core/reaction-verdict.js";
+import type { RunOutputStore } from "../core/stall.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
@@ -354,7 +354,7 @@ export interface NoticeMessageStore {
   getNoticeQuestion(id: string): Promise<NoticeQuestion | null>;
 }
 
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore {
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes
@@ -525,13 +525,6 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
    * expired but was not reaped or reclaimed (host sleep) is renewed. lease_lost means stop work immediately.
    */
   heartbeat(runId: RunId, token: number, lease_ms: number): Promise<LeaseResult>;
-  /**
-   * Stores now as the run's last model output time (`worker_runs.last_output_at`, design 05-restarts) while the run
-   * is `running` with this `token`; false otherwise. Written by the worker, never by the heartbeat.
-   */
-  recordRunOutput(runId: RunId, token: number): Promise<boolean>;
-  /** The latest last model output time of any `running` run, or null when none got output (design 05-restarts). */
-  latestRunningOutput(): Promise<Timestamp | null>;
   /**
    * Records the outcome and clears the lease while the run is `running` with this `token`, even past `expires_at`.
    * Closes the attempt record that claim opened (same token): status, error code, failure class, tokens.

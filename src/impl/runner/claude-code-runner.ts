@@ -488,7 +488,7 @@ export const DEFAULT_FIRST_OUTPUT_MS = 180_000;
  * `firstOutputMs` and `stallMs`, counted from the start; after it, `stallMs` from the last model output. Tool
  * calls are tracked from the events (`tool_use` blocks open one, `tool_result` blocks close it): while any is
  * open the clock does not run, since a test run in Bash can be silent for minutes; nor while `held` (a gate Stop
- * check running its commands); the run timeout still bounds both. Out of time: `signal` aborts, `stalled` says why.
+ * check running its commands); the run timeout still bounds both. Out of time: `signal` aborts, `stalled` says why. `onModel` hears each model output.
  */
 class StallWatch {
   private readonly ctl = new AbortController();
@@ -499,13 +499,7 @@ class StallWatch {
   private seenModel = false;
   stalled: false | "first_output" | "silence" = false;
 
-  constructor(
-    private readonly ms: number,
-    private readonly firstOutputMs: number,
-    private readonly held = () => false,
-    /** Called on each chunk with model output (design 05-restarts: the run's last output time). */
-    private readonly onModel?: () => void,
-  ) {
+  constructor(private readonly ms: number, private readonly firstOutputMs: number, private readonly held = () => false, private readonly onModel?: () => void) {
     this.arm();
   }
 
@@ -523,8 +517,7 @@ class StallWatch {
     let model = false;
     for (const line of lines) if (this.track(line)) model = true;
     if (!model) return;
-    this.seenModel = true;
-    this.onModel?.();
+    this.seenModel = true; this.onModel?.(); // onModel: the run's last output time (design 05-restarts)
     this.arm();
   }
 

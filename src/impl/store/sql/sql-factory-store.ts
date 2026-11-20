@@ -116,7 +116,7 @@ import * as signals from "./signals.js";
 import * as evaluations from "./merge-evaluations.js";
 import * as proposals from "./command-proposals.js";
 import * as tasks from "./tasks.js";
-import { SqlProjectStore } from "./projects.js";
+import { SqlRunOutputStore } from "./run-output.js";
 import * as notices from "./notices.js";
 import * as noticeMessages from "./notice-messages.js";
 import * as posted from "./posted-comments.js";
@@ -125,9 +125,9 @@ import * as verdicts from "./verdicts.js";
 /**
  * FactoryStore over a SqlDriver (SQLite; `db` is public for components owning tables). Every write is one driver transaction. Correctness
  * never depends on the row locks alone: every state change is also a conditional UPDATE (version,
- * status, lease token), and uniqueness is enforced by keys, with a duplicate treated as "already there". Task projects: SqlProjectStore.
+ * status, lease token), and uniqueness is enforced by keys, with a duplicate treated as "already there". Task projects: SqlProjectStore, through SqlRunOutputStore.
  */
-export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
+export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
   constructor(db: SqlDriver, private readonly clock: Clock) {
     super(db, () => clock.now().toISOString() as Timestamp);
   }
@@ -946,16 +946,6 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
       );
       return extended === 1 ? { ok: true, run: (await this.selectRun(tx, runId))! } : { ok: false, reason: "lease_lost" };
     });
-  }
-
-  async recordRunOutput(runId: RunId, token: number): Promise<boolean> {
-    const n = await this.db.run(`UPDATE worker_runs SET last_output_at = ? WHERE id = ? AND status = 'running' AND lease_token = ?`, [this.now(), runId, token]);
-    return n === 1;
-  }
-
-  async latestRunningOutput(): Promise<Timestamp | null> {
-    const [row] = await this.db.all(`SELECT MAX(last_output_at) AS at FROM worker_runs WHERE status = 'running'`);
-    return (row?.at as Timestamp | null | undefined) ?? null;
   }
 
   async completeRun(runId: RunId, token: number, outcome: RunOutcome): Promise<LeaseResult> {

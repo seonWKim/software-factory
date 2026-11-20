@@ -13,6 +13,25 @@ import { type DecisionAnswer, answerLines } from "../shared/command-notes.js";
 
 export { type LocalRoute, type PrText, TRUSTED_GIT_ENV, type WorkerDeps, hasTool, prTitle, routeFor, runPushIntents, threadDelivery };
 
+/** At most one write of a run's last model output time per this many ms, and per a tenth of stall_ms (design 05-restarts). */
+export const OUTPUT_RECORD_MS = 30_000;
+
+/**
+ * The runner's `on_output` for one agent step (design 05-restarts): stores the run's last model output time through
+ * the store, at once on the first output, then at most once per OUTPUT_RECORD_MS (or a tenth of `stall_ms`), so the
+ * controller can tell one silent run from a model that is down. Best effort: a failed write lets the next output try.
+ */
+export function outputRecorder(d: Pick<WorkerDeps, "store" | "clock">, run: Pick<Run, "id" | "lease">, stall_ms: number): () => void {
+  const every = Math.min(OUTPUT_RECORD_MS, Math.floor(stall_ms / 10));
+  let last = -Infinity;
+  return () => {
+    const now = d.clock.now().getTime();
+    if (!run.lease || now - last < every) return;
+    last = now;
+    d.store.recordRunOutput(run.id, run.lease.token).catch(() => { last = -Infinity; });
+  };
+}
+
 /** The run kinds `workers pause` stops mid-run (design §5 Pause). Others finish first; then the worker stops claiming. */
 export const PAUSABLE_KINDS: readonly RunKind[] = ["implement", "review"];
 

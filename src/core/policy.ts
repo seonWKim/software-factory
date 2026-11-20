@@ -1,6 +1,6 @@
 import type { FactoryConfig } from "./config.js";
 import type { Floor } from "./settings.js";
-import type { Run, RunKind, RunOutcome, Tier, Timestamp, WorkItem } from "./types.js";
+import { RECURRING_FAILURE, type Run, type RunKind, type RunOutcome, type StateChangeDetail, type Tier, type Timestamp, type WorkItem } from "./types.js";
 
 // Deterministic gate rules (control plane). Same input, same output.
 
@@ -136,9 +136,31 @@ export function retryClears(outcome: RunOutcome | null): boolean {
 
 /**
  * The error code of a run whose agent printed nothing for `stall_ms` while no tool call was open (design §5
- * Restarts). Not an attempt; it pauses every claim (`model_stall`) until a probe on the cheap model answers.
+ * Restarts). Not an attempt; when no other running run got model output either (`stallIsGlobal`), it pauses every
+ * claim (`model_stall`) until a probe on the cheap model answers; otherwise it holds only its item (`stallHold`).
  */
 export const AGENT_STALLED = "agent_stalled";
+
+/**
+ * Whether a stall at `stalledAt` (ms) is the model's (design 05-restarts, decision of 2026-11-20): no running run's
+ * last model output (`latest`, the store's latest; null: none got any) is within `stall_ms` of it.
+ */
+export function stallIsGlobal(latest: Timestamp | null, stalledAt: number, stall_ms: number): boolean {
+  return latest === null || Date.parse(latest) <= stalledAt - stall_ms;
+}
+
+/** The state change detail key that holds a stall hold's end (design 05-restarts). */
+export const HELD_UNTIL = "held_until";
+
+/**
+ * The hold of a stalled run's item while other runs still get model output (design 05-restarts), merged into the
+ * decision that applies the run and queues its retry (not claimed while held): `recurring_failure` with no pattern
+ * key and its end `until`. Null when that decision leaves the item closed or blocked.
+ */
+export function stallHold(after: Pick<WorkItem, "stage" | "blocked_on">, detail: StateChangeDetail | undefined, until: Timestamp) {
+  if (after.stage === "CLOSED" || after.blocked_on !== "none") return null;
+  return { patch: { blocked_on: "human" as const, blocked_reason: RECURRING_FAILURE }, reason: RECURRING_FAILURE, detail: { ...detail, [HELD_UNTIL]: until } };
+}
 
 /**
  * The claim pause of a stall (design §5 Restarts): its row holds the next probe time, and claims stay paused
