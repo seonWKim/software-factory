@@ -349,8 +349,18 @@ export async function waitingSpec(it: WorkItem, runs: readonly Run[], text: (v: 
   for (const d of spec.decision_items ?? []) {
     const options = [];
     for (const o of d.options ?? []) options.push((await text(o))!);
+    // Each option's changes (design 09-dashboard-item-commands, 2026-11-21), with the extra paths the item's
+    // allowed_paths do not cover: the approve dialog warns about those before anything is sent.
+    const option_changes = [];
+    for (const c of d.option_changes ?? []) {
+      const done_when = [];
+      for (const l of c.done_when) done_when.push((await text(l))!);
+      option_changes.push({
+        option: (await text(c.option))!, extra_paths: c.extra_paths, done_when, uncovered_paths: c.extra_paths.filter((p) => !isCovered(p, it.allowed_paths)),
+      });
+    }
     decisions.push({
-      question: (await text(d.text))!, options, default: await text(d.default), reason: await text(d.reason ?? null), owner_only: d.owner_only,
+      question: (await text(d.text))!, options, default: await text(d.default), reason: await text(d.reason ?? null), owner_only: d.owner_only, option_changes,
       ...(d.layout ? { layout: true } : {}),
     });
   }

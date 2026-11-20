@@ -5,10 +5,10 @@
 import type { RunOutputStore } from "../../../core/stall.js";
 import type { RunId, Timestamp } from "../../../core/types.js";
 import type { SqlDriver } from "../../../state/index.js";
-import { SqlProjectStore } from "./projects.js";
+import { SqlReservationStore } from "./reservations.js";
 
 /** RunOutputStore over a SqlDriver; `outputStamp` is the store's injected Clock's time. */
-export class SqlRunOutputStore extends SqlProjectStore implements RunOutputStore {
+export class SqlRunOutputStore extends SqlReservationStore implements RunOutputStore {
   constructor(db: SqlDriver, private readonly outputStamp: () => Timestamp) {
     super(db, outputStamp);
   }

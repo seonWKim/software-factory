@@ -266,6 +266,65 @@ describe("triage decisions as questions (issue #526)", () => {
     for (const name of ["implement", "review"]) expect(read(name)).toContain('"Decisions for the spec"');
   });
 
+  describe("option changes (design 04-triage, 2026-11-21)", () => {
+    const change = { option: "Fail the job", extra_paths: ["docs/ci.md"], done_when: ["CI fails the job when files outside allowed_paths change"] };
+    const withChanges = { ...ask, option_changes: [change, { option: "Only warn", extra_paths: [], done_when: [] }] };
+
+    it("the schema asks each decision for its option changes: the option, its extra paths and its done-when lines", () => {
+      const item = TRIAGE_SCHEMA.properties.decisions.items;
+      expect(item.required).toContain("option_changes");
+      expect((item.properties.option_changes as { items: { required: string[] } }).items.required).toEqual(expect.arrayContaining(["option", "extra_paths", "done_when"]));
+    });
+
+    it("the parser keeps each option's extra paths and done-when lines, drops an entry that changes nothing, and a stored answer parses the same", () => {
+      const r = parseTriage({ ...current, decisions: [withChanges, free] });
+      if (!r.ok) throw new Error(r.error);
+      expect(r.value.decision_items?.[0]).toEqual({ text: ask.question, default: "Only warn", owner_only: false, reason: ask.reason, options: ask.options, option_changes: [change] });
+      expect(r.value.decision_items?.[1]).not.toHaveProperty("option_changes");
+      const again = parseTriage(r.value);
+      expect(again.ok && again.value.decision_items).toEqual(r.value.decision_items);
+    });
+
+    it("an older decision with plain-string options and no option changes parses unchanged", () => {
+      const r = parseTriage({ ...current, decision_items: [{ text: ask.question, default: "Only warn", owner_only: false, reason: ask.reason, options: ask.options }] });
+      expect(r.ok && r.value.decision_items).toEqual([{ text: ask.question, default: "Only warn", owner_only: false, reason: ask.reason, options: ask.options }]);
+    });
+
+    it("refuses a change naming no option, an option twice, an unsafe or owner-only path, and markup in a done-when line", () => {
+      const error = (option_changes: unknown) => {
+        const r = parseTriage({ ...current, decisions: [free, { ...ask, option_changes }] });
+        return r.ok ? null : r.error;
+      };
+      expect(error("x")).toBe("decisions[1].option_changes: must be a list");
+      expect(error([{ ...change, option: "Something else" }])).toBe("decisions[1].option_changes[0].option: must be one of the options");
+      expect(error([change, change])).toBe("decisions[1].option_changes[1].option: names an option twice");
+      expect(error([{ ...change, extra_paths: ["../etc"] }])).toBe("decisions[1].option_changes[0].extra_paths: must be repo-relative paths");
+      expect(error([{ ...change, extra_paths: [".claude/settings.json"] }])).toContain(".claude/ paths are owner-only");
+      expect(error([{ ...change, done_when: [3] }])).toBe("decisions[1].option_changes[0].done_when: must be a list of strings");
+      expect(error([{ ...change, done_when: ["<invoke name=\"x\">"] }])).toBe("decisions: tool-call markup outside code");
+    });
+
+    it("the spec comment shows each option's extra paths and done-when changes under its decision, before the answer block", () => {
+      const r = parseTriage({ ...current, decisions: [withChanges, free] });
+      if (!r.ok) throw new Error(r.error);
+      const body = renderSpec(r.value, 2);
+      expect(body).toContain(
+        "1. Fail the job, or only warn? Proposed default: Only warn.\n" +
+          "   - If you answer \"Fail the job\": needs `docs/ci.md` (add with `+paths`); changes done when: CI fails the job when files outside allowed_paths change\n" +
+          "2. Name the step? Proposed default: scope.\n",
+      );
+      expect(body.indexOf("If you answer")).toBeLessThan(body.indexOf("To answer, reply `/approve`"));
+      expect(body).not.toContain("If you answer \"Only warn\"");
+    });
+  });
+
+  it("the triage prompt asks for option changes, and an explicit instruction in revise feedback sets the default of the decision it answers", () => {
+    const triage = readFileSync(new URL("../prompts/triage.md", import.meta.url), "utf8");
+    for (const field of ['"option_changes"', '"extra_paths"', '"done_when"']) expect(triage).toContain(field);
+    expect(triage).toContain("An explicit instruction in the revision feedback");
+    expect(triage).toContain("sets the\ndefault of the decision it answers: that decision's default is the instruction, never its opposite.");
+  });
+
   it("a stored plain-text decision from an older triage still parses and renders", () => {
     const r = parseTriage({ ...current, decision_items: ["Ship behind a flag?"] });
     if (!r.ok) throw new Error(r.error);
