@@ -11,7 +11,6 @@ import {
 import { readProjectLabel, saveProject, saveProjectLabel } from "../src/core/project-labels.js";
 import { type FactoryConfig, cliUserConfig } from "../src/core/config.js";
 import type { UserId } from "../src/core/types.js";
-import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { GitHubClient, GitHubError, webHost } from "../src/impl/github/github-client.js";

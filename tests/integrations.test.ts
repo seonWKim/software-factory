@@ -7,7 +7,6 @@ import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
 import { LearnedRules } from "../src/core/learned-rules.js";
 import { LiveSettings, baseFromConfig, keyRefusal, parseSettable } from "../src/core/settings.js";
-import type { WorkerId } from "../src/core/types.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { TacitLedger } from "../src/interfaces/tacit-ledger.js";
