@@ -526,6 +526,13 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
    */
   heartbeat(runId: RunId, token: number, lease_ms: number): Promise<LeaseResult>;
   /**
+   * Stores now as the run's last model output time (`worker_runs.last_output_at`, design 05-restarts) while the run
+   * is `running` with this `token`; false otherwise. Written by the worker, never by the heartbeat.
+   */
+  recordRunOutput(runId: RunId, token: number): Promise<boolean>;
+  /** The latest last model output time of any `running` run, or null when none got output (design 05-restarts). */
+  latestRunningOutput(): Promise<Timestamp | null>;
+  /**
    * Records the outcome and clears the lease while the run is `running` with this `token`, even past `expires_at`.
    * Closes the attempt record that claim opened (same token): status, error code, failure class, tokens.
    */

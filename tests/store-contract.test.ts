@@ -227,6 +227,26 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect(new Date(after.lease!.expires_at).getTime()).toBe(clock.now().getTime() + LEASE);
     });
 
+    it("last model output (design 05-restarts): stored by its lease holder, read across running runs, never by the heartbeat", async () => {
+      const { store, clock } = await queued();
+      await store.createWorkItem(issue(2), system, { enqueue: { kind: "triage", idempotency_key: "o/r#2:triage" } });
+      const a = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))!;
+      const b = (await store.claimRun({ worker_id: w2, kinds: ["triage"], lease_ms: LEASE }))!;
+      // A running run with no output yet (and the heartbeat) leaves it null.
+      expect(await store.heartbeat(a.id, a.lease!.token, LEASE)).toMatchObject({ ok: true });
+      expect(await store.latestRunningOutput()).toBeNull();
+      expect(await store.recordRunOutput(a.id, a.lease!.token)).toBe(true);
+      const first = clock.now().toISOString();
+      clock.advance(1_000);
+      expect(await store.recordRunOutput(b.id, b.lease!.token)).toBe(true);
+      expect(await store.latestRunningOutput()).toBe(clock.now().toISOString());
+      // A stale token writes nothing; a finished run is no longer read.
+      expect(await store.recordRunOutput(a.id, a.lease!.token + 1)).toBe(false);
+      await store.completeRun(b.id, b.lease!.token, ok);
+      expect(await store.recordRunOutput(b.id, b.lease!.token)).toBe(false);
+      expect(await store.latestRunningOutput()).toBe(first);
+    });
+
     it("host sleep: an expired lease nobody reclaimed is renewed by its holder (status and token decide, not the clock)", async () => {
       const { store, clock, item } = await queued();
       const run = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))!;

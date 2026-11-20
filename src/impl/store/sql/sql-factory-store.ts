@@ -948,6 +948,16 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
     });
   }
 
+  async recordRunOutput(runId: RunId, token: number): Promise<boolean> {
+    const n = await this.db.run(`UPDATE worker_runs SET last_output_at = ? WHERE id = ? AND status = 'running' AND lease_token = ?`, [this.now(), runId, token]);
+    return n === 1;
+  }
+
+  async latestRunningOutput(): Promise<Timestamp | null> {
+    const [row] = await this.db.all(`SELECT MAX(last_output_at) AS at FROM worker_runs WHERE status = 'running'`);
+    return (row?.at as Timestamp | null | undefined) ?? null;
+  }
+
   async completeRun(runId: RunId, token: number, outcome: RunOutcome): Promise<LeaseResult> {
     return this.db.transaction(async (tx) => {
       const now = this.now();
