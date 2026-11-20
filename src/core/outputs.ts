@@ -63,11 +63,15 @@ export interface SpecDecision {
   reason?: string;
   /** The answers to pick from, the default among them; absent or empty for a free answer. */
   options?: string[];
+  /** A layout decision: each option is a text sketch of a page layout, shown in monospace. Absent on any other decision. */
+  layout?: boolean;
 }
 
 /** How many options a decision with options offers (issue #526); a decision may also have none. */
 export const MIN_OPTIONS = 2;
 export const MAX_OPTIONS = 4;
+/** The most options a layout decision offers; it needs at least MIN_OPTIONS. */
+export const MAX_LAYOUT_OPTIONS = 3;
 
 /** One phase of a split spec. On /approve it becomes a sub-issue and then an ordinary work item. */
 export interface TriagePhase {
@@ -213,6 +217,7 @@ export const TRIAGE_SCHEMA = {
           options: { ...strings, maxItems: MAX_OPTIONS, description: `[] for a free answer, or ${MIN_OPTIONS} to ${MAX_OPTIONS} answers to pick from.` },
           default: { type: "string", description: "The answer you propose, one of the options when there are any; the factory takes it when it approves on its own." },
           owner_only: { type: "boolean", description: "true when only the owner may answer: no default fits, or the choice is risky." },
+          layout: { type: "boolean", description: `true only for a layout decision: ${MIN_OPTIONS} to ${MAX_LAYOUT_OPTIONS} options, each a text sketch of the page.` },
       }),
     },
     applied_defaults: { ...strings, maxItems: MAX_APPLIED_DEFAULTS },
@@ -378,7 +383,14 @@ function parseQuestion(d: Record<string, unknown>, at: string): SpecDecision | s
   const def = defaultOf(d.default);
   if (options.length > 0 && (def === null || !options.includes(def))) return `${at}.default: must be one of the options`;
   if (d.owner_only !== undefined && typeof d.owner_only !== "boolean") return `${at}.owner_only: must be true or false`;
-  return { text: d.question, default: def, owner_only: d.owner_only !== false || def === null, reason: d.reason, ...(options.length > 0 ? { options } : {}) };
+  if (d.layout !== undefined && typeof d.layout !== "boolean") return `${at}.layout: must be true or false`;
+  if (d.layout === true && (options.length < MIN_OPTIONS || options.length > MAX_LAYOUT_OPTIONS)) {
+    return `${at}.options: a layout decision needs ${MIN_OPTIONS} to ${MAX_LAYOUT_OPTIONS} options`;
+  }
+  return {
+    text: d.question, default: def, owner_only: d.owner_only !== false || def === null, reason: d.reason, ...(options.length > 0 ? { options } : {}),
+    ...(d.layout === true ? { layout: true } : {}),
+  };
 }
 
 /**
@@ -401,6 +413,7 @@ function parseDecisions(v: unknown): Validation<SpecDecision[]> {
       out.push({
         text: d.text, default: def, owner_only: d.owner_only !== false || def === null,
         ...(isStr(d.reason) ? { reason: d.reason } : {}), ...(isStrs(d.options) && d.options.length > 0 ? { options: d.options } : {}),
+        ...(d.layout === true ? { layout: true } : {}),
       });
     } else return { ok: false, error: `${at}.question: must be a non-empty string` };
   }

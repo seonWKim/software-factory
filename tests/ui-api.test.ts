@@ -1007,6 +1007,15 @@ describe("ui api: the waiting spec's In short and decisions on GET /api/v1/items
     });
   });
 
+  it("a layout decision carries its layout marker; the others have none", async () => {
+    const { d, store } = await seeded();
+    const layout = { question: "Which layout?", reason: "The page shape.", options: ["[Header]\n[Cards]", "[Header]\n[List]"], default: "[Header]\n[List]", owner_only: false, layout: true };
+    const it = await triaged(store, 53, { ...SPEC, decisions: [...SPEC.decisions, layout] }, { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" });
+    const body = await json<Detail>(d, `/api/v1/items/${encodeURIComponent(it.id)}`);
+    expect(body.spec!.decisions.map((x) => x.layout)).toEqual([undefined, undefined, true]);
+    expect(body.spec!.decisions[2]).toMatchObject({ question: "Which layout?", options: layout.options, default: layout.default });
+  });
+
   it("a stored plain-text decision from an older triage is a question with no options, default or reason", async () => {
     const { d, store } = await seeded();
     const it = await triaged(store, 51, { ...SPEC, decisions: ["Ship behind a flag?"] }, { stage: "READY", blocked_on: "human", blocked_reason: "max_revisions" });
