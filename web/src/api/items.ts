@@ -50,15 +50,16 @@ export function showsMerge(m: MergeReadiness | null | undefined): m is MergeRead
 }
 
 /**
- * The `merge` reasons of an item whose Merge was pressed (src/core/request-transition.ts ROW_LABELS): its request
- * waits for the controller or the forge merges a PR ("Merging…"), the merge queue checks a local item's merged
- * result ("Checking…"). The button shows the reason.
+ * The `merge` reasons of an item whose Merge was pressed (src/core/request-transition.ts ROW_LABELS and
+ * mergeQueuedLabel): the request path's answer ("Merging…"), its request stored and not handled yet ("Merge queued
+ * (position N)"), the merge queue checking the merged result ("Checking build"). Merge is hidden for each: the button
+ * reads the reason, disabled, and the Work row says it as the item's state.
  */
-const IN_FLIGHT = ["Checking…", "Merging…"];
+const IN_FLIGHT = /^(?:Merging…|Checking build|Merge queued \(position \d+\))$/;
 
 /** Whether the item's Merge was pressed and its merge is under way: the button reads its reason, disabled. */
-export function mergeInFlight(m: MergeReadiness | null | undefined): boolean {
-  return !!m && !m.enabled && IN_FLIGHT.includes(m.reason ?? "");
+export function mergeInFlight(m: MergeReadiness | null | undefined): m is MergeReadiness & { reason: string } {
+  return !!m && !m.enabled && IN_FLIGHT.test(m.reason ?? "");
 }
 
 /**

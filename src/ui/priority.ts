@@ -64,7 +64,16 @@ export interface PriorityInput {
   held?: boolean;
   /** The kind of the run behind an `agent_needs_human` block (core/policy.ts `blockingRunKind`), else null. */
   asked_by?: RunKind | null;
+  /** The owner's dashboard command stored and not carried out by the controller yet (list.ts pendingOf), else null. */
+  pending?: Pending | null;
 }
+
+/**
+ * A dashboard command the controller has not carried out yet (design 09-dashboard-item-commands): an Approve whose
+ * run is not queued yet (its run's kind), or a Merge request not handled yet (its 1-based place among them). The
+ * stored state is unchanged; the ranking shows it as queued, never as stuck or ready to merge.
+ */
+export type Pending = { command: "approve"; kind: RunKind } | { command: "merge"; position: number };
 
 export interface Ranked<T extends PriorityInput> {
   input: T;
@@ -89,12 +98,14 @@ function staleRun(i: PriorityInput, now: number, lease_ms: number): boolean {
  * triage", a spec to approve (also at its revision limit) "Needs approval", every other one (and the budget check)
  * "Needs you". Another item's block (a deadlock claim, a dependency hold, a coordination hold, a phase or upstream
  * hold) is "Blocked by another task", never stuck; a dependency or coordination hold waits even while its run is
- * queued (issue #310). A running run past its lease is stuck; an open item that waits on nothing and has no queued
- * or running run is stuck too (nothing moves it).
+ * queued (issue #310). A pending dashboard command (an Approve whose run is not queued yet, a Merge not handled yet)
+ * is queued. A running run past its lease is stuck; an open item that waits on nothing and has no queued or running
+ * run is stuck too (nothing moves it).
  */
 export function levelOf(i: PriorityInput, now: Date, lease_ms: number): Level {
   const p = phaseOf(i);
   if (isClosedPhase(p)) return "closed";
+  if (i.pending) return "queued";
   if (p === "merge_pending") return "ready_to_merge";
   if (p === "spec_pending" || p === "max_revisions") return "needs_approval";
   if (p === "agent_needs_human" && i.asked_by === "triage") return "needs_triage";
@@ -155,7 +166,7 @@ export function badgesOf(i: PriorityInput, level: Level, now: Date, lease_ms: nu
       main = i.run ? `running ${i.run.kind}` : "waiting for CI";
       break;
     case "queued":
-      main = !i.run ? "next run queued" : i.run.paused_at ? `paused ${i.run!.kind}` : `queued ${i.run!.kind}`;
+      main = i.pending?.command === "merge" ? `merge queued (position ${i.pending.position})` : i.pending ? `queued ${i.pending.kind}` : !i.run ? "next run queued" : i.run.paused_at ? `paused ${i.run!.kind}` : `queued ${i.run!.kind}`;
       break;
     case "blocked_by_task":
       main = blockedBadge(i);
