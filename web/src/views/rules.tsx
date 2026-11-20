@@ -338,8 +338,11 @@ function EntryDetail({ entry, applied }: { entry: RuleRow; applied: AppliedRule[
   );
 }
 
-/** A proposal's before and after lines, read without opening anything; a side the ledger did not give is left out. */
-function Excerpt({ excerpt }: { excerpt: { before?: string; after?: string } }) {
+/** A waiting proposal's first changed lines, by ID, from `GET /api/v1/rules`; a side the ledger did not give is absent. */
+type Excerpt = { before?: string; after?: string };
+
+/** A proposal's before and after lines, read without opening anything. */
+function ExcerptBlock({ excerpt }: { excerpt: Excerpt }) {
   const sides = ([["before", "rules.before"], ["after", "rules.after"]] as const).filter(([k]) => excerpt[k] !== undefined);
   return (
     <div data-rule-excerpt className="grid gap-2 sm:grid-cols-2">
@@ -353,7 +356,7 @@ function Excerpt({ excerpt }: { excerpt: { before?: string; after?: string } }) 
   );
 }
 
-function RuleCard({ entry, excerpt, applied, token }: { entry: RuleRow; excerpt?: { before?: string; after?: string } | undefined; applied: AppliedRule[]; token: string | null }) {
+function RuleCard({ entry, excerpt, applied, token }: { entry: RuleRow; excerpt?: Excerpt | undefined; applied: AppliedRule[]; token: string | null }) {
   const [open, setOpen] = useState<RuleVerdict | null>(null);
   const menu = useRef<HTMLDivElement>(null);
   // The menu item that opened a dialog is gone when it closes: focus goes back to the menu's ⋯ button.
@@ -378,7 +381,7 @@ function RuleCard({ entry, excerpt, applied, token }: { entry: RuleRow; excerpt?
           {proposalLine(entry.kind, entry.target)}
         </p>
       )}
-      {excerpt !== undefined && <Excerpt excerpt={excerpt} />}
+      {excerpt !== undefined && <ExcerptBlock excerpt={excerpt} />}
       <Disclosure lazy summary={t("rules.showDetail")}>
         <EntryDetail entry={entry} applied={applied} />
       </Disclosure>
@@ -634,7 +637,7 @@ export function RulesPage() {
                 </p>
                 <ul aria-label={t(g.title)} className="divide-y divide-border rounded-control border border-border">
                   {entries.map((e) => (
-                    <RuleCard key={e.id} entry={e} excerpt={v.excerpts?.[e.id]} applied={applied} token={token} />
+                    <RuleCard key={e.id} entry={e} excerpt={(v as RulesView & { excerpts?: Record<string, Excerpt> }).excerpts?.[e.id]} applied={applied} token={token} />
                   ))}
                 </ul>
               </Card>

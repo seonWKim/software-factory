@@ -128,8 +128,6 @@ export interface AgentsHomeView {
 export interface RulesView {
   enabled: boolean;
   entries: RuleRow[];
-  /** A waiting proposal's before and after lines by its ID (first changed lines, cut short); a proposal without any has no key. */
-  excerpts?: Record<string, { before?: string; after?: string }>;
   /** The rules file's blocks and encoded-elsewhere lines; null with the ledger off. */
   applied: { rules: AppliedRule[]; elsewhere: string[] } | null;
   /** The retired classes, newest first; null with the ledger off (absent from an older server). */
