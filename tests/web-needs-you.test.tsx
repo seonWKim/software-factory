@@ -25,7 +25,7 @@ const MERGE = row("m1", "ready_to_merge", "Ship the parser", {
 const CHECKING = row("m2", "ready_to_merge", "Ship the lexer", { merge: { enabled: true, reason: null }, merge_check: { state: "checking", conflicts: [], head_sha: null, base_sha: null, checked_at: null } });
 const APPROVE = row("a1", "needs_approval", "Approve the spec", { commands: ["approve", "reject", "revise"].map(cmd) });
 const RETRY = row("r1", "needs_you", "Fix the build", { commands: ["retry", "reject"].map(cmd), need: { reason: WHY, anchor: null } });
-const NOTHING = row("n1", "needs_you", "Look at this", { commands: [] });
+const NOTHING = row("n1", "needs_you", "Look at this", { commands: [], need: { reason: "failed: spec_conflict", anchor: null } });
 const DEP = row("5b2b", "running", "Add the input component", { blocked_on: "none", need: undefined });
 
 let list: object[];
@@ -166,6 +166,38 @@ describe("the Needs you section", () => {
     });
     expect(sent.textContent).toBe("Sent, waiting…");
     expect(sent.disabled).toBe(true);
+  });
+
+  it("shows a reason that is only a status code as a chip beside the badge, not as a line under it", async () => {
+    mount();
+    const lists = await ready();
+    const row = rowsOf(lists[2]!)[1]!;
+    const need = row.querySelector<HTMLElement>("[data-need]")!;
+    expect(need.tagName).toBe("SPAN");
+    // The chip is the shared neutral Badge, a direct child of the reason's wrapper, in the badge row.
+    const chip = need.firstElementChild as HTMLElement;
+    expect(chip.tagName).toBe("SPAN");
+    expect(chip.className).toContain("rounded-pill");
+    expect(chip.hasAttribute("data-level")).toBe(false);
+    expect(chip.textContent).toBe("failed: spec_conflict");
+    expect(need.parentElement!.querySelector("[data-level='needs_you']")).not.toBeNull();
+    expect(row.querySelector("p[data-need]")).toBeNull();
+    // A sentence stays a line.
+    expect(rowsOf(lists[2]!)[0]!.querySelector("[data-need]")!.tagName).toBe("P");
+  });
+
+  it("links a status-code chip to the thread entry its reason names", async () => {
+    list = list.map((r) => (r === NOTHING ? { ...NOTHING, need: { reason: "failed: spec_conflict", anchor: "entry-7" } } : r));
+    mount();
+    const lists = await ready();
+    const need = rowsOf(lists[2]!)[1]!.querySelector<HTMLElement>("span[data-need]")!;
+    const link = need.firstElementChild as HTMLAnchorElement;
+    expect(link.tagName).toBe("A");
+    expect(link.getAttribute("href")).toMatch(/wi_n1.*#entry-7$/);
+    const chip = link.firstElementChild as HTMLElement;
+    expect(chip.className).toContain("rounded-pill");
+    expect(chip.hasAttribute("data-level")).toBe(false);
+    expect(chip.textContent).toBe("failed: spec_conflict");
   });
 
   it("moves between rows with j and k, opens the item with Enter, presses the primary action with p (never Merge)", async () => {
