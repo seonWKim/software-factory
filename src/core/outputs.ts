@@ -63,7 +63,23 @@ export interface SpecDecision {
   reason?: string;
   /** The answers to pick from, the default among them; absent or empty for a free answer. */
   options?: string[];
+  /**
+   * What picking an option changes (design 04-triage, 2026-11-21): its extra allowed paths and the done-when lines it
+   * changes, one entry per option that changes any. Absent on an older decision and when no option changes anything.
+   */
+  option_changes?: OptionChange[];
 }
+
+/** One option's changes to the spec: the paths it needs beyond allowed_paths, and the done-when lines it changes. */
+export interface OptionChange {
+  option: string;
+  extra_paths: string[];
+  done_when: string[];
+}
+
+/** The changes of the option `answer` picks on decision `d`, or null when it changes nothing (or is no option). */
+export const optionChange = (d: Pick<SpecDecision, "option_changes">, answer: string | null): OptionChange | null =>
+  d.option_changes?.find((c) => c.option === answer) ?? null;
 
 /** How many options a decision with options offers (issue #526); a decision may also have none. */
 export const MIN_OPTIONS = 2;
@@ -213,6 +229,16 @@ export const TRIAGE_SCHEMA = {
           options: { ...strings, maxItems: MAX_OPTIONS, description: `[] for a free answer, or ${MIN_OPTIONS} to ${MAX_OPTIONS} answers to pick from.` },
           default: { type: "string", description: "The answer you propose, one of the options when there are any; the factory takes it when it approves on its own." },
           owner_only: { type: "boolean", description: "true when only the owner may answer: no default fits, or the choice is risky." },
+          option_changes: {
+            type: "array",
+            maxItems: MAX_OPTIONS,
+            description: "[] when no option changes the spec. Otherwise one entry per option that does: the paths it needs outside allowed_paths and the done-when lines it changes.",
+            items: closed({
+              option: { type: "string", description: "One of the options, as written there." },
+              extra_paths: { ...strings, description: "Repo-relative paths this option needs that allowed_paths does not cover. [] when none." },
+              done_when: { ...strings, description: "The done-when lines this option changes, each as the line it becomes. [] when none." },
+            }),
+          },
       }),
     },
     applied_defaults: { ...strings, maxItems: MAX_APPLIED_DEFAULTS },
@@ -378,7 +404,38 @@ function parseQuestion(d: Record<string, unknown>, at: string): SpecDecision | s
   const def = defaultOf(d.default);
   if (options.length > 0 && (def === null || !options.includes(def))) return `${at}.default: must be one of the options`;
   if (d.owner_only !== undefined && typeof d.owner_only !== "boolean") return `${at}.owner_only: must be true or false`;
-  return { text: d.question, default: def, owner_only: d.owner_only !== false || def === null, reason: d.reason, ...(options.length > 0 ? { options } : {}) };
+  const changes = parseOptionChanges(d.option_changes, options, at);
+  if (isStr(changes)) return changes;
+  return {
+    text: d.question, default: def, owner_only: d.owner_only !== false || def === null, reason: d.reason, ...(options.length > 0 ? { options } : {}),
+    ...(changes.length > 0 ? { option_changes: changes } : {}),
+  };
+}
+
+/**
+ * A decision's `option_changes` (design 04-triage, 2026-11-21): absent is none; otherwise each entry names one of the
+ * options once, with safe repo-relative `extra_paths` (no `.claude/`) and `done_when` lines. An entry that changes
+ * nothing is dropped. The error names the field.
+ */
+function parseOptionChanges(v: unknown, options: readonly string[], at: string): OptionChange[] | string {
+  if (v === undefined || v === null) return [];
+  const field = `${at}.option_changes`;
+  if (!Array.isArray(v)) return `${field}: must be a list`;
+  const out: OptionChange[] = [];
+  for (const [i, c] of v.entries()) {
+    const here = `${field}[${i}]`;
+    if (!isObj(c) || !isStr(c.option) || !options.includes(c.option)) return `${here}.option: must be one of the options`;
+    if (out.some((o) => o.option === c.option)) return `${here}.option: names an option twice`;
+    const extra_paths = c.extra_paths ?? [];
+    if (!isStrs(extra_paths) || !extra_paths.every(isSafePath)) return `${here}.extra_paths: must be repo-relative paths`;
+    const ownerOnly = ownerOnlyError(`${here}.extra_paths`, extra_paths);
+    if (ownerOnly) return ownerOnly;
+    const done_when = c.done_when ?? [];
+    if (!isStrs(done_when)) return `${here}.done_when: must be a list of strings`;
+    const lines = done_when.filter((l) => l.trim() !== "");
+    if (extra_paths.length > 0 || lines.length > 0) out.push({ option: c.option, extra_paths, done_when: lines });
+  }
+  return out;
 }
 
 /**
@@ -398,9 +455,13 @@ function parseDecisions(v: unknown): Validation<SpecDecision[]> {
       out.push(q);
     } else if (isObj(d) && isStr(d.text) && (d.default === undefined || d.default === null || isStr(d.default))) {
       const def = defaultOf(d.default);
+      const options = isStrs(d.options) ? d.options : [];
+      const changes = parseOptionChanges(d.option_changes, options, at);
+      if (isStr(changes)) return { ok: false, error: changes };
       out.push({
         text: d.text, default: def, owner_only: d.owner_only !== false || def === null,
-        ...(isStr(d.reason) ? { reason: d.reason } : {}), ...(isStrs(d.options) && d.options.length > 0 ? { options: d.options } : {}),
+        ...(isStr(d.reason) ? { reason: d.reason } : {}), ...(options.length > 0 ? { options } : {}),
+        ...(changes.length > 0 ? { option_changes: changes } : {}),
       });
     } else return { ok: false, error: `${at}.question: must be a non-empty string` };
   }
@@ -471,7 +532,9 @@ export function parseTriage(v: unknown, limits?: SplitLimits): Validation<Triage
   // Bare tool-call markup (issue #446) is refused, never repaired: the run is retried like any invalid output.
   const markup = markupError({
     in_short, problem, desired_output, tier_reason, ...(lists ? { in_scope: scoped.in_scope, out_of_scope: scoped.out_of_scope } : { scope: scoped.scope }),
-    done_criteria, decisions: [...decisions, ...decision_items.flatMap((d) => [d.reason ?? "", ...(d.options ?? [])])], applied_defaults,
+    done_criteria,
+    decisions: [...decisions, ...decision_items.flatMap((d) => [d.reason ?? "", ...(d.options ?? []), ...(d.option_changes ?? []).flatMap((c) => c.done_when)])],
+    applied_defaults,
   });
   if (markup) return { ok: false, error: markup };
   if (!isStrs(allowed_paths) || allowed_paths.length === 0 || !allowed_paths.every(isSafePath)) {

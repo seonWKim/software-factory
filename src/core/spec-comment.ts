@@ -1,6 +1,6 @@
 import { type CommandState, commandFooter } from "./commands.js";
 import type { AddedPath } from "./companions.js";
-import { MAX_DECISIONS, type TriageOutput, type TriagePhase } from "./outputs.js";
+import { MAX_DECISIONS, type OptionChange, type TriageOutput, type TriagePhase } from "./outputs.js";
 import { type MissingAnswer, missingAnswers, missingValues, specText } from "./given-values.js";
 import { inShortParagraphs } from "./pr-body.js";
 import type { Tier } from "./types.js";
@@ -89,6 +89,20 @@ export function repeatsDone(desired: string, done: readonly string[]): boolean {
 }
 
 /**
+ * What each option of a decision changes (design 04-triage, 2026-11-21), one nested bullet per option that changes
+ * anything, under the decision's line: the paths it needs outside the allowed paths and the done-when lines it changes.
+ */
+function optionLines(changes: readonly OptionChange[]): string[] {
+  return changes.map((c) => {
+    const parts = [
+      ...(c.extra_paths.length ? [`needs ${c.extra_paths.map((p) => `\`${p}\``).join(", ")} (add with \`+paths\`)`] : []),
+      ...(c.done_when.length ? [`changes done when: ${c.done_when.join("; ")}`] : []),
+    ];
+    return `   - If you answer "${c.option}": ${parts.join("; ")}`;
+  });
+}
+
+/**
  * How to answer the numbered decisions (issue #527): the reply the command parser reads on an `/approve` from any
  * source, one `N: <answer>` line per decision (src/shared/command-notes.ts), and what an unanswered one takes.
  */
@@ -160,7 +174,7 @@ export function renderSpec(
   // The decisions are numbered (issue #526): `/approve` answers decision N with an `N: <answer>` line.
   const decisions = [
     ...(tier > spec.tier ? [`- Tier raised from ${spec.tier} to ${tier} because ${raiseReason(tier, spec.tier, why)}.`] : []),
-    ...(spec.decisions ?? []).map((d, i) => `${i + 1}. ${d}`),
+    ...(spec.decisions ?? []).map((d, i) => [`${i + 1}. ${d}`, ...optionLines(spec.decision_items?.[i]?.option_changes ?? [])].join("\n")),
   ];
   if (decisions.length > 0) {
     out.push("### Decisions for you", ...folded(decisions, MAX_DECISIONS, (n) => `${n} more`), "");
