@@ -21,12 +21,12 @@ import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { Tabs } from "../components/ui/tabs.js";
 import { cn } from "../lib/cn.js";
 import { useUrlParam } from "../lib/url-param.js";
-import type { MessageKey } from "../i18n/en.js";
+import { type MessageKey, en } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { LEVEL_LABELS, duration, errorLabel, groupedInteger, isHttpUrl, localClock, localDateTime, relativeTime, runStatusLabel, termLabel, shortRev, shortSource, tokens } from "../lib/format.js";
+import { LEVEL_LABELS, duration, groupedInteger, isHttpUrl, isWorkerId, localClock, localDateTime, relativeTime, termLabel, shortRev, shortSource, tokens, workerName } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
-import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, When, byId, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
+import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, When, byId, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
 import { ItemDecision } from "./decision-card.js";
 import { type SupervisorActionName, SupervisorActions } from "./system-banner.js";
 import { Thread } from "./thread.js";
@@ -484,26 +484,36 @@ export function ItemPage({ id }: { id: string }) {
       )}
       <Card title={t("item.runs")} count={runs.length}>
         {runs.length === 0 ? <EmptyState title={t("item.noRun")} /> : (
-          <Table label={t("item.runs")} head={[t("item.kind"), t("col.attempt"), t("item.status"), t("item.error"), t("col.worker"), t("item.started"), t("item.took"), t("col.tokens"), t("item.transcript")]}>
-            {[...runs].reverse().map((r) => (
+          <Table label={t("item.runs")} head={[t("item.step"), t("item.try"), t("item.result"), t("item.error"), t("col.worker"), t("item.started"), t("item.took"), t("col.tokens"), t("item.transcript")]}>
+            {foldRuns(runs).map(({ run: r, tries }) => (
               <Tr key={r.id} data-run={r.id}>
                 <Td className="min-w-40">
-                  {runKindLabel(r.kind)} <code className="font-mono text-xs break-all text-text-2">{r.id}</code>
+                  {runKindLabel(r.kind)}{" "}
+                  {tries.length === 1 ? <code className="font-mono text-xs break-all text-text-2">{r.id}</code> : (
+                    <RawDetails className="mt-1">
+                      <ul aria-label={t("item.runIds")} className="mt-1 font-mono text-xs break-all">
+                        {tries.map((x) => <li key={x.id}>{x.id}</li>)}
+                      </ul>
+                    </RawDetails>
+                  )}
                 </Td>
-                <Td className="tabular-nums">{t("item.attempt", { attempt: r.attempt })}</Td>
-                <Td><Badge level={r.status === "running" ? "running" : r.status === "failed" ? "stuck" : undefined}>{runStatusLabel(r.status)}</Badge></Td>
+                <Td className="tabular-nums">{tries.length > 1 ? t("item.foldedTries", { count: tries.length }) : t("item.tryNumber", { number: Math.max(1, r.attempt) })}</Td>
+                <Td><Badge level={r.status === "running" ? "running" : r.status === "failed" ? "stuck" : undefined}>{runResultLabel(r.status)}</Badge></Td>
                 <Td className="max-w-md min-w-40 text-xs break-words text-text-1">
                   {r.error ? (
                     <>
-                      <span className="font-medium">{r.error.code ? errorLabel(r.error.code) : t("format.unknown")}</span>{r.error.detail ? `: ${r.error.detail}` : ""}
-                      {r.error.code && <RawDetails><code className="font-mono">{r.error.code}</code></RawDetails>}
+                      <span className="font-medium">{errorSentence(r.error.code)}</span>
+                      <RawDetails>
+                        {r.error.code && <code className="font-mono">{r.error.code}</code>}
+                        {r.error.detail && <p className="mt-1 whitespace-pre-wrap">{r.error.detail}</p>}
+                      </RawDetails>
                     </>
                   ) : "–"}
                 </Td>
                 <Td><WorkerName id={r.attempts?.at(-1)?.worker_id} /></Td>
                 <Td className="tabular-nums whitespace-nowrap"><When at={r.started_at} now={now} /></Td>
                 <Td className="tabular-nums">{r.started_at && r.finished_at ? duration(Date.parse(r.finished_at) - Date.parse(r.started_at)) : "–"}</Td>
-                <Td className="tabular-nums">{tokens(r.tokens)}</Td>
+                <Td className="tabular-nums">{tokens(tries.reduce((sum, x) => sum + (x.tokens ?? 0), 0))}</Td>
                 <Td className="whitespace-nowrap">
                   {(transcripts[r.id]?.length ?? 0) > 0 ? (
                     <Link href={transcriptPath(item.id, r.id)} className={LINK_CLASS}>{t("item.open")}</Link>
@@ -610,11 +620,6 @@ function shortValue(v: unknown): string {
   return String(v);
 }
 
-/** A short change value for a sentence: a stored code (`wont_do`) as words, anything else as `shortValue`. */
-function plainValue(v: unknown): string {
-  return typeof v === "string" ? termLabel(v) : shortValue(v);
-}
-
 /** A health check's status word. */
 const CHECK_KEYS: Readonly<Record<string, MessageKey>> = { ok: "check.ok", warn: "check.warn", fail: "check.fail" };
 const checkLabel = (status: string): string => (CHECK_KEYS[status] ? t(CHECK_KEYS[status]) : status);
@@ -623,6 +628,42 @@ const checkLabel = (status: string): string => (CHECK_KEYS[status] ? t(CHECK_KEY
 function specMarkdown(v: unknown): string {
   if (Array.isArray(v)) return v.map((x) => `- ${shortValue(x)}`).join("\n");
   return shortValue(v);
+}
+
+/** The runs, newest first, with consecutive cancelled tries of one step folded into one row (its newest try, and every folded try). */
+function foldRuns(runs: ItemDetail["runs"]): { run: ItemDetail["runs"][number]; tries: ItemDetail["runs"] }[] {
+  const rows: { run: ItemDetail["runs"][number]; tries: ItemDetail["runs"] }[] = [];
+  for (const run of [...runs].reverse()) {
+    const prev = rows.at(-1);
+    if (prev && run.status === "canceled" && prev.run.status === "canceled" && prev.run.kind === run.kind) prev.tries.push(run);
+    else rows.push({ run, tries: [run] });
+  }
+  return rows;
+}
+
+/** A run's status as the Result column reads it. */
+const runResultLabel = (status: string): string => (`item.result.${status}` in en ? t(`item.result.${status}` as MessageKey) : termLabel(status));
+
+/** A run error's one line: the sentence for its code, else "Failed". The code and the full text go behind Details. */
+function errorSentence(code: string | null | undefined): string {
+  const key = code ? [`item.error.${code}`, `term.${code}`, `failure.${code}.title`].find((k) => k in en) : undefined;
+  return t((key ?? "item.errorFailed") as MessageKey);
+}
+
+/** The timeline's actor as a phrase: "you" for the viewer, "the factory", "worker 2", else "a person" (never a name). */
+function actorPhrase(actor: TimelineEntry["actor"], viewer: string | null): string {
+  const id = actor.kind === "system" ? null : actor.id;
+  if (!id || id === "system") return t("person.factory");
+  if (isWorkerId(id)) return workerName(id);
+  return id === viewer ? t("person.you") : t("person.other");
+}
+
+/** One timeline row's sentence ("You asked for a retry"); "Changed" for a reason with no sentence. */
+function timelineSentence(entry: TimelineEntry, viewer: string | null): string {
+  const key = `timeline.${entry.reason}`;
+  if (!entry.reason || !(key in en)) return t("item.change");
+  const whom = actorPhrase(entry.actor, viewer);
+  return t(key as MessageKey, { who: whom.charAt(0).toLocaleUpperCase() + whom.slice(1), whom });
 }
 
 function TimelineRow({ entry, now, viewer }: { entry: TimelineEntry; now: number; viewer: string | null }) {
@@ -634,21 +675,14 @@ function TimelineRow({ entry, now, viewer }: { entry: TimelineEntry; now: number
     <li className="flex gap-3">
       <span className="w-16 shrink-0 text-right text-text-3 tabular-nums"><When at={entry.at} now={now} /></span>
       <div className="min-w-0 flex-1 break-words">
-        <span className="font-medium">{entry.reason ? termLabel(entry.reason) : t("item.change")}</span>
-        <span className="text-text-3">{t("item.by")}</span>
-        <PersonName id={entry.actor.kind === "system" ? null : entry.actor.id} name={entry.actor.name} viewer={viewer} />
-        {short.length > 0 && (
-          <span className="text-text-2">
-            {" "}— {short.map(([f, c]) => `${termLabel(f)}: ${plainValue(parseValue(c.from))} → ${plainValue(parseValue(c.to))}`).join(", ")}
-          </span>
-        )}
-        {short.length > 0 && (
-          <RawDetails className="mt-1">
-            <ul className="mt-1 font-mono text-xs break-all">
-              {short.map(([f, c]) => <li key={f}>{`${f}: ${shortValue(parseValue(c.from))} → ${shortValue(parseValue(c.to))}`}</li>)}
-            </ul>
-          </RawDetails>
-        )}
+        <span className="font-medium">{timelineSentence(entry, viewer)}</span>
+        <RawDetails className="mt-1">
+          <ul className="mt-1 font-mono text-xs break-all">
+            {entry.reason && <li>{entry.reason}</li>}
+            <li>{entry.actor.id}</li>
+            {short.map(([f, c]) => <li key={f}>{`${f}: ${shortValue(parseValue(c.from))} → ${shortValue(parseValue(c.to))}`}</li>)}
+          </ul>
+        </RawDetails>
         {spec.length > 0 && (
           <div className="mt-1">
             <Button variant="ghost" size="sm" aria-expanded={open} onClick={() => setOpen(!open)} className={LINK_CLASS}>

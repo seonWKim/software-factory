@@ -33,7 +33,7 @@ const detail = (extra: object = {}) => ({
   item: item(),
   timeline: [
     { version: 1, at: AT, actor: { kind: "user", id: "local:me" }, reason: "intake", changes: {}, detail: null },
-    { version: 2, at: AT, actor: { kind: "user", id: "github:4711", name: null }, reason: "comment", changes: {}, detail: null },
+    { version: 2, at: AT, actor: { kind: "user", id: "github:4711", name: null }, reason: "retry_requested", changes: {}, detail: null },
   ],
   runs: [{ id: "run_t1", kind: "triage", status: "succeeded", attempt: 1, started_at: AT, finished_at: AT, created_at: AT, tokens: 5, error: null, attempts: [{ attempt: 1, worker_id: "mac-mini:4242:3" }] }],
   commands: ["approve", "revise", "reject"].map(cmd),
@@ -242,13 +242,12 @@ describe("item page: DecisionCard", () => {
     expect(main.querySelector("[data-cli-hint]")).toBeNull();
   });
 
-  it("shows the owner as you and a worker as worker N, each ID in a tooltip on its name", async () => {
+  it("shows the owner as you and a worker as worker N, each ID in a tooltip on its name; the timeline names them in its sentences", async () => {
     mount();
     await box();
     const timeline = screen.getByRole("region", { name: "Timeline" });
-    const people = [...timeline.querySelectorAll("[data-id]")].map((s) => s.textContent);
-    expect(people).toContain("you");
-    expect(people).toContain("a person");
+    expect(timeline.textContent).toContain("Created by you");
+    expect(timeline.textContent).toContain("A person asked for a retry");
     const runs = screen.getByRole("table", { name: "Runs" });
     const worker = runs.querySelector("[data-id]")!;
     expect(worker.tagName).toBe("BUTTON");
