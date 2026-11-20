@@ -7,7 +7,7 @@ import { recurringStalls } from "../src/core/alarms.js";
 import { normalizeDetail, patternKey } from "../src/core/improver.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
-import { modelStallChecks, modelStallLine } from "../src/ui/factory-status.js";
+import { localWithOffset, modelStallChecks, modelStallLine } from "../src/ui/factory-status.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { FakeAuth, PROJECT, cleanScanner, pipeline } from "./helpers/fakes.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
@@ -147,7 +147,8 @@ describe("stalled runs", () => {
     const t2 = f.clock.now().getTime();
     expect(await f.store.getClaimPause("model_stall")).toBe(iso(t2 + PROBE_MS));
     expect(await f.w1.tick()).toBe(false);
-    expect(await modelStallLine(f.store)).toBe(`agents paused: model not answering since ${iso(f.stalledAt)}, next probe at ${iso(t2 + PROBE_MS)}`);
+    expect(await modelStallLine(f.store)).toBe(`agents paused: model not answering since ${localWithOffset(iso(f.stalledAt))}, next probe at ${localWithOffset(iso(t2 + PROBE_MS))}`);
+    expect(await modelStallChecks(f.store)).toEqual([{ ok: false, msg: "agents paused: model not answering", since: iso(f.stalledAt), next: iso(t2 + PROBE_MS) }]);
 
     f.clock.advance(PROBE_MS);
     await f.prober.tickModelProbe();
@@ -174,12 +175,12 @@ describe("stalled runs", () => {
     const again = f.clock.now().getTime();
     const p = await f.store.pauseClaims(iso(again + PROBE_MS), "model_stall");
     expect(p).toMatchObject({ started: true, resume_at: iso(again + PROBE_MS) });
-    expect(await modelStallLine(f.store)).toBe(`agents paused: model not answering since ${iso(again)}, next probe at ${iso(again + PROBE_MS)}`);
+    expect(await modelStallLine(f.store)).toBe(`agents paused: model not answering since ${localWithOffset(iso(again))}, next probe at ${localWithOffset(iso(again + PROBE_MS))}`);
     // A second stall during the same pause starts nothing and keeps the since time.
     f.clock.advance(1_000);
     expect(await f.store.pauseClaims(iso(again + 1_000 + PROBE_MS), "model_stall")).toMatchObject({ started: false });
     expect(await modelStallLine(f.store)).toBe(
-      `agents paused: model not answering since ${iso(again)}, next probe at ${iso(again + 1_000 + PROBE_MS)}`,
+      `agents paused: model not answering since ${localWithOffset(iso(again))}, next probe at ${localWithOffset(iso(again + 1_000 + PROBE_MS))}`,
     );
   });
 });
@@ -242,17 +243,31 @@ describe("who probes a due stall pause", () => {
 describe("the stall pause line", () => {
   it("factory status and the dashboard show it during a pause, and not without one", async () => {
     const f = await stalled();
-    const line = `agents paused: model not answering since ${iso(f.stalledAt)}, next probe at ${iso(f.stalledAt + PROBE_MS)}`;
-    // factory status
+    const line = `agents paused: model not answering since ${localWithOffset(iso(f.stalledAt))}, next probe at ${localWithOffset(iso(f.stalledAt + PROBE_MS))}`;
+    // factory status: local time with its offset, never an ISO instant
     expect(await modelStallLine(f.store)).toBe(line);
-    // the dashboard's health report (/api/health)
+    expect(line).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
+    // the dashboard's health report (/api/health): the instants as fields, none in the sentence
     const health = new HealthMonitor(() => modelStallChecks(f.store), f.clock, 0);
-    expect((await health.report(cleanScanner)).checks).toContainEqual({ status: "fail", msg: line });
+    expect((await health.report(cleanScanner)).checks).toContainEqual({
+      status: "fail", msg: "agents paused: model not answering", since: iso(f.stalledAt), next: iso(f.stalledAt + PROBE_MS),
+    });
 
     f.clock.advance(PROBE_MS);
     await f.prober.tickModelProbe();
     expect(await modelStallLine(f.store)).toBeNull();
     expect((await health.report(cleanScanner)).checks.map((c) => c.msg).join("\n")).not.toContain("agents paused");
+  });
+});
+
+describe("localWithOffset", () => {
+  it("prints an instant as local `YYYY-MM-DD HH:MM +HH:MM`, the same minute as the instant", () => {
+    const at = "2026-11-19T16:11:54.203Z";
+    const out = localWithOffset(at);
+    const m = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) ([+-]\d{2}:\d{2})$/.exec(out);
+    expect(m).not.toBeNull();
+    expect(Date.parse(`${m![1]}T${m![2]}:00${m![3]}`)).toBe(Date.parse("2026-11-19T16:11:00.000Z"));
+    expect(localWithOffset("soon")).toBe("soon");
   });
 });
 

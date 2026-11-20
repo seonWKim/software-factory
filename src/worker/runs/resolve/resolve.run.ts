@@ -94,6 +94,9 @@ async function mergeAndResolve(
   const tipSha = (await w.git(handle, ["rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"])).trim();
   const realIndex = (await w.git(handle, ["rev-parse", "--path-format=absolute", "--git-path", "index"])).trim();
   const index = (await w.git(handle, ["rev-parse", "--path-format=absolute", "--git-path", "sf-resolve-index"])).trim();
+  // The toolchain warms the branch tip, before the merge: the merged tree may not build until the agent fixes its
+  // conflicts (design 05-sandbox.md). The run is marked warmed, so its agent step does not warm again.
+  await w.warmOnce(run, handle, signal);
 
   const merge = await w.gitRaw(
     handle,

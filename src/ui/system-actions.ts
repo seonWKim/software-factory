@@ -13,7 +13,8 @@ import { MIGRATION_PENDING } from "../interfaces/updater.js";
 import { type Check, TOKEN_WARN_DAYS } from "../setup.js";
 import type { FactoryStatus } from "./factory-status.js";
 import { type AutoStopNote, alarmCommand, alarmText, alarmUntil, lastAutoStop, openAlarms } from "./alarms.js";
-import { activePauses } from "./pause-api.js";
+import type { ResumablePause } from "../resume-cmd.js";
+import { RESUME_IN_NEEDS_YOU, activePauses } from "./pause-api.js";
 
 export type SystemActionCode = "migration_pending" | "token_expiring" | "claim_pause" | "worker_pause" | "alarm" | "revision_mismatch";
 
@@ -27,7 +28,17 @@ export interface SystemAction {
   until: string | null;
   /** On the alarm of the auto-mode stop still in force (design 03-risk): its Needs-you row's stop line and its button. */
   auto_stop?: AutoStopNote;
+  /** On a claim pause: the pause's name, which its Needs-you row's Resume now posts. */
+  pause?: ResumablePause;
 }
+
+/** Each claim pause's plain name: the text of its Needs-you row, never the stored name. */
+const PAUSE_NAMES: Record<ResumablePause, string> = {
+  rate_limit: "Usage or rate limit",
+  forge_auth: "Forge refused the credentials",
+  preflight_access: "Push or PR access check failed",
+  model_stall: "Model not answering",
+};
 
 /**
  * The checks of this process's last health run, kept as they finished: Needs you reads the token's days from
@@ -137,9 +148,10 @@ export async function systemActions(x: SystemInput): Promise<SystemAction[]> {
   }
 
   for (const p of await activePauses(x)) {
-    const what = p.name === "model_stall" ? `next probe at ${p.ends_at}` : `until ${p.ends_at}`;
-    // The dashboard action first, the CLI command as the fallback.
-    add("claim_pause", `Claim pause ${p.name} in effect, ${what}`, `Resume now on the Status page (/app/), or factory resume ${p.name}`, p.ends_at);
+    // The plain name; the row shows `until` (model_stall's next probe) as a relative time. The dashboard action first,
+    // the CLI command as the fallback; the Tasks row draws the button, never this command.
+    add("claim_pause", PAUSE_NAMES[p.name], `${RESUME_IN_NEEDS_YOU}, or factory resume ${p.name}`, p.ends_at);
+    out.at(-1)!.pause = p.name;
   }
   const workerPauses = await x.store.listWorkerPauses();
   // The CLI only: the dashboard has no worker pause or resume control yet.

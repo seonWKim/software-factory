@@ -6,6 +6,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ImproveView, RuleEntryView, RulesView } from "../web/src/api.js";
+import { localDateTime } from "../web/src/lib/format.js";
 import { PAGES, routeFor } from "../web/src/pages.js";
 
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
@@ -731,7 +732,11 @@ describe("Rules page: improve report and Run now (design 07-self-improvement, 20
     current = view({ improve: improve() });
     await show();
     const s = await section();
-    expect(s.querySelector("[data-improve-window]")!.textContent).toContain("2 groups (4 runs), 1 single-run patterns");
+    const windowText = s.querySelector("[data-improve-window]")!.textContent!;
+    expect(windowText).toContain("2 groups (4 runs), 1 single-run patterns");
+    // Each instant in the viewer's local time, never as the ISO text the API sent.
+    expect(windowText).toContain(`Window ${localDateTime(report!.window_start)} to ${localDateTime(report!.window_end)}, reported ${localDateTime(report!.created_at)}.`);
+    expect(windowText).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
     const rows = [...s.querySelectorAll<HTMLElement>("[data-improve-group]")];
     expect(rows.map((r) => r.dataset.improveGroup)).toEqual(["checks_failed", "no_commits"]);
     expect(rows[0]!.querySelector("[data-draft]")!.textContent).toContain("a flaky port");

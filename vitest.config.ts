@@ -17,7 +17,10 @@ export default defineConfig({
     // the default node environment.
     include: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],
     exclude: ["node_modules", "dist", ".worktrees", ".factory", ".vite-cache"],
-    testTimeout: 5_000,
+    // 15 s (2026-11-20; was 5 s): the factory's runs share the host, and at load 40 to 100 on 10 cores tests that take
+    // 1 to 4 s alone timed out, failed merge checks and stopped auto mode on a green main (all 6787 passed at 30 s).
+    // A test that hangs still fails, a few seconds later.
+    testTimeout: 15_000,
     ...(Number.isInteger(share) && share > 0 ? { maxWorkers: share } : {}),
   },
 });
