@@ -70,6 +70,8 @@ the topic file, never this index; add a line here only for a new topic file. "§
 - [09-health.md](design/09-health.md): the Health panel, schema probe.
 - [09-dashboard-app.md](design/09-dashboard-app.md): index of the dashboard page topics.
 - [09-dashboard-shell.md](design/09-dashboard-shell.md): sidebar, top bar, shared components, API.
+- [09-dashboard-shell-text.md](design/09-dashboard-shell-text.md): dashboard text: plain words, `t()`, the i18n catalog.
+- [09-dashboard-shell-serving.md](design/09-dashboard-shell-serving.md): dashboard serving, JSON API, build stamp, responsive check.
 - [09-dashboard-activity.md](design/09-dashboard-activity.md): the Activity page.
 - [09-dashboard-runners.md](design/09-dashboard-runners.md): the Runners page, Migrate now.
 - [09-dashboard-tasks.md](design/09-dashboard-tasks.md): Tasks, Calendar, Needs you, Project switcher.
