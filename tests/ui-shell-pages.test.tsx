@@ -2,6 +2,7 @@
 // Dashboard shell tests: one queued count, app pages, unreviewed merges, system actions and revisions. Shared setup is in ui-shell-fixtures.tsx.
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { localDateTime } from "../web/src/lib/format.js";
 import { redirectFor } from "../web/src/pages.js";
 import { ItemsTable } from "../web/src/views/common.js";
 import { API } from "../web/src/api.js";
@@ -359,6 +360,26 @@ describe("system actions, revisions and the tab title (issue #311)", () => {
       expect(folded.querySelector("summary")!.textContent).toBe("22 ok");
       expect(folded.querySelectorAll("li")).toHaveLength(22);
       for (const msg of ["token expires in 2 days", "push access denied"]) expect(folded.textContent).not.toContain(msg);
+    } finally {
+      RESPONSES["/api/v1/health"] = saved;
+    }
+  });
+
+  it("Health shows a stall check's since and next probe as relative times with the local time on hover, never ISO", async () => {
+    const since = "2026-11-19T16:11:54.203Z";
+    const next = "2026-11-19T16:21:54.203Z";
+    const saved = RESPONSES["/api/v1/health"];
+    RESPONSES["/api/v1/health"] = { checked_at: AT, checks: [{ status: "fail", msg: "agents paused: model not answering", since, next }] };
+    try {
+      history.replaceState(null, "", "/app/health");
+      mount();
+      const row = (await screen.findByText(/agents paused: model not answering/)).closest("li")!;
+      const times = [...row.querySelectorAll("time")];
+      expect(times.map((t) => t.getAttribute("datetime"))).toEqual([since, next]);
+      expect(times.map((t) => t.getAttribute("title"))).toEqual([localDateTime(since), localDateTime(next)]);
+      expect(times[0]!.textContent).toMatch(/^started /);
+      expect(times[1]!.textContent).toMatch(/^next probe /);
+      expect(row.textContent).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}|UTC/);
     } finally {
       RESPONSES["/api/v1/health"] = saved;
     }

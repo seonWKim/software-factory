@@ -698,7 +698,9 @@ export function RunnersPage() {
 
 const HEALTH_TONE: Record<string, string> = { ok: "running", warn: "needs_approval", fail: "stuck" };
 
+/** A check's row: its sentence, then its times (a probe pause's start and next probe) relative, the local time on hover. */
 function CheckList({ checks }: { checks: Health["checks"] }) {
+  const now = useNow();
   if (checks.length === 0) return null;
   return (
     <ul className="space-y-1 text-sm">
@@ -707,6 +709,8 @@ function CheckList({ checks }: { checks: Health["checks"] }) {
           <Badge level={HEALTH_TONE[c.status]}>{checkLabel(c.status)}</Badge>
           <span className="min-w-0 text-pretty break-words">
             {c.msg}
+            {c.since !== undefined && <span className="text-text-2">{" · "}<When at={c.since} now={now} label="health.checkSince" /></span>}
+            {c.next !== undefined && <span className="text-text-2">{" · "}<When at={c.next} now={now} label="health.checkNext" /></span>}
             {c.detail !== undefined && <RawDetails className="mt-1"><code className="font-mono text-xs whitespace-pre-wrap break-all">{c.detail}</code></RawDetails>}
           </span>
         </li>
