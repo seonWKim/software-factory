@@ -86,13 +86,12 @@ export class WorkerPool {
     const settings = this.live;
     const size = d.config.max_workers ?? d.config.workers;
     this.slotAwake = Array.from({ length: size }, () => new SlotAwake(awake));
-    const peers = Array.from({ length: size }, (_, i) => `${id_prefix}:${index_base + i}` as WorkerId);
-    this.workers = peers.map((id, i) => {
+    const ids = Array.from({ length: size }, (_, i) => `${id_prefix}:${index_base + i}` as WorkerId);
+    this.workers = ids.map((id, i) => {
       const index = index_base + i;
       const slotAwake = this.slotAwake[i]!;
       return new Worker({ ...shared, settings, id, index, awake: slotAwake, active: () => this.claims(i), hostRuns: () => this.hostRuns() }, {
         ...(engines ? { engines } : {}), ...(ticks ? { ticks } : {}), ...(pack_checks ? { pack_checks } : {}), ...(imported_mcp_refusals ? { imported_mcp_refusals } : {}),
-        peers,
       });
     });
     // id_prefix is `<host>:<pid>`.
