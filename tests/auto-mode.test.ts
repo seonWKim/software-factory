@@ -376,7 +376,8 @@ describe("auto mode: stop conditions", { timeout: 60_000 }, () => {
     await stopped(f, "red_main");
     // The stop is in force: its time and cause reach the Mode toggle and the system banner.
     const [alert] = (await f.store.listAlerts({ limit: 10 })).filter((a) => a.pattern === "auto_stopped");
-    expect(await lastAutoStop(f.store)).toEqual({ alert_id: alert!.id, at: alert!.created_at, cause: "red_main" });
+    // The failing command printed nothing: no test names and no tail to keep.
+    expect(await lastAutoStop(f.store)).toEqual({ alert_id: alert!.id, at: alert!.created_at, cause: "red_main", failing_tests: [], output_tail: null });
     const actions = await systemActions({ store: f.store, factory: null, deps: {}, now: f.clock.now(), dashboardRev: null });
     const line = actions.find((a) => a.auto_stop)!;
     expect(line.auto_stop).toMatchObject({ alert_id: alert!.id, cause: "red_main" });
