@@ -595,7 +595,7 @@ describe("Rules page", () => {
         { id: "P-0007", title: "Split the review prompt", state: "held", kind: "edit-asset", target: "prompts/review.md", judged: null, draft: null, draft_error: null },
       ],
       excerpts: { "P-20261103-34e9": { before: "notify every hour", after: "notify at 8am" } },
-    });
+    } as Partial<RulesView>);
     await show();
     await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
     const row = card("P-20261103-34e9");
