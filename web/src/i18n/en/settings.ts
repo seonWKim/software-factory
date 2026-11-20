@@ -76,6 +76,8 @@ export const settings = {
   "settings.tierAbove": "Tier 4 and the gate list always wait for a person.",
   "settings.tier": "Auto-merge tier",
   "settings.settableKeys": "Settable keys",
+  "settings.search": "Search settings",
+  "settings.noMatch": "No setting matches “{query}”.",
   "settings.groupRetries": "Retries",
   "settings.groupLimits": "Limits",
   "settings.groupModels": "Models",
