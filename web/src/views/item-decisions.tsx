@@ -3,6 +3,7 @@ import type { SpecDecision, WaitingSpec } from "../api.js";
 import type { RefObject } from "react";
 import { Dialog } from "../components/ui/dialog.js";
 import { Input } from "../components/ui/input.js";
+import { ValueBlock } from "../components/ui/key-value.js";
 import { Markdown } from "../components/ui/markdown.js";
 import { Radio } from "../components/ui/radio.js";
 import { Textarea } from "../components/ui/textarea.js";
@@ -12,7 +13,8 @@ import { Card } from "../components/ui/card.js";
 
 // The item page's spec panel (design §9, issue #526): the waiting spec's In short above Commands, and its decisions
 // as questions to answer before `approve`. A decision with options is a radio group with the default selected and
-// a `write my own` choice with a text field; one with none is a text field prefilled with the default. The answers
+// a `write my own` choice with a text field; one with none is a text field prefilled with the default. A layout
+// decision's options are text sketches, each in a monospace ValueBlock so its boxes line up. The answers
 // go out with the approve as `N: <answer>` lines (the controller's parser, src/shared/command-notes.ts), and the
 // confirm step names what is approved and what happens next. Reject and revise open a dialog (issue #527, shared
 // by the Floor and the item page): reject asks why (a reason and a free text) and says what closes; revise takes one
@@ -95,7 +97,7 @@ export function DecisionsPanel({
         const c = choices[i] ?? { own: true, value: "" };
         const label = `${i + 1}. ${d.question}`;
         return (
-          <fieldset key={i} data-decision={i + 1} className="min-w-0 max-w-xl">
+          <fieldset key={i} data-decision={i + 1} data-layout={d.layout || undefined} className="min-w-0 max-w-xl">
             <legend className="text-sm font-medium text-pretty break-words">
               {label}
               {d.owner_only && <span className="ml-1 text-xs text-text-2">{t("decisions.ownerOnly")}</span>}
@@ -105,7 +107,7 @@ export function DecisionsPanel({
               <div role="radiogroup" aria-label={label} className="mt-1 space-y-1">
                 {d.options.map((o) => (
                   <Radio key={o} name={`decision-${i + 1}`} checked={!c.own && c.value === o} onChange={() => onChange(i, { own: false, value: o })}>
-                    {o}
+                    {d.layout ? <ValueBlock>{o}</ValueBlock> : o}
                     {o === d.default && <span className="text-xs text-text-2">{t("decisions.default")}</span>}
                   </Radio>
                 ))}
