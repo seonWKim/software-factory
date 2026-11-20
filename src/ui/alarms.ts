@@ -6,7 +6,6 @@
 import { ALERT_DEDUPE_MS, RESTART_WINDOW_MS } from "../core/alarms.js";
 import { MODEL_RUN_KINDS } from "../core/model-choice.js";
 import { AUTO_ACTOR } from "../core/policy.js";
-import { utcMinute } from "../core/spec-comment.js";
 import { type Run, type WorkItem, runTokenCount } from "../core/types.js";
 import type { Alert, FactoryStore } from "../interfaces/factory-store.js";
 
@@ -31,11 +30,11 @@ export function alarmUntil(a: Alert): string {
   return new Date(Date.parse(a.created_at) + ALERT_DEDUPE_MS).toISOString();
 }
 
-/** The alarm in one plain sentence, without its detail (the why-it-waits sentence names it this way). */
+/** The alarm in one plain sentence, without its detail or any time (the why-it-waits sentence names it this way; the page shows `auto_stop.at`). */
 export function alarmText(a: Alert): string {
   if (a.pattern === "repeated_error") return `Alarm: ${a.error_code} failed ${a.count} runs on several items`;
   if (a.pattern === "zero_tokens") return `Alarm: ${a.count} agent runs in a row used no tokens`;
-  if (a.pattern === "auto_stopped") return `Alarm: back to manual at ${utcMinute(a.created_at)}: ${AUTO_STOP_TEXT[a.error_code] ?? a.error_code}`;
+  if (a.pattern === "auto_stopped") return `Alarm: back to manual: ${AUTO_STOP_TEXT[a.error_code] ?? a.error_code}`;
   if (a.pattern === "dead_letter") return `Alarm: a message on ${deadLetterTopic(a)} was dead-lettered (${DEAD_LETTER_TEXT[a.error_code] ?? a.error_code})`;
   if (a.pattern === "spend_budget") return `Alarm: spending passed ${spendOf(a).pct}% of the ${spendOf(a).period} budget`;
   if (a.pattern === "red_main") return `Alarm: the base branch fails its checks on its own at \`${redMainSha(a).slice(0, 12)}\`; merge-queue changes wait until it moves`;

@@ -380,7 +380,10 @@ describe("auto mode: stop conditions", { timeout: 60_000 }, () => {
     const actions = await systemActions({ store: f.store, factory: null, deps: {}, now: f.clock.now(), dashboardRev: null });
     const line = actions.find((a) => a.auto_stop)!;
     expect(line.auto_stop).toMatchObject({ alert_id: alert!.id, cause: "red_main" });
-    expect(line.text).toContain(`Alarm: back to manual at ${utcMinute(alert!.created_at)}: the checks failed on the base branch after a merge`);
+    expect(line.text).toContain("Alarm: back to manual: the checks failed on the base branch after a merge");
+    // The time is a field (`auto_stop.at`), never inside the sentence.
+    expect(line.text).not.toMatch(/\d{4}-\d{2}-\d{2}|UTC/);
+    expect(line.auto_stop!.at).toBe(alert!.created_at);
     // Manual again: the next spec waits.
     const next = await f.create();
     await f.step();
