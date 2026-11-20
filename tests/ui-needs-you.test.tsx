@@ -7,8 +7,9 @@ import { App } from "../web/src/App.js";
 
 // The Tasks page's Needs you section (design 09-dashboard-app; the Floor's list of design 09-status-page): one list first, one row per item that waits on the operator,
 // with its title, a one-line reason and the buttons that apply now. Items started past a deadlock are never rows and
-// never counted (decision 1). Each open alarm is its own row in the Check group: its sentence once, wrapped, and one
-// primary action that opens it on Failures; no dismiss. A row with no stored reason says the
+// never counted (decision 1). Each open alarm is its own row in the Check group: its sentence once, on one line, and a
+// "⋯" menu whose items open a dialog on the page (What failed for red main, Show failures for a repeated error); no
+// dismiss. A row with no stored reason says the
 // item's state and the next step.
 
 const AT = "2026-11-12T00:00:00.000Z";
@@ -26,7 +27,21 @@ const SPEC = row(30, "needs_approval", "Spec waiting for you", {
   stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", need: { reason: "spec ready", anchor: null },
   commands: ["approve", "reject", "revise"].map(cmd),
 });
-const ALARM = (n: number) => ({ code: "alarm", text: `Alarm: ${n}`, command: "Failures page (/app/failures)", until: AT });
+const ALARM = (n: number) => ({
+  code: "alarm", text: `Alarm: ${n}`, command: "Failures page (/app/failures)", until: AT, pattern: "repeated_error", error_code: "checks_failed",
+});
+const RED_MAIN = (output: { failing_tests: string[]; output_tail: string | null }) => ({
+  code: "alarm", text: "Alarm: the base branch fails its checks on its own at `abc`", command: "Fix the base branch", until: AT,
+  pattern: "red_main", error_code: "red_main", ...output,
+});
+const FAILURE_RUN = { id: "run_9", work_item_id: "wi_30", kind: "implement", attempt: 1, detail: "npm test exited 1", worker: null, finished_at: AT };
+const FAILURES = {
+  as_of: AT, window: "24h", cap: 500, total: 2, capped: false,
+  groups: [
+    { code: "checks_failed", count: 1, last_seen: AT, items: 1, runs: [FAILURE_RUN] },
+    { code: "agent_error", count: 1, last_seen: AT, items: 1, runs: [{ ...FAILURE_RUN, id: "run_8" }] },
+  ],
+};
 
 let responses: Record<string, unknown>;
 
@@ -39,6 +54,7 @@ beforeEach(() => {
     "/api/v1/queue": { as_of: AT, queue: [] },
     "/api/v1/pauses": { pauses: [], csrf_token: null },
     "/api/v1/session": { as_of: AT, csrf_token: "tok", commands_enabled: true, actor: "local:me", actor_source: "environment" },
+    "/api/v1/failures": FAILURES,
   };
   vi.stubGlobal("fetch", vi.fn(async (url: string) => {
     const body = responses[url.split("?")[0]!];
@@ -96,21 +112,12 @@ describe("Needs you on the Tasks page", () => {
       expect(section.querySelector("h2")!.nextElementSibling!.textContent).toBe(String(1 + n));
       expect(section.querySelectorAll("li[data-key], li[data-check]")).toHaveLength(1 + n);
       for (const r of rows) {
-        // Its one control is the ⋯ menu, whose only item opens Failures; no dismiss control.
+        // Its one control is the ⋯ menu, whose only item shows its failures; no dismiss control.
         expect(within(r).getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual(["More commands"]);
         fireEvent.click(within(r).getByRole("button", { name: "More commands" }));
-        expect(within(r).getAllByRole("menuitem").map((m) => [m.textContent, m.getAttribute("data-action")])).toEqual([["Open on Failures", "failures"]]);
+        expect(within(r).getAllByRole("menuitem").map((m) => [m.textContent, m.getAttribute("data-action")])).toEqual([["Show failures", "show_failures"]]);
         fireEvent.click(within(r).getByRole("button", { name: "More commands" }));
-        expect(r.textContent).not.toMatch(/dismiss/i);
-      }
-      if (n === 1) {
-        // Choosing it moves the app to the Failures section of Health, as the old link did.
-        fireEvent.click(within(rows[0]!).getByRole("button", { name: "More commands" }));
-        fireEvent.click(within(rows[0]!).getByRole("menuitem", { name: "Open on Failures" }));
-        await waitFor(() => expect(screen.getAllByRole("heading", { level: 1 }).map((h) => h.textContent)).toEqual(["Health"]));
-        cleanup();
-        history.replaceState(null, "", "/app/");
-        continue;
+        expect(r.textContent).not.toMatch(/dismiss|Open on Failures/i);
       }
       expect(document.body.textContent).not.toContain("Open alarms");
       expect(screen.queryByRole("list", { name: "System actions" })).toBeNull();
@@ -121,7 +128,7 @@ describe("Needs you on the Tasks page", () => {
   it("an alarm row shows its sentence once, with no Full text toggle; a long text stays on one line, cut with an ellipsis, with the full text as its tooltip, and never widens the page", async () => {
     const long = `Alarm: checks_failed failed 4 runs on several items: ${"npm test exited 1 in packages/very-long-workspace-name/".repeat(5)}${"x".repeat(80)}`;
     expect(long.length).toBeGreaterThan(200);
-    (responses["/api/v1/overview"] as { system_actions: unknown[] }).system_actions = [{ code: "alarm", text: long, command: "Failures page (/app/failures)", until: AT }];
+    (responses["/api/v1/overview"] as { system_actions: unknown[] }).system_actions = [{ ...ALARM(0), text: long }];
     mount();
     const row = (await screen.findByRole("list", { name: "Check" })).querySelector<HTMLElement>('li[data-check="alarm"]')!;
     const summary = row.querySelector<HTMLElement>("[data-alarm-summary]")!;
@@ -136,6 +143,67 @@ describe("Needs you on the Tasks page", () => {
     // The row never wraps its menu under the text: the content column shrinks instead.
     expect(row.className.split(" ")).not.toContain("flex-wrap");
     expect(row.lastElementChild!.hasAttribute("data-row-menu")).toBe(true);
+  });
+
+  /** The Check group's alarm rows once `actions` load. */
+  async function alarmRows(actions: unknown[]): Promise<HTMLElement[]> {
+    (responses["/api/v1/overview"] as { system_actions: unknown[] }).system_actions = actions;
+    mount();
+    const check = await screen.findByRole("list", { name: "Check" });
+    return [...check.querySelectorAll<HTMLElement>('li[data-check="alarm"]')];
+  }
+  /** Chooses `label` in the row's ⋯ menu and returns the dialog it opened. */
+  function choose(row: HTMLElement, label: string): HTMLElement {
+    fireEvent.click(within(row).getByRole("button", { name: "More commands" }));
+    fireEvent.click(within(row).getByRole("menuitem", { name: label }));
+    return document.querySelector<HTMLElement>("dialog[data-dialog]")!;
+  }
+
+  it("a repeated error's Show failures opens a dialog on the page with that error code's failure group, as Health draws it", async () => {
+    const [row] = await alarmRows([ALARM(0)]);
+    const dialog = choose(row!, "Show failures");
+    expect(within(dialog).getByRole("heading", { name: "Show failures" })).toBeTruthy();
+    const groups = await within(dialog).findAllByTestId("failure-group");
+    // Only the alarm's own code, not the other group of the window.
+    expect(groups).toHaveLength(1);
+    expect(dialog.textContent).toContain("1 run");
+    expect(groups[0]!.textContent).toContain("Project checks failed");
+    expect(within(dialog).getByTestId("failure-code").textContent).toBe("checks_failed");
+    // It stays on the Tasks page: no navigation to Health.
+    expect(location.pathname).toBe("/app/tasks");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    expect(document.querySelector("dialog[data-dialog]")).toBeNull();
+    expect(screen.getByRole("region", { name: "Needs you" })).toBeTruthy();
+  });
+
+  it("a red main's What failed lists the failing tests one per line and the output tail in a preformatted block, on the page", async () => {
+    const tail = "FAIL tests/a.test.ts > adds\nAssertionError: expected 2 to be 3";
+    const [row] = await alarmRows([RED_MAIN({ failing_tests: ["tests/a.test.ts > adds", "tests/b.test.ts > subtracts"], output_tail: tail })]);
+    fireEvent.click(within(row!).getByRole("button", { name: "More commands" }));
+    expect(within(row!).getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["What failed"]);
+    fireEvent.click(within(row!).getByRole("button", { name: "More commands" }));
+    const dialog = choose(row!, "What failed");
+    expect([...dialog.querySelectorAll("[data-failing-tests] li")].map((li) => li.textContent)).toEqual(["tests/a.test.ts > adds", "tests/b.test.ts > subtracts"]);
+    const pre = dialog.querySelector("pre[data-output-tail]")!;
+    expect(pre.textContent).toBe(tail);
+    expect(dialog.textContent).not.toContain("No output kept");
+    expect(location.pathname).toBe("/app/tasks");
+  });
+
+  it("a red main with no output kept says so in What failed, with no empty block; names kept from a flagged tail still show", async () => {
+    const [none, flagged] = await alarmRows([
+      RED_MAIN({ failing_tests: [], output_tail: null }),
+      { ...RED_MAIN({ failing_tests: ["tests/a.test.ts > adds"], output_tail: null }), text: "Alarm: red main two" },
+    ]);
+    let dialog = choose(none!, "What failed");
+    expect(within(dialog).getByText("No output kept for this check.")).toBeTruthy();
+    expect(dialog.querySelector("pre")).toBeNull();
+    expect(dialog.querySelector("[data-failing-tests]")).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    dialog = choose(flagged!, "What failed");
+    expect([...dialog.querySelectorAll("[data-failing-tests] li")].map((li) => li.textContent)).toEqual(["tests/a.test.ts > adds"]);
+    expect(within(dialog).getByText("No output kept for this check.")).toBeTruthy();
+    expect(dialog.querySelector("pre")).toBeNull();
   });
 
   it("lists each other system action as one row with its command in the Check group", async () => {
