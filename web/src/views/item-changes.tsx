@@ -58,7 +58,7 @@ export function ItemChangesTab({ id }: { id: string }) {
                   variant="ghost"
                   aria-pressed={picked === f.path}
                   onClick={() => pick(f.path)}
-                  className="w-full min-w-0 gap-3 text-left font-normal"
+                  className="w-full min-w-0 gap-3 text-left"
                 >
                   <span className="min-w-0 grow truncate font-mono text-xs" title={f.path}>{f.path}</span>
                   {f.added === null || f.removed === null ? (
