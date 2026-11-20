@@ -1,7 +1,5 @@
 import { buildSessionParts } from "../../../compose.js";
-import { cliUserConfig } from "../../../core/config.js";
-import { selectedSources } from "../../../plugins.js";
-import { SESSION_USAGE, parseSessionArgs, runSession, sessionDeps } from "../../../session-cmd.js";
+import { SESSION_USAGE, parseSessionArgs, runSession, sessionDeps, sessionWho } from "../../../session-cmd.js";
 import { defineCommand } from "../../command.js";
 import { cliEnvironment, stopOnSignals } from "../../support.js";
 
@@ -17,7 +15,7 @@ export default defineCommand({
       return 1;
     }
     const loaded = await ctx.load();
-    const who = { cliUser: cliUserConfig(loaded.file), env: await cliEnvironment(loaded.root), githubSource: selectedSources(loaded.plugins).includes("github-issues") };
+    const who = sessionWho(loaded, await cliEnvironment(loaded.root));
     const parts = await buildSessionParts(loaded);
     try {
       return await runSession(sessionDeps(parts, loaded.stateDir, stopOnSignals(), who), action);

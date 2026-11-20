@@ -4,7 +4,9 @@
 
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { SessionParts } from "./compose.js";
+import type { Loaded, SessionParts } from "./compose.js";
+import { cliUserConfig } from "./core/config.js";
+import { selectedSources } from "./plugins.js";
 import { hostId } from "./runtime/host-id.js";
 import { type CliEnvironment, type CliIdentity, cliIdentity, localIdentity } from "./core/local-cli.js";
 import { type IssueLookup, type SessionFile, type SessionFiles, type SessionResult, Sessions } from "./core/session.js";
@@ -125,6 +127,11 @@ export function cliPerson(user: UserId): ExternalIdentity {
 
 /** Who starts a session: the inputs of the CLI identity, and whether the GitHub source (`github-issues`) is on. */
 export interface SessionWho { cliUser: UserId | null; env: CliEnvironment; githubSource: boolean }
+
+/** `who` from the loaded config and the environment the CLI read. */
+export function sessionWho(loaded: Loaded, env: CliEnvironment): SessionWho {
+  return { cliUser: cliUserConfig(loaded.file), env, githubSource: selectedSources(loaded.plugins).includes("github-issues") };
+}
 
 /** `stop` aborts on Ctrl-C: `start` stops keeping the lease, `finish` stops the test command. */
 export interface SessionCmdDeps {
