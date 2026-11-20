@@ -4,7 +4,6 @@ import { describe, expect, it } from "vitest";
 import type { Timestamp, WorkItemId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
-import { HealthMonitor } from "../src/ui/health.js";
 import { type UiDeps } from "../src/ui/server.js";
 import { issue, system, w1 } from "./helpers/store.js";
 import { LEASE, SECRET, ROUTES, get, json, patch, seeded } from "./ui-api-fixtures.js";

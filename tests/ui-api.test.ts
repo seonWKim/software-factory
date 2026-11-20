@@ -2,12 +2,10 @@
 // rows as the HTML page, that store text leaves only through the Withholder, and that it never writes.
 // Everything goes through respond(), the server's whole request handling without a socket.
 
-
 import { describe, expect, it, vi } from "vitest";
 import { QUEUED_RUN } from "../src/core/commands.js";
 import type { AuthDecision } from "../src/interfaces/auth-provider.js";
 import type { Timestamp, UserId, WorkItemId } from "../src/core/types.js";
-import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { HealthMonitor } from "../src/ui/health.js";
