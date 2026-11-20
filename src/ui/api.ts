@@ -79,10 +79,7 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
     case "/health": return ok(await health(c));
     case "/failures":
       return failures({ store: d.store, text: (v) => c.text(v, "run_outcome").then((t) => t!), now: c.now }, url.searchParams);
-    case "/spend": {
-      const budgets = { daily_usd: (await effectiveGlobal(d, "spend.daily_budget_usd")).value, weekly_usd: (await effectiveGlobal(d, "spend.weekly_budget_usd")).value };
-      return spend({ store: d.store, text: (v) => c.text(v).then((t) => t!), now: c.now, budgets }, url.searchParams);
-    }
+    case "/spend": return spend({ store: d.store, text: (v) => c.text(v).then((t) => t!), now: c.now, budgets: { daily_usd: (await effectiveGlobal(d, "spend.daily_budget_usd")).value, weekly_usd: (await effectiveGlobal(d, "spend.weekly_budget_usd")).value } }, url.searchParams);
     case "/efficiency": return efficiency({ store: d.store, text: (v) => c.text(v).then((t) => t!), now: c.now });
     case "/settings": return d.settings ? ok(await readSettings(d, d.settings)) : apiError(404, "Not found.");
     case "/settings/capabilities": return d.settings ? ok(await readCapabilities(d, d.settings)) : apiError(404, "Not found.");
