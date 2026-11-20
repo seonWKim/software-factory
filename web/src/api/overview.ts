@@ -25,6 +25,8 @@ export interface SystemAction {
   until: string | null;
   /** On the alarm of the auto-mode stop still in force: the banner shows when and why, and a button back to auto. */
   auto_stop?: AutoStop;
+  /** On a claim pause: the pause's name, which the row's Resume now posts (`text` is its plain name). */
+  pause?: string;
 }
 
 /** The last auto-mode stop while it is in force (design 03-risk): its alarm, when, and its cause code. */

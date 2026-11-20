@@ -1383,7 +1383,8 @@ describe("ui api: pauses and Needs-you reasons (issue: floor banner)", () => {
     }
     const rows = (await json<{ items: NeedRow[] }>(d, "/api/v1/items?state=needs")).items;
     const need = (id: string) => rows.find((r) => r.id === id)!.need!;
-    expect(need(more["run_failed:implement:diff_too_large"]!.id).reason).toBe("failed: diff_too_large");
+    // A failed item with no failed run: fixed words, never its code.
+    expect(need(more["run_failed:implement:diff_too_large"]!.id).reason).toBe("The last run failed with no message.");
     const commands = (id: string) => rows.find((r) => r.id === id)!.commands!.map((c) => c.name);
     expect(commands(items.approve.id)).toEqual(["approve", "reject", "revise"]);
     expect(need(items.merge.id).reason).toBe("merge check running");
@@ -1397,7 +1398,33 @@ describe("ui api: pauses and Needs-you reasons (issue: floor banner)", () => {
       expect(shown(r).trim(), r.id).not.toBe("");
       expect(shown(r), r.id).not.toContain("no reason");
     }
-    expect(rows.filter((r) => r.need!.reason === "failed: diff_too_large")).toHaveLength(1);
+    expect(rows.filter((r) => r.need!.reason === "The last run failed with no message.")).toHaveLength(1);
+    expect(rows.map((r) => r.need!.reason ?? "").filter((t) => t.startsWith("failed: "))).toEqual([]);
+  });
+
+  it("a failed item's reason is the first line of its latest failed run's stored message, through the Withholder, cut at 80 characters", async () => {
+    const { d, store, clock } = await seeded();
+    const failed = async (n: number, details: string[]) => {
+      const it = await make(store, n, `Failed ${n}`);
+      for (const [i, detail] of details.entries()) {
+        await enqueue(store, it, "implement", `f${n}:${i}`);
+        const r = (await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))!;
+        clock.advance(1_000);
+        await store.completeRun(r.id, r.lease!.token, { status: "failed", error_code: "exception", detail, infra: false });
+      }
+      await patch(store, it, { blocked_on: "human", blocked_reason: "run_failed:implement:exception" });
+      return it;
+    };
+    const plain = await failed(30, ["an older failure", "no model credential in the secret file\n    at loadSecrets (secrets.ts:12)"]);
+    const leaky = await failed(31, [`push failed: token ${SECRET} rejected`]);
+    const long = await failed(32, ["x".repeat(200)]);
+    const rows = (await json<{ items: NeedRow[] }>(d, "/api/v1/items?state=needs")).items;
+    const row = (id: string) => rows.find((r) => r.id === id)!;
+    expect(row(plain.id).need!.reason).toBe("no model credential in the secret file");
+    expect(row(plain.id).commands!.map((c) => c.name)).toContain("retry");
+    expect(row(leaky.id).need!.reason).not.toContain(SECRET);
+    // The Withholder's cut: 80 characters and its ellipsis.
+    expect(row(long.id).need!.reason).toBe(`${"x".repeat(80)}…`);
   });
 
   it("a ready-to-merge row shows the merge check: mergeable, or the conflict count", async () => {
@@ -1772,7 +1799,7 @@ describe("ui api: the Settings page's typed form of the file-only keys (design 0
 });
 
 describe("POST /api/v1/pauses/resume: the refusal (design 05-restarts)", () => {
-  it("a 403 names the dashboard's Resume now on the Status page first, `factory resume <name>` after, and ends nothing", async () => {
+  it("a 403 names the dashboard's Resume now in Needs you on Tasks first, `factory resume <name>` after, and ends nothing", async () => {
     const { store, clock } = await newStore();
     const until = new Date(clock.now().getTime() + 60_000).toISOString() as Timestamp;
     await store.pauseClaims(until, "rate_limit");
@@ -1781,8 +1808,9 @@ describe("POST /api/v1/pauses/resume: the refusal (design 05-restarts)", () => {
     const r = await resumePause({ store } as unknown as PauseDeps, pauses, { name: "rate_limit" });
     expect(r.status).toBe(403);
     const error = (r.value as { error: string }).error;
-    expect(error).toContain("Resume now on the Status page (/app/)");
-    expect(error.indexOf("/app/")).toBeLessThan(error.indexOf("factory resume rate_limit"));
+    expect(error).toContain("Resume now in Needs you on Tasks");
+    expect(error).not.toContain("the Status page (/app/)");
+    expect(error.indexOf("Needs you")).toBeLessThan(error.indexOf("factory resume rate_limit"));
     expect(await store.getClaimPause("rate_limit")).toBe(until);
     expect(log.info).not.toHaveBeenCalled();
   });
