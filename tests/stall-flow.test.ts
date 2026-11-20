@@ -196,6 +196,8 @@ describe("one silent run or a silent model (decision of 2026-11-20)", () => {
     let first = true;
     const f = await pipeline({
       implement: () => (first ? ((first = false), { status: "stalled", output: null, error: "silent" }) : { output: { summary: "s", next_steps: "n" } }),
+      // The other review run is left running: the slot cap counts every running run, so allow a few.
+      config: { workers: 4 },
     });
     const llm = probeLLM(answers);
     const prober = new ControllerRole({ store: f.store, source: f.source, auth: new FakeAuth(), clock: f.clock, config: f.config, log: f.log, scanner: cleanScanner, llm });

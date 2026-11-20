@@ -274,7 +274,7 @@ export interface ClaimInput {
   lease_ms: number;
   /** The coordination threshold and weights (design §5, 2026-11-03). Absent: DEFAULT_COORDINATION. */
   coordination?: CoordinationSettings;
-  workers?: { count: number; owners: readonly WorkerId[] }; // The slot cap (design §5, 2026-11-18): live `workers`, every loop id of this process. Absent: none.
+  workers?: { count: number }; // The slot cap (design §5, 2026-11-18; per factory since 2026-11-20): the live `workers`, counted over every process's running runs. Absent: none.
 }
 /** The slot cap's kinds: any kind claims below `workers`; a short one also in one slot beyond while every slot holds a capped one. */
 export const SHORT_KINDS: readonly RunKind[] = ["merge-check", "review", "triage"], CAPPED_KINDS: readonly RunKind[] = ["implement", "resolve"];

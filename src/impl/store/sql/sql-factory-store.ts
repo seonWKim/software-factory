@@ -603,10 +603,9 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
     });
   }
 
-  /** The slot cap (design §5, 2026-11-18): which kinds fit, by the running runs of this process's loops read under the claim lock. */
-  private async slotCheck(tx: SqlExecutor, { count, owners }: NonNullable<ClaimInput["workers"]>): Promise<(kind: RunKind) => boolean> {
-    const sql = `SELECT kind FROM worker_runs WHERE status = 'running' AND lease_owner IN (${placeholders(owners.length)})`;
-    const running = (await tx.all(sql, [...owners])).map((r) => r.kind as RunKind);
+  /** The slot cap (design §5): which kinds fit, by every process's running runs (not interactive) under the claim lock. */
+  private async slotCheck(tx: SqlExecutor, { count }: NonNullable<ClaimInput["workers"]>): Promise<(kind: RunKind) => boolean> {
+    const running = (await tx.all(`SELECT kind FROM worker_runs WHERE status = 'running' AND kind <> 'interactive'`, [])).map((r) => r.kind as RunKind);
     const beyond = count > 0 && running.length === count && running.every((k) => CAPPED_KINDS.includes(k));
     return (kind) => running.length < count || (beyond && SHORT_KINDS.includes(kind));
   }

@@ -173,10 +173,10 @@ export class Worker {
     if (this.d.active && !this.d.active()) return false;
     this.cfg = this.live.config();
     if (this.d.settings) this.runModels = this.live.models();
-    // Coordination weights (design §5, 2026-11-03; absent: the defaults) and the pool's slot cap (design §5 2026-11-18; a lone Worker: none).
+    // Coordination weights (design §5, 2026-11-03; absent: the defaults) and the factory's slot cap (design §5 2026-11-18), lone Workers too.
     const run = await this.d.store.claimRun({
       worker_id: this.d.id, kinds: KINDS, lease_ms: this.cfg.lease_ms, ...(this.cfg.coordination ? { coordination: this.cfg.coordination } : {}),
-      ...(this.plugins.peers ? { workers: { count: this.live.workers(), owners: this.plugins.peers } } : {}),
+      workers: { count: this.live.workers() },
     });
     if (!run?.lease) return false;
     this.holding = run.kind;
@@ -1020,7 +1020,6 @@ export interface WorkerPlugins {
   hooks?: readonly HookDescriptor[];
   pack_checks?: PackChecks;
   /** Refuses each imported MCP server a run is granted as `not_started` (design 11-plugin-import, owner answer 1); absent: none. */ imported_mcp_refusals?: (servers: readonly PackMcpServer[]) => Promise<readonly PackGrantRefusal[]>;
-  /** Every loop id of this Worker's pool, its own included: the claim caps their running runs (ClaimInput.workers); absent: no cap. */ peers?: readonly WorkerId[];
 }
 
 /** A run an enabled `before_run` hook or a pack check refused (a veto, a timeout or an error): a task failure, not retried as infra. */
