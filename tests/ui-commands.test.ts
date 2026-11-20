@@ -791,8 +791,14 @@ describe("the Merge button's Merging… state (item page and Needs-you row)", ()
     rtl = await import("@testing-library/react");
     ({ createElement } = await import("react"));
     ({ QueryClient, QueryClientProvider, useQuery } = await import("@tanstack/react-query"));
-    // @ts-expect-error -- TS6142, as the import at the top of this file
-    views = await import("../web/src/views/item-commands.js");
+    const [commands, send, merge] = await Promise.all([
+      // @ts-expect-error -- TS6142, as the import at the top of this file
+      import("../web/src/views/item-commands.js"),
+      import("../web/src/views/command-send.js"),
+      // @ts-expect-error -- TS6142, as above
+      import("../web/src/views/merge-button.js"),
+    ]);
+    views = { NeedActions: commands.NeedActions, useCommandSend: send.useCommandSend, MergeButton: merge.MergeButton };
   });
   afterAll(async () => {
     await teardown?.();

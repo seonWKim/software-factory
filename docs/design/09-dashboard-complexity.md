@@ -36,7 +36,7 @@ One old path redirects: `workers` → `runners` (`REDIRECTS` in the same file). 
 
 ## Item-page flows that need more than one click or dialog
 
-All sit in `web/src/views/item-commands.tsx` (buttons, verdict dialog, merge button), with the approve, reject and revise dialogs and the decisions panel in `web/src/views/item-decisions.tsx`, and the command box in `web/src/views/command-box.tsx`. [code]
+All sit in `web/src/views/item-commands.tsx` (buttons, verdict dialog), `web/src/views/merge-button.tsx` (`MergeButton`, `RestartButton`) and `web/src/views/command-send.ts` (`useCommandSend` and the outcome helpers), with the approve, reject and revise dialogs and the decisions panel in `web/src/views/item-decisions.tsx`, and the command box in `web/src/views/command-box.tsx`. [code]
 
 1. **Approve in an approve phase** (spec gate, floor block, Rule of Two): pick an answer per decision in the panel, click Approve, then confirm in the approve dialog.
 2. **Reject**: click Reject, give a reason and confirm what closes in the reject dialog.
