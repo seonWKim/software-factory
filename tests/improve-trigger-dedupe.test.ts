@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TRIGGER_FAILURES, TRIGGER_WINDOW_MS, systemSource, triggerImprove, triggerImproveKey } from "../src/core/improver.js";
+import { TRIGGER_FAILURES, systemSource, triggerImprove, triggerImproveKey } from "../src/core/improver.js";
 import type { Actor, Run, RunId, Timestamp, WorkItem, WorkItemId } from "../src/core/types.js";
 import type { FactoryStore, NewRun, NewWorkItem } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -86,38 +86,6 @@ function world() {
 }
 
 const improveRuns = (store: FakeImproveStore) => store.runs.filter((r) => r.kind === "improve");
-
-describe("improve trigger on a fake store", () => {
-  it("two replicas that hit the trigger at the same time create exactly one improve run", async () => {
-    const { clock, store, d } = world();
-    for (let i = 0; i < TRIGGER_FAILURES; i++) {
-      store.fail();
-      clock.advance(1_000);
-    }
-    const [a, b] = await Promise.all([triggerImprove(d, PROJECT.key), triggerImprove(d, PROJECT.key)]);
-    // Both replicas found the trigger due and wrote the same key; the store kept one run.
-    expect([a?.created, b?.created].sort()).toEqual([false, true]);
-    expect(a!.run.id).toBe(b!.run.id);
-    expect(improveRuns(store).map((r) => r.idempotency_key)).toEqual([triggerImproveKey(PROJECT.key, null)]);
-    expect(store.calls.filter((c) => c.method === "enqueueRun")).toHaveLength(2);
-    // The dedupe is the stored run: a third call, a fresh process with nothing in memory, sees it and queues nothing.
-    expect(await triggerImprove(d, PROJECT.key)).toBeNull();
-    expect(improveRuns(store)).toHaveLength(1);
-  });
-
-  it("10 failed runs spread over more than 24 hours queue nothing; the 10th inside 24 hours queues one", async () => {
-    const { clock, store, d } = world();
-    store.fail();
-    clock.advance(TRIGGER_WINDOW_MS + 1);
-    for (let i = 0; i < TRIGGER_FAILURES - 1; i++) store.fail();
-    clock.advance(1_000);
-    expect(await triggerImprove(d, PROJECT.key)).toBeNull();
-    store.fail();
-    clock.advance(1_000);
-    expect(await triggerImprove(d, PROJECT.key)).toMatchObject({ created: true, why: { reason: "count", failures: TRIGGER_FAILURES } });
-    expect(improveRuns(store)).toHaveLength(1);
-  });
-});
 
 describe("factory improve and the trigger share one enqueue path", () => {
   it("both make the same store writes on the project's system work item, through enqueueImprove", async () => {

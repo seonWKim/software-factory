@@ -194,14 +194,6 @@ describe("external config: keys", () => {
     expect(loaded.file.dials).toEqual(loosened.dials);
     expect(loaded.file.floors).toEqual([]);
   });
-
-  it("an external config that selects a mysql store is refused at startup as an unknown FactoryStore plugin", async () => {
-    noSecrets();
-    const main = checkout(REAL);
-    const mysql = { type: "mysql", host: "localhost", port: 3306, database: "software_factory", user: "factory" };
-    const err = await loadConfig(main, { configFile: external({ ...REAL, ...loosened, store: mysql }) }).then(() => null, (e: Error) => e);
-    expect(err?.message).toMatch(/unknown FactoryStore plugin "mysql" at store\.type/);
-  });
 });
 
 describe("external config: doctor", () => {

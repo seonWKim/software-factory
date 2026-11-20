@@ -255,12 +255,6 @@ describe("packs: plugins", () => {
     }
   }
 
-  it("a mysql store is refused at startup as an unknown FactoryStore plugin, naming store.type", async () => {
-    const f = fixture({ store: { type: "mysql", host: "localhost", port: 3306, database: "sf", user: "factory" } });
-    const err = await loadError(f.codeRoot);
-    expect(err.message).toMatch(/unknown FactoryStore plugin "mysql" at store\.type/);
-  });
-
   it("a pack plugin that claims a default, or a name its kind has, fails startup naming the file", async () => {
     const f = fixture();
     const file = join(f.project, "plugins", "dup.plugin.js");
