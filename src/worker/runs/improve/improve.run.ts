@@ -1,14 +1,23 @@
-import { type Grade, type GradeSubject, type ImproveDeps, improvePrompts, learnFromReport, runImprove, scoreRun, scorerFor } from "../../../core/improver.js";
-import type { Run, WorkItem } from "../../../core/types.js";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  type GoldenEvidence, type Grade, type GradeSubject, IMPROVER_DEFAULTS, type ImproveDeps, improvePrompts, learnFromReport, proposeChanges, proposesIn, runImprove, scoreRun, scorerFor,
+} from "../../../core/improver.js";
+import { runCases } from "../../../golden.js";
 import { factoryGit } from "../../../impl/broker/trusted-git.js";
-import { addUsage } from "../../support.js";
+import { loadRoles } from "../../../runtime/index.js";
+import { addUsage, type renderWorkItem } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { DEFAULT_TIMEOUTS, defineRunKind } from "../../run-kind.js";
+
+type Run = Parameters<typeof runImprove>[1];
+type WorkItem = Parameters<typeof renderWorkItem>[0];
 
 /**
  * The improve run (design §7): no sandbox, no agent. One plain model call per group, with no tools; its usage
  * counts toward the run's. Stores one report; the outcome names it. Then, only in the daily run and only from the
- * stored report, the learner may write one tighter max_diff_lines for the project (design 08-settings).
+ * stored report, the learner may write one tighter max_diff_lines for the project (design 08-settings), and, as
+ * `improver.schedule` allows, the entity proposals are drafted and replayed through the golden set (core/proposals.ts).
  */
 async function improve(w: Worker, run: Run, item: WorkItem, signal: AbortSignal): Promise<Record<string, unknown>> {
   const metered = meteredLlm(w, run);
@@ -22,8 +31,13 @@ async function improve(w: Worker, run: Run, item: WorkItem, signal: AbortSignal)
     item,
   );
   const learned = await learnFromReport({ store: w.d.store, layers: w.cfg.settings }, run, report);
+  // Entity proposals (design §7, #496): the review prompt's change per recurring failure, with its golden evidence; nothing applied.
+  const cfg = w.cfg.improver ?? IMPROVER_DEFAULTS;
+  const proposals = metered && proposesIn(cfg.schedule, run)
+    ? await proposeChanges({ store: w.d.store, scanner: w.d.scanner, llm: metered, file_text: w.d.prompts.review, replay: goldenReplay(w, run, signal), config: cfg, signal }, report)
+    : [];
   return {
-    report_id: report.id, groups: report.groups.length, patterns: report.patterns.length,
+    report_id: report.id, groups: report.groups.length, patterns: report.patterns.length, proposals: proposals.map((p) => p.id),
     ...(learned ? { learned: { key: learned.key, old_value: learned.old_value, new_value: learned.new_value } } : {}),
   };
 }
@@ -61,6 +75,22 @@ function mergeGit(repo: string, base_branch: string): NonNullable<ImproveDeps["g
       return new Map(changed.map(([path, n]) => [path, { deleted: n.deleted, lines: before.get(path)?.added ?? 0 }]));
     },
     existsAtHead: async (path) => (await git(["ls-tree", "--name-only", "-z", `refs/heads/${base_branch}`, "--", path])).split("\0").includes(path),
+  };
+}
+
+/**
+ * One golden replay of the review cases (runCases in src/golden.ts, unchanged) with `prompt` as the reviewer's system
+ * prompt, held in memory: no file is written but the results file, under the OS temp folder, one folder per replay.
+ */
+function goldenReplay(w: Worker, run: Run, signal: AbortSignal): (prompt: string) => Promise<GoldenEvidence> {
+  let n = 0;
+  return async (prompt) => {
+    const r = await runCases({
+      rolesDir: join(import.meta.dirname, "..", "..", "roles"), roles: await loadRoles(), prompt: async () => prompt,
+      resultsDir: join(tmpdir(), "software-factory-golden", run.id, String(n++)), sandbox: w.d.sandbox, runner: w.d.runner, scanner: w.d.scanner,
+      clock: w.d.clock, config: w.cfg, signal, ...(w.d.models ? { model_by: w.d.models.table } : {}),
+    }, { role: "review", prompts: ["review.md"] });
+    return { cases: r.cases.map(({ id, expect, verdict }) => ({ id, expect, verdict })), catch_rate: r.rates.catch_rate.value, false_alarm_rate: r.rates.false_alarm_rate.value };
   };
 }
 

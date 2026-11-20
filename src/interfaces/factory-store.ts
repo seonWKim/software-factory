@@ -17,7 +17,7 @@ import type { TaskStore } from "../core/tasks.js";
 import type { NoticeStore } from "../core/notifications.js";
 import type { PostedCommentReads } from "../core/reaction-verdict.js";
 import type { RunOutputStore } from "../core/stall.js";
-
+import type { ProposalStore } from "../core/proposals.js";
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
 // - Time comes from the injected Clock (SystemClock in prod, FakeClock in tests). Method arguments never carry "now".
@@ -354,7 +354,7 @@ export interface NoticeMessageStore {
   getNoticeQuestion(id: string): Promise<NoticeQuestion | null>;
 }
 
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore {
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, ProposalStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes
