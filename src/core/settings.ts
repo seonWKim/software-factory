@@ -6,7 +6,7 @@ import { errorText, type Logger } from "./log.js";
 import { parseMessageStyle, withMessageStyle } from "./message-style.js";
 import { NOTICE_KINDS, type NoticeKind, parseNoticeKinds, parseNotifyChannels, quietHoursSetting } from "./notifications.js";
 import { DEFAULT_MODEL_BY, MODEL_RUN_KINDS, type ModelNames, type ModelTable, TIER_KEYS, parseModelBy, parseModels } from "./model-choice.js";
-import { usdBudget } from "./spend.js"; import { testPathsOnly } from "./auto-grant.js";
+import { usdBudget } from "./spend.js"; import { fewOrdinaryPaths, testPathsOnly } from "./auto-grant.js";
 import type { RunId, Tier, Timestamp } from "./types.js";
 import type { SettingOverride } from "../interfaces/factory-store.js";
 
@@ -741,8 +741,8 @@ export class LiveSettings {
     return withMessageStyle(system, this.current.values.message_style);
   }
 
-  /** Whether `paths` are granted without the owner on `project`: auto_grant_test_paths on and test paths only (design 05-restarts). */
-  autoGrantable(project: string, paths: readonly string[]): boolean { return effectiveSetting(this.current, "auto_grant_test_paths", project).value && testPathsOnly(paths, this.current.values.test_globs); }
+  /** Whether `paths` are test paths only (testPathsOnly); autoGrantable: also a few ordinary files (design 05-restart-asks). */ testPathsOnly(paths: readonly string[]): boolean { return testPathsOnly(paths, this.current.values.test_globs); }
+  autoGrantable(project: string, paths: readonly string[]): boolean { return effectiveSetting(this.current, "auto_grant_test_paths", project).value && (this.testPathsOnly(paths) || fewOrdinaryPaths(paths)); }
   /** Worker slots that may claim: the effective `workers`, capped at the file's `max_workers`. */
   workers(): number {
     return this.current.values.workers;

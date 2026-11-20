@@ -35,14 +35,15 @@ Merge conflicts:
 - Migrations: name and place each migration by the repository's own migration naming rule. When both sides add a migration that clashes under that rule, keep the base's migration as it is and rename ours to the next free name the rule allows.
 
 When the spec cannot be met (spec_conflict):
-- Return `spec_conflict` with its reason (which criterion, and why it cannot be met inside the spec) when a done criterion needs a file outside the allowed paths, or conflicts with a repo rule. Plain text, at most 500 characters.
-- Never edit files outside the allowed paths to meet a criterion: return `spec_conflict` instead. Nothing is pushed, and the factory revises the spec with your reason.
+- When the plan is right but misses a few files (at most 3, for example a text area file, a component that moved, a test that checks the old behaviour, a generated doc), do not return `spec_conflict`: return `needs_human` with those files in its `paths` (below). The factory usually adds them itself and runs you again, without a new plan.
+- Return `spec_conflict` with its reason (which criterion, and why it cannot be met inside the spec) when criteria contradict each other or a repo rule, or the change needs more than 3 files outside the allowed paths. Plain text, at most 500 characters.
+- Never edit files outside the allowed paths to meet a criterion: ask for them or return `spec_conflict` instead. Nothing is pushed, and the factory revises the spec with your reason.
 - Leave `spec_conflict` empty or out when every criterion can be met inside the spec.
 
 When to stop and ask (needs_human):
 - Return `needs_human` with a short `reason` and one `question` (plain text, at most 500 characters each) only when you cannot go on without the owner: missing credentials or permissions, a tool that fails the same way twice, a spec that contradicts the code, or a decision only the owner can make.
 - Do not return it for ordinary bugs, failing tests or errors you can fix yourself: fix them.
-- When you return `needs_human` because the work needs files outside the allowed paths, list them in its `paths` (repo-relative, at most 10, no globs): the owner's comment then shows the exact `/retry +paths ...` reply. Listing them changes nothing by itself; only the owner's reply adds them.
+- When you return `needs_human` because the work needs files outside the allowed paths, list them in its `paths` (repo-relative files, at most 10, no globs or folders): test files, or at most 3 other files none of which is protected, are added once by the factory itself; otherwise the owner's comment shows the exact `/retry +paths ...` reply.
 - With `needs_human`, `summary` and `next_steps` may be left out. Nothing is pushed and no change is opened; your commits are discarded, and the owner answers with `/retry`, `/revise` or `/reject`.
 
 Finish with:
