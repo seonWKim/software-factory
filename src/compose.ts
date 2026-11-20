@@ -1,6 +1,5 @@
 // Composition root: the only place that reads env/files for config and picks implementations.
 // Environment (local / cloud) is chosen here; core code never branches on it.
-
 import { createHash } from "node:crypto";
 import { mkdir, readFile, stat } from "node:fs/promises";
 import { availableParallelism, hostname } from "node:os";
@@ -12,6 +11,7 @@ import {
 import { toolchainEnvKeyRefusal } from "./core/tools/policy.js";
 import { type ProjectRef, localProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { pathCompanionsConfig } from "./core/companions.js";
+import { improverConfig } from "./core/proposals.js";
 import { checkCommands, commandText } from "./core/checks.js";
 import { type SplitLimits, splitThresholds } from "./core/split.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
@@ -466,7 +466,7 @@ export async function loadConfig(
     ],
     agent_git_identity: file.agent_git_identity,
     budget_min_sample: budget.budget_min_sample,
-    path_companions: pathCompanionsConfig(raw),
+    path_companions: pathCompanionsConfig(raw), improver: improverConfig(raw), // improver and distill (design 07, entity proposals)
     // Coordination (design §5): the threshold, hotspots and mechanical paths, checked at load by checkConfigKeys.
     coordination: coordinationConfig(raw),
   };
