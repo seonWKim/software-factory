@@ -5,7 +5,6 @@ import { Button } from "../../components/ui/button.js";
 import { Checkbox } from "../../components/ui/checkbox.js";
 import { FOCUS } from "../../components/ui/control.js";
 import { announceStatus } from "../../components/ui/dialog.js";
-import { LINK_CLASS } from "../../components/ui/link-style.js";
 import { type MenuItem, OverflowMenu } from "../../components/ui/menu.js";
 import { ListRow, ROW_TITLE } from "../../components/ui/list-row.js";
 import type { MessageKey } from "../../i18n/en.js";
@@ -52,10 +51,18 @@ function useBuild(task: TaskRow, token: string | null) {
 }
 
 /**
- * The title. On an open task the page can write, a button that opens the description dialog (a built task's item link
- * stays on its state and ID); else a link to the built task's item, or plain text when it is not built.
+ * The title. A built task's title links to its work item's page (owner feedback 2026-11-20), quiet like a Needs you
+ * row's title; its description dialog is in the row's menu. An open task that is not built opens the description
+ * dialog from its title; else plain text.
  */
 function Title({ task, className, onOpen }: { task: TaskRow; className: string; onOpen: (() => void) | null }) {
+  if (task.work_item_id !== null) {
+    return (
+      <Link href={itemPath(task.work_item_id)} title={task.title} className={cn(className, "text-text-1 hover:underline")}>
+        {task.title}
+      </Link>
+    );
+  }
   if (onOpen !== null) {
     return (
       // The title stays the paragraph's text; the shared Button lies over it, so the row keeps its height.
@@ -71,12 +78,7 @@ function Title({ task, className, onOpen }: { task: TaskRow; className: string; 
       </p>
     );
   }
-  const title = <p title={task.title} className={className}>{task.title}</p>;
-  return task.work_item_id === null ? title : (
-    <Link href={itemPath(task.work_item_id)} className={cn("block", LINK_CLASS)}>
-      {title}
-    </Link>
-  );
+  return <p title={task.title} className={className}>{task.title}</p>;
 }
 
 export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { task: TaskRow; overdue?: boolean; sub?: boolean }) {
@@ -124,6 +126,8 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
     ? [{ label: t("tasks.reopen"), disabled: action.busy, onSelect: () => void reopen() }]
     : [
         ...(task.work_item_id === null ? [{ label: t("tasks.build"), action: "build", disabled: builder.busy, onSelect: () => void builder.build() }] : []),
+        // A built task's title goes to its work item, so its description dialog opens from here.
+        ...(task.work_item_id !== null ? [{ label: t("tasks.description"), onSelect: () => setMode("description") }] : []),
         ...(parent === null ? [{ label: t("tasks.addSub"), onSelect: () => setMode("sub") }] : []),
         { label: t("tasks.projectsItem"), onSelect: () => setMode("projects") },
         { label: t("tasks.delete"), danger: true, onSelect: () => setMode("delete") },

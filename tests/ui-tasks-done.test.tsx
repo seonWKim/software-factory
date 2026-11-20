@@ -14,7 +14,8 @@ afterEach(teardown);
 describe("done tasks stay, struck through (design 02-tasks, done tasks stay)", () => {
   const AT = "2026-11-12T09:10:00.000Z";
   const done = (id: string, over: Partial<TaskRow> = {}): TaskRow => row(id, { done_at: AT, ...over });
-  const title = (id: string) => within(card(id)).getByText(id, { selector: "p" });
+  // A built task's title is a link to its work item; any other title a paragraph.
+  const title = (id: string) => within(card(id)).getByText(id, { selector: "p, a" });
   /** Today's tk_now as the server places it, done or open. */
   const withNow = (now: TaskRow) => view({ today: { overdue: view().today.overdue, due: [now] } });
 

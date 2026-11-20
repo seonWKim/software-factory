@@ -343,9 +343,13 @@ describe("the description dialog (design 02-tasks and 09-dashboard-tasks)", () =
     expect(s.posts).toEqual([]);
   });
 
-  it("a built task's title opens the dialog too, which says the work item keeps the text it was built with", async () => {
+  // Owner feedback 2026-11-20: a built task's title goes to its work item's page; the description is in its menu.
+  it("a built task's title links to its work item's page, and Description in its menu opens the dialog, which says the work item keeps the text it was built with", async () => {
     await show();
-    open("tk_built");
+    const link = within(card("tk_built")).getByRole("link", { name: "tk_built" });
+    expect(link.getAttribute("href")).toBe("/app/items/wi_1");
+    expect(within(card("tk_built")).queryByRole("button", { name: "Description: tk_built" })).toBeNull();
+    chooseMenu(card("tk_built"), "Description");
     expect(dialog()!.textContent).toContain("Built as wi_1: the work item keeps the text it was built with");
   });
 
@@ -392,7 +396,7 @@ describe("a built task's Work row: queued and pending states", () => {
 describe("a task row's layout", () => {
   it("keeps the title on one truncated line with its full text as a tooltip, and the details and state under it", async () => {
     await show();
-    const title = card("tk_built").querySelector<HTMLElement>("p[title]")!;
+    const title = card("tk_built").querySelector<HTMLElement>("a[title]")!;
     expect(title.getAttribute("title")).toBe("tk_built");
     expect(title.className).toContain("truncate");
     const details = card("tk_built").querySelector<HTMLElement>("[data-details]")!;
