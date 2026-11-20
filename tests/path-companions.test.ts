@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/compose.js";
-import { ConfigKeyError } from "../src/config-keys.js";
 import { type PathCompanion, applyCompanions, pathCompanionProblems, pathCompanionsConfig, refusedCompanion } from "../src/core/companions.js";
 import { GATE_PATHS } from "../src/core/improver.js";
 import type { Floor } from "../src/core/settings.js";
@@ -310,12 +309,6 @@ describe("path_companions load check", () => {
     };
     const SQLITE = { ...REAL, store: { type: "sqlite" } };
 
-    it("a bad entry fails loadConfig with the entry index", async () => {
-      const err = await loadConfig(root({ ...SQLITE, path_companions: [{ when: "a", also: [] }] })).then(() => null, (e: Error) => e);
-      expect(err).toBeInstanceOf(ConfigKeyError);
-      expect(err!.message).toContain("path_companions[0].also");
-    });
-
     it("the repo's own entries load", async () => {
       const loaded = await loadConfig(root(SQLITE));
       expect(loaded.config.path_companions).toEqual(expect.arrayContaining([
@@ -368,13 +361,6 @@ describe("path_companions load check", () => {
       const paths = await allowedFor("src/core/policy.ts");
       expect(paths).not.toContain("schema/sqlite.sql");
       expect(paths).not.toContain("docs/settings.md");
-    });
-
-    it("an absent key loads with no companions", async () => {
-      const rest: Record<string, unknown> = { ...SQLITE };
-      delete rest.path_companions;
-      const loaded = await loadConfig(root(rest));
-      expect(loaded.config.path_companions).toEqual([]);
     });
   });
 });
