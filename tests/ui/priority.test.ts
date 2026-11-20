@@ -192,4 +192,16 @@ describe("ui priority", () => {
       expect(rank([g], NOW, LEASE)[0]!.badges).toEqual(["stuck 10 min"]);
     }
   });
+
+  it("a pending dashboard command is queued, never stuck or ready to merge: an Approve's run not queued yet, a Merge not handled yet", () => {
+    const approved = item("approved", { stage: "RUNNING", since: at(30), pending: { command: "approve", kind: "implement" } });
+    expect(levelOf({ ...approved, pending: null }, NOW, LEASE)).toBe("stuck"); // the same item without it: nothing moves it
+    expect(levelOf(approved, NOW, LEASE)).toBe("queued");
+    expect(rank([approved], NOW, LEASE)[0]!.badges).toEqual(["queued implement"]);
+    const merge = item("merge", { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pending: { command: "merge", position: 2 } });
+    expect(levelOf(merge, NOW, LEASE)).toBe("queued");
+    expect(rank([merge], NOW, LEASE)[0]!.badges).toEqual(["merge queued (position 2)"]);
+    expect(levelOf({ ...merge, pending: null }, NOW, LEASE)).toBe("ready_to_merge");
+    expect(levelOf({ ...merge, stage: "CLOSED", close_reason: "completed" }, NOW, LEASE)).toBe("closed");
+  });
 });

@@ -3,12 +3,13 @@
 
 import { type ConflictCounts, conflictCounts } from "../core/resolve.js";
 import type { Alert, FactoryStore } from "../interfaces/factory-store.js";
+import { MERGE_QUEUED, MERGE_REQUESTS_READ, mergeQueued, pendingApproval, pendingMerge } from "../core/commands.js";
 import { blockingRunKind } from "../core/policy.js";
 import { PERSON_PHASES, phaseOf } from "../core/phase.js";
 import type { ClaimDecision, Run, StateChange, WorkItem, WorkItemId } from "../core/types.js";
 import { alarmText, alarmsFor, itemAlarms, openAlarms } from "./alarms.js";
 import { type FilterRow, type Filters, runKindOf, searchKeys } from "./filters.js";
-import { type Level, type PriorityInput, levelOf, rank } from "./priority.js";
+import { type Level, type Pending, type PriorityInput, levelOf, rank } from "./priority.js";
 import { heldFailureOf, needCtx } from "./need.js";
 import { type ClaimPauses, type HeldFailure, type Why, type WhyInput, deadlocked, heldBy, refsOf, whyWaiting, withAlarms } from "./why.js";
 import type { Withholder } from "./withhold.js";
@@ -40,6 +41,8 @@ export interface ListRow extends FilterRow {
   why: Why;
   /** The open alarms that affect the item (alarms.ts). */
   alarms: Alert[];
+  /** The owner's dashboard command the controller has not carried out yet (pendingOf), else null. */
+  pending: Pending | null;
 }
 
 /** True when the filters may show closed items, so listRows reads them. */
@@ -55,6 +58,7 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
   const decisions = await c.store.listLatestClaimDecisions(items.filter((it) => active.get(it.id)?.kind === "implement").map((it) => it.id));
 
   const titles = await holderTitles(c.store, [...decisions.values()]);
+  const merges = await mergePositions(c.store, items.filter((it) => phaseOf(it) === "merge_pending"), items.filter(mergeQueued).length);
 
   const inputs: (PriorityInput & { item: WorkItem; conflicts: ConflictCounts; why: Why; decision: ClaimDecision | null; alarms: Alert[] })[] = [];
   const phases = items.filter((it) => it.parent_id !== null);
@@ -65,13 +69,14 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
     const waiting = waitingOn(it, phases);
     const runs = await c.store.listRuns(it.id);
     const alarms = alarmsFor(open, it, runs);
+    const pending = pendingOf(it, run, changes, merges);
     inputs.push({
       item: it,
-      ...priorityInput(it, run, runs, decision, waiting, changes),
+      ...priorityInput(it, run, runs, decision, waiting, changes, pending),
       conflicts: conflictCounts(runs, changes),
       decision,
       alarms,
-      why: whyOf(it, run, position.get(run?.id ?? "") ?? null, withTitle(decision, titles), pauses, waiting, c.now, alarms, await heldFailureOf(needCtx(c.store, c.w), it, runs)),
+      why: pendingWhy(pending, alarms) ?? whyOf(it, run, position.get(run?.id ?? "") ?? null, withTitle(decision, titles), pauses, waiting, c.now, alarms, await heldFailureOf(needCtx(c.store, c.w), it, runs)),
     });
   }
 
@@ -84,7 +89,7 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
       level: r.level,
       stage: it.stage,
       tier: it.tier,
-      kind: runKindOf(it.blocked_reason, r.input.run?.kind ?? null),
+      kind: runKindOf(it.blocked_reason, r.input.run?.kind ?? (r.input.pending?.command === "approve" ? r.input.pending.kind : null)),
       dependents: r.input.dependents,
       search: searchKeys(it.source.id, await searchTitle(c.w, it)),
       runStatus: r.input.run?.status ?? null,
@@ -94,16 +99,53 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
       conflicts: r.input.conflicts,
       why: r.input.why,
       alarms: r.input.alarms,
+      pending: r.input.pending ?? null,
     });
   }
   return out;
 }
 
 /**
+ * The 1-based place of each of `waiting` (items at merge_pending) whose dashboard Merge is stored and not handled yet,
+ * by its oldest such request: behind the `checking` items the merge queue checks now (merge_queued). One store read per
+ * item at merge_pending (few wait there at once; the store interface is unchanged), none for any other item.
+ */
+export async function mergePositions(store: Pick<FactoryStore, "listAppCommandRequestsForItem">, waiting: readonly WorkItem[], checking: number): Promise<Map<WorkItemId, number>> {
+  const seqs: [WorkItemId, number][] = [];
+  for (const it of waiting) {
+    const seq = pendingMerge(await store.listAppCommandRequestsForItem(it.id, MERGE_REQUESTS_READ));
+    if (seq !== null) seqs.push([it.id, seq]);
+  }
+  return new Map(seqs.sort((a, b) => a[1] - b[1]).map(([id], i) => [id, checking + i + 1]));
+}
+
+/**
+ * The pending-request rule (design 09-dashboard-item-commands), one for the list, the item page and the Merge button:
+ * a Merge stored and not handled yet (its place from mergePositions), else an Approve whose run the controller has
+ * not queued yet (core pendingApproval) while the item has no queued or running run. Null for anything else.
+ */
+export function pendingOf(it: WorkItem, run: Run | null, changes: readonly StateChange[], merges: ReadonlyMap<WorkItemId, number>): Pending | null {
+  const position = merges.get(it.id);
+  if (position !== undefined) return { command: "merge", position };
+  const active = run?.status === "queued" || run?.status === "running";
+  const kind = active ? null : pendingApproval(it, changes);
+  return kind === null ? null : { command: "approve", kind };
+}
+
+/** A pending command's reason, as a queued run's (the Merge's place, or the approved run's kind), with the alarms; null for none. */
+function pendingWhy(pending: Pending | null, alarms: readonly Alert[]): Why | null {
+  if (!pending) return null;
+  const params = pending.command === "merge" ? { position: pending.position } : { kind: pending.kind };
+  return withAlarms({ code: "queued", reason_code: pending.command === "merge" ? "queued_at" : "queued", params, next_actor: "factory", refs: [], alarms: [], holder_id: null }, alarms.map(alarmText));
+}
+
+/**
  * What the ranking reads about one item (priority.ts levelOf): its state, its active run, its last finished run,
  * what it waits on and its claim hold. One builder for the list and the item page, so both give one level.
  */
-export function priorityInput(it: WorkItem, run: Run | null, runs: readonly Run[], decision: ClaimDecision | null, waiting: { waiting_on: number; waiting_on_number: number | null }, changes: readonly StateChange[]): PriorityInput {
+export function priorityInput(
+  it: WorkItem, run: Run | null, runs: readonly Run[], decision: ClaimDecision | null, waiting: { waiting_on: number; waiting_on_number: number | null }, changes: readonly StateChange[], pending: Pending | null = null,
+): PriorityInput {
   const person = PERSON_PHASES.has(phaseOf(it));
   return {
     stage: it.stage,
@@ -118,18 +160,31 @@ export function priorityInput(it: WorkItem, run: Run | null, runs: readonly Run[
     ...waiting,
     ...holdOf(decision, run, waiting.waiting_on_number),
     asked_by: blockingRunKind(it.blocked_reason, runs) ?? null,
+    pending,
   };
 }
 
-/** Why one item waits and its level, from the same reads and rules as listRows (the item page's state). */
-export async function itemState(c: ListCtx, it: WorkItem, runs: readonly Run[], changes: readonly StateChange[]): Promise<{ why: Why; level: Level }> {
+/**
+ * Why one item waits, its level and its pending command, from the same reads and rules as listRows (the item page's
+ * state). A pending Merge's place reads the other items at merge_pending only when this item has one.
+ */
+export async function itemState(c: ListCtx, it: WorkItem, runs: readonly Run[], changes: readonly StateChange[]): Promise<{ why: Why; level: Level; pending: Pending | null }> {
   const { active, position } = await activeRuns(c.store);
   const run = active.get(it.id) ?? null;
   const decision = await latestDecision(c.store, it.id, run);
   const waiting = waitingOn(it, await readPhases(c.store, [it]));
   const alarms = await itemAlarms(c.store, await openAlarms(c.store, c.now), it);
-  const why = whyOf(it, run, position.get(run?.id ?? "") ?? null, withTitle(decision, await holderTitles(c.store, [decision])), await readClaimPauses(c.store), waiting, c.now, alarms, await heldFailureOf(needCtx(c.store, c.w), it, runs));
-  return { why, level: levelOf(priorityInput(it, run, runs, decision, waiting, changes), c.now, c.lease_ms) };
+  const pending = pendingOf(it, run, changes, await itemMergePosition(c.store, it));
+  const why = pendingWhy(pending, alarms) ?? whyOf(it, run, position.get(run?.id ?? "") ?? null, withTitle(decision, await holderTitles(c.store, [decision])), await readClaimPauses(c.store), waiting, c.now, alarms, await heldFailureOf(needCtx(c.store, c.w), it, runs));
+  return { why, level: levelOf(priorityInput(it, run, runs, decision, waiting, changes, pending), c.now, c.lease_ms), pending };
+}
+
+/** mergePositions as the list reads it, for one item: the other items at merge_pending and merge_queued are read only when its own Merge is pending. */
+async function itemMergePosition(store: FactoryStore, it: WorkItem): Promise<Map<WorkItemId, number>> {
+  if (phaseOf(it) !== "merge_pending" || pendingMerge(await store.listAppCommandRequestsForItem(it.id, MERGE_REQUESTS_READ)) === null) return new Map();
+  const waiting = await store.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", limit: LIST_LIMIT });
+  const checking = await store.countWorkItemsWhere({ stage: "REVIEW", blocked_on: "ci", blocked_reason: MERGE_QUEUED });
+  return mergePositions(store, waiting, checking);
 }
 
 /**
