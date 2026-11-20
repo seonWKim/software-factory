@@ -10,9 +10,9 @@ import { sizeDetail } from "../src/core/diff-gate.js";
 import { NO_COMMITS_DETAIL } from "../src/worker/index.js";
 import type { RunKind } from "../src/core/types.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
-import { ClaudeCodeRunner, RunDeadline, buildClaudeArgs } from "../src/impl/runner/claude-code-runner.js";
+import { ClaudeCodeRunner, buildClaudeArgs } from "../src/impl/runner/claude-code-runner.js";
 import {
-  GATE_HOOKS_DIR, HOOK_SCRIPT, HOOK_SPEC, PATH_REFUSAL, STOP_CHECK_MS, STOP_CHECK_TIMED_OUT, STOP_HOOK_SLACK_MS, editCovered, gateAnswerer, hookScript, specFile,
+  GATE_HOOKS_DIR, HOOK_SCRIPT, HOOK_SPEC, PATH_REFUSAL, STOP_CHECK_MS, STOP_CHECK_TIMED_OUT, STOP_HOOK_SLACK_MS, editCovered, gateAnswerer, hookScript, runDeadline, specFile,
 } from "../src/impl/runner/gate-hooks.js";
 import type { AgentRunResult, AgentRunSpec, GateHooks } from "../src/interfaces/agent-runner.js";
 import type { ExecOptions, ExecResult, Sandbox, SandboxHandle } from "../src/interfaces/sandbox.js";
@@ -243,7 +243,7 @@ async function drive(f: ReturnType<typeof setup>, mode: Mode): Promise<Pick<Agen
   if (mode === "hooks") return f.runner.run(f.spec);
   const dir = join(f.configDir, GATE_HOOKS_DIR, f.spec.run_id);
   mkdirSync(dir, { recursive: true });
-  const answers = await gateAnswerer({ dir, spec: { ...f.spec, gate_hooks: f.spec.gate_hooks! }, sandbox: f.sandbox, scanner }, f.spec.signal);
+  const answers = await gateAnswerer({ dir, spec: { ...f.spec, gate_hooks: f.spec.gate_hooks! }, sandbox: f.sandbox, scanner, after }, f.spec.signal);
   const ask = async (req: unknown) => {
     const a = await answers.answer(req);
     if (a) await answers.sent(a);
@@ -462,7 +462,6 @@ describe("gate hooks: the Stop check's time limit", () => {
     expect(await answers.answer({ event: "stop" })).toBeNull();
     expect(answers.stopTimeout()).toBeNull();
     expect(f.sandbox.killed).toEqual([]);
-    expect(answers.checkMs()).toBeGreaterThanOrEqual(150);
   });
 
   it("a check over its limit is killed, the stop allowed and the timeout kept naming the check; no later stop runs a check", async () => {
@@ -516,36 +515,41 @@ describe("the run deadline", () => {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
   it("ends the run at timeout_ms with no Stop check", async () => {
-    const d = new RunDeadline(150);
+    const d = runDeadline(150, () => false, after);
     await sleep(400);
-    expect(d.timedOut).toBe(true);
     expect(d.signal.aborted).toBe(true);
   });
 
-  it("moves later by the time a Stop check runs, also while it is still running", async () => {
+  it("does not count the time a Stop check runs", async () => {
     const start = Date.now();
     // A Stop check that runs from the start for 600 ms.
-    const d = new RunDeadline(150, () => Math.min(Date.now() - start, 600));
+    const d = runDeadline(150, () => Date.now() - start < 600, after);
     await sleep(500);
-    expect(d.timedOut).toBe(false);
+    expect(d.signal.aborted).toBe(false);
     await sleep(600);
-    expect(d.timedOut).toBe(true);
+    expect(d.signal.aborted).toBe(true);
     d.stop();
   });
 
   it("stops without firing", async () => {
-    const d = new RunDeadline(100);
+    const d = runDeadline(100, () => false, after);
     d.stop();
     await sleep(250);
     expect(d.signal.aborted).toBe(false);
   });
 });
 
+/** A real timer for the hooks, as the runner gives them. */
+function after(ms: number, fn: () => void): () => void {
+  const t = setTimeout(fn, ms);
+  return () => clearTimeout(t);
+}
+
 /** The answerer the hook host uses, with the Stop check's limit, in a fresh hook folder. */
 async function answerer(f: ReturnType<typeof setup>, stopCheckMs: number) {
   const dir = join(f.configDir, GATE_HOOKS_DIR, f.spec.run_id);
   mkdirSync(dir, { recursive: true });
-  return gateAnswerer({ dir, spec: { ...f.spec, gate_hooks: f.spec.gate_hooks! }, sandbox: f.sandbox, scanner, stop_check_ms: stopCheckMs }, f.spec.signal);
+  return gateAnswerer({ dir, spec: { ...f.spec, gate_hooks: f.spec.gate_hooks! }, sandbox: f.sandbox, scanner, after, stop_check_ms: stopCheckMs }, f.spec.signal);
 }
 
 /** The hook settings the runner passes, read from the fake claude's --settings (no hook is run). */

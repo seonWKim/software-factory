@@ -8,7 +8,7 @@ import {
 } from "../../interfaces/agent-runner.js";
 import type { Sandbox } from "../../interfaces/sandbox.js";
 import { type SecretStore, secretName } from "../../interfaces/secret-store.js";
-import { GATE_HOOKS_DIR, type RunningGateHooks, startGateHooks, stopTimeoutDetail } from "./gate-hooks.js";
+import { type After, GATE_HOOKS_DIR, type RunningGateHooks, startGateHooks, stopTimeoutDetail } from "./gate-hooks.js";
 import { copyToolchainSeeds } from "./toolchain-seeds.js";
 import { type BridgeArgs, type GrantedToolDeps, harnessToolName, withRunBridge } from "./tool-bridge.js";
 
@@ -314,6 +314,7 @@ export class ClaudeCodeRunner implements AgentRunner {
       dir: join(this.opts.claudeConfigDir, GATE_HOOKS_DIR, spec.run_id),
       spec: { ...spec, gate_hooks: g },
       sandbox: this.opts.sandbox,
+      after,
       ...(this.opts.tools ? { scanner: this.opts.tools.scanner } : {}),
       ...(this.opts.stopCheckMs === undefined ? {} : { stop_check_ms: this.opts.stopCheckMs }),
     }).catch(() => null);
@@ -343,20 +344,18 @@ export class ClaudeCodeRunner implements AgentRunner {
     const stallMs = spec.stall_ms ?? DEFAULT_STALL_MS;
     const firstOutputMs = spec.first_output_ms ?? DEFAULT_FIRST_OUTPUT_MS;
     const watch = new StallWatch(stallMs, firstOutputMs, hooks ? () => hooks.checking() : undefined);
-    const deadline = new RunDeadline(spec.timeout_ms, hooks ? () => hooks.checkMs() : undefined);
     let result: Awaited<ReturnType<Sandbox["exec"]>>, soFar = ""; // soFar: stdout so far, for the live transcript (spec.live)
     try {
       result = await this.opts.sandbox.exec(spec.sandbox, buildClaudeArgs(spec, model, this.opts.claudeBin, bridge, [tmp], hooks?.settings), {
         env,
         stdin: spec.prompt,
-        // A backstop only: the deadline ends the run first, as Stop checks are bounded by their own limit.
+        // A backstop: the hooks' deadline ends the run first; a Stop check past its own limit fails it naming the check.
         timeout_ms: spec.timeout_ms + (hooks?.maxCheckMs ?? 0),
-        signal: AbortSignal.any([spec.signal, watch.signal, deadline.signal]),
+        signal: AbortSignal.any([spec.signal, watch.signal, ...(hooks ? [hooks.deadline] : [])]),
         onStdout: (chunk) => { watch.feed(chunk); if (spec.live) spec.live((soFar += chunk)); },
       });
     } finally {
       watch.stop();
-      deadline.stop();
     }
 
     // Usage is read whenever stdout holds the CLI's result event, also on timeout, stall and abort. A killed run
@@ -366,7 +365,6 @@ export class ClaudeCodeRunner implements AgentRunner {
     const usage = parsed ? usageOf(parsed) : stream.usage;
     const did_work = stream.did_work;
     if (spec.signal.aborted) return { status: "aborted", output: null, transcript: result.stdout, usage, did_work };
-    // A Stop check that ran out its own limit fails the run naming the check: not agent_timed_out (design §4).
     const stopTimeout = hooks?.stopTimeout();
     if (stopTimeout) return { status: "failed", output: null, transcript: result.stdout, usage, error: stopTimeoutDetail(stopTimeout), did_work };
     if (watch.stalled) {
@@ -375,17 +373,9 @@ export class ClaudeCodeRunner implements AgentRunner {
         : `no model output for stall_ms (${stallMs} ms) with no tool call open`;
       return { status: "stalled", output: null, transcript: result.stdout, usage, error, did_work };
     }
-    if (result.timed_out || deadline.timedOut) return { status: "timed_out", output: null, transcript: result.stdout, usage, did_work };
-
+    if (result.timed_out || hooks?.deadline.aborted) return { status: "timed_out", output: null, transcript: result.stdout, usage, did_work };
     if (parsed === null) {
-      return {
-        status: "failed",
-        output: null,
-        transcript: result.stdout + result.stderr,
-        usage,
-        error: `claude exited ${result.exit_code} without JSON output`,
-        did_work,
-      };
+      return { status: "failed", output: null, transcript: result.stdout + result.stderr, usage, error: `claude exited ${result.exit_code} without JSON output`, did_work };
     }
 
     if (parsed.api_error_status === 429) {
@@ -501,7 +491,7 @@ export const DEFAULT_FIRST_OUTPUT_MS = 180_000;
  */
 class StallWatch {
   private readonly ctl = new AbortController();
-  private timer: ReturnType<typeof setTimeout> | null = null;
+  private cancel = (): void => {};
   private readonly open = new Set<string>();
   private partial = "";
   private done = false;
@@ -532,8 +522,7 @@ class StallWatch {
 
   stop(): void {
     this.done = true;
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = null;
+    this.cancel();
   }
 
   /** Tracks the line's tool blocks; true when it is model output (an assistant event or a tool result). */
@@ -556,51 +545,19 @@ class StallWatch {
 
   /** Restarts the clock when no tool call is open; stops it while one is. */
   private arm(): void {
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = null;
+    this.cancel();
     if (this.done || this.open.size > 0) return;
     const first = !this.seenModel && this.firstOutputMs <= this.ms;
-    this.timer = setTimeout(() => {
+    this.cancel = after(first ? this.firstOutputMs : this.ms, () => {
       if (this.held()) return this.arm();
       this.stalled = first ? "first_output" : "silence";
       this.ctl.abort();
-    }, first ? this.firstOutputMs : this.ms);
+    });
   }
 }
 
-/**
- * The run timeout (design §5 Restarts): `timeout_ms` of the run's own time. Time a gate Stop check runs (`checkMs`)
- * moves the deadline later, so a slow check never uses up the agent's time; the check has its own limit. Out of
- * time: `signal` aborts and `timedOut` is set. Exported for tests.
- */
-export class RunDeadline {
-  private readonly ctl = new AbortController();
-  private readonly start = Date.now();
-  private timer: ReturnType<typeof setTimeout> | null = null;
-  timedOut = false;
-
-  constructor(private readonly ms: number, private readonly checkMs = () => 0) {
-    this.arm(ms);
-  }
-
-  get signal(): AbortSignal {
-    return this.ctl.signal;
-  }
-
-  stop(): void {
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = null;
-  }
-
-  private arm(wait: number): void {
-    this.timer = setTimeout(() => {
-      const left = this.start + this.ms + this.checkMs() - Date.now();
-      if (left > 0) return this.arm(left);
-      this.timedOut = true;
-      this.ctl.abort();
-    }, wait);
-  }
-}
+/** The runner's one timer, also the gate hooks' (the Stop check's limit, the run deadline): returns its cancel. */
+const after: After = (ms, fn) => { const t = setTimeout(fn, ms); return () => clearTimeout(t); };
 
 /** Characters of an unfinished stdout line kept for tool tracking. */
 const PARTIAL_LIMIT = 4 * 1024 * 1024;

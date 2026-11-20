@@ -132,6 +132,33 @@ export interface GateHooksOptions {
   scanner?: EgressScanner;
   /** The Stop check's time limit. Absent: STOP_CHECK_MS. */
   stop_check_ms?: number;
+  /** The runner's timer, for the Stop check's limit and the run deadline: runs `fn` after `ms`; returns its cancel. */
+  after: After;
+}
+
+export type After = (ms: number, fn: () => void) => () => void;
+
+/** The run deadline counts time in ticks of at most this. */
+const DEADLINE_TICK_MS = 1_000;
+
+/**
+ * The run timeout (design §5 Restarts): `ms` of the run's own time, counted in ticks of `after`. A tick while `held`
+ * (a Stop check running, bounded by its own limit) does not count, so a slow check never uses up the agent's time.
+ * Out of time: `signal` aborts. Exported for tests.
+ */
+export function runDeadline(ms: number, held: () => boolean, after: After): { signal: AbortSignal; stop: () => void } {
+  const ctl = new AbortController();
+  let cancel = (): void => {};
+  const tick = (left: number): void => {
+    const wait = Math.min(left, DEADLINE_TICK_MS);
+    cancel = after(wait, () => {
+      const rest = held() ? left : left - wait;
+      if (rest > 0) tick(rest);
+      else ctl.abort();
+    });
+  };
+  tick(ms);
+  return { signal: ctl.signal, stop: () => cancel() };
 }
 
 /** A Stop check that ran out its limit: the check it was running, and the limit. */
@@ -152,8 +179,8 @@ export interface RunningGateHooks {
   blocks(): Promise<GateBlock[]>;
   /** Whether a Stop check is running: the agent is silent while its Stop hook waits, so the stall clock holds. */
   checking(): boolean;
-  /** The time spent in Stop checks so far, the one running included: it does not count against the run timeout. */
-  checkMs(): number;
+  /** The run timeout, from the start of the hooks: aborts after `timeout_ms` of time with no Stop check running. */
+  deadline: AbortSignal;
   /** The most time this call's Stop checks can take together. */
   maxCheckMs: number;
   /** The Stop check that ran out its limit, if one did. */
@@ -177,8 +204,6 @@ export interface GateAnswerer {
   blocks(): Promise<GateBlock[]>;
   /** Whether a Stop request is being answered. */
   checking(): boolean;
-  /** The time spent answering Stop requests so far, the one being answered included. */
-  checkMs(): number;
   /** The Stop check that ran out its limit, if one did; every later stop is allowed without a check. */
   stopTimeout(): StopTimeout | null;
 }
@@ -195,8 +220,6 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
   const counts = { pre_tool_use: 0, stop: 0 };
   const limitMs = o.stop_check_ms ?? STOP_CHECK_MS;
   let stopsOpen = 0;
-  let stopSince = 0;
-  let stopTotal = 0;
   let timedOut: StopTimeout | null = null;
   const blocksFile = join(o.dir, HOOK_BLOCKS);
 
@@ -261,7 +284,7 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
   const stop = async (): Promise<Answer | null> => {
     if (timedOut || g.stop_blocks_used + counts.stop >= g.stop_checks) return null;
     const limit = new AbortController();
-    const timer = setTimeout(() => limit.abort(), limitMs);
+    const cancel = o.after(limitMs, () => limit.abort());
     let check = "";
     try {
       const a = await checks(AbortSignal.any([signal, limit.signal]), (c) => (check = c)).catch((err: unknown) => {
@@ -270,7 +293,7 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
       });
       return limit.signal.aborted ? null : a;
     } finally {
-      clearTimeout(timer);
+      cancel();
       if (limit.signal.aborted && !signal.aborted) timedOut = { check, ms: limitMs };
     }
   };
@@ -281,11 +304,11 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
       try {
         if (r.event === "pre_tool_use") return await preToolUse(r.tool_name, r.file_path);
         if (r.event === "stop") {
-          if (stopsOpen++ === 0) stopSince = Date.now();
+          stopsOpen++;
           try {
             return await stop();
           } finally {
-            if (--stopsOpen === 0) stopTotal += Date.now() - stopSince;
+            stopsOpen--;
           }
         }
       } catch {
@@ -303,7 +326,6 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
       return text.split("\n").filter(Boolean).map((l) => JSON.parse(l) as GateBlock);
     },
     checking: () => stopsOpen > 0,
-    checkMs: () => stopTotal + (stopsOpen > 0 ? Date.now() - stopSince : 0),
     stopTimeout: () => timedOut,
   };
 }
@@ -329,6 +351,7 @@ export async function startGateHooks(o: GateHooksOptions): Promise<RunningGateHo
   const command = (event: string) => [process.execPath, script, event].map(shellQuote).join(" ");
   const stopMs = (o.stop_check_ms ?? STOP_CHECK_MS) + STOP_HOOK_SLACK_MS;
   const g = o.spec.gate_hooks;
+  const deadline = runDeadline(o.spec.timeout_ms, answers.checking, o.after);
   return {
     settings: {
       PreToolUse: [{ matcher: PATH_TOOLS.join("|"), hooks: [{ type: "command", command: command("pre_tool_use"), timeout: PRE_TOOL_TIMEOUT_S }] }],
@@ -336,11 +359,12 @@ export async function startGateHooks(o: GateHooksOptions): Promise<RunningGateHo
     },
     blocks: answers.blocks,
     checking: answers.checking,
-    checkMs: answers.checkMs,
+    deadline: deadline.signal,
     // Each block runs one check, and the stop that is allowed one more.
     maxCheckMs: (Math.max(0, g.stop_checks - g.stop_blocks_used) + 1) * stopMs,
     stopTimeout: answers.stopTimeout,
     close: async () => {
+      deadline.stop();
       ctl.abort();
       await host.close();
       await rm(o.dir, { recursive: true, force: true });
