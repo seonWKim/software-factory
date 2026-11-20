@@ -182,8 +182,11 @@ describe("the Needs you section", () => {
     expect(chip.textContent).toBe("failed: spec_conflict");
     expect(need.parentElement!.querySelector("[data-level='needs_you']")).not.toBeNull();
     expect(row.querySelector("p[data-need]")).toBeNull();
-    // A sentence stays a line.
-    expect(rowsOf(lists[2]!)[0]!.querySelector("[data-need]")!.tagName).toBe("P");
+    // A sentence joins the same second line, cut to one line with the full text on hover (owner feedback 2026-11-20).
+    const sentence = rowsOf(lists[2]!)[0]!.querySelector<HTMLElement>("[data-need]")!;
+    expect(sentence.className).toContain("truncate");
+    expect(sentence.getAttribute("title")).toBe(sentence.textContent);
+    expect(sentence.parentElement!.querySelector("[data-level]")).not.toBeNull();
   });
 
   it("links a status-code chip to the thread entry its reason names", async () => {

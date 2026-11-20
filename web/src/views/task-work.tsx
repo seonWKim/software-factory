@@ -13,7 +13,7 @@ import { type NeedGroup, MergeCheckNote, allowEntries, needGroup, needsYou } fro
 import { ItemDecision } from "./decision-card.js";
 import { NeedActions, SendErrors, useCommandSend } from "./item-commands.js";
 import { FloorStatus } from "./pages.js";
-import { CheckRow, NEED_ROW } from "./system-banner.js";
+import { CheckRow } from "./system-banner.js";
 import { Card } from "../components/ui/card.js";
 import { Badge } from "../components/ui/badge.js";
 
@@ -105,15 +105,15 @@ function WorkRow({ it }: { it: ItemRow }) {
   const reason = needReason(it);
   const chip = CODE_REASON.test(reason);
   return (
-    <li data-key={it.id} className={NEED_ROW}>
-      <div className="min-w-0 grow basis-64 space-y-1">
+    <li data-key={it.id} className="flex flex-wrap items-start gap-3 p-3">
+      <div className="min-w-0 flex-1 space-y-1">
         <span className="flex min-w-0 items-baseline gap-2">
-          <Link href={itemPath(it.id)} title={t("needs.idHover", { id: it.id })} className="truncate font-medium text-text-1 hover:underline">
+          <Link href={itemPath(it.id)} title={it.title ?? undefined} className="truncate text-sm text-text-1 hover:underline">
             {it.title ?? shortSource(it.source.id)}
           </Link>
           {it.change_ref !== null && <span className="shrink-0 text-xs text-text-2 tabular-nums">#{it.change_ref}</span>}
         </span>
-        <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span data-details className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-text-2">
           <Badge level={it.item_phase}>{LEVEL_LABELS[it.item_phase] ?? it.item_phase}</Badge>
           {it.merge_check && !checking && it.merge_check.state !== "mergeable" && <MergeCheckNote check={it.merge_check} />}
           {chip && (
@@ -127,14 +127,16 @@ function WorkRow({ it }: { it: ItemRow }) {
               )}
             </span>
           )}
+          {reason !== "" && !chip && (
+            <span data-need title={reason} className="min-w-0 flex-1 basis-40 truncate">
+              {it.need?.anchor ? <Link href={`${itemPath(it.id)}#${it.need.anchor}`} className={LINK_CLASS}>{reason}</Link> : reason}
+            </span>
+          )}
         </span>
-        {reason !== "" && !chip && (
-          <p data-need title={reason} className="line-clamp-2 text-xs break-words text-text-2">
-            {it.need?.anchor ? <Link href={`${itemPath(it.id)}#${it.need.anchor}`} className={LINK_CLASS}>{reason}</Link> : reason}
-          </p>
-        )}
       </div>
-      <RowActions it={it} cmd={cmd} inlineErrors={false} />
+      <span className="flex shrink-0 items-center">
+        <RowActions it={it} cmd={cmd} inlineErrors={false} />
+      </span>
       {Object.values(cmd.local).some((l) => "error" in l) && (
         <div data-row-error className="flex basis-full flex-col gap-1">
           <SendErrors local={cmd.local} />

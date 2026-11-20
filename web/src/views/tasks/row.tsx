@@ -5,7 +5,7 @@ import { Button } from "../../components/ui/button.js";
 import { Checkbox } from "../../components/ui/checkbox.js";
 import { FOCUS } from "../../components/ui/control.js";
 import { announceStatus } from "../../components/ui/dialog.js";
-import { ID_CLASS, LINK_CLASS } from "../../components/ui/link-style.js";
+import { LINK_CLASS } from "../../components/ui/link-style.js";
 import { OverflowMenu } from "../../components/ui/menu.js";
 import type { MessageKey } from "../../i18n/en.js";
 import { t } from "../../i18n/index.js";
@@ -47,8 +47,8 @@ function BuildButton({ task, token }: { task: TaskRow; token: string }) {
     }
   };
   return (
-    <span className="flex flex-col items-start gap-1">
-      <Button variant="secondary" disabled={busy} aria-label={t("tasks.buildLabel", { title: task.title })} onClick={() => void build()}>
+    <span className="flex flex-wrap items-center gap-2">
+      <Button size="sm" variant="secondary" disabled={busy} aria-label={t("tasks.buildLabel", { title: task.title })} onClick={() => void build()}>
         {t("tasks.build")}
       </Button>
       {error !== null && (
@@ -68,7 +68,7 @@ function Title({ task, className, onOpen }: { task: TaskRow; className: string; 
   if (onOpen !== null) {
     return (
       // The title stays the paragraph's text; the shared Button lies over it, so the row keeps its height.
-      <p className={cn(className, "relative hover:underline")}>
+      <p title={task.title} className={cn(className, "relative hover:underline")}>
         {task.title}
         <Button
           variant="ghost"
@@ -80,7 +80,7 @@ function Title({ task, className, onOpen }: { task: TaskRow; className: string; 
       </p>
     );
   }
-  const title = <p className={className}>{task.title}</p>;
+  const title = <p title={task.title} className={className}>{task.title}</p>;
   return task.work_item_id === null ? title : (
     <Link href={itemPath(task.work_item_id)} className={cn("block", LINK_CLASS)}>
       {title}
@@ -140,7 +140,7 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
       data-overdue={overdue ? "" : undefined}
       data-done={done ? "" : undefined}
       data-sub={sub ? "" : undefined}
-      className={cn("flex flex-wrap items-start justify-between gap-x-3 gap-y-2 p-3", FOCUS, "focus-visible:-outline-offset-2", sub && "pl-10")}
+      className={cn("flex items-start gap-3 p-3", FOCUS, "focus-visible:-outline-offset-2", sub && "pl-10")}
     >
       {token !== null && !done && (
         <Checkbox
@@ -164,11 +164,11 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
         ) : (
           <Title
             task={task}
-            className={cn("text-sm text-pretty break-words", overdue && "font-medium text-pill-bad-fg", done && "text-text-2 line-through")}
+            className={cn("truncate text-sm", overdue && "font-medium text-pill-bad-fg", done && "text-text-2 line-through")}
             onOpen={token !== null && !done ? () => setMode("description") : null}
           />
         )}
-        <p className={cn(muted, "flex flex-wrap gap-x-3 gap-y-1")}>
+        <div data-details className={cn(muted, "flex flex-wrap items-center gap-x-3 gap-y-1")}>
           {overdue && <Badge level="stuck">{t("tasks.overdue")}</Badge>}
           {task.done_at != null && <span className="tabular-nums">{t("tasks.doneAt", { at: localDateTime(task.done_at) })}</span>}
           {task.close_reason != null && <span>{t(closedKey(task.close_reason))}</span>}
@@ -183,7 +183,14 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
             </span>
           ))}
           {task.recurrence !== null && <span>{t("tasks.every", { recurrence: task.recurrence })}</span>}
-        </p>
+          {task.work_item_id !== null ? (
+            <span data-work className="-my-1 flex flex-wrap items-center gap-2">
+              <WorkState id={task.work_item_id} title={task.title} open={!done} />
+            </span>
+          ) : (
+            token !== null && !done && <BuildButton task={task} token={token} />
+          )}
+        </div>
         {mode === "sub" && (
           <RowForm
             label={t("tasks.subLabel", { title: task.title })}
@@ -203,17 +210,7 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
           </p>
         )}
       </div>
-      <div className="flex items-start gap-2">
-        {task.work_item_id !== null ? (
-          <>
-            <WorkState id={task.work_item_id} title={task.title} open={!done} />
-            <Link href={itemPath(task.work_item_id)} className={cn(ID_CLASS, "text-xs break-all")}>
-              {task.work_item_id}
-            </Link>
-          </>
-        ) : (
-          token !== null && !done && <BuildButton task={task} token={token} />
-        )}
+      <div className="flex shrink-0 items-start">
         {token !== null && (done ? (
           <Button variant="secondary" disabled={action.busy} aria-label={t("tasks.reopenLabel", { title: task.title })} onClick={() => void reopen()}>
             {t("tasks.reopen")}

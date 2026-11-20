@@ -165,9 +165,10 @@ describe("Needs you", () => {
     expect(line.className.split(" ")).toContain("basis-full");
     const children = [...row.children];
     expect(children.indexOf(line)).toBeGreaterThan(children.indexOf(actions.closest("li > *")!));
-    // The title keeps its space: it grows from a fixed basis instead of shrinking to nothing beside the actions.
+    // The title keeps its space: one truncated line in a column that takes the rest of the row, the actions beside it.
     const title = within(row).getByRole("link", { name: "Task title that keeps its space" });
-    expect(title.closest("li > div")!.className.split(" ")).toEqual(expect.arrayContaining(["grow", "basis-64"]));
+    expect(title.className).toContain("truncate");
+    expect(title.closest("li > div")!.className.split(" ")).toEqual(expect.arrayContaining(["min-w-0", "flex-1"]));
   });
 
   it("a checkbox still completes a task with the section on the page", async () => {

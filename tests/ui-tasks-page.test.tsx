@@ -49,7 +49,9 @@ describe("Tasks page", () => {
     expect(card("tk_soon").textContent).toContain("#home");
     expect(screen.getByRole("list", { name: "No date" }).textContent).toContain("tk_inbox");
     const built = within(card("tk_built"));
-    expect(built.getByRole("link", { name: "wi_1" }).getAttribute("href")).toBe("/app/items/wi_1");
+    // No raw ID on the row: the work's state sits on the details line, under the title.
+    expect(card("tk_built").textContent).not.toContain("wi_1");
+    expect(card("tk_built").querySelector("[data-details] [data-work]")).not.toBeNull();
     expect(built.queryByRole("button", { name: /Build this/ })).toBeNull();
   });
 
@@ -339,9 +341,8 @@ describe("the description dialog (design 02-tasks and 09-dashboard-tasks)", () =
     expect(s.posts).toEqual([]);
   });
 
-  it("a built task's title opens the dialog too, which says the work item keeps the text it was built with; the ID still links", async () => {
+  it("a built task's title opens the dialog too, which says the work item keeps the text it was built with", async () => {
     await show();
-    expect(within(card("tk_built")).getByRole("link", { name: "wi_1" }).getAttribute("href")).toBe("/app/items/wi_1");
     open("tk_built");
     expect(dialog()!.textContent).toContain("Built as wi_1: the work item keeps the text it was built with");
   });
@@ -382,4 +383,18 @@ describe("a built task's Work row: queued and pending states", () => {
       expect(within(card("tk_built")).queryByText("Ready to merge")).toBeNull();
     });
   }
+});
+
+// A row is checkbox, then the title on one line (cut with an ellipsis, the full title on hover), then the details and
+// state on a second line, then the menu: nothing beside the title takes its width (owner feedback 2026-11-20).
+describe("a task row's layout", () => {
+  it("keeps the title on one truncated line with its full text as a tooltip, and the details and state under it", async () => {
+    await show();
+    const title = card("tk_built").querySelector<HTMLElement>("p[title]")!;
+    expect(title.getAttribute("title")).toBe("tk_built");
+    expect(title.className).toContain("truncate");
+    const details = card("tk_built").querySelector<HTMLElement>("[data-details]")!;
+    expect(details.previousElementSibling).toBe(title.closest("div > *"));
+    expect(card("tk_built").className).not.toContain("flex-wrap");
+  });
 });
