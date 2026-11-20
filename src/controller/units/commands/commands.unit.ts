@@ -12,9 +12,8 @@ import {
 } from "../../../core/commands.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
 import { commandEvent, syncedCommand } from "../../../core/command-inbox.js";
-import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
-import { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity } from "../../../core/local-cli.js";
-import { specKind } from "../../../core/standing.js";
+import { LOCAL_SOURCE, MERGE_COMMAND, RESTART_COMMAND } from "../../../core/local-merge.js";
+import { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity } from "../../../core/local-cli.js"; import { specKind } from "../../../core/standing.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpretMessage, interpretReply, interpretTexts, openItems, proposalEvent } from "../../../core/interpret.js";
 import { type Actor, type RunKind, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { AppCommandRequest, CliCommand, FactoryStore, RedeemLinkResult } from "../../../interfaces/factory-store.js";
@@ -498,9 +497,10 @@ export class CommandsUnit {
     await answerPlain(this.c, item, e, async () => commandFooter(await this.stateOf(item)));
   }
 
-  /** The dashboard's Confirm all, Cancel or sentence (proposals.ts appProposal), and `hold` (the coordination unit's); undefined for any other app command. */
+  /** The dashboard's Confirm all, Cancel or sentence (proposals.ts appProposal), `hold` (the coordination unit's) and `restart` (the local-merge unit's, from the page or `factory restart`); undefined for any other app command. */
   appProposal(r: AppCommandRequest, item: WorkItem, key: string): Promise<string | null> | undefined {
     if (r.command === "hold") return this.c.unit("coordination").holdCommand(item, { app: r.actor }, key, typeof r.args.note === "string" ? r.args.note : "");
+    if (r.command === RESTART_COMMAND) return this.c.unit("local-merge").restart(item, r.actor, key, { [APP_REQUEST]: r.seq });
     const who = localIdentity(r.actor), kind = r.command === CONFIRM_COMMAND ? "confirm" : r.command === CANCEL_APP_COMMAND ? "cancel" : r.command === SENTENCE_APP_COMMAND ? "sentence" : null;
     return kind ? appProposal(this.c, r, item, key, kind, { who, event: (row, s) => proposalEvent(row, s, who), say: refusalText, footer: async () => commandFooter(await this.stateOf(item)) }) : undefined;
   }

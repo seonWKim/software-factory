@@ -3,14 +3,14 @@
 // size, JSON), then the body; every refusal stores nothing. The caller chooses the task ID, so a retry stores one task.
 
 import { describe, expect, it } from "vitest";
-import { DONE_WINDOW_DAYS } from "../src/core/tasks.js";
+import { DONE_WINDOW_DAYS, MAX_TASK_BODY } from "../src/core/tasks.js";
 import type { UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, type UiRequest, respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
-import { TASKS_PATH, TASK_DONE_PATH, TASK_EDIT_PATH, TASK_REOPEN_PATH, TASK_SUB_PATH, TASK_WRITES } from "../src/ui/tasks-api.js";
+import { TASKS_PATH, TASK_BODY_PATH, TASK_DELETE_PATH, TASK_DONE_PATH, TASK_EDIT_PATH, TASK_REOPEN_PATH, TASK_SUB_PATH, TASK_WRITES } from "../src/ui/tasks-api.js";
 import { PROJECTS_PATH, TASK_PROJECT_PATH } from "../src/ui/projects-api.js";
 import { newStore } from "./helpers/store.js";
 
@@ -48,6 +48,12 @@ async function setup(opts: { actor?: UserId | null; wired?: boolean } = {}) {
 const ID = "tk_0123456789abcdef";
 
 describe("POST /api/v1/tasks", () => {
+  it("a timed task typed with no duration stores no duration (no default is written)", async () => {
+    const s = await setup();
+    expect((await s.post({ id: ID, words: "call bank tomorrow 09:00" })).status).toBe(200);
+    expect((await s.tasks())[0]).toMatchObject({ id: ID, due_time: "09:00", duration_minutes: null });
+  });
+
   it("stores one task with the parsed fields, created by the page's actor, and returns it", async () => {
     const s = await setup();
     const r = await s.post({ id: ID, words: "pay rent tomorrow 09:30 !1 #home every month" });
@@ -491,5 +497,141 @@ describe("the dashboard's task project routes (design 02-tasks and 09-dashboard-
     expect(home.map((t) => t.id).sort()).toEqual([ID, "tk_home_done_0001"].sort());
     expect(home.find((t) => t.id === "tk_home_done_0001")!.done_at).not.toBeNull();
     expect(rows(JSON.parse((await get(s)).body)).map((t) => t.id)).toEqual(expect.arrayContaining(["tk_home_done_0001", "tk_away_done_0001"]));
+  });
+});
+
+describe("sub-tasks stay with their parent (design 02-tasks-page, delete with sub-tasks)", () => {
+  type S = Awaited<ReturnType<typeof setup>>;
+  const PARENT = "tk_parent_0000001";
+  const get = async (s: S, query = "") => JSON.parse((await respond(s.d, { method: "GET", url: `${TASKS_PATH}${query}`, host: HOST })).body);
+  const del = (s: S, body: unknown) => s.post(body, { url: TASK_DELETE_PATH });
+  const all = (s: S) => s.store.db.all("SELECT * FROM controller_tasks ORDER BY id");
+  const rows = (v: { projects: { tasks: { id: string; open_sub_tasks: number }[] }[] }) => v.projects.flatMap((p) => p.tasks);
+
+  /** A parent with two open sub-tasks and one done one; the parent is in Home, its sub-tasks in no project. */
+  async function seeded() {
+    const s = await setup();
+    await s.post({ id: PARENT, words: "move house tomorrow" });
+    for (const id of ["tk_sub_open_0001", "tk_sub_open_0002", "tk_sub_done_0001"]) await s.post({ parent: PARENT, id, words: id }, { url: TASK_SUB_PATH });
+    await s.post({ id: "tk_sub_done_0001" }, { url: TASK_DONE_PATH });
+    await s.post({ id: ID, words: "call the bank" });
+    await s.store.createProject({ id: "pj_home", name: "Home", created_by: ACTOR });
+    await s.store.addTaskToProject("pj_home", PARENT);
+    return s;
+  }
+
+  it("GET /api/v1/tasks gives each row open_sub_tasks, counted before the project filter", async () => {
+    const s = await seeded();
+    const v = rows(await get(s));
+    expect(v.find((t) => t.id === PARENT)!.open_sub_tasks).toBe(2);
+    expect(v.find((t) => t.id === ID)!.open_sub_tasks).toBe(0);
+    expect(v.find((t) => t.id === "tk_sub_open_0001")!.open_sub_tasks).toBe(0);
+    // Home holds the parent but none of its sub-tasks: the count is still theirs.
+    expect(rows(await get(s, "?project=home")).find((t) => t.id === PARENT)!.open_sub_tasks).toBe(2);
+  });
+
+  it("a plain delete of a parent with open sub-tasks still answers 409 naming them, writing nothing", async () => {
+    const s = await seeded();
+    const before = await all(s);
+    const r = await del(s, { id: PARENT });
+    expect(r.status).toBe(409);
+    expect(JSON.parse(r.body).error).toMatch(/it has open sub-tasks \(tk_sub_open_0001, tk_sub_open_0002\)/);
+    expect(await all(s)).toEqual(before);
+  });
+
+  it("with_sub_tasks true deletes the parent and every sub-task in one write, naming the deleted sub-tasks", async () => {
+    const s = await seeded();
+    const r = await del(s, { id: PARENT, with_sub_tasks: true });
+    expect(r.status).toBe(200);
+    const v = JSON.parse(r.body) as { task_id: string; deleted_sub_tasks: string[] };
+    expect(v.task_id).toBe(PARENT);
+    expect([...v.deleted_sub_tasks].sort()).toEqual(["tk_sub_done_0001", "tk_sub_open_0001", "tk_sub_open_0002"]);
+    expect((await all(s)).map((t) => t.id)).toEqual([ID]);
+  });
+
+  it("a parent with no open sub-tasks deletes with { id } as before", async () => {
+    const s = await setup();
+    await s.post({ id: PARENT, words: "move house" });
+    const r = await del(s, { id: PARENT });
+    expect(r.status).toBe(200);
+    expect(JSON.parse(r.body)).toMatchObject({ task_id: PARENT });
+    expect(await s.store.getTask(PARENT)).toBeNull();
+  });
+
+  it("a with_sub_tasks that is not a boolean is 400 and writes nothing", async () => {
+    const s = await seeded();
+    const before = await all(s);
+    for (const flag of ["true", 1, null, {}]) {
+      const r = await del(s, { id: PARENT, with_sub_tasks: flag });
+      expect(r.status, JSON.stringify(flag)).toBe(400);
+      expect(JSON.parse(r.body).error).toMatch(/with_sub_tasks must be true or false/);
+    }
+    expect((await del(s, { id: PARENT, with_sub_tasks: true, extra: 1 })).status).toBe(400);
+    expect(await all(s)).toEqual(before);
+  });
+});
+
+describe("POST /api/v1/tasks/body: a task's description (design 02-tasks, description)", () => {
+  const save = (s: Awaited<ReturnType<typeof setup>>, body: unknown, over: Partial<UiRequest> = {}) => s.post(body, { url: TASK_BODY_PATH, ...over });
+  const rows = (s: Awaited<ReturnType<typeof setup>>) => s.store.db.all("SELECT * FROM controller_tasks ORDER BY id");
+
+  it("is a task write route", () => {
+    expect(TASK_WRITES[TASK_BODY_PATH]).toBeTypeOf("function");
+  });
+
+  it("stores the description trimmed and answers the task; GET /api/v1/tasks returns it", async () => {
+    const s = await setup();
+    await s.post({ id: ID, words: "call the bank" });
+    const r = await save(s, { id: ID, body: "  ask about the fee\nand the card  " });
+    expect(r.status).toBe(200);
+    expect(JSON.parse(r.body)).toMatchObject({ task: { id: ID, body: "ask about the fee\nand the card" } });
+    expect((await s.store.getTask(ID))!.body).toBe("ask about the fee\nand the card");
+    const read = JSON.parse((await respond(s.d, { method: "GET", url: TASKS_PATH, host: HOST })).body);
+    expect(read.projects[0].tasks[0]).toMatchObject({ id: ID, body: "ask about the fee\nand the card" });
+  });
+
+  it("an empty or blank description clears it", async () => {
+    const s = await setup();
+    await s.post({ id: ID, words: "call the bank" });
+    await save(s, { id: ID, body: "notes" });
+    expect((await save(s, { id: ID, body: "  \n " })).status).toBe(200);
+    expect((await s.store.getTask(ID))!.body).toBeNull();
+  });
+
+  it("takes MAX_TASK_BODY characters and refuses one more with 400, writing nothing", async () => {
+    const s = await setup();
+    await s.post({ id: ID, words: "call the bank" });
+    expect(MAX_TASK_BODY).toBe(20_000);
+    expect((await save(s, { id: ID, body: "a".repeat(MAX_TASK_BODY) })).status).toBe(200);
+    const before = await rows(s);
+    const r = await save(s, { id: ID, body: "b".repeat(MAX_TASK_BODY + 1) });
+    expect(r.status).toBe(400);
+    expect(await rows(s)).toEqual(before);
+  });
+
+  it("answers 404 for an unknown task and 409 for a done one, writing nothing", async () => {
+    const s = await setup();
+    await s.post({ id: ID, words: "call the bank" });
+    await save(s, { id: ID, body: "before" });
+    await s.store.completeTask(ID);
+    const before = await rows(s);
+    expect((await save(s, { id: "tk_nope_nope", body: "x" })).status).toBe(404);
+    const done = await save(s, { id: ID, body: "after" });
+    expect(done.status).toBe(409);
+    expect(await rows(s)).toEqual(before);
+  });
+
+  it("refuses a body that is not { id, body }, a request without the guards, and no actor, writing nothing", async () => {
+    const s = await setup();
+    await s.post({ id: ID, words: "call the bank" });
+    const before = await rows(s);
+    for (const b of [{ id: ID }, { id: ID, body: 7 }, { id: ID, body: "x", extra: 1 }, []]) expect((await save(s, b)).status, JSON.stringify(b)).toBe(400);
+    expect((await save(s, { id: ID, body: "x" }, { csrfToken: "stale" })).status).toBe(403);
+    expect((await save(s, { id: ID, body: "x" }, { origin: "https://evil.example" })).status).toBe(403);
+    expect((await save(s, { id: ID, body: "x" }, { contentType: "text/plain" })).status).toBe(415);
+    expect((await save(s, { id: ID, body: "x" }, { bodyTooLarge: true })).status).toBe(413);
+    expect(await rows(s)).toEqual(before);
+    const off = await setup({ actor: null });
+    expect((await save(off, { id: ID, body: "x" })).status).toBe(503);
   });
 });

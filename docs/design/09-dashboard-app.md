@@ -9,5 +9,6 @@ This file is an index. Each dashboard page keeps its decisions in its own topic 
 - [09-dashboard-rules.md](09-dashboard-rules.md): the Rules page.
 - [09-dashboard-settings.md](09-dashboard-settings.md): the Settings and Plugins pages.
 - [09-dashboard-system.md](09-dashboard-system.md): the Work tree, Workers, Failures, Spend and Data pages.
+- [09-dashboard-workers.md](09-dashboard-workers.md): the Workers page: run timeline and dependency graph.
 - [09-dashboard-item.md](09-dashboard-item.md): the item page.
 - [09-dashboard-item-commands.md](09-dashboard-item-commands.md): item commands, dialogs, Merge button.

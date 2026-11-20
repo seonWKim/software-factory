@@ -260,3 +260,50 @@ describe("the Depends on line (design 05-dependencies, 2026-11-20)", () => {
     expect(await localItemOf(store, gh.id)).toBeNull();
   });
 });
+
+describe("a task's description in its build (design 02-tasks, description)", () => {
+  const problem = async (s: Awaited<ReturnType<typeof setup>>, id: string) =>
+    (await s.store.getWorkItem((await s.store.getTask(id))!.work_item_id!))!.problem;
+
+  it("factory task build puts the stored description below the title, after a blank line", async () => {
+    const s = await setup();
+    await s.cli("add", "pay", "rent");
+    await s.store.setTaskBody("tk_id1", "the landlord's account changed");
+    expect((await s.cli("build", "tk_id1")).code).toBe(0);
+    expect(await problem(s, "tk_id1")).toBe("pay rent\n\nthe landlord's account changed");
+  });
+
+  it("a task with no description builds its title alone, as before", async () => {
+    const s = await setup();
+    await s.cli("add", "pay", "rent");
+    await s.cli("build", "tk_id1");
+    expect(await problem(s, "tk_id1")).toBe("pay rent");
+  });
+
+  it("Build this on the dashboard sends the description too; a later edit changes the task, not the item", async () => {
+    const s = await route();
+    await s.cli("add", "pay", "rent");
+    await s.store.setTaskBody("tk_id1", "by Friday");
+    expect((await s.post({ id: "tk_id1" })).status).toBe(200);
+    expect(await problem(s, "tk_id1")).toBe("pay rent\n\nby Friday");
+    await s.store.setTaskBody("tk_id1", "by Monday");
+    expect((await s.store.getTask("tk_id1"))!.body).toBe("by Monday");
+    expect(await problem(s, "tk_id1")).toBe("pay rent\n\nby Friday");
+  });
+
+  it("task create --project stores its body on the task and builds from it", async () => {
+    const s = await setup();
+    const d: LocalCliDeps = {
+      store: s.store, identity: { user: USER, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "  call first  \n", newId: () => "x1",
+    };
+    const run = (word: string, ...args: string[]) => {
+      const a = parseLocalCliArgs(word, args);
+      if ("error" in a) throw new Error(a.error);
+      return runLocalCli(d, a as CliAction);
+    };
+    await run("project", "create", "Home");
+    expect((await run("task", "create", "--title", "fix the tap", "--body-file", "f.md", "--project", "home")).code).toBe(0);
+    expect((await s.store.getTask("tk_x1"))!.body).toBe("call first");
+    expect(await problem(s, "tk_x1")).toBe("fix the tap\n\ncall first");
+  });
+});

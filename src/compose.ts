@@ -2,7 +2,7 @@
 // Environment (local / cloud) is chosen here; core code never branches on it.
 
 import { createHash } from "node:crypto";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, stat } from "node:fs/promises";
 import { availableParallelism, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -18,7 +18,6 @@ import { saveProject, saveProjectLabel } from "./core/project-labels.js";
 import { errorText, type Logger } from "./core/log.js";
 import type { CliEnvironment, CliIdentity } from "./core/local-cli.js";
 import { canMergeLocal, forgeRoles } from "./core/local-merge.js";
-import { MERGE_REQUESTS_READ, mergeRequested } from "./core/commands.js";
 import { StoredLearnedSettings } from "./core/learned-settings.js";
 import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
@@ -68,7 +67,7 @@ import type { UiPauses } from "./ui/pause-api.js";
 import { type UiTacit, uiTacit } from "./ui/rules-api.js";
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
 import type { SlackConfig } from "./impl/source/slack-config.js";
-import { baseEnv } from "./impl/process/run-process.js";
+import { baseEnv, runProcess } from "./impl/process/run-process.js";
 import { defaultSecretsFile } from "./impl/secrets/env-file-secret-store.js";
 import { LiveTacit } from "./runtime/live-tacit.js";
 import { LiveCalendars } from "./calendar/index.js";
@@ -91,10 +90,10 @@ export interface FileConfig {
   /**
    * install_command, test_command: argv, defaults ["npm", "ci"] and ["npm", "test"]. check_commands: a list of
    * argv, the pre-push checks (design §4); absent: [test_command]. ui_check: the merge-time UI check (uiCheckConfig).
-   */
+   * restart_command: argv, the restart run's command (design 04-gate-commands, restart); absent: off. */
   repo: {
     owner: string; name: string; path: string; base_branch: string;
-    install_command?: unknown; test_command?: unknown; check_commands?: unknown; ui_check?: unknown;
+    install_command?: unknown; test_command?: unknown; check_commands?: unknown; ui_check?: unknown; restart_command?: unknown;
   };
   intake_label: string;
   /** Prefix of the status labels (docs/plugins.md, SourceAdapter). Absent: "sf: ". */
@@ -414,14 +413,14 @@ export async function loadConfig(
   const secretsFile = defaultSecretsFile();
 
   const home = process.env.HOME ?? "";
-  const { check_commands: rawChecks, ui_check: rawUiCheck, ...fileRepo } = file.repo;
+  const { check_commands: rawChecks, ui_check: rawUiCheck, restart_command: rawRestart, ...fileRepo } = file.repo;
   const config: LoadedConfig = {
     repo: {
       ...fileRepo,
       path: repoPath,
       install_command: argvConfig("repo.install_command", file.repo.install_command, ["npm", "ci"]),
       test_command: testCommand(file.repo.test_command),
-      ...checkCommandsConfig(rawChecks), ...uiCheckConfig(rawUiCheck),
+      ...checkCommandsConfig(rawChecks), ...uiCheckConfig(rawUiCheck), ...(rawRestart === undefined ? {} : { restart_command: argvConfig("repo.restart_command", rawRestart, ["bin/restart"]) }),
     },
     ...(local ? { local_only: true as const } : {}),
     intake_label: intakeLabel(file.intake_label),
@@ -845,7 +844,7 @@ export async function build(
     git_host: gitHost(stateDir, sel.store),
     settings, learned,
     // The worker pool's sandbox: the controller's local merge check fetches and checks through it (design §5).
-    sandbox,
+    sandbox, repo_entries: async (names) => (await Promise.all(names.map((n) => stat(join(config.repo.path, n)).then(() => [n], () => [])))).flat(), // the merge reply's run hint
     // The alarm step's restart count (design 05-alarms): this host's supervisor status file.
     restarts: () => readRestarts(join(loaded.stateDir, SUPERVISOR_STATUS_FILE)),
     // This process's GitHub budget, stored after each poll for the status page (design §5, GitHub call budget).
@@ -871,7 +870,7 @@ export async function build(
     clock, config,
     prompts: loaded.prompts,
     log: new ConsoleLogger(clock, "worker"),
-    toolEnv: baseEnv(),
+    toolEnv: baseEnv(), host_exec: runProcess, // the restart run's command, on the host in the base checkout (design 04-gate-commands)
     // Split over the runs running on this host at each claim as SF_TEST_WORKERS, so parallel test runs do not each take every CPU.
     cpus: availableParallelism(),
     models: { table: loaded.model_by, names: loaded.models },
@@ -1042,9 +1041,9 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   // One token per process for every write route; held only in memory, never written to a file, the store or a log.
   // The UI server, loaded here only: through setup.ts it reaches GitHub modules a solo start must not load.
   const who = uiCommandsActor(uiUserId(loaded.file.ui), opts.identity, (await import("./ui/server.js")).BIND);
-  // The Merge button's facts (design §9): a forge selected, a sandbox that merges locally (built only to ask), a Merge request still pending.
+  // The Merge button's facts (design §9): a forge selected, a sandbox that merges locally (built only to ask).
   const commands: UiCommands = {
-    ...who, token, forge: loaded.plugins.forge !== undefined, localMerge: canMergeLocal(await p.sandbox()), mergeRequested: async (id) => mergeRequested(await store.listAppCommandRequestsForItem(id, MERGE_REQUESTS_READ)), changeName: (ref) => `PR #${ref}`,
+    ...who, token, forge: loaded.plugins.forge !== undefined, localMerge: canMergeLocal(await p.sandbox()), changeName: (ref) => `PR #${ref}`, restart: loaded.config.repo.restart_command !== undefined,
     allowed: (action) => (who.actor === null ? Promise.resolve({ allow: false, reason: "no_actor" }) : onProject(who.actor, action, true)),
   };
   // The mode switch, the auto-merge tier and a loosening change need approve_merge on the project (design 08-settings), as the Merge button.

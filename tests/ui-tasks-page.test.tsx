@@ -145,12 +145,12 @@ describe("Tasks page", () => {
       for (const r of document.querySelectorAll("[data-task]")) expect(r.hasAttribute("draggable")).toBe(false);
     });
 
-    it("a timed row still shows its duration: 30 minutes when none is stored, else the stored one", async () => {
+    it("a timed row shows a duration only when one is stored: no 30 min for a null duration", async () => {
       s.current = view({
         today: { overdue: [], due: [row("tk_call", { due_date: "2026-11-12", due_time: "15:00" }), row("tk_gym", { due_date: "2026-11-12", due_time: "18:00", duration_minutes: 90 })] },
       });
       await show2();
-      expect(card("tk_call").textContent).toContain("30 min");
+      expect(card("tk_call").textContent).not.toContain("min");
       expect(card("tk_gym").textContent).toContain("90 min");
     });
   });
@@ -218,4 +218,168 @@ describe("Tasks page", () => {
       expect(overdue.getAttribute("data-level")).toBe("stuck");
     });
   });
+
+  describe("sub-tasks stay with their parent (design 02-tasks-page)", () => {
+    const ids = (list: string) => [...screen.getByRole("list", { name: list }).querySelectorAll<HTMLElement>("[data-task]")].map((e) => e.dataset.task);
+    const parentDay = "2026-11-20";
+
+    it("an undated open sub-task shows right under its parent in the parent's date group, not under No date", async () => {
+      s.current = view({
+        today: { overdue: [], due: [] },
+        projects: [{ list: null, tasks: [row("tk_p", { due_date: parentDay }), row("tk_s", { parent_task_id: "tk_p" }), row("tk_free")] }],
+      });
+      await show2();
+      expect(ids(dayLabel(parentDay))).toEqual(["tk_p", "tk_s"]);
+      expect(card("tk_s").hasAttribute("data-sub")).toBe(true);
+      expect(ids("No date")).toEqual(["tk_free"]);
+    });
+
+    it("a sub-task with its own due date shows under its parent's date group, not its own date's", async () => {
+      s.current = view({
+        today: { overdue: [], due: [row("tk_s", { due_date: "2026-11-12", parent_task_id: "tk_p" })] },
+        projects: [{ list: null, tasks: [row("tk_s", { due_date: "2026-11-12", parent_task_id: "tk_p" }), row("tk_p", { due_date: parentDay }), row("tk_x", { due_date: "2026-11-12" })] }],
+      });
+      await show2();
+      expect(ids(dayLabel(parentDay))).toEqual(["tk_p", "tk_s"]);
+      expect(ids(`Today, ${dayLabel("2026-11-12")}`)).toEqual(["tk_x"]);
+    });
+
+    it("a sub-task whose parent is not in the list stays in its own date group, unindented", async () => {
+      s.current = view({
+        today: { overdue: [], due: [] },
+        projects: [{ list: null, tasks: [row("tk_s", { due_date: "2026-11-13", parent_task_id: "tk_gone" })] }],
+      });
+      await show2();
+      expect(ids(dayLabel("2026-11-13"))).toEqual(["tk_s"]);
+      expect(card("tk_s").hasAttribute("data-sub")).toBe(false);
+    });
+  });
+
+  describe("delete checks for open sub-tasks before it asks (design 02-tasks-page)", () => {
+    const openDelete = async (id: string) => {
+      card(id).focus();
+      fireEvent.keyDown(card(id), { key: "Delete" });
+      return within(await waitFor(() => document.querySelector<HTMLElement>("[data-dialog]")!));
+    };
+    const posted = () => s.posts.filter((p) => p.url === "/api/v1/tasks/delete").map((p) => JSON.parse(String(p.init.body)));
+
+    it("for a parent with open sub-tasks it says how many and its confirm, Delete with sub-tasks, posts with_sub_tasks", async () => {
+      s.current = view({
+        today: { overdue: [], due: [] },
+        projects: [{ list: null, tasks: [row("tk_p", { due_date: "2026-11-20", open_sub_tasks: 2 }), row("tk_s1", { parent_task_id: "tk_p" }), row("tk_s2", { parent_task_id: "tk_p" })] }],
+      });
+      s.answer = { status: 200, body: { task_id: "tk_p", deleted_sub_tasks: ["tk_s1", "tk_s2"] } };
+      await show2();
+      const d = await openDelete("tk_p");
+      expect(document.querySelector("[data-open-sub-tasks]")!.textContent).toContain("2 open sub-tasks");
+      expect(document.querySelector("[data-dialog-consequence]")!.textContent).toBe("The task leaves every view. This cannot be undone.");
+      expect(d.queryByRole("button", { name: "Delete" })).toBeNull();
+      fireEvent.click(d.getByRole("button", { name: "Delete with sub-tasks" }));
+      await waitFor(() => expect(posted()).toEqual([{ id: "tk_p", with_sub_tasks: true }]));
+    });
+
+    it("for a task with no open sub-tasks it is the plain Delete confirm, posting { id }", async () => {
+      s.current = view({ today: { overdue: [], due: [] }, projects: [{ list: null, tasks: [row("tk_p", { due_date: "2026-11-20", open_sub_tasks: 0 })] }] });
+      s.answer = { status: 200, body: { task_id: "tk_p", deleted_sub_tasks: [] } };
+      await show2();
+      const d = await openDelete("tk_p");
+      expect(document.querySelector("[data-open-sub-tasks]")).toBeNull();
+      expect(d.queryByRole("button", { name: "Delete with sub-tasks" })).toBeNull();
+      fireEvent.click(d.getByRole("button", { name: "Delete" }));
+      await waitFor(() => expect(posted()).toEqual([{ id: "tk_p" }]));
+    });
+  });
+});
+
+describe("the description dialog (design 02-tasks and 09-dashboard-tasks)", () => {
+  const open = (id: string) => fireEvent.click(within(card(id)).getByRole("button", { name: `Description: ${id}` }));
+  const dialog = () => document.querySelector<HTMLDialogElement>("dialog[data-dialog]");
+
+  it("the title opens a dialog with the stored description in a textarea, outside the row, so the row keeps its children", async () => {
+    s.current = view({ today: { overdue: [row("tk_late", { due_date: "2026-11-10", body: "the old notes" })], due: [] } });
+    await show();
+    const before = card("tk_late").innerHTML;
+    open("tk_late");
+    const d = dialog()!;
+    expect(d).not.toBeNull();
+    expect(card("tk_late").contains(d)).toBe(false);
+    expect(card("tk_late").innerHTML).toBe(before);
+    expect((within(d).getByRole("textbox", { name: "Description" }) as HTMLTextAreaElement).value).toBe("the old notes");
+    expect(within(d).getByRole("button", { name: "Save" })).toBeTruthy();
+    expect(within(d).getByRole("button", { name: "Cancel" })).toBeTruthy();
+    expect(d.textContent).toContain("Build this sends the title and this description");
+  });
+
+  it("Save posts { id, body } with the token and closes the dialog", async () => {
+    await show();
+    open("tk_late");
+    fireEvent.change(within(dialog()!).getByRole("textbox", { name: "Description" }), { target: { value: "call before noon" } });
+    fireEvent.click(within(dialog()!).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(s.posts).toHaveLength(1));
+    expect(s.posts[0]!.url).toBe("/api/v1/tasks/body");
+    expect(new Headers(s.posts[0]!.init.headers).get("x-csrf-token")).toBe(TOKEN);
+    expect(JSON.parse(String(s.posts[0]!.init.body))).toEqual({ id: "tk_late", body: "call before noon" });
+    await waitFor(() => expect(dialog()).toBeNull(), SLOW);
+  });
+
+  it("a refusal stays in the dialog with its reason", async () => {
+    await show();
+    s.answer = { status: 409, body: { error: "the task is done: a done task's description cannot be edited" } };
+    open("tk_late");
+    fireEvent.click(within(dialog()!).getByRole("button", { name: "Save" }));
+    expect((await within(dialog()!).findByRole("alert", undefined, SLOW)).textContent).toContain("a done task's description");
+  });
+
+  it("Cancel closes it and posts nothing", async () => {
+    await show();
+    open("tk_late");
+    fireEvent.change(within(dialog()!).getByRole("textbox", { name: "Description" }), { target: { value: "not saved" } });
+    fireEvent.click(within(dialog()!).getByRole("button", { name: "Cancel" }));
+    expect(dialog()).toBeNull();
+    expect(s.posts).toEqual([]);
+  });
+
+  it("a built task's title opens the dialog too, which says the work item keeps the text it was built with; the ID still links", async () => {
+    await show();
+    expect(within(card("tk_built")).getByRole("link", { name: "wi_1" }).getAttribute("href")).toBe("/app/items/wi_1");
+    open("tk_built");
+    expect(dialog()!.textContent).toContain("Built as wi_1: the work item keeps the text it was built with");
+  });
+
+  it("with no commands actor the title opens nothing", async () => {
+    s.current = view({ csrf_token: null, can_build: false });
+    await show();
+    expect(within(card("tk_late")).queryByRole("button", { name: "Description: tk_late" })).toBeNull();
+  });
+});
+
+// A built task's Work row says a queued run and a pressed Merge as their own states (design 09-dashboard-item-commands):
+// a queued triage is never Running, and a Merge under way reads the server's pending-request label with no Merge button.
+describe("a built task's Work row: queued and pending states", () => {
+  const run = (kind: string) => ({ kind, status: "queued", attempt: 1, worker_id: null, started_at: null, position: 1 });
+  const state = async (text: string) => within(card("tk_built")).findByText(text, {}, SLOW);
+
+  it("a queued triage run reads Triage queued, never Running", async () => {
+    s.items = [item("wi_1", { item_phase: "queued", blocked_on: "none", stage: "NEW", run: run("triage") })];
+    await show();
+    expect(await state("Triage queued")).toBeTruthy();
+    expect(within(card("tk_built")).queryByText("Running")).toBeNull();
+  });
+
+  it("a queued implement run, or an approved one the controller has not queued yet, reads Queued", async () => {
+    s.items = [item("wi_1", { item_phase: "queued", blocked_on: "none", stage: "RUNNING", run: null, kind: "implement" })];
+    await show();
+    expect(await state("Queued")).toBeTruthy();
+    expect(within(card("tk_built")).queryByText("Running")).toBeNull();
+  });
+
+  for (const reason of ["Merge queued (position 2)", "Checking build"]) {
+    it(`a Merge under way reads "${reason}" and hides the Merge button`, async () => {
+      s.items = [item("wi_1", { item_phase: "queued", blocked_on: "human", blocked_reason: "merge_pending", merge: { enabled: false, reason } })];
+      await show();
+      expect(await state(reason)).toBeTruthy();
+      expect(within(card("tk_built")).queryByRole("button", { name: "Merge" })).toBeNull();
+      expect(within(card("tk_built")).queryByText("Ready to merge")).toBeNull();
+    });
+  }
 });

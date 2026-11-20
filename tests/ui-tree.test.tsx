@@ -105,16 +105,18 @@ describe("items tree", () => {
     expect(new Set(titles(tree)).size).toBe(titles(tree).length);
   });
 
-  it("chips the held phases with the item they wait for, the coordination hold with its holder, and names the worker", async () => {
+  it("links a held item's state badge to the item it waits for, named on hover, with no id or waits-for chip, and names the worker", async () => {
     const tree = await mount();
-    const chip = (title: string) => within(rowOf(tree, title)).getByText(/^waits for/);
-    expect(chip("Phase two").textContent).toBe("waits for #11");
-    expect(chip("Phase two").getAttribute("href")).toBe("/app/items/wi_11");
-    expect(chip("Phase three").textContent).toBe("waits for #12");
-    expect(chip("Phase three").getAttribute("href")).toBe("/app/items/wi_12");
-    expect(chip("Held by coordination").textContent).toBe("waits for #11");
-    expect(chip("Held by coordination").getAttribute("href")).toBe("/app/items/wi_11");
-    expect(within(rowOf(tree, "Phase one")).queryByText(/^waits for/)).toBeNull();
+    const held = (title: string) => rowOf(tree, title).querySelector<HTMLAnchorElement>("[data-waits-for]")!;
+    expect(held("Phase two").getAttribute("href")).toBe("/app/items/wi_11");
+    expect(held("Phase two").title).toBe("Waits for Phase one");
+    expect(held("Phase three").getAttribute("href")).toBe("/app/items/wi_12");
+    expect(held("Held by coordination").getAttribute("href")).toBe("/app/items/wi_11");
+    expect(held("Phase two").textContent).toBe("Blocked by another task");
+    expect(rowOf(tree, "Phase one").querySelector("[data-waits-for]")).toBeNull();
+    for (const title of ["Phase two", "Held by coordination"]) {
+      expect(rowOf(tree, title).textContent, title).not.toMatch(/waits for|o\/r#\d|wi_\d/);
+    }
     const worker = rowOf(tree, "Phase one").querySelector("[data-id]")!;
     fireEvent.mouseEnter(worker.parentElement!);
     expect(within(rowOf(tree, "Phase one")).getByRole("tooltip").textContent).toBe("host:7:0");

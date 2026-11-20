@@ -174,9 +174,11 @@ function ModeSection({ view }: { view: SettingsView }) {
   const tier = view.keys.find((k) => k.key === "auto_merge_max_tier");
   return (
     <Card title={t("settings.mode")}>
-      <p className="mb-2 text-sm text-pretty text-text-2">
-        {t("settings.modeIntro")}
-      </p>
+      <ul className="mb-2 space-y-1 text-sm text-pretty text-text-2">
+        {(["settings.modeLineManual", "settings.modeLineAuto", "settings.modeLineBack"] as const).map((line) => (
+          <li key={line}>{t(line)}</li>
+        ))}
+      </ul>
       {/* Each label sits above its control, so a refusal under one never squeezes the other's label. */}
       <div className="flex flex-wrap items-start gap-x-10 gap-y-4">
         <div className="flex max-w-md flex-col gap-1 text-sm">
@@ -188,6 +190,11 @@ function ModeSection({ view }: { view: SettingsView }) {
           <div className="flex max-w-md flex-col gap-1 text-sm">
             <span className="font-medium whitespace-nowrap">{t("settings.tierLabel")}</span>
             <Editor row={tier} label={t("settings.tier")} value={tier.value} token={view.csrf_token} />
+            <ul data-tier-levels className="mt-1 space-y-0.5 text-xs text-text-2">
+              {(["settings.tierLevel0", "settings.tierLevel1", "settings.tierLevel2", "settings.tierLevel3", "settings.tierAbove"] as const).map((line) => (
+                <li key={line}>{t(line)}</li>
+              ))}
+            </ul>
           </div>
         )}
       </div>

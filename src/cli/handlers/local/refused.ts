@@ -17,7 +17,7 @@ export function lastRefusedLines(messages: readonly Message[]): string[] {
   return ["", LAST_REFUSED, `  [${last.seq}] ${last.created_at}`, ...last.body.split("\n").map((l) => `    ${l}`)];
 }
 
-/** The line after a stored item command: where its refusal shows, since the controller decides later. */
-export function refusalHint(id: string): string {
-  return `if the controller refuses it, \`factory task show ${id}\` lists the reason under "${LAST_REFUSED}"`;
+/** The line after a stored item command: where its refusal shows, since the controller decides later; `cli` starts the hint. */
+export function refusalHint(id: string, cli: string): string {
+  return `if the controller refuses it, \`${cli} task show ${id}\` lists the reason under "${LAST_REFUSED}"`;
 }
