@@ -855,6 +855,11 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   recordMergeCheck(check: NewMergeCheck): Promise<MergeCheck>;
   /** The item's latest result; null when it was never checked. Read-only. */
   getMergeCheck(work_item_id: WorkItemId): Promise<MergeCheck | null>;
+  /**
+   * Removes the item's stored result (the dashboard's Re-check), so its card reads `checking` until the controller's
+   * next merge check stores a new one. Touches no other row. True when a row was removed; safe to run twice.
+   */
+  clearMergeCheck(work_item_id: WorkItemId): Promise<boolean>;
   /** The latest results of the given items (those with one), in no set order. Read-only. */
   listMergeChecks(work_item_ids: readonly WorkItemId[]): Promise<MergeCheck[]>;
 
