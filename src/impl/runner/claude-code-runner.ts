@@ -343,7 +343,7 @@ export class ClaudeCodeRunner implements AgentRunner {
     let result: Awaited<ReturnType<Sandbox["exec"]>>;
     try {
       result = await this.opts.sandbox.exec(spec.sandbox, buildClaudeArgs(spec, model, this.opts.claudeBin, bridge, [tmp], hooks?.settings), {
-        env,
+        env: { ...env, ...FOREGROUND_ENV },
         stdin: spec.prompt,
         timeout_ms: spec.timeout_ms,
         signal: AbortSignal.any([spec.signal, watch.signal]),
@@ -487,13 +487,18 @@ export const DEFAULT_FIRST_OUTPUT_MS = 180_000;
  * system events (init, API retries) print before the model answers and are not activity (issue #215). Before the first model output the clock is the shorter of
  * `firstOutputMs` and `stallMs`, counted from the start; after it, `stallMs` from the last model output. Tool
  * calls are tracked from the events (`tool_use` blocks open one, `tool_result` blocks close it): while any is
- * open the clock does not run, since a test run in Bash can be silent for minutes; nor while `held` (a gate Stop
- * check running its commands); the run timeout still bounds both. Out of time: `signal` aborts, `stalled` says why.
+ * open the clock does not run, since a test run in Bash can be silent for minutes. A running background task
+ * counts as an open tool call (the 2026-11-19 resolve stalls: a check started with `run_in_background` returns its
+ * tool call at once, then the model waits idle for the task): a `task_started` system event opens one, its
+ * `task_notification` or a `task_updated` to an end status closes it, and a `background_tasks_changed` event sets the
+ * list; a closed task restarts the clock, as a tool result does. Nor does the clock run while `held` (a gate Stop
+ * check running its commands); the run timeout still bounds all three. Out of time: `signal` aborts, `stalled` says why.
  */
 class StallWatch {
   private readonly ctl = new AbortController();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private readonly open = new Set<string>();
+  private readonly tasks = new Set<string>();
   private partial = "";
   private done = false;
   private seenModel = false;
@@ -527,10 +532,11 @@ class StallWatch {
     this.timer = null;
   }
 
-  /** Tracks the line's tool blocks; true when it is model output (an assistant event or a tool result). */
+  /** Tracks the line's tool blocks and background tasks; true when it is model output or ends a call or task. */
   private track(line: string): boolean {
     const event = line.trim().startsWith("{") ? parseObject(line) : null;
     if (!event) return false;
+    if (event.type === "system" && this.trackTask(event)) return true;
     // A thinking-tokens event is the model working before it writes anything: activity, like an assistant event.
     let model = event.type === "assistant" || (event.type === "system" && event.subtype === "thinking_tokens");
     const message = event.message as { content?: unknown } | undefined;
@@ -545,11 +551,31 @@ class StallWatch {
     return model;
   }
 
-  /** Restarts the clock when no tool call is open; stops it while one is. */
+  /** Tracks a background task system event; true when it ended one (the clock restarts, as for a tool result). */
+  private trackTask(event: Record<string, unknown>): boolean {
+    const before = this.tasks.size;
+    const id = typeof event.task_id === "string" ? event.task_id : "";
+    // The status sits on the event or, in some CLI versions, on its `patch`.
+    const status = String(event.status ?? (event.patch as { status?: unknown } | undefined)?.status);
+    if (event.subtype === "task_started") this.tasks.add(id);
+    else if (event.subtype === "task_notification") this.tasks.delete(id);
+    else if (event.subtype === "task_updated" && TASK_END.has(status)) this.tasks.delete(id);
+    else if (event.subtype === "background_tasks_changed" && Array.isArray(event.tasks)) {
+      this.tasks.clear();
+      for (const [i, t] of (event.tasks as { id?: unknown; task_id?: unknown }[]).entries()) {
+        const key = t?.task_id ?? t?.id;
+        this.tasks.add(typeof key === "string" ? key : `#${i}`);
+      }
+    } else return false;
+    if (this.tasks.size > before) this.arm();
+    return this.tasks.size < before;
+  }
+
+  /** Restarts the clock when no tool call or background task is open; stops it while one is. */
   private arm(): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
-    if (this.done || this.open.size > 0) return;
+    if (this.done || this.open.size > 0 || this.tasks.size > 0) return;
     const first = !this.seenModel && this.firstOutputMs <= this.ms;
     this.timer = setTimeout(() => {
       if (this.held()) return this.arm();
@@ -558,6 +584,16 @@ class StallWatch {
     }, first ? this.firstOutputMs : this.ms);
   }
 }
+
+/**
+ * Turns off the CLI's background tasks (`run_in_background`, auto-backgrounding) for every run, so a check runs in
+ * the foreground as an open tool call (design §5 Restarts, the 2026-11-19 resolve stalls). StallWatch still holds
+ * for a background task, in case a CLI version ignores this.
+ */
+const FOREGROUND_ENV: Readonly<Record<string, string>> = { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" };
+
+/** The `task_updated` statuses that end a background task. */
+const TASK_END: ReadonlySet<string> = new Set(["completed", "failed", "killed", "stopped"]);
 
 /** Characters of an unfinished stdout line kept for tool tracking. */
 const PARTIAL_LIMIT = 4 * 1024 * 1024;
