@@ -77,6 +77,13 @@ export interface AgentRunSpec {
   /** Abort when the worker loses its lease, or when `workers pause` stops the run (design §5 Pause). */
   signal: AbortSignal;
   /**
+   * The live transcript (design 09-dashboard-item): a runner that streams its output calls this with the output so
+   * far, as text, each time it grows; the worker stores it, throttled and egress-scanned, while the run is running.
+   * Synchronous and cheap; it never throws. Absent, or a runner that does not stream: the transcript is stored
+   * only when the step ends.
+   */
+  live?: (output: string) => void;
+  /**
    * The agent session (design §5 Pause). Kept only for the roles in SESSION_ROLES and only when given: `id` names
    * a new session, or with `resume` the stored one this call continues. Absent, or another role: the runner
    * keeps no session, so nothing is left behind and nothing can be resumed.

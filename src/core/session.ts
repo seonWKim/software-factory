@@ -1,5 +1,5 @@
 import { refusalReply } from "./authorize.js";
-import { checkedLines, commandText, runChecks } from "./checks.js";
+import { checkedLines, commandText, failingTestFiles, runChecks } from "./checks.js";
 import type { FactoryConfig } from "./config.js";
 import { requiredTier } from "./diff-gate.js";
 import type { Logger } from "./log.js";
@@ -251,7 +251,10 @@ export class Sessions {
     const signal = o.signal ?? new AbortController().signal;
     const checked = await runChecks({ sandbox: this.d.sandbox, handle, commands: [cfg.repo.test_command], env: { ...this.d.toolEnv }, timeout_ms: cfg.run_timeout_ms, signal, redact: [] });
     if (o.signal?.aborted) return this.refuseFinish(file, ["tests: stopped before they finished"]);
-    if (checked.failed) return this.refuseFinish(file, [`tests: \`${test}\` ${checked.failed.how}`]);
+    if (checked.failed) {
+      const shown = await this.failureLines(checked.failed.tail);
+      return this.refuseFinish(file, [`tests: \`${test}\` ${checked.failed.how}`], shown.before, shown.after);
+    }
 
     if (this.forgeForLocal(item)) return this.refuseFinish(file, [LOCAL_NEEDS_LOCAL_BROKER]);
     // Every gate passed: the store through the broker, which fences on this run's lease and scans what it sends.
@@ -301,9 +304,27 @@ export class Sessions {
     return { ok: true, lines: [`abandoned the session on ${file.work_item_id}; the controller releases the item (${SESSION_RELEASED})`, `the remote branch ${file.branch}, if pushed, and the run folder ${file.folder.workdir} are kept`] };
   }
 
-  private async refuseFinish(file: SessionFile, reasons: string[], lines: string[] = []): Promise<SessionResult> {
+  /**
+   * `lines` print before the refusal and `after` below its reasons; only `reasons` is stored as the last finish, so a
+   * failed test's output is printed once and never kept with the run.
+   */
+  private async refuseFinish(file: SessionFile, reasons: string[], lines: string[] = [], after: string[] = []): Promise<SessionResult> {
     await this.d.store.updateSession(file.run_id, file.token, { last_finish: { ok: false, reasons, pr_number: null } });
-    return refused(...lines, "finish refused; the session stays open and nothing was pushed:", ...reasons.map((r) => `- ${r}`));
+    return refused(...lines, "finish refused; the session stays open and nothing was pushed:", ...reasons.map((r) => `- ${r}`), ...after);
+  }
+
+  /**
+   * A failed test command's failing files and output tail, for the person at the terminal (so a failure seen only
+   * here can be found). Both pass the run_outcome egress scan first; a flagged tail is not shown.
+   */
+  private async failureLines(tail: string): Promise<{ before: string[]; after: string[] }> {
+    if (tail.trim() === "") return { before: [], after: [] };
+    if (!(await this.d.scanner.scan("run_outcome", tail)).clean) return { before: [], after: ["(the test output did not pass the egress scan, so it is not shown)"] };
+    const files = failingTestFiles(tail);
+    return {
+      before: files.length > 0 ? [`failing test files: ${files.join(", ")}`] : [],
+      after: ["test output (last lines):", ...tail.trimEnd().split("\n").map((l) => `    ${l}`)],
+    };
   }
 
   /** Whether a local item would reach the forge's broker: no local route given and the broker is the forge's. Never allowed. */

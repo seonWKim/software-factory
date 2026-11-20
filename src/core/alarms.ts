@@ -123,8 +123,9 @@ function zeroTokens(newestFirst: readonly Run[], threshold: number): AlarmFindin
   while (streak < agent.length && runTokenCount(agent[streak]!) === 0) streak++;
   if (streak < threshold) return [];
   const last = agent[0]!.outcome;
-  const how = last?.status === "failed" ? `the last failed with ${last.error_code}` : "the last succeeded";
-  return [{ pattern: "zero_tokens", pattern_key: "zero_tokens", error_code: "zero_tokens", count: streak, detail: `${streak} agent runs in a row used no tokens; ${how}` }];
+  // How the last run ended only: the alarm's sentence (alarmText in src/ui/alarms.ts) already says the streak.
+  const detail = last?.status === "failed" ? `the last failed with ${last.error_code}` : "the last succeeded";
+  return [{ pattern: "zero_tokens", pattern_key: "zero_tokens", error_code: "zero_tokens", count: streak, detail }];
 }
 
 function childRestarts(restarts: readonly ChildRestart[], now: number, threshold: number): AlarmFinding[] {

@@ -6,6 +6,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CapabilitiesView, PluginsView } from "../web/src/api.js";
+import { LocalToolBroker } from "../src/impl/broker/local-tool-broker.js";
+import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
 // loaded by a specifier the node check skips.
@@ -166,7 +168,29 @@ describe("Plugins page", () => {
     expect(rows[0]!.textContent).toContain("triage");
     expect(rows[0]!.textContent).toContain("ago");
     expect(rows[1]!.textContent).toContain("Pack");
-    expect(rows[2]!.textContent).toContain("Writes; never granted");
+    expect(rows[1]!.textContent).toContain("Not used by any agent");
+    expect(rows[2]!.textContent).toContain("Can change things · not given to any agent");
+  });
+
+  it("the header says what the page lists and what a pack is", async () => {
+    show();
+    await screen.findByRole("table", { name: "MCP" });
+    expect(document.body.textContent).toContain("Extra abilities the agents can use: connected apps (MCP), skills and tools. A pack is a folder of them that you add.");
+  });
+
+  it("a broker tool's row shows its description as one plain sentence", async () => {
+    const [local] = new LocalToolBroker({} as never).allTools();
+    const github = new GitHubToolBroker({} as never).allTools().find((d) => d.name === local!.name)!;
+    for (const d of [local!, github]) {
+      expect(d.description).toMatch(/^[^.]+\.$/);
+      expect(d.description).not.toMatch(/\b(HEAD|outbound)\b/);
+    }
+    view = { ...FULL, tools: [{ name: local!.name, description: local!.description, read_only: false, origin: "broker", roles: [], last_used: null }] };
+    history.replaceState(null, "", "/app/plugins?tab=tools");
+    show();
+    const [row] = rowsOf(await screen.findByRole("table", { name: "Tools" }));
+    expect(row!.textContent).toContain("Saves the run's latest commit as its branch in this repository, without sending it anywhere.");
+    expect(row!.textContent).toContain("Can change things");
   });
 
   it("the Skills tab shows each row's source (Folder, Claude Code or Codex), an imported row's path, and a missing or changed file", async () => {

@@ -316,10 +316,10 @@ describe("system actions, revisions and the tab title (issue #311)", () => {
     }
   });
 
-  it("the Tasks page lists each system action with its command as a row in the Needs you section's Check group", async () => {
+  it("the Tasks page lists each system action as a row in the Needs you section's Check group; a claim pause draws no command", async () => {
     const actions = [
       { code: "migration_pending", text: "Schema at version 3 of 8", command: "Migrate now, or factory migrate", until: null, work_item_id: null },
-      { code: "claim_pause", text: "Claim pause rate_limit in effect, until 2026-11-07T01:00:00.000Z", command: "factory resume rate_limit", until: "2026-11-07T01:00:00.000Z", work_item_id: null },
+      { code: "claim_pause", text: "Usage or rate limit", command: "Resume now in Needs you on Tasks, or factory resume rate_limit", until: "2026-11-07T01:00:00.000Z", work_item_id: null, pause: "rate_limit" },
     ];
     (overview as Record<string, unknown>).system_actions = actions;
     try {
@@ -329,7 +329,11 @@ describe("system actions, revisions and the tab title (issue #311)", () => {
       expect(rows.map((r) => r.getAttribute("data-check"))).toEqual(["migration_pending", "claim_pause"]);
       expect(rows[0]!.textContent).toContain("Schema at version 3 of 8");
       expect(rows[0]!.querySelector("code")!.textContent).toBe("Migrate now, or factory migrate");
-      expect(rows[1]!.querySelector("code")!.textContent).toBe("factory resume rate_limit");
+      expect(rows[1]!.textContent).toContain("Usage or rate limit");
+      expect(rows[1]!.querySelector("time")!.getAttribute("datetime")).toBe("2026-11-07T01:00:00.000Z");
+      // The button is the action (decision 3): no CLI command under the pause.
+      expect(rows[1]!.querySelector("code")).toBeNull();
+      expect(rows[1]!.textContent).not.toContain("factory resume");
       // The rows are inside the Needs you section, not lines after it.
       expect(screen.getByRole("region", { name: "Needs you" }).contains(list)).toBe(true);
       expect(screen.queryByRole("list", { name: "System actions" })).toBeNull();
