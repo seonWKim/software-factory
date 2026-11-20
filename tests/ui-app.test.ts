@@ -362,7 +362,7 @@ describe("ui app: the Merge button", () => {
     }
   });
 
-  it("Needs you gives a ready-to-merge row the Merge button, disabled with its reason on hover; Work items has none", () => {
+  it("Needs you gives a ready-to-merge row no Merge button beside its title, only its closed ⋯ menu; Work items has none", () => {
     const client = new QueryClient();
     client.setQueryData([API.session], { as_of: AT, csrf_token: "t", commands_enabled: true });
     const row = (id: string, merge: MergeReadiness): ItemRow => ({
@@ -374,9 +374,12 @@ describe("ui app: the Merge button", () => {
     const items = [row("1", ENABLED), row("2", { enabled: false, reason: "1 conflicting file" })];
     const html = renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(NeedsList, { items })));
     const cell = (id: string) => html.slice(html.indexOf(`data-key="${id}"`), html.indexOf("</li>", html.indexOf(`data-key="${id}"`)));
-    expect(cell("1")).toMatch(/<span data-command="merge"[^>]*><span[^>]*><button[^>]*>Merge<\/button>/);
-    expect(cell("1")).not.toContain("disabled=\"\"");
-    expect(cell("2")).toMatch(/<span data-command="merge"[^>]*><span[^>]*><button[^>]*disabled=""[^>]*>Merge<\/button>/);
+    // Merge is the menu's first item (tests/ui-tasks-needs.test.tsx opens it); Merge has no p shortcut.
+    for (const id of ["1", "2"]) {
+      expect(cell(id)).not.toMatch(/>Merge<\/button>/);
+      expect(cell(id)).toMatch(/<button[^>]*aria-label="More commands"[^>]*aria-expanded="false"/);
+      expect(cell(id)).not.toContain("data-shortcut");
+    }
     expect(html).not.toContain("merge the PR");
     // Work items uses its own table, with no Merge button.
     expect(renderToStaticMarkup(createElement(ItemsTable, { items, now: Date.parse(AT), label: "Work items", empty: "none" }))).not.toContain("data-command=");
@@ -422,18 +425,21 @@ describe("ui app: the Needs-you commands and the verdict control", () => {
     return renderToStaticMarkup(createElement(QueryClientProvider, { client: client() }, createElement(NeedsList, { items: [it] })));
   };
 
-  it("a row shows its primary button and one ⋯ menu, no inline form and no dialog", () => {
+  it("a row shows one ⋯ menu and no visible command button, no inline form and no dialog; its primary keeps a hidden p button", () => {
     const html = render([APPROVE, VERDICT]);
-    expect(html).toMatch(/<span data-command="approve"[^>]*><span[^>]*><button[^>]*>Approve<\/button>/);
+    expect(html).not.toMatch(/>Approve<\/button>/);
+    expect(html).toMatch(/<button[^>]*hidden=""[^>]*data-shortcut="p"[^>]*data-command="approve"/);
     expect(html).toMatch(/<button[^>]*aria-label="More commands"[^>]*aria-expanded="false"[^>]*>/);
     expect(html).not.toContain("Verdict</button>");
     expect(html).not.toContain("<dialog");
     expect(html).not.toContain("data-verdict-form");
   });
 
-  it("a row with no primary command gets Open to the item page, then the menu", () => {
+  it("a row with no primary command has no Open link and no p shortcut: its title links to the item, then the menu", () => {
     const html = render([VERDICT]);
-    expect(html).toMatch(/<a [^>]*href="\/app\/items\/wi_1"[^>]*data-command="open"[^>]*>Open<\/a>/);
-    expect(html.indexOf('data-command="open"')).toBeLessThan(html.indexOf('aria-label="More commands"'));
+    expect(html).not.toContain('data-command="open"');
+    expect(html).not.toContain("data-shortcut");
+    expect(html).toMatch(/<a [^>]*href="\/app\/items\/wi_1"/);
+    expect(html).toMatch(/aria-label="More commands"/);
   });
 });

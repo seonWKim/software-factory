@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // @ts-nocheck -- tsconfig.test.json has no DOM or JSX; like the other ui tests this file typechecks under the web config.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../web/src/App.js";
 
@@ -63,15 +63,16 @@ function mount() {
 }
 
 describe("Needs you on the Tasks page", () => {
-  it("with five items started past a deadlock and one at spec approval, lists only the spec item, first, with its buttons in its row", async () => {
+  it("with five items started past a deadlock and one at spec approval, lists only the spec item, first, with its commands in its row's menu", async () => {
     mount();
     const section = await screen.findByRole("region", { name: "Needs you" });
     const rows = [...section.querySelectorAll("li[data-key]")] as HTMLElement[];
     expect(rows.map((r) => r.getAttribute("data-key"))).toEqual(["wi_30"]);
     expect(within(rows[0]!).getByRole("link", { name: "Spec waiting for you" })).toBeTruthy();
-    // Its actions sit in its own row: the primary Approve and the menu with the others.
-    expect(within(rows[0]!).getByRole("button", { name: "Approve" })).toBeTruthy();
-    expect(within(rows[0]!).getByRole("button", { name: "More commands" })).toBeTruthy();
+    // Its actions sit in its own row's one menu, Approve first (owner feedback 2026-11-20).
+    expect(within(rows[0]!).getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual(["More commands"]);
+    fireEvent.click(within(rows[0]!).getByRole("button", { name: "More commands" }));
+    expect(within(rows[0]!).getAllByRole("menuitem")[0]!.textContent).toBe("Approve");
     // The page's one h1 is its header; the section shows its count and the group inside it.
     const main = document.querySelector("main")!;
     expect(main.querySelectorAll("h1")).toHaveLength(1);
@@ -95,10 +96,21 @@ describe("Needs you on the Tasks page", () => {
       expect(section.querySelector("h2")!.nextElementSibling!.textContent).toBe(String(1 + n));
       expect(section.querySelectorAll("li[data-key], li[data-check]")).toHaveLength(1 + n);
       for (const r of rows) {
-        expect(within(r).getByRole("link", { name: "Open on Failures" }).getAttribute("href")).toBe("/app/failures");
-        // One primary action and no dismiss control.
-        expect(r.querySelectorAll("button")).toHaveLength(0);
+        // Its one control is the ⋯ menu, whose only item opens Failures; no dismiss control.
+        expect(within(r).getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual(["More commands"]);
+        fireEvent.click(within(r).getByRole("button", { name: "More commands" }));
+        expect(within(r).getAllByRole("menuitem").map((m) => [m.textContent, m.getAttribute("data-action")])).toEqual([["Open on Failures", "failures"]]);
+        fireEvent.click(within(r).getByRole("button", { name: "More commands" }));
         expect(r.textContent).not.toMatch(/dismiss/i);
+      }
+      if (n === 1) {
+        // Choosing it moves the app to the Failures section of Health, as the old link did.
+        fireEvent.click(within(rows[0]!).getByRole("button", { name: "More commands" }));
+        fireEvent.click(within(rows[0]!).getByRole("menuitem", { name: "Open on Failures" }));
+        await waitFor(() => expect(screen.getAllByRole("heading", { level: 1 }).map((h) => h.textContent)).toEqual(["Health"]));
+        cleanup();
+        history.replaceState(null, "", "/app/");
+        continue;
       }
       expect(document.body.textContent).not.toContain("Open alarms");
       expect(screen.queryByRole("list", { name: "System actions" })).toBeNull();
@@ -116,12 +128,14 @@ describe("Needs you on the Tasks page", () => {
     expect(summary.textContent).toBe(long);
     expect(summary.className.split(" ")).toContain("wrap-anywhere");
     expect(summary.className.split(" ")).not.toContain("truncate");
-    expect(summary.closest("li > div")!.className.split(" ")).toEqual(expect.arrayContaining(["min-w-0", "grow", "basis-64"]));
+    expect(summary.closest("li > div")!.className.split(" ")).toEqual(expect.arrayContaining(["min-w-0", "flex-1"]));
     // Decision 2: the sentence is printed once, so there is no toggle that prints it again.
     expect(row.querySelector("details")).toBeNull();
     expect(row.textContent).not.toContain("Full text");
     expect(row.textContent!.split(long)).toHaveLength(2);
-    expect(row.className.split(" ")).toContain("flex-wrap");
+    // The row never wraps its menu under the text: the content column shrinks instead.
+    expect(row.className.split(" ")).not.toContain("flex-wrap");
+    expect(row.lastElementChild!.hasAttribute("data-row-menu")).toBe(true);
   });
 
   it("lists each other system action as one row with its command in the Check group", async () => {

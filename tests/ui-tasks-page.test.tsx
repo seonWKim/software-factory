@@ -7,7 +7,7 @@ import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { EventRow } from "../web/src/api.js";
 import { PAGES, routeFor } from "../web/src/pages.js";
-import { SLOW, TOKEN, TasksPage, card, item, reset, row, s, show, show2, teardown, view } from "./ui-tasks-fixtures.js";
+import { SLOW, TOKEN, TasksPage, card, chooseMenu, item, menuItems, reset, row, s, show, show2, teardown, view } from "./ui-tasks-fixtures.js";
 
 // dayLabel lives in the groups module; the specifier is one the node type check skips (the page module is loaded the same way).
 const GROUPS_MODULE = "../web/src/views/tasks/groups.js";
@@ -52,7 +52,7 @@ describe("Tasks page", () => {
     // No raw ID on the row: the work's state sits on the details line, under the title.
     expect(card("tk_built").textContent).not.toContain("wi_1");
     expect(card("tk_built").querySelector("[data-details] [data-work]")).not.toBeNull();
-    expect(built.queryByRole("button", { name: /Build this/ })).toBeNull();
+    expect(menuItems(card("tk_built"))).not.toContain("Build this");
   });
 
   it("groups come in the order overdue, today, later days by date, no date, with today on the first page", async () => {
@@ -102,22 +102,24 @@ describe("Tasks page", () => {
     });
   });
 
-  it("Build this posts the task's ID with the token; a refusal stays beside the button", async () => {
+  it("Build this, first in an unbuilt task's menu, posts the task's ID with the token; a refusal shows on the row", async () => {
     await show();
-    fireEvent.click(within(card("tk_now")).getByRole("button", { name: "Build this: tk_now" }));
+    expect(menuItems(card("tk_now"))[0]).toBe("Build this");
+    chooseMenu(card("tk_now"), "Build this");
     await waitFor(() => expect(s.posts).toHaveLength(1));
     expect(s.posts[0]!.url).toBe("/api/v1/tasks/build");
     expect(new Headers(s.posts[0]!.init.headers).get("x-csrf-token")).toBe(TOKEN);
     expect(JSON.parse(String(s.posts[0]!.init.body))).toEqual({ id: "tk_now" });
     s.answer = { status: 409, body: { error: "no project is stored yet" } };
-    fireEvent.click(within(card("tk_late")).getByRole("button", { name: "Build this: tk_late" }));
+    chooseMenu(card("tk_late"), "Build this");
     expect((await within(card("tk_late")).findByRole("alert", undefined, SLOW)).textContent).toBe("no project is stored yet");
   });
 
-  it("with no commands actor there is no Build this button", async () => {
+  it("with no commands actor a row has no menu, so no Build this", async () => {
     s.current = view({ can_build: false });
     await show();
-    expect(screen.queryByRole("button", { name: /Build this/ })).toBeNull();
+    expect(card("tk_now").querySelector("[data-row-menu]")).toBeNull();
+    expect(document.querySelector("[data-task] [aria-haspopup=menu]")).toBeNull();
   });
 
   describe("calendar events leave the Tasks list (design 02-tasks)", () => {

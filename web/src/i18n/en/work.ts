@@ -56,12 +56,8 @@ export const work = {
   "needs.actAllowApprove": "Allow and approve",
   "needs.actAllowRetry": "Allow and retry",
   "needs.actAllowAnswer": "Allow and answer",
-  "needs.allowPaths": "Allows {paths} ({key})",
-  "needs.actOpen": "Open",
   "needs.checking": "Checking…",
   "needs.noMore": "No other commands",
-  "needs.withKey": "{label} ({key})",
-  "needs.idHover": "Item {id}",
   "why.allow": "Allow {file} and retry",
   // Why an item waits: one text per reason code (src/ui/why.ts ReasonCode); `{name}` is a value the API sends.
   "why.reason.closed": "Closed",
