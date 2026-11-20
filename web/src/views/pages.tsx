@@ -461,7 +461,7 @@ export function ItemPage({ id }: { id: string }) {
           <dd className="min-w-0"><CopyText value={item.source.id} what="source ID" /></dd>
         </dl>
       </Disclosure>
-      <CurrentRun runs={runs} itemId={item.id} hasTranscript={(run) => (transcripts[run]?.length ?? 0) > 0} now={now} />
+      <CurrentRun runs={runs} itemId={item.id} now={now} />
       <Thread entries={q.data.thread ?? []} now={now} />
       <Phases phases={item.phases ?? []} />
       {item.merge_check && (
@@ -534,8 +534,11 @@ export function ItemPage({ id }: { id: string }) {
   );
 }
 
-/** The item's queued or running run, newest first, with its live state (the item query polls); nothing when none is. */
-function CurrentRun({ runs, itemId, hasTranscript, now }: { runs: ItemDetail["runs"]; itemId: string; hasTranscript: (run: string) => boolean; now: number }) {
+/**
+ * The item's queued or running run, newest first, with its live state (the item query polls) and a link to its
+ * transcript, which shows its output so far while it runs; nothing when none is.
+ */
+function CurrentRun({ runs, itemId, now }: { runs: ItemDetail["runs"]; itemId: string; now: number }) {
   const run = [...runs].reverse().find((r) => r.status === "running" || r.status === "queued");
   if (!run) return null;
   return (
@@ -546,7 +549,7 @@ function CurrentRun({ runs, itemId, hasTranscript, now }: { runs: ItemDetail["ru
         <span className="tabular-nums">{t("item.attempt", { attempt: run.attempt })}</span>
         <WorkerName id={run.attempts?.at(-1)?.worker_id} />
         {run.started_at && <span className="text-text-2 tabular-nums"><When at={run.started_at} now={now} label="item.startedAgo" /></span>}
-        {hasTranscript(run.id) && <Link href={transcriptPath(itemId, run.id)} className={LINK_CLASS}>{t("item.transcript")}</Link>}
+        <Link href={transcriptPath(itemId, run.id)} className={LINK_CLASS}>{t("item.transcript")}</Link>
       </p>
     </Card>
   );

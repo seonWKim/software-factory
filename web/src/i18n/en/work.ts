@@ -212,6 +212,7 @@ export const work = {
   "transcript.tailNote": "The last steps of the transcript; earlier ones are not loaded.",
   "transcript.noneOfType": "No step of this type.",
   "transcript.noSteps": "The transcript has no steps.",
+  "transcript.waiting": "Waiting for the agent's first output",
   "transcript.stepsList": "Transcript steps",
   "transcript.loading": "Loading…",
   "transcript.loadMore": "Load more",
