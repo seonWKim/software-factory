@@ -343,7 +343,7 @@ export class ClaudeCodeRunner implements AgentRunner {
     const model = this.opts.models[spec.model_class];
     const stallMs = spec.stall_ms ?? DEFAULT_STALL_MS;
     const firstOutputMs = spec.first_output_ms ?? DEFAULT_FIRST_OUTPUT_MS;
-    const watch = new StallWatch(stallMs, firstOutputMs, hooks ? () => hooks.checking() : undefined);
+    const watch = new StallWatch(stallMs, firstOutputMs, hooks ? () => hooks.checking() : undefined, spec.on_output);
     let result: Awaited<ReturnType<Sandbox["exec"]>>, soFar = ""; // soFar: stdout so far, for the live transcript (spec.live)
     try {
       result = await this.opts.sandbox.exec(spec.sandbox, buildClaudeArgs(spec, model, this.opts.claudeBin, bridge, [tmp], hooks?.settings), {
@@ -487,7 +487,7 @@ export const DEFAULT_FIRST_OUTPUT_MS = 180_000;
  * `firstOutputMs` and `stallMs`, counted from the start; after it, `stallMs` from the last model output. Tool
  * calls are tracked from the events (`tool_use` blocks open one, `tool_result` blocks close it): while any is
  * open the clock does not run, since a test run in Bash can be silent for minutes; nor while `held` (a gate Stop
- * check running its commands); the run timeout bounds tool calls, the Stop check's own limit bounds a check. Out of time: `signal` aborts, `stalled` says why.
+ * check running its commands); the run timeout bounds tool calls, the Stop check's own limit bounds a check. Out of time: `signal` aborts, `stalled` says why. `onModel` hears each model output.
  */
 class StallWatch {
   private readonly ctl = new AbortController();
@@ -498,7 +498,7 @@ class StallWatch {
   private seenModel = false;
   stalled: false | "first_output" | "silence" = false;
 
-  constructor(private readonly ms: number, private readonly firstOutputMs: number, private readonly held = () => false) {
+  constructor(private readonly ms: number, private readonly firstOutputMs: number, private readonly held = () => false, private readonly onModel?: () => void) {
     this.arm();
   }
 
@@ -516,7 +516,7 @@ class StallWatch {
     let model = false;
     for (const line of lines) if (this.track(line)) model = true;
     if (!model) return;
-    this.seenModel = true;
+    this.seenModel = true; this.onModel?.(); // onModel: the run's last output time (design 05-restarts)
     this.arm();
   }
 
