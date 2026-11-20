@@ -35,6 +35,7 @@ import { HELD, ItemsTree, type TreeFilter, type View, VIEW_KEY, buildTree, defau
 import { Disclosure } from "../components/ui/disclosure.js";
 import { Card } from "../components/ui/card.js";
 import { Badge } from "../components/ui/badge.js";
+import { Tooltip } from "../components/ui/menu.js";
 
 /** A host sleep's gap in whole minutes, at least 1 (only gaps over 60 s are recorded). */
 const sleptMinutes = (gap_ms: number): number => Math.max(1, Math.round(gap_ms / 60_000));
@@ -112,8 +113,8 @@ export function FactoryBanner({ factory, now, pauses = [] }: { factory: FactoryS
 }
 
 /**
- * The running revision and how far it is behind the code checkout's origin/main (a separate clone, design
- * 08-self-update), so a stuck install shows. Nothing for self-hosting (no `behind`) or with no factory status.
+ * The running version and how far it is behind the latest code (the code checkout's origin/main, a separate clone,
+ * design 08-self-update), so a stuck install shows. Nothing for self-hosting (no `behind`) or with no factory status.
  */
 export function CodeRevision({ factory }: { factory: FactoryState | null | undefined }) {
   if (!factory || factory.behind === undefined) return null;
@@ -667,19 +668,23 @@ function TimelineRow({ entry, now, viewer }: { entry: TimelineEntry; now: number
   );
 }
 
-/** One live worker process: host, pid, version or start time, and its slots (busy, idle, current, max). */
-function ProcessRow({ p, items, now }: { p: WorkerProcess; items: ReadonlyMap<string, ItemRow>; now: number }) {
+/**
+ * One live worker process: its host ("This Mac" for the factory's own host) and how many tasks it runs of its slots,
+ * its start time, and while it drains "Finishing up before it stops". The pid and max slots show in the line's tooltip.
+ */
+function ProcessRow({ p, local, items, now }: { p: WorkerProcess; local: boolean; items: ReadonlyMap<string, ItemRow>; now: number }) {
   const draining = p.slots === 0;
+  const host = local ? t("runners.thisHost") : p.host;
   return (
     <li data-testid="worker-process" className="rounded-control border border-border px-3 py-2">
       <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
-        <span className="text-xs font-semibold">{p.host}</span>
-        <span className="tabular-nums">{t("runners.pid", { pid: p.pid })}</span>
+        <Tooltip text={t("runners.details", { pid: p.pid, max: p.max_slots })}>
+          <span data-line tabIndex={0} className="tabular-nums">
+            {draining ? t("runners.lineDraining", { host, busy: p.busy }) : t("runners.line", { host, busy: p.busy, slots: p.slots })}
+          </span>
+        </Tooltip>
         <span className="tabular-nums text-text-2"><When at={p.started_at} now={now} label="runners.started" /></span>
         {draining && <Badge level="needs_approval">{t("runners.draining")}</Badge>}
-        <span className="tabular-nums" data-slots>
-          {t("runners.slots", { busy: p.busy, idle: p.idle, slots: p.slots, max: p.max_slots })}
-        </span>
       </div>
       {p.runs.length > 0 && (
         <ul aria-label={t("runners.runsOf", { host: p.host, pid: p.pid })} className="mt-1 space-y-0.5 text-xs">
@@ -697,7 +702,14 @@ function ProcessRow({ p, items, now }: { p: WorkerProcess; items: ReadonlyMap<st
   );
 }
 
-const WORKERS_SOURCE: Record<string, string> = { override: t("runners.sourceOverride"), file: t("runners.sourceFile"), default: t("runners.sourceDefault") };
+const WORKERS_SOURCE: Record<FactoryState["workers_source"], MessageKey> = { override: "runners.sourceOverride", file: "runners.sourceFile", default: "runners.sourceDefault" };
+
+/** The effective `workers` setting in words, with where it comes from: "Up to 3 tasks at once (changed in Settings)". */
+function workersLine(f: FactoryState): string {
+  const key = WORKERS_SOURCE[f.workers_source];
+  const source = key ? t(key) : f.workers_source;
+  return f.workers === 1 ? t("runners.settingOne", { source }) : t("runners.setting", { count: f.workers, source });
+}
 
 export function RunnersPage() {
   const now = useNow();
@@ -708,6 +720,8 @@ export function RunnersPage() {
   const map = useMemo(() => byId(items.data?.items), [items.data]);
   const f = overview.data?.factory;
   const processes = workers.data?.processes ?? [];
+  // The factory's own host: the host of the process the supervisor runs (child_pid), where this server runs too.
+  const thisHost = processes.find((p) => f?.child_pid != null && p.pid === f.child_pid)?.host;
   return (
     <>
       <PageHeader title={t("page.runners")} />
@@ -715,8 +729,8 @@ export function RunnersPage() {
         <FactoryBanner factory={f} now={now} />
         <CodeRevision factory={f} />
         {f && (
-          <p data-testid="effective-workers" className="text-sm">
-            {t("runners.setting")} <span className="font-semibold tabular-nums">{f.workers}</span> ({WORKERS_SOURCE[f.workers_source] ?? f.workers_source})
+          <p data-testid="effective-workers" className="text-sm tabular-nums">
+            {workersLine(f)}
           </p>
         )}
         <Card title={t("runners.processes")} count={workers.data?.processes ? processes.length : undefined}>
@@ -726,7 +740,7 @@ export function RunnersPage() {
             <EmptyState title={t("runners.none")} />
           ) : (
             <ul aria-label={t("runners.processes")} className="space-y-2">
-              {processes.map((p) => <ProcessRow key={p.process_id} p={p} items={map} now={now} />)}
+              {processes.map((p) => <ProcessRow key={p.process_id} p={p} local={p.host === thisHost} items={map} now={now} />)}
             </ul>
           )}
         </Card>
