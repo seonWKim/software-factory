@@ -19,7 +19,7 @@ import {
 } from "../../../core/coordination.js";
 import {
   GITHUB_RATE_LIMIT, IMPLEMENT_KINDS, INTERACTIVE, MODEL_ANSWERED, MODEL_STALL, NETWORK, NETWORK_ANSWERED, PROBE_PAUSES, type ProbePause,
-  SESSION_LOST, failureClass, pathsOverlap, probePauseOf,
+  SESSION_LOST, TAKEOVER_OUTCOME, failureClass, pathsOverlap, probePauseOf,
 } from "../../../core/policy.js";
 import { prNumber } from "../../../core/change-ref.js";
 import { assertProjectKey } from "../../../core/project.js";
@@ -393,11 +393,11 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
   addTask(t: Parameters<FactoryStore["addTask"]>[0]) { return tasks.addTask(this.db, t, this.clock.now()); }
   listTasks(limit: number) { return tasks.listTasks(this.db, limit); } listDoneTasks(w: Parameters<FactoryStore["listDoneTasks"]>[0]) { return tasks.listDoneTasks(this.db, w); }
   completeTask(id: string) { return tasks.completeTask(this.db, id, this.now()); } reopenTask(id: string) { return tasks.reopenTask(this.db, id); }
-  getTask(id: string) { return tasks.getTask(this.db, id); }
+  getTask(id: string) { return tasks.getTask(this.db, id); } countOpenSubTasks() { return tasks.countOpenSubTasks(this.db); }
   linkTask(id: string, work_item_id: WorkItemId) { return tasks.linkTask(this.db, id, work_item_id); }
   closeLinkedTasks(work_item_id: WorkItemId) { return tasks.closeLinkedTasks(this.db, work_item_id, this.now()); }
   updateTask(id: string, edit: Parameters<FactoryStore["updateTask"]>[1]) { return tasks.updateTask(this.db, id, edit, this.clock.now()); }
-  deleteTask(id: string) { return tasks.deleteTask(this.db, id); }
+  setTaskBody(id: string, body: string | null) { return tasks.setTaskBody(this.db, id, body); } deleteTask(id: string, opts?: { with_sub_tasks?: boolean }) { return tasks.deleteTask(this.db, id, opts); }
   addSubTask(parent_task_id: string, t: Parameters<FactoryStore["addSubTask"]>[1]) { return tasks.addSubTask(this.db, parent_task_id, t, this.clock.now()); }
   listDueReminders(now: Date) { return tasks.listDueReminders(this.db, now); }
   remindTask(...a: Parameters<FactoryStore["remindTask"]>) { return tasks.remindTask(this.db, ...a); }
@@ -1065,7 +1065,7 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
       const own = await tx.all(`SELECT id, kind, status FROM worker_runs WHERE work_item_id = ? AND status IN ('queued', 'running') ORDER BY created_at, ${seq}`, [input.id]);
       const open = own.find((r) => r.kind === INTERACTIVE && r.status === "running");
       if (open) return { ok: false, reason: "session_open", run_id: open.id as RunId };
-      const writer = own.find((r) => (IMPLEMENT_KINDS as readonly string[]).includes(r.kind as string));
+      const writes = (r: Row) => (IMPLEMENT_KINDS as readonly string[]).includes(r.kind as string), writer = own.find((r) => writes(r) && r.status === "running");
       if (writer) return { ok: false, reason: "implement_run", run_id: writer.id as RunId };
       for (const o of await this.runningPaths(tx, [...IMPLEMENT_KINDS, INTERACTIVE])) {
         const paths = pathsOverlap(input.patch.allowed_paths ?? current.allowed_paths, parseList(o.allowed_paths));
@@ -1089,13 +1089,13 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
       await tx.run(`UPDATE controller_work_items SET ${[...sets, "version = ?", "updated_at = ?"].join(", ")} WHERE id = ? AND version = ?`, [
         ...values, version, now, input.id, input.expected_version,
       ]);
-      const state_change = await this.insertStateChange(tx, input.id, version, input.actor, input.reason, changes, { ...input.detail, run_id: runId });
-      const cancelled: RunId[] = [];
-      for (const r of own.filter((x) => x.kind === "triage")) {
-        const n = await tx.run("UPDATE worker_runs SET status = 'cancelled', updated_at = ? WHERE id = ? AND status = 'queued'", [now, r.id as string]);
-        if (n === 1) cancelled.push(r.id as RunId);
-      }
-      return { ok: true, item: (await this.selectItem(tx, input.id))!, run: (await this.selectRun(tx, runId))!, state_change, cancelled };
+      // Every check passed, so the takeover (design §5 Restarts): queued implement-type runs get TAKEOVER_OUTCOME (no attempt).
+      const [taken_over, cancelled]: [RunId[], RunId[]] = [[], []];
+      for (const r of own.filter((x) => x.status === "queued" && (writes(x) || x.kind === "triage")))
+        if (await this.cancelRun(tx, r.id as RunId, "queued", now, writes(r) ? TAKEOVER_OUTCOME : null)) (writes(r) ? taken_over : cancelled).push(r.id as RunId);
+      const state_change = await this.insertStateChange(tx, input.id, version, input.actor, input.reason, changes,
+        { ...input.detail, run_id: runId, ...(taken_over.length > 0 ? { taken_over: taken_over.join(",") } : {}) });
+      return { ok: true, item: (await this.selectItem(tx, input.id))!, run: (await this.selectRun(tx, runId))!, state_change, cancelled, taken_over };
     });
   }
 
@@ -2459,16 +2459,16 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
       workItemId, status,
     ]);
     const cancelled: RunId[] = [];
-    for (const r of rows) {
-      const n = await tx.run(
-        "UPDATE worker_runs SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ? AND status = ?",
-        [now, r.id as string, status],
-      );
-      if (n !== 1) continue;
-      cancelled.push(r.id as RunId);
-      await this.closeAttempt(tx, r.id as RunId, status === "running" ? null : "paused", "cancelled", now);
-    }
+    for (const r of rows) if (await this.cancelRun(tx, r.id as RunId, status, now)) cancelled.push(r.id as RunId);
     return cancelled;
+  }
+
+  /** Cancels the run if still `status` (lease cleared, attempt closed `cancelled`), storing `outcome` if given (a takeover's). */
+  private async cancelRun(tx: SqlExecutor, id: RunId, status: "queued" | "running", now: Timestamp, outcome: RunOutcome | null = null): Promise<boolean> {
+    const n = await tx.run("UPDATE worker_runs SET status = 'cancelled', outcome = COALESCE(?, outcome), lease_owner = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ? AND status = ?",
+      [outcome === null ? null : JSON.stringify(outcome), now, id, status]);
+    if (n === 1) await this.closeAttempt(tx, id, status === "running" ? null : "paused", "cancelled", now);
+    return n === 1;
   }
 
   /**
@@ -2712,10 +2712,10 @@ function rowToWorkerPause(r: Row): WorkerPause {
 }
 
 /**
- * claimRun's kind rank (design §5 Coordination, 2026-11-18): merge check, then resolve, to move changes to merge; then review and
- * triage; then the branch writers, implement last; improve after all. Within a kind, created_at, then insertion order.
+ * claimRun's kind rank (design §5 Coordination, 2026-11-18): a restart the owner asked for, then merge check, then resolve, to move changes to merge; then
+ * review and triage; then the branch writers, implement last; improve after all. Within a kind, created_at, then insertion order.
  */
-const CLAIM_ORDER: readonly RunKind[] = ["merge-check", "resolve", "review", "triage", "update", "implement"];
+const CLAIM_ORDER: readonly RunKind[] = ["restart", "merge-check", "resolve", "review", "triage", "update", "implement"];
 
 /** A JSON string array column (allowed_paths). */
 function parseList(value: unknown): string[] {

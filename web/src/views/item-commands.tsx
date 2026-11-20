@@ -30,7 +30,8 @@ import { RejectDialog, ReviseDialog, commandLabel, type CommandDialogProps } fro
 // Dialog; verdict (issue #523) is an Accept, Changes or Reject choice with a severity and a reason sent as
 // `<kind> <severity> <reason>` (verdictNote). A permission ask's paths (the item API's `paths`) go with the command
 // that allows them as `+paths` (withPaths). Feedback a `/revise` queued while implementing is listed until the run that
-// applies it starts (pendingFeedback).
+// applies it starts (pendingFeedback). A merged item with `repo.restart_command` set has a `restart` row: the Restart
+// app button (RestartButton), which sends `restart` with no note, as `factory restart` does.
 
 /** Every command that opens a dialog from a button: reject and revise (their forms), and verdict (its Accept, Changes or Reject choice). */
 export const DIALOGS = ["reject", "revise", "verdict"];
@@ -249,10 +250,12 @@ export function ItemCommands({ id, commands, reason = null }: { id: string; comm
   const detail = data?.item;
   // Verdict and Reject: in the "…" menu, one the viewer may not send disabled with its reason.
   const menuItems = commands.filter((c) => MENU.includes(c.name)).map((c) => menuEntry(c, !enabled || busy, () => setOpen(c.name as FormName)));
+  const restart = commands.find((c) => c.name === "restart");
   return (
     <div ref={wrap} className="mt-2">
       {reason}
       <QueuedFeedbackList timeline={data?.timeline} />
+      {restart && <RestartButton command={restart} on={enabled} busy={busy} replies={data?.replies ?? []} local={local.restart} send={() => void post("restart", "")} />}
       {commands.length === 0 && !showsMerge(detail?.merge) && (
         <p data-commands-none className="mt-2 text-sm text-pretty text-text-2">
           {t("commands.none")}
@@ -316,6 +319,28 @@ export function MergeButton({ id, source, merge, replies = [], returned = null }
         onClick={() => void send()}
       >
         {queued ? merge.reason : merging ? t("commands.merging") : t("commands.merge")}
+      </Button>
+      <OutcomeText outcome={outcome} />
+    </span>
+  );
+}
+
+/**
+ * The Restart app button (design 09-dashboard-item-commands), on a merged item's page when `repo.restart_command` is
+ * set: sends `restart` with no note. "Restarting…" from the click until the controller's reply, then "Restart queued"
+ * (the run's result is posted in the thread) or the refusal; disabled with the controller's reason when the viewer
+ * may not send it.
+ */
+export function RestartButton({ command, on, busy, replies, local, send }: {
+  command: ItemCommand; on: boolean; busy: boolean; replies: readonly CommandReply[]; local: LocalSend | undefined; send: () => void;
+}) {
+  const reply = command.allowed ? commandOutcome(replies, "restart", local) : notAllowed(command);
+  const waiting = command.allowed && (busy || awaitsReply(reply));
+  const outcome: Outcome = waiting ? null : reply?.tone === "status" && reply.text === t("commands.done") ? { tone: "status", text: t("commands.restartQueued") } : reply;
+  return (
+    <span data-command="restart" className="mt-2 inline-flex flex-wrap items-center gap-2">
+      <Button variant="secondary" data-action="restart" disabled={!on || !command.allowed || waiting} title={t("commands.restartTitle")} onClick={send}>
+        {waiting ? t("commands.restarting") : t("commands.restart")}
       </Button>
       <OutcomeText outcome={outcome} />
     </span>
@@ -449,6 +474,10 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
   ];
   // Applied at once (Approve): the row's label, e.g. "Approved", until the list's next read moves the row on.
   const applied = Object.entries(local).flatMap(([k, l]) => (k !== "merge" && "seq" in l && l.label && !l.refusal ? [l.label] : []));
+  // The primary command this row sent and the controller has not refused: its button says so and stays off until the
+  // list's next read moves the row on, so a click never looks like nothing happened.
+  const sentLocal = primary ? local[primary.name] : undefined;
+  const sent = sentLocal !== undefined && "seq" in sentLocal && !sentLocal.refusal ? sentLocal : null;
   return (
     <span ref={wrap} data-need-commands className="inline-flex flex-wrap items-center justify-end gap-2">
       {group === "merge" ? (
@@ -465,8 +494,8 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
           <Tooltip text={pathsOf(primary).length > 0
             ? t("needs.allowPaths", { paths: pathsOf(primary).join(", "), key: PRIMARY_KEY })
             : t("needs.withKey", { label: primaryLabel(primary), key: PRIMARY_KEY })}>
-            <Button variant="secondary" data-shortcut={PRIMARY_KEY} data-action={primary.name} disabled={off} onClick={() => void send(primary.name, withPaths(primary, ""))}>
-              {primaryLabel(primary)}
+            <Button variant="secondary" data-shortcut={PRIMARY_KEY} data-action={primary.name} data-sent={sent ? "" : undefined} disabled={off || sent !== null} onClick={() => void send(primary.name, withPaths(primary, ""))}>
+              {sent ? (sent.label ?? t("commands.sentWaiting")) : primaryLabel(primary)}
             </Button>
           </Tooltip>
         </span>
@@ -476,7 +505,7 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
         </Link>
       )}
       <OverflowMenu label={t("commands.more")} items={items.length > 0 ? items : [{ label: t("needs.noMore"), disabled: true, onSelect: () => undefined }]} />
-      {applied.map((text) => (
+      {applied.filter((text) => text !== sent?.label).map((text) => (
         <OutcomeText key={text} outcome={{ tone: "status", text }} />
       ))}
       {inlineErrors && <SendErrors local={local} />}

@@ -99,6 +99,17 @@ describe("config keys: unknown keys fail at load", () => {
     });
   }
 
+  it("repo.restart_command: absent is off, an argv of non-empty strings loads, any other value fails startup naming the key", async () => {
+    const repo = REAL.repo as Record<string, unknown>;
+    expect((await loadConfig(root({ ...REAL, repo }))).config.repo.restart_command).toBeUndefined();
+    const set = await loadConfig(root({ ...REAL, repo: { ...repo, restart_command: ["bin/restart", "--port", "8080"] } }));
+    expect(set.config.repo.restart_command).toEqual(["bin/restart", "--port", "8080"]);
+    for (const bad of ["bin/stop && bin/start", [], ["bin/restart", ""], [1], null]) {
+      const err = await loadError({ ...REAL, repo: { ...repo, restart_command: bad } });
+      expect(err.message, JSON.stringify(bad)).toContain("repo.restart_command must be a non-empty array of non-empty strings (argv)");
+    }
+  });
+
   it('a sqlite store with the key "host" fails', async () => {
     const err = await loadError({ ...REAL, store: { type: "sqlite", host: "localhost" } });
     expect(err.message).toContain("store.host");

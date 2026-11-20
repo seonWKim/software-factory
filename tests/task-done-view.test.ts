@@ -141,7 +141,7 @@ describe("GET /api/v1/tasks keeps the done tasks of the window", () => {
 });
 
 describe("taskViews with done tasks", () => {
-  it("places a done task by its due date as an open one; overdue keeps one done today only", async () => {
+  it("places a done task by its due date as an open one; overdue holds open tasks only, not one done today or before", async () => {
     const s = await setup();
     s.clock.advance(NOW - 3 * DAY - s.clock.now().getTime());
     const today = localDate(new Date(NOW));
@@ -155,8 +155,10 @@ describe("taskViews with done tasks", () => {
     for (const id of ["tk_late_done_today", "tk_timed_done"]) await s.store.completeTask(id);
     const all = [...await s.store.listTasks(100), ...(await s.done()).tasks];
     const v = taskViews(all, s.clock.now());
-    expect(v.today.overdue.map((t) => t.id).sort()).toEqual(["tk_late_done_today", "tk_late_open"]);
+    expect(v.today.overdue.map((t) => t.id)).toEqual(["tk_late_open"]);
+    // A past-due task done today is no longer overdue (design 02-tasks-page, done tasks are never overdue).
+    expect(v.today.overdue.map((t) => t.id)).not.toContain("tk_late_done_today");
     expect(v.today.due.map((t) => t.id)).toEqual(["tk_timed_done", "tk_timed_open"]);
-    expect(v.projects.flatMap((p) => p.tasks.map((t) => t.id))).toEqual(expect.arrayContaining(["tk_late_done_before", "tk_timed_done"]));
+    expect(v.projects.flatMap((p) => p.tasks.map((t) => t.id))).toEqual(expect.arrayContaining(["tk_late_done_today", "tk_late_done_before", "tk_timed_done"]));
   });
 });

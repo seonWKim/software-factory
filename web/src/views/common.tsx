@@ -1,11 +1,13 @@
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { API, type ItemRow, type MergeCheckView, type Overview, type QueueRow, type RunRow, type Session, type Why, mergeCheckLabel, showsMerge, useApi } from "../api.js";
 import { IdDetails } from "../components/ui/copy.js";
+import { Disclosure } from "../components/ui/disclosure.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
+import { type MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { ID_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
-import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, isHttpUrl, isWorkerId, shortSource, until, whyText, workerName } from "../lib/format.js";
+import { LEVEL_LABELS, NEEDS_YOU_LEVELS, duration, isHttpUrl, isWorkerId, localDateTime, relativeTime, shortSource, whyText, workerName } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
 import { Badge } from "../components/ui/badge.js";
@@ -18,6 +20,21 @@ export function useNow(): number {
     return () => clearInterval(t);
   }, []);
   return now;
+}
+
+/**
+ * A relative time in the one compact form (`relativeTime`), with the exact local time in the element's title. `label`
+ * is a catalog text with `{time}` (and the `vars`) for a time inside a sentence ("started {time}"); "–" when there is no time.
+ */
+export function When({ at, now, label, vars }: { at: string | null | undefined; now: number; label?: MessageKey; vars?: Record<string, string | number> }) {
+  if (!at) return <>{t("format.none")}</>;
+  const time = relativeTime(at, now);
+  return <time dateTime={at} title={localDateTime(at)}>{label ? t(label, { ...vars, time }) : time}</time>;
+}
+
+/** The raw fields of a row or card, behind one "Details" toggle: the only place a page shows a stored field name or code as it is stored (`data-raw`, skipped by tests/web-plain-words.test.tsx). */
+export function RawDetails({ children, className }: { children: ReactNode; className?: string }) {
+  return <Disclosure data-raw className={className} summary={t("details.raw")}>{children}</Disclosure>;
 }
 
 /** The viewer: the factory user the page's commands act as (the session's actor), null while unknown. */
@@ -215,7 +232,7 @@ export function ItemsTable({ items, now, label, empty, plugins }: { items: reado
       ),
     },
     { key: "why", header: t("col.why"), className: "text-text-2", render: (it) => (it.why ? <WhyText why={it.why} /> : it.blocked_reason || "–") },
-    { key: "since", header: t("col.since"), className: "tabular-nums whitespace-nowrap", render: (it) => ago(it.since, now) },
+    { key: "since", header: t("col.since"), className: "tabular-nums whitespace-nowrap", render: (it) => <When at={it.since} now={now} /> },
     ...(plugins?.issues === "github"
       ? [{ key: "issue", header: t("col.issue"), className: "tabular-nums", render: (it: ItemRow) => (it.issue ? <Ext href={it.issue.url}>#{it.issue.number}</Ext> : "–") }]
       : []),
@@ -247,8 +264,8 @@ export function RunningTable({ runs, items, now }: { runs: readonly RunRow[]; it
     { key: "kind", header: t("col.run"), render: (r) => runKindLabel(r.kind) },
     { key: "attempt", header: t("col.attempt"), numeric: false, className: "tabular-nums" },
     { key: "worker", header: t("col.worker"), render: (r) => <WorkerName id={r.owner} /> },
-    { key: "running_for", header: t("col.runningFor"), className: "tabular-nums", render: (r) => ago(r.started_at, now) },
-    { key: "heartbeat", header: t("col.heartbeat"), className: "tabular-nums", render: (r) => t("time.ago", { time: ago(r.heartbeat_at, now) }) },
+    { key: "running_for", header: t("col.runningFor"), className: "tabular-nums", render: (r) => (r.started_at ? duration(now - Date.parse(r.started_at)) : t("format.none")) },
+    { key: "heartbeat", header: t("col.heartbeat"), className: "tabular-nums", render: (r) => <When at={r.heartbeat_at} now={now} /> },
   ];
   return <DataTable label={t("running.label")} columns={columns} rows={runs.filter((r) => r.status === "running")} rowKey={(r) => r.id} empty={t("running.empty")} dataKey />;
 }
@@ -260,8 +277,8 @@ export function QueueTable({ queue, items, now, limit }: { queue: readonly Queue
     { key: "item", header: t("col.item"), className: "max-w-md", render: (q) => <RunItemCell id={q.work_item_id} item={items.get(q.work_item_id)} /> },
     { key: "kind", header: t("col.run"), render: (r) => runKindLabel(r.kind) },
     { key: "attempt", header: t("col.attempt"), numeric: false, className: "tabular-nums" },
-    { key: "queued", header: t("col.queued"), className: "tabular-nums", render: (q) => t("time.ago", { time: ago(q.created_at, now) }) },
-    { key: "starts", header: t("col.starts"), className: "tabular-nums", render: (q) => (q.why && q.why.code !== "queued" && q.why.code !== "not_before" ? <WhyText why={q.why} /> : until(q.not_before, now)) },
+    { key: "queued", header: t("col.queued"), className: "tabular-nums", render: (q) => <When at={q.created_at} now={now} /> },
+    { key: "starts", header: t("col.starts"), className: "tabular-nums", render: (q) => (q.why && q.why.code !== "queued" && q.why.code !== "not_before" ? <WhyText why={q.why} /> : q.not_before && Date.parse(q.not_before) > now ? <When at={q.not_before} now={now} /> : t("queue.now")) },
   ];
   return <DataTable label={t("queue.title")} columns={columns} rows={limit ? queue.slice(0, limit) : queue} rowKey={(q) => q.id} empty={t("queue.empty")} dataKey />;
 }
