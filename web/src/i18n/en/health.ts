@@ -197,6 +197,8 @@ export const health = {
   "health.checks": "Checks",
   "health.tabs": "Health sections",
   "health.tabChecks": "Checks",
+  "health.checkSince": "started {time}",
+  "health.checkNext": "next probe {time}",
   "health.failMark": "⚠ failing",
   "health.okCount": "{count} ok",
   "health.allPass": "All {count} checks pass · {time}",

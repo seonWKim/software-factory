@@ -19,6 +19,7 @@ import { EmptyState, Notice, PageHeader } from "../components/ui/notice.js";
 import { Textarea } from "../components/ui/textarea.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
+import { localDateTime } from "../lib/format.js";
 import { AgentsHomePicker } from "./agents-home-picker.js";
 import { ApprovalsSection } from "./standing.js";
 import { Disclosure } from "../components/ui/disclosure.js";
@@ -726,7 +727,7 @@ function Improve({ view }: { view: ImproveView }) {
             <>
               <p data-improve-window className={`${muted} tabular-nums`}>
                 {t("rules.improveWindow", {
-                  start: r.window_start, end: r.window_end, created: r.created_at, groups: r.groups.length, runs: r.runs, patterns: r.patterns,
+                  start: localDateTime(r.window_start), end: localDateTime(r.window_end), created: localDateTime(r.created_at), groups: r.groups.length, runs: r.runs, patterns: r.patterns,
                 })}
               </p>
               {r.groups.length === 0 ? (

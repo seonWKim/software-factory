@@ -11,8 +11,11 @@ export interface HostSleepRow {
 
 export interface Health {
   checked_at: string;
-  /** `msg` in plain words; `detail`, when present, the check's raw text (shown behind Details). */
-  checks: { status: string; msg: string; detail?: string }[];
+  /**
+   * `msg` in plain words; `detail`, when present, the check's raw text (shown behind Details); `since` / `next`, when
+   * the check names a time (a probe pause's start and next probe), its ISO instants, shown in local time.
+   */
+  checks: { status: string; msg: string; detail?: string; since?: string; next?: string }[];
   /** The 10 newest host sleeps, newest first. */
   sleeps?: HostSleepRow[];
 }
