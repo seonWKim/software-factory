@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  IMPLEMENT_KINDS, autoApproveRefusal, autoMergeRefusal, effectiveTier, failureClass, floorTier, isCovered, pathsOverlap, retryDelayMs, retryKey, runKey,
-  sameStep, workItemIdFromBranch,
+  IMPLEMENT_KINDS, TAKEOVER_OUTCOME, autoApproveRefusal, autoMergeRefusal, effectiveTier, failureClass, floorTier, isCovered, pathsOverlap, retryDelayMs, retryKey, runKey,
+  sameStep, takenOver, workItemIdFromBranch,
 } from "../src/core/policy.js";
 import { GATE_PATHS, gatePathTouched } from "../src/core/improver.js";
 import { PROTECTED_PATHS, protectedCategory } from "../src/core/standing.js";
@@ -110,6 +110,16 @@ describe("policy", () => {
 
   it("rejects a files_to_change entry with a .. segment", () => {
     expect(parseTriage({ ...triageSpec, allowed_paths: ["tests/"], files_to_change: ["tests/../src/x.ts"] }).ok).toBe(false);
+  });
+});
+
+describe("takenOver", () => {
+  it("is true only for a cancelled run with the takeover outcome; other cancelled or failed runs keep their counting", () => {
+    expect(takenOver({ status: "cancelled", outcome: TAKEOVER_OUTCOME })).toBe(true);
+    expect(takenOver({ status: "cancelled", outcome: null })).toBe(false);
+    expect(failureClass(null)).toBe("task"); // a plain cancel still counts as a task failure
+    expect(takenOver({ status: "failed", outcome: TAKEOVER_OUTCOME })).toBe(false);
+    expect(takenOver({ status: "cancelled", outcome: { status: "failed", error_code: "agent_failed", detail: "", infra: false } })).toBe(false);
   });
 });
 

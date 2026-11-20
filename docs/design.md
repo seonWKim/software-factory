@@ -1,10 +1,8 @@
 # Software factory: design index
 
-The design of the factory. Living document: change it when a decision changes.
-
-Read this index first, then open only the topic files your change touches. Each topic file states its current
-decision first; replaced decisions are in `history/<topic>.md`. A design change edits the topic file, never this
-index. Add a line here only for a new topic file. Topic files keep the old section numbers: "§5" means `05-*`.
+The living design. Read this index first, then open only the topic files your change touches. Each
+topic file states its current decision first; replaced decisions are in `history/<topic>.md`. A design change edits
+the topic file, never this index; add a line here only for a new topic file. "§5" means `05-*`.
 
 ## 1. Shape
 - [01-shape.md](design/01-shape.md): the flow from intake to the human gate and post-merge.
@@ -51,6 +49,7 @@ index. Add a line here only for a new topic file. Topic files keep the old secti
 - [06-measurement.md](design/06-measurement.md): the feedback rate, revert tracking, `factory stats`, the golden set.
 - [06-token-budget.md](design/06-token-budget.md): per-tier token budget checkpoints and what a run's tokens count.
 - [06-spend.md](design/06-spend.md): spend per day, week and item, and dollar budgets.
+- [06-efficiency.md](design/06-efficiency.md): items finished per period; tokens and time per item.
 
 ## 7. Self-improvement
 - [07-self-improvement.md](design/07-self-improvement.md): how the factory changes its own behaviour, the doc index in the prompt.
@@ -69,20 +68,21 @@ index. Add a line here only for a new topic file. Topic files keep the old secti
 ## 9. Status page
 - [09-status-page.md](design/09-status-page.md): the read-only status page, its guards.
 - [09-health.md](design/09-health.md): the Health panel, schema probe.
-- [09-dashboard-app.md](design/09-dashboard-app.md): index of the dashboard topic files, one per page.
+- [09-dashboard-app.md](design/09-dashboard-app.md): index of the dashboard page topics.
 - [09-dashboard-shell.md](design/09-dashboard-shell.md): sidebar, top bar, shared components, API.
 - [09-dashboard-activity.md](design/09-dashboard-activity.md): the Activity page.
 - [09-dashboard-runners.md](design/09-dashboard-runners.md): the Runners page, Migrate now.
 - [09-dashboard-tasks.md](design/09-dashboard-tasks.md): Tasks, Calendar, Needs you, Project switcher.
 - [09-dashboard-rules.md](design/09-dashboard-rules.md): the Rules page: verdicts, Promote, Retire.
-- [09-dashboard-settings.md](design/09-dashboard-settings.md): the Settings page and the Plugins page.
-- [09-dashboard-system.md](design/09-dashboard-system.md): Work, Workers, Failures, Spend, Data.
+- [09-dashboard-settings.md](design/09-dashboard-settings.md): the Settings and Plugins pages.
+- [09-dashboard-system.md](design/09-dashboard-system.md): Work, Failures, Spend, Data.
+- [09-dashboard-workers.md](design/09-dashboard-workers.md): run timeline, dependency graph.
 - [09-dashboard-item.md](design/09-dashboard-item.md): the item page: thread, transcripts.
 - [09-dashboard-item-commands.md](design/09-dashboard-item-commands.md): item commands, dialogs, Merge button.
-- [09-status-banner.md](design/09-status-banner.md): the supervisor status banner.
+- [09-status-banner.md](design/09-status-banner.md): the supervisor banner.
 - [09-notifications.md](design/09-notifications.md): owner notices, kinds, quiet hours.
-- [09-desktop-app.md](design/09-desktop-app.md): the macOS app for the supervisor and dashboard.
-- [09-brand-and-tokens.md](design/09-brand-and-tokens.md): the token source, `tokens.css`, the no-hex rule.
+- [09-desktop-app.md](design/09-desktop-app.md): the macOS app.
+- [09-brand-and-tokens.md](design/09-brand-and-tokens.md): design tokens, the no-hex rule.
 - [09-dashboard-complexity.md](design/09-dashboard-complexity.md): audit of the dashboard's pages.
 
 ## 10. Event-driven factory

@@ -87,12 +87,12 @@ describe("app pages", () => {
     expect(screen.queryByRole("link", { name: "Users" })).toBeNull();
   });
 
-  it("the sidebar has exactly seven links; Activity, Failures, Spend, Runners and Data are not among them", () => {
+  it("the sidebar links Workers after Health; Activity, Failures, Spend, Runners and Data are not among them", () => {
     mount();
     const side = screen.getByRole("complementary", { name: "Sidebar" });
     const links = [...side.querySelectorAll("a")].filter((a) => a.getAttribute("href")?.startsWith("/app/") && a.getAttribute("href") !== "/app/");
     expect(links.map((a) => [a.getAttribute("aria-label"), a.getAttribute("href")])).toEqual([
-      ["Tasks", "/app/tasks"], ["Calendar", "/app/calendar"], ["Work", "/app/items"], ["Health", "/app/health"],
+      ["Tasks", "/app/tasks"], ["Calendar", "/app/calendar"], ["Work", "/app/items"], ["Health", "/app/health"], ["Workers", "/app/workers"],
       ["Rules", "/app/rules"], ["Plugins", "/app/plugins"], ["Settings", "/app/settings"],
     ]);
     for (const gone of ["Activity", "Failures", "Spend", "Runners", "Data"]) expect(within(side).queryByRole("link", { name: gone })).toBeNull();
@@ -118,20 +118,25 @@ describe("app pages", () => {
     }
   });
 
-  it("old paths redirect: /app/workers to Runners; /app/users is no longer an old path", async () => {
+  it("/app/workers opens the Workers page with no redirect; /app/runners still opens Runners; /app/users is no longer an old path", async () => {
     history.replaceState(null, "", "/app/workers");
     mount();
+    expect(await screen.findByRole("heading", { level: 1, name: "Workers" })).toBeTruthy();
+    expect(location.pathname).toBe("/app/workers");
+    expect(redirectFor("/app/workers")).toBeNull();
+    cleanup();
+    history.replaceState(null, "", "/app/runners");
+    mount();
     expect(await screen.findByRole("heading", { level: 1, name: "Runners" })).toBeTruthy();
-    await vi.waitFor(() => expect(location.pathname).toBe("/app/runners"));
+    expect(location.pathname).toBe("/app/runners");
     expect(redirectFor("/app/users")).toBeNull();
   });
 
-  it("/app/spend, /app/failures and /app/activity redirect, keeping the query; /app/queue and /app/workers still do", async () => {
+  it("/app/spend, /app/failures and /app/activity redirect, keeping the query; /app/queue still does", async () => {
     expect(redirectFor("/app/spend")).toBe("/app/health#spend");
     expect(redirectFor("/app/failures")).toBe("/app/health#failures");
     expect(redirectFor("/app/failures", "?window=7d")).toBe("/app/health?window=7d#failures");
     expect(redirectFor("/app/activity")).toBe("/app/items");
-    expect(redirectFor("/app/workers")).toBe("/app/runners");
     expect(redirectFor("/app/queue")).toBe("/app/items?state=queued");
     for (const [from, to] of [
       ["/app/spend", "/app/health#spend"],
@@ -220,7 +225,7 @@ describe("app pages", () => {
     mount();
     await screen.findByText("push access denied");
     const tabs = screen.getAllByRole("tab");
-    expect(tabs.map((x) => x.textContent!.replace(/\s*\(.*$/, ""))).toEqual(["Checks", "Host sleeps", "Merged without review"]);
+    expect(tabs.map((x) => x.textContent!.replace(/\s*\(.*$/, ""))).toEqual(["Checks", "Host sleeps", "Merged without review", "Efficiency"]);
     expect(tabs[0]!.getAttribute("aria-selected")).toBe("true");
     expect(tabs[0]!.textContent).toContain("(2)");
     expect(tabs[0]!.textContent).toContain("failing");

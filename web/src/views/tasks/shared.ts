@@ -35,7 +35,7 @@ export function useTaskAction(token: string | null) {
   const client = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const run = async (action: TaskAction, body: Record<string, string>): Promise<boolean> => {
+  const run = async (action: TaskAction, body: Record<string, string | boolean>): Promise<boolean> => {
     if (token === null || busy) return false;
     setBusy(true);
     setError(null);

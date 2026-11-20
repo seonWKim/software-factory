@@ -23,12 +23,14 @@ import { TranscriptView, transcriptRoute } from "./views/transcript.js";
 import { RulesPage } from "./views/rules.js";
 import { CalendarPage } from "./views/calendar.js";
 import { TasksPage } from "./views/tasks.js";
+import { WorkersPage } from "./views/workers.js";
 
 const VIEWS: Record<string, () => JSX.Element> = {
   items: ItemsPage,
   tasks: TasksPage,
   calendar: CalendarPage,
   runners: RunnersPage,
+  workers: WorkersPage,
   health: HealthPage,
   rules: RulesPage,
   settings: SettingsPage,
@@ -54,7 +56,7 @@ export function App() {
   const [dialog, setDialog] = useState<"search" | "help" | null>(null);
   useShortcuts({ navigate, openSearch: () => setDialog("search"), openHelp: () => setDialog("help"), path });
   const route = routeFor(path);
-  // An old page path (/app/workers) swaps itself for its new one in the address bar, keeping its query.
+  // An old page path (/app/queue) swaps itself for its new one in the address bar, keeping its query.
   const moved = redirectFor(path, location.search);
   useEffect(() => {
     if (moved) navigate(moved, true);

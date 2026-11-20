@@ -61,7 +61,7 @@ describe("Calendar section", () => {
     within(row).getByRole("button", { name: `Connect ${NAME}` });
     const other = section.querySelector<HTMLElement>('[data-calendar="other"]')!;
     expect(other.textContent).toContain("connected");
-    expect(other.textContent).toMatch(/Last sync \d+s ago/);
+    expect(other.textContent).toMatch(/Last sync just now/);
     expect(other.textContent).toContain("Last error: events read failed (HTTP 500)");
     within(other).getByRole("button", { name: "Disconnect other" });
   });

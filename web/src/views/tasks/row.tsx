@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { type KeyboardEvent, useContext, useRef, useState } from "react";
 import { API, type TaskRow, postTaskBuild } from "../../api.js";
 import { Button } from "../../components/ui/button.js";
+import { Checkbox } from "../../components/ui/checkbox.js";
 import { FOCUS } from "../../components/ui/control.js";
 import { announceStatus } from "../../components/ui/dialog.js";
 import { ID_CLASS, LINK_CLASS } from "../../components/ui/link-style.js";
@@ -13,7 +14,7 @@ import { localDateTime } from "../../lib/format.js";
 import { Link } from "../../nav.js";
 import { itemPath } from "../../pages.js";
 import { WorkState } from "../task-work.js";
-import { DeleteDialog, ProjectsDialog } from "./dialogs.js";
+import { DeleteDialog, DescriptionDialog, ProjectsDialog } from "./dialogs.js";
 import { RowForm } from "./forms.js";
 import type { Nested } from "./groups.js";
 import { ALERT, Rows, idFor, muted, useTaskAction } from "./shared.js";
@@ -22,8 +23,6 @@ import { Badge } from "../../components/ui/badge.js";
 /** A linked task's item's close reason, as the row says it in its details line, open or done (design 02-tasks). */
 const closedKey = (reason: NonNullable<TaskRow["close_reason"]>): MessageKey =>
   reason === "rejected" ? "tasks.closedRejected" : reason === "wont_do" ? "tasks.closedNotPlanned" : "tasks.closedOther";
-/** A timed task with no stored duration shows this long. */
-const DEFAULT_MINUTES = 30;
 
 /** Build this: one POST; its refusal stays beside the button until the next try. */
 function BuildButton({ task, token }: { task: TaskRow; token: string }) {
@@ -61,8 +60,26 @@ function BuildButton({ task, token }: { task: TaskRow; token: string }) {
   );
 }
 
-/** The title, a link to the built task's item (the ID beside it links too); an unbuilt task's title is plain text. */
-function TitleLink({ task, className }: { task: TaskRow; className: string }) {
+/**
+ * The title. On an open task the page can write, a button that opens the description dialog (a built task's item link
+ * stays on its state and ID); else a link to the built task's item, or plain text when it is not built.
+ */
+function Title({ task, className, onOpen }: { task: TaskRow; className: string; onOpen: (() => void) | null }) {
+  if (onOpen !== null) {
+    return (
+      // The title stays the paragraph's text; the shared Button lies over it, so the row keeps its height.
+      <p className={cn(className, "relative hover:underline")}>
+        {task.title}
+        <Button
+          variant="ghost"
+          aria-haspopup="dialog"
+          aria-label={t("tasks.descriptionLabel", { title: task.title })}
+          className="absolute inset-0 min-h-0! px-0! enabled:hover:bg-transparent!"
+          onClick={onOpen}
+        />
+      </p>
+    );
+  }
   const title = <p className={className}>{task.title}</p>;
   return task.work_item_id === null ? title : (
     <Link href={itemPath(task.work_item_id)} className={cn("block", LINK_CLASS)}>
@@ -78,11 +95,12 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
   const done = task.done_at != null;
   // A done task is not late, wherever it is placed.
   const overdue = inOverdue && !done;
-  const [mode, setMode] = useState<"view" | "edit" | "sub" | "delete" | "projects">("view");
+  const [mode, setMode] = useState<"view" | "edit" | "sub" | "delete" | "projects" | "description">("view");
   const [checked, setChecked] = useState(false);
   const parent = task.parent_task_id ?? null;
   const due = task.due_date === null ? null : task.due_time === null ? task.due_date : `${task.due_date} ${task.due_time}`;
-  const minutes = task.due_time === null ? null : (task.duration_minutes ?? DEFAULT_MINUTES);
+  // A timed task's stored duration; none stored: none shown.
+  const minutes = task.due_time === null ? null : (task.duration_minutes ?? null);
   const close = () => {
     setMode("view");
     action.setError(null);
@@ -125,17 +143,12 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
       className={cn("flex flex-wrap items-start justify-between gap-x-3 gap-y-2 p-3", FOCUS, "focus-visible:-outline-offset-2", sub && "pl-10")}
     >
       {token !== null && !done && (
-        // The shared Button as a checkbox: components/ui has no checkbox, and a raw input is not used outside it.
-        <Button
-          size="icon"
-          role="checkbox"
-          aria-checked={checked}
+        <Checkbox
+          checked={checked}
           aria-label={t("tasks.complete", { title: task.title })}
           disabled={action.busy}
-          onClick={() => void complete()}
-        >
-          <span aria-hidden>{checked ? "✓" : ""}</span>
-        </Button>
+          onChange={() => void complete()}
+        />
       )}
       <div className="min-w-0 flex-1 space-y-1">
         {mode === "edit" ? (
@@ -149,7 +162,11 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
             onClose={close}
           />
         ) : (
-          <TitleLink task={task} className={cn("text-sm text-pretty break-words", overdue && "font-medium text-pill-bad-fg", done && "text-text-2 line-through")} />
+          <Title
+            task={task}
+            className={cn("text-sm text-pretty break-words", overdue && "font-medium text-pill-bad-fg", done && "text-text-2 line-through")}
+            onOpen={token !== null && !done ? () => setMode("description") : null}
+          />
         )}
         <p className={cn(muted, "flex flex-wrap gap-x-3 gap-y-1")}>
           {overdue && <Badge level="stuck">{t("tasks.overdue")}</Badge>}
@@ -160,6 +177,11 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
           {minutes !== null && <span className="tabular-nums">{t("tasks.minutes", { minutes })}</span>}
           {task.priority !== null && <span>!{task.priority}</span>}
           {task.list !== null && <span className="break-all">#{task.list}</span>}
+          {(task.projects ?? []).map((p) => (
+            <span key={p} className="break-all">
+              +{p}
+            </span>
+          ))}
           {task.recurrence !== null && <span>{t("tasks.every", { recurrence: task.recurrence })}</span>}
         </p>
         {mode === "sub" && (
@@ -175,7 +197,7 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
             onClose={close}
           />
         )}
-        {action.error !== null && mode !== "delete" && mode !== "projects" && (
+        {action.error !== null && mode !== "delete" && mode !== "projects" && mode !== "description" && (
           <p role="alert" className={ALERT}>
             {action.error}
           </p>
@@ -202,6 +224,7 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
       </div>
       {mode === "delete" && token !== null && <DeleteDialog task={task} token={token} returnFocusTo={row} onClose={close} />}
       {mode === "projects" && token !== null && <ProjectsDialog task={task} token={token} returnFocusTo={row} onClose={close} />}
+      {mode === "description" && token !== null && <DescriptionDialog task={task} token={token} returnFocusTo={row} onClose={close} />}
     </li>
   );
 }

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // @ts-nocheck -- same reason as tests/data-page.test.tsx: tsconfig.test.json has no DOM and no JSX.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../web/src/App.js";
 import { GO_KEYS, isQuickAddSubmit } from "../web/src/keys.js";
@@ -24,7 +24,10 @@ const RESPONSES: Record<string, unknown> = {
 beforeEach(() => {
   history.replaceState(null, "", "/app/");
   vi.stubGlobal("fetch", vi.fn(async (url: string) => {
-    const body = RESPONSES[url.split("?")[0]!];
+    const closedRow = { ...row("wi_9", "Transfer actor second", "closed"), stage: "CLOSED", close_reason: "completed" };
+    const body = url === "/api/v1/items?closed=1"
+      ? { ...(RESPONSES["/api/v1/items"] as object), items: [closedRow, row("wi_1", "First spec", "needs_approval"), row("wi_2", "Second spec", "needs_approval")] }
+      : RESPONSES[url.split("?")[0]!];
     return body === undefined ? new Response("{}", { status: 404 }) : new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
   }));
 });
@@ -84,6 +87,27 @@ describe("shortcuts", () => {
     press("k", { metaKey: true });
     fireEvent.keyDown(screen.getByPlaceholderText("Search pages and items"), { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("⌘K finds a merged item that was not loaded, labels it Merged and lists it after open matches", async () => {
+    mount();
+    await screen.findByText("First spec");
+    press("k", { metaKey: true });
+    fireEvent.change(await screen.findByPlaceholderText("Search pages and items"), { target: { value: "second" } });
+    await waitFor(() => expect(within(screen.getByRole("listbox")).getAllByRole("option")).toHaveLength(2));
+    const [open, merged] = within(screen.getByRole("listbox")).getAllByRole("option");
+    expect(open.textContent).toBe("Second specItems");
+    expect(merged.textContent).toBe("Transfer actor secondMerged");
+  });
+
+  it("⌘K lists the Data page with a developer-page label, and no other page with one", async () => {
+    mount();
+    await screen.findByText("First spec");
+    press("k", { metaKey: true });
+    const box = await screen.findByRole("dialog", { name: "Search" });
+    const data = screen.getAllByRole("option").find((o) => o.textContent?.startsWith("Data"))!;
+    expect(data.textContent).toBe("DataDeveloper page");
+    expect(box.textContent?.split("Developer page").length).toBe(2);
   });
 
   it("? lists every shortcut, Escape closes it", () => {

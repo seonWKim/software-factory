@@ -98,7 +98,8 @@ export function retryDelayMs(attempt: number, base_ms: number, max_ms: number): 
  * neither is a stall (the model printed nothing for `stall_ms`); a pre-push check whose failing test files
  * also fail on the base branch (`checks_env`) spends neither budget and has its own cap, CHECKS_ENV_LIMIT per
  * item; infra failures (lease loss, timeout, exception) count toward `max_restart`; anything else is the
- * task's own failure and counts toward `max_attempts`. A run with no outcome (cancelled) is a task failure.
+ * task's own failure and counts toward `max_attempts`. A run with no outcome (cancelled) is a task failure; a run
+ * an accepted interactive takeover cancelled (`takenOver`) is left out of the step's counts by `retryOrBlock`.
  */
 export type FailureClass = "rate_limited" | "stalled" | "checks_env" | "infra" | "task";
 
@@ -108,6 +109,20 @@ export function failureClass(outcome: RunOutcome | null): FailureClass {
   if (outcome.error_code === AGENT_STALLED) return "stalled";
   if (outcome.error_code === CHECKS_ENV) return "checks_env";
   return outcome.infra ? "infra" : "task";
+}
+
+/**
+ * The error code on the outcome of a queued implement or update run that an accepted interactive takeover cancelled
+ * (design §5 Restarts, 2026-11-19). The run stays `cancelled`; the outcome only marks it as no attempt.
+ */
+export const INTERACTIVE_TAKEOVER = "interactive_takeover";
+export const TAKEOVER_OUTCOME: RunOutcome = {
+  status: "failed", error_code: INTERACTIVE_TAKEOVER, detail: "an interactive task took the item over before the run started", infra: false,
+};
+
+/** Whether an accepted interactive takeover cancelled the run: it counts toward neither max_attempts nor max_restart. */
+export function takenOver(run: Pick<Run, "status" | "outcome">): boolean {
+  return run.status === "cancelled" && run.outcome?.status === "failed" && run.outcome.error_code === INTERACTIVE_TAKEOVER;
 }
 
 /**

@@ -15,6 +15,7 @@ import { Notice, PageHeader, EmptyState } from "../components/ui/notice.js";
 import { ID_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import { FailuresSection } from "./failures.js";
 import { SpendSection } from "./spend.js";
+import { EfficiencyTab } from "./efficiency.js";
 import { Markdown } from "../components/ui/markdown.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { Tabs } from "../components/ui/tabs.js";
@@ -22,10 +23,10 @@ import { cn } from "../lib/cn.js";
 import { useUrlParam } from "../lib/url-param.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { LEVEL_LABELS, ago, isHttpUrl, shortRev, shortSource, tokens } from "../lib/format.js";
+import { LEVEL_LABELS, duration, errorLabel, groupedInteger, isHttpUrl, localClock, localDateTime, relativeTime, runStatusLabel, termLabel, shortRev, shortSource, tokens } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
-import { InteractiveBadge, ItemsTable, MergeCheckNote, byId, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
+import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, When, byId, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
 import { ItemDecision } from "./decision-card.js";
 import { type SupervisorActionName, SupervisorActions } from "./system-banner.js";
 import { Thread } from "./thread.js";
@@ -35,15 +36,18 @@ import { Disclosure } from "../components/ui/disclosure.js";
 import { Card } from "../components/ui/card.js";
 import { Badge } from "../components/ui/badge.js";
 
-/** "host slept N min" for a host sleep's gap, at least 1 min (only gaps over 60 s are recorded). */
-export const sleptText = (gap_ms: number): string => t("host.slept", { min: Math.max(1, Math.round(gap_ms / 60_000)) });
+/** A host sleep's gap in whole minutes, at least 1 (only gaps over 60 s are recorded). */
+const sleptMinutes = (gap_ms: number): number => Math.max(1, Math.round(gap_ms / 60_000));
+
+/** "host slept N min" for a host sleep's gap, on the item timeline. */
+export const sleptText = (gap_ms: number): string => t("host.slept", { min: sleptMinutes(gap_ms) });
 
 /** One active claim pause for the banner: what it stops, when it began (model stall) and when it ends or is checked next. */
 function pauseLine(p: PauseRow, now: number): string {
   const what = pauseLabel(p.name);
-  if (p.name !== "model_stall") return t("pause.line", { name: p.name, what, end: p.ends_at });
+  if (p.name !== "model_stall") return t("pause.line", { what, end: p.ends_at });
   const due = Date.parse(p.ends_at) <= now;
-  const vars = { name: p.name, what, end: p.ends_at, since: p.since ?? "" };
+  const vars = { what, end: p.ends_at, since: p.since ?? "" };
   if (p.since) return t(due ? "pause.stallSinceDue" : "pause.stallSinceAt", vars);
   return t(due ? "pause.stallDue" : "pause.stallAt", vars);
 }
@@ -52,8 +56,15 @@ function pauseLine(p: PauseRow, now: number): string {
 interface FactoryView {
   tone: "ok" | "warn" | "bad";
   text: string;
+  /** The raw names of the pauses the text says in words: shown behind Details. */
+  raw?: readonly string[];
   /** Paused, stopped or failing: the states that get a page Notice. */
   notice: boolean;
+}
+
+/** A factory sentence, with the raw names of its pauses behind Details. */
+function FactoryText({ view }: { view: FactoryView }) {
+  return <>{view.text}{view.raw && view.raw.length > 0 && <RawDetails className="mt-1"><code className="font-mono">{view.raw.join(", ")}</code></RawDetails>}</>;
 }
 
 function factoryView(factory: FactoryState | null, now: number, pauses: readonly PauseRow[]): FactoryView {
@@ -63,8 +74,8 @@ function factoryView(factory: FactoryState | null, now: number, pauses: readonly
   const updating = (text: string): FactoryView => ({ tone: "warn", text, notice: false });
   switch (factory.state) {
     case "running":
-      if (pauses.length > 0) return { tone: "warn", text: pauses.map((p) => pauseLine(p, now)).join(" "), notice: true };
-      return { tone: "ok", text: t("factory.running", { rev, time: ago(factory.since, now) }), notice: false };
+      if (pauses.length > 0) return { tone: "warn", text: pauses.map((p) => pauseLine(p, now)).join(" "), raw: pauses.map((p) => p.name), notice: true };
+      return { tone: "ok", text: t("factory.running", { rev, time: relativeTime(factory.since, now) }), notice: false };
     case "building":
       return updating(t("factory.building", { target, rev }));
     case "draining":
@@ -94,7 +105,7 @@ export function FactoryBanner({ factory, now, pauses = [] }: { factory: FactoryS
   const actions: SupervisorActionName[] = factory?.state === "migration_pending" ? ["migrate"] : ["start", "restart"];
   return (
     <div data-testid="factory-banner" className="space-y-2">
-      <Notice tone={v.tone}>{v.text}</Notice>
+      <Notice tone={v.tone}><FactoryText view={v} /></Notice>
       <SupervisorActions actions={actions} />
     </div>
   );
@@ -147,14 +158,12 @@ function PauseItem({ pause, token, now }: { pause: PauseRow; token: string | nul
       setBusy(false);
     }
   };
-  const ends = Date.parse(pause.ends_at);
-  const when = t(pause.name === "model_stall" ? "pause.nextProbe" : "pause.ends", { time: pause.ends_at });
   return (
     <li data-pause={pause.name} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
-      <span className="font-mono text-xs">{pause.name}</span>
       <span className="min-w-0 text-pretty text-text-1">{pauseLabel(pause.name)}</span>
-      <span className="min-w-0 tabular-nums break-words text-text-2" title={pause.ends_at}>
-        {when}{ends > now ? ` (${t("format.in", { time: ago(new Date(now).toISOString(), ends) })})` : ""}
+      <span className="min-w-0 tabular-nums break-words text-text-2" title={localDateTime(pause.ends_at)}>
+        {t(pause.name === "model_stall" ? "pause.nextProbe" : "pause.ends", { time: pause.ends_at })}
+        {Date.parse(pause.ends_at) > now ? ` (${relativeTime(pause.ends_at, now)})` : ""}
       </span>
       {token !== null && (
         <Button variant="secondary" disabled={busy} onClick={() => void resume()}>
@@ -199,7 +208,7 @@ export function FloorStatus() {
   const view = o?.factory === undefined ? null : factoryView(o.factory, now, pauses.data?.pauses ?? []);
   return (
     <>
-      {view?.notice && <Notice tone={view.tone === "bad" ? "bad" : "warn"}>{view.text}</Notice>}
+      {view?.notice && <Notice tone={view.tone === "bad" ? "bad" : "warn"}><FactoryText view={view} /></Notice>}
       <ClaimPauses now={now} />
     </>
   );
@@ -428,15 +437,15 @@ export function ItemPage({ id }: { id: string }) {
       />
       <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
         {([
-          [t("col.state"), <Badge level={level}>{LEVEL_LABELS[level] ?? level}{item.close_reason ? ` (${item.close_reason.replace(/_/g, " ")})` : ""}</Badge>],
+          [t("col.state"), <Badge level={level}>{LEVEL_LABELS[level] ?? level}{item.close_reason ? ` (${termLabel(item.close_reason)})` : ""}</Badge>],
           [t("item.source"), isHttpUrl(item.source.link) ? <SourceLink source={item.source} className="inline-block align-bottom" /> : short],
           [t("item.tier"), item.tier ?? "–"],
           [t("col.pr"), item.change_ref === null ? "–" : <UrlOrText url={item.change_url} text={`#${item.change_ref}`} />],
           [t("item.specComment"), item.spec_comment_url ? <UrlOrText url={item.spec_comment_url} text={t("item.specCommentLink")} /> : "–"],
           [t("item.reviewLoops"), item.loop_count],
           [t("item.restarts"), item.restart_count],
-          [t("col.tokens"), tokens(item.token_cost)],
-          [t("item.updated"), t("time.ago", { time: ago(item.updated_at, now) })],
+          [termLabel("token_cost"), tokens(item.token_cost)],
+          [t("item.updated"), <When at={item.updated_at} now={now} />],
         ] as const).map(([k, v]) => (
           <div key={k} className="min-w-0">
             <dt className="text-xs text-text-2">{k}</dt>
@@ -461,7 +470,7 @@ export function ItemPage({ id }: { id: string }) {
             <MergeCheckNote check={item.merge_check} />
             {item.merge_check.base_sha && item.merge_check.checked_at && (
               <span className="ml-2 text-text-2">
-                {t("item.againstBase")} <code className="font-mono text-xs" title={item.merge_check.base_sha}>{item.merge_check.base_sha.slice(0, 12)}</code>{t("item.checkedAgo", { time: ago(item.merge_check.checked_at, now) })}
+                {t("item.againstBase")} <code className="font-mono text-xs" title={item.merge_check.base_sha}>{item.merge_check.base_sha.slice(0, 12)}</code>, <When at={item.merge_check.checked_at} now={now} label="item.checkedAgo" />
               </span>
             )}
           </p>
@@ -481,13 +490,18 @@ export function ItemPage({ id }: { id: string }) {
                   {runKindLabel(r.kind)} <code className="font-mono text-xs break-all text-text-2">{r.id}</code>
                 </Td>
                 <Td className="tabular-nums">{t("item.attempt", { attempt: r.attempt })}</Td>
-                <Td><Badge level={r.status === "running" ? "running" : r.status === "failed" ? "stuck" : undefined}>{r.status}</Badge></Td>
+                <Td><Badge level={r.status === "running" ? "running" : r.status === "failed" ? "stuck" : undefined}>{runStatusLabel(r.status)}</Badge></Td>
                 <Td className="max-w-md min-w-40 text-xs break-words text-text-1">
-                  {r.error ? <><span className="font-medium">{r.error.code}</span>{r.error.detail ? `: ${r.error.detail}` : ""}</> : "–"}
+                  {r.error ? (
+                    <>
+                      <span className="font-medium">{r.error.code ? errorLabel(r.error.code) : t("format.unknown")}</span>{r.error.detail ? `: ${r.error.detail}` : ""}
+                      {r.error.code && <RawDetails><code className="font-mono">{r.error.code}</code></RawDetails>}
+                    </>
+                  ) : "–"}
                 </Td>
                 <Td><WorkerName id={r.attempts?.at(-1)?.worker_id} /></Td>
-                <Td className="tabular-nums whitespace-nowrap">{r.started_at ? t("time.ago", { time: ago(r.started_at, now) }) : "–"}</Td>
-                <Td className="tabular-nums">{r.started_at && r.finished_at ? ago(r.started_at, Date.parse(r.finished_at)) : "–"}</Td>
+                <Td className="tabular-nums whitespace-nowrap"><When at={r.started_at} now={now} /></Td>
+                <Td className="tabular-nums">{r.started_at && r.finished_at ? duration(Date.parse(r.finished_at) - Date.parse(r.started_at)) : "–"}</Td>
                 <Td className="tabular-nums">{tokens(r.tokens)}</Td>
                 <Td className="whitespace-nowrap">
                   {(transcripts[r.id]?.length ?? 0) > 0 ? (
@@ -504,7 +518,7 @@ export function ItemPage({ id }: { id: string }) {
           {entries.map((e) => {
             if (e.kind === "sleep") return (
               <li key={`sleep:${e.h.worker_id}:${e.h.woke_at}`} className="flex gap-3" data-testid="host-sleep">
-                <span className="w-12 shrink-0 text-right text-text-3 tabular-nums">{ago(e.h.woke_at, now)}</span>
+                <span className="w-16 shrink-0 text-right text-text-3 tabular-nums"><When at={e.h.woke_at} now={now} /></span>
                 <span className="min-w-0">
                   <span className="font-medium">{sleptText(e.h.gap_ms)}</span>
                   <span className="text-text-3">{t("item.on")}</span>
@@ -531,7 +545,7 @@ function CurrentRun({ runs, itemId, hasTranscript, now }: { runs: ItemDetail["ru
         <Badge level={run.status === "running" ? "running" : undefined}>{run.status}</Badge>
         <span className="tabular-nums">{t("item.attempt", { attempt: run.attempt })}</span>
         <WorkerName id={run.attempts?.at(-1)?.worker_id} />
-        {run.started_at && <span className="text-text-2 tabular-nums">{t("item.startedAgo", { time: ago(run.started_at, now) })}</span>}
+        {run.started_at && <span className="text-text-2 tabular-nums"><When at={run.started_at} now={now} label="item.startedAgo" /></span>}
         {hasTranscript(run.id) && <Link href={transcriptPath(itemId, run.id)} className={LINK_CLASS}>{t("item.transcript")}</Link>}
       </p>
     </Card>
@@ -592,6 +606,15 @@ function shortValue(v: unknown): string {
   return String(v);
 }
 
+/** A short change value for a sentence: a stored code (`wont_do`) as words, anything else as `shortValue`. */
+function plainValue(v: unknown): string {
+  return typeof v === "string" ? termLabel(v) : shortValue(v);
+}
+
+/** A health check's status word. */
+const CHECK_KEYS: Readonly<Record<string, MessageKey>> = { ok: "check.ok", warn: "check.warn", fail: "check.fail" };
+const checkLabel = (status: string): string => (CHECK_KEYS[status] ? t(CHECK_KEYS[status]) : status);
+
 /** A spec field's value as markdown: a list becomes a bullet list. */
 function specMarkdown(v: unknown): string {
   if (Array.isArray(v)) return v.map((x) => `- ${shortValue(x)}`).join("\n");
@@ -605,15 +628,22 @@ function TimelineRow({ entry, now, viewer }: { entry: TimelineEntry; now: number
   const spec = changes.filter(([f]) => f in SPEC_FIELDS);
   return (
     <li className="flex gap-3">
-      <span className="w-12 shrink-0 text-right text-text-3 tabular-nums">{ago(entry.at, now)}</span>
+      <span className="w-16 shrink-0 text-right text-text-3 tabular-nums"><When at={entry.at} now={now} /></span>
       <div className="min-w-0 flex-1 break-words">
-        <span className="font-medium">{entry.reason ?? t("item.change")}</span>
+        <span className="font-medium">{entry.reason ? termLabel(entry.reason) : t("item.change")}</span>
         <span className="text-text-3">{t("item.by")}</span>
         <PersonName id={entry.actor.kind === "system" ? null : entry.actor.id} name={entry.actor.name} viewer={viewer} />
         {short.length > 0 && (
           <span className="text-text-2">
-            {" "}— {short.map(([f, c]) => `${f}: ${shortValue(parseValue(c.from))} → ${shortValue(parseValue(c.to))}`).join(", ")}
+            {" "}— {short.map(([f, c]) => `${termLabel(f)}: ${plainValue(parseValue(c.from))} → ${plainValue(parseValue(c.to))}`).join(", ")}
           </span>
+        )}
+        {short.length > 0 && (
+          <RawDetails className="mt-1">
+            <ul className="mt-1 font-mono text-xs break-all">
+              {short.map(([f, c]) => <li key={f}>{`${f}: ${shortValue(parseValue(c.from))} → ${shortValue(parseValue(c.to))}`}</li>)}
+            </ul>
+          </RawDetails>
         )}
         {spec.length > 0 && (
           <div className="mt-1">
@@ -645,7 +675,7 @@ function ProcessRow({ p, items, now }: { p: WorkerProcess; items: ReadonlyMap<st
       <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
         <span className="text-xs font-semibold">{p.host}</span>
         <span className="tabular-nums">{t("runners.pid", { pid: p.pid })}</span>
-        <span className="tabular-nums text-text-2">{t("runners.started", { time: ago(p.started_at, now) })}</span>
+        <span className="tabular-nums text-text-2"><When at={p.started_at} now={now} label="runners.started" /></span>
         {draining && <Badge level="needs_approval">{t("runners.draining")}</Badge>}
         <span className="tabular-nums" data-slots>
           {t("runners.slots", { busy: p.busy, idle: p.idle, slots: p.slots, max: p.max_slots })}
@@ -658,7 +688,7 @@ function ProcessRow({ p, items, now }: { p: WorkerProcess; items: ReadonlyMap<st
               <Link href={itemPath(r.work_item_id)} className={LINK_CLASS}>{items.get(r.work_item_id)?.title || r.work_item_id}</Link>
               <span>{runKindLabel(r.kind)}</span>
               <WorkerName id={r.worker_id} />
-              <span className="tabular-nums">{ago(r.started_at, now)}</span>
+              <span className="tabular-nums"><When at={r.started_at} now={now} /></span>
             </li>
           ))}
         </ul>
@@ -716,58 +746,82 @@ function CheckList({ checks }: { checks: Health["checks"] }) {
     <ul className="space-y-1 text-sm">
       {checks.map((c, i) => (
         <li key={i} className="flex items-baseline gap-2">
-          <Badge level={HEALTH_TONE[c.status]}>{c.status}</Badge>
-          <span className="min-w-0 text-pretty break-words">{c.msg}</span>
+          <Badge level={HEALTH_TONE[c.status]}>{checkLabel(c.status)}</Badge>
+          <span className="min-w-0 text-pretty break-words">
+            {c.msg}
+            {c.detail !== undefined && <RawDetails className="mt-1"><code className="font-mono text-xs whitespace-pre-wrap break-all">{c.detail}</code></RawDetails>}
+          </span>
         </li>
       ))}
     </ul>
   );
 }
 
-type HealthTab = "checks" | "pauses" | "sleeps" | "merges" | "github";
+type HealthTab = "checks" | "pauses" | "sleeps" | "merges" | "efficiency" | "github";
 
 /**
- * The GitHub budget tab (design 09-dashboard-app, 2026-11-16): what the controller stored after its last poll, so no
- * GitHub call. Remaining of limit until reset_at, the counted calls (and the share when one is set), a banner while
- * waiting or low, and the token's days left when the last health run checked it.
+ * The GitHub budget tab (design 09-health, 2026-11-20): what the controller stored after its last poll, so no GitHub
+ * call. Remaining of limit grouped by thousands and the reset in the viewer's local time, the requests this factory
+ * made (and the share when one is set), a banner while waiting or low, the token's days left when the last health run
+ * checked it, and the stored fields (reset time, replica, wait reason) behind Details.
  */
 function GitHubBudgetTab({ budget, tokenDays }: { budget: GitHubBudget; tokenDays: Overview["github_token_days"] }) {
+  const reset = localClock(budget.reset_at);
+  const raw = { reset_at: budget.reset_at, replica_id: budget.replica_id, budget_share: budget.budget_share, wait_reason: budget.wait_reason };
   return (
     <Card title={t("health.githubBudget")}>
       <div data-github-budget className="space-y-2 text-sm">
-        {budget.state === "waiting" && <Notice tone="warn">{t("health.budgetWaiting", { reason: budget.wait_reason ?? budget.reset_at })}</Notice>}
+        {budget.state === "waiting" && <Notice tone="warn">{t("health.budgetWaiting", { reset })}</Notice>}
         {budget.state === "low" && <Notice tone="warn">{t("health.budgetLow")}</Notice>}
-        <p className="tabular-nums">{t("health.budgetLeft", { remaining: budget.remaining, limit: budget.limit, reset: budget.reset_at })}</p>
-        <p className="tabular-nums text-text-2">{t("health.budgetCounted", { counted: budget.counted })}</p>
-        {budget.share_limit !== null && <p className="tabular-nums text-text-2">{t("health.budgetShare", { share_limit: budget.share_limit, share: budget.budget_share })}</p>}
+        <p className="tabular-nums">{t("health.budgetLeft", { remaining: groupedInteger(budget.remaining), limit: groupedInteger(budget.limit), reset })}</p>
+        <p className="tabular-nums text-text-2">{t("health.budgetCounted", { counted: groupedInteger(budget.counted) })}</p>
+        {budget.share_limit !== null && <p className="tabular-nums text-text-2">{t("health.budgetShare", { share_limit: groupedInteger(budget.share_limit) })}</p>}
         {tokenDays !== null && tokenDays !== undefined && (
           <p data-token-days className="tabular-nums">{tokenDays === "unknown" ? t("health.tokenUnknown") : t("health.tokenDays", { days: tokenDays })}</p>
         )}
+        <RawDetails><code className="font-mono text-xs whitespace-pre-wrap break-all">{JSON.stringify(raw, null, 1)}</code></RawDetails>
       </div>
     </Card>
   );
 }
 
-/** One row per sleep event: entries with the same `woke_at` (one per worker) merge, the gap being the largest. */
-function groupSleeps(sleeps: readonly HostSleepRow[]): { woke_at: string; gap_ms: number; slots: number[] }[] {
-  const groups = new Map<string, { woke_at: string; gap_ms: number; slots: number[] }>();
+interface SleepGroup {
+  woke_at: string;
+  gap_ms: number;
+  workers: Set<string>;
+  /** The API entries behind the row, for its Details. */
+  raw: HostSleepRow[];
+}
+
+/**
+ * One row per sleep event: entries that woke in the same minute (one per worker, milliseconds apart) merge, the gap
+ * being the largest and the workers counted once each.
+ */
+function groupSleeps(sleeps: readonly HostSleepRow[]): SleepGroup[] {
+  const groups = new Map<string, SleepGroup>();
   for (const h of sleeps) {
-    const g = groups.get(h.woke_at) ?? { woke_at: h.woke_at, gap_ms: 0, slots: [] };
+    const minute = Math.floor(Date.parse(h.woke_at) / 60_000);
+    const key = Number.isNaN(minute) ? h.woke_at : String(minute);
+    const g = groups.get(key) ?? { woke_at: h.woke_at, gap_ms: 0, workers: new Set<string>(), raw: [] };
     g.gap_ms = Math.max(g.gap_ms, h.gap_ms);
-    const slot = /:(\d+)$/.exec(h.worker_id)?.[1];
-    if (slot !== undefined) g.slots.push(Number(slot));
-    groups.set(h.woke_at, g);
+    g.workers.add(h.worker_id);
+    g.raw.push(h);
+    groups.set(key, g);
   }
   return [...groups.values()];
 }
 
-/** "workers 0–4" for consecutive slots, "workers 0, 2" otherwise, "worker 3" for one. */
-function workersText(slots: readonly number[]): string {
-  const s = [...new Set(slots)].sort((a, b) => a - b);
-  if (s.length === 0) return "";
-  if (s.length === 1) return t("health.worker", { slots: String(s[0]) });
-  const run = s.every((n, i) => n === s[0]! + i);
-  return t("health.workers", { slots: run ? `${s[0]}–${s.at(-1)}` : s.join(", ") });
+/** "Computer slept 15 min at 6:18 PM; 4 workers paused": the largest gap, the local wake time and the distinct workers. */
+function sleepText(g: SleepGroup): string {
+  const n = g.workers.size;
+  return t("health.sleepRow", { min: sleptMinutes(g.gap_ms), time: localClock(g.woke_at), workers: t(n === 1 ? "health.pausedOne" : "health.pausedMany", { count: n }) });
+}
+
+/** The Checks card's title: all pass, or how many need attention, then when they ran ("All 27 checks pass · 4m ago"). */
+function checksTitle(total: number, attention: number, ago: string): string {
+  if (total === 0) return t("health.checks");
+  if (attention === 0) return t("health.allPass", { count: total, time: ago });
+  return t(attention === 1 ? "health.attentionOne" : "health.attentionMany", { count: attention, time: ago });
 }
 
 export function HealthPage() {
@@ -779,12 +833,12 @@ export function HealthPage() {
   const overview = useApi<Overview>(API.overview);
   const viewer = useViewer();
   const held = (pauses.data?.pauses.length ?? 0) > 0;
-  const [picked, pick] = useUrlParam("tab", (v) => ["checks", "pauses", "sleeps", "merges", "github"].includes(v));
+  const [picked, pick] = useUrlParam("tab", (v) => ["checks", "pauses", "sleeps", "merges", "efficiency", "github"].includes(v));
   if (health.isError) return <><PageHeader title={t("page.health")} /><ErrorNote error={health.error} /></>;
   if (!health.data) return <><PageHeader title={t("page.health")} /><Loading rows={6} /></>;
   const order = ["fail", "warn", "ok"];
   const checks = [...health.data.checks].sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
-  // Warn and fail rows stay in view; ok rows fold behind their count ("22 ok").
+  // Warn and fail rows stay in view; ok rows fold behind their count ("22 ok"), or behind "Show the checks" when the title already counts them.
   const open = checks.filter((c) => c.status !== "ok");
   const fine = checks.filter((c) => c.status === "ok");
   const sleeps = groupSleeps(health.data.sleeps ?? []);
@@ -796,6 +850,7 @@ export function HealthPage() {
     ...(held ? [{ id: "pauses" as const, label: `${t("pause.title")} (${pauses.data!.pauses.length})` }] : []),
     { id: "sleeps", label: `${t("health.sleeps")} (${sleeps.length})` },
     { id: "merges", label: `${t("health.merges")}${mergeList ? ` (${mergeList.length})` : ""}` },
+    { id: "efficiency", label: t("efficiency.title") },
     // Only while a GitHub budget is stored (GitHub selected and polled).
     ...(budget ? [{ id: "github" as const, label: t("health.githubBudget") }] : []),
   ];
@@ -806,10 +861,10 @@ export function HealthPage() {
       <CodeRevision factory={overview.data?.factory} />
       <Tabs label={t("health.tabs")} options={options} value={tab} onChange={pick} />
       {tab === "checks" && (
-        <Card title={t("health.checks", { time: ago(health.data.checked_at, now) })} count={checks.length}>
+        <Card title={checksTitle(checks.length, open.length, relativeTime(health.data.checked_at, now))}>
           <CheckList checks={open} />
           {fine.length > 0 && (
-            <Disclosure data-testid="ok-checks" className="mt-2" summary={t("health.okCount", { count: fine.length })}>
+            <Disclosure data-testid="ok-checks" className={open.length > 0 ? "mt-2" : undefined} summary={open.length > 0 ? t("health.okCount", { count: fine.length }) : t("health.showChecks")}>
               <CheckList checks={fine} />
             </Disclosure>
           )}
@@ -827,10 +882,12 @@ export function HealthPage() {
           ) : (
             <ul className="space-y-1 text-sm">
               {sleeps.map((h) => (
-                <li key={h.woke_at} className="flex items-baseline gap-3" data-testid="host-sleep">
-                  <span className="font-medium">{sleptText(h.gap_ms)}</span>
-                  <span className="tabular-nums text-text-2">{t("health.sleepWhen", { when: h.woke_at.slice(0, 16).replace("T", " "), time: ago(h.woke_at, now) })}</span>
-                  <span className="min-w-0 text-text-3">{workersText(h.slots)}</span>
+                <li key={h.woke_at} className="text-sm" data-testid="host-sleep">
+                  <span className="flex flex-wrap items-baseline gap-x-3">
+                    <span className="font-medium tabular-nums">{sleepText(h)}</span>
+                    <span className="tabular-nums text-text-2"><When at={h.woke_at} now={now} /></span>
+                  </span>
+                  <RawDetails className="mt-1"><code className="font-mono text-xs whitespace-pre-wrap break-all">{h.raw.map((r) => `${r.woke_at} ${r.worker_id} gap_ms=${r.gap_ms}`).join("\n")}</code></RawDetails>
                 </li>
               ))}
             </ul>
@@ -847,7 +904,7 @@ export function HealthPage() {
                   { key: "pr", header: t("col.pr"), className: "tabular-nums", render: (m) => (m.change_url ? <a href={m.change_url} target="_blank" rel="noreferrer" className={LINK_CLASS}>#{m.change_ref}</a> : `#${m.change_ref}`) },
                   { key: "merged_by", header: t("health.mergedBy"), className: "text-xs break-words", render: (m) => (m.merged_by && m.merged_by !== "unknown" ? <span title={m.merged_by}>{m.merged_by === viewer ? t("person.you") : t("person.other")}</span> : t("format.unknown")) },
                   { key: "merge_sha", header: t("health.mergeCommit"), className: "font-mono text-xs" },
-                  { key: "recorded_at", header: t("col.when"), className: "tabular-nums whitespace-nowrap", render: (m) => t("time.ago", { time: ago(m.recorded_at, now) }) },
+                  { key: "recorded_at", header: t("col.when"), className: "tabular-nums whitespace-nowrap", render: (m) => <When at={m.recorded_at} now={now} /> },
                 ]}
                 rows={mergeList}
                 rowKey={(m) => `${m.project}#${m.change_ref}`}
@@ -857,6 +914,7 @@ export function HealthPage() {
           </Card>
         </div>
       )}
+      {tab === "efficiency" && <EfficiencyTab />}
       {tab === "github" && budget && <GitHubBudgetTab budget={budget} tokenDays={overview.data?.github_token_days} />}
       <SpendSection />
       <FailuresSection />

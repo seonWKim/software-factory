@@ -1,24 +1,59 @@
 import type { Why } from "../api.js";
 import { type MessageKey, en } from "../i18n/en.js";
-import { formatInteger, t, withUnit } from "../i18n/index.js";
+import { formatInteger, locale, t, withUnit } from "../i18n/index.js";
 
 // Display helpers. Pure: `now` is passed in, so a test can fix it.
 
-/** "12s", "4m", "3h", "2d" since `at`; "–" for none. */
-export function ago(at: string | null | undefined, now: number): string {
-  if (!at) return t("format.none");
-  const s = Math.max(0, Math.floor((now - Date.parse(at)) / 1000));
-  if (s < 60) return withUnit(s, "s");
-  if (s < 3600) return withUnit(Math.floor(s / 60), "m");
-  if (s < 86400) return withUnit(Math.floor(s / 3600), "h");
-  return withUnit(Math.floor(s / 86400), "d");
-}
-
-/** "in 4m" for a time ahead, "now" for one passed; "–" for none. */
-export function until(at: string | null | undefined, now: number): string {
+/**
+ * The one relative time, compact: "just now" within a minute either way, "4m ago" / "3h ago" / "2d ago" for the past,
+ * "in 4m" for the future; "–" for none. A caller puts the exact local time (`localDateTime`) in the element's title.
+ */
+export function relativeTime(at: string | null | undefined, now: number): string {
   if (!at) return t("format.none");
   const ms = Date.parse(at) - now;
-  return ms <= 0 ? t("format.now") : t("format.in", { time: ago(new Date(now - ms).toISOString(), now) });
+  const s = Math.floor(Math.abs(ms) / 1000);
+  if (s < 60) return t("time.justNow");
+  const span = s < 3600 ? withUnit(Math.floor(s / 60), "m") : s < 86400 ? withUnit(Math.floor(s / 3600), "h") : withUnit(Math.floor(s / 86400), "d");
+  return t(ms > 0 ? "time.in" : "time.ago", { time: span });
+}
+
+/** The internal names that have a catalog label: field names, reason codes and permissions. */
+const TERM_KEYS: Readonly<Record<string, MessageKey>> = {
+  agent_needs_human: "term.agent_needs_human",
+  approve_merge: "term.approve_merge",
+  approve_spec: "term.approve_spec",
+  allowed_paths: "term.allowed_paths",
+  blocked_on: "term.blocked_on",
+  checks_failed: "term.checks_failed",
+  rule_of_two: "term.rule_of_two",
+  spec_conflict: "term.spec_conflict",
+  token_cost: "term.token_cost",
+};
+
+/** An internal name (a field, reason or command code) in words: its catalog label (`term.<code>`), else the code with spaces for underscores. */
+export function termLabel(code: string): string {
+  const key = TERM_KEYS[code];
+  return key ? t(key) : code.replaceAll("_", " ");
+}
+
+/** A run error's code in words: its term label, else its failure title, else the code with spaces for underscores. */
+export function errorLabel(code: string): string {
+  const title = `failure.${code}.title`;
+  return code in TERM_KEYS || !(title in en) ? termLabel(code) : t(title as MessageKey);
+}
+
+const RUN_STATUS_KEYS: Readonly<Record<string, MessageKey>> = {
+  queued: "run.status.queued",
+  running: "run.status.running",
+  succeeded: "run.status.succeeded",
+  failed: "run.status.failed",
+  canceled: "run.status.canceled",
+};
+
+/** A run's status in one form each ("Succeeded", "Failed", "Running"); an unknown one as words. */
+export function runStatusLabel(status: string): string {
+  const key = RUN_STATUS_KEYS[status];
+  return key ? t(key) : termLabel(status);
 }
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
@@ -28,6 +63,17 @@ export function localDateTime(at: string): string {
   const d = new Date(at);
   if (Number.isNaN(d.getTime())) return at;
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+/** A whole number grouped by thousands in the active locale ("4,844"). */
+export function groupedInteger(n: number): string {
+  return new Intl.NumberFormat(locale(), { maximumFractionDigits: 0 }).format(n);
+}
+
+/** An ISO time as the viewer's local clock time ("9:51 PM"); the text itself when it is not one. */
+export function localClock(at: string): string {
+  const d = new Date(at);
+  return Number.isNaN(d.getTime()) ? at : new Intl.DateTimeFormat(locale(), { hour: "numeric", minute: "2-digit" }).format(d);
 }
 
 /** A local item id: `local-` (or `local-filed-`), its hex id, then its phase suffixes (`-phase-N`, nested). */
@@ -138,5 +184,5 @@ export function whyText(why: Pick<Why, "reason_code" | "params" | "alarms">, hol
   if (stage in en) vars.stage = t(stage as MessageKey);
   if ("holder" in vars) vars.holder = holder ?? (vars.holder || t("why.anotherItem"));
   const key = `why.reason.${why.reason_code}`;
-  return [key in en ? t(key as MessageKey, vars) : why.reason_code, ...why.alarms].join(". ");
+  return [key in en ? t(key as MessageKey, vars) : termLabel(why.reason_code), ...why.alarms].join(". ");
 }

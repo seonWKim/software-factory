@@ -5,6 +5,7 @@ import {
   getPluginsImport, postPackAdd, postPackApproval, postPluginsImport, postSettings, useApi,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { Checkbox } from "../components/ui/checkbox.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
@@ -16,8 +17,7 @@ import { Tabs } from "../components/ui/tabs.js";
 import { useUrlParam } from "../lib/url-param.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { ago } from "../lib/format.js";
-import { useNow } from "./common.js";
+import { When, useNow } from "./common.js";
 import { ModelsTab } from "./plugins-models.js";
 import { MergeButton } from "./item-commands.js";
 import { withNodes } from "./standing.js";
@@ -118,7 +118,7 @@ function NameCell({ name, description, fresh = false }: { name: string; descript
 const Roles = ({ roles }: { roles: readonly string[] }) => <span className="text-xs text-pretty">{roles.length > 0 ? roles.join(", ") : t("plugins.noRole")}</span>;
 
 function LastUsed({ at, now }: { at: string | null; now: number }) {
-  return <span className="text-xs tabular-nums whitespace-nowrap">{at ? t("time.ago", { time: ago(at, now) }) : t("plugins.never")}</span>;
+  return <span className="text-xs tabular-nums whitespace-nowrap">{at ? <When at={at} now={now} /> : t("plugins.never")}</span>;
 }
 
 const STATUS: Record<McpStatus, { label: MessageKey; level: string | undefined }> = {
@@ -273,17 +273,12 @@ function ImportDialog({ tab, token, report, onClose }: { tab: ListTab; token: st
             const on = i.imported || checked.has(key);
             return (
               <li key={key} data-import-item={i.name} className="flex items-start gap-3 px-3 py-2">
-                {/* The shared Button as a checkbox, as on the Tasks page: components/ui has no checkbox. */}
-                <Button
-                  size="icon"
-                  role="checkbox"
-                  aria-checked={on}
+                <Checkbox
+                  checked={on}
                   aria-label={t("plugins.importSelect", { name: i.name, source: t(SOURCE[i.source]) })}
                   disabled={busy || locked}
-                  onClick={() => toggle(key)}
-                >
-                  <span aria-hidden>{on ? "✓" : ""}</span>
-                </Button>
+                  onChange={() => toggle(key)}
+                />
                 <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <span className="text-xs wrap-anywhere">{i.name}</span>
                   <span className="text-xs text-pretty wrap-anywhere text-text-2">{i.path ?? t(SOURCE[i.source])}</span>
