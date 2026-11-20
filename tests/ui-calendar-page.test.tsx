@@ -14,7 +14,7 @@ const PAGE_MODULE = "../web/src/views/calendar.js";
 const { CalendarPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { CalendarPage: FunctionComponent };
 
 // The Calendar page (design 09-dashboard-app, Calendar page): Week and Month views of the stored calendar events from
-// GET /api/v1/calendar/events, with previous, next and Today, "Not synced" for a day the last syncs did not cover, the
+// GET /api/v1/calendar/events, with previous, next and Today, shaded days for a day the last syncs did not cover, the
 // stale-sync notice, and an empty state that links to the Integrations tab of Settings. Today is fixed at Thursday 2026-11-12 (local).
 
 const SLOW = { timeout: 5_000 };
@@ -111,13 +111,62 @@ describe("Calendar page", () => {
     expect(entries(friday)).toEqual(["google-calendar:holiday", "work:standup", "google-calendar:lunch"]);
     const holiday = friday.querySelector<HTMLElement>('[data-event="google-calendar:holiday"]')!;
     expect(holiday.textContent).toContain("all day");
-    expect(holiday.textContent).toContain("google-calendar");
+    expect(holiday.textContent).not.toContain("google-calendar");
     expect(friday.querySelector('[data-event="work:standup"]')!.textContent).toContain("09:30");
     expect(within(holiday).queryByRole("button")).toBeNull();
-    // Days before the synced window say so; a synced day with no event is not drawn as not synced.
-    expect(document.querySelector('[data-day="2026-11-09"] [data-not-synced]')!.textContent).toBe("Not synced");
-    expect(document.querySelector('[data-day="2026-11-12"] [data-not-synced]')).toBeNull();
-    expect(document.querySelector('[data-day="2026-11-12"]')!.textContent).toContain("No events");
+    // Days before the synced window are shaded and carry no text; a synced day with no event shows no text line.
+    const unsynced = document.querySelector<HTMLElement>('[data-day="2026-11-09"]')!;
+    expect(unsynced.hasAttribute("data-not-synced")).toBe(true);
+    expect(unsynced.className).toContain("bg-surface-2");
+    expect(unsynced.textContent).toBe("Mon, Nov 9");
+    const empty = document.querySelector<HTMLElement>('[data-day="2026-11-12"]')!;
+    expect(empty.hasAttribute("data-not-synced")).toBe(false);
+    expect(empty.querySelector("p, ul")).toBeNull();
+  });
+
+  it("the period heading is the only h2, in the toolbar row, and the Card has no title", async () => {
+    show();
+    await shownRange("2026-11-09", "2026-11-15");
+    const h2 = screen.getByRole("heading", { level: 2 });
+    expect(h2.closest("[data-calendar-toolbar]")).not.toBeNull();
+    expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(1);
+    expect(screen.getByRole("region", { name: "Nov 9 – 15, 2026" }).querySelector("h2")).toBeNull();
+    press("Month");
+    await shownRange("2026-11-01", "2026-11-30");
+    expect(heading()).toBe("November 2026");
+    expect(screen.getByRole("heading", { level: 2 }).closest("[data-calendar-toolbar]")).not.toBeNull();
+  });
+
+  it("today is circled in Week and Month, and no other day is", async () => {
+    show();
+    await shownRange("2026-11-09", "2026-11-15");
+    expect([...document.querySelectorAll("[data-today]")].map((e) => e.closest("[data-day]")!.getAttribute("data-day"))).toEqual(["2026-11-12"]);
+    expect(document.querySelector("[data-today]")!.className).toContain("outline-accent");
+    press("Month");
+    await shownRange("2026-11-01", "2026-11-30");
+    const today = [...document.querySelectorAll<HTMLElement>("[data-today]")];
+    expect(today.map((e) => e.closest("[data-day]")!.getAttribute("data-day"))).toEqual(["2026-11-12"]);
+    expect(today[0]!.textContent).toBe("12");
+  });
+
+  it("each event has a colour strip from a token, the same for one source across reads", async () => {
+    show();
+    await shownRange("2026-11-09", "2026-11-15");
+    const strip = (id: string) => document.querySelector(`[data-event="${id}"] [data-strip]`)!.className;
+    expect(strip("google-calendar:holiday")).toMatch(/bg-kind-/);
+    expect(strip("google-calendar:holiday")).toBe(strip("google-calendar:lunch"));
+    const before = strip("google-calendar:lunch");
+    press("Month");
+    await shownRange("2026-11-01", "2026-11-30");
+    expect(document.querySelector('[data-event="google-calendar:lunch"] [data-strip]')!.className).toBe(before);
+  });
+
+  it("an event names its source only when more than one calendar is connected", async () => {
+    calendar = [...calendar, { source: "work", synced_at: "2026-11-12T08:00:00.000Z", failed: false }];
+    show();
+    await shownRange("2026-11-09", "2026-11-15");
+    expect(document.querySelector('[data-event="work:standup"]')!.textContent).toContain("work");
+    expect(document.querySelector('[data-event="google-calendar:lunch"]')!.textContent).toContain("google-calendar");
   });
 
   it("Month shows a Monday-first grid of the month: up to 3 events a cell, then '+N more', empty cells outside the month", async () => {
@@ -138,7 +187,9 @@ describe("Calendar page", () => {
     const busy = grid.querySelector<HTMLElement>('[data-day="2026-11-20"]')!;
     expect(entries(busy)).toEqual(["google-calendar:a", "google-calendar:b", "google-calendar:c"]);
     expect(busy.textContent).toContain("+2 more");
-    expect(grid.querySelector('[data-day="2026-11-05"]')!.textContent).toContain("Not synced");
+    const unsynced = grid.querySelector('[data-day="2026-11-05"]')!;
+    expect(unsynced.hasAttribute("data-not-synced")).toBe(true);
+    expect(unsynced.textContent).toBe("5");
   });
 
   it("Week: previous and next move by one week, Today returns to the current week; the heading and the read follow", async () => {
@@ -180,12 +231,25 @@ describe("Calendar page", () => {
     expect(heading()).toBe("November 2026");
   });
 
-  it("a period outside the synced window says it is not synced, and no day of it is drawn as empty", async () => {
+  it("one note above the grid names the unsynced days, and is absent when every day is synced", async () => {
+    show();
+    await shownRange("2026-11-09", "2026-11-15");
+    const note = screen.getByRole("status");
+    expect(note.getAttribute("data-tone")).toBe("info");
+    expect(note.textContent).toContain(`Not synced: ${new Date(2026, 10, 9).toLocaleDateString(undefined, { month: "short", day: "numeric" })} – `);
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    press("Next week");
+    await shownRange("2026-11-16", "2026-11-22");
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(document.querySelectorAll("[data-not-synced]")).toHaveLength(0);
+  });
+
+  it("a period outside the synced window shades every day, and no day of it is drawn as empty", async () => {
     show();
     await shownRange("2026-11-09", "2026-11-15");
     press("Previous week");
     await shownRange("2026-11-02", "2026-11-08");
-    expect(screen.getByText(/not synced/, { selector: "[role=status] *" })).toBeTruthy();
+    expect(screen.getByText(/Not synced:/, { selector: "[role=status] *" })).toBeTruthy();
     expect(document.querySelectorAll("[data-not-synced]")).toHaveLength(7);
     expect(screen.queryByText("No events")).toBeNull();
   });
