@@ -10,8 +10,9 @@
 // - Time is the latest tick's: `heartbeat` renews this worker's leases, times out steps and aborts a run past
 //   deadline_at. No takeover here: the controller's reaper requeues a run whose lease expired, and the next claim
 //   resumes it from the journal (one takeover path).
-// - code_version: a run with a stored step result from other code is resumed only if `resumes(version)` says so;
-//   otherwise it is left for a worker on that revision (RFC 0015 §8 version pinning).
+// - code_version: a run with a stored step result from other code is resumed only if `resumes(version)` says so.
+//   Otherwise `claim` leaves it for a worker on that revision (RFC 0015 §8 version pinning), and `adopt`, whose
+//   run the store already leased to this worker, drops the old journal so the run starts over (issue #718).
 
 import { errorText } from "../../../../core/log.js";
 import type { Row, SqlDriver, SqlExecutor, SqlValue } from "../../../../state/index.js";
@@ -84,7 +85,7 @@ export class JournalEngine implements ExecutionEngine {
       const timeouts = this.opts.kinds[String(row.kind)];
       if (!timeouts) return null;
       if (row.not_before !== null && Date.parse(String(row.not_before)) > now) return null;
-      if (!(await this.mayResume(tx, runId, row.code_version))) return null;
+      if (await this.foreignJournal(tx, runId, row.code_version)) return null;
       const deadline = row.deadline_at === null ? iso(Date.parse(String(row.created_at)) + timeouts.schedule_to_close_ms) : String(row.deadline_at);
       const claimed = await tx.run(
         `UPDATE worker_runs SET status = 'running', attempt = attempt + 1, lease_owner = ?, lease_token = lease_token + 1,
@@ -101,10 +102,15 @@ export class JournalEngine implements ExecutionEngine {
     const now = this.observe(tick);
     const timeouts = this.opts.kinds[run.kind];
     if (!timeouts) return false;
+    let dropped: string | null = null;
     const deadline = await this.opts.db.transaction(async (tx): Promise<string | null> => {
       const [row] = await tx.all(`SELECT status, lease_token, created_at, code_version, deadline_at FROM worker_runs WHERE id = ?`, [run.id]);
       if (!row || row.status !== "running" || Number(row.lease_token) !== run.lease_token) return null;
-      if (!(await this.mayResume(tx, run.id, row.code_version))) return null;
+      // Leased to this worker already, so nobody else would take it: the run starts over on this code.
+      if (await this.foreignJournal(tx, run.id, row.code_version)) {
+        await tx.run("DELETE FROM worker_run_steps WHERE run_id = ?", [run.id]);
+        dropped = String(row.code_version);
+      }
       const deadline = row.deadline_at === null ? iso(Date.parse(String(row.created_at)) + timeouts.schedule_to_close_ms) : String(row.deadline_at);
       const n = await tx.run(
         "UPDATE worker_runs SET code_version = ?, deadline_at = ?, updated_at = ? WHERE id = ? AND status = 'running' AND lease_token = ?",
@@ -113,6 +119,7 @@ export class JournalEngine implements ExecutionEngine {
       return n === 1 ? deadline : null;
     });
     if (deadline === null) return false;
+    if (dropped !== null) this.opts.log?.warn("journal from another code_version dropped; the run starts over", { run_id: run.id, code_version: dropped });
     this.hold(run, deadline);
     return true;
   }
@@ -254,14 +261,14 @@ export class JournalEngine implements ExecutionEngine {
   }
 
   /**
-   * A run with a stored step result from other code is resumed only when this code says it can. A run with none
-   * adopts this code: a failed or running row holds only a partial, which its step checks again anyway, so a
-   * paused or requeued run whose only step failed survives a deploy.
+   * Whether the run holds a stored step result from code this code cannot resume. A run with none adopts this
+   * code: a failed or running row holds only a partial, which its step checks again anyway, so a paused or
+   * requeued run whose only step failed survives a deploy.
    */
-  private async mayResume(tx: SqlExecutor, runId: string, version: unknown): Promise<boolean> {
-    if (version === null || version === this.opts.codeVersion) return true;
-    if (this.opts.resumes?.(String(version))) return true;
-    return (await tx.all("SELECT 1 AS x FROM worker_run_steps WHERE run_id = ? AND status = 'succeeded' LIMIT 1", [runId])).length === 0;
+  private async foreignJournal(tx: SqlExecutor, runId: string, version: unknown): Promise<boolean> {
+    if (version === null || version === this.opts.codeVersion) return false;
+    if (this.opts.resumes?.(String(version))) return false;
+    return (await tx.all("SELECT 1 AS x FROM worker_run_steps WHERE run_id = ? AND status = 'succeeded' LIMIT 1", [runId])).length > 0;
   }
 
   private hold(ref: RunRef, deadline: string): RunRef {

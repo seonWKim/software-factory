@@ -213,7 +213,7 @@ export class Worker {
 
   /**
    * Holds the claimed run in the engine, then executes it. A run journaled by code this worker cannot resume
-   * (another code_version) fails as `not_resumable`, infra: its retry is a new run with a new journal.
+   * (another code_version) runs from the start: the engine drops its journal when it adopts it.
    */
   async execute(run: Run, token: number): Promise<void> {
     const engine = await this.engine();
@@ -248,7 +248,7 @@ export class Worker {
     let outcome: RunOutcome | null = null;
     let paused: RunPaused | null = null;
     try {
-      if (!ref) throw new RunFailure(NOT_RESUMABLE, "the run was journaled by code this worker cannot resume", true);
+      if (!ref) throw new RunFailure("lease_lost", "lease lost before the engine held the run", true);
       const item = await this.d.store.getWorkItem(run.work_item_id);
       if (!item) throw new RunFailure("work_item_missing", run.work_item_id);
       const ctx: ToolCallContext = { run_id: run.id, work_item_id: item.id, lease_token: token };
@@ -1027,9 +1027,6 @@ export const HOOK_REFUSED = "hook_refused";
 
 /** WorkerDeps.code_version when the process names none. */
 const DEV_CODE_VERSION = "dev";
-
-/** A run another code_version journaled, which this worker's code cannot resume. */
-const NOT_RESUMABLE = "not_resumable";
 
 /** The engine's errors as run failures: a lost lease and a step timeout are infra; a passed deadline is not. */
 function stepFailure(err: unknown): unknown {
