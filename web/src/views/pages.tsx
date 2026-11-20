@@ -789,6 +789,8 @@ interface SleepGroup {
   woke_at: string;
   gap_ms: number;
   workers: Set<string>;
+  /** The runs the sleep held, once each (by run id), with their item and current status. */
+  runs: Map<string, { work_item_id: string; status: string }>;
   /** The API entries behind the row, for its Details. */
   raw: HostSleepRow[];
 }
@@ -802,9 +804,10 @@ function groupSleeps(sleeps: readonly HostSleepRow[]): SleepGroup[] {
   for (const h of sleeps) {
     const minute = Math.floor(Date.parse(h.woke_at) / 60_000);
     const key = Number.isNaN(minute) ? h.woke_at : String(minute);
-    const g = groups.get(key) ?? { woke_at: h.woke_at, gap_ms: 0, workers: new Set<string>(), raw: [] };
+    const g: SleepGroup = groups.get(key) ?? { woke_at: h.woke_at, gap_ms: 0, workers: new Set<string>(), runs: new Map(), raw: [] };
     g.gap_ms = Math.max(g.gap_ms, h.gap_ms);
     g.workers.add(h.worker_id);
+    if (h.run_id && h.work_item_id && h.run_status) g.runs.set(h.run_id, { work_item_id: h.work_item_id, status: h.run_status });
     g.raw.push(h);
     groups.set(key, g);
   }
@@ -887,6 +890,19 @@ export function HealthPage() {
                     <span className="font-medium tabular-nums">{sleepText(h)}</span>
                     <span className="tabular-nums text-text-2"><When at={h.woke_at} now={now} /></span>
                   </span>
+                  {h.runs.size > 0 && (
+                    <div className="mt-1 text-xs text-text-2" data-testid="host-sleep-runs">
+                      <span>{t("health.sleepRuns")}</span>
+                      <ul className="ml-4 list-disc">
+                        {[...h.runs].map(([id, r]) => (
+                          <li key={id}>
+                            <Link href={itemPath(r.work_item_id)} className={LINK_CLASS}>{r.work_item_id}</Link>: {runStatusLabel(r.status)}
+                          </li>
+                        ))}
+                      </ul>
+                      <p>{t("health.sleepHint")} <Link href={`${BASE}settings?tab=advanced`} className={LINK_CLASS}>{t("health.sleepHintLink")}</Link></p>
+                    </div>
+                  )}
                   <RawDetails className="mt-1"><code className="font-mono text-xs whitespace-pre-wrap break-all">{h.raw.map((r) => `${r.woke_at} ${r.worker_id} gap_ms=${r.gap_ms}`).join("\n")}</code></RawDetails>
                 </li>
               ))}

@@ -225,13 +225,27 @@ class ApiCtx {
 async function health(c: ApiCtx) {
   const report = await c.d.health.report(c.d.scanner);
   const rows = await c.d.store.listHostSleeps({ limit: HEALTH_SLEEPS }).catch((): HostSleep[] => []);
-  return { ...report, sleeps: await sleepRows(c, rows) };
+  return { ...report, sleeps: await healthSleepRows(c, rows) };
 }
 
 /** Host sleeps as the API returns them: ids, a timestamp and a number, never free text. */
 async function sleepRows(c: ApiCtx, rows: readonly HostSleep[]) {
   const out = [];
   for (const h of rows) out.push({ worker_id: (await c.text(h.worker_id))!, woke_at: h.woke_at, gap_ms: h.gap_ms, run_id: h.run_id });
+  return out;
+}
+
+/**
+ * The health tab's sleeps: each also gives the work item and current status of the run it held (a read; a failed
+ * lookup leaves both null and the row in place).
+ */
+async function healthSleepRows(c: ApiCtx, rows: readonly HostSleep[]) {
+  const base = await sleepRows(c, rows);
+  const out = [];
+  for (const h of base) {
+    const run = h.run_id ? await c.d.store.getRun(h.run_id).catch(() => null) : null;
+    out.push({ ...h, work_item_id: run ? await c.text(run.work_item_id) : null, run_status: run?.status ?? null });
+  }
   return out;
 }
 

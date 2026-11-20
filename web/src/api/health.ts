@@ -7,6 +7,9 @@ export interface HostSleepRow {
   /** How late the wait ended, in ms. */
   gap_ms: number;
   run_id: string | null;
+  /** The work item and current status of the run the sleep held; null for an idle tick or a failed lookup. */
+  work_item_id?: string | null;
+  run_status?: string | null;
 }
 
 export interface Health {
