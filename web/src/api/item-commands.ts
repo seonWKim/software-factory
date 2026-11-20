@@ -77,6 +77,8 @@ export interface SpecDecision {
   owner_only: boolean;
   /** What picking an option changes; [] when no option changes anything (and on an older spec). */
   option_changes: OptionChange[];
+  /** A layout decision: each option is a text sketch, shown in monospace. Absent on any other decision. */
+  layout?: boolean;
 }
 
 /**

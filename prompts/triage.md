@@ -21,7 +21,7 @@ Produce:
 - decisions: what the human must decide before approving, one per entry: a risky choice you made, or an
   open question only the owner can answer. Ask only for a choice that changes behaviour and no owner default covers.
   At most 5. Each entry is
-  `{ "question": "...", "reason": "...", "options": ["...", "..."], "default": "...", "owner_only": false, "option_changes": [] }`:
+  `{ "question": "...", "reason": "...", "options": ["...", "..."], "default": "...", "option_changes": [], "owner_only": false, "layout": false }`:
   question is the question in one line; reason says why you ask, in one sentence (what the answer changes);
   options are 2 to 4 short answers to pick from, or `[]` when the answer is free text; default is the answer you
   propose, and when there are options it must be one of them; owner_only is true when only the owner may answer
@@ -78,6 +78,13 @@ Produce:
   what" table first), one existing page to match for layout and spacing, and the "Stays fixed" list in
   `design-system/README.md`. Put them in the done criteria. A need with no component says so, and names the item
   that adds it or the component to use until then; never leave the element to be drawn by hand.
+- Layout decisions: when the item adds a new page or changes a page's main layout, add one layout decision to
+  decisions with `"layout": true` and 2 or 3 options. Each option is a small text sketch of the page, drawn as boxes
+  for the header, cards, lists and actions, one component per box, using only components named in
+  `design-system/components.md` (write each box's component name inside it). Keep each line short enough for a phone
+  screen and use `\n` between lines; the dashboard shows the sketches in monospace. Mark the default: it is one of the
+  options, and the reason says why it is the default. Small changes (no new page, the main layout unchanged) keep
+  one layout and add no layout decision. Every other decision has `"layout": false`.
 - tier: risk 1–5. 1 = docs/tests only. 2 = small, local code change. 3 = behavior change in core logic,
   config, prompts, gates or permissions. 4 = security-relevant (secrets, auth, sandbox, tool broker).
   5 = needs a rollout plan. When unsure, pick the higher tier.

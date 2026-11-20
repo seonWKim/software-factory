@@ -213,6 +213,23 @@ describe("triage decisions as questions (issue #526)", () => {
     expect(again.ok && again.value.decision_items).toEqual(r.ok && r.value.decision_items);
   });
 
+  it("a layout decision keeps its marker; a decision without one still parses with none (the layout marker)", () => {
+    const layout = { ...ask, layout: true, options: ["[Header]\n[Cards]", "[Header]\n[List]"], default: "[Header]\n[List]" };
+    expect(TRIAGE_SCHEMA.properties.decisions.items.properties.layout).toMatchObject({ type: "boolean" });
+    const r = parseTriage({ ...current, decisions: [ask, layout, { ...free, layout: false }] });
+    expect(r.ok && r.value.decision_items?.map((d) => d.layout)).toEqual([undefined, true, undefined]);
+    const again = r.ok ? parseTriage(r.value) : r;
+    expect(again.ok && again.value.decision_items).toEqual(r.ok && r.value.decision_items);
+    const error = (d: object) => {
+      const x = parseTriage({ ...current, decisions: [d] });
+      return x.ok ? null : x.error;
+    };
+    expect(error({ ...layout, layout: "yes" })).toBe("decisions[0].layout: must be true or false");
+    expect(error({ ...layout, options: [] , default: "x" })).toContain("decisions[0].options:");
+    expect(error({ ...layout, options: ["a", "b", "c", "d"], default: "a" })).toContain("a layout decision needs 2 to 3 options");
+    expect(error({ ...layout, options: ["a", "b", "c"], default: "a" })).toBeNull();
+  });
+
   it("refuses any other shape and names the field", () => {
     const error = (d: object) => {
       const r = parseTriage({ ...current, decisions: [free, d] });

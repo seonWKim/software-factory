@@ -361,6 +361,7 @@ export async function waitingSpec(it: WorkItem, runs: readonly Run[], text: (v: 
     }
     decisions.push({
       question: (await text(d.text))!, options, default: await text(d.default), reason: await text(d.reason ?? null), owner_only: d.owner_only, option_changes,
+      ...(d.layout ? { layout: true } : {}),
     });
   }
   return { in_short: await text(spec.in_short), decisions };
