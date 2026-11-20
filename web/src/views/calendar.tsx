@@ -223,20 +223,21 @@ export function CalendarPage() {
     <>
     <PageHeader title={t("page.calendar")} />
     <div className="flex flex-col gap-6">
-      <div data-calendar-toolbar className="flex flex-wrap items-center gap-2">
-        <h2 aria-live="polite" className={cn(CARD_TITLE, "mr-auto")}>{label}</h2>
-        <SegmentedControl label={t("calendarPage.view")} options={VIEWS} value={view} onChange={setView} />
-        <ButtonRow role="group" aria-label={t("calendarPage.period")}>
-          <Button aria-label={t(view === "week" ? "calendarPage.previousWeek" : "calendarPage.previousMonth")} onClick={() => setFocus(step(view, focus, -1))}>
-            {t("calendarPage.previous")}
-          </Button>
-          <Button aria-label={t(view === "week" ? "calendarPage.nextWeek" : "calendarPage.nextMonth")} onClick={() => setFocus(step(view, focus, 1))}>
-            {t("calendarPage.next")}
-          </Button>
-          <Button onClick={() => setFocus(new Date())}>{t("calendarPage.today")}</Button>
-        </ButtonRow>
-      </div>
       <Card label={label}>
+        <div data-calendar-toolbar className="flex flex-wrap items-center gap-2">
+          <h2 aria-live="polite" className={cn(CARD_TITLE, "mr-auto")}>{label}</h2>
+          <SegmentedControl label={t("calendarPage.view")} options={VIEWS} value={view} onChange={setView} />
+          <ButtonRow role="group" aria-label={t("calendarPage.period")}>
+            <Button aria-label={t(view === "week" ? "calendarPage.previousWeek" : "calendarPage.previousMonth")} onClick={() => setFocus(step(view, focus, -1))}>
+              {t("calendarPage.previous")}
+            </Button>
+            <Button aria-label={t(view === "week" ? "calendarPage.nextWeek" : "calendarPage.nextMonth")} onClick={() => setFocus(step(view, focus, 1))}>
+              {t("calendarPage.next")}
+            </Button>
+            <Button onClick={() => setFocus(new Date())}>{t("calendarPage.today")}</Button>
+          </ButtonRow>
+        </div>
+
         {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <Events v={v} view={view} label={label} />}
       </Card>
     </div>

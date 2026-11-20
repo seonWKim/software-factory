@@ -130,7 +130,8 @@ describe("Calendar page", () => {
     const h2 = screen.getByRole("heading", { level: 2 });
     expect(h2.closest("[data-calendar-toolbar]")).not.toBeNull();
     expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(1);
-    expect(screen.getByRole("region", { name: "Nov 9 – 15, 2026" }).querySelector("h2")).toBeNull();
+    const card = screen.getByRole("region", { name: "Nov 9 – 15, 2026" });
+    expect(card.querySelector("[data-calendar-toolbar] h2")).toBe(h2);
     press("Month");
     await shownRange("2026-11-01", "2026-11-30");
     expect(heading()).toBe("November 2026");
