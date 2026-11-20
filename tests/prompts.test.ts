@@ -410,6 +410,36 @@ describe("prompts/triage.md: a UI change names components, a reference page and 
   });
 });
 
+// A new page or a main-layout change offers layout options (wi_a82df3cb): one layout decision with 2 or 3 text
+// sketches built from design-system/components.md, the default marked with a reason; small changes ask nothing.
+describe("prompts/triage.md: layout decisions for a new page or a main-layout change", () => {
+  const rule = flat(bullet(prompt("triage"), "Layout decisions"));
+
+  it("adds one layout decision with 2 or 3 options when the item adds a new page or changes a page's main layout", () => {
+    expect(rule).toMatch(/adds a new page or changes a page's main layout, add one layout decision/);
+    expect(rule).toMatch(/`"layout": true` and 2 or 3 options/);
+  });
+
+  it("keeps one layout and no layout decision for a small change", () => {
+    expect(rule).toMatch(/Small changes .* keep one layout and add no layout decision/);
+  });
+
+  it("draws each option as a text sketch of header, cards, lists and actions from design-system/components.md only", () => {
+    expect(rule).toMatch(/Each option is a small text sketch/);
+    expect(rule).toMatch(/header, cards, lists and actions/);
+    expect(rule).toMatch(/using only components named in `design-system\/components\.md`/);
+    expect(rule).toMatch(/monospace/);
+  });
+
+  it("marks the default and gives its reason", () => {
+    expect(rule).toMatch(/Mark the default: it is one of the options, and the reason says why it is the default/);
+  });
+
+  it("names the layout field in the decision entry", () => {
+    expect(flat(bullet(prompt("triage"), "decisions"))).toContain('"owner_only": false, "layout": false }');
+  });
+});
+
 describe("prompts/review.md step 7: the diff against the named components and the Stays fixed list", () => {
   const lines = prompt("review").split("\n");
   const start = lines.findIndex((l) => l.startsWith("7. Design-system review:"));
