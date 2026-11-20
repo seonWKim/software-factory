@@ -594,6 +594,8 @@ export class FakeSandbox implements Sandbox {
   resolveChanged: string[] = [];
   /** Exit codes of non-git commands by argv joined with spaces, e.g. { "npm test": 1 }. Default 0. */
   exits: Record<string, number> = {};
+  /** What non-git commands print on stdout, by argv joined with spaces, e.g. { "npm test": "FAIL  tests/a.test.ts > x" }. */
+  stdouts: Record<string, string> = {};
   /** What a plain `git diff` prints, e.g. a review run's diff against the base ("": an empty diff). */
   diff = "+ a change\n";
   /** What `git rev-parse HEAD` prints. A resolve run's checkout makes it its commit-tree result. */
@@ -636,7 +638,7 @@ export class FakeSandbox implements Sandbox {
       this.commands.push(line);
       if (cmd[0] === "cat") return out(this.files[cmd.at(-1)!] ?? "");
       if (cmd[0] === "mktemp") return this.exits[line] ? res(this.exits[line]!) : out(`/tmp/sf-fake.${this.commands.length}\n`);
-      return res(this.exits[line] ?? 0);
+      return res(this.exits[line] ?? 0, this.stdouts[line] ?? "");
     }
     const args = cmd.slice(1).join(" ");
     this.gitCalls.push(args);

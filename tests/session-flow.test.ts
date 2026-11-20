@@ -346,6 +346,31 @@ describe("session finish", () => {
     expect(await refusedOpen(h)).toMatch(/uncommitted changes[\s\S]*scope:[\s\S]*size:/);
   });
 
+  it("a failed test command names its failing files and shows its output; only the reason is stored", async () => {
+    let h = await started();
+    h.sandbox.exits["npm test"] = 1;
+    h.sandbox.stdouts["npm test"] = " FAIL  tests/a.test.ts > widget > renders\n FAIL  tests/b.test.ts > other\n FAIL  tests/a.test.ts > widget > again\nAssertionError: expected 1 to be 2\n";
+    let out = await refusedOpen(h);
+    // The files line comes before the refusal, the output after its reasons.
+    expect(out).toMatch(/^failing test files: tests\/a\.test\.ts, tests\/b\.test\.ts\nfinish refused;[\s\S]*- tests: `npm test` exited 1\ntest output \(last lines\):\n {5}FAIL {2}tests\/a\.test\.ts > widget > renders[\s\S]*\n {4}AssertionError: expected 1 to be 2$/);
+    expect((await h.runs(h.it0.id, "interactive"))[0]!.last_finish?.reasons).toEqual(["tests: `npm test` exited 1"]);
+
+    h = await started();
+    h.sandbox.exits["npm test"] = 1;
+    h.sandbox.stdouts["npm test"] = "Error: Cannot find module 'x'\n";
+    out = await refusedOpen(h);
+    expect(out).not.toContain("failing test files");
+    expect(out).toContain("    Error: Cannot find module 'x'");
+
+    h = await started();
+    h.sandbox.exits["npm test"] = 1;
+    h.sandbox.stdouts["npm test"] = ` FAIL  tests/a.test.ts > leaks\nkey ${AWS_SHAPED}\n`;
+    out = await refusedOpen(h);
+    expect(out).toContain("did not pass the egress scan");
+    expect(out).not.toContain(AWS_SHAPED);
+    expect(out).not.toContain("failing test files");
+  });
+
   it("a floor hit is refused with the paths and the required tier; the session stays open and no floor_blocked is written", async () => {
     const h = await started(["src/"]);
     h.sandbox.changedFiles = ["src/impl/broker/x.ts"];
