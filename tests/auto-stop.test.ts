@@ -116,13 +116,13 @@ describe("auto stop: red main", () => {
     expect(await turnAutoOn(section)).toEqual({ action: "set", key: "mode", value: '"auto"' });
   });
 
-  it("its alarm's Needs-you row is the alarm's own target: Turn auto back on is its button, Failures its menu item", async () => {
+  it("its alarm's Needs-you row is the alarm's own target: Turn auto back on is its button, Open on Failures its menu item", async () => {
     view = settingsView("manual", stop("red_main"));
     mount(checks([alarm(stop("red_main")), alarm()]));
     const line = (await screen.findByText(`Back to manual at ${time}: the checks failed on the base branch after a merge`)).closest("li")!;
     expect(line.id).toBe("alarm-al_1");
     expect(within(line).getByRole("link", { name: "See the alarm" }).getAttribute("href")).toBe("/app/#alarm-al_1");
-    expect(menuOf(line)).toEqual([["Failures", "failures"]]);
+    expect(menuOf(line)).toEqual([["Open on Failures", "failures"]]);
     // The other alarm is its own row, whose menu opens Failures.
     const other = document.querySelectorAll<HTMLElement>("li[data-check='alarm']")[1]!;
     expect(other.querySelector("[data-auto-stop]")).toBeNull();

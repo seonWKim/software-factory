@@ -118,7 +118,7 @@ describe("Needs you on the Tasks page", () => {
     }
   });
 
-  it("an alarm row shows its sentence once, with no Full text toggle; a long text wraps and never widens the page", async () => {
+  it("an alarm row shows its sentence once, with no Full text toggle; a long text stays on one line, cut with an ellipsis, with the full text as its tooltip, and never widens the page", async () => {
     const long = `Alarm: checks_failed failed 4 runs on several items: ${"npm test exited 1 in packages/very-long-workspace-name/".repeat(5)}${"x".repeat(80)}`;
     expect(long.length).toBeGreaterThan(200);
     (responses["/api/v1/overview"] as { system_actions: unknown[] }).system_actions = [{ code: "alarm", text: long, command: "Failures page (/app/failures)", until: AT }];
@@ -126,8 +126,8 @@ describe("Needs you on the Tasks page", () => {
     const row = (await screen.findByRole("list", { name: "Check" })).querySelector<HTMLElement>('li[data-check="alarm"]')!;
     const summary = row.querySelector<HTMLElement>("[data-alarm-summary]")!;
     expect(summary.textContent).toBe(long);
-    expect(summary.className.split(" ")).toContain("wrap-anywhere");
-    expect(summary.className.split(" ")).not.toContain("truncate");
+    expect(summary.className.split(" ")).toContain("truncate");
+    expect(summary.getAttribute("title")).toBe(long);
     expect(summary.closest("li > div")!.className.split(" ")).toEqual(expect.arrayContaining(["min-w-0", "flex-1"]));
     // Decision 2: the sentence is printed once, so there is no toggle that prints it again.
     expect(row.querySelector("details")).toBeNull();

@@ -49,7 +49,6 @@ export const work = {
   "needs.pauseEnds": "ends {time}",
   "needs.pauseEnded": "ended {time}",
   "needs.alarmOpen": "Open on Failures",
-  "needs.alarmFailures": "Failures",
   "needs.actApprove": "Approve",
   "needs.actRetry": "Retry",
   "needs.actAnswer": "Answer",

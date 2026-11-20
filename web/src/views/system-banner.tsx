@@ -217,7 +217,7 @@ function SupervisorDialog({ action, token, onClose }: { action: "start" | "resta
 /**
  * An open alarm's row on the shared ListRow: its text on one line, the full text (with the detail) behind a toggle,
  * and "Open on Failures" in its "⋯" menu (every row action is in the menu, owner feedback 2026-11-20). The auto-mode stop's alarm (design 03-risk) is the target of the Settings link to it and has
- * "Turn auto back on" as its primary action, with Failures as a link. No dismiss: an alarm closes by itself.
+ * "Turn auto back on" as its button, with "Open on Failures" in the same "⋯" menu. No dismiss: an alarm closes by itself.
  */
 function AlarmRow({ action }: { action: SystemAction }) {
   const stop = action.auto_stop;
@@ -226,8 +226,8 @@ function AlarmRow({ action }: { action: SystemAction }) {
     <ListRow
       data-check="alarm"
       {...(stop ? { id: alarmAnchor(stop.alert_id) } : {})}
-      title={<p data-alarm-summary className="text-sm text-pretty wrap-anywhere text-text-1">{action.text}</p>}
-      menu={<OverflowMenu label={t("commands.more")} items={[{ label: stop ? t("needs.alarmFailures") : t("needs.alarmOpen"), action: "failures", onSelect: () => navigate(FAILURES) }]} />}
+      title={<p data-alarm-summary title={action.text} className={cn(ROW_TITLE, "text-text-1")}>{action.text}</p>}
+      menu={<OverflowMenu label={t("commands.more")} items={[{ label: t("needs.alarmOpen"), action: "failures", onSelect: () => navigate(FAILURES) }]} />}
     >
       {stop && <AutoStopLine stop={stop} />}
     </ListRow>
