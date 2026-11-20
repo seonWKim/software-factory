@@ -10,7 +10,8 @@
 // calendar routes (design 08-settings; calendar-api.ts: POST /api/v1/calendar/connect and /disconnect) and the Data page's Ask
 // (design 09-dashboard-app; data-ask.ts: POST /api/v1/data/ask) and the Plugins page's import (design 11-plugin-import;
 // plugins-import-api.ts: POST /api/v1/plugins/import) and Migrate now, Start and Restart now (design 08-self-update; migrate-api.ts:
-// POST /api/v1/migrate and POST /api/v1/supervisor), each guarded in this order: Host, then an Origin equal to the Host's own http origin, then Content-Type
+// POST /api/v1/migrate and POST /api/v1/supervisor) and Re-check (design 09-dashboard-item; changes.ts: POST
+// /api/v1/items/:id/merge-check/recheck, the commands token), each guarded in this order: Host, then an Origin equal to the Host's own http origin, then Content-Type
 // application/json, then the per-process CSRF token in x-csrf-token; the resume, standing, improve, migrate and supervisor routes then
 // check the owner (approve_spec), the rules, calendar and Ask routes the owner, the pack approvals route approve_tool, the task routes
 // the commands actor, the plugins import the page's factory user. GET /api/v1/plugins/import (it reads the user's own
@@ -22,7 +23,7 @@
 // /api/v1 (api.ts, GET /api/v1/notices in notices-api.ts, GET /api/v1/rules and /api/v1/rules/entry in rules-api.ts, GET
 // /api/v1/tasks (`?project=<slug>`: the project switcher) and GET /api/v1/tasks/preview (the quick-add preview) in tasks-api.ts, GET /api/v1/plugins (the Plugins page) in plugins-api.ts and GET
 // /api/v1/calendar in calendar-api.ts, GET /api/v1/supervisor (what Migrate now, Start and Restart now may do) in migrate-api.ts, GET /api/v1/calendar/events (the Calendar page's range read) in
-// calendar-events-api.ts; errors as JSON) and the app under /app (app.ts; its own
+// calendar-events-api.ts, GET /api/v1/items/:id/changes (the item page's Changes tab) in changes.ts; errors as JSON) and the app under /app (app.ts; its own
 // CSP, errors as text).
 
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
@@ -46,6 +47,7 @@ import { CALENDAR_EVENTS_PATH, readCalendarEvents } from "./calendar-events-api.
 import { DATA_ASK_PATH, askData } from "./data-ask.js";
 import { MIGRATE_PATH, type MigrateDeps, SUPERVISOR_PATH, postMigrate, postSupervisor, readSupervisor } from "./migrate-api.js";
 import { APP_HOME, STYLE_HASH, errorPage } from "./html.js";
+import { changesPathId, readItemChanges, recheckMergeCheck, recheckPathId } from "./changes.js";
 
 export type { UiDeps } from "./deps.js";
 export type { PauseDeps } from "./pause-api.js";
@@ -132,15 +134,15 @@ function areaError(area: "api" | "app" | "page", status: number, message: string
   return error(status, message, extra);
 }
 
-type WriteRoute = "settings" | "resume" | "standing" | "improve" | "packs" | "import" | "rules" | "tasks" | "calendar" | "ask" | "migrate" | "supervisor";
+type WriteRoute = "settings" | "resume" | "standing" | "improve" | "packs" | "import" | "rules" | "tasks" | "calendar" | "ask" | "migrate" | "supervisor" | "recheck";
 
 /**
  * The write route a request is for: POST to exactly /api/v1/settings when settings are wired, to exactly
  * /api/v1/pauses/resume, /api/v1/standing or /api/v1/plugins/import when the pause routes (their factory user) are, or to exactly /api/v1/improve/run when both the pause routes and
  * settings (its project) are, or to exactly one of the task routes (TASK_WRITES) when the commands route (its actor and token) is, or
  * to exactly /api/v1/calendar/connect or /disconnect when the settings carry the Calendar section, or to exactly /api/v1/data/ask when they carry
- * the Ask, or to exactly /api/v1/migrate or /api/v1/supervisor when both the pause routes and Migrate now's parts are (a query string
- * is ignored). Null for every other request.
+ * the Ask, or to exactly /api/v1/migrate or /api/v1/supervisor when both the pause routes and Migrate now's parts are, or to an item's
+ * /merge-check/recheck when the commands route (its token) is (a query string is ignored). Null for every other request.
  */
 function writeRoute(d: ServerDeps, req: UiRequest): WriteRoute | null {
   if (req.method !== "POST") return null;
@@ -157,6 +159,7 @@ function writeRoute(d: ServerDeps, req: UiRequest): WriteRoute | null {
   if (path === DATA_ASK_PATH && d.settings?.ask !== undefined) return "ask";
   if (path === MIGRATE_PATH && d.pauses !== undefined && d.migrate !== undefined) return "migrate";
   if (path === SUPERVISOR_PATH && d.pauses !== undefined && d.migrate !== undefined) return "supervisor";
+  if (recheckPathId(path) !== null && d.commands !== undefined) return "recheck";
   return null;
 }
 
@@ -179,7 +182,7 @@ function mediaType(value: string | undefined): string {
 async function writePost(d: ServerDeps, req: UiRequest, route: WriteRoute): Promise<UiResponse> {
   const token =
     route === "settings" || route === "calendar" || route === "ask" ? d.settings!.csrfToken
-    : route === "tasks" ? d.commands!.token
+    : route === "tasks" || route === "recheck" ? d.commands!.token
     : d.pauses!.csrfToken;
   const own = `http://${(req.host ?? "").trim().toLowerCase()}`;
   if (req.origin === undefined || req.origin.trim().toLowerCase() !== own) {
@@ -208,6 +211,7 @@ async function writePost(d: ServerDeps, req: UiRequest, route: WriteRoute): Prom
     : route === "ask" ? await askData(d, d.settings!.ask!, body)
     : route === "migrate" ? await postMigrate(d.migrate!, d.pauses!, body)
     : route === "supervisor" ? await postSupervisor(d.migrate!, d.pauses!, body)
+    : route === "recheck" ? await recheckMergeCheck(d, recheckPathId(req.url)!)
     : await writeStanding(d, d.pauses!, body);
   return json(r.status, r.value);
 }
@@ -229,7 +233,7 @@ export async function respond(d: ServerDeps, req: UiRequest): Promise<UiResponse
     return json(r.status, r.value);
   }
   // A POST anywhere else is a JSON 405, whatever the area: a script that posts reads one error format.
-  if (req.method === "POST") return areaError("api", 405, "Only the settings, item commands, pause resume, standing, improve run, pack approvals, plugins import, rule verdict, task, calendar, data ask, migrate and supervisor routes take a POST.", { allow: ALLOW });
+  if (req.method === "POST") return areaError("api", 405, "Only the settings, item commands, pause resume, standing, improve run, pack approvals, plugins import, rule verdict, task, calendar, data ask, migrate, supervisor and Re-check routes take a POST.", { allow: ALLOW });
   if (req.method !== "GET" && req.method !== "HEAD") return areaError(area, 405, "This page is read-only.", { allow: ALLOW });
 
   let url: URL;
@@ -258,6 +262,7 @@ export async function respond(d: ServerDeps, req: UiRequest): Promise<UiResponse
       : url.pathname === CALENDAR_PATH ? await readCalendarStatus(d)
       : url.pathname === SUPERVISOR_PATH && d.migrate !== undefined && d.pauses !== undefined ? await readSupervisor(d.migrate, d.pauses)
       : url.pathname === CALENDAR_EVENTS_PATH ? await readCalendarEvents(d, url.searchParams.get("from"), url.searchParams.get("to"))
+      : changesPathId(url.pathname) !== null ? await readItemChanges(d, changesPathId(url.pathname)!, url.searchParams.get("path"))
       : await api(d, url);
     return json(r.status, r.value);
   }

@@ -1004,6 +1004,7 @@ export interface UiParts {
   displayNames: (user_ids: readonly string[]) => Promise<ReadonlyMap<string, string>>; // by user id from Identity's identity_profiles (M9), only to show
   tacit: UiTacit; // the Rules page's ledger, switched by the `integrations` setting before each Rules request (design 08-settings)
   migrate: import("./ui/migrate-api.js").UiMigrate; // Migrate now, Start and Restart now (design 08-self-update): state dir, clock, run_timeout_ms, steps
+  changes: import("./ui/changes.js").UiChanges | undefined; // the sandbox's readChanges on repo.path and its base: the Changes tab and Re-check (design 09-dashboard-item)
   close(): Promise<void>;
 }
 
@@ -1018,10 +1019,8 @@ export interface UiParts {
  */
 export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity }): Promise<UiParts> {
   await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
-  const p = new Plugins(loaded);
-  const clock = await p.clock();
-  const secrets = await p.secrets();
-  const store = await p.store(secrets, clock);
+  const p = new Plugins(loaded), clock = await p.clock();
+  const secrets = await p.secrets(), store = await p.store(secrets, clock);
   await store.migrate();
   const scanner = await p.scanner(secrets);
   const { owner, name } = loaded.config.repo, token = newCsrfToken();
@@ -1041,14 +1040,15 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   // One token per process for every write route; held only in memory, never written to a file, the store or a log.
   // The UI server, loaded here only: through setup.ts it reaches GitHub modules a solo start must not load.
   const who = uiCommandsActor(uiUserId(loaded.file.ui), opts.identity, (await import("./ui/server.js")).BIND);
-  // The Merge button's facts (design §9): a forge selected, a sandbox that merges locally (built only to ask).
+  // The Merge button's facts (design §9): a forge selected, a sandbox that merges locally (built only to ask, and to read changes).
+  const sbx = await p.sandbox(), changes = sbx.readChanges && ((spec: Parameters<import("./ui/changes.js").UiChanges>[0]) => sbx.readChanges!({ repo: loaded.config.repo.path, base_ref: loaded.config.repo.base_branch, ...spec }));
   const commands: UiCommands = {
-    ...who, token, forge: loaded.plugins.forge !== undefined, localMerge: canMergeLocal(await p.sandbox()), changeName: (ref) => `PR #${ref}`, restart: loaded.config.repo.restart_command !== undefined,
+    ...who, token, forge: loaded.plugins.forge !== undefined, localMerge: canMergeLocal(sbx), changeName: (ref) => `PR #${ref}`, restart: loaded.config.repo.restart_command !== undefined,
     allowed: (action) => (who.actor === null ? Promise.resolve({ allow: false, reason: "no_actor" }) : onProject(who.actor, action, true)),
   };
   // The mode switch, the auto-merge tier and a loosening change need approve_merge on the project (design 08-settings), as the Merge button.
   settings.mayApproveMerge = async () => refusalOf(await onProject(opts.identity.user, "approve_merge"));
-  settings.editFile = configWriter({ loaded, store, sandbox: await p.sandbox(), now: () => clock.now().toISOString(), actor: opts.identity.user, loadConfig, project: async () => (await settings.resolveProject())?.key ?? null });
+  settings.editFile = configWriter({ loaded, store, sandbox: sbx, now: () => clock.now().toISOString(), actor: opts.identity.user, loadConfig, project: async () => (await settings.resolveProject())?.key ?? null });
   settings.calendar = (await import("./ui/calendar-api.js")).uiCalendar(loaded, { store, actor: settings.actor, clock, base: settings.base }); // its Calendar section
   settings.ask = { llm: await p.llm(secrets).catch(() => null), log: new ConsoleLogger(clock, "ask") }; // the Data page's Ask: the Model plugin, null when it cannot be built
   const cliUser = cliUserConfig(loaded.file);
@@ -1063,7 +1063,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   const profiles = new ProfileStore(storeSql(store)), displayNames = (ids: readonly string[]) => profiles.displayNames(ids);
   const tacit = await uiTacit(loaded.plugins.tacit, (n) => createPlugin(loaded.registry, "tacit", n, p.base), { config: loaded.config, base: settingsBase(loaded), source: store, log: new ConsoleLogger(clock, "tacit") });
   const migrate = (await import("./ui/migrate-api.js")).uiMigrate({ stateDir: loaded.stateDir, clock, runTimeoutMs: loaded.config.run_timeout_ms, githubApi: () => p.githubApi(), resolveProject }); // its GitHub client only for owner/name rows
-  return { clock, store, scanner, settings, commands, pauses, displayNames, tacit, migrate, close: () => identity.stop().then(() => store.close()) };
+  return { clock, store, scanner, settings, commands, pauses, displayNames, tacit, migrate, changes, close: () => identity.stop().then(() => store.close()) };
 }
 
 const refusalOf = (d: AuthDecision): string | null => (d.allow ? null : d.reason);
