@@ -1878,10 +1878,10 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
 
   describe("claim cap: implement and resolve wait at `workers`; short runs take one slot beyond", () => {
     const ALL_KINDS: RunKind[] = ["triage", "implement", "review", "update", "resolve", "merge-check"];
-    /** One process's loops: p:0 … p:3, so three `workers` and the first loop above them. */
+    /** Loop ids: p:0 … p:3, so three `workers` and the first loop above them. The cap counts every process's runs. */
     const owners = [0, 1, 2, 3].map((n) => `p:${n}` as WorkerId);
     const claim = (store: FactoryStore, worker_id: WorkerId, workers?: number) =>
-      store.claimRun({ worker_id, kinds: ALL_KINDS, lease_ms: LEASE, ...(workers !== undefined ? { workers: { count: workers, owners } } : {}) });
+      store.claimRun({ worker_id, kinds: ALL_KINDS, lease_ms: LEASE, ...(workers !== undefined ? { workers: { count: workers } } : {}) });
     const enqueue = (store: FactoryStore, n: number, kind: RunKind) =>
       store.createWorkItem(issue(n), system, { enqueue: { kind, idempotency_key: `${n}:${kind}` } });
     /** Fills the first slots: kinds[i] runs on item i + 1, leased by p:i. */
@@ -1933,15 +1933,30 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect(await claim(store, owners[2]!, 2)).toBeNull();
     });
 
-    it("counts only this process's lease owners, read from the store", async () => {
+    it("counts every process's running runs: B waits while A holds `workers` implement runs, then claims when they finish", async () => {
       const { store } = await make();
-      await fill(store, ["implement"]);
-      // Another process's running implement leaves this process's one free slot alone.
-      await enqueue(store, 2, "implement");
-      expect((await claim(store, "q:0" as WorkerId))?.kind).toBe("implement");
-      await enqueue(store, 3, "implement");
-      expect(await claim(store, owners[1]!, 1)).toBeNull();
-      expect((await claim(store, owners[1]!, 2))?.idempotency_key).toBe("3:implement");
+      // Process A (a:0 … a:3) holds 4 running implement runs, as a process draining after a merge does.
+      const held = [];
+      for (let n = 1; n <= 4; n++) {
+        await enqueue(store, n, "implement");
+        held.push((await claim(store, `a:${n - 1}` as WorkerId, 4))!);
+      }
+      await enqueue(store, 5, "implement");
+      expect(await claim(store, "b:0" as WorkerId, 4)).toBeNull();
+      for (const run of held) await store.completeRun(run.id, run.lease!.token, { status: "succeeded", summary: "", data: {} });
+      expect((await claim(store, "b:0" as WorkerId, 4))?.idempotency_key).toBe("5:implement");
+    });
+
+    it("while another process holds `workers` implement runs, a review takes the one slot beyond and a triage then waits", async () => {
+      const { store } = await make();
+      for (let n = 1; n <= 4; n++) {
+        await enqueue(store, n, "implement");
+        expect((await claim(store, `a:${n - 1}` as WorkerId, 4))?.kind).toBe("implement");
+      }
+      await enqueue(store, 5, "review");
+      expect((await claim(store, "b:0" as WorkerId, 4))?.kind).toBe("review");
+      await enqueue(store, 6, "triage");
+      expect(await claim(store, "b:1" as WorkerId, 4)).toBeNull();
     });
 
     it("with no worker count, nothing is capped: only the claim order applies", async () => {

@@ -85,7 +85,8 @@ async function setup(sourcesOf: (store: FactoryStore) => SourceAdapter[], authOf
   const controller = new ControllerRole({ store, sources, auth: await authOf(store), clock, config, log: silent, scanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner: noRunner, broker: new FakeBroker(), storage,
-    clock, config, prompts, log: silent, scanner, toolEnv: {}, awake: new NoKeepAwake(),
+    // The improve run claims while other runs are left running: the slot cap counts them, so allow a few.
+    clock, config: { ...config, workers: 4 }, prompts, log: silent, scanner, toolEnv: {}, awake: new NoKeepAwake(),
   });
   let n = 0;
   /** Claims the queued triage run and fails it now (then the clock moves a second). */
