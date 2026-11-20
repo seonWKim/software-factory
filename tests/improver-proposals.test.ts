@@ -218,8 +218,8 @@ describe("improve proposals: verdicts and filing", () => {
 });
 
 describe("improve proposals: settings", () => {
-  it("improver.max_proposals, improver.schedule and distill.min_cases default to 1, daily and 2", () => {
-    expect(improverConfig({})).toEqual({ max_proposals: 1, schedule: "daily", min_cases: 2 });
+  it("improver.max_proposals, improver.schedule and distill.min_cases default to 1, off and 2", () => {
+    expect(improverConfig({})).toEqual({ max_proposals: 1, schedule: "off", min_cases: 2 });
     expect(improverConfig({ improver: { max_proposals: 3, schedule: "every_run" }, distill: { min_cases: 4 } })).toEqual({ max_proposals: 3, schedule: "every_run", min_cases: 4 });
   });
 
@@ -263,7 +263,7 @@ describe("improve proposals: the daily improve run", () => {
     });
     const worker = new Worker({
       id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker: new FakeBroker(), storage: new MemoryStorage(), llm,
-      clock, config, prompts, log: silent, scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(),
+      clock, config: { ...config, improver: { ...IMPROVER_DEFAULTS, schedule: "daily" } }, prompts, log: silent, scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(),
     });
     const items = (await store.listTables()).find((t) => t.name === "controller_work_items")!.rows;
     expect(await worker.tick()).toBe(true);

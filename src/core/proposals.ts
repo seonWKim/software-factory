@@ -16,7 +16,7 @@ import type { FailureGroup, ImproveReport, Run, SourceRef, Timestamp, UserId } f
 // ---------------------------------------------------------------------------------------------------------
 // Settings: `improver.max_proposals`, `improver.schedule`, `distill.min_cases` in factory.config.json.
 
-/** When the improve run proposes: only in the daily run (default), in every improve run, or never. */
+/** When the improve run proposes: only in the daily run, in every improve run, or never (default: each proposal costs two golden replays). */
 export const IMPROVER_SCHEDULES = ["daily", "every_run", "off"] as const;
 export type ImproverSchedule = (typeof IMPROVER_SCHEDULES)[number];
 export interface ImproverConfig {
@@ -26,8 +26,8 @@ export interface ImproverConfig {
   /** A group with fewer failed runs than this stays `watching`: recorded, no draft, no replay. */
   min_cases: number;
 }
-/** The defaults when factory.config.json sets none: one proposal per daily run, from a pattern of 2 or more runs. */
-export const IMPROVER_DEFAULTS: ImproverConfig = { max_proposals: 1, schedule: "daily", min_cases: 2 };
+/** The defaults when factory.config.json sets none: no proposals (opt in with `improver.schedule`), then one per run from a pattern of 2 or more runs. */
+export const IMPROVER_DEFAULTS: ImproverConfig = { max_proposals: 1, schedule: "off", min_cases: 2 };
 export const IMPROVER_KEYS = ["max_proposals", "schedule"] as const;
 export const DISTILL_KEYS = ["min_cases"] as const;
 
@@ -41,7 +41,7 @@ export function improverProblems(raw: unknown): string[] {
   const { improver: i, distill: d } = raw;
   if (i !== undefined && !isObject(i)) out.push("improver must be an object with max_proposals and schedule");
   if (isObject(i) && i.max_proposals !== undefined && !positiveInt(i.max_proposals)) out.push("improver.max_proposals must be an integer ≥ 1 (default 1)");
-  if (isObject(i) && i.schedule !== undefined && !(IMPROVER_SCHEDULES as readonly unknown[]).includes(i.schedule)) out.push(`improver.schedule must be one of ${IMPROVER_SCHEDULES.join(", ")} (default daily)`);
+  if (isObject(i) && i.schedule !== undefined && !(IMPROVER_SCHEDULES as readonly unknown[]).includes(i.schedule)) out.push(`improver.schedule must be one of ${IMPROVER_SCHEDULES.join(", ")} (default off)`);
   if (d !== undefined && !isObject(d)) out.push("distill must be an object with min_cases");
   if (isObject(d) && d.min_cases !== undefined && !positiveInt(d.min_cases)) out.push("distill.min_cases must be an integer ≥ 1 (default 2)");
   return out;
