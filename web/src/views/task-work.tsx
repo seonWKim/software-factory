@@ -56,7 +56,7 @@ const needReason = (it: ItemRow): string => (needGroup(it) === "answer" ? (it.ne
  */
 function RowActions({ it, cmd, inlineErrors = true, extra, label }: { it: ItemRow; cmd: ReturnType<typeof useCommandSend>; inlineErrors?: boolean; extra?: readonly MenuItem[]; label?: string }) {
   const checking = it.merge_check?.state === "checking";
-  return <NeedActions id={it.id} title={it.title ?? it.id} commands={it.commands ?? []} pr={it.change_ref} group={needGroup(it)} merge={it.merge} source={it.source.type} checking={checking} cmd={cmd} allow={allowEntries(needReason(it))} inlineErrors={inlineErrors} extra={extra} label={label} />;
+  return <NeedActions id={it.id} title={it.title ?? it.id} commands={it.commands ?? []} pr={it.change_ref} group={needGroup(it)} merge={it.merge} checking={checking} cmd={cmd} allow={allowEntries(needReason(it))} inlineErrors={inlineErrors} extra={extra} label={label} />;
 }
 
 /** The work item a built task links to, from the items list; undefined while it loads or when the list lacks it. */

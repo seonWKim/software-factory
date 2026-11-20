@@ -408,7 +408,6 @@ export interface NeedActionsProps {
   /** "merge": the primary button is Merge (disabled with the reason, or "Checking…" while the merge check runs). */
   group: "merge" | "approve" | "answer";
   merge?: MergeReadiness | undefined;
-  source: string;
   checking: boolean;
   /** The row's command sender, shared with its Why text. */
   cmd: ReturnType<typeof useCommandSend>;
@@ -437,7 +436,7 @@ export function SendErrors({ local }: { local: Record<string, LocalSend> }) {
  * a failed send shows its error in the cell (or, with `inlineErrors` false, where the row puts SendErrors), a sent
  * one in a short status message that outlives the row.
  */
-export function NeedActions({ id, title, commands, pr, group, merge, source, checking, cmd, allow, inlineErrors = true, extra = [], label }: NeedActionsProps) {
+export function NeedActions({ id, title, commands, pr, group, merge, checking, cmd, allow, inlineErrors = true, extra = [], label }: NeedActionsProps) {
   const { on, busy, local, send: post } = cmd;
   const [open, setOpen] = useState<FormName | null>(null);
   const wrap = useRef<HTMLSpanElement>(null);
