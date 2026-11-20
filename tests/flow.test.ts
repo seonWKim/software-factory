@@ -2930,9 +2930,10 @@ describe("+paths on /approve and /retry, and /retry notes (issue #280)", () => {
 
   it("needs_human paths give the exact /retry +paths reply in the comment and never change allowed_paths", async () => {
     let asks = 0;
+    // Four ordinary files: over the three granted without the owner (2026-11-19), so the ask waits for the owner.
     const f = await atSpecGate(100, {
       implement: () => (asks++ === 0
-        ? { output: { needs_human: { reason: "needs the loader", question: "may I change it?", paths: ["src/loader.ts", ".github/workflows/a.yml"] } } }
+        ? { output: { needs_human: { reason: "needs the loader", question: "may I change it?", paths: ["src/loader.ts", "src/a.ts", "src/b.ts", "src/c.ts", ".github/workflows/a.yml"] } } }
         : implementOk()),
     });
     f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: "10001", approver: alice });
@@ -2941,12 +2942,12 @@ describe("+paths on /approve and /retry, and /retry notes (issue #280)", () => {
     expect(item).toMatchObject({ blocked_reason: "agent_needs_human", allowed_paths: [".github/workflows/"] });
     const ask = f.source.comments.find((c) => c.marker.startsWith("<!-- factory:needs-human:"))!;
     // Paths already covered are left out of the reply.
-    expect(ask.body).toContain("```\n/retry +paths src/loader.ts\n```");
+    expect(ask.body).toContain("```\n/retry +paths src/loader.ts src/a.ts src/b.ts src/c.ts\n```");
     expect(JSON.stringify(await f.store.listStateChanges(item.id))).not.toContain("src/loader.ts");
 
-    f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "10002", requester: alice, note: "+paths src/loader.ts" });
+    f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "10002", requester: alice, note: "+paths src/loader.ts src/a.ts src/b.ts src/c.ts" });
     await f.step();
-    expect(await current(f)).toMatchObject({ stage: "REVIEW", allowed_paths: [".github/workflows/", "src/loader.ts"] });
+    expect(await current(f)).toMatchObject({ stage: "REVIEW", allowed_paths: [".github/workflows/", "src/loader.ts", "src/a.ts", "src/b.ts", "src/c.ts"] });
   });
 
   it("/retry +paths with only covered paths retries as before, adds nothing and replies that they were already allowed", async () => {
