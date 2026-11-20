@@ -7,12 +7,12 @@ import { parseTriage } from "./outputs.js";
 import { IMPLEMENT_KINDS, INTERACTIVE, SESSION_ABANDONED, SESSION_RELEASED, branchFor, effectiveTier, floorTier } from "./policy.js";
 import { NumstatError, diffGates, scopeGate } from "./pre-push.js";
 import { type LearnedSettingsSource, settingValues } from "./settings.js";
-import type { Run, RunId, SourceRef, SourceType, WorkItem, WorkItemId, WorkItemPatch } from "./types.js";
+import type { Run, RunId, SourceRef, SourceType, Timestamp, WorkItem, WorkItemId, WorkItemPatch } from "./types.js";
 import { type LocalRoute, TRUSTED_GIT_ENV, hasTool, prTitle, routeFor, runPushIntents } from "./worker-deps.js";
 import type { AuthProvider, ExternalIdentity } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
-import type { FactoryStore, SessionUpdate, StartSessionResult } from "../interfaces/factory-store.js";
+import type { FactoryStore, SessionUpdate, StartSessionInput, StartSessionResult } from "../interfaces/factory-store.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 import { PREFLIGHT, STORE_BRANCH, type ToolBroker, type ToolCallContext } from "../interfaces/tool-broker.js";
 
@@ -41,6 +41,28 @@ export interface SessionDeps {
   files: SessionFiles; issues: IssueLookup; toolEnv: Readonly<Record<string, string>>; owner: string; learned?: LearnedSettingsSource; local?: LocalRoute;
 }
 
+/**
+ * A waiting `session start --spec <file> --wait` on a NEW item (design 05-interactive-sessions, 2026-11-21): while it
+ * holds, no claim takes the item's runs and only `owner` (the waiting session's lease owner) starts a session on it.
+ */
+export interface SessionReservation { work_item_id: WorkItemId; owner: string; expires_at: Timestamp }
+export type ReserveResult =
+  | { ok: true; reservation: SessionReservation }
+  | { ok: false; reason: "not_found" | "not_new" }
+  | { ok: false; reason: "reserved"; reservation: SessionReservation };
+/** How long a reservation holds: a constant, no setting. Past it the item goes to triage as usual. */
+export const RESERVATION_MS = 2 * 60 * 60 * 1000;
+
+/** Every method one transaction under the claim lock; an expired reservation counts as none and is deleted when met. */
+export interface SessionReservationStore {
+  /** Reserves a NEW item nothing blocks for `owner`, until `ttl_ms` from now. `owner`'s own reservation is kept as it is (no renewal). */
+  reserveItem(input: { id: WorkItemId; owner: string; ttl_ms: number }): Promise<ReserveResult>;
+  /** The item's reservation in effect, or null. */
+  getReservation(id: WorkItemId): Promise<SessionReservation | null>;
+  /** Ends `owner`'s reservation of the item; false when `owner` held none in effect. */
+  releaseReservation(id: WorkItemId, owner: string): Promise<boolean>;
+}
+
 /** `ok: false`: refused, and nothing the command would write was written (a finish records its reasons only). */
 export interface SessionResult { ok: boolean; lines: string[] }
 
@@ -52,8 +74,12 @@ const LOCAL_NEEDS_LOCAL_BROKER = "a local item is committed only through the loc
 export class Sessions {
   constructor(private readonly d: SessionDeps) {}
 
-  /** Opens a session on an issue number (`12`, `#12`) or a work item id, or refuses with nothing changed. */
-  async start(o: { target: string; person: ExternalIdentity; spec?: string; transcript?: string }): Promise<SessionResult & { file?: SessionFile }> {
+  /**
+   * Opens a session on an issue number (`12`, `#12`) or a work item id, or refuses with nothing changed. `wait` (with
+   * `spec`, on a NEW item): reserves the item and waits while running work shares its files (waitAndBegin); `progress`
+   * gets the waiting lines at once, `signal` stops the wait.
+   */
+  async start(o: { target: string; person: ExternalIdentity; spec?: string; transcript?: string; wait?: boolean; signal?: AbortSignal; progress?: (line: string) => void }): Promise<SessionResult & { file?: SessionFile }> {
     const cfg = this.d.config;
     const settings = (project: string) => settingValues(project, cfg.settings, this.d.learned);
     // The spec first, with the triage parser: an invalid file refuses before anything is read or created.
@@ -94,25 +120,75 @@ export class Sessions {
       }));
     }
     const it = item!;
-    const why = await this.startRefusal(it, spec !== null);
+    // --wait reserves a NEW item for a spec of its own: anything else keeps today's refusal (design 05-interactive-sessions, 2026-11-21).
+    const why = await this.startRefusal(it, spec !== null) ?? (o.wait && !spec ? "--wait applies only to a NEW item started with --spec <file>" : null);
     if (why) return refused(`refused: ${why}`);
-
-    // A NEW item takes the owner's spec (as triage would write it); a RUNNING one keeps its approved spec.
-    const patch: WorkItemPatch = spec
+    const ctx = { actor, created, transcript_url: transcript?.url ?? null, patch: (cur: WorkItem): WorkItemPatch => spec
+      // A NEW item takes the owner's spec (as triage would write it); a RUNNING one keeps its approved spec.
       ? {
           problem: spec.problem, done_criteria: spec.done_criteria, desired_output: spec.desired_output, scope: spec.scope,
           allowed_paths: spec.allowed_paths, files_to_change: spec.files_to_change, stage: "RUNNING", blocked_on: "none", blocked_reason: null,
-          tier: effectiveTier(spec.tier, floorTier(spec.allowed_paths, settings(it.project).floors), it.tier),
+          tier: effectiveTier(spec.tier, floorTier(spec.allowed_paths, settings(cur.project).floors), cur.tier),
         }
-      : { blocked_on: "none", blocked_reason: null };
-    const source = spec ? "owner" : await this.specSource(it.id);
+      : { blocked_on: "none", blocked_reason: null } };
+    if (!o.wait) {
+      const r = await this.begin(it, ctx);
+      if (!("busy" in r)) return r;
+      await routeFor(this.d, it).sandbox.destroy(r.handle).catch(() => undefined);
+      return refused(`refused: ${r.busy}`);
+    }
+    const held = await this.d.store.reserveItem({ id: it.id, owner: this.d.owner, ttl_ms: RESERVATION_MS });
+    if (!held.ok) return refused(`refused: ${held.reason === "reserved" ? reservedBy(held.reservation) : "the item changed while the session was starting; run the command again"}`);
+    return this.waitAndBegin(it, ctx, held.reservation, o);
+  }
+
+  /**
+   * Tries the start every WAIT_POLL_MS (the injected Clock) while a running run of another item shares the item's files,
+   * keeping the reservation and the run folder. Ends at the start, a refusal, the reservation's end, or `signal` (Ctrl-C),
+   * which releases the reservation now; every end but the start leaves the item to triage as usual.
+   */
+  private async waitAndBegin(it: WorkItem, ctx: BeginContext, held: SessionReservation, o: { signal?: AbortSignal; progress?: (line: string) => void }): Promise<SessionResult & { file?: SessionFile }> {
+    const sandbox = routeFor(this.d, it).sandbox;
+    let handle: SandboxHandle | undefined;
+    const end = async (...lines: string[]) => {
+      await this.d.store.releaseReservation(it.id, this.d.owner);
+      if (handle) await sandbox.destroy(handle).catch(() => undefined);
+      return refused(...lines);
+    };
+    for (let cur = it, first = true; ; first = false) {
+      const r = await this.begin(cur, ctx, handle);
+      if (!("busy" in r)) return r.ok ? r : end(...r.lines);
+      handle = r.handle;
+      if (first) {
+        this.d.log.info("session waits for its files", { work_item_id: it.id, expires_at: held.expires_at });
+        o.progress?.(`waiting: ${r.busy}`);
+        o.progress?.(`${it.id} is reserved for this session until ${held.expires_at}, so triage skips it; the session starts once no running run shares its files. Ctrl-C stops waiting and releases the item.`);
+      }
+      if (!(await this.d.clock.sleep(WAIT_POLL_MS, o.signal).then(() => true, () => false))) return end("stopped waiting: the reservation is released and the item goes to triage as usual");
+      if ((await this.d.store.getReservation(it.id))?.owner !== this.d.owner) {
+        return end(`refused: the reservation ended (it holds ${RESERVATION_MS / 3_600_000} hours at most); the item goes to triage as usual`);
+      }
+      const next = await this.d.store.getWorkItem(it.id);
+      const why = next ? await this.startRefusal(next, true) : "the item is gone";
+      if (why || !next) return end(`refused: ${why}`);
+      cur = next;
+    }
+  }
+
+  /** One start attempt with the item as it is now. `busy`: a running run of another item shares its files; the run folder is kept for the next try. */
+  private async begin(it: WorkItem, c: BeginContext, made?: SandboxHandle): Promise<(SessionResult & { file?: SessionFile }) | { busy: string; handle: SandboxHandle }> {
+    const cfg = this.d.config;
+    const patch = c.patch(it);
+    const source = patch.done_criteria ? "owner" : await this.specSource(it.id);
     if ((patch.allowed_paths ?? it.allowed_paths).length === 0) return refused("refused: the item has no allowed_paths, so a session could not pass the scope gate");
 
     const branch = branchFor(it, cfg.branch_prefix);
-    const handle = await routeFor(this.d, it).sandbox.create({ repo: cfg.repo.path, branch, base_ref: cfg.repo.base_branch });
-    const r = await this.d.store.startSession({ id: it.id, expected_version: it.version, actor, patch, reason: SESSION_STARTED, detail: { spec_source: source }, owner: this.d.owner, lease_ms: cfg.lease_ms, transcript_url: transcript?.url ?? null });
+    const handle = made ?? await routeFor(this.d, it).sandbox.create({ repo: cfg.repo.path, branch, base_ref: cfg.repo.base_branch });
+    const { actor } = c;
+    const r = await this.d.store.startSession({ id: it.id, expected_version: it.version, actor, patch, reason: SESSION_STARTED, detail: { spec_source: source }, owner: this.d.owner, lease_ms: cfg.lease_ms, transcript_url: c.transcript_url });
+    if (!r.ok && r.reason === "overlap") return { busy: await this.storeRefusal(r), handle };
     if (!r.ok) {
-      await this.d.sandbox.destroy(handle).catch(() => undefined);
+      await routeFor(this.d, it).sandbox.destroy(handle).catch(() => undefined);
       return refused(`refused: ${await this.storeRefusal(r)}`);
     }
     const file: SessionFile = { work_item_id: it.id, run_id: r.run.id, token: r.run.lease!.token, branch, folder: { id: handle.id, workdir: handle.workdir, base_sha: handle.base_sha ?? null } };
@@ -122,7 +198,7 @@ export class Sessions {
     // Taking over: the store cancelled the queued implement-type runs only after every refusal check passed (design §5 Restarts).
     if (r.taken_over.length > 0) lines.push(`took over the item: cancelled the queued worker run${r.taken_over.length > 1 ? "s" : ""} ${r.taken_over.join(", ")}`);
     lines.push(`branch: ${branch}`, `run folder: ${handle.workdir}`, `lease until ${r.run.lease!.expires_at}; kept while this runs. Ctrl-C: the lease expires and the item is released.`);
-    return { ok: true, file, lines: [...(created ? [`created work item ${it.id} for ${it.source.id}`] : []), ...lines, `finish with: factory interactive finish ${it.id}`] };
+    return { ok: true, file, lines: [...(c.created ? [`created work item ${it.id} for ${it.source.id}`] : []), ...lines, `finish with: factory interactive finish ${it.id}`] };
   }
 
   private async startRefusal(item: WorkItem, withSpec: boolean): Promise<string | null> {
@@ -148,6 +224,7 @@ export class Sessions {
       return `running work on ${other?.source.id ?? r.work_item_id} (run ${r.run_id}) overlaps the allowed_paths: ${r.paths.join(", ")}`;
     }
     if (r.reason === "not_found" || r.reason === "version_conflict") return "the item changed while the session was starting; run the command again";
+    if (r.reason === "reserved") return reservedBy(r.reservation);
     return r.reason === "session_open" ? `the item already has an open session (run ${r.run_id})` : `the item has an implement-type run (${r.run_id})`;
   }
 
@@ -378,6 +455,16 @@ export class Sessions {
 }
 
 class GitError extends Error {}
+
+/** What begin() needs besides the item: the spec patch is rebuilt from the item each try, as it is then. */
+interface BeginContext { actor: Extract<StartSessionInput["actor"], { kind: "user" }>; created: boolean; transcript_url: string | null; patch(item: WorkItem): WorkItemPatch }
+
+/** How often a waiting start tries again. */
+export const WAIT_POLL_MS = 15_000;
+
+function reservedBy(r: SessionReservation): string {
+  return `the item is reserved by a waiting session (${r.owner}) until ${r.expires_at}; that session starts it once its files are free`;
+}
 
 function jsonOrNull(text: string): unknown {
   try {

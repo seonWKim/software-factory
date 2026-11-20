@@ -3430,6 +3430,70 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       ]);
       expect((await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))?.work_item_id).toBe(it1.id);
     });
+
+    // A waiting `session start --wait` reserves its NEW item (design 05-interactive-sessions, 2026-11-21).
+    describe("reservations", () => {
+      const HOURS_2 = 2 * 60 * 60 * 1000;
+      const reserve = (store: FactoryStore, id: WorkItemId, owner = "session:h:1") => store.reserveItem({ id, owner, ttl_ms: HOURS_2 });
+      const claimTriage = (store: FactoryStore, worker = w1) => store.claimRun({ worker_id: worker, kinds: ["triage"], lease_ms: LEASE });
+
+      it("while a reservation holds no worker claims the item's queued triage run; other items' runs still claim", async () => {
+        const { store } = await make();
+        const it0 = await seed(store, 1, ["src/a/"]);
+        const r = await reserve(store, it0.id);
+        expect(r).toMatchObject({ ok: true, reservation: { work_item_id: it0.id, owner: "session:h:1" } });
+        for (const worker of [w1, w2]) expect(await claimTriage(store, worker)).toBeNull();
+        const other = await seed(store, 2, ["src/b/"]);
+        expect((await claimTriage(store, w2))?.work_item_id).toBe(other.id);
+        expect((await store.listRuns(it0.id)).map((x) => x.status)).toEqual(["queued"]);
+        expect(await store.getReservation(it0.id)).toEqual(r.ok ? r.reservation : null);
+      });
+
+      it("a reservation older than 2 hours ends: the claim deletes it and triage claims the item", async () => {
+        const { store, clock } = await make();
+        const it0 = await seed(store, 1, ["src/a/"]);
+        await reserve(store, it0.id);
+        clock.advance(HOURS_2 - 1);
+        expect(await claimTriage(store)).toBeNull();
+        clock.advance(1);
+        expect((await claimTriage(store))?.work_item_id).toBe(it0.id);
+        expect(await store.getReservation(it0.id)).toBeNull();
+        expect(await store.releaseReservation(it0.id, "session:h:1")).toBe(false);
+      });
+
+      it("only the owner starts a session on a reserved item; the start ends the reservation; another owner is refused naming it", async () => {
+        const { store } = await make();
+        const it0 = await seed(store, 1, ["src/a/"]);
+        const r = await reserve(store, it0.id);
+        if (!r.ok) throw new Error(r.reason);
+        expect(await reserve(store, it0.id, "session:h:2")).toEqual({ ok: false, reason: "reserved", reservation: r.reservation });
+        expect(await reserve(store, it0.id)).toEqual(r); // the owner's own: kept as it is, not renewed
+        const before = JSON.stringify(await store.listRuns(it0.id));
+        const other = await store.startSession({
+          id: it0.id, expected_version: it0.version, actor: person, patch: { stage: "RUNNING" }, reason: "session_started", detail: {}, owner: "session:h:2", lease_ms: LEASE, transcript_url: null,
+        });
+        expect(other).toEqual({ ok: false, reason: "reserved", reservation: r.reservation });
+        expect(JSON.stringify(await store.listRuns(it0.id))).toBe(before);
+        expect(await store.releaseReservation(it0.id, "session:h:2")).toBe(false);
+        const s = await start(store, it0); // owner session:h:1
+        expect(s).toMatchObject({ ok: true });
+        expect(await store.getReservation(it0.id)).toBeNull();
+      });
+
+      it("a release leaves no reservation; only a NEW item nothing blocks is reserved", async () => {
+        const { store } = await make();
+        const it0 = await seed(store, 1, ["src/a/"]);
+        await reserve(store, it0.id);
+        expect(await store.releaseReservation(it0.id, "session:h:1")).toBe(true);
+        expect(await store.getReservation(it0.id)).toBeNull();
+        expect((await claimTriage(store))?.work_item_id).toBe(it0.id);
+        const running = await seed(store, 2, ["src/b/"]);
+        const t = await store.transition({ id: running.id, expected_version: running.version, actor: system, reason: "x", patch: { stage: "RUNNING" } });
+        if (!t.ok) throw new Error(t.reason);
+        expect(await reserve(store, running.id)).toEqual({ ok: false, reason: "not_new" });
+        expect(await reserve(store, "wi_none" as WorkItemId)).toEqual({ ok: false, reason: "not_found" });
+      });
+    });
   });
 
   // Task projects: create, rename, archive, restore, membership, delete and listTaskProjects take plain arguments and
