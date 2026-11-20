@@ -49,7 +49,9 @@ describe("Tasks page", () => {
     expect(card("tk_soon").textContent).toContain("#home");
     expect(screen.getByRole("list", { name: "No date" }).textContent).toContain("tk_inbox");
     const built = within(card("tk_built"));
-    expect(built.getByRole("link", { name: "wi_1" }).getAttribute("href")).toBe("/app/items/wi_1");
+    // The title links to the work item; the raw ID is not shown (owner feedback 2026-11-20).
+    expect(built.getByRole("link", { name: "tk_built" }).getAttribute("href")).toBe("/app/items/wi_1");
+    expect(card("tk_built").textContent).not.toContain("wi_1");
     expect(built.queryByRole("button", { name: /Build this/ })).toBeNull();
   });
 
@@ -339,10 +341,12 @@ describe("the description dialog (design 02-tasks and 09-dashboard-tasks)", () =
     expect(s.posts).toEqual([]);
   });
 
-  it("a built task's title opens the dialog too, which says the work item keeps the text it was built with; the ID still links", async () => {
+  it("a built task's title links to its work item; Description in its menu opens the dialog, which says the work item keeps the text it was built with", async () => {
     await show();
-    expect(within(card("tk_built")).getByRole("link", { name: "wi_1" }).getAttribute("href")).toBe("/app/items/wi_1");
-    open("tk_built");
+    expect(within(card("tk_built")).getByRole("link", { name: "tk_built" }).getAttribute("href")).toBe("/app/items/wi_1");
+    expect(within(card("tk_built")).queryByRole("button", { name: "Description: tk_built" })).toBeNull();
+    fireEvent.click(within(card("tk_built")).getByRole("button", { name: "More actions: tk_built" }));
+    fireEvent.click(within(card("tk_built")).getByRole("menuitem", { name: "Description" }));
     expect(dialog()!.textContent).toContain("Built as wi_1: the work item keeps the text it was built with");
   });
 

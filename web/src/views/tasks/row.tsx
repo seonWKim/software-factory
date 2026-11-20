@@ -5,7 +5,7 @@ import { Button } from "../../components/ui/button.js";
 import { Checkbox } from "../../components/ui/checkbox.js";
 import { FOCUS } from "../../components/ui/control.js";
 import { announceStatus } from "../../components/ui/dialog.js";
-import { ID_CLASS, LINK_CLASS } from "../../components/ui/link-style.js";
+import { LINK_CLASS } from "../../components/ui/link-style.js";
 import { OverflowMenu } from "../../components/ui/menu.js";
 import type { MessageKey } from "../../i18n/en.js";
 import { t } from "../../i18n/index.js";
@@ -61,10 +61,17 @@ function BuildButton({ task, token }: { task: TaskRow; token: string }) {
 }
 
 /**
- * The title. On an open task the page can write, a button that opens the description dialog (a built task's item link
- * stays on its state and ID); else a link to the built task's item, or plain text when it is not built.
+ * The title. A built task's title links to its work item's page (owner feedback 2026-11-20); its description dialog
+ * is in the row's menu. An open task that is not built opens the description dialog from its title; else plain text.
  */
 function Title({ task, className, onOpen }: { task: TaskRow; className: string; onOpen: (() => void) | null }) {
+  if (task.work_item_id !== null) {
+    return (
+      <Link href={itemPath(task.work_item_id)} className={cn("block", LINK_CLASS)}>
+        <p className={className}>{task.title}</p>
+      </Link>
+    );
+  }
   if (onOpen !== null) {
     return (
       // The title stays the paragraph's text; the shared Button lies over it, so the row keeps its height.
@@ -80,12 +87,7 @@ function Title({ task, className, onOpen }: { task: TaskRow; className: string; 
       </p>
     );
   }
-  const title = <p className={className}>{task.title}</p>;
-  return task.work_item_id === null ? title : (
-    <Link href={itemPath(task.work_item_id)} className={cn("block", LINK_CLASS)}>
-      {title}
-    </Link>
-  );
+  return <p className={className}>{task.title}</p>;
 }
 
 export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { task: TaskRow; overdue?: boolean; sub?: boolean }) {
@@ -126,6 +128,8 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
   };
   const subAttempt = useRef<{ id: string; words: string } | null>(null);
   const items = [
+    // A built task's title goes to its work item, so its description dialog opens from here.
+    ...(task.work_item_id !== null ? [{ label: t("tasks.description"), onSelect: () => setMode("description") }] : []),
     ...(parent === null ? [{ label: t("tasks.addSub"), onSelect: () => setMode("sub") }] : []),
     { label: t("tasks.projectsItem"), onSelect: () => setMode("projects") },
     { label: t("tasks.delete"), danger: true, onSelect: () => setMode("delete") },
@@ -205,12 +209,8 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
       </div>
       <div className="flex items-start gap-2">
         {task.work_item_id !== null ? (
-          <>
-            <WorkState id={task.work_item_id} title={task.title} open={!done} />
-            <Link href={itemPath(task.work_item_id)} className={cn(ID_CLASS, "text-xs break-all")}>
-              {task.work_item_id}
-            </Link>
-          </>
+          // No raw ID: the title links to the work item (owner feedback 2026-11-20).
+          <WorkState id={task.work_item_id} title={task.title} open={!done} />
         ) : (
           token !== null && !done && <BuildButton task={task} token={token} />
         )}

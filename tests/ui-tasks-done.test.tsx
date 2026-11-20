@@ -35,7 +35,9 @@ describe("done tasks stay, struck through (design 02-tasks, done tasks stay)", (
     s.current = view({ projects: [{ list: null, tasks: [done("tk_built", { work_item_id: "wi_1" }), row("tk_inbox")] }] });
     await show();
     expect(title("tk_built").className.split(" ")).toContain("line-through");
-    expect(within(card("tk_built")).getByRole("link", { name: "wi_1" })).toBeTruthy();
+    // Its title links to the work item; the raw ID is not shown (owner feedback 2026-11-20).
+    expect(within(card("tk_built")).getByRole("link", { name: "tk_built" }).getAttribute("href")).toBe("/app/items/wi_1");
+    expect(card("tk_built").textContent).not.toContain("wi_1");
     expect(within(card("tk_built")).getByRole("button", { name: "Reopen: tk_built" })).toBeTruthy();
     expect(card("tk_built").textContent).toContain("Done 2026-11-12");
     expect(title("tk_inbox").className.split(" ")).not.toContain("line-through");
