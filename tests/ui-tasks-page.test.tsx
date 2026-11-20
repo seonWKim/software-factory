@@ -218,6 +218,77 @@ describe("Tasks page", () => {
       expect(overdue.getAttribute("data-level")).toBe("stuck");
     });
   });
+
+  describe("sub-tasks stay with their parent (design 02-tasks-page)", () => {
+    const ids = (list: string) => [...screen.getByRole("list", { name: list }).querySelectorAll<HTMLElement>("[data-task]")].map((e) => e.dataset.task);
+    const parentDay = "2026-11-20";
+
+    it("an undated open sub-task shows right under its parent in the parent's date group, not under No date", async () => {
+      s.current = view({
+        today: { overdue: [], due: [] },
+        projects: [{ list: null, tasks: [row("tk_p", { due_date: parentDay }), row("tk_s", { parent_task_id: "tk_p" }), row("tk_free")] }],
+      });
+      await show2();
+      expect(ids(dayLabel(parentDay))).toEqual(["tk_p", "tk_s"]);
+      expect(card("tk_s").hasAttribute("data-sub")).toBe(true);
+      expect(ids("No date")).toEqual(["tk_free"]);
+    });
+
+    it("a sub-task with its own due date shows under its parent's date group, not its own date's", async () => {
+      s.current = view({
+        today: { overdue: [], due: [row("tk_s", { due_date: "2026-11-12", parent_task_id: "tk_p" })] },
+        projects: [{ list: null, tasks: [row("tk_s", { due_date: "2026-11-12", parent_task_id: "tk_p" }), row("tk_p", { due_date: parentDay }), row("tk_x", { due_date: "2026-11-12" })] }],
+      });
+      await show2();
+      expect(ids(dayLabel(parentDay))).toEqual(["tk_p", "tk_s"]);
+      expect(ids(`Today, ${dayLabel("2026-11-12")}`)).toEqual(["tk_x"]);
+    });
+
+    it("a sub-task whose parent is not in the list stays in its own date group, unindented", async () => {
+      s.current = view({
+        today: { overdue: [], due: [] },
+        projects: [{ list: null, tasks: [row("tk_s", { due_date: "2026-11-13", parent_task_id: "tk_gone" })] }],
+      });
+      await show2();
+      expect(ids(dayLabel("2026-11-13"))).toEqual(["tk_s"]);
+      expect(card("tk_s").hasAttribute("data-sub")).toBe(false);
+    });
+  });
+
+  describe("delete checks for open sub-tasks before it asks (design 02-tasks-page)", () => {
+    const openDelete = async (id: string) => {
+      card(id).focus();
+      fireEvent.keyDown(card(id), { key: "Delete" });
+      return within(await waitFor(() => document.querySelector<HTMLElement>("[data-dialog]")!));
+    };
+    const posted = () => s.posts.filter((p) => p.url === "/api/v1/tasks/delete").map((p) => JSON.parse(String(p.init.body)));
+
+    it("for a parent with open sub-tasks it says how many and its confirm, Delete with sub-tasks, posts with_sub_tasks", async () => {
+      s.current = view({
+        today: { overdue: [], due: [] },
+        projects: [{ list: null, tasks: [row("tk_p", { due_date: "2026-11-20", open_sub_tasks: 2 }), row("tk_s1", { parent_task_id: "tk_p" }), row("tk_s2", { parent_task_id: "tk_p" })] }],
+      });
+      s.answer = { status: 200, body: { task_id: "tk_p", deleted_sub_tasks: ["tk_s1", "tk_s2"] } };
+      await show2();
+      const d = await openDelete("tk_p");
+      expect(document.querySelector("[data-open-sub-tasks]")!.textContent).toContain("2 open sub-tasks");
+      expect(document.querySelector("[data-dialog-consequence]")!.textContent).toBe("The task leaves every view. This cannot be undone.");
+      expect(d.queryByRole("button", { name: "Delete" })).toBeNull();
+      fireEvent.click(d.getByRole("button", { name: "Delete with sub-tasks" }));
+      await waitFor(() => expect(posted()).toEqual([{ id: "tk_p", with_sub_tasks: true }]));
+    });
+
+    it("for a task with no open sub-tasks it is the plain Delete confirm, posting { id }", async () => {
+      s.current = view({ today: { overdue: [], due: [] }, projects: [{ list: null, tasks: [row("tk_p", { due_date: "2026-11-20", open_sub_tasks: 0 })] }] });
+      s.answer = { status: 200, body: { task_id: "tk_p", deleted_sub_tasks: [] } };
+      await show2();
+      const d = await openDelete("tk_p");
+      expect(document.querySelector("[data-open-sub-tasks]")).toBeNull();
+      expect(d.queryByRole("button", { name: "Delete with sub-tasks" })).toBeNull();
+      fireEvent.click(d.getByRole("button", { name: "Delete" }));
+      await waitFor(() => expect(posted()).toEqual([{ id: "tk_p" }]));
+    });
+  });
 });
 
 describe("the description dialog (design 02-tasks and 09-dashboard-tasks)", () => {
@@ -280,4 +351,35 @@ describe("the description dialog (design 02-tasks and 09-dashboard-tasks)", () =
     await show();
     expect(within(card("tk_late")).queryByRole("button", { name: "Description: tk_late" })).toBeNull();
   });
+});
+
+// A built task's Work row says a queued run and a pressed Merge as their own states (design 09-dashboard-item-commands):
+// a queued triage is never Running, and a Merge under way reads the server's pending-request label with no Merge button.
+describe("a built task's Work row: queued and pending states", () => {
+  const run = (kind: string) => ({ kind, status: "queued", attempt: 1, worker_id: null, started_at: null, position: 1 });
+  const state = async (text: string) => within(card("tk_built")).findByText(text, {}, SLOW);
+
+  it("a queued triage run reads Triage queued, never Running", async () => {
+    s.items = [item("wi_1", { item_phase: "queued", blocked_on: "none", stage: "NEW", run: run("triage") })];
+    await show();
+    expect(await state("Triage queued")).toBeTruthy();
+    expect(within(card("tk_built")).queryByText("Running")).toBeNull();
+  });
+
+  it("a queued implement run, or an approved one the controller has not queued yet, reads Queued", async () => {
+    s.items = [item("wi_1", { item_phase: "queued", blocked_on: "none", stage: "RUNNING", run: null, kind: "implement" })];
+    await show();
+    expect(await state("Queued")).toBeTruthy();
+    expect(within(card("tk_built")).queryByText("Running")).toBeNull();
+  });
+
+  for (const reason of ["Merge queued (position 2)", "Checking build"]) {
+    it(`a Merge under way reads "${reason}" and hides the Merge button`, async () => {
+      s.items = [item("wi_1", { item_phase: "queued", blocked_on: "human", blocked_reason: "merge_pending", merge: { enabled: false, reason } })];
+      await show();
+      expect(await state(reason)).toBeTruthy();
+      expect(within(card("tk_built")).queryByRole("button", { name: "Merge" })).toBeNull();
+      expect(within(card("tk_built")).queryByText("Ready to merge")).toBeNull();
+    });
+  }
 });

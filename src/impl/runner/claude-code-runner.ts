@@ -340,14 +340,14 @@ export class ClaudeCodeRunner implements AgentRunner {
     const stallMs = spec.stall_ms ?? DEFAULT_STALL_MS;
     const firstOutputMs = spec.first_output_ms ?? DEFAULT_FIRST_OUTPUT_MS;
     const watch = new StallWatch(stallMs, firstOutputMs, hooks ? () => hooks.checking() : undefined);
-    let result: Awaited<ReturnType<Sandbox["exec"]>>;
+    let result: Awaited<ReturnType<Sandbox["exec"]>>, soFar = ""; // soFar: stdout so far, for the live transcript (spec.live)
     try {
       result = await this.opts.sandbox.exec(spec.sandbox, buildClaudeArgs(spec, model, this.opts.claudeBin, bridge, [tmp], hooks?.settings), {
         env,
         stdin: spec.prompt,
         timeout_ms: spec.timeout_ms,
         signal: AbortSignal.any([spec.signal, watch.signal]),
-        onStdout: (chunk) => watch.feed(chunk),
+        onStdout: (chunk) => { watch.feed(chunk); if (spec.live) spec.live((soFar += chunk)); },
       });
     } finally {
       watch.stop();

@@ -177,6 +177,36 @@ describe("transcript api", () => {
     expect(r.body).not.toContain("EIO");
   });
 
+  it("a running run answers 200: an empty page before its first part is stored, its steps so far after", async () => {
+    const { d, store, storage } = await setup();
+    const it0 = (await store.createWorkItem({ ...issue(9), title: "Item 9" }, system)).item;
+    const r0 = await store.transition({ id: it0.id, expected_version: it0.version, patch: {}, actor: system, reason: "x", enqueue: { kind: "implement", idempotency_key: "live" } });
+    if (!r0.ok) throw new Error(r0.reason);
+    const queued = (await store.listRuns(it0.id))[0]!;
+    const q = await body(d, path(it0.id, queued.id));
+    expect(q).toMatchObject({ run: { status: "queued" }, parts: [], format: null, size: 0, next: null, steps: [] });
+
+    const run = (await store.claimRun({ worker_id: "host:1:3" as WorkerId, kinds: ["implement"], lease_ms: LEASE }))!;
+    const empty = await body(d, path(it0.id, run.id));
+    expect(empty).toMatchObject({ run: { id: run.id, status: "running" }, parts: [], part: "", format: null, size: 0, next: null, earlier: false, steps: [] });
+
+    const line = JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Reading the code first." }] } });
+    await storage.put(`transcripts/${it0.id}/${run.id}.json`, enc(`${line}\n`));
+    const so = await body(d, path(it0.id, run.id));
+    expect(so).toMatchObject({ run: { status: "running" }, parts: [""], format: "stream-json" });
+    expect(so.steps.map((s) => s.text)).toEqual(["Reading the code first."]);
+  });
+
+  it("without shared storage, a running run still answers its empty page and a finished one 404", async () => {
+    const { d, store, a } = await setup();
+    const it0 = (await store.createWorkItem({ ...issue(9), title: "Item 9" }, system)).item;
+    await store.transition({ id: it0.id, expected_version: it0.version, patch: {}, actor: system, reason: "x", enqueue: { kind: "implement", idempotency_key: "live" } });
+    const run = (await store.claimRun({ worker_id: "host:1:3" as WorkerId, kinds: ["implement"], lease_ms: LEASE }))!;
+    const { storage: _unused, ...bare } = d;
+    expect((await body(bare, path(it0.id, run.id))).steps).toEqual([]);
+    expect((await get(bare, path(a.item.id, a.run.id))).status).toBe(404);
+  });
+
   it("is GET and HEAD only", async () => {
     const { d, a } = await setup();
     expect((await get(d, path(a.item.id, a.run.id), "HEAD")).status).toBe(200);

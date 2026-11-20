@@ -24,7 +24,8 @@ import type { KeepAwake } from "../interfaces/keep-awake.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 import { STORE_BRANCH, type ToolCallContext, type ToolResult } from "../interfaces/tool-broker.js";
 import { checkWrapperSource, wrapperSeedFields } from "./toolchain-seeds.js";
-import { AGENT_FAILED, HOST_SLEEP_MS, INDEX_SIZE, KINDS, LIVE_REPORT_PATHS, type LocalRoute, NETWORK_PAUSED_BY, NO_HOOKS, NO_USAGE, PAUSABLE_KINDS, type ResumePlan, RunFailure, RunPaused, type RunScratch, TEST_WORKERS_ENV, TRANSCRIPT_FAIL_RULES, TRUSTED_GIT_ENV, WARM_FAILED, WARM_KINDS, WORKER_INDEX_ENV, type WorkerDeps, addUsage, continues, fenced, gitIdentity, gitVerb, prTitle, type PrText, routeFor, runPushIntents, tail, threadDelivery, testWorkerShare, toolsNamed, untrustedGitConfig } from "./support.js";
+import { LiveTranscript } from "./live-transcript.js";
+import { AGENT_FAILED, HOST_SLEEP_MS, INDEX_SIZE, KINDS, LIVE_REPORT_PATHS, type LocalRoute, NETWORK_PAUSED_BY, NO_HOOKS, NO_USAGE, PAUSABLE_KINDS, type ResumePlan, RunFailure, RunPaused, type RunScratch, TEST_WORKERS_ENV, TRUSTED_GIT_ENV, WARM_FAILED, WARM_KINDS, WORKER_INDEX_ENV, type WorkerDeps, addUsage, continues, fenced, gitIdentity, gitVerb, prTitle, type PrText, routeFor, runPushIntents, tail, threadDelivery, testWorkerShare, toolsNamed, untrustedGitConfig } from "./support.js";
 
 /** Agent plane host: claims runs, executes them in a Sandbox, reports outcomes. Never decides a transition; the controller does that from the outcome. Holds nothing between runs. */
 export class Worker {
@@ -709,15 +710,17 @@ export class Worker {
   }
 
   /**
-   * The toolchain's warm step (design 05-sandbox.md, issue #334): `warm_command` in the run folder before the
-   * run's first agent step, as the worker (its tool env: the owner's HOME and caches, and the network), with the
-   * slot env and no credential or test database. It fills the caches the agent then reads offline. A failure ends the run before any agent starts, naming the command.
+   * The toolchain's warm step (design 05-sandbox.md, issue #334), once per run of a warm kind: `warm_command` in
+   * the run folder before the first agent step (resolve calls it on the branch tip before its merge), as the worker
+   * (its tool env: the owner's HOME and caches, and the network), with the slot env and no credential or test database. It fills the caches the agent then reads offline. A failure ends the run before any agent starts, naming the command.
    */
-  async warm(run: Run, handle: SandboxHandle, signal: AbortSignal, cmd: readonly string[]): Promise<void> {
+  async warmOnce(run: Run, handle: SandboxHandle, signal: AbortSignal): Promise<void> {
+    const s = this.scratch.get(run);
+    if (!this.cfg.toolchain || !s || s.warmed || !WARM_KINDS.includes(run.kind)) return;
     const round = await runChecks({
       sandbox: this.d.sandbox,
       handle,
-      commands: [cmd],
+      commands: [this.cfg.toolchain.warm_command],
       env: { ...this.d.toolEnv, ...this.slotEnv() },
       timeout_ms: this.cfg.run_timeout_ms,
       signal,
@@ -728,6 +731,7 @@ export class Worker {
     if (f) {
       throw new RunFailure(WARM_FAILED, `toolchain warm_command \`${commandText(f.command)}\` ${f.how}; no agent started`, true, f.tail ? { output_tail: f.tail } : {});
     }
+    s.warmed = true;
   }
 
   async agent(
@@ -759,10 +763,7 @@ export class Worker {
     if (tool_grants.length > 0 && !this.d.runner.exposes_tools) {
       throw new RunFailure(TOOLS_NOT_EXPOSED, toolsNotExposedMessage(tool_grants));
     }
-    if (this.cfg.toolchain && s && !s.warmed && WARM_KINDS.includes(run.kind)) {
-      await this.warm(run, handle, signal, this.cfg.toolchain.warm_command);
-      s.warmed = true;
-    }
+    await this.warmOnce(run, handle, signal);
     if (session) s?.sessions.add(session.id);
     if (s) s.step_session = session?.id ?? null;
     // The system prompt and tools are the role's (src/worker/roles/<role>.role.ts), never the run kind's own choice.
@@ -770,6 +771,7 @@ export class Worker {
     await this.packChecks("before_agent", run, item, handle, signal);
     const on_tool_call = role.gate_hooks && this.packGate("on_tool_call", run, item, handle);
     const liveBefore = await this.liveUntracked(handle);
+    const live = new LiveTranscript(this.d, { item: item.id, run: run.id, step }); // the output so far, while the step runs
     const result = await this.d.runner.run({
       run_id: run.id, work_item_id: item.id, role: run.kind,
       sandbox: handle,
@@ -781,14 +783,15 @@ export class Worker {
       timeout_ms: this.cfg.run_timeout_ms,
       stall_ms: this.cfg.stall_ms ?? STALL_DEFAULTS.stall_ms,
       first_output_ms: this.cfg.first_output_ms ?? STALL_DEFAULTS.first_output_ms,
-      signal: pause ? AbortSignal.any([signal, pause]) : signal,
+      signal: AbortSignal.any([signal, live.stop.signal, ...(pause ? [pause] : [])]),
+      live: live.push,
       ...declared,
       ...role,
       ...(on_tool_call ? { gate_hooks: { ...role.gate_hooks!, on_tool_call } } : {}),
       env_allowlist: { ...role.env_allowlist, ...this.slotEnv() },
       ...readOnlyRunFields(this.cfg), ...(await wrapperSeedFields(this.cfg, this.d, handle, this.slotEnv())), // design 05-sandbox.md: read-only fields, wrapper seeds
       ...(session ? { session } : {}),
-    });
+    }).finally(() => live.close());
     // Counted before anything below can fail the run, so a failed run keeps what this call used.
     const meter = this.meters.get(run);
     if (meter) addUsage(meter, result.usage);
@@ -799,16 +802,8 @@ export class Worker {
       this.d.log.info("gate hook sent the agent back", { run_id: run.id, step: step ?? "", hook: b.hook, check: b.check.slice(0, 200), attempt: b.attempt });
     }
 
-    // G5 before the transcript is stored anywhere. A known secret value or the canary fails the run; a pattern hit
-    // alone (a token-shaped test fixture a failing test printed) only keeps the transcript out of storage, since the commit, PR and comment scans still stop that text from leaving.
-    const scan = await this.d.scanner.scan("log", result.transcript);
-    const rules = scan.clean ? [] : scan.findings.map((f) => f.rule);
-    if (rules.some((r) => TRANSCRIPT_FAIL_RULES.includes(r))) throw new RunFailure("egress_blocked", rules.join(","));
-    if (rules.length > 0) {
-      this.d.log.warn("transcript not stored: the egress scan flagged it", { run_id: run.id, step: step ?? "", rules: rules.join(",") });
-    } else {
-      await this.d.storage.put(`transcripts/${item.id}/${run.id}${step ? `.${step}` : ""}.json`, new TextEncoder().encode(result.transcript));
-    }
+    // G5 before the transcript is stored anywhere; a fail rule (also one a partial write found) fails the run with egress_blocked.
+    await live.finish(result.transcript);
 
     // A fallback chain (design 2026-11-07): one line per member that gave the run to the next. The reason is a member's error text, scanned like any other before it reaches a log.
     for (const f of result.fallbacks ?? []) {
