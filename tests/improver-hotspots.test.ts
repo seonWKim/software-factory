@@ -73,7 +73,8 @@ async function setup() {
   const controller = new ControllerRole({ store, sources: [new LocalSource(store)], auth: new FakeAuth(), clock, config, log: silent, scanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner: noRunner, broker: new FakeBroker(), storage: new MemoryStorage(),
-    clock, config: { ...config, repo: { ...config.repo, path: repo.dir } }, prompts, log: silent, scanner, toolEnv: {}, awake: new NoKeepAwake(),
+    // The improve run claims while other runs are left running: the slot cap counts them, so allow a few.
+    clock, config: { ...config, workers: 4, repo: { ...config.repo, path: repo.dir } }, prompts, log: silent, scanner, toolEnv: {}, awake: new NoKeepAwake(),
   });
   let n = 0;
   /** A finished run of a new item: `kind` with `outcome`, finished now (then the clock moves a second). */

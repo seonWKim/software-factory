@@ -134,12 +134,17 @@ async function show(d: PauseDeps) {
 }
 
 const card = () => document.querySelector<HTMLElement>('[data-rule="P-0007"]')!;
+/** Picks a verdict from a card's ⋯ menu. */
+const choose = (el: HTMLElement, label: string) => {
+  fireEvent.click(within(el).getByRole("button", { name: /^Decide:/ }));
+  fireEvent.click(within(el).getByRole("menuitem", { name: label }));
+};
 const dialog = () => document.querySelector<HTMLDialogElement>("dialog[data-dialog]");
 
 /** Opens Promote on P-0007, waits for its lines and gives the reason; returns the confirm button. */
 async function openPromote(): Promise<HTMLButtonElement> {
   await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
-  fireEvent.click(within(card()).getByRole("button", { name: "Promote" }));
+  choose(card(), "Promote");
   await waitFor(() => expect(dialog()!.querySelector('[data-change="proposed"]')).not.toBeNull(), SLOW);
   fireEvent.change(within(dialog()!).getByRole("textbox", { name: "Reason" }), { target: { value: "clearer review" } });
   return within(dialog()!).getByRole("button", { name: "Send promote" }) as HTMLButtonElement;
@@ -209,7 +214,7 @@ describe("Rules page: promote of a proposal applies it", () => {
     writeFileSync(join(s.root, "show"), `# P-0007 Split the review prompt\ntarget: ${TARGET}\ncurrent: Review the change.\n`);
     await show(await deps());
     await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
-    fireEvent.click(within(card()).getByRole("button", { name: "Promote" }));
+    choose(card(), "Promote");
     expect((await within(dialog()!).findByRole("alert", {}, SLOW)).textContent).toBe("Promote is off: this proposal gives no Now and Proposed lines to apply.");
     fireEvent.change(within(dialog()!).getByRole("textbox", { name: "Reason" }), { target: { value: "x" } });
     expect((within(dialog()!).getByRole("button", { name: "Send promote" }) as HTMLButtonElement).disabled).toBe(true);

@@ -50,11 +50,16 @@ interface RawRun {
   checks: readonly Check[];
 }
 
-/** One row of the report: `msg` is the sentence Health shows; `detail`, when the check has one, the raw text behind Details. */
+/**
+ * One row of the report: `msg` is the sentence Health shows; `detail`, when the check has one, the raw text behind
+ * Details; `since` / `next`, when the check names a time, its ISO instants (the page shows them in local time).
+ */
 export interface HealthRow {
   status: CheckStatus;
   msg: string;
   detail?: string;
+  since?: string;
+  next?: string;
 }
 
 /** What GET /api/health returns. Every `msg` and `detail` has passed through the Withholder. */
@@ -72,7 +77,8 @@ const PATH = /(?<=^|[\s(])(?<!(?:GET|POST|PUT|PATCH|DELETE) )~?\/[^\s;,()'"]+/g;
 /** A check as a report row: its `plain` sentence, else its text with every path moved behind Details, else its text. */
 function row(c: Check): HealthRow {
   const plain = c.plain ?? c.msg.replace(PATH, "(path in Details)");
-  return plain === c.msg ? { status: checkStatus(c), msg: c.msg } : { status: checkStatus(c), msg: plain, detail: c.msg };
+  const times = { ...(c.since !== undefined && { since: c.since }), ...(c.next !== undefined && { next: c.next }) };
+  return plain === c.msg ? { status: checkStatus(c), msg: c.msg, ...times } : { status: checkStatus(c), msg: plain, detail: c.msg, ...times };
 }
 
 /**
@@ -175,8 +181,10 @@ export class HealthMonitor {
     const w = new Withholder(scanner);
     const checks: HealthRow[] = [];
     for (const c of reportRows(r.checks)) {
+      // `since` and `next` are instants the checks computed, never outside text: they pass as they are.
+      const { detail, ...rest } = c;
       const msg = (await w.plain(c.msg)).text;
-      checks.push(c.detail === undefined ? { status: c.status, msg } : { status: c.status, msg, detail: (await w.plain(c.detail)).text });
+      checks.push(detail === undefined ? { ...rest, msg } : { ...rest, msg, detail: (await w.plain(detail)).text });
     }
     return { checked_at: r.checked_at.toISOString(), checks };
   }

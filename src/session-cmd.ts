@@ -12,18 +12,21 @@ import { baseEnv } from "./impl/process/run-process.js";
 import type { WorkItemId } from "./core/types.js";
 import type { ExternalIdentity } from "./interfaces/auth-provider.js";
 
-export const SESSION_USAGE = `factory interactive start <issue number | work item id> [--spec <file>] [--transcript <url>] [--as <github login>]
+export const SESSION_USAGE = `factory interactive start <issue number | work item id> [--spec <file> [--wait]] [--transcript <url>] [--as <github login>]
                     status | note [<text>] [--tokens <n>] [--transcript <url>] | finish [--tokens <n>] | abandon [--tokens <n>]
   an interactive task: you handle the item in your own session (\`factory session\` is the same command)
+  --wait: on a NEW item, reserve it (triage skips it) and start once no running run shares its files (at most 2 hours)
   status, note, finish and abandon take a work item id first, or use the only open interactive task here (SET_UP.md)`;
 
 export type SessionAction =
-  | { cmd: "start"; target: string; spec?: string; transcript?: string; as?: string }
+  | { cmd: "start"; target: string; spec?: string; transcript?: string; as?: string; wait?: true }
   | { cmd: "status"; id?: WorkItemId }
   | { cmd: "note"; id?: WorkItemId; text?: string; tokens?: number; transcript?: string }
   | { cmd: "finish" | "abandon"; id?: WorkItemId; tokens?: number };
 
-const FLAGS = { start: ["--spec", "--transcript", "--as"], status: [], note: ["--tokens", "--transcript"], finish: ["--tokens"], abandon: ["--tokens"] };
+const FLAGS = { start: ["--spec", "--transcript", "--as", "--wait"], status: [], note: ["--tokens", "--transcript"], finish: ["--tokens"], abandon: ["--tokens"] };
+/** Flags that take no value. */
+const SWITCHES = ["--wait"];
 const ITEM_ID = /^wi_[A-Za-z0-9]+$/;
 
 export function parseSessionArgs(args: readonly string[]): SessionAction | { error: string } {
@@ -36,6 +39,7 @@ export function parseSessionArgs(args: readonly string[]): SessionAction | { err
     const a = rest[i]!;
     if (!a.startsWith("--")) pos.push(a);
     else if (!(FLAGS[c] as readonly string[]).includes(a)) return { error: `${a} is not a flag of session ${c}` };
+    else if (SWITCHES.includes(a)) flags[a] = "";
     else if (rest[i + 1] === undefined || rest[i + 1]!.startsWith("--")) return { error: `${a} needs a value` };
     else flags[a] = rest[++i]!;
   }
@@ -48,7 +52,7 @@ export function parseSessionArgs(args: readonly string[]): SessionAction | { err
   const after = id ? pos.slice(1) : pos;
   if (c === "start") {
     if (pos.length !== 1) return { error: "session start takes one issue number or work item id" };
-    return { cmd: c, target: pos[0]!, ...opt("spec", flags["--spec"]), ...transcript, ...opt("as", flags["--as"]) };
+    return { cmd: c, target: pos[0]!, ...opt("spec", flags["--spec"]), ...transcript, ...opt("as", flags["--as"]), ...opt("wait", flags["--wait"] === undefined ? undefined : true) };
   }
   if (c === "note") {
     const text = after.join(" ").trim();
@@ -126,7 +130,8 @@ export async function runSession(d: SessionCmdDeps, a: SessionAction): Promise<n
   if (!person) return out({ ok: false, lines: [`refused: no GitHub account ${JSON.stringify(login)} (use --as <login>)`] });
   const spec = a.spec === undefined ? undefined : await d.readSpec(a.spec).catch(() => null);
   if (spec === null) return out({ ok: false, lines: [`refused: cannot read the --spec file ${a.spec}`] });
-  const r = await d.sessions.start({ target: a.target, person, ...(spec !== undefined ? { spec } : {}), ...(a.transcript !== undefined ? { transcript: a.transcript } : {}) });
+  const wait = a.wait ? { wait: true, signal: d.stop, progress: d.print } : {};
+  const r = await d.sessions.start({ target: a.target, person, ...(spec !== undefined ? { spec } : {}), ...(a.transcript !== undefined ? { transcript: a.transcript } : {}), ...wait });
   const code = out(r);
   if (!r.ok || !r.file) return code;
   const why = await d.sessions.heartbeat(r.file, d.stop);

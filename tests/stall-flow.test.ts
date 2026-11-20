@@ -7,10 +7,10 @@ import { recurringStalls } from "../src/core/alarms.js";
 import { normalizeDetail, patternKey } from "../src/core/improver.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
-import { modelStallChecks, modelStallLine } from "../src/ui/factory-status.js";
+import { localWithOffset, modelStallChecks, modelStallLine } from "../src/ui/factory-status.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { FakeAuth, PROJECT, cleanScanner, pipeline } from "./helpers/fakes.js";
-import { issue, newStore, system, w1 } from "./helpers/store.js";
+import { issue, newStore, system, w1, w2 } from "./helpers/store.js";
 
 // Design §5 Restarts, stalls: a run that ends `stalled` (the model printed nothing for stall_ms) spends no
 // attempt and no restart. Its retry is queued under the step's key, and every claim pauses (`model_stall`)
@@ -147,7 +147,8 @@ describe("stalled runs", () => {
     const t2 = f.clock.now().getTime();
     expect(await f.store.getClaimPause("model_stall")).toBe(iso(t2 + PROBE_MS));
     expect(await f.w1.tick()).toBe(false);
-    expect(await modelStallLine(f.store)).toBe(`agents paused: model not answering since ${iso(f.stalledAt)}, next probe at ${iso(t2 + PROBE_MS)}`);
+    expect(await modelStallLine(f.store)).toBe(`agents paused: model not answering since ${localWithOffset(iso(f.stalledAt))}, next probe at ${localWithOffset(iso(t2 + PROBE_MS))}`);
+    expect(await modelStallChecks(f.store)).toEqual([{ ok: false, msg: "agents paused: model not answering", since: iso(f.stalledAt), next: iso(t2 + PROBE_MS) }]);
 
     f.clock.advance(PROBE_MS);
     await f.prober.tickModelProbe();
@@ -174,13 +175,127 @@ describe("stalled runs", () => {
     const again = f.clock.now().getTime();
     const p = await f.store.pauseClaims(iso(again + PROBE_MS), "model_stall");
     expect(p).toMatchObject({ started: true, resume_at: iso(again + PROBE_MS) });
-    expect(await modelStallLine(f.store)).toBe(`agents paused: model not answering since ${iso(again)}, next probe at ${iso(again + PROBE_MS)}`);
+    expect(await modelStallLine(f.store)).toBe(`agents paused: model not answering since ${localWithOffset(iso(again))}, next probe at ${localWithOffset(iso(again + PROBE_MS))}`);
     // A second stall during the same pause starts nothing and keeps the since time.
     f.clock.advance(1_000);
     expect(await f.store.pauseClaims(iso(again + 1_000 + PROBE_MS), "model_stall")).toMatchObject({ started: false });
     expect(await modelStallLine(f.store)).toBe(
-      `agents paused: model not answering since ${iso(again)}, next probe at ${iso(again + 1_000 + PROBE_MS)}`,
+      `agents paused: model not answering since ${localWithOffset(iso(again))}, next probe at ${localWithOffset(iso(again + 1_000 + PROBE_MS))}`,
     );
+  });
+});
+
+describe("one silent run or a silent model (decision of 2026-11-20)", () => {
+  const STALL_MS = 300_000;
+
+  /**
+   * Another item's review run is running (worker w2) and got model output `outputAgo` ms before item `a`'s implement
+   * run stalls; `outputAgo` null: it never got any. Then the stall is applied.
+   */
+  async function stallBeside(outputAgo: number | null, answers: (boolean | "throw")[] = []) {
+    let first = true;
+    const f = await pipeline({
+      implement: () => (first ? ((first = false), { status: "stalled", output: null, error: "silent" }) : { output: { summary: "s", next_steps: "n" } }),
+      // The other review run is left running: the slot cap counts every running run, so allow a few.
+      config: { workers: 4 },
+    });
+    const llm = probeLLM(answers);
+    const prober = new ControllerRole({ store: f.store, source: f.source, auth: new FakeAuth(), clock: f.clock, config: f.config, log: f.log, scanner: cleanScanner, llm });
+    const a = await f.submit();
+    await f.w1.tick(); // triage
+    await f.controller.tickRuns();
+    await f.store.createWorkItem(issue(300), system, { enqueue: { kind: "review", idempotency_key: "other-review" } });
+    const other = (await f.store.claimRun({ worker_id: w2, kinds: ["review"], lease_ms: 3_600_000 }))!;
+    if (outputAgo !== null) {
+      expect(await f.store.recordRunOutput(other.id, other.lease!.token)).toBe(true);
+      f.clock.advance(outputAgo);
+    }
+    const stalledAt = f.clock.now().getTime();
+    await f.w1.tick(); // implement: stalls
+    await f.controller.tickRuns();
+    return { ...f, a, other, llm, prober, stalledAt };
+  }
+
+  it("the worker stores a running run's last model output time from the runner's on_output, at most once per 30 s", async () => {
+    const seen: (string | null)[] = [];
+    let f: Awaited<ReturnType<typeof pipeline>> | null = null;
+    const read = async () => {
+      await new Promise((r) => setTimeout(r, 10)); // the write is not awaited by the runner's callback
+      seen.push(await f!.store.latestRunningOutput());
+    };
+    f = await pipeline({
+      implement: async (spec) => {
+        const start = f!.clock.now().toISOString();
+        spec.on_output!();
+        await read();
+        f!.clock.advance(10_000);
+        spec.on_output!(); // within 30 s of the last write: not written
+        await read();
+        f!.clock.advance(20_000);
+        spec.on_output!();
+        await read();
+        seen.push(start);
+        return { output: { summary: "s", next_steps: "n" } };
+      },
+    });
+    await f.submit();
+    await f.step();
+    const [start] = seen.splice(3);
+    expect(seen).toEqual([start, start, iso(Date.parse(start!) + 30_000)]);
+    // Once the run finished, it is no longer read.
+    expect(await f.store.latestRunningOutput()).toBeNull();
+  });
+
+  it("another run got output a minute ago: no global pause, only the silent run's item is held, claims go on", async () => {
+    const f = await stallBeside(60_000);
+    expect(await f.store.getClaimPause("model_stall")).toBeNull();
+    const [run, retry] = await f.runs(f.a, "implement");
+    expect(run!.outcome).toMatchObject({ status: "failed", error_code: AGENT_STALLED });
+    expect(retry).toMatchObject({ status: "queued", idempotency_key: retryKey(run!.idempotency_key) });
+    expect(await f.item(f.a)).toMatchObject({ stage: "RUNNING", blocked_on: "human", blocked_reason: "recurring_failure", restart_count: 0 });
+    const hold = (await f.store.listStateChanges(f.a.id)).at(-1)!;
+    expect(hold).toMatchObject({ reason: "recurring_failure", detail: { run_id: run!.id, failure: "stalled", held_until: iso(f.stalledAt + PROBE_MS) } });
+
+    // Claims go on for other items; the held item's retry waits.
+    await f.store.createWorkItem(issue(301), system, { enqueue: { kind: "triage", idempotency_key: "next-triage" } });
+    expect(await f.store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: 60_000 })).toBeNull();
+    const next = await f.store.claimRun({ worker_id: w1, kinds: ["triage", "implement"], lease_ms: 60_000 });
+    expect(next).toMatchObject({ kind: "triage", status: "running" });
+    expect(next!.work_item_id).not.toBe(f.a.id);
+
+    // The hold ends probe_interval_ms after the stall, and the retry is claimed then; no probe was asked.
+    f.clock.advance(PROBE_MS - 1);
+    await f.controller.tickAlarms();
+    expect(await f.item(f.a)).toMatchObject({ blocked_reason: "recurring_failure" });
+    f.clock.advance(1);
+    await f.controller.tickAlarms();
+    expect(await f.item(f.a)).toMatchObject({ stage: "RUNNING", blocked_on: "none", blocked_reason: null });
+    expect((await f.store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: 60_000 }))?.id).toBe(retry!.id);
+    await f.prober.tickModelProbe();
+    expect(f.llm.requests).toHaveLength(0);
+  });
+
+  it("every running run is silent past stall_ms: the global pause is set and the probe runs as before", async () => {
+    const f = await stallBeside(STALL_MS + 1, [true]);
+    expect(await f.store.getClaimPause("model_stall")).toBe(iso(f.stalledAt + PROBE_MS));
+    expect(await f.item(f.a)).toMatchObject({ blocked_on: "none" });
+    expect(await f.store.claimRun({ worker_id: w1, kinds: ["triage", "implement", "review"], lease_ms: 60_000 })).toBeNull();
+    f.clock.advance(PROBE_MS);
+    await f.prober.tickModelProbe();
+    expect(f.llm.requests).toHaveLength(1);
+    expect(await f.store.getClaimPause("model_stall")).toBeNull();
+  });
+
+  it("a running run that never got output does not count: the global pause is set", async () => {
+    const f = await stallBeside(null);
+    expect(await f.store.getClaimPause("model_stall")).toBe(iso(f.stalledAt + PROBE_MS));
+  });
+
+  it("a single silent running run sets the global pause, as when every run is silent", async () => {
+    const f = await stalled();
+    expect(await f.store.latestRunningOutput()).toBeNull();
+    expect(await f.store.getClaimPause("model_stall")).toBe(iso(f.stalledAt + PROBE_MS));
+    expect(await f.item(f.a)).toMatchObject({ blocked_on: "none" });
   });
 });
 
@@ -242,17 +357,31 @@ describe("who probes a due stall pause", () => {
 describe("the stall pause line", () => {
   it("factory status and the dashboard show it during a pause, and not without one", async () => {
     const f = await stalled();
-    const line = `agents paused: model not answering since ${iso(f.stalledAt)}, next probe at ${iso(f.stalledAt + PROBE_MS)}`;
-    // factory status
+    const line = `agents paused: model not answering since ${localWithOffset(iso(f.stalledAt))}, next probe at ${localWithOffset(iso(f.stalledAt + PROBE_MS))}`;
+    // factory status: local time with its offset, never an ISO instant
     expect(await modelStallLine(f.store)).toBe(line);
-    // the dashboard's health report (/api/health)
+    expect(line).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
+    // the dashboard's health report (/api/health): the instants as fields, none in the sentence
     const health = new HealthMonitor(() => modelStallChecks(f.store), f.clock, 0);
-    expect((await health.report(cleanScanner)).checks).toContainEqual({ status: "fail", msg: line });
+    expect((await health.report(cleanScanner)).checks).toContainEqual({
+      status: "fail", msg: "agents paused: model not answering", since: iso(f.stalledAt), next: iso(f.stalledAt + PROBE_MS),
+    });
 
     f.clock.advance(PROBE_MS);
     await f.prober.tickModelProbe();
     expect(await modelStallLine(f.store)).toBeNull();
     expect((await health.report(cleanScanner)).checks.map((c) => c.msg).join("\n")).not.toContain("agents paused");
+  });
+});
+
+describe("localWithOffset", () => {
+  it("prints an instant as local `YYYY-MM-DD HH:MM +HH:MM`, the same minute as the instant", () => {
+    const at = "2026-11-19T16:11:54.203Z";
+    const out = localWithOffset(at);
+    const m = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) ([+-]\d{2}:\d{2})$/.exec(out);
+    expect(m).not.toBeNull();
+    expect(Date.parse(`${m![1]}T${m![2]}:00${m![3]}`)).toBe(Date.parse("2026-11-19T16:11:00.000Z"));
+    expect(localWithOffset("soon")).toBe("soon");
   });
 });
 

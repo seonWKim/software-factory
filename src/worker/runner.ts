@@ -14,7 +14,7 @@ import { LiveSettings } from "../core/settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelRunKind, type ModelTable, isModelRunKind, modelClassFor } from "../core/model-choice.js";
 import { errorText, type LogFields } from "../core/log.js";
 import { type CheckRound, checkCommands, commandText, failingTestFiles, runChecks, withTestFiles } from "../core/checks.js";
-import { AGENT_STALLED, FORGE_AUTH, GITHUB_RATE_LIMIT, GITHUB_RATE_LIMITED, githubRateLimitReset, MODEL_STALL, PREFLIGHT_ACCESS, preflightCheck, RATE_LIMITED, branchFor, wipBranchFor, canAutoMerge, NETWORK, NETWORK_PROBE_MS, NETWORK_UNAVAILABLE, classifyNetwork, failureClass } from "../core/policy.js";
+import { FORGE_AUTH, GITHUB_RATE_LIMIT, GITHUB_RATE_LIMITED, githubRateLimitReset, PREFLIGHT_ACCESS, preflightCheck, RATE_LIMITED, branchFor, wipBranchFor, canAutoMerge, NETWORK, NETWORK_PROBE_MS, NETWORK_UNAVAILABLE, classifyNetwork, failureClass } from "../core/policy.js";
 import { incompleteLabel, lastPrNotes, prBody } from "../core/pr-body.js";
 import type { MergeIO } from "../core/mechanical.js";
 import { Read, type ToolSpec } from "../core/tools/index.js";
@@ -25,7 +25,7 @@ import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 import { STORE_BRANCH, type ToolCallContext, type ToolResult } from "../interfaces/tool-broker.js";
 import { checkWrapperSource, wrapperSeedFields } from "./toolchain-seeds.js";
 import { LiveTranscript } from "./live-transcript.js";
-import { AGENT_FAILED, HOST_SLEEP_MS, INDEX_SIZE, KINDS, LIVE_REPORT_PATHS, type LocalRoute, NETWORK_PAUSED_BY, NO_HOOKS, NO_USAGE, PAUSABLE_KINDS, type ResumePlan, RunFailure, RunPaused, type RunScratch, TEST_WORKERS_ENV, TRUSTED_GIT_ENV, WARM_FAILED, WARM_KINDS, WORKER_INDEX_ENV, type WorkerDeps, addUsage, continues, fenced, gitIdentity, gitVerb, prTitle, type PrText, routeFor, runPushIntents, tail, threadDelivery, testWorkerShare, toolsNamed, untrustedGitConfig } from "./support.js";
+import { AGENT_FAILED, HOST_SLEEP_MS, INDEX_SIZE, KINDS, LIVE_REPORT_PATHS, type LocalRoute, NETWORK_PAUSED_BY, NO_HOOKS, NO_USAGE, outputRecorder, PAUSABLE_KINDS, type ResumePlan, RunFailure, RunPaused, type RunScratch, TEST_WORKERS_ENV, TRUSTED_GIT_ENV, WARM_FAILED, WARM_KINDS, WORKER_INDEX_ENV, type WorkerDeps, addUsage, continues, fenced, gitIdentity, gitVerb, prTitle, type PrText, routeFor, runPushIntents, tail, threadDelivery, testWorkerShare, toolsNamed, untrustedGitConfig } from "./support.js";
 
 /** Agent plane host: claims runs, executes them in a Sandbox, reports outcomes. Never decides a transition; the controller does that from the outcome. Holds nothing between runs. */
 export class Worker {
@@ -173,10 +173,10 @@ export class Worker {
     if (this.d.active && !this.d.active()) return false;
     this.cfg = this.live.config();
     if (this.d.settings) this.runModels = this.live.models();
-    // Coordination weights (design §5, 2026-11-03; absent: the defaults) and the pool's slot cap (design §5 2026-11-18; a lone Worker: none).
+    // Coordination weights (design §5, 2026-11-03; absent: the defaults) and the factory's slot cap (design §5 2026-11-18), lone Workers too.
     const run = await this.d.store.claimRun({
       worker_id: this.d.id, kinds: KINDS, lease_ms: this.cfg.lease_ms, ...(this.cfg.coordination ? { coordination: this.cfg.coordination } : {}),
-      ...(this.plugins.peers ? { workers: { count: this.live.workers(), owners: this.plugins.peers } } : {}),
+      workers: { count: this.live.workers() },
     });
     if (!run?.lease) return false;
     this.holding = run.kind;
@@ -339,16 +339,6 @@ export class Worker {
       outcome = { ...outcome, reset_at: pause.resume_at };
       if (pause.started) {
         this.d.log.warn(`forge rate limited: implement, update and review runs paused until ${pause.resume_at}`, { ...log, resume_at: pause.resume_at });
-      }
-    }
-    if (outcome.status === "failed" && outcome.error_code === AGENT_STALLED) {
-      // The model printed nothing for stall_ms: every claim pauses until a probe on the cheap model answers, set
-      // before the outcome is stored, as for a rate limit (design §5 Restarts). The first probe is due after
-      // probe_interval_ms. `started` comes from the store's conditional write, so one worker logs the line.
-      const probeMs = this.cfg.probe_interval_ms ?? STALL_DEFAULTS.probe_interval_ms;
-      const pause = await this.d.store.pauseClaims(this.after(probeMs), MODEL_STALL);
-      if (pause.started) {
-        this.d.log.warn(`model not answering: all runs paused, first probe at ${pause.resume_at}`, { ...log, resume_at: pause.resume_at });
       }
     }
     if (outcome.status === "failed" && outcome.error_code === FORGE_AUTH) {
@@ -785,6 +775,7 @@ export class Worker {
       first_output_ms: this.cfg.first_output_ms ?? STALL_DEFAULTS.first_output_ms,
       signal: AbortSignal.any([signal, live.stop.signal, ...(pause ? [pause] : [])]),
       live: live.push,
+      on_output: outputRecorder(this.d, run, this.cfg.stall_ms ?? STALL_DEFAULTS.stall_ms),
       ...declared,
       ...role,
       ...(on_tool_call ? { gate_hooks: { ...role.gate_hooks!, on_tool_call } } : {}),
@@ -1029,7 +1020,6 @@ export interface WorkerPlugins {
   hooks?: readonly HookDescriptor[];
   pack_checks?: PackChecks;
   /** Refuses each imported MCP server a run is granted as `not_started` (design 11-plugin-import, owner answer 1); absent: none. */ imported_mcp_refusals?: (servers: readonly PackMcpServer[]) => Promise<readonly PackGrantRefusal[]>;
-  /** Every loop id of this Worker's pool, its own included: the claim caps their running runs (ClaimInput.workers); absent: no cap. */ peers?: readonly WorkerId[];
 }
 
 /** A run an enabled `before_run` hook or a pack check refused (a veto, a timeout or an error): a task failure, not retried as infra. */

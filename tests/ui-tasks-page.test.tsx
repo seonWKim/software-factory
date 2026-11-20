@@ -7,7 +7,7 @@ import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { EventRow } from "../web/src/api.js";
 import { PAGES, routeFor } from "../web/src/pages.js";
-import { SLOW, TOKEN, TasksPage, card, item, reset, row, s, show, show2, teardown, view } from "./ui-tasks-fixtures.js";
+import { SLOW, TOKEN, TasksPage, card, chooseMenu, item, menuItems, reset, row, s, show, show2, teardown, view } from "./ui-tasks-fixtures.js";
 
 // dayLabel lives in the groups module; the specifier is one the node type check skips (the page module is loaded the same way).
 const GROUPS_MODULE = "../web/src/views/tasks/groups.js";
@@ -49,8 +49,10 @@ describe("Tasks page", () => {
     expect(card("tk_soon").textContent).toContain("#home");
     expect(screen.getByRole("list", { name: "No date" }).textContent).toContain("tk_inbox");
     const built = within(card("tk_built"));
-    expect(built.getByRole("link", { name: "wi_1" }).getAttribute("href")).toBe("/app/items/wi_1");
-    expect(built.queryByRole("button", { name: /Build this/ })).toBeNull();
+    // No raw ID on the row: the work's state sits on the details line, under the title.
+    expect(card("tk_built").textContent).not.toContain("wi_1");
+    expect(card("tk_built").querySelector("[data-details] [data-work]")).not.toBeNull();
+    expect(menuItems(card("tk_built"))).not.toContain("Build this");
   });
 
   it("groups come in the order overdue, today, later days by date, no date, with today on the first page", async () => {
@@ -100,22 +102,24 @@ describe("Tasks page", () => {
     });
   });
 
-  it("Build this posts the task's ID with the token; a refusal stays beside the button", async () => {
+  it("Build this, first in an unbuilt task's menu, posts the task's ID with the token; a refusal shows on the row", async () => {
     await show();
-    fireEvent.click(within(card("tk_now")).getByRole("button", { name: "Build this: tk_now" }));
+    expect(menuItems(card("tk_now"))[0]).toBe("Build this");
+    chooseMenu(card("tk_now"), "Build this");
     await waitFor(() => expect(s.posts).toHaveLength(1));
     expect(s.posts[0]!.url).toBe("/api/v1/tasks/build");
     expect(new Headers(s.posts[0]!.init.headers).get("x-csrf-token")).toBe(TOKEN);
     expect(JSON.parse(String(s.posts[0]!.init.body))).toEqual({ id: "tk_now" });
     s.answer = { status: 409, body: { error: "no project is stored yet" } };
-    fireEvent.click(within(card("tk_late")).getByRole("button", { name: "Build this: tk_late" }));
+    chooseMenu(card("tk_late"), "Build this");
     expect((await within(card("tk_late")).findByRole("alert", undefined, SLOW)).textContent).toBe("no project is stored yet");
   });
 
-  it("with no commands actor there is no Build this button", async () => {
+  it("with no commands actor a row has no menu, so no Build this", async () => {
     s.current = view({ can_build: false });
     await show();
-    expect(screen.queryByRole("button", { name: /Build this/ })).toBeNull();
+    expect(card("tk_now").querySelector("[data-row-menu]")).toBeNull();
+    expect(document.querySelector("[data-task] [aria-haspopup=menu]")).toBeNull();
   });
 
   describe("calendar events leave the Tasks list (design 02-tasks)", () => {
@@ -339,10 +343,13 @@ describe("the description dialog (design 02-tasks and 09-dashboard-tasks)", () =
     expect(s.posts).toEqual([]);
   });
 
-  it("a built task's title opens the dialog too, which says the work item keeps the text it was built with; the ID still links", async () => {
+  // Owner feedback 2026-11-20: a built task's title goes to its work item's page; the description is in its menu.
+  it("a built task's title links to its work item's page, and Description in its menu opens the dialog, which says the work item keeps the text it was built with", async () => {
     await show();
-    expect(within(card("tk_built")).getByRole("link", { name: "wi_1" }).getAttribute("href")).toBe("/app/items/wi_1");
-    open("tk_built");
+    const link = within(card("tk_built")).getByRole("link", { name: "tk_built" });
+    expect(link.getAttribute("href")).toBe("/app/items/wi_1");
+    expect(within(card("tk_built")).queryByRole("button", { name: "Description: tk_built" })).toBeNull();
+    chooseMenu(card("tk_built"), "Description");
     expect(dialog()!.textContent).toContain("Built as wi_1: the work item keeps the text it was built with");
   });
 
@@ -382,4 +389,18 @@ describe("a built task's Work row: queued and pending states", () => {
       expect(within(card("tk_built")).queryByText("Ready to merge")).toBeNull();
     });
   }
+});
+
+// A row is checkbox, then the title on one line (cut with an ellipsis, the full title on hover), then the details and
+// state on a second line, then the menu: nothing beside the title takes its width (owner feedback 2026-11-20).
+describe("a task row's layout", () => {
+  it("keeps the title on one truncated line with its full text as a tooltip, and the details and state under it", async () => {
+    await show();
+    const title = card("tk_built").querySelector<HTMLElement>("a[title]")!;
+    expect(title.getAttribute("title")).toBe("tk_built");
+    expect(title.className).toContain("truncate");
+    const details = card("tk_built").querySelector<HTMLElement>("[data-details]")!;
+    expect(details.previousElementSibling).toBe(title.closest("div > *"));
+    expect(card("tk_built").className).not.toContain("flex-wrap");
+  });
 });

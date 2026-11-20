@@ -7,6 +7,15 @@ import { type FunctionComponent, type ReactElement, createElement } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AutoStop, SettingRow, SettingsView, SystemAction } from "../web/src/api.js";
 
+/** The items of a row's ⋯ menu as [label, data-action]; the menu is closed again after reading. */
+function menuOf(row: HTMLElement): [string | null, string | null][] {
+  const more = within(row).getByRole("button", { name: "More commands" });
+  fireEvent.click(more);
+  const items = within(row).getAllByRole("menuitem").map((m) => [m.textContent, m.getAttribute("data-action")] as [string | null, string | null]);
+  fireEvent.click(more);
+  return items;
+}
+
 // The last auto-mode stop (design 03-risk), shown beside the Mode toggle and on its alarm's Needs-you row (the Check
 // group, design 09-status-page): when and why, a link to its alarm, and one click back to auto through POST
 // /api/v1/settings, the row's primary action, with Failures as a link. A burst of agent-run failures stops nothing, so
@@ -107,18 +116,17 @@ describe("auto stop: red main", () => {
     expect(await turnAutoOn(section)).toEqual({ action: "set", key: "mode", value: '"auto"' });
   });
 
-  it("its alarm's Needs-you row is the alarm's own target: Turn auto back on is its primary action, Failures a link", async () => {
+  it("its alarm's Needs-you row is the alarm's own target: Turn auto back on is its button, Open on Failures its menu item", async () => {
     view = settingsView("manual", stop("red_main"));
     mount(checks([alarm(stop("red_main")), alarm()]));
     const line = (await screen.findByText(`Back to manual at ${time}: the checks failed on the base branch after a merge`)).closest("li")!;
     expect(line.id).toBe("alarm-al_1");
     expect(within(line).getByRole("link", { name: "See the alarm" }).getAttribute("href")).toBe("/app/#alarm-al_1");
-    expect(within(line).getByRole("link", { name: "Failures" }).getAttribute("href")).toBe("/app/failures");
-    expect(within(line).queryByRole("link", { name: "Open on Failures" })).toBeNull();
-    // The other alarm is its own row, whose primary action opens Failures.
-    const other = document.querySelectorAll("li")[1]!;
+    expect(menuOf(line)).toEqual([["Open on Failures", "failures"]]);
+    // The other alarm is its own row, whose menu opens Failures.
+    const other = document.querySelectorAll<HTMLElement>("li[data-check='alarm']")[1]!;
     expect(other.querySelector("[data-auto-stop]")).toBeNull();
-    expect(within(other).getByRole("link", { name: "Open on Failures" }).getAttribute("href")).toBe("/app/failures");
+    expect(menuOf(other)).toEqual([["Open on Failures", "failures"]]);
     expect(await turnAutoOn(line)).toEqual({ action: "set", key: "mode", value: '"auto"' });
   });
 });
@@ -148,7 +156,7 @@ describe("auto stop: a burst of agent-run failures", () => {
     cleanup();
     mount(checks([alarm()]));
     const line = document.querySelector<HTMLElement>("li[data-check='alarm']")!;
-    expect(within(line).getByRole("link", { name: "Open on Failures" }).getAttribute("href")).toBe("/app/failures");
+    expect(menuOf(line)).toEqual([["Open on Failures", "failures"]]);
     expect(line.querySelector("[data-auto-stop]")).toBeNull();
     expect(within(line).queryByRole("button", { name: "Turn auto back on" })).toBeNull();
   });

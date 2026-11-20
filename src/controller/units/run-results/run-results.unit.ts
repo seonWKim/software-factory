@@ -144,7 +144,7 @@ export class RunResultsUnit {
       if (run.kind === "improve") return ack(run.outcome?.status === "succeeded" ? "improve_done" : "improve_failed");
       // The run's full token count (design §6 Measurement); old succeeded rows keep the data.tokens they stored.
       const tokens = it.token_cost + runTokenCount(run);
-      if (!run.outcome || run.outcome.status !== "succeeded") return this.applyFailedRun(it, run);
+      if (!run.outcome || run.outcome.status !== "succeeded") return this.c.unit("model-probe").stallScope(it, run, await this.applyFailedRun(it, run));
       if (!this.c.unit("transitions").expects(it, run.kind)) return ack("run_ignored");
       const data = run.outcome.data;
       // The agent asked for a human (decided 2026-11-07): a finished run with data, never retried on its own.

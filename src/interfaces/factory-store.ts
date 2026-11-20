@@ -5,8 +5,7 @@ import type {
   Actor, BlockedOn, BudgetAnswer, BudgetCheckpoint, BudgetCheckpointId, ClaimDecision, ClaimPauseName, DependencyEdge, DependencyState, Tier,
   Handoff, FiledPattern, FiledPatternId, HostSleep, ImproveReport, ImproveReportId, ImproveWindow, Run, RunAttempt, RunId, RunInput, RunKind,
   RunOutcome, RunResume, RunStatus, SessionFinish, SourceRef, SourceType, StandingGate, StandingProposal, StandingRule, StateChange,
-  StateChangeDetail, Stage, Timestamp, UnreviewedMerge, UserId, Verdict, VerdictKind, VerdictSeverity, VerdictTarget, WorkItem, WorkItemId,
-  WorkItemPatch, WorkerId, WorkerPause,
+  StateChangeDetail, Stage, Timestamp, UnreviewedMerge, UserId, Verdict, VerdictKind, VerdictSeverity, VerdictTarget, WorkItem, WorkItemId, WorkItemPatch, WorkerId, WorkerPause,
 } from "../core/types.js";
 import type { AuthAction, AuthResource, LinkedAccount } from "./auth-provider.js";
 import type { SourceEvent } from "./source-adapter.js";
@@ -17,6 +16,8 @@ import type { CommandProposalStore } from "../core/interpret.js";
 import type { TaskStore } from "../core/tasks.js";
 import type { NoticeStore } from "../core/notifications.js";
 import type { PostedCommentReads } from "../core/reaction-verdict.js";
+import type { RunOutputStore } from "../core/stall.js";
+import type { SessionReservation, SessionReservationStore } from "../core/session.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
@@ -274,7 +275,7 @@ export interface ClaimInput {
   lease_ms: number;
   /** The coordination threshold and weights (design §5, 2026-11-03). Absent: DEFAULT_COORDINATION. */
   coordination?: CoordinationSettings;
-  workers?: { count: number; owners: readonly WorkerId[] }; // The slot cap (design §5, 2026-11-18): live `workers`, every loop id of this process. Absent: none.
+  workers?: { count: number }; // The slot cap (design §5, 2026-11-18; per factory since 2026-11-20): the live `workers`, counted over every process's running runs. Absent: none.
 }
 /** The slot cap's kinds: any kind claims below `workers`; a short one also in one slot beyond while every slot holds a capped one. */
 export const SHORT_KINDS: readonly RunKind[] = ["merge-check", "review", "triage"], CAPPED_KINDS: readonly RunKind[] = ["implement", "resolve"];
@@ -330,9 +331,8 @@ export interface StartSessionInput {
 export type StartSessionResult =
   /** `cancelled`: the item's queued triage runs. `taken_over`: its queued implement-type runs the start cancelled. */
   | { ok: true; item: WorkItem; run: Run; state_change: StateChange; cancelled: RunId[]; taken_over: RunId[] }
-  | { ok: false; reason: "not_found" }
-  | { ok: false; reason: "version_conflict"; current: WorkItem }
-  | { ok: false; reason: "session_open" | "implement_run"; run_id: RunId }
+  | { ok: false; reason: "not_found" } | { ok: false; reason: "version_conflict"; current: WorkItem }
+  | { ok: false; reason: "session_open" | "implement_run"; run_id: RunId } | { ok: false; reason: "reserved"; reservation: SessionReservation }
   /** A running implement-type or interactive run of another item shares `paths` with this item's allowed_paths. */
   | { ok: false; reason: "overlap"; work_item_id: WorkItemId; run_id: RunId; paths: string[] };
 /** What `session note`, `--tokens`, `--transcript` and `finish` write (scanned by the caller). `note` is appended, the rest replace. */
@@ -354,7 +354,7 @@ export interface NoticeMessageStore {
   getNoticeQuestion(id: string): Promise<NoticeQuestion | null>;
 }
 
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore {
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes
@@ -551,9 +551,9 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
 
   /**
    * `session start` (design §5, 2026-11-01), one transaction under the claim lock. Refused with nothing written while
-   * the item has a running interactive or implement-type run, or a running implement-type or interactive run of another
-   * item overlaps its allowed_paths (after `patch`). Else: the transition (detail `taken_over`), the item's queued triage
-   * and implement-type runs cancelled (the latter with TAKEOVER_OUTCOME), one `interactive` run inserted running (attempt 1, lease token 1).
+   * the item has a running interactive or implement-type run or another owner's reservation (`reserved`), or a running implement-type or interactive run of
+   * another item overlaps its allowed_paths (after `patch`). Else: the transition (detail `taken_over`), the item's queued triage and implement-type runs
+   * cancelled (the latter with TAKEOVER_OUTCOME), one `interactive` run inserted running (attempt 1, lease token 1), the item's reservation ended.
    */
   startSession(input: StartSessionInput): Promise<StartSessionResult>;
   /** Writes `update` on the interactive run while it is `running` with this `token`; lease_lost otherwise. */

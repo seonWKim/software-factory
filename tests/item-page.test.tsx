@@ -246,6 +246,30 @@ describe("item page: In short, decisions and the approve confirm (issue #526)", 
     expect(radios[2]!.checked).toBe(true);
   });
 
+  it("a layout decision shows each option's sketch in monospace with the default marked; the others stay plain text", async () => {
+    const SKETCH_A = "+--------+\n| Header |\n+--------+\n| Cards  |\n+--------+";
+    const SKETCH_B = "+--------+\n| Header |\n+--------+\n| List   |\n+--------+";
+    const layout = { question: "Which layout?", options: [SKETCH_A, SKETCH_B], default: SKETCH_B, reason: "A list scans faster.", owner_only: false, layout: true };
+    SPEC.decisions.push(layout);
+    try {
+      serve("spec_pending");
+      mount("/app/items/wi_d");
+      const group = await screen.findByRole("radiogroup", { name: "4. Which layout?" });
+      const sketches = [...group.querySelectorAll("pre")];
+      expect(sketches.map((p) => p.textContent)).toEqual([SKETCH_A, SKETCH_B]);
+      for (const p of sketches) expect(p.className).toContain("font-mono");
+      const radios = within(group).getAllByRole("radio") as HTMLInputElement[];
+      expect(radios.map((r) => r.checked)).toEqual([false, true, false]);
+      expect(radios[1]!.parentElement!.textContent).toBe(`${SKETCH_B}(default)`);
+      expect(group.closest("fieldset")!.hasAttribute("data-layout")).toBe(true);
+      const plain = screen.getByRole("radiogroup", { name: "1. Fail the job, or only warn?" });
+      expect(plain.querySelector("pre")).toBeNull();
+      expect(plain.closest("fieldset")!.hasAttribute("data-layout")).toBe(false);
+    } finally {
+      SPEC.decisions.pop();
+    }
+  });
+
   it("spec waiting for approval: the confirm names the answers and the defaults taken, then sends N: lines and the note", async () => {
     serve("spec_pending");
     mount("/app/items/wi_d");
