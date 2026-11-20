@@ -14,7 +14,7 @@ interface DisclosureProps extends Omit<HTMLAttributes<HTMLDetailsElement>, "chil
   /** Called with the new state each time the reader opens or closes it. */
   onToggle?: (open: boolean) => void;
   /** The summary's text colour; default `text-text-2`. A panel on a pill fill passes its own `text-pill-*-fg`. */
-  summaryTone?: string;
+  summaryTone?: string | undefined;
 }
 
 /**
