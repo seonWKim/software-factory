@@ -19,7 +19,7 @@ import { MERGE_CONFLICT_PENDING } from "./resolve.js";
 import { PHASES_OPEN, SPLIT_FILING } from "./split.js";
 import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "./standing.js";
 import type { TriagePhase } from "./outputs.js";
-import type { Actor, RunInput, RunKind, SpecKind, StateChange, StateChangeDetail, Tier, Timestamp, WorkItem, WorkItemPatch } from "./types.js";
+import { type Actor, RECURRING_FAILURE, type Run, type RunInput, type RunKind, type SpecKind, type StateChange, type StateChangeDetail, type Tier, type Timestamp, type WorkItem, type WorkItemPatch } from "./types.js";
 
 /** A transition as a check decides it: the store's input without the item and its version. */
 export type Transition = Omit<TransitionInput, "id" | "expected_version">;
@@ -303,6 +303,18 @@ export function conflictParked(it: Pick<WorkItem, "stage" | "blocked_on" | "bloc
   return it.stage === "REVIEW" && it.blocked_on === "human" && it.blocked_reason === MERGE_CONFLICT_PENDING;
 }
 
+/**
+ * Held for `recurring_failure` (design 05-alarms) in REVIEW, and its last failed run is a resolve run: its resolve on
+ * the merge conflict stalled or failed, so the local merge treats it as parked on that conflict (design §5 Merge
+ * conflict, 2026-11-21) and a branch the owner fixed by hand goes to its fresh review.
+ */
+export function resolveHeld(it: Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason">, runs: readonly Pick<Run, "kind" | "outcome" | "finished_at" | "updated_at">[]): boolean {
+  if (it.stage !== "REVIEW" || it.blocked_on !== "human" || it.blocked_reason !== RECURRING_FAILURE) return false;
+  const failed = runs.filter((r) => r.outcome?.status === "failed");
+  const last = failed.reduce<(typeof failed)[number] | null>((a, r) => (a === null || (r.finished_at ?? r.updated_at) >= (a.finished_at ?? a.updated_at) ? r : a), null);
+  return last?.kind === "resolve";
+}
+
 /** Which merge an item takes (design 05-sources): a local item with no PR the local merge, any other its PR's merge. */
 export function mergeRoute(it: Pick<WorkItem, "source" | "change_ref">): "local" | "pr" {
   return it.source.type === LOCAL_SOURCE && it.change_ref === null ? "local" : "pr";
@@ -314,10 +326,11 @@ export type ChangeName = (change_ref: string) => string;
 /**
  * Why the local merge does not apply to `it` (`canMerge`: a sandbox that merges locally), or null. A local item parked
  * on its merge conflict passes too (design §5 Merge conflict, 2026-11-20): the controller probes its branch as it is,
- * so a branch fixed by hand goes to a fresh review and one that still conflicts is refused with its files.
+ * so a branch fixed by hand goes to a fresh review and one that still conflicts is refused with its files. `held`: it
+ * is held after its resolve failed (resolveHeld), which passes like a parked one (2026-11-21).
  */
-export function localMergeRefusal(it: WorkItem, canMerge: boolean, name: ChangeName): string | null {
-  if (!(awaitingMerge(it) || conflictParked(it)) || it.change_ref !== null) {
+export function localMergeRefusal(it: WorkItem, canMerge: boolean, name: ChangeName, held = false): string | null {
+  if (!(awaitingMerge(it) || conflictParked(it) || held) || it.change_ref !== null) {
     const at = [it.stage, it.blocked_reason].filter(Boolean).join(", ");
     return it.change_ref !== null
       ? `${it.id} has ${name(it.change_ref)}: merge the PR instead`
@@ -432,7 +445,9 @@ export async function requestTransition<A>(d: RequestDeps<A>, r: AppCommandReque
       await d.store.markAppCommandRequest(r.seq, null);
       return { outcome: "already_done", item: it, label: ROW_LABELS.merging };
     }
-    const refusal = mergeRoute(it) === "local" ? localMergeRefusal(it, d.localMerge !== false, d.changeName) : prMergeRefusal(it, d.forge !== false, d.changeName);
+    const refusal = mergeRoute(it) === "local"
+      ? localMergeRefusal(it, d.localMerge !== false, d.changeName, it.blocked_reason === RECURRING_FAILURE && resolveHeld(it, await d.store.listRuns(it.id)))
+      : prMergeRefusal(it, d.forge !== false, d.changeName);
     return refusal !== null ? finish(it, refusal) : { outcome: "queued", item: it, label: ROW_LABELS.merging };
   }
   const actor: Actor = { kind: "user", id: r.actor };

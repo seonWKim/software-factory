@@ -12,7 +12,7 @@ import {
 } from "../../../core/local-merge.js";
 import { gatePathTouched } from "../../../core/improver.js";
 import { lastPrNotes } from "../../../core/pr-body.js";
-import { type Actor, type Run, type SourceRef, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
+import { type Actor, RECURRING_FAILURE, type Run, type SourceRef, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { ExternalIdentity } from "../../../interfaces/auth-provider.js";
 import { LOCAL_GIT_HOST, basePushOutcome, basePushTarget, gitTarget, type ActionRow } from "../../../outbound/index.js";
 import { AUTO, CONFLICT_PENDING, SYSTEM, awaitingMerge } from "../support.js";
@@ -26,6 +26,14 @@ const HAND_FIXED = "conflict_fixed_by_hand";
  * core, to keep this unit off another legacy import (dependency-direction ratchet). */
 function conflictParked(it: Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason">): boolean {
   return it.stage === "REVIEW" && it.blocked_on === "human" && it.blocked_reason === CONFLICT_PENDING;
+}
+/** Held for recurring_failure in REVIEW after its last failed run, a resolve run (core resolveHeld, copied here for the
+ * same reason): its hand fix is accepted like a parked one (design §5 Merge conflict, 2026-11-21). */
+function resolveHeld(it: Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason">, runs: readonly Run[]): boolean {
+  if (it.stage !== "REVIEW" || it.blocked_on !== "human" || it.blocked_reason !== RECURRING_FAILURE) return false;
+  const failed = runs.filter((r) => r.outcome?.status === "failed");
+  const last = failed.reduce<Run | null>((a, r) => (a === null || (r.finished_at ?? r.updated_at) >= (a.finished_at ?? a.updated_at) ? r : a), null);
+  return last?.kind === "resolve";
 }
 /** mergeLocal's `who` for auto mode's merge: no person, actor `system:auto`. */
 const AUTO_MERGE = { auto: true } as const;
@@ -91,7 +99,10 @@ export class LocalMergeUnit {
         : await this.c.unit("auth").authorize(who, "approve_merge", item.id);
     // The merge gate (core request-transition, through the commands unit): waiting for its merge, no PR, a sandbox that merges.
     const sandbox = this.c.k.d.sandbox;
-    const gate = "refuse" in principal ? null : this.c.unit("commands").merge.localRefusal(item, canMergeLocal(sandbox));
+    // An item held after its resolve failed is parked on that conflict: the gate checks it as parked.
+    const parked = conflictParked(item) || (item.blocked_reason === RECURRING_FAILURE && resolveHeld(item, await this.c.k.reader.listRuns(item.id)));
+    const asGated = parked ? { ...item, blocked_reason: CONFLICT_PENDING } : item;
+    const gate = "refuse" in principal ? null : this.c.unit("commands").merge.localRefusal(asGated, canMergeLocal(sandbox));
     let refusal: string;
     if ("refuse" in principal) refusal = principal.refuse;
     // The gate refuses when the sandbox cannot merge; its check again here only narrows the sandbox's type.
@@ -99,10 +110,10 @@ export class LocalMergeUnit {
     else {
       const conflicts = await sandbox.localConflicts({ repo: repo.path, base_ref: repo.base_branch, branch });
       if (conflicts === null) refusal = `the factory repo has no local branch \`${branch}\``;
-      else if (conflicts.length > 0 && conflictParked(item)) refusal = conflictRefusal(item.id, branch, repo.base_branch, conflicts, "parked");
+      else if (conflicts.length > 0 && parked) refusal = conflictRefusal(item.id, branch, repo.base_branch, conflicts, "parked");
       else if (conflicts.length > 0) refusal = conflictRefusal(item.id, branch, repo.base_branch, conflicts, await this.resolveRefused(item) ? "resolving" : "person");
-      else if (conflictParked(item)) {
-        // Fixed by hand (design §5 Merge conflict, 2026-11-20): the branch as it is gets a fresh review first.
+      else if (parked) {
+        // Fixed by hand (design §5 Merge conflict, 2026-11-20; a resolve-held item too, 2026-11-21): the branch as it is gets a fresh review first.
         const r = await this.handFixed(item, principal.user_id, branch, detail);
         if (r === null) return null;
         refusal = r;
@@ -118,8 +129,8 @@ export class LocalMergeUnit {
   }
 
   /**
-   * A local item parked on its merge conflict whose branch now merges cleanly into the local base (design §5 Merge
-   * conflict, 2026-11-20): the owner fixed it by hand. No resolve run: the item goes back to REVIEW with one fresh
+   * A local item parked on its merge conflict, or held after its resolve failed (2026-11-21), whose branch now merges
+   * cleanly into the local base (design §5 Merge conflict, 2026-11-20): the owner fixed it by hand; the hold is lifted. No resolve run: the item goes back to REVIEW with one fresh
    * review keyed on the branch's head, so a second `factory merge` on the same head queues nothing new; the review's
    * pass sets merge_pending, and `factory merge` then lands it. Returns the refusal, or null when the review is queued.
    */
@@ -129,7 +140,7 @@ export class LocalMergeUnit {
     if (head === null) return `the head of \`${branch}\` could not be read; run \`factory merge ${item.id}\` again`;
     const input = await this.c.unit("checks-gate").reviewInput(null, item.id);
     const actor: Actor = by === AUTO_ACTOR ? AUTO : { kind: "user", id: by as UserId };
-    await this.c.unit("transitions").decide(item.id, (it) => (conflictParked(it) && it.change_ref === null
+    await this.c.unit("transitions").decide(item.id, async (it) => ((conflictParked(it) || resolveHeld(it, await this.c.k.reader.listRuns(it.id))) && it.change_ref === null
       ? {
           patch: { blocked_on: "none", blocked_reason: null },
           actor,
