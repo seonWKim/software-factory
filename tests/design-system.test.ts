@@ -63,6 +63,14 @@ describe("design tokens", () => {
     expect(ui("card.tsx")).toMatch(/CARD_TITLE = "[^"]*\btext-base font-semibold"/);
   });
 
+  it("a Disclosure summary is text-2 by default, and the update note's on the info fill passes text-pill-info-fg", () => {
+    expect(readFileSync(join(WEB_SRC, "components", "ui", "disclosure.tsx"), "utf8")).toMatch(/summaryTone = "text-text-2"/);
+    const banner = readFileSync(join(WEB_SRC, "views", "system-banner.tsx"), "utf8");
+    const note = banner.slice(banner.indexOf("export function UpdateNote"), banner.indexOf("export function FactoryRevision"));
+    expect(note).toMatch(/bg-pill-info-bg/);
+    expect(note).toMatch(/<Disclosure summaryTone="text-pill-info-fg"/);
+  });
+
   it("no file under web/src except tokens.css holds a hex colour", () => {
     // Six or eight digits always; three or four only with a letter a-f, so "#192" is not flagged.
     const hex = /#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|(?=[0-9]*[a-fA-F])[0-9a-fA-F]{3,4})\b/;

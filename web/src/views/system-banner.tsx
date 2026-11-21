@@ -89,7 +89,7 @@ export function UpdateNote({ factory }: { factory: FactoryState | null | undefin
           {count === null ? t("update.noteNoCount", { rev: short }) : count === 1 ? t("update.noteOne", { rev: short }) : t("update.note", { rev: short, count })}
         </p>
         {subjects.length > 0 && (
-          <Disclosure summary={t("update.changes")}>
+          <Disclosure summaryTone="text-pill-info-fg" summary={t("update.changes")}>
             <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs wrap-anywhere">
               {subjects.map((s, i) => <li key={i}>{s}</li>)}
             </ul>
