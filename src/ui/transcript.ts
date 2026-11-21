@@ -1,8 +1,9 @@
 // A stored run transcript for the app (design §9, issue #303): GET /api/v1/items/<id>/runs/<run>/transcript.
 // The worker stores each agent step's output (already egress-scanned on `log`) under
 // `transcripts/<item>/<run>.json` (a second step of the same run: `<run>.<step>.json`); this module reads it back
-// one byte range at a time, never the whole file. runs.transcript_url is not used: it holds the external link a
-// person gives for an interactive session.
+// one byte range at a time, never the whole file. While the run is queued or running, that file holds its output so
+// far (rewritten at most every 5 s), and a run with none stored yet answers an empty page. runs.transcript_url is
+// not used: it holds the external link a person gives for an interactive session.
 //
 // Paging: a page reads at most PAGE_BYTES through SharedStorage.getRange. A forward page at byte `offset` reads
 // from `offset - 1`, so it can tell whether `offset` starts a line (the byte before it is a newline) without
@@ -331,7 +332,10 @@ async function budgeted(scanner: EgressScanner, rows: readonly LineSteps[]): Pro
 export async function transcript(d: TranscriptDeps, item: WorkItemId, runId: string, params: URLSearchParams): Promise<TranscriptResult> {
   const run = (await d.store.listRuns(item)).find((r) => r.id === runId);
   if (!run) return fail(404, "No such run for this work item.");
-  if (!d.storage) return fail(404, "No stored transcript for this run.");
+  // A queued or running run's transcript is written while it runs (the worker's live transcript): until its first
+  // part is stored, it answers an empty page rather than 404, so the app shows it waiting and polls.
+  const live = run.status === "queued" || run.status === "running";
+  if (!d.storage && !live) return fail(404, "No stored transcript for this run.");
 
   const filterRaw = params.get("filter");
   if (filterRaw !== null && filterRaw !== "" && !(STEP_FILTERS as readonly string[]).includes(filterRaw)) {
@@ -343,11 +347,15 @@ export async function transcript(d: TranscriptDeps, item: WorkItemId, runId: str
   const offset = Number(offsetRaw);
   const tail = params.get("tail") === "1";
 
-  let parts: string[];
+  let parts: string[] = [];
   try {
-    parts = runParts(await d.storage.list(itemPrefix(item)), item, run.id);
+    if (d.storage) parts = runParts(await d.storage.list(itemPrefix(item)), item, run.id);
   } catch {
     return fail(500, "The transcript could not be read.");
+  }
+  if (live && parts.length === 0) {
+    const value = { run: await runInfo(d, run), parts, part: "", format: null, size: 0, mode: tail ? "tail" : "forward", filter, start: 0, next: null, earlier: false, steps: [] };
+    return { status: 200, value };
   }
   const part = params.get("part") ?? parts[0] ?? "";
   if (!parts.includes(part)) return fail(404, "No stored transcript for this run.");

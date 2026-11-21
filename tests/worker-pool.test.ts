@@ -2,7 +2,11 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { WORKER_INDEX_BASE_ENV, build, loadConfig, maxWorkers, workerCount, workerIndexBase } from "../src/compose.js";
+import { WORKER_INDEX_BASE_ENV } from "../src/interfaces/updater.js";
+import { build } from "../src/compose.js";
+import { loadConfig } from "../src/load-config.js";
+import { maxWorkers, workerCount } from "../src/core/settings.js";
+import { workerIndexBase } from "../src/config-values.js";
 import { CODE_VERSION_ENV } from "../src/interfaces/updater.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import type { Logger } from "../src/core/log.js";
@@ -17,8 +21,9 @@ import type { KeepAwake } from "../src/interfaces/keep-awake.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import { runDevChild } from "../src/supervisor.js";
 import { issue, newStore, system } from "./helpers/store.js";
-import {
-  FakeBroker, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, config, prompts, recordingLog, silent, triageSpec, waitFor, fakeRepoLookup } from "./helpers/fakes.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, prompts, recordingLog, silent, triageSpec, waitFor, fakeRepoLookup } from "./helpers/fakes/config.js";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -215,9 +220,9 @@ describe("worker pool", () => {
     for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
     expect(s.started()).toBe(1);
     expect(await s.store.listRunsByStatus(["queued"], 10)).toHaveLength(1);
-    const owners = ["host:42:0", "host:42:1", "host:42:2"];
     const pooled = s.claimRun.mock.calls.slice(1).map(([input]) => input); // the first is this test's own claim
-    expect(pooled.every((input) => input.workers?.count === 1 && input.workers.owners.join() === owners.join())).toBe(true);
+    // Every claim passes the live cap only: the store counts every process's running runs, not a list of owners.
+    expect(pooled.every((input) => JSON.stringify(input.workers) === JSON.stringify({ count: 1 }))).toBe(true);
     // The loop above `workers` claims; the one after it never runs.
     expect(pooled.map((input) => input.worker_id)).toContain("host:42:1");
     expect(pooled.map((input) => input.worker_id)).not.toContain("host:42:2");

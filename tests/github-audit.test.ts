@@ -11,9 +11,10 @@ import { OwnerAuth } from "../src/core/authorize.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
-import {
-  FakeBroker, FakeGitHubClient, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, config, issueRef, prompts, recordingLog, triageSpec,
-} from "./helpers/fakes.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeGitHubClient } from "./helpers/fakes/github.js";
+import { FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, issueRef, prompts, recordingLog, triageSpec } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 /** The factory user an approver's GitHub account is linked to. */

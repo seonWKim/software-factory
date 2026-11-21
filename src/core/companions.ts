@@ -33,12 +33,16 @@ export const INDEX_FOLDERS: readonly PathCompanion[] = [
   { when: "docs/plugins.md", also: ["docs/plugins/"] },
 ];
 
+/** The generated i18n catalog barrel: allowed only when the answer names it (a new area file). */
+const I18N_BARREL = "web/src/i18n/en.ts";
+
 /**
  * The built-in rules (decided 2026-11-18): the companions of one `files_to_change` path, read from the path alone,
- * since triage has no clone. A design topic file adds its History file; a web view or component adds the i18n area
- * file its name maps to and the generated catalog barrel `web/src/i18n/en.ts` (`npm run i18n:catalog`), so a new
- * area file can be joined in; a source file under `src/` adds the test named after it; a migration directly under
- * `src/<owner>/migrations/` adds that owner's `src/<owner>/table-docs.ts`.
+ * since triage has no clone. A design topic file adds its History file; a web view or component adds only the i18n
+ * area file its name maps to; the generated catalog barrel `web/src/i18n/en.ts` (`npm run i18n:catalog`) is added
+ * only when `files_to_change` names it, as triage does for a new area file (decided 2026-11-20); a source file under
+ * `src/` adds the test named after it; a migration directly under `src/<owner>/migrations/` adds that owner's
+ * `src/<owner>/table-docs.ts`.
  */
 const COMPANION_RULES: readonly ((file: string) => string[])[] = [
   (file) => {
@@ -49,8 +53,9 @@ const COMPANION_RULES: readonly ((file: string) => string[])[] = [
     const area =
       /^web\/src\/components\/([^/.]+)\.tsx$/.exec(file)?.[1] ??
       /^web\/src\/views\/(?:([^/]+)\/[^/]+|([^/.-]+)[^/]*)\.tsx$/.exec(file)?.slice(1).find((a) => a !== undefined);
-    return area === undefined ? [] : [`web/src/i18n/en/${area}.ts`, "web/src/i18n/en.ts"];
+    return area === undefined ? [] : [`web/src/i18n/en/${area}.ts`];
   },
+  (file) => (file === I18N_BARREL ? [file] : []),
   (file) => {
     if (file.endsWith(".d.ts")) return [];
     const m = /^src\/(?:.+\/)?([^/.]+)[^/]*\.(tsx?)$/.exec(file);

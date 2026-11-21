@@ -75,6 +75,21 @@ export interface SpecDecision {
   default: string | null;
   reason: string | null;
   owner_only: boolean;
+  /** What picking an option changes; [] when no option changes anything (and on an older spec). */
+  option_changes: OptionChange[];
+  /** A layout decision: each option is a text sketch, shown in monospace. Absent on any other decision. */
+  layout?: boolean;
+}
+
+/**
+ * One option's changes to the spec: the paths it needs beyond the allowed paths, the done-when lines it changes,
+ * and those of its paths the item's allowed_paths do not cover yet (an approve with it is refused until `+paths`).
+ */
+export interface OptionChange {
+  option: string;
+  extra_paths: string[];
+  done_when: string[];
+  uncovered_paths: string[];
 }
 
 export interface ItemCommand {
@@ -85,6 +100,8 @@ export interface ItemCommand {
   allowed: boolean;
   /** Why not, in the controller's refusal words; null when allowed. */
   reason: string | null;
+  /** The item stopped the same way three times or more: its main action is Revise or Reject, not Retry (primaryOf). */
+  repeated_stop?: boolean;
 }
 
 /** A stored proposal with its pending commands, each as its typed line and the item it is for. */

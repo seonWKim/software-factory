@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { RunOutcome, WipRef } from "../src/core/types.js";
 import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import { STORE_BRANCH } from "../src/interfaces/tool-broker.js";
-import { pipeline } from "./helpers/fakes.js";
+import { pipeline } from "./helpers/harness.js";
 
 // Design §5 Restarts, stopped runs keep their work: an implement run that stops mid-work (rate_limited,
 // agent_stalled, agent_timed_out) keeps its commits on `<branch_prefix>wip/<item id>/<run id>`, and its retry runs

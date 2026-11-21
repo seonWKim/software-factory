@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { alarmConfig, loadConfig } from "../src/compose.js";
+import { alarmConfig } from "../src/config-values.js";
+import { loadConfig } from "../src/load-config.js";
 import { ConfigKeyError, unknownConfigKeys } from "../src/config-keys.js";
 import { DEFAULT_COORDINATION } from "../src/core/coordination.js";
 import {
@@ -28,7 +29,7 @@ import type { UserId } from "../src/core/types.js";
 import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
 import { LiveIntakeLabel } from "../src/impl/github/intake-label.js";
 import { settingsChecks } from "../src/setup.js";
-import { config } from "./helpers/fakes.js";
+import { config } from "./helpers/fakes/config.js";
 import { RecordingGitHubClient } from "./helpers/github.js";
 import { newStore } from "./helpers/store.js";
 

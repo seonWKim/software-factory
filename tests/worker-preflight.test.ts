@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { WorkItemId, WorkerId } from "../src/core/types.js";
 import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import { GitHubError, type GitHubClient } from "../src/impl/github/github-client.js";
-import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import type { ToolCallContext } from "../src/interfaces/tool-broker.js";
-import { cleanScanner, pipeline } from "./helpers/fakes.js";
+import { cleanScanner } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 // The implement preflight (design §5 Restarts): push access, the PR API and the base fetch are checked before
@@ -87,7 +87,6 @@ async function brokerFor(answer: (method: string, path: string) => unknown) {
       return answer(method, path);
     },
   } as unknown as GitHubClient;
-  const credentials = { token: async () => null } as unknown as GitHubCredentials;
   const broker = new GitHubToolBroker({
     client, store, scanner: cleanScanner, clock: { now: () => new Date() } as never,
     repo: { owner: "o", name: "r" }, branchPrefix: "factory/",

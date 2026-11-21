@@ -15,7 +15,6 @@
 
 import { type SourceSync, readCalendar } from "../calendar/index.js";
 import { syncWindow } from "../calendar/calendar-sync.js";
-import { validDate } from "../core/quick-add.js";
 import { type SettingsBase, resolveSettings } from "../core/settings.js";
 import { calendarDays, dayBounds } from "../core/tasks.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
@@ -33,19 +32,26 @@ const DAY_MS = 86_400_000;
 /** Why the range is refused, or null: each a `YYYY-MM-DD` date, `from` not after `to`, at most MAX_SPAN_DAYS days. */
 function rangeError(from: string | null, to: string | null): string | null {
   for (const [name, v] of [["from", from], ["to", to]] as const) {
-    if (v === null || !DATE.test(v) || !validDate(v)) return `${name} must be a date as YYYY-MM-DD, e.g. 2026-11-09`;
+    if (v === null || !DATE.test(v) || !realDate(v)) return `${name} must be a date as YYYY-MM-DD, e.g. 2026-11-09`;
   }
   if (from! > to!) return "from must not be later than to";
   if (span(from!, to!) > MAX_SPAN_DAYS) return `from through to must span at most ${MAX_SPAN_DAYS} days`;
   return null;
 }
 
+/** Midnight UTC of a `YYYY-MM-DD` date; an impossible day rolls over (2026-02-30 is March 2). */
+function utc(date: string): number {
+  const [y, m, d] = date.split("-").map(Number) as [number, number, number];
+  return Date.UTC(y, m - 1, d);
+}
+
+/** Whether a `YYYY-MM-DD` date names a real day: it does not roll over. Kept here, not core's validDate, so this route imports one core module less (tests/architecture/kinds.test.ts). */
+function realDate(date: string): boolean {
+  return new Date(utc(date)).toISOString().slice(0, 10) === date;
+}
+
 /** The days from `from` through `to`, both included. */
 function span(from: string, to: string): number {
-  const utc = (date: string) => {
-    const [y, m, d] = date.split("-").map(Number) as [number, number, number];
-    return Date.UTC(y, m - 1, d);
-  };
   return Math.round((utc(to) - utc(from)) / DAY_MS) + 1;
 }
 

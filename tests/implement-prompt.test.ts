@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { renderRequest, renderWorkItem } from "../src/worker/support.js";
 import type { WorkItem } from "../src/core/types.js";
-import { alice, issueRef, pipeline, triageSpec } from "./helpers/fakes.js";
+import { alice, issueRef, triageSpec } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 
 // The implement prompt's "Original request" section (design 04-agents.md, Given values).
 

@@ -11,7 +11,9 @@ import type { LLMProvider } from "../src/interfaces/llm-provider.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { issue, newStore, system } from "./helpers/store.js";
-import { FakeAuth, FakeBroker, FakeSandbox, MemoryStorage, PROJECT, cleanScanner, config, prompts, silent } from "./helpers/fakes.js";
+import { FakeAuth, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { PROJECT, cleanScanner, config, prompts, silent } from "./helpers/fakes/config.js";
 
 const DAY = 86_400_000;
 

@@ -11,7 +11,7 @@ import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type UiSettings, newCsrfToken, parseWrite, readSettings, storeProjectResolver } from "../src/ui/settings-api.js";
 import type { UiDeps } from "../src/ui/server.js";
-import { PROJECT } from "./helpers/fakes.js";
+import { PROJECT } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 /** The file: max_diff_lines 1000 for every project, and o/r's block with max_diff_files 10. */

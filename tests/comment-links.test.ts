@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { RunOutcome, WorkItem } from "../src/core/types.js";
-import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubClient } from "../src/impl/github/github-client.js";
 import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
-import type { SecretStore } from "../src/interfaces/secret-store.js";
-import { FakeAuth, FakeSource, alice, cleanScanner, config, gates, issueRef, silent, triageSpec } from "./helpers/fakes.js";
-import { issue, newStore, system, w1 } from "./helpers/store.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, gates, issueRef, silent, triageSpec } from "./helpers/fakes/config.js";
+import { newStore, system, w1 } from "./helpers/store.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 
 // The spec and failure comment URLs land on the item once the outbox delivers the comment (issue #282): the

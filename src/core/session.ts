@@ -1,5 +1,5 @@
 import { refusalReply } from "./authorize.js";
-import { checkedLines, commandText, runChecks } from "./checks.js";
+import { PrePushSelection, checkedLines, commandText, failingTestFiles, runChecks } from "./checks.js";
 import type { FactoryConfig } from "./config.js";
 import { requiredTier } from "./diff-gate.js";
 import type { Logger } from "./log.js";
@@ -7,12 +7,12 @@ import { parseTriage } from "./outputs.js";
 import { IMPLEMENT_KINDS, INTERACTIVE, SESSION_ABANDONED, SESSION_RELEASED, branchFor, effectiveTier, floorTier } from "./policy.js";
 import { NumstatError, diffGates, scopeGate } from "./pre-push.js";
 import { type LearnedSettingsSource, settingValues } from "./settings.js";
-import type { Run, RunId, SourceRef, SourceType, WorkItem, WorkItemId, WorkItemPatch } from "./types.js";
-import { type LocalRoute, TRUSTED_GIT_ENV, hasTool, prTitle, routeFor, runPushIntents } from "./worker-deps.js";
+import type { Run, RunId, SourceRef, SourceType, Timestamp, WorkItem, WorkItemId, WorkItemPatch } from "./types.js";
+import { type LocalRoute, TRUSTED_GIT_ENV, baseRefspec, hasTool, prTitle, routeFor, runPushIntents } from "./worker-deps.js";
 import type { AuthProvider, ExternalIdentity } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
-import type { FactoryStore, SessionUpdate, StartSessionResult } from "../interfaces/factory-store.js";
+import type { FactoryStore, SessionUpdate, StartSessionInput, StartSessionResult } from "../interfaces/factory-store.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 import { PREFLIGHT, STORE_BRANCH, type ToolBroker, type ToolCallContext } from "../interfaces/tool-broker.js";
 
@@ -41,6 +41,28 @@ export interface SessionDeps {
   files: SessionFiles; issues: IssueLookup; toolEnv: Readonly<Record<string, string>>; owner: string; learned?: LearnedSettingsSource; local?: LocalRoute;
 }
 
+/**
+ * A waiting `session start --spec <file> --wait` on a NEW item (design 05-interactive-sessions, 2026-11-21): while it
+ * holds, no claim takes the item's runs and only `owner` (the waiting session's lease owner) starts a session on it.
+ */
+export interface SessionReservation { work_item_id: WorkItemId; owner: string; expires_at: Timestamp }
+export type ReserveResult =
+  | { ok: true; reservation: SessionReservation }
+  | { ok: false; reason: "not_found" | "not_new" }
+  | { ok: false; reason: "reserved"; reservation: SessionReservation };
+/** How long a reservation holds: a constant, no setting. Past it the item goes to triage as usual. */
+export const RESERVATION_MS = 2 * 60 * 60 * 1000;
+
+/** Every method one transaction under the claim lock; an expired reservation counts as none and is deleted when met. */
+export interface SessionReservationStore {
+  /** Reserves a NEW item nothing blocks for `owner`, until `ttl_ms` from now. `owner`'s own reservation is kept as it is (no renewal). */
+  reserveItem(input: { id: WorkItemId; owner: string; ttl_ms: number }): Promise<ReserveResult>;
+  /** The item's reservation in effect, or null. */
+  getReservation(id: WorkItemId): Promise<SessionReservation | null>;
+  /** Ends `owner`'s reservation of the item; false when `owner` held none in effect. */
+  releaseReservation(id: WorkItemId, owner: string): Promise<boolean>;
+}
+
 /** `ok: false`: refused, and nothing the command would write was written (a finish records its reasons only). */
 export interface SessionResult { ok: boolean; lines: string[] }
 
@@ -52,8 +74,12 @@ const LOCAL_NEEDS_LOCAL_BROKER = "a local item is committed only through the loc
 export class Sessions {
   constructor(private readonly d: SessionDeps) {}
 
-  /** Opens a session on an issue number (`12`, `#12`) or a work item id, or refuses with nothing changed. */
-  async start(o: { target: string; person: ExternalIdentity; spec?: string; transcript?: string }): Promise<SessionResult & { file?: SessionFile }> {
+  /**
+   * Opens a session on an issue number (`12`, `#12`) or a work item id, or refuses with nothing changed. `wait` (with
+   * `spec`, on a NEW item): reserves the item and waits while running work shares its files (waitAndBegin); `progress`
+   * gets the waiting lines at once, `signal` stops the wait.
+   */
+  async start(o: { target: string; person: ExternalIdentity; spec?: string; transcript?: string; wait?: boolean; signal?: AbortSignal; progress?: (line: string) => void }): Promise<SessionResult & { file?: SessionFile }> {
     const cfg = this.d.config;
     const settings = (project: string) => settingValues(project, cfg.settings, this.d.learned);
     // The spec first, with the triage parser: an invalid file refuses before anything is read or created.
@@ -94,25 +120,75 @@ export class Sessions {
       }));
     }
     const it = item!;
-    const why = await this.startRefusal(it, spec !== null);
+    // --wait reserves a NEW item for a spec of its own: anything else keeps today's refusal (design 05-interactive-sessions, 2026-11-21).
+    const why = await this.startRefusal(it, spec !== null) ?? (o.wait && !spec ? "--wait applies only to a NEW item started with --spec <file>" : null);
     if (why) return refused(`refused: ${why}`);
-
-    // A NEW item takes the owner's spec (as triage would write it); a RUNNING one keeps its approved spec.
-    const patch: WorkItemPatch = spec
+    const ctx = { actor, created, transcript_url: transcript?.url ?? null, patch: (cur: WorkItem): WorkItemPatch => spec
+      // A NEW item takes the owner's spec (as triage would write it); a RUNNING one keeps its approved spec.
       ? {
           problem: spec.problem, done_criteria: spec.done_criteria, desired_output: spec.desired_output, scope: spec.scope,
           allowed_paths: spec.allowed_paths, files_to_change: spec.files_to_change, stage: "RUNNING", blocked_on: "none", blocked_reason: null,
-          tier: effectiveTier(spec.tier, floorTier(spec.allowed_paths, settings(it.project).floors), it.tier),
+          tier: effectiveTier(spec.tier, floorTier(spec.allowed_paths, settings(cur.project).floors), cur.tier),
         }
-      : { blocked_on: "none", blocked_reason: null };
-    const source = spec ? "owner" : await this.specSource(it.id);
+      : { blocked_on: "none", blocked_reason: null } };
+    if (!o.wait) {
+      const r = await this.begin(it, ctx);
+      if (!("busy" in r)) return r;
+      await routeFor(this.d, it).sandbox.destroy(r.handle).catch(() => undefined);
+      return refused(`refused: ${r.busy}`);
+    }
+    const held = await this.d.store.reserveItem({ id: it.id, owner: this.d.owner, ttl_ms: RESERVATION_MS });
+    if (!held.ok) return refused(`refused: ${held.reason === "reserved" ? reservedBy(held.reservation) : "the item changed while the session was starting; run the command again"}`);
+    return this.waitAndBegin(it, ctx, held.reservation, o);
+  }
+
+  /**
+   * Tries the start every WAIT_POLL_MS (the injected Clock) while a running run of another item shares the item's files,
+   * keeping the reservation and the run folder. Ends at the start, a refusal, the reservation's end, or `signal` (Ctrl-C),
+   * which releases the reservation now; every end but the start leaves the item to triage as usual.
+   */
+  private async waitAndBegin(it: WorkItem, ctx: BeginContext, held: SessionReservation, o: { signal?: AbortSignal; progress?: (line: string) => void }): Promise<SessionResult & { file?: SessionFile }> {
+    const sandbox = routeFor(this.d, it).sandbox;
+    let handle: SandboxHandle | undefined;
+    const end = async (...lines: string[]) => {
+      await this.d.store.releaseReservation(it.id, this.d.owner);
+      if (handle) await sandbox.destroy(handle).catch(() => undefined);
+      return refused(...lines);
+    };
+    for (let cur = it, first = true; ; first = false) {
+      const r = await this.begin(cur, ctx, handle);
+      if (!("busy" in r)) return r.ok ? r : end(...r.lines);
+      handle = r.handle;
+      if (first) {
+        this.d.log.info("session waits for its files", { work_item_id: it.id, expires_at: held.expires_at });
+        o.progress?.(`waiting: ${r.busy}`);
+        o.progress?.(`${it.id} is reserved for this session until ${held.expires_at}, so triage skips it; the session starts once no running run shares its files. Ctrl-C stops waiting and releases the item.`);
+      }
+      if (!(await this.d.clock.sleep(WAIT_POLL_MS, o.signal).then(() => true, () => false))) return end("stopped waiting: the reservation is released and the item goes to triage as usual");
+      if ((await this.d.store.getReservation(it.id))?.owner !== this.d.owner) {
+        return end(`refused: the reservation ended (it holds ${RESERVATION_MS / 3_600_000} hours at most); the item goes to triage as usual`);
+      }
+      const next = await this.d.store.getWorkItem(it.id);
+      const why = next ? await this.startRefusal(next, true) : "the item is gone";
+      if (why || !next) return end(`refused: ${why}`);
+      cur = next;
+    }
+  }
+
+  /** One start attempt with the item as it is now. `busy`: a running run of another item shares its files at the workers' cost (sessionHold); the run folder is kept for the next try. */
+  private async begin(it: WorkItem, c: BeginContext, made?: SandboxHandle): Promise<(SessionResult & { file?: SessionFile }) | { busy: string; handle: SandboxHandle }> {
+    const cfg = this.d.config;
+    const patch = c.patch(it);
+    const source = patch.done_criteria ? "owner" : await this.specSource(it.id);
     if ((patch.allowed_paths ?? it.allowed_paths).length === 0) return refused("refused: the item has no allowed_paths, so a session could not pass the scope gate");
 
     const branch = branchFor(it, cfg.branch_prefix);
-    const handle = await routeFor(this.d, it).sandbox.create({ repo: cfg.repo.path, branch, base_ref: cfg.repo.base_branch });
-    const r = await this.d.store.startSession({ id: it.id, expected_version: it.version, actor, patch, reason: SESSION_STARTED, detail: { spec_source: source }, owner: this.d.owner, lease_ms: cfg.lease_ms, transcript_url: transcript?.url ?? null });
+    const handle = made ?? await routeFor(this.d, it).sandbox.create({ repo: cfg.repo.path, branch, base_ref: cfg.repo.base_branch });
+    const { actor } = c;
+    const r = await this.d.store.startSession({ id: it.id, expected_version: it.version, actor, patch, reason: SESSION_STARTED, detail: { spec_source: source }, owner: this.d.owner, lease_ms: cfg.lease_ms, transcript_url: c.transcript_url, ...(cfg.coordination ? { coordination: cfg.coordination } : {}) });
+    if (!r.ok && r.reason === "overlap") return { busy: await this.storeRefusal(r), handle };
     if (!r.ok) {
-      await this.d.sandbox.destroy(handle).catch(() => undefined);
+      await routeFor(this.d, it).sandbox.destroy(handle).catch(() => undefined);
       return refused(`refused: ${await this.storeRefusal(r)}`);
     }
     const file: SessionFile = { work_item_id: it.id, run_id: r.run.id, token: r.run.lease!.token, branch, folder: { id: handle.id, workdir: handle.workdir, base_sha: handle.base_sha ?? null } };
@@ -122,7 +198,7 @@ export class Sessions {
     // Taking over: the store cancelled the queued implement-type runs only after every refusal check passed (design §5 Restarts).
     if (r.taken_over.length > 0) lines.push(`took over the item: cancelled the queued worker run${r.taken_over.length > 1 ? "s" : ""} ${r.taken_over.join(", ")}`);
     lines.push(`branch: ${branch}`, `run folder: ${handle.workdir}`, `lease until ${r.run.lease!.expires_at}; kept while this runs. Ctrl-C: the lease expires and the item is released.`);
-    return { ok: true, file, lines: [...(created ? [`created work item ${it.id} for ${it.source.id}`] : []), ...lines, `finish with: factory interactive finish ${it.id}`] };
+    return { ok: true, file, lines: [...(c.created ? [`created work item ${it.id} for ${it.source.id}`] : []), ...lines, `finish with: factory interactive finish ${it.id}`] };
   }
 
   private async startRefusal(item: WorkItem, withSpec: boolean): Promise<string | null> {
@@ -145,9 +221,10 @@ export class Sessions {
   private async storeRefusal(r: Exclude<StartSessionResult, { ok: true }>): Promise<string> {
     if (r.reason === "overlap") {
       const other = await this.d.store.getWorkItem(r.work_item_id);
-      return `running work on ${other?.source.id ?? r.work_item_id} (run ${r.run_id}) overlaps the allowed_paths: ${r.paths.join(", ")}`;
+      return `running work on ${other?.source.id ?? r.work_item_id} (run ${r.run_id}) overlaps at cost ${r.cost} (max_coordination_cost ${r.max_cost}): ${r.paths.join(", ")}`;
     }
     if (r.reason === "not_found" || r.reason === "version_conflict") return "the item changed while the session was starting; run the command again";
+    if (r.reason === "reserved") return reservedBy(r.reservation);
     return r.reason === "session_open" ? `the item already has an open session (run ${r.run_id})` : `the item has an implement-type run (${r.run_id})`;
   }
 
@@ -210,7 +287,9 @@ export class Sessions {
   }
 
   /**
-   * The gates in order: scope, size, floor, then `repo.test_command` in the run folder (skipped after a failed gate).
+   * The gates in order: scope, size, floor, then `repo.test_command` in the run folder (skipped after a failed gate),
+   * narrowed by `repo.test_selection` to the test files the diff reaches when that key is set.
+   * Every diff (commits, gates, test selection) is against gateBase: only the item's own changes count.
    * A failure lists the reasons, records them as the last finish, keeps the session open and pushes nothing. All
    * pass: the branch stored through the item's broker, the push and PR recorded as keyed intents (a local item: its
    * local branch, no PR), then the run completes as succeeded; the controller moves the item to REVIEW with a review
@@ -228,8 +307,10 @@ export class Sessions {
     const reasons: string[] = [];
     let paths: string[] = [];
     let commits = 0;
+    let base = "";
     try {
-      const base = file.folder.base_sha ?? (await git(["rev-parse", "--verify", "--end-of-options", `origin/${cfg.repo.base_branch}^{commit}`])).trim();
+      const start = file.folder.base_sha ?? (await git(["rev-parse", "--verify", "--end-of-options", `origin/${cfg.repo.base_branch}^{commit}`])).trim();
+      base = await this.gateBase(handle, item, start);
       const dirty = await git(["status", "--porcelain", "-z", "--untracked-files=normal"]);
       if (dirty.replace(/\0/g, "").trim() !== "") reasons.push("uncommitted changes in the run folder: commit or remove them (only commits are pushed)");
       commits = (await git(["rev-list", `${base}..HEAD`])).split("\n").filter(Boolean).length;
@@ -249,9 +330,18 @@ export class Sessions {
     const test = commandText(cfg.repo.test_command);
     if (reasons.length > 0) return this.refuseFinish(file, reasons, [`tests: \`${test}\` not run (an earlier gate failed)`]);
     const signal = o.signal ?? new AbortController().signal;
-    const checked = await runChecks({ sandbox: this.d.sandbox, handle, commands: [cfg.repo.test_command], env: { ...this.d.toolEnv }, timeout_ms: cfg.run_timeout_ms, signal, redact: [] });
+    // The test command on the test files the branch's diff reaches in enforce mode, whole in shadow mode (design §4,
+    // test selection); no `repo.test_selection`: the whole command. A finish counts toward the mode switch when it
+    // passes, or at once when it shows a miss; a refused finish without one is not counted, so a retry counts once.
+    const sel = await PrePushSelection.open(this.d.store, cfg.repo, item.project, (line) => this.d.log.info(line, { work_item_id: item.id, run_id: file.run_id }));
+    const commands = await sel.commands([cfg.repo.test_command], git, base);
+    const checked = sel.saw(await runChecks({ sandbox: this.d.sandbox, handle, commands, env: { ...this.d.toolEnv }, timeout_ms: cfg.run_timeout_ms, signal, redact: [] }));
     if (o.signal?.aborted) return this.refuseFinish(file, ["tests: stopped before they finished"]);
-    if (checked.failed) return this.refuseFinish(file, [`tests: \`${test}\` ${checked.failed.how}`]);
+    if (!checked.failed || sel.misses.length > 0) await sel.note(this.d, item.project, file.run_id);
+    if (checked.failed) {
+      const shown = await this.failureLines(checked.failed.tail);
+      return this.refuseFinish(file, [`tests: \`${test}\` ${checked.failed.how}`], shown.before, shown.after);
+    }
 
     if (this.forgeForLocal(item)) return this.refuseFinish(file, [LOCAL_NEEDS_LOCAL_BROKER]);
     // Every gate passed: the store through the broker, which fences on this run's lease and scans what it sends.
@@ -280,7 +370,7 @@ export class Sessions {
     await this.d.store.updateSession(file.run_id, file.token, { last_finish: { ok: true, reasons: [], pr_number: null } });
     const done = await this.d.store.completeRun(file.run_id, file.token, {
       status: "succeeded", summary: "interactive session finished",
-      data: { pr_number: null, pr_url: null, commits, files: paths.slice(0, MAX_PR_FILES), ...(pr_intent ? { pr_pending: true, pr_intent } : {}) },
+      data: { pr_number: null, pr_url: null, commits, files: paths.slice(0, MAX_PR_FILES), ...(pr_intent ? { pr_pending: true, pr_intent } : {}), test_selection: sel.record() ?? undefined },
     });
     if (!done.ok) return refused(`refused: the session ended before it could complete; ${pr_intent === null ? "the branch is committed" : "the push and PR are queued"}`);
     await this.d.files.remove(item.id);
@@ -301,9 +391,27 @@ export class Sessions {
     return { ok: true, lines: [`abandoned the session on ${file.work_item_id}; the controller releases the item (${SESSION_RELEASED})`, `the remote branch ${file.branch}, if pushed, and the run folder ${file.folder.workdir} are kept`] };
   }
 
-  private async refuseFinish(file: SessionFile, reasons: string[], lines: string[] = []): Promise<SessionResult> {
+  /**
+   * `lines` print before the refusal and `after` below its reasons; only `reasons` is stored as the last finish, so a
+   * failed test's output is printed once and never kept with the run.
+   */
+  private async refuseFinish(file: SessionFile, reasons: string[], lines: string[] = [], after: string[] = []): Promise<SessionResult> {
     await this.d.store.updateSession(file.run_id, file.token, { last_finish: { ok: false, reasons, pr_number: null } });
-    return refused(...lines, "finish refused; the session stays open and nothing was pushed:", ...reasons.map((r) => `- ${r}`));
+    return refused(...lines, "finish refused; the session stays open and nothing was pushed:", ...reasons.map((r) => `- ${r}`), ...after);
+  }
+
+  /**
+   * A failed test command's failing files and output tail, for the person at the terminal (so a failure seen only
+   * here can be found). Both pass the run_outcome egress scan first; a flagged tail is not shown.
+   */
+  private async failureLines(tail: string): Promise<{ before: string[]; after: string[] }> {
+    if (tail.trim() === "") return { before: [], after: [] };
+    if (!(await this.d.scanner.scan("run_outcome", tail)).clean) return { before: [], after: ["(the test output did not pass the egress scan, so it is not shown)"] };
+    const files = failingTestFiles(tail);
+    return {
+      before: files.length > 0 ? [`failing test files: ${files.join(", ")}`] : [],
+      after: ["test output (last lines):", ...tail.trimEnd().split("\n").map((l) => `    ${l}`)],
+    };
   }
 
   /** Whether a local item would reach the forge's broker: no local route given and the broker is the forge's. Never allowed. */
@@ -339,6 +447,34 @@ export class Sessions {
     return t.ok ? open : { refuse: "refused: the session has ended" };
   }
 
+  /**
+   * The base the finish gates diff against, by the implement run's rule (syncBase): the base branch fetched from the
+   * factory repo as the worker fetches it (`updateBase`, then `baseRefspec` into the run folder's `origin/<base>`).
+   * When that tip moved forward from `start` (the base the session started on) and HEAD contains it, the session has
+   * merged or rebased onto it, and the gates diff against it, so files only the base changed are not counted. Else
+   * `start`, as before (also when the fetch fails: a local action never waits on the forge). Either way the gates see
+   * the tree HEAD has against one base commit, so an edit made in a merge commit itself still counts.
+   */
+  private async gateBase(handle: SandboxHandle, item: WorkItem, start: string): Promise<string> {
+    const { repo } = this.d.config;
+    const route = routeFor(this.d, item);
+    const run = (args: string[]) => this.d.sandbox.exec(handle, ["git", ...args], { env: { ...this.d.toolEnv, ...TRUSTED_GIT_ENV } });
+    try {
+      const fresh = await route.sandbox.updateBase({ repo: repo.path, base_ref: repo.base_branch });
+      if (fresh === start) return start;
+      if ((await run(["fetch", "--quiet", "--no-tags", repo.path, baseRefspec(this.d.config, route.local)])).exit_code !== 0) return start;
+      const fetched = await run(["rev-parse", "--verify", "--end-of-options", `origin/${repo.base_branch}^{commit}`]);
+      if (fetched.exit_code !== 0 || fetched.stdout.trim() !== fresh) return start;
+      // Forward only from the session's own base, and already in the branch: what syncBase merges, the session merged.
+      const forward = await run(["merge-base", "--is-ancestor", start, fresh]);
+      const contained = forward.exit_code === 0 ? await run(["merge-base", "--is-ancestor", fresh, "HEAD"]) : forward;
+      return contained.exit_code === 0 ? fresh : start;
+    } catch (err) {
+      this.d.log.warn("finish: the base fetch failed; the gates diff against the session's start base", { work_item_id: item.id, error: err instanceof Error ? err.message : "unknown" });
+      return start;
+    }
+  }
+
   /** Trusted git in the run folder: the env ranks above the folder's own git config, as for the worker's calls. */
   private async git(handle: SandboxHandle, args: string[]): Promise<string> {
     const r = await this.d.sandbox.exec(handle, ["git", ...args], { env: { ...this.d.toolEnv, ...TRUSTED_GIT_ENV } });
@@ -357,6 +493,16 @@ export class Sessions {
 }
 
 class GitError extends Error {}
+
+/** What begin() needs besides the item: the spec patch is rebuilt from the item each try, as it is then. */
+interface BeginContext { actor: Extract<StartSessionInput["actor"], { kind: "user" }>; created: boolean; transcript_url: string | null; patch(item: WorkItem): WorkItemPatch }
+
+/** How often a waiting start tries again. */
+export const WAIT_POLL_MS = 15_000;
+
+function reservedBy(r: SessionReservation): string {
+  return `the item is reserved by a waiting session (${r.owner}) until ${r.expires_at}; that session starts it once its files are free`;
+}
 
 function jsonOrNull(text: string): unknown {
   try {

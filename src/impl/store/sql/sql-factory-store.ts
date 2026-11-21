@@ -15,11 +15,11 @@ import {
   conflictWindowStart,
   holdOutcome,
   holdsOn,
-  shortRef,
+  sessionHold, shortRef,
 } from "../../../core/coordination.js";
 import {
   GITHUB_RATE_LIMIT, IMPLEMENT_KINDS, INTERACTIVE, MODEL_ANSWERED, MODEL_STALL, NETWORK, NETWORK_ANSWERED, PROBE_PAUSES, type ProbePause,
-  SESSION_LOST, TAKEOVER_OUTCOME, failureClass, pathsOverlap, probePauseOf,
+  SESSION_LOST, TAKEOVER_OUTCOME, failureClass, probePauseOf,
 } from "../../../core/policy.js";
 import { prNumber } from "../../../core/change-ref.js";
 import { assertProjectKey } from "../../../core/project.js";
@@ -116,7 +116,8 @@ import * as signals from "./signals.js";
 import * as evaluations from "./merge-evaluations.js";
 import * as proposals from "./command-proposals.js";
 import * as tasks from "./tasks.js";
-import { SqlProjectStore } from "./projects.js";
+import { SqlRunOutputStore } from "./run-output.js";
+import { claimLock, endReservations, liveReservations, reservationOf } from "./reservations.js";
 import * as notices from "./notices.js";
 import * as noticeMessages from "./notice-messages.js";
 import * as posted from "./posted-comments.js";
@@ -125,9 +126,9 @@ import * as verdicts from "./verdicts.js";
 /**
  * FactoryStore over a SqlDriver (SQLite; `db` is public for components owning tables). Every write is one driver transaction. Correctness
  * never depends on the row locks alone: every state change is also a conditional UPDATE (version,
- * status, lease token), and uniqueness is enforced by keys, with a duplicate treated as "already there". Task projects: SqlProjectStore.
+ * status, lease token), and uniqueness is enforced by keys, with a duplicate treated as "already there". Task projects: SqlProjectStore, through SqlRunOutputStore.
  */
-export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
+export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
   constructor(db: SqlDriver, private readonly clock: Clock) {
     super(db, () => clock.now().toISOString() as Timestamp);
   }
@@ -393,11 +394,11 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
   addTask(t: Parameters<FactoryStore["addTask"]>[0]) { return tasks.addTask(this.db, t, this.clock.now()); }
   listTasks(limit: number) { return tasks.listTasks(this.db, limit); } listDoneTasks(w: Parameters<FactoryStore["listDoneTasks"]>[0]) { return tasks.listDoneTasks(this.db, w); }
   completeTask(id: string) { return tasks.completeTask(this.db, id, this.now()); } reopenTask(id: string) { return tasks.reopenTask(this.db, id); }
-  getTask(id: string) { return tasks.getTask(this.db, id); }
+  getTask(id: string) { return tasks.getTask(this.db, id); } countOpenSubTasks() { return tasks.countOpenSubTasks(this.db); }
   linkTask(id: string, work_item_id: WorkItemId) { return tasks.linkTask(this.db, id, work_item_id); }
   closeLinkedTasks(work_item_id: WorkItemId) { return tasks.closeLinkedTasks(this.db, work_item_id, this.now()); }
   updateTask(id: string, edit: Parameters<FactoryStore["updateTask"]>[1]) { return tasks.updateTask(this.db, id, edit, this.clock.now()); }
-  setTaskBody(id: string, body: string | null) { return tasks.setTaskBody(this.db, id, body); } deleteTask(id: string) { return tasks.deleteTask(this.db, id); }
+  setTaskBody(id: string, body: string | null) { return tasks.setTaskBody(this.db, id, body); } deleteTask(id: string, opts?: { with_sub_tasks?: boolean }) { return tasks.deleteTask(this.db, id, opts); }
   addSubTask(parent_task_id: string, t: Parameters<FactoryStore["addSubTask"]>[1]) { return tasks.addSubTask(this.db, parent_task_id, t, this.clock.now()); }
   listDueReminders(now: Date) { return tasks.listDueReminders(this.db, now); }
   remindTask(...a: Parameters<FactoryStore["remindTask"]>) { return tasks.remindTask(this.db, ...a); }
@@ -520,12 +521,9 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
     const { seq } = this.db.dialect;
     const writeKinds = placeholders(IMPLEMENT_KINDS.length);
     return this.db.transaction(async (tx) => {
-      // The lock row first: claimers run the same-item check below one at a time, so two of them can never both
-      // see "nothing of this item is running" and claim two runs of one item. Only a claim moves a run to 'running',
-      // so the running set read under the lock stays true until this commits. (SQLite: BEGIN IMMEDIATE already
-      // serializes; the select is a no-op.)
-      await tx.all(`SELECT name FROM worker_claim_locks WHERE name = ?`, [CLAIM_LOCK]);
+      await claimLock(tx); // first: the same-item check below runs one claimer at a time
       const now = this.now();
+      const reserved = await liveReservations(tx, now); // a waiting session's NEW item: its runs stay queued (05-interactive-sessions)
       // A usage or rate limit pauses every claim, for every item, on every replica; a forge 401/403 pauses the
       // implement-type claims only, and so does a failed push_access or pr_api preflight check; a GitHub rate
       // limit pauses implement-type and review claims (design §5 Restarts). All are rows of claim_pauses, read
@@ -548,12 +546,12 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
       // allowed_paths overlap do run side by side; their conflicts are resolved at merge.
       const writing = await tx.all(`SELECT work_item_id FROM worker_runs WHERE status = 'running' AND kind IN (${writeKinds})`, [...IMPLEMENT_KINDS]);
       const busy = new Set(writing.map((r) => r.work_item_id as string));
-      // Open sessions (design §5, 2026-11-01): an implement-type run waits while its item has one or overlaps one.
-      const sessions = (await this.runningPaths(tx, [INTERACTIVE])).map((r) => ({ id: r.work_item_id as string, paths: parseList(r.allowed_paths) }));
+      // Open sessions (design §5, 2026-11-01): an implement-type run waits while its item has one, or while its cost against one reaches max_cost (sessionHold, 2026-11-21).
+      const sessions = await this.runningItems(tx, [INTERACTIVE]), sc = input.coordination ?? DEFAULT_COORDINATION;
       const overlapsSession = async (itemId: string): Promise<boolean> => {
-        if (sessions.length === 0 || sessions.some((x) => x.id === itemId)) return sessions.length > 0;
+        if (sessions.length === 0 || sessions.some((x) => x.item.id === itemId)) return sessions.length > 0;
         const it = await this.selectItem(tx, itemId as WorkItemId);
-        return it !== null && sessions.some((x) => pathsOverlap(it.allowed_paths, x.paths).length > 0);
+        return it !== null && sessionHold(it, sessions, await this.projectConflicts(tx, it.project, sc), sc) !== null;
       };
 
       // Queued runs by kind rank (CLAIM_ORDER: merge check and resolve first, implement last), then created_at, then insertion
@@ -571,7 +569,7 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
       const coord = queued.some((q) => q.kind === "implement") ? await this.coordinationContext(tx, queued, busy, settings) : null;
       const fits = input.workers ? await this.slotCheck(tx, input.workers) : () => true; // the cap: implement and resolve wait at `workers`, short runs get one slot beyond
       for (const next of queued) {
-        if (!fits(next.kind as RunKind)) continue;
+        if (!fits(next.kind as RunKind) || reserved.has(next.work_item_id as string)) continue;
         // An implement-type run waits while its own item has one running, or while the forge refuses the
         // credentials; it stays queued. Triage and review never wait.
         const writer = (IMPLEMENT_KINDS as readonly string[]).includes(next.kind as string);
@@ -603,10 +601,9 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
     });
   }
 
-  /** The slot cap (design §5, 2026-11-18): which kinds fit, by the running runs of this process's loops read under the claim lock. */
-  private async slotCheck(tx: SqlExecutor, { count, owners }: NonNullable<ClaimInput["workers"]>): Promise<(kind: RunKind) => boolean> {
-    const sql = `SELECT kind FROM worker_runs WHERE status = 'running' AND lease_owner IN (${placeholders(owners.length)})`;
-    const running = (await tx.all(sql, [...owners])).map((r) => r.kind as RunKind);
+  /** The slot cap (design §5): which kinds fit, by every process's running runs (not interactive) under the claim lock. */
+  private async slotCheck(tx: SqlExecutor, { count }: NonNullable<ClaimInput["workers"]>): Promise<(kind: RunKind) => boolean> {
+    const running = (await tx.all(`SELECT kind FROM worker_runs WHERE status = 'running' AND kind <> 'interactive'`, [])).map((r) => r.kind as RunKind);
     const beyond = count > 0 && running.length === count && running.every((k) => CAPPED_KINDS.includes(k));
     return (kind) => running.length < count || (beyond && SHORT_KINDS.includes(kind));
   }
@@ -801,7 +798,7 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
 
   /** A probe pause's row and its answered row; `lock`: read under the claim lock first. */
   private async probeRows(tx: SqlExecutor, pause: ProbePause, lock: boolean): Promise<{ current?: Timestamp; answered?: Timestamp }> {
-    if (lock) await tx.all(`SELECT name FROM worker_claim_locks WHERE name = ?`, [CLAIM_LOCK]);
+    if (lock) await claimLock(tx);
     const answeredRow = PROBE_PAUSES[pause].answered;
     const rows = new Map(
       (await tx.all("SELECT name, resume_at FROM worker_claim_pauses WHERE name IN (?, ?)", [pause, answeredRow]))
@@ -884,7 +881,7 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
         return { paused: (await this.insertOnce(tx, PAUSE_INSERT, [ALL_WORKERS, by, now])) ? [ALL_WORKERS] : [] };
       }
       // Under the claim lock, so no claim moves a run to running between the read and the pause rows.
-      await tx.all(`SELECT name FROM worker_claim_locks WHERE name = ?`, [CLAIM_LOCK]);
+      await claimLock(tx);
       const already = new Set((await tx.all("SELECT worker_id FROM worker_pauses")).map((r) => r.worker_id as string));
       const running = await tx.all(
         `SELECT lease_owner FROM worker_runs WHERE status = 'running' AND lease_owner IS NOT NULL AND kind <> ? ORDER BY started_at DESC, ${seq} DESC`,
@@ -1004,8 +1001,8 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
             [now, run.id as string],
           );
         } else if (run.kind === INTERACTIVE) {
-          // A closed terminal does not come back (design §5, 2026-11-01): never requeued, whatever the attempt count.
-          const lost: RunOutcome = { status: "failed", error_code: SESSION_LOST, detail: "the session's lease expired", infra: false };
+          // A closed terminal does not come back (design §5, 2026-11-01): never requeued; the detail names the last heartbeat.
+          const lost: RunOutcome = { status: "failed", error_code: SESSION_LOST, detail: `the session's lease expired; last heartbeat at ${String(run.updated_at)}`, infra: false };
           outcome = "failed";
           moved = await tx.run(
             "UPDATE worker_runs SET status = 'failed', outcome = ?, lease_owner = NULL, lease_expires_at = NULL, finished_at = ?, updated_at = ? WHERE id = ? AND status = 'running'",
@@ -1058,21 +1055,21 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
     const { seq } = this.db.dialect;
     return this.db.transaction(async (tx): Promise<StartSessionResult> => {
       // The claim lock first, as claimRun takes it: no claim moves a run to running between these checks and the insert.
-      await tx.all(`SELECT name FROM worker_claim_locks WHERE name = ?`, [CLAIM_LOCK]);
+      await claimLock(tx);
       const current = await this.selectItem(tx, input.id);
       if (!current) return { ok: false, reason: "not_found" };
       if (current.version !== input.expected_version) return { ok: false, reason: "version_conflict", current };
+      const held = await reservationOf(tx, input.id, this.now());
+      if (held && held.owner !== input.owner) return { ok: false, reason: "reserved", reservation: held };
       const own = await tx.all(`SELECT id, kind, status FROM worker_runs WHERE work_item_id = ? AND status IN ('queued', 'running') ORDER BY created_at, ${seq}`, [input.id]);
       const open = own.find((r) => r.kind === INTERACTIVE && r.status === "running");
       if (open) return { ok: false, reason: "session_open", run_id: open.id as RunId };
       const writes = (r: Row) => (IMPLEMENT_KINDS as readonly string[]).includes(r.kind as string), writer = own.find((r) => writes(r) && r.status === "running");
       if (writer) return { ok: false, reason: "implement_run", run_id: writer.id as RunId };
-      for (const o of await this.runningPaths(tx, [...IMPLEMENT_KINDS, INTERACTIVE])) {
-        const paths = pathsOverlap(input.patch.allowed_paths ?? current.allowed_paths, parseList(o.allowed_paths));
-        if (o.work_item_id !== input.id && paths.length > 0) {
-          return { ok: false, reason: "overlap", work_item_id: o.work_item_id as WorkItemId, run_id: o.id as RunId, paths };
-        }
-      }
+      // Running work of another item refuses only at the workers' cost (sessionHold, design 05-dependencies 2026-11-21).
+      const s = input.coordination ?? DEFAULT_COORDINATION, mine = { ...current, files_to_change: input.patch.files_to_change ?? current.files_to_change, allowed_paths: input.patch.allowed_paths ?? current.allowed_paths };
+      const hold = sessionHold(mine, await this.runningItems(tx, [...IMPLEMENT_KINDS, INTERACTIVE]), await this.projectConflicts(tx, current.project, s), s);
+      if (hold) return { ok: false, reason: "overlap", work_item_id: hold.holder.work_item_id as WorkItemId, run_id: hold.run_id as RunId, paths: hold.shared.map((p) => p.path), cost: hold.cost, max_cost: s.max_cost };
       const runId = newId("run") as RunId;
       const now = this.now();
       const session: SessionRecord = { notes: [], last_finish: null };
@@ -1093,6 +1090,7 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
       const [taken_over, cancelled]: [RunId[], RunId[]] = [[], []];
       for (const r of own.filter((x) => x.status === "queued" && (writes(x) || x.kind === "triage")))
         if (await this.cancelRun(tx, r.id as RunId, "queued", now, writes(r) ? TAKEOVER_OUTCOME : null)) (writes(r) ? taken_over : cancelled).push(r.id as RunId);
+      await endReservations(tx, input.id);
       const state_change = await this.insertStateChange(tx, input.id, version, input.actor, input.reason, changes,
         { ...input.detail, run_id: runId, ...(taken_over.length > 0 ? { taken_over: taken_over.join(",") } : {}) });
       return { ok: true, item: (await this.selectItem(tx, input.id))!, run: (await this.selectRun(tx, runId))!, state_change, cancelled, taken_over };
@@ -1117,13 +1115,13 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
     });
   }
 
-  /** Running runs of `kinds` with their item's allowed_paths. */
-  private runningPaths(tx: SqlExecutor, kinds: readonly RunKind[]): Promise<Row[]> {
-    return tx.all(
-      `SELECT r.id, r.work_item_id, w.allowed_paths FROM worker_runs r JOIN controller_work_items w ON w.id = r.work_item_id
-       WHERE r.status = 'running' AND r.kind IN (${placeholders(kinds.length)}) ORDER BY r.created_at, r.${this.db.dialect.seq}`,
-      [...kinds],
-    );
+  /** Running runs of `kinds` with their items; the recorded conflicts of one project inside `conflict_window_days`. */
+  private async runningItems(tx: SqlExecutor, kinds: readonly RunKind[]): Promise<{ run_id: string; item: WorkItem }[]> {
+    return (await tx.all(`SELECT r.id AS run_id, w.* FROM worker_runs r JOIN controller_work_items w ON w.id = r.work_item_id
+       WHERE r.status = 'running' AND r.kind IN (${placeholders(kinds.length)}) ORDER BY r.created_at, r.${this.db.dialect.seq}`, [...kinds])).map((r) => ({ run_id: r.run_id as string, item: rowToWorkItem(r) }));
+  }
+  private async projectConflicts(q: SqlExecutor, project: string, s: CoordinationSettings): Promise<Map<string, number>> {
+    return (await this.conflictsByProject(q, [project], conflictWindowStart(this.clock.now(), s))).get(project) ?? new Map<string, number>();
   }
 
   async listRunsByKind(kind: RunKind, statuses: readonly RunStatus[]): Promise<Run[]> {
@@ -2700,9 +2698,6 @@ interface CoordContext {
 /** Notes kept per session: the newest ones. */
 const MAX_SESSION_NOTES = 200;
 
-/** The one row in `claim_locks`: every claim takes it first (migration 7). */
-const CLAIM_LOCK = "claim";
-
 /** The `worker_pauses` row that pauses every worker loop (`workers pause --all`). */
 const ALL_WORKERS = "*" as const;
 const PAUSE_INSERT = "INSERT INTO worker_pauses (worker_id, paused_by, paused_at) VALUES (?, ?, ?)";
@@ -2716,11 +2711,6 @@ function rowToWorkerPause(r: Row): WorkerPause {
  * review and triage; then the branch writers, implement last; improve after all. Within a kind, created_at, then insertion order.
  */
 const CLAIM_ORDER: readonly RunKind[] = ["restart", "merge-check", "resolve", "review", "triage", "update", "implement"];
-
-/** A JSON string array column (allowed_paths). */
-function parseList(value: unknown): string[] {
-  return typeof value === "string" ? (JSON.parse(value) as string[]) : [];
-}
 
 /** Link codes are stored only as this hash (design 2026-11-01). */
 function hashCode(code: string): string {

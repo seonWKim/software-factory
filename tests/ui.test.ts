@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { uiPort } from "../src/compose.js";
+import { uiPort } from "../src/config-values.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { UserId, WorkItem, WorkItemId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
@@ -15,7 +15,9 @@ import { type ApiDeps, type UiRequest, type UiServer, respond, startUi } from ".
 import { TASK_DELETE_PATH, TASK_DONE_PATH, TASK_EDIT_PATH, TASK_SUB_PATH } from "../src/ui/tasks-api.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
-import { FakeAuth, FakeSource, PROJECT, alice, config, issueRef, silent, cleanScanner } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { PROJECT, alice, config, issueRef, silent, cleanScanner } from "./helpers/fakes/config.js";
 import { issue, newStore, system, w1, w2 } from "./helpers/store.js";
 
 const LEASE = 60_000;
@@ -371,6 +373,7 @@ describe("ui: the Tasks page's row actions (design 02-tasks)", () => {
       [TASK_DELETE_PATH, { id: "tk_nope" }, 404, /no task tk_nope/],
       [TASK_SUB_PATH, { parent: "tk_nope", id: SUB_ID, words: "x" }, 404, /no task tk_nope/],
       [TASK_DELETE_PATH, { id: "tk_parent" }, 409, /open sub-tasks \(book the train\)/],
+      [TASK_DELETE_PATH, { id: "tk_parent", with_sub_tasks: "yes" }, 400, /with_sub_tasks must be true or false/],
       [TASK_SUB_PATH, { parent: "tk_child", id: SUB_ID, words: "deeper" }, 409, /sub-task cannot have sub-tasks/],
       [TASK_EDIT_PATH, { id: "tk_plain", words: "!7" }, 400, /priority must be/],
       [TASK_EDIT_PATH, { id: "tk_plain", words: "" }, 400, /nothing to change/],

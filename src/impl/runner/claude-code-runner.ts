@@ -8,7 +8,7 @@ import {
 } from "../../interfaces/agent-runner.js";
 import type { Sandbox } from "../../interfaces/sandbox.js";
 import { type SecretStore, secretName } from "../../interfaces/secret-store.js";
-import { GATE_HOOKS_DIR, type RunningGateHooks, startGateHooks } from "./gate-hooks.js";
+import { type After, GATE_HOOKS_DIR, type RunningGateHooks, startGateHooks, stopTimeoutDetail } from "./gate-hooks.js";
 import { copyToolchainSeeds } from "./toolchain-seeds.js";
 import { type BridgeArgs, type GrantedToolDeps, harnessToolName, withRunBridge } from "./tool-bridge.js";
 
@@ -27,6 +27,8 @@ export interface ClaudeCodeRunnerOptions {
    * The broker and scanner granted tools go through (architecture §5). Absent: the runner exposes no tools and refuses a run with grants.
    */
   tools?: GrantedToolDeps;
+  /** The gate Stop check's time limit. Absent: STOP_CHECK_MS (gate-hooks.ts). */
+  stopCheckMs?: number;
 }
 
 /** The harness credential: the one secret the agent process holds (architecture §5). */
@@ -95,17 +97,8 @@ function rulePath(p: string): string {
  * Bash checks no commands and the shared module has no web tools, so these stay with this runner.
  */
 const HARNESS_ONLY_DENY: readonly string[] = [
-  "Bash(gh:*)",
-  "Bash(security:*)",
-  "Bash(git push:*)",
-  "Bash(git credential:*)",
-  "Bash(printenv:*)",
-  "Bash(env)",
-  "Bash(mysql:*)",
-  "Bash(mysqldump:*)",
-  "Bash(mysqladmin:*)",
-  "WebFetch",
-  "WebSearch",
+  "Bash(gh:*)", "Bash(security:*)", "Bash(git push:*)", "Bash(git credential:*)", "Bash(printenv:*)", "Bash(env)",
+  "Bash(mysql:*)", "Bash(mysqldump:*)", "Bash(mysqladmin:*)", "WebFetch", "WebSearch",
 ];
 
 /**
@@ -191,12 +184,7 @@ export function buildHarnessSettings(
         ...(caches.length > 0 ? { allowRead: [...caches], denyWrite: [...caches] } : {}),
       },
       network: { allowLocalBinding: true },
-      credentials: {
-        envVars: [
-          { name: "GITHUB_TOKEN", mode: "deny" },
-          { name: "GH_TOKEN", mode: "deny" },
-        ],
-      },
+      credentials: { envVars: [{ name: "GITHUB_TOKEN", mode: "deny" }, { name: "GH_TOKEN", mode: "deny" }] },
     },
   };
 }
@@ -312,7 +300,9 @@ export class ClaudeCodeRunner implements AgentRunner {
       dir: join(this.opts.claudeConfigDir, GATE_HOOKS_DIR, spec.run_id),
       spec: { ...spec, gate_hooks: g },
       sandbox: this.opts.sandbox,
+      after,
       ...(this.opts.tools ? { scanner: this.opts.tools.scanner } : {}),
+      ...(this.opts.stopCheckMs === undefined ? {} : { stop_check_ms: this.opts.stopCheckMs }),
     }).catch(() => null);
     if (!hooks) return this.runClaude(spec, bridge);
     try {
@@ -339,15 +329,16 @@ export class ClaudeCodeRunner implements AgentRunner {
     const model = this.opts.models[spec.model_class];
     const stallMs = spec.stall_ms ?? DEFAULT_STALL_MS;
     const firstOutputMs = spec.first_output_ms ?? DEFAULT_FIRST_OUTPUT_MS;
-    const watch = new StallWatch(stallMs, firstOutputMs, hooks ? () => hooks.checking() : undefined);
-    let result: Awaited<ReturnType<Sandbox["exec"]>>;
+    const watch = new StallWatch(stallMs, firstOutputMs, hooks ? () => hooks.checking() : undefined, spec.on_output);
+    let result: Awaited<ReturnType<Sandbox["exec"]>>, soFar = ""; // soFar: stdout so far, for the live transcript (spec.live)
     try {
       result = await this.opts.sandbox.exec(spec.sandbox, buildClaudeArgs(spec, model, this.opts.claudeBin, bridge, [tmp], hooks?.settings), {
-        env,
+        env: { ...env, ...FOREGROUND_ENV },
         stdin: spec.prompt,
-        timeout_ms: spec.timeout_ms,
-        signal: AbortSignal.any([spec.signal, watch.signal]),
-        onStdout: (chunk) => watch.feed(chunk),
+        // A backstop: the hooks' deadline ends the run first; a Stop check past its own limit fails it naming the check.
+        timeout_ms: spec.timeout_ms + (hooks?.maxCheckMs ?? 0),
+        signal: AbortSignal.any([spec.signal, watch.signal, ...(hooks ? [hooks.deadline] : [])]),
+        onStdout: (chunk) => { watch.feed(chunk); if (spec.live) spec.live((soFar += chunk)); },
       });
     } finally {
       watch.stop();
@@ -360,38 +351,25 @@ export class ClaudeCodeRunner implements AgentRunner {
     const usage = parsed ? usageOf(parsed) : stream.usage;
     const did_work = stream.did_work;
     if (spec.signal.aborted) return { status: "aborted", output: null, transcript: result.stdout, usage, did_work };
+    const stopTimeout = hooks?.stopTimeout();
+    if (stopTimeout) return { status: "failed", output: null, transcript: result.stdout, usage, error: stopTimeoutDetail(stopTimeout), did_work };
     if (watch.stalled) {
       const error = watch.stalled === "first_output"
         ? `no model output within first_output_ms (${firstOutputMs} ms)`
         : `no model output for stall_ms (${stallMs} ms) with no tool call open`;
       return { status: "stalled", output: null, transcript: result.stdout, usage, error, did_work };
     }
-    if (result.timed_out) return { status: "timed_out", output: null, transcript: result.stdout, usage, did_work };
-
+    if (result.timed_out || hooks?.deadline.aborted) return { status: "timed_out", output: null, transcript: result.stdout, usage, did_work };
     if (parsed === null) {
-      return {
-        status: "failed",
-        output: null,
-        transcript: result.stdout + result.stderr,
-        usage,
-        error: `claude exited ${result.exit_code} without JSON output`,
-        did_work,
-      };
+      return { status: "failed", output: null, transcript: result.stdout + result.stderr, usage, error: `claude exited ${result.exit_code} without JSON output`, did_work };
     }
 
     if (parsed.api_error_status === 429) {
       const text = typeof parsed.result === "string" ? parsed.result : "";
       const reset_at = parseRateLimitReset(text, (this.opts.now ?? (() => new Date()))());
-      return {
-        status: "rate_limited",
-        output: null,
-        transcript: result.stdout,
-        usage,
-        // The CLI's own text names when the limit resets (design §5 Restarts): kept, capped, for the failure detail.
-        error: text.trim().slice(0, RATE_LIMIT_DETAIL_CHARS) || "rate_limited",
-        did_work,
-        ...(reset_at ? { reset_at } : {}),
-      };
+      // The CLI's own text names when the limit resets (design §5 Restarts): kept, capped, for the failure detail.
+      const error = text.trim().slice(0, RATE_LIMIT_DETAIL_CHARS) || "rate_limited";
+      return { status: "rate_limited", output: null, transcript: result.stdout, usage, error, did_work, ...(reset_at ? { reset_at } : {}) };
     }
     if (parsed.is_error || result.exit_code !== 0) {
       return { status: "failed", output: null, transcript: result.stdout, usage, error: parsed.subtype ?? "error", did_work };
@@ -435,12 +413,7 @@ interface ClaudeJsonResult {
   result?: string;
   structured_output?: unknown;
   total_cost_usd?: number;
-  usage?: {
-    input_tokens?: number;
-    output_tokens?: number;
-    cache_read_input_tokens?: number;
-    cache_creation_input_tokens?: number;
-  };
+  usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
   /** Per-model usage, keyed by model name. */
   modelUsage?: Record<string, { costUSD?: number; outputTokens?: number } | null>;
   /** HTTP status of the API error that ended the run; 429 is a usage or rate limit. */
@@ -487,19 +460,25 @@ export const DEFAULT_FIRST_OUTPUT_MS = 180_000;
  * system events (init, API retries) print before the model answers and are not activity (issue #215). Before the first model output the clock is the shorter of
  * `firstOutputMs` and `stallMs`, counted from the start; after it, `stallMs` from the last model output. Tool
  * calls are tracked from the events (`tool_use` blocks open one, `tool_result` blocks close it): while any is
- * open the clock does not run, since a test run in Bash can be silent for minutes; nor while `held` (a gate Stop
- * check running its commands); the run timeout still bounds both. Out of time: `signal` aborts, `stalled` says why.
+ * open the clock does not run, since a test run in Bash can be silent for minutes. A running background task
+ * counts as an open tool call (the 2026-11-19 resolve stalls: a check started with `run_in_background` returns its
+ * tool call at once, then the model waits idle for the task): a `task_started` system event opens one, its
+ * `task_notification` or a `task_updated` to an end status closes it, and a `background_tasks_changed` event sets the
+ * list; a closed task restarts the clock, as a tool result does. Nor does the clock run while `held` (a gate Stop
+ * check running its commands); the run timeout bounds tool calls and tasks, the Stop check's own limit bounds a check.
+ * Out of time: `signal` aborts, `stalled` says why. `onModel` hears each model output.
  */
 class StallWatch {
   private readonly ctl = new AbortController();
-  private timer: ReturnType<typeof setTimeout> | null = null;
+  private cancel = (): void => {};
   private readonly open = new Set<string>();
+  private readonly tasks = new Set<string>();
   private partial = "";
   private done = false;
   private seenModel = false;
   stalled: false | "first_output" | "silence" = false;
 
-  constructor(private readonly ms: number, private readonly firstOutputMs: number, private readonly held = () => false) {
+  constructor(private readonly ms: number, private readonly firstOutputMs: number, private readonly held = () => false, private readonly onModel?: () => void) {
     this.arm();
   }
 
@@ -517,20 +496,20 @@ class StallWatch {
     let model = false;
     for (const line of lines) if (this.track(line)) model = true;
     if (!model) return;
-    this.seenModel = true;
+    this.seenModel = true; this.onModel?.(); // onModel: the run's last output time (design 05-restarts)
     this.arm();
   }
 
   stop(): void {
     this.done = true;
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = null;
+    this.cancel();
   }
 
-  /** Tracks the line's tool blocks; true when it is model output (an assistant event or a tool result). */
+  /** Tracks the line's tool blocks and background tasks; true when it is model output or ends a call or task. */
   private track(line: string): boolean {
     const event = line.trim().startsWith("{") ? parseObject(line) : null;
     if (!event) return false;
+    if (event.type === "system" && this.trackTask(event)) return true;
     // A thinking-tokens event is the model working before it writes anything: activity, like an assistant event.
     let model = event.type === "assistant" || (event.type === "system" && event.subtype === "thinking_tokens");
     const message = event.message as { content?: unknown } | undefined;
@@ -545,19 +524,44 @@ class StallWatch {
     return model;
   }
 
-  /** Restarts the clock when no tool call is open; stops it while one is. */
+  /** Tracks a background task system event; true when it ended one (the clock restarts, as for a tool result). */
+  private trackTask(event: Record<string, unknown>): boolean {
+    const before = this.tasks.size;
+    const id = typeof event.task_id === "string" ? event.task_id : "";
+    // The status sits on the event or, in some CLI versions, on its `patch`.
+    const status = String(event.status ?? (event.patch as { status?: unknown } | undefined)?.status);
+    if (event.subtype === "task_started") this.tasks.add(id);
+    else if (event.subtype === "task_notification") this.tasks.delete(id);
+    else if (event.subtype === "task_updated" && TASK_END.has(status)) this.tasks.delete(id);
+    else if (event.subtype === "background_tasks_changed" && Array.isArray(event.tasks)) {
+      this.tasks.clear();
+      for (const [i, t] of (event.tasks as { id?: unknown; task_id?: unknown }[]).entries()) this.tasks.add(String(t?.task_id ?? t?.id ?? `#${i}`));
+    } else return false;
+    if (this.tasks.size > before) this.arm();
+    return this.tasks.size < before;
+  }
+
+  /** Restarts the clock when no tool call or background task is open; stops it while one is. */
   private arm(): void {
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = null;
-    if (this.done || this.open.size > 0) return;
+    this.cancel();
+    if (this.done || this.open.size > 0 || this.tasks.size > 0) return;
     const first = !this.seenModel && this.firstOutputMs <= this.ms;
-    this.timer = setTimeout(() => {
+    this.cancel = after(first ? this.firstOutputMs : this.ms, () => {
       if (this.held()) return this.arm();
       this.stalled = first ? "first_output" : "silence";
       this.ctl.abort();
-    }, first ? this.firstOutputMs : this.ms);
+    });
   }
 }
+
+/** Turns off the CLI's background tasks for every run, so a check runs as an open tool call (design §5 Restarts). */
+const FOREGROUND_ENV: Readonly<Record<string, string>> = { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" };
+
+/** The `task_updated` statuses that end a background task. */
+const TASK_END: ReadonlySet<string> = new Set(["completed", "failed", "killed", "stopped"]);
+
+/** The runner's one timer, also the gate hooks' (the Stop check's limit, the run deadline): returns its cancel. */
+const after: After = (ms, fn) => { const t = setTimeout(fn, ms); return () => clearTimeout(t); };
 
 /** Characters of an unfinished stdout line kept for tool tracking. */
 const PARTIAL_LIMIT = 4 * 1024 * 1024;
@@ -640,13 +644,8 @@ export function parseRateLimitReset(text: string, now: Date): string | null {
   if (ampm) hour = (hour % 12) + (ampm === "pm" ? 12 : 0);
   let wall: { h: number; m: number; s: number };
   try {
-    const parts = new Intl.DateTimeFormat("en-US", {
-      timeZone: m[4]?.trim(),
-      hourCycle: "h23",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    }).formatToParts(now);
+    const opts = { timeZone: m[4]?.trim(), hourCycle: "h23", hour: "2-digit", minute: "2-digit", second: "2-digit" } as const;
+    const parts = new Intl.DateTimeFormat("en-US", opts).formatToParts(now);
     const get = (t: string) => Number(parts.find((p) => p.type === t)?.value);
     wall = { h: get("hour"), m: get("minute"), s: get("second") };
   } catch {

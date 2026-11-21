@@ -6,10 +6,9 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { ManualTicks } from "../src/shared/ticks/plugins/manual/manual-tick-generator.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { issue, newStore, system } from "./helpers/store.js";
-import {
-  FakeBroker, FakeRunner, FakeSandbox, MemoryStorage,
-  config, prompts, recordingLog, triageSpec, waitFor,
-} from "./helpers/fakes.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { config, prompts, recordingLog, triageSpec, waitFor } from "./helpers/fakes/config.js";
 
 const { lease_ms, heartbeat_ms } = config;
 const LATE = "heartbeat late; renewing now";

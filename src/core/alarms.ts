@@ -12,7 +12,7 @@
 
 import { groupFailures, normalizeDetail, patternKey, sleepAlertKey, stalledBySleep } from "./improver.js";
 import type { Logger } from "./log.js";
-import { AGENT_STALLED, MODEL_STALL } from "./policy.js";
+import { AGENT_STALLED, HELD_UNTIL, MODEL_STALL } from "./policy.js";
 import { DAY_MS, dayStart, spendTotals, utcDay, weekStart } from "./spend.js";
 import {
   type FailureGroup, type FiledPattern, RECURRING_FAILURE, type Run, type RunKind, type RunOutcome, type SourceRef, type StateChange, type Timestamp, type WorkItem, type WorkItemId,
@@ -123,8 +123,9 @@ function zeroTokens(newestFirst: readonly Run[], threshold: number): AlarmFindin
   while (streak < agent.length && runTokenCount(agent[streak]!) === 0) streak++;
   if (streak < threshold) return [];
   const last = agent[0]!.outcome;
-  const how = last?.status === "failed" ? `the last failed with ${last.error_code}` : "the last succeeded";
-  return [{ pattern: "zero_tokens", pattern_key: "zero_tokens", error_code: "zero_tokens", count: streak, detail: `${streak} agent runs in a row used no tokens; ${how}` }];
+  // How the last run ended only: the alarm's sentence (alarmText in src/ui/alarms.ts) already says the streak.
+  const detail = last?.status === "failed" ? `the last failed with ${last.error_code}` : "the last succeeded";
+  return [{ pattern: "zero_tokens", pattern_key: "zero_tokens", error_code: "zero_tokens", count: streak, detail }];
 }
 
 function childRestarts(restarts: readonly ChildRestart[], now: number, threshold: number): AlarmFinding[] {
@@ -439,6 +440,20 @@ export async function heldKey(
 export function releasePatch(it: Pick<WorkItem, "blocked_reason">, pattern_key: string, fix: Pick<WorkItem, "id" | "stage" | "merge_sha"> | null) {
   if (it.blocked_reason !== RECURRING_FAILURE || !fix || fix.stage !== "CLOSED" || !fix.merge_sha) return null;
   return { patch: { blocked_on: "none" as const, blocked_reason: null }, reason: RELEASED, detail: { pattern_key, fix_work_item_id: fix.id } };
+}
+
+/** When a held item's stall hold ends (its last hold's `held_until`, design 05-restarts), or null: not held, or held by a pattern. */
+export async function stallHeldUntil(
+  it: Pick<WorkItem, "blocked_reason">, changes: () => Promise<readonly Pick<StateChange, "reason" | "detail">[]>,
+): Promise<string | null> {
+  if (it.blocked_reason !== RECURRING_FAILURE) return null;
+  const until = (await changes()).filter((c) => c.reason === RECURRING_FAILURE).at(-1)?.detail?.[HELD_UNTIL];
+  return typeof until === "string" ? until : null;
+}
+
+/** The release of a stall hold (design 05-restarts) once its end `until` passed. */
+export function stallRelease(until: string) {
+  return { patch: { blocked_on: "none" as const, blocked_reason: null }, reason: RELEASED, detail: { [HELD_UNTIL]: until } };
 }
 
 function cmp(a: string, b: string): number {

@@ -17,9 +17,10 @@ import { LocalSource } from "../src/impl/source/local-source.js";
 import { parseComment } from "../src/core/commands.js";
 import type { AuthProvider } from "../src/interfaces/auth-provider.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
-import {
-  FakeBroker, FakeGitHubClient, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, config, issueRef, prompts, recordingLog, triageSpec,
-} from "./helpers/fakes.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeGitHubClient } from "./helpers/fakes/github.js";
+import { FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, issueRef, prompts, recordingLog, triageSpec } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
 const OWNER = "github:1" as UserId;
