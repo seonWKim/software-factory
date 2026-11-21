@@ -6,9 +6,15 @@ import type { RunOutputStore } from "../../../core/stall.js";
 import type { RunId, Timestamp } from "../../../core/types.js";
 import type { SqlDriver } from "../../../state/index.js";
 import { SqlReservationStore } from "./reservations.js";
+import { SQL_DRIVER } from "./store-sql.js";
 
 /** RunOutputStore over a SqlDriver; `outputStamp` is the store's injected Clock's time. */
 export class SqlRunOutputStore extends SqlReservationStore implements RunOutputStore {
+  /** The driver, for storeSql (store-sql.ts) without importing the SQL store class. */
+  get [SQL_DRIVER](): SqlDriver {
+    return this.db;
+  }
+
   constructor(db: SqlDriver, private readonly outputStamp: () => Timestamp) {
     super(db, outputStamp);
   }

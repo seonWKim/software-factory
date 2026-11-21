@@ -1,5 +1,4 @@
 import { type RunCall, type RunKindDescriptor, loadRunKinds } from "./run-kind.js";
-import { gradeRun } from "./runs/improve/improve.run.js";
 import type { MergeCheckTools } from "./runs/merge-check/merge-check.run.js";
 import { type ExecutionEngine, type ExecutionEngines, LeaseLostError, RunDeadlineError, type RunRef, StepTimeoutError } from "./engine/index.js";
 import { JournalEngines } from "./engine/plugins/journal/journal-engine.js";
@@ -282,7 +281,8 @@ export class Worker {
       };
       // Graded by judges independent of the producing call (design §7); then recorded next to the run's usage, so cost
       // and failure rate can be compared per class. data.tokens: the full count, where readers from before usage existed look for it.
-      const data = await gradeRun(this, run, item, model, await this.role({ run, item, ctx, signal, model: model ?? "cheap", step }), signal);
+      const produced = await this.role({ run, item, ctx, signal, model: model ?? "cheap", step });
+      const data = (await [...(await loadRunKinds()).values()].find((k) => k.grade)?.grade?.(this, run, item, model, produced, signal)) ?? produced;
       const withUsage = { ...data, tokens: usageTokens(usage), usage };
       outcome = { status: "succeeded", summary: `${run.kind} done`, data: model ? { ...withUsage, ...this.modelRecord(model) } : withUsage };
     } catch (err) {

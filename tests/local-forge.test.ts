@@ -7,7 +7,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { Loaded } from "../src/compose.js";
+import type { Loaded } from "../src/load-config.js";
 import { mergeQueuePushBase } from "../src/core/config.js";
 import { forgeRoles } from "../src/core/local-merge.js";
 import type { WorkItem } from "../src/core/types.js";

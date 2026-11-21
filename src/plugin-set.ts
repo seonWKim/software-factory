@@ -4,7 +4,7 @@
 
 import { FallbackLLM } from "./core/fallback-llm.js";
 import { FallbackRunner } from "./core/fallback-runner.js";
-import type { Loaded } from "./compose.js";
+import type { Loaded } from "./load-config.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";

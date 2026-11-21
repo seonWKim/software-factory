@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { alarmConfig, loadConfig } from "../src/compose.js";
+import { alarmConfig } from "../src/config-values.js";
+import { loadConfig } from "../src/load-config.js";
 import { ConfigKeyError, unknownConfigKeys } from "../src/config-keys.js";
 import { DEFAULT_COORDINATION } from "../src/core/coordination.js";
 import {

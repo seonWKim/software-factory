@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CHECK_COMMANDS_PLACEHOLDER, FORGE_PLACEHOLDER, SPLIT_PLACEHOLDERS, UI_CHECK_PLACEHOLDER, fillPrompt, loadConfig } from "../src/compose.js";
+import { CHECK_COMMANDS_PLACEHOLDER, FORGE_PLACEHOLDER, SPLIT_PLACEHOLDERS, UI_CHECK_PLACEHOLDER, fillPrompt, loadConfig } from "../src/load-config.js";
 import type { FactoryConfig } from "../src/core/config.js";
 
 // These tests check the instruction text only. They cannot prove a model's reply starts with the section.
@@ -250,7 +250,7 @@ describe("prompts/improve.md (issue #307)", () => {
   });
 
   it("is loaded by compose as the improve prompt", async () => {
-    const { loadConfig } = await import("../src/compose.js");
+    const { loadConfig } = await import("../src/load-config.js");
     const { prompts } = await loadConfig(join(import.meta.dirname, ".."));
     expect(prompts.improve).toBe(text);
   });
