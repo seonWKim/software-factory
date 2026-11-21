@@ -6,7 +6,9 @@ import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Loaded, SessionParts } from "./compose.js";
 import { cliUserConfig } from "./core/config.js";
-import { selectedSources } from "./plugins.js";
+import { type Logger, errorText } from "./core/log.js";
+import { Plugins } from "./plugin-set.js";
+import { createPlugin, selectedSources } from "./plugins.js";
 import { hostId } from "./runtime/host-id.js";
 import { type CliEnvironment, type CliIdentity, cliIdentity, localIdentity } from "./core/local-cli.js";
 import { type IssueLookup, type SessionFile, type SessionFiles, type SessionResult, Sessions } from "./core/session.js";
@@ -14,6 +16,7 @@ import { ConsoleLogger } from "./impl/log/console-logger.js";
 import { baseEnv } from "./impl/process/run-process.js";
 import type { UserId, WorkItemId } from "./core/types.js";
 import type { ExternalIdentity } from "./interfaces/auth-provider.js";
+import type { KeepAwake } from "./interfaces/keep-awake.js";
 
 export const SESSION_USAGE = `factory interactive start <issue number | work item id> [--spec <file> [--wait]] [--transcript <url>] [--as <github login>]
                     status | note [<text>] [--tokens <n>] [--transcript <url>] | finish [--tokens <n>] | abandon [--tokens <n>]
@@ -133,9 +136,18 @@ export function sessionWho(loaded: Loaded, env: CliEnvironment): SessionWho {
   return { cliUser: cliUserConfig(loaded.file), env, githubSource: selectedSources(loaded.plugins).includes("github-issues") };
 }
 
-/** `stop` aborts on Ctrl-C: `start` stops keeping the lease, `finish` stops the test command. */
+/** The selected `plugins.awake`, built as the worker's is (design 05-interactive-sessions, 2026-11-21). */
+export function sessionAwake(loaded: Loaded, clock: SessionParts["clock"]): Promise<KeepAwake> {
+  return createPlugin(loaded.registry, "awake", loaded.plugins.awake, { ...new Plugins(loaded).base, clock });
+}
+
+/**
+ * `stop` aborts on Ctrl-C: `start` stops keeping the lease, `finish` stops the test command. `start` holds `awake`
+ * while it keeps the lease; `log` gets a hold or release that failed.
+ */
 export interface SessionCmdDeps {
   sessions: Sessions; identity: CliIdentity; githubSource: boolean; github: SessionGitHub; readSpec(path: string): Promise<string>; print(line: string): void; stop: AbortSignal;
+  awake: KeepAwake; log: Logger;
 }
 
 /** The person a start acts as: the CLI identity with no network call, or with `--as` the GitHub account of that login. */
@@ -163,7 +175,11 @@ export async function runSession(d: SessionCmdDeps, a: SessionAction): Promise<n
   const r = await d.sessions.start({ target: a.target, person, ...(spec !== undefined ? { spec } : {}), ...(a.transcript !== undefined ? { transcript: a.transcript } : {}), ...wait });
   const code = out(r);
   if (!r.ok || !r.file) return code;
-  const why = await d.sessions.heartbeat(r.file, d.stop);
+  // Kept awake while the lease is held: a host sleep longer than lease_ms would end the session (session_lost).
+  // Best effort, as for the worker: a hold or release that throws is a warning and the session goes on.
+  const awake = (op: "hold" | "release") => d.awake[op]().catch((err: unknown) => d.log.warn(`keep-awake ${op} failed`, { error: errorText(err) }));
+  await awake("hold");
+  const why = await d.sessions.heartbeat(r.file, d.stop).finally(() => awake("release"));
   d.print(why === "stopped" ? "stopped keeping the lease; when it expires the reaper ends the session (session_lost) and the item is released" : "the session has ended");
   return 0;
 }
@@ -172,13 +188,17 @@ export async function runSession(d: SessionCmdDeps, a: SessionAction): Promise<n
  * The command's deps from the built parts and `who` (the CLI supplies the environment); the learned layer as a run's (08-settings).
  * The lease owner is never a worker id, so `workers pause` skips it.
  */
-export function sessionDeps(p: SessionParts, stateDir: string, stop: AbortSignal, who: SessionWho): SessionCmdDeps {
+export function sessionDeps(p: SessionParts, stateDir: string, stop: AbortSignal, who: SessionWho, awake: KeepAwake): SessionCmdDeps {
   const { owner, name } = p.config.repo;
+  const log = new ConsoleLogger(p.clock, "session");
   const sessions = new Sessions({
     store: p.store, sandbox: p.sandbox, broker: p.broker, local: p.local, scanner: p.scanner, auth: p.auth, clock: p.clock, config: p.config, learned: p.learned,
-    log: new ConsoleLogger(p.clock, "session"), files: new FileSessionFiles(join(stateDir, "sessions")), issues: githubIssues(p.github, { owner, name }),
+    log, files: new FileSessionFiles(join(stateDir, "sessions")), issues: githubIssues(p.github, { owner, name }),
     // The host part is this machine's stable host id: a finished session's push and PR go to `git:<host id>:<branch>`.
     toolEnv: baseEnv(), owner: `session:${hostId(stateDir)}:${process.pid}`,
   });
-  return { sessions, identity: cliIdentity(who.cliUser, who.env), githubSource: who.githubSource, github: p.github, readSpec: (path) => readFile(path, "utf8"), print: (l) => console.log(l), stop };
+  return {
+    sessions, identity: cliIdentity(who.cliUser, who.env), githubSource: who.githubSource, github: p.github, readSpec: (path) => readFile(path, "utf8"), print: (l) => console.log(l), stop,
+    awake, log,
+  };
 }

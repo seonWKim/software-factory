@@ -10,6 +10,7 @@ import type { LocalRoute } from "../src/core/worker-deps.js";
 import { settingValues } from "../src/core/settings.js";
 import type { Run, RunKind, Tier, UserId, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { STORE_BRANCH } from "../src/interfaces/tool-broker.js";
 import { FileSessionFiles, githubIssues, parseSessionArgs, runSession } from "../src/session-cmd.js";
 import { FakeAuth, FakeIssues, FakeSandbox, MemorySessionFiles } from "./helpers/fakes/runner.js";
@@ -631,6 +632,25 @@ describe("session end without a PR", () => {
     expect(h.files.files.size).toBe(0);
   });
 
+  it("the `session_lost` detail names the last heartbeat, the run's updated_at before the reaper's write, in ISO 8601", async () => {
+    const h = await started();
+    const { it0, file } = h;
+    const stop = new AbortController();
+    const beating = h.sessions.heartbeat(file, stop.signal);
+    const before = (await h.runs(it0.id, "interactive"))[0]!.updated_at;
+    h.clock.advance(h.cfg.heartbeat_ms);
+    await waitFor(async () => (await h.runs(it0.id, "interactive"))[0]!.updated_at > before, "a heartbeat");
+    stop.abort();
+    await beating;
+    const last = (await h.runs(it0.id, "interactive"))[0]!.updated_at;
+    expect(last).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    h.clock.advance(h.cfg.lease_ms + 1);
+    await h.controller.tickReaper();
+    const run = (await h.runs(it0.id, "interactive"))[0]!;
+    expect(run.outcome).toMatchObject({ error_code: "session_lost", detail: `the session's lease expired; last heartbeat at ${last}` });
+    expect(run.updated_at).not.toBe(last);
+  });
+
   it("--tokens takes a whole number of 0 or more; the latest total is added to token_cost once, when the run ends", async () => {
     const h = await started();
     const { it0 } = h;
@@ -700,7 +720,7 @@ describe("session flow and CLI", () => {
     const printed: string[] = [];
     const stop = new AbortController();
     const identity = { user: "github:2" as UserId, from: "cli_user" as const };
-    const deps = { sessions: h.sessions, identity, githubSource: true, github, readSpec: async () => SPEC_TEXT, print: (l: string) => printed.push(l), stop: stop.signal };
+    const deps = { sessions: h.sessions, identity, githubSource: true, github, readSpec: async () => SPEC_TEXT, print: (l: string) => printed.push(l), stop: stop.signal, awake: new NoKeepAwake(), log: silent };
     const started = runSession(deps, { cmd: "start", target: it0.id, as: "alice" });
     await waitFor(async () => (await h.runs(it0.id, "interactive")).length === 1, "session start");
     expect(printed).toContain("run folder: /wt/1");
@@ -723,7 +743,7 @@ describe("session flow and CLI", () => {
     const stop = new AbortController();
     const deps = {
       sessions: h.sessions, identity: { user: "github:1" as UserId, from: "cli_user" as const }, githubSource: false, github,
-      readSpec: async () => SPEC_TEXT, print: () => {}, stop: stop.signal,
+      readSpec: async () => SPEC_TEXT, print: () => {}, stop: stop.signal, awake: new NoKeepAwake(), log: silent,
     };
     const started = runSession(deps, { cmd: "start", target: it0.id });
     await waitFor(async () => (await h.runs(it0.id, "interactive")).length === 1, "session start");
