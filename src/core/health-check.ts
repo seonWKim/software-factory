@@ -5,7 +5,7 @@
 /**
  * `warn`: not a doctor failure (hardening local use may skip). `token_days`: the token expiry check's whole days left. `fix`:
  * how to fix a FAIL whose `msg` is outside text as it came (an error, a version). `plain`: Health's sentence, no path (doctor
- * prints `msg`, Health shows it behind Details). `label`: a GitHub status label's name; Health folds those into one row.
+ * prints `msg`, Health shows it behind Details). `label`: a forge status label's name; Health folds those into one row.
  * `since` / `next`: ISO instants kept out of `msg` (a probe pause's start, next probe), shown locally. */
 export type Check = { ok: boolean; msg: string; warn?: boolean; token_days?: number; fix?: string; plain?: string; label?: string; since?: string; next?: string };
 
