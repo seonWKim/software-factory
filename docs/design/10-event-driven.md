@@ -82,9 +82,15 @@ force.
   - Claims still go through the store's `claimRun` (coordination, claim pauses, one branch writer per item): the
     runner hands the leased run to the engine (`adopt`, which stamps `code_version` and `deadline_at`), and the
     engine renews the lease on each heartbeat with the live `lease_ms` and aborts the run when it is lost. A run
-    with a succeeded step journaled by another `code_version` fails `not_resumable` (infra) and its retry is a new
-    run; failed or running rows hold only a partial, so a paused or requeued run whose steps all failed survives a
-    deploy with its WIP (decision changed 2026-11-09, worker review finding 4; see History). Each process
+    leased with a succeeded step journaled by another `code_version` (that `resumes` does not accept) is requeued
+    to run from the start: `adopt` answers `foreign_journal` and leaves the run and its journal as they are, and
+    the runner ends it as `code_version_restart` (infra), so the controller's retry is a new run with a new journal
+    that counts as an infra restart (05-restarts). It no longer fails `not_resumable`, and a lease lost before
+    `adopt` holds the run fails `lease_lost` (decision changed 2026-11-21, issue #718; replaces "fails
+    `not_resumable`", see History). The finished step's result is not reused. The engine's own `claim` still
+    leaves such a run for a worker on its revision. Failed or running rows hold only a partial, so a paused or
+    requeued run whose steps all failed keeps its journal and survives a deploy with its WIP (decision changed
+    2026-11-09, worker review finding 4; see History). Each process
     stamps the revision its supervisor built it from (`SF_CODE_VERSION`, 08-self-update), or `dev` unsupervised.
   - Named timeouts per run kind (`timeouts` in the kind file): `start_to_close` one hour per step by default; the
     implement kind's `run-agent` step gets two hours (7,200,000 ms), above twice `run_timeout_ms`, since it holds
