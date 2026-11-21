@@ -217,9 +217,9 @@ The factory removes only these eight names (under the current prefix) when it ch
 
 ### Several items at once
 
-By default the factory builds one item at a time. To build several in parallel, set `workers` in `factory.config.json`, e.g. `"workers": 3`, and restart `npm run factory -- dev` (or `worker`). It must be a whole number of 1 or more; anything else stops startup with an error. Absent means 1.
+By default the factory builds one item at a time. To build several in parallel, set `workers` in `factory.config.json`, e.g. `"workers": 3`, and restart `npm run factory -- dev` (or `worker`). It must be a whole number of 0 or more; anything else stops startup with an error. Absent means 1. With 0 no worker claims a run, and runs already going finish.
 
-To change the count while the factory runs, without a PR, set `max_workers` in the file once (a whole number of at least `workers`; absent means `workers`), then use `npm run factory -- settings set workers <n>` with any n from 1 to `max_workers`. The pool starts or stops worker loops on its next tick; a stopped loop finishes its current run first. `npm run factory -- settings reset workers` goes back to the file's `workers`.
+To change the count while the factory runs, without a PR, set `max_workers` in the file once (a whole number of at least `workers`; absent means `workers`), then use `npm run factory -- settings set workers <n>` with any n from 0 to `max_workers`. The pool starts or stops worker loops on its next tick; a stopped loop finishes its current run first. 0 stops every loop: no new run starts, and the runs going finish. To also put the implement and review runs going back in the queue, use `npm run factory -- stop` (undo: `npm run factory -- resume owner`). `npm run factory -- settings reset workers` goes back to the file's `workers`.
 
 To let the phases of a split you approved run without an `/approve` each, run `npm run factory -- settings set phases_auto_approve true` (`settings reset phases_auto_approve` turns it off again).
 

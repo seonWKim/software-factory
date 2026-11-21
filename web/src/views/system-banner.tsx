@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useState } from "react";
 import { API, type AutoStop, type FactoryState, type MigrateDryRun, type PausesView, type SettingsView, type SupervisorView, type SystemAction, postMigrate, postResume, postSupervisor, useApi } from "../api.js";
+import { postJson } from "../api/client.js";
 import { Button } from "../components/ui/button.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { Disclosure } from "../components/ui/disclosure.js";
@@ -140,7 +141,9 @@ export function CheckRow({ action }: { action: SystemAction }) {
  */
 function PauseCheckRow({ action, pause }: { action: SystemAction; pause: string }) {
   const now = useNow();
-  const token = useApi<PausesView>(API.pauses).data?.csrf_token ?? null;
+  const pauses = useApi<PausesView>(API.pauses).data;
+  const token = pauses?.csrf_token ?? null;
+  if (pause === OWNER_PAUSE) return <OwnerPauseRow action={action} since={pauses?.pauses.find((p) => p.name === OWNER_PAUSE)?.since ?? null} token={token} />;
   const due = action.until !== null && Date.parse(action.until) <= now;
   const stall = pause === "model_stall";
   const label = stall ? (due ? "needs.pauseNextDue" : "needs.pauseNext") : due ? "needs.pauseEnded" : "needs.pauseEnds";
@@ -153,6 +156,68 @@ function PauseCheckRow({ action, pause }: { action: SystemAction; pause: string 
     >
       <ResumeNow name={pause} token={token} />
     </ListRow>
+  );
+}
+
+/** The owner pause's name (`factory stop`, Stop all agents): it has no end time, only when it began. */
+const OWNER_PAUSE = "owner";
+
+/**
+ * The owner pause's Needs-you row (design 09-dashboard-tasks): "Agents stopped by you at 16:03" in local time, and Resume
+ * now. Until the pause list has loaded, the server's plain name.
+ */
+function OwnerPauseRow({ action, since, token }: { action: SystemAction; since: string | null; token: string | null }) {
+  const title = since === null ? action.text : t("stop.stoppedAt", { time: clockTime(since) });
+  return (
+    <ListRow data-check="claim_pause" data-pause={OWNER_PAUSE} title={<p title={title} className={cn(ROW_TITLE, "text-text-1")}>{title}</p>}>
+      <ResumeNow name={OWNER_PAUSE} token={token} />
+    </ListRow>
+  );
+}
+
+/** POST /api/v1/agents/stop (src/ui/agents-api.ts): starts the owner pause. */
+const STOP_PATH = "/api/v1/agents/stop";
+
+/**
+ * Stop all agents in the top bar (design 09-dashboard-shell): a secondary button that opens a confirm dialog, which posts
+ * the stop and then reloads the pauses and the overview, so Needs you shows the stop with Resume now. Hidden while the
+ * agents are stopped (Resume now is the way back) and while the server has no pause routes.
+ */
+export function StopAllAgents() {
+  const client = useQueryClient();
+  const view = useApi<PausesView>(API.pauses).data;
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const token = view?.csrf_token ?? null;
+  if (token === null || view?.pauses.some((p) => p.name === OWNER_PAUSE)) return null;
+  const close = () => {
+    setOpen(false);
+    setError(null);
+  };
+  const confirm = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await postJson<{ error?: string }>(STOP_PATH, token, {});
+      if (!r.ok) return setError(r.value.error ?? t("api.http", { status: r.status }));
+      announceStatus(t("stop.stopped"));
+      await Promise.all([client.invalidateQueries({ queryKey: [API.pauses] }), client.invalidateQueries({ queryKey: [API.overview] })]);
+      close();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <Button data-testid="stop-all-agents" variant="secondary" className="shrink-0" onClick={() => setOpen(true)}>{t("stop.button")}</Button>
+      {open && (
+        <Dialog title={t("stop.title")} consequence={t("stop.consequence")} confirmLabel={t("stop.button")} confirmDisabled={busy} error={error}
+          onConfirm={() => void confirm()} onClose={close} />
+      )}
+    </>
   );
 }
 

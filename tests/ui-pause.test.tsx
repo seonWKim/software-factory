@@ -14,6 +14,8 @@ const PAGE_MODULE = "../web/src/views/pages.js";
 const TASKS_MODULE = "../web/src/views/tasks.js";
 const { HealthPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { HealthPage: FunctionComponent };
 const { TasksPage } = (await import(/* @vite-ignore */ TASKS_MODULE)) as { TasksPage: FunctionComponent };
+const BANNER_MODULE = "../web/src/views/system-banner.js";
+const { StopAllAgents } = (await import(/* @vite-ignore */ BANNER_MODULE)) as { StopAllAgents: FunctionComponent };
 
 // Claim pauses (issue #291, design §5 Restarts and §9). On Health's Claim pauses tab: each pause in effect with when it
 // ends and a "Resume now" button that posts to /api/v1/pauses/resume with the CSRF token; a refusal shows next to that
@@ -41,6 +43,10 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method === "POST") {
       posts.push({ url, init });
+      if (url === "/api/v1/agents/stop") {
+        if (answer.status === 200) view = { ...view, pauses: [...view.pauses, { name: "owner", ends_at: null, since: AT }] };
+        return json(answer.status, answer.body);
+      }
       const name = JSON.parse(String(init.body)).name;
       if (answer.status === 200) {
         view = { ...view, pauses: view.pauses.filter((p) => p.name !== name) };
@@ -162,5 +168,73 @@ describe("Tasks page claim pauses", () => {
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([u]) => String(u).startsWith("/api/v1/overview"))).toBe(true));
     expect(document.querySelector('li[data-check="claim_pause"]')).toBeNull();
     expect(screen.queryByRole("list", { name: "Claim pauses" })).toBeNull();
+  });
+});
+
+// Stop all agents (design 05-restart-pauses and 09-dashboard-shell, 2026-11-21): the owner pause has no end, so its
+// Needs-you row says when you stopped the agents, in local time, with the same Resume now; the top bar's Stop all agents
+// asks first in a dialog.
+const clock = (at: string) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+
+describe("the owner pause in Needs you", () => {
+  beforeEach(() => {
+    view = { pauses: [{ name: "owner", ends_at: null, since: AT }], csrf_token: TOKEN };
+    actions = [{ code: "claim_pause", text: "Agents stopped", command: "Resume now in Needs you on Tasks, or factory resume owner", until: null, pause: "owner" }];
+    answer = { status: 200, body: { name: "owner", ended: true, pauses: [] } };
+  });
+
+  it("reads \"Agents stopped by you at HH:MM\" with Resume now, which posts the owner pause", async () => {
+    mount(TasksPage, "/app/tasks");
+    const check = await screen.findByRole("list", { name: "Check" });
+    const row = await waitFor(() => {
+      const r = check.querySelector<HTMLElement>('li[data-pause="owner"]');
+      expect(r?.textContent).toContain(`Agents stopped by you at ${clock(AT)}`);
+      return r!;
+    });
+    expect(row.querySelector("code")).toBeNull();
+    expect(row.textContent).not.toMatch(/owner|factory/);
+    fireEvent.click(within(row).getByRole("button", { name: "Resume now" }));
+    await waitFor(() => expect(document.querySelector('li[data-pause="owner"]')).toBeNull());
+    expect(JSON.parse(String(posts[0]!.init.body))).toEqual({ name: "owner" });
+  });
+});
+
+describe("Stop all agents in the top bar", () => {
+  beforeEach(() => {
+    view = { pauses: [], csrf_token: TOKEN };
+    answer = { status: 200, body: { name: "owner", stopped: true, since: AT, pauses: [] } };
+  });
+
+  const button = () => screen.findByRole("button", { name: "Stop all agents" });
+
+  it("opens a dialog first; its confirm posts the stop with the CSRF token, and the button goes once the agents are stopped", async () => {
+    mount(StopAllAgents, "/app/tasks");
+    fireEvent.click(await button());
+    expect(posts).toEqual([]);
+    const dialog = await screen.findByRole("dialog", { name: "Stop all agents?" });
+    expect(dialog.textContent).toContain("Nothing new starts until you resume");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Stop all agents" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Stop all agents" })).toBeNull());
+    expect(posts.map((p) => p.url)).toEqual(["/api/v1/agents/stop"]);
+    expect(new Headers(posts[0]!.init.headers).get("x-csrf-token")).toBe(TOKEN);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("Cancel posts nothing", async () => {
+    mount(StopAllAgents, "/app/tasks");
+    fireEvent.click(await button());
+    const dialog = await screen.findByRole("dialog", { name: "Stop all agents?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(posts).toEqual([]);
+  });
+
+  it("a refusal stays in the open dialog", async () => {
+    answer = { status: 403, body: { error: "Stopping needs write permission (approve_spec): no_role." } };
+    mount(StopAllAgents, "/app/tasks");
+    fireEvent.click(await button());
+    const dialog = await screen.findByRole("dialog", { name: "Stop all agents?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Stop all agents" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toContain("approve_spec");
   });
 });

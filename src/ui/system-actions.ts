@@ -44,6 +44,7 @@ const PAUSE_NAMES: Record<ResumablePause, string> = {
   forge_auth: "Forge refused the credentials",
   preflight_access: "Push or PR access check failed",
   model_stall: "Model not answering",
+  owner: "Agents stopped",
 };
 
 /**
@@ -154,13 +155,15 @@ export async function systemActions(x: SystemInput): Promise<SystemAction[]> {
   }
 
   for (const p of await activePauses(x)) {
-    // The plain name; the row shows `until` (model_stall's next probe) as a relative time. The dashboard action first,
-    // the CLI command as the fallback; the Tasks row draws the button, never this command.
+    // The plain name; the row shows `until` (model_stall's next probe) as a relative time; the owner pause has none, and
+    // its row reads when it began from GET /api/v1/pauses. The dashboard action first, the CLI command as the fallback;
+    // the Tasks row draws the button, never this command.
     add("claim_pause", PAUSE_NAMES[p.name], `${RESUME_IN_NEEDS_YOU}, or factory resume ${p.name}`, p.ends_at);
     out.at(-1)!.pause = p.name;
   }
-  const workerPauses = await x.store.listWorkerPauses();
-  // The CLI only: the dashboard has no worker pause or resume control yet.
+  // The all-workers row is the owner pause above (`factory stop`); this row counts the per-worker pauses only, set on the
+  // CLI: the dashboard has no per-worker pause or resume control.
+  const workerPauses = (await x.store.listWorkerPauses()).filter((p) => p.worker_id !== "*");
   if (workerPauses.length > 0) {
     add("worker_pause", `${workerPauses.length} worker pause${workerPauses.length === 1 ? "" : "s"} in effect (factory workers pause)`, "factory workers resume");
   }
