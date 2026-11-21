@@ -67,10 +67,13 @@ export class FakeForge implements Forge {
     return { number: n, url: this.prRef(n).link };
   }
 
+  /** Open PRs by number: like GitHub's, each is reported (change_open) on every poll while it is here, after `queue`. */
+  openPrs = new Map<number, Extract<ForgeEvent, { kind: "change_open" }>>();
+
   async poll(cursor: string | null): Promise<ForgePollResult> {
     this.polls.push(cursor);
     if (this.pollError) throw this.pollError;
-    const events = this.queue;
+    const events = [...this.queue, ...this.openPrs.values()];
     this.queue = [];
     return { events, next_cursor: String(Number(cursor ?? "0") + 1) };
   }
@@ -81,9 +84,12 @@ export class FakeForge implements Forge {
   prRef(pr_number: number): SourceRef {
     return { type: "github_issue", id: `o/r#${pr_number}`, link: `https://github.com/o/r/pull/${pr_number}` };
   }
+  /** Like GitHub's: only a ref equal to its own prRef (another repository's PR is not one). */
   prNumberOf(ref: SourceRef): number | null {
     const m = /\/pull\/(\d+)$/.exec(ref.link);
-    return ref.type === "github_issue" && m ? Number(m[1]) : null;
+    if (ref.type !== "github_issue" || !m) return null;
+    const ours = this.prRef(Number(m[1]));
+    return ours.id === ref.id && ours.link === ref.link ? Number(m[1]) : null;
   }
   async postPrComment(pr_number: number, body: string, marker: string): Promise<{ url: string }> {
     if (this.commentError) throw this.commentError;
