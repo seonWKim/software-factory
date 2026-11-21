@@ -13,7 +13,7 @@ import { STANDING_APPROVED, ruleId, specKind, standingActor } from "../../../cor
 import { applyCompanions } from "../../../core/companions.js";
 import { suggestedSplit } from "../../../core/split.js";
 import { type Actor, type Run, type StateChangeDetail, type Tier, type WorkItem, type WorkItemId, runTokenCount } from "../../../core/types.js";
-import { failingTests, firstErrorLine, stripAnsi } from "../../../core/output-summary.js";
+import { failingTests, firstErrorLine, stripAnsi } from "../../../core/output-summary.js"; import { doneChecksDetail } from "../../../core/checks.js";
 import { PROVIDER_SETUP } from "../../../interfaces/agent-runner.js";
 import type { ActionRow } from "../../../outbound/index.js";
 import { AUTO, DELIVERY_FAILED, type Decision, SYSTEM, UNCHANGED_HEAD, MAX_FEEDBACK_CHARS, FLOOR_TIER, CONFLICT_PENDING, quote, footerAfter, fenced, iso, updatingForChecks } from "../support.js";
@@ -273,7 +273,7 @@ export class RunResultsUnit {
           // The run stored its push and PR as intents (RFC 0015 M7): the item waits for outbound, and `prDelivered`
           // applies the PR number and queues the review once the PR delivery completes. One delivered before this
           // result is applied (outbound ran first) is applied here, so the wait never misses it.
-          if (data.pr_pending === true) return this.prPending(it, run, data, { token_cost: tokens, ...(files ? { pr_files: files } : {}) }, "implemented");
+          if (data.pr_pending === true) return this.prPending(it, run, data, { token_cost: tokens, ...(files ? { pr_files: files } : {}) }, "implemented", doneChecksDetail(data));
           // No PR (the local broker, design 05-sources): the item reviews and merges as its local branch.
           const pr = data.pr_number === null || data.pr_number === undefined ? null : Number(data.pr_number);
           return this.c.unit("commands").applyQueued(it, {
@@ -286,7 +286,7 @@ export class RunResultsUnit {
               ...(it.blocked_on === "dependency" ? { blocked_on: "none" as const, blocked_reason: null } : {}),
             },
             actor: SYSTEM,
-            reason: "implemented",
+            reason: "implemented", ...(doneChecksDetail(data) ? { detail: doneChecksDetail(data)! } : {}), // each done-when line's result (design 04-pre-push-gates)
             ack_run: run.id,
             enqueue: { kind: "review", idempotency_key: runKey(it, "review"), input: await this.c.unit("checks-gate").reviewInput(pr, it.id) },
           });
@@ -707,7 +707,7 @@ export class RunResultsUnit {
     const infra = count("infra");
     const failedAt = Date.parse(run.finished_at ?? this.c.k.d.clock.now().toISOString());
     const restart = cls === "infra" ? { restart_count: it.restart_count + 1 } : {};
-    const detail = { run_id: run.id, error_code: code, failure: cls, task_failures: task, infra_failures: infra };
+    const detail = { run_id: run.id, error_code: code, failure: cls, task_failures: task, infra_failures: infra, ...doneChecksDetail(run.outcome) };
 
     if (cls === "checks_env") {
       const env = (await this.c.k.reader.listRuns(it.id)).filter(
