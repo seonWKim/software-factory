@@ -65,7 +65,7 @@ export interface CommandState {
   asked_by?: RunKind;
 }
 
-export type CommandName = "approve" | "reject" | "revise" | "retry" | "resolve" | "budget" | "verdict" | "standing" | "link" | "help";
+export type CommandName = "approve" | "reject" | "revise" | "retry" | "resolve" | "hold" | "budget" | "verdict" | "standing" | "link" | "help";
 
 export interface CommandSpec {
   name: CommandName;
@@ -159,6 +159,8 @@ export const COMMANDS: readonly CommandSpec[] = [
     needs_pr: false,
     changes_state: true,
   },
+  { name: "hold", usage: "/hold <id>", phases: [], local_phases: ["agent_needs_human"], asked_by: ["implement"], needs_pr: false, changes_state: true, // a local implement stop (design 05-dependencies)
+    description: "Hold until <id> merges: writes a `Depends on: <id>` line in the item's problem and queues the implement run, which waits for <id> (a local wi_… item, or a built task tk_…) to merge and then starts on its own. Refused for an ID that names no local item, the item itself, or an item already merged" },
   {
     name: "budget",
     usage: "/budget [tokens]",
@@ -213,6 +215,7 @@ export function commandSpec(name: CommandName): CommandSpec {
 
 /** blocked_reason prefix (with `blocked_on: human`) of an item whose dependency closed without a merge (design §5). */
 export { DEPENDENCY_CLOSED } from "./phase.js";
+export { LOCAL_ID, dependsOnIds, localItemOf, wantedDependsOn, withDependsOn } from "./task-build.js"; // for `/hold` and the coordination unit
 
 /** Block reasons whose step `/retry` reads from the stage (or, for the agent blocks, from the item's runs first). */
 const STAGE_RETRY_REASONS: readonly (string | null)[] = ["max_attempts", "max_restart", AGENT_NEEDS_HUMAN, REPEATED_FAILURE];
@@ -267,9 +270,8 @@ export function itemCommandState(it: ItemState, runs: readonly Run[]): CommandSt
 export const appliesLocally = (c: CommandSpec, s: CommandState): boolean => s.local === true && !s.has_pr && (c.local_phases?.includes(s.phase) ?? false);
 
 export function applies(c: CommandSpec, s: CommandState): boolean {
-  if (appliesLocally(c, s)) return true;
-  if (!c.phases.includes(s.phase) || (c.needs_pr && !s.has_pr && !s.local)) return false;
-  return s.phase !== "agent_needs_human" || !c.asked_by || (s.asked_by !== undefined && c.asked_by.includes(s.asked_by));
+  const asked = s.phase !== "agent_needs_human" || !c.asked_by || (s.asked_by !== undefined && c.asked_by.includes(s.asked_by));
+  return asked && (appliesLocally(c, s) || (c.phases.includes(s.phase) && (!c.needs_pr || s.has_pr || s.local === true)));
 }
 
 /** Whether `c` is accepted as a comment on the item's PR with its PR meaning (`pr_phases`); needs a PR. */
@@ -380,7 +382,8 @@ function whenText(c: CommandSpec): string {
         ? "any open or merged item"
         : c.phases.map((p) => PHASE_LABELS[p]).join(", ");
   const on = (label: string, ps?: readonly CommandPhase[]) => (ps?.length ? `; ${label}: ${ps.map((p) => PHASE_LABELS[p]).join(", ")}` : "");
-  return (c.needs_pr ? `${where}, once it has a PR (a local item needs none)` : where) + on("on a local item with no PR", c.local_phases) + on("on its PR", c.pr_phases);
+  // A command that applies only to a local item (`phases` empty) starts with its local phases.
+  return ((c.needs_pr ? `${where}, once it has a PR (a local item needs none)` : where) + on("on a local item with no PR", c.local_phases) + on("on its PR", c.pr_phases)).replace(/^; /, "");
 }
 
 /** The command table in SET_UP.md, generated from COMMANDS; a test keeps the two equal. */

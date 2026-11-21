@@ -315,6 +315,22 @@ describe("command table", () => {
     expect(commandTableMarkdown()).toContain("; on a local item with no PR: waiting for a human merge; on its PR: ");
   });
 
+  it("/hold <id> applies only to a local item with no PR whose implement run asked for a human; its help text is the hold reply option", () => {
+    const hold = commandSpec("hold");
+    expect(hold.usage).toBe("/hold <id>");
+    expect(hold.description).toMatch(/^Hold until <id> merges: writes a `Depends on: <id>` line/);
+    const local = { phase: "agent_needs_human" as const, has_pr: false, local: true as const };
+    expect(applies(hold, { ...local, asked_by: "implement" })).toBe(true);
+    expect(commandFooter({ ...local, asked_by: "implement" })).toContain(`- \`/hold <id>\`: ${hold.description}.`);
+    // A resolve run that asked, any other phase, a GitHub item, or a local item's PR: not offered.
+    expect(applies(hold, { ...local, asked_by: "resolve" })).toBe(false);
+    for (const phase of COMMAND_PHASES.filter((p) => p !== "agent_needs_human")) expect(applies(hold, { phase, has_pr: false, local: true }), phase).toBe(false);
+    expect(applies(hold, { phase: "agent_needs_human", has_pr: false, asked_by: "implement" })).toBe(false);
+    expect(applies(hold, { ...local, has_pr: true, asked_by: "implement" })).toBe(false);
+    expect(commandTableMarkdown()).toContain(`| \`/hold <id>\` | ${hold.description} | on a local item with no PR: blocked: the agent asked for a human |`);
+    expect(helpReply({ ...local, asked_by: "implement" })).toContain("`/hold <id>` **(now)**: Hold until <id> merges");
+  });
+
   it("/help names the state by its label, not its phase id", () => {
     expect(helpReply(s("spec_pending"))).toContain("(spec waiting for approval)");
     expect(helpReply(s("spec_pending"))).not.toContain("spec_pending");
