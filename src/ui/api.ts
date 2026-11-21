@@ -391,14 +391,7 @@ async function item(c: ApiCtx, id: WorkItemId) {
   const attemptsOf = new Map<string, RunAttempt[]>();
   for (const a of await s.listRunAttempts(id)) attemptsOf.set(a.run_id, [...(attemptsOf.get(a.run_id) ?? []), a]);
   // Which runs have a stored transcript: one listing of the item's prefix. A storage error only hides the links.
-  let stored: string[] = [];
-  if (c.d.storage) {
-    try {
-      stored = await c.d.storage.list(itemPrefix(id));
-    } catch {
-      stored = [];
-    }
-  }
+  const stored = c.d.storage ? await c.d.storage.list(itemPrefix(id)).catch((): string[] => []) : [];
   const merge_check = await mergeCheckRow(c, it, phaseOf(it) === "merge_pending" ? await s.getMergeCheck(id) : null);
   const st = await itemState({ store: s, w: c.w, now: c.now, lease_ms: c.d.lease_ms }, it, runs, changes); // as the list reads it
   const timeline = [];
@@ -452,6 +445,9 @@ async function item(c: ApiCtx, id: WorkItemId) {
       item_phase: st.level,
       reason_code: st.why.reason_code,
       why: await c.why(st.why, it),
+      // About (design 09-dashboard-item): the intake text's first paragraph, and the spec once approved (done_criteria set), each text withheld on its own.
+      request: await c.text(it.issue_text?.split(/\n[ \t]*\n/)[0]?.trim() || null),
+      spec: it.done_criteria && { problem: (await c.text(it.problem))!, desired_output: await c.text(it.desired_output), done_criteria: await Promise.all(it.done_criteria.map(async (d) => (await c.text(d))!)) },
     },
     timeline,
     runs: runRows,
