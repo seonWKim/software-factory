@@ -1,5 +1,7 @@
 import { resolve } from "node:path";
-import { type CliIdentity, type FactoryStore, type Loaded, Plugins, localAuth } from "../../../compose.js";
+import { type CliIdentity, type FactoryStore, localAuth } from "../../../compose.js";
+import { type Loaded } from "../../../load-config.js";
+import { Plugins } from "../../../plugin-set.js";
 import { storeSql } from "../../../impl/store/sql/store-sql.js";
 import { type ApprovalRequest, PackApprovalsStore, approvalLine, changeApproval } from "../../../packs/pack-approvals.store.js";
 import { PackEntriesStore, addLine, addPack } from "../../../packs/pack-entries.store.js";

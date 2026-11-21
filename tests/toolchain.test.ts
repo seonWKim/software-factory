@@ -3,7 +3,8 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TOOLCHAIN_PLACEHOLDER, checkToolchainEnv, fillPrompt, loadConfig, toolchainConfig } from "../src/compose.js";
+import { TOOLCHAIN_PLACEHOLDER, fillPrompt, loadConfig } from "../src/load-config.js";
+import { checkToolchainEnv, toolchainConfig } from "../src/config-values.js";
 import type { FactoryConfig, ToolchainConfig } from "../src/core/config.js";
 import { keyRefusal, PR_ONLY_KEYS } from "../src/core/settings.js";
 import { Edit, FORBIDDEN_ENV, Read, Write, guardPolicy, type ToolContext } from "../src/core/tools/index.js";

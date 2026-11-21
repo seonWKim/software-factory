@@ -7,7 +7,10 @@
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { type CliIdentity, type Loaded, Plugins, buildStatsStore, settingsBase } from "../../../compose.js";
+import { type CliIdentity, buildStatsStore } from "../../../compose.js";
+import { type Loaded } from "../../../load-config.js";
+import { Plugins } from "../../../plugin-set.js";
+import { settingsBase } from "../../../core/settings-base.js";
 import { AUTO_MERGE_TIER_MAX, MODES, type Mode, resolveSettings } from "../../../core/settings.js";
 import { ProfileStore, checkDisplayName } from "../../../identity/index.js";
 import { storeSql } from "../../../impl/store/sql/store-sql.js";

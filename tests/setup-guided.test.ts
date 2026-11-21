@@ -16,7 +16,7 @@ import {
 import { registerYou } from "../src/cli/handlers/setup/guided.js";
 import setupCommand from "../src/cli/handlers/setup/setup.command.js";
 import { REGISTRY, connectHooks } from "../src/plugins.js";
-import { loadConfig } from "../src/compose.js";
+import { loadConfig } from "../src/load-config.js";
 import { cliIdentity } from "../src/core/local-cli.js";
 import { ProfileStore } from "../src/identity/index.js";
 import { storeSql } from "../src/impl/store/sql/store-sql.js";

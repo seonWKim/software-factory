@@ -3,7 +3,9 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CODE_ROOT_ENV, Plugins, loadConfig } from "../src/compose.js";
+import { CODE_ROOT_ENV } from "../src/interfaces/updater.js";
+import { Plugins } from "../src/plugin-set.js";
+import { loadConfig } from "../src/load-config.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { runProcess } from "../src/impl/process/run-process.js";
 import { defaultSecretsFile } from "../src/impl/secrets/env-file-secret-store.js";

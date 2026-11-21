@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { stallConfig } from "../src/compose.js";
+import { stallConfig } from "../src/config-values.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { AGENT_STALLED, failureClass, retryKey } from "../src/core/policy.js";
 import type { RunId, RunKind, RunOutcome, Timestamp } from "../src/core/types.js";

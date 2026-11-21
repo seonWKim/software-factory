@@ -5,7 +5,10 @@
 
 import { randomUUID } from "node:crypto";
 import { CHILD_ERROR_MESSAGE } from "./interfaces/updater.js";
-import { CODE_ROOT_ENV, Plugins, cliConfig, loadConfig, ownerRefusal } from "./compose.js";
+import { CODE_ROOT_ENV } from "./interfaces/updater.js";
+import { Plugins } from "./plugin-set.js";
+import { cliConfig, loadConfig } from "./load-config.js";
+import { ownerRefusal } from "./compose.js";
 import { defineCommand, loadCommands, resolveCommand } from "./cli/index.js";
 import { SENTENCE_FORM } from "./core/command-table.js";
 import { cliName, parseSentence, runSentence } from "./core/local-cli.js";

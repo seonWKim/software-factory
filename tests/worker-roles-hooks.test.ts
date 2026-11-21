@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { checkEnabledHooks, hookNames } from "../src/compose.js";
+import { checkEnabledHooks } from "../src/compose.js";
+import { hookNames } from "../src/config-values.js";
 import { Worker } from "../src/worker/index.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import type { WorkerId } from "../src/core/types.js";

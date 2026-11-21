@@ -1,4 +1,5 @@
-import { Plugins, ownerRefusal } from "../../../compose.js";
+import { Plugins } from "../../../plugin-set.js";
+import { ownerRefusal } from "../../../compose.js";
 import { ConsoleLogger } from "../../../impl/log/console-logger.js";
 import { RESUME_USAGE, parseResumeArgs, runResume } from "../../../resume-cmd.js";
 import { defineCommand } from "../../command.js";

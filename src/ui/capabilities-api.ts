@@ -11,7 +11,7 @@
 // touched, and nothing here calls a tool (G2). "Last used" reads stored runs and transcripts, and writes nothing.
 
 import { TextDecoder } from "node:util";
-import type { Loaded } from "../compose.js";
+import type { Loaded } from "../load-config.js";
 import { GRANT_RUN_KINDS, capabilitiesConfig } from "../core/config.js";
 import { MODEL_RUN_KINDS } from "../core/model-choice.js";
 import { type SettingsBase, resolveSettings } from "../core/settings.js";

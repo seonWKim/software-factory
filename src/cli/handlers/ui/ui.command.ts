@@ -1,5 +1,7 @@
 import { join } from "node:path";
-import { Plugins, buildUiParts, uiPort } from "../../../compose.js";
+import { Plugins } from "../../../plugin-set.js";
+import { buildUiParts } from "../../../compose.js";
+import { uiPort } from "../../../config-values.js";
 import { FORGE_BUDGET_PLUGIN } from "../../../impl/github/github-client.js";
 import { SUPERVISOR_STATUS_FILE } from "../../../interfaces/updater.js";
 import { createPlugin, selectedSources } from "../../../plugins.js";

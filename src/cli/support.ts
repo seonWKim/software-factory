@@ -3,7 +3,8 @@
 import { execFile } from "node:child_process";
 import { userInfo } from "node:os";
 import { promisify } from "node:util";
-import { type Loaded, build } from "../compose.js";
+import { type Loaded } from "../load-config.js";
+import { build } from "../compose.js";
 import { cliUserConfig } from "../core/config.js";
 import { type CliEnvironment, type CliIdentity, cliIdentity } from "../core/local-cli.js";
 

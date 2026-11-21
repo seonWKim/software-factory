@@ -1,4 +1,4 @@
-import type { Loaded } from "../../../compose.js";
+import type { Loaded } from "../../../load-config.js";
 import { configFailLines } from "../../../config-keys.js";
 import { doctor } from "../../../setup.js";
 import { defineCommand } from "../../command.js";

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadCommands } from "../src/cli/index.js";
-import type { Loaded } from "../src/compose.js";
+import type { Loaded } from "../src/load-config.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
 import type { WorkItemId, WorkItemPatch } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";

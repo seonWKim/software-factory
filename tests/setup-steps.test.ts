@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultsAsk, terminalAsk } from "../src/cli/handlers/setup/ask.js";
 import { type GuidedState, SETUP_STEPS, runSetup, terminalIo } from "../src/cli/handlers/setup/guided.js";
 import { progressFile } from "../src/cli/handlers/setup/progress.js";
-import { loadConfig } from "../src/compose.js";
+import { loadConfig } from "../src/load-config.js";
 import {
   type SetupIo,
   type SetupStep,

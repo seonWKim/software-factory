@@ -4,7 +4,10 @@
 import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { type SyncOutcome, syncCalendars } from "./calendar/index.js";
-import { type Loaded, Plugins, buildStatsStore, settingsBase } from "./compose.js";
+import { type Loaded } from "./load-config.js";
+import { Plugins } from "./plugin-set.js";
+import { buildStatsStore } from "./compose.js";
+import { settingsBase } from "./core/settings-base.js";
 import { runCanary } from "./canary.js";
 import { type Check, type CheckStatus, TOKEN_FAIL_DAYS, TOKEN_WARN_DAYS, checkStatus } from "./core/health-check.js";
 import { type LoadedConfig, readOnlyOverlaps } from "./core/config.js";
