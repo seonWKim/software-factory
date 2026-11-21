@@ -200,7 +200,7 @@ describe("contrast", () => {
   });
 
   for (const [theme, selector] of [["light", ":root"], ["dark", "\\.dark"]] as const) {
-    it(`meets 4.5:1 in ${theme}`, () => {
+    it(`meets 4.5:1 in ${theme}, text and pill-*-fg on each pill-{ok,warn,bad,info}-bg included`, () => {
       const root = block(":root");
       const t = (name: string) => {
         const m = new RegExp(`--${name}: (#[0-9A-Fa-f]{6});`).exec(theme === "light" ? root : block(selector) + root);

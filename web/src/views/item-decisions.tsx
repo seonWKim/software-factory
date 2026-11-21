@@ -68,7 +68,7 @@ function ChangeLine({ change }: { change: OptionChange | null | undefined }) {
     ...(change.extra_paths.length ? [t("decisions.needsPaths", { paths: change.extra_paths.join(", ") })] : []),
     ...(change.done_when.length ? [t("decisions.changesDone", { lines: change.done_when.join("; ") })] : []),
   ];
-  return <span data-option-change className="block text-xs text-pretty break-words text-text-2">{parts.join(". ")}</span>;
+  return <span data-option-change className="block text-xs text-pretty break-words text-pill-warn-fg">{parts.join(". ")}</span>;
 }
 
 /** The approve note: one `N: <answer>` line per answered decision, then the free note. */
