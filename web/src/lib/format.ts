@@ -65,6 +65,23 @@ export function localDateTime(at: string): string {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 
+/** An ISO time as the viewer's short local date ("Nov 18"); the text itself when it is not one. */
+export function localShortDate(at: string): string {
+  const d = new Date(at);
+  return Number.isNaN(d.getTime()) ? at : new Intl.DateTimeFormat(locale(), { month: "short", day: "numeric" }).format(d);
+}
+
+/** Whether `start` to `end` is one whole local day ending at local midnight of the day `made` falls on. */
+export function isPreviousLocalDay(start: string, end: string, made: string): boolean {
+  const s = new Date(start);
+  const e = new Date(end);
+  const m = new Date(made);
+  if ([s, e, m].some((d) => Number.isNaN(d.getTime()))) return false;
+  const nextDay = new Date(s.getFullYear(), s.getMonth(), s.getDate() + 1);
+  const madeDay = new Date(m.getFullYear(), m.getMonth(), m.getDate());
+  return s.getTime() === new Date(s.getFullYear(), s.getMonth(), s.getDate()).getTime() && e.getTime() === nextDay.getTime() && e.getTime() === madeDay.getTime();
+}
+
 /** A whole number grouped by thousands in the active locale ("4,844"). */
 export function groupedInteger(n: number): string {
   return new Intl.NumberFormat(locale(), { maximumFractionDigits: 0 }).format(n);

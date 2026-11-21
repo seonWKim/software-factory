@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { ItemDecision } from "../web/src/views/decision-card.js";
-import { commandOutcome } from "../web/src/views/item-commands.js";
+import { commandOutcome } from "../web/src/views/command-send.js";
 import { API } from "../web/src/api.js";
 import { AT, items, detail, RESPONSES, state, installShellFixtures, mount, cmd, SESSION, cap, button, settle } from "./ui-shell-fixtures.js";
 

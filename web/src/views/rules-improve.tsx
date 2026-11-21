@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { API, type ImproveGroupView, type ImproveView, postImproveRun } from "../api.js";
+import { API, type ImproveFilingView, type ImproveGroupView, type ImproveNote, type ImproveReportView, type ImproveView, postImproveRun } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { Card } from "../components/ui/card.js";
 import { Disclosure } from "../components/ui/disclosure.js";
@@ -9,12 +9,12 @@ import { ListRow, ROW_TITLE } from "../components/ui/list-row.js";
 import type { MessageKey } from "../i18n/en.js";
 import { Notice } from "../components/ui/notice.js";
 import { t } from "../i18n/index.js";
-import { localDateTime } from "../lib/format.js";
+import { isPreviousLocalDay, localShortDate } from "../lib/format.js";
 import { ROW_PAD, STACK_NARROW, line, muted } from "./rules-shared.js";
 
 // The improve report, the Health page's Improve tab (design 07-self-improvement, 2026-11-16; moved off the Rules page
 // 2026-11-21), from GET /api/v1/rules's `improve`: its window and counts, then one row per failure group titled in
-// plain words (a label per known error code, else "Other failure"; never the code or a file path), with its runs and
+// plain words (its detail, else its draft cause, else "Repeated failure"; a hot file "Often-edited file"), with its runs and
 // filing on the details line and its detail, draft and code behind a Disclosure. Run now shows only when `run_now` says
 // the viewer may run it (approve_spec); it posts to POST /api/v1/improve/run and shows the queued run_id, or a 409's
 // refusal and the run already queued, with no reload.
@@ -50,51 +50,68 @@ function RunNow({ token }: { token: string }) {
         <Button variant="secondary" size="sm" disabled={busy} onClick={() => void run()}>
           {t("rules.runNow")}
         </Button>
-        <span className={muted}>{t("rules.runNowHint")}</span>
       </div>
       {result !== null && <Notice tone={result.ok ? "ok" : "bad"}>{result.text}</Notice>}
     </div>
   );
 }
 
-/** The plain title of each known error code; any other code reads "Other failure". */
-const CODE_TITLE: Record<string, MessageKey> = {
-  hotspot: "rules.code.hotspot",
-  pushback: "rules.code.pushback",
-  checks_failed: "rules.code.checksFailed",
-  checks_env: "rules.code.checksFailed",
-  tests_failed: "rules.code.testsFailed",
-  flaky_test: "rules.code.flakyTest",
-  spec_conflict: "rules.code.specConflict",
-  agent_stalled: "rules.code.agentStalled",
-  agent_timed_out: "rules.code.agentTimedOut",
-  start_to_close: "rules.code.agentTimedOut",
-  schedule_to_close: "rules.code.agentTimedOut",
-  agent_failed: "rules.code.agentFailed",
-  exception: "rules.code.exception",
-  no_commits: "rules.code.noCommits",
-  scope_violation: "rules.code.outOfScope",
-  out_of_scope: "rules.code.outOfScope",
-  push_failed: "rules.code.pushFailed",
-  git_failed: "rules.code.pushFailed",
-  merge_conflict: "rules.code.mergeConflict",
-  session_lost: "rules.code.sessionLost",
-  not_resumable: "rules.code.sessionLost",
-  abandoned: "rules.code.sessionLost",
-  warm_failed: "rules.code.warmFailed",
-  diff_too_large: "rules.code.diffTooLarge",
-  rate_limited: "rules.code.rateLimited",
-  invalid_output: "rules.code.invalidOutput",
-  forge_auth: "rules.code.forgeAuth",
-  egress_blocked: "rules.code.egressBlocked",
+/** The plain phrase of each skip, failed and withheld reason src/core/improver.ts records. */
+const REASON_KEYS: Readonly<Record<string, MessageKey>> = {
+  issue_cap: "rules.reason.issue_cap",
+  comment_cap: "rules.reason.comment_cap",
+  recently_closed: "rules.reason.recently_closed",
+  no_source: "rules.reason.no_source",
+  needs_person: "rules.reason.needs_person",
+  host_sleep: "rules.reason.host_sleep",
+  pause: "rules.reason.pause",
+  in_flight: "rules.reason.in_flight",
+  open_item: "rules.reason.open_item",
+  call_cap: "rules.reason.call_cap",
+  error: "rules.reason.error",
+  refused: "rules.reason.refused",
+  max_tokens: "rules.reason.max_tokens",
+  invalid_output: "rules.reason.invalid_output",
+  withheld: "rules.reason.withheld",
 };
 
-/** A failure group's one-line title in plain words. */
-export const groupTitle = (code: string): string => t(CODE_TITLE[code] ?? "rules.code.other");
+/** A reason in plain words; null for a code with no phrase (the code is never shown). */
+function reasonPhrase(reason: string | null): string | null {
+  const key = reason === null ? undefined : REASON_KEYS[reason];
+  return key === undefined ? null : t(key);
+}
+
+/** A group's one-line title: a hotspot is "Often-edited file", else its detail, else its draft's cause, else "Repeated failure". */
+function groupTitle(g: ImproveGroupView): string {
+  if (g.hotspot) return t("rules.titleHotspot");
+  return g.detail ?? g.draft?.cause ?? t("rules.titleRepeated");
+}
+
+/** A group's filing on its details line: where it went, or "not filed" with the plain reason when there is one. */
+function filingText(f: ImproveFilingView | null): string {
+  if (f === null) return t("rules.improveNotFiled");
+  if (f.status === "filed" || f.status === "linked") return t("rules.filedRef", { status: f.status, ref: f.ref ?? "" });
+  if (f.status === "commented") return t("rules.commentedRef", { ref: f.ref ?? "", runs: f.runs ?? 0 });
+  const why = reasonPhrase(f.reason);
+  return why === null ? t("rules.notFiled") : t("rules.notFiledWhy", { why });
+}
+
+/** A group's draft note (skipped, failed or withheld) in plain words. */
+function noteText(n: ImproveNote): string {
+  const why = reasonPhrase(n.reason);
+  return why === null ? t("rules.improveNoDraft") : t("rules.noDraftWhy", { why });
+}
+
+/** The header: "Yesterday (Nov 18): …" for the previous local day, else "{start} to {end}: …", dates short and local. */
+function windowText(r: ImproveReportView): string {
+  const counts = { groups: r.groups.length, runs: r.runs };
+  if (isPreviousLocalDay(r.window_start, r.window_end, r.created_at)) return t("rules.improveHeaderDay", { date: localShortDate(r.window_start), ...counts });
+  return t("rules.improveHeaderRange", { start: localShortDate(r.window_start), end: localShortDate(r.window_end), ...counts });
+}
 
 /** One failure group: its plain title, runs and filing, then its detail, draft and code behind a Disclosure. */
 function ImproveGroup({ g }: { g: ImproveGroupView }) {
-  const title = groupTitle(g.error_code);
+  const title = groupTitle(g);
   return (
     <ListRow
       data-improve-group={g.error_code}
@@ -103,7 +120,7 @@ function ImproveGroup({ g }: { g: ImproveGroupView }) {
       details={
         <>
           <span className="tabular-nums">{t("rules.improveRuns", { count: g.runs })}</span>
-          <span data-filing className="min-w-0 break-keep">{g.filing ?? t("rules.improveNotFiled")}</span>
+          <span data-filing className="min-w-0 break-keep">{filingText(g.filing)}</span>
         </>
       }
     >
@@ -122,7 +139,7 @@ function ImproveGroup({ g }: { g: ImproveGroupView }) {
                     {g.draft === null && <p className={muted}>{t("rules.improveNoDraft")}</p>}
                     {g.draft?.cause != null && <p className={line}>{t("rules.improveCause", { cause: g.draft.cause })}</p>}
                     {g.draft?.fix != null && <p className={line}>{t("rules.improveFix", { fix: g.draft.fix })}</p>}
-                    {g.draft?.note != null && <p className={line}>{g.draft.note}</p>}
+                    {g.draft?.note != null && <p className={line}>{noteText(g.draft.note)}</p>}
                   </div>
                 ),
               },
@@ -147,9 +164,7 @@ export function Improve({ view }: { view: ImproveView }) {
           ) : (
             <>
               <p data-improve-window className={`${muted} tabular-nums`}>
-                {t("rules.improveWindow", {
-                  start: localDateTime(r.window_start), end: localDateTime(r.window_end), created: localDateTime(r.created_at), groups: r.groups.length, runs: r.runs, patterns: r.patterns,
-                })}
+                {windowText(r)}
               </p>
               {r.groups.length === 0 ? (
                 <p className={muted}>{t("rules.improveNoGroup")}</p>

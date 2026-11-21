@@ -238,8 +238,8 @@ async function improveReport(r: ImproveReport, text: (v: string) => Promise<stri
   // The hot files (`hotspot` rows of the patterns) show with the groups: their file, runs and filing.
   for (const g of [...r.groups, ...r.patterns.filter(isHotspot)]) {
     groups.push({
-      error_code: await text(g.error_code), detail: await opt(g.detail), runs: g.run_ids.length,
-      draft: await improveDraft(g, text), filing: await opt(filingText(g)),
+      error_code: await text(g.error_code), detail: await opt(g.detail), runs: g.run_ids.length, hotspot: isHotspot(g),
+      draft: await improveDraft(g, text), filing: await improveFiling(g, text),
     });
   }
   return {
@@ -248,30 +248,25 @@ async function improveReport(r: ImproveReport, text: (v: string) => Promise<stri
   };
 }
 
-/** A group's draft: its cause and fix when drafted, else one note (withheld, failed or skipped); null with none. */
+/** A group's draft: its cause and fix when drafted, else one note `{ status, reason }` (reason `withheld` for a withheld one); null with none. */
 async function improveDraft(g: FailureGroup, text: (v: string) => Promise<string>) {
   const d = g.draft;
   if (!d) return null;
   if (d.status === "drafted") return { cause: await text(d.cause), fix: await text(d.fix), note: null };
-  return { cause: null, fix: null, note: await text(d.status === "withheld" ? `withheld (${d.rules.join(", ")})` : `${d.status} (${d.reason})`) };
+  return { cause: null, fix: null, note: { status: d.status, reason: d.status === "withheld" ? "withheld" : await text(d.reason) } };
 }
 
-/** A group's filing as one line; null when not filed yet. */
-function filingText(g: FailureGroup): string | null {
+/**
+ * A group's filing as `{ status, reason, ref, runs }`, null when not filed yet: `reason` the stored code of a skipped or
+ * failed filing (`withheld` for a withheld one), else null; `ref` the item's link or ID; `runs` the new runs a comment named.
+ */
+async function improveFiling(g: FailureGroup, text: (v: string) => Promise<string>) {
   const f = g.filing;
   if (!f) return null;
-  switch (f.status) {
-    case "filed":
-    case "linked":
-      return `${f.status}: ${f.ref.link || f.ref.id}`;
-    case "commented":
-      return `commented on ${f.ref.link || f.ref.id}: ${f.run_ids.length} new runs`;
-    case "withheld":
-      return `withheld (${f.rules.join(", ")})`;
-    case "skipped":
-    case "failed":
-      return `${f.status} (${f.reason})`;
-  }
+  const ref = "ref" in f ? await text(f.ref.link || f.ref.id) : null;
+  const runs = f.status === "commented" ? f.run_ids.length : null;
+  const reason = f.status === "skipped" || f.status === "failed" ? await text(f.reason) : f.status === "withheld" ? "withheld" : null;
+  return { status: f.status, reason, ref, runs };
 }
 
 /** The retired classes, newest first, each text through the Withholder; a failed read gives none. */
