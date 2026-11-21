@@ -6,8 +6,8 @@
 // `applied` (the Applied group) is the promoted rules file read through `TacitLedger.applied` only: its blocks and its
 // encoded-elsewhere lines, null with the ledger off; `retired` the classes the ledger's retire verdicts name
 // (`TacitLedger.retired`), with reason and date.
-// GET /api/v1/rules/entry?id= reads one entry's detail on demand (a description, what it would change, why, where it
-// applies, and each incident's ID, date, proposal, quote and root reason as `evidence`) through
+// GET /api/v1/rules/entry?id= reads one entry's detail on demand (a description, what it would change, a proposal's
+// prose `change`, why, where it applies, and each incident's ID, date, proposal, quote and root reason as `evidence`) through
 // `TacitLedger.show` only; for an applied class it adds `retire`, the reasons it looks ready to retire
 // (src/core/rule-retirement.ts: the rules file, the detail's incident count, the other applied rules and this repo's
 // paths; no model call). The page's Suggest button reads it once per applied rule; it writes nothing. Every ledger text
@@ -15,7 +15,7 @@
 // the owner's reason, and for promote of a class their wording, default and exception, which the plugin encodes in the
 // owner's rules file before the verdict (a retire removes the class's block instead); promote of a proposal takes no
 // field beyond the reason: the plugin applies the proposal's current → proposed lines (as `show` gives them) to its
-// target file, then sends the verdict, all through `TacitLedger.verdict`
+// target file, then sends the verdict (a prose change: the verdict only, applied to its target), all through `TacitLedger.verdict`
 // only: the page has no other write path and writes nothing to the store. The request guards
 // (Host, Origin, Content-Type, CSRF token, body size, JSON) run in server.ts; then the owner check (decision 1 of #571:
 // the store's local owner only); every refusal comes before the ledger's CLI runs.
@@ -370,7 +370,7 @@ export async function readRuleEntry(d: PauseDeps, rawId: string | null): Promise
   const reasons = retire === null ? null : await Promise.all(retire.map(text));
   if (detail === null) return { status: 200, value: { id: await text(id), detail: null, error: error === null ? null : await text(error), retire: reasons } };
   const shown: Record<string, unknown> = { id: await text(detail.id) };
-  for (const key of ["description", "default", "exceptions", "kind", "target", "current", "proposed", "root_reason", "scope"] as const) {
+  for (const key of ["description", "default", "exceptions", "kind", "target", "current", "proposed", "change", "root_reason", "scope"] as const) {
     const v = detail[key];
     if (v !== undefined) shown[key] = await text(v);
   }

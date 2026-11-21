@@ -3,7 +3,7 @@
 // its CLIs and reads its promoted rules. The controller records each capture as an outbound intent, and outbound calls
 // `capture` (retried with backoff, its text through G5 first). `pending`, `show`, `verdict` and `rules` read and judge
 // the ledger (a promote of a class also writes the rule into the owner's rules file; a promote of a proposal applies its
-// proposed lines to its target file): the dashboard's Rules page and
+// proposed lines to its target file when it has them): the dashboard's Rules page and
 // the learned rules in every prompt (issue #571) go through them only.
 
 /** One pushback as the factory knows it. The ledger's own fields (root reason, hypothesis, rule draft) stay empty. */
@@ -79,6 +79,8 @@ export interface TacitEntryDetail {
   /** A proposal's current lines of its target and the change it proposes, when the ledger carries them. */
   readonly current?: string;
   readonly proposed?: string;
+  /** A proposal's change in prose (the JSON form's `change`), when it gives no current and proposed lines. */
+  readonly change?: string;
   /** How many times it came up. */
   readonly incidents?: number;
   /** The incident rows that hold anything beyond a bare reference, newest first (undated rows last, in the ledger's order). */
@@ -175,7 +177,7 @@ export interface TacitLedger {
   /**
    * Records the owner's verdict on entry `id` with their reason; `rule` is the owner's rule on a promote of a class,
    * which encodes it first; a promote of a proposal applies its proposed lines to its target file first (as `show`
-   * gives them); a retire of a class removes its block from the rules file first. Throws for an ID that is neither a
+   * gives them), or, when its change is prose, records it as applied to its target with no file written; a retire of a class removes its block from the rules file first. Throws for an ID that is neither a
    * class nor a proposal, before any CLI runs; throws `TacitRefusal` when a promote or retire is refused with nothing
    * written or run, `TacitSyncFailed` when its verdict was recorded but the follow-up failed. A verdict that fails after
    * a write puts the file back.

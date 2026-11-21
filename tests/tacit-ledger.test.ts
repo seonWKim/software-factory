@@ -76,6 +76,24 @@ const DETAIL_SAMPLE = `# C-012 keep existing CLI flags
 `;
 
 /**
+ * `evolve show <P-id>` as the owner's CLI prints it now: one JSON object with the keys id, ts, by, kind, target, title,
+ * rationale, change (free text), evidence (IDs only) and verdicts. The values are made up; the keys and shapes are the CLI's.
+ */
+const SHOW_JSON = `${JSON.stringify({
+  id: "P-20261017-4c1d",
+  ts: "2026-10-17T21:04:11+09:00",
+  by: "evolve",
+  kind: "edit-asset",
+  target: "skills/review/SKILL.md",
+  title: "Review runs the changed tests before its verdict",
+  rationale: "Two reviews on the same day passed a change whose tests never ran.",
+  change: "Add a step before the verdict: run the changed tests and quote their result.",
+  evidence: ["T-20261017-de7e", "T-20261017-9f3c", "L-20261016-0a1b"],
+  state: "open",
+  verdicts: [],
+}, null, 2)}\n`;
+
+/**
  * A temp agents home with stub `bin/tacit`, `bin/evolve` and `bin/sync-agents` that take only the real CLIs' forms
  * (checked 2026-11-12 with `--help`; `evolve show` 2026-11-13) and exit 2 with usage text on any other. As the real
  * ledger does, `tacit verdict … promote` exits 1 without both `--rule` and `--encoded-to`, and `evolve verdict … promote`
@@ -565,6 +583,35 @@ describe("plugin agents-home", () => {
     });
   });
 
+  it("the show JSON (evolve show <P-id>): rationale is the Why, change is what it would change, each evidence ID is a row with its ref", () => {
+    expect(parseShow("P-20261017-4c1d", SHOW_JSON)).toEqual({
+      id: "P-20261017-4c1d",
+      kind: "edit-asset",
+      target: "skills/review/SKILL.md",
+      root_reason: "Two reviews on the same day passed a change whose tests never ran.",
+      change: "Add a step before the verdict: run the changed tests and quote their result.",
+      incidents: 3,
+      evidence: [{ ref: "T-20261017-de7e" }, { ref: "T-20261017-9f3c" }, { ref: "L-20261016-0a1b" }],
+    });
+    // No evidence, an empty value or a value of another type: absent; a JSON array or a broken object falls back to the text reader.
+    expect(parseShow("P-1", JSON.stringify({ id: "P-1", kind: "new-asset", rationale: "", change: 3, evidence: [] }))).toEqual({ id: "P-1", kind: "new-asset" });
+    expect(parseShow("P-1", "{ kind: edit-asset\ntarget: a.md")).toEqual({ id: "P-1", target: "a.md" });
+  });
+
+  it("the show text form still parses next to the JSON one, and an unknown ID's plain \"not found\" is null", () => {
+    expect(parseShow("P-0007", "# P-0007 Quiet notify\nkind: edit-asset\ntarget: private/bin/notify\ncurrent: a\nproposed: b\n")).toEqual({
+      id: "P-0007", kind: "edit-asset", target: "private/bin/notify", current: "a", proposed: "b",
+    });
+    expect(parseShow("P-0404", "not found: P-0404\n")).toBeNull();
+  });
+
+  it("an incident ID with hyphens is read whole in a 근거 line and a draft's 인시던트 line; two incidents of the same day count as two", () => {
+    const rules = "## C-040 test first\n- 기본값: Run the tests.\n- 근거: 인시던트 T-20261017-de7e, T-20261017-9f3c / 판정일 2026-10-18\n";
+    expect(parseApplied(rules).rules[0]!.incidents).toEqual(["T-20261017-de7e", "T-20261017-9f3c"]);
+    const draft = parseDraft("C-040", "### C-040 test first\n- 인시던트: T-20261017-de7e, T-20261017-9f3c\n- 초안: 기본값: Run the tests. / 예외: a docs change\n- 범위: 전역\n");
+    expect(typeof draft === "string" ? draft : draft.incidents).toEqual(["T-20261017-de7e", "T-20261017-9f3c"]);
+  });
+
   it("show runs evolve show <id> and reads its text; it writes nothing; an empty text is null; a bad ID runs no CLI", async () => {
     const s = stubHome();
     writeFileSync(join(s.root, "drafts", "P-0007"), "");
@@ -617,6 +664,24 @@ describe("plugin agents-home", () => {
     await new AgentsHomeTacitLedger(s.home).verdict("P-0007", "promote", "good shape");
     expect(s.file()).toBe("#!/bin/sh\nnotify --quiet \"$1\"\n");
     expect(s.argv()).toEqual(["evolve|show|P-0007", "evolve|verdict|P-0007|promote|--reason|good shape|--applied-to|private/bin/notify"]);
+  });
+
+  it("a promote of a P- ID whose change is prose (no current or proposed lines) runs evolve verdict once with --applied-to its target and writes no file", async () => {
+    const s = applyHome(SHOW_JSON);
+    const before = snapshot(s.home);
+    await new AgentsHomeTacitLedger(s.home).verdict("P-0007", "promote", "applied it");
+    expect(s.argv()).toEqual(["evolve|show|P-0007", "evolve|verdict|P-0007|promote|--reason|applied it|--applied-to|skills/review/SKILL.md"]);
+    expect(snapshot(s.home)).toEqual(before);
+  });
+
+  it("a promote of a P- ID with no target is a TacitRefusal before any verdict runs, prose or lines", async () => {
+    for (const show of [JSON.stringify({ ...JSON.parse(SHOW_JSON), target: "" }), "not found: P-0007\n"]) {
+      const s = applyHome(show);
+      const err = await new AgentsHomeTacitLedger(s.home).verdict("P-0007", "promote", "r").catch((e: unknown) => e);
+      expect(err, show).toBeInstanceOf(TacitRefusal);
+      expect((err as Error).message).toMatch(/has no target line: nothing written/);
+      expect(s.argv()).toEqual(["evolve|show|P-0007"]);
+    }
   });
 
   it("a promote of a P- ID is refused, with nothing written and no verdict sent, when its lines or target do not fit", async () => {
