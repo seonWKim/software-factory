@@ -430,7 +430,7 @@ describe("auto mode: stop conditions", { timeout: 60_000 }, () => {
     await stopped(f, "red_main");
     const [red] = (await f.store.listAlerts({ limit: 10 })).filter((a) => a.pattern === "red_main");
     expect(JSON.parse(red!.detail!)).toMatchObject({ failing_tests: ["tests/layout.test.ts > fits"], output_tail: null });
-    expect(red!.detail).not.toContain("AKIAABCDEFGHIJKLMNOP");
+    expect(red!.detail).not.toContain("AKIA" + "ABCDEFGHIJKLMNOP");
   });
 
   it("red main at the merge check in auto mode: the change stays queued, one red_main alert is stored and auto mode stops", async () => {
