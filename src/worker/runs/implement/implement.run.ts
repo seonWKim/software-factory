@@ -461,7 +461,7 @@ async function preflight(w: Worker, item: WorkItem, handle: SandboxHandle, ctx: 
   } catch (err) {
     throw new RunFailure(PREFLIGHT_FAILED, `base_fetch: ${err instanceof Error ? err.message : "unknown"}`.slice(0, 500));
   }
-  const fetched = await w.gitRaw(handle, ["fetch", "--quiet", "--no-tags", repo.path, baseRefspec(w.cfg, w.route(item).local)]);
+  const fetched = await w.gitRaw(handle, ["fetch", "--quiet", "--no-tags", repo.path, baseRefspec(w, item)]);
   if (fetched.exit_code !== 0) throw new RunFailure(PREFLIGHT_FAILED, `base_fetch: ${fetched.stderr.trim()}`.slice(0, 500));
 }
 
@@ -552,7 +552,7 @@ async function syncBase(
   const baseRef = `origin/${repo.base_branch}`;
   // From the factory repo, freshly fetched outside the clone; never the clone's own remote (design §5).
   const fresh = await w.route(item).sandbox.updateBase({ repo: repo.path, base_ref: repo.base_branch });
-  await w.git(handle, ["fetch", "--quiet", "--no-tags", repo.path, baseRefspec(w.cfg, w.route(item).local)]);
+  await w.git(handle, ["fetch", "--quiet", "--no-tags", repo.path, baseRefspec(w, item)]);
   const baseSha = (await w.git(handle, ["rev-parse", "--verify", "--end-of-options", `${baseRef}^{commit}`])).trim();
   if (baseSha !== fresh) throw new RunFailure("untrusted_base", "the clone's base does not match the factory repo's");
   // The fetched base may only move forward from the base the sandbox resolved before any agent ran.
@@ -1073,6 +1073,15 @@ async function previousContext(w: Worker, item: WorkItem, run: Run): Promise<str
     parts.push("", `Last noted next steps: ${handoffs.at(-1)!.next_steps}`);
   }
   return parts.join("\n").trim();
+}
+
+/**
+ * The base branch copied from the factory repo into a run folder's `origin/<base>`: the factory repo's
+ * `origin/<base>`, or its local `refs/heads/<base>` when no forge plugin is selected (`local_only`).
+ */
+function baseRefspec(w: Worker, item: WorkItem): string {
+  const base = w.cfg.repo.base_branch;
+  return `+${w.cfg.local_only || w.route(item).local ? `refs/heads/${base}` : `refs/remotes/origin/${base}`}:refs/remotes/origin/${base}`;
 }
 
 export default defineRunKind({
