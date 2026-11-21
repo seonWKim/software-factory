@@ -74,7 +74,7 @@ function related(applied: AppliedRule[], ids: ReadonlySet<string>, target: strin
 }
 
 /**
- * The detail in its order: a description, what it would change (a proposal's kind and target), before → after, why,
+ * The detail in its order: a description, what it would change (a proposal's kind, target and prose change), before → after, why,
  * the evidence, where it applies, and the related applied rules. A part with nothing to show is left out; only "what"
  * says "not given".
  */
@@ -91,11 +91,12 @@ function Detail({ entry, d, applied }: { entry: DetailEntry; d: RuleDetail; appl
       {d.description !== undefined && <p data-detail-description className={line}>{d.description}</p>}
       {!isClass(entry.id) && (
         <DetailPart label="rules.detailWhat" part="what">
-          {kind === undefined && target === undefined
+          {kind === undefined && target === undefined && d.change === undefined
             ? [<p key="none" className={muted}>{t("rules.notGiven")}</p>]
             : [
               kind !== undefined && <p key="kind" className={line}>{t("rules.whatKind", { kind: proposalLine(kind, target) })}</p>,
               target !== undefined && <p key="target" className={`${line} font-mono`}>{t("rules.whatTarget", { target })}</p>,
+              d.change !== undefined && <p key="change" data-detail-change className={line}>{d.change}</p>,
             ]}
         </DetailPart>
       )}
