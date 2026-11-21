@@ -2,17 +2,20 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { SessionParts } from "../src/compose.js";
+import type { Loaded, SessionParts } from "../src/compose.js";
 import { StoredLearnedSettings } from "../src/core/learned-settings.js";
 import { settingValues } from "../src/core/settings.js";
 import { splitThresholds } from "../src/core/split.js";
 import type { Timestamp, UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
-import { SESSION_USAGE, type SessionWho, runSession, sessionDeps } from "../src/session-cmd.js";
+import type { KeepAwake } from "../src/interfaces/keep-awake.js";
+import { REGISTRY, withPlugin } from "../src/plugins.js";
+import { SESSION_USAGE, type SessionWho, runSession, sessionAwake, sessionDeps } from "../src/session-cmd.js";
 import { FakeAuth, FakeSandbox } from "./helpers/fakes/runner.js";
 import { FakeBroker } from "./helpers/fakes/broker.js";
-import { PROJECT, cleanScanner, config } from "./helpers/fakes/config.js";
+import { PROJECT, cleanScanner, config, waitFor } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 // A session built through sessionDeps reads the learned layer (design 08-settings) as a run does.
@@ -44,7 +47,7 @@ const NOBODY: SessionWho = { cliUser: null, env: { gitEmail: null, osUser: null 
 
 async function start(p: SessionParts): Promise<string[]> {
   const lines: string[] = [];
-  const d = { ...sessionDeps(p, mkdtempSync(join(tmpdir(), "session-cmd-")), new AbortController().signal, { ...NOBODY, cliUser: "github:1" as UserId }), readSpec: async () => JSON.stringify(SPEC), print: (l: string) => lines.push(l) };
+  const d = { ...sessionDeps(p, mkdtempSync(join(tmpdir(), "session-cmd-")), new AbortController().signal, { ...NOBODY, cliUser: "github:1" as UserId }, new NoKeepAwake()), readSpec: async () => JSON.stringify(SPEC), print: (l: string) => lines.push(l) };
   await runSession(d, { cmd: "start", target: "7", spec: "spec.json" });
   return lines;
 }
@@ -75,7 +78,7 @@ describe("factory session through sessionDeps", () => {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
     const { parts: p } = await parts(store, clock);
-    const deps = sessionDeps(p, mkdtempSync(join(tmpdir(), "session-cmd-")), new AbortController().signal, NOBODY);
+    const deps = sessionDeps(p, mkdtempSync(join(tmpdir(), "session-cmd-")), new AbortController().signal, NOBODY, new NoKeepAwake());
     // Without it, Sessions.forgeForLocal refuses every local item (a local item is committed only through the local broker).
     expect((deps.sessions as unknown as { d: { local?: unknown } }).d.local).toBe(p.local);
   });
@@ -102,7 +105,7 @@ async function startAs(who: SessionWho, as?: string, users: Record<string, numbe
   const persons: unknown[] = [];
   const lines: string[] = [];
   const d = {
-    ...sessionDeps({ ...p, github }, mkdtempSync(join(tmpdir(), "session-cmd-")), new AbortController().signal, who),
+    ...sessionDeps({ ...p, github }, mkdtempSync(join(tmpdir(), "session-cmd-")), new AbortController().signal, who, new NoKeepAwake()),
     sessions: { start: async (o: { person: unknown }) => (persons.push(o.person), { ok: true, lines: [] }) } as never, print: (l: string) => lines.push(l),
   };
   const code = await runSession(d, { cmd: "start", target: "7", ...(as === undefined ? {} : { as }) });
@@ -145,5 +148,79 @@ describe("the person a session start acts as", () => {
   it("the usage names the CLI identity and what --as needs", () => {
     expect(SESSION_USAGE).toContain("you act as the CLI identity");
     expect(SESSION_USAGE).toContain("--as <login>");
+  });
+});
+
+/** A KeepAwake that counts its calls, and throws on each when `fail` is set; `held` is whether a hold is open. */
+class CountingAwake implements KeepAwake {
+  holds = 0;
+  releases = 0;
+  constructor(private readonly fail = false) {}
+  get held(): boolean { return this.holds > this.releases; }
+  async hold(): Promise<void> {
+    this.holds++;
+    if (this.fail) throw new Error("no power assertion");
+  }
+  async release(): Promise<void> {
+    this.releases++;
+    if (this.fail) throw new Error("no power assertion");
+  }
+}
+
+/** A start through sessionDeps whose Sessions starts at once and keeps the lease until `stop` aborts. */
+async function keptAwake(awake: CountingAwake, started = true) {
+  const { parts: p } = await parts((await newStore(new FakeClock())).store, new FakeClock());
+  const stop = new AbortController();
+  const warnings: string[] = [];
+  let heldWhileBeating: boolean | null = null;
+  const file = { work_item_id: "wi_a1" };
+  const sessions = {
+    start: async () => (started ? { ok: true, lines: [], file } : { ok: false, lines: ["refused"] }),
+    heartbeat: (_f: unknown, signal: AbortSignal) => new Promise<"stopped">((resolve) => {
+      heldWhileBeating = awake.held;
+      signal.addEventListener("abort", () => resolve("stopped"));
+    }),
+  } as never;
+  const d = {
+    ...sessionDeps(p, mkdtempSync(join(tmpdir(), "session-cmd-")), stop.signal, NOBODY, awake),
+    sessions, print: () => {}, log: { info() {}, error() {}, warn: (m: string) => warnings.push(m) },
+  };
+  const run = runSession(d, { cmd: "start", target: "7" });
+  return { run, stop, warnings, heldWhileBeating: () => heldWhileBeating };
+}
+
+describe("an interactive task keeps the machine awake while it holds the lease", () => {
+  it("holds keep-awake once the task starts, until its heartbeat stops, then releases it", async () => {
+    const awake = new CountingAwake();
+    const s = await keptAwake(awake);
+    await waitFor(async () => s.heldWhileBeating() !== null, "the heartbeat");
+    expect([s.heldWhileBeating(), awake.holds, awake.releases]).toEqual([true, 1, 0]);
+    s.stop.abort();
+    expect(await s.run).toBe(0);
+    expect([awake.holds, awake.releases, awake.held, s.warnings]).toEqual([1, 1, false, []]);
+  });
+
+  it("a refused start never holds keep-awake", async () => {
+    const awake = new CountingAwake();
+    const s = await keptAwake(awake, false);
+    expect(await s.run).toBe(1);
+    expect([awake.holds, awake.releases]).toEqual([0, 0]);
+  });
+
+  it("a hold or release that throws is logged as a warning and the session goes on", async () => {
+    const awake = new CountingAwake(true);
+    const s = await keptAwake(awake);
+    await waitFor(async () => s.heldWhileBeating() !== null, "the heartbeat");
+    s.stop.abort();
+    expect(await s.run).toBe(0);
+    expect([awake.holds, awake.releases]).toEqual([1, 1]);
+    expect(s.warnings).toEqual(["keep-awake hold failed", "keep-awake release failed"]);
+  });
+
+  it("builds the keep-awake plugin selected in plugins.awake, as the worker does", async () => {
+    const awake = new CountingAwake();
+    const registry = withPlugin(REGISTRY, "awake", "counting", () => awake);
+    const loaded = { registry, plugins: { awake: "counting" }, config: { repo: { owner: "o", name: "r" } } } as unknown as Loaded;
+    expect(await sessionAwake(loaded, new FakeClock())).toBe(awake);
   });
 });
