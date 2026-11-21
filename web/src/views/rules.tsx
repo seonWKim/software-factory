@@ -18,6 +18,7 @@ import { ValueBlock } from "../components/ui/key-value.js";
 import { t } from "../i18n/index.js";
 import { AgentsHomePicker } from "./agents-home-picker.js";
 import { Applied } from "./rules-applied.js";
+import { Pushbacks } from "./rules-pushbacks.js";
 import { EntryDetail } from "./rules-detail.js";
 import { GROUPS, PAGE_WIDTH, PROSE, ROW_PAD, STATE_LABEL, STATE_LEVEL, VERDICTS, isClass, muted, proposalLine } from "./rules-shared.js";
 import { VerdictDialog } from "./rules-verdict.js";
@@ -33,7 +34,8 @@ import { ApprovalsSection } from "./standing.js";
 // before and after excerpt, "Why and where" (a Disclosure with the entry's detail, rules-detail.tsx), and one ⋯ menu
 // holding Promote (off, with its reason in the row, when the draft could not be read), Hold and Reject (danger, last);
 // each opens a dialog (rules-verdict.tsx). Only the owner sends. Auto-approve specs (standing.tsx) sits below the
-// waiting list. Applied (rules-applied.tsx) and Retired are their own tabs. The improve report is a tab on Health.
+// waiting list. Applied (rules-applied.tsx, then the Pushbacks card, rules-pushbacks.tsx, when the ledger lists
+// pushbacks) and Retired are their own tabs. The improve report is a tab on Health.
 // With the ledger off the page is an EmptyState whose action is Turn on, first, above Auto-approve specs (stores `integrations`,
 // the plugin name only, through POST /api/v1/settings, then loads the rules), and an agents home picker over the
 // known homes (AGENTS_HOME when set, ~/.agents) shows the chosen one's check: both CLIs executable, else the missing file.
@@ -257,9 +259,14 @@ export function RulesPage() {
           </Disclosure>
         </div>
       )}
-      {tab === "applied" && (v.applied !== null && (v.applied.rules.length > 0 || v.applied.elsewhere.length > 0)
-        ? <Applied applied={v.applied} token={token} />
-        : <EmptyState title={t("rules.appliedEmpty")} />)}
+      {tab === "applied" && (
+        <div data-tab="applied">
+          {v.applied !== null && (v.applied.rules.length > 0 || v.applied.elsewhere.length > 0)
+            ? <Applied applied={v.applied} token={token} />
+            : <EmptyState title={t("rules.appliedEmpty")} />}
+          {v.pushbacks != null && <Pushbacks pushbacks={v.pushbacks} token={token} />}
+        </div>
+      )}
       {tab === "retired" && <Retired retired={v.retired ?? []} />}
     </div>
   );

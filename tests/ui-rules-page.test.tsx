@@ -498,19 +498,178 @@ describe("Rules page", () => {
     expect(new Headers(posts[0]!.init.headers).get("x-csrf-token")).toBe(TOKEN);
   });
 
-  it("a user who is not the owner sees the menu's Retire disabled, with the owner-only tooltip", async () => {
+  it("a user who is not the owner sees the menu's Edit and Retire disabled, with the owner-only tooltip; Open evidence stays on", async () => {
     current = view({ applied: APPLIED, judge: "Only the owner judges rules; you are local:alice." });
     await show();
     await openTab("Applied");
     await screen.findByRole("list", { name: "Applied" }, SLOW);
     fireEvent.click(within(applied("C-001")).getByRole("button", { name: "Actions: summary first" }));
-    const item = within(applied("C-001")).getByRole("menuitem", { name: "Retire" }) as HTMLButtonElement;
-    expect(item.disabled).toBe(true);
-    fireEvent.click(item);
-    expect(document.querySelector("dialog[data-dialog]")).toBeNull();
+    for (const name of ["Edit", "Retire"]) {
+      const item = within(applied("C-001")).getByRole("menuitem", { name }) as HTMLButtonElement;
+      expect(item.disabled).toBe(true);
+      fireEvent.click(item);
+      expect(document.querySelector("dialog[data-dialog]")).toBeNull();
+    }
+    expect((within(applied("C-001")).getByRole("menuitem", { name: "Open evidence" }) as HTMLButtonElement).disabled).toBe(false);
     // The owner-only reason is the menu's tooltip.
-    fireEvent.mouseEnter(applied("C-001").querySelector("[data-row-menu]")!.firstElementChild!);
-    expect(within(applied("C-001")).getByRole("tooltip").textContent).toBe("Only the owner retires a rule.");
+    fireEvent.mouseEnter(applied("C-001").querySelector("[data-row-menu] span")!);
+    expect(within(applied("C-001")).getByRole("tooltip").textContent).toBe("Only the owner edits or retires a rule.");
+  });
+
+  it("each applied class's ⋯ menu holds Edit, Open evidence and Retire in that order; a raw block has no menu", async () => {
+    current = view({ applied: APPLIED });
+    await show();
+    await openTab("Applied");
+    await screen.findByRole("list", { name: "Applied" }, SLOW);
+    expect(screen.getAllByRole("button", { name: /^Actions:/ })).toHaveLength(2);
+    expect(document.querySelector("[data-applied-raw] [data-row-menu]")).toBeNull();
+    fireEvent.click(within(applied("C-001")).getByRole("button", { name: "Actions: summary first" }));
+    const items = within(applied("C-001")).getAllByRole("menuitem");
+    expect(items.map((i) => i.textContent)).toEqual(["Edit", "Open evidence", "Retire"]);
+    expect(items.map((i) => i.className.includes("text-pill-bad-fg"))).toEqual([false, false, true]);
+  });
+
+  it("Edit opens the three-field dialog prefilled with the rule, asks for no reason, and posts the new text to /api/v1/rules/edit", async () => {
+    const rule = { id: "C-001", name: "summary first", default: "Open with a summary.\nThen the detail.", exceptions: "a one-word reply", scope: null, incidents: ["T-1"], judged: null, raw: null };
+    current = view({ applied: { rules: [rule], elsewhere: [] } });
+    answer = { status: 200, body: { id: "C-001" } };
+    await show();
+    await openTab("Applied");
+    await screen.findByRole("list", { name: "Applied" }, SLOW);
+    fireEvent.click(within(applied("C-001")).getByRole("button", { name: "Actions: summary first" }));
+    fireEvent.click(within(applied("C-001")).getByRole("menuitem", { name: "Edit" }));
+    const d = dialog();
+    expect(within(d).getByRole("heading", { level: 2 }).textContent).toBe("Edit: summary first");
+    const field = (name: string) => within(d).getByRole("textbox", { name }) as HTMLTextAreaElement;
+    expect([field("Rule wording").value, field("Default").value, field("Exception").value]).toEqual(["summary first", "Open with a summary.\nThen the detail.", "a one-word reply"]);
+    for (const name of ["Rule wording", "Default", "Exception"]) expect(field(name).maxLength).toBe(2000);
+    expect(within(d).getAllByRole("textbox")).toHaveLength(3);
+    expect(within(d).queryByRole("textbox", { name: "Reason" })).toBeNull();
+    // The confirm is the one primary action, in the ButtonRow; an empty field turns it off.
+    const save = within(d).getByRole("button", { name: "Save" }) as HTMLButtonElement;
+    expect(within(d).getAllByRole("button").filter((b) => b.className.includes("bg-accent"))).toEqual([save]);
+    fireEvent.change(field("Exception"), { target: { value: " " } });
+    expect(save.disabled).toBe(true);
+    fireEvent.change(field("Exception"), { target: { value: "a yes or no" } });
+    fireEvent.change(field("Rule wording"), { target: { value: "summary on top" } });
+    fireEvent.click(save);
+    await waitFor(() => expect(document.querySelector("dialog[data-dialog]")).toBeNull());
+    expect(posts.map((p) => p.url)).toEqual(["/api/v1/rules/edit"]);
+    expect(sent()).toEqual([{ id: "C-001", text: "summary on top", default: "Open with a summary.\nThen the detail.", exception: "a yes or no" }]);
+    expect(new Headers(posts[0]!.init.headers).get("x-csrf-token")).toBe(TOKEN);
+  });
+
+  it("an edit the server refuses keeps the dialog open with its error", async () => {
+    current = view({ applied: APPLIED });
+    answer = { status: 502, body: { error: "The rule was saved, but sync-agents failed: locked" } };
+    await show();
+    await openTab("Applied");
+    await screen.findByRole("list", { name: "Applied" }, SLOW);
+    fireEvent.click(within(applied("C-001")).getByRole("button", { name: "Actions: summary first" }));
+    fireEvent.click(within(applied("C-001")).getByRole("menuitem", { name: "Edit" }));
+    fireEvent.change(within(dialog()).getByRole("textbox", { name: "Exception" }), { target: { value: "none" } });
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Save" }));
+    expect((await within(dialog()).findByRole("alert", {}, SLOW)).textContent).toBe("The rule was saved, but sync-agents failed: locked");
+  });
+
+  it("Open evidence opens a read-only dialog titled with the rule's name, with each incident's quote", async () => {
+    current = view({ applied: APPLIED });
+    detail = (id) => ({
+      id, error: null, retire: [], detail: {
+        id, incidents: 2, root_reason: "summaries buried the point", scope: "모든 문서",
+        evidence: [{ ref: "T-1", date: "2026-11-03", quote: "lead with the answer" }, { ref: "T-2", quote: "한 줄 요약 먼저" }],
+      },
+    });
+    await show();
+    await openTab("Applied");
+    await screen.findByRole("list", { name: "Applied" }, SLOW);
+    fireEvent.click(within(applied("C-001")).getByRole("button", { name: "Actions: summary first" }));
+    fireEvent.click(within(applied("C-001")).getByRole("menuitem", { name: "Open evidence" }));
+    const d = dialog();
+    expect(within(d).getByRole("heading", { level: 2 }).textContent).toBe("Evidence: summary first");
+    await waitFor(() => expect(d.querySelectorAll("[data-quote]")).toHaveLength(2), SLOW);
+    expect([...d.querySelectorAll("[data-quote]")].map((q) => q.textContent)).toEqual(["lead with the answer", "한 줄 요약 먼저"]);
+    expect([...d.querySelectorAll("[data-detail-part]")].map((p) => p.getAttribute("data-detail-part"))).toEqual(expect.arrayContaining(["why", "evidence", "where"]));
+    expect(gets).toContain("/api/v1/rules/entry?id=C-001");
+    expect(within(d).queryAllByRole("textbox")).toEqual([]);
+    fireEvent.click(within(d).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(document.querySelector("dialog[data-dialog]")).toBeNull());
+    expect(posts).toEqual([]);
+  });
+
+  it("a rule with two default lines shows each on its own line in its Details", async () => {
+    current = view({ applied: { rules: [{ ...APPLIED!.rules[0]!, default: "Open with a summary.\nKeep it to one line." }], elsewhere: [] } });
+    await show();
+    await openTab("Applied");
+    await screen.findByRole("list", { name: "Applied" }, SLOW);
+    const lines = applied("C-001").querySelectorAll("[data-lines] > [data-markdown]");
+    expect([...lines].map((l) => l.textContent)).toEqual(["Open with a summary.", "Keep it to one line."]);
+  });
+
+  const PUSHBACKS = { rows: [{ id: "T-0201", pushback: "keep the --json flag", date: "2026-11-20" }, { id: "T-0202", pushback: "요약 먼저", date: null }], error: null };
+
+  it("Pushbacks is a Card after Applied with its count: each row the owner's words and date, no ID, and one secondary sm Dismiss", async () => {
+    current = view({ applied: APPLIED, pushbacks: PUSHBACKS });
+    await show();
+    await openTab("Applied");
+    const list = await screen.findByRole("list", { name: "Pushbacks" }, SLOW);
+    expect(screen.getAllByRole("region").map((r) => r.getAttribute("aria-label"))).toEqual(["Applied", "Pushbacks"]);
+    expect(screen.getByRole("region", { name: "Pushbacks" }).textContent).toContain("2");
+    const rows = within(list).getAllByRole("listitem");
+    expect(rows.map((r) => r.querySelector("[data-pushback-words]")!.textContent)).toEqual(["keep the --json flag", "요약 먼저"]);
+    expect(rows[0]!.querySelector("[data-details]")!.textContent).toBe("2026-11-20");
+    expect(rows[1]!.querySelector("[data-details]")).toBeNull();
+    for (const r of rows) {
+      expect(r.textContent).not.toMatch(/\b[PT]-\d/);
+      const buttons = within(r).getAllByRole("button");
+      expect(buttons.map((b) => b.textContent)).toEqual(["Dismiss"]);
+      expect(buttons[0]!.className).toContain("min-h-7");
+      expect(buttons[0]!.className).toContain("border-border-strong");
+    }
+  });
+
+  it("Dismiss opens a dialog that says it records the pushback as noise, posts its ID, and the list reloads without it", async () => {
+    current = view({ applied: APPLIED, pushbacks: PUSHBACKS });
+    answer = { status: 200, body: { id: "T-0201" } };
+    await show();
+    await openTab("Applied");
+    const list = await screen.findByRole("list", { name: "Pushbacks" }, SLOW);
+    fireEvent.click(within(within(list).getAllByRole("listitem")[0]!).getByRole("button", { name: "Dismiss" }));
+    expect(dialog().querySelector("[data-dialog-consequence]")!.textContent).toContain("noise");
+    expect(posts).toEqual([]);
+    current = view({ applied: APPLIED, pushbacks: { rows: [PUSHBACKS.rows[1]!], error: null } });
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Dismiss" }));
+    await waitFor(() => expect(document.querySelector("dialog[data-dialog]")).toBeNull());
+    expect(posts.map((p) => p.url)).toEqual(["/api/v1/rules/pushbacks/dismiss"]);
+    expect(sent()).toEqual([{ id: "T-0201" }]);
+    await waitFor(() => expect(within(screen.getByRole("list", { name: "Pushbacks" })).getAllByRole("listitem")).toHaveLength(1));
+  });
+
+  it("a user who is not the owner sees Dismiss disabled with the owner-only tooltip", async () => {
+    current = view({ applied: APPLIED, pushbacks: PUSHBACKS, judge: "Only the owner judges rules; you are local:alice." });
+    await show();
+    await openTab("Applied");
+    const list = await screen.findByRole("list", { name: "Pushbacks" }, SLOW);
+    const row = within(list).getAllByRole("listitem")[0]!;
+    const button = within(row).getByRole("button", { name: "Dismiss" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    fireEvent.mouseEnter(button.parentElement!);
+    expect(within(row).getByRole("tooltip").textContent).toBe("Only the owner dismisses a pushback.");
+  });
+
+  it("no Pushbacks card with the ledger giving none; an unreadable list is a Notice and the rest of the page loads", async () => {
+    current = view({ applied: APPLIED });
+    await show();
+    await openTab("Applied");
+    await screen.findByRole("list", { name: "Applied" }, SLOW);
+    expect(screen.queryByRole("region", { name: "Pushbacks" })).toBeNull();
+    cleanup();
+    current = view({ applied: APPLIED, pushbacks: { rows: [], error: "The pushbacks could not be read: boom" } });
+    await show();
+    await openTab("Applied");
+    const card = await screen.findByRole("region", { name: "Pushbacks" }, SLOW);
+    expect(card.textContent).toContain("The pushbacks could not be read.");
+    expect(screen.getByRole("list", { name: "Applied" })).toBeTruthy();
   });
 
   it("the Retired tab lists each rule's reason and date; an empty state when the ledger has none", async () => {

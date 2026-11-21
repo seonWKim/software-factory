@@ -1,5 +1,6 @@
 // The Rules page: GET /api/v1/standing, /api/v1/rules and /api/v1/rules/entry; POST /api/v1/standing (postStanding),
-// POST /api/v1/rules/verdict (postRuleVerdict) and POST /api/v1/improve/run (postImproveRun).
+// POST /api/v1/rules/verdict (postRuleVerdict), /api/v1/rules/edit (postRuleEdit), /api/v1/rules/pushbacks/dismiss
+// (postPushbackDismiss) and POST /api/v1/improve/run (postImproveRun).
 
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { t } from "../i18n/index.js";
@@ -112,6 +113,13 @@ export interface AppliedRule {
   raw: string | null;
 }
 
+/** One active pushback in no class yet: its incident ID (sent by Dismiss, never shown), the owner's words, the day or null. */
+export interface PushbackRow {
+  id: string;
+  pushback: string;
+  date: string | null;
+}
+
 /** One agents home and the first of bin/tacit and bin/evolve that is missing or not executable there (null: both are). */
 export interface AgentsHomeView {
   path: string;
@@ -132,6 +140,8 @@ export interface RulesView {
   applied: { rules: AppliedRule[]; elsewhere: string[] } | null;
   /** The retired classes, newest first; null with the ledger off (absent from an older server). */
   retired?: RetiredRule[] | null;
+  /** The active unclustered pushbacks and a failed read's error; null (or absent) with the ledger off or a plugin without them. */
+  pushbacks?: { rows: PushbackRow[]; error: string | null } | null;
   error: string | null;
   csrf_token: string | null;
   judge: string | null;
@@ -201,7 +211,22 @@ export async function postRuleVerdict(
   token: string,
   body: { id: string; verdict: RuleVerdict; reason: string; text?: string; default?: string; exception?: string },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const r = await postJson<{ error?: string }>(API.ruleVerdict, token, body);
+  return postRules(API.ruleVerdict, token, body);
+}
+
+/** POST /api/v1/rules/edit: an applied class's new wording, default and exception; no reason, no verdict. */
+export function postRuleEdit(token: string, body: { id: string; text: string; default: string; exception: string }) {
+  return postRules("/api/v1/rules/edit", token, body);
+}
+
+/** POST /api/v1/rules/pushbacks/dismiss: records the pushback as noise. */
+export function postPushbackDismiss(token: string, body: { id: string }) {
+  return postRules("/api/v1/rules/pushbacks/dismiss", token, body);
+}
+
+/** A Rules page write: ok, or the server's refusal as `error`. */
+async function postRules(url: string, token: string, body: object): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await postJson<{ error?: string }>(url, token, body);
   if (r.ok) return { ok: true };
   return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
