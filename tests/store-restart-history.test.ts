@@ -1,7 +1,6 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { RESTART_WINDOW_MS, detectAlarms } from "../src/core/alarms.js";
 import { ALARM_DEFAULTS, type FactoryConfig } from "../src/core/config.js";
@@ -13,7 +12,7 @@ import type { ChildRestart } from "../src/interfaces/updater.js";
 import dropRecordedAt from "../src/runtime/migrations/20261109T1401-runtime-drop-restart-recorded-at.migration.js";
 import { tableColumns, type MigrationDb } from "../src/state/index.js";
 import { cleanScanner, config, FakeAuth, silent } from "./helpers/fakes.js";
-import { BACKENDS, issue, newStore, system } from "./helpers/store.js";
+import { BACKENDS, newStore } from "./helpers/store.js";
 
 // Restart history (design 05-restarts): one store row per child restart, written by one conditional insert, so
 // the restart alarm's count and window survive a restart of the factory. Never pin a step as the newest.

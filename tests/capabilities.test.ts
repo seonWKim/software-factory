@@ -289,7 +289,7 @@ describe("GET /api/v1/settings/capabilities", () => {
     const folder = await skillFolder({ dirs: [`leak-${SECRET}`] });
     const providers = [{ interface: "runner" as const, plugin: "openai-compatible", selected: true, endpoint: "api.example.com", models: { cheap: SECRET, standard: "m", strong: "m" } }];
     const tools = [{ name: "forge.preflight", description: `token ${SECRET}`, read_only: true, origin: "broker" as const }];
-    const { d, settings, store, storage } = await setup({ skill_folders: [folder], tools, providers }, { secrets: [SECRET] });
+    const { d, store, storage } = await setup({ skill_folders: [folder], tools, providers }, { secrets: [SECRET] });
     await finishedRun(store, storage, 1, "m", `{"secret":"${SECRET}"}\n`);
     const r = await respond(d, { method: "GET", url: "/api/v1/settings/capabilities", host: "127.0.0.1:4310" });
     expect(r.status).toBe(200);

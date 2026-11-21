@@ -240,7 +240,7 @@ describe("the worker's warm step", () => {
   });
 
   it("with no toolchain block: no warm step, and the agent spec has no toolchain fields", async () => {
-    const { f, before } = await world({});
+    const { f } = await world({});
     await f.submit();
     await f.step();
     expect(f.agentCalls("implement")).toBe(1);

@@ -8,7 +8,6 @@ import { Plugins, loadConfig } from "../src/compose.js";
 import { FallbackLLM } from "../src/core/fallback-llm.js";
 import { FallbackRunner } from "../src/core/fallback-runner.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { TRIAGE_SCHEMA } from "../src/core/outputs.js";
 import { Bash, Edit, Glob, Grep, Read, type ToolSpec, Write } from "../src/core/tools/index.js";
 import type { RunId, WorkItemId, WorkerId } from "../src/core/types.js";
 import { WRITE_TOOLS, Worker } from "../src/worker/index.js";

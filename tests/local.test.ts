@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadCommands } from "../src/cli/index.js";
-import { refusalHint } from "../src/cli/handlers/local/refused.js";
 import type { Loaded } from "../src/compose.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
 import type { WorkItemId, WorkItemPatch } from "../src/core/types.js";
@@ -44,13 +43,6 @@ async function itemAtSpec(store: FactoryStore) {
   if (!r.ok) throw new Error("setup");
   return r.item;
 }
-
-describe("the refusal hint", () => {
-  it("starts its command with the name it is given", () => {
-    expect(refusalHint("wi_1", "gb")).toContain("`gb task show wi_1`");
-    expect(refusalHint("wi_1", "factory")).toContain("`factory task show wi_1`");
-  });
-});
 
 describe("the local handler's hints", () => {
   it("with FACTORY_CLI_NAME=gb, the stored-command line and the refusal hint both say gb", async () => {

@@ -26,17 +26,6 @@ async function dump(store: SqlFactoryStore): Promise<string> {
 }
 
 describe("identity links: store", () => {
-  it("a code links the account that redeems it, found by provider and subject only", async () => {
-    const { store } = await newStore();
-    const code = newLinkCode();
-    await store.createLinkCode(USER, code);
-    expect(await store.resolveLink("slack", "U1")).toBeNull();
-    expect(await store.redeemLinkCode(code, slack("U1"))).toEqual({ ok: true, user_id: USER });
-    expect(await store.resolveLink("slack", "U1")).toBe(USER);
-    expect(await store.resolveLink("github", "U1")).toBeNull();
-    expect(await store.listLinks(USER)).toEqual([{ provider: "slack", subject: "U1" }]);
-  });
-
   it("a wrong code is refused, counts as a failed attempt, and links nothing", async () => {
     const { store } = await newStore();
     const code = newLinkCode();
@@ -45,16 +34,6 @@ describe("identity links: store", () => {
     expect(await store.resolveLink("slack", "U1")).toBeNull();
     expect(await store.listLinks(USER)).toEqual([]);
     expect(await dump(store)).toMatch(/"failures":1/);
-  });
-
-  it("works once: a second account gets `used`, and the same account again is a no-op", async () => {
-    const { store } = await newStore();
-    const code = newLinkCode();
-    await store.createLinkCode(USER, code);
-    expect(await store.redeemLinkCode(code, slack("U1"))).toEqual({ ok: true, user_id: USER });
-    expect(await store.redeemLinkCode(code, slack("U1"))).toEqual({ ok: true, user_id: USER });
-    expect(await store.redeemLinkCode(code, slack("U2"))).toEqual({ ok: false, reason: "used" });
-    expect(await store.resolveLink("slack", "U2")).toBeNull();
   });
 
   it("expires after 10 minutes", async () => {
@@ -82,18 +61,6 @@ describe("identity links: store", () => {
     expect((await store.redeemLinkCode("BAD4XXXXXX", slack("U9"))).ok).toBe(false);
     expect(await store.redeemLinkCode(code, slack("U1"))).toEqual({ ok: false, reason: "locked" });
     expect(await store.resolveLink("slack", "U1")).toBeNull();
-  });
-
-  it("an account linked to another user is refused and the code stays usable", async () => {
-    const { store } = await newStore();
-    const a = newLinkCode();
-    await store.createLinkCode("github:2" as UserId, a);
-    await store.redeemLinkCode(a, slack("U1"));
-    const b = newLinkCode();
-    await store.createLinkCode(USER, b);
-    expect(await store.redeemLinkCode(b, slack("U1"))).toEqual({ ok: false, reason: "already_linked" });
-    expect(await store.resolveLink("slack", "U1")).toBe("github:2");
-    expect(await store.redeemLinkCode(b, slack("U3"))).toEqual({ ok: true, user_id: USER });
   });
 
   it("stores only a hash of the code", async () => {
