@@ -71,9 +71,8 @@ export function checksExitCode(checks: readonly Check[]): number {
  * The health checks, the one implementation behind both `doctor` and the status page's Health panel.
  * Read-only: writes nothing to the store, makes no model call, and never puts a secret value in a message
  * itself. Messages may carry error text from GitHub, so a surface that shows them to anyone but the operator's terminal must
- * egress-scan them first (the status page does).
+ * egress-scan them first (the status page does). `opts.sandbox`: the OS sandbox probe (tests pass a fake); one warn per line it does not enforce.
  */
-/** `opts.sandbox`: the OS sandbox probe (tests pass a fake); doctor prints one warn per line the OS does not enforce. */
 export async function doctorChecks(loaded: Loaded, opts: { github?: boolean; sandbox?: () => Promise<SandboxEnforcement> } = {}): Promise<Check[]> {
   // Setup passes the person's GitHub answer, which a declined config diff leaves unwritten.
   const github = opts.github ?? loaded.config.local_only !== true;
