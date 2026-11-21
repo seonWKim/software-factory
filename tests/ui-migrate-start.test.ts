@@ -7,7 +7,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type Loaded, buildUiParts, loadConfig } from "../src/compose.js";
+import { type Loaded, loadConfig } from "../src/load-config.js";
+import { buildUiParts } from "../src/compose.js";
 import { OwnerAuth } from "../src/core/authorize.js";
 import type { LogFields, Logger } from "../src/core/log.js";
 import type { CliIdentity } from "../src/core/local-cli.js";

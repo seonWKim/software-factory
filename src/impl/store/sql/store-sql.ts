@@ -11,8 +11,15 @@ import type { SqlDriver } from "../../../state/index.js";
 /** The key under which a SQL-backed FactoryStore exposes its driver. */
 export const SQL_DRIVER: unique symbol = Symbol.for("software-factory.sql-driver");
 
+/** The store's driver, or null when the selected store plugin is not a SQL store. */
+export function storeSqlOrNull(store: FactoryStore): SqlDriver | null {
+  // An object only: a stand-in store (a Proxy that answers every key with a function) is not a SQL store.
+  const db: unknown = (store as { [SQL_DRIVER]?: unknown })[SQL_DRIVER];
+  return typeof db === "object" && db !== null ? (db as SqlDriver) : null;
+}
+
 export function storeSql(store: FactoryStore): SqlDriver {
-  const db = (store as { [SQL_DRIVER]?: SqlDriver })[SQL_DRIVER];
+  const db = storeSqlOrNull(store);
   if (db) return db;
   throw new Error("the selected store plugin is not a SQL store");
 }

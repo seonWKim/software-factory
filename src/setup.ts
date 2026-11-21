@@ -4,7 +4,9 @@
 import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { type SyncOutcome, syncCalendars } from "./calendar/index.js";
-import { type Loaded, Plugins, buildStatsStore, settingsBase } from "./compose.js";
+import type { Loaded } from "./load-config.js";
+import { Plugins } from "./plugin-set.js";
+import { settingsBase } from "./core/settings-base.js";
 import { runCanary } from "./canary.js";
 import { type Check, type CheckStatus, TOKEN_FAIL_DAYS, TOKEN_WARN_DAYS, checkStatus } from "./core/health-check.js";
 import { type LoadedConfig, readOnlyOverlaps } from "./core/config.js";
@@ -15,8 +17,7 @@ import { prFlagLabels, statusLabels } from "./impl/github/github-issue-source.js
 import { baseEnv, runProcess } from "./impl/process/run-process.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
 import type { GitHubApi } from "./interfaces/github-credentials.js";
-import { SqlFactoryStore } from "./impl/store/sql/sql-factory-store.js";
-import { storeSql } from "./impl/store/sql/store-sql.js";
+import { storeSql, storeSqlOrNull } from "./impl/store/sql/store-sql.js";
 import type { SecretName, SecretStore } from "./interfaces/secret-store.js";
 import type { ConnectContext } from "./plugin-api.js";
 import { REGISTRY, type SecretDeclaration, connectHooks, createPlugin, declaredSecrets, selectedSetups } from "./plugins.js";
@@ -313,9 +314,12 @@ export async function statusLabelChecks(client: Pick<GitHubApi, "request">, repo
   return checks;
 }
 
-/** `llm`: one extra line that runs the LLM check (two real provider calls). Plain doctor calls no model. */
-export async function doctor(loaded: Loaded, opts: { llm?: boolean } = {}): Promise<number> {
-  const open = () => buildStatsStore(loaded).then((s) => ({ sql: s instanceof SqlFactoryStore ? s.db : null, close: () => s.close() }));
+/**
+ * `openStore`: the store the run-attempt checks read (the CLI passes compose's buildStatsStore, so this file does not
+ * load the composition root, RFC 0023). `llm`: one extra line that runs the LLM check (two real provider calls).
+ */
+export async function doctor(loaded: Loaded, openStore: (l: Loaded) => Promise<FactoryStore>, opts: { llm?: boolean } = {}): Promise<number> {
+  const open = () => openStore(loaded).then((s) => ({ sql: storeSqlOrNull(s), close: () => s.close() }));
   const checks = [...(await doctorChecks(loaded)), ...(await storeRunAttemptChecks(open))];
   if (opts.llm) {
     const r = await llmCheckFromPlugins(new Plugins(loaded), "cheap");

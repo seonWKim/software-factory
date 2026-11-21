@@ -2,7 +2,9 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildUiParts, loadConfig, uiUserId } from "../src/compose.js";
+import { buildUiParts } from "../src/compose.js";
+import { loadConfig } from "../src/load-config.js";
+import { uiUserId } from "../src/config-values.js";
 import { goldenConfig } from "../src/core/config.js";
 import type { CliIdentity } from "../src/core/local-cli.js";
 import type { UserId } from "../src/core/types.js";
