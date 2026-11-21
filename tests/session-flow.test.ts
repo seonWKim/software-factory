@@ -618,6 +618,25 @@ describe("session end without a PR", () => {
     expect(h.files.files.size).toBe(0);
   });
 
+  it("the `session_lost` detail names the last heartbeat, the run's updated_at before the reaper's write, in ISO 8601", async () => {
+    const h = await started();
+    const { it0, file } = h;
+    const stop = new AbortController();
+    const beating = h.sessions.heartbeat(file, stop.signal);
+    const before = (await h.runs(it0.id, "interactive"))[0]!.updated_at;
+    h.clock.advance(h.cfg.heartbeat_ms);
+    await waitFor(async () => (await h.runs(it0.id, "interactive"))[0]!.updated_at > before, "a heartbeat");
+    stop.abort();
+    await beating;
+    const last = (await h.runs(it0.id, "interactive"))[0]!.updated_at;
+    expect(last).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    h.clock.advance(h.cfg.lease_ms + 1);
+    await h.controller.tickReaper();
+    const run = (await h.runs(it0.id, "interactive"))[0]!;
+    expect(run.outcome).toMatchObject({ error_code: "session_lost", detail: `the session's lease expired; last heartbeat at ${last}` });
+    expect(run.updated_at).not.toBe(last);
+  });
+
   it("--tokens takes a whole number of 0 or more; the latest total is added to token_cost once, when the run ends", async () => {
     const h = await started();
     const { it0 } = h;
