@@ -6,7 +6,8 @@
 import { lstat, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { ENV_EXAMPLE } from "../../core/tools/guard.js";
-import { TRUSTED_GIT_ENV, untrustedGitConfig } from "../../worker/index.js";
+import { untrustedGitConfig } from "../../core/git-trust.js";
+import { TRUSTED_GIT_ENV } from "../../core/worker-deps.js";
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
 import type { ExecResult } from "../../interfaces/sandbox.js";

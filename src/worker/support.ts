@@ -12,6 +12,7 @@ import type { SandboxHandle } from "../interfaces/sandbox.js";
 import { type DecisionAnswer, answerLines } from "../shared/command-notes.js";
 
 export { type LocalRoute, type PrText, TRUSTED_GIT_ENV, type WorkerDeps, hasTool, prTitle, routeFor, runPushIntents, threadDelivery };
+export { TRUSTED_GIT_KEYS, untrustedGitConfig } from "../core/git-trust.js";
 
 /** At most one write of a run's last model output time per this many ms, and per a tenth of stall_ms (design 05-restarts). */
 export const OUTPUT_RECORD_MS = 30_000;
@@ -128,22 +129,6 @@ export function continues(wip: WipRef | null | undefined): wip is ContinueWip {
 
 /** The most paths one live-checkout report names; `count` gives the total. */
 export const LIVE_REPORT_PATHS = 20;
-
-export const TRUSTED_GIT_KEYS = new Set([
-  "core.repositoryformatversion", "core.filemode", "core.bare", "core.logallrefupdates", "core.ignorecase",
-  "core.precomposeunicode", "core.symlinks", "core.hookspath", "extensions.objectformat", "extensions.refstorage",
-  "remote.origin.url", "remote.origin.fetch", "user.name", "user.email",
-]);
-
-/**
- * The keys in a run's `.git/config` (`git config --name-only --list -z` output) that are not plain data a sandbox
- * or git itself writes there. Anything else may make git run a program (filters, textconv, fsmonitor, ssh,
- * credential helpers, includes, URL rewrites), so trusted git calls never read it (design §5).
- */
-export function untrustedGitConfig(names: string): string[] {
-  const keys = names.split("\0").filter(Boolean);
-  return [...new Set(keys.filter((k) => !TRUSTED_GIT_KEYS.has(k) && !/^branch\.[^\n]+\.(remote|merge)$/.test(k)))];
-}
 
 export class RunFailure extends Error {
   constructor(
