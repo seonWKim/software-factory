@@ -20,7 +20,7 @@ describe("app shell", () => {
     const tasks = screen.getByRole("navigation", { name: "Tasks" });
     expect([...tasks.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Tasks4", "Calendar"]);
     const nav = screen.getByRole("navigation", { name: "System" });
-    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Work", "Health"]);
+    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Work", "Health", "Workers"]);
     fireEvent.click(within(nav).getByText("Health"));
     expect(await screen.findByRole("heading", { level: 1, name: "Health" })).toBeTruthy();
     expect(location.pathname).toBe("/app/health");
@@ -217,7 +217,7 @@ describe("sidebar", () => {
     expect(content.className.split(" ")).toContain("overflow-y-auto");
   });
 
-  it("the sidebar has no group heading; each nav is named by aria-label and the blocks are split by dividers", () => {
+  it("the sidebar has no group heading; each nav is named by aria-label (its links are named by their text) and the blocks are split by dividers", () => {
     mount();
     const side = screen.getByRole("complementary", { name: "Sidebar" });
     expect(side.querySelectorAll("nav p, nav h1, nav h2, nav h3, nav h4, nav h5, nav h6")).toHaveLength(0);
@@ -226,9 +226,9 @@ describe("sidebar", () => {
       expect(nav.hasAttribute("aria-labelledby")).toBe(false);
       expect(nav.getAttribute("aria-label")).toBe(name);
     }
-    const links = (name: string) => within(screen.getByRole("navigation", { name })).getAllByRole("link").map((a) => a.getAttribute("aria-label"));
+    const links = (name: string) => within(screen.getByRole("navigation", { name })).getAllByRole("link").map((a) => a.textContent);
     expect(links("Tasks")).toEqual(["Tasks", "Calendar"]);
-    expect(links("System")).toEqual(["Work", "Health"]);
+    expect(links("System")).toEqual(["Work", "Health", "Workers"]);
     expect(links("Setup")).toEqual(["Rules", "Plugins", "Settings"]);
     expect(document.querySelector("aside details, aside summary, aside [data-chevron]")).toBeNull();
     expect(screen.getByRole("navigation", { name: "System" }).closest("div")!.className.split(" ")).toEqual(expect.arrayContaining(["mt-3", "border-t", "pt-3"]));
@@ -266,7 +266,7 @@ describe("sidebar in the icon-only layout", () => {
         for (const a of links) {
           const label = a.querySelector("span")!.textContent!;
           expect(a.getAttribute("title")).toBe(label);
-          expect(within(nav).getByRole("link", { name: label })).toBe(a);
+          expect(within(nav).getByRole("link", { name: label === "Tasks" ? "Tasks, 4 need you" : label })).toBe(a);
         }
       }
     } finally {
@@ -293,7 +293,8 @@ describe("top bar", () => {
     expect(header.textContent).not.toMatch(/Needs you \(/);
     expect(header.textContent).not.toMatch(/updated|ago/);
     expect(header.textContent).not.toContain("not updated yet");
-    expect(screen.getByRole("link", { name: "Tasks" }).textContent).toBe("Tasks4");
+    expect(screen.getByRole("link", { name: "Tasks, 4 need you" }).textContent).toBe("Tasks4");
+    expect(document.querySelector("aside a[aria-label]")).toBeNull();
   });
 
   it("shows update failed when the overview request fails", async () => {

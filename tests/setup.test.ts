@@ -2,9 +2,9 @@ import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { loadConfig } from "../src/compose.js";
+import { loadConfig } from "../src/load-config.js";
 import { GitHubClient, GitHubError } from "../src/impl/github/github-client.js";
-import { type SecretStore, secretName } from "../src/interfaces/secret-store.js";
+import { secretName } from "../src/interfaces/secret-store.js";
 import { createLabels } from "../src/impl/github/github-issue-source.js";
 import { checkStatus, ensureSecretFile, removeSecret, setSecret, statusLabelChecks, tokenExpiryCheck } from "../src/setup.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
@@ -88,11 +88,11 @@ describe("setup and doctor: status labels", () => {
     const checks = await statusLabelChecks(client, repo, "sf: ");
     // Eight status labels and the PR flag label `incomplete` (issue #229).
     expect(checks).toHaveLength(9);
-    expect(checks[0]).toEqual({ ok: true, msg: 'status label "sf: triaging" exists' });
+    expect(checks[0]).toEqual({ ok: true, msg: 'status label "sf: triaging" exists', label: "sf: triaging" });
     const missing = checks.filter((c) => !c.ok);
     expect(missing).toHaveLength(8);
     expect(missing.map((c) => c.msg)).toContain('status label "sf: incomplete" exists (run: npm run setup)');
-    expect(missing.every((c) => c.warn === true)).toBe(true);
+    expect(missing.every((c) => c.warn === true && c.label === c.msg.split('"')[1])).toBe(true);
     expect(missing.map((c) => c.msg)).toContain('status label "sf: needs approval" exists (run: npm run setup)');
   });
 

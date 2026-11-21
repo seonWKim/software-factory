@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { testPathsOnly } from "../src/core/auto-grant.js";
+import { MAX_ORDINARY_GRANT, fewOrdinaryPaths, testPathsOnly } from "../src/core/auto-grant.js";
 import { AUTO_GRANT, autoGrants } from "../src/controller/units/run-results/auto-grant.js";
 import { GATE_PATHS } from "../src/core/improver.js";
 import { LiveSettings, SETTABLE_DEFAULTS, baseFromConfig } from "../src/core/settings.js";
@@ -14,9 +14,11 @@ import { failingTestFiles } from "../src/core/checks.js";
 import { NEEDS_HUMAN_MAX_CHARS, NEEDS_HUMAN_MAX_PATHS } from "../src/core/outputs.js";
 import { isCovered } from "../src/core/policy.js";
 import { newStore } from "./helpers/store.js";
-import {
-  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, config, issueRef, prompts, recordingLog, silent, triageSpec,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, config, issueRef, prompts, recordingLog, silent, triageSpec } from "./helpers/fakes/config.js";
 
 // An implement run's needs-human ask for test paths only is granted once without the owner (design 05-restarts,
 // 2026-11-15): the owner's `/retry +paths` transition, applied by the controller with the system actor.
@@ -26,6 +28,8 @@ const DEFAULT_TEST_GLOBS = SETTABLE_DEFAULTS.test_globs as string[];
 const TESTS = ["tests/ui-link-style.test.tsx", "tests/ui-thread.test.tsx"];
 /** A ratchet list: always covered, whatever allowed_paths says (isCovered). */
 const RATCHET = "tests/architecture/known-violations/no-clock.json";
+/** One more ordinary file than the grant takes. */
+const MANY = Array.from({ length: MAX_ORDINARY_GRANT + 1 }, (_, i) => `src/ui/part-${i}.ts`);
 const askFor = (paths: readonly string[]) => ({ output: { needs_human: { reason: "A test outside the allowed paths breaks.", question: "Allow it?", paths } } });
 const done = { output: { summary: "s", next_steps: "n" } };
 const pass = { output: { verdict: "pass", tier: 2, findings: [], summary: "s" } };
@@ -104,6 +108,44 @@ describe("testPathsOnly", () => {
   });
 });
 
+describe("fewOrdinaryPaths", () => {
+  it("is true for 1 to MAX_ORDINARY_GRANT files with no folder, glob, gate-list path, CLAUDE.md or AGENTS.md", () => {
+    expect(fewOrdinaryPaths(["web/src/i18n/en/shell.ts"])).toBe(true);
+    expect(fewOrdinaryPaths(MANY.slice(0, MAX_ORDINARY_GRANT))).toBe(true);
+    expect(fewOrdinaryPaths(MANY)).toBe(false);
+    expect(fewOrdinaryPaths([])).toBe(false);
+    for (const p of ["src/ui/", "src/**/x.ts", "prompts/implement.md", "src/core/policy.ts", "factory.config.json", "CLAUDE.md", "web/AGENTS.md"]) {
+      expect(fewOrdinaryPaths([p]), p).toBe(false);
+    }
+  });
+});
+
+describe("an implement run that misses a few ordinary files", () => {
+  it("gets them once by a system /retry +paths, with a comment that says a few files were granted", async () => {
+    const files = ["web/src/i18n/en/shell.ts", TESTS[0]!];
+    const f = await factory((n) => (n === 1 ? askFor(files) : done));
+    await f.approve();
+    await f.step();
+    const grants = await f.grants();
+    expect(grants).toHaveLength(1);
+    expect(grants[0]).toMatchObject({ actor: { kind: "system", id: "system:controller" }, detail: { added_paths: JSON.stringify(files), [AUTO_GRANT]: true } });
+    expect(String(grants[0]!.detail!.note)).toContain("granted automatically because the ask named a few ordinary files");
+    expect((await f.item()).allowed_paths).toEqual([...triageSpec.allowed_paths, ...files]);
+    expect(f.comments("auto-grant")[0]!.body).toContain("## Factory: files granted automatically");
+    expect(f.comments("needs-human")).toEqual([]);
+    expect(await f.item()).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+  });
+
+  it("with auto_grant_test_paths off, a few ordinary files wait for the owner", async () => {
+    const f = await factory((n) => (n === 1 ? askFor(["web/src/i18n/en/shell.ts"]) : done));
+    await f.store.setSettingOverride({ key: "auto_grant_test_paths", project: "", value: "false", actor: "local:owner" });
+    await f.approve();
+    await f.step();
+    expect(await f.grants()).toEqual([]);
+    expect(await f.item()).toMatchObject({ blocked_on: "human", blocked_reason: "agent_needs_human" });
+  });
+});
+
 describe("an implement run that asks only for test paths", () => {
   it("leads to one system /retry +paths with those paths: the item does not wait on the owner", async () => {
     const f = await factory((n) => (n === 1 ? askFor(TESTS) : done));
@@ -132,8 +174,8 @@ describe("an implement run that asks only for test paths", () => {
     expect(line?.fields).toMatchObject({ paths: TESTS.join(" ") });
   });
 
-  it("a request with a non-test path or a gate-list path posts the owner comment and blocks on the human as before", async () => {
-    for (const paths of [["src/ui/thread.tsx", TESTS[0]!], ["tests/architecture/settings-monotonic.test.ts"], ["prompts/review.test.md"], ["tests/CLAUDE.md"], ["tests/AGENTS.md"]]) {
+  it("a request with too many ordinary files, a folder or a gate-list path posts the owner comment and blocks on the human as before", async () => {
+    for (const paths of [MANY, ["src/ui/"], ["tests/architecture/settings-monotonic.test.ts"], ["prompts/review.test.md"], ["tests/CLAUDE.md"], ["tests/AGENTS.md"]]) {
       const f = await factory(() => askFor(paths));
       await f.approve();
       await f.step();
@@ -256,14 +298,14 @@ describe("an implement run that asks only for paths already allowed", () => {
     expect(f.comments("auto-grant")[0]!.body).toContain(`already allowed: ${RATCHET}`);
   });
 
-  it("an ask that also names an uncovered non-test path goes to the owner, whose reply names only that path", async () => {
-    const f = await factory(() => askFor([RATCHET, "src/loader.ts"]));
+  it("an ask that also names an uncovered gate-list path goes to the owner, whose reply names only that path", async () => {
+    const f = await factory(() => askFor([RATCHET, "src/core/policy.ts"]));
     await f.approve();
     await f.step();
     expect(await f.item()).toMatchObject({ blocked_on: "human", blocked_reason: "agent_needs_human" });
     expect(await f.grants()).toEqual([]);
     const [ask] = f.comments("needs-human");
-    expect(ask!.body).toContain("```\n/retry +paths src/loader.ts\n```");
+    expect(ask!.body).toContain("```\n/retry +paths src/core/policy.ts\n```");
   });
 
   it("a second covered-only ask on the same item holds on agent_needs_human", async () => {

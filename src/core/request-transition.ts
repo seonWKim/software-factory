@@ -12,13 +12,15 @@ import type { AuthDecision } from "../interfaces/auth-provider.js";
 import { refusalReply } from "./authorize.js";
 import { BUDGET_CHECKPOINT } from "./budget.js";
 import { prNumber } from "./change-ref.js";
-import { CHECKPOINT_REFUSAL, CLOSED_REFUSAL, commandPhase, dependencyHoldRefusal, latestSpec, parseCommandPaths, phaseLabel, refusalText, specNotWaiting } from "./commands.js";
+import {
+  CHECKPOINT_REFUSAL, CLOSED_REFUSAL, commandPhase, dependencyHoldRefusal, latestSpec, parseCommandPaths, phaseLabel, refusalText, retryPathsReply, specNotWaiting,
+} from "./commands.js";
 import { LOCAL_SOURCE } from "./local-merge.js";
-import { effectiveTier, runKey } from "./policy.js";
+import { effectiveTier, isCovered, runKey } from "./policy.js";
 import { MERGE_CONFLICT_PENDING } from "./resolve.js";
 import { PHASES_OPEN, SPLIT_FILING } from "./split.js";
 import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "./standing.js";
-import type { TriagePhase } from "./outputs.js";
+import { type SpecDecision, type TriagePhase, optionChange } from "./outputs.js";
 import type { Actor, RunInput, RunKind, SpecKind, StateChange, StateChangeDetail, Tier, Timestamp, WorkItem, WorkItemPatch } from "./types.js";
 
 /** A transition as a check decides it: the store's input without the item and its version. */
@@ -47,8 +49,13 @@ export const MERGE_QUEUED = "merge_queued";
 export const MERGE_REQUESTED = "merge_requested";
 /** The reason of a refused or failed merge: merge_queued → merge_pending, the refusal in its detail. */
 export const MERGE_RETURNED = "merge_returned";
-/** The row's words for a state the request path just recorded (design 09-dashboard-app). */
-export const ROW_LABELS = { approved: "Approved", merging: "Merging…", checking: "Checking…", merged: "Merged" } as const;
+/**
+ * The row's words for a state the request path just recorded (design 09-dashboard-app), and for a Merge under way:
+ * `checking` while the merge queue checks the item (merge_queued); a pending Merge's place is mergeQueuedLabel.
+ */
+export const ROW_LABELS = { approved: "Approved", merging: "Merging…", checking: "Checking build", merged: "Merged" } as const;
+/** A dashboard Merge stored and not handled yet, at its 1-based place among the Merges waiting for the controller. */
+export const mergeQueuedLabel = (position: number): string => `Merge queued (position ${position})`;
 /** Characters of an approval note kept on the state change (design §4). */
 const MAX_NOTE_CHARS = 2000;
 /** Characters of a merge refusal kept on its state change. */
@@ -139,14 +146,20 @@ export async function commandNote(
   return { note: note || null, paths: split.paths };
 }
 
+/** What the approve gate reads of one decision's answer: the answer given (else the default) and whether it is the default. */
+export interface GateAnswer {
+  answer: string | null;
+  accepted_default: boolean;
+}
+
 /** The decision answers of an approval note (src/shared/command-notes.ts): its parser and its state change detail. */
-export interface NoteAnswers<A> {
+export interface NoteAnswers<A extends GateAnswer> {
   split(note: string | null, decisions: readonly { text: string; default: string | null }[]): { note: string | null; answers: A[] } | Refused;
   detail(answers: readonly A[]): StateChangeDetail;
 }
 
 /** What an `/approve` carries into the approve gate. */
-export interface ApproveArgs<A> {
+export interface ApproveArgs<A extends GateAnswer> {
   actor: Actor;
   note: string | null;
   paths: readonly string[];
@@ -178,7 +191,7 @@ export async function floorTierNeeded(r: ItemReads, it: WorkItem): Promise<numbe
  * claimed it is answered: null), a dependency hold, a spec not waiting, `+paths` on a split, the decision answers;
  * then the transition: a split's filing (`split`, the controller's), else RUNNING with one implement run.
  */
-export async function approveCheck<A>(r: ItemReads, it: WorkItem, a: ApproveArgs<A>): Promise<ApproveChecked> {
+export async function approveCheck<A extends GateAnswer>(r: ItemReads, it: WorkItem, a: ApproveArgs<A>): Promise<ApproveChecked> {
   if (it.stage === "CLOSED") return { refuse: CLOSED_REFUSAL };
   if (it.blocked_reason === BUDGET_CHECKPOINT) return { refuse: CHECKPOINT_REFUSAL };
   if (it.blocked_reason === FLOOR_TIER) return floorCommand("spec_approved", it, a.actor, await floorTierNeeded(r, it), a.note, a.widen(a.paths));
@@ -199,6 +212,8 @@ export async function approveCheck<A>(r: ItemReads, it: WorkItem, a: ApproveArgs
   const ans = a.answers.split(a.note, spec?.decision_items ?? []);
   if ("refuse" in ans) return ans;
   if (phases) return { split: phases, note: ans.note, tag: ans.answers.length ? { ...a.tag, ...a.answers.detail(ans.answers) } : a.tag };
+  const uncovered = uncoveredOptionPaths(spec?.decision_items ?? [], ans.answers, [...it.allowed_paths, ...a.paths]);
+  if (uncovered.length > 0) return { refuse: optionPathsRefusal(uncovered) };
   const w = a.widen(a.paths);
   const detail = { ...(ans.note ? { note: ans.note } : {}), ...a.answers.detail(ans.answers), ...w.detail };
   return {
@@ -208,6 +223,33 @@ export async function approveCheck<A>(r: ItemReads, it: WorkItem, a: ApproveArgs
     ...(Object.keys(detail).length > 0 ? { detail } : {}),
     enqueue: { kind: "implement", idempotency_key: runKey(it, "implement") },
   };
+}
+
+/** A non-default answer's option paths outside the allowed paths: the decision's number and those paths. */
+export type UncoveredOption = { n: number; paths: string[] };
+
+/**
+ * The extra paths of each non-default answer's option (design 04-spec-gate-commands, 2026-11-21) that `allowed` does
+ * not cover, by decision. A default needs none: its paths are the spec's allowed_paths.
+ */
+export function uncoveredOptionPaths(decisions: readonly SpecDecision[], answers: readonly GateAnswer[], allowed: readonly string[]): UncoveredOption[] {
+  return decisions.flatMap((d, i) => {
+    const a = answers[i];
+    if (!a || a.accepted_default) return [];
+    const paths = (optionChange(d, a.answer)?.extra_paths ?? []).filter((p) => !isCovered(p, allowed));
+    return paths.length > 0 ? [{ n: i + 1, paths }] : [];
+  });
+}
+
+/**
+ * The one refusal of an approval whose answer needs a path outside the allowed paths: it names each path and the
+ * `/approve +paths` reply that allows them. Nothing widens on its own (owner answer, wi_80ba9d05).
+ */
+export function optionPathsRefusal(uncovered: readonly UncoveredOption[]): string {
+  const paths = [...new Set(uncovered.flatMap((u) => u.paths))];
+  const which = uncovered.map((u) => `decision ${u.n}`).join(", ");
+  const reply = retryPathsReply(paths, "/approve") ?? `/approve +paths ${paths.join(" ")}`;
+  return `the answer to ${which} needs ${paths.map((p) => `\`${p}\``).join(", ")} outside the allowed paths, so nothing was queued and nothing widened; reply \`${reply}\` with the same answers to allow ${paths.length === 1 ? "it" : "them"}, or pick another answer`;
 }
 
 /** The gate commands a block takes: approve, reject, revise, retry (the comment command events). */
@@ -347,6 +389,23 @@ export function mergeRequested(requests: readonly AppCommandRequest[], seq: numb
   return requests.some((q) => q.command === "merge" && q.handled_at === null && q.seq !== seq && (seq === null || q.seq < seq));
 }
 
+/** The seq of the oldest dashboard Merge for the item stored and not handled yet, or null: its place in the merge line. */
+export function pendingMerge(requests: readonly AppCommandRequest[]): number | null {
+  return requests.reduce<number | null>((a, q) => (q.command === "merge" && q.handled_at === null && (a === null || q.seq < a) ? q.seq : a), null);
+}
+
+/**
+ * The run kind of a request-time approval whose run the controller has not queued yet, or null (design
+ * 09-dashboard-item-commands): the item's newest state change carries the run it left (QUEUED_RUN) and the item is
+ * open and unblocked. The controller's APPROVED_RUN_QUEUED change (or any later change) ends it. Read from the
+ * item's state changes only, so it costs no store read of its own.
+ */
+export function pendingApproval(it: Pick<WorkItem, "stage" | "blocked_on">, changes: readonly Pick<StateChange, "detail">[]): RunKind | null {
+  const newest = changes.at(-1);
+  if (!newest || it.stage === "CLOSED" || it.blocked_on !== "none") return null;
+  return queuedRun(newest)?.kind ?? null;
+}
+
 /** The newest dashboard Merge requests read for an item: enough to find one still pending. */
 export const MERGE_REQUESTS_READ = 20;
 
@@ -359,7 +418,7 @@ export function mergeReturned(it: WorkItem, refusal: string, actor: Actor): Tran
 // The request path.
 
 /** What the request path needs: the store, the egress scanner, the owner check and the merge facts of this process. */
-export interface RequestDeps<A> {
+export interface RequestDeps<A extends GateAnswer> {
   store: Pick<FactoryStore, "getWorkItem" | "listRuns" | "listStateChanges" | "transition" | "markAppCommandRequest" | "listAppCommandRequestsForItem">;
   scanner: EgressScanner;
   /** The owner check of the request's actor: approve_spec for Approve, approve_merge for Merge. */
@@ -394,7 +453,7 @@ const MAX_TRIES = 5;
  * queue; an earlier pending Merge of the item, or one the controller queued, makes it `already_done`. A refusal or an
  * earlier request's transition marks the row handled here, so the controller posts nothing.
  */
-export async function requestTransition<A>(d: RequestDeps<A>, r: AppCommandRequest, item: WorkItem): Promise<RequestOutcome> {
+export async function requestTransition<A extends GateAnswer>(d: RequestDeps<A>, r: AppCommandRequest, item: WorkItem): Promise<RequestOutcome> {
   const merge = r.command === "merge";
   const name = merge ? "merge" : "/approve";
   const finish = async (it: WorkItem, refusal: string | null): Promise<RequestOutcome> => {

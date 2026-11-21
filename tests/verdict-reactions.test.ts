@@ -13,7 +13,8 @@ import type { AuthDecision, AuthProvider, ExternalIdentity, Principal } from "..
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import type { SourceRef } from "../src/core/types.js";
-import { FakeSource, cleanScanner, config, issueRef, recordingLog, silent } from "./helpers/fakes.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { cleanScanner, config, issueRef, recordingLog, silent } from "./helpers/fakes/config.js";
 import { RecordingGitHubClient } from "./helpers/github.js";
 import { CHANNEL, FakeSlackApi, FakeSocket, TEAM, eventEnvelope } from "./helpers/slack.js";
 import { PROJECT_KEY, newStore, system } from "./helpers/store.js";

@@ -21,7 +21,7 @@ import { HealthMonitor } from "../src/ui/health.js";
 import type { UiPauses } from "../src/ui/pause-api.js";
 import { type ApiDeps, type UiRequest, respond } from "../src/ui/server.js";
 import type { ImportItem, PluginsImportView, PluginsView } from "../web/src/api.js";
-import { silent } from "./helpers/fakes.js";
+import { silent } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 import { startPackMcpServer } from "../src/impl/runner/pack-mcp-client.js";
 import { listRequestedMcpTools } from "../src/import/mcp-tool-lists.js";
@@ -348,7 +348,7 @@ describe("GET /api/v1/plugins: tools of approved imported MCP servers (phase 3)"
     expect(vi.mocked(startPackMcpServer)).not.toHaveBeenCalled();
   });
 
-  it("a server that did not start shows its name and 'did not start' only; a URL server shows not stdio", async () => {
+  it("a server that did not start says Couldn't start and its name only; a URL server shows not stdio", async () => {
     const s = await readSetup();
     await s.post({ items: [sel("mcp_server", "claude", "docs"), sel("mcp_server", "claude", "remote")] });
     await s.approve("docs");
@@ -356,7 +356,7 @@ describe("GET /api/v1/plugins: tools of approved imported MCP servers (phase 3)"
     await s.read();
     await s.work(null);
     expect((await s.read()).map((t) => [t.name, t.description])).toEqual([
-      ["mcp:docs", "MCP server docs: did not start"],
+      ["mcp:docs", "Couldn't start docs"],
       ["mcp:remote", "MCP server remote: not a stdio server: its tools are not listed"],
     ]);
   });
@@ -600,11 +600,11 @@ describe("Plugins page: Import", () => {
 
   it("the Tools tab labels an imported MCP server's tools with origin MCP and has no approve or revoke control", async () => {
     const tool = (name: string, description: string) => ({ name, description, read_only: false, origin: "mcp", roles: [], last_used: null }) as unknown as PluginsView["tools"][number];
-    page({ ...PAGE, tools: [tool("mcp:docs:search", "From MCP server docs"), tool("mcp:remote", "MCP server remote: did not start")] });
+    page({ ...PAGE, tools: [tool("mcp:docs:search", "From MCP server docs"), tool("mcp:remote", "Couldn't start remote")] });
     rtl.fireEvent.click(rtl.screen.getByRole("tab", { name: "Tools" }));
     const table = await rtl.screen.findByRole("table", { name: "Tools" });
     const rows = rtl.within(table).getAllByRole("row").slice(1);
-    expect(rows.map((r) => r.textContent)).toEqual([expect.stringContaining("mcp:docs:search"), expect.stringContaining("did not start")]);
+    expect(rows.map((r) => r.textContent)).toEqual([expect.stringContaining("mcp:docs:search"), expect.stringContaining("Couldn't start remote")]);
     for (const r of rows) expect(r.textContent).toContain("MCP");
     expect(rtl.within(table).queryByRole("button", { name: /Approve|Revoke/ })).toBeNull();
   });

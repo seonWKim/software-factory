@@ -14,7 +14,9 @@ interface SegmentedControlProps<T extends string> {
 /**
  * One choice of a few views (docs/design/09-brand-and-tokens.md): a 32px box with a 1px border-strong edge holding
  * 28px segments in one row that never wraps. The selected segment is marked with aria-pressed and neutral (surface
- * fill, a border-strong ring, text-1), so it reads in light and dark alike; the others are text-2 on the surface.
+ * fill, a border-strong ring drawn inside it, text-1), so it reads in light and dark alike; the others are text-2 on the
+ * surface. Its corner is the box's radius less the 2px of border and padding, and the inset ring keeps a 1px gap from
+ * the box's edge, so the two outlines never touch (owner feedback 2026-11-20).
  */
 export function SegmentedControl<T extends string>({ label, options, value, onChange, className }: SegmentedControlProps<T>) {
   return (
@@ -31,9 +33,10 @@ export function SegmentedControl<T extends string>({ label, options, value, onCh
           {...(o.action ? { "data-action": o.action } : {})}
           onClick={() => onChange(o.id)}
           className={cn(
-            "inline-flex min-h-7 items-center rounded-control px-3 text-sm font-medium whitespace-nowrap motion-safe:transition-colors",
+            // Nested in the box's 1px padding and 1px border: the corner is 2px tighter than the box's, so the curves match.
+            "inline-flex min-h-7 items-center rounded-[calc(var(--radius-control)-2px)] px-3 text-sm font-medium whitespace-nowrap motion-safe:transition-colors",
             "text-text-2 enabled:hover:bg-surface-2 enabled:hover:text-text-1",
-            "aria-pressed:bg-surface aria-pressed:text-text-1 aria-pressed:ring-1 aria-pressed:ring-border-strong enabled:aria-pressed:hover:bg-surface enabled:aria-pressed:hover:text-text-1",
+            "aria-pressed:bg-surface aria-pressed:text-text-1 aria-pressed:ring-1 aria-pressed:ring-inset aria-pressed:ring-border-strong enabled:aria-pressed:hover:bg-surface enabled:aria-pressed:hover:text-text-1",
             FOCUS,
           )}
         >

@@ -2,11 +2,12 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { build, loadConfig } from "../../src/compose.js";
+import { build } from "../../src/compose.js";
+import { loadConfig } from "../../src/load-config.js";
 import { TOP_LEVEL_KEYS } from "../../src/config-keys.js";
 import { FakeClock } from "../../src/impl/clock/fake-clock.js";
 import { PLUGINS_KEYS, REGISTRY, selectPlugins, selectedCalendars, withPlugin } from "../../src/plugins.js";
-import { fakeRepoLookup } from "../helpers/fakes.js";
+import { fakeRepoLookup } from "../helpers/fakes/config.js";
 import { FakeCalendarSource } from "./fakes.js";
 
 // The top-level `calendar` key (design 02-tasks, calendar): a list of CalendarSource plugin names, default [], checked

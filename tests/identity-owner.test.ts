@@ -14,7 +14,7 @@ import { HealthMonitor } from "../src/ui/health.js";
 import type { PauseDeps, UiPauses } from "../src/ui/pause-api.js";
 import { ownerOf } from "../src/ui/rules-api.js";
 import { respond } from "../src/ui/server.js";
-import { cleanScanner } from "./helpers/fakes.js";
+import { cleanScanner } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 const MIGRATION = "20261113T1500-identity-owner";

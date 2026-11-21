@@ -8,7 +8,8 @@ import type { UserId, WorkItem } from "../src/core/types.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type UiDeps, respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
-import { alice, cleanScanner, pipeline, settingsWith, triageSpec } from "./helpers/fakes.js";
+import { alice, cleanScanner, settingsWith, triageSpec } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 
 // A spec's premise (design 04-spec-gate-commands, 2026-11-20): a spec whose files_to_change is empty changes no file
 // in this repo, so no surface approves it; a /retry on an item whose last change is over a day old re-checks the

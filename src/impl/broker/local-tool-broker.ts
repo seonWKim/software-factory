@@ -18,7 +18,7 @@ const TOOLS: readonly ToolDescriptor[] = [
   {
     name: STORE_BRANCH,
     read_only: false,
-    description: "Store the current HEAD of a run folder as its factory branch in the factory repo itself, as a local branch. Pushes to no remote.",
+    description: "Saves the run's latest commit as its branch in this repository, without sending it anywhere.",
     input_schema: SCHEMA,
   },
 ];

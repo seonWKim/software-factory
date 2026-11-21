@@ -26,8 +26,8 @@
 import { randomUUID } from "node:crypto";
 import { COMMAND_TABLE } from "../core/command-table.js";
 import {
-  COMMANDS, type CommandName, ROW_LABELS, commandPhase, commandSpec, commandsFor, itemCommandState, latestSpec, mergeQueued, mergeRoute, noFilesRefusal, phaseLabel,
-  refusalText, requestTransition,
+  COMMANDS, type CommandName, ROW_LABELS, commandPhase, commandSpec, commandsFor, itemCommandState, latestSpec, mergeQueued, mergeQueuedLabel, mergeRoute, noFilesRefusal,
+  phaseLabel, refusalText, requestTransition,
 } from "../core/commands.js";
 import { refusalReply } from "../core/authorize.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, isProposalId, parseProposalMarker, typed } from "../core/interpret.js";
@@ -42,6 +42,7 @@ import type { AuthDecision } from "../interfaces/auth-provider.js";
 import type { AppCommandRequest } from "../interfaces/factory-store.js";
 import { answersDetail, splitAnswers } from "../shared/command-notes.js";
 import type { UiDeps } from "./deps.js";
+import type { Pending } from "./priority.js";
 import { csrfMatches } from "./settings-api.js";
 import { Withholder } from "./withhold.js";
 
@@ -63,11 +64,6 @@ export interface UiCommands {
   forge?: boolean;
   /** Whether the controller's sandbox can merge locally, for a local item's Merge; set by compose.ts buildUiParts. Absent: not known here; the controller still checks. */
   localMerge?: boolean;
-  /**
-   * Whether a dashboard Merge of the item is stored and not handled yet (core mergeRequested): its button reads
-   * "Merging…" until the controller's pass enters the merge queue. Set by compose.ts buildUiParts. Absent: not read.
-   */
-  mergeRequested?: (id: WorkItemId) => Promise<boolean>;
   /** How a refusal names the item's PR, as the controller names it (`PR #N`); set by compose.ts buildUiParts, so ui writes no change-ref form. Absent: the bare ref. */
   changeName?: (change_ref: string) => string;
   /** Whether `repo.restart_command` is set, so a merged item offers Restart app; set by compose.ts buildUiParts. Absent: not offered. */
@@ -387,8 +383,19 @@ export async function waitingSpec(it: WorkItem, runs: readonly Run[], text: (v: 
   for (const d of spec.decision_items ?? []) {
     const options = [];
     for (const o of d.options ?? []) options.push((await text(o))!);
+    // Each option's changes (design 09-dashboard-item-commands, 2026-11-21), with the extra paths the item's
+    // allowed_paths do not cover: the approve dialog warns about those before anything is sent.
+    const option_changes = [];
+    for (const c of d.option_changes ?? []) {
+      const done_when = [];
+      for (const l of c.done_when) done_when.push((await text(l))!);
+      option_changes.push({
+        option: (await text(c.option))!, extra_paths: c.extra_paths, done_when, uncovered_paths: c.extra_paths.filter((p) => !isCovered(p, it.allowed_paths)),
+      });
+    }
     decisions.push({
-      question: (await text(d.text))!, options, default: await text(d.default), reason: await text(d.reason ?? null), owner_only: d.owner_only,
+      question: (await text(d.text))!, options, default: await text(d.default), reason: await text(d.reason ?? null), owner_only: d.owner_only, option_changes,
+      ...(d.layout ? { layout: true } : {}),
     });
   }
   return { in_short: await text(spec.in_short), decisions };
@@ -446,14 +453,15 @@ const off = (reason: string): MergeReadiness => ({ enabled: false, reason });
  * The item API's `merge`, from stored state only (no forge call): enabled for an item waiting for its merge that
  * the page's user may merge. A local item with no PR merges through the local merge, any item with a PR through
  * its PR on the forge (design 05-sources). The merge check applies to a factory PR, the one item it runs for. The
- * controller checks everything again when it applies the request; GitHub checks the head at merge time.
+ * controller checks everything again when it applies the request; GitHub checks the head at merge time. `pending`:
+ * the item's pending command (list.ts pendingOf), the rule the ranking reads too.
  */
-export async function mergeReadiness(d: UiDeps, it: WorkItem, check: MergeCheckState | null, allowed: () => Promise<ActorGrant>): Promise<MergeReadiness> {
-  // Merge taken by the controller (design 09-dashboard-app): the merge queue checks a local item's merged result.
+export async function mergeReadiness(d: UiDeps, it: WorkItem, check: MergeCheckState | null, allowed: () => Promise<ActorGrant>, pending: Pending | null = null): Promise<MergeReadiness> {
+  // Merge taken by the controller (design 09-dashboard-item-commands): the merge queue checks a local item's merged result.
   if (mergeQueued(it)) return off(ROW_LABELS.checking);
   if (commandPhase(it) !== "merge_pending") return off(NOT_WAITING);
-  // A Merge stored and not handled yet: the controller enters the merge queue on its next pass, so a read before it keeps "Merging…".
-  if (await d.commands?.mergeRequested?.(it.id)) return off(ROW_LABELS.merging);
+  // A Merge stored and not handled yet: the controller takes it on a later pass, so until then it reads its place in line.
+  if (pending?.command === "merge") return off(mergeQueuedLabel(pending.position));
   // The controller's route: a local item with no PR takes the local merge, an item with a PR its PR's merge.
   const local = mergeRoute(it) === "local";
   if (!local && it.change_ref === null) return off("no PR to merge");

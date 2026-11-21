@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useRef, useState } from "react";
 import { API, type Session, type SettingRow, type SettingsView, type SettingsWrite, useApi } from "../../api.js";
 import { Button } from "../../components/ui/button.js";
 import { ButtonRow } from "../../components/ui/button-row.js";
@@ -7,7 +7,7 @@ import { Field } from "../../components/ui/field.js";
 import { Input } from "../../components/ui/input.js";
 import { LINK_CLASS } from "../../components/ui/link-style.js";
 import { KeyValue } from "../../components/ui/key-value.js";
-import { Table } from "../../components/ui/parts.js";
+import { Table, Td, Tr } from "../../components/ui/parts.js";
 import type { MessageKey } from "../../i18n/en.js";
 import { t } from "../../i18n/index.js";
 import { duration } from "../../lib/format.js";
@@ -19,7 +19,8 @@ import { FileKeysSection, KeyNameDetails, Outcome, editableKeys, useWrite } from
 import { Description, SettingsRow } from "../settings-row.js";
 import { withNodes } from "../standing.js";
 import { Editor } from "./editor.js";
-import { SHORT_OBJECT, asObject, entries, stringOf, summaryOf } from "./values.js";
+import { ADVANCED_GROUPS, appliesKey, groupOf, keyRank } from "./advanced-groups.js";
+import { SHORT_OBJECT, asObject, entries, modelSummary, stringOf, summaryOf } from "./values.js";
 import { Disclosure } from "../../components/ui/disclosure.js";
 import { Card } from "../../components/ui/card.js";
 import { Badge } from "../../components/ui/badge.js";
@@ -129,33 +130,83 @@ function KeyDetails({ row }: { row: SettingRow }) {
                 <span className="text-text-3">{withNodes("settings.default", { value: <JsonValue text={shownValue(row.key, row.default_value)} /> })}</span>
               ),
           },
-          { key: "applies", term: t("settings.colAppliesAt"), value: <span className="text-text-2">{row.applies_at}</span> },
+          { key: "applies", term: t("settings.colAppliesAt"), value: <span className="text-text-2">{t(appliesKey(row.applies_at))}</span> },
         ]}
       />
     </Disclosure>
   );
 }
 
-/** The settable keys table: one shared settings row per key; the Value cell holds the editors, the per-project layer and the learned value. */
+/** One group's keys as table rows: one shared settings row per key; the Value cell holds the editors, the per-project layer and the learned value. */
+function KeyRows({ rows, view, resets }: { rows: readonly SettingRow[]; view: SettingsView; resets: boolean }) {
+  return rows.map((row) => (
+    <SettingsRow
+      key={row.key}
+      attrs={{ "data-key": row.key }}
+      name={keyLabel(row.key)}
+      description={keyHelp(row.key, row.description)}
+      control={<ValueCell row={row} view={view} />}
+      details={<KeyDetails row={row} />}
+      trailing={resets ? row.source === "override" && <ResetButton row={row} label={keyLabel(row.key)} token={view.csrf_token} /> : undefined}
+    />
+  ));
+}
+
+/**
+ * The settable keys in groups (design 09-dashboard-settings): Retries, Limits, Models and Notices as rows of one table,
+ * each group opened by a heading row, then For developers as a collapsed table of its own.
+ */
 function KeysTable({ view }: { view: SettingsView }) {
+  const [query, setQuery] = useState("");
   if (view.keys.length === 0) return <EmptyState title={t("settings.noKeys")} />;
   // The Reset column shows only while some key has an override to reset.
   const resets = view.keys.some((row) => row.source === "override");
+  const head = [t("settings.colKey"), t("settings.colValue"), t("settings.details"), ...(resets ? [t("settings.colReset")] : [])];
+  // The search matches a key's name, its label and its help text; while it is on, For developers joins the table.
+  const needle = query.trim().toLowerCase();
+  const matches = (row: SettingRow) => needle === "" || [row.key, keyLabel(row.key), keyHelp(row.key, row.description)].some((s) => s.toLowerCase().includes(needle));
+  const inGroup = (id: string) => view.keys.filter((row) => groupOf(row.key) === id && matches(row)).sort((a, b) => keyRank(a.key) - keyRank(b.key));
+  const groups = ADVANCED_GROUPS.map((g) => ({ ...g, rows: inGroup(g.id) }));
+  const developers = groups.find((g) => g.id === "developers")!;
+  const shown = groups.filter((g) => (needle !== "" || g.id !== "developers") && g.rows.length > 0);
   return (
-    <Table label={t("settings.settableKeys")} head={[t("settings.colKey"), t("settings.colValue"), t("settings.details"), ...(resets ? [t("settings.colReset")] : [])]}>
-      {view.keys.map((row) => (
-        <SettingsRow
-          key={row.key}
-          attrs={{ "data-key": row.key }}
-          name={keyLabel(row.key)}
-          description={keyHelp(row.key, row.description)}
-          control={<ValueCell row={row} view={view} />}
-          details={<KeyDetails row={row} />}
-          trailing={resets ? row.source === "override" && <ResetButton row={row} label={keyLabel(row.key)} token={view.csrf_token} /> : undefined}
-        />
-      ))}
-    </Table>
+    <>
+      <Input
+        type="search"
+        aria-label={t("settings.search")}
+        placeholder={t("settings.search")}
+        className="mb-3 w-full sm:max-w-sm"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+      />
+      {shown.length === 0 && <p data-no-match className="text-sm text-text-2">{t("settings.noMatch", { query: query.trim() })}</p>}
+      {shown.length > 0 && <Table label={t("settings.settableKeys")} head={head}>
+        {shown.map((g) => (
+          <Fragment key={g.id}>
+            <Tr data-group={g.id}>
+              <Td className="bg-bg text-xs font-semibold text-text-2">{t(g.title)}</Td>
+            </Tr>
+            <KeyRows rows={g.rows} view={view} resets={resets} />
+          </Fragment>
+        ))}
+      </Table>}
+      {needle === "" && developers.rows.length > 0 && (
+        <Disclosure data-group="developers" className="mt-3" summary={t(developers.title)}>
+          <div className="mt-2">
+            <Table label={t(developers.title)} head={head}>
+              <KeyRows rows={developers.rows} view={view} resets={resets} />
+            </Table>
+          </div>
+        </Disclosure>
+      )}
+    </>
   );
+}
+
+/** The model row's plain line: which class plans and which builds, and from which try the build moves up. */
+function ModelSummary({ value }: { value: string }) {
+  const text = modelSummary(value);
+  return text === null ? null : <p data-model-summary className="mb-1 text-xs text-pretty text-text-2">{text}</p>;
 }
 
 function ValueCell({ row, view }: { row: SettingRow; view: SettingsView }) {
@@ -165,6 +216,7 @@ function ValueCell({ row, view }: { row: SettingRow; view: SettingsView }) {
   const projectLabel = t("settings.keyFor", { key: label, project: view.repo });
   return (
     <>
+      {row.key === "model_by" && <ModelSummary value={row.value} />}
       {SECTION_KEYS[row.key] ? (
         <p className="text-xs text-pretty text-text-2">
           <span className="font-mono wrap-anywhere">{row.value}</span> · {t(SECTION_KEYS[row.key]!)}

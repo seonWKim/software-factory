@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { DIFF_CHECK_MS } from "../src/worker/index.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
-import { PROJECT, config, pipeline, waitFor } from "./helpers/fakes.js";
+import { PROJECT, config, waitFor } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 
 // The implement run's diff budget (design §4 Pre-push gates, issue #217): the prompt states the item's project's
 // max_diff_lines and max_diff_files, and while the agent step runs the worker reads the branch diff against the base

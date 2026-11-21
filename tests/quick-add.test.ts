@@ -173,6 +173,38 @@ describe("every: a repeat only when every day, every week or every month ends th
   });
 });
 
+describe("unread words: what stays in the title without being read (the quick-add preview)", () => {
+  const unread = (words: string) => {
+    const r = parseQuickAdd(words);
+    if (!r.ok) throw new Error(r.reason);
+    return { title: r.task.title, recurrence: r.task.recurrence, unread: r.unread };
+  };
+
+  it("every week as the last two words is the repeat, with nothing unread", () => {
+    expect(unread("review PRs tomorrow every week")).toEqual({ title: "review PRs", recurrence: "week", unread: [] });
+  });
+
+  it("every week anywhere else stays in the title and is reported unread, with no repeat", () => {
+    const r = parseQuickAdd("review PRs every week +backend tomorrow 09:00");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.task).toMatchObject({ title: "review PRs every week", recurrence: null, projects: ["backend"], due: { days_from_today: 1 }, due_time: "09:00" });
+    expect(r.unread).toEqual(["every week"]);
+  });
+
+  it("any other every … is reported with its next word; a lone every alone", () => {
+    expect(unread("Design rules checked on every UI review").unread).toEqual(["every UI"]);
+    expect(unread("call mum every monday")).toEqual({ title: "call mum every monday", recurrence: null, unread: ["every monday"] });
+    expect(unread("water today every").unread).toEqual(["every"]);
+    expect(unread("water every 3pm").unread).toEqual(["every"]);
+    expect(unread("a every day today every week")).toEqual({ title: "a every day", recurrence: "week", unread: ["every day"] });
+  });
+
+  it("plain title words and read tokens are not reported", () => {
+    expect(unread("pay rent tomorrow 09:30 !1 #home +bills 45m").unread).toEqual([]);
+  });
+});
+
 describe("+slug: a task project (design 02-tasks, task projects)", () => {
   it("each +slug is a project slug, projectSlug of the word after +, in the order given and once each", () => {
     expect(ok("fix tap +Home-Repairs +work +home-repairs")).toMatchObject({ title: "fix tap", projects: ["home-repairs", "work"] });

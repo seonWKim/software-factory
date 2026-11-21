@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 // Dashboard shell tests: items table, Running now and Queue, Floor links, why an item waits, open alarms. Shared setup is in ui-shell-fixtures.tsx.
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { ItemsTable, QueueTable, RunningTable } from "../web/src/views/common.js";
+import { ItemsTable } from "../web/src/views/common.js";
 import { API, type Items, type ItemRow } from "../web/src/api.js";
 import { POLL_MS } from "../web/src/api.js";
 import { VIEW_KEY } from "../web/src/views/tree.js";
 import { whyText } from "../web/src/lib/format.js";
-import { AT, overview, row, items, runs, queue, detail, state, installShellFixtures, mount } from "./ui-shell-fixtures.js";
+import { AT, RESPONSES, overview, row, items, runs, queue, detail, state, installShellFixtures, mount } from "./ui-shell-fixtures.js";
 
 installShellFixtures();
 
@@ -75,19 +75,6 @@ describe("ItemsTable columns and links (issue #240)", () => {
     const td = cells(itemsTable([trow(7, { change_ref: "7", change_url: null })], GH));
     expect(td[5]!.textContent).toBe("#7");
     expect(td[5]!.querySelector("a")).toBeNull();
-  });
-});
-
-describe("Running now and Queue", () => {
-  it("have no source link: the title links to the item page", () => {
-    const items = new Map([["wi_1", trow(1)]]);
-    const run = { id: "run_a", status: "running", kind: "implement", work_item_id: "wi_1", attempt: 1, owner: "h:1:0", heartbeat_at: AT, started_at: AT, lease_expires_at: AT, created_at: AT };
-    const q = { position: 1, id: "run_b", kind: "implement", work_item_id: "wi_1", attempt: 0, created_at: AT, not_before: null };
-    const a = render(<RunningTable runs={[run] as never} items={items} now={NOW_MS} />).container;
-    expect([...a.querySelectorAll("tbody tr td:first-child a")].map((x) => [x.getAttribute("href"), x.textContent])).toEqual([["/app/items/wi_1", "Title 1"]]);
-    cleanup();
-    const b = render(<QueueTable queue={[q] as never} items={items} now={NOW_MS} />).container;
-    expect([...b.querySelectorAll("tbody tr td:nth-child(2) a")].map((x) => x.getAttribute("href"))).toEqual(["/app/items/wi_1"]);
   });
 });
 
@@ -166,7 +153,16 @@ describe("why an item waits (issue #310)", () => {
 
 describe("open alarms on the Tasks page and the why sentence (design 09-status-page)", () => {
   const ALARM = "Alarm: checks_failed failed 4 runs on several items";
-  const action = { code: "alarm", text: `${ALARM}: npm test exited #`, command: "Failures page (/app/failures)", until: "2026-11-07T06:00:00.000Z", work_item_id: null };
+  const action = {
+    code: "alarm", text: `${ALARM}: npm test exited #`, command: "Failures page (/app/failures)", until: "2026-11-07T06:00:00.000Z", work_item_id: null,
+    pattern: "repeated_error", error_code: "checks_failed",
+  };
+  /** A red main alarm whose check kept no output (an older stop or a flagged tail). */
+  const redMain = { ...action, text: "Alarm: the base branch fails its checks on its own at `abc`", pattern: "red_main", error_code: "red_main", failing_tests: [], output_tail: null };
+  const failures = {
+    as_of: AT, window: "24h", cap: 500, total: 1, capped: false,
+    groups: [{ code: "checks_failed", count: 4, last_seen: AT, items: 2, runs: [{ id: "run_f", work_item_id: "wi_1", kind: "implement", attempt: 1, detail: "npm test exited 1", worker: null, finished_at: AT }] }],
+  };
   const plain = { code: "queued", reason_code: "queued_at", params: { position: 1 }, alarms: [] as string[], holder_id: null, next_actor: "factory" as const, refs: [], ref_url: null };
   const alarmed = { ...plain, alarms: [ALARM] };
 
@@ -190,17 +186,43 @@ describe("open alarms on the Tasks page and the why sentence (design 09-status-p
     await act(async () => void (await vi.advanceTimersByTimeAsync(POLL_MS + 10)));
   }
 
-  it("the Tasks page lists the open alarm as a Needs-you row in the Check group that opens Failures, and drops it once resolved", () =>
+  it("the Tasks page lists the open alarm as a Needs-you row in the Check group whose Show failures opens its failure group on the page, and drops it once resolved", () =>
     withAlarm(async () => {
+      RESPONSES["/api/v1/failures"] = failures;
+      try {
+        mount();
+        const list = await screen.findByRole("list", { name: "Check" });
+        const li = list.querySelector('[data-check="alarm"]') as HTMLElement;
+        expect(li.querySelector("[data-alarm-summary]")!.textContent).toBe(action.text);
+        // Its menu's one item shows the alarm's failures (data-action "show_failures"); the row has no link to Failures.
+        fireEvent.click(within(li).getByRole("button", { name: "More commands" }));
+        expect(within(li).getAllByRole("menuitem").map((m) => [m.textContent, m.getAttribute("data-action")])).toEqual([["Show failures", "show_failures"]]);
+        expect(within(li).queryByRole("link")).toBeNull();
+        fireEvent.click(within(li).getByRole("menuitem", { name: "Show failures" }));
+        const dialog = document.querySelector<HTMLElement>("dialog[data-dialog]")!;
+        expect(await within(dialog).findByText("Project checks failed")).toBeTruthy();
+        expect(location.pathname).not.toContain("health");
+        fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+        expect(document.body.textContent).not.toContain("Open alarms");
+        expect(screen.queryByRole("list", { name: "System actions" })).toBeNull();
+        await resolve();
+        await vi.waitFor(() => expect(screen.queryByRole("list", { name: "Check" })).toBeNull());
+      } finally {
+        delete RESPONSES["/api/v1/failures"];
+      }
+    }));
+
+  it("a red main alarm row's only menu item is What failed, which says no output was kept when the check kept none", () =>
+    withAlarm(async () => {
+      (overview as Record<string, unknown>).system_actions = [redMain];
       mount();
-      const list = await screen.findByRole("list", { name: "Check" });
-      const li = list.querySelector('[data-check="alarm"]') as HTMLElement;
-      expect(li.querySelector("[data-alarm-summary]")!.textContent).toBe(action.text);
-      expect(within(li).getByRole("link", { name: "Open on Failures" }).getAttribute("href")).toBe("/app/failures");
-      expect(document.body.textContent).not.toContain("Open alarms");
-      expect(screen.queryByRole("list", { name: "System actions" })).toBeNull();
-      await resolve();
-      await vi.waitFor(() => expect(screen.queryByRole("list", { name: "Check" })).toBeNull());
+      const li = (await screen.findByRole("list", { name: "Check" })).querySelector('[data-check="alarm"]') as HTMLElement;
+      fireEvent.click(within(li).getByRole("button", { name: "More commands" }));
+      expect(within(li).getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["What failed"]);
+      fireEvent.click(within(li).getByRole("menuitem", { name: "What failed" }));
+      const dialog = document.querySelector<HTMLElement>("dialog[data-dialog]")!;
+      expect(within(dialog).getByText("No output kept for this check.")).toBeTruthy();
+      expect(dialog.querySelector("pre")).toBeNull();
     }));
 
   it("Work items and the item page name the alarm in the item's why, and drop it once it is resolved", () =>

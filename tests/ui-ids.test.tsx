@@ -58,6 +58,11 @@ const RESPONSES: Record<string, unknown> = {
   "/api/v1/items": { as_of: AT, total: ITEMS.length, items: ITEMS, facets: { allStates: ITEMS.length, state: {} }, counts: { open: 0, running: 1 } },
   "/api/v1/items/wi_local3": ITEM_DETAIL,
   "/api/v1/runs": { as_of: AT, runs: [{ id: "run_a", status: "running", kind: "implement", work_item_id: "wi_run2", attempt: 1, owner: `${HOST}:4242:0`, heartbeat_at: AT, started_at: AT, lease_expires_at: AT, created_at: AT }] },
+  "/api/v1/items/graph": {
+    as_of: AT,
+    nodes: [{ id: "wi_run2", title: "Being built", stage: "RUNNING", blocked_reason: null }, { id: "wi_local3", title: "A local task", stage: "READY", blocked_reason: null }],
+    edges: [{ from: "wi_run2", to: "wi_local3", kind: "dependency" }],
+  },
   "/api/v1/queue": { as_of: AT, queue: [{ position: 1, id: "run_b", kind: "implement", work_item_id: "wi_local3", attempt: 0, created_at: AT, not_before: null, why: why("queued", "Queued at position 1") }] },
   "/api/v1/pauses": { pauses: [], csrf_token: null },
   "/api/v1/session": { as_of: AT, csrf_token: "tok", commands_enabled: true, actor: "local:me", actor_source: "environment" },
@@ -115,6 +120,7 @@ const PAGES: [string, string][] = [
   ["", "Spec waiting"],
   ["items", "Spec waiting"],
   ["items/wi_local3", "A local task"],
+  ["runners", "Being built"],
   ["workers", "Being built"],
   ["queue", "A local task"],
   ["health", "store reachable"],
@@ -150,7 +156,7 @@ describe("narrow windows (check:responsive at 390px)", () => {
   it("a name is a plain label with the full ID in a tooltip on hover, and a click copies it", async () => {
     const written: string[] = [];
     Object.defineProperty(navigator, "clipboard", { value: { writeText: async (v: string) => void written.push(v) }, configurable: true });
-    await mountAt("workers", "Being built");
+    await mountAt("runners", "Being built");
     const names = [...document.querySelectorAll("main [data-id]")];
     expect(names.length).toBeGreaterThan(0);
     expect(document.querySelector("main details")).toBeNull();
@@ -171,7 +177,7 @@ describe("narrow windows (check:responsive at 390px)", () => {
 
   it("a click with no clipboard does nothing and leaves the label usable", async () => {
     Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
-    await mountAt("workers", "Being built");
+    await mountAt("runners", "Being built");
     const label = document.querySelector("main [data-id]") as HTMLElement;
     fireEvent.click(label);
     await new Promise((r) => setTimeout(r, 0));
@@ -202,10 +208,5 @@ describe("item links", () => {
     // In the tree, the local item's short id links to its page.
     const short = screen.queryByText("30331a68");
     if (short) expect(short.closest("a")?.getAttribute("href")).toBe("/app/items/wi_local3");
-  });
-
-  it("titles link to the item page", async () => {
-    await mountAt("", "Spec waiting");
-    expect(screen.getByRole("link", { name: "Spec waiting" }).getAttribute("href")).toBe("/app/items/wi_spec1");
   });
 });

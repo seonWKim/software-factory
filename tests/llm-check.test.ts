@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Plugins, loadConfig } from "../src/compose.js";
+import { Plugins } from "../src/plugin-set.js";
+import { loadConfig } from "../src/load-config.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import type { EgressChannel, EgressScanner, ScanResult } from "../src/interfaces/egress-scanner.js";
@@ -19,6 +20,7 @@ import {
 } from "../src/llm-check.js";
 import { REGISTRY, type Registry, withPlugin } from "../src/plugins.js";
 import { doctor } from "../src/setup.js";
+import { buildStatsStore } from "../src/compose.js";
 import { type FakeOpenAIServer, startFakeOpenAIServer } from "./helpers/fake-openai-server.js";
 
 const FAKE_KEY = `sk-ant-api03-${"A".repeat(40)}`;
@@ -272,7 +274,7 @@ describe("doctor and the LLM check", () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     const provider = new FakeProvider();
     const loaded = await loadConfig(root("counting"), { registry: registry({ counting: provider }, new RecordingScanner()) });
-    await doctor(loaded);
+    await doctor(loaded, buildStatsStore);
     expect(provider.requests).toHaveLength(0);
   });
 
@@ -280,7 +282,7 @@ describe("doctor and the LLM check", () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const provider = new FakeProvider();
     const loaded = await loadConfig(root("counting"), { registry: registry({ counting: provider }, new RecordingScanner()) });
-    await doctor(loaded, { llm: true });
+    await doctor(loaded, buildStatsStore, { llm: true });
     expect(provider.requests).toHaveLength(2);
     const lines = log.mock.calls.map((c) => String(c[0])).filter((l) => /llm-check (ok|FAIL)/.test(l));
     expect(lines).toHaveLength(1);
@@ -291,7 +293,7 @@ describe("doctor and the LLM check", () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const provider = new FakeProvider({ stop_reason: "error", text: "nope" });
     const loaded = await loadConfig(root("counting"), { registry: registry({ counting: provider }, new RecordingScanner()) });
-    expect(await doctor(loaded, { llm: true })).toBe(1);
+    expect(await doctor(loaded, buildStatsStore, { llm: true })).toBe(1);
     const lines = log.mock.calls.map((c) => String(c[0])).filter((l) => /llm-check (ok|FAIL)/.test(l));
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatch(/^FAIL\s+llm-check FAIL: plain request stop_reason error: nope/);

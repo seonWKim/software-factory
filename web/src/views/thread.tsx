@@ -86,7 +86,7 @@ function Message({ m, now, open: initial }: { m: ThreadEntry; now: number; open:
         <p data-summary className="min-w-0 truncate px-3 py-2 text-sm sm:px-4">{summary}</p>
       ) : m.body !== "" && (
         <div className="max-w-[75ch] min-w-0 px-3 py-3 sm:px-4">
-          <Markdown text={m.body} />
+          <Markdown text={m.body} renumberHeadings />
         </div>
       )}
       {long && (

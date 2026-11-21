@@ -8,8 +8,7 @@ import { WORK_STATUSES } from "../src/core/status-label.js";
 import type { UserId } from "../src/core/types.js";
 import { GitHubClient, GitHubError } from "../src/impl/github/github-client.js";
 import { GitHubIssueSource, statusLabels } from "../src/impl/github/github-issue-source.js";
-import type { SecretStore } from "../src/interfaces/secret-store.js";
-import { issueRef, silent } from "./helpers/fakes.js";
+import { issueRef, silent } from "./helpers/fakes/config.js";
 import { RecordingGitHubClient as FakeClient } from "./helpers/github.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 
@@ -63,7 +62,6 @@ describe("GitHubIssueSource", () => {
 
   it("parses /revise with its feedback, and /reject with and without a reason", async () => {
     const { client, source } = setup();
-    const alice = { provider: "github", subject: "1", login: "alice" };
     client.responses["/repos/o/r/issues/comments"] = [
       comment(20, "/revise keep the CLI flag\nand drop the config key", "2026-11-01T00:00:01Z"),
       comment(21, "/revise", "2026-11-01T00:00:02Z"),

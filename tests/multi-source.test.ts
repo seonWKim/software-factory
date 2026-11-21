@@ -11,22 +11,10 @@ import type { LLMProvider, LLMResponse } from "../src/interfaces/llm-provider.js
 import type { SourceAdapter, SourceEvent } from "../src/interfaces/source-adapter.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
-import {
-  FakeAuth,
-  FakeForge,
-  FakeSlackPollSource,
-  FakeSource,
-  FakeStreamSource,
-  alice,
-  cleanScanner,
-  config,
-  issueRef,
-  mallory,
-  recordingLog,
-  silent,
-  slackRef,
-  triageSpec,
-} from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSlackPollSource, FakeSource, FakeStreamSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, mallory, recordingLog, silent, slackRef, triageSpec } from "./helpers/fakes/config.js";
 import { newStore, w1, PROJECT_KEY } from "./helpers/store.js";
 import { COMMAND_TABLE } from "../src/core/command-table.js";
 import { edgeRefusal } from "../src/impl/source/slack-commands.js";

@@ -6,7 +6,8 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type Loaded, Plugins, loadConfig } from "../src/compose.js";
+import { type Loaded, loadConfig } from "../src/load-config.js";
+import { Plugins } from "../src/plugin-set.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import { type Secret, secretName } from "../src/interfaces/secret-store.js";
@@ -16,9 +17,10 @@ import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { REGISTRY, type Registry, withPlugin } from "../src/plugins.js";
 import { type Check, checkLine, checkStatus, checksExitCode, doctor, doctorChecks } from "../src/setup.js";
-import { HEALTH_MIN_INTERVAL_MS, HealthMonitor } from "../src/ui/health.js";
+import { buildStatsStore } from "../src/compose.js";
+import { HEALTH_MIN_INTERVAL_MS, HealthMonitor, reportRows } from "../src/ui/health.js";
 import { type UiDeps, type UiResponse, respond } from "../src/ui/server.js";
-import { fakeGitHubAccess } from "./helpers/fakes.js";
+import { fakeGitHubAccess } from "./helpers/fakes/github.js";
 import { BACKENDS } from "./helpers/store.js";
 
 const REPO_ROOT = join(import.meta.dirname, "..");
@@ -125,9 +127,46 @@ describe("health: one implementation behind doctor and the page", () => {
     const res = await get(port, "/api/health");
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toMatch(/^application\/json/);
-    const report = JSON.parse(res.body) as { checked_at: string; checks: { status: string; msg: string }[] };
+    const report = JSON.parse(res.body) as { checked_at: string; checks: { status: string; msg: string; detail?: string }[] };
     expect(Number.isNaN(Date.parse(report.checked_at))).toBe(false);
-    expect(report.checks).toEqual(expected.map((c) => ({ status: checkStatus(c), msg: c.msg })));
+    expect(report.checks).toEqual(reportRows(expected));
+    // Every doctor line is still in the report, in order: as the row's text, or behind its Details (of the labels, the missing ones).
+    const raw = report.checks.flatMap((c) => (c.detail ?? c.msg).split("\n"));
+    expect(raw).toEqual(expected.filter((c) => !(c.label && c.ok)).map((c) => c.msg));
+  });
+
+  it("the report says each changed check in plain words, with no file path outside Details (design 09-health, 2026-11-20)", async () => {
+    const { loaded } = await setupDoctor();
+    const { port } = await uiFor(loaded);
+    const { checks } = JSON.parse((await get(port, "/api/health")).body) as { checks: { status: string; msg: string; detail?: string }[] };
+    const secretRow = checks.find((c) => c.msg === "Your secret file is private")!;
+    expect(secretRow).toMatchObject({ status: "ok", detail: expect.stringContaining(`secret file at ${loaded.secretsFile} is private`) });
+    // Eight of the nine status labels are missing in the fixture: one warn row, the names behind Details.
+    const labels = checks.filter((c) => c.msg.startsWith("GitHub labels:"));
+    expect(labels).toEqual([{ status: "warn", msg: "GitHub labels: 8 missing (run: npm run setup)", detail: expect.stringContaining('status label "sf: incomplete" exists') }]);
+    expect(checks.some((c) => c.msg.startsWith("status label"))).toBe(false);
+    expect(checks.find((c) => c.msg.startsWith("Config file:"))!.msg).toBe("Config file: the repository's own");
+    for (const c of checks) expect(c.msg).not.toMatch(/(^|[\s(])~?\/[\w.-]+\//);
+  });
+
+  it("reportRows: all labels present is one ok row; a non-private secret file names no path; any other path goes behind Details", () => {
+    const label = (name: string, ok: boolean): Check => ({ ok, msg: `status label "${name}" exists`, label: name, ...(!ok && { warn: true }) });
+    const rows = reportRows([
+      { ok: true, msg: "first" },
+      label("sf: a", true),
+      { ok: false, msg: "secret file at /home/u/.env is private (mode 644; run: chmod 600 /home/u/.env)", plain: "Your secret file can be read by other users; the fix is in Details" },
+      label("sf: b", true),
+      { ok: true, msg: "toolchain cache /home/u/.gradle exists (read-only for agents)" },
+    ]);
+    expect(rows).toEqual([
+      { status: "ok", msg: "first" },
+      { status: "ok", msg: "GitHub labels: all present", detail: 'status label "sf: a" exists\nstatus label "sf: b" exists' },
+      { status: "fail", msg: "Your secret file can be read by other users; the fix is in Details", detail: "secret file at /home/u/.env is private (mode 644; run: chmod 600 /home/u/.env)" },
+      { status: "ok", msg: "toolchain cache (path in Details) exists (read-only for agents)", detail: "toolchain cache /home/u/.gradle exists (read-only for agents)" },
+    ]);
+    expect(reportRows([label("sf: a", false), label("sf: b", true)])).toEqual([
+      { status: "warn", msg: "GitHub labels: 1 missing (run: npm run setup)", detail: 'status label "sf: a" exists' },
+    ]);
   });
 
   it("doctor and the health API show each per-project setting's effective value and source layer (design 2026-11-01)", async () => {
@@ -150,7 +189,7 @@ describe("health: one implementation behind doctor and the page", () => {
     const { loaded } = await setupDoctor();
     const checks = await doctorChecks(loaded);
     log.mockClear();
-    const code = await doctor(loaded);
+    const code = await doctor(loaded, buildStatsStore);
     expect(log.mock.calls.map((c) => String(c[0]))).toEqual(checks.map(checkLine));
     expect(code).toBe(1); // claude CLI not found
 

@@ -7,7 +7,7 @@ import type { RunId, WorkItemId } from "../src/core/types.js";
 import { type AgentRunResult, type AgentRunSpec, type AgentRunner, toolsNotExposedMessage } from "../src/interfaces/agent-runner.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import type { SandboxHandle } from "../src/interfaces/sandbox.js";
-import { pipeline } from "./helpers/fakes.js";
+import { pipeline } from "./helpers/harness.js";
 import { REGISTRY, declaredSecretNames, selectPlugins, selectedLlms, selectedRunners } from "../src/plugins.js";
 
 // The runner and LLM fallback chains (design 2026-11-07): `plugins.runner` / `plugins.llm` list several plugins,

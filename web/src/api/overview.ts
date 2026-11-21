@@ -4,6 +4,10 @@
 export interface FactoryState {
   state: string;
   rev: string | null;
+  /** The revision the child on `rev` replaced; null: none yet. Absent from an older server. */
+  previous_rev?: string | null;
+  /** The commits of previous_rev..rev: count (null: git could not say) and at most 20 subjects; null: no previous_rev. */
+  changes?: { count: number | null; subjects: string[] } | null;
   target_rev: string | null;
   child_pid: number | null;
   since: string;
@@ -23,8 +27,16 @@ export interface SystemAction {
   command: string;
   /** When it ends by itself, else null. */
   until: string | null;
-  /** On the alarm of the auto-mode stop still in force: the banner shows when and why, and a button back to auto. */
+  /** On an alarm: its pattern (`repeated_error`, `red_main`, `auto_stopped`, …) and error code, which pick its row's menu. */
+  pattern?: string;
+  error_code?: string;
+  /** On a red_main alarm: the failing tests and output tail the red-main check kept (empty and null: none kept). */
+  failing_tests?: string[];
+  output_tail?: string | null;
+  /** On the alarm of the auto-mode stop still in force: its row's sentence, Turn auto back on and What failed. */
   auto_stop?: AutoStop;
+  /** On a claim pause: the pause's name, which the row's Resume now posts (`text` is its plain name). */
+  pause?: string;
 }
 
 /** The last auto-mode stop while it is in force (design 03-risk): its alarm, when, and its cause code. */
@@ -33,6 +45,9 @@ export interface AutoStop {
   at: string;
   /** `red_main`, `budget_checkpoint` or `failure_alert`. */
   cause: string;
+  /** A red_main cause: what the red-main check printed (empty and null: none kept). */
+  failing_tests?: string[];
+  output_tail?: string | null;
 }
 
 /** `/api/v1/overview`: the page's numbers. */
