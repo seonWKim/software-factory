@@ -437,19 +437,6 @@ export function intakeLabel(value: unknown): string {
   return value;
 }
 
-const REVIEW_TIME = /^([01]\d|2[0-3]):([0-5]\d)$/;
-
-/**
- * `review_time` (design 09-status-page) as minutes after local midnight, or null when it is "" (holding off). Throws a
- * message naming the key on any other value than HH:MM from 00:00 to 23:59.
- */
-export function reviewMinutes(value: unknown): number | null {
-  if (value === "") return null;
-  const m = typeof value === "string" ? REVIEW_TIME.exec(value) : null;
-  if (!m) throw new Error('review_time must be "HH:MM" (24-hour, local time, 00:00 to 23:59), or "" to turn holding off');
-  return Number(m[1]) * 60 + Number(m[2]);
-}
-
 /** Checks one settable value; throws the message the config loader gives for that key. */
 export function parseSettable<K extends SettableKey>(key: K, value: unknown): SettableValues[K] {
   switch (key) {
@@ -477,8 +464,7 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
     case "message_style":
       return parseMessageStyle(value) as SettableValues[K];
     case "notice_kinds": return parseNoticeKinds(value) as SettableValues[K];
-    case "quiet_hours": return quietHoursSetting(value) as SettableValues[K];
-    case "review_time": reviewMinutes(value); return value as SettableValues[K];
+    case "quiet_hours": return quietHoursSetting(value) as SettableValues[K]; case "review_time": if (value === "" || (typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value))) return value as SettableValues[K]; throw new Error('review_time must be "HH:MM" (24-hour, local time, 00:00 to 23:59), or "" to turn holding off'); // design 09-status-page
     case "notify_channels": return parseNotifyChannels(value) as SettableValues[K];
     case "integrations": return integrationEntries(value) as SettableValues[K]; case "tool_grants": return toolGrantsShape(value) as SettableValues[K];
     case "calendar": case "test_globs": try { return parseNotifyChannels(value) as SettableValues[K]; } catch { throw new Error(`${key} must be a list of distinct ${key === "calendar" ? "calendar plugin names" : "globs"}, or [] for none`); } // the same list check

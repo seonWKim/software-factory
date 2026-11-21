@@ -93,8 +93,10 @@ export interface ItemRow {
   id: string;
   source: SourceRef;
   title: string | null;
-  /** The item's phase on the pages: its level (src/ui/priority.ts levelOf over core/phase.ts phaseOf and its run). */
+  /** The item's state on the pages: its level (src/ui/priority.ts levelOf over core/phase.ts phaseOf and its run), a key of src/shared/states.ts. */
   item_phase: string;
+  /** The state table's label for `item_phase`, for API readers; the pages draw it with StatusBadge from `item_phase`. */
+  state_label?: string;
   /** Why it waits, as a reason code (the same as `why.reason_code`). */
   reason_code: string;
   stage: string;

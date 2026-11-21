@@ -1,10 +1,7 @@
 // The Work items tree's pure model (design §9): the filter and the tree builder. tree.tsx draws it.
 
+import { filterShowsFinished, groupOf, inStateFilter } from "../../../src/shared/states.js";
 import type { ItemRow } from "../api.js";
-import { NEEDS_YOU_LEVELS } from "../lib/format.js";
-
-/** The tree's own filter besides the API's levels: items held behind another item. */
-export const HELD = "held";
 
 export interface TreeNode {
   item: ItemRow;
@@ -18,20 +15,8 @@ export const issueNumber = (it: ItemRow): number | null => {
   return m ? Number(m[1]) : null;
 };
 
-const needsYou = (it: ItemRow) => (NEEDS_YOU_LEVELS as readonly string[]).includes(it.item_phase);
-
-/** Held behind another item: a held claim, or a phase waiting for the phase before it. */
-export function isHeld(it: ItemRow): boolean {
-  return it.why?.code === "held" || (it.why?.code === "phase" && !!it.parent_id);
-}
-
-/** The state filter as the list's server filter reads it, applied to a row. */
-function inState(it: ItemRow, state: string | null): boolean {
-  if (state === null) return true;
-  if (state === "needs") return needsYou(it);
-  if (state === HELD) return isHeld(it);
-  return it.item_phase === state;
-}
+/** A Finished row (merged, closed or rejected): hidden unless asked for. */
+export const isFinished = (it: ItemRow): boolean => groupOf(it.item_phase) === "finished";
 
 /** True when the title or the source id holds the search text (a leading # is optional). */
 function inSearch(it: ItemRow, q: string): boolean {
@@ -48,11 +33,14 @@ export interface TreeFilter {
   ids?: ReadonlySet<string> | null;
 }
 
-/** Whether a row passes the filters: closed rows only with Show closed (or the Closed filter). */
+/**
+ * Whether a row passes the filters, as the list's server filter reads them (src/shared/states.ts inStateFilter): a
+ * group, one state, or none. Finished rows only with Show closed or a Finished filter.
+ */
 export function itemMatches(it: ItemRow, f: TreeFilter): boolean {
   if (f.ids) return f.ids.has(it.id) && inSearch(it, f.q);
-  if (it.item_phase === "closed" && !f.showClosed && f.state !== "closed") return false;
-  return inState(it, f.state) && inSearch(it, f.q);
+  if (isFinished(it) && !f.showClosed && !filterShowsFinished(f.state)) return false;
+  return (f.state === null || inStateFilter(it.item_phase, f.state)) && inSearch(it, f.q);
 }
 
 /**
@@ -86,5 +74,5 @@ export function parentIds(nodes: readonly TreeNode[]): string[] {
 
 /** The expanded rows when nothing is saved: every parent that has an open phase. */
 export function defaultExpanded(nodes: readonly TreeNode[]): string[] {
-  return nodes.flatMap((n) => (n.children.some((c) => c.item.item_phase !== "closed") ? [n.item.id, ...defaultExpanded(n.children)] : defaultExpanded(n.children)));
+  return nodes.flatMap((n) => (n.children.some((c) => !isFinished(c.item)) ? [n.item.id, ...defaultExpanded(n.children)] : defaultExpanded(n.children)));
 }

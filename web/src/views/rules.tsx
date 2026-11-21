@@ -2,7 +2,7 @@ import { ScrollText } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useRef, useState } from "react";
 import { API, type AppliedRule, type RetiredRule, type RuleRow, type RuleVerdict, type RulesView, type StandingView, postSettings, useApi } from "../api.js";
-import { Badge } from "../components/ui/badge.js";
+import { Badge, StatusBadge } from "../components/ui/badge.js";
 import { Button } from "../components/ui/button.js";
 import { Card, CardSection } from "../components/ui/card.js";
 import { IdDetails } from "../components/ui/copy.js";
@@ -22,7 +22,7 @@ import { AgentsHomePicker } from "./agents-home-picker.js";
 import { Applied } from "./rules-applied.js";
 import { Pushbacks } from "./rules-pushbacks.js";
 import { EntryDetail } from "./rules-detail.js";
-import { GROUPS, PAGE_WIDTH, PROSE, ROW_PAD, STATE_LABEL, STATE_LEVEL, VERDICTS, isClass, muted, proposalLine } from "./rules-shared.js";
+import { GROUPS, PAGE_WIDTH, PROSE, ROW_PAD, RULE_STATE, VERDICTS, isClass, muted, proposalLine } from "./rules-shared.js";
 import { VerdictDialog } from "./rules-verdict.js";
 import { ApprovalsSection, StandingProposal, StandingRule } from "./standing.js";
 
@@ -80,7 +80,7 @@ function RuleCard({ entry, excerpt, applied, token }: { entry: RuleRow; excerpt?
       <Badge level="ready_to_merge">{t("rules.judged", { decision: entry.judged })}</Badge>
     </span>
   ) : (
-    <Badge level={STATE_LEVEL[entry.state]}>{STATE_LABEL[entry.state] ? t(STATE_LABEL[entry.state]!) : entry.state}</Badge>
+    <StatusBadge state={RULE_STATE[entry.state] ?? entry.state} />
   );
   return (
     <ListRow

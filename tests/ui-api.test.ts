@@ -10,6 +10,7 @@ import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { HealthMonitor } from "../src/ui/health.js";
+import { stateLabel } from "../src/shared/states.js";
 import { type UiDeps, respond, wire } from "../src/ui/server.js";
 import { type FileKeysView, type UiSettings, fileKeysOf, newCsrfToken, storeProjectResolver, writeSettings } from "../src/ui/settings-api.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
@@ -92,7 +93,7 @@ describe("ui api: items", () => {
     const open = (await store.listWorkItemsWhere({ exclude_closed: true, limit: 1000 })).length;
     expect(list.counts.open).toBe(open);
     expect(o.open).toBe(list.counts.open);
-    expect(list.items.filter((i) => i.item_phase !== "closed")).toHaveLength(open);
+    expect(list.items.filter((i) => !["merged", "closed", "rejected"].includes(i.item_phase))).toHaveLength(open);
   });
 
   it("the default list has every open item ranked, and the filters narrow it", async () => {
@@ -109,6 +110,22 @@ describe("ui api: items", () => {
     expect(kind.items).toMatchObject([{ id: items.running2.id, run_status: "running" }]);
   });
 
+  it("each row carries state_label, the state table's label for its item_phase, in every group", async () => {
+    const { d, store, items } = await seeded();
+    const waiting = await make(store, 60, "Waits on a phase");
+    await patch(store, waiting, { blocked_on: "upstream", blocked_reason: "phase_hold" });
+    const failed = await make(store, 61, "Failed run");
+    await patch(store, failed, { stage: "RUNNING", blocked_on: "human", blocked_reason: "run_failed:implement:agent_error" });
+    const list = await json<{ items: { id: string; item_phase: string; state_label: string }[] }>(d, "/api/v1/items?closed=1");
+    const label = (id: string) => list.items.find((i) => i.id === id)!.state_label;
+    expect(label(items.merge.id)).toBe("Ready to merge"); // Needs you
+    expect(label(items.queued.id)).toBe("Queued"); // Active
+    expect(label(waiting.id)).toBe("Blocked by another task"); // Waiting
+    expect(label(failed.id)).toBe("Failed"); // Problem
+    expect(label(items.done.id)).toBe("Merged"); // Finished
+    for (const i of list.items) expect(i.state_label, i.id).toBe(stateLabel(i.item_phase));
+  });
+
   it("returns the filter counts the page's options show", async () => {
     const { d } = await seeded();
     const api = await json<{ facets: { allStates: number; state: Record<string, number>; stage: Record<string, number> } }>(d, "/api/v1/items");
@@ -116,6 +133,8 @@ describe("ui api: items", () => {
     // The closed item counts under Closed though the default list leaves it out (same rule as every facet).
     expect(api.facets.stage.CLOSED).toBe(1);
     expect(api.facets.state.closed).toBe(1);
+    expect(api.facets.state.finished).toBe(1);
+    expect(api.facets.state.merged).toBe(1);
   });
 
   it("the Closed facet counts the closed items that match the other filters (148 closed items)", async () => {
