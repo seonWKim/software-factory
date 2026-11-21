@@ -15,6 +15,7 @@ import { checkoutRevision } from "../src/ui/system-actions.js";
 import viteConfig from "../web/vite.config.js";
 import type { Why } from "../web/src/api.js";
 import { whyText } from "../web/src/lib/format.js";
+import { stateLabel } from "../src/shared/states.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 import { LEASE, SECRET, json, make, patch, enqueue, seeded } from "./ui-api-fixtures.js";
 
@@ -65,7 +66,7 @@ describe("ui api: why an item waits (issue #310)", () => {
     decide(held, run.id, "held", "pr");
     const w = await whyOn(d, held.id);
     const expected = { code: "held", text: "Held behind #92, which has an open PR", next_actor: "other_item", refs: [92], ref_url: "https://github.com/o/r/issues/" };
-    expect(w.row.item_phase).toBe("blocked_by_task");
+    expect(w.row.item_phase).toBe("held");
     expect(w.row.reason_code).toBe("held_pr");
     expect(w.row.why).toMatchObject(expected);
     expect(w.queued!.why).toMatchObject(expected);
@@ -191,7 +192,11 @@ describe("ui api: pauses and Needs-you reasons (issue: floor banner)", () => {
   type NeedRow = { id: string; item_phase: string; why: Why; need?: { reason: string | null }; commands?: { name: string; allowed: boolean; reason: string | null }[] };
   /** What the Needs-you row shows: the need's own words, else the why's en.ts text. */
   const shown = (r: NeedRow) => r.need!.reason ?? whyText(r.why);
-  const LABELS: Record<string, string> = { ready_to_merge: "Ready to merge", needs_approval: "Needs approval", needs_you: "Needs you", needs_triage: "Needs triage" };
+  /** The rows that carry a need: the Needs-you group, and a failed run in the Problem group. */
+  const needRows = async (d: UiDeps) => [
+    ...(await json<{ items: NeedRow[] }>(d, "/api/v1/items?state=needs")).items,
+    ...(await json<{ items: NeedRow[] }>(d, "/api/v1/items?state=failed")).items,
+  ];
 
   it("each Needs-you reason is its own words, never the State label, and names what to do", async () => {
     const { d, store, items } = await seeded();
@@ -200,7 +205,7 @@ describe("ui api: pauses and Needs-you reasons (issue: floor banner)", () => {
       more[String(reason)] = await make(store, n, `Item ${n}`);
       await patch(store, more[String(reason)]!, { blocked_on: "human", blocked_reason: reason });
     }
-    const rows = (await json<{ items: NeedRow[] }>(d, "/api/v1/items?state=needs")).items;
+    const rows = await needRows(d);
     const need = (id: string) => rows.find((r) => r.id === id)!.need!;
     // A failed item with no failed run: fixed words, never its code.
     expect(need(more["run_failed:implement:diff_too_large"]!.id).reason).toBe("The last run failed with no message.");
@@ -213,7 +218,7 @@ describe("ui api: pauses and Needs-you reasons (issue: floor banner)", () => {
     expect(shown(rows.find((r) => r.id === more["max_loops"]!.id)!)).toBe("Too many review loops: a person decides what happens next");
     for (const r of rows) {
       expect(r.need, r.id).toBeDefined();
-      expect(shown(r).toLowerCase(), r.id).not.toBe(LABELS[r.item_phase]!.toLowerCase());
+      expect(shown(r).toLowerCase(), r.id).not.toBe(stateLabel(r.item_phase).toLowerCase());
       expect(shown(r).trim(), r.id).not.toBe("");
       expect(shown(r), r.id).not.toContain("no reason");
     }
@@ -237,7 +242,8 @@ describe("ui api: pauses and Needs-you reasons (issue: floor banner)", () => {
     const plain = await failed(30, ["an older failure", "no model credential in the secret file\n    at loadSecrets (secrets.ts:12)"]);
     const leaky = await failed(31, [`push failed: token ${SECRET} rejected`]);
     const long = await failed(32, ["x".repeat(200)]);
-    const rows = (await json<{ items: NeedRow[] }>(d, "/api/v1/items?state=needs")).items;
+    // A failed run is in the Problem group, with its need and its commands.
+    const rows = (await json<{ items: NeedRow[] }>(d, "/api/v1/items?state=problem")).items;
     const row = (id: string) => rows.find((r) => r.id === id)!;
     expect(row(plain.id).need!.reason).toBe("no model credential in the secret file");
     expect(row(plain.id).commands!.map((c) => c.name)).toContain("retry");
@@ -272,7 +278,8 @@ describe("ui api: pauses and Needs-you reasons (issue: floor banner)", () => {
     let grant: AuthDecision = { allow: true };
     const asked = vi.fn(async (_action: PageAction) => grant);
     d.commands = { actor: ACTOR, source: "config", token: newCsrfToken(), allowed: asked };
-    const rows = async () => (await json<{ items: NeedRow[] }>(d, "/api/v1/items?state=needs")).items;
+    // Every open row: the Needs-you group's, and the failed one in Problem.
+    const rows = async () => (await json<{ items: NeedRow[] }>(d, "/api/v1/items")).items;
     const of = (all: NeedRow[], id: string) => all.find((r) => r.id === id)!.commands!;
 
     let all = await rows();
@@ -448,7 +455,8 @@ describe("ui api: open alarms in Needs you and the why sentence (design 09-statu
     expect(o.system_actions).toContainEqual({
       code: "alarm", text: `${ALARM}: npm test exited #`, command: "Failures page (/app/failures)", pattern: "repeated_error", error_code: "checks_failed", until: new Date(created + ALERT_DEDUPE_MS).toISOString(),
     });
-    expect(o.needs_you).toBe(1 + o.system_actions.length);
+    // The failing item is Failed, in the Problem group: no Needs-you row of its own.
+    expect(o.needs_you).toBe(o.system_actions.length);
     clock.advance(ALERT_DEDUPE_MS);
     const after = await overview(d);
     expect(after.system_actions.map((a) => a.code)).not.toContain("alarm");
@@ -522,9 +530,16 @@ describe("ui api: Needs you, Needs triage and Blocked by another task", () => {
     await patch(store, impl, { stage: "RUNNING", blocked_on: "human", blocked_reason: "agent_needs_human" });
     asks.set(triage.id, "triage");
     asks.set(impl.id, "implement");
-    const rows = (await json<{ items: { id: string; item_phase: string; need?: { reason: string } }[] }>(d, "/api/v1/items?state=needs")).items;
+    const rows = (await json<{ items: { id: string; item_phase: string; need?: { reason: string } }[] }>(d, "/api/v1/items")).items;
     const row = (id: string) => rows.find((r) => r.id === id)!;
     expect(row(triage.id)).toMatchObject({ item_phase: "needs_triage", need: { reason: ASK.question } });
+    // Needs triage is in the Waiting group, not Needs you, and the overview does not count it.
+    const needs = (await json<{ items: { id: string }[] }>(d, "/api/v1/items?state=needs")).items.map((r) => r.id);
+    expect(needs).toContain(impl.id);
+    expect(needs).not.toContain(triage.id);
+    expect((await json<{ items: { id: string }[] }>(d, "/api/v1/items?state=waiting")).items.map((r) => r.id)).toContain(triage.id);
+    const o = await json<{ needs_you: number; system_actions: unknown[] }>(d, "/api/v1/overview");
+    expect(o.needs_you).toBe(needs.length + o.system_actions.length);
     expect(row(impl.id)).toMatchObject({ item_phase: "needs_you", need: { reason: ASK.question } });
   });
 

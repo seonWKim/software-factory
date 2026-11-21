@@ -222,7 +222,7 @@ describe("contrast", () => {
       for (const s of ["ok", "warn", "bad", "info"]) for (const bg of [`pill-${s}-bg`, "surface", "bg"]) pairs.push([`pill-${s}-fg`, bg]);
       // The text a panel on a pill fill may use: its own fg (above) or text-1; never text-2 or text-3.
       for (const s of ["ok", "warn", "bad", "info"]) pairs.push(["text", `pill-${s}-bg`]);
-      // Every tone Badge draws (LEVEL_TONE and the neutral fallback): its text token on its fill token.
+      // Every tone Badge and StatusBadge draw (TONE_CLASS, the neutral one included): its text token on its fill token.
       for (const [bg, fg] of badgeTones()) pairs.push([fg, bg]);
       // Text on a filled accent or failed background (a primary button, a destructive confirm).
       for (const bg of ["accent", "failed"]) pairs.push(["on-solid", bg]);

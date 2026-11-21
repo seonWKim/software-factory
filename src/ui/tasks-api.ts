@@ -24,7 +24,7 @@ import type { UiDeps } from "./deps.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
 import { TASKS_ADD_KEYS, type TasksAddKey } from "../runtime/settings/tasks-add-key.setting.js";
 import { Withholder } from "./withhold.js";
-import { PROJECTS_PATH, TASK_PROJECT_PATH, writeProject, writeTaskProject } from "./projects-api.js";
+import { PROJECTS_PATH, PROJECT_DELETE_PATH, TASK_PROJECT_PATH, writeProject, writeProjectDelete, writeTaskProject } from "./projects-api.js";
 
 export const TASKS_PATH = "/api/v1/tasks";
 export const TASK_BUILD_PATH = "/api/v1/tasks/build";
@@ -385,4 +385,5 @@ export const TASK_WRITES: Readonly<Record<string, (d: UiDeps, body: unknown) => 
   [TASK_BODY_PATH]: writeTaskBody,
   [TASK_PROJECT_PATH]: writeTaskProject,
   [PROJECTS_PATH]: writeProject,
+  [PROJECT_DELETE_PATH]: writeProjectDelete,
 };

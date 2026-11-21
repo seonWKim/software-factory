@@ -5,10 +5,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { QUEUED_RUN } from "../src/core/commands.js";
 import type { AuthDecision } from "../src/interfaces/auth-provider.js";
-import type { Timestamp, UserId, WorkItemId } from "../src/core/types.js";
+import type { Timestamp, UserId, WorkItem, WorkItemId } from "../src/core/types.js";
+import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { HealthMonitor } from "../src/ui/health.js";
+import { stateLabel } from "../src/shared/states.js";
 import { type UiDeps, wire } from "../src/ui/server.js";
 import { type FileKeysView, type UiSettings, fileKeysOf, newCsrfToken, writeSettings } from "../src/ui/settings-api.js";
 import type { ConfigEditRequest, ConfigEditResult } from "../src/core/config-writer.js";
@@ -88,7 +90,7 @@ describe("ui api: items", () => {
     const open = (await store.listWorkItemsWhere({ exclude_closed: true, limit: 1000 })).length;
     expect(list.counts.open).toBe(open);
     expect(o.open).toBe(list.counts.open);
-    expect(list.items.filter((i) => i.item_phase !== "closed")).toHaveLength(open);
+    expect(list.items.filter((i) => !["merged", "closed", "rejected"].includes(i.item_phase))).toHaveLength(open);
   });
 
   it("the default list has every open item ranked, and the filters narrow it", async () => {
@@ -105,6 +107,22 @@ describe("ui api: items", () => {
     expect(kind.items).toMatchObject([{ id: items.running2.id, run_status: "running" }]);
   });
 
+  it("each row carries state_label, the state table's label for its item_phase, in every group", async () => {
+    const { d, store, items } = await seeded();
+    const waiting = await make(store, 60, "Waits on a phase");
+    await patch(store, waiting, { blocked_on: "upstream", blocked_reason: "phase_hold" });
+    const failed = await make(store, 61, "Failed run");
+    await patch(store, failed, { stage: "RUNNING", blocked_on: "human", blocked_reason: "run_failed:implement:agent_error" });
+    const list = await json<{ items: { id: string; item_phase: string; state_label: string }[] }>(d, "/api/v1/items?closed=1");
+    const label = (id: string) => list.items.find((i) => i.id === id)!.state_label;
+    expect(label(items.merge.id)).toBe("Ready to merge"); // Needs you
+    expect(label(items.queued.id)).toBe("Queued"); // Active
+    expect(label(waiting.id)).toBe("Blocked by another task"); // Waiting
+    expect(label(failed.id)).toBe("Failed"); // Problem
+    expect(label(items.done.id)).toBe("Merged"); // Finished
+    for (const i of list.items) expect(i.state_label, i.id).toBe(stateLabel(i.item_phase));
+  });
+
   it("returns the filter counts the page's options show", async () => {
     const { d } = await seeded();
     const api = await json<{ facets: { allStates: number; state: Record<string, number>; stage: Record<string, number> } }>(d, "/api/v1/items");
@@ -112,6 +130,8 @@ describe("ui api: items", () => {
     // The closed item counts under Closed though the default list leaves it out (same rule as every facet).
     expect(api.facets.stage.CLOSED).toBe(1);
     expect(api.facets.state.closed).toBe(1);
+    expect(api.facets.state.finished).toBe(1);
+    expect(api.facets.state.merged).toBe(1);
   });
 
   it("the Closed facet counts the closed items that match the other filters (148 closed items)", async () => {
@@ -235,6 +255,63 @@ describe("ui api: items", () => {
     expect(new Set(attempts.map((a) => a.started_at)).size).toBe(3);
     expect(new Set(attempts.map((a) => a.finished_at)).size).toBe(3);
     for (const a of attempts) expect(a.finished_at > a.started_at).toBe(true);
+  });
+});
+
+describe("ui api: the item's request and spec (About on the item page)", () => {
+  /** A fake scanner: flags any text with FLAGME under the rule fake_rule, nothing else. */
+  const scanner: EgressScanner = {
+    scan: async (channel, text) => (text.includes("FLAGME") ? { clean: false, findings: [{ rule: "fake_rule", channel }] } : { clean: true }),
+  };
+  type About = { item: { request: string | null; spec: { problem: string; desired_output: string | null; done_criteria: string[] } | null } };
+  /** A fake store's item: the stored fields given here over a seeded item's, read as an existing item is (no migration). */
+  async function about(fields: Partial<WorkItem>) {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const it0 = await make(store, 60, "About me");
+    const faked = new Proxy(store, {
+      get(target, key) {
+        if (key === "getWorkItem") return async (id: WorkItemId) => { const it = await target.getWorkItem(id); return it && { ...it, ...fields }; };
+        const v = Reflect.get(target, key) as unknown;
+        return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+      },
+    });
+    const d: UiDeps = { store: faked, scanner, clock, lease_ms: LEASE, health: new HealthMonitor(async () => [], clock) };
+    return { body: await json<About>(d, `/api/v1/items/${encodeURIComponent(it0.id)}`), list: await json<{ items: Record<string, unknown>[] }>(d, "/api/v1/items") };
+  }
+
+  it("a request with an approved spec: the request's first paragraph and the problem, output and each criterion", async () => {
+    const { body } = await about({
+      issue_text: "Item page shows what the work is about\n\nThe item page says\nwhat the work is about.",
+      problem: "The page shows no text.", desired_output: "An About card.", done_criteria: ["About shows", "Spec collapses"],
+    });
+    expect(body.item.request).toBe("Item page shows what the work is about");
+    expect(body.item.spec).toEqual({ problem: "The page shows no text.", desired_output: "An About card.", done_criteria: ["About shows", "Spec collapses"] });
+  });
+
+  it("a request with no approved spec (done_criteria null): the request only, spec null", async () => {
+    const { body } = await about({ issue_text: "Just a request", problem: "Draft spec", done_criteria: null });
+    expect(body.item).toMatchObject({ request: "Just a request", spec: null });
+  });
+
+  it("a spec without a request (issue_text null or empty): request null, the spec as stored", async () => {
+    for (const issue_text of [null, ""]) {
+      const { body } = await about({ issue_text, problem: "P", desired_output: null, done_criteria: ["C"] });
+      expect(body.item).toMatchObject({ request: null, spec: { problem: "P", desired_output: null, done_criteria: ["C"] } });
+    }
+  });
+
+  it("a flagged text is withheld whole, each criterion on its own; the list rows get no request or spec", async () => {
+    const { body, list } = await about({
+      issue_text: "Request FLAGME text\n\nmore", problem: "Problem FLAGME", desired_output: "Output", done_criteria: ["Clean one", "Leaky FLAGME", "Clean two"],
+    });
+    expect(body.item.request).toBe("[withheld: fake_rule]");
+    expect(body.item.spec).toEqual({ problem: "[withheld: fake_rule]", desired_output: "Output", done_criteria: ["Clean one", "[withheld: fake_rule]", "Clean two"] });
+    expect(JSON.stringify(body)).not.toContain("FLAGME");
+    for (const row of list.items) {
+      expect(row).not.toHaveProperty("request");
+      expect(row).not.toHaveProperty("spec");
+    }
   });
 });
 

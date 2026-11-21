@@ -7,10 +7,11 @@ import { type MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { ID_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
-import { LEVEL_LABELS, NEEDS_YOU_LEVELS, duration, isHttpUrl, isWorkerId, localDateTime, relativeTime, shortSource, whyText, workerName } from "../lib/format.js";
+import { duration, isHttpUrl, isWorkerId, localDateTime, relativeTime, shortSource, whyText, workerName } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
-import { Badge } from "../components/ui/badge.js";
+import { StatusBadge } from "../components/ui/badge.js";
+import { groupOf } from "../../../src/shared/states.js";
 
 /** Date.now(), ticking each second, for "Ns ago" texts. */
 export function useNow(): number {
@@ -184,14 +185,12 @@ export const byId = (items: readonly ItemRow[] | undefined): Map<string, ItemRow
 /** What a Needs-you row asks of the owner: merge a PR, approve a spec, or answer or fix (everything else). */
 export type NeedGroup = "merge" | "approve" | "answer";
 
-/** The levels of an item that waits on the owner (the server's NEEDS_YOU): a stuck item waits on nobody's answer. */
-const WAITING_LEVELS: readonly string[] = NEEDS_YOU_LEVELS.filter((l) => l !== "stuck");
-
 /**
- * The items that wait on the owner, one Needs-you row each (src/ui/needs-you.ts): blocked on a person or the budget.
- * An item started past a deadlock is Blocked by another task and goes on by itself.
+ * The items that wait on the owner, one Needs-you row each (src/ui/needs-you.ts): the state table's Needs-you group.
+ * A triage run's ask (Waiting), a failed run and a stuck item (Problem) are no row; an item started past a deadlock is
+ * Blocked by another task and goes on by itself.
  */
-export const needsYou = (items: readonly ItemRow[]): ItemRow[] => items.filter((i) => WAITING_LEVELS.includes(i.item_phase));
+export const needsYou = (items: readonly ItemRow[]): ItemRow[] => items.filter((i) => groupOf(i.item_phase) === "needs");
 
 export function needGroup(it: ItemRow): NeedGroup {
   if (showsMerge(it.merge) || it.item_phase === "ready_to_merge") return "merge";
@@ -225,7 +224,7 @@ export function ItemsTable({ items, now, label, empty, plugins }: { items: reado
       header: t("col.state"),
       render: (it) => (
         <>
-          <Badge level={it.item_phase}>{LEVEL_LABELS[it.item_phase] ?? it.item_phase}</Badge>
+          <StatusBadge state={it.item_phase} />
           {isInteractiveRun(it.run) && <> <InteractiveBadge /></>}
           {it.merge_check && <MergeCheckNote check={it.merge_check} />}
         </>
@@ -254,7 +253,7 @@ export const isInteractiveRun = (run: { kind: string; status: string } | null | 
 
 /** The badge an item shows while a person handles it as an interactive task. */
 export function InteractiveBadge() {
-  return <Badge level="running">{t("run.interactive")}</Badge>;
+  return <StatusBadge state="running">{t("run.interactive")}</StatusBadge>;
 }
 
 /** Running runs with their item, owner and heartbeat. */

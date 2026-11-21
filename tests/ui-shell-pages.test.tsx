@@ -17,7 +17,10 @@ describe("one queued count", () => {
     history.replaceState(null, "", "/app/items");
     mount();
     const filters = await screen.findByRole("tablist", { name: "Filter by state" });
-    expect(await within(filters).findByRole("tab", { name: `Queued ${queue.queue.length}` })).toBeTruthy();
+    // Queued is a state of the Active group: its tab is in the second row once Active is chosen.
+    fireEvent.click(await within(filters).findByRole("tab", { name: /^Active/ }));
+    const states = await screen.findByRole("tablist", { name: "Filter Active by state" });
+    expect(await within(states).findByRole("tab", { name: `Queued ${queue.queue.length}` })).toBeTruthy();
     expect(queue.queue.length).toBe(overview.queued);
   });
 
@@ -26,7 +29,9 @@ describe("one queued count", () => {
     mount();
     await vi.waitFor(() => expect(location.pathname + location.search).toBe("/app/items?state=queued"));
     const filters = screen.getByRole("tablist", { name: "Filter by state" });
-    expect(within(filters).getByRole("tab", { name: /^Queued/ }).getAttribute("aria-selected")).toBe("true");
+    expect(within(filters).getByRole("tab", { name: /^Active/ }).getAttribute("aria-selected")).toBe("true");
+    const states = screen.getByRole("tablist", { name: "Filter Active by state" });
+    expect(within(states).getByRole("tab", { name: /^Queued/ }).getAttribute("aria-selected")).toBe("true");
     expect(await screen.findByRole("table", { name: "Queued runs" })).toBeTruthy();
   });
 

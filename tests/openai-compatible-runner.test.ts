@@ -497,6 +497,7 @@ const TRIAGE_OUT = {
   problem: "Add a CI scope gate",
   decisions: [],
   done_criteria: ["CI fails when files outside allowed_paths change"],
+  done_checks: [{ line: "CI fails when files outside allowed_paths change", test_file: "tests/scope-gate.test.ts" }],
   desired_output: "workflow + test",
   in_scope: ["CI"],
   out_of_scope: ["the rest"],

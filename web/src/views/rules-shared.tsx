@@ -8,10 +8,9 @@ import { t } from "../i18n/index.js";
 /** Muted text; break-keep keeps a Korean word whole when the line wraps. */
 export const muted = "text-xs text-pretty break-keep text-text-2";
 
-export const STATE_LABEL: Record<string, MessageKey> = { open: "rules.stateOpen", pending: "rules.statePending", held: "rules.stateHeld" };
-/** The Badge level of each state, so open, pending and held look different. */
-export const STATE_LEVEL: Record<string, string> = { open: "running", pending: "needs_approval" };
-/** The page's list column: the tabs, cards and rows. */
+/** A rule's state as a key of the one state table (src/shared/states.ts), whose label and tone its pill shows. */
+export const RULE_STATE: Readonly<Record<string, string>> = { open: "running", pending: "needs_approval", held: "held" };
+/** The page's list column: its two sections and Details. */
 export const PAGE_WIDTH = "max-w-5xl";
 /** The reading width of description prose (a group's line, How this works). */
 export const PROSE = "max-w-3xl";
@@ -54,14 +53,12 @@ const KIND_LABEL: Record<string, MessageKey> = {
 export const kindLabel = (kind: string): string => t(KIND_LABEL[kind] ?? "rules.kindOther");
 
 /**
- * A target in short: a comma-separated list of more than one file reads "N files"; one file reads its last path segment
- * ("bin/evolve" is "evolve"). The full target stays in "Why and where".
+ * A target in short, as a file count: a comma-separated list reads "N files", one file "1 file"; no path or file name
+ * shows in a row (since 2026-11-22). The full target stays in "Why and where".
  */
 export function targetLabel(target: string): string {
   const files = target.split(",").map((f) => f.trim()).filter(Boolean);
-  if (files.length > 1) return t("rules.files", { count: files.length });
-  const one = files[0] ?? target;
-  return one.split("/").filter(Boolean).pop() ?? one;
+  return files.length > 1 ? t("rules.files", { count: files.length }) : t("rules.fileOne");
 }
 
 /** A proposal's change line: its kind and target in short; a part the ledger did not list reads "not given". */

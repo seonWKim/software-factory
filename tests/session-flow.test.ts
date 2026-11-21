@@ -76,7 +76,7 @@ async function harness(
   const item = async (id: WorkItemId) => (await store.getWorkItem(id))!;
   const runs = async (id: WorkItemId, kind?: RunKind) => (await store.listRuns(id)).filter((r) => !kind || r.kind === kind);
   const start = (target: string, extra: { spec?: string; transcript?: string } = {}) => sessions.start({ target, person: alice, ...extra });
-  return { clock, store, cfg, sandbox, broker, forge, files, issues, sessions, deps, controller, deliver, running, enqueue, snapshot, item, runs, start };
+  return { clock, store, cfg, sandbox, broker, forge, source, files, issues, sessions, deps, controller, deliver, running, enqueue, snapshot, item, runs, start };
 }
 type H = Awaited<ReturnType<typeof harness>>;
 /** A harness with an open session on item #1 (`it0`, allowed `paths`); `file` is its local record. */
@@ -260,11 +260,11 @@ describe("session start", () => {
   });
 
 
-  it("a run cancelled by an accepted takeover is no attempt: taking over more often than max_attempts never holds the item", async () => {
+  it("a run cancelled by an accepted takeover is no attempt and gets no retry: taking over more often than max_attempts never holds the item", async () => {
     const h = await harness();
     const it0 = await h.running(1);
-    await h.enqueue(it0, "implement", "i1");
     for (let n = 0; n <= settingValues(h.cfg.project.key, h.cfg.settings).max_attempts; n++) {
+      await h.enqueue(it0, "implement", `i${n}`); // a fresh implement run each time, as a /retry after the abandon queues
       const queued = (await h.runs(it0.id, "implement")).filter((x) => x.status === "queued");
       expect(queued).toHaveLength(1);
       const r = await h.start(it0.id);
@@ -274,8 +274,10 @@ describe("session start", () => {
       // One state change: the start itself, naming the run it took over.
       expect((await h.store.listStateChanges(it0.id)).at(-1)).toMatchObject({ reason: "session_started", detail: { taken_over: cancelled.id } });
       await h.controller.tickRuns();
-      const applied = (await h.store.listStateChanges(it0.id)).find((c) => c.detail?.run_id === cancelled.id && c.reason !== "session_started");
-      expect(applied?.detail).toMatchObject({ task_failures: 0 });
+      // The session replaced the run: acknowledged with no retry, so nothing is left queued for a worker after the session.
+      expect((await h.store.getRun(cancelled.id))!.acknowledged_at).not.toBeNull();
+      expect((await h.store.listStateChanges(it0.id)).at(-1)).toMatchObject({ reason: "run_ignored" });
+      expect((await h.runs(it0.id, "implement")).filter((x) => x.status === "queued")).toEqual([]);
       expect((await h.item(it0.id)).blocked_reason).not.toBe("max_attempts");
       await h.sessions.abandon({ id: it0.id });
       await h.controller.tickRuns();
@@ -699,6 +701,71 @@ describe("session end without a PR", () => {
     const run = (await h.runs(it0.id, "interactive"))[0]!;
     expect(run.outcome).toMatchObject({ error_code: "session_lost", detail: `the session's lease expired; last heartbeat at ${last}` });
     expect(run.updated_at).not.toBe(last);
+  });
+
+  describe("/retry on the released item (design 04-spec-gate-commands, 2026-11-22)", () => {
+    /** A harness whose session on `it0` was abandoned and released, and a `/retry` with `note` sent as comment `id`. */
+    const released_ = async () => {
+      const h = await started();
+      await h.sessions.abandon({});
+      await h.controller.tickRuns();
+      expect(await h.item(h.it0.id)).toMatchObject(released);
+      const retry = async (id: string, note?: string) => {
+        await h.controller.handleEvent({ kind: "retry_requested", source: h.it0.source, comment_id: id, requester: alice, ...(note === undefined ? {} : { note }) });
+        await h.controller.tickOutbox();
+      };
+      const refusals = (id: string) => h.source.comments.filter((c) => c.marker === `<!-- factory:refused:${id} -->`);
+      return { ...h, retry, refusals };
+    };
+
+    it("`/retry +paths` adds the paths and queues the implement run with a new key in one transition; a new session takes it over", async () => {
+      const h = await released_();
+      const [before, changes] = [await h.item(h.it0.id), (await h.store.listStateChanges(h.it0.id)).length];
+      await h.retry("r1", "+paths src/worker/index.ts");
+      const after = await h.item(h.it0.id);
+      expect(after).toMatchObject({ stage: "RUNNING", blocked_on: "none", blocked_reason: null, restart_count: before.restart_count + 1, version: before.version + 1 });
+      expect(after.allowed_paths).toEqual([...before.allowed_paths, "src/worker/index.ts"]);
+      const added = await h.store.listStateChanges(h.it0.id);
+      expect(added.slice(changes).map((c) => c.reason)).toEqual(["retry_requested"]);
+      expect(added.at(-1)!.detail).toMatchObject({ added_paths: JSON.stringify(["src/worker/index.ts"]) });
+      const queued = (await h.runs(h.it0.id, "implement")).filter((x) => x.status === "queued");
+      expect(queued).toHaveLength(1);
+      expect(h.refusals("r1")).toEqual([]);
+      // The existing takeover rule: a new `interactive start` cancels the queued implement run and starts the session.
+      expect((await h.start(h.it0.id)).ok).toBe(true);
+      expect((await h.store.getRun(queued[0]!.id))!.status).toBe("cancelled");
+      expect((await h.store.listStateChanges(h.it0.id)).at(-1)).toMatchObject({ reason: "session_started", detail: { taken_over: queued[0]!.id } });
+    });
+
+    it("`/retry` with no paths queues the implement run and leaves allowed_paths and tier as they were", async () => {
+      const h = await released_();
+      const before = await h.item(h.it0.id);
+      await h.retry("r2");
+      const after = await h.item(h.it0.id);
+      expect(after).toMatchObject({ blocked_on: "none", blocked_reason: null, restart_count: before.restart_count + 1, allowed_paths: before.allowed_paths, tier: before.tier });
+      expect((await h.runs(h.it0.id, "implement")).map((x) => x.status)).toEqual(["queued"]);
+    });
+
+    it("a refused path changes nothing and gets one reply, also when sent twice", async () => {
+      const h = await released_();
+      for (const [id, note] of [["r3", "+paths ../x.ts"], ["r4", "+paths src/**/*.ts"], ["r5", "+paths /etc/x"]] as const) {
+        const before = await h.snapshot(h.it0.id);
+        await h.retry(id, note);
+        await h.retry(id, note);
+        expect(await h.snapshot(h.it0.id)).toBe(before);
+        expect(h.refusals(id)).toHaveLength(1);
+      }
+    });
+
+    it("on an item released outside RUNNING there is no failed run to retry", async () => {
+      const h = await harness();
+      const it0 = await h.running(1, ["src/a/"], 2, { stage: "REVIEW", blocked_on: "human", blocked_reason: "session_released" });
+      const before = await h.snapshot(it0.id);
+      await h.controller.handleEvent({ kind: "retry_requested", source: it0.source, comment_id: "r6", requester: alice });
+      await h.controller.tickOutbox();
+      expect(await h.snapshot(it0.id)).toBe(before);
+      expect(h.source.comments.find((c) => c.marker === "<!-- factory:refused:r6 -->")!.body).toContain("there is no failed run to retry");
+    });
   });
 
   it("--tokens takes a whole number of 0 or more; the latest total is added to token_cost once, when the run ends", async () => {

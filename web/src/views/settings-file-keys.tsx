@@ -15,7 +15,7 @@ import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { termLabel } from "../lib/format.js";
 import { keyHelp, keyLabel } from "../lib/key-label.js";
-import { MergeButton } from "./item-commands.js";
+import { MergeButton } from "./merge-button.js";
 import { SettingsRow } from "./settings-row.js";
 import { withNodes } from "./standing.js";
 import { Disclosure } from "../components/ui/disclosure.js";

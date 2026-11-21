@@ -106,7 +106,6 @@ export class ClosesUnit {
           },
           actor,
           reason: "source_closed",
-          cancel_queued_runs: true,
           cancel_running_runs: true,
         };
       });

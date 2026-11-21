@@ -57,6 +57,7 @@ import {
 import { packChecks, packSkills } from "./packs/packs.js";
 import { importedMcpRefusals, listRequestedMcpTools } from "./import/mcp-tool-lists.js";
 import { startPackMcpServer } from "./impl/runner/pack-mcp-client.js";
+import { type SandboxEnforcement, probeOsSandbox } from "./impl/runner/os-sandbox.js";
 import { PackGuidance } from "./impl/capability/project-guidance.js";
 import { LearnedRules, joinGuidance } from "./core/learned-rules.js";
 import { checkToolchainEnv, codeVersion, readRestarts, uiCommandsActor, uiUserId, workerIndexBase } from "./config-values.js";
@@ -302,6 +303,7 @@ export async function build(
     store, sandbox, runner,
     broker: guarded, local, passports,
     scanner, storage, llm,
+    ...credentialPresence(modelCredentialCheck(loaded, secrets)),
     clock, config,
     prompts: loaded.prompts,
     log: new ConsoleLogger(clock, "worker"),
@@ -325,6 +327,26 @@ export async function build(
   return { loaded, clock, store, secrets, project, controller, worker, close: () => refreshed.then(() => identity.stop()).then(() => store.close()) };
 }
 
+/**
+ * The model credential check (design §5 Restarts, setup state): doctor's check of the "model credential" group (the
+ * `oneOf` label of the declarations) that every selected runner declares, read from the secret store at each call;
+ * a store that cannot be read counts as missing. Resolves to doctor's line when missing, else null. Null when a
+ * selected runner declares no such group: it reads no model credential. Presence only: no value leaves the store.
+ */
+export function modelCredentialCheck(loaded: Pick<Loaded, "registry" | "plugins">, secrets: SecretStore): (() => Promise<string | null>) | null {
+  const groups = selectedRunners(loaded.plugins).map((n) => (loaded.registry.runner.secrets[n] ?? []).filter((d) => d.oneOf === "model credential"));
+  if (groups.length === 0 || groups.some((g) => g.length === 0)) return null;
+  const declared = [...new Map(groups.flat().map((d) => [d.name, d])).values()];
+  const readable: SecretStore = { get: (name) => secrets.get(name).catch(() => null), valuesForScan: () => secrets.valuesForScan() };
+  return async () => {
+    const { secretChecks } = await import("./setup.js");
+    return (await secretChecks(declared, readable)).find((c) => !c.ok)?.msg ?? null;
+  };
+}
+
+/** WorkerDeps.modelCredential from a modelCredentialCheck; none when it is null. */
+const credentialPresence = (check: (() => Promise<string | null>) | null) => (check ? { modelCredential: async () => (await check()) === null } : {});
+
 /** This process's Identity on the store's database, its key in the state folder (denied to agents). */
 export async function startProcessIdentity(loaded: Loaded, store: FactoryStore, clock: Clock): Promise<IdentityRuntime> {
   const log = new ConsoleLogger(clock, "identity");
@@ -335,7 +357,7 @@ export async function startProcessIdentity(loaded: Loaded, store: FactoryStore, 
   });
 }
 
-/** `workers` from factory.config.json: absent means 1, otherwise an integer of 1 or more or startup fails. */
+/** `workers` from factory.config.json: absent means 1, otherwise an integer of 0 or more or startup fails. */
 export { maxWorkers, workerCount };
 
 
@@ -411,6 +433,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   };
   // The mode switch, the auto-merge tier and a loosening change need approve_merge on the project (design 08-settings), as the Merge button.
   settings.mayApproveMerge = async () => refusalOf(await onProject(opts.identity.user, "approve_merge"));
+  settings.sandbox = () => sandboxEnforcement(loaded); // `mode auto` needs the OS sandbox, as from the CLI (design 05-sandbox.md)
   settings.editFile = configWriter({ loaded, store, sandbox: await p.sandbox(), now: () => clock.now().toISOString(), actor: opts.identity.user, loadConfig, project: async () => (await settings.resolveProject())?.key ?? null });
   settings.calendar = (await import("./ui/calendar-api.js")).uiCalendar(loaded, {
     store, actor: settings.actor, clock, base: settings.base, connect: async (r) => (await import("./setup.js")).connectCalendar(r),
@@ -432,6 +455,11 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
 }
 
 const refusalOf = (d: AuthDecision): string | null => (d.allow ? null : d.reason);
+
+/** Whether reads, writes and network are OS-enforced for the selected runners (doctor's probe), asked before `mode` becomes auto. */
+export function sandboxEnforcement(loaded: Pick<Loaded, "plugins">): Promise<SandboxEnforcement> {
+  return probeOsSandbox({ runners: selectedRunners(loaded.plugins) });
+}
 
 /** The owner check, with no forge call: how a CLI command is authorized (approve_tool, `factory settings`, `factory resume`). */
 export async function localAuth(_loaded: Loaded, store: FactoryStore): Promise<AuthProvider> {

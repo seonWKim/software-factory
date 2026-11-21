@@ -23,19 +23,21 @@ import { cn } from "../lib/cn.js";
 import { useUrlParam } from "../lib/url-param.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { LEVEL_LABELS, duration, errorLabel, groupedInteger, isHttpUrl, localClock, localDateTime, relativeTime, runStatusLabel, termLabel, shortItemId, shortRev, tokens } from "../lib/format.js";
+import { duration, errorLabel, groupedInteger, isHttpUrl, localClock, localDateTime, relativeTime, runStatusLabel, termLabel, shortItemId, shortRev, tokens } from "../lib/format.js";
+import { GROUP_LABELS, ITEM_STATES, STATE_GROUPS, type StateGroup, groupOf, groupStates, isGroup, stateLabel } from "../../../src/shared/states.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
 import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, When, byId, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
 import { ItemDecision } from "./decision-card.js";
+import { ItemAbout } from "./item-about.js";
 import { ResumeNow, type SupervisorActionName, SupervisorActions } from "./system-banner.js";
 import { Thread } from "./thread.js";
 import { transcriptPath } from "./transcript.js";
 import { ItemsTree, type View, VIEW_KEY, useExpanded } from "./tree.js";
-import { HELD, type TreeFilter, buildTree, defaultExpanded, itemMatches, parentIds } from "./tree-model.js";
+import { type TreeFilter, buildTree, defaultExpanded, itemMatches, parentIds } from "./tree-model.js";
 import { Disclosure } from "../components/ui/disclosure.js";
 import { Card } from "../components/ui/card.js";
-import { Badge } from "../components/ui/badge.js";
+import { Badge, StatusBadge } from "../components/ui/badge.js";
 import { Tooltip } from "../components/ui/menu.js";
 
 /** A host sleep's gap in whole minutes, at least 1 (only gaps over 60 s are recorded). */
@@ -117,6 +119,7 @@ const PAUSE_LABELS: Record<string, MessageKey> = {
   forge_auth: "pause.forge_auth",
   preflight_access: "pause.preflight_access",
   model_stall: "pause.model_stall",
+  owner: "stop.stopped",
 };
 const pauseLabel = (name: string): string => {
   const key = PAUSE_LABELS[name];
@@ -125,13 +128,17 @@ const pauseLabel = (name: string): string => {
 
 /** One pause with its "Resume now" button (ResumeNow, shared with the Tasks pause row); a refusal shows next to the button. */
 function PauseItem({ pause, token, now }: { pause: PauseRow; token: string | null; now: number }) {
+  // The owner pause (Stop all agents) has no end, only when it began.
+  const at = pause.ends_at ?? pause.since ?? null;
   return (
     <li data-pause={pause.name} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
       <span className="min-w-0 text-pretty text-text-1">{pauseLabel(pause.name)}</span>
-      <span className="min-w-0 tabular-nums break-words text-text-2" title={localDateTime(pause.ends_at)}>
-        {t(pause.name === "model_stall" ? "pause.nextProbe" : "pause.ends", { time: pause.ends_at })}
-        {Date.parse(pause.ends_at) > now ? ` (${relativeTime(pause.ends_at, now)})` : ""}
-      </span>
+      {at !== null && (
+        <span className="min-w-0 tabular-nums break-words text-text-2" title={localDateTime(at)}>
+          {pause.ends_at === null ? relativeTime(at, now) : t(pause.name === "model_stall" ? "pause.nextProbe" : "pause.ends", { time: at })}
+          {pause.ends_at !== null && Date.parse(at) > now ? ` (${relativeTime(at, now)})` : ""}
+        </span>
+      )}
       <ResumeNow name={pause.name} token={token} />
     </li>
   );
@@ -201,14 +208,18 @@ export function ActivityPage() {
   );
 }
 
-const STATE_FILTERS = ["needs", "ready_to_merge", "needs_approval", "needs_triage", "stuck", "running", "queued", "blocked_by_task", "closed"] as const;
-const FILTER_LABELS: Record<string, string> = { ...LEVEL_LABELS, needs: t("page.needs"), held: t("items.held") };
-
-/** The Work filter named by the `state` query parameter (the Queue page's old address leads here); an unknown value is no filter. */
+/**
+ * The Work filter named by the `state` query parameter (the Queue page's old address leads here): a group or one item
+ * state; `closed`, from older links, is the Finished group. An unknown value is no filter.
+ */
 function initialState(): string | null {
   const s = new URLSearchParams(location.search).get("state");
-  return s !== null && (s === HELD || (STATE_FILTERS as readonly string[]).includes(s)) ? s : null;
+  if (s === "closed") return "finished";
+  return s !== null && (isGroup(s) || (ITEM_STATES as readonly string[]).includes(s)) ? s : null;
 }
+
+/** The selected filter's group: the group itself, or the group a state is in; null for All. */
+const groupOfFilter = (state: string | null): StateGroup | null => (state === null ? null : isGroup(state) ? state : (groupOf(state) ?? null));
 
 const ALL = "all";
 const VIEW_OPTIONS: { id: View; label: string }[] = [{ id: "tree", label: t("items.tree") }, { id: "list", label: t("items.list") }];
@@ -245,7 +256,6 @@ export function ItemsPage() {
   const queuedView = state === "queued";
   const setView = (v: View) => {
     setViewState(v);
-    if (v === "list" && state === HELD) setState(null);
     try {
       localStorage.setItem(VIEW_KEY, v);
     } catch {
@@ -275,6 +285,9 @@ export function ItemsPage() {
   // Running, with no search and no named items, is the server's count of runs whose status is running, as Activity's Running now.
   const narrowed = !!q.trim() || ids !== null;
   const counted = (s: string) => (s === "queued" ? (queue.data?.queue.length ?? "…") : s === "running" && !narrowed && items.data ? items.data.counts.running : local ?rows.filter((r) => itemMatches(r, { state: s, q, showClosed, ids })).length : (items.data?.facets.state[s] ?? 0));
+  const group = groupOfFilter(state);
+  // A group or state tab with no rows is hidden, unless it is the one selected.
+  const shows = (s: string) => s === state || s === group || counted(s) !== 0;
   // All, with no search, no named items and closed items hidden, is the server's open count (stage not CLOSED), as Activity's Open items.
   const allCount = !narrowed && !showClosed && items.data ? items.data.counts.open : local ? rows.filter((r) => itemMatches(r, { state: null, q, showClosed, ids })).length : (items.data?.facets.allStates ?? "");
   return (
@@ -304,17 +317,30 @@ export function ItemsPage() {
           <Button size="sm" onClick={() => setIds(null)}>{t("items.idsClear")}</Button>
         </div>
       )}
-      {rateLimit && <div className="mb-3"><Notice tone="warn">{t("items.rateLimit", { state: t("items.ratePaused", { time: rateLimit.ends_at }) })}</Notice></div>}
+      {rateLimit?.ends_at && <div className="mb-3"><Notice tone="warn">{t("items.rateLimit", { state: t("items.ratePaused", { time: rateLimit.ends_at }) })}</Notice></div>}
       <Tabs
         label={t("items.filterByState")}
-        className="mb-3"
-        options={[null, ...(tree ? [HELD] : []), ...STATE_FILTERS].map((s) => ({
-          id: s ?? ALL,
-          label: t("items.filterCount", { label: s === null ? t("items.all") : FILTER_LABELS[s]!, count: s === null ? allCount : counted(s) }),
-        }))}
-        value={state ?? ALL}
+        className={group ? "mb-2" : "mb-3"}
+        options={[
+          { id: ALL, label: t("items.filterCount", { label: t("items.all"), count: allCount }) },
+          ...STATE_GROUPS.filter(shows).map((g) => ({ id: g, label: t("items.filterCount", { label: GROUP_LABELS[g], count: counted(g) }) })),
+        ]}
+        value={group ?? ALL}
         onChange={(id) => setState(id === ALL ? null : id)}
       />
+      {group && (
+        <Tabs
+          label={t("items.filterGroup", { group: GROUP_LABELS[group] })}
+          className="mb-3"
+          options={[
+            { id: group, label: t("items.filterCount", { label: t("items.all"), count: counted(group) }) },
+            // `closed` is the Finished group's older link value (src/shared/states.ts inStateFilter): All shows those rows.
+            ...groupStates(group).filter((s) => s !== "closed" && shows(s)).map((s) => ({ id: s, label: t("items.filterCount", { label: stateLabel(s), count: counted(s) }) })),
+          ]}
+          value={state ?? group}
+          onChange={setState}
+        />
+      )}
       {queuedView ? (
         <Card title={t("queue.title")} count={queue.data?.queue.length}>
           {queue.isError ? <ErrorNote error={queue.error} /> : !queue.data || !items.data ? <Loading rows={4} /> : <QueueTable queue={queue.data.queue} items={itemsById} now={now} />}
@@ -369,6 +395,7 @@ export function ItemPage({ id }: { id: string }) {
           {t("item.phase", { phase: item.phase ?? "?" })} <Link href={itemPath(item.parent_id)} className={LINK_CLASS}>{t("item.splitParent")}</Link>
         </p>
       )}
+      <ItemAbout item={item} />
       <ItemDecision
         id={item.id}
         commands={q.data.commands ?? []}
@@ -381,7 +408,7 @@ export function ItemPage({ id }: { id: string }) {
       />
       <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
         {([
-          [t("col.state"), <Badge level={level}>{LEVEL_LABELS[level] ?? level}{item.close_reason ? ` (${termLabel(item.close_reason)})` : ""}</Badge>],
+          [t("col.state"), <StatusBadge state={level}>{stateLabel(level)}{level === "closed" && item.close_reason ? ` (${termLabel(item.close_reason)})` : ""}</StatusBadge>],
           [t("item.source"), isHttpUrl(item.source.link) ? <SourceLink source={item.source} className="inline-block align-bottom" /> : short],
           [t("item.tier"), item.tier ?? "–"],
           [t("col.pr"), item.change_ref === null ? "–" : <UrlOrText url={item.change_url} text={`#${item.change_ref}`} />],
@@ -434,7 +461,7 @@ export function ItemPage({ id }: { id: string }) {
                   {runKindLabel(r.kind)} <code className="font-mono text-xs break-all text-text-2">{r.id}</code>
                 </Td>
                 <Td className="tabular-nums">{t("item.attempt", { attempt: r.attempt })}</Td>
-                <Td><Badge level={r.status === "running" ? "running" : r.status === "failed" ? "stuck" : undefined}>{runStatusLabel(r.status)}</Badge></Td>
+                <Td><StatusBadge state={r.status} /></Td>
                 <Td className="max-w-md min-w-40 text-xs break-words text-text-1">
                   {r.error ? (
                     <>
@@ -489,7 +516,7 @@ function CurrentRun({ runs, itemId, now }: { runs: ItemDetail["runs"]; itemId: s
     <Card title={t("item.currentRun")}>
       <p data-current-run={run.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
         <span className="font-medium">{runKindLabel(run.kind)}</span>
-        <Badge level={run.status === "running" ? "running" : undefined}>{run.status}</Badge>
+        <StatusBadge state={run.status} />
         <span className="tabular-nums">{t("item.attempt", { attempt: run.attempt })}</span>
         <WorkerName id={run.attempts?.at(-1)?.worker_id} />
         {run.started_at && <span className="text-text-2 tabular-nums"><When at={run.started_at} now={now} label="item.startedAgo" /></span>}
@@ -630,7 +657,7 @@ function ProcessRow({ p, local, items, now }: { p: WorkerProcess; local: boolean
           </span>
         </Tooltip>
         <span className="tabular-nums text-text-2"><When at={p.started_at} now={now} label="runners.started" /></span>
-        {draining && <Badge level="needs_approval">{t("runners.draining")}</Badge>}
+        {draining && <StatusBadge state="draining">{t("runners.draining")}</StatusBadge>}
       </div>
       {p.runs.length > 0 && (
         <ul aria-label={t("runners.runsOf", { host: p.host, pid: p.pid })} className="mt-1 space-y-0.5 text-xs">

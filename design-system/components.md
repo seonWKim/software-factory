@@ -8,7 +8,7 @@ Pick the component by the need, before drawing anything by hand. A UI spec names
 
 | Need | Component | Usage |
 |---|---|---|
-| a state | `Badge` | A short state as a pill, tone from its level; never a hand-made chip or a bordered Button. |
+| a state | `StatusBadge` for an item, run or worker state, else `Badge` | `StatusBadge` shows the state table's label and tone (`src/shared/states.ts`) with `data-status`; `Badge` any other short status as a pill, tone from a state table key; never a hand-made chip or a bordered Button. |
 | an on/off choice in a list | Checkbox (none yet: `Switch` until it exists) | One box per row that turns that row's choice on or off. No Checkbox exists yet; a follow-up issue adds it. Until then use `Switch`, never a Button drawn as a box. |
 | a row's extra actions | `OverflowMenu` | The row's secondary actions behind one "more" button at its end, so the row stays one line. |
 | a row in a bordered list | `ListRow` | Leading control, one-line title with ellipsis, details line, every action in its ⋯ menu. |
@@ -40,7 +40,11 @@ A `Table` built from `columns` and `rows`, on `Table`, `Tr` and `Td`. A column i
 
 ## Badge
 
-The one badge (`badge.tsx`): a short state as a pill with a dot, `text-xs` medium, tone from `LEVEL_TONE` (the pill tokens: `ok`, `warn`, `bad`, `info`); an unknown or missing level is neutral (`surface-2` with `text`). Carries `data-level`. Variants: one per level in `LEVEL_TONE`, and neutral. One size. `tests/design-system.test.ts` checks every tone it draws at 4.5:1 in both themes.
+The one pill (`badge.tsx`): a short text as a pill with a dot, `text-xs` medium, in the tone of `level`, a key of the one state table (`src/shared/states.ts`); `TONE_CLASS` maps each tone to the pill tokens (`ok`, `warn`, `bad`, `info`) or neutral (`surface-2` with `text`), and an unknown or missing level is neutral. Carries `data-level`. For any pill that is not an item, run or worker state (plugins, settings, calendar, a task's overdue, a transcript, a thread). One size. `tests/design-system.test.ts` checks every tone it draws at 4.5:1 in both themes.
+
+## StatusBadge
+
+An item's, a run's or a worker's state (`badge.tsx`): `state` is a key of the state table, and the pill shows its label in its tone, or `children` when the words say more (where a Merge is). Carries `data-status` set to the state key. Every item, run and worker state pill is a `StatusBadge`; no view maps a state to a label or a tone itself.
 
 ## Notice
 
@@ -120,7 +124,7 @@ One choice among a few views (`role=group` with an `aria-label`): a 32 px box wi
 
 ## Link and ID
 
-`web/src/components/ui/link-style.ts` holds both. `LINK_CLASS` (`text-text-1 hover:underline`) is every link in the views, item titles included; the sidebar keeps its own. `ID_CLASS` (`font-mono text-text-3 hover:underline`) is an item or source ID, linked or not (Tasks row ID, source ID links, the item page header ID). Accent is never a text colour: only the primary Button and the selected-tab underline use it, and `tests/ui-link-style.test.tsx` fails on `text-accent` anywhere under `web/src`.
+`web/src/components/ui/link-style.ts` holds both. `LINK_CLASS` (`text-text-1 hover:underline`) is every link in the views, item titles included; the sidebar keeps its own. `ID_CLASS` (`font-mono text-text-3 hover:underline`) is an item or source ID, linked or not (source ID links, the item page header ID). Accent is never a text colour: only the primary Button and the selected-tab underline use it, and `tests/ui-link-style.test.tsx` fails on `text-accent` anywhere under `web/src`.
 
 ## Tabs
 

@@ -1,4 +1,4 @@
-import { Plugins, loadConfig, localProject, ownerRefusal, resolveProject, settingsBase } from "../../../compose.js";
+import { Plugins, loadConfig, localProject, ownerRefusal, resolveProject, sandboxEnforcement, settingsBase } from "../../../compose.js";
 import { MODE_USAGE, SETTINGS_TOP_WORDS, SETTINGS_USAGE, parseModeArgs, parseSettingsArgs, runSettings } from "../../../settings-cmd.js";
 import { configWriter, storeProjectResolver } from "../../../ui/settings-api.js";
 import { defineCommand } from "../../command.js";
@@ -54,6 +54,8 @@ export default defineCommand({
           // An ID, never a display name: the CLI identity (issue #318), the one the approve_merge check asks about.
           actor: identity.user,
           mayApproveMerge: ownerRefusal(loaded, store, identity.user, "approve_merge"),
+          // `mode auto` needs the OS sandbox: the same probe as doctor's sandbox lines (design 05-sandbox.md).
+          sandbox: () => sandboxEnforcement(loaded),
           scanner,
           // The file-only key writer, the same one the Settings write route runs (design 08-settings).
           ...(action.action === "edit-file"
