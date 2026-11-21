@@ -197,24 +197,24 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
     return this.selectItem(this.db, id);
   }
 
+  async findWorkItemIds(prefix: string): Promise<WorkItemId[]> {
+    const end = prefix.slice(0, -1) + String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1); // IDs with the prefix sort in [prefix, end)
+    return prefix === "" ? [] : (await this.db.all("SELECT id FROM controller_work_items WHERE id >= ? AND id < ? ORDER BY id", [prefix, end])).map((r) => r.id as WorkItemId);
+  }
+
   async getWorkItemBySource(type: SourceType, sourceId: string): Promise<WorkItem | null> {
     return this.selectItemBySource(this.db, type, sourceId);
   }
 
   async getWorkItemByPr(project: string, change_ref: string): Promise<WorkItem | null> {
-    const [row] = await this.db.all(
-      `SELECT * FROM controller_work_items WHERE project = ? AND change_ref = ?
-         ORDER BY created_at, ${this.db.dialect.seq} LIMIT 1`,
-      [project, change_ref],
-    );
+    const sql = `SELECT * FROM controller_work_items WHERE project = ? AND change_ref = ? ORDER BY created_at, ${this.db.dialect.seq} LIMIT 1`;
+    const [row] = await this.db.all(sql, [project, change_ref]);
     return row ? rowToWorkItem(row) : null;
   }
 
   async getWorkItemByMergeSha(project: string, sha: string): Promise<WorkItem | null> {
-    const [row] = await this.db.all(
-      `SELECT * FROM controller_work_items WHERE merge_sha = ? AND project = ? ORDER BY created_at, ${this.db.dialect.seq} LIMIT 1`,
-      [sha, project],
-    );
+    const sql = `SELECT * FROM controller_work_items WHERE merge_sha = ? AND project = ? ORDER BY created_at, ${this.db.dialect.seq} LIMIT 1`;
+    const [row] = await this.db.all(sql, [sha, project]);
     return row ? rowToWorkItem(row) : null;
   }
 

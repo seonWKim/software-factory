@@ -370,11 +370,11 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
    * parent link) and enqueues `enqueue` in the same transaction, only when created.
    */
   createWorkItem(
-    input: NewWorkItem,
-    actor: Actor,
-    opts?: { enqueue?: Omit<NewRun, "work_item_id">; detail?: StateChangeDetail },
+    input: NewWorkItem, actor: Actor, opts?: { enqueue?: Omit<NewRun, "work_item_id">; detail?: StateChangeDetail },
   ): Promise<{ item: WorkItem; created: boolean }>;
   getWorkItem(id: WorkItemId): Promise<WorkItem | null>;
+  /** IDs of the work items whose ID starts with `prefix`, in ID order: a key range, no list scan (design 05-sources, short IDs); none for "". Read-only. */
+  findWorkItemIds(prefix: string): Promise<WorkItemId[]>;
   getWorkItemBySource(type: SourceType, sourceId: string): Promise<WorkItem | null>;
   /**
    * The item in `project` whose PR (factory or adopted) has this change_ref (oldest if several). A row with

@@ -622,6 +622,24 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
   });
 
   describe("read-only queries", () => {
+    it("findWorkItemIds returns the IDs that start with the prefix: the full ID, a short one, `wi_` alone; none for an empty or overlong prefix", async () => {
+      const { store } = await make();
+      // 17 items: two of them share their first hex character (pigeonhole), so a one-character prefix matches several.
+      const ids: WorkItemId[] = [];
+      for (let n = 1; n <= 17; n++) ids.push((await store.createWorkItem(issue(n), system)).item.id);
+      const [a] = ids as [WorkItemId];
+      expect(await store.findWorkItemIds(a)).toEqual([a]);
+      expect(await store.findWorkItemIds(a.slice(0, 11))).toContain(a);
+      expect(await store.findWorkItemIds("wi_")).toEqual([...ids].sort());
+      const first = ids.map((id) => id.slice(0, 4)).find((p, i, all) => all.indexOf(p) !== i)!;
+      const shared = ids.filter((id) => id.startsWith(first)).sort();
+      expect(shared.length).toBeGreaterThan(1);
+      expect(await store.findWorkItemIds(first)).toEqual(shared);
+      expect(await store.findWorkItemIds(`${a}0`)).toEqual([]);
+      expect(await store.findWorkItemIds("")).toEqual([]);
+      expect(await store.findWorkItemIds("wi_g")).toEqual([]);
+    });
+
     it("listWorkItemsWhere filters by stage, blocked_on and closed, most recently updated first", async () => {
       const { store, clock } = await make();
       const ids = [];
