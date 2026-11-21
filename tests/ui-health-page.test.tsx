@@ -6,7 +6,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitHubBudget, ImproveView, Overview } from "../web/src/api.js";
-import { localDateTime } from "../web/src/lib/format.js";
+import { localShortDate } from "../web/src/lib/format.js";
 
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
 // loaded by a specifier the node check skips (as tests/ui-pause.test.tsx does).
@@ -177,15 +177,16 @@ describe("Health page: the Checks card", () => {
 
 // The improve report is the Health page's Improve tab (design 09-dashboard-system, 2026-11-21; it left the Rules page),
 // read from GET /api/v1/rules's `improve`; with no such read there is no tab. Each failure group is titled in plain words (a
-// label per known error code, else "Other failure"); its code, detail and draft sit behind a Disclosure.
+// title per group: its detail, else its draft cause, else "Repeated failure"); its code, detail and draft sit behind a Disclosure.
 describe("Health page: Improve tab", () => {
   const IMPROVE_TOKEN = "tok_improve";
   const report: ImproveView["report"] = {
     window_start: "2026-11-15T00:00:00.000Z", window_end: "2026-11-16T00:00:00.000Z", created_at: "2026-11-16T00:05:00.000Z", runs: 4, patterns: 1,
     groups: [
-      { error_code: "checks_failed", detail: "npm test exited #", runs: 2, draft: { cause: "a flaky port", fix: "pin the port", note: null }, filing: "filed: local:local-1" },
-      { error_code: "hotspot", detail: "web/src/i18n/en.ts", runs: 3, draft: null, filing: null },
-      { error_code: "weird_new_code", detail: null, runs: 2, draft: { cause: null, fix: null, note: "withheld (github_token)" }, filing: null },
+      { error_code: "checks_failed", detail: "npm test exited #", runs: 2, hotspot: false, draft: { cause: "a flaky port", fix: "pin the port", note: null }, filing: { status: "filed", reason: null, ref: "local:local-1", runs: null } },
+      { error_code: "hotspot", detail: "web/src/i18n/en.ts", runs: 3, hotspot: true, draft: null, filing: { status: "skipped", reason: "recently_closed", ref: null, runs: null } },
+      { error_code: "weird_new_code", detail: null, runs: 2, hotspot: false, draft: { cause: null, fix: null, note: { status: "withheld", reason: "withheld" } }, filing: null },
+      { error_code: "other_code", detail: null, runs: 2, hotspot: false, draft: { cause: "a stale cache", fix: null, note: null }, filing: { status: "failed", reason: "brand_new_reason", ref: null, runs: null } },
     ],
   };
   const improve = (over: Partial<ImproveView> = {}): ImproveView => ({ report, run_now: true, csrf_token: IMPROVE_TOKEN, ...over });
@@ -233,24 +234,32 @@ describe("Health page: Improve tab", () => {
     expect(within(again).queryByRole("tab", { name: "Improve" })).toBeNull();
   });
 
-  it("shows the window, counts and one row per group, titled in plain words; the code, detail and draft are behind a Disclosure", async () => {
+  const REASONS: Record<string, string> = {
+    issue_cap: "the daily limit of new issues was reached", comment_cap: "the daily limit of comments was reached", recently_closed: "a similar issue closed recently",
+    no_source: "no issue tracker to file to", needs_person: "it needs a person to decide", host_sleep: "the computer was asleep", pause: "the factory was paused",
+    in_flight: "it is being filed now", open_item: "an open item already covers it", call_cap: "the limit of model calls was reached", error: "an error stopped it",
+    refused: "the model refused", max_tokens: "the model's answer was cut off", invalid_output: "the model's answer could not be read", withheld: "held back for a possible secret",
+  };
+
+  it("shows the header, one row per group titled in plain words; the code, detail and draft are behind a Disclosure", async () => {
     await show("improve");
     const s = await section();
     const windowText = s.querySelector("[data-improve-window]")!.textContent!;
-    expect(windowText).toContain(`Window ${localDateTime(report!.window_start)} to ${localDateTime(report!.window_end)}, reported ${localDateTime(report!.created_at)}.`);
+    expect(windowText).toBe(`${localShortDate(report!.window_start)} to ${localShortDate(report!.window_end)}: 4 repeating problems across 4 runs`);
     expect(windowText).not.toMatch(ISO);
+    expect(windowText).not.toContain("single-run");
     const rows = [...s.querySelectorAll<HTMLElement>("[data-improve-group]")];
-    expect(rows.map((r) => r.querySelector("[data-group-title]")!.textContent)).toEqual(["Checks failed", "Often-edited file", "Other failure"]);
-    // No raw code or file path in a title; each row is a ListRow with its runs and filing on the details line.
+    expect(rows.map((r) => r.querySelector("[data-group-title]")!.textContent)).toEqual(["npm test exited #", "Often-edited file", "Repeated failure", "a stale cache"]);
     for (const r of rows) {
       expect(r.matches("[data-list-row]")).toBe(true);
-      const title = r.querySelector("[data-group-title]")!.textContent!;
-      expect(title).not.toMatch(/\b[a-z]+_[a-z_]+\b/);
-      expect(title).not.toMatch(FILE_PATH);
+      expect(r.querySelector("[data-group-title]")!.textContent).not.toMatch(FILE_PATH);
     }
     expect(rows[0]!.querySelector("[data-details]")!.textContent).toContain("2 runs");
     expect(rows[0]!.querySelector("[data-filing]")!.textContent).toBe("filed: local:local-1");
-    expect(rows[1]!.querySelector("[data-filing]")!.textContent).toBe("not filed yet");
+    expect(rows[1]!.querySelector("[data-filing]")!.textContent).toBe("not filed (a similar issue closed recently)");
+    expect(rows[2]!.querySelector("[data-filing]")!.textContent).toBe("not filed yet");
+    // An unmapped reason reads "not filed" with no code and no parentheses.
+    expect(rows[3]!.querySelector("[data-filing]")!.textContent).toBe("not filed");
     // The draft opens under "Draft and details", lazily.
     const toggle = within(rows[0]!).getByText("Draft and details").closest("summary")!;
     expect(rows[0]!.querySelector("[data-draft]")).toBeNull();
@@ -259,7 +268,29 @@ describe("Health page: Improve tab", () => {
     expect(rows[0]!.querySelector("[data-draft]")!.textContent).toContain("pin the port");
     expect(rows[0]!.querySelector("code")!.textContent).toBe("checks_failed");
     fireEvent.click(within(rows[2]!).getByText("Draft and details").closest("summary")!);
-    expect((await waitFor(() => rows[2]!.querySelector("[data-draft]")!)).textContent).toBe("withheld (github_token)");
+    expect((await waitFor(() => rows[2]!.querySelector("[data-draft]")!)).textContent).toBe("no draft (held back for a possible secret)");
+  });
+
+  it("a previous-local-day window reads Yesterday (date) with the group and run counts", async () => {
+    const day = new Date(2026, 10, 18);
+    const next = new Date(2026, 10, 19);
+    const made = new Date(2026, 10, 19, 0, 5);
+    const group = { error_code: "x_y", detail: "d", runs: 1, hotspot: false, draft: null, filing: null };
+    rulesBody = { ...(rulesBody as object), improve: improve({ report: { ...report!, window_start: day.toISOString(), window_end: next.toISOString(), created_at: made.toISOString(), runs: 12, groups: Array.from({ length: 15 }, () => group) } }) };
+    await show("improve");
+    const s = await section();
+    expect(s.querySelector("[data-improve-window]")!.textContent).toBe("Yesterday (Nov 18): 15 repeating problems across 12 runs");
+  });
+
+  it.each(Object.entries(REASONS))("the filing reason %s reads as a plain phrase, and a draft note too", async (code, phrase) => {
+    const g = (i: number) => ({ error_code: `c${i}`, detail: `g${i}`, runs: 2, hotspot: false, draft: { cause: null, fix: null, note: { status: "skipped", reason: code } }, filing: { status: "skipped" as const, reason: code, ref: null, runs: null } });
+    rulesBody = { ...(rulesBody as object), improve: improve({ report: { ...report!, groups: [g(1)] } }) };
+    await show("improve");
+    const s = await section();
+    const row = s.querySelector<HTMLElement>("[data-improve-group]")!;
+    expect(row.querySelector("[data-filing]")!.textContent).toBe(`not filed (${phrase})`);
+    fireEvent.click(within(row).getByText("Draft and details").closest("summary")!);
+    expect((await waitFor(() => row.querySelector("[data-draft]")!)).textContent).toBe(`no draft (${phrase})`);
   });
 
   it("with no report it says so; with no run_now there is no Run now button", async () => {
@@ -267,13 +298,14 @@ describe("Health page: Improve tab", () => {
     await show("improve");
     const s = await section();
     expect(s.textContent).toContain("no improve run has reported yet");
-    expect(within(s).queryByRole("button", { name: "Run now" })).toBeNull();
+    expect(within(s).queryByRole("button", { name: "Check the last 24 hours now" })).toBeNull();
   });
 
   it("Run now posts to POST /api/v1/improve/run with the x-csrf-token header; a 200 shows the run_id", async () => {
     await show("improve");
     const s = await section();
-    fireEvent.click(within(s).getByRole("button", { name: "Run now" }));
+    expect(s.textContent).not.toContain("queues an improve run of the last 24 hours");
+    fireEvent.click(within(s).getByRole("button", { name: "Check the last 24 hours now" }));
     expect((await within(s).findByRole("status")).textContent).toBe("Improve run queued: run_queued_1");
     expect(posts.map((p) => p.url)).toEqual(["/api/v1/improve/run"]);
     expect(new Headers(posts[0]!.init.headers).get("x-csrf-token")).toBe(IMPROVE_TOKEN);
@@ -285,7 +317,7 @@ describe("Health page: Improve tab", () => {
     await show("improve");
     const s = await section();
     const before = rulesReads;
-    fireEvent.click(within(s).getByRole("button", { name: "Run now" }));
+    fireEvent.click(within(s).getByRole("button", { name: "Check the last 24 hours now" }));
     const alert = await within(s).findByRole("alert");
     expect(alert.textContent).toContain("An improve run is already queued (run_busy).");
     expect(within(s).queryByRole("status")).toBeNull();
