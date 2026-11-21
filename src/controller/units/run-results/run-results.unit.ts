@@ -3,7 +3,7 @@
 
 import { prNumber } from "../../../core/change-ref.js";
 import { NO_FILES_REFUSAL, changesNoFile, commandFooter, commandState, retryPathsReply, withholdReplyLines } from "../../../core/commands.js";
-import { type NeedsHuman, type ReviewOutput, SPEC_CONFLICT, type TriageOutput, findingLine, parseNeedsHuman, parseReview, parseTriage, specFindings } from "../../../core/outputs.js";
+import { type NeedsHuman, type ReviewOutput, SPEC_CONFLICT, type TriageOutput, doneCheckCommands, findingLine, parseNeedsHuman, parseReview, parseTriage, specFindings } from "../../../core/outputs.js";
 import { AGENT_NEEDS_HUMAN, AUTO_ACTOR, AUTO_RESOLVE_LIMIT, autoApproveRefusal, REPEATED_FAILURE, type FailureClass, failureLine, repeatsFastInfraFailure, repeatsLastFailure, preflightCheck, PREFLIGHT_ACCESS, autoResolveAttempts, autoResolveKey, effectiveTier, failureClass, floorTier, isCovered, needsSpecApproval, nextAutoResolveAttempt, parseAutoResolveKey, retryDelayMs, retryKey, retryNotBefore, GITHUB_RATE_LIMITED, runKey, sameStep, takenOver, FORGE_AUTH, NO_AUTO_RETRY, CHECKS_ENV, CHECKS_ENV_LIMIT, SESSION_RELEASED } from "../../../core/policy.js";
 import { FIX_SPEC_APPROVED, gatePathTouched } from "../../../core/improver.js"; import { autoApprovalDetail, ownerAnswersFor } from "../../../shared/command-notes.js";
 import { dependencyStop } from "./dependency-stop.js"; import { autoGrant } from "./auto-grant.js";
@@ -165,7 +165,7 @@ export class RunResultsUnit {
           // Path companions first (design 04-triage.md): on the raw answer, so a companion triage named only in
           // files_to_change is covered, and before the floor, which raises the tier or refuses a built-in rule's path.
           const { answer, added } = applyCompanions(data.spec, this.c.k.cfg.path_companions ?? [], floors);
-          const parsed = parseTriage(answer, { max_diff_lines, max_diff_files });
+          const parsed = parseTriage(answer, { max_diff_lines, max_diff_files, check_commands: doneCheckCommands(this.c.k.cfg.repo) }); // done_checks required (design 04-triage)
           if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
           const spec = parsed.value;
           const floor = floorTier(spec.allowed_paths, floors);
@@ -176,8 +176,8 @@ export class RunResultsUnit {
             desired_output: spec.desired_output,
             scope: spec.scope,
             allowed_paths: spec.allowed_paths,
-            // The coordination cost's input until the PR exists (design §5, 2026-11-03).
-            files_to_change: spec.files_to_change,
+            files_to_change: spec.files_to_change, // the coordination cost's input until the PR exists (design §5, 2026-11-03)
+            done_checks: spec.done_checks ?? null,
             tier,
             token_cost: tokens,
           };
