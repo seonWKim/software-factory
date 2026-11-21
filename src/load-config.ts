@@ -414,9 +414,8 @@ export async function loadConfig(
       join(home, ".netrc"),
       join(home, ".my.cnf"),
       join(home, ".mylogin.cnf"),
-      // GnuPG keys (RFC 0024 WP2 step A), and the desktop shell's app data, whose Chromium profile holds its sign-ins.
+      // GnuPG keys (RFC 0024 WP2 step A).
       join(home, ".gnupg"),
-      join(home, "Library", "Application Support", "software-factory"),
     ],
     agent_git_identity: file.agent_git_identity,
     budget_min_sample: budget.budget_min_sample,

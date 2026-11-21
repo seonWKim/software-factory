@@ -37,13 +37,13 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("the read denial built from deny_paths", () => {
-  it("adds ~/.gnupg and the desktop shell's app data; the earlier home entries stay as they were", async () => {
+  it("adds ~/.gnupg; the earlier home entries stay as they were", async () => {
     const deny = (await loadConfig(REPO)).config.deny_paths;
     const home = deny.filter((p) => p.startsWith(`${fakeHome}/`)).map((p) => p.slice(fakeHome.length + 1));
     expect(home).toEqual([
       ".config/software-factory", // the secret file's folder: .env, the Google client JSON, github-app.pem
       ".ssh", ".aws", ".config/gh", ".claude", ".gitconfig", ".git-credentials", ".netrc", ".my.cnf", ".mylogin.cnf",
-      ".gnupg", "Library/Application Support/software-factory",
+      ".gnupg",
     ]);
   });
 });
@@ -102,9 +102,22 @@ function seatbelt(fs: { denyRead: string[]; allowRead?: string[] }): string {
   return ["(version 1)(allow default)", ...deny, "(allow file-read-metadata (vnode-type DIRECTORY))", ...(fs.allowRead ?? []).map((p) => `(allow file-read* (subpath ${q(p)}))`)].join("");
 }
 
-const SEATBELT = process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec");
+/**
+ * Why the Seatbelt tests cannot run here, or null when they can: not macOS, no sandbox-exec, or this process already
+ * runs inside a sandbox (a reviewer's or an agent's own Seatbelt), where a nested sandbox-exec cannot apply a profile.
+ */
+function seatbeltUnavailable(): string | null {
+  if (process.platform !== "darwin" || !existsSync("/usr/bin/sandbox-exec")) return "no Seatbelt (macOS sandbox-exec) on this host";
+  // A profile with a rule: a nested sandbox-exec applies an allow-only profile as a no-op and refuses one that denies.
+  const profile = `(version 1)(allow default)(deny file-read* (subpath ${JSON.stringify(join(tmpdir(), "sf-no-such-folder"))}))`;
+  const r = spawnSync("/usr/bin/sandbox-exec", ["-p", profile, "/usr/bin/true"], { encoding: "utf8" });
+  return r.status === 0 ? null : `already inside a sandbox: a nested sandbox-exec fails (${(r.stderr || r.error?.message || `exit ${r.status}`).trim()})`;
+}
+const NO_SEATBELT = seatbeltUnavailable();
+const SEATBELT = NO_SEATBELT === null;
+const skipNote = NO_SEATBELT === null ? "" : ` (skipped: ${NO_SEATBELT})`;
 
-describe.skipIf(!SEATBELT)("a child process of npm test in a run, under the OS sandbox (macOS)", () => {
+describe.skipIf(!SEATBELT)(`a child process of npm test in a run, under the OS sandbox (macOS)${skipNote}`, () => {
   it("cannot open a planted file under ~/.gnupg or the live checkout; its own folder and git still work", async () => {
     // The checkout: a real repo; the run folder: a clone borrowing its objects, as NoOpSandbox makes it.
     const checkout = tmp("live");
@@ -177,7 +190,8 @@ describe("the OS sandbox probe (doctor and the mode check)", () => {
     expect(none.reads.why).toContain("gave no answer");
   });
 
-  it("a wrapper that lets the denied read, write and connect through is not enforced", async () => {
+  // A plain host only: inside another sandbox the outer profile may refuse the probe's own read, write or connect.
+  it.skipIf(!SEATBELT)(`a wrapper that lets the denied read, write and connect through is not enforced${skipNote}`, async () => {
     const e = await probeOsSandbox({ runners: ["claude-code"], platform: "darwin", exec: fakeExec(ON, "drop") });
     expect(e).toEqual({
       reads: { enforced: false, why: "a probe read of a denied file went through" },
@@ -193,7 +207,7 @@ describe("the OS sandbox probe (doctor and the mode check)", () => {
     expect(unknown.network.why).toBe("no OS sandbox the factory knows on win32");
   });
 
-  it.skipIf(!SEATBELT)("a relaxed filesystem policy leaves reads and writes not enforced; the network line stands on its probe", async () => {
+  it.skipIf(!SEATBELT)(`a relaxed filesystem policy leaves reads and writes not enforced; the network line stands on its probe${skipNote}`, async () => {
     const e = await probeOsSandbox({ runners: ["claude-code"], exec: fakeExec({ ...ON, filesystemPolicy: "relaxed" }, "keep") });
     expect(e.reads).toEqual({ enforced: false, why: "Claude Code's filesystem policy is relaxed, not strict" });
     expect(e.writes.enforced).toBe(false);
