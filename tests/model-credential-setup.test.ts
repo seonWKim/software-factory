@@ -124,7 +124,7 @@ describe("a missing model credential (design §5 Restarts, setup state)", () => 
     expect(dialog.secrets).toEqual(["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]);
     const csrfToken = newCsrfToken();
     const settings = { base: {} as never, repo: { owner: "o", name: "r" }, actor: owner, resolveProject: async () => null, csrfToken, modelCredential: dialog };
-    const pauses = { principal: async () => owner, authorize: async () => ({ allow: true }), csrfToken, log: f.log };
+    const pauses = { principal: async () => owner, authorize: async () => ({ allow: true as const }), csrfToken, log: f.log };
     const d: ApiDeps = { ...f.d, settings, pauses };
     const r = await respond(d, {
       method: "POST", url: MODEL_CREDENTIAL_PATH, host: "127.0.0.1:4310", origin: "http://127.0.0.1:4310", contentType: "application/json", csrfToken,
