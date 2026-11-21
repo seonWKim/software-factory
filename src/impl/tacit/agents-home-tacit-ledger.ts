@@ -9,29 +9,35 @@
 // a proposal applies it (2026-11-18; evolve has no apply subcommand): the proposal's current lines, read from `evolve
 // show`, are replaced with its proposed lines in its target file only when they occur there exactly once, then
 // `evolve verdict <id> promote --reason <r> --applied-to <target>` runs (the file is put back if it fails). Factory
-// processes only: an agent run never gets it.
+// processes only: an agent run never gets it. An edit of an applied class (2026-11-22) rewrites its block's heading,
+// default and exception lines in the rules file and runs `sync-agents`, with no verdict. The Pushbacks list reads
+// `tacit show --active --unclustered` and Dismiss runs `tacit status <T-id> noise`: both forms are assumed until the
+// owner confirms them (docs/plugins/tacit-ledger.md).
 
 import { accessSync, constants, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, sep } from "node:path";
 import {
   type TacitApplied, type TacitDecision, type TacitDraft, type TacitEntryDetail, type TacitLedger, type TacitPendingEntry, type TacitPromotion,
-  type TacitPushback, type TacitRetired, type TacitRule, TacitRefusal, TacitSyncFailed, tacitIdKind,
+  type TacitOpenPushback, type TacitPushback, type TacitRetired, type TacitRule, TacitRefusal, TacitSyncFailed, tacitIdKind,
 } from "../../interfaces/tacit-ledger.js";
 import { SystemClock } from "../clock/system-clock.js";
 import { baseEnv, runProcess } from "../process/run-process.js";
 import {
-  ENCODED_ELSEWHERE_HEADING, hasEncodedElsewhere, hasRuleHeading, parseDraft, parseApplied, parsePending, parseRules, parseShow, withRuleBlock,
-  withoutRuleBlock,
+  ENCODED_ELSEWHERE_HEADING, hasEncodedElsewhere, hasRuleHeading, parseDraft, parseApplied, parsePending, parsePushbacks, parseRules, parseShow,
+  withEditedBlock, withRuleBlock, withoutRuleBlock,
 } from "./ledger-text.js";
 import { NoTacitLedger } from "./no-tacit-ledger.js";
 
-/** The owner's rules file, relative to the home: the one file the factory writes there (promote and retire), and the verdict's `--encoded-to`. */
+/** The owner's rules file, relative to the home: the one file the factory writes there (promote, edit and retire), and the verdict's `--encoded-to`. */
 export const RULES_FILE = "private/tacit/rules.md";
 /** The ledger's own records, one JSON object per line; only read. */
 const LEDGER_FILE = "private/tacit/ledger.jsonl";
 /** The view `evolve pending` reads, rebuilt by the daily brief: a verdict newer than it is not in the view yet. */
 const CANDIDATES_FILE = "private/tacit/rule-candidates.md";
+
+/** The status `tacit status` records for a dismissed pushback. */
+const NOISE = "noise";
 
 /** How long one CLI call may take before it is stopped and counted as a failure. */
 export const TACIT_CLI_TIMEOUT_MS = 30_000;
@@ -218,11 +224,54 @@ export class AgentsHomeTacitLedger implements TacitLedger {
    */
   private async rewrite(file: string, before: Buffer, after: string, args: readonly string[]): Promise<void> {
     await this.writeThen(file, before, after, "tacit", args);
+    await this.syncAgents();
+  }
+
+  /** `<home>/bin/sync-agents`: a failure throws `TacitSyncFailed` (what was written stays). */
+  private async syncAgents(): Promise<void> {
     try {
       await this.run("sync-agents", []);
     } catch (err) {
       throw new TacitSyncFailed(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  /**
+   * Edit of an applied class: no verdict, only its block. Checks first, with nothing written and no CLI run on a
+   * refusal: the ID is a class, the rules file's resolved path lies inside the resolved home, `bin/sync-agents` is
+   * executable and the file has a `## <id>` block. Then the block's heading, default and exception lines are rewritten
+   * (`withEditedBlock`; a failed write puts the file back byte for byte) and `sync-agents` runs (a failure keeps the
+   * new text).
+   */
+  async edit(id: string, rule: TacitPromotion): Promise<void> {
+    if (tacitIdKind(id) !== "class") throw new TacitRefusal(`only a class (C-) is edited, not "${id}": nothing written`);
+    const file = this.homeFile(RULES_FILE);
+    if (!this.runnable("bin/sync-agents")) throw new TacitRefusal("bin/sync-agents is missing or not executable in the agents home: nothing written");
+    const before = readFileSync(file);
+    const after = withEditedBlock(before.toString("utf8"), id, rule);
+    if (after === null) throw new TacitRefusal(`${id} has no block in ${RULES_FILE}: nothing written`);
+    try {
+      writeFileSync(file, after);
+    } catch (err) {
+      try {
+        writeFileSync(file, before);
+      } catch {
+        // The first write failed before it changed the file, or this one fails too: the first error says why.
+      }
+      throw err;
+    }
+    await this.syncAgents();
+  }
+
+  /** `tacit show --active --unclustered`: the active pushbacks in no class yet (`parsePushbacks`; the form is assumed). */
+  async pushbacks(): Promise<readonly TacitOpenPushback[]> {
+    return parsePushbacks(await this.run("tacit", ["show", "--active", "--unclustered"]));
+  }
+
+  /** `tacit status <T-id> noise`: records the pushback as noise (the form is assumed). Any other ID throws first. */
+  async dismiss(id: string): Promise<void> {
+    if (!/^T-[0-9A-Za-z_-]+$/.test(id)) throw new TacitRefusal(`only a pushback (T-) is dismissed, not "${id}"`);
+    await this.run("tacit", ["status", id, NOISE]);
   }
 
   /** `<home>/<path>` resolved, refused when it is missing or resolves outside the resolved home. */
