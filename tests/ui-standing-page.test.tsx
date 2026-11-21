@@ -6,16 +6,17 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RulesView, StandingView } from "../web/src/api.js";
+import { localDateTime } from "../web/src/lib/format.js";
 
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
 // loaded by a specifier the node check skips (as tests/ui-settings-page.test.tsx does).
 const PAGE_MODULE = "../web/src/views/rules.js";
 const { RulesPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { RulesPage: FunctionComponent };
 
-// Approvals on the Rules page (issue #300, design 05-standing-approvals and §9; moved from Settings 2026-11-16): under
-// one "Approvals" heading, an on or off switch per standing rule and Accept and Decline per pending proposal, each a
+// Auto-approve specs on the Rules page's Waiting tab (issue #300, design 05-standing-approvals and §9; moved from
+// Settings 2026-11-16, renamed from Approvals 2026-11-21): under one "Auto-approve specs" heading, an on or off switch per standing rule and Accept and Decline per pending proposal, each a
 // POST /api/v1/standing with the CSRF token; a refusal shows beside its item. Each part is hidden when it has no items,
-// and the heading when both are empty.
+// and the heading when both are empty. Who set a rule reads "you" or "a person", never the user ID, and the dates are local.
 
 const TOKEN = "tok_standing";
 const AT = "2026-11-07T00:00:00.000Z";
@@ -53,8 +54,11 @@ describe("Standing approvals section (stubbed API)", { timeout: TEST_MS }, () =>
   // Set by a test that must see the write in flight: each POST then waits until the test calls the release it left.
   let hold: boolean;
   let release: (() => void)[];
+  // The session's actor: the viewer the set-by words compare with.
+  let viewer: string;
 
   beforeEach(() => {
+    viewer = "github:2";
     posts = [];
     view = standing();
     answer = { status: 200, body: { changed: true } };
@@ -69,24 +73,35 @@ describe("Standing approvals section (stubbed API)", { timeout: TEST_MS }, () =>
       }
       if (url === "/api/v1/rules") return json(200, rules);
       if (url === "/api/v1/standing") return json(200, view);
+      if (url === "/api/v1/session") return json(200, { actor: viewer });
       return json(404, { error: "Not found." });
     }));
   });
 
-  it("shows a switch per rule with its gate, tier, threshold, created and last used", async () => {
+  it("shows a switch per rule with its gate, tier, threshold, who set it in words, the local created date and last used", async () => {
     const list = await show();
     const li = ruleItem(list, "spec-t1");
     expect(within(li).getByRole("switch", { name: "spec-t1" }).getAttribute("aria-checked")).toBe("false");
-    for (const text of ["gate spec", "tier 1", "threshold 10", `created ${AT}`, "last used not recorded", "github:1"]) expect(li.textContent).toContain(text);
-    const approvals = screen.getByRole("region", { name: "Approvals" });
-    expect(within(approvals).getByRole("heading", { level: 2 }).textContent).toBe("Approvals");
+    for (const text of ["gate spec", "tier 1", "threshold 10", `created ${localDateTime(AT)}`, "last used not recorded", "set by a person"]) expect(li.textContent).toContain(text);
+    // No user ID and no ISO time.
+    expect(li.textContent).not.toContain("github:");
+    expect(li.textContent).not.toContain(AT);
+    const approvals = screen.getByRole("region", { name: "Auto-approve specs" });
+    expect(within(approvals).getByRole("heading", { level: 2 }).textContent).toBe("Auto-approve specs");
     // No config key path next to the threshold.
     expect(li.textContent).not.toContain("standing_approvals.threshold");
   });
 
-  it("puts the pending proposals before the standing rules, both under the Approvals heading", async () => {
+  it("a rule the viewer set reads \"set by you\"", async () => {
+    viewer = "github:1";
+    const list = await show();
+    await waitFor(() => expect(ruleItem(list, "spec-t1").textContent).toContain("set by you"), SLOW);
+    expect(ruleItem(list, "spec-t1").textContent).not.toContain("github:1");
+  });
+
+  it("puts the pending proposals before the standing rules, both under the Auto-approve specs heading", async () => {
     await show();
-    const approvals = screen.getByRole("region", { name: "Approvals" });
+    const approvals = screen.getByRole("region", { name: "Auto-approve specs" });
     const lists = [...approvals.querySelectorAll("ul")].map((u) => u.getAttribute("aria-label"));
     expect(lists).toEqual(["Pending proposals", "Standing rules"]);
   });
@@ -103,14 +118,14 @@ describe("Standing approvals section (stubbed API)", { timeout: TEST_MS }, () =>
     expect(screen.queryByRole("list", { name: "Standing rules" })).toBeNull();
   });
 
-  it("hides the whole Approvals heading when there is nothing in either part", async () => {
+  it("hides the whole Auto-approve specs heading when there is nothing in either part", async () => {
     view = { ...view, proposals: [], rules: [] };
     render(createElement(QueryClientProvider, { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) }, createElement(RulesPage)));
     await screen.findByRole("heading", { name: "Rules" }, SLOW);
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/standing", expect.anything()), SLOW);
     await new Promise((r) => setTimeout(r, 50));
-    expect(screen.queryByRole("region", { name: "Approvals" })).toBeNull();
-    expect(screen.queryByText("Approvals")).toBeNull();
+    expect(screen.queryByRole("region", { name: "Auto-approve specs" })).toBeNull();
+    expect(screen.queryByText("Auto-approve specs")).toBeNull();
   });
 
   it("the switch posts the rule and its new state with the CSRF token", async () => {

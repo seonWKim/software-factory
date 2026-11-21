@@ -5,7 +5,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { GitHubBudget, Overview } from "../web/src/api.js";
+import type { GitHubBudget, ImproveView, Overview } from "../web/src/api.js";
+import { localDateTime } from "../web/src/lib/format.js";
 
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
 // loaded by a specifier the node check skips (as tests/ui-pause.test.tsx does).
@@ -80,7 +81,7 @@ describe("Health page: GitHub budget tab", () => {
     current = overview({ github_budget: budget(), github_token_days: 12 });
     const list = await show();
     const tab = await within(list).findByRole("tab", { name: "GitHub budget" }, SLOW);
-    // Added after the other tabs, which keep their order: Efficiency sits between Merged without review and it.
+    // Added after the other tabs, which keep their order: Efficiency sits between Merged without review and it (no rules read here, so no Improve tab).
     expect(tabNames(list).slice(-3)).toEqual([expect.stringContaining("Merged without review"), "Efficiency", "GitHub budget"]);
     fireEvent.click(tab);
     const panel = await screen.findByRole("region", { name: "GitHub budget" });
@@ -171,5 +172,123 @@ describe("Health page: the Checks card", () => {
     expect(firstRows[1]).toContain("GitHub labels: 2 missing (run: npm run setup)");
     expect(within(card).getByTestId("ok-checks").querySelector("summary")!.textContent).toBe("1 ok");
     expect(visibleText(card)).not.toMatch(FILE_PATH);
+  });
+});
+
+// The improve report is the Health page's Improve tab (design 09-dashboard-system, 2026-11-21; it left the Rules page),
+// read from GET /api/v1/rules's `improve`; with no such read there is no tab. Each failure group is titled in plain words (a
+// label per known error code, else "Other failure"); its code, detail and draft sit behind a Disclosure.
+describe("Health page: Improve tab", () => {
+  const IMPROVE_TOKEN = "tok_improve";
+  const report: ImproveView["report"] = {
+    window_start: "2026-11-15T00:00:00.000Z", window_end: "2026-11-16T00:00:00.000Z", created_at: "2026-11-16T00:05:00.000Z", runs: 4, patterns: 1,
+    groups: [
+      { error_code: "checks_failed", detail: "npm test exited #", runs: 2, draft: { cause: "a flaky port", fix: "pin the port", note: null }, filing: "filed: local:local-1" },
+      { error_code: "hotspot", detail: "web/src/i18n/en.ts", runs: 3, draft: null, filing: null },
+      { error_code: "weird_new_code", detail: null, runs: 2, draft: { cause: null, fix: null, note: "withheld (github_token)" }, filing: null },
+    ],
+  };
+  const improve = (over: Partial<ImproveView> = {}): ImproveView => ({ report, run_now: true, csrf_token: IMPROVE_TOKEN, ...over });
+  let rulesBody: unknown;
+  let answer: { status: number; body: unknown };
+  let posts: { url: string; init: RequestInit }[];
+  let rulesReads: number;
+
+  beforeEach(() => {
+    rulesBody = { enabled: true, entries: [], applied: null, retired: null, error: null, csrf_token: null, judge: null, home: null, turn_on: null, improve: improve() };
+    answer = { status: 200, body: { run_id: "run_queued_1" } };
+    posts = [];
+    rulesReads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        posts.push({ url, init });
+        return json(answer.status, answer.body);
+      }
+      if (url === "/api/v1/rules") {
+        rulesReads++;
+        return rulesBody === null ? json(404, { error: "Not found." }) : json(200, rulesBody);
+      }
+      if (url === "/api/v1/overview") return json(200, current);
+      if (url === "/api/v1/health") return json(200, healthBody);
+      if (url === "/api/v1/unreviewed-merges") return json(200, { merges: [] });
+      if (url === "/api/v1/pauses") return json(200, { pauses: [], csrf_token: null });
+      return json(404, { error: "Not found." });
+    }));
+  });
+
+  const section = () => screen.findByRole("region", { name: "Improve report" }, SLOW);
+
+  it("the Improve tab comes after Efficiency and opens the report; with no rules read there is no tab", async () => {
+    const list = await show();
+    const tab = await within(list).findByRole("tab", { name: "Improve" }, SLOW);
+    expect(tabNames(list).slice(-2)).toEqual(["Efficiency", "Improve"]);
+    fireEvent.click(tab);
+    await section();
+    cleanup();
+    rulesBody = null;
+    const again = await show("improve");
+    await screen.findByRole("region", { name: /Checks/ }, SLOW);
+    await waitFor(() => expect(rulesReads).toBeGreaterThan(1));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(within(again).queryByRole("tab", { name: "Improve" })).toBeNull();
+  });
+
+  it("shows the window, counts and one row per group, titled in plain words; the code, detail and draft are behind a Disclosure", async () => {
+    await show("improve");
+    const s = await section();
+    const windowText = s.querySelector("[data-improve-window]")!.textContent!;
+    expect(windowText).toContain(`Window ${localDateTime(report!.window_start)} to ${localDateTime(report!.window_end)}, reported ${localDateTime(report!.created_at)}.`);
+    expect(windowText).not.toMatch(ISO);
+    const rows = [...s.querySelectorAll<HTMLElement>("[data-improve-group]")];
+    expect(rows.map((r) => r.querySelector("[data-group-title]")!.textContent)).toEqual(["Checks failed", "Often-edited file", "Other failure"]);
+    // No raw code or file path in a title; each row is a ListRow with its runs and filing on the details line.
+    for (const r of rows) {
+      expect(r.matches("[data-list-row]")).toBe(true);
+      const title = r.querySelector("[data-group-title]")!.textContent!;
+      expect(title).not.toMatch(/\b[a-z]+_[a-z_]+\b/);
+      expect(title).not.toMatch(FILE_PATH);
+    }
+    expect(rows[0]!.querySelector("[data-details]")!.textContent).toContain("2 runs");
+    expect(rows[0]!.querySelector("[data-filing]")!.textContent).toBe("filed: local:local-1");
+    expect(rows[1]!.querySelector("[data-filing]")!.textContent).toBe("not filed yet");
+    // The draft opens under "Draft and details", lazily.
+    const toggle = within(rows[0]!).getByText("Draft and details").closest("summary")!;
+    expect(rows[0]!.querySelector("[data-draft]")).toBeNull();
+    fireEvent.click(toggle);
+    expect((await waitFor(() => rows[0]!.querySelector("[data-draft]")!)).textContent).toContain("a flaky port");
+    expect(rows[0]!.querySelector("[data-draft]")!.textContent).toContain("pin the port");
+    expect(rows[0]!.querySelector("code")!.textContent).toBe("checks_failed");
+    fireEvent.click(within(rows[2]!).getByText("Draft and details").closest("summary")!);
+    expect((await waitFor(() => rows[2]!.querySelector("[data-draft]")!)).textContent).toBe("withheld (github_token)");
+  });
+
+  it("with no report it says so; with no run_now there is no Run now button", async () => {
+    rulesBody = { ...(rulesBody as object), improve: improve({ report: null, run_now: false, csrf_token: null }) };
+    await show("improve");
+    const s = await section();
+    expect(s.textContent).toContain("no improve run has reported yet");
+    expect(within(s).queryByRole("button", { name: "Run now" })).toBeNull();
+  });
+
+  it("Run now posts to POST /api/v1/improve/run with the x-csrf-token header; a 200 shows the run_id", async () => {
+    await show("improve");
+    const s = await section();
+    fireEvent.click(within(s).getByRole("button", { name: "Run now" }));
+    expect((await within(s).findByRole("status")).textContent).toBe("Improve run queued: run_queued_1");
+    expect(posts.map((p) => p.url)).toEqual(["/api/v1/improve/run"]);
+    expect(new Headers(posts[0]!.init.headers).get("x-csrf-token")).toBe(IMPROVE_TOKEN);
+    expect(JSON.parse(String(posts[0]!.init.body))).toEqual({});
+  });
+
+  it("a 409 shows its error and run_id, and the rules are not reloaded into a success", async () => {
+    answer = { status: 409, body: { error: "An improve run is already queued (run_busy).", run_id: "run_busy" } };
+    await show("improve");
+    const s = await section();
+    const before = rulesReads;
+    fireEvent.click(within(s).getByRole("button", { name: "Run now" }));
+    const alert = await within(s).findByRole("alert");
+    expect(alert.textContent).toContain("An improve run is already queued (run_busy).");
+    expect(within(s).queryByRole("status")).toBeNull();
+    expect(rulesReads).toBe(before);
   });
 });

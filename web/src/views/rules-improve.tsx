@@ -3,14 +3,19 @@ import { useState } from "react";
 import { API, type ImproveGroupView, type ImproveView, postImproveRun } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { Card } from "../components/ui/card.js";
+import { Disclosure } from "../components/ui/disclosure.js";
 import { KeyValue } from "../components/ui/key-value.js";
+import { ListRow, ROW_TITLE } from "../components/ui/list-row.js";
+import type { MessageKey } from "../i18n/en.js";
 import { Notice } from "../components/ui/notice.js";
 import { t } from "../i18n/index.js";
 import { localDateTime } from "../lib/format.js";
-import { line, muted } from "./rules-shared.js";
+import { ROW_PAD, STACK_NARROW, line, muted } from "./rules-shared.js";
 
-// The Rules page's improve report (design 07-self-improvement, 2026-11-16), from GET /api/v1/rules's `improve`: its
-// window and counts, then one row per failure group with its draft and filing. Run now shows only when `run_now` says
+// The improve report, the Health page's Improve tab (design 07-self-improvement, 2026-11-16; moved off the Rules page
+// 2026-11-21), from GET /api/v1/rules's `improve`: its window and counts, then one row per failure group titled in
+// plain words (a label per known error code, else "Other failure"; never the code or a file path), with its runs and
+// filing on the details line and its detail, draft and code behind a Disclosure. Run now shows only when `run_now` says
 // the viewer may run it (approve_spec); it posts to POST /api/v1/improve/run and shows the queued run_id, or a 409's
 // refusal and the run already queued, with no reload.
 
@@ -52,34 +57,81 @@ function RunNow({ token }: { token: string }) {
   );
 }
 
-/** One failure group: its error code and runs, its detail, its draft (cause and fix, or a note) and its filing. */
+/** The plain title of each known error code; any other code reads "Other failure". */
+const CODE_TITLE: Record<string, MessageKey> = {
+  hotspot: "rules.code.hotspot",
+  pushback: "rules.code.pushback",
+  checks_failed: "rules.code.checksFailed",
+  checks_env: "rules.code.checksFailed",
+  tests_failed: "rules.code.testsFailed",
+  flaky_test: "rules.code.flakyTest",
+  spec_conflict: "rules.code.specConflict",
+  agent_stalled: "rules.code.agentStalled",
+  agent_timed_out: "rules.code.agentTimedOut",
+  start_to_close: "rules.code.agentTimedOut",
+  schedule_to_close: "rules.code.agentTimedOut",
+  agent_failed: "rules.code.agentFailed",
+  exception: "rules.code.exception",
+  no_commits: "rules.code.noCommits",
+  scope_violation: "rules.code.outOfScope",
+  out_of_scope: "rules.code.outOfScope",
+  push_failed: "rules.code.pushFailed",
+  git_failed: "rules.code.pushFailed",
+  merge_conflict: "rules.code.mergeConflict",
+  session_lost: "rules.code.sessionLost",
+  not_resumable: "rules.code.sessionLost",
+  abandoned: "rules.code.sessionLost",
+  warm_failed: "rules.code.warmFailed",
+  diff_too_large: "rules.code.diffTooLarge",
+  rate_limited: "rules.code.rateLimited",
+  invalid_output: "rules.code.invalidOutput",
+  forge_auth: "rules.code.forgeAuth",
+  egress_blocked: "rules.code.egressBlocked",
+};
+
+/** A failure group's one-line title in plain words. */
+export const groupTitle = (code: string): string => t(CODE_TITLE[code] ?? "rules.code.other");
+
+/** One failure group: its plain title, runs and filing, then its detail, draft and code behind a Disclosure. */
 function ImproveGroup({ g }: { g: ImproveGroupView }) {
+  const title = groupTitle(g.error_code);
   return (
-    <li data-improve-group={g.error_code} className="min-w-0 space-y-1 px-3 py-2">
-      <p className="flex flex-wrap items-baseline gap-x-2">
-        <span className="font-mono text-sm break-all">{g.error_code}</span>
-        <span className="text-xs text-text-2 tabular-nums">{t("rules.improveRuns")}: {g.runs}</span>
-      </p>
-      {g.detail !== null && <p className={`${line} text-text-2`}>{g.detail}</p>}
-      <KeyValue
-        items={[
-          {
-            key: "draft",
-            term: <span className="font-semibold">{t("rules.improveDraft")}</span>,
-            valueProps: { "data-draft": true },
-            value: (
-              <div className="space-y-0.5">
-                {g.draft === null && <p className={muted}>{t("rules.improveNoDraft")}</p>}
-                {g.draft?.cause != null && <p className={line}>{t("rules.improveCause", { cause: g.draft.cause })}</p>}
-                {g.draft?.fix != null && <p className={line}>{t("rules.improveFix", { fix: g.draft.fix })}</p>}
-                {g.draft?.note != null && <p className={line}>{g.draft.note}</p>}
-              </div>
-            ),
-          },
-          { key: "filing", term: <span className="font-semibold">{t("rules.improveFiling")}</span>, valueProps: { "data-filing": true }, value: <span className={g.filing === null ? muted : line}>{g.filing ?? t("rules.improveNotFiled")}</span> },
-        ]}
-      />
-    </li>
+    <ListRow
+      data-improve-group={g.error_code}
+      className={ROW_PAD}
+      title={<p data-group-title className={`${ROW_TITLE} font-medium`} title={title}>{title}</p>}
+      details={
+        <>
+          <span className="tabular-nums">{t("rules.improveRuns", { count: g.runs })}</span>
+          <span data-filing className="min-w-0 break-keep">{g.filing ?? t("rules.improveNotFiled")}</span>
+        </>
+      }
+    >
+      <Disclosure lazy summary={t("rules.improveShowDraft")}>
+        <div className="mt-2 space-y-2">
+          {g.detail !== null && <p className={`${line} text-text-2`}>{g.detail}</p>}
+          <KeyValue
+            className={STACK_NARROW}
+            items={[
+              {
+                key: "draft",
+                term: <span className="font-semibold">{t("rules.improveDraft")}</span>,
+                valueProps: { "data-draft": true },
+                value: (
+                  <div className="space-y-0.5">
+                    {g.draft === null && <p className={muted}>{t("rules.improveNoDraft")}</p>}
+                    {g.draft?.cause != null && <p className={line}>{t("rules.improveCause", { cause: g.draft.cause })}</p>}
+                    {g.draft?.fix != null && <p className={line}>{t("rules.improveFix", { fix: g.draft.fix })}</p>}
+                    {g.draft?.note != null && <p className={line}>{g.draft.note}</p>}
+                  </div>
+                ),
+              },
+              { key: "code", term: <span className="font-semibold">{t("rules.improveCode")}</span>, value: <code className="font-mono text-xs break-all">{g.error_code}</code> },
+            ]}
+          />
+        </div>
+      </Disclosure>
+    </ListRow>
   );
 }
 

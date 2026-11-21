@@ -60,7 +60,7 @@ The "Could not load" message in the `bad` tone, role alert.
 
 ## PageHeader
 
-The top of every page: the one h1 in the page title role (`text-xl font-semibold`), an optional description under it (`text-sm`, `text-2`) and optional actions at the end, the primary action last. 24px below it. States: with or without description, with or without actions; actions wrap below the title when narrow.
+The top of every page: the one h1 in the page title role (`text-xl font-semibold`), an optional `badge` beside it (a Badge with the page's count, such as the Rules page's waiting count; never an action), an optional description under it (`text-sm`, `text-2`) and optional actions at the end, the primary action last. 24px below it. States: with or without badge, with or without description, with or without actions; actions wrap below the title when narrow.
 
 ## Input
 
