@@ -153,8 +153,8 @@ export interface TransitionInput {
   enqueue?: Omit<NewRun, "work_item_id">;
   /**
    * Cancel every `queued` run of this item in the same transaction (waiting on `not_before` or not), so no
-   * worker can claim one afterwards. Running runs are left alone. Cancelled runs are unacknowledged, with no
-   * outcome and no `finished_at`, and go through the controller's ack path like any finished run.
+   * worker can claim one afterwards; before `enqueue`, which is kept. A move to `CLOSED` does this without the flag. Running
+   * runs are left alone. Cancelled runs are unacknowledged, with no outcome and no `finished_at`, and go through the ack path.
    */
   cancel_queued_runs?: boolean;
   /**
@@ -370,11 +370,11 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
    * parent link) and enqueues `enqueue` in the same transaction, only when created.
    */
   createWorkItem(
-    input: NewWorkItem,
-    actor: Actor,
-    opts?: { enqueue?: Omit<NewRun, "work_item_id">; detail?: StateChangeDetail },
+    input: NewWorkItem, actor: Actor, opts?: { enqueue?: Omit<NewRun, "work_item_id">; detail?: StateChangeDetail },
   ): Promise<{ item: WorkItem; created: boolean }>;
   getWorkItem(id: WorkItemId): Promise<WorkItem | null>;
+  /** IDs of the work items whose ID starts with `prefix`, in ID order: a key range, no list scan (design 05-sources, short IDs); none for "". Read-only. */
+  findWorkItemIds(prefix: string): Promise<WorkItemId[]>;
   getWorkItemBySource(type: SourceType, sourceId: string): Promise<WorkItem | null>;
   /**
    * The item in `project` whose PR (factory or adopted) has this change_ref (oldest if several). A row with

@@ -60,7 +60,7 @@ The "Could not load" message in the `bad` tone, role alert.
 
 ## PageHeader
 
-The top of every page: the one h1 in the page title role (`text-xl font-semibold`), an optional description under it (`text-sm`, `text-2`) and optional actions at the end, the primary action last. 24px below it. States: with or without description, with or without actions; actions wrap below the title when narrow.
+The top of every page: the one h1 in the page title role (`text-xl font-semibold`), an optional `badge` beside it (a Badge with the page's count, such as the Rules page's waiting count; never an action), an optional description under it (`text-sm`, `text-2`) and optional actions at the end, the primary action last. 24px below it. States: with or without badge, with or without description, with or without actions; actions wrap below the title when narrow.
 
 ## Input
 
@@ -120,7 +120,7 @@ One choice among a few views (`role=group` with an `aria-label`): a 32 px box wi
 
 ## Link and ID
 
-`web/src/components/ui/link-style.ts` holds both. `LINK_CLASS` (`text-text-1 hover:underline`) is every link in the views, item titles included; the sidebar keeps its own. `ID_CLASS` (`font-mono text-text-3 hover:underline`) is an item or source ID, linked or not (Tasks row ID, source ID links, the item page header ID). Accent is never a text colour: only the primary Button and the selected-tab underline use it, and `tests/ui-link-style.test.tsx` fails on `text-accent` anywhere under `web/src`.
+`web/src/components/ui/link-style.ts` holds both. `LINK_CLASS` (`text-text-1 hover:underline`) is every link in the views, item titles included; the sidebar keeps its own. `ID_CLASS` (`font-mono text-text-3 hover:underline`) is an item or source ID, linked or not (source ID links, the item page header ID). Accent is never a text colour: only the primary Button and the selected-tab underline use it, and `tests/ui-link-style.test.tsx` fails on `text-accent` anywhere under `web/src`.
 
 ## Tabs
 

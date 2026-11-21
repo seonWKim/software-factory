@@ -622,6 +622,24 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
   });
 
   describe("read-only queries", () => {
+    it("findWorkItemIds returns the IDs that start with the prefix: the full ID, a short one, `wi_` alone; none for an empty or overlong prefix", async () => {
+      const { store } = await make();
+      // 17 items: two of them share their first hex character (pigeonhole), so a one-character prefix matches several.
+      const ids: WorkItemId[] = [];
+      for (let n = 1; n <= 17; n++) ids.push((await store.createWorkItem(issue(n), system)).item.id);
+      const [a] = ids as [WorkItemId];
+      expect(await store.findWorkItemIds(a)).toEqual([a]);
+      expect(await store.findWorkItemIds(a.slice(0, 11))).toContain(a);
+      expect(await store.findWorkItemIds("wi_")).toEqual([...ids].sort());
+      const first = ids.map((id) => id.slice(0, 4)).find((p, i, all) => all.indexOf(p) !== i)!;
+      const shared = ids.filter((id) => id.startsWith(first)).sort();
+      expect(shared.length).toBeGreaterThan(1);
+      expect(await store.findWorkItemIds(first)).toEqual(shared);
+      expect(await store.findWorkItemIds(`${a}0`)).toEqual([]);
+      expect(await store.findWorkItemIds("")).toEqual([]);
+      expect(await store.findWorkItemIds("wi_g")).toEqual([]);
+    });
+
     it("listWorkItemsWhere filters by stage, blocked_on and closed, most recently updated first", async () => {
       const { store, clock } = await make();
       const ids = [];
@@ -1106,6 +1124,29 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
         expect((await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))?.idempotency_key).toBe("t");
       },
     );
+
+    // Bug: the missing model credential's pause lives in one process (or runs out at a time), so another worker
+    // claims agent runs that fail, or the pause starts again on every check and logs once per tick.
+    it("the model_credential pause is one row every store on the database sees: started once, in effect until ended", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "sf-credential-pause-"));
+      const clock = new FakeClock();
+      const open = async () => {
+        const s = new SqlFactoryStore(new SqliteDriver(join(dir, "factory.db")), clock);
+        await s.migrate();
+        return s;
+      };
+      const [a, b] = [await open(), await open()];
+      const forever = "9999-12-31T23:59:59.999Z" as Timestamp;
+      expect((await a.pauseClaims(forever, "model_credential")).started).toBe(true);
+      expect((await b.pauseClaims(forever, "model_credential")).started).toBe(false);
+      clock.advance(400 * 24 * 3_600_000);
+      expect(await b.getClaimPause("model_credential")).toBe(forever);
+      expect(await b.endClaimPause("model_credential")).toEqual({ ended: true });
+      expect(await a.getClaimPause("model_credential")).toBeNull();
+      expect((await a.pauseClaims(forever, "model_credential")).started).toBe(true);
+      await a.close();
+      await b.close();
+    });
 
     it("ending a model_stall pause also clears model_stall_since, even after the probe time passed", async () => {
       const { store, clock } = await make();
@@ -1668,6 +1709,28 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
         id: item.id, expected_version: 3, patch: {}, actor: system, reason: "run_ignored", ack_run: runs[0]!.id,
       });
       expect(ack.ok).toBe(true);
+    });
+
+    it("any close cancels the item's queued runs without the flag, a merge's too; an already closed item's transition cancels nothing", async () => {
+      const { store, clock } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      const queue = async (v: number, key: string) => {
+        const r = await store.transition({ id: item.id, expected_version: v, patch: {}, actor: system, reason: "x", enqueue: { kind: "implement", idempotency_key: key } });
+        if (!r.ok) throw new Error(r.reason);
+        return r.enqueued!;
+      };
+      const retry = await queue(1, "i:a1"); // a retry queued while the item was open (a takeover's, before 2026-11-22)
+      const merged = await store.transition({
+        id: item.id, expected_version: 2, actor: system, reason: "local_merged",
+        patch: { stage: "CLOSED", close_reason: "completed", merge_sha: "m".repeat(40), blocked_on: "none", blocked_reason: null },
+      });
+      if (!merged.ok) throw new Error(merged.reason);
+      expect(merged.cancelled).toEqual([retry.id]);
+      expect(await store.getRun(retry.id)).toMatchObject({ status: "cancelled", acknowledged_at: null, lease: null });
+      clock.advance(120_000);
+      expect(await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE })).toBeNull();
+      const late = await queue(3, "late"); // a transition on a closed item is no close
+      expect((await store.getRun(late.id))!.status).toBe("queued");
     });
 
     it("leaves a running run alone, and cancels nothing without the flag or when the transition loses", async () => {

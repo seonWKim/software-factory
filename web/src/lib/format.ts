@@ -90,6 +90,11 @@ export function shortSource(id: string): string {
   return m ? m[1]! + m[2]!.replaceAll("-phase-", "-p") : id;
 }
 
+/** A work item's short ID (design 09-dashboard-item): "c86970ff" for "wi_c86970ff…", the 8 hex characters after `wi_` that the CLI accepts; any other ID as it is. */
+export function shortItemId(id: string): string {
+  return /^wi_([0-9a-f]{8})/.exec(id)?.[1] ?? id;
+}
+
 /** 38521431 → "38.5M"; 29285 → "29.3k". */
 export function tokens(n: number | null | undefined): string {
   if (n === null || n === undefined) return t("format.none");

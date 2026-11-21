@@ -2,11 +2,12 @@
 // @ts-nocheck -- tsconfig.test.json has no DOM or JSX; like the other ui tests this file typechecks under the web config.
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { shortSource } from "../web/src/lib/format.js";
+import { shortItemId, shortSource } from "../web/src/lib/format.js";
 import { ItemTitle } from "../web/src/views/common.js";
 
 // Local item ids (`local-<uuid>`) are 40+ characters; shown in full they widened the Floor, Queue and Work items
-// pages past a 390px screen. They show short, like `#N` for issues, with the full id kept on hover.
+// pages past a 390px screen. They show short, like `#N` for issues, with the full id kept on hover. A work item itself
+// shows its own short ID (shortItemId, design 09-dashboard-item); shortSource stays for source references.
 
 const LOCAL = "local-30331a68-38a4-4a4e-83ed-30c3d0b7a040";
 
@@ -22,6 +23,14 @@ describe("shortSource", () => {
   it("still shortens issue ids to #N and leaves other ids as they are", () => {
     expect(shortSource("o/r#192")).toBe("#192");
     expect(shortSource("system:improve:x")).toBe("system:improve:x");
+  });
+});
+
+describe("shortItemId", () => {
+  it("is the 8 hex characters after wi_, the short ID the CLI accepts; any other ID as it is", () => {
+    expect(shortItemId("wi_c86970ff1a73401c952d9228d6156b6d")).toBe("c86970ff");
+    expect(shortItemId("wi_spec1")).toBe("wi_spec1");
+    expect(shortItemId(LOCAL)).toBe(LOCAL);
   });
 });
 

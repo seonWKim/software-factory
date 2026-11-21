@@ -5,11 +5,12 @@
 // each value through the Withholder before it leaves (api.ts); `refs` are the same-repo issue numbers it names.
 //
 // Precedence, first match wins: closed, blocked on a person or the budget, running, a claim
-// pause that stops this run's kind, a dependency, a phase hold, a coordination hold, a retry's not_before, the
-// queue position, and last nothing (no run moves it). An open alarm that affects the item is named after the
+// pause that stops this run's kind, a dependency, a phase hold, a coordination hold, a run kind no worker claims
+// (`worker_kinds`: it waits for a session), a retry's not_before, the queue position, and last nothing (no run moves it). An open alarm that affects the item is named after the
 // reason (withAlarms), whichever rule gave it.
 
 import { DEPENDENCY_CLOSED, DEPENDENCY_CYCLE, type ItemPhase, PERSON_PHASES, isClosedPhase, phaseOf } from "../core/phase.js";
+import { isModelRunKind } from "../core/model-choice.js";
 import { failureClass, IMPLEMENT_KINDS, retryClears } from "../core/policy.js";
 import type { BlockedOn, ClaimDecision, CloseReason, RunKind, RunOutcome, Stage } from "../core/types.js";
 import { FAILURE_DESCRIPTIONS } from "./failures.js";
@@ -38,11 +39,11 @@ export type ReasonCode =
   | "recurring_none" | "recurring_stalled" | "recurring_rate_limited" | "recurring_infra" | "recurring_own"
   | "run_failed" | "person_idle" | "person"
   | "deadlock" | "deadlock_unknown" | "running"
-  | "paused_rate_limit" | "paused_model_stall" | "paused_forge_auth" | "paused_preflight"
+  | "paused_rate_limit" | "paused_model_stall" | "paused_model_credential" | "paused_forge_auth" | "paused_preflight"
   | "dependency" | "dependency_unknown"
   | "phase_parent_one" | "phase_parent_many" | "phase_parent" | "phase_prev_ref" | "phase_prev" | "ci" | "other_issue"
   | "held_running" | "held_pr" | "held_waiting"
-  | "not_before" | "queued_at" | "queued" | "idle";
+  | "not_before" | "queued_at" | "queued" | "waits_session" | "idle";
 
 export interface Why {
   code: WhyCode;
@@ -65,8 +66,12 @@ export interface Why {
 export interface ClaimPauses {
   rate_limit?: string | null;
   model_stall?: string | null;
+  /** The missing model credential's pause (design §5 Restarts): it stops agent runs only. */
+  model_credential?: string | null;
   forge_auth?: string | null;
   preflight_access?: string | null;
+  /** The run kinds workers claim now (`worker_kinds`); a queued run of another kind waits for a session. Absent or null: every kind. */
+  worker_kinds?: readonly RunKind[] | null;
 }
 
 export interface WhyInput {
@@ -179,6 +184,7 @@ function human(i: WhyInput["item"], p: ItemPhase, failure: HeldFailure | null): 
 function pause(p: ClaimPauses, kind: RunKind): Why | null {
   if (p.rate_limit) return why("paused", "paused_rate_limit", "factory", { until: p.rate_limit });
   if (p.model_stall) return why("paused", "paused_model_stall", "factory");
+  if (p.model_credential && isModelRunKind(kind)) return why("paused", "paused_model_credential", "human");
   if (!IMPLEMENT_KINDS.includes(kind)) return null;
   if (p.forge_auth) return why("paused", "paused_forge_auth", "human", { until: p.forge_auth });
   if (p.preflight_access) return why("paused", "paused_preflight", "human", { until: p.preflight_access });
@@ -232,6 +238,7 @@ export function whyWaiting(x: WhyInput): Why {
   if (p === "dependency_hold") return dependency(i.blocked_reason);
   if (p === "phase_hold" || p === "phases_open" || p === "upstream_wait" || p === "ci_wait" || x.phases.waiting_on > 0) return splitWait(p, x.phases);
   if (heldBy(d, run)) return why("held", HOLDER[d!.holder_kind], "other_item", { holder: holderName(d!) }, holder);
+  if (run && x.pauses.worker_kinds && !x.pauses.worker_kinds.includes(run.kind)) return why("queued", "waits_session", "human", { kind: run.kind });
   if (run && x.not_before) return why("not_before", "not_before", "factory", { until: x.not_before });
   if (run) return run.position ? why("queued", "queued_at", "factory", { position: run.position }) : why("queued", "queued", "factory", { kind: run.kind });
   return why("idle", "idle", "human");

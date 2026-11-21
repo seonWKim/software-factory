@@ -54,6 +54,8 @@ import { Withholder } from "./withhold.js";
 export const RULES_PATH = "/api/v1/rules";
 export const RULE_VERDICT_PATH = "/api/v1/rules/verdict";
 export const RULE_ENTRY_PATH = "/api/v1/rules/entry";
+export const RULE_EDIT_PATH = "/api/v1/rules/edit";
+export const PUSHBACK_DISMISS_PATH = "/api/v1/rules/pushbacks/dismiss";
 
 /** The longest reason and rule text (each of wording, default and exception) a verdict takes. */
 export const MAX_REASON = 1000;
@@ -84,13 +86,25 @@ export async function uiTacit(
   build: (name: string) => Promise<TacitLedger>,
   o: Omit<LiveOpts, "integrations" | "config"> & { config: Omit<LiveOpts["config"], "project"> },
 ): Promise<UiTacit> {
-  // The holder delegates no `show` or `retired`: the page reads them from the plugin the holder last built (a failed build keeps both).
+  // The holder delegates no `show`, `retired`, `edit`, `pushbacks` or `dismiss`: the page reaches them on the plugin the
+  // holder last built (a failed build keeps it). `pushbacks` is there only while that plugin has it, so a plugin
+  // without it shows no Pushbacks list.
   let inUse: TacitLedger | undefined;
   const live = await LiveTacit.start(configured, async (n) => (inUse = await build(n)), o.log);
-  const ledger = Object.assign(live, {
+  const missing = (what: string) => new TacitRefusal(`this rules plugin cannot ${what}`);
+  const ledger: typeof live & TacitLedger = Object.assign(live, {
     show: async (id: string) => (await inUse?.show?.(id)) ?? null,
     retired: async () => (await inUse?.retired?.()) ?? [],
+    edit: async (id: string, rule: TacitPromotion) => {
+      if (!inUse?.edit) throw missing("edit a rule");
+      await inUse.edit(id, rule);
+    },
+    dismiss: async (id: string) => {
+      if (!inUse?.dismiss) throw missing("dismiss a pushback");
+      await inUse.dismiss(id);
+    },
   });
+  Object.defineProperty(ledger, "pushbacks", { get: () => inUse?.pushbacks?.bind(inUse) });
   const settings = new LiveSettings({ ...o, config: { ...o.config, project: { key: "", label: "" } }, integrations: [ledger] });
   return { ledger, settings, home: () => checkAgentsHome(process.env) };
 }
@@ -121,7 +135,7 @@ export async function readRules(d: PauseDeps): Promise<ApiResult> {
     return "error" in who ? await text(who.error) : null;
   };
   if (!tacit?.enabled) {
-    if (!d.tacit) return { status: 200, value: { enabled: false, entries: [], applied: null, retired: null, error: null, csrf_token: null, judge: null, home: null, turn_on: null, improve } };
+    if (!d.tacit) return { status: 200, value: { enabled: false, entries: [], applied: null, retired: null, pushbacks: null, error: null, csrf_token: null, judge: null, home: null, turn_on: null, improve } };
     const judge = await judgeOf("turns the ledger on");
     const home = d.tacit.home();
     // The whole entry with `tacit` set to the plugin name: other integrations keep theirs, and no path goes in.
@@ -130,7 +144,7 @@ export async function readRules(d: PauseDeps): Promise<ApiResult> {
     return {
       status: 200,
       value: {
-        enabled: false, entries: [], applied: null, retired: null, error: null, csrf_token: judge === null ? d.pauses!.csrfToken : null, judge,
+        enabled: false, entries: [], applied: null, retired: null, pushbacks: null, error: null, csrf_token: judge === null ? d.pauses!.csrfToken : null, judge,
         home: { path: await text(home.path), missing: home.missing, homes }, turn_on: turnOn, improve,
       },
     };
@@ -163,7 +177,7 @@ export async function readRules(d: PauseDeps): Promise<ApiResult> {
   return {
     status: 200,
     value: {
-      enabled: true, entries: shown, excerpts, applied: await readApplied(tacit, text), retired: await readRetired(tacit, text),
+      enabled: true, entries: shown, excerpts, applied: await readApplied(tacit, text), retired: await readRetired(tacit, text), pushbacks: await readPushbacks(tacit, text),
       error: error === null ? null : await text(error), csrf_token: d.pauses?.csrfToken ?? null, judge, home: null, turn_on: null, improve,
     },
   };
@@ -270,6 +284,21 @@ async function readRetired(tacit: TacitLedger, text: (v: string) => Promise<stri
   }
 }
 
+/**
+ * The active unclustered pushbacks, each text through the Withholder: `{ rows, error }`, `error` a failed read (no
+ * rows then); null when the ledger has no `pushbacks`, so the page shows no Pushbacks list.
+ */
+async function readPushbacks(tacit: TacitLedger, text: (v: string) => Promise<string>) {
+  const list = tacit.pushbacks;
+  if (list === undefined) return null;
+  try {
+    const rows = await list.call(tacit);
+    return { rows: await Promise.all(rows.map(async (r) => ({ id: await text(r.id), pushback: await text(r.pushback), date: r.date ?? null }))), error: null };
+  } catch (err) {
+    return { rows: [], error: await text(`The pushbacks could not be read: ${errorText(err)}`) };
+  }
+}
+
 /** This checkout: the repo whose paths the gone-from-the-repo signal checks (src/ui → the root, as the app's dist is found). */
 const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -362,10 +391,8 @@ const RULE_FIELDS = ["text", "default", "exception"] as const;
 
 /** The POST body as a verdict, or why it is not one. */
 function parseVerdict(body: unknown): VerdictBody | string {
-  if (typeof body !== "object" || body === null || Array.isArray(body)) return "the body must be a JSON object";
-  const b = body as Record<string, unknown>;
-  const extra = Object.keys(b).find((k) => !["id", "verdict", "reason", ...RULE_FIELDS].includes(k));
-  if (extra) return `unknown field "${extra}"`;
+  const b = bodyOf(body, ["id", "verdict", "reason", ...RULE_FIELDS]);
+  if (typeof b === "string") return b;
   if (typeof b.id !== "string" || b.id.trim() === "") return "id must be a non-empty string";
   if (!RULE_VERDICTS.includes(b.verdict as RuleVerdict)) return `verdict must be one of ${RULE_VERDICTS.join(", ")}`;
   if (typeof b.reason !== "string" || b.reason.trim() === "" || b.reason.length > MAX_REASON) return `reason must be 1 to ${MAX_REASON} characters`;
@@ -375,10 +402,23 @@ function parseVerdict(body: unknown): VerdictBody | string {
     const given = RULE_FIELDS.find((k) => b[k] !== undefined);
     return given ? `only promote of a class (C-) takes a ${given}` : v;
   }
+  const rule = ruleOf(b);
+  return typeof rule === "string" ? rule : { ...v, rule };
+}
+
+/** The rule's three fields of a body (promote of a class, or an edit), each 1 to MAX_RULE_TEXT characters, or why not. */
+function ruleOf(b: Record<string, unknown>): TacitPromotion | string {
   const bad = RULE_FIELDS.find((k) => typeof b[k] !== "string" || b[k].trim() === "" || b[k].length > MAX_RULE_TEXT);
   if (bad) return `${bad} must be 1 to ${MAX_RULE_TEXT} characters`;
   const field = (k: (typeof RULE_FIELDS)[number]) => (b[k] as string).trim();
-  return { ...v, rule: { wording: field("text"), default: field("default"), exception: field("exception") } };
+  return { wording: field("text"), default: field("default"), exception: field("exception") };
+}
+
+/** A POST body as an object with only `keys`, or why it is not one. */
+function bodyOf(body: unknown, keys: readonly string[]): Record<string, unknown> | string {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return "the body must be a JSON object";
+  const extra = Object.keys(body).find((k) => !keys.includes(k));
+  return extra ? `unknown field "${extra}"` : (body as Record<string, unknown>);
 }
 
 /**
@@ -408,3 +448,72 @@ export async function writeRuleVerdict(d: PauseDeps, p: UiPauses, body: unknown)
   p.log.info("rule verdict sent", { id: v.id, verdict: v.verdict, actor: who.user, edited: v.rule !== undefined });
   return { status: 200, value: { id: v.id, verdict: v.verdict } };
 }
+
+/**
+ * The ledger for a rules write, with the owner check, or the answer that refuses it: 409 with no ledger or one without
+ * the method `has` names, 403 for anyone but the owner. Every refusal comes before the ledger's CLI runs.
+ */
+async function ownerLedger(d: PauseDeps, p: UiPauses, has: "edit" | "dismiss", does: string): Promise<{ tacit: TacitLedger; user: UserId } | ApiResult> {
+  await d.tacit?.settings.refresh();
+  const tacit = d.tacit?.ledger;
+  if (!tacit?.enabled) return { status: 409, value: { error: "No tacit ledger is on: turn it on from the Rules page." } };
+  if (tacit[has] === undefined) return { status: 409, value: { error: `This rules plugin cannot ${has === "edit" ? "edit a rule" : "dismiss a pushback"}.` } };
+  const who = await ownerOf(d, p, does);
+  if ("error" in who) return { status: 403, value: { error: who.error } };
+  return { tacit, user: who.user };
+}
+
+/**
+ * POST /api/v1/rules/edit with `{ id, text, default, exception }`, after the request guards: 400 for an ID that is not
+ * a class or a bad field (each 1 to 2000 characters), 409 with no ledger or when the plugin refuses with nothing
+ * written (no block for the ID, a failed check), 403 for anyone but the owner, 502 when the write failed (the file put
+ * back) or the rule was saved but sync-agents failed; else 200. No verdict is sent and no reason taken.
+ */
+export async function writeRuleEdit(d: PauseDeps, p: UiPauses, body: unknown): Promise<ApiResult> {
+  const b = bodyOf(body, ["id", ...RULE_FIELDS]);
+  if (typeof b === "string") return { status: 400, value: { error: b } };
+  const id = typeof b.id === "string" ? b.id.trim() : "";
+  if (tacitIdKind(id) !== "class") return { status: 400, value: { error: "id must be a class (C-) ID" } };
+  const rule = ruleOf(b);
+  if (typeof rule === "string") return { status: 400, value: { error: rule } };
+  const own = await ownerLedger(d, p, "edit", "edits rules");
+  if (!("tacit" in own)) return own;
+  try {
+    await own.tacit.edit!(id, rule);
+  } catch (err) {
+    if (err instanceof TacitRefusal) return { status: 409, value: { error: `The edit was refused: ${errorText(err)}` } };
+    if (err instanceof TacitSyncFailed) return { status: 502, value: { error: `The rule was saved, but sync-agents failed: ${errorText(err)}` } };
+    return { status: 502, value: { error: `The rule could not be saved: ${errorText(err)}` } };
+  }
+  p.log.info("rule edited", { id, actor: own.user });
+  return { status: 200, value: { id } };
+}
+
+/**
+ * POST /api/v1/rules/pushbacks/dismiss with `{ id }` (a `T-` ID), after the request guards: 400 for any other body,
+ * 409 with no ledger or one that cannot dismiss, 403 for anyone but the owner, 502 when the ledger's CLI fails; else
+ * 200. The ledger records the pushback as noise.
+ */
+export async function writePushbackDismiss(d: PauseDeps, p: UiPauses, body: unknown): Promise<ApiResult> {
+  const b = bodyOf(body, ["id"]);
+  if (typeof b === "string") return { status: 400, value: { error: b } };
+  const id = typeof b.id === "string" ? b.id.trim() : "";
+  if (!/^T-[0-9A-Za-z_-]+$/.test(id)) return { status: 400, value: { error: "id must be a pushback (T-) ID" } };
+  const own = await ownerLedger(d, p, "dismiss", "dismisses pushbacks");
+  if (!("tacit" in own)) return own;
+  try {
+    await own.tacit.dismiss!(id);
+  } catch (err) {
+    if (err instanceof TacitRefusal) return { status: 409, value: { error: `The dismiss was refused: ${errorText(err)}` } };
+    return { status: 502, value: { error: `The pushback could not be dismissed: ${errorText(err)}` } };
+  }
+  p.log.info("pushback dismissed", { id, actor: own.user });
+  return { status: 200, value: { id } };
+}
+
+/** The Rules page's write routes by path (server.ts): each behind the write guards, then its own owner check. */
+export const RULE_WRITES: Readonly<Record<string, (d: PauseDeps, p: UiPauses, body: unknown) => Promise<ApiResult>>> = {
+  [RULE_VERDICT_PATH]: writeRuleVerdict,
+  [RULE_EDIT_PATH]: writeRuleEdit,
+  [PUSHBACK_DISMISS_PATH]: writePushbackDismiss,
+};

@@ -145,6 +145,13 @@ export interface TacitRetired {
   readonly date: string;
 }
 
+/** One active pushback the ledger has not put in a class yet: its incident ID (`T-…`), the owner's words and the day (YYYY-MM-DD) when given. */
+export interface TacitOpenPushback {
+  readonly id: string;
+  readonly pushback: string;
+  readonly date?: string;
+}
+
 /** The verdicts a ledger takes. `retire` is for a class only. */
 export type TacitDecision = "hold" | "promote" | "reject" | "retire";
 
@@ -180,4 +187,15 @@ export interface TacitLedger {
   applied?(): Promise<TacitApplied>;
   /** The retired classes, newest first, from the ledger's `retire` verdicts; the Rules page's Retired list. Reads only. Optional as `applied` is. */
   retired?(): Promise<readonly TacitRetired[]>;
+  /**
+   * Rewrites the applied class `id`'s block in the rules file with `rule` (its heading's wording, its default and
+   * exception lines; nothing else), then updates the agents' instructions. Sends no verdict. Throws `TacitRefusal` with
+   * nothing written (no block, a failed check), `TacitSyncFailed` when the file was saved but the follow-up failed; a
+   * failed write puts the file back. Optional as `applied` is.
+   */
+  edit?(id: string, rule: TacitPromotion): Promise<void>;
+  /** The active pushbacks not in any class yet, in the ledger's order; the Rules page's Pushbacks list. Reads only. Optional as `applied` is. */
+  pushbacks?(): Promise<readonly TacitOpenPushback[]>;
+  /** Records pushback `id` (`T-…`) as noise, so it leaves the active list. Throws on a failure. Optional as `pushbacks` is. */
+  dismiss?(id: string): Promise<void>;
 }

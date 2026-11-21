@@ -2,6 +2,7 @@
 
 ## History
 
+- **A missing model credential showed as several rows** (until 2026-11-21, the model credential decision at the top). Before: each failed run (`exception`), the zero-token alarm and the `model_stall` pause were rows of their own, and none named the missing secret.
 - **The ranking read only the stored state and the run** (until 2026-11-20, the pending owner command decision at the top). Before: an approved item whose run the controller had not queued yet ranked Stuck ("Nothing moves it: no run is queued") for 1–4 s; an item whose Merge request was not handled yet ranked Ready to merge, its `merge` reading "Merging…" (`UiCommands.mergeRequested`) and "Checking…" at `merge_queued`; the Work row labelled every queued item, a queued triage too, Running.
 - **Plugins in its own sidebar group, Rules under System** (until 2026-11-18, the three-block sidebar decision at the top). Before: the sidebar was Tasks, Calendar | Plugins | System: Work, Rules, Health | Settings; Plugins sat alone near the top and Rules under System.
 - **A twelve-entry sidebar** (until 2026-11-18, the seven-page sidebar decision at the top). Before: the sidebar linked Tasks, Calendar, Plugins, and under System Work, Activity, Health, Failures, Spend, Rules, Runners and Data, then Settings. Activity, Failures and Spend were pages of their own at `/app/activity`, `/app/failures` and `/app/spend`, and only `/app/workers` and `/app/queue` redirected.

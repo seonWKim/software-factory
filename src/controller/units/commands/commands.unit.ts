@@ -627,7 +627,7 @@ export class CommandsUnit {
     const refuse = await this.c.unit("closes").rejectRefusal(it);
     if (refuse !== null) return { refuse };
     const patch = { stage: "CLOSED", close_reason: "rejected", blocked_on: "upstream", blocked_reason: SOURCE_CLOSE_PENDING, spec_feedback: e.reason.trim() || null } as const;
-    return { patch, actor, reason: "spec_rejected", cancel_queued_runs: true, cancel_running_runs: true };
+    return { patch, actor, reason: "spec_rejected", cancel_running_runs: true };
   }
 
   /**
