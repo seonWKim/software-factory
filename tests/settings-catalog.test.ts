@@ -7,6 +7,7 @@ import {
   PR_ONLY_KEYS,
   SETTABLE_DEFAULTS,
   SETTABLE_KEYS,
+  WORKER_KINDS,
   keyRefusal,
   loosening,
 } from "../src/core/settings.js";
@@ -50,6 +51,14 @@ describe("settings catalog", () => {
     expect(catalog.get("tasks_add_key")).toMatchObject({ type: "enum", default: "enter", changed_by: "runtime", scope: "global", direction: "free" });
     expect(TASKS_ADD_KEYS).toEqual(["enter", "cmd-enter"]);
     for (const k of DASHBOARD_KEYS) expect(SETTABLE_KEYS as readonly string[], k).not.toContain(k);
+  });
+
+  it("holds worker_kinds, a global runtime list of the worker, free, defaulting to all eight claimable kinds", () => {
+    expect(catalog.get("worker_kinds")).toMatchObject({
+      owner: "worker", type: "list", changed_by: "runtime", scope: "global", direction: "free",
+      default: ["triage", "review", "merge-check", "update", "restart", "improve", "implement", "resolve"],
+    });
+    expect(SETTABLE_DEFAULTS.worker_kinds).toEqual([...WORKER_KINDS]);
   });
 
   it("orders each per-project gate as the resolver's tighten-only check does", () => {

@@ -5,8 +5,8 @@
 // each value through the Withholder before it leaves (api.ts); `refs` are the same-repo issue numbers it names.
 //
 // Precedence, first match wins: closed, blocked on a person or the budget, running, a claim
-// pause that stops this run's kind, a dependency, a phase hold, a coordination hold, a retry's not_before, the
-// queue position, and last nothing (no run moves it). An open alarm that affects the item is named after the
+// pause that stops this run's kind, a dependency, a phase hold, a coordination hold, a run kind no worker claims
+// (`worker_kinds`: it waits for a session), a retry's not_before, the queue position, and last nothing (no run moves it). An open alarm that affects the item is named after the
 // reason (withAlarms), whichever rule gave it.
 
 import { DEPENDENCY_CLOSED, DEPENDENCY_CYCLE, type ItemPhase, PERSON_PHASES, isClosedPhase, phaseOf } from "../core/phase.js";
@@ -42,7 +42,7 @@ export type ReasonCode =
   | "dependency" | "dependency_unknown"
   | "phase_parent_one" | "phase_parent_many" | "phase_parent" | "phase_prev_ref" | "phase_prev" | "ci" | "other_issue"
   | "held_running" | "held_pr" | "held_waiting"
-  | "not_before" | "queued_at" | "queued" | "idle";
+  | "not_before" | "queued_at" | "queued" | "waits_session" | "idle";
 
 export interface Why {
   code: WhyCode;
@@ -67,6 +67,8 @@ export interface ClaimPauses {
   model_stall?: string | null;
   forge_auth?: string | null;
   preflight_access?: string | null;
+  /** The run kinds workers claim now (`worker_kinds`); a queued run of another kind waits for a session. Absent or null: every kind. */
+  worker_kinds?: readonly RunKind[] | null;
 }
 
 export interface WhyInput {
@@ -232,6 +234,7 @@ export function whyWaiting(x: WhyInput): Why {
   if (p === "dependency_hold") return dependency(i.blocked_reason);
   if (p === "phase_hold" || p === "phases_open" || p === "upstream_wait" || p === "ci_wait" || x.phases.waiting_on > 0) return splitWait(p, x.phases);
   if (heldBy(d, run)) return why("held", HOLDER[d!.holder_kind], "other_item", { holder: holderName(d!) }, holder);
+  if (run && x.pauses.worker_kinds && !x.pauses.worker_kinds.includes(run.kind)) return why("queued", "waits_session", "human", { kind: run.kind });
   if (run && x.not_before) return why("not_before", "not_before", "factory", { until: x.not_before });
   if (run) return run.position ? why("queued", "queued_at", "factory", { position: run.position }) : why("queued", "queued", "factory", { kind: run.kind });
   return why("idle", "idle", "human");

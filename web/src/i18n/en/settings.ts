@@ -213,6 +213,8 @@ export const settings = {
   "key.lease_ms.help": "How long a worker holds an item before another may take it.",
   "key.workers.label": "Parallel workers",
   "key.workers.help": "How many runs may go at the same time.",
+  "key.worker_kinds.label": "Worker run kinds",
+  "key.worker_kinds.help": "Which kinds of runs workers take; the others wait for you to start a session.",
   "key.phases_auto_approve.label": "Approve phases automatically",
   "key.phases_auto_approve.help": "Whether the next phase of a multi-phase item is approved without waiting for you.",
   "key.hold_policy.label": "Held item policy",

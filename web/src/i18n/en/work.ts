@@ -111,6 +111,7 @@ export const work = {
   "why.reason.not_before": "Retry waits until {until}",
   "why.reason.queued_at": "Queued at position {position}",
   "why.reason.queued": "Queued {kind}",
+  "why.reason.waits_session": "Waits for a session: workers do not take {kind} runs",
   "why.reason.idle": "Nothing moves it: no run is queued",
   "why.anotherItem": "another item",
   "why.stage.NEW": "new, not triaged yet",
