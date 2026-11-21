@@ -7,6 +7,7 @@ import { serverDescriptor } from "../src/import/mcp-servers.js";
 import { canonicalJson, descriptionHash } from "../src/packs/pack-entries.store.js";
 import { checkPackGrants } from "../src/packs/pack-grants.js";
 import type { HostSleep, ImproveReportId, RunId, RunKind, Timestamp, UserId, WorkerId, WorkItemId } from "../src/core/types.js";
+import { DEFAULT_COORDINATION } from "../src/core/coordination.js";
 import { projectLabelCursor } from "../src/core/project.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
@@ -3350,9 +3351,11 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       if (!r.ok) throw new Error(r.reason);
       return r.item;
     };
-    const start = (store: FactoryStore, it: { id: WorkItemId; version: number }) => store.startSession({
+    /** max_cost 1: one shared ordinary file (1.0) holds, as every shared path did before the cost rule (2026-11-21). */
+    const STRICT = { ...DEFAULT_COORDINATION, max_cost: 1 };
+    const start = (store: FactoryStore, it: { id: WorkItemId; version: number }, coordination?: typeof STRICT) => store.startSession({
       id: it.id, expected_version: it.version, actor: person, patch: { stage: "RUNNING" }, reason: "session_started", detail: { spec_source: "owner" },
-      owner: "session:h:1", lease_ms: LEASE, transcript_url: "https://example.com/t",
+      owner: "session:h:1", lease_ms: LEASE, transcript_url: "https://example.com/t", ...(coordination ? { coordination } : {}),
     });
 
     it("startSession writes one running interactive run and the transition and cancels queued triage; other runs read the fields as null", async () => {
@@ -3389,8 +3392,10 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect((await store.getRun(u.enqueued!.id))!.status).toBe("queued");
       const it2 = await seed(store, 3, ["src/a/x.ts"]);
       const before = JSON.stringify([await store.listRuns(it2.id), await store.listStateChanges(it2.id)]);
-      expect(await start(store, it2)).toMatchObject({ ok: false, reason: "overlap", work_item_id: it0.id, paths: ["src/a/x.ts"] });
+      expect(await start(store, it2, STRICT)).toMatchObject({ ok: false, reason: "overlap", work_item_id: it0.id, paths: ["src/a/x.ts"], cost: 1, max_cost: 1 });
       expect(JSON.stringify([await store.listRuns(it2.id), await store.listStateChanges(it2.id)])).toBe(before);
+      // At the default max_cost (2.5) one shared ordinary file (1.0) does not refuse.
+      expect(await start(store, it2)).toMatchObject({ ok: true });
     });
 
     it("updateSession writes notes, tokens, transcript and the last finish only while the lease is held", async () => {
@@ -3414,7 +3419,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       if (!s.ok) throw new Error(s.reason);
       const it1 = await seed(store, 2, ["src/a/y.ts"]);
       await store.transition({ id: it1.id, expected_version: it1.version, actor: system, reason: "x", patch: { stage: "RUNNING" }, enqueue: { kind: "implement", idempotency_key: "i2" } });
-      expect(await store.claimRun({ worker_id: w1, kinds: ["interactive", "implement", "update"], lease_ms: LEASE })).toBeNull();
+      expect(await store.claimRun({ worker_id: w1, kinds: ["interactive", "implement", "update"], lease_ms: LEASE, coordination: STRICT })).toBeNull();
       clock.advance(LEASE + 1);
       expect(await store.expireLeases(5)).toEqual([s.run.id]);
       expect(await store.getRun(s.run.id)).toMatchObject({ status: "failed", lease: null, outcome: { status: "failed", error_code: "session_lost" } });
@@ -3423,6 +3428,31 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
         [1, "failed", "session_lost", "task"],
       ]);
       expect((await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))?.work_item_id).toBe(it1.id);
+    });
+
+    it("a session start and a claim next to an open session use the workers' cost: mechanical paths and unnamed shared indexes never hold, a hotspot does", async () => {
+      const { store } = await make();
+      const plan = async (n: number, files: string[], allowed = files) => {
+        const it = await seed(store, n, allowed);
+        const r = await store.transition({ id: it.id, expected_version: it.version, actor: system, reason: "x", patch: { files_to_change: files } });
+        if (!r.ok) throw new Error(r.reason);
+        return r.item;
+      };
+      // Two plans on different pages' text, both allowed the shared indexes (covering folders), sharing two design topics (mechanical, 0.5).
+      const shared = ["docs/design/", "docs/design.md", "web/src/i18n/"];
+      const s = await start(store, await plan(1, ["web/src/views/tasks.tsx", "web/src/i18n/en/tasks.ts", "docs/design/04-triage.md", "docs/design/history/04-triage.md"], [...shared, "web/src/views/tasks.tsx"]));
+      if (!s.ok) throw new Error(s.reason);
+      const page = await plan(2, ["web/src/views/rules.tsx", "web/src/i18n/en/rules.ts", "docs/design/04-triage.md", "docs/design/history/04-triage.md"], [...shared, "web/src/views/rules.tsx"]);
+      expect(await start(store, page)).toMatchObject({ ok: true });
+      // A queued implement run of a third plan sharing the same design topics is claimed next to both sessions.
+      const third = await plan(3, ["src/a.ts", "docs/design/04-triage.md"]);
+      const q = await store.transition({ id: third.id, expected_version: third.version, actor: system, reason: "x", patch: { stage: "RUNNING" }, enqueue: { kind: "implement", idempotency_key: "i3" } });
+      if (!q.ok) throw new Error(q.reason);
+      expect((await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))?.work_item_id).toBe(third.id);
+      // A plan that names a hotspot another running item names (3.0) is refused, naming the cost.
+      const hot = await plan(4, ["src/worker/x.ts"]);
+      await plan(5, ["src/worker/x.ts"]).then((it) => start(store, it));
+      expect(await start(store, hot)).toMatchObject({ ok: false, reason: "overlap", paths: ["src/worker/x.ts"], cost: 3, max_cost: 2.5 });
     });
 
     // A waiting `session start --wait` reserves its NEW item (design 05-interactive-sessions, 2026-11-21).

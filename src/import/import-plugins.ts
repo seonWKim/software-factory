@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { insertOrSkip } from "../bus/index.js";
-import type { Loaded } from "../compose.js";
+import type { Loaded } from "../load-config.js";
 import { Plugins } from "../plugin-set.js";
 import { cliUserConfig } from "../core/config.js";
 import { type CliEnvironment, cliIdentity } from "../core/local-cli.js";

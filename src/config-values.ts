@@ -1,69 +1,30 @@
-// The plain config parsers and checks (moved from compose.ts, the composition root, which re-exports them).
-// Guard and gate checks (toolchainConfig, checkToolchainEnv, checkEnabledHooks, hookNames) stay in compose.ts.
+// The small parsers for factory.config.json values and supervisor env (moved out of compose.ts, RFC 0023 step 2e).
 
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
-import { AGENT_STOP_CHECKS_DEFAULT, ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS, type StatsConfig, type ToolchainConfig, uiCheckSentence } from "./core/config.js";
-import { checkCommands, commandText } from "./core/checks.js";
-import { type SplitLimits, splitThresholds } from "./core/split.js";
+import { join } from "node:path";
+import {
+  AGENT_STOP_CHECKS_DEFAULT, ALARM_DEFAULTS, STALL_DEFAULTS, type StatsConfig, type ToolchainConfig, readOnlyFolders,
+} from "./core/config.js";
+import { toolchainEnvKeyRefusal } from "./core/tools/policy.js";
 import type { CliIdentity } from "./core/local-cli.js";
-import type { UserId, VerdictSeverity } from "./core/types.js";
+import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
-import { BUILT_IN_SETTINGS, positiveInteger } from "./core/settings.js";
-import { CONFIG_ENV, type ChildRestart, type SupervisorStatus } from "./interfaces/updater.js";
+import { positiveInteger } from "./core/settings.js";
+import type { EgressScanner } from "./interfaces/egress-scanner.js";
+import { type ChildRestart, type SupervisorStatus } from "./interfaces/updater.js";
 import type { UiCommands } from "./ui/commands.js";
-import type { FileConfig } from "./compose-file.js";
-
-/**
- * The config path for this process, parsed once at startup for every command: `--config <path>` (or
- * `--config=<path>`) anywhere in `argv`, else FACTORY_CONFIG, made absolute against `cwd`. `args` is `argv`
- * without the flag. No flag and no env var: `configFile` is undefined (the code root's checked-in file).
- */
-export function cliConfig(
-  argv: readonly string[],
-  env: Readonly<Record<string, string | undefined>>,
-  cwd: string,
-): { args: string[]; configFile: string | undefined } {
-  const args: string[] = [];
-  let flag: string | undefined;
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i]!;
-    if (a === "--config" || a.startsWith("--config=")) {
-      const value = a === "--config" ? argv[++i] : a.slice("--config=".length);
-      if (!value) throw new Error("--config needs a path to a factory.config.json");
-      flag = value;
-    } else args.push(a);
-  }
-  const chosen = flag ?? (env[CONFIG_ENV] || undefined);
-  return { args, configFile: chosen === undefined ? undefined : resolve(cwd, chosen) };
-}
-
-/** The placeholder in prompts/*.md that names the project's pre-push checks. */
-export const CHECK_COMMANDS_PLACEHOLDER = "{{check_commands}}";
-/** The placeholder in prompts/*.md that names where a change lives: the forge plugin, or "local" with none. */
-export const FORGE_PLACEHOLDER = "{{forge}}";
-export const TOOLCHAIN_PLACEHOLDER = "{{toolchain}}"; // the toolchain sentence (design 05-sandbox.md): empty with no toolchain block
-export const UI_CHECK_PLACEHOLDER = "{{ui_check}}"; // the UI check sentence (uiCheckSentence): empty with no repo.ui_check
-export const SPLIT_PLACEHOLDERS = ["{{max_diff_lines}}", "{{max_diff_files}}", "{{split_lines}}", "{{split_files}}"] as const;
-
-/**
- * A prompt file's text with its placeholders filled, once at load: the check commands, each command of
- * `checkCommands` (so `repo.check_commands`, else `test_command`) in backticks, in order; the forge name
- * (`plugins.forge`, else "local"); the `toolchain` block's offline sentence; the `repo.ui_check` sentence (none: "");
- * SPLIT_PLACEHOLDERS: the size caps `limits` (the configured project's max_diff_lines, max_diff_files), then their split thresholds.
- */
-export function fillPrompt(text: string, repo: FactoryConfig["repo"], forge: string, toolchain?: ToolchainConfig, limits: SplitLimits = BUILT_IN_SETTINGS): string {
-  const t = splitThresholds(limits), sizes = [limits.max_diff_lines, limits.max_diff_files, t.lines, t.files];
-  const checks = checkCommands(repo).map((c) => `\`${commandText(c)}\``).join(", then ");
-  const caches = toolchain && toolchain.caches.length > 0 ? ` (${toolchain.caches.map((c) => `\`${c}\``).join(", ")})` : "";
-  const offline = toolchain ? ` They run offline: there is no network, and the toolchain caches${caches} are read-only, so build from what they hold and never write to or download into them.` : "";
-  return SPLIT_PLACEHOLDERS.reduce((out, p, i) => out.split(p).join(String(sizes[i])), text).split(CHECK_COMMANDS_PLACEHOLDER).join(checks).split(FORGE_PLACEHOLDER).join(forge).split(TOOLCHAIN_PLACEHOLDER).join(offline).split(UI_CHECK_PLACEHOLDER).join(uiCheckSentence(repo.ui_check));
-}
+import type { FileConfig } from "./load-config.js";
 
 /** SF_WORKER_INDEX_BASE as set by the supervisor: unset, empty or not a non-negative integer means 0. */
 export function workerIndexBase(value: string | undefined): number {
   if (value === undefined || !/^\d+$/.test(value.trim())) return 0;
   return Number.parseInt(value.trim(), 10);
+}
+
+/** `hooks` from factory.config.json: a list of hook names, or startup fails. */
+export function hookNames(value: unknown): readonly string[] {
+  if (!Array.isArray(value) || value.some((v) => typeof v !== "string")) throw new Error("hooks must be a list of hook names");
+  return value as string[];
 }
 
 /** SF_CODE_VERSION as set by the supervisor: the revision, trimmed; unset or blank: none (the worker stamps `dev`). */
@@ -152,6 +113,57 @@ export function checkCommandsConfig(value: unknown): { check_commands?: string[]
     throw new Error('repo.check_commands must be a non-empty list of argv, e.g. [["npm", "run", "typecheck"], ["npm", "test"]]');
   }
   return { check_commands: value.map((v, i) => argvConfig(`repo.check_commands[${i}]`, v, ["npm", "test"])) };
+}
+
+/**
+ * `toolchain` from factory.config.json (design 05-sandbox.md, issue #334): absent → undefined. Otherwise
+ * `caches` is a list of absolute folders (a leading `~` is the owner's HOME), normalized, none overlapping a
+ * `deny_paths` entry in either direction (so neither the secret file's folder nor the owner's config); `env` maps
+ * env var names to strings, each key passing the G1 key check (`toolchainEnvKeyRefusal`); `warm_command` is argv,
+ * absent: `install_command`. Every problem fails startup at once, one per line, each naming its entry. The values
+ * are scanned for secrets in build(), by the configured scanner (`checkToolchainEnv`).
+ */
+export function toolchainConfig(
+  raw: unknown,
+  ctx: { home: string; install_command: readonly string[]; deny_paths: readonly string[] },
+): ToolchainConfig | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw)) throw new Error("toolchain must be an object with caches, env and warm_command");
+  const problems: string[] = [];
+  const caches = readOnlyFolders("toolchain.caches", raw.caches ?? [], { expand: expandHome(ctx.home), deny_paths: ctx.deny_paths }, problems);
+  const env: Record<string, string> = {};
+  if (raw.env !== undefined && !isRecord(raw.env)) problems.push("toolchain.env must be an object of env var names to strings");
+  for (const [key, value] of Object.entries(isRecord(raw.env) ? raw.env : {})) {
+    const refusal = toolchainEnvKeyRefusal(key);
+    if (refusal) problems.push(refusal);
+    else if (typeof value !== "string") problems.push(`toolchain.env.${key} must be a string`);
+    else env[key] = value;
+  }
+  let warm_command: string[] = [...ctx.install_command];
+  try {
+    warm_command = argvConfig("toolchain.warm_command", raw.warm_command, ctx.install_command);
+  } catch (err) {
+    problems.push((err as Error).message);
+  }
+  if (problems.length > 0) throw new Error(problems.join("\n"));
+  return { caches, env, warm_command };
+}
+
+/** A configured path with a leading `~` taken as the owner's HOME (no HOME: unchanged, so it fails as relative). */
+export const expandHome = (home: string) => (p: string): string => ((p === "~" || p.startsWith("~/")) && home !== "" ? join(home, p.slice(1)) : p);
+
+/**
+ * G1 on the toolchain's env values at startup: each value goes through the configured egress scanner (known
+ * secret values and secret patterns), so a token pasted into `toolchain.env` never reaches an agent. Fails naming
+ * the entry and the rule, never the value. No block, or no entry: nothing is scanned.
+ */
+export async function checkToolchainEnv(toolchain: ToolchainConfig | undefined, scanner: EgressScanner): Promise<void> {
+  const problems: string[] = [];
+  for (const [key, value] of Object.entries(toolchain?.env ?? {})) {
+    const scan = await scanner.scan("log", value);
+    if (!scan.clean) problems.push(`toolchain.env.${key} looks like a credential (${scan.findings.map((f) => f.rule).join(", ")}) (G1)`);
+  }
+  if (problems.length > 0) throw new Error(problems.join("\n"));
 }
 
 /** A gate command from config: absent → `fallback`; otherwise a non-empty argv of non-empty strings, or startup fails. */
@@ -244,3 +256,9 @@ export function mergeQueueDepth(file: Pick<FileConfig, "merge_queue">): number {
   }
   return v;
 }
+
+export function isTier(n: number): n is Tier {
+  return Number.isInteger(n) && n >= 1 && n <= 5;
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);

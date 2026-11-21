@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { uiCommandsActor } from "../src/compose.js";
+import { uiCommandsActor } from "../src/config-values.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { OwnerAuth } from "../src/core/authorize.js";
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";

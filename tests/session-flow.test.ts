@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
+import { type CoordinationSettings, DEFAULT_COORDINATION } from "../src/core/coordination.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { RESERVATION_MS, Sessions, WAIT_POLL_MS, parseTarget } from "../src/core/session.js";
 import type { LocalRoute } from "../src/core/worker-deps.js";
@@ -29,11 +30,14 @@ const SPEC_TEXT = JSON.stringify(SPEC);
 /** A key-shaped string the leak scanner flags, built here so no such literal sits in the repository. */
 const AWS_SHAPED = ["AKIA", "ABCDEFGHIJKLMNOP"].join("");
 const W1 = "w1" as WorkerId;
+/** max_cost 1: one shared ordinary file (1.0) holds, as every shared path did before the cost rule (design 05-dependencies, 2026-11-21). */
+const STRICT: CoordinationSettings = { ...DEFAULT_COORDINATION, max_cost: 1 };
 
-async function harness(o: { local?: LocalRoute } = {}) {
+/** `coordination`: the config's settings, STRICT unless given, so these tests reach a refusal with one shared file. */
+async function harness({ coordination = STRICT, ...o }: { local?: LocalRoute; coordination?: CoordinationSettings } = {}) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
-  const cfg: FactoryConfig = config;
+  const cfg: FactoryConfig = { ...config, coordination };
   const sandbox = new FakeSandbox();
   sandbox.changedFiles = ["src/a/x.ts"];
   const broker = new FakeBroker();
@@ -167,11 +171,20 @@ describe("session start", () => {
       const before = await h.snapshot(it0.id);
       const r = await h.start(it0.id);
       expect(r.ok).toBe(false);
-      expect(r.lines.join("\n")).toMatch(/o\/r#2 .* overlaps the allowed_paths: src\/a\/x\.ts/);
+      expect(r.lines.join("\n")).toMatch(/o\/r#2 .* overlaps at cost 1 \(max_coordination_cost 1\): src\/a\/x\.ts/);
       expect(await h.snapshot(it0.id)).toBe(before);
       expect(h.sandbox.destroyed).toBe(1); // the folder made before the store's check is removed again
       expect(h.files.files.size).toBe(0);
       expect((await h.start((await h.running(3, ["src/c/"])).id)).ok).toBe(true);
+    });
+
+    it("not when the shared files cost less than the configured max_coordination_cost, as for workers", async () => {
+      const h = await harness({ coordination: DEFAULT_COORDINATION });
+      const other = await h.running(2, ["src/a/x.ts"]);
+      await h.enqueue(other, "implement", "i2");
+      await h.store.claimRun({ worker_id: W1, kinds: ["implement"], lease_ms: 60_000 });
+      const r = await h.start((await h.running(1, ["src/a/"])).id); // src/a/x.ts weighs 1.0, below the default 2.5
+      expect(r.ok).toBe(true);
     });
 
     it("when another item's running run overlaps: its queued implement run stays queued, no attempt and no state change", async () => {
@@ -185,7 +198,7 @@ describe("session start", () => {
       const changes = (await h.store.listStateChanges(it0.id)).length;
       const r = await h.start(it0.id);
       expect(r.ok).toBe(false);
-      expect(r.lines.join("\n")).toMatch(/overlaps the allowed_paths/);
+      expect(r.lines.join("\n")).toMatch(/overlaps at cost 1 \(max_coordination_cost 1\)/);
       expect((await h.runs(it0.id, "implement")).map((x) => [x.status, x.attempt, x.outcome])).toEqual([["queued", 0, null]]);
       expect((await h.item(it0.id)).version).toBe(before.version);
       expect(await h.store.listStateChanges(it0.id)).toHaveLength(changes);
@@ -271,7 +284,7 @@ describe("session start", () => {
     const overlapping = await h.running(2, ["src/a/y.ts"]);
     await h.enqueue(overlapping, "implement", "i2");
     const all = ["triage", "implement", "review", "update", "resolve", "interactive"] as const;
-    const claim = () => h.store.claimRun({ worker_id: W1, kinds: all, lease_ms: 60_000 });
+    const claim = () => h.store.claimRun({ worker_id: W1, kinds: all, lease_ms: 60_000, coordination: STRICT }); // as a worker passes its config's
     expect(await claim()).toBeNull();
     const free = await h.running(3, ["src/b/"]);
     await h.enqueue(free, "implement", "i3");
@@ -310,7 +323,7 @@ describe("session start --wait", () => {
     const h = await busy();
     const p = h.wait();
     await h.slept(1);
-    expect(h.printed.join("\n")).toMatch(/waiting: running work on o\/r#2 .* overlaps the allowed_paths: src\/a\/x\.ts/);
+    expect(h.printed.join("\n")).toMatch(/waiting: running work on o\/r#2 .* overlaps at cost 1 \(max_coordination_cost 1\): src\/a\/x\.ts/);
     expect(h.printed.join("\n")).toContain("reserved for this session until 2026-01-01T02:00:00.000Z, so triage skips it");
     expect(await h.store.getReservation(h.it0.id)).toMatchObject({ owner: "session:host:1", expires_at: "2026-01-01T02:00:00.000Z" });
     for (const worker_id of [W1, "w2" as WorkerId]) expect(await h.store.claimRun({ worker_id, kinds: ["triage"], lease_ms: 60_000 })).toBeNull();

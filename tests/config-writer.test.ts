@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { type Loaded, loadConfig, localProject } from "../src/compose.js";
+import { type Loaded, loadConfig, localProject } from "../src/load-config.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import { setConfigKey } from "../src/core/config-text.js";
 import { type ConfigWriterDeps, FILE_ONLY_KEYS, editConfigFile } from "../src/core/config-writer.js";

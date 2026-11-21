@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { loadConfig } from "../src/compose.js";
+import { loadConfig } from "../src/load-config.js";
 import { checkCommands, redact } from "../src/core/checks.js";
 import type { WorkItem } from "../src/core/types.js";
 import { STORE_BRANCH } from "../src/interfaces/tool-broker.js";

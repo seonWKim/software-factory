@@ -45,6 +45,11 @@ export interface RunKindDescriptor {
    */
   readonly timeouts: RunTimeouts;
   execute(w: Worker, call: RunCall): Promise<Record<string, unknown>>;
+  /**
+   * Grades a finished run of any kind (design §7), for the kind that owns grading (improve). The runner calls the
+   * one discovered kind that has it, so the engine never imports that kind (RFC 0023 R1). Absent on every other kind.
+   */
+  readonly grade?: (w: Worker, run: Run, item: WorkItem, producer: ModelClass | null, data: Record<string, unknown>, signal: AbortSignal) => Promise<Record<string, unknown>>;
 }
 
 export function defineRunKind(d: Omit<RunKindDescriptor, "kind">): RunKindDescriptor {

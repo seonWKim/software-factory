@@ -1,55 +1,43 @@
-// Composition root: the only place that reads env/files for config and picks implementations.
+// Composition root: the only place that picks implementations and wires the factory. Reading factory.config.json
+// lives in load-config.ts and config-values.ts, so code that only reads config does not load this file.
 // Environment (local / cloud) is chosen here; core code never branches on it.
 
-import { createHash } from "node:crypto";
-import { mkdir, readFile, stat } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import { availableParallelism, hostname } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import {
-  type FactoryConfig, type LoadedConfig, type Prompts, type StatsConfig, type ToolchainConfig, cliUserConfig, uiCheckConfig,
-  coordinationConfig, mergeQueuePushBase, readOnlyFolders, readOnlyInputsConfig, retentionConfig, toolGrantsConfig,
-} from "./core/config.js";
-import { toolchainEnvKeyRefusal } from "./core/tools/policy.js";
-import { type ProjectRef, localProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
-import { pathCompanionsConfig } from "./core/companions.js";
+import { join } from "node:path";
+import { type FactoryConfig, cliUserConfig, toolGrantsConfig } from "./core/config.js";
+import type { ProjectRef } from "./core/project.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
 import { errorText, type Logger } from "./core/log.js";
 import type { CliEnvironment, CliIdentity } from "./core/local-cli.js";
 import { canMergeLocal, forgeRoles } from "./core/local-merge.js";
 import { StoredLearnedSettings } from "./core/learned-settings.js";
-import type { Tier, UserId } from "./core/types.js";
-import { budgetConfig } from "./core/budget.js";
-import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./core/model-choice.js";
+import type { UserId } from "./core/types.js";
 import { gitHost, hostId } from "./runtime/host-id.js";
 import { ControllerRole } from "./runtime/roles/controller-role.js";
 import { SqlHookAudit, loadHooks } from "./runtime/index.js";
 import { PackCheckRunner } from "./runtime/hooks/pack-checks.js";
 import { type HookDescriptor, UNCALLED_HOOK_POINTS } from "./shared/hook.js";
-import {
-  HEARTBEAT_LEASE_MESSAGE, type LearnedSettingsSource, booleanSetting, intakeLabel, LiveSettings, maxWorkers, settingValues, settingsLayers, workerCount,
-} from "./core/settings.js";
+import { type LearnedSettingsSource, LiveSettings, maxWorkers, workerCount } from "./core/settings.js";
 import { settingsBase } from "./core/settings-base.js";
 import { WorkerPool } from "./worker/index.js";
 import type { LocalRoute } from "./worker/index.js";
 import { type BrokerDeps, Plugins } from "./plugin-set.js";
-import { checkConfigKeys, removedKeysWarning } from "./config-keys.js";
-import { checkStatePaths } from "./state-paths.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
 import type { GitHubApi } from "./interfaces/github-credentials.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
-import { DEFAULT_STATUS_LABEL_PREFIX, type Forge } from "./interfaces/forge.js";
+import type { Forge } from "./interfaces/forge.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
 import type { AuthAction, AuthDecision, AuthProvider } from "./interfaces/auth-provider.js";
 import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
 import { CODE_VERSION_ENV, SUPERVISOR_STATUS_FILE, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
-import { updaterConfig } from "./impl/updater/config.js";
-import { LOCAL_KEY_FILE, ProfileStore, startIdentity, type IdentityRuntime } from "./identity/index.js";
+import { ProfileStore, startIdentity, type IdentityRuntime } from "./identity/index.js";
 import { controllerServiceAuth, outboundServiceAuth } from "./impl/auth/audited-auth.js";
 import { OwnerAuth } from "./core/authorize.js";
 import { PassportToolBroker } from "./impl/broker/passport-broker.js";
-import { type PackTool, packToolBrokers, withPackTools } from "./impl/broker/pack-tools.js";
+import { packToolBrokers } from "./impl/broker/pack-tools.js";
 import { storeSql } from "./impl/store/sql/store-sql.js";
 import { RunPassports } from "./worker/passports/run-passports.js";
 import type { RepoRef } from "./impl/github/github-client.js";
@@ -61,263 +49,20 @@ import { type UiSettings, configWriter, newCsrfToken, storeProjectResolver } fro
 import type { UiPauses } from "./ui/pause-api.js";
 import { type UiTacit, uiTacit } from "./ui/rules-api.js";
 import { baseEnv, runProcess } from "./impl/process/run-process.js";
-import { defaultSecretsFile } from "./impl/secrets/env-file-secret-store.js";
 import { LiveTacit } from "./runtime/live-tacit.js";
 import { LiveCalendars } from "./calendar/index.js";
 import {
-  INTEGRATION_KINDS, REGISTRY, type Registry, type Selection, createPlugin, selectPlugins, selectedRunners, selectedSources, withPackPlugins,
+  INTEGRATION_KINDS, createPlugin, selectedRunners, selectedSources,
 } from "./plugins.js";
-import { batchingPolicies } from "./outbound/index.js";
-import { type Pack, autoApproveReadOnly, findPacks, packChecks, packPluginFiles, packPrompts, packSkills } from "./packs/packs.js";
+import { packChecks, packSkills } from "./packs/packs.js";
 import { importedMcpRefusals, listRequestedMcpTools } from "./import/mcp-tool-lists.js";
 import { startPackMcpServer } from "./impl/runner/pack-mcp-client.js";
 import { PackGuidance } from "./impl/capability/project-guidance.js";
 import { LearnedRules, joinGuidance } from "./core/learned-rules.js";
-import type { FileConfig, StoreConfig } from "./compose-file.js";
-import {
-  agentStopChecks, alarmConfig, argvConfig, checkCommandsConfig, codeVersion, fillPrompt, mergeQueueDepth, readRestarts, retryConfig, stallConfig, statsConfig,
-  testCommand, uiCommandsActor, uiPort, uiUserId, workerIndexBase,
-} from "./compose-config.js";
-
-// FileConfig and the plain config parsers live beside this file, so a new config key does not edit the composition root.
-export * from "./compose-file.js";
-export * from "./compose-config.js";
+import { checkToolchainEnv, codeVersion, readRestarts, uiCommandsActor, uiUserId, workerIndexBase } from "./config-values.js";
+import { type Loaded, loadConfig, localProject, resolvedConfig } from "./load-config.js";
 
 export { CODE_ROOT_ENV, CONFIG_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
-
-/** The checked-in config's name under the code root. */
-export const CONFIG_FILE = "factory.config.json";
-
-const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
-
-/** Reads and parses one config file; a missing, unreadable or invalid file fails naming the path. */
-async function readConfigFile(path: string, text?: string): Promise<unknown> {
-  try {
-    return JSON.parse(text ?? (await readFile(path, "utf8"))) as unknown;
-  } catch (err) {
-    throw new Error(`cannot load the config file ${path}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
-  }
-}
-
-export interface Loaded {
-  /** The cwd: the main checkout. Repo path resolves here; so do state and worktrees without an external config. */
-  root: string;
-  /** Where prompts/ (and the checked-in factory.config.json) were read: the runtime copy under the updater, else `root`. */
-  codeRoot: string;
-  /** The config file that was read, absolute. */
-  configFile: string;
-  /** The `--config` / FACTORY_CONFIG file, absolute; null when the code root's checked-in file is used. */
-  externalConfig: string | null;
-  /** `worktrees_dir`, resolved like the state dir. */
-  worktreesDir: string;
-  file: FileConfig;
-  /** Not yet resolved to a project key: build() finds the configured repo's key in the store, or asks GitHub (startupProject). */
-  config: LoadedConfig;
-  prompts: Prompts;
-  secretsFile: string;
-  stateDir: string;
-  store: StoreConfig;
-  /** Checked plugin name per interface. */
-  plugins: Selection;
-  /** Where plugin names resolve: the built-in REGISTRY (unless a test passes another) plus the packs' plugins. */
-  registry: Registry;
-  /** The pack layers that are on, in order (design 11-packs.md): where prompts, skills, pack plugins and pack_tools (#592) came from. */
-  packs: readonly Pack[];
-  pack_tools: readonly PackTool[];
-  /** The checked `stats` key. Read only by `factory stats`; no dial uses it. */
-  stats: StatsConfig;
-  /** The checked `models`: a model name for cheap, standard and strong. */
-  models: ModelNames;
-  /** The checked, expanded `model_by` (the default table when absent). */
-  model_by: ModelTable;
-}
-
-/** The source plugin whose PRs live on GitHub, and the forge it implies (issue #273). */
-const GITHUB_SOURCE = "github-issues";
-const GITHUB_FORGE = "github";
-
-/**
- * The forge default rule (issue #273): `plugins.forge` left out follows the sources: `github` when `plugins.source`
- * lists github-issues, else none. Derived, not a setting, so a local-only setup makes no GitHub call. An off value
- * next to github-issues fails, naming plugins.forge: that source's PRs would never close their items.
- */
-export function withForgeDefault(registry: Registry, selection: Selection, plugins: unknown): Selection {
-  if (!selectedSources(selection).includes(GITHUB_SOURCE)) return selection;
-  const given = plugins !== null && typeof plugins === "object" && Object.hasOwn(plugins, "forge");
-  if (!given) return Object.hasOwn(registry.forge.plugins, GITHUB_FORGE) ? { ...selection, forge: GITHUB_FORGE } : selection;
-  if (selection.forge !== undefined) return selection;
-  const value = JSON.stringify((plugins as { forge?: unknown }).forge) ?? "nothing";
-  throw new Error(
-    `plugins.forge is ${value} but plugins.source lists "${GITHUB_SOURCE}": its pull requests (merges, closes, reviews) are read ` +
-      `only through a forge, so its factory PRs would never close their items; leave plugins.forge out (it then follows ` +
-      `plugins.source) or set it to "${GITHUB_FORGE}"`,
-  );
-}
-
-/**
- * `codeRoot` is where prompts are read (the updater's runtime copy); `root` is the cwd. `configFile` (from
- * `--config` / FACTORY_CONFIG, see cliConfig) replaces the code root's checked-in factory.config.json, and its
- * folder becomes where `state_dir` and `worktrees_dir` resolve; without it they resolve from `root`.
- * `repo.path` always resolves from `root`. `platform` picks the platform-dependent plugin defaults
- * (docs/plugins.md); the host's unless a test passes one. `text` is read instead of the file (a new text checked before it is written).
- */
-export async function loadConfig(
-  root = process.cwd(),
-  opts: { registry?: Registry; codeRoot?: string | undefined; configFile?: string | undefined; platform?: string | undefined; text?: string } = {},
-): Promise<Loaded> {
-  const codeRoot = resolve(opts.codeRoot ?? root);
-  const checkedIn = join(codeRoot, CONFIG_FILE);
-  const externalConfig = opts.configFile === undefined ? null : resolve(root, opts.configFile);
-  const configFile = externalConfig ?? checkedIn;
-  const raw = await readConfigFile(configFile, opts.text);
-  checkConfigKeys(raw);
-  const removed = removedKeysWarning(raw);
-  if (removed !== null) console.warn(removed);
-  const file = raw as FileConfig;
-  if (file.env !== "local") throw new Error(`env "${file.env}" has no implementations yet; only "local"`);
-  if (file.dials.auto_merge_max_tier !== 0) {
-    throw new Error(
-      "dials.auto_merge_max_tier must be 0: the auto-merge tier is the live auto_merge_max_tier setting (0 to 3, " +
-        "`factory settings set auto_merge_max_tier <n>` or the Settings page, with approve_merge), read only in auto mode",
-    );
-  }
-  if (!isTier(file.dials.spec_gate_min_tier)) throw new Error("tiers must be integers 1–5");
-  if (file.heartbeat_ms * 2 >= file.lease_ms) throw new Error(HEARTBEAT_LEASE_MESSAGE);
-  uiPort(file.ui);
-  uiUserId(file.ui);
-  updaterConfig(file.updater);
-  const workers = workerCount(file.workers);
-  const max_workers = maxWorkers(workers, file.max_workers);
-  const retry = retryConfig(file);
-  // The per-project gate settings in layers (design 2026-11-01): top level / `defaults`, then `projects`.
-  const settings = settingsLayers(raw as Record<string, unknown>, `${file.repo.owner}/${file.repo.name}`);
-  const retention = { retention: retentionConfig(file.retention, file.inbox_retention_days) };
-  const budget = budgetConfig({ budget_min_sample: file.budget_min_sample });
-  const stats = statsConfig(file.stats);
-  const models = parseModels(file.models);
-  const model_by = parseModelBy(file.model_by);
-  const store = file.store ?? { type: "sqlite" };
-  const stateBase = externalConfig === null ? root : dirname(externalConfig);
-  const stateDir = resolve(stateBase, file.state_dir);
-  const worktreesDir = resolve(stateBase, file.worktrees_dir);
-  const repoPath = resolve(root, file.repo.path);
-  // The pack layers (design 11-packs.md): base (the code root), org (`packs.org`), project (`.factory/` in the
-  // repo's main checkout) and learned (under the state dir). A missing layer is off. Their plugins and tools join a registry copy.
-  const packs = findPacks({ codeRoot, repoPath, stateDir, configDir: stateBase, packs: file.packs });
-  const packRegistry = await withPackPlugins(opts.registry ?? REGISTRY, packPluginFiles(packs));
-  const plugins = withForgeDefault(packRegistry, selectPlugins(packRegistry, { store, calendar: file.calendar, plugins: file.plugins }, { platform: opts.platform }), file.plugins);
-  const { registry, pack_tools } = await withPackTools(packRegistry, plugins.broker, packs, opts.registry ?? REGISTRY);
-  const local = !selectsGitHub(plugins);
-  if (!local) await checkGitHubSettings(file.github);
-  const secretsFile = defaultSecretsFile();
-
-  const home = process.env.HOME ?? "";
-  const { check_commands: rawChecks, ui_check: rawUiCheck, restart_command: rawRestart, ...fileRepo } = file.repo;
-  const config: LoadedConfig = {
-    repo: {
-      ...fileRepo,
-      path: repoPath,
-      install_command: argvConfig("repo.install_command", file.repo.install_command, ["npm", "ci"]),
-      test_command: testCommand(file.repo.test_command),
-      ...checkCommandsConfig(rawChecks), ...uiCheckConfig(rawUiCheck), ...(rawRestart === undefined ? {} : { restart_command: argvConfig("repo.restart_command", rawRestart, ["bin/restart"]) }),
-    },
-    ...(local ? { local_only: true as const } : {}),
-    intake_label: intakeLabel(file.intake_label),
-    status_label_prefix: file.status_label_prefix ?? DEFAULT_STATUS_LABEL_PREFIX,
-    branch_prefix: file.branch_prefix,
-    dials: { spec_gate_min_tier: file.dials.spec_gate_min_tier as Tier, auto_merge_max_tier: 0 },
-    settings,
-    max_loops: file.max_loops,
-    phases_auto_approve: file.phases_auto_approve === undefined ? false : booleanSetting("phases_auto_approve", file.phases_auto_approve),
-    ...retry, // max_restart, retry_base_ms, retry_max_ms, auth_pause_ms
-    lease_ms: file.lease_ms,
-    heartbeat_ms: file.heartbeat_ms,
-    tick_ms: file.tick_ms,
-    poll_interval_ms: file.poll_interval_ms,
-    run_timeout_ms: file.run_timeout_ms,
-    ...stallConfig(file),
-    ...alarmConfig(file),
-    agent_stop_checks: agentStopChecks(file),
-    ...retention, // the retention block, inbox_retention_days as its fallback (design 08-retention)
-    outbound_batching: batchingPolicies(file.outbound?.batching),
-    merge_queue_depth: mergeQueueDepth(file), merge_queue_push_base: mergeQueuePushBase(file.merge_queue),
-    ...(file.hooks === undefined ? {} : { hooks: hookNames(file.hooks) }),
-    ...(autoApproveReadOnly(file.packs) ? { packs_auto_approve_read_only: true } : {}),
-    workers,
-    max_workers,
-    deny_paths: [
-      dirname(secretsFile),
-      join(stateDir, "db"),
-      join(stateDir, "storage"),
-      // The owner's test MySQL login (SET_UP.md): agents may connect to localhost since the sandbox allows it.
-      join(stateDir, "test-mysql.url"),
-      // The solo passport key (Identity): an agent that read it could mint passports.
-      join(stateDir, LOCAL_KEY_FILE),
-      join(home, ".ssh"),
-      join(home, ".aws"),
-      join(home, ".config", "gh"),
-      join(home, ".claude"),
-      join(home, ".gitconfig"),
-      join(home, ".git-credentials"),
-      join(home, ".netrc"),
-      join(home, ".my.cnf"),
-      join(home, ".mylogin.cnf"),
-    ],
-    agent_git_identity: file.agent_git_identity,
-    budget_min_sample: budget.budget_min_sample,
-    path_companions: pathCompanionsConfig(raw),
-    // Coordination (design §5): the threshold, hotspots and mechanical paths, checked at load by checkConfigKeys.
-    coordination: coordinationConfig(raw),
-  };
-  if (externalConfig !== null) checkStatePaths({ state_dir: stateDir, worktrees_dir: worktreesDir }, config.deny_paths);
-  // The toolchain block (design 05-sandbox.md): its caches checked against every denied path, the secret folder included.
-  const toolchain = toolchainConfig(file.toolchain, { home, install_command: config.repo.install_command, deny_paths: config.deny_paths });
-  if (toolchain) config.toolchain = toolchain;
-  const inputs = readOnlyInputsConfig(file.read_only_inputs, { expand: expandHome(home), deny_paths: config.deny_paths });
-  if (inputs) config.read_only_inputs = inputs;
-  // Each prompt through the pack layers, placeholders filled after the merge (design 11-packs.md). A required
-  // prompt no layer has fails startup; owner-defaults is appended to triage.
-  const prompts = await packPrompts(packs, (text) => fillPrompt(text, config.repo, plugins.forge ?? "local", config.toolchain, settingValues(`${file.repo.owner}/${file.repo.name}`, settings)));
-  return { root, codeRoot, configFile, externalConfig, worktreesDir, file, config, prompts, secretsFile, stateDir, store, plugins, registry, packs, pack_tools, stats, models, model_by };
-}
-
-/**
- * The plugins that call GitHub, per interface (design 05-sources, Local startup). The `github_auth` credentials are
- * not on the list: they are read only for a plugin that is.
- */
-const GITHUB_PLUGINS: Readonly<Partial<Record<keyof Selection, readonly string[]>>> = {
-  broker: ["github"], forge: ["github"],
-};
-const GITHUB_SOURCES: readonly string[] = ["github-issues"];
-
-/**
- * Whether config selects any GitHub plugin: a GitHub source, broker or forge. The one rule for the local path
- * (`local_only`): none selected means no GitHub credential, repo lookup, origin fetch or PR, whether or not the factory repo has a remote.
- */
-export function selectsGitHub(sel: Selection): boolean {
-  if (selectedSources(sel).some((s) => GITHUB_SOURCES.includes(s))) return true;
-  return Object.entries(GITHUB_PLUGINS).some(([kind, names]) => {
-    const name = sel[kind as keyof Selection];
-    return typeof name === "string" && names!.includes(name);
-  });
-}
-
-/**
- * GitHub's settings (`github` in factory.config.json), checked at load only when a GitHub plugin is selected: a
- * config with none loads no GitHub implementation module.
- */
-async function checkGitHubSettings(github: FileConfig["github"]): Promise<void> {
-  const [client, issues] = await Promise.all([import("./impl/github/github-client.js"), import("./impl/github/github-issue-source.js")]);
-  client.githubMinRemaining(github);
-  client.githubBudgetShare(github);
-  issues.githubHistorySince(github);
-}
-
-/** The configured repo as a local project: `local:local:<sha-256 of owner/name>`, labelled `local/owner/name`. */
-export function localProject(repo: RepoRef): ProjectRef {
-  const digest = createHash("sha256").update(`${repo.owner}/${repo.name}`).digest("hex").slice(0, 32);
-  return { key: localProjectKey(digest), label: projectLabel("local", repo.owner, repo.name) };
-}
 
 /** The GitHub project key's resolution, for the CLI commands that resolve the key outside startup. */
 export { resolveProject };
@@ -410,12 +155,6 @@ async function projectAtStartup(loaded: Loaded, src: ProjectSource, d: Omit<Star
  */
 function shareGitHubBudget(loaded: Loaded, github: GitHubApi, store: FactoryStore, config: FactoryConfig): void {
   if (loaded.config.local_only !== true) github.shareBudget({ store, project: config.project.key, refresh_ms: config.tick_ms });
-}
-
-/** The loaded config with the resolved project, and the per-project settings re-keyed from `owner/name` to its key. */
-export function resolvedConfig(config: LoadedConfig, project: ProjectRef): FactoryConfig {
-  const ownerName = `${config.repo.owner}/${config.repo.name}`;
-  return { ...config, project, settings: { ...config.settings, projects: rekeyProjectSettings(config.settings.projects, ownerName, project.key) } };
 }
 
 export interface Built {
@@ -600,12 +339,6 @@ export async function startProcessIdentity(loaded: Loaded, store: FactoryStore, 
 export { maxWorkers, workerCount };
 
 
-/** `hooks` from factory.config.json: a list of hook names, or startup fails. */
-export function hookNames(value: unknown): readonly string[] {
-  if (!Array.isArray(value) || value.some((v) => typeof v !== "string")) throw new Error("hooks must be a list of hook names");
-  return value as string[];
-}
-
 /**
  * Every enabled hook name must be a discovered `*.hook.ts` at a point the factory calls: a typo, or a point no
  * caller runs yet, would otherwise leave the owner's check off without a word.
@@ -760,60 +493,12 @@ export async function buildStatsStore(loaded: Loaded): Promise<FactoryStore> {
   return p.store(await p.secrets(), clock);
 }
 
-/**
- * `toolchain` from factory.config.json (design 05-sandbox.md, issue #334): absent → undefined. Otherwise
- * `caches` is a list of absolute folders (a leading `~` is the owner's HOME), normalized, none overlapping a
- * `deny_paths` entry in either direction (so neither the secret file's folder nor the owner's config); `env` maps
- * env var names to strings, each key passing the G1 key check (`toolchainEnvKeyRefusal`); `warm_command` is argv,
- * absent: `install_command`. Every problem fails startup at once, one per line, each naming its entry. The values
- * are scanned for secrets in build(), by the configured scanner (`checkToolchainEnv`).
- */
-export function toolchainConfig(
-  raw: unknown,
-  ctx: { home: string; install_command: readonly string[]; deny_paths: readonly string[] },
-): ToolchainConfig | undefined {
-  if (raw === undefined) return undefined;
-  if (!isRecord(raw)) throw new Error("toolchain must be an object with caches, env and warm_command");
-  const problems: string[] = [];
-  const caches = readOnlyFolders("toolchain.caches", raw.caches ?? [], { expand: expandHome(ctx.home), deny_paths: ctx.deny_paths }, problems);
-  const env: Record<string, string> = {};
-  if (raw.env !== undefined && !isRecord(raw.env)) problems.push("toolchain.env must be an object of env var names to strings");
-  for (const [key, value] of Object.entries(isRecord(raw.env) ? raw.env : {})) {
-    const refusal = toolchainEnvKeyRefusal(key);
-    if (refusal) problems.push(refusal);
-    else if (typeof value !== "string") problems.push(`toolchain.env.${key} must be a string`);
-    else env[key] = value;
-  }
-  let warm_command: string[] = [...ctx.install_command];
-  try {
-    warm_command = argvConfig("toolchain.warm_command", raw.warm_command, ctx.install_command);
-  } catch (err) {
-    problems.push((err as Error).message);
-  }
-  if (problems.length > 0) throw new Error(problems.join("\n"));
-  return { caches, env, warm_command };
-}
-
-/** A configured path with a leading `~` taken as the owner's HOME (no HOME: unchanged, so it fails as relative). */
-const expandHome = (home: string) => (p: string): string => ((p === "~" || p.startsWith("~/")) && home !== "" ? join(home, p.slice(1)) : p);
-
-/**
- * G1 on the toolchain's env values at startup: each value goes through the configured egress scanner (known
- * secret values and secret patterns), so a token pasted into `toolchain.env` never reaches an agent. Fails naming
- * the entry and the rule, never the value. No block, or no entry: nothing is scanned.
- */
-export async function checkToolchainEnv(toolchain: ToolchainConfig | undefined, scanner: EgressScanner): Promise<void> {
-  const problems: string[] = [];
-  for (const [key, value] of Object.entries(toolchain?.env ?? {})) {
-    const scan = await scanner.scan("log", value);
-    if (!scan.clean) problems.push(`toolchain.env.${key} looks like a credential (${scan.findings.map((f) => f.rule).join(", ")}) (G1)`);
-  }
-  if (problems.length > 0) throw new Error(problems.join("\n"));
-}
-
-function isTier(n: number): n is Tier {
-  return Number.isInteger(n) && n >= 1 && n <= 5;
-}
-
 export { Plugins } from "./plugin-set.js";
 export { settingsBase } from "./core/settings-base.js";
+// Config reading moved to load-config.ts and config-values.ts (RFC 0023 step 2e); re-exported for the code that also wires.
+export {
+  CHECK_COMMANDS_PLACEHOLDER, cliConfig, CONFIG_FILE, type FileConfig, fillPrompt, FORGE_PLACEHOLDER, loadConfig, type Loaded, localProject, resolvedConfig, selectsGitHub, SPLIT_PLACEHOLDERS, type StoreConfig, TOOLCHAIN_PLACEHOLDER, UI_CHECK_PLACEHOLDER, withForgeDefault,
+} from "./load-config.js";
+export {
+  agentStopChecks, alarmConfig, argvConfig, checkCommandsConfig, checkToolchainEnv, codeVersion, DEFAULT_UI_PORT, hookNames, isLoopback, MERGE_QUEUE_DEPTH_MAX, mergeQueueDepth, readRestarts, RETRY_DEFAULTS, retryConfig, stallConfig, STATS_MIN_SAMPLE_DEFAULT, statsConfig, testCommand, toolchainConfig, uiCommandsActor, uiPort, uiUserId, workerIndexBase,
+} from "./config-values.js";
