@@ -129,9 +129,13 @@ export class WorkerPool {
     return Math.min(this.live.workers(), this.workers.length);
   }
 
-  /** Loops that run now: the `workers` slots and the first slot above them, when the slot count has one (design §5, 2026-11-18). */
+  /**
+   * Loops that run now: the `workers` slots and the first slot above them, when the slot count has one (design §5, 2026-11-18).
+   * None at `workers` 0 (design 05-restart-pauses, 2026-11-21): every loop stops claiming and finishes its current run.
+   */
   loops(): number {
-    return Math.min(this.live.workers() + 1, this.workers.length);
+    const workers = this.live.workers();
+    return workers === 0 ? 0 : Math.min(workers + 1, this.workers.length);
   }
 
   /**

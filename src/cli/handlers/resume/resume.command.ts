@@ -6,9 +6,10 @@ import { defineCommand } from "../../command.js";
 export default defineCommand({
   names: ["resume"],
   usage: `  resume [name | --all]
-               end a claim pause now: rate_limit (no name), forge_auth, preflight_access or model_stall, or
-               --all for every one; prints what it ended or "no pause in effect". Needs approve_spec (the owner
-               check, as the dashboard's Resume now); logged with the CLI identity`,
+               end a pause now: rate_limit (no name), forge_auth, preflight_access, model_stall, owner (what
+               \`factory stop\` started; also clears every \`workers pause\`), or --all for every one; prints what
+               it ended or "no pause in effect". Needs approve_spec (the owner check, as the dashboard's Resume
+               now); logged with the CLI identity`,
   async run(args, ctx) {
     // The pauses live in the store (design §5 Restarts); an unknown name is refused before the store opens.
     const action = parseResumeArgs([...args]);

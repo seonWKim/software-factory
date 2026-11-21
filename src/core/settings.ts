@@ -397,11 +397,14 @@ export function keyRefusal(key: string): string | null {
   return `"${key}" is not settable; the settable keys are ${SETTABLE_KEYS.join(", ")}`;
 }
 
-/** `workers` from factory.config.json: absent means 1, otherwise an integer of 1 or more or startup fails. */
+/**
+ * `workers` from factory.config.json: absent means 1, otherwise an integer of 0 or more or startup fails. 0: no worker
+ * claims a run and running runs finish (design 05-restart-pauses, 2026-11-21).
+ */
 export function workerCount(value: unknown): number {
   if (value === undefined) return 1;
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-    throw new Error(`workers must be an integer of 1 or more (got ${JSON.stringify(value) ?? String(value)})`);
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw new Error(`workers must be an integer of 0 or more (got ${JSON.stringify(value) ?? String(value)})`);
   }
   return value;
 }
@@ -409,7 +412,7 @@ export function workerCount(value: unknown): number {
 /**
  * `max_workers` from factory.config.json: the worker slots a process has, which sizes the supervisor's worker
  * index block. Absent means `workers`; otherwise an integer of at least `workers` or startup fails. The live
- * `workers` setting may go anywhere from 1 to this without a restart.
+ * `workers` setting may go anywhere from 0 to this without a restart.
  */
 export function maxWorkers(workers: number, value: unknown): number {
   if (value === undefined) return workers;
@@ -449,7 +452,7 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
       if (value === undefined) throw new Error("model_by must be an object");
       return parseModelBy(value) as SettableValues[K];
     case "workers":
-      if (value === undefined) throw new Error("workers must be an integer of 1 or more (got undefined)");
+      if (value === undefined) throw new Error("workers must be an integer of 0 or more (got undefined)");
       return workerCount(value) as SettableValues[K];
     case "phases_auto_approve": case "auto_grant_test_paths": return booleanSetting(key, value) as SettableValues[K];
     case "hold_policy": return parseHoldPolicy(value) as SettableValues[K];

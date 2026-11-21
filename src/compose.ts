@@ -335,7 +335,7 @@ export async function startProcessIdentity(loaded: Loaded, store: FactoryStore, 
   });
 }
 
-/** `workers` from factory.config.json: absent means 1, otherwise an integer of 1 or more or startup fails. */
+/** `workers` from factory.config.json: absent means 1, otherwise an integer of 0 or more or startup fails. */
 export { maxWorkers, workerCount };
 
 

@@ -1,5 +1,5 @@
 // Claim pauses on the dashboard (design §5 Restarts and §9, issue #291). GET /api/v1/pauses lists each pause in
-// effect with when it ends; POST /api/v1/pauses/resume ends one, as `factory resume <name>` does (endPause in
+// effect with when it ends, and the owner pause (`factory stop`, design 05-restart-pauses) with when it began; POST /api/v1/pauses/resume ends one, as `factory resume <name>` does (endPause in
 // src/resume-cmd.ts, so both write the same log line). The request guards (Host, Origin, Content-Type, CSRF
 // token) run in server.ts before resumePause is reached; then the owner check: the page's factory user must be
 // allowed `approve_spec` on the configured project. Only then is the store written.
@@ -7,7 +7,7 @@
 import type { Logger } from "../core/log.js";
 import type { Timestamp, UserId } from "../core/types.js";
 import type { AuthDecision, AuthProvider } from "../interfaces/auth-provider.js";
-import { RESUMABLE_PAUSES, type ResumablePause, endPause, isResumablePause } from "../resume-cmd.js";
+import { OWNER_PAUSE, RESUMABLE_PAUSES, RESUME_NAMES, type ResumablePause, endPause, isResumablePause, ownerPause } from "../resume-cmd.js";
 import type { ApiResult } from "./api.js";
 import type { UiDeps } from "./deps.js";
 
@@ -34,17 +34,21 @@ export type PauseDeps = UiDeps & { pauses?: UiPauses };
 
 export interface PauseView {
   name: ResumablePause;
-  /** When it ends by itself; for `model_stall`, the next probe time (it ends when a probe answers). */
-  ends_at: Timestamp;
+  /** When it ends by itself; for `model_stall`, the next probe time (it ends when a probe answers). Null for `owner`, which holds until resumed. */
+  ends_at: Timestamp | null;
+  /** `owner` only: when the agents were stopped. Who stopped them stays in the store: one owner, so the page says "you". */
+  since?: Timestamp;
 }
 
-/** Every pause in effect, in RESUMABLE_PAUSES order. Store reads only. */
+/** Every pause in effect, in RESUME_NAMES order (the claim pauses, then the owner pause). Store reads only. */
 export async function activePauses(d: Pick<UiDeps, "store">): Promise<PauseView[]> {
   const out: PauseView[] = [];
   for (const name of RESUMABLE_PAUSES) {
     const ends_at = await d.store.getClaimPause(name);
     if (ends_at !== null) out.push({ name, ends_at });
   }
+  const owner = await ownerPause(d.store);
+  if (owner) out.push({ name: OWNER_PAUSE, ends_at: null, since: owner.since });
   return out;
 }
 
@@ -57,7 +61,7 @@ export async function readPauses(d: PauseDeps): Promise<ApiResult> {
 export async function resumePause(d: PauseDeps, p: UiPauses, body: unknown): Promise<ApiResult> {
   const name = typeof body === "object" && body !== null && !Array.isArray(body) ? (body as Record<string, unknown>).name : undefined;
   if (!isResumablePause(name)) {
-    return { status: 400, value: { error: `name must be one of ${RESUMABLE_PAUSES.join(", ")}` } };
+    return { status: 400, value: { error: `name must be one of ${RESUME_NAMES.join(", ")}` } };
   }
   const user = await p.principal();
   if (user === null) {

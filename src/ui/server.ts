@@ -2,6 +2,7 @@
 // node:http only, bound to 127.0.0.1 with no host option. GET and HEAD only, on every path (/api/health too),
 // except the write routes: POST /api/v1/settings (design §8, issue #236), POST /api/v1/items/:id/commands
 // (design §9, issue #227; commands.ts), POST /api/v1/pauses/resume (design §5 Restarts, issue #291), POST
+// /api/v1/agents/stop (design 05-restart-pauses, Stop all agents; agents-api.ts), POST
 // /api/v1/standing (design 05-standing-approvals, issue #300; standing-api.ts), POST /api/v1/improve/run (design §7, issue #508; improve-api.ts) and
 // POST /api/v1/packs/approvals (design 11-packs, issue #589; packs-api.ts), POST /api/v1/rules/verdict (design §9,
 // issue #571; rules-api.ts) and the task routes (design 02-tasks; tasks-api.ts TASK_WRITES: POST /api/v1/tasks, the quick-add box,
@@ -11,7 +12,7 @@
 // (design 09-dashboard-app; data-ask.ts: POST /api/v1/data/ask) and the Plugins page's import (design 11-plugin-import;
 // plugins-import-api.ts: POST /api/v1/plugins/import) and Migrate now, Start and Restart now (design 08-self-update; migrate-api.ts:
 // POST /api/v1/migrate and POST /api/v1/supervisor), each guarded in this order: Host, then an Origin equal to the Host's own http origin, then Content-Type
-// application/json, then the per-process CSRF token in x-csrf-token; the resume, standing, improve, migrate and supervisor routes then
+// application/json, then the per-process CSRF token in x-csrf-token; the resume, stop, standing, improve, migrate and supervisor routes then
 // check the owner (approve_spec), the rules, calendar and Ask routes the owner, the pack approvals route approve_tool, the task routes
 // the commands actor, the plugins import the page's factory user. GET /api/v1/plugins/import (it reads the user's own
 // Claude Code and Codex configs) also needs the CSRF token after the Host check. A POST to any
@@ -32,6 +33,7 @@ import { DEFAULT_APP_DIR, appText, isAppPath, serveApp } from "./app.js";
 import { MAX_COMMAND_BODY, commandsPathId, commandsPost, staleCsrf } from "./commands.js";
 import { CSRF_HEADER, SETTINGS_PATH, csrfMatches, writeSettings } from "./settings-api.js";
 import { RESUME_PATH, resumePause } from "./pause-api.js";
+import { STOP_PATH, stopAllAgents } from "./agents-api.js";
 import { STANDING_PATH, writeStanding } from "./standing-api.js";
 import { PACK_APPROVALS_PATH, writePackApproval } from "./packs-api.js";
 import { TASKS_PATH, TASK_PREVIEW_PATH, TASK_WRITES, readTaskPreview, readTasks } from "./tasks-api.js";
@@ -132,11 +134,11 @@ function areaError(area: "api" | "app" | "page", status: number, message: string
   return error(status, message, extra);
 }
 
-type WriteRoute = "settings" | "resume" | "standing" | "improve" | "packs" | "import" | "rules" | "tasks" | "calendar" | "ask" | "migrate" | "supervisor";
+type WriteRoute = "settings" | "resume" | "stop" | "standing" | "improve" | "packs" | "import" | "rules" | "tasks" | "calendar" | "ask" | "migrate" | "supervisor";
 
 /**
  * The write route a request is for: POST to exactly /api/v1/settings when settings are wired, to exactly
- * /api/v1/pauses/resume, /api/v1/standing or /api/v1/plugins/import when the pause routes (their factory user) are, or to exactly /api/v1/improve/run when both the pause routes and
+ * /api/v1/pauses/resume, /api/v1/agents/stop, /api/v1/standing or /api/v1/plugins/import when the pause routes (their factory user) are, or to exactly /api/v1/improve/run when both the pause routes and
  * settings (its project) are, or to exactly one of the task routes (TASK_WRITES) when the commands route (its actor and token) is, or
  * to exactly /api/v1/calendar/connect or /disconnect when the settings carry the Calendar section, or to exactly /api/v1/data/ask when they carry
  * the Ask, or to exactly /api/v1/migrate or /api/v1/supervisor when both the pause routes and Migrate now's parts are (a query string
@@ -147,6 +149,7 @@ function writeRoute(d: ServerDeps, req: UiRequest): WriteRoute | null {
   const path = pathOf(req.url);
   if (path === SETTINGS_PATH && d.settings !== undefined) return "settings";
   if (path === RESUME_PATH && d.pauses !== undefined) return "resume";
+  if (path === STOP_PATH && d.pauses !== undefined) return "stop";
   if (path === STANDING_PATH && d.pauses !== undefined) return "standing";
   if (path === IMPROVE_RUN_PATH && improveRunWired(d)) return "improve";
   if (path === PACK_APPROVALS_PATH && d.pauses?.auth !== undefined) return "packs";
@@ -199,6 +202,7 @@ async function writePost(d: ServerDeps, req: UiRequest, route: WriteRoute): Prom
   const r =
     route === "settings" ? await writeSettings(d, d.settings!, body)
     : route === "resume" ? await resumePause(d, d.pauses!, body)
+    : route === "stop" ? await stopAllAgents(d, d.pauses!)
     : route === "improve" ? await runImproveNow(d as ImproveRunDeps)
     : route === "packs" ? await writePackApproval(d, d.pauses!, body)
     : route === "import" ? await writePluginsImport(d, d.pauses!, body)

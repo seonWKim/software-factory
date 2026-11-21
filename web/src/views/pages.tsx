@@ -117,6 +117,7 @@ const PAUSE_LABELS: Record<string, MessageKey> = {
   forge_auth: "pause.forge_auth",
   preflight_access: "pause.preflight_access",
   model_stall: "pause.model_stall",
+  owner: "stop.stopped",
 };
 const pauseLabel = (name: string): string => {
   const key = PAUSE_LABELS[name];
@@ -125,13 +126,17 @@ const pauseLabel = (name: string): string => {
 
 /** One pause with its "Resume now" button (ResumeNow, shared with the Tasks pause row); a refusal shows next to the button. */
 function PauseItem({ pause, token, now }: { pause: PauseRow; token: string | null; now: number }) {
+  // The owner pause (Stop all agents) has no end, only when it began.
+  const at = pause.ends_at ?? pause.since ?? null;
   return (
     <li data-pause={pause.name} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
       <span className="min-w-0 text-pretty text-text-1">{pauseLabel(pause.name)}</span>
-      <span className="min-w-0 tabular-nums break-words text-text-2" title={localDateTime(pause.ends_at)}>
-        {t(pause.name === "model_stall" ? "pause.nextProbe" : "pause.ends", { time: pause.ends_at })}
-        {Date.parse(pause.ends_at) > now ? ` (${relativeTime(pause.ends_at, now)})` : ""}
-      </span>
+      {at !== null && (
+        <span className="min-w-0 tabular-nums break-words text-text-2" title={localDateTime(at)}>
+          {pause.ends_at === null ? relativeTime(at, now) : t(pause.name === "model_stall" ? "pause.nextProbe" : "pause.ends", { time: at })}
+          {pause.ends_at !== null && Date.parse(at) > now ? ` (${relativeTime(at, now)})` : ""}
+        </span>
+      )}
       <ResumeNow name={pause.name} token={token} />
     </li>
   );
@@ -304,7 +309,7 @@ export function ItemsPage() {
           <Button size="sm" onClick={() => setIds(null)}>{t("items.idsClear")}</Button>
         </div>
       )}
-      {rateLimit && <div className="mb-3"><Notice tone="warn">{t("items.rateLimit", { state: t("items.ratePaused", { time: rateLimit.ends_at }) })}</Notice></div>}
+      {rateLimit?.ends_at && <div className="mb-3"><Notice tone="warn">{t("items.rateLimit", { state: t("items.ratePaused", { time: rateLimit.ends_at }) })}</Notice></div>}
       <Tabs
         label={t("items.filterByState")}
         className="mb-3"
