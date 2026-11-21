@@ -4,7 +4,10 @@ import { parseFixReferences, parseRevert } from "../src/impl/github/github-forge
 import type { WorkItem } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { newStore, issue, system } from "./helpers/store.js";
-import { FakeAuth, FakeForge, FakeSource, alice, config, issueRef, silent, cleanScanner } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, config, issueRef, silent, cleanScanner } from "./helpers/fakes/config.js";
 
 describe("links: revert matching", () => {
   it("finds reverted shas in `This reverts commit <sha>`", () => {

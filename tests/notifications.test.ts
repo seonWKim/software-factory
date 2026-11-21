@@ -22,7 +22,7 @@ import { recordAction } from "../src/outbound/index.js";
 import { tickAt } from "../src/shared/ticks/tick-generator.js";
 import { MIGRATIONS_TABLE } from "../src/state/index.js";
 import { type ApiDeps, respond } from "../src/ui/server.js";
-import { cleanScanner, config, silent } from "./helpers/fakes.js";
+import { cleanScanner, config, silent } from "./helpers/fakes/config.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 // Design 09-notifications: one notice per wait on the owner and per close (`finished`), quiet hours and their summary,

@@ -8,7 +8,7 @@ import { api } from "../../src/ui/api.js";
 import { HealthMonitor } from "../../src/ui/health.js";
 import { needOf } from "../../src/ui/need.js";
 import type { UiDeps } from "../../src/ui/deps.js";
-import { PROJECT } from "../helpers/fakes.js";
+import { PROJECT } from "../helpers/fakes/config.js";
 import { issue, newStore, system } from "../helpers/store.js";
 
 // The UI builds no forge link: a PR link is the item's stored change_url, the change_ref alone is plain text.

@@ -14,7 +14,9 @@ import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import { renderSpec } from "../src/core/spec-comment.js";
 import type { RunOutcome, WorkItem } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent, triageSpec } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, silent, triageSpec } from "./helpers/fakes/config.js";
 import { newStore, w1 } from "./helpers/store.js";
 
 // Path companions (design 04-triage.md, issue #224): a change to one path also needs others. The controller

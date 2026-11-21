@@ -2,7 +2,9 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { WorkItem, WorkerId } from "../src/core/types.js";
 import { GitHubForge } from "../src/impl/github/github-forge.js";
-import { FakeGitHubClient, pipeline, runComments, waitFor } from "./helpers/fakes.js";
+import { FakeGitHubClient } from "./helpers/fakes/github.js";
+import { pipeline } from "./helpers/harness.js";
+import { runComments, waitFor } from "./helpers/fakes/config.js";
 
 // The review run's cheap checks before any agent call, and the CI results in the review prompt (issue #223).
 

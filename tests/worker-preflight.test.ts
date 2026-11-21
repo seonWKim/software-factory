@@ -3,7 +3,8 @@ import type { WorkItemId, WorkerId } from "../src/core/types.js";
 import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import { GitHubError, type GitHubClient } from "../src/impl/github/github-client.js";
 import type { ToolCallContext } from "../src/interfaces/tool-broker.js";
-import { cleanScanner, pipeline } from "./helpers/fakes.js";
+import { cleanScanner } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 // The implement preflight (design §5 Restarts): push access, the PR API and the base fetch are checked before

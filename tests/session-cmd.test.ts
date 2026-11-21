@@ -10,7 +10,9 @@ import type { Timestamp, UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { SESSION_USAGE, type SessionWho, runSession, sessionDeps } from "../src/session-cmd.js";
-import { FakeAuth, FakeBroker, FakeSandbox, PROJECT, cleanScanner, config } from "./helpers/fakes.js";
+import { FakeAuth, FakeSandbox } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { PROJECT, cleanScanner, config } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 // A session built through sessionDeps reads the learned layer (design 08-settings) as a run does.

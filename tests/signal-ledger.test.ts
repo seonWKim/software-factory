@@ -15,7 +15,7 @@ import { Router, type ControllerUnits } from "../src/controller/index.js";
 import { loadDescriptors } from "../src/runtime/registry/registry.js";
 import { CODE_ROOT, findDescriptorFiles } from "../src/state/index.js";
 import { tickAt } from "../src/shared/ticks/tick-generator.js";
-import { cleanScanner, config, silent } from "./helpers/fakes.js";
+import { cleanScanner, config, silent } from "./helpers/fakes/config.js";
 import { human, issue, newStore, system, w1 } from "./helpers/store.js";
 
 // Design 11-signal-ledger (issue #491): the `signals` unit writes one controller_signals row per stored signal.

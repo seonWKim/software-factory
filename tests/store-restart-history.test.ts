@@ -11,7 +11,8 @@ import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import type { ChildRestart } from "../src/interfaces/updater.js";
 import dropRecordedAt from "../src/runtime/migrations/20261109T1401-runtime-drop-restart-recorded-at.migration.js";
 import { tableColumns, type MigrationDb } from "../src/state/index.js";
-import { cleanScanner, config, FakeAuth, silent } from "./helpers/fakes.js";
+import { cleanScanner, config, silent } from "./helpers/fakes/config.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
 import { BACKENDS, newStore } from "./helpers/store.js";
 
 // Restart history (design 05-restarts): one store row per child restart, written by one conditional insert, so

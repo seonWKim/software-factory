@@ -15,7 +15,9 @@ import { type ApiDeps, type UiRequest, type UiServer, respond, startUi } from ".
 import { TASK_DELETE_PATH, TASK_DONE_PATH, TASK_EDIT_PATH, TASK_SUB_PATH } from "../src/ui/tasks-api.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
-import { FakeAuth, FakeSource, PROJECT, alice, config, issueRef, silent, cleanScanner } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { PROJECT, alice, config, issueRef, silent, cleanScanner } from "./helpers/fakes/config.js";
 import { issue, newStore, system, w1, w2 } from "./helpers/store.js";
 
 const LEASE = 60_000;

@@ -16,10 +16,11 @@ import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import { STORE_BRANCH, type ToolCallContext } from "../src/interfaces/tool-broker.js";
 import { newStore, PROJECT_KEY } from "./helpers/store.js";
-import {
-  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, GitForge, MemoryStorage,
-  alice, cleanScanner, config, gates, issueRef, mallory, prompts, recordingLog, runComments, settingsWith, silent, triageSpec, waitFor,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeForge, GitForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, gates, issueRef, mallory, prompts, recordingLog, runComments, settingsWith, silent, triageSpec, waitFor } from "./helpers/fakes/config.js";
 
 async function factory(
   runner: FakeRunner,

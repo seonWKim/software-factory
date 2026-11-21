@@ -3,7 +3,7 @@ import { HealthMonitor } from "../src/ui/health.js";
 import { type UiDeps, respond } from "../src/ui/server.js";
 import { type UiSettings, newCsrfToken } from "../src/ui/settings-api.js";
 import type { UserId } from "../src/core/types.js";
-import { cleanScanner } from "./helpers/fakes.js";
+import { cleanScanner } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 // The stale-token 403 carries code "stale_csrf" (design 09-dashboard-app), so the page's postJson retries it once

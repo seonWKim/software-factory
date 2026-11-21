@@ -14,7 +14,8 @@ import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { ExecOptions, ExecResult, Sandbox } from "../src/interfaces/sandbox.js";
 import { doctorChecks, toolchainChecks } from "../src/setup.js";
-import { config, pipeline } from "./helpers/fakes.js";
+import { config } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 import { issue, system } from "./helpers/store.js";
 
 // The `toolchain` block (design 05-sandbox.md, issue #334): read-only caches, non-secret agent env, and a warm

@@ -18,7 +18,7 @@ import { runSettings } from "../src/settings-cmd.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import type { UiDeps } from "../src/ui/server.js";
 import { type UiSettings, newCsrfToken, writeSettings } from "../src/ui/settings-api.js";
-import { cleanScanner, config, recordingLog, silent } from "./helpers/fakes.js";
+import { cleanScanner, config, recordingLog, silent } from "./helpers/fakes/config.js";
 import { CHANNEL, FakeSlackApi, FakeSocket } from "./helpers/slack.js";
 import { newStore } from "./helpers/store.js";
 

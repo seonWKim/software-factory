@@ -6,7 +6,8 @@ import {
 import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine, lastResolveFailure, renderResolvePrompt, resolveScopeViolations } from "../src/core/resolve.js";
 import type { Run, StateChange, WorkItem } from "../src/core/types.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
-import { pipeline, runComments } from "./helpers/fakes.js";
+import { pipeline } from "./helpers/harness.js";
+import { runComments } from "./helpers/fakes/config.js";
 import { issue, system } from "./helpers/store.js";
 
 // Pure rules of automatic conflict resolution (design §5 Merge conflict, decided 2026-11-02).

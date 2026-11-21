@@ -7,7 +7,7 @@ import { OwnerAuth } from "../src/core/authorize.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { postNotices } from "../src/impl/source/slack-notify.js";
 import { SlackSource } from "../src/impl/source/slack-source.js";
-import { silent } from "./helpers/fakes.js";
+import { silent } from "./helpers/fakes/config.js";
 import { CHANNEL, FakeSlackApi, FakeSocket, OTHER_CHANNEL } from "./helpers/slack.js";
 import { newStore } from "./helpers/store.js";
 

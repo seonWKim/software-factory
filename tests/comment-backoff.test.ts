@@ -4,7 +4,9 @@ import type { UserId } from "../src/core/types.js";
 import type { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubIssueSource, commentBackoffMs } from "../src/impl/github/github-issue-source.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
-import { FakeAuth, FakeGitHubClient, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeGitHubClient } from "./helpers/fakes/github.js";
+import { cleanScanner, config, issueRef, silent } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore, system } from "./helpers/store.js";
 
 // Backoff of a failing comment post (design §5, GitHub call budget): the attempt count and the next attempt time

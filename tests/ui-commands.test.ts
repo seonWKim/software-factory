@@ -17,7 +17,9 @@ import { refusalText } from "../src/core/commands.js";
 import { REVISE_APPLIED } from "../src/controller/units/commands/queued-revise.js";
 import { runLocalCli } from "../src/core/local-cli.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
-import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent, waitFor } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, silent, waitFor } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 import { classifierAnswer } from "./helpers/classifier.js";
 

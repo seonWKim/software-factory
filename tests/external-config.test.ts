@@ -12,7 +12,7 @@ import { CODE_ROOT_ENV, type CommandRunner } from "../src/interfaces/updater.js"
 import { REGISTRY, createPlugin } from "../src/plugins.js";
 import { checkLine, doctor, doctorChecks } from "../src/setup.js";
 import { createUpdater } from "../src/supervisor.js";
-import { recordingLog } from "./helpers/fakes.js";
+import { recordingLog } from "./helpers/fakes/config.js";
 
 const REPO_ROOT = join(import.meta.dirname, "..");
 const CHECKED_IN = join(REPO_ROOT, "factory.config.json");
