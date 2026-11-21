@@ -42,7 +42,6 @@ describe("Tasks page", () => {
     expect(within(screen.getByRole("list", { name: dayLabel("2026-11-13") })).getByText("tk_soon")).toBeTruthy();
     expect(card("tk_soon").textContent).toContain("#home");
     expect(screen.getByRole("list", { name: "No date" }).textContent).toContain("tk_inbox");
-    const built = within(card("tk_built"));
     // No raw ID on the row: the work's state sits on the details line, under the title.
     expect(card("tk_built").textContent).not.toContain("wi_1");
     expect(card("tk_built").querySelector("[data-details] [data-work]")).not.toBeNull();
