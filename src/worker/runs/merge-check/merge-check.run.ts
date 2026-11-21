@@ -1,6 +1,7 @@
 // The merge-check run (RFC 0015 §7 Merge queue, M8): checks a merge queue entry as it will land. No agent, no push,
 // no forge call. In a fresh run folder at the base it merges the branches of the entries ahead and then this
-// change's branch, in queue order, and runs the install command and then the checks on the result, then the UI check
+// change's branch, in queue order, and runs the install command (through the run-side install cache, design
+// 05-sandbox) and then the checks on the result, then the UI check
 // (`repo.ui_check`, design §4) when the merged result changes one of its paths. A conflict or a failing check is a
 // result (`red`), not a run failure: the merge queue decides. Git and sandbox errors fail the run. A failing check's
 // red result names the failing tests and keeps the output tail, as the implement run's `checks_failed` does.
@@ -17,6 +18,7 @@
 import { NO_HOOKS, RunFailure, failingTestNames, gitIdentity } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { DEFAULT_TIMEOUTS, defineRunKind, type RunCall } from "../../run-kind.js";
+import { cachedInstall } from "../../install-cache.js";
 import { type NodeChoice, chooseNode, offNode, onNode, projectNode } from "./node-version.js";
 
 /** The check helpers the runner hands this run (core/checks.ts), so the run imports none of them. */
@@ -79,8 +81,8 @@ async function mergeCheck(w: Worker, c: RunCall): Promise<Record<string, unknown
       const r = await w.runCheckList(run, handle, signal, { commands: commands.map((c) => onNode(node, c)) });
       return { ...r, failed: r.failed && { ...r.failed, command: offNode(r.failed.command) } };
     };
-    const install = await runOn([[...w.cfg.repo.install_command]]);
-    if (install.failed) return red(install.failed);
+    const install = await cachedInstall(w, handle, () => runOn([[...w.cfg.repo.install_command]]));
+    if (install?.failed) return red(install.failed);
     const list = await checkList(w, runOn);
     // The list stays whole in every selection mode; a failing file the item's enforced selection skipped is a miss.
     if (list.failed) return { ...(await red(list.failed)), ...(await w.checkTools.mergeMiss(w.d, item, w.checkTools.failingTestFiles(list.failed.tail), run.id)) };
@@ -108,8 +110,8 @@ async function baseUiCheck(w: Worker, { run, item, signal }: RunCall, base_ref: 
   });
   try {
     await w.git(handle, [...NO_HOOKS, "checkout", "--quiet", "--detach", base_sha]);
-    const commands = [[...w.cfg.repo.install_command], ...uiCheck].map((cmd) => onNode(node, cmd));
-    const failed = (await w.runCheckList(run, handle, signal, { commands })).failed;
+    const runOn = async (commands: string[][]) => (await w.runCheckList(run, handle, signal, { commands: commands.map((cmd) => onNode(node, cmd)) })).failed;
+    const failed = (await cachedInstall(w, handle, async () => ({ failed: await runOn([[...w.cfg.repo.install_command]]) })))?.failed ?? (await runOn(uiCheck));
     return failed && { ...failed, command: offNode(failed.command) };
   } finally {
     await w.d.sandbox.destroy(handle);
