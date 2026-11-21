@@ -81,7 +81,7 @@ the topic file, never this index; add a line here only for a new topic file. "§
 - [09-dashboard-tasks-projects.md](design/09-dashboard-tasks-projects.md): Project switcher.
 - [09-dashboard-rules.md](design/09-dashboard-rules.md): Rules: verdicts, Promote, Retire.
 - [09-dashboard-settings.md](design/09-dashboard-settings.md): Settings and Plugins.
-- [09-dashboard-system.md](design/09-dashboard-system.md): Work, Failures, Spend, Data.
+- [09-dashboard-system.md](design/09-dashboard-system.md): Work, Failures, Spend, Data, the Improve tab.
 - [09-dashboard-workers.md](design/09-dashboard-workers.md): run timeline, dependency graph.
 - [09-dashboard-item.md](design/09-dashboard-item.md): item page, thread, transcripts.
 - [09-dashboard-item-commands.md](design/09-dashboard-item-commands.md): item commands, dialogs, Merge button.
