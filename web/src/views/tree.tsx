@@ -9,7 +9,7 @@ import { FOCUS } from "../components/ui/control.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
-import { LEVEL_LABELS, duration, shortSource } from "../lib/format.js";
+import { LEVEL_LABELS, duration, shortItemId } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
 import { When, WhyText, WorkerName, runKindLabel } from "./common.js";
@@ -44,9 +44,9 @@ function Row({ node, now, byNumber, byId }: { node: TreeNode; now: number; byNum
   const badge = <Badge level={it.item_phase}>{LEVEL_LABELS[it.item_phase] ?? it.item_phase}</Badge>;
   return (
     <div className={cn("flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-1 py-1", node.context && "text-text-2")}>
-      <Link href={itemPath(it.id)} className={cn("min-w-0 truncate font-medium", LINK_CLASS)}>{it.title ?? shortSource(it.source.id)}</Link>
+      <Link href={itemPath(it.id)} className={cn("min-w-0 truncate font-medium", LINK_CLASS)}>{it.title ?? shortItemId(it.id)}</Link>
       {waits ? (
-        <Link href={itemPath(waits.id)} data-waits-for title={t("tree.waitsFor", { title: waits.title ?? shortSource(waits.source.id) })} className={cn("rounded-pill", FOCUS)}>
+        <Link href={itemPath(waits.id)} data-waits-for title={t("tree.waitsFor", { title: waits.title ?? shortItemId(waits.id) })} className={cn("rounded-pill", FOCUS)}>
           {badge}
         </Link>
       ) : (

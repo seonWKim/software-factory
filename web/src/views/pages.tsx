@@ -23,7 +23,7 @@ import { cn } from "../lib/cn.js";
 import { useUrlParam } from "../lib/url-param.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { LEVEL_LABELS, duration, errorLabel, groupedInteger, isHttpUrl, localClock, localDateTime, relativeTime, runStatusLabel, termLabel, shortRev, shortSource, tokens } from "../lib/format.js";
+import { LEVEL_LABELS, duration, errorLabel, groupedInteger, isHttpUrl, localClock, localDateTime, relativeTime, runStatusLabel, termLabel, shortItemId, shortRev, tokens } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
 import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, When, byId, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
@@ -354,14 +354,14 @@ export function ItemPage({ id }: { id: string }) {
   ];
   entries.reverse().sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
   const transcripts = q.data.transcripts ?? {};
-  const short = shortSource(item.source.id);
+  const short = shortItemId(item.id);
   const level = item.item_phase;
   return (
     <>
       <nav aria-label={t("item.breadcrumb")} className="mb-1 text-sm">
         <Link href={`${BASE}items`} className={LINK_CLASS}>{t("page.work")}</Link>
         <span className="text-text-3"> / </span>
-        <Link href={itemPath(item.id)} aria-current="page" title={item.source.id} className={cn("inline-block max-w-[16ch] truncate align-bottom tabular-nums", ID_CLASS)}>{short}</Link>
+        <Link href={itemPath(item.id)} aria-current="page" title={item.id} className={cn("inline-block max-w-[16ch] truncate align-bottom tabular-nums", ID_CLASS)}>{short}</Link>
       </nav>
       <PageHeader title={item.title ?? short} actions={runs.some(isInteractiveRun) ? <InteractiveBadge /> : undefined} />
       {item.parent_id && (

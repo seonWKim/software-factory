@@ -14,6 +14,8 @@ import { VIEW_KEY } from "../web/src/views/tree.js";
 const AT = "2026-11-12T00:00:00.000Z";
 const HOST = "mac-mini";
 const LOCAL = "local-30331a68-38a4-4a4e-83ed-30c3d0b7a040";
+/** The local item's work item ID; the pages show its short ID, `c86970ff` (design 09-dashboard-item). */
+const LOCAL_ITEM = "wi_c86970ff1a73401c952d9228d6156b6d";
 const RAW = new RegExp(`\\bwi_[0-9a-z]+|\\bgithub:\\d+|${HOST}:\\d+`);
 
 const gh = (n: number) => ({ type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` });
@@ -32,7 +34,7 @@ const ITEMS = [
   row("wi_run2", gh(2), "running", "Being built", {
     why: why("running", "Running implement"), run: { kind: "implement", status: "running", attempt: 1, worker_id: `${HOST}:4242:0`, started_at: AT, position: null },
   }),
-  row("wi_local3", local, "queued", "A local task", {
+  row(LOCAL_ITEM, local, "queued", "A local task", {
     why: why("queued", "Queued at position 1"), run: { kind: "implement", status: "queued", attempt: 0, worker_id: null, started_at: null, position: 1 },
   }),
 ];
@@ -56,14 +58,14 @@ const ITEM_DETAIL = {
 const RESPONSES: Record<string, unknown> = {
   "/api/v1/overview": { as_of: AT, stages: { RUNNING: 3 }, needs_you: 1, running: 1, queued: 1, last_24h: { succeeded: 0, failed: 1, tokens: 0 }, system_actions: [] },
   "/api/v1/items": { as_of: AT, total: ITEMS.length, items: ITEMS, facets: { allStates: ITEMS.length, state: {} }, counts: { open: 0, running: 1 } },
-  "/api/v1/items/wi_local3": ITEM_DETAIL,
+  [`/api/v1/items/${LOCAL_ITEM}`]: ITEM_DETAIL,
   "/api/v1/runs": { as_of: AT, runs: [{ id: "run_a", status: "running", kind: "implement", work_item_id: "wi_run2", attempt: 1, owner: `${HOST}:4242:0`, heartbeat_at: AT, started_at: AT, lease_expires_at: AT, created_at: AT }] },
   "/api/v1/items/graph": {
     as_of: AT,
-    nodes: [{ id: "wi_run2", title: "Being built", stage: "RUNNING", blocked_reason: null }, { id: "wi_local3", title: "A local task", stage: "READY", blocked_reason: null }],
-    edges: [{ from: "wi_run2", to: "wi_local3", kind: "dependency" }],
+    nodes: [{ id: "wi_run2", title: "Being built", stage: "RUNNING", blocked_reason: null }, { id: LOCAL_ITEM, title: "A local task", stage: "READY", blocked_reason: null }],
+    edges: [{ from: "wi_run2", to: LOCAL_ITEM, kind: "dependency" }],
   },
-  "/api/v1/queue": { as_of: AT, queue: [{ position: 1, id: "run_b", kind: "implement", work_item_id: "wi_local3", attempt: 0, created_at: AT, not_before: null, why: why("queued", "Queued at position 1") }] },
+  "/api/v1/queue": { as_of: AT, queue: [{ position: 1, id: "run_b", kind: "implement", work_item_id: LOCAL_ITEM, attempt: 0, created_at: AT, not_before: null, why: why("queued", "Queued at position 1") }] },
   "/api/v1/pauses": { pauses: [], csrf_token: null },
   "/api/v1/session": { as_of: AT, csrf_token: "tok", commands_enabled: true, actor: "local:me", actor_source: "environment" },
   "/api/v1/workers": {
@@ -75,7 +77,7 @@ const RESPONSES: Record<string, unknown> = {
   "/api/v1/unreviewed-merges": { as_of: AT, merges: [{ project: "o/r", change_ref: "9", change_url: null, merge_sha: "abcdef1", merged_by: "github:4711", recorded_at: AT }] },
   "/api/v1/failures": {
     as_of: AT, window: "24h", cap: 500, total: 1, capped: false,
-    groups: [{ code: "checks_failed", description: null, count: 1, last_seen: AT, items: 1, runs: [{ id: "run_x", work_item_id: "wi_local3", kind: "implement", attempt: 1, detail: "npm test", worker: `${HOST}:4242:1`, finished_at: AT }] }],
+    groups: [{ code: "checks_failed", description: null, count: 1, last_seen: AT, items: 1, runs: [{ id: "run_x", work_item_id: LOCAL_ITEM, kind: "implement", attempt: 1, detail: "npm test", worker: `${HOST}:4242:1`, finished_at: AT }] }],
   },
 };
 
@@ -119,7 +121,7 @@ function rawIds(): string[] {
 const PAGES: [string, string][] = [
   ["", "Spec waiting"],
   ["items", "Spec waiting"],
-  ["items/wi_local3", "A local task"],
+  [`items/${LOCAL_ITEM}`, "A local task"],
   ["runners", "Being built"],
   ["workers", "Being built"],
   ["queue", "A local task"],
@@ -143,10 +145,10 @@ describe("raw IDs", () => {
   });
 
   it("the IDs stay one step away: in the item page's IDs details, with a Copy button", async () => {
-    await mountAt("items/wi_local3", "A local task");
+    await mountAt(`items/${LOCAL_ITEM}`, "A local task");
     const ids = document.querySelector("[data-ids]") as HTMLDetailsElement;
     expect(ids.tagName).toBe("DETAILS");
-    expect(ids.textContent).toContain("wi_local3");
+    expect(ids.textContent).toContain(LOCAL_ITEM);
     expect(ids.textContent).toContain(LOCAL);
     expect(ids.querySelectorAll("[data-copy] button")).toHaveLength(2);
   });
@@ -184,21 +186,21 @@ describe("narrow windows (check:responsive at 390px)", () => {
     expect(label.textContent).toBe("worker 0");
   });
 
-  it("a long short id in the breadcrumb is cut to one line, with the full id as its title", async () => {
-    await mountAt("items/wi_local3", "A local task");
+  it("a long short id in the breadcrumb is cut to one line, with the full work item id as its title", async () => {
+    await mountAt(`items/${LOCAL_ITEM}`, "A local task");
     const crumb = screen.getByRole("navigation", { name: "Breadcrumb" }).querySelector("[aria-current=page]")!;
     expect(crumb.className).toContain("truncate");
     expect(crumb.className).toContain("max-w-[16ch]");
-    expect(crumb.getAttribute("title")).toBe(LOCAL);
+    expect(crumb.getAttribute("title")).toBe(LOCAL_ITEM);
   });
 });
 
 describe("item links", () => {
   it("the breadcrumb and every item link point to /app/items/<id>; no link has a local: or other non-web address", async () => {
-    await mountAt("items/wi_local3", "A local task");
+    await mountAt(`items/${LOCAL_ITEM}`, "A local task");
     const crumbs = [...screen.getByRole("navigation", { name: "Breadcrumb" }).querySelectorAll("a")].map((a) => [a.textContent, a.getAttribute("href")]);
-    expect(crumbs).toEqual([["Work", "/app/items"], ["30331a68", "/app/items/wi_local3"]]);
-    for (const path of ["items/wi_local3", "items", ""]) {
+    expect(crumbs).toEqual([["Work", "/app/items"], ["c86970ff", `/app/items/${LOCAL_ITEM}`]]);
+    for (const path of [`items/${LOCAL_ITEM}`, "items", ""]) {
       cleanup();
       await mountAt(path, path === "" ? "Spec waiting" : "A local task");
       const hrefs = [...document.querySelectorAll("main a")].map((a) => a.getAttribute("href")!);
@@ -206,7 +208,7 @@ describe("item links", () => {
       for (const h of hrefs) expect(h, path).toMatch(/^(\/app\/|https?:\/\/)/);
     }
     // In the tree, the local item's short id links to its page.
-    const short = screen.queryByText("30331a68");
-    if (short) expect(short.closest("a")?.getAttribute("href")).toBe("/app/items/wi_local3");
+    const short = screen.queryByText("c86970ff");
+    if (short) expect(short.closest("a")?.getAttribute("href")).toBe(`/app/items/${LOCAL_ITEM}`);
   });
 });
