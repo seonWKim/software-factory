@@ -385,7 +385,7 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
   listStateChangesSince(q: Parameters<FactoryStore["listStateChangesSince"]>[0]): Promise<StateChange[]> { return signals.listStateChangesSince(this.db, q); }
   listVerdictsSince(since: Timestamp | null): Promise<Verdict[]> { return signals.listVerdictsSince(this.db, since); }
   listRunsFinishedSince(q: Parameters<FactoryStore["listRunsFinishedSince"]>[0]): Promise<Run[]> { return signals.listRunsFinishedSince(this.db, q); }
-  listMergeEvaluations(since: Timestamp | null) { return evaluations.listMergeEvaluations(this.db, since); }
+  listMergeEvaluations(since: Parameters<FactoryStore["listMergeEvaluations"]>[0]) { return evaluations.listMergeEvaluations(this.db, since !== null && typeof since === "object" ? this.after(-since.within_ms) : since); }
   // Command proposals (design 04-gate-commands, issue #584): command-proposals.ts
   recordCommandProposals(rows: Parameters<FactoryStore["recordCommandProposals"]>[0]) { return proposals.recordCommandProposals(this.db, rows, this.now()); }
   listCommandProposals(proposal_id: string) { return proposals.listCommandProposals(this.db, proposal_id); }
