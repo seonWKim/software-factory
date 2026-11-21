@@ -1,5 +1,6 @@
-import { useRef, useState } from "react";
+import { type RefObject, useRef, useState } from "react";
 import { type RulesView, type AppliedRule, useRuleEntry } from "../api.js";
+import { Dialog } from "../components/ui/dialog.js";
 import { Button } from "../components/ui/button.js";
 import { Badge } from "../components/ui/badge.js";
 import { Card } from "../components/ui/card.js";
@@ -12,14 +13,16 @@ import { Markdown } from "../components/ui/markdown.js";
 import { OverflowMenu, Tooltip } from "../components/ui/menu.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { RetireDialog } from "./rules-verdict.js";
+import { EntryDetail } from "./rules-detail.js";
+import { EditDialog, RetireDialog } from "./rules-verdict.js";
 import { PROSE, ROW_PAD, STACK_NARROW, muted, ruleName } from "./rules-shared.js";
 import type { ReactNode } from "react";
 
 // The Rules page's applied rules group: the promoted rules file in the file's order, one compact row per rule (name
-// with its ID in a tooltip, scope, judged date, the "Suggested to retire" badge, and Retire in its ⋯ menu) that expands to a
-// label/value list (stacked below `sm`), with a search over ID, name, default and scope; it is the Applied tab. Suggest
-// reads each class's retire suggestions on demand. Scope and the encoded-elsewhere lines render through Markdown.
+// with its ID in a tooltip, scope, judged date, the "Suggested to retire" badge, and a ⋯ menu with Edit, Open evidence
+// and Retire) that expands to a label/value list (stacked below `sm`; each default and exception line on its own line),
+// with a search over ID, name, default and scope; it is the Applied tab. Suggest reads each class's retire suggestions
+// on demand. Scope and the encoded-elsewhere lines render through Markdown.
 
 /** One label and its value in an applied rule's details (a KeyValue item); no value reads "not given". */
 const part = (key: string, label: MessageKey, value: ReactNode): KeyValueItem => ({
@@ -28,8 +31,13 @@ const part = (key: string, label: MessageKey, value: ReactNode): KeyValueItem =>
   value: value ?? <span className="text-sm text-text-2">{t("rules.notGiven")}</span>,
 });
 
-/** A text part through Markdown, or nothing when the rule has none. */
-const md = (value: string | null): ReactNode => (value === null || value === "" ? null : <Markdown text={value} />);
+/** A text part through Markdown, each of its lines (a repeated 기본값 or 예외 line) on its own line; nothing when the rule has none. */
+const md = (value: string | null): ReactNode =>
+  value === null || value === "" ? null : (
+    <div data-lines className="space-y-1">
+      {value.split("\n").map((l, i) => <Markdown key={i} text={l} />)}
+    </div>
+  );
 
 /** The evidence as a count and the incident IDs once each; nothing when the block gave none. */
 function evidence(incidents: string[] | null): ReactNode {
@@ -39,7 +47,7 @@ function evidence(incidents: string[] | null): ReactNode {
 }
 
 /** One promoted block: its ID, name and parts; an unparsable block shows its raw text. */
-function AppliedCard({ rule, token, round }: { rule: AppliedRule; token: string | null; round: number }) {
+function AppliedCard({ rule, token, round, applied }: { rule: AppliedRule; token: string | null; round: number; applied: AppliedRule[] }) {
   if (rule.raw !== null || rule.id === null) {
     return (
       <li data-applied-raw className="p-3 max-sm:p-2">
@@ -47,27 +55,46 @@ function AppliedCard({ rule, token, round }: { rule: AppliedRule; token: string 
       </li>
     );
   }
-  return <AppliedClass rule={rule} id={rule.id} token={token} round={round} />;
+  return <AppliedClass rule={rule} id={rule.id} token={token} round={round} applied={applied} />;
+}
+
+/** Open evidence: the waiting entry's detail (why, evidence with each incident's quote, where it applies), read-only, titled with the rule's name. */
+function EvidenceDialog({ id, title, applied, returnFocusTo, onClose }: { id: string; title: string; applied: AppliedRule[]; returnFocusTo: RefObject<HTMLElement | null>; onClose: () => void }) {
+  return (
+    <Dialog title={t("rules.evidenceTitle", { title })} confirmLabel={t("rules.evidenceDone")} onConfirm={onClose} onClose={onClose} returnFocusTo={returnFocusTo}>
+      <EntryDetail entry={{ id, title }} applied={applied} />
+    </Dialog>
+  );
 }
 
 /**
  * An applied class as a compact row: ID, name, scope and judged date, the "Suggested to retire" badge with its reasons
- * once Suggest was pressed (`round` > 0), and Retire, which opens the reason dialog (disabled for anyone but the owner,
- * no `token`); its details open under the row as a label/value list.
+ * once Suggest was pressed (`round` > 0), and its ⋯ menu: Edit (the three-field dialog), Open evidence (read-only) and
+ * Retire (the reason dialog). Edit and Retire are off for anyone but the owner (no `token`), and the menu says why;
+ * its details open under the row as a label/value list.
  */
-function AppliedClass({ rule, id, token, round }: { rule: AppliedRule; id: string; token: string | null; round: number }) {
-  const [retiring, setRetiring] = useState(false);
+function AppliedClass({ rule, id, token, round, applied }: { rule: AppliedRule; id: string; token: string | null; round: number; applied: AppliedRule[] }) {
+  const [open, setOpen] = useState<"edit" | "evidence" | "retire" | null>(null);
   const menu = useRef<HTMLDivElement>(null);
   // The menu item that opened the dialog is gone when it closes: focus goes back to the ⋯ button.
   const menuButton = { get current() { return menu.current?.querySelector<HTMLElement>("button[aria-haspopup]") ?? null; } };
   const suggested = useRuleEntry(id, round > 0, round).data?.retire ?? [];
+  const name = ruleName(rule);
+  const owner = token !== null;
+  const items = [
+    { label: t("rules.edit"), action: "edit", disabled: !owner, onSelect: () => setOpen("edit") },
+    { label: t("rules.openEvidence"), action: "evidence", onSelect: () => setOpen("evidence") },
+    { label: t("rules.retire"), action: "retire", danger: true, disabled: !owner, onSelect: () => setOpen("retire") },
+  ];
+  const overflow = <OverflowMenu label={t("rules.appliedActions", { name })} items={items} />;
+  const close = () => setOpen(null);
   return (
     <ListRow
       data-applied={id}
       className={ROW_PAD}
       title={
-        <p className={`${ROW_TITLE} font-medium`} title={ruleName(rule)}>
-          <IdDetails label={ruleName(rule)} id={id} what="rule ID" />
+        <p className={`${ROW_TITLE} font-medium`} title={name}>
+          <IdDetails label={name} id={id} what="rule ID" />
         </p>
       }
       details={
@@ -79,16 +106,10 @@ function AppliedClass({ rule, id, token, round }: { rule: AppliedRule; id: strin
         )
       }
       menu={
-        // Retire is the danger item of the row's ⋯ menu; for anyone but the owner it is off, and the menu says why.
-        token === null ? (
-          <Tooltip text={t("rules.retireOwner")} align="end">
-            <OverflowMenu label={t("rules.appliedActions", { name: ruleName(rule) })} items={[{ label: t("rules.retire"), action: "retire", danger: true, disabled: true, onSelect: () => {} }]} />
-          </Tooltip>
-        ) : (
-          <div ref={menu}>
-            <OverflowMenu label={t("rules.appliedActions", { name: ruleName(rule) })} items={[{ label: t("rules.retire"), action: "retire", danger: true, onSelect: () => setRetiring(true) }]} />
-          </div>
-        )
+        // For anyone but the owner Edit and Retire are off, and the menu's tooltip says why; Open evidence stays on.
+        <div ref={menu}>
+          {owner ? overflow : <Tooltip text={t("rules.appliedOwner")} align="end">{overflow}</Tooltip>}
+        </div>
       }
     >
       {rule.scope !== null && rule.scope !== "" && <div className="line-clamp-2 break-keep text-text-2">{md(rule.scope)}</div>}
@@ -112,7 +133,9 @@ function AppliedClass({ rule, id, token, round }: { rule: AppliedRule; id: strin
           ]}
         />
       </Disclosure>
-      {retiring && token !== null && <RetireDialog id={id} name={ruleName(rule)} token={token} returnFocusTo={menuButton} onClose={() => setRetiring(false)} />}
+      {open === "edit" && token !== null && <EditDialog rule={rule} id={id} token={token} returnFocusTo={menuButton} onClose={close} />}
+      {open === "evidence" && <EvidenceDialog id={id} title={name} applied={applied} returnFocusTo={menuButton} onClose={close} />}
+      {open === "retire" && token !== null && <RetireDialog id={id} name={name} token={token} returnFocusTo={menuButton} onClose={close} />}
     </ListRow>
   );
 }
@@ -145,7 +168,7 @@ export function Applied({ applied, token }: { applied: NonNullable<RulesView["ap
           {shown.length > 0 && (
             <ul aria-label={t("rules.groupApplied")} className="divide-y divide-border rounded-control border border-border">
               {shown.map((r, i) => (
-                <AppliedCard key={r.id ?? `raw${i}`} rule={r} token={token} round={round} />
+                <AppliedCard key={r.id ?? `raw${i}`} rule={r} token={token} round={round} applied={rules} />
               ))}
             </ul>
           )}
