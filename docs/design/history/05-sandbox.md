@@ -1,5 +1,6 @@
 ## History
 
+- **Run folders clone a cached node_modules per lock file** (decision changed 2026-11-22; changes *Setup with the network, agent without*). Before: "the worker runs `warm_command` (absent: `repo.install_command`) in the run folder", and the merge check and the resolve gates ran `repo.install_command` in every run folder too, so each run wrote a fresh `node_modules`; the updater's `deps/<hash>` installs were never used by run folders.
 - **A run's tool grants** (new decision, 2026-11-11, issue #589). Before: a run's grants were the run kind's `tool_grants` broker tools only, every one checked against the broker at startup; a pack entry could not be granted.
 
 - **Own git folder per run** (decision changed 2026-11-01). Before: worktrees shared the owner's git folder and agents could write to it.
