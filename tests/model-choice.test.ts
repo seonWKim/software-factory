@@ -57,11 +57,11 @@ describe("model class per run kind and tier: the default table", () => {
     it(`triage at tier ${tier} uses cheap`, () => {
       expect(modelClassFor(T, "triage", tier, 0)).toBe("cheap");
     });
+  }
+  for (const tier of [1, 2] as const) {
     it(`review at tier ${tier} uses standard`, () => {
       expect(modelClassFor(T, "review", tier, 0)).toBe("standard");
     });
-  }
-  for (const tier of [1, 2] as const) {
     it(`implement at tier ${tier} uses standard`, () => {
       expect(modelClassFor(T, "implement", tier, 0)).toBe("standard");
     });
@@ -70,6 +70,9 @@ describe("model class per run kind and tier: the default table", () => {
     });
   }
   for (const tier of [3, 4, 5] as const) {
+    it(`review at tier ${tier} uses strong`, () => {
+      expect(modelClassFor(T, "review", tier, 0)).toBe("strong");
+    });
     it(`implement at tier ${tier} uses strong`, () => {
       expect(modelClassFor(T, "implement", tier, 0)).toBe("strong");
     });
@@ -106,8 +109,9 @@ describe("retry after a review loop", () => {
   it("triage and review are not moved up when loop_count ≥ 1", () => {
     for (const tier of TIERS) {
       expect(modelClassFor(T, "triage", tier, 1)).toBe("cheap");
-      expect(modelClassFor(T, "review", tier, 2)).toBe("standard");
     }
+    for (const tier of [1, 2] as const) expect(modelClassFor(T, "review", tier, 2)).toBe("standard");
+    for (const tier of [3, 4, 5] as const) expect(modelClassFor(T, "review", tier, 1)).toBe("strong");
   });
 
   it("a triage run on attempt 1 uses cheap; the attempt after an agent_failed one uses standard", () => {
