@@ -8,6 +8,7 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { RESERVATION_MS, Sessions, WAIT_POLL_MS, parseTarget } from "../src/core/session.js";
 import type { LocalRoute } from "../src/core/worker-deps.js";
 import { settingValues } from "../src/core/settings.js";
+import { MODE_KEY, SELECTION_ACTOR, cleanCursor } from "../src/core/test-selection.js";
 import type { Run, RunKind, Tier, UserId, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
@@ -527,23 +528,50 @@ describe("session finish", () => {
     expect(out).not.toContain("failing test files");
   });
 
-  it("with repo.test_selection the test command runs on the files the diff reaches plus the always-run list, logged first; without it, whole", async () => {
+  const selecting: FactoryConfig = { ...config, repo: { ...config.repo, test_selection: { hubs: [], always: ["tests/architecture/"] } } };
+  // The import graph: one git grep (`path\0line` per line); tests/y.test.ts reaches another file.
+  const GRAPH = 'tests/x.test.ts\0import { x } from "../src/a/x.js";\ntests/y.test.ts\0import { b } from "../src/b.js";\n';
+
+  it("in enforce mode the test command runs on the files the diff reaches plus the always-run list, logged first; without repo.test_selection, whole", async () => {
     const log = recordingLog();
-    const selecting: FactoryConfig = { ...config, repo: { ...config.repo, test_selection: { hubs: [], always: ["tests/architecture/"] } } };
     const h = await started(["src/a/"], { config: selecting, log });
-    // The import graph: one git grep (`path\0match` per line); tests/y.test.ts reaches another file.
-    h.sandbox.markers = 'tests/x.test.ts\0from "../src/a/x.js"\ntests/y.test.ts\0from "../src/b.js"\n';
+    await h.store.setLearnedSetting({
+      project: h.it0.project, key: MODE_KEY, expected: null, value: '"enforce"', evidence_run_ids: [], window_end: h.clock.now().toISOString() as never, actor: SELECTION_ACTOR,
+    });
+    h.sandbox.markers = GRAPH;
     expect((await h.sessions.finish({})).ok).toBe(true);
     expect(h.sandbox.commands).toEqual(["npm test -- tests/x.test.ts tests/architecture/"]);
     const run = (await h.runs(h.it0.id, "interactive"))[0]!;
-    expect(log.lines.filter((l) => l.msg.startsWith("test selection: "))).toEqual([{
-      level: "info", msg: "test selection: 2 files, 1 reaching the 1 changed source and test files, plus 1 always-run: tests/x.test.ts tests/architecture/", fields: { work_item_id: h.it0.id, run_id: run.id },
+    expect(log.lines.filter((l) => l.msg.startsWith("test selection"))).toEqual([{
+      level: "info", msg: "test selection (enforce): 2 files, 1 reaching the 1 changed source and test files, plus 1 always-run: tests/x.test.ts tests/architecture/", fields: { work_item_id: h.it0.id, run_id: run.id },
     }]);
+    expect(run.outcome).toMatchObject({ status: "succeeded", data: { test_selection: { mode: "enforce", files: ["tests/x.test.ts", "tests/architecture/"] } } });
 
     const whole = await started();
     whole.sandbox.markers = h.sandbox.markers;
     expect((await whole.sessions.finish({})).ok).toBe(true);
     expect(whole.sandbox.commands).toEqual(["npm test"]);
+  });
+
+  it("in shadow mode (no stored mode) the test command runs whole; a refused finish with a miss resets the count, a passing finish counts once", async () => {
+    const h = await started(["src/a/"], { config: selecting });
+    h.sandbox.markers = GRAPH;
+    await h.store.advanceCursor(cleanCursor(h.it0.project), null, "7");
+    // tests/y.test.ts fails; the diff (src/a/x.ts) does not reach it: a miss.
+    h.sandbox.exits["npm test"] = 1;
+    h.sandbox.stdouts["npm test"] = " FAIL  tests/y.test.ts > y\n";
+    expect((await h.sessions.finish({})).ok).toBe(false);
+    expect(await h.store.getCursor(cleanCursor(h.it0.project))).toBe("0");
+    // A failure inside the selection is no miss, and a refused finish is not counted: the retry counts once.
+    h.sandbox.stdouts["npm test"] = " FAIL  tests/x.test.ts > x\n";
+    expect((await h.sessions.finish({})).ok).toBe(false);
+    expect(await h.store.getCursor(cleanCursor(h.it0.project))).toBe("0");
+    h.sandbox.exits["npm test"] = 0;
+    expect((await h.sessions.finish({})).ok).toBe(true);
+    expect(h.sandbox.commands).toEqual(["npm test", "npm test", "npm test"]);
+    expect(await h.store.getCursor(cleanCursor(h.it0.project))).toBe("1");
+    const run = (await h.runs(h.it0.id, "interactive"))[0]!;
+    expect(run.outcome).toMatchObject({ status: "succeeded", data: { test_selection: { mode: "shadow", full: false, files: ["tests/x.test.ts", "tests/architecture/"] } } });
   });
 
   it("a floor hit is refused with the paths and the required tier; the session stays open and no floor_blocked is written", async () => {
