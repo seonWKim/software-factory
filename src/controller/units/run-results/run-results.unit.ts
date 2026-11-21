@@ -530,7 +530,7 @@ export class RunResultsUnit {
     };
   }
 
-  /** A failed or cancelled run's decision, before its usage is added (`apply` does that). */
+  /** A failed or cancelled run's decision, before its usage is added (`apply` does that). A takeover's run: no retry (05-restarts). */
   async applyFailedRun(it: WorkItem, run: Run): Promise<Decision> {
     // One owner comment per forge-auth pause, from the run that started it (marker-keyed on the pause end).
     if (run.outcome?.status === "failed" && run.outcome.error_code === FORGE_AUTH && run.outcome.pause_started) {
@@ -540,10 +540,8 @@ export class RunResultsUnit {
     if (run.outcome?.status === "failed" && run.outcome.error_code === PREFLIGHT_ACCESS && run.outcome.pause_started) {
       await this.preflightAccessComment(it, run);
     }
-    if (!this.c.unit("transitions").expects(it, run.kind)) return { patch: {}, actor: SYSTEM, reason: "run_ignored", ack_run: run.id };
+    if (takenOver(run) || !this.c.unit("transitions").expects(it, run.kind)) return { patch: {}, actor: SYSTEM, reason: "run_ignored", ack_run: run.id };
     const code = failedCode(run);
-    // The session that took the item over replaced this run (design 05-interactive-sessions): acked, never retried.
-    if (takenOver(run)) return { patch: {}, actor: SYSTEM, reason: "run_ignored", detail: { run_id: run.id, error_code: code }, ack_run: run.id };
     if (run.kind === "resolve") return this.resolveFailed(it, run, code);
     if (run.kind === "interactive") return sessionReleased(it, run, code);
     // The provider's account or config needs a person (design §5 Restarts): no retry would get further.

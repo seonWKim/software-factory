@@ -285,10 +285,8 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
     if (input.ack_run !== undefined) {
       await tx.run("UPDATE worker_runs SET acknowledged_at = ?, updated_at = ? WHERE id = ?", [now, now, input.ack_run]);
     }
-    // A close cancels every queued run of the item, whichever path closes it (design 04-closing-source-issue): no worker claims one afterwards.
-    const closes = current.stage !== "CLOSED" && input.patch.stage === "CLOSED";
-    const cancelled = [
-      ...(input.cancel_queued_runs || closes ? await this.cancelRuns(tx, input.id, "queued", now) : []),
+    const cancelled = [ // any close cancels the item's queued runs, whichever path closes it (design 05-restarts, 2026-11-22)
+      ...(input.cancel_queued_runs || (current.stage !== "CLOSED" && input.patch.stage === "CLOSED") ? await this.cancelRuns(tx, input.id, "queued", now) : []),
       ...(input.cancel_running_runs ? await this.cancelRuns(tx, input.id, "running", now) : []),
     ];
     const enqueued = input.enqueue ? await this.insertRun(tx, { ...input.enqueue, work_item_id: input.id }) : null;

@@ -153,9 +153,8 @@ export interface TransitionInput {
   enqueue?: Omit<NewRun, "work_item_id">;
   /**
    * Cancel every `queued` run of this item in the same transaction (waiting on `not_before` or not), so no
-   * worker can claim one afterwards; before `enqueue`, which is kept. Running runs are left alone. Cancelled runs are
-   * unacknowledged, with no outcome and no `finished_at`, and go through the controller's ack path like any finished
-   * run. A transition that moves the item to `CLOSED` does this without the flag.
+   * worker can claim one afterwards; before `enqueue`, which is kept. A move to `CLOSED` does this without the flag. Running
+   * runs are left alone. Cancelled runs are unacknowledged, with no outcome and no `finished_at`, and go through the ack path.
    */
   cancel_queued_runs?: boolean;
   /**

@@ -276,7 +276,7 @@ describe("session start", () => {
       await h.controller.tickRuns();
       // The session replaced the run: acknowledged with no retry, so nothing is left queued for a worker after the session.
       expect((await h.store.getRun(cancelled.id))!.acknowledged_at).not.toBeNull();
-      expect((await h.store.listStateChanges(it0.id)).at(-1)).toMatchObject({ reason: "run_ignored", detail: { run_id: cancelled.id } });
+      expect((await h.store.listStateChanges(it0.id)).at(-1)).toMatchObject({ reason: "run_ignored" });
       expect((await h.runs(it0.id, "implement")).filter((x) => x.status === "queued")).toEqual([]);
       expect((await h.item(it0.id)).blocked_reason).not.toBe("max_attempts");
       await h.sessions.abandon({ id: it0.id });
