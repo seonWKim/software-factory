@@ -158,6 +158,19 @@ export class CoordinationUnit {
     return null;
   }
 
+  /**
+   * Whether an implement stop's `reason` names a local item `/hold` would accept (design 05-dependencies, 2026-11-20):
+   * a wi_ or tk_ id of another local item not closed yet. Only then does the stop's footer offer `/hold <id>`.
+   */
+  async namesUnmerged(it: WorkItem, reason: string): Promise<boolean> {
+    if (it.source.type !== "local") return false;
+    for (const [id] of reason.matchAll(/\b(?:wi|tk)_[\w-]+/g)) {
+      const dep = await localItemOf(this.c.k.d.store, id);
+      if (dep && dep.id !== it.id && dep.stage !== "CLOSED") return true;
+    }
+    return false;
+  }
+
   /** The comment of a dependency hold: what the item waits for (`reason`, `count` items), and its footer after `patch`. */
   private async waitComment(it: WorkItem, key: string, reason: string, count: number, patch: WorkItemPatch): Promise<void> {
     await this.c.unit("outbox").comment(it, key, [

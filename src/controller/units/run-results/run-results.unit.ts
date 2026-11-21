@@ -932,7 +932,7 @@ export class RunResultsUnit {
   async needsHuman(it: WorkItem, run: Run, ask: NeedsHuman, tokens: number): Promise<Decision> {
     const waits = await dependencyStop(this.c, it, run, ask, tokens); if (waits) return waits;
     const patch = { blocked_on: "human" as const, blocked_reason: AGENT_NEEDS_HUMAN };
-    const footer = commandFooter(commandState({ ...it, ...patch }, run.kind));
+    const footer = commandFooter(commandState({ ...it, ...patch }, run.kind), run.kind === "implement" && (await this.c.unit("coordination").namesUnmerged(it, ask.reason)) ? [] : ["hold"]);
     const answer = run.kind === "resolve"
       ? "Reply `/resolve <your answer>` to run the resolve again with your answer as its notes, or `/retry` to run it again as it is."
       : `Fix what it needs, then reply \`/retry\` to run the ${run.kind} again, \`/revise <feedback>\` to get a new spec written with your answer, or \`/reject <reason>\` to close.`;

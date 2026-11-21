@@ -251,6 +251,20 @@ describe("entry points that write the Depends on line (design 05-dependencies, 2
     expect((await f.store.listItemMessages(a)).map((m) => m.body).join("\n")).toContain("`/hold <id>`");
   });
 
+  it("a stop whose reason names no unmerged item (none, only itself, or one already merged) does not offer `/hold` in its comment", async () => {
+    const f = await setup();
+    const x = await f.mergeable();
+    await f.merge(x);
+    for (const reason of ["The spec is unclear.", "This item needs more context.", `This builds on ${x}.`, "It builds on wi_nosuch."]) {
+      const a = await f.item("the second part");
+      await f.asks(a, reason.replace("This item", a));
+      await f.controller.tickOutbox();
+      const body = (await f.store.listItemMessages(a)).map((m) => m.body).join("\n");
+      expect(body).toContain("`/retry`");
+      expect(body).not.toContain("/hold");
+    }
+  });
+
   it("`/hold <id>` appends the line, holds the item on `blocked_on: dependency` with a queued implement run, and the merge releases it", async () => {
     const f = await setup();
     const x = await f.mergeable();
