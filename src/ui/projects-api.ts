@@ -1,7 +1,8 @@
 // The task projects' dashboard routes (design 02-tasks, task projects; 09-dashboard-app, the Tasks page's project
 // dialog): POST /api/v1/projects creates a project, as `factory project create` does, under the ID the page chose (a
-// resend stores nothing more), and POST /api/v1/tasks/project adds a task to a project or removes it, through the
-// store's addTaskToProject and removeTaskFromProject. Both are task routes (tasks-api.ts TASK_WRITES): server.ts runs
+// resend stores nothing more), POST /api/v1/projects/delete deletes one by slug, as `factory project delete` does (the
+// store's deleteProject: its task links go, its tasks stay; design 09-dashboard-tasks), and POST /api/v1/tasks/project
+// adds a task to a project or removes it, through the store's addTaskToProject and removeTaskFromProject. All are task routes (tasks-api.ts TASK_WRITES): server.ts runs
 // the request guards (Host, Origin, Content-Type, CSRF token, body size, JSON) and the commands actor's token first,
 // and every refusal here comes before the store write.
 
@@ -11,6 +12,7 @@ import type { ApiResult } from "./api.js";
 import type { UiDeps } from "./deps.js";
 
 export const PROJECTS_PATH = "/api/v1/projects";
+export const PROJECT_DELETE_PATH = "/api/v1/projects/delete";
 export const TASK_PROJECT_PATH = "/api/v1/tasks/project";
 
 /** A caller-chosen project ID: `pj_` and 8 to 64 URL-safe characters (the CLI's own `pj_<random>`). */
@@ -57,6 +59,26 @@ export async function writeProject(d: UiDeps, body: unknown): Promise<ApiResult>
   if (r.reason === "invalid_name") return refused(400, r.error);
   const archived = r.project.archived_at === null ? "" : " (archived)";
   return refused(409, `project "${r.project.slug}" exists already${archived}`, { project: shown(r.project) });
+}
+
+/**
+ * POST /api/v1/projects/delete with `{ project }` (a slug), after the request guards: 503 with no commands actor; 400 for
+ * a body that is not one or a `project` that is not a slug; 404 for an unknown project (also one another worker deleted
+ * first); else 200 with `{ project, unlinked }`, the task IDs that left it. The same store call as `factory project
+ * delete` (deleteProject): it deletes the project and its task links in one transaction, and never a task.
+ */
+export async function writeProjectDelete(d: UiDeps, body: unknown): Promise<ApiResult> {
+  if ((d.commands?.actor ?? null) === null) return OFF;
+  const f = fields(body, ["project"]);
+  if (!f.ok) return refused(400, f.error);
+  const slug = f.b.project;
+  if (typeof slug !== "string" || !isProjectSlug(slug)) return refused(400, "project must be a project slug, e.g. home-repairs");
+  const noProject = refused(404, projectRefusal(slug, "not_found"));
+  const project = await d.store.getProjectBySlug(slug);
+  if (project === null) return noProject;
+  const r = await d.store.deleteProject(project.id);
+  if (!r.ok) return noProject;
+  return { status: 200, value: { project: r.project.slug, unlinked: r.unlinked } };
 }
 
 /**

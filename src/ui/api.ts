@@ -21,7 +21,7 @@ import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, activeRuns, closedFacetRows, itemCounts, itemState, latestDecision, holderTitles, listRows, readClaimPauses, readPhases, waitingOn, whyOf, withTitle } from "./list.js";
 import { runTokens } from "./deps.js";
 import { heldFailureOf, needCtx, needOf } from "./need.js";
-import { NEEDS_YOU } from "./priority.js";
+import { WITH_NEED } from "./priority.js";
 import { type PauseDeps, readPauses } from "./pause-api.js";
 import { failures } from "./failures.js";
 import { spend } from "./spend.js";
@@ -32,6 +32,7 @@ import { readCapabilities } from "./capabilities-api.js";
 import { readStanding } from "./standing-api.js";
 import { inProject, projectFilterRefusal } from "./tasks-api.js";
 import { itemPrefix, runParts, transcript } from "./transcript.js";
+import { aboutFields } from "./item-checks.js";
 import { type SystemDeps, parseRevision, systemActions } from "./system-actions.js";
 import { needsYouCount } from "./needs-you.js";
 import { latestWhyAnchor, threadRows } from "./thread.js";
@@ -335,7 +336,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       id: it.id,
       source: { type: it.source.type, id: it.source.id, link: it.source.link },
       title: await c.text(it.title || null),
-      item_phase: r.level,
+      item_phase: r.level, state_label: r.label, // its words on the pages (src/shared/states.ts)
       reason_code: r.why.reason_code,
       stage: it.stage,
       tier: it.tier,
@@ -353,7 +354,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       conflicts: r.conflicts,
       merge_check,
       merge: await mergeReadiness(c.d, it, merge_check, allowed, r.pending),
-      ...(NEEDS_YOU.includes(r.level) ? { need: await c.need(it, merge_check), commands: await needsYouCommands(c.d, it, commandGrant, (v) => c.text(v)) } : {}),
+      ...(WITH_NEED.includes(r.level) ? { need: await c.need(it, merge_check), commands: await needsYouCommands(c.d, it, commandGrant, (v) => c.text(v)) } : {}),
       why: await c.why(r.why, it),
       parent_id: it.parent_id,
       phase: it.phase,
@@ -445,9 +446,8 @@ async function item(c: ApiCtx, id: WorkItemId) {
       item_phase: st.level,
       reason_code: st.why.reason_code,
       why: await c.why(st.why, it),
-      // About (design 09-dashboard-item): the intake text's first paragraph, and the spec once approved (done_criteria set), each text withheld on its own.
-      request: await c.text(it.issue_text?.split(/\n[ \t]*\n/)[0]?.trim() || null),
-      spec: it.done_criteria && { problem: (await c.text(it.problem))!, desired_output: await c.text(it.desired_output), done_criteria: await Promise.all(it.done_criteria.map(async (d) => (await c.text(d))!)) },
+      // About (design 09-dashboard-item): the request, the approved spec and the done-when checks, each text withheld on its own.
+      ...(await aboutFields(it, runs, (v, ch) => c.text(v, ch))),
     },
     timeline,
     runs: runRows,

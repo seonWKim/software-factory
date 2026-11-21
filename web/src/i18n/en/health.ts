@@ -1,14 +1,5 @@
 // English text, area: health. A key's prefix (before its first dot) belongs to this file only.
 export const health = {
-  "level.ready_to_merge": "Ready to merge",
-  "level.needs_approval": "Needs approval",
-  "level.needs_you": "Needs you",
-  "level.needs_triage": "Needs triage",
-  "level.stuck": "Stuck",
-  "level.running": "Running",
-  "level.queued": "Queued",
-  "level.blocked_by_task": "Blocked by another task",
-  "level.closed": "Closed",
   "running.empty": "No run is running. Queued runs start when a worker is free.",
   "running.label": "Running now",
   "queue.empty": "The queue is empty.",

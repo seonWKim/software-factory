@@ -9,11 +9,11 @@ import { FOCUS } from "../components/ui/control.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
-import { LEVEL_LABELS, duration, shortItemId } from "../lib/format.js";
+import { duration, shortItemId } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
 import { When, WhyText, WorkerName, runKindLabel } from "./common.js";
-import { Badge } from "../components/ui/badge.js";
+import { StatusBadge } from "../components/ui/badge.js";
 import { type TreeNode, issueNumber } from "./tree-model.js";
 
 /** Browser storage keys: the chosen view, and the expanded rows (a list of item ids; absent: the default). */
@@ -41,7 +41,7 @@ function Row({ node, now, byNumber, byId }: { node: TreeNode; now: number; byNum
   const it = node.item;
   const waits = waitsFor(it, byNumber, byId);
   const run = it.run;
-  const badge = <Badge level={it.item_phase}>{LEVEL_LABELS[it.item_phase] ?? it.item_phase}</Badge>;
+  const badge = <StatusBadge state={it.item_phase} />;
   return (
     <div className={cn("flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-1 py-1", node.context && "text-text-2")}>
       <Link href={itemPath(it.id)} className={cn("min-w-0 truncate font-medium", LINK_CLASS)}>{it.title ?? shortItemId(it.id)}</Link>

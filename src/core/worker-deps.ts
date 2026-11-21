@@ -226,6 +226,11 @@ export interface WorkerDeps {
    */
   prRef?: (pr: number) => SourceRef;
   /**
+   * `<state_dir>/run-deps` (compose): the run-side install cache a run folder's `repo.install_command` step clones
+   * node_modules from (src/worker/install-cache.ts, design 05-sandbox.md). Absent: every such step runs the install command.
+   */
+  install_cache?: string;
+  /**
    * Runs `cmd` on the host, outside any sandbox, with no shell (compose: runProcess): the restart run's
    * `repo.restart_command` in the repo's base checkout (design 04-gate-commands, restart). It rejects when the
    * command cannot start. Absent: a restart run fails with `no_host_exec`.

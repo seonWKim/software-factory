@@ -1,3 +1,4 @@
+import { stateLabel } from "../../../src/shared/states.js";
 import type { Why } from "../api.js";
 import { type MessageKey, en } from "../i18n/en.js";
 import { formatInteger, locale, t, withUnit } from "../i18n/index.js";
@@ -42,19 +43,8 @@ export function errorLabel(code: string): string {
   return code in TERM_KEYS || !(title in en) ? termLabel(code) : t(title as MessageKey);
 }
 
-const RUN_STATUS_KEYS: Readonly<Record<string, MessageKey>> = {
-  queued: "run.status.queued",
-  running: "run.status.running",
-  succeeded: "run.status.succeeded",
-  failed: "run.status.failed",
-  canceled: "run.status.canceled",
-};
-
-/** A run's status in one form each ("Succeeded", "Failed", "Running"); an unknown one as words. */
-export function runStatusLabel(status: string): string {
-  const key = RUN_STATUS_KEYS[status];
-  return key ? t(key) : termLabel(status);
-}
+/** A run's status in one form each ("Succeeded", "Failed", "Running"): its label in the one state table; an unknown one as words. */
+export const runStatusLabel = stateLabel;
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
@@ -147,19 +137,6 @@ export function isHttpUrl(url: string | null | undefined): url is string {
 }
 
 export const shortRev =(rev: string | null | undefined) => (rev ? rev.slice(0, 7) : t("format.unknown"));
-
-/** The status page's level names (src/ui/priority.ts LEVEL_LABELS), for the same words in both UIs. */
-export const LEVEL_LABELS: Record<string, string> = Object.fromEntries(
-  ["ready_to_merge", "needs_approval", "needs_you", "needs_triage", "stuck", "running", "queued", "blocked_by_task", "closed"].map((level) => [
-    level,
-    t(`level.${level}` as MessageKey),
-  ]),
-);
-
-/**
- * Levels that wait on the operator: the Floor lists them first. Never "Blocked by another task".
- */
-export const NEEDS_YOU_LEVELS = ["ready_to_merge", "needs_approval", "needs_you", "needs_triage", "stuck"] as const;
 
 /** "worker 3" for a worker id `<host>:<pid>:<slot>` (its slot number); "a worker" for any other id; "–" for none. */
 export function workerName(id: string | null | undefined): string {
