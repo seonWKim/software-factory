@@ -156,6 +156,14 @@ export interface PhaseRow {
   source: SourceRef;
 }
 
+/** One done-when line on the item page: its check and the newest implement run's result; `output_tail` on a failed line only. */
+export interface ItemCheck {
+  line: string;
+  check: { kind: "command" | "test" | "manual"; text: string };
+  result: "pass" | "fail" | "manual" | "not_run";
+  output_tail: string | null;
+}
+
 export interface ItemDetail {
   as_of: string;
   item: {
@@ -193,6 +201,8 @@ export interface ItemDetail {
     request?: string | null;
     /** The approved spec, each text withheld on its own; null until the owner confirms it. */
     spec?: { problem: string; desired_output: string | null; done_criteria: string[] } | null;
+    /** Each done-when line with its check and latest result; null (or absent) when the item has no checks. */
+    checks?: ItemCheck[] | null;
   };
   timeline: {
     version: number;
