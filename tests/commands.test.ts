@@ -338,6 +338,17 @@ describe("command table", () => {
     expect(commandsFor(s("other_blocked")).map((c) => c.name)).not.toContain("retry");
   });
 
+  it("an item released by its interactive session is its own phase, where /retry applies and /revise and /approve do not", () => {
+    expect(commandPhase({ stage: "RUNNING", blocked_on: "human", blocked_reason: "session_released", change_ref: null })).toBe("session_released");
+    expect(phaseLabel("session_released")).toBe("released: its session ended without a PR");
+    expect(commandsFor(s("session_released")).map((c) => c.name)).toContain("retry");
+    for (const name of ["revise", "approve"] as const) expect(applies(commandSpec(name), s("session_released"))).toBe(false);
+    expect(helpReply(s("session_released"))).toContain("(released: its session ended without a PR)");
+    expect(helpReply(s("session_released"))).toContain("`/retry` **(now)**");
+    const row = commandTableMarkdown().split("\n").find((l) => l.startsWith("| `/retry` |"))!;
+    expect(row).toContain("released: its session ended without a PR");
+  });
+
   it("SET_UP.md has the command table from code", () => {
     const setup = readFileSync(new URL("../SET_UP.md", import.meta.url), "utf8");
     expect(setup).toContain(commandTableMarkdown());
@@ -398,6 +409,7 @@ describe("footers match what the controller accepts", () => {
     merge_pending: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" },
     max_loops: { stage: "REVIEW", blocked_on: "human", blocked_reason: "max_loops" },
     merge_conflict: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending" },
+    session_released: { stage: "RUNNING", blocked_on: "human", blocked_reason: "session_released" },
     other_blocked: { stage: "RUNNING", blocked_on: "ci", blocked_reason: "something" },
     merged: { stage: "CLOSED", close_reason: "completed", merge_sha: "m1" },
     closed: { stage: "CLOSED", close_reason: "rejected" },
