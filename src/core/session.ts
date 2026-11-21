@@ -8,7 +8,7 @@ import { IMPLEMENT_KINDS, INTERACTIVE, SESSION_ABANDONED, SESSION_RELEASED, bran
 import { NumstatError, diffGates, scopeGate } from "./pre-push.js";
 import { type LearnedSettingsSource, settingValues } from "./settings.js";
 import type { Run, RunId, SourceRef, SourceType, Timestamp, WorkItem, WorkItemId, WorkItemPatch } from "./types.js";
-import { type LocalRoute, TRUSTED_GIT_ENV, hasTool, prTitle, routeFor, runPushIntents } from "./worker-deps.js";
+import { type LocalRoute, TRUSTED_GIT_ENV, baseRefspec, hasTool, prTitle, routeFor, runPushIntents } from "./worker-deps.js";
 import type { AuthProvider, ExternalIdentity } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
@@ -289,6 +289,7 @@ export class Sessions {
   /**
    * The gates in order: scope, size, floor, then `repo.test_command` in the run folder (skipped after a failed gate),
    * narrowed by `repo.test_selection` to the test files the diff reaches when that key is set.
+   * Every diff (commits, gates, test selection) is against gateBase: only the item's own changes count.
    * A failure lists the reasons, records them as the last finish, keeps the session open and pushes nothing. All
    * pass: the branch stored through the item's broker, the push and PR recorded as keyed intents (a local item: its
    * local branch, no PR), then the run completes as succeeded; the controller moves the item to REVIEW with a review
@@ -308,7 +309,8 @@ export class Sessions {
     let commits = 0;
     let base = "";
     try {
-      base = file.folder.base_sha ?? (await git(["rev-parse", "--verify", "--end-of-options", `origin/${cfg.repo.base_branch}^{commit}`])).trim();
+      const start = file.folder.base_sha ?? (await git(["rev-parse", "--verify", "--end-of-options", `origin/${cfg.repo.base_branch}^{commit}`])).trim();
+      base = await this.gateBase(handle, item, start);
       const dirty = await git(["status", "--porcelain", "-z", "--untracked-files=normal"]);
       if (dirty.replace(/\0/g, "").trim() !== "") reasons.push("uncommitted changes in the run folder: commit or remove them (only commits are pushed)");
       commits = (await git(["rev-list", `${base}..HEAD`])).split("\n").filter(Boolean).length;
@@ -443,6 +445,34 @@ export class Sessions {
     if (!isTokenCount(o.tokens)) return { refuse: "refused: --tokens takes a whole number of 0 or more" };
     const t = await this.d.store.updateSession(open.file.run_id, open.file.token, { tokens: o.tokens });
     return t.ok ? open : { refuse: "refused: the session has ended" };
+  }
+
+  /**
+   * The base the finish gates diff against, by the implement run's rule (syncBase): the base branch fetched from the
+   * factory repo as the worker fetches it (`updateBase`, then `baseRefspec` into the run folder's `origin/<base>`).
+   * When that tip moved forward from `start` (the base the session started on) and HEAD contains it, the session has
+   * merged or rebased onto it, and the gates diff against it, so files only the base changed are not counted. Else
+   * `start`, as before (also when the fetch fails: a local action never waits on the forge). Either way the gates see
+   * the tree HEAD has against one base commit, so an edit made in a merge commit itself still counts.
+   */
+  private async gateBase(handle: SandboxHandle, item: WorkItem, start: string): Promise<string> {
+    const { repo } = this.d.config;
+    const route = routeFor(this.d, item);
+    const run = (args: string[]) => this.d.sandbox.exec(handle, ["git", ...args], { env: { ...this.d.toolEnv, ...TRUSTED_GIT_ENV } });
+    try {
+      const fresh = await route.sandbox.updateBase({ repo: repo.path, base_ref: repo.base_branch });
+      if (fresh === start) return start;
+      if ((await run(["fetch", "--quiet", "--no-tags", repo.path, baseRefspec(this.d.config, route.local)])).exit_code !== 0) return start;
+      const fetched = await run(["rev-parse", "--verify", "--end-of-options", `origin/${repo.base_branch}^{commit}`]);
+      if (fetched.exit_code !== 0 || fetched.stdout.trim() !== fresh) return start;
+      // Forward only from the session's own base, and already in the branch: what syncBase merges, the session merged.
+      const forward = await run(["merge-base", "--is-ancestor", start, fresh]);
+      const contained = forward.exit_code === 0 ? await run(["merge-base", "--is-ancestor", fresh, "HEAD"]) : forward;
+      return contained.exit_code === 0 ? fresh : start;
+    } catch (err) {
+      this.d.log.warn("finish: the base fetch failed; the gates diff against the session's start base", { work_item_id: item.id, error: err instanceof Error ? err.message : "unknown" });
+      return start;
+    }
   }
 
   /** Trusted git in the run folder: the env ranks above the folder's own git config, as for the worker's calls. */
