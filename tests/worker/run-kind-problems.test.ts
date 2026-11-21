@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { loadRunKinds, runKindProblems, type RunKindDescriptor } from "../../src/worker/run-kind.js";
-import { KINDS } from "../../src/worker/support.js";
+import { WORKER_KINDS } from "../../src/core/settings.js";
 
 // The worker pool's startup check: a claimed kind with no run file would fail each of its runs only when claimed.
 
 describe("run kinds at startup", () => {
   it("every kind the worker claims has its run file, and every run file is claimed", async () => {
-    expect(runKindProblems(KINDS, await loadRunKinds())).toEqual([]);
+    expect(runKindProblems(WORKER_KINDS, await loadRunKinds())).toEqual([]);
   });
 
   it("names a claimed kind with no file and a file no worker claims", () => {
