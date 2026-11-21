@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadConfig } from "../src/load-config.js";
+import { loadConfig } from "../src/compose.js";
 import { type PathCompanion, applyCompanions, pathCompanionProblems, pathCompanionsConfig, refusedCompanion } from "../src/core/companions.js";
 import { GATE_PATHS } from "../src/core/improver.js";
 import type { Floor } from "../src/core/settings.js";
