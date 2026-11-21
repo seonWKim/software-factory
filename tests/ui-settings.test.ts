@@ -24,7 +24,7 @@ import { runSettings } from "../src/settings-cmd.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type UiSettings, newCsrfToken, storeProjectResolver } from "../src/ui/settings-api.js";
 import { type UiDeps, type UiResponse, respond, startUi } from "../src/ui/server.js";
-import { PROJECT } from "./helpers/fakes.js";
+import { PROJECT } from "./helpers/fakes/config.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 const HOST = "127.0.0.1:4310";

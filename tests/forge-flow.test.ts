@@ -10,10 +10,11 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubForge } from "../src/impl/github/github-forge.js";
 import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
 import type { ExternalIdentity } from "../src/interfaces/auth-provider.js";
-import {
-  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSlackPollSource, MemoryStorage,
-  alice, cleanScanner, config, issueRef, prompts, recordingLog, silent, slackRef, triageSpec,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSlackPollSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, prompts, recordingLog, silent, slackRef, triageSpec } from "./helpers/fakes/config.js";
 import { RecordingGitHubClient } from "./helpers/github.js";
 import { newStore } from "./helpers/store.js";
 

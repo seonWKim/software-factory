@@ -5,7 +5,9 @@ import { GoogleCalendarSource } from "../../src/calendar/plugins/google-calendar
 import type { NewTask } from "../../src/core/tasks.js";
 import type { UserId } from "../../src/core/types.js";
 import { ControllerRole } from "../../src/runtime/roles/controller-role.js";
-import { FakeAuth, FakeSource, cleanScanner, config, silent } from "../helpers/fakes.js";
+import { FakeAuth } from "../helpers/fakes/runner.js";
+import { FakeSource } from "../helpers/fakes/source.js";
+import { cleanScanner, config, silent } from "../helpers/fakes/config.js";
 import { newStore } from "../helpers/store.js";
 import { FakeCalendarSource, calendarEvent } from "./fakes.js";
 

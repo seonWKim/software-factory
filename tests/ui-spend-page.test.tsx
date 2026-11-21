@@ -7,7 +7,6 @@ import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SettingRow, SettingsView, SpendDay, SpendView } from "../web/src/api.js";
 import { keyLabel } from "../web/src/lib/key-label.js";
-import { PAGES, redirectFor, routeFor } from "../web/src/pages.js";
 
 // tsconfig.test.json checks this file without JSX, so the pages are built with createElement and their .tsx modules
 // are loaded by a specifier the node check skips (as tests/ui-rules-page.test.tsx does).
@@ -30,6 +29,7 @@ const SPEND: SpendView = {
   as_of: "2026-01-14T12:00:00.000Z",
   today: "2026-01-14",
   week_start: "2026-01-12",
+  budgets: { daily_usd: 20, weekly_usd: null },
   from: "2025-12-16",
   to: "2026-01-14",
   total: { cost_usd: 15.5, tokens: 15500, runs: 6, unknown: 1 },
@@ -90,15 +90,6 @@ function show(page: FunctionComponent) {
 }
 
 describe("Spend page", () => {
-  it("is a section of Health, not a sidebar page: /app/spend leads to Health's Spend section", async () => {
-    expect(routeFor("/app/spend").page.label).toBe("Health");
-    expect(redirectFor("/app/spend")).toBe("/app/health#spend");
-    expect(PAGES.map((p) => p.path)).not.toContain("spend");
-    show(SpendSection);
-    expect(await screen.findByRole("heading", { level: 2, name: "Spend" })).toBeTruthy();
-    expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
-  });
-
   it("shows today, this week and the last 30 days, each with cost and tokens", async () => {
     show(SpendSection);
     const today = await screen.findByText("Today");
@@ -110,6 +101,28 @@ describe("Spend page", () => {
     expect(totals("This week")).toContain("6.5k tokens");
     expect(totals("Last 30 days")).toContain("$15.50");
     expect(totals("Last 30 days")).toContain("15.5k tokens");
+  });
+
+  it("shows each period's budget against its spent amount, 'No budget set.' when none, and the alert-only note", async () => {
+    view = { ...SPEND, budgets: { daily_usd: 20, weekly_usd: null } };
+    show(SpendSection);
+    await screen.findByText("Today");
+    const totals = (label: string) => document.querySelector<HTMLElement>(`[data-total="${label}"]`)!.textContent;
+    expect(totals("Today")).toContain("$1.50 of $20 today");
+    expect(totals("This week")).toContain("No budget set.");
+    expect(totals("Last 30 days")).not.toContain("budget");
+    const note = screen.getByTestId("spend-budget-note");
+    expect(note.textContent).toContain("At 80% and 100% of a budget an alert appears in Needs you. No work stops.");
+    expect(within(note).getByRole("link", { name: "Change in Settings" }).getAttribute("href")).toBe("/app/settings");
+    expect(document.body.textContent).not.toMatch(/spend\.(daily|weekly)_budget_usd/);
+  });
+
+  it("a weekly budget shows 'this week' and keeps the cents of $12.50", async () => {
+    view = { ...SPEND, budgets: { daily_usd: null, weekly_usd: 12.5 } };
+    show(SpendSection);
+    await screen.findByText("Today");
+    expect(document.querySelector<HTMLElement>('[data-total="This week"]')!.textContent).toContain("$5.50 of $12.50 this week");
+    expect(document.querySelector<HTMLElement>('[data-total="Today"]')!.textContent).toContain("No budget set.");
   });
 
   it("draws one bar per day, the highest day full height, each named with its day and cost", async () => {
@@ -158,7 +171,7 @@ const NOV_ITEMS: SpendView["items"] = [
   { work_item_id: "wi_d", title: "Other day only", cost_usd: 8.79, tokens: 30_000, runs: 3, unknown: 1, kinds: ["triage"] },
 ];
 const NOV_VIEW: SpendView = {
-  as_of: "2026-11-15T12:00:00.000Z", today: "2026-11-15", week_start: "2026-11-09", from: "2026-10-17", to: "2026-11-15",
+  as_of: "2026-11-15T12:00:00.000Z", today: "2026-11-15", week_start: "2026-11-09", budgets: { daily_usd: null, weekly_usd: null }, from: "2026-10-17", to: "2026-11-15",
   total: { cost_usd: 588.79, tokens: 1_230_000, runs: 16, unknown: 1 }, days: NOV, items: NOV_ITEMS, items_total: 4,
 };
 const NOV7_VIEW: SpendView = {

@@ -6,8 +6,8 @@ import { errorText, type Logger } from "./log.js";
 import { parseMessageStyle, withMessageStyle } from "./message-style.js";
 import { NOTICE_KINDS, type NoticeKind, parseNoticeKinds, parseNotifyChannels, quietHoursSetting } from "./notifications.js";
 import { DEFAULT_MODEL_BY, MODEL_RUN_KINDS, type ModelNames, type ModelTable, TIER_KEYS, parseModelBy, parseModels } from "./model-choice.js";
-import { usdBudget } from "./spend.js"; import { testPathsOnly } from "./auto-grant.js";
-import type { RunId, Tier, Timestamp } from "./types.js";
+import { usdBudget } from "./spend.js"; import { fewOrdinaryPaths, testPathsOnly } from "./auto-grant.js";
+import type { RunId, RunKind, Tier, Timestamp } from "./types.js";
 import type { SettingOverride } from "../interfaces/factory-store.js";
 
 // Per-project settings in layers (design 2026-11-01, "Settings resolve in layers"). Pure: the parse and
@@ -246,6 +246,30 @@ function set<K extends ProjectSettingKey>(o: Partial<ProjectSettings>, k: K, v: 
 // A global override sits above the file's top-level value, a project override above the file's project block,
 // and the learned layer stays on top (settingsFor).
 
+/**
+ * Every run kind a worker can claim, in the order `worker_kinds` lists them by default (design 05-interactive-sessions).
+ * The one list: the worker's claim, its startup check and the `worker_kinds` check read it here, since core cannot
+ * import the worker. `interactive` and `manual` are never claimed.
+ */
+export const WORKER_KINDS = ["triage", "review", "merge-check", "update", "restart", "improve", "implement", "resolve"] as const satisfies readonly RunKind[];
+
+/**
+ * `worker_kinds`: a non-empty list of distinct kinds from WORKER_KINDS, or the message that names the setting. An
+ * empty list is refused: a worker that claims nothing is `workers pause`, which says so.
+ */
+export function workerKinds(value: unknown): RunKind[] {
+  const known = (WORKER_KINDS as readonly unknown[]);
+  if (!Array.isArray(value)) throw new Error(`worker_kinds must be a list of run kinds from ${WORKER_KINDS.join(", ")}`);
+  if (value.length === 0) throw new Error("worker_kinds must list at least one run kind; to stop every claim, use `factory workers pause`");
+  const seen = new Set<unknown>();
+  for (const k of value) {
+    if (!known.includes(k)) throw new Error(`worker_kinds: unknown run kind ${JSON.stringify(k)}; the kinds are ${WORKER_KINDS.join(", ")}`);
+    if (seen.has(k)) throw new Error(`worker_kinds: run kind "${String(k)}" is listed twice`);
+    seen.add(k);
+  }
+  return [...value] as RunKind[];
+}
+
 /** The keys `factory settings set` accepts. An allow-list: every other key is refused. */
 export const SETTABLE_KEYS = [
   "max_attempts",
@@ -263,6 +287,7 @@ export const SETTABLE_KEYS = [
   "mode", "auto_merge_max_tier",
   "message_style", "notice_kinds", "quiet_hours", "notify_channels", "integrations", "calendar",
   "stall_ms", "probe_interval_ms", "auth_pause_ms", "max_coordination_cost", "hotspot_weight", "mechanical_weight", "intake_label", "spend.daily_budget_usd", "spend.weekly_budget_usd", "tool_grants", "conflict_hotspot_threshold",
+  "worker_kinds",
 ] as const;
 export type SettableKey = (typeof SETTABLE_KEYS)[number];
 
@@ -321,6 +346,7 @@ export interface SettableValues {
   stall_ms: number; probe_interval_ms: number; auth_pause_ms: number; conflict_hotspot_threshold: number;
   max_coordination_cost: number; hotspot_weight: number; mechanical_weight: number; tool_grants: ToolGrants; // run kind → granted tools (design 08-settings)
   intake_label: string | null; // null: no built-in default, and neither the file nor an override says
+  worker_kinds: RunKind[]; // the run kinds a worker claims (design 05-interactive-sessions)
 }
 
 /** The built-in default of each settable key, in the form factory.config.json writes it. */
@@ -353,6 +379,7 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   auth_pause_ms: 1_800_000, // shown as the default; with no override and no file value it follows the effective retry_max_ms
   max_coordination_cost: DEFAULT_COORDINATION.max_cost, hotspot_weight: DEFAULT_COORDINATION.hotspot_weight, mechanical_weight: DEFAULT_COORDINATION.mechanical_weight, tool_grants: {},
   intake_label: null, // no built-in default: the config file must say, and its value applies
+  worker_kinds: [...WORKER_KINDS],
 });
 
 export const HEARTBEAT_LEASE_MESSAGE = "heartbeat_ms must be well under lease_ms";
@@ -370,11 +397,11 @@ export function keyRefusal(key: string): string | null {
   return `"${key}" is not settable; the settable keys are ${SETTABLE_KEYS.join(", ")}`;
 }
 
-/** `workers` from factory.config.json: absent means 1, otherwise an integer of 1 or more or startup fails. */
+/** `workers` from factory.config.json: absent means 1, otherwise an integer of 0 or more (0: none claims) or startup fails. */
 export function workerCount(value: unknown): number {
   if (value === undefined) return 1;
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-    throw new Error(`workers must be an integer of 1 or more (got ${JSON.stringify(value) ?? String(value)})`);
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw new Error(`workers must be an integer of 0 or more (got ${JSON.stringify(value) ?? String(value)})`);
   }
   return value;
 }
@@ -382,7 +409,7 @@ export function workerCount(value: unknown): number {
 /**
  * `max_workers` from factory.config.json: the worker slots a process has, which sizes the supervisor's worker
  * index block. Absent means `workers`; otherwise an integer of at least `workers` or startup fails. The live
- * `workers` setting may go anywhere from 1 to this without a restart.
+ * `workers` setting may go anywhere from 0 to this without a restart.
  */
 export function maxWorkers(workers: number, value: unknown): number {
   if (value === undefined) return workers;
@@ -422,7 +449,7 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
       if (value === undefined) throw new Error("model_by must be an object");
       return parseModelBy(value) as SettableValues[K];
     case "workers":
-      if (value === undefined) throw new Error("workers must be an integer of 1 or more (got undefined)");
+      if (value === undefined) throw new Error("workers must be an integer of 0 or more (got undefined)");
       return workerCount(value) as SettableValues[K];
     case "phases_auto_approve": case "auto_grant_test_paths": return booleanSetting(key, value) as SettableValues[K];
     case "hold_policy": return parseHoldPolicy(value) as SettableValues[K];
@@ -448,6 +475,7 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
     }
     case "intake_label": return (value === null ? null : intakeLabel(value)) as SettableValues[K]; // null: none, the file's applies
     case "spend.daily_budget_usd": case "spend.weekly_budget_usd": return usdBudget(key, value) as SettableValues[K];
+    case "worker_kinds": return workerKinds(value) as SettableValues[K];
     default:
       return positiveInteger(key, value) as SettableValues[K];
   }
@@ -741,8 +769,8 @@ export class LiveSettings {
     return withMessageStyle(system, this.current.values.message_style);
   }
 
-  /** Whether `paths` are granted without the owner on `project`: auto_grant_test_paths on and test paths only (design 05-restarts). */
-  autoGrantable(project: string, paths: readonly string[]): boolean { return effectiveSetting(this.current, "auto_grant_test_paths", project).value && testPathsOnly(paths, this.current.values.test_globs); }
+  /** Whether `paths` are test paths only (testPathsOnly); autoGrantable: also a few ordinary files (design 05-restart-asks). */ testPathsOnly(paths: readonly string[]): boolean { return testPathsOnly(paths, this.current.values.test_globs); }
+  autoGrantable(project: string, paths: readonly string[]): boolean { return effectiveSetting(this.current, "auto_grant_test_paths", project).value && (this.testPathsOnly(paths) || fewOrdinaryPaths(paths)); }
   /** Worker slots that may claim: the effective `workers`, capped at the file's `max_workers`. */
   workers(): number {
     return this.current.values.workers;

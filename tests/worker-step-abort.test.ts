@@ -5,7 +5,11 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Worker } from "../src/worker/index.js";
 import { DEFAULT_TIMEOUTS } from "../src/worker/run-kind.js";
-import { FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, prompts, silent } from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, prompts, silent } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 // A step's start_to_close stops the step's work (worker review finding 3): the agent's signal aborts, and the run's

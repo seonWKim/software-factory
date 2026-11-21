@@ -11,6 +11,7 @@ import { Input } from "../web/src/components/ui/input.js";
 import { OverflowMenu, Tooltip } from "../web/src/components/ui/menu.js";
 import { Badge, LEVEL_TONE } from "../web/src/components/ui/badge.js";
 import { Card, CardSection } from "../web/src/components/ui/card.js";
+import { ListRow, ROW_TITLE } from "../web/src/components/ui/list-row.js";
 import { EmptyState, Kbd, Notice, PageHeader } from "../web/src/components/ui/notice.js";
 import { SM_PX } from "../web/src/components/ui/parts.js";
 import { Inbox } from "lucide-react";
@@ -380,5 +381,40 @@ describe("design-system/components.md", () => {
         expect(headings.has(m[1]), `${m[1]} (${f})`).toBe(true);
       }
     }
+  });
+});
+
+describe("ListRow", () => {
+  it("puts the leading control first, the title then the details in one column, and the ⋯ menu last, at the right of the title line", () => {
+    render(
+      <ul>
+        <ListRow
+          data-testid="row"
+          leading={<input type="checkbox" aria-label="pick" />}
+          title={<p className={ROW_TITLE} title="Full title">Full title</p>}
+          details={<span>2 items</span>}
+          menu={<OverflowMenu label="More: Full title" items={[{ label: "Retire", danger: true, onSelect: () => {} }]} />}
+        >
+          <p>extra</p>
+        </ListRow>
+      </ul>,
+    );
+    const row = screen.getByTestId("row");
+    expect(row.tagName).toBe("LI");
+    const parts = [...row.children];
+    expect(parts[0]!.tagName).toBe("INPUT");
+    expect(parts[1]!.textContent).toBe("Full title2 itemsextra");
+    expect(parts[1]!.querySelector("[data-details]")!.textContent).toBe("2 items");
+    expect(parts[2]!.matches("[data-row-menu]")).toBe(true);
+    expect(parts[2]!.querySelector("button")!.getAttribute("aria-label")).toBe("More: Full title");
+    // One line for the title: cut with an ellipsis, the full text in its title attribute.
+    expect(row.querySelector("p")!.className).toContain("truncate");
+  });
+
+  it("draws no details line and no menu box when it has none", () => {
+    render(<ul><ListRow data-testid="row" title={<p>Only a title</p>} /></ul>);
+    const row = screen.getByTestId("row");
+    expect(row.querySelector("[data-details]")).toBeNull();
+    expect(row.querySelector("[data-row-menu]")).toBeNull();
   });
 });

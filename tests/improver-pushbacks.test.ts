@@ -10,7 +10,8 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import { LocalSource } from "../src/impl/source/local-source.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import { issue, newStore, system } from "./helpers/store.js";
-import { MemoryStorage, PROJECT } from "./helpers/fakes.js";
+import { MemoryStorage } from "./helpers/fakes/runner.js";
+import { PROJECT } from "./helpers/fakes/config.js";
 
 const TOKEN = `ghp_${"a".repeat(36)}`;
 

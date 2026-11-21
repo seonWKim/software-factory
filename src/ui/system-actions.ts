@@ -8,12 +8,13 @@ import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import type { FactoryStore } from "../interfaces/factory-store.js";
+import type { AlertPattern, FactoryStore } from "../interfaces/factory-store.js";
 import { MIGRATION_PENDING } from "../interfaces/updater.js";
-import { type Check, TOKEN_WARN_DAYS } from "../setup.js";
+import { type Check, TOKEN_WARN_DAYS } from "../core/health-check.js";
 import type { FactoryStatus } from "./factory-status.js";
-import { type AutoStopNote, alarmCommand, alarmText, alarmUntil, lastAutoStop, openAlarms } from "./alarms.js";
-import { activePauses } from "./pause-api.js";
+import { type AutoStopNote, alarmCommand, alarmFullText, alarmUntil, lastAutoStop, openAlarms, redMainDetail } from "./alarms.js";
+import type { ResumablePause } from "../resume-cmd.js";
+import { RESUME_IN_NEEDS_YOU, activePauses } from "./pause-api.js";
 
 export type SystemActionCode = "migration_pending" | "token_expiring" | "claim_pause" | "worker_pause" | "alarm" | "revision_mismatch";
 
@@ -25,9 +26,26 @@ export interface SystemAction {
   command: string;
   /** When it ends by itself (a claim pause's end, model_stall's next probe, an alarm's close), else null. */
   until: string | null;
-  /** On the alarm of the auto-mode stop still in force (design 03-risk): its Needs-you row's stop line and its button. */
+  /** On an alarm: its pattern and error code, which pick its row's menu (What failed, Show failures). */
+  pattern?: AlertPattern;
+  error_code?: string;
+  /** On a red_main alarm: what the red-main check printed (empty and null when it kept nothing). */
+  failing_tests?: string[];
+  output_tail?: string | null;
+  /** On the alarm of the auto-mode stop still in force (design 03-risk): its Needs-you row's sentence and menu. */
   auto_stop?: AutoStopNote;
+  /** On a claim pause: the pause's name, which its Needs-you row's Resume now posts. */
+  pause?: ResumablePause;
 }
+
+/** Each claim pause's plain name: the text of its Needs-you row, never the stored name. */
+const PAUSE_NAMES: Record<ResumablePause, string> = {
+  rate_limit: "Usage or rate limit",
+  forge_auth: "Forge refused the credentials",
+  preflight_access: "Push or PR access check failed",
+  model_stall: "Model not answering",
+  owner: "Agents stopped",
+};
 
 /**
  * The checks of this process's last health run, kept as they finished: Needs you reads the token's days from
@@ -137,20 +155,28 @@ export async function systemActions(x: SystemInput): Promise<SystemAction[]> {
   }
 
   for (const p of await activePauses(x)) {
-    const what = p.name === "model_stall" ? `next probe at ${p.ends_at}` : `until ${p.ends_at}`;
-    // The dashboard action first, the CLI command as the fallback.
-    add("claim_pause", `Claim pause ${p.name} in effect, ${what}`, `Resume now on the Status page (/app/), or factory resume ${p.name}`, p.ends_at);
+    // The plain name; the row shows `until` (model_stall's next probe) as a relative time; the owner pause has none, and
+    // its row reads when it began from GET /api/v1/pauses. The dashboard action first, the CLI command as the fallback;
+    // the Tasks row draws the button, never this command.
+    add("claim_pause", PAUSE_NAMES[p.name], `${RESUME_IN_NEEDS_YOU}, or factory resume ${p.name}`, p.ends_at);
+    out.at(-1)!.pause = p.name;
   }
-  const workerPauses = await x.store.listWorkerPauses();
-  // The CLI only: the dashboard has no worker pause or resume control yet.
+  // The all-workers row is the owner pause above (`factory stop`); this row counts the per-worker pauses only, set on the
+  // CLI: the dashboard has no per-worker pause or resume control.
+  const workerPauses = (await x.store.listWorkerPauses()).filter((p) => p.worker_id !== "*");
   if (workerPauses.length > 0) {
     add("worker_pause", `${workerPauses.length} worker pause${workerPauses.length === 1 ? "" : "s"} in effect (factory workers pause)`, "factory workers resume");
   }
 
   const stop = await lastAutoStop(x.store);
   for (const a of await openAlarms(x.store, x.now)) {
-    add("alarm", a.detail === null ? alarmText(a) : `${alarmText(a)}: ${a.detail}`, alarmCommand(a), alarmUntil(a));
-    if (stop?.alert_id === a.id) out.at(-1)!.auto_stop = stop;
+    add("alarm", alarmFullText(a), alarmCommand(a), alarmUntil(a));
+    const row = Object.assign(out.at(-1)!, { pattern: a.pattern, error_code: a.error_code });
+    if (a.pattern === "red_main") {
+      const output = redMainDetail(a).output;
+      Object.assign(row, { failing_tests: output?.failing_tests ?? [], output_tail: output?.output_tail ?? null });
+    }
+    if (stop?.alert_id === a.id) row.auto_stop = stop;
   }
 
   const server = x.deps.revision ?? null;

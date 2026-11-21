@@ -277,7 +277,7 @@ async function orRefused(fail: (line: string) => CliResult, run: () => Promise<C
 export interface LocalCliDeps {
   store: Pick<
     FactoryStore,
-    "createWorkItem" | "getWorkItem" | "listWorkItems" | "listPhases" | "listRuns" | "listItemMessages" | "appendCliCommand"
+    "createWorkItem" | "getWorkItem" | "findWorkItemIds" | "listWorkItems" | "listPhases" | "listRuns" | "listItemMessages" | "appendCliCommand"
     | "claimOwner" | "addTask" | "listTasks" | "completeTask" | "reopenTask" | "listCommandProposals"
     | "getTask" | "linkTask" | "updateTask" | "deleteTask" | "addSubTask"
     | "createProject" | "listProjects" | "renameProject" | "archiveProject" | "restoreProject" | "deleteProject" | "getProjectBySlug"
@@ -297,9 +297,19 @@ export interface LocalCliDeps {
   ui?: { port?: number }; // factory.config.json's `ui` (validated at load): `task create` prints the item's loopback link on its port; absent: no link (chat)
 }
 
-export interface CliResult {
-  code: number;
-  lines: string[];
+export interface CliResult { code: number; lines: string[] }
+
+/** A work item's short ID, as the dashboard shows it: the 8 hex characters after `wi_`; any other ID as it is. */
+export const shortItemId = (id: string): string => /^wi_([0-9a-f]{8})/.exec(id)?.[1] ?? id;
+/**
+ * The item a token names, for `task show`, every item command and `help` (design 05-sources, short IDs): the token, `wi_`
+ * optional, is a prefix of its ID; one with no hex after `wi_` reads nothing. None or several (listed) is a refusal.
+ */
+export async function resolveItem(store: Pick<FactoryStore, "findWorkItemIds" | "getWorkItem">, token: string): Promise<WorkItem | CliResult> {
+  const rest = token.replace(/^wi_/, "");
+  const ids = /[0-9a-f]/.test(rest) ? await store.findWorkItemIds(`wi_${rest}`) : [];
+  const item = ids.length === 1 ? await store.getWorkItem(ids[0]!) : null;
+  return item ?? { code: 1, lines: ids.length > 1 ? [`${token} names ${ids.length} work items; give more of its ID:`, ...ids.map((id) => `  ${id}\t${shortItemId(id)}`)] : [`no work item ${token}`] };
 }
 
 /** The most items, and the most open tasks, `task list` reads. */
@@ -310,7 +320,7 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
   const user = d.identity.user;
   const cli = d.cli ?? DEFAULT_CLI_NAME;
   const link = (id: WorkItemId) => (d.ui ? [`http://127.0.0.1:${d.ui.port ?? UI_PORT}/app/items/${id}`] : []);
-  const created = (id: WorkItemId, ...rest: string[]): CliResult => ({ code: 0, lines: [id, ...rest, ...link(id), CREATE_NEXT_STEP] }); // the ID first (scripts read it)
+  const created = (id: WorkItemId, ...rest: string[]): CliResult => ({ code: 0, lines: [id, shortItemId(id), ...rest, ...link(id), CREATE_NEXT_STEP] }); // the ID first (scripts read it), then its short ID
   // The first identity to write becomes the local owner (issue #318); anonymous never does.
   const claim = async () => (user === ANONYMOUS_USER ? null : d.store.claimOwner(user));
   switch (a.action) {
@@ -389,7 +399,7 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       const items = (await d.store.listWorkItems(TASK_LIST_LIMIT)).filter((i) => i.source.type === "local");
       const tasks = await d.store.listTasks(TASK_LIST_LIMIT);
       const links = await d.store.listTaskProjectSlugs(tasks.map((t) => t.id));
-      const lines = items.length === 0 ? ["no local work items"] : items.map((i) => [i.id, i.title ?? "", i.stage, i.blocked_reason ?? "-"].join("\t"));
+      const lines = items.length === 0 ? ["no local work items"] : items.map((i) => [i.id, shortItemId(i.id), i.title ?? "", i.stage, i.blocked_reason ?? "-"].join("\t"));
       // Plain tasks in their own section after the work items (design 02-tasks), only when there are any.
       return { code: 0, lines: tasks.length === 0 ? lines : [...lines, "", "Tasks", ...tasks.map((t) => taskLine(t, links[t.id] ?? []))] };
     }
@@ -421,13 +431,13 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
     case "project":
       return runProject(d, a, fail, claim);
     case "show": {
-      const item = await d.store.getWorkItem(a.id);
-      if (!item) return fail(`no work item ${a.id}`);
+      const item = await resolveItem(d.store, a.id);
+      if ("lines" in item) return item;
       return { code: 0, lines: await showLines(d, item) };
     }
     case "command": {
-      const item = await d.store.getWorkItem(a.id);
-      if (!item) return fail(`no work item ${a.id}`);
+      const item = await resolveItem(d.store, a.id);
+      if ("lines" in item) return item;
       const name = a.command === MERGE_COMMAND ? `${cli} merge` : `/${a.command}`;
       // The controller's phase check, before any write: the same refusal it would post (issues #528, #523).
       const refused = a.command === "approve" ? approveRefusal(item) : a.command === "verdict" ? verdictRefusal(item) : null;
@@ -458,8 +468,8 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
     }
     case "help": {
       if (a.id === null) return { code: 0, lines: helpReply(null).split("\n") };
-      const item = await d.store.getWorkItem(a.id);
-      if (!item) return fail(`no work item ${a.id}`);
+      const item = await resolveItem(d.store, a.id);
+      if ("lines" in item) return item;
       return { code: 0, lines: helpReply(itemCommandState(item, await d.store.listRuns(item.id))).split("\n") };
     }
   }
@@ -506,18 +516,8 @@ async function runProject(
 
 async function showLines(d: LocalCliDeps, item: WorkItem): Promise<string[]> {
   const out: string[] = [
-    `${item.id}  ${item.title ?? ""}`,
-    "",
-    "State",
-    `  stage: ${item.stage}`,
-    `  blocked_on: ${item.blocked_on}`,
-    `  blocked_reason: ${item.blocked_reason ?? "-"}`,
-    `  close_reason: ${item.close_reason ?? "-"}`,
-    `  tier: ${item.tier ?? "-"}`,
-    `  change_ref: ${item.change_ref ?? "-"}`,
-    `  version: ${item.version}`,
-    "",
-    "Spec",
+    `${item.id}  ${item.title ?? ""}`, "", "State", `  stage: ${item.stage}`, `  blocked_on: ${item.blocked_on}`, `  blocked_reason: ${item.blocked_reason ?? "-"}`,
+    `  close_reason: ${item.close_reason ?? "-"}`, `  tier: ${item.tier ?? "-"}`, `  change_ref: ${item.change_ref ?? "-"}`, `  version: ${item.version}`, "", "Spec",
   ];
   if (item.done_criteria === null) out.push("  (no spec yet)", `  problem: ${item.problem}`);
   else {

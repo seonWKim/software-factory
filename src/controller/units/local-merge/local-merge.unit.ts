@@ -3,7 +3,7 @@
 // Moved out of the legacy controller (RFC 0015 M5); the merge and the base push are outbound deliveries (M8), the
 // conflict probe and the red-main check are still inline (unit-purity ratchet).
 
-import { checkCommands } from "../../../core/checks.js";
+import { checkCommands, runChecks } from "../../../core/checks.js";
 import { ALERT_DEDUPE_MS } from "../../../core/alarms.js";
 import { modeOf } from "../../../core/settings.js";
 import { AUTO_ACTOR, autoMergeRefusal, branchFor } from "../../../core/policy.js";
@@ -12,9 +12,10 @@ import {
 } from "../../../core/local-merge.js";
 import { gatePathTouched } from "../../../core/improver.js";
 import { lastPrNotes } from "../../../core/pr-body.js";
-import { type Actor, type Run, type SourceRef, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
+import { type Actor, RECURRING_FAILURE, type Run, type SourceRef, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { ExternalIdentity } from "../../../interfaces/auth-provider.js";
 import { LOCAL_GIT_HOST, basePushOutcome, basePushTarget, gitTarget, type ActionRow } from "../../../outbound/index.js";
+import { failingTestNames } from "../../../worker/index.js";
 import { AUTO, CONFLICT_PENDING, SYSTEM, awaitingMerge } from "../support.js";
 import type { ControllerWrite } from "../kernel.js";
 import type { Ctx } from "../context.js";
@@ -26,6 +27,14 @@ const HAND_FIXED = "conflict_fixed_by_hand";
  * core, to keep this unit off another legacy import (dependency-direction ratchet). */
 function conflictParked(it: Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason">): boolean {
   return it.stage === "REVIEW" && it.blocked_on === "human" && it.blocked_reason === CONFLICT_PENDING;
+}
+/** Held for recurring_failure in REVIEW after its last failed run, a resolve run (core resolveHeld, copied here for the
+ * same reason): its hand fix is accepted like a parked one (design §5 Merge conflict, 2026-11-21). */
+function resolveHeld(it: Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason">, runs: readonly Run[]): boolean {
+  if (it.stage !== "REVIEW" || it.blocked_on !== "human" || it.blocked_reason !== RECURRING_FAILURE) return false;
+  const failed = runs.filter((r) => r.outcome?.status === "failed");
+  const last = failed.reduce<Run | null>((a, r) => (a === null || (r.finished_at ?? r.updated_at) >= (a.finished_at ?? a.updated_at) ? r : a), null);
+  return last?.kind === "resolve";
 }
 /** mergeLocal's `who` for auto mode's merge: no person, actor `system:auto`. */
 const AUTO_MERGE = { auto: true } as const;
@@ -40,6 +49,12 @@ const MODE_HISTORY = 500;
 const AUTO_MERGE_BATCH = 20;
 /** Why auto mode went back to manual: the alert's error code (design 03-risk, stop conditions). */
 type AutoStop = "red_main" | "failure_alert" | "budget_checkpoint";
+
+/** What the red-main check's failing command printed: the failing tests by name (at most 10) and its tail (at most 2000 characters). */
+interface RedMainOutput {
+  failing_tests: string[];
+  output_tail: string;
+}
 
 /**
  * Why a branch that does not merge cleanly into the local base was not merged, with the conflicting files. `next`:
@@ -91,7 +106,10 @@ export class LocalMergeUnit {
         : await this.c.unit("auth").authorize(who, "approve_merge", item.id);
     // The merge gate (core request-transition, through the commands unit): waiting for its merge, no PR, a sandbox that merges.
     const sandbox = this.c.k.d.sandbox;
-    const gate = "refuse" in principal ? null : this.c.unit("commands").merge.localRefusal(item, canMergeLocal(sandbox));
+    // An item held after its resolve failed is parked on that conflict: the gate checks it as parked.
+    const parked = conflictParked(item) || (item.blocked_reason === RECURRING_FAILURE && resolveHeld(item, await this.c.k.reader.listRuns(item.id)));
+    const asGated = parked ? { ...item, blocked_reason: CONFLICT_PENDING } : item;
+    const gate = "refuse" in principal ? null : this.c.unit("commands").merge.localRefusal(asGated, canMergeLocal(sandbox));
     let refusal: string;
     if ("refuse" in principal) refusal = principal.refuse;
     // The gate refuses when the sandbox cannot merge; its check again here only narrows the sandbox's type.
@@ -99,10 +117,10 @@ export class LocalMergeUnit {
     else {
       const conflicts = await sandbox.localConflicts({ repo: repo.path, base_ref: repo.base_branch, branch });
       if (conflicts === null) refusal = `the factory repo has no local branch \`${branch}\``;
-      else if (conflicts.length > 0 && conflictParked(item)) refusal = conflictRefusal(item.id, branch, repo.base_branch, conflicts, "parked");
+      else if (conflicts.length > 0 && parked) refusal = conflictRefusal(item.id, branch, repo.base_branch, conflicts, "parked");
       else if (conflicts.length > 0) refusal = conflictRefusal(item.id, branch, repo.base_branch, conflicts, await this.resolveRefused(item) ? "resolving" : "person");
-      else if (conflictParked(item)) {
-        // Fixed by hand (design §5 Merge conflict, 2026-11-20): the branch as it is gets a fresh review first.
+      else if (parked) {
+        // Fixed by hand (design §5 Merge conflict, 2026-11-20; a resolve-held item too, 2026-11-21): the branch as it is gets a fresh review first.
         const r = await this.handFixed(item, principal.user_id, branch, detail);
         if (r === null) return null;
         refusal = r;
@@ -118,8 +136,8 @@ export class LocalMergeUnit {
   }
 
   /**
-   * A local item parked on its merge conflict whose branch now merges cleanly into the local base (design §5 Merge
-   * conflict, 2026-11-20): the owner fixed it by hand. No resolve run: the item goes back to REVIEW with one fresh
+   * A local item parked on its merge conflict, or held after its resolve failed (2026-11-21), whose branch now merges
+   * cleanly into the local base (design §5 Merge conflict, 2026-11-20): the owner fixed it by hand; the hold is lifted. No resolve run: the item goes back to REVIEW with one fresh
    * review keyed on the branch's head, so a second `factory merge` on the same head queues nothing new; the review's
    * pass sets merge_pending, and `factory merge` then lands it. Returns the refusal, or null when the review is queued.
    */
@@ -129,7 +147,7 @@ export class LocalMergeUnit {
     if (head === null) return `the head of \`${branch}\` could not be read; run \`factory merge ${item.id}\` again`;
     const input = await this.c.unit("checks-gate").reviewInput(null, item.id);
     const actor: Actor = by === AUTO_ACTOR ? AUTO : { kind: "user", id: by as UserId };
-    await this.c.unit("transitions").decide(item.id, (it) => (conflictParked(it) && it.change_ref === null
+    await this.c.unit("transitions").decide(item.id, async (it) => ((conflictParked(it) || resolveHeld(it, await this.c.k.reader.listRuns(it.id))) && it.change_ref === null
       ? {
           patch: { blocked_on: "none", blocked_reason: null },
           actor,
@@ -454,48 +472,59 @@ export class LocalMergeUnit {
 
   /**
    * Red main (design 03-risk): after an automatic merge, the install command, the checks and the UI check
-   * (`repo.ui_check`) run again on the new base tip in a fresh detached checkout. A failure, or a check that could
-   * not run, is red main (`redMain`): its alert and fix item on that tip, and auto mode set back to manual.
+   * (`repo.ui_check`) run again on the new base tip in a fresh detached checkout, through the merge check's runner
+   * (`runChecks`: its tail, at most CHECK_TAIL_CHARS). A failure, or a check that could not run, is red main
+   * (`redMain`): its alert, which keeps the failing tests and the output tail, its fix item on that tip, and auto mode
+   * set back to manual.
    */
   async redMainCheck(it: WorkItem): Promise<void> {
     const sandbox = this.c.k.d.sandbox;
     if (!sandbox) return;
     const { repo } = this.c.k.cfg;
     let failed: string | null = null;
+    let output: RedMainOutput | undefined;
     let tip: string | null = null;
     try {
-      const h = await sandbox.create({ repo: repo.path, branch: null, base_ref: repo.base_branch });
-      tip = h.base_sha ?? null;
+      const handle = await sandbox.create({ repo: repo.path, branch: null, base_ref: repo.base_branch });
+      tip = handle.base_sha ?? null;
       try {
-        for (const cmd of [repo.install_command, ...checkCommands(repo), ...(repo.ui_check ? [repo.ui_check.command] : [])]) {
-          const r = await sandbox.exec(h, cmd, { env: this.c.k.d.check_env ?? {}, timeout_ms: this.c.k.cfg.run_timeout_ms });
-          if (r.exit_code === 0) continue;
-          failed = `\`${cmd.join(" ")}\` ${r.timed_out ? "timed out" : `exited ${r.exit_code}`} on the new tip of \`${repo.base_branch}\``;
-          break;
+        const round = await runChecks({
+          sandbox, handle, commands: [repo.install_command, ...checkCommands(repo), ...(repo.ui_check ? [repo.ui_check.command] : [])],
+          env: { ...this.c.k.d.check_env }, timeout_ms: this.c.k.cfg.run_timeout_ms, signal: new AbortController().signal, redact: [],
+        });
+        if (round.failed) {
+          failed = `\`${round.failed.command.join(" ")}\` ${round.failed.how} on the new tip of \`${repo.base_branch}\``;
+          output = { failing_tests: failingTestNames(round.failed.tail), output_tail: round.failed.tail };
         }
       } finally {
-        await sandbox.destroy(h);
+        await sandbox.destroy(handle);
       }
     } catch (err) {
       failed = `the checks could not run on the new tip of \`${repo.base_branch}\`: ${err instanceof Error ? err.message.slice(0, 200) : "unknown error"}`;
     }
-    if (failed !== null) await this.redMain(it.project, tip ?? (await this.baseTip()), failed);
+    if (failed !== null) await this.redMain(it.project, tip ?? (await this.baseTip()), failed, output);
   }
 
   /**
    * The base branch fails a check on its own at `base_sha` (design 03-risk): one `red_main` alert keyed on that sha, in
    * manual and auto mode; one fix item filed through outbound (`file_fix_item`, keyed on that sha) by the first source
    * in `plugins.source` order that can file; and in auto mode the stop (`stopAuto`). Safe to run again: the alert's
-   * conditional insert and the action's key store each once. With no sha known, only the stop.
+   * conditional insert and the action's key store each once. With no sha known, only the stop. With `output` (the
+   * red-main check's), the alert's detail is JSON `{ text, failing_tests, output_tail }` (`redMainDetail` in
+   * src/ui/alarms.ts reads it back); else the text alone.
    */
-  async redMain(project: string, base_sha: string | null, detail: string): Promise<void> {
+  async redMain(project: string, base_sha: string | null, detail: string, output?: RedMainOutput): Promise<void> {
     if (base_sha !== null) {
-      // G5: the alert reaches the status page, so its detail is scanned as UI text first; the fix item's text is
-      // scanned by outbound before it leaves.
+      // G5: the alert reaches the status page, so its detail is scanned as UI text first, and the output tail as run
+      // outcome text, as the merge check scans it: a flagged tail is stored as null, the test names are kept. The fix
+      // item's text is scanned by outbound before it leaves.
       const scan = await this.c.k.reader.scan("ui", detail);
+      const text = scan.clean ? detail : null;
+      const tail = output && output.output_tail !== "" && (await this.c.k.reader.scan("run_outcome", output.output_tail)).clean ? output.output_tail : null;
+      const stored = output ? JSON.stringify({ text, failing_tests: output.failing_tests, output_tail: tail }) : text;
       const writes: ControllerWrite[] = [{
         kind: "alert", dedupe_ms: ALERT_DEDUPE_MS,
-        alert: { pattern: "red_main", pattern_key: `red_main:${base_sha}`, error_code: "red_main", count: 1, detail: scan.clean ? detail : null },
+        alert: { pattern: "red_main", pattern_key: `red_main:${base_sha}`, error_code: "red_main", count: 1, detail: stored },
       }];
       const filer = this.c.k.filer();
       const { base_branch } = this.c.k.cfg.repo;

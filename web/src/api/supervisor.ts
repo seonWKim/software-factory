@@ -5,11 +5,14 @@ import { t } from "../i18n/index.js";
 import { postJson } from "./client.js";
 import { API } from "./routes.js";
 
-/** One claim pause in effect (design §5 Restarts). `ends_at`: for model_stall, the next probe time. */
+/**
+ * One claim pause in effect (design §5 Restarts). `ends_at`: for model_stall, the next probe time; null for `owner`
+ * (Stop all agents), which holds until resumed.
+ */
 export interface PauseRow {
   name: string;
-  ends_at: string;
-  /** When a model stall began; absent for the pauses that have no start time. */
+  ends_at: string | null;
+  /** When the agents were stopped (`owner`) or a model stall began; absent for the pauses that have no start time. */
   since?: string | null;
 }
 

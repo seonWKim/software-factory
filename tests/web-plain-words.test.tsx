@@ -118,6 +118,31 @@ describe("rendered page text has no internal names", () => {
     });
   }
 
+  it("Tasks with a model_stall pause shows it once, by its plain name, with no claim pause wording or ISO time", async () => {
+    const overview = RESPONSES["/api/v1/overview"] as Record<string, unknown>;
+    const before = overview.system_actions;
+    overview.system_actions = [{ code: "claim_pause", text: "Model not answering", command: "Resume now in Needs you on Tasks, or factory resume model_stall", until: LATER, pause: "model_stall" }];
+    try {
+      history.replaceState(null, "", "/app/tasks");
+      const { container } = mount();
+      const row = await waitFor(() => {
+        const li = container.querySelector<HTMLElement>('li[data-check="claim_pause"]');
+        if (li === null) throw new Error("no pause row yet");
+        return li;
+      });
+      await within(row).findByRole("button", { name: "Resume now" });
+      await new Promise((r) => setTimeout(r, 100));
+      const text = visibleText(container);
+      expect(text).not.toMatch(/model_stall|Claim pause|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
+      expect(text.split("Model not answering")).toHaveLength(2);
+      // No CLI command under the row (decision 3), so nothing hides in a code element either.
+      expect(row.querySelector("code")).toBeNull();
+      expect(INTERNAL.exec(text)?.[0] ?? null).toBeNull();
+    } finally {
+      overview.system_actions = before;
+    }
+  });
+
   it("the Data page is a developer page: it renders, and is left out of the check", async () => {
     history.replaceState(null, "", "/app/data");
     mount();

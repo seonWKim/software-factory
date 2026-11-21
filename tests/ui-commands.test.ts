@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { uiCommandsActor } from "../src/compose.js";
+import { uiCommandsActor } from "../src/config-values.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { OwnerAuth } from "../src/core/authorize.js";
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
@@ -10,14 +10,16 @@ import { oneTapNote, pendingFeedback, verdictNote } from "../web/src/views/item-
 import type { AppCommandRequest } from "../src/interfaces/factory-store.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import { parseProposalMarker } from "../src/core/interpret.js";
-import type { PageAction } from "../src/ui/commands.js";
+import { type PageAction, stopCount } from "../src/ui/commands.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, type UiDeps, respond } from "../src/ui/server.js";
 import { refusalText } from "../src/core/commands.js";
 import { REVISE_APPLIED } from "../src/controller/units/commands/queued-revise.js";
 import { runLocalCli } from "../src/core/local-cli.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
-import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent, waitFor } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, silent, waitFor } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 import { classifierAnswer } from "./helpers/classifier.js";
 
@@ -492,6 +494,63 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
     });
     expect(pendingFeedback(await timeline())).toEqual([]);
   });
+
+  describe("repeated_stop (design 09-dashboard-item-commands, 2026-11-20)", () => {
+    const FAILED = "run_failed:implement:agent_error";
+    type Row = { name: string; repeated_stop?: boolean };
+    /** An item whose block `patch` was set `n` times, cleared in between, as a retry and the next failure leave it. */
+    const stoppedTimes = async (h: Awaited<ReturnType<typeof harness>>, patch: WorkItemPatch, n: number, at: number) => {
+      let it = await h.itemIn(patch, at);
+      for (let i = 1; i < n; i++) {
+        for (const p of [{ blocked_on: "none", blocked_reason: null }, patch] as WorkItemPatch[]) {
+          const r = await h.store.transition({ id: it.id, expected_version: it.version, actor: { kind: "system", id: "system:test" }, reason: "setup", patch: p });
+          if (!r.ok) throw new Error("setup");
+          it = r.item;
+        }
+      }
+      return it;
+    };
+    const rowsOf = async (d: ApiDeps, it: WorkItem) => (await listed(d, it)).commands as Row[];
+    const listRows = async (d: ApiDeps, it: WorkItem) => {
+      const all = JSON.parse((await respond(d, { method: "GET", url: "/api/v1/items", host: HOST })).body) as { items: { id: string; commands?: Row[] }[] };
+      return all.items.find((x) => x.id === it.id)?.commands ?? [];
+    };
+
+    it("stopCount counts the state changes that set the current blocked_reason, the current one included", () => {
+      const set = (to: string | null) => ({ changes: { blocked_reason: { from: null, to } } }) as never;
+      expect(stopCount({ blocked_reason: "x" }, [set("x"), set(null), set("y"), set("x"), { changes: {} } as never])).toBe(2);
+      expect(stopCount({ blocked_reason: null }, [set(null)])).toBe(0);
+    });
+
+    it("from the third identical stop every command row of the item and the list carries repeated_stop: true; before it none does", async () => {
+      const h = await harness({ localAuth: true });
+      const owner = "local:owner@example.com" as UserId;
+      await h.store.claimOwner(owner);
+      const patch: WorkItemPatch = { stage: "RUNNING", blocked_on: "human", blocked_reason: FAILED };
+      const twice = await stoppedTimes(h, patch, 2, 1);
+      const thrice = await stoppedTimes(h, patch, 3, 2);
+      for (const rows of [await rowsOf(page(h, owner), twice), await listRows(page(h, owner), twice)]) {
+        expect(rows.map((r) => r.name)).toContain("retry");
+        for (const r of rows) expect(r.repeated_stop, r.name).toBeUndefined();
+      }
+      for (const rows of [await rowsOf(page(h, owner), thrice), await listRows(page(h, owner), thrice)]) {
+        expect(rows.map((r) => r.name)).toEqual(expect.arrayContaining(["retry", "revise", "reject"]));
+        for (const r of rows) expect(r.repeated_stop, r.name).toBe(true);
+      }
+    });
+
+    it("any current blocked_reason counts: a spec back at the gate a third time carries repeated_stop on every row", async () => {
+      const h = await harness({ localAuth: true });
+      const owner = "local:owner@example.com" as UserId;
+      await h.store.claimOwner(owner);
+      const twice = await stoppedTimes(h, SPEC_PENDING, 2, 1);
+      const gate = await stoppedTimes(h, SPEC_PENDING, 3, 2);
+      for (const r of await rowsOf(page(h, owner), twice)) expect(r.repeated_stop, r.name).toBeUndefined();
+      const rows = await rowsOf(page(h, owner), gate);
+      expect(rows.map((r) => r.name)).toEqual(expect.arrayContaining(["approve", "revise", "reject"]));
+      for (const r of rows) expect(r.repeated_stop, r.name).toBe(true);
+    });
+  });
 });
 
 describe("verdict from the item page and the item API (issue #523)", () => {
@@ -772,7 +831,7 @@ describe("the command box and pending proposals (design 09-dashboard-app)", () =
 /** A JSON response for the stubbed fetch. */
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-describe("the Merge button's Merging… state (item page and Needs-you row)", () => {
+describe("the Merge button's Merging… state (item page; on a Needs-you row, the menu's Merge)", () => {
   // The web views need a DOM; this file's other tests run on node, so only these set jsdom up (vitest's own environment).
   let teardown: (() => unknown) | undefined;
   let rtl: typeof import("@testing-library/react");
@@ -817,6 +876,16 @@ describe("the Merge button's Merging… state (item page and Needs-you row)", ()
   const READY = { enabled: true, reason: null };
   const wrap = (client: InstanceType<typeof QueryClient>, el: unknown) => createElement(QueryClientProvider, { client }, el as never);
   const mergeButton = () => rtl.screen.getByRole("button", { name: /^Merg/ }) as unknown as { disabled: boolean; textContent: string };
+  /** A Needs-you row's ⋯ menu, opened if closed (choosing an item closes it). */
+  const openRowMenu = () => {
+    const more = rtl.screen.getByRole("button", { name: "More commands" }) as unknown as HTMLElement;
+    if (more.getAttribute("aria-expanded") !== "true") rtl.fireEvent.click(more as never);
+  };
+  /** A Needs-you row's first menu item (Merge or the primary command), read with the menu open; every row action is in the menu. */
+  const firstItem = () => {
+    openRowMenu();
+    return rtl.screen.getAllByRole("menuitem")[0] as unknown as { disabled: boolean; textContent: string };
+  };
   /** Holds the POST open until the returned function is called. */
   const holdPost = () => {
     let release!: () => void;
@@ -871,22 +940,25 @@ describe("the Merge button's Merging… state (item page and Needs-you row)", ()
       return createElement(views.NeedActions as never, { id: "wi_1", title: "One", commands: [], pr: null, group: "merge", merge: READY, source: "local", checking: false, cmd, allow: [] });
     }
     rtl.render(wrap(client, createElement(Row)));
-    await rtl.waitFor(() => expect(mergeButton().disabled).toBe(false));
+    await rtl.waitFor(() => expect(firstItem().disabled).toBe(false));
+    expect(firstItem().textContent).toBe("Merge");
     const release = holdPost();
-    rtl.fireEvent.click(mergeButton() as never);
-    await rtl.waitFor(() => expect(mergeButton().textContent).toBe("Merging…"));
-    expect(mergeButton().disabled).toBe(true);
+    rtl.fireEvent.click(firstItem() as never);
+    // In flight: the row says Merging… beside its closed menu, and the menu's Merge reads Merging…, disabled.
+    await rtl.waitFor(() => expect(rtl.screen.getByText("Merging…")).toBeTruthy());
+    expect(firstItem().textContent).toBe("Merging…");
+    expect(firstItem().disabled).toBe(true);
     release();
     // Sent: the row reads the item until its reply; with none yet it stays Merging… and disabled.
     await rtl.waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([u]) => u === "/api/v1/items/wi_1")).toBe(true));
-    expect(mergeButton().textContent).toBe("Merging…");
-    expect(mergeButton().disabled).toBe(true);
+    expect(firstItem().textContent).toBe("Merging…");
+    expect(firstItem().disabled).toBe(true);
     // The controller refuses; the next read (the poll) brings the reply.
     itemReplies = [reply({ handled_at: "t", refusal: "the head moved" })];
     await client.invalidateQueries({ queryKey: ["/api/v1/items/wi_1"] });
     await rtl.waitFor(() => expect(rtl.screen.getByText("the head moved")).toBeTruthy());
-    expect(mergeButton().textContent).toBe("Merge");
-    expect(mergeButton().disabled).toBe(false);
+    expect(firstItem().textContent).toBe("Merge");
+    expect(firstItem().disabled).toBe(false);
   });
   /** What the server answers for an Approve it applied while handling the request (src/ui/commands.ts applyNow). */
   const applied = () => json({ seq: 5, outcome: "applied", refusal: null, state: { stage: "RUNNING", blocked_on: "none", blocked_reason: null, phase: "p", label: "Approved" } }, 202);
@@ -905,11 +977,14 @@ describe("the Merge button's Merging… state (item page and Needs-you row)", ()
       return approveRow(views.useCommandSend("wi_1"));
     }
     rtl.render(wrap(client, createElement(Row)));
-    const approve = () => rtl.screen.getByRole("button", { name: "Approve" }) as unknown as { disabled: boolean };
-    await rtl.waitFor(() => expect(approve().disabled).toBe(false));
+    await rtl.waitFor(() => expect(firstItem().disabled).toBe(false));
+    expect(firstItem().textContent).toBe("Approve");
     post = async () => applied();
-    rtl.fireEvent.click(approve() as never);
+    rtl.fireEvent.click(firstItem() as never);
+    // With the menu closed the row itself says Approved (a click never looks like nothing happened)…
     await rtl.waitFor(() => expect(rtl.screen.getByText("Approved")).toBeTruthy());
+    // …and the menu's Approve reads it too, disabled.
+    expect([firstItem().textContent, firstItem().disabled]).toEqual(["Approved", true]);
     expect(itemReads()).toBe(0);
     expect((client.getQueryData(["/api/v1/items"]) as { items: { stage: string; blocked_reason: string | null }[] }).items[0]).toMatchObject({ stage: "RUNNING", blocked_reason: null });
   });
@@ -921,13 +996,12 @@ describe("the Merge button's Merging… state (item page and Needs-you row)", ()
       return approveRow(views.useCommandSend("wi_1"));
     }
     rtl.render(wrap(client, createElement(Row)));
-    const approve = () => rtl.screen.getByRole("button", { name: "Approve" }) as unknown as { disabled: boolean };
-    await rtl.waitFor(() => expect(approve().disabled).toBe(false));
+    await rtl.waitFor(() => expect(firstItem().disabled).toBe(false));
     post = async () => json({
       seq: 5, outcome: "refused", refusal: "`/approve` was not applied: the spec is not waiting for approval (the item is waiting for a human merge).",
       state: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", phase: "waiting for a human merge", label: null },
     }, 202);
-    rtl.fireEvent.click(approve() as never);
+    rtl.fireEvent.click(firstItem() as never);
     await rtl.waitFor(() => expect(rtl.screen.getByText("/approve was not applied: the spec is not waiting for approval (the item is waiting for a human merge).")).toBeTruthy());
     expect((client.getQueryData(["/api/v1/items"]) as { items: { blocked_reason: string }[] }).items[0]!.blocked_reason).toBe("merge_pending");
   });
@@ -943,16 +1017,16 @@ describe("the Merge button's Merging… state (item page and Needs-you row)", ()
       return createElement(views.NeedActions as never, { id: "wi_1", title: "One", commands: [], pr: null, group: "merge", merge, source: "local", checking: false, cmd, allow: [] });
     }
     rtl.render(wrap(client, createElement(Row)));
-    await rtl.waitFor(() => expect(mergeButton().disabled).toBe(false));
+    await rtl.waitFor(() => expect(firstItem().disabled).toBe(false));
     // The request path writes nothing for a Merge: the state stays merge_pending, the label says Merging….
     post = async () => json({
       seq: 5, outcome: "queued", refusal: null, state: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", phase: "p", label: "Merging…" },
     }, 202);
-    rtl.fireEvent.click(mergeButton() as never);
+    rtl.fireEvent.click(firstItem() as never);
     await rtl.waitFor(() => expect((client.getQueryData(["/api/v1/items"]) as { items: { merge: unknown }[] }).items[0]!.merge).toEqual({ enabled: false, reason: "Merging…" }));
     expect((client.getQueryData(["/api/v1/items"]) as { items: { blocked_reason: string }[] }).items[0]!.blocked_reason).toBe("merge_pending");
-    expect(mergeButton().textContent).toBe("Merging…");
-    expect(mergeButton().disabled).toBe(true);
+    expect(firstItem().textContent).toBe("Merging…");
+    expect(firstItem().disabled).toBe(true);
   });
 
   it("on the item page: a Merge under way reads Merge queued (position N), then Checking build; one returned to merge_pending shows why beside Merge", async () => {
@@ -987,6 +1061,6 @@ describe("the Merge button's Merging… state (item page and Needs-you row)", ()
     }
     rtl.render(wrap(client, createElement(Row)));
     await rtl.waitFor(() => expect(rtl.screen.getByText("the merged commit conflicts in src/a.ts")).toBeTruthy());
-    expect(mergeButton().textContent).toBe("Merge");
+    expect(firstItem().textContent).toBe("Merge");
   });
 });

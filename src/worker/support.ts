@@ -3,7 +3,7 @@ import type { DiffStat } from "../core/diff-gate.js";
 import { MAX_COMMAND_PATHS, retryPathsReply } from "../core/commands.js";
 import { type ReviewOutput, builtDifferentlyOf, specFindings, unverifiedOf } from "../core/outputs.js";
 import { AGENT_STALLED, RATE_LIMITED } from "../core/policy.js";
-import { type LocalRoute, type PrText, TRUSTED_GIT_ENV, type WorkerDeps, hasTool, prTitle, routeFor, runPushIntents, threadDelivery } from "../core/worker-deps.js";
+import { type LocalRoute, type PrText, TRUSTED_GIT_ENV, type WorkerDeps, baseRefspec, hasTool, prTitle, routeFor, runPushIntents, threadDelivery } from "../core/worker-deps.js";
 import { failingTests, stripAnsi } from "../core/output-summary.js";
 import { Bash, Edit, Glob, Grep, Read, TOOLS, type ToolSpec, Write } from "../core/tools/index.js";
 import type { Run, RunId, RunKind, RunResume, RunUsage, Timestamp, WipRef, WorkItem } from "../core/types.js";
@@ -11,7 +11,27 @@ import type { AgentRunResult } from "../interfaces/agent-runner.js";
 import type { SandboxHandle } from "../interfaces/sandbox.js";
 import { type DecisionAnswer, answerLines } from "../shared/command-notes.js";
 
-export { type LocalRoute, type PrText, TRUSTED_GIT_ENV, type WorkerDeps, hasTool, prTitle, routeFor, runPushIntents, threadDelivery };
+export { type LocalRoute, type PrText, TRUSTED_GIT_ENV, type WorkerDeps, baseRefspec, hasTool, prTitle, routeFor, runPushIntents, threadDelivery };
+export { TRUSTED_GIT_KEYS, untrustedGitConfig } from "../shared/git-trust.js";
+
+/** At most one write of a run's last model output time per this many ms, and per a tenth of stall_ms (design 05-restarts). */
+export const OUTPUT_RECORD_MS = 30_000;
+
+/**
+ * The runner's `on_output` for one agent step (design 05-restarts): stores the run's last model output time through
+ * the store, at once on the first output, then at most once per OUTPUT_RECORD_MS (or a tenth of `stall_ms`), so the
+ * controller can tell one silent run from a model that is down. Best effort: a failed write lets the next output try.
+ */
+export function outputRecorder(d: Pick<WorkerDeps, "store" | "clock">, run: Pick<Run, "id" | "lease">, stall_ms: number): () => void {
+  const every = Math.min(OUTPUT_RECORD_MS, Math.floor(stall_ms / 10));
+  let last = -Infinity;
+  return () => {
+    const now = d.clock.now().getTime();
+    if (!run.lease || now - last < every) return;
+    last = now;
+    d.store.recordRunOutput(run.id, run.lease.token).catch(() => { last = -Infinity; });
+  };
+}
 
 /** The run kinds `workers pause` stops mid-run (design §5 Pause). Others finish first; then the worker stops claiming. */
 export const PAUSABLE_KINDS: readonly RunKind[] = ["implement", "review"];
@@ -47,7 +67,6 @@ export const gitVerb = (args: readonly string[]): string => {
   return args[i] ?? "";
 };
 
-export const KINDS: readonly RunKind[] = ["triage", "implement", "review", "update", "resolve", "improve", "merge-check", "restart"];
 /** Files of a PR kept as its pr_files (design §5, 2026-11-03); past the size gate's file cap anyway. */
 export const MAX_PR_FILES = 500;
 /** The read role's tools (triage): only `read` capability, no write or exec tool. */
@@ -110,28 +129,16 @@ export function continues(wip: WipRef | null | undefined): wip is ContinueWip {
 /** The most paths one live-checkout report names; `count` gives the total. */
 export const LIVE_REPORT_PATHS = 20;
 
-export const TRUSTED_GIT_KEYS = new Set([
-  "core.repositoryformatversion", "core.filemode", "core.bare", "core.logallrefupdates", "core.ignorecase",
-  "core.precomposeunicode", "core.symlinks", "core.hookspath", "extensions.objectformat", "extensions.refstorage",
-  "remote.origin.url", "remote.origin.fetch", "user.name", "user.email",
-]);
-
-/**
- * The keys in a run's `.git/config` (`git config --name-only --list -z` output) that are not plain data a sandbox
- * or git itself writes there. Anything else may make git run a program (filters, textconv, fsmonitor, ssh,
- * credential helpers, includes, URL rewrites), so trusted git calls never read it (design §5).
- */
-export function untrustedGitConfig(names: string): string[] {
-  const keys = names.split("\0").filter(Boolean);
-  return [...new Set(keys.filter((k) => !TRUSTED_GIT_KEYS.has(k) && !/^branch\.[^\n]+\.(remote|merge)$/.test(k)))];
-}
-
 export class RunFailure extends Error {
   constructor(
     readonly code: string,
     detail: string,
     readonly infra = false,
-    readonly extra: { output_tail?: string; reset_at?: Timestamp | null; wip?: WipRef } = {},
+    readonly extra: {
+      output_tail?: string; reset_at?: Timestamp | null; wip?: WipRef;
+      /** The implement run's test selection before push (design §4, shadow mode), recorded on the failed outcome. */
+      test_selection?: object | undefined;
+    } = {},
   ) {
     super(detail);
   }
@@ -192,8 +199,9 @@ export interface RunScratch {
 }
 
 /**
- * The run kinds whose first agent step the toolchain's warm_command runs before (design 05-sandbox.md, issue
- * #334): the ones that build and run checks. Triage only reads, so it warms nothing.
+ * The run kinds the toolchain's warm_command runs for, once per run (design 05-sandbox.md, issue #334): the ones
+ * that build and run checks. Implement and review warm before their first agent step; resolve warms the branch tip
+ * before its merge, since the merged tree may not build until its conflicts are fixed. Triage only reads.
  */
 export const WARM_KINDS: readonly RunKind[] = ["implement", "review", "resolve"];
 

@@ -1,10 +1,9 @@
 // Dependencies between items: edges, holds, cycles and releases.
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
-import { DEPENDENCY_CLOSED, applies, commandSpec, phaseLabel, refusalText } from "../../../core/commands.js";
+import { DEPENDENCY_CLOSED, LOCAL_ID, applies, commandSpec, dependsOnIds, localItemOf, phaseLabel, refusalText, wantedDependsOn, withDependsOn } from "../../../core/commands.js";
 import { type DependencyLink, type DependencyVerdict, dependencyReason, dependencyRef, dependencyVerdict, holdReason, isDependencySource } from "../../../core/coordination.js";
 import { AGENT_NEEDS_HUMAN, runKey } from "../../../core/policy.js";
-import { LOCAL_ID, dependsOnIds, localItemOf, wantedDependsOn, withDependsOn } from "../../../core/task-build.js";
 import { type Actor, type DependencyState, type SourceType, type Timestamp, type UserId, type WorkItem, type WorkItemId, type WorkItemPatch } from "../../../core/types.js";
 import { ownerAnswersFor, storedAnswers } from "../../../shared/command-notes.js";
 import type { UnitOperations } from "../../router/unit.js";

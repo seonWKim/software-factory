@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseTriage } from "../src/core/outputs.js";
 import { answersYes, dependencyQuestion, proposedDependency } from "../src/core/task-build.js";
-import { triageSpec } from "./helpers/fakes.js";
+import { triageSpec } from "./helpers/fakes/config.js";
 
 // Triage's dependency proposal (design 04-triage, 2026-11-20): a request that says it runs after another local item is
 // asked as "Depends on wi_X? yes/no", a yes/no decision whatever options triage wrote; an approved yes writes the edge.

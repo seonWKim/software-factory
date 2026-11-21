@@ -64,6 +64,27 @@ const DETAILS: Record<string, unknown> = {
     timeline: [],
     runs: [{ id: "run_i_2", kind: "interactive", status: "succeeded", attempt: 1, started_at: AT, finished_at: AT, created_at: AT, tokens: 0, error: null }],
   },
+  "/api/v1/items/wi_about": {
+    as_of: AT,
+    item: base("wi_about", 30, "About spec", {
+      request: "Item page shows what the work is about",
+      spec: { problem: "The page shows no text about the work.", desired_output: "[withheld: github_token]", done_criteria: ["About shows the summary", "[withheld: github_token]", "Spec starts collapsed"] },
+    }),
+    timeline: [],
+    runs: [],
+  },
+  "/api/v1/items/wi_request": {
+    as_of: AT,
+    item: base("wi_request", 31, "Request only", { request: "Only the request so far", spec: null }),
+    timeline: [],
+    runs: [],
+  },
+  "/api/v1/items/wi_withheld": {
+    as_of: AT,
+    item: base("wi_withheld", 32, "Flagged request", { request: "[withheld: github_token]", spec: null }),
+    timeline: [],
+    runs: [],
+  },
   "/api/v1/items/wi_p1": {
     as_of: AT,
     item: base("wi_p1", 11, "First phase", { parent_id: "wi_parent", phase: 1, spec_comment_url: "[withheld: github_token]", change_ref: "14", change_url: "javascript:alert(1)" }),
@@ -244,6 +265,30 @@ describe("item page: In short, decisions and the approve confirm (issue #526)", 
     fireEvent.click(radios[2]!);
     fireEvent.change(within(first).getByRole("textbox", { name: "Answer 1" }), { target: { value: "Warn on docs only" } });
     expect(radios[2]!.checked).toBe(true);
+  });
+
+  it("a layout decision shows each option's sketch in monospace with the default marked; the others stay plain text", async () => {
+    const SKETCH_A = "+--------+\n| Header |\n+--------+\n| Cards  |\n+--------+";
+    const SKETCH_B = "+--------+\n| Header |\n+--------+\n| List   |\n+--------+";
+    const layout = { question: "Which layout?", options: [SKETCH_A, SKETCH_B], default: SKETCH_B, reason: "A list scans faster.", owner_only: false, layout: true };
+    SPEC.decisions.push(layout);
+    try {
+      serve("spec_pending");
+      mount("/app/items/wi_d");
+      const group = await screen.findByRole("radiogroup", { name: "4. Which layout?" });
+      const sketches = [...group.querySelectorAll("pre")];
+      expect(sketches.map((p) => p.textContent)).toEqual([SKETCH_A, SKETCH_B]);
+      for (const p of sketches) expect(p.className).toContain("font-mono");
+      const radios = within(group).getAllByRole("radio") as HTMLInputElement[];
+      expect(radios.map((r) => r.checked)).toEqual([false, true, false]);
+      expect(radios[1]!.parentElement!.textContent).toBe(`${SKETCH_B}(default)`);
+      expect(group.closest("fieldset")!.hasAttribute("data-layout")).toBe(true);
+      const plain = screen.getByRole("radiogroup", { name: "1. Fail the job, or only warn?" });
+      expect(plain.querySelector("pre")).toBeNull();
+      expect(plain.closest("fieldset")!.hasAttribute("data-layout")).toBe(false);
+    } finally {
+      SPEC.decisions.pop();
+    }
   });
 
   it("spec waiting for approval: the confirm names the answers and the defaults taken, then sends N: lines and the note", async () => {
@@ -484,29 +529,6 @@ describe("item page: refusals and the viewer's grants (issues #528, #453)", () =
     expect(document.querySelector("[data-decide]")!.textContent).not.toContain("`");
     expect(document.querySelector("[data-commands-none]")).toBeNull();
   });
-
-  it("the verdict row: Good and Bad are one segmented control, Feedback a button, in the same row; Verdict is in the \"…\" menu", async () => {
-    const replies = [{ seq: 4, command: "verdict", created_at: AT, handled_at: AT, refusal: null }];
-    serve({ commands: [cmd("verdict")], replies });
-    mount("/app/items/wi_g");
-    const group = await screen.findByRole("group", { name: "Verdict" });
-    expect([...group.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Good", "Bad"]);
-    expect(group.parentElement!.parentElement!.contains(screen.getByRole("button", { name: "Feedback" }))).toBe(true);
-    expect(screen.queryByRole("button", { name: "Verdict" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "More commands" }));
-    expect(screen.getByRole("menuitem", { name: "Verdict" })).toBeTruthy();
-    expect((await found('[data-outcome-of="verdict"]')).textContent).toBe("Done");
-  });
-
-  it("Merge is the first button of the one row, primary, with the verdict control after it", async () => {
-    serve({ item: base("wi_g", 50, "Grants", { merge: { enabled: true, reason: null } }), commands: [cmd("verdict")] });
-    mount("/app/items/wi_g");
-    const merge = await found('[data-command="merge"]');
-    const row = merge.parentElement!;
-    expect(row.querySelector("button")!.textContent).toBe("Merge");
-    expect(row.querySelector("[data-verdict]")).toBeTruthy();
-    expect(within(merge).getByRole("button", { name: "Merge" }).className.split(" ")).toContain("bg-accent");
-  });
 });
 
 describe("item page: the command box and pending proposals (design 09-dashboard-app)", () => {
@@ -647,5 +669,69 @@ describe("item page: Interactive task badge", () => {
     const table = await screen.findByRole("table", { name: "Runs" });
     expect(screen.getAllByText("Interactive task")).toHaveLength(1);
     expect(table.querySelector('tr[data-run="run_i_2"] td')!.textContent).toContain("Interactive task");
+  });
+});
+
+describe("item page: About (the request and the approved spec)", () => {
+  it("a request with an approved spec: About under the title with the summary line, the spec collapsed", async () => {
+    mount("/app/items/wi_about");
+    const about = await screen.findByRole("region", { name: "About" });
+    expect(about.textContent).toContain("Item page shows what the work is about");
+    // Under the title: About comes before the decision box and every other Card.
+    const regions = [...document.querySelectorAll("section[aria-label]")];
+    expect(regions[0]).toBe(about);
+    const toggle = about.querySelector("summary")!;
+    expect(toggle.textContent).toBe("Approved spec");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(about.querySelector("details")!.open).toBe(false);
+    expect(within(about).queryAllByRole("button")).toEqual([]);
+    expect(about.textContent).not.toMatch(/wi_about/);
+  });
+
+  it("expanding the spec shows the problem, the desired output and each done criterion as a list item", async () => {
+    mount("/app/items/wi_about");
+    const about = await screen.findByRole("region", { name: "About" });
+    fireEvent.click(about.querySelector("summary")!);
+    expect(about.querySelector("details")!.open).toBe(true);
+    for (const label of ["Problem", "Desired output", "Done criteria"]) expect(within(about).getByText(label)).toBeTruthy();
+    expect(about.textContent).toContain("The page shows no text about the work.");
+    const items = within(within(about).getByRole("list", { name: "Done criteria" })).getAllByRole("listitem");
+    expect(items.map((li) => li.textContent)).toEqual(["About shows the summary", "Withheld: the egress scan flagged this text.", "Spec starts collapsed"]);
+  });
+
+  it("a withheld text shows the withheld note, never the marker", async () => {
+    mount("/app/items/wi_withheld");
+    const about = await screen.findByRole("region", { name: "About" });
+    expect(about.textContent).toContain("Withheld: the egress scan flagged this text.");
+    expect(about.textContent).not.toContain("[withheld");
+    // The spec's withheld desired output and criterion read the same way.
+    cleanup();
+    mount("/app/items/wi_about");
+    const spec = await screen.findByRole("region", { name: "About" });
+    fireEvent.click(spec.querySelector("summary")!);
+    expect(spec.querySelectorAll("[data-withheld]").length).toBe(2);
+    expect(spec.textContent).not.toContain("[withheld");
+  });
+
+  it("a request with no approved spec: About with the summary only, no spec Disclosure", async () => {
+    mount("/app/items/wi_request");
+    const about = await screen.findByRole("region", { name: "About" });
+    expect(about.textContent).toContain("Only the request so far");
+    expect(about.querySelector("details")).toBeNull();
+  });
+
+  it("an item with neither a request nor a spec shows no About", async () => {
+    mount("/app/items/wi_done");
+    await screen.findByRole("table", { name: "Runs" });
+    expect(screen.queryByRole("region", { name: "About" })).toBeNull();
+  });
+
+  it("at 390 px the About text wraps (break-words)", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    mount("/app/items/wi_about");
+    const about = await screen.findByRole("region", { name: "About" });
+    const summary = about.querySelector<HTMLElement>("[data-about-request] p")!;
+    expect(summary.className).toContain("break-words");
+    expect(about.className).toContain("min-w-0");
   });
 });

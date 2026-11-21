@@ -16,7 +16,10 @@ import type { AuthProvider } from "../src/interfaces/auth-provider.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { storedAnswers } from "../src/shared/command-notes.js";
 import { retry } from "../src/controller/units/support.js";
-import { FakeAuth, FakeSlackPollSource, FakeSource, alice, cleanScanner, config, issueRef, pipeline, silent, slackRef, triageSpec } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeSlackPollSource, FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, silent, slackRef, triageSpec } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 import { newStore, PROJECT_KEY, system, w1 } from "./helpers/store.js";
 
 describe("parseComment", () => {
@@ -756,6 +759,67 @@ describe("answers to the spec's decisions on /approve (issue #526)", () => {
       "`/approve` was not applied: only the owner may send this command (`not_a_collaborator`).",
       "`/revise` was not applied: only the owner may send this command (`not_a_collaborator`).",
     ]);
+  });
+
+  describe("an option that needs a path outside the allowed paths (design 04-spec-gate-commands, 2026-11-21)", () => {
+    const WIDE = [{
+      ...DECISIONS[0]!,
+      option_changes: [{ option: "Only warn", extra_paths: ["docs/ci.md"], done_when: ["CI warns when files outside allowed_paths change"] }],
+    }];
+    const REPLY = "`/approve +paths docs/ci.md`";
+    const implementRuns = async (h: Awaited<ReturnType<typeof harness>>, id: WorkItemId) => (await h.store.listRuns(id)).filter((r) => r.kind === "implement");
+
+    it("is refused from a comment, Slack, the CLI and the dashboard with one reply naming the path and the +paths reply; nothing is queued or widened", async () => {
+      const h = await harness();
+      const byComment = await h.triaged(issueRef(70), WIDE);
+      const bySlack = await h.triaged(slackRef(71), WIDE);
+      const byCli = await h.triaged(issueRef(72), WIDE);
+      const byApp = await h.triaged(issueRef(73), WIDE);
+      // Each delivered twice (a second poll): still one reply.
+      for (const _ of [1, 2]) {
+        await h.controller.handleEvent({ kind: "spec_approved", source: byComment.source, comment_id: "w1", approver: alice, note: "1: Only warn" });
+        await h.controller.handleEvent({ kind: "spec_approved", source: bySlack.source, comment_id: "w2", approver: { provider: "slack", subject: "U2", login: "u" }, note: "1: Only warn" });
+      }
+      const cli = { store: h.store, identity: { user: ME, from: "git user.email" as const }, project: async () => PROJECT_KEY, read: async () => "", newId: () => "x" };
+      expect((await runLocalCli(cli, { action: "command", command: "approve", id: byCli.id, text: "1: Only warn" })).code).toBe(0);
+      await h.store.recordAppCommandRequest({ key: "k73", actor: ME, command: "approve", args: { work_item_id: byApp.id, note: "1: Only warn" } });
+      await h.controller.tickCommands();
+
+      for (const [name, it, marker] of [["comment", byComment, "w1"], ["slack", bySlack, "w2"]] as const) {
+        const replies = (await h.store.listItemMessages(it.id)).filter((m) => m.marker === `<!-- factory:refused:${marker} -->`);
+        expect(replies, name).toHaveLength(1);
+        expect(replies[0]!.body, name).toContain("`docs/ci.md`");
+        expect(replies[0]!.body, name).toContain(REPLY);
+      }
+      const app = (await h.store.listAppCommandRequestsForItem(byApp.id, 5)).at(-1)!;
+      expect(app.refusal).toContain(REPLY);
+      for (const [name, it] of [["comment", byComment], ["slack", bySlack], ["cli", byCli], ["app", byApp]] as const) {
+        const now = (await h.store.getWorkItem(it.id))!;
+        expect(now, name).toMatchObject({ stage: "READY", blocked_reason: "spec_pending", allowed_paths: it.allowed_paths });
+        expect(await h.approval(it.id), name).toBeUndefined();
+        expect(await implementRuns(h, it.id), name).toEqual([]);
+      }
+    });
+
+    it("an approval whose +paths covers the option's path starts the implement run with the widened allowed_paths", async () => {
+      const h = await harness();
+      const it = await h.triaged(issueRef(80), WIDE);
+      await h.comment(it, "/approve +paths docs/ci.md\n1: Only warn");
+      const now = (await h.store.getWorkItem(it.id))!;
+      expect(now).toMatchObject({ stage: "RUNNING", blocked_on: "none" });
+      expect(now.allowed_paths).toEqual([...it.allowed_paths, "docs/ci.md"]);
+      expect(await implementRuns(h, it.id)).toHaveLength(1);
+      expect(storedAnswers((await h.approval(it.id))!.detail)[0]).toEqual({ question: DECISIONS[0]!.question, answer: "Only warn", accepted_default: false });
+    });
+
+    it("the default option needs no extra path: an approval with it starts the run with allowed_paths as they were", async () => {
+      const h = await harness();
+      const it = await h.triaged(issueRef(90), WIDE);
+      await h.controller.handleEvent({ kind: "spec_approved", source: it.source, comment_id: "d9", approver: alice, note: "1: Fail the job" });
+      const now = (await h.store.getWorkItem(it.id))!;
+      expect(now).toMatchObject({ stage: "RUNNING", allowed_paths: it.allowed_paths });
+      expect(await implementRuns(h, it.id)).toHaveLength(1);
+    });
   });
 });
 

@@ -8,7 +8,7 @@ import type { UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
-import { cleanScanner } from "./helpers/fakes.js";
+import { cleanScanner } from "./helpers/fakes/config.js";
 import { issue, newStore, system } from "./helpers/store.js";
 import { classifierAnswer } from "./helpers/classifier.js";
 

@@ -14,11 +14,11 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { ForgeEvent } from "../src/interfaces/forge.js";
-import type { SourceEvent } from "../src/interfaces/source-adapter.js";
-import {
-  FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeForge, FakeSource, MemoryStorage,
-  alice, cleanScanner, config, issueRef, prompts, runComments, silent, triageSpec,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, prompts, runComments, silent, triageSpec } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 // Review routing by finding kind (issue #222): code findings loop back to implement, spec findings and an

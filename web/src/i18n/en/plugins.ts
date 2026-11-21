@@ -1,6 +1,6 @@
 // English text, area: plugins. A key's prefix (before its first dot) belongs to this file only.
 export const plugins = {
-  "plugins.intro": "What the agents can use: MCP servers from packs, skills from your skill folders, and tools.",
+  "plugins.intro": "Extra abilities the agents can use: connected apps (MCP), skills and tools. A pack is a folder of them that you add.",
   "plugins.tabs": "Kind",
   "plugins.tabMcp": "MCP",
   "plugins.tabSkills": "Skills",
@@ -22,8 +22,8 @@ export const plugins = {
   "plugins.originPack": "Pack",
   "plugins.originBroker": "Broker",
   "plugins.readOnly": "Read-only",
-  "plugins.writes": "Writes; never granted",
-  "plugins.noRole": "No role",
+  "plugins.writes": "Can change things · not given to any agent",
+  "plugins.noRole": "Not used by any agent",
   "plugins.never": "Not in recent runs",
   "plugins.statusApproved": "Approved",
   "plugins.statusWaiting": "Waiting",

@@ -97,4 +97,5 @@ export default defineRunKind({
   folder: false,
   timeouts: DEFAULT_TIMEOUTS,
   execute: (w, c) => improve(w, c.run, c.item, c.signal),
+  grade: gradeRun,
 });

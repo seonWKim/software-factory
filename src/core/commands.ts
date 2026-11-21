@@ -4,6 +4,7 @@ import { type TriageOutput, parseTriage } from "./outputs.js";
 import { type ItemPhase, isClosedPhase, phaseOf } from "./phase.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind } from "./policy.js";
 import type { Run, RunKind, WorkItem } from "./types.js";
+import { awaitingSpec } from "./request-transition.js";
 export * from "./request-transition.js"; // the approve and merge gates' shared checks (design 04-gate-commands)
 
 /**
@@ -158,14 +159,8 @@ export const COMMANDS: readonly CommandSpec[] = [
     needs_pr: false,
     changes_state: true,
   },
-  {
-    name: "hold",
-    usage: "/hold <id>",
-    description: "Hold until <id> merges: writes a `Depends on: <id>` line in the item's problem and queues the implement run, which waits " +
-      "for <id> (a local wi_… item, or a built task tk_…) to merge and then starts on its own. Refused for an ID that names no local item, the item itself, or an item already merged",
-    // Only a local item whose implement run asked for a human, e.g. because it needs another item first (design 05-dependencies).
-    phases: [], local_phases: ["agent_needs_human"], asked_by: ["implement"], needs_pr: false, changes_state: true,
-  },
+  { name: "hold", usage: "/hold <id>", phases: [], local_phases: ["agent_needs_human"], asked_by: ["implement"], needs_pr: false, changes_state: true, // a local implement stop (design 05-dependencies)
+    description: "Hold until <id> merges: writes a `Depends on: <id>` line in the item's problem and queues the implement run, which waits for <id> (a local wi_… item, or a built task tk_…) to merge and then starts on its own. Refused for an ID that names no local item, the item itself, or an item already merged" },
   {
     name: "budget",
     usage: "/budget [tokens]",
@@ -220,6 +215,7 @@ export function commandSpec(name: CommandName): CommandSpec {
 
 /** blocked_reason prefix (with `blocked_on: human`) of an item whose dependency closed without a merge (design §5). */
 export { DEPENDENCY_CLOSED } from "./phase.js";
+export { LOCAL_ID, dependsOnIds, localItemOf, wantedDependsOn, withDependsOn } from "./task-build.js"; // for `/hold` and the coordination unit
 
 /** Block reasons whose step `/retry` reads from the stage (or, for the agent blocks, from the item's runs first). */
 const STAGE_RETRY_REASONS: readonly (string | null)[] = ["max_attempts", "max_restart", AGENT_NEEDS_HUMAN, REPEATED_FAILURE];
@@ -275,8 +271,7 @@ export const appliesLocally = (c: CommandSpec, s: CommandState): boolean => s.lo
 
 export function applies(c: CommandSpec, s: CommandState): boolean {
   const asked = s.phase !== "agent_needs_human" || !c.asked_by || (s.asked_by !== undefined && c.asked_by.includes(s.asked_by));
-  if (appliesLocally(c, s)) return asked;
-  return c.phases.includes(s.phase) && (!c.needs_pr || s.has_pr || s.local === true) && asked;
+  return asked && (appliesLocally(c, s) || (c.phases.includes(s.phase) && (!c.needs_pr || s.has_pr || s.local === true)));
 }
 
 /** Whether `c` is accepted as a comment on the item's PR with its PR meaning (`pr_phases`); needs a PR. */
@@ -387,9 +382,8 @@ function whenText(c: CommandSpec): string {
         ? "any open or merged item"
         : c.phases.map((p) => PHASE_LABELS[p]).join(", ");
   const on = (label: string, ps?: readonly CommandPhase[]) => (ps?.length ? `; ${label}: ${ps.map((p) => PHASE_LABELS[p]).join(", ")}` : "");
-  const when = (c.needs_pr ? `${where}, once it has a PR (a local item needs none)` : where) + on("on a local item with no PR", c.local_phases) + on("on its PR", c.pr_phases);
   // A command that applies only to a local item (`phases` empty) starts with its local phases.
-  return when.replace(/^; /, "");
+  return ((c.needs_pr ? `${where}, once it has a PR (a local item needs none)` : where) + on("on a local item with no PR", c.local_phases) + on("on its PR", c.pr_phases)).replace(/^; /, "");
 }
 
 /** The command table in SET_UP.md, generated from COMMANDS; a test keeps the two equal. */
@@ -565,6 +559,15 @@ export function dependencyHoldRefusal(held: string | null): string {
 export function specNotWaiting(phase: CommandPhase): string {
   return `the spec is not waiting for approval (the item is ${phaseLabel(phase)})`;
 }
+
+/** The reason for `/approve` on a spec that changes no file in this repo (design 04-spec-gate-commands, 2026-11-20); the spec comment says it too. */
+export const NO_FILES_REFUSAL = "the spec changes no file in this repo (its files_to_change is empty), so there is nothing to implement; reply `/revise <feedback>` for a spec that changes a file here, or `/reject <reason>` to close";
+/** Whether `spec` changes no file in this repo: one spec (not a split) whose files_to_change is empty. */
+export const changesNoFile = (spec: TriageOutput | null): boolean => spec !== null && !spec.phases && spec.files_to_change.length === 0;
+/** NO_FILES_REFUSAL when `it` waits at the spec gate on a spec that changes no file, else null. The caller passes the runs. */
+export const noFilesRefusal = (it: WorkItem, runs: readonly Run[]): string | null => (awaitingSpec(it) && changesNoFile(latestSpec(runs)) ? NO_FILES_REFUSAL : null);
+/** The reason for `/retry +paths` on an item whose `/retry` re-checks its premise first (design 04-spec-gate-commands, 2026-11-20). */
+export const RECHECK_PATHS_REFUSAL = "the item's last change is more than a day old, so `/retry` re-checks its premise with a new triage run first, and `+paths` does not apply to that; reply `/retry` without `+paths`, then `/approve +paths <path>...` on the new spec";
 
 /**
  * Why `/approve` cannot apply to `it` whatever its runs say, in the controller's words; null when the controller may

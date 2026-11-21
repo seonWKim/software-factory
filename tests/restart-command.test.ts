@@ -8,7 +8,10 @@ import type { ExecResult } from "../src/interfaces/sandbox.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Worker } from "../src/worker/index.js";
-import { FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, cleanScanner, config, issueRef, prompts, silent } from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { cleanScanner, config, issueRef, prompts, silent } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
 // The `restart` command end to end (design 04-gate-commands, restart): an app request (the Restart app button, or
