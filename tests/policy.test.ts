@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   IMPLEMENT_KINDS, TAKEOVER_OUTCOME, autoApproveRefusal, autoMergeRefusal, effectiveTier, failureClass, floorTier, isCovered, pathsOverlap, retryDelayMs, retryKey, runKey,
-  sameStep, takenOver, workItemIdFromBranch,
+  sameStep, takenOver, workItemIdFromBranch, SETUP_MISSING, retryClears,
 } from "../src/core/policy.js";
+import { harnessCredential } from "../src/impl/runner/claude-code-runner.js";
+import { thrownFailure } from "../src/worker/support.js";
+import { MemorySecretStore } from "./helpers/fakes/secrets.js";
 import { GATE_PATHS, gatePathTouched } from "../src/core/improver.js";
 import { PROTECTED_PATHS, protectedCategory } from "../src/core/standing.js";
 import { parseTriage } from "../src/core/outputs.js";
@@ -59,6 +62,19 @@ describe("policy", () => {
     expect(failureClass(null)).toBe("task");
     // A provider's quota, key or model error is the task's own failure, never a rate limit (no claim pause).
     expect(failureClass(failed(PROVIDER_SETUP, false))).toBe("task");
+  });
+
+  // Bug: a missing model credential is an "exception" (infra), so the run is retried, counted toward max_restart and
+  // the repeated-failure rule, and Health lists it as an unexpected worker error.
+  it("classifies a missing model credential as setup_missing, apart from task and infra", async () => {
+    const thrown = await harnessCredential(new MemorySecretStore({})).then(() => null, (err: unknown) => err);
+    const f = thrownFailure(thrown);
+    expect(f).toMatchObject({ code: SETUP_MISSING, infra: false });
+    expect(f.detail).toContain("CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY");
+    expect(thrownFailure(new Error("boom")).code).toBe("exception");
+    const outcome = { status: "failed" as const, error_code: SETUP_MISSING, detail: f.detail, infra: true };
+    expect(failureClass(outcome)).toBe("setup_missing");
+    expect(retryClears(outcome)).toBe(true);
   });
 
   it("maps factory branches back to work items", () => {

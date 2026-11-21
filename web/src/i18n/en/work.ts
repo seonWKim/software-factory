@@ -94,6 +94,7 @@ export const work = {
   "why.reason.running": "Running {kind}",
   "why.reason.paused_rate_limit": "Paused by a usage or rate limit until {until}",
   "why.reason.paused_model_stall": "Paused: the model is not answering; runs start again once a probe answers",
+  "why.reason.paused_model_credential": "Waiting for a model credential",
   "why.reason.paused_forge_auth": "Paused: the forge refused the factory's credentials, until {until}",
   "why.reason.paused_preflight": "Paused: a push or PR access check failed, until {until}",
   "why.reason.dependency": "Waiting for {refs} to merge",
