@@ -446,7 +446,7 @@ describe("ui api: open alarms in Needs you and the why sentence (design 09-statu
     const created = clock.now().getTime();
     const o = await overview(d);
     expect(o.system_actions).toContainEqual({
-      code: "alarm", text: `${ALARM}: npm test exited #`, command: "Failures page (/app/failures)", until: new Date(created + ALERT_DEDUPE_MS).toISOString(),
+      code: "alarm", text: `${ALARM}: npm test exited #`, command: "Failures page (/app/failures)", pattern: "repeated_error", error_code: "checks_failed", until: new Date(created + ALERT_DEDUPE_MS).toISOString(),
     });
     expect(o.needs_you).toBe(1 + o.system_actions.length);
     clock.advance(ALERT_DEDUPE_MS);
