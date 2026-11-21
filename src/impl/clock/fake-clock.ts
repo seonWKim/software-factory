@@ -36,7 +36,8 @@ export class FakeClock implements Clock {
 
   advance(ms: number): void {
     this.ms += ms;
-    const due = this.sleepers.filter((s) => s.wakeAt <= this.ms);
+    // Earliest deadline first, as real timers fire; equal deadlines keep the order they were made in.
+    const due = this.sleepers.filter((s) => s.wakeAt <= this.ms).sort((a, b) => a.wakeAt - b.wakeAt);
     this.sleepers = this.sleepers.filter((s) => s.wakeAt > this.ms);
     for (const s of due) s.resolve();
   }

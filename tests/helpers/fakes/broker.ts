@@ -3,6 +3,16 @@ import type { Run } from "../../../src/core/types.js";
 import { STORE_BRANCH, type ToolBroker, type ToolCallContext, type ToolDescriptor, type ToolResult } from "../../../src/interfaces/tool-broker.js";
 
 const OBJECT_SCHEMA = { type: "object" } as const;
+
+/** The runs a broker fences calls on (the real brokers' `holdsLease`, src/impl/broker/trusted-git.ts). */
+type RunLookup = { getRun(id: Run["id"]): Promise<Run | null> };
+const LEASE_LOST: ToolResult = { ok: false, error_code: "lease_lost", message: "run no longer holds its lease" };
+
+/** Whether the call's run still holds the lease its context names: running, same item, same token. */
+async function holdsLease(store: RunLookup, ctx: ToolCallContext): Promise<boolean> {
+  const run = await store.getRun(ctx.run_id);
+  return run !== null && run.work_item_id === ctx.work_item_id && run.status === "running" && run.lease?.token === ctx.lease_token;
+}
 /** What FakeBroker lists: the GitHub broker's tool names and read_only flags. */
 export const FAKE_GITHUB_TOOLS: readonly ToolDescriptor[] = [
   { name: STORE_BRANCH, description: "store the branch in the factory repo", input_schema: OBJECT_SCHEMA, read_only: false },
@@ -23,7 +33,7 @@ export class FakeNoteBroker implements ToolBroker {
   ];
   constructor(
     public notes: Record<string, string> = {},
-    private readonly store?: { getRun(id: Run["id"]): Promise<Run | null> },
+    private readonly store?: RunLookup,
   ) {}
   listTools(grants: readonly string[]): ToolDescriptor[] {
     return this.tools.filter((t) => grants.includes(t.name));
@@ -33,11 +43,7 @@ export class FakeNoteBroker implements ToolBroker {
   }
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
     this.calls.push({ ctx, name, args });
-    if (this.store) {
-      const run = await this.store.getRun(ctx.run_id);
-      const held = run !== null && run.work_item_id === ctx.work_item_id && run.status === "running" && run.lease?.token === ctx.lease_token;
-      if (!held) return { ok: false, error_code: "lease_lost", message: "run no longer holds its lease" };
-    }
+    if (this.store && !(await holdsLease(this.store, ctx))) return LEASE_LOST;
     this.ran.push({ name, args });
     if (name === "test.read_note") {
       const key = String((args as { key?: unknown } | null)?.key ?? "");
@@ -68,6 +74,11 @@ export class FakeBroker implements ToolBroker {
   responses: Record<string, (ToolResult | ((args: unknown) => ToolResult | null))[]> = {};
   /** The GitHub broker's tools, flagged as it flags them: only the preflight is read-only. */
   tools: ToolDescriptor[] = FAKE_GITHUB_TOOLS.map((t) => ({ ...t }));
+  /**
+   * `store`: given, every call is fenced on the lease as the real brokers fence it (`lease_lost`, nothing recorded).
+   * `branchPrefix`: a store of a branch outside it is refused `branch_not_allowed`, as the real brokers refuse it.
+   */
+  constructor(private readonly opts: { store?: RunLookup; branchPrefix?: string } = {}) {}
   listTools(grants: readonly string[]): ToolDescriptor[] {
     return this.tools.filter((t) => grants.includes(t.name));
   }
@@ -75,7 +86,14 @@ export class FakeBroker implements ToolBroker {
     return this.tools;
   }
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
+    if (this.opts.store && !(await holdsLease(this.opts.store, ctx))) return LEASE_LOST;
     (name === "forge.preflight" ? this.preflights : name === STORE_BRANCH ? this.stores : this.calls).push({ ctx, name, args });
+    if (!this.tools.some((t) => t.name === name)) return { ok: false, error_code: "unknown_tool", message: name };
+    const prefix = this.opts.branchPrefix ?? "factory/";
+    const branch = (args as { branch?: unknown } | null)?.branch;
+    if (name === STORE_BRANCH && !(typeof branch === "string" && branch.startsWith(prefix))) {
+      return { ok: false, error_code: "branch_not_allowed", message: `only ${prefix}* branches` };
+    }
     const next = this.responses[name]?.shift();
     const scripted = typeof next === "function" ? next(args) : next;
     // A stored branch must still reach the forge: outbound pushes it. Each store names a new sha.
