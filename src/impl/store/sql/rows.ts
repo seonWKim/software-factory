@@ -35,7 +35,7 @@ import type { NewWorkItem } from "../../../interfaces/factory-store.js";
 import type { ChangeFields } from "./change-fields.js";
 import type { Row, SqlValue } from "../../../state/index.js";
 
-const JSON_COLUMNS = new Set(["resources", "done_criteria", "allowed_paths", "files_to_change", "pr_files"]);
+const JSON_COLUMNS = new Set(["resources", "done_criteria", "allowed_paths", "files_to_change", "pr_files", "done_checks"]);
 const PATCHABLE: readonly (keyof WorkItemPatch)[] = [
   "project",
   "problem",
@@ -62,6 +62,7 @@ const PATCHABLE: readonly (keyof WorkItemPatch)[] = [
   "spec_feedback",
   "files_to_change",
   "pr_files",
+  "done_checks",
 ];
 
 export function newId(prefix: string): string {
@@ -110,6 +111,7 @@ export function newWorkItem(input: NewWorkItem, change: ChangeFields, now: Times
     files_to_change: null,
     // An adopted PR's file list is its allowed_paths: the files it changes (design 2026-11-03).
     pr_files: a ? a.allowed_paths : null,
+    done_checks: null,
     created_at: now,
     updated_at: now,
   };
@@ -124,7 +126,7 @@ const WORK_ITEM_COLUMNS =
 
 /**
  * The columns and values of INSERT INTO controller_work_items, the change columns taken from the item (newWorkItem). The change columns are listed only with a PR number: without one they are NULL by default,
- * and intake inserts exactly as before migration 35, also on a schema without them (tests of older steps do).
+ * and intake inserts exactly as before migration 35, also on a schema without them (tests of older steps do). `done_checks` likewise only when set.
  */
 export function workItemInsert(i: WorkItem): { columns: string; values: SqlValue[] } {
   const values: SqlValue[] = [
@@ -137,8 +139,9 @@ export function workItemInsert(i: WorkItem): { columns: string; values: SqlValue
     i.parent_id, i.phase,
     i.files_to_change && JSON.stringify(i.files_to_change), i.pr_files && JSON.stringify(i.pr_files),
   ];
-  if (i.change_ref === null) return { columns: WORK_ITEM_COLUMNS, values };
-  return { columns: `${WORK_ITEM_COLUMNS}, change_ref, change_url`, values: [...values, i.change_ref, i.change_url] };
+  const checks = i.done_checks === null ? { columns: "", values: [] } : { columns: ", done_checks", values: [JSON.stringify(i.done_checks)] };
+  if (i.change_ref === null) return { columns: WORK_ITEM_COLUMNS + checks.columns, values: [...values, ...checks.values] };
+  return { columns: `${WORK_ITEM_COLUMNS}${checks.columns}, change_ref, change_url`, values: [...values, ...checks.values, i.change_ref, i.change_url] };
 }
 
 /** Only the fields that actually change, as state_changes entries and `column = ?` assignments. */
@@ -210,6 +213,7 @@ export function rowToWorkItem(r: Row): WorkItem {
     phase: r.phase === null || r.phase === undefined ? null : Number(r.phase),
     files_to_change: parseJson(r.files_to_change),
     pr_files: parseJson(r.pr_files),
+    done_checks: parseJson(r.done_checks ?? null), // null on a row from before the column (migration 20261121T1000)
     created_at: r.created_at as Timestamp,
     updated_at: r.updated_at as Timestamp,
   };
