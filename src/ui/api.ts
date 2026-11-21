@@ -21,7 +21,8 @@ import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, activeRuns, closedFacetRows, itemCounts, itemState, latestDecision, holderTitles, listRows, readClaimPauses, readPhases, waitingOn, whyOf, withTitle } from "./list.js";
 import { runTokens } from "./deps.js";
 import { heldFailureOf, needCtx, needOf } from "./need.js";
-import { NEEDS_YOU } from "./priority.js";
+import { type Level, NEEDS_YOU } from "./priority.js";
+import { stateLabel } from "../shared/states.js";
 import { type PauseDeps, readPauses } from "./pause-api.js";
 import { failures } from "./failures.js";
 import { spend } from "./spend.js";
@@ -336,6 +337,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       source: { type: it.source.type, id: it.source.id, link: it.source.link },
       title: await c.text(it.title || null),
       item_phase: r.level,
+      state_label: stateLabel(r.level), // the words the pages show for item_phase (src/shared/states.ts)
       reason_code: r.why.reason_code,
       stage: it.stage,
       tier: it.tier,
@@ -353,7 +355,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       conflicts: r.conflicts,
       merge_check,
       merge: await mergeReadiness(c.d, it, merge_check, allowed, r.pending),
-      ...(NEEDS_YOU.includes(r.level) ? { need: await c.need(it, merge_check), commands: await needsYouCommands(c.d, it, commandGrant, (v) => c.text(v)) } : {}),
+      ...(withCommands(r.level) ? { need: await c.need(it, merge_check), commands: await needsYouCommands(c.d, it, commandGrant, (v) => c.text(v)) } : {}),
       why: await c.why(r.why, it),
       parent_id: it.parent_id,
       phase: it.phase,
@@ -380,6 +382,12 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
   const facets = facetCounts([...rows, ...(await closedFacetRows(ctx, f))], f);
   return ok({ as_of: c.now.toISOString(), total: out.length, items: out, facets, counts: await itemCounts(c.d.store) });
 }
+
+/**
+ * The rows that carry their need and their commands: the Needs-you group, a failed run (Retry, Reject) in Problem, and
+ * a triage run's ask (its question and Answer) in Waiting.
+ */
+const withCommands = (level: Level): boolean => NEEDS_YOU.includes(level) || level === "failed" || level === "needs_triage";
 
 async function item(c: ApiCtx, id: WorkItemId) {
   const s = c.d.store;

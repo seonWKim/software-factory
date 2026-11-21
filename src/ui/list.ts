@@ -10,7 +10,8 @@ import { type SettingsBase, resolveSettings } from "../core/settings.js";
 import type { ClaimDecision, Run, RunKind, StateChange, WorkItem, WorkItemId } from "../core/types.js";
 import { alarmText, alarmsFor, itemAlarms, openAlarms } from "./alarms.js";
 import { type FilterRow, type Filters, runKindOf, searchKeys } from "./filters.js";
-import { type Level, type Pending, type PriorityInput, levelOf, rank } from "./priority.js";
+import { filterShowsFinished } from "../shared/states.js";
+import { type Level, type Pending, type PriorityInput, closedLevel, levelOf, rank } from "./priority.js";
 import { heldFailureOf, needCtx } from "./need.js";
 import { type ClaimPauses, type HeldFailure, type Why, type WhyInput, deadlocked, heldBy, refsOf, whyWaiting, withAlarms } from "./why.js";
 import type { Withholder } from "./withhold.js";
@@ -47,7 +48,7 @@ export interface ListRow extends FilterRow {
 }
 
 /** True when the filters may show closed items, so listRows reads them. */
-const showsClosed = (f: Filters) => f.closed || f.state === "closed" || f.stage === "CLOSED";
+const showsClosed = (f: Filters) => f.closed || filterShowsFinished(f.state) || f.stage === "CLOSED";
 
 /** Every listed item, ranked (closed items too when the filters may show them). */
 export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
@@ -205,15 +206,16 @@ async function searchTitle(w: Withholder, it: WorkItem): Promise<string | null> 
 }
 
 /**
- * The closed items as the facet counts read them, when listRows left them out: so the Closed option counts the
+ * The closed items as the facet counts read them, when listRows left them out: so the Finished options count the
  * closed items that match the other filters, as every other option does. One store read (at most LIST_LIMIT
- * items), no per-item reads: a closed item's level is always `closed`, its kind comes from its blocked reason.
+ * items), no per-item reads: a closed item's level comes from its phase and close reason (closedLevel), its kind
+ * from its blocked reason.
  */
 export async function closedFacetRows(c: ListCtx, f: Filters): Promise<FilterRow[]> {
   if (showsClosed(f)) return [];
   const out: FilterRow[] = [];
   for (const it of await c.store.listWorkItemsWhere({ stage: "CLOSED", limit: LIST_LIMIT })) {
-    out.push({ level: "closed", stage: it.stage, tier: it.tier, kind: runKindOf(it.blocked_reason, null), dependents: 0, search: searchKeys(it.source.id, await searchTitle(c.w, it)) });
+    out.push({ level: closedLevel(it), stage: it.stage, tier: it.tier, kind: runKindOf(it.blocked_reason, null), dependents: 0, search: searchKeys(it.source.id, await searchTitle(c.w, it)) });
   }
   return out;
 }
