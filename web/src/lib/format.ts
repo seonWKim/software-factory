@@ -90,6 +90,11 @@ export function shortSource(id: string): string {
   return m ? m[1]! + m[2]!.replaceAll("-phase-", "-p") : id;
 }
 
+/** A work item's short ID (design 09-dashboard-item): "c86970ff" for "wi_c86970ff…", the 8 hex characters after `wi_` that the CLI accepts; any other ID as it is. */
+export function shortItemId(id: string): string {
+  return /^wi_([0-9a-f]{8})/.exec(id)?.[1] ?? id;
+}
+
 /** 38521431 → "38.5M"; 29285 → "29.3k". */
 export function tokens(n: number | null | undefined): string {
   if (n === null || n === undefined) return t("format.none");
@@ -175,13 +180,14 @@ export function stateAndNext(stage: string, commands: readonly { name: string; a
 
 /**
  * Why an item waits, in the active locale: its reason code's text (`why.reason.<code>`, one per code) with the values
- * the API sent, then the open alarms that affect it. `holder` stands for the holder's name (WhyText puts a link
+ * the API sent, then the open alarms that affect it. `until` comes as an ISO instant and reads as the viewer's local time. `holder` stands for the holder's name (WhyText puts a link
  * there); without it the name is the holder's title or ref, or "another item". An unknown code shows as is.
  */
 export function whyText(why: Pick<Why, "reason_code" | "params" | "alarms">, holder?: string): string {
   const vars: Record<string, string | number> = { ...why.params };
   const stage = `why.stage.${vars.stage}`;
   if (stage in en) vars.stage = t(stage as MessageKey);
+  if (typeof vars.until === "string") vars.until = localDateTime(vars.until);
   if ("holder" in vars) vars.holder = holder ?? (vars.holder || t("why.anotherItem"));
   const key = `why.reason.${why.reason_code}`;
   return [key in en ? t(key as MessageKey, vars) : termLabel(why.reason_code), ...why.alarms].join(". ");

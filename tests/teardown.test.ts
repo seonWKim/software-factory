@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultsAsk } from "../src/cli/handlers/setup/ask.js";
 import { type GuidedState, SETUP_STEPS, runSetup } from "../src/cli/handlers/setup/guided.js";
-import { type Loaded, loadConfig } from "../src/compose.js";
+import { type Loaded, loadConfig } from "../src/load-config.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { runProcess } from "../src/impl/process/run-process.js";
 import { SUPERVISOR_REQUEST_FILE, SUPERVISOR_STATUS_FILE } from "../src/interfaces/updater.js";

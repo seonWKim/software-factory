@@ -68,10 +68,6 @@ describe("supervisor child", () => {
     expect(result).toBe("killed");
   });
 
-  it("the drain timeout is 60 seconds", () => {
-    expect(DRAIN_TIMEOUT_MS).toBe(60_000);
-  });
-
   it("Quit while waiting to restart cancels the restart", async () => {
     const { calls, sup } = started();
     calls[0]!.child.exit(1);

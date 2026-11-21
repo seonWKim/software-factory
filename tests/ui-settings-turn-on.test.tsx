@@ -69,7 +69,7 @@ describe("Settings → Integrations: turning the TacitLedger on", () => {
     const d = await dialog();
     await d.findByRole("radiogroup", { name: "Agents home" }, SLOW);
     expect((d.getByRole("radio", { name: "/h/.agents (in use)" }) as HTMLInputElement).checked).toBe(true);
-    expect(d.getByText("bin/tacit and bin/evolve are both executable in /h/.agents.")).not.toBeNull();
+    expect(d.getByText("The rules tools are ready in /h/.agents.")).not.toBeNull();
     expect(posted()).toEqual([]);
     expect(rulesReads()).toBe(1);
     const on = d.getByRole("button", { name: "Turn on" }) as HTMLButtonElement;
@@ -86,7 +86,7 @@ describe("Settings → Integrations: turning the TacitLedger on", () => {
     open(settings("none", "config"));
     flip();
     const d = await dialog();
-    await d.findByText("bin/evolve is missing or not executable in /h/.agents.", {}, SLOW);
+    await d.findByText("The rules tools are missing or not executable in /h/.agents.", {}, SLOW);
     const on = d.getByRole("button", { name: "Turn on" }) as HTMLButtonElement;
     expect(on.disabled).toBe(true);
     fireEvent.click(on);

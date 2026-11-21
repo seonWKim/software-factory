@@ -10,9 +10,11 @@ import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { issue, newStore, system } from "./helpers/store.js";
-import {
-  FakeAuth, FakeBroker, FakeForge, FakeSandbox, FakeSlackPollSource, FakeSource, MemoryStorage, PROJECT, cleanScanner, config, prompts, silent,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSlackPollSource, FakeSource } from "./helpers/fakes/source.js";
+import { PROJECT, cleanScanner, config, prompts, silent } from "./helpers/fakes/config.js";
 
 const IMPROVE_PROMPT = "IMPROVE";
 /** A GitHub-token-shaped string the pattern scanner flags as `github_token`. */

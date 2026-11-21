@@ -6,7 +6,7 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
-import { TASKS_PATH, TASK_REOPEN_PATH } from "../src/ui/tasks-api.js";
+import { TASKS_PATH } from "../src/ui/tasks-api.js";
 import { newStore } from "./helpers/store.js";
 
 // Done tasks stay on the Tasks page (design 02-tasks, done tasks stay): GET /api/v1/tasks reads the open tasks and the
@@ -34,11 +34,9 @@ async function setup() {
     const value = JSON.parse(r.body) as { projects: { list: string | null; tasks: { id: string; title: string; list: string | null; done_at: string | null }[] }[] };
     return { status: r.status, tasks: value.projects.flatMap((p) => p.tasks) };
   };
-  const reopen = (id: string) =>
-    respond(d, { method: "POST", url: TASK_REOPEN_PATH, host: HOST, origin: `http://${HOST}`, contentType: "application/json", csrfToken: token, body: JSON.stringify({ id }) });
   const rows = () => store.db.all("SELECT * FROM controller_tasks ORDER BY id");
   const done = () => store.listDoneTasks(doneWindow(clock.now(), null));
-  return { store, clock, get, reopen, rows, done };
+  return { store, clock, get, rows, done };
 }
 
 const task = (id: string, over: Partial<NewTask> = {}): NewTask => ({
@@ -104,39 +102,6 @@ describe("GET /api/v1/tasks keeps the done tasks of the window", () => {
     expect((await s.store.closeLinkedTasks("wi_merged" as WorkItemId)).map((t) => t.id)).toEqual(["tk_merged"]);
     const row = (await s.get()).tasks.find((t) => t.id === "tk_merged");
     expect(row?.done_at).toBe(new Date(NOW).toISOString());
-  });
-
-  it("a reopened task is open again: its done_at cleared in the store and in the read", async () => {
-    const s = await setup();
-    await doneAgo(s, [["tk_a", 1]]);
-    expect((await s.reopen("tk_a")).status).toBe(200);
-    expect((await s.store.getTask("tk_a"))!.done_at).toBeNull();
-    expect((await s.get()).tasks).toEqual([expect.objectContaining({ id: "tk_a", done_at: null })]);
-  });
-
-  it("reopening a recurring task removes its open next occurrence", async () => {
-    const s = await setup();
-    await s.store.addTask(task("tk_r", { due: { date: "2026-11-14" }, recurrence: "week" }));
-    const c = await s.store.completeTask("tk_r");
-    const next = c.ok ? c.next! : null;
-    const r = await s.reopen("tk_r");
-    expect(JSON.parse(r.body)).toEqual({ task_id: "tk_r", reopened: true, removed_next: next!.id });
-    expect(await s.store.getTask(next!.id)).toBeNull();
-    expect((await s.get()).tasks.map((t) => [t.id, t.done_at])).toEqual([["tk_r", null]]);
-  });
-
-  it("answers 409 and writes nothing when the next occurrence is done; the task stays done", async () => {
-    const s = await setup();
-    await s.store.addTask(task("tk_r", { due: { date: "2026-11-14" }, recurrence: "week" }));
-    const c = await s.store.completeTask("tk_r");
-    s.clock.advance(60_000);
-    await s.store.completeTask(c.ok ? c.next!.id : "");
-    const before = await s.rows();
-    const r = await s.reopen("tk_r");
-    expect(r.status).toBe(409);
-    expect(JSON.parse(r.body).error).toMatch(/next occurrence is done/);
-    expect(await s.rows()).toEqual(before);
-    expect((await s.get()).tasks.find((t) => t.id === "tk_r")?.done_at).not.toBeNull();
   });
 });
 

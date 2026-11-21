@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { build, loadConfig } from "../src/compose.js";
+import { build } from "../src/compose.js";
+import { loadConfig } from "../src/load-config.js";
 import { type FactoryConfig, GRANT_RUN_KINDS, toolGrantsConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { LiveSettings } from "../src/core/settings.js";
@@ -16,10 +17,11 @@ import { ClaudeCodeRunner } from "../src/impl/runner/claude-code-runner.js";
 import { type AgentRunner, TOOLS_NOT_EXPOSED } from "../src/interfaces/agent-runner.js";
 import type { ToolBroker, ToolCallContext } from "../src/interfaces/tool-broker.js";
 import { REGISTRY, type Registry, withPlugin } from "../src/plugins.js";
-import {
-  FakeAuth, FakeBroker, FakeForge, FakeNoteBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, cleanScanner, config, fakeRepoLookup,
-  issueRef, prompts, silent, triageSpec,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker, FakeNoteBroker } from "./helpers/fakes/broker.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, fakeRepoLookup, issueRef, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 // #164: `tool_grants` in factory.config.json grants read-only broker tools to a run kind. Checked at startup, when

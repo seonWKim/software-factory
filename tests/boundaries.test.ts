@@ -121,6 +121,7 @@ interface Exempt {
 
 const GITHUB_EXEMPT: readonly Exempt[] = [
   { file: "compose.ts", reason: "composition root: the forge descriptor's resolveProject for the CLI, the RepoRef type, and GitHub's settings checked only when a GitHub plugin is selected" },
+  { file: "load-config.ts", reason: "reads factory.config.json for the composition root (moved out of compose.ts, RFC 0023 step 2e): the RepoRef type, the GitHub issue source's config keys, and GitHub's settings checked only when a GitHub plugin is selected" },
   { file: "setup.ts", reason: "`npm run setup` and doctor check GitHub's status labels and errors (follow-up: move into src/impl/github/)" },
   { file: "cli/handlers/ui/ui.command.ts", reason: "the status page names the forge budget's plugin (follow-up: move into src/impl/github/)" },
   { file: "impl/source/slack-source.ts", reason: "the RepoRef type of the configured repo (follow-up: a forge-neutral repo type)" },

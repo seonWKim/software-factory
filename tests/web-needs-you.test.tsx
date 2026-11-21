@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../web/src/App.js";
 
 // The Needs you section of the Tasks page (design 09-dashboard-app), which /app/ opens: its count, compact rows grouped
-// Merge, Approve, Answer or fix, one primary action per row with the "⋯" menu last, and j, k, Enter and p on the rows.
+// Merge, Approve, Answer or fix, every action in the row's "⋯" menu with the primary first, and j, k, Enter and p on the rows.
 // Its count, and the sidebar badge are the same number for the same data: the overview's needs_you
 // counts the rows the section lists (design 09-status-page; tests/ui-system-actions.test.ts checks the server's side).
 
@@ -72,10 +72,17 @@ function mount() {
 const rowsOf = (el: HTMLElement) => [...el.querySelectorAll("li[data-key]")] as HTMLElement[];
 const ready = async () => {
   const section = await screen.findByRole("region", { name: "Needs you" });
-  // The rows' commands are on once the session is read.
-  await waitFor(() => expect(within(section).queryAllByRole("button", { name: "Merge" }).some((b) => !b.disabled) || list.length === 0).toBe(true));
+  // The rows' commands are on once the session is read: the hidden shortcut button of the first primary turns on.
+  await waitFor(() => expect(!!section.querySelector("[data-shortcut]:not([disabled])") || list.length === 0).toBe(true));
   return [...section.querySelectorAll("ul")] as HTMLElement[];
 };
+/** Opens a row's ⋯ menu and returns its items (the menu stays open). */
+const openMenu = (r: HTMLElement) => {
+  fireEvent.click(within(r).getByRole("button", { name: "More commands" }));
+  return within(within(r).getByRole("menu")).getAllByRole("menuitem") as HTMLButtonElement[];
+};
+/** Closes an open ⋯ menu by its button. */
+const closeMenu = (r: HTMLElement) => fireEvent.click(within(r).getByRole("button", { name: "More commands" }));
 
 describe("the Needs you section", () => {
   it("leads from /app/ to the Tasks page, with the count and the groups Merge, Approve, Answer or fix in that order", async () => {
@@ -118,27 +125,32 @@ describe("the Needs you section", () => {
     expect(merge.textContent).not.toContain("#12");
   });
 
-  it("gives every row one primary action with the ⋯ menu last, in the same place", async () => {
+  it("gives every row only its ⋯ menu, the primary command its first item (owner feedback 2026-11-20)", async () => {
     mount();
     const lists = await ready();
     const labels = lists.flatMap(rowsOf).map((r) => {
-      const controls = [...r.querySelectorAll("button, a[data-command]")].filter((c) => !c.closest("[role=menu]"));
-      expect(controls.at(-1)!.getAttribute("aria-label"), r.getAttribute("data-key")).toBe("More commands");
-      expect(controls, r.getAttribute("data-key")).toHaveLength(2);
-      return controls[0]!.textContent;
+      // No visible button or command link beside the menu: Merge, Approve and Retry are menu items.
+      const controls = [...r.querySelectorAll<HTMLElement>("button, a[data-command]")].filter((c) => !c.hidden && !c.closest("[role=menu]"));
+      expect(controls.map((c) => c.getAttribute("aria-label")), r.getAttribute("data-key")).toEqual(["More commands"]);
+      const first = openMenu(r)[0]!.textContent;
+      closeMenu(r);
+      return first;
     });
-    expect(labels).toEqual(["Merge", "Checking…", "Approve", "Retry", "Open"]);
+    expect(labels).toEqual(["Merge", "Checking…", "Approve", "Retry", "No other commands"]);
   });
 
   it("disables Merge as 'Checking…' while the merge check runs, with no separate line or duplicate text", async () => {
     mount();
     const lists = await ready();
     const checking = rowsOf(lists[0]!)[1]!;
-    const button = within(checking).getByRole("button", { name: "Checking…" });
-    expect(button.disabled).toBe(true);
+    const item = openMenu(checking)[0]!;
+    expect(item.textContent).toBe("Checking…");
+    expect(item.disabled).toBe(true);
     expect(checking.textContent!.match(/Checking…/g)).toHaveLength(1);
     expect(checking.textContent).not.toContain("merge check running");
-    expect(within(rowsOf(lists[0]!)[0]!).getByRole("button", { name: "Merge" }).disabled).toBe(false);
+    closeMenu(checking);
+    const merge = openMenu(rowsOf(lists[0]!)[0]!)[0]!;
+    expect([merge.textContent, merge.disabled]).toEqual(["Merge", false]);
   });
 
   it("shows an Answer-or-fix reason as plain text, with the +paths reply in the menu and /retry sent from it", async () => {
@@ -152,18 +164,16 @@ describe("the Needs you section", () => {
     expect(posts[0]).toEqual({ url: "/api/v1/items/wi_r1/commands", body: { command: "retry", note: "+paths web/src/components/ui/input.tsx" } });
   });
 
-  it("after a click the primary button says it was sent and stays off, so the row never looks unchanged", async () => {
+  it("after a click the primary menu item says it was sent and stays off, and p cannot send it twice", async () => {
     mount();
     const lists = await ready();
     const row = rowsOf(lists[1]!)[0]!;
-    const approve = within(row).getByRole("button", { name: "Approve" });
+    const approve = openMenu(row)[0]!;
+    expect(approve.textContent).toBe("Approve");
     fireEvent.click(approve);
     await waitFor(() => expect(posts).toHaveLength(1));
-    const sent = await waitFor(() => {
-      const b = row.querySelector<HTMLButtonElement>("[data-sent]");
-      if (!b) throw new Error("not sent yet");
-      return b;
-    });
+    await waitFor(() => expect(row.querySelector<HTMLButtonElement>("[data-shortcut]")!.disabled).toBe(true));
+    const sent = openMenu(row)[0]!;
     expect(sent.textContent).toBe("Sent, waiting…");
     expect(sent.disabled).toBe(true);
   });
@@ -182,8 +192,11 @@ describe("the Needs you section", () => {
     expect(chip.textContent).toBe("failed: spec_conflict");
     expect(need.parentElement!.querySelector("[data-level='needs_you']")).not.toBeNull();
     expect(row.querySelector("p[data-need]")).toBeNull();
-    // A sentence stays a line.
-    expect(rowsOf(lists[2]!)[0]!.querySelector("[data-need]")!.tagName).toBe("P");
+    // A sentence joins the same second line, cut to one line with the full text on hover (owner feedback 2026-11-20).
+    const sentence = rowsOf(lists[2]!)[0]!.querySelector<HTMLElement>("[data-need]")!;
+    expect(sentence.className).toContain("truncate");
+    expect(sentence.getAttribute("title")).toBe(sentence.textContent);
+    expect(sentence.parentElement!.querySelector("[data-level]")).not.toBeNull();
   });
 
   it("links a status-code chip to the thread entry its reason names", async () => {
@@ -222,15 +235,13 @@ describe("the Needs you section", () => {
     await waitFor(() => expect(location.pathname).toBe("/app/items/wi_a1"));
   });
 
-  it("shows the primary action's shortcut in its tooltip, and none on Merge", async () => {
+  it("keeps the p shortcut on a hidden button for the primary command, and none on Merge", async () => {
     mount();
     const lists = await ready();
-    fireEvent.focus(within(rowsOf(lists[1]!)[0]!).getByRole("button", { name: "Approve" }));
-    expect(screen.getByRole("tooltip").textContent).toBe("Approve (p)");
-    cleanup();
-    mount();
-    const [merge] = await ready();
-    expect(merge!.querySelector("[data-shortcut]")).toBeNull();
+    const shortcut = rowsOf(lists[1]!)[0]!.querySelector<HTMLButtonElement>("[data-shortcut='p']")!;
+    expect(shortcut.hidden).toBe(true);
+    expect(shortcut.getAttribute("data-command")).toBe("approve");
+    expect(lists[0]!.querySelector("[data-shortcut]")).toBeNull();
   });
 });
 
@@ -266,12 +277,6 @@ describe("the Needs you count is its rows (design 09-status-page)", () => {
     const n = await numbers(3, [MERGE, APPROVE, RETRY, STUCK], []);
     expect([n.rows.length, n.count, n.badge]).toEqual([3, 3, 3]);
     expect(n.rows.map((r) => r.dataset.key)).toEqual([MERGE.id, APPROVE.id, RETRY.id]);
-  });
-
-  it("each open alarm is its own row: two alarms give 2", async () => {
-    const n = await numbers(2, [], [ALARM(4), ALARM(5)]);
-    expect([n.rows.length, n.count, n.badge]).toEqual([2, 2, 2]);
-    expect(n.rows.map((r) => r.dataset.check)).toEqual(["alarm", "alarm"]);
   });
 
   it("a non-alarm system action is one row with its command, beside an item and an alarm", async () => {

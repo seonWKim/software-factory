@@ -6,7 +6,8 @@ import type { Alert, FactoryStore } from "../interfaces/factory-store.js";
 import { MERGE_QUEUED, MERGE_REQUESTS_READ, mergeQueued, pendingApproval, pendingMerge } from "../core/commands.js";
 import { blockingRunKind } from "../core/policy.js";
 import { PERSON_PHASES, phaseOf } from "../core/phase.js";
-import type { ClaimDecision, Run, StateChange, WorkItem, WorkItemId } from "../core/types.js";
+import { type SettingsBase, resolveSettings } from "../core/settings.js";
+import type { ClaimDecision, Run, RunKind, StateChange, WorkItem, WorkItemId } from "../core/types.js";
 import { alarmText, alarmsFor, itemAlarms, openAlarms } from "./alarms.js";
 import { type FilterRow, type Filters, runKindOf, searchKeys } from "./filters.js";
 import { type Level, type Pending, type PriorityInput, levelOf, rank } from "./priority.js";
@@ -269,12 +270,27 @@ export async function activeRuns(store: FactoryStore): Promise<{ active: Map<Wor
 /** The claim pauses in effect, as the claim reads them (four store reads). */
 export async function readClaimPauses(store: FactoryStore): Promise<ClaimPauses> {
   return {
+    worker_kinds: await workerKindsNow(store),
     rate_limit: await store.getClaimPause("rate_limit"),
     model_stall: await store.getClaimPause("model_stall"),
     forge_auth: await store.getClaimPause("forge_auth"),
     preflight_access: await store.getClaimPause("preflight_access"),
   };
 }
+
+/**
+ * The run kinds workers claim now: the `worker_kinds` override, else the default (the config file does not set it).
+ * A failed read says nothing (every kind), so the reason never claims a wait it could not check.
+ */
+async function workerKindsNow(store: FactoryStore): Promise<readonly RunKind[] | null> {
+  try {
+    return resolveSettings(NO_FILE, await store.listSettingOverrides()).values.worker_kinds;
+  } catch {
+    return null;
+  }
+}
+
+const NO_FILE: SettingsBase = { file: {}, layers: { defaults: {}, projects: {} } };
 
 /** The item's latest claim decision, read only while its active run is an implement run (only those get one). */
 export async function latestDecision(store: FactoryStore, id: WorkItemId, run: Run | null): Promise<ClaimDecision | null> {

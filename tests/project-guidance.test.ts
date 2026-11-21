@@ -84,6 +84,9 @@ describe("project guidance: rules and learnings of every layer", () => {
     const dir = layer({ "rules/a.md": "x" });
     mkdirSync(join(dir, "learnings.md")); // a folder where the file should be: EISDIR
     await expect(new PackGuidance([{ layer: "base", dir }]).collect()).rejects.toThrow();
+  });
+
+  it.skipIf(process.getuid?.() === 0)("collect(): an unreadable file rejects (skipped as root: root reads any file)", async () => {
     const locked = layer({ "rules/a.md": "x" });
     chmodSync(join(locked, "rules", "a.md"), 0o000);
     await expect(new PackGuidance([{ layer: "base", dir: locked }]).collect()).rejects.toThrow();

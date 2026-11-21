@@ -9,7 +9,8 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { SourceAdapter } from "../src/interfaces/source-adapter.js";
 import { whyWaiting } from "../src/ui/why.js";
 import { whyText } from "../web/src/lib/format.js";
-import { FakeSource, cleanScanner, config, silent } from "./helpers/fakes.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { cleanScanner, config, silent } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore, system, w1 } from "./helpers/store.js";
 
 // Local items honour `Depends on:` lines naming wi_ or tk_ ids (design 05-dependencies): the local source resolves

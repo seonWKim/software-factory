@@ -246,6 +246,30 @@ describe("item page: In short, decisions and the approve confirm (issue #526)", 
     expect(radios[2]!.checked).toBe(true);
   });
 
+  it("a layout decision shows each option's sketch in monospace with the default marked; the others stay plain text", async () => {
+    const SKETCH_A = "+--------+\n| Header |\n+--------+\n| Cards  |\n+--------+";
+    const SKETCH_B = "+--------+\n| Header |\n+--------+\n| List   |\n+--------+";
+    const layout = { question: "Which layout?", options: [SKETCH_A, SKETCH_B], default: SKETCH_B, reason: "A list scans faster.", owner_only: false, layout: true };
+    SPEC.decisions.push(layout);
+    try {
+      serve("spec_pending");
+      mount("/app/items/wi_d");
+      const group = await screen.findByRole("radiogroup", { name: "4. Which layout?" });
+      const sketches = [...group.querySelectorAll("pre")];
+      expect(sketches.map((p) => p.textContent)).toEqual([SKETCH_A, SKETCH_B]);
+      for (const p of sketches) expect(p.className).toContain("font-mono");
+      const radios = within(group).getAllByRole("radio") as HTMLInputElement[];
+      expect(radios.map((r) => r.checked)).toEqual([false, true, false]);
+      expect(radios[1]!.parentElement!.textContent).toBe(`${SKETCH_B}(default)`);
+      expect(group.closest("fieldset")!.hasAttribute("data-layout")).toBe(true);
+      const plain = screen.getByRole("radiogroup", { name: "1. Fail the job, or only warn?" });
+      expect(plain.querySelector("pre")).toBeNull();
+      expect(plain.closest("fieldset")!.hasAttribute("data-layout")).toBe(false);
+    } finally {
+      SPEC.decisions.pop();
+    }
+  });
+
   it("spec waiting for approval: the confirm names the answers and the defaults taken, then sends N: lines and the note", async () => {
     serve("spec_pending");
     mount("/app/items/wi_d");
@@ -483,29 +507,6 @@ describe("item page: refusals and the viewer's grants (issues #528, #453)", () =
     }
     expect(document.querySelector("[data-decide]")!.textContent).not.toContain("`");
     expect(document.querySelector("[data-commands-none]")).toBeNull();
-  });
-
-  it("the verdict row: Good and Bad are one segmented control, Feedback a button, in the same row; Verdict is in the \"…\" menu", async () => {
-    const replies = [{ seq: 4, command: "verdict", created_at: AT, handled_at: AT, refusal: null }];
-    serve({ commands: [cmd("verdict")], replies });
-    mount("/app/items/wi_g");
-    const group = await screen.findByRole("group", { name: "Verdict" });
-    expect([...group.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Good", "Bad"]);
-    expect(group.parentElement!.parentElement!.contains(screen.getByRole("button", { name: "Feedback" }))).toBe(true);
-    expect(screen.queryByRole("button", { name: "Verdict" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "More commands" }));
-    expect(screen.getByRole("menuitem", { name: "Verdict" })).toBeTruthy();
-    expect((await found('[data-outcome-of="verdict"]')).textContent).toBe("Done");
-  });
-
-  it("Merge is the first button of the one row, primary, with the verdict control after it", async () => {
-    serve({ item: base("wi_g", 50, "Grants", { merge: { enabled: true, reason: null } }), commands: [cmd("verdict")] });
-    mount("/app/items/wi_g");
-    const merge = await found('[data-command="merge"]');
-    const row = merge.parentElement!;
-    expect(row.querySelector("button")!.textContent).toBe("Merge");
-    expect(row.querySelector("[data-verdict]")).toBeTruthy();
-    expect(within(merge).getByRole("button", { name: "Merge" }).className.split(" ")).toContain("bg-accent");
   });
 });
 

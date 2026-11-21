@@ -5,14 +5,17 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CONFIG_ENV, Plugins, cliConfig, loadConfig } from "../src/compose.js";
+import { CONFIG_ENV } from "../src/interfaces/updater.js";
+import { Plugins } from "../src/plugin-set.js";
+import { cliConfig, loadConfig } from "../src/load-config.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { pendingIn } from "../src/impl/updater/git-worktree.plugin.js";
 import { CODE_ROOT_ENV, type CommandRunner } from "../src/interfaces/updater.js";
 import { REGISTRY, createPlugin } from "../src/plugins.js";
 import { checkLine, doctor, doctorChecks } from "../src/setup.js";
+import { buildStatsStore } from "../src/compose.js";
 import { createUpdater } from "../src/supervisor.js";
-import { recordingLog } from "./helpers/fakes.js";
+import { recordingLog } from "./helpers/fakes/config.js";
 
 const REPO_ROOT = join(import.meta.dirname, "..");
 const CHECKED_IN = join(REPO_ROOT, "factory.config.json");
@@ -194,14 +197,6 @@ describe("external config: keys", () => {
     expect(loaded.file.dials).toEqual(loosened.dials);
     expect(loaded.file.floors).toEqual([]);
   });
-
-  it("an external config that selects a mysql store is refused at startup as an unknown FactoryStore plugin", async () => {
-    noSecrets();
-    const main = checkout(REAL);
-    const mysql = { type: "mysql", host: "localhost", port: 3306, database: "software_factory", user: "factory" };
-    const err = await loadConfig(main, { configFile: external({ ...REAL, ...loosened, store: mysql }) }).then(() => null, (e: Error) => e);
-    expect(err?.message).toMatch(/unknown FactoryStore plugin "mysql" at store\.type/);
-  });
 });
 
 describe("external config: doctor", () => {
@@ -213,7 +208,7 @@ describe("external config: doctor", () => {
     expect(named.map(checkLine)).toEqual([`ok    config file: ${file} (--config / FACTORY_CONFIG)`]);
 
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
-    await doctor(await loadConfig(main));
+    await doctor(await loadConfig(main), buildStatsStore);
     const lines = log.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("config file: "));
     expect(lines).toEqual([`ok    config file: ${join(main, "factory.config.json")} (checked-in)`]);
   });

@@ -7,7 +7,9 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
-import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes/config.js";
 import { newStore, PROJECT_KEY } from "./helpers/store.js";
 
 // The thin classifier in front of the interpreter (design 04-gate-commands, 2026-11-13): one cheap call labels a plain

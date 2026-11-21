@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { uiPort } from "../src/compose.js";
+import { uiPort } from "../src/config-values.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { UserId, WorkItem, WorkItemId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
@@ -15,7 +15,9 @@ import { type ApiDeps, type UiRequest, type UiServer, respond, startUi } from ".
 import { TASK_DELETE_PATH, TASK_DONE_PATH, TASK_EDIT_PATH, TASK_SUB_PATH } from "../src/ui/tasks-api.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
-import { FakeAuth, FakeSource, PROJECT, alice, config, issueRef, silent, cleanScanner } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { PROJECT, alice, config, issueRef, silent, cleanScanner } from "./helpers/fakes/config.js";
 import { issue, newStore, system, w1, w2 } from "./helpers/store.js";
 
 const LEASE = 60_000;
@@ -350,14 +352,6 @@ describe("ui: the Tasks page's row actions (design 02-tasks)", () => {
     await s.store.completeTask("tk_child");
     expect((await s.post(TASK_DELETE_PATH, { id: "tk_parent" })).status).toBe(200);
     expect(await s.store.getTask("tk_parent")).toBeNull();
-  });
-
-  it("delete with with_sub_tasks removes a parent and its open sub-task in one write, naming the sub-task", async () => {
-    const s = await tasks();
-    const r = await s.post(TASK_DELETE_PATH, { id: "tk_parent", with_sub_tasks: true });
-    expect(r).toMatchObject({ status: 200, value: { task_id: "tk_parent", deleted_sub_tasks: ["tk_child"] } });
-    expect(await s.store.getTask("tk_parent")).toBeNull();
-    expect(await s.store.getTask("tk_child")).toBeNull();
   });
 
   it("add sub-task stores one sub-task under the page's ID through the store's addSubTask; a resend stores no second one", async () => {

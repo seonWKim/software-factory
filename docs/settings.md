@@ -10,7 +10,7 @@ Direction: `tighten-only` keys may only be tightened by a lower level (owner →
 | `alarm_restart_count` | controller | runtime | global | free |  | `5` | Child restarts within 30 minutes that raise an alert. |
 | `alarm_window_minutes` | controller | runtime | global | free |  | `60` | Minutes over which the alarm counts matching failed runs and zero-token runs. |
 | `auth_pause_ms` | worker | runtime | global | free |  | `1800000` | How long a forge 401 or 403 pauses implement-type claims; with no value, it follows retry_max_ms. |
-| `auto_grant_test_paths` | controller | runtime | project | tighten-only |  | `true` | Whether an implement run that asks only for test paths gets them once, without the owner. |
+| `auto_grant_test_paths` | controller | runtime | project | tighten-only |  | `true` | Whether an implement run asking for test paths, or up to 3 other unprotected files, gets them once. |
 | `auto_merge_max_tier` | controller | runtime | global | tighten-only | dial (approve_merge) | `0` | In auto mode, the highest tier (0 to 3) a reviewed local change merges at by itself; 0 is none. |
 | `broker` | guards | review | global | tighten-only | guard |  | Which tool broker runs the forge actions agents ask for, such as a push. |
 | `calendar` | runtime | runtime | global | free |  | `[]` | Calendar plugins the factory reads, in order, over the calendar key in factory.config.json. |
@@ -64,4 +64,5 @@ Direction: `tighten-only` keys may only be tightened by a lower level (owner →
 | `tick_ms` | runtime | runtime | global | free |  | `2000` | How often the controller and the worker pool run their loop. |
 | `tool_grants` | runtime | runtime | global | tighten-only |  | `{}` | Which read-only tools each role (run kind) may call; a role with no entry gets none. |
 | `toolchain` | worker | review | global | free |  |  | Cache folders agents may read but not write, their extra env, and the command that warms them. |
+| `worker_kinds` | worker | runtime | global | free |  | `["triage","review","merge-check","update","restart","improve","implement","resolve"]` | Run kinds the workers claim; a queued run of another kind waits for an interactive session. |
 | `workers` | worker | runtime | global | free |  | `1` | Worker loops in each process that claim and run steps. |

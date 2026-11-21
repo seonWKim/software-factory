@@ -73,9 +73,9 @@ function expectShared(links: HTMLAnchorElement[]) {
 }
 
 describe("shared link style", () => {
+  // The Tasks page has no accent content link left: an open task's title opens its description dialog, a built task
+  // shows no raw item ID, and the Needs you titles are quiet (filtered out above) (owner feedback 2026-11-20).
   it("is applied to every link on Work items, an item page and Data", async () => {
-    // The Tasks page has no other content link since its rows dropped the raw ID (2026-11-20): a row's title link is
-    // the quiet row style, which contentLinks leaves out, so the page is not in this loop.
     for (const [path, ready] of [["items", "Title 1"], ["items/wi_1", "Title 1"], ["data", "work_items"]] as const) {
       const { container } = await mountAt(path, ready);
       if (path === "data") { fireEvent.click((await screen.findAllByText("work_items"))[0]!); await screen.findAllByText("wi_1"); }

@@ -18,7 +18,8 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { commandsPost } from "../src/ui/commands.js";
 import type { UiDeps } from "../src/ui/deps.js";
 import { RunPassports } from "../src/worker/passports/run-passports.js";
-import { FakeSource, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { cleanScanner, config, issueRef, silent } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
 // The one owner check (design 08-permissions, One owner; phase A of issue #575): every person's command, whatever its

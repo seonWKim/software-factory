@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
 import type { Floor } from "../src/core/settings.js";
 import { failingTestFiles, withTestFiles } from "../src/core/checks.js";
+import { MODE_KEY, SELECTION_ACTOR, cleanCursor } from "../src/core/test-selection.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { WorkItem, WorkerId } from "../src/core/types.js";
 import { Worker } from "../src/worker/index.js";
@@ -14,9 +15,13 @@ import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import { STORE_BRANCH, type ToolBroker, type ToolCallContext, type ToolDescriptor, type ToolResult } from "../src/interfaces/tool-broker.js";
-import { FakeForge, FAKE_GITHUB_TOOLS, FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, recordingLog, runComments } from "./helpers/fakes.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FAKE_GITHUB_TOOLS } from "./helpers/fakes/broker.js";
+import { FakeAuth, FakeRunner, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, recordingLog, runComments } from "./helpers/fakes/config.js";
 import { git, gitTemplate } from "./helpers/git-fixture.js";
-import { newStore } from "./helpers/store.js";
+import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
 // The pre-push checks (design §4, decided 2026-11-03): an implement run runs repo.check_commands after sync and
 // the scope, size and floor gates, before any handoff row or push. A failure gets one fix step in the same run.
@@ -129,6 +134,8 @@ async function setup(opts: {
   /** Files committed to the base branch before the item starts. */
   base?: Record<string, string>;
   floors?: Floor[];
+  /** Merged into the repo config: test_command and test_selection. */
+  repo?: Partial<FactoryConfig["repo"]>;
 } = {}) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
@@ -140,7 +147,7 @@ async function setup(opts: {
 
   const cfg: FactoryConfig = {
     ...config,
-    repo: { ...config.repo, path: repo, check_commands: opts.checks ?? CHECKS },
+    repo: { ...config.repo, path: repo, check_commands: opts.checks ?? CHECKS, ...opts.repo },
     settings: { ...config.settings, defaults: { ...config.settings.defaults, max_attempts: opts.max_attempts ?? 3, ...(opts.floors ? { floors: opts.floors } : {}) } },
   };
   let implementCount = 0;
@@ -554,5 +561,99 @@ describe("implement run: the factory lowers shrunk ratchet counts before push", 
     expect(item).toMatchObject({ stage: "REVIEW", change_ref: "42" });
     const branch = `refs/heads/factory/${item.id}`;
     expect(git(f.origin, "log", "--format=%s", `main..${branch}`)).toBe("implementer edits a (1)");
+  });
+});
+
+// Test selection (design §4, decided 2026-11-21): with repo.test_selection, only the check equal to
+// repo.test_command runs on the test files the round's own diff reaches, plus the always-run list, in enforce mode.
+// In shadow mode (no stored mode) it runs whole, and the run records the selection and any miss.
+describe("implement run: test selection before push", { timeout: 60_000 }, () => {
+  const TESTS = ["sh", "-c", "exit 0", "tests"];
+  const base = {
+    "src/b.ts": "export const b = 1;\n",
+    "src/c.ts": "export const c = 1;\n",
+    "tests/b.test.ts": 'import { b } from "../src/b.js";\n',
+    "tests/c.test.ts": 'import { c } from "../src/c.js";\n',
+    "tests/always.test.ts": "\n",
+  };
+  const selection = { hubs: [], always: ["tests/always.test.ts"] };
+
+  it("in enforce mode each round narrows only the test command to the files its own diff reaches, and logs the selection first", async () => {
+    const f = await setup({
+      base, checks: [TYPECHECK, TESTS], repo: { test_command: TESTS, test_selection: selection },
+      implement: (wd) => {
+        commitFile(wd, "src/b.ts", "export const b = 2;\n", "change b");
+        commitFile(wd, "src/type-error.txt", "broken\n", "add a fault");
+      },
+      fix: (wd) => {
+        removeFile(wd, "src/type-error.txt", "fix: remove the fault");
+        commitFile(wd, "src/c.ts", "export const c = 2;\n", "change c");
+      },
+    });
+    await f.store.setLearnedSetting({
+      project: PROJECT_KEY, key: MODE_KEY, expected: null, value: '"enforce"', evidence_run_ids: [], window_end: f.clock.now().toISOString() as never, actor: SELECTION_ACTOR,
+    });
+    const item = await f.approveAndImplement();
+    expect(item.stage).toBe("REVIEW");
+    const ran = f.checkExecs().map((e) => e.cmd);
+    // Round one stops at the typecheck, which runs whole; round two's diff (src/a.txt, src/b.ts, src/c.ts) also reaches tests/c.test.ts.
+    expect(ran).toEqual([TYPECHECK.join(" "), TYPECHECK.join(" "), "sh -c exit 0 tests tests/b.test.ts tests/c.test.ts tests/always.test.ts"]);
+    const run = (await f.implementRuns(item.id))[0]!;
+    const logged = f.log.lines.filter((l) => l.msg.startsWith("test selection (enforce): "));
+    expect(logged.map((l) => l.msg)).toEqual([
+      "test selection (enforce): 2 files, 1 reaching the 3 changed source and test files, plus 1 always-run: tests/b.test.ts tests/always.test.ts",
+      "test selection (enforce): 3 files, 2 reaching the 3 changed source and test files, plus 1 always-run: tests/b.test.ts tests/c.test.ts tests/always.test.ts",
+    ]);
+    expect(logged.every((l) => l.fields?.run_id === run.id)).toBe(true);
+    expect(run.outcome).toMatchObject({ status: "succeeded", data: { test_selection: { mode: "enforce", full: false, files: ["tests/b.test.ts", "tests/c.test.ts", "tests/always.test.ts"] } } });
+    // Enforce mode runs no whole command before push, so the run is not counted.
+    expect(await f.store.getCursor(cleanCursor(item.project))).toBeNull();
+  });
+
+  it("with no stored mode (shadow) the test command runs whole; the run records its selection and counts one clean run", async () => {
+    const f = await setup({ base, checks: [TESTS], repo: { test_command: TESTS, test_selection: selection } });
+    const item = await f.approveAndImplement();
+    expect(item.stage).toBe("REVIEW");
+    expect(f.checkExecs().map((e) => e.cmd)).toEqual(["sh -c exit 0 tests"]);
+    const run = (await f.implementRuns(item.id))[0]!;
+    expect(f.log.lines.filter((l) => l.msg.startsWith("test selection")).map((l) => l.msg)).toEqual([
+      "test selection (shadow): 1 files, 0 reaching the 1 changed source and test files, plus 1 always-run: tests/always.test.ts",
+    ]);
+    expect(run.outcome).toMatchObject({
+      status: "succeeded", data: { test_selection: { mode: "shadow", full: false, files: ["tests/always.test.ts"], reason: expect.stringContaining("1 files") } },
+    });
+    expect(await f.store.getCursor(cleanCursor(item.project))).toBe("1");
+  });
+
+  it("in shadow mode a failing test file outside the selection is a miss: recorded with the changed files, and the count resets", async () => {
+    // Fails while src/fault.txt is there, naming tests/c.test.ts, which the change to src/b.ts does not reach.
+    const failing = failsWhile("tests", "src/fault.txt", " FAIL  tests/c.test.ts > c > breaks");
+    const f = await setup({
+      base, checks: [failing], repo: { test_command: failing, test_selection: selection },
+      implement: (wd) => {
+        commitFile(wd, "src/b.ts", "export const b = 2;\n", "change b");
+        commitFile(wd, "src/fault.txt", "broken\n", "add a fault");
+      },
+      fix: fixBy("src/fault.txt"),
+    });
+    await f.store.advanceCursor(cleanCursor(PROJECT_KEY), null, "7");
+    const item = await f.approveAndImplement();
+    expect(item.stage).toBe("REVIEW");
+    // Both rounds ran the whole command.
+    expect(f.checkExecs().map((e) => e.cmd)).toEqual([failing.join(" "), failing.join(" ")]);
+    const run = (await f.implementRuns(item.id))[0]!;
+    expect(run.outcome).toMatchObject({
+      status: "succeeded",
+      data: { test_selection: { mode: "shadow", misses: ["tests/c.test.ts"], changed: ["src/a.txt", "src/b.ts"] } },
+    });
+    expect(await f.store.getCursor(cleanCursor(item.project))).toBe("0");
+    expect(f.log.lines.some((l) => l.msg.startsWith("test selection miss: tests/c.test.ts"))).toBe(true);
+  });
+
+  it("without repo.test_selection the test command runs whole, and nothing is logged", async () => {
+    const f = await setup({ base, checks: [TYPECHECK, TESTS], repo: { test_command: TESTS } });
+    await f.approveAndImplement();
+    expect(f.checkExecs().map((e) => e.cmd)).toEqual([TYPECHECK.join(" "), "sh -c exit 0 tests"]);
+    expect(f.log.lines.some((l) => l.msg.startsWith("test selection"))).toBe(false);
   });
 });

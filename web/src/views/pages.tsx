@@ -1,9 +1,8 @@
 import { ListTodo } from "lucide-react";
-import { useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import {
   API, type FactoryState, type GitHubBudget, type Health, type HostSleepRow, type ItemDetail, type ItemRow, type Items, type Overview, type PauseRow, type PhaseRow, type PausesView, type QueueRow, type RunRow,
-  type UnreviewedMerges, type WorkerProcess, type WorkersView, postResume, useApi,
+  type RulesView, type UnreviewedMerges, type WorkerProcess, type WorkersView, useApi,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
@@ -16,6 +15,7 @@ import { ID_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import { FailuresSection } from "./failures.js";
 import { SpendSection } from "./spend.js";
 import { EfficiencyTab } from "./efficiency.js";
+import { Improve } from "./rules-improve.js";
 import { Markdown } from "../components/ui/markdown.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { Tabs } from "../components/ui/tabs.js";
@@ -23,15 +23,16 @@ import { cn } from "../lib/cn.js";
 import { useUrlParam } from "../lib/url-param.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { LEVEL_LABELS, duration, errorLabel, groupedInteger, isHttpUrl, localClock, localDateTime, relativeTime, runStatusLabel, termLabel, shortRev, shortSource, tokens } from "../lib/format.js";
+import { LEVEL_LABELS, duration, errorLabel, groupedInteger, isHttpUrl, localClock, localDateTime, relativeTime, runStatusLabel, termLabel, shortItemId, shortRev, tokens } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
 import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, When, byId, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
 import { ItemDecision } from "./decision-card.js";
-import { type SupervisorActionName, SupervisorActions } from "./system-banner.js";
+import { ResumeNow, type SupervisorActionName, SupervisorActions } from "./system-banner.js";
 import { Thread } from "./thread.js";
 import { transcriptPath } from "./transcript.js";
-import { HELD, ItemsTree, type TreeFilter, type View, VIEW_KEY, buildTree, defaultExpanded, itemMatches, parentIds, useExpanded } from "./tree.js";
+import { ItemsTree, type View, VIEW_KEY, useExpanded } from "./tree.js";
+import { HELD, type TreeFilter, buildTree, defaultExpanded, itemMatches, parentIds } from "./tree-model.js";
 import { Disclosure } from "../components/ui/disclosure.js";
 import { Card } from "../components/ui/card.js";
 import { Badge } from "../components/ui/badge.js";
@@ -43,39 +44,21 @@ const sleptMinutes = (gap_ms: number): number => Math.max(1, Math.round(gap_ms /
 /** "host slept N min" for a host sleep's gap, on the item timeline. */
 export const sleptText = (gap_ms: number): string => t("host.slept", { min: sleptMinutes(gap_ms) });
 
-/** One active claim pause for the banner: what it stops, when it began (model stall) and when it ends or is checked next. */
-function pauseLine(p: PauseRow, now: number): string {
-  const what = pauseLabel(p.name);
-  if (p.name !== "model_stall") return t("pause.line", { what, end: p.ends_at });
-  const due = Date.parse(p.ends_at) <= now;
-  const vars = { what, end: p.ends_at, since: p.since ?? "" };
-  if (p.since) return t(due ? "pause.stallSinceDue" : "pause.stallSinceAt", vars);
-  return t(due ? "pause.stallDue" : "pause.stallAt", vars);
-}
-
 /** What the factory process is doing, in words: `text` is the status page's sentence. */
 interface FactoryView {
   tone: "ok" | "warn" | "bad";
   text: string;
-  /** The raw names of the pauses the text says in words: shown behind Details. */
-  raw?: readonly string[];
-  /** Paused, stopped or failing: the states that get a page Notice. */
+  /** Stopped or failing: the states that get a page Notice. */
   notice: boolean;
 }
 
-/** A factory sentence, with the raw names of its pauses behind Details. */
-function FactoryText({ view }: { view: FactoryView }) {
-  return <>{view.text}{view.raw && view.raw.length > 0 && <RawDetails className="mt-1"><code className="font-mono">{view.raw.join(", ")}</code></RawDetails>}</>;
-}
-
-function factoryView(factory: FactoryState | null, now: number, pauses: readonly PauseRow[]): FactoryView {
+function factoryView(factory: FactoryState | null, now: number): FactoryView {
   if (factory === null || factory.state === "stopped") return { tone: "bad", text: t("factory.stopped"), notice: true };
   const rev = shortRev(factory.rev);
   const target = shortRev(factory.target_rev);
   const updating = (text: string): FactoryView => ({ tone: "warn", text, notice: false });
   switch (factory.state) {
     case "running":
-      if (pauses.length > 0) return { tone: "warn", text: pauses.map((p) => pauseLine(p, now)).join(" "), raw: pauses.map((p) => p.name), notice: true };
       return { tone: "ok", text: t("factory.running", { rev, time: relativeTime(factory.since, now) }), notice: false };
     case "building":
       return updating(t("factory.building", { target, rev }));
@@ -99,14 +82,14 @@ function factoryView(factory: FactoryState | null, now: number, pauses: readonly
 }
 
 /** The Runners page's supervisor banner: what the factory process is doing (the status page's words). */
-export function FactoryBanner({ factory, now, pauses = [] }: { factory: FactoryState | null | undefined; now: number; pauses?: readonly PauseRow[] | undefined }) {
+export function FactoryBanner({ factory, now }: { factory: FactoryState | null | undefined; now: number }) {
   if (factory === undefined) return null;
-  const v = factoryView(factory, now, pauses);
+  const v = factoryView(factory, now);
   // Migrate now while an update waits for its migration; otherwise Start or Restart now (design 08-self-update).
   const actions: SupervisorActionName[] = factory?.state === "migration_pending" ? ["migrate"] : ["start", "restart"];
   return (
     <div data-testid="factory-banner" className="space-y-2">
-      <Notice tone={v.tone}><FactoryText view={v} /></Notice>
+      <Notice tone={v.tone}>{v.text}</Notice>
       <SupervisorActions actions={actions} />
     </div>
   );
@@ -140,25 +123,8 @@ const pauseLabel = (name: string): string => {
   return key ? t(key) : name;
 };
 
-/** One pause with its "Resume now" button; the endpoint's refusal shows next to the button. */
+/** One pause with its "Resume now" button (ResumeNow, shared with the Tasks pause row); a refusal shows next to the button. */
 function PauseItem({ pause, token, now }: { pause: PauseRow; token: string | null; now: number }) {
-  const client = useQueryClient();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const resume = async () => {
-    if (token === null) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const r = await postResume(token, pause.name);
-      if (!r.ok) setError(r.error);
-      else await client.invalidateQueries({ queryKey: [API.pauses] });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
   return (
     <li data-pause={pause.name} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
       <span className="min-w-0 text-pretty text-text-1">{pauseLabel(pause.name)}</span>
@@ -166,12 +132,7 @@ function PauseItem({ pause, token, now }: { pause: PauseRow; token: string | nul
         {t(pause.name === "model_stall" ? "pause.nextProbe" : "pause.ends", { time: pause.ends_at })}
         {Date.parse(pause.ends_at) > now ? ` (${relativeTime(pause.ends_at, now)})` : ""}
       </span>
-      {token !== null && (
-        <Button variant="secondary" disabled={busy} onClick={() => void resume()}>
-          {t("pause.resume")}
-        </Button>
-      )}
-      {error && <span role="alert" className="text-xs text-pretty break-words text-pill-bad-fg">{error}</span>}
+      <ResumeNow name={pause.name} token={token} />
     </li>
   );
 }
@@ -185,34 +146,16 @@ function PauseList({ view, now }: { view: PausesView; now: number }) {
   );
 }
 
-/** Every claim pause in effect, each with "Resume now". Hidden while there is none. */
-export function ClaimPauses({ now }: { now: number }) {
-  const q = useApi<PausesView>(API.pauses);
-  if (q.isError) return <ErrorNote error={q.error} />;
-  if (!q.data || q.data.pauses.length === 0) return null;
-  return (
-    <Card title={t("pause.title")} count={q.data.pauses.length}>
-      <PauseList view={q.data} now={now} />
-    </Card>
-  );
-}
-
 /**
- * The factory's notes on the Tasks page under All projects: a Notice only when the factory is paused, stopped or
- * failing, and the claim pauses. The system actions are Needs-you rows (the Check group), not notes here.
+ * The factory's note on the Tasks page under All projects: a Notice only when the factory is stopped or failing. A
+ * claim pause is its own Needs-you row in the Check group (design 09-dashboard-tasks), so this note never names one.
  */
 export function FloorStatus() {
   const now = useNow();
   const overview = useApi<Overview>(API.overview);
-  const pauses = useApi<PausesView>(API.pauses);
   const o = overview.data;
-  const view = o?.factory === undefined ? null : factoryView(o.factory, now, pauses.data?.pauses ?? []);
-  return (
-    <>
-      {view?.notice && <Notice tone={view.tone === "bad" ? "bad" : "warn"}><FactoryText view={view} /></Notice>}
-      <ClaimPauses now={now} />
-    </>
-  );
+  const view = o?.factory === undefined ? null : factoryView(o.factory, now);
+  return view?.notice ? <Notice tone={view.tone === "bad" ? "bad" : "warn"}>{view.text}</Notice> : null;
 }
 
 /** Work's Activity section, below its list: what runs now, the unreviewed-merges line, then the numbers of the last 24 hours. */
@@ -411,14 +354,14 @@ export function ItemPage({ id }: { id: string }) {
   ];
   entries.reverse().sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
   const transcripts = q.data.transcripts ?? {};
-  const short = shortSource(item.source.id);
+  const short = shortItemId(item.id);
   const level = item.item_phase;
   return (
     <>
       <nav aria-label={t("item.breadcrumb")} className="mb-1 text-sm">
         <Link href={`${BASE}items`} className={LINK_CLASS}>{t("page.work")}</Link>
         <span className="text-text-3"> / </span>
-        <Link href={itemPath(item.id)} aria-current="page" title={item.source.id} className={cn("inline-block max-w-[16ch] truncate align-bottom tabular-nums", ID_CLASS)}>{short}</Link>
+        <Link href={itemPath(item.id)} aria-current="page" title={item.id} className={cn("inline-block max-w-[16ch] truncate align-bottom tabular-nums", ID_CLASS)}>{short}</Link>
       </nav>
       <PageHeader title={item.title ?? short} actions={runs.some(isInteractiveRun) ? <InteractiveBadge /> : undefined} />
       {item.parent_id && (
@@ -757,7 +700,9 @@ export function RunnersPage() {
 
 const HEALTH_TONE: Record<string, string> = { ok: "running", warn: "needs_approval", fail: "stuck" };
 
+/** A check's row: its sentence, then its times (a probe pause's start and next probe) relative, the local time on hover. */
 function CheckList({ checks }: { checks: Health["checks"] }) {
+  const now = useNow();
   if (checks.length === 0) return null;
   return (
     <ul className="space-y-1 text-sm">
@@ -766,6 +711,8 @@ function CheckList({ checks }: { checks: Health["checks"] }) {
           <Badge level={HEALTH_TONE[c.status]}>{checkLabel(c.status)}</Badge>
           <span className="min-w-0 text-pretty break-words">
             {c.msg}
+            {c.since !== undefined && <span className="text-text-2">{" · "}<When at={c.since} now={now} label="health.checkSince" /></span>}
+            {c.next !== undefined && <span className="text-text-2">{" · "}<When at={c.next} now={now} label="health.checkNext" /></span>}
             {c.detail !== undefined && <RawDetails className="mt-1"><code className="font-mono text-xs whitespace-pre-wrap break-all">{c.detail}</code></RawDetails>}
           </span>
         </li>
@@ -774,7 +721,9 @@ function CheckList({ checks }: { checks: Health["checks"] }) {
   );
 }
 
-type HealthTab = "checks" | "pauses" | "sleeps" | "merges" | "efficiency" | "github";
+type HealthTab = "checks" | "pauses" | "sleeps" | "merges" | "efficiency" | "improve" | "github";
+
+
 
 /**
  * The GitHub budget tab (design 09-health, 2026-11-20): what the controller stored after its last poll, so no GitHub
@@ -806,6 +755,8 @@ interface SleepGroup {
   woke_at: string;
   gap_ms: number;
   workers: Set<string>;
+  /** The runs the sleep held, once each (by run id), with their item and current status. */
+  runs: Map<string, { work_item_id: string; status: string }>;
   /** The API entries behind the row, for its Details. */
   raw: HostSleepRow[];
 }
@@ -819,9 +770,10 @@ function groupSleeps(sleeps: readonly HostSleepRow[]): SleepGroup[] {
   for (const h of sleeps) {
     const minute = Math.floor(Date.parse(h.woke_at) / 60_000);
     const key = Number.isNaN(minute) ? h.woke_at : String(minute);
-    const g = groups.get(key) ?? { woke_at: h.woke_at, gap_ms: 0, workers: new Set<string>(), raw: [] };
+    const g: SleepGroup = groups.get(key) ?? { woke_at: h.woke_at, gap_ms: 0, workers: new Set<string>(), runs: new Map(), raw: [] };
     g.gap_ms = Math.max(g.gap_ms, h.gap_ms);
     g.workers.add(h.worker_id);
+    if (h.run_id && h.work_item_id && h.run_status) g.runs.set(h.run_id, { work_item_id: h.work_item_id, status: h.run_status });
     g.raw.push(h);
     groups.set(key, g);
   }
@@ -848,9 +800,10 @@ export function HealthPage() {
   const merges = useApi<UnreviewedMerges>(API.unreviewedMerges, 30_000);
   const pauses = useApi<PausesView>(API.pauses);
   const overview = useApi<Overview>(API.overview);
+  const rules = useApi<RulesView>(API.rules);
   const viewer = useViewer();
   const held = (pauses.data?.pauses.length ?? 0) > 0;
-  const [picked, pick] = useUrlParam("tab", (v) => ["checks", "pauses", "sleeps", "merges", "efficiency", "github"].includes(v));
+  const [picked, pick] = useUrlParam("tab", (v) => ["checks", "pauses", "sleeps", "merges", "efficiency", "improve", "github"].includes(v));
   if (health.isError) return <><PageHeader title={t("page.health")} /><ErrorNote error={health.error} /></>;
   if (!health.data) return <><PageHeader title={t("page.health")} /><Loading rows={6} /></>;
   const order = ["fail", "warn", "ok"];
@@ -862,12 +815,15 @@ export function HealthPage() {
   const failing = checks.some((c) => c.status === "fail");
   const mergeList = merges.data?.merges;
   const budget = overview.data?.github_budget ?? null;
+  // The improve report (design 09-dashboard-system, 2026-11-21): from the rules read's `improve`; no tab without one.
+  const improve = rules.data?.improve ?? null;
   const options: { id: HealthTab; label: string }[] = [
     { id: "checks", label: `${t("health.tabChecks")} (${checks.length})${failing ? ` ${t("health.failMark")}` : ""}` },
     ...(held ? [{ id: "pauses" as const, label: `${t("pause.title")} (${pauses.data!.pauses.length})` }] : []),
     { id: "sleeps", label: `${t("health.sleeps")} (${sleeps.length})` },
     { id: "merges", label: `${t("health.merges")}${mergeList ? ` (${mergeList.length})` : ""}` },
     { id: "efficiency", label: t("efficiency.title") },
+    ...(improve ? [{ id: "improve" as const, label: t("health.tabImprove") }] : []),
     // Only while a GitHub budget is stored (GitHub selected and polled).
     ...(budget ? [{ id: "github" as const, label: t("health.githubBudget") }] : []),
   ];
@@ -904,6 +860,19 @@ export function HealthPage() {
                     <span className="font-medium tabular-nums">{sleepText(h)}</span>
                     <span className="tabular-nums text-text-2"><When at={h.woke_at} now={now} /></span>
                   </span>
+                  {h.runs.size > 0 && (
+                    <div className="mt-1 text-xs text-text-2" data-testid="host-sleep-runs">
+                      <span>{t("health.sleepRuns")}</span>
+                      <ul className="ml-4 list-disc">
+                        {[...h.runs].map(([id, r]) => (
+                          <li key={id}>
+                            <Link href={itemPath(r.work_item_id)} className={LINK_CLASS}>{r.work_item_id}</Link>: {runStatusLabel(r.status)}
+                          </li>
+                        ))}
+                      </ul>
+                      <p>{t("health.sleepHint")} <Link href={`${BASE}settings?tab=advanced`} className={LINK_CLASS}>{t("health.sleepHintLink")}</Link></p>
+                    </div>
+                  )}
                   <RawDetails className="mt-1"><code className="font-mono text-xs whitespace-pre-wrap break-all">{h.raw.map((r) => `${r.woke_at} ${r.worker_id} gap_ms=${r.gap_ms}`).join("\n")}</code></RawDetails>
                 </li>
               ))}
@@ -932,6 +901,7 @@ export function HealthPage() {
         </div>
       )}
       {tab === "efficiency" && <EfficiencyTab />}
+      {tab === "improve" && improve && <Improve view={improve} />}
       {tab === "github" && budget && <GitHubBudgetTab budget={budget} tokenDays={overview.data?.github_token_days} />}
       <SpendSection />
       <FailuresSection />

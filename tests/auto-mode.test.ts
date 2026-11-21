@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { localProject } from "../src/compose.js";
+import { localProject } from "../src/load-config.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { type CliAction, runLocalCli } from "../src/core/local-cli.js";
@@ -25,7 +25,8 @@ import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import type { Sandbox } from "../src/interfaces/sandbox.js";
 import { parseModeArgs, runSettings } from "../src/settings-cmd.js";
-import { FakeRunner, MemoryStorage, cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes.js";
+import { FakeRunner, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 // Auto mode (design 03-risk, issue #444): a local factory over a real git repo, as in local-merge-flow.test.ts, with the
@@ -376,11 +377,15 @@ describe("auto mode: stop conditions", { timeout: 60_000 }, () => {
     await stopped(f, "red_main");
     // The stop is in force: its time and cause reach the Mode toggle and the system banner.
     const [alert] = (await f.store.listAlerts({ limit: 10 })).filter((a) => a.pattern === "auto_stopped");
-    expect(await lastAutoStop(f.store)).toEqual({ alert_id: alert!.id, at: alert!.created_at, cause: "red_main" });
+    // The failing command printed nothing: no test names and no tail to keep.
+    expect(await lastAutoStop(f.store)).toEqual({ alert_id: alert!.id, at: alert!.created_at, cause: "red_main", failing_tests: [], output_tail: null });
     const actions = await systemActions({ store: f.store, factory: null, deps: {}, now: f.clock.now(), dashboardRev: null });
     const line = actions.find((a) => a.auto_stop)!;
     expect(line.auto_stop).toMatchObject({ alert_id: alert!.id, cause: "red_main" });
-    expect(line.text).toContain(`Alarm: back to manual at ${utcMinute(alert!.created_at)}: the checks failed on the base branch after a merge`);
+    expect(line.text).toContain("Alarm: back to manual: the checks failed on the base branch after a merge");
+    // The time is a field (`auto_stop.at`), never inside the sentence.
+    expect(line.text).not.toMatch(/\d{4}-\d{2}-\d{2}|UTC/);
+    expect(line.auto_stop!.at).toBe(alert!.created_at);
     // Manual again: the next spec waits.
     const next = await f.create();
     await f.step();
@@ -389,7 +394,7 @@ describe("auto mode: stop conditions", { timeout: 60_000 }, () => {
 
   it("red main from the UI check: after an auto merge it runs on the new base tip; a failure raises one red_main alert on that tip, files its fix item and stops auto mode", async () => {
     // The change touches no UI path, so its merge check runs no UI check; the base tip's check after the merge does.
-    const f = await autoFactory({ ui_check: { command: ["sh", "-c", "echo layout broken; exit 1"], paths: ["web/"] } });
+    const f = await autoFactory({ ui_check: { command: ["sh", "-c", "echo 'FAIL  tests/layout.test.ts > fits'; echo layout broken; exit 1"], paths: ["web/"] } });
     await f.setting("auto_merge_max_tier", 3);
     await f.mode("auto");
     const first = await f.create();
@@ -400,9 +405,33 @@ describe("auto mode: stop conditions", { timeout: 60_000 }, () => {
     const tip = git(f.repo, "rev-parse", "main");
     const red = (await f.store.listAlerts({ limit: 10 })).filter((a) => a.pattern === "red_main");
     expect(red.map((a) => a.pattern_key)).toEqual([`red_main:${tip}`]);
-    expect(red[0]!.detail).toContain("`sh -c echo layout broken; exit 1` exited 1 on the new tip of `main`");
+    // The alert's detail keeps the sentence, the failing tests by name and the output tail (no new column).
+    expect(JSON.parse(red[0]!.detail!)).toEqual({
+      text: "`sh -c echo 'FAIL  tests/layout.test.ts > fits'; echo layout broken; exit 1` exited 1 on the new tip of `main`",
+      failing_tests: ["tests/layout.test.ts > fits"],
+      output_tail: "FAIL  tests/layout.test.ts > fits\nlayout broken\n",
+    });
+    // The overview's red_main alarm and the stop carry them to What failed.
+    const actions = await systemActions({ store: f.store, factory: null, deps: {}, now: f.clock.now(), dashboardRev: null });
+    expect(actions.find((a) => a.pattern === "red_main")).toMatchObject({ failing_tests: ["tests/layout.test.ts > fits"], output_tail: "FAIL  tests/layout.test.ts > fits\nlayout broken\n" });
+    expect((await lastAutoStop(f.store))).toMatchObject({ cause: "red_main", failing_tests: ["tests/layout.test.ts > fits"] });
     const fixes = await f.store.db.all("SELECT intent_key FROM outbound_actions WHERE action = 'file_fix_item'");
     expect(fixes.map((r) => r.intent_key)).toEqual([`file_fix_item:red_main:${tip}`]);
+  });
+
+  it("red main from the UI check with a tail the egress scan flags: the tail is stored as null and the test names are kept", async () => {
+    // The key is put together by the shell, so only the output holds it, not the command in the sentence.
+    const print = "printf 'FAIL  tests/layout.test.ts > fits\\nAKIA%s\\n' ABCDEFGHIJKLMNOP; exit 1";
+    const f = await autoFactory({ ui_check: { command: ["sh", "-c", print], paths: ["web/"] } });
+    await f.setting("auto_merge_max_tier", 3);
+    await f.mode("auto");
+    const first = await f.create();
+    await f.step();
+    await f.approveRun(first);
+    await stopped(f, "red_main");
+    const [red] = (await f.store.listAlerts({ limit: 10 })).filter((a) => a.pattern === "red_main");
+    expect(JSON.parse(red!.detail!)).toMatchObject({ failing_tests: ["tests/layout.test.ts > fits"], output_tail: null });
+    expect(red!.detail).not.toContain("AKIA" + "ABCDEFGHIJKLMNOP");
   });
 
   it("red main at the merge check in auto mode: the change stays queued, one red_main alert is stored and auto mode stops", async () => {

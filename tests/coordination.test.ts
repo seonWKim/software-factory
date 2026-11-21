@@ -16,6 +16,7 @@ import {
   learnedWeight,
   parseDependsOn,
   pathWeight,
+  UNCLAIMED_INDEXES,
 } from "../src/core/coordination.js";
 import { pathsOverlap } from "../src/core/policy.js";
 import { statusOf } from "../src/core/status-label.js";
@@ -154,6 +155,39 @@ describe("mechanical paths (design §5, issue #297)", () => {
     expect(holdReason({ holder_ref: "#9", shared: [learned], cost: 2.5, threshold: 2.5, fallback: false })).toBe(
       "waiting for #9 to merge: both change docs/design.md (mechanical, 2.5, conflicted 3 times), cost 2.5 ≥ 2.5",
     );
+  });
+});
+
+// The design index and the generated i18n barrel are claimed only by a run whose files_to_change names them
+// (design 05-dependencies, 2026-11-20).
+describe("shared index files a run does not name", () => {
+  const holder = (files: string[]): Holder => ({ work_item_id: "wi_b", project: "p", ref: "#2", kind: "running", files, fallback: false });
+  const page = (area: string) => [`web/src/views/${area}.tsx`, `web/src/i18n/en/${area}.ts`];
+
+  it("lists the design index and the catalog barrel", () => {
+    expect(UNCLAIMED_INDEXES).toContain("docs/design.md");
+    expect(UNCLAIMED_INDEXES).toContain("web/src/i18n/en.ts");
+  });
+
+  it("ignores either one when only a folder of the run covers it", () => {
+    const other = ["web/src/i18n/en.ts", "docs/design.md", "lib/b.ts"];
+    expect(coordinationCost(["web/src/i18n/", "docs/", "lib/a.ts"], other, none, S)).toEqual({ shared: [], cost: 0 });
+    expect(coordinationCost(other, ["web/src/i18n/", "docs/", "lib/a.ts"], none, S)).toEqual({ shared: [], cost: 0 });
+  });
+
+  it("a run that names either one still conflicts on it", () => {
+    const heavy = new Map([["web/src/i18n/en.ts", 6], ["docs/design.md", 6]]);
+    const a = [...page("tasks"), "web/src/i18n/en.ts", "docs/design.md"];
+    const b = [...page("rules"), "web/src/i18n/en.ts", "docs/design.md"];
+    const { shared, cost } = coordinationCost(a, b, heavy, S);
+    expect(shared.map((p) => p.path)).toEqual(["docs/design.md", "web/src/i18n/en.ts"]);
+    expect(cost).toBe(8);
+    expect(claimDecision(holdsOn({ work_item_id: "wi_a", project: "p", files: a }, [holder(b)], heavy, S))).toBe("held");
+  });
+
+  it("two items that each change a different page's text run at the same time", () => {
+    const heavy = new Map([["web/src/i18n/en.ts", 6], ["docs/design.md", 6]]);
+    expect(claimDecision(holdsOn({ work_item_id: "wi_a", project: "p", files: page("tasks") }, [holder(page("rules"))], heavy, S))).toBe("free");
   });
 });
 
