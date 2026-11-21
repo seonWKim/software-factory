@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PROJECT_RETRY_MS, build, loadConfig, resolvedConfig, startupProject } from "../src/compose.js";
+import { PROJECT_RETRY_MS, build, startupProject } from "../src/compose.js";
+import { loadConfig, resolvedConfig } from "../src/load-config.js";
 import { githubProjectKey, resolveProject } from "../src/impl/github/forge.plugin.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import {

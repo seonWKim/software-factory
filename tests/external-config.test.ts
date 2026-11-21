@@ -13,6 +13,7 @@ import { pendingIn } from "../src/impl/updater/git-worktree.plugin.js";
 import { CODE_ROOT_ENV, type CommandRunner } from "../src/interfaces/updater.js";
 import { REGISTRY, createPlugin } from "../src/plugins.js";
 import { checkLine, doctor, doctorChecks } from "../src/setup.js";
+import { buildStatsStore } from "../src/compose.js";
 import { createUpdater } from "../src/supervisor.js";
 import { recordingLog } from "./helpers/fakes/config.js";
 
@@ -207,7 +208,7 @@ describe("external config: doctor", () => {
     expect(named.map(checkLine)).toEqual([`ok    config file: ${file} (--config / FACTORY_CONFIG)`]);
 
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
-    await doctor(await loadConfig(main));
+    await doctor(await loadConfig(main), buildStatsStore);
     const lines = log.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("config file: "));
     expect(lines).toEqual([`ok    config file: ${join(main, "factory.config.json")} (checked-in)`]);
   });

@@ -17,6 +17,7 @@ import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { REGISTRY, type Registry, withPlugin } from "../src/plugins.js";
 import { type Check, checkLine, checkStatus, checksExitCode, doctor, doctorChecks } from "../src/setup.js";
+import { buildStatsStore } from "../src/compose.js";
 import { HEALTH_MIN_INTERVAL_MS, HealthMonitor, reportRows } from "../src/ui/health.js";
 import { type UiDeps, type UiResponse, respond } from "../src/ui/server.js";
 import { fakeGitHubAccess } from "./helpers/fakes/github.js";
@@ -188,7 +189,7 @@ describe("health: one implementation behind doctor and the page", () => {
     const { loaded } = await setupDoctor();
     const checks = await doctorChecks(loaded);
     log.mockClear();
-    const code = await doctor(loaded);
+    const code = await doctor(loaded, buildStatsStore);
     expect(log.mock.calls.map((c) => String(c[0]))).toEqual(checks.map(checkLine));
     expect(code).toBe(1); // claude CLI not found
 
