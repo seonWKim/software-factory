@@ -18,9 +18,11 @@ import { buildClaudeArgs, buildHarnessSettings } from "../src/impl/runner/claude
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { Capability, CapabilitySearch } from "../src/interfaces/capability-search.js";
 import { newStore } from "./helpers/store.js";
-import {
-  FakeForge, FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, config, issueRef, prompts, silent, triageSpec, cleanScanner,
-} from "./helpers/fakes.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, config, issueRef, prompts, silent, triageSpec, cleanScanner } from "./helpers/fakes/config.js";
 
 const RESULTS: Capability[] = [
   { id: "docs/plugins.md", kind: "doc", name: "Plugins", summary: "Every interface has named plugins." },

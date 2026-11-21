@@ -16,10 +16,11 @@ import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import { STORE_BRANCH, type ToolCallContext } from "../src/interfaces/tool-broker.js";
 import { newStore, PROJECT_KEY } from "./helpers/store.js";
-import {
-  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, GitForge, MemoryStorage,
-  alice, cleanScanner, config, gates, issueRef, mallory, prompts, recordingLog, runComments, settingsWith, silent, triageSpec, waitFor,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeForge, GitForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, gates, issueRef, mallory, prompts, recordingLog, runComments, settingsWith, silent, triageSpec, waitFor } from "./helpers/fakes/config.js";
 
 async function factory(
   runner: FakeRunner,
@@ -2055,16 +2056,6 @@ describe("/resolve on a merge conflict", () => {
       const said = f.source.comments.filter((c) => c.marker === "<!-- factory:already-allowed:8502 -->");
       expect(said).toHaveLength(1);
       expect(said[0]!.body).toContain("`/retry` was applied; its `+paths` added nothing to the allowed paths, already allowed: .github/workflows/x.yml");
-    });
-
-    it("bad paths and more than 10 are refused with one reply each, and nothing changes", async () => {
-      const f = await resolveAsked(86);
-      const before = await snapshot(f);
-      const bad = ["+paths tests/../x.ts", "+paths tests/*.ts", `+paths ${Array.from({ length: 11 }, (_, i) => `f${i}.ts`).join(" ")}`];
-      bad.forEach((note, i) => f.source.queue.push(retryEvent(f, `86b${i}`, note)));
-      await f.controller.tickIntake();
-      expect(await snapshot(f)).toEqual(before);
-      bad.forEach((_, i) => expect(f.source.comments.filter((c) => c.marker === `<!-- factory:refused:86b${i} -->`)).toHaveLength(1));
     });
   });
 

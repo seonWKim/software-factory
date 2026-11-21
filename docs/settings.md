@@ -64,4 +64,5 @@ Direction: `tighten-only` keys may only be tightened by a lower level (owner →
 | `tick_ms` | runtime | runtime | global | free |  | `2000` | How often the controller and the worker pool run their loop. |
 | `tool_grants` | runtime | runtime | global | tighten-only |  | `{}` | Which read-only tools each role (run kind) may call; a role with no entry gets none. |
 | `toolchain` | worker | review | global | free |  |  | Cache folders agents may read but not write, their extra env, and the command that warms them. |
+| `worker_kinds` | worker | runtime | global | free |  | `["triage","review","merge-check","update","restart","improve","implement","resolve"]` | Run kinds the workers claim; a queued run of another kind waits for an interactive session. |
 | `workers` | worker | runtime | global | free |  | `1` | Worker loops in each process that claim and run steps. |

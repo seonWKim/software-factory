@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { RETRY_DEFAULTS, loadConfig, retryConfig } from "../src/compose.js";
+import { RETRY_DEFAULTS, retryConfig } from "../src/config-values.js";
+import { loadConfig } from "../src/load-config.js";
 
 describe("retry config keys", () => {
   it("defaults: max_restart 3, retry_base_ms 60000, retry_max_ms 1800000", () => {

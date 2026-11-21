@@ -1,10 +1,10 @@
 # KeepAwake
 
-What it does: keeps the host from idle-sleeping while a job runs. The worker holds it right after it claims a run and releases it when the run is done, whether the run succeeded or failed. It is never held while the worker is idle, so the machine can sleep between jobs. Staying awake is best effort: if the hold fails, the worker logs a warning and runs the job anyway.
+What it does: keeps the host from idle-sleeping while a job runs. The worker holds it right after it claims a run and releases it when the run is done, whether the run succeeded or failed. It is never held while the worker is idle, so the machine can sleep between jobs. Interactive tasks hold it as well: `factory session start` holds the same selected plugin once its task starts and releases it when its heartbeat stops (the task ended or Ctrl-C), so a laptop sleep does not lapse the session's lease (design [05-interactive-sessions.md](../design/05-interactive-sessions.md)). Staying awake is best effort: if the hold fails, the worker or session logs a warning and goes on.
 
 Plugins:
 
-- `caffeinate`: `CaffeinateKeepAwake`. While held, runs `caffeinate -i -s -w <worker pid>` (macOS): `-i` prevents idle sleep, `-s` prevents system sleep on AC power, `-w` ends caffeinate when the worker process exits, so a crash cannot leave the machine awake. Release kills it.
+- `caffeinate`: `CaffeinateKeepAwake`. While held, runs `caffeinate -i -s -w <worker pid>` (macOS): `-i` prevents idle sleep, `-s` prevents system sleep on AC power, `-w` ends caffeinate when the worker (or session) process exits, so a crash cannot leave the machine awake. Release kills it.
   - Enable: `"plugins": { "awake": "caffeinate", ... }`, or leave `awake` out on macOS. Secrets: none. Settings: the `caffeinate` executable on `PATH` (it ships with macOS at `/usr/bin/caffeinate`).
   - Startup failure: if `caffeinate` is selected (explicitly or by the macOS default) and there is no `caffeinate` executable on `PATH`, `build()` fails at startup with an error naming `plugins.awake`, `caffeinate` and the `none` alternative.
 - `none`: `NoKeepAwake`. Does nothing; the host's own power settings decide.

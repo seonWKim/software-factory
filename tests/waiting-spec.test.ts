@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Run, WorkItem } from "../src/core/types.js";
 import { waitingSpec } from "../src/ui/commands.js";
-import { triageSpec } from "./helpers/fakes.js";
+import { triageSpec } from "./helpers/fakes/config.js";
 
 // The item API's waiting spec (design 09-dashboard-item-commands, 2026-11-21): each decision carries its options'
 // extra paths and done-when changes, and which of those paths the item's allowed_paths do not cover yet.

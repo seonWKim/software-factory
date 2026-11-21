@@ -5,7 +5,8 @@ import { rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { RunId, WorkItemId } from "./core/types.js";
 import { toolsNamed } from "./worker/index.js";
-import { type Loaded, Plugins } from "./compose.js";
+import { type Loaded } from "./load-config.js";
+import { Plugins } from "./plugin-set.js";
 
 const CANARY_SCHEMA = {
   type: "object",

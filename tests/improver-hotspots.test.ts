@@ -23,7 +23,9 @@ import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { issue, newStore, system } from "./helpers/store.js";
-import { FakeAuth, FakeBroker, FakeSandbox, MemoryStorage, PROJECT, config, prompts, silent } from "./helpers/fakes.js";
+import { FakeAuth, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { PROJECT, config, prompts, silent } from "./helpers/fakes/config.js";
 
 const noRunner = { run: () => { throw new Error("the improve run called the agent runner"); } } as unknown as AgentRunner;
 

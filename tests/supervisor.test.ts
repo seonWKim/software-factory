@@ -9,7 +9,7 @@ import { NoneUpdater } from "../src/impl/updater/none.js";
 import type { ExecResult } from "../src/interfaces/sandbox.js";
 import { type ChildHandle, type ChildLauncher, type ChildSpec, type CommandRunner, WORKER_INDEX_BASE_ENV } from "../src/interfaces/updater.js";
 import { supervise } from "../src/supervisor.js";
-import { recordingLog, waitFor } from "./helpers/fakes.js";
+import { recordingLog, waitFor } from "./helpers/fakes/config.js";
 
 // The supervisor end to end, with fake git/npm (a linear history; every change touches src/) and a fake
 // launcher whose children answer a drain the way the test says.

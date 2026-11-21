@@ -5,9 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ImproveView, RuleEntryView, RulesView } from "../web/src/api.js";
-import { localDateTime } from "../web/src/lib/format.js";
-import { PAGES, routeFor } from "../web/src/pages.js";
+import type { RuleEntryView, RulesView } from "../web/src/api.js";
 
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
 // loaded by a specifier the node check skips (as tests/ui-users-page.test.tsx does).
@@ -48,6 +46,8 @@ const view = (over: Partial<RulesView> = {}): RulesView => ({
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 let current: RulesView;
+/** GET /api/v1/standing's answer. */
+let standing: unknown;
 let posts: { url: string; init: RequestInit }[];
 let answer: { status: number; body: unknown };
 let gets: string[];
@@ -56,6 +56,7 @@ let detail: RuleEntryView | number | ((id: string) => RuleEntryView);
 
 beforeEach(() => {
   current = view();
+  standing = { as_of: AT, csrf_token: TOKEN, rules: [], proposals: [] };
   posts = [];
   gets = [];
   detail = { id: "C-012", error: null, detail: null };
@@ -69,7 +70,7 @@ beforeEach(() => {
     }
     gets.push(url);
     if (url === "/api/v1/rules") return json(200, current);
-    if (url === "/api/v1/standing") return json(200, { as_of: AT, csrf_token: TOKEN, rules: [], proposals: [] });
+    if (url === "/api/v1/standing") return json(200, standing);
     if (url.startsWith("/api/v1/rules/entry?")) {
       if (typeof detail === "number") return json(detail, { error: "boom" });
       return json(200, typeof detail === "function" ? detail(new URL(url, "http://x").searchParams.get("id")!) : detail);
@@ -84,8 +85,15 @@ afterEach(() => {
 });
 
 async function show() {
+  // Each test starts on the Waiting tab: the tab a test picked stays in the URL otherwise.
+  history.replaceState(null, "", "/app/rules");
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(createElement(QueryClientProvider, { client }, createElement(RulesPage)));
+}
+
+/** Selects one of the page's tabs ("Waiting", "Applied", "Retired") once the rules are loaded. */
+async function openTab(name: string) {
+  fireEvent.click(await screen.findByRole("tab", { name }, SLOW));
 }
 
 const card = (id: string) => document.querySelector<HTMLElement>(`[data-rule="${id}"]`)!;
@@ -100,11 +108,6 @@ const choose = (el: HTMLElement, label: string) => {
 const sent = () => posts.map((p) => JSON.parse(String(p.init.body)));
 
 describe("Rules page", () => {
-  it("is a sidebar page at /app/rules", () => {
-    expect(routeFor("/app/rules").page.label).toBe("Rules");
-    expect(PAGES.map((p) => p.path)).toContain("rules");
-  });
-
   it("groups candidates and proposals, each under its line; each card shows its title (ID in its tooltip), state and what it would change", async () => {
     await show();
     const classes = await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
@@ -127,12 +130,12 @@ describe("Rules page", () => {
     // The card does not repeat its title in a "Rule: …" line; a proposal still says its kind and target.
     expect(card("C-012").querySelector("[data-rule-what]")).toBeNull();
     expect(card("C-012").textContent).not.toContain("Rule:");
-    // Title first, then the state badge.
-    const order = [...card("C-012").firstElementChild!.children].map((c) => c.textContent);
-    expect(order).toEqual(["Keep existing CLI flags.", "Pending"]);
+    // Each entry is a ListRow: the title line first, then the details line with the state badge.
+    expect(card("C-012").matches("[data-list-row]")).toBe(true);
+    expect(card("C-012").querySelector("[data-details]")!.textContent).toBe("Pending");
     expect(card("P-0007").textContent).toContain("Held");
     expect(card("P-0007").querySelector("[data-rule-title]")!.textContent).toBe("Split the review prompt");
-    expect(card("P-0007").querySelector("[data-rule-what]")!.textContent).toBe("edit-asset: review.md");
+    expect(card("P-0007").querySelector("[data-rule-what]")!.textContent).toBe("Edit a file: review.md");
     // No detail is read on page load.
     expect(gets.filter((u) => u.includes("/rules/entry"))).toEqual([]);
     expect(document.querySelector("[data-rule-detail]")).toBeNull();
@@ -172,7 +175,7 @@ describe("Rules page", () => {
     fireEvent.click(whyToggle("P-0007"));
     await waitFor(() => expect(card("P-0007").querySelector("[data-detail-part]")).not.toBeNull(), SLOW);
     const part = (name: string) => card("P-0007").querySelector(`[data-detail-part="${name}"]`);
-    expect(part("what")!.textContent).toContain("Kind: edit-asset");
+    expect(part("what")!.textContent).toContain("Kind: Edit a file: review.md");
     expect(part("what")!.textContent).toContain("Changes: prompts/review.md");
     for (const name of ["why", "where", "change", "evidence", "related"]) expect(part(name)).toBeNull();
     expect(card("P-0007").querySelector("[data-rule-detail]")!.textContent).not.toContain("not given");
@@ -270,7 +273,7 @@ describe("Rules page", () => {
     choose(card("P-20261101-158e"), "Promote");
     for (const name of ["Rule wording", "Default", "Exception", "Applied to"]) expect(within(dialog()).queryByRole("textbox", { name })).toBeNull();
     expect(dialog().querySelector("[data-dialog-consequence]")!.textContent).toBe(
-      "Promoting replaces the Now lines with the Proposed lines in the target file, then records the verdict. If the Now lines are not there exactly once, or evolve refuses, nothing is written and the error shows here.",
+      "Promoting replaces the Now lines with the Proposed lines in the target file, then records the verdict. If the Now lines are not there exactly once, or the change is refused, nothing is written and the error shows here.",
     );
     await waitFor(() => expect(dialog().querySelector('[data-change="proposed"]')!.textContent).toBe("notify --quiet"), SLOW);
     expect(dialog().querySelector('[data-change="current"]')!.textContent).toBe("notify --loud");
@@ -306,7 +309,7 @@ describe("Rules page", () => {
     await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
     choose(card("C-012"), "Promote");
     expect(dialog().querySelector("[data-dialog-consequence]")!.textContent).toBe(
-      "Promoting writes this rule into your rules file, records the verdict and runs sync-agents; it is part of every run's prompt from the next run on.",
+      "Promoting writes this rule into your rules, records the verdict and updates your agents' instructions; it is part of every run's prompt from the next run on.",
     );
     expect(within(dialog()).queryByRole("textbox", { name: "Applied to" })).toBeNull();
   });
@@ -344,14 +347,14 @@ describe("Rules page", () => {
     expect(turnOn.className).toContain("bg-accent"); // the primary variant
     const radios = within(screen.getByRole("radiogroup", { name: "Agents home" })).getAllByRole("radio") as HTMLInputElement[];
     expect(radios.map((r) => [r.value, r.checked])).toEqual([["/Users/me/.agents", true]]);
-    expect(check().textContent).toBe("bin/tacit and bin/evolve are both executable in /Users/me/.agents.");
+    expect(check().textContent).toBe("The rules tools are ready in /Users/me/.agents.");
     // No path field: the picker offers only the known homes.
     expect(screen.queryByRole("textbox")).toBeNull();
     // The page's own header is the one "Rules"; the page adds no second h1 and no step list.
     expect(h1s()).toEqual(["Rules"]);
     expect(document.querySelector("ol")).toBeNull();
-    // The empty state carries the action, and the page is capped at max-w-3xl.
-    expect(turnOn.closest("div.max-w-3xl")).not.toBeNull();
+    // The empty state carries the action, and the page is capped at the list column, max-w-5xl.
+    expect(turnOn.closest("div.max-w-5xl")).not.toBeNull();
   });
 
   it("the picker lists only the known homes, AGENTS_HOME first, and shows the check of the one chosen: the missing file, or both executable", async () => {
@@ -361,9 +364,9 @@ describe("Rules page", () => {
     const radios = within(group).getAllByRole("radio") as HTMLInputElement[];
     expect(radios.map((r) => [r.value, r.checked])).toEqual([["/Users/me/agents", true], ["/Users/me/.agents", false]]);
     expect(group.textContent).toContain("/Users/me/agents (in use)");
-    expect(check().textContent).toBe("bin/evolve is missing or not executable in /Users/me/agents.");
+    expect(check().textContent).toBe("The rules tools are missing or not executable in /Users/me/agents.");
     fireEvent.click(radios[1]!);
-    expect(check().textContent).toContain("bin/tacit and bin/evolve are both executable in /Users/me/.agents.");
+    expect(check().textContent).toContain("The rules tools are ready in /Users/me/.agents.");
     expect(check().textContent).toContain("The factory reads the home in use, /Users/me/agents, not this one.");
     // Choosing writes nothing, and with the home in use not found there is no Turn on.
     expect(posts).toEqual([]);
@@ -397,7 +400,7 @@ describe("Rules page", () => {
     await show();
     await waitFor(() => expect(document.querySelector("[data-home]")).not.toBeNull(), SLOW);
     const text = document.querySelector("[data-home]")!.textContent!;
-    expect(text).toContain("bin/evolve is missing or not executable in /Users/me/.agents.");
+    expect(text).toContain("The rules tools are missing or not executable in /Users/me/.agents.");
     expect(text).not.toMatch(/\bput\b/i);
     expect(screen.queryAllByRole("button")).toEqual([]);
     expect(screen.queryByRole("textbox")).toBeNull();
@@ -415,8 +418,10 @@ describe("Rules page", () => {
       },
     });
     await show();
+    await openTab("Applied");
     const applied = await screen.findByRole("list", { name: "Applied" }, SLOW);
-    expect(screen.getAllByRole("region").map((r) => r.getAttribute("aria-label")).at(-1)).toBe("Applied");
+    // The Applied tab holds the one Applied card, and no waiting group.
+    expect(screen.getAllByRole("region").map((r) => r.getAttribute("aria-label"))).toEqual(["Applied"]);
     const c = applied.querySelector<HTMLElement>('[data-applied="C-001"]')!.textContent!;
     expect(c).not.toContain("C-001");
     for (const part of ["summary first", "모든 문서", "2026-11-13", "Open with a summary.", "not given", "2: T-1, T-2"]) expect(c).toContain(part);
@@ -427,8 +432,9 @@ describe("Rules page", () => {
     // The elsewhere lines go through Markdown: a list item, no raw "- ".
     expect(document.querySelector("[data-elsewhere]")!.textContent).toContain("C-009 → CLAUDE.md");
     expect(document.querySelector("[data-elsewhere] li")!.textContent).toBe("C-009 → CLAUDE.md");
-    // The raw block has no action; the class has Retire and no edit.
-    expect(screen.getAllByRole("button", { name: "Retire" })).toHaveLength(1);
+    // The raw block has no action; the class has one ⋯ menu (Retire is in it) and no visible Retire button or edit.
+    expect(screen.getAllByRole("button", { name: /^Actions:/ })).toHaveLength(1);
+    expect(screen.queryAllByRole("button", { name: "Retire" })).toEqual([]);
     expect(screen.queryAllByRole("button", { name: /edit/i })).toEqual([]);
   });
 
@@ -446,6 +452,7 @@ describe("Rules page", () => {
     current = view({ applied: APPLIED });
     detail = (id) => ({ id, error: null, detail: null, retire: id === "C-001" ? ["no new incident for 44 days since judged on 2026-10-01", "covered by C-002"] : [] });
     await show();
+    await openTab("Applied");
     await screen.findByRole("list", { name: "Applied" }, SLOW);
     // Nothing is suggested, and no entry read, before the press.
     expect(gets.filter((u) => u.includes("/rules/entry"))).toEqual([]);
@@ -468,9 +475,17 @@ describe("Rules page", () => {
     current = view({ applied: APPLIED });
     answer = { status: 200, body: { id: "C-001", verdict: "retire" } };
     await show();
+    await openTab("Applied");
     await screen.findByRole("list", { name: "Applied" }, SLOW);
     expect(applied("C-001").querySelector("textarea, input")).toBeNull();
-    fireEvent.click(within(applied("C-001")).getByRole("button", { name: "Retire" }));
+    // No visible Retire button: Retire is the danger item of the row's ⋯ menu, at the right of the title line.
+    expect(within(applied("C-001")).queryByRole("button", { name: "Retire" })).toBeNull();
+    const more = within(applied("C-001")).getByRole("button", { name: "Actions: summary first" });
+    expect(more.closest("[data-row-menu]")!.parentElement).toBe(applied("C-001"));
+    fireEvent.click(more);
+    const item = within(applied("C-001")).getByRole("menuitem", { name: "Retire" });
+    expect(item.className).toContain("text-pill-bad-fg");
+    fireEvent.click(item);
     expect(applied("C-001").querySelector("textarea, input")).toBeNull();
     expect(within(dialog()).getByRole("heading", { level: 2 }).textContent).toBe("Retire: summary first");
     const confirm = within(dialog()).getByRole("button", { name: "Send retire" }) as HTMLButtonElement;
@@ -483,28 +498,33 @@ describe("Rules page", () => {
     expect(new Headers(posts[0]!.init.headers).get("x-csrf-token")).toBe(TOKEN);
   });
 
-  it("a user who is not the owner sees Retire disabled", async () => {
+  it("a user who is not the owner sees the menu's Retire disabled, with the owner-only tooltip", async () => {
     current = view({ applied: APPLIED, judge: "Only the owner judges rules; you are local:alice." });
     await show();
+    await openTab("Applied");
     await screen.findByRole("list", { name: "Applied" }, SLOW);
-    const buttons = screen.getAllByRole("button", { name: "Retire" }) as HTMLButtonElement[];
-    expect(buttons.map((b) => b.disabled)).toEqual([true, true]);
-    fireEvent.click(buttons[0]!);
+    fireEvent.click(within(applied("C-001")).getByRole("button", { name: "Actions: summary first" }));
+    const item = within(applied("C-001")).getByRole("menuitem", { name: "Retire" }) as HTMLButtonElement;
+    expect(item.disabled).toBe(true);
+    fireEvent.click(item);
     expect(document.querySelector("dialog[data-dialog]")).toBeNull();
+    // The owner-only reason is the menu's tooltip.
+    fireEvent.mouseEnter(applied("C-001").querySelector("[data-row-menu]")!.firstElementChild!);
+    expect(within(applied("C-001")).getByRole("tooltip").textContent).toBe("Only the owner retires a rule.");
   });
 
-  it("the Retired list is collapsed and gives each rule's reason and date; none when the ledger has none", async () => {
+  it("the Retired tab lists each rule's reason and date; an empty state when the ledger has none", async () => {
     current = view({ applied: APPLIED, retired: [{ id: "C-007", reason: "covered by C-001", date: "2026-11-14" }] });
     await show();
+    await openTab("Retired");
     const region = await screen.findByRole("region", { name: "Retired" }, SLOW);
-    const details = region.querySelector<HTMLDetailsElement>("details[data-retired]")!;
-    expect(details.open).toBe(false);
-    expect(details.querySelector("summary")!.textContent).toBe("Show retired rules");
-    expect(details.querySelector('[data-retired-rule="C-007"]')!.textContent).toBe("Retired ruleRetired 2026-11-14: covered by C-001");
+    expect(region.querySelector('[data-retired-rule="C-007"]')!.textContent).toBe("Retired ruleRetired 2026-11-14: covered by C-001");
+    expect(screen.queryByRole("list", { name: "Applied" })).toBeNull();
     cleanup();
     current = view({ applied: APPLIED, retired: [] });
     await show();
-    await screen.findByRole("list", { name: "Applied" }, SLOW);
+    await openTab("Retired");
+    await screen.findByText("No rule has been retired.", {}, SLOW);
     expect(screen.queryByRole("region", { name: "Retired" })).toBeNull();
   });
 
@@ -536,18 +556,25 @@ describe("Rules page", () => {
     expect(how.open).toBe(false);
   });
 
-  it("Applied is collapsed while something waits and open when nothing does; it says its order", async () => {
+  it("shared Tabs named Rules: Waiting is selected on load and holds the waiting groups then Auto-approve specs; Applied is its own tab and says its order", async () => {
     current = view({ applied: APPLIED });
+    standing = { as_of: AT, csrf_token: TOKEN, rules: [], proposals: [{ id: "sp_1", rule: "spec-t1", run_length: 3, threshold: 3, created_at: AT }] };
     await show();
     await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
-    const details = () => document.querySelector<HTMLDetailsElement>("section[aria-label=Applied] > details")!;
-    expect(details().open).toBe(false);
-    expect(details().textContent).toContain("Listed in the order of your rules file.");
-    cleanup();
-    current = view({ applied: APPLIED, entries: judgedEntries() });
-    await show();
-    await screen.findByText("Nothing waits for a verdict", {}, SLOW);
-    expect(details().open).toBe(true);
+    const tabs = within(screen.getByRole("tablist", { name: "Rules" })).getAllByRole("tab");
+    expect(tabs.map((t) => [t.textContent, t.getAttribute("aria-selected")])).toEqual([["Waiting", "true"], ["Applied", "false"], ["Retired", "false"]]);
+    // The waiting list comes first; Auto-approve specs sits below it; no Applied or improve report on this tab.
+    await screen.findByRole("region", { name: "Auto-approve specs" }, SLOW);
+    expect(screen.getAllByRole("region").map((r) => r.getAttribute("aria-label"))).toEqual(["Rule candidates", "Structure proposals", "Auto-approve specs"]);
+    expect(screen.queryByRole("list", { name: "Applied" })).toBeNull();
+    expect(screen.queryByText("Improve report")).toBeNull();
+    // The waiting count is a Badge beside the title, not an action at the header's end.
+    const waiting = document.querySelector<HTMLElement>("[data-waiting]")!;
+    expect(waiting.querySelector("[data-level]")!.textContent).toBe("2 waiting");
+    expect(waiting.parentElement!.querySelector("h1")!.textContent).toBe("Rules");
+    fireEvent.click(tabs[1]!);
+    expect((await screen.findByRole("list", { name: "Applied" }, SLOW)).closest("section")!.textContent).toContain("Listed in the order of your rules.");
+    expect(screen.queryByRole("list", { name: "Rule candidates" })).toBeNull();
   });
 
   it("the search filters Applied rows case-insensitively over ID, name, default and scope; evidence is counted once per incident", async () => {
@@ -562,6 +589,7 @@ describe("Rules page", () => {
       },
     });
     await show();
+    await openTab("Applied");
     await screen.findByRole("list", { name: "Applied" }, SLOW);
     const ids = () => [...document.querySelectorAll<HTMLElement>("[data-applied]")].map((e) => e.dataset.applied);
     expect(ids()).toEqual(["C-001", "C-002"]);
@@ -599,7 +627,7 @@ describe("Rules page", () => {
     await show();
     await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
     const row = card("P-20261103-34e9");
-    expect(row.querySelector("[data-rule-what]")!.textContent).toBe("edit-asset: evolve");
+    expect(row.querySelector("[data-rule-what]")!.textContent).toBe("Edit a file: evolve");
     expect(row.querySelector('[data-excerpt="before"]')!.textContent).toBe("Beforenotify every hour");
     expect(row.querySelector('[data-excerpt="after"]')!.textContent).toBe("Afternotify at 8am");
     expect(row.querySelector("[data-rule-what]")!.textContent).not.toContain("bin/");
@@ -607,7 +635,7 @@ describe("Rules page", () => {
     expect(card("P-0007").textContent).not.toContain("not given");
   });
 
-  it("the verdict dialog titles the verdict and the entry title, shows the full title and detail above the fields, and labels the reason as it reads", async () => {
+  it("the verdict dialog titles the verdict and the entry title, shows the title once and the detail above the fields, and labels the reason as it reads", async () => {
     const long = "A".repeat(80);
     current = view({ entries: [{ id: "C-037", title: long, state: "pending", judged: null, draft: { default: "d", exception: "e", incidents: ["T-1"], scope: "s" }, draft_error: null }] });
     detail = { id: "C-037", error: null, detail: { id: "C-037", incidents: 2, scope: "software" } };
@@ -616,10 +644,14 @@ describe("Rules page", () => {
     choose(card("C-037"), "Promote");
     expect(within(dialog()).getByRole("heading", { level: 2 }).textContent).toBe(`Promote: ${long}`);
     expect(dialog().querySelector("h2")!.textContent).not.toContain("C-037");
-    expect(dialog().querySelector("[data-dialog-summary]")!.textContent).toBe(long);
+    // The title shows once, in the heading: the body does not repeat it.
+    expect(dialog().querySelector("[data-dialog-summary]")).toBeNull();
     await waitFor(() => expect(dialog().querySelector("[data-detail-part]")).not.toBeNull(), SLOW);
+    // Outside the heading, the title shows only as the prefilled rule wording (a field), never as body text.
+    const body = dialog().cloneNode(true) as HTMLElement;
+    body.querySelectorAll("h2, textarea").forEach((n) => n.remove());
+    expect(body.textContent).not.toContain(long);
     const all = dialog().innerHTML;
-    expect(all.indexOf("data-dialog-summary")).toBeLessThan(all.indexOf("data-detail-part"));
     expect(all.indexOf("data-detail-part")).toBeLessThan(all.indexOf("<textarea"));
     const reason = within(dialog()).getByRole("textbox", { name: "Reason" });
     expect(dialog().querySelector(`label[for="${reason.id}"]`)!.textContent).toBe("Reason");
@@ -663,13 +695,14 @@ describe("Rules page", () => {
     expect(dialog().querySelector("[data-rule-detail]")!.textContent).not.toContain("not given");
   });
 
-  it("the Reject dialog shows the full title too; the evidence shows 3 and the rest behind Show all N", async () => {
+  it("the Reject dialog shows the full title in its heading; the evidence shows 3 and the rest behind Show all N", async () => {
     const long = "B".repeat(90);
     current = view({ entries: proposalEntry(long) });
     const evidence = ["2026-11-01", "2026-11-05", "2026-11-03", "2026-11-04", "2026-11-02"].map((date, i) => ({ ref: `E-${i}`, date, quote: `q${i}` }));
     detail = { id: "P-20261103-34e9", error: null, detail: { id: "P-20261103-34e9", evidence } };
     await openDialog("Reject");
-    expect(dialog().querySelector("[data-dialog-summary]")!.textContent).toBe(long);
+    expect(within(dialog()).getByRole("heading", { level: 2 }).textContent).toBe(`Reject: ${long}`);
+    expect(dialog().querySelector("[data-dialog-summary]")).toBeNull();
     const shown = () => [...dialog().querySelectorAll<HTMLElement>("[data-evidence]")].map((i) => i.dataset.evidence);
     expect(shown()).toEqual(["E-0", "E-1", "E-2"]);
     fireEvent.click(within(dialog()).getByRole("button", { name: "Show all 5" }));
@@ -710,21 +743,76 @@ describe("Rules page", () => {
     expect(dialog().querySelector('[data-detail-part="related"]')).toBeNull();
   });
 
-  it("a long Korean title and long Korean quotes wrap in the dialog instead of overflowing it", async () => {
+  it("a long Korean title stays in the heading and long Korean quotes wrap in the dialog instead of overflowing it", async () => {
     const title = "프로모트할 때 근거와 맥락을 보여주어 소유자가 무엇을 근거로 한 제안인지 판단할 수 있게 한다".repeat(3);
     const said = "새벽 세 시에 알림이 계속 와서 잠을 못 잤으니 야간에는 알림을 보내지 않도록 바꿔 달라고 여러 번 말했다".repeat(4);
     current = view({ entries: proposalEntry(title) });
     detail = { ...TWO_INCIDENTS, detail: { ...TWO_INCIDENTS.detail!, evidence: TWO_INCIDENTS.detail!.evidence!.map((e) => ({ ...e, quote: said })) } };
     await openDialog("Promote");
-    const summary = dialog().querySelector<HTMLElement>("[data-dialog-summary]")!;
-    expect(summary.textContent).toBe(title);
-    // Wrapped, never cut or kept on one line: the summary and every quote break inside the dialog's width.
-    for (const el of [summary, ...dialog().querySelectorAll<HTMLElement>("blockquote[data-quote]")]) {
+    // The title is the heading's (the dialog's own wrapping); every quote breaks inside the dialog's width.
+    expect(within(dialog()).getByRole("heading", { level: 2 }).textContent).toBe(`Promote: ${title}`);
+    for (const el of dialog().querySelectorAll<HTMLElement>("blockquote[data-quote]")) {
       expect(el.className).toContain("break-words");
       expect(el.className).not.toMatch(/\b(truncate|whitespace-nowrap)\b/);
     }
     expect(dialog().querySelectorAll("blockquote[data-quote]")).toHaveLength(2);
     expect(dialog().querySelector("[data-rule-detail]")!.className).toContain("min-w-0");
+  });
+
+  it("each waiting row's ⋯ menu sits at the right end of its title line, not on a line of its own", async () => {
+    await show();
+    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
+    for (const id of ["C-012", "P-0007"]) {
+      const menu = card(id).querySelector<HTMLElement>("[data-row-menu]")!;
+      // The menu is the row's last child, beside the column that holds the title, in the same flex row.
+      expect(menu.parentElement).toBe(card(id));
+      expect(menu.previousElementSibling!.querySelector("[data-rule-title]")).not.toBeNull();
+      expect(card(id).className).toContain("flex");
+      expect(within(menu).getByRole("button", { name: /^Decide:/ })).toBeTruthy();
+    }
+  });
+
+  it("kinds read in plain words and a target of several files reads as a count, in the row and in the detail; the full target stays in Why and where", async () => {
+    current = view({
+      entries: [
+        { id: "P-1", title: "Many files", state: "open", kind: "edit-asset", target: "prompts/a.md, prompts/b.md, bin/evolve, docs/c.md", judged: null, draft: null, draft_error: null },
+        { id: "P-2", title: "Learning", state: "open", kind: "promote-learning", target: "skills/git/learnings.md", judged: null, draft: null, draft_error: null },
+        { id: "P-3", title: "New", state: "open", kind: "new-asset", target: "skills/new/SKILL.md", judged: null, draft: null, draft_error: null },
+        { id: "P-4", title: "Other", state: "open", kind: "rename-thing", target: "x.md", judged: null, draft: null, draft_error: null },
+      ],
+    });
+    detail = (id) => ({ id, error: null, detail: { id } });
+    await show();
+    await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
+    const what = (id: string) => card(id).querySelector("[data-rule-what]")!.textContent;
+    expect(["P-1", "P-2", "P-3", "P-4"].map(what)).toEqual([
+      "Edit a file: 4 files", "Turn a learning into a rule: learnings.md", "Add a new file: SKILL.md", "Change: x.md",
+    ]);
+    for (const raw of ["edit-asset", "promote-learning", "new-asset", "rename-thing"]) expect(document.body.textContent).not.toContain(raw);
+    fireEvent.click(within(card("P-1")).getByText("Why and where").closest("summary")!);
+    const part = await waitFor(() => {
+      const el = card("P-1").querySelector<HTMLElement>('[data-detail-part="what"]');
+      if (!el) throw new Error("the detail is not open yet");
+      return el;
+    }, SLOW);
+    expect(part.textContent).toContain("Kind: Edit a file: 4 files");
+    expect(part.textContent).toContain("Changes: prompts/a.md, prompts/b.md, bin/evolve, docs/c.md");
+    expect(part.textContent).not.toContain("edit-asset");
+  });
+
+  it("with the rules home off, the Turn on empty state comes before Auto-approve specs", async () => {
+    current = off();
+    standing = { as_of: AT, csrf_token: TOKEN, rules: [], proposals: [{ id: "sp_1", rule: "spec-t1", run_length: 3, threshold: 3, created_at: AT }] };
+    await show();
+    const turnOn = await screen.findByRole("button", { name: "Turn on" }, SLOW);
+    const approvals = await screen.findByRole("region", { name: "Auto-approve specs" }, SLOW);
+    expect(turnOn.compareDocumentPosition(approvals) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByText("Improve report")).toBeNull();
+  });
+
+  it("no rules string names a tool, the ledger or a CLI path", async () => {
+    const { rules } = await import("../web/src/i18n/en/rules.js");
+    for (const [key, text] of Object.entries(rules)) expect([key, text]).not.toEqual([key, expect.stringMatching(/evolve|tacit|sync-agents|ledger|bin\//i)]);
   });
 
   it("no Applied group when the file holds nothing or the ledger is off", async () => {
@@ -739,79 +827,5 @@ describe("Rules page", () => {
     await show();
     expect((await screen.findByRole("alert", {}, SLOW)).textContent).toContain("Only the owner");
     expect(screen.queryAllByRole("button")).toEqual([]);
-  });
-});
-
-describe("Rules page: improve report and Run now (design 07-self-improvement, 2026-11-16)", () => {
-  const IMPROVE_TOKEN = "tok_improve";
-  const report: ImproveView["report"] = {
-    window_start: "2026-11-15T00:00:00.000Z", window_end: "2026-11-16T00:00:00.000Z", created_at: "2026-11-16T00:05:00.000Z", runs: 4, patterns: 1,
-    groups: [
-      { error_code: "checks_failed", detail: "npm test exited #", runs: 2, draft: { cause: "a flaky port", fix: "pin the port", note: null }, filing: "filed: local:local-1" },
-      { error_code: "no_commits", detail: null, runs: 2, draft: { cause: null, fix: null, note: "withheld (github_token)" }, filing: null },
-    ],
-  };
-  const improve = (over: Partial<ImproveView> = {}): ImproveView => ({ report, run_now: true, csrf_token: IMPROVE_TOKEN, ...over });
-  const section = () => screen.findByRole("region", { name: "Improve report" }, SLOW);
-
-  it("shows the report's window, counts and one row per group with its draft and filing", async () => {
-    current = view({ improve: improve() });
-    await show();
-    const s = await section();
-    const windowText = s.querySelector("[data-improve-window]")!.textContent!;
-    expect(windowText).toContain("2 groups (4 runs), 1 single-run patterns");
-    // Each instant in the viewer's local time, never as the ISO text the API sent.
-    expect(windowText).toContain(`Window ${localDateTime(report!.window_start)} to ${localDateTime(report!.window_end)}, reported ${localDateTime(report!.created_at)}.`);
-    expect(windowText).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
-    const rows = [...s.querySelectorAll<HTMLElement>("[data-improve-group]")];
-    expect(rows.map((r) => r.dataset.improveGroup)).toEqual(["checks_failed", "no_commits"]);
-    expect(rows[0]!.querySelector("[data-draft]")!.textContent).toContain("a flaky port");
-    expect(rows[0]!.querySelector("[data-draft]")!.textContent).toContain("pin the port");
-    expect(rows[0]!.querySelector("[data-filing]")!.textContent).toBe("filed: local:local-1");
-    expect(rows[1]!.querySelector("[data-draft]")!.textContent).toBe("withheld (github_token)");
-    expect(rows[1]!.querySelector("[data-filing]")!.textContent).toBe("not filed yet");
-  });
-
-  it("with no report it says so; with no run_now there is no Run now button", async () => {
-    current = view({ improve: improve({ report: null, run_now: false, csrf_token: null }) });
-    await show();
-    const s = await section();
-    expect(s.textContent).toContain("no improve run has reported yet");
-    expect(within(s).queryByRole("button", { name: "Run now" })).toBeNull();
-  });
-
-  it("Run now posts to POST /api/v1/improve/run with the x-csrf-token header; a 200 shows the run_id", async () => {
-    current = view({ improve: improve() });
-    answer = { status: 200, body: { run_id: "run_queued_1" } };
-    await show();
-    const s = await section();
-    fireEvent.click(within(s).getByRole("button", { name: "Run now" }));
-    expect((await within(s).findByRole("status")).textContent).toBe("Improve run queued: run_queued_1");
-    expect(posts.map((p) => p.url)).toEqual(["/api/v1/improve/run"]);
-    expect(new Headers(posts[0]!.init.headers).get("x-csrf-token")).toBe(IMPROVE_TOKEN);
-    expect(JSON.parse(String(posts[0]!.init.body))).toEqual({});
-  });
-
-  it("a 409 shows its error and run_id, and the rules are not reloaded into a success", async () => {
-    current = view({ improve: improve() });
-    answer = { status: 409, body: { error: "An improve run is already queued (run_busy).", run_id: "run_busy" } };
-    await show();
-    const s = await section();
-    const before = gets.filter((u) => u === "/api/v1/rules").length;
-    fireEvent.click(within(s).getByRole("button", { name: "Run now" }));
-    const alert = await within(s).findByRole("alert");
-    expect(alert.textContent).toContain("An improve run is already queued (run_busy).");
-    expect(alert.textContent).toContain("run_busy");
-    expect(within(s).queryByRole("status")).toBeNull();
-    expect(gets.filter((u) => u === "/api/v1/rules").length).toBe(before);
-  });
-
-  it("with the ledger off the section and Run now show above the ledger-off EmptyState", async () => {
-    current = view({ enabled: false, entries: [], home: { path: "/Users/me/.agents", missing: null }, turn_on: '{"tacit":"agents-home"}', improve: improve() });
-    await show();
-    const s = await section();
-    expect(within(s).getByRole("button", { name: "Run now" })).toBeTruthy();
-    const empty = screen.getByText("No tacit ledger is on, so there are no rules to review.");
-    expect(s.compareDocumentPosition(empty) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });

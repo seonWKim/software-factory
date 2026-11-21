@@ -5,9 +5,9 @@ import { WorkerPool } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { issue, newStore, system } from "./helpers/store.js";
-import {
-  FakeBroker, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, config, prompts, recordingLog, triageSpec, waitFor,
-} from "./helpers/fakes.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, prompts, recordingLog, triageSpec, waitFor } from "./helpers/fakes/config.js";
 
 // Each WorkerPool writes one store row per tick: its slots, its slot count and how many slots hold a run
 // (design §5 Coordination, 2026-11-07). The row is removed on a clean stop; a dead process's row ages out.

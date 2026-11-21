@@ -274,3 +274,108 @@ describe("ClaudeCodeRunner: only model output restarts the stall clock (issue #2
     expect(seen).toEqual(["thinking", "assistant", "tool_result"]);
   });
 });
+
+// The 2026-11-19/20 resolve stalls: every stored detail named stall_ms. The agent started its checks as a background
+// task (Bash run_in_background): the tool call returned at once, so no tool call was open while the model waited
+// for the task's notification, and the run was ended as stalled with the task still running.
+describe("ClaudeCodeRunner: a running background task holds the stall clock like an open tool call", () => {
+  const resolve = (): AgentRunSpec => ({ ...spec(), role: "resolve" });
+  const bgCheck = (id: string) => ({
+    type: "assistant",
+    message: { content: [{ type: "tool_use", id, name: "Bash", input: { command: "npm test", run_in_background: true } }] },
+  });
+  const taskStarted = (task_id: string) => ({ type: "system", subtype: "task_started", task_id, description: "Run full test suite" });
+  const taskDone = (task_id: string) => ({ type: "system", subtype: "task_notification", task_id, status: "completed", summary: "Run full test suite" });
+  const tasksChanged = (ids: string[]) => ({ type: "system", subtype: "background_tasks_changed", tasks: ids.map((id) => ({ id })) });
+
+  /** The stored stalls' stream: the check started in the background, its tool call answered at once. */
+  const startBackgroundCheck = (out: (line: unknown) => void) => {
+    out(text("running the checks"));
+    out(bgCheck("toolu_bg"));
+    out(toolResult("toolu_bg"));
+    out(taskStarted("task_1"));
+  };
+
+  it("a resolve run whose background check is silent past stall_ms is not stalled while the task runs", async () => {
+    const r = await runnerWith(async (opts, out) => {
+      startBackgroundCheck(out);
+      await wait(STALL_MS * 3, opts.signal);
+      if (opts.signal?.aborted) return { exit_code: 143 };
+      out(taskDone("task_1"));
+      out(text("checks pass"));
+      out(RESULT);
+      return { exit_code: 0 };
+    }).run(resolve());
+    expect(r.status).toBe("completed");
+  });
+
+  it("once the task's notification arrives the clock runs again, and the error still names stall_ms", async () => {
+    const r = await runnerWith(async (opts, out) => {
+      startBackgroundCheck(out);
+      await wait(STALL_MS * 2, opts.signal);
+      out(taskDone("task_1"));
+      await untilAborted(opts.signal);
+      return { exit_code: 143 };
+    }).run(resolve());
+    expect(r.status).toBe("stalled");
+    expect(r.error).toBe(`no model output for stall_ms (${STALL_MS} ms) with no tool call open`);
+  });
+
+  it("a killed task, or an empty background task list, ends the hold", async () => {
+    for (const end of [{ type: "system", subtype: "task_updated", task_id: "task_1", status: "killed" }, tasksChanged([])]) {
+      const r = await runnerWith(async (opts, out) => {
+        startBackgroundCheck(out);
+        out(end);
+        await untilAborted(opts.signal);
+        return { exit_code: 143 };
+      }).run(resolve());
+      expect(r.status).toBe("stalled");
+    }
+  });
+
+  it("a non-empty background task list holds the clock until it empties", async () => {
+    const r = await runnerWith(async (opts, out) => {
+      out(text("start"));
+      out(tasksChanged(["task_9"]));
+      await wait(STALL_MS * 3, opts.signal);
+      if (opts.signal?.aborted) return { exit_code: 143 };
+      out(tasksChanged([]));
+      out(RESULT);
+      return { exit_code: 0 };
+    }).run(resolve());
+    expect(r.status).toBe("completed");
+  });
+
+  it("a background task that never ends is left to the run timeout, not the stall watch", async () => {
+    const r = await runnerWith(async (opts, out) => {
+      startBackgroundCheck(out);
+      await untilAborted(opts.signal, STALL_MS * 3);
+      return { exit_code: 143 };
+    }).run({ ...resolve(), timeout_ms: STALL_MS * 3 });
+    expect(r.status).not.toBe("stalled");
+  });
+
+  it("a resolve run's foreground check, silent past stall_ms, is not stalled while its tool call is open", async () => {
+    const r = await runnerWith(async (opts, out) => {
+      out(toolUse("toolu_check"));
+      await wait(STALL_MS * 3, opts.signal);
+      if (opts.signal?.aborted) return { exit_code: 143 };
+      out(toolResult("toolu_check"));
+      out(RESULT);
+      return { exit_code: 0 };
+    }).run(resolve());
+    expect(r.status).toBe("completed");
+  });
+
+  it("asks the CLI to keep checks in the foreground: background tasks are off for every run", async () => {
+    for (const role of ["resolve", "implement"] as const) {
+      let env: Record<string, string> = {};
+      await runnerWith(async (opts, out) => {
+        env = { ...opts.env };
+        out(RESULT);
+        return { exit_code: 0 };
+      }).run({ ...spec(), role });
+      expect(env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe("1");
+    }
+  });
+});

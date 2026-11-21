@@ -1,7 +1,6 @@
 import { type RunCall, type RunKindDescriptor, loadRunKinds } from "./run-kind.js";
-import { gradeRun } from "./runs/improve/improve.run.js";
 import type { MergeCheckTools } from "./runs/merge-check/merge-check.run.js";
-import { type ExecutionEngine, type ExecutionEngines, LeaseLostError, RunDeadlineError, type RunRef, StepTimeoutError } from "./engine/index.js";
+import { type Adopted, type ExecutionEngine, type ExecutionEngines, LeaseLostError, RunDeadlineError, type RunRef, StepTimeoutError } from "./engine/index.js";
 import { JournalEngines } from "./engine/plugins/journal/journal-engine.js";
 import { type Period, type TickHandler, type TickSource, tickAt } from "../shared/ticks/tick-generator.js";
 import { TimeBasedTicks } from "../shared/ticks/plugins/time-based/time-based-tick-generator.js";
@@ -13,7 +12,7 @@ import { type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor, readOnlyOv
 import { LiveSettings } from "../core/settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelRunKind, type ModelTable, isModelRunKind, modelClassFor } from "../core/model-choice.js";
 import { errorText, type LogFields } from "../core/log.js";
-import { type CheckRound, checkCommands, commandText, failingTestFiles, runChecks, withTestFiles } from "../core/checks.js";
+import { type CheckRound, checkCommands, commandText, failingTestFiles, mergeMiss, runChecks, withTestFiles } from "../core/checks.js";
 import { FORGE_AUTH, GITHUB_RATE_LIMIT, GITHUB_RATE_LIMITED, githubRateLimitReset, PREFLIGHT_ACCESS, preflightCheck, RATE_LIMITED, branchFor, wipBranchFor, canAutoMerge, NETWORK, NETWORK_PROBE_MS, NETWORK_UNAVAILABLE, classifyNetwork, failureClass } from "../core/policy.js";
 import { incompleteLabel, lastPrNotes, prBody } from "../core/pr-body.js";
 import type { MergeIO } from "../core/mechanical.js";
@@ -25,7 +24,7 @@ import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 import { STORE_BRANCH, type ToolCallContext, type ToolResult } from "../interfaces/tool-broker.js";
 import { checkWrapperSource, wrapperSeedFields } from "./toolchain-seeds.js";
 import { LiveTranscript } from "./live-transcript.js";
-import { AGENT_FAILED, HOST_SLEEP_MS, INDEX_SIZE, KINDS, LIVE_REPORT_PATHS, type LocalRoute, NETWORK_PAUSED_BY, NO_HOOKS, NO_USAGE, outputRecorder, PAUSABLE_KINDS, type ResumePlan, RunFailure, RunPaused, type RunScratch, TEST_WORKERS_ENV, TRUSTED_GIT_ENV, WARM_FAILED, WARM_KINDS, WORKER_INDEX_ENV, type WorkerDeps, addUsage, continues, fenced, gitIdentity, gitVerb, prTitle, type PrText, routeFor, runPushIntents, tail, threadDelivery, testWorkerShare, toolsNamed, untrustedGitConfig } from "./support.js";
+import { AGENT_FAILED, HOST_SLEEP_MS, INDEX_SIZE, LIVE_REPORT_PATHS, type LocalRoute, NETWORK_PAUSED_BY, NO_HOOKS, NO_USAGE, outputRecorder, PAUSABLE_KINDS, type ResumePlan, RunFailure, RunPaused, type RunScratch, TEST_WORKERS_ENV, TRUSTED_GIT_ENV, WARM_FAILED, WARM_KINDS, WORKER_INDEX_ENV, type WorkerDeps, addUsage, continues, fenced, gitIdentity, gitVerb, prTitle, type PrText, routeFor, runPushIntents, tail, threadDelivery, testWorkerShare, toolsNamed, untrustedGitConfig } from "./support.js";
 
 /** Agent plane host: claims runs, executes them in a Sandbox, reports outcomes. Never decides a transition; the controller does that from the outcome. Holds nothing between runs. */
 export class Worker {
@@ -38,7 +37,7 @@ export class Worker {
   readonly live: LiveSettings;
 
   /** The check helpers the merge-check run uses, injected so the run imports no legacy core module. */
-  readonly checkTools: MergeCheckTools = { checkCommands, failingTestFiles, withTestFiles };
+  readonly checkTools: MergeCheckTools = { checkCommands, failingTestFiles, withTestFiles, mergeMiss };
 
   /** The settings of the run being executed, read once at its claim. Scratch for one run, like `meters`. */
   cfg: FactoryConfig;
@@ -173,9 +172,9 @@ export class Worker {
     if (this.d.active && !this.d.active()) return false;
     this.cfg = this.live.config();
     if (this.d.settings) this.runModels = this.live.models();
-    // Coordination weights (design §5, 2026-11-03; absent: the defaults) and the factory's slot cap (design §5 2026-11-18), lone Workers too.
+    // The live run kinds (`worker_kinds`, design 05-interactive-sessions), coordination weights (design §5, 2026-11-03; absent: the defaults) and the factory's slot cap (design §5 2026-11-18), lone Workers too.
     const run = await this.d.store.claimRun({
-      worker_id: this.d.id, kinds: KINDS, lease_ms: this.cfg.lease_ms, ...(this.cfg.coordination ? { coordination: this.cfg.coordination } : {}),
+      worker_id: this.d.id, kinds: this.live.values().worker_kinds, lease_ms: this.cfg.lease_ms, ...(this.cfg.coordination ? { coordination: this.cfg.coordination } : {}),
       workers: { count: this.live.workers() },
     });
     if (!run?.lease) return false;
@@ -212,8 +211,8 @@ export class Worker {
   }
 
   /**
-   * Holds the claimed run in the engine, then executes it. A run journaled by code this worker cannot resume
-   * (another code_version) fails as `not_resumable`, infra: its retry is a new run with a new journal.
+   * Holds the claimed run in the engine, then executes it. A run another code_version journaled ends as `code_version_restart`,
+   * infra: its retry is a new run with a new journal that starts over and counts toward max_restart (issue #718).
    */
   async execute(run: Run, token: number): Promise<void> {
     const engine = await this.engine();
@@ -221,15 +220,14 @@ export class Worker {
     const lease = new AbortController();
     this.leases.set(run.id, lease);
     try {
-      const held = await engine.adopt(ref, tickAt("claim", this.cfg.tick_ms, this.d.clock.now().getTime()));
-      await this.executeHeld(run, token, engine, held ? ref : null, lease);
+      await this.executeHeld(run, token, engine, ref, await engine.adopt(ref, tickAt("claim", this.cfg.tick_ms, this.d.clock.now().getTime())), lease);
     } finally {
       this.leases.delete(run.id);
       engine.release(ref);
     }
   }
 
-  async executeHeld(run: Run, token: number, engine: ExecutionEngine, ref: RunRef | null, lease: AbortController): Promise<void> {
+  async executeHeld(run: Run, token: number, engine: ExecutionEngine, ref: RunRef, adopted: Adopted, lease: AbortController): Promise<void> {
     const log = { run_id: run.id, work_item_id: run.work_item_id, kind: run.kind, attempt: run.attempt, worker_id: this.d.id };
     const startedAt = this.d.clock.now().getTime();
     this.d.log.info("run start", log);
@@ -248,7 +246,8 @@ export class Worker {
     let outcome: RunOutcome | null = null;
     let paused: RunPaused | null = null;
     try {
-      if (!ref) throw new RunFailure(NOT_RESUMABLE, "the run was journaled by code this worker cannot resume", true);
+      if (adopted === "lost") throw new RunFailure("lease_lost", "lease lost before the engine held the run", true);
+      if (adopted === "foreign_journal") throw new RunFailure(CODE_VERSION_RESTART, "the run was journaled by another code_version; its retry starts over", true);
       const item = await this.d.store.getWorkItem(run.work_item_id);
       if (!item) throw new RunFailure("work_item_missing", run.work_item_id);
       const ctx: ToolCallContext = { run_id: run.id, work_item_id: item.id, lease_token: token };
@@ -282,7 +281,8 @@ export class Worker {
       };
       // Graded by judges independent of the producing call (design §7); then recorded next to the run's usage, so cost
       // and failure rate can be compared per class. data.tokens: the full count, where readers from before usage existed look for it.
-      const data = await gradeRun(this, run, item, model, await this.role({ run, item, ctx, signal, model: model ?? "cheap", step }), signal);
+      const produced = await this.role({ run, item, ctx, signal, model: model ?? "cheap", step });
+      const data = (await [...(await loadRunKinds()).values()].find((k) => k.grade)?.grade?.(this, run, item, model, produced, signal)) ?? produced;
       const withUsage = { ...data, tokens: usageTokens(usage), usage };
       outcome = { status: "succeeded", summary: `${run.kind} done`, data: model ? { ...withUsage, ...this.modelRecord(model) } : withUsage };
     } catch (err) {
@@ -823,9 +823,9 @@ export class Worker {
     if (result.status === "failed" && result.error?.startsWith(`${NETWORK_UNAVAILABLE}: `)) {
       throw new RunFailure(NETWORK_UNAVAILABLE, result.error.slice(NETWORK_UNAVAILABLE.length + 2), true);
     }
-    // `stalled` becomes `agent_stalled`: neither infra nor a task failure (failureClass, design §5 Restarts).
-    if (result.status !== "completed") {
-      throw new RunFailure(`agent_${result.status}`, result.error ?? "", result.status === "timed_out", { output_tail: tail(result.transcript) });
+    if (result.status !== "completed") { // `stalled` → `agent_stalled` (failureClass, design §5 Restarts); tail scanned on its own, null when flagged.
+      const out = tail(result.transcript), clean = out === "" || (await this.d.scanner.scan("run_outcome", out)).clean;
+      throw new RunFailure(`agent_${result.status}`, result.error ?? "", result.status === "timed_out", { output_tail: clean ? out : null } as RunFailure["extra"]);
     }
     await this.packChecks("after_agent", run, item, handle, signal);
     return result;
@@ -1028,8 +1028,8 @@ export const HOOK_REFUSED = "hook_refused";
 /** WorkerDeps.code_version when the process names none. */
 const DEV_CODE_VERSION = "dev";
 
-/** A run another code_version journaled, which this worker's code cannot resume. */
-const NOT_RESUMABLE = "not_resumable";
+/** A run another code_version journaled, which this worker's code cannot resume: its retry starts over (issue #718). */
+const CODE_VERSION_RESTART = "code_version_restart";
 
 /** The engine's errors as run failures: a lost lease and a step timeout are infra; a passed deadline is not. */
 function stepFailure(err: unknown): unknown {

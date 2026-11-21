@@ -7,7 +7,9 @@ import { storeSql } from "../src/impl/store/sql/store-sql.js";
 import { PackCheckRunner, type PackCheckSpec } from "../src/runtime/hooks/pack-checks.js";
 import { SqlHookAudit } from "../src/runtime/index.js";
 import { HOOK_REFUSED, Worker } from "../src/worker/runner.js";
-import { MemoryStorage, PROJECT, cleanScanner, config, pipeline, prompts } from "./helpers/fakes.js";
+import { MemoryStorage } from "./helpers/fakes/runner.js";
+import { PROJECT, cleanScanner, config, prompts } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 
 // The gate hooks (design §4 Pre-push gates, issue #302): the worker gives the implement run's main and fix steps
 // the values its own gates use, logs one line per block, and its gates still decide.

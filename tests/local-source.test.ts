@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { build, loadConfig } from "../src/compose.js";
+import { build } from "../src/compose.js";
+import { loadConfig } from "../src/load-config.js";
 import type { SourceRef, UserId, WorkItemId } from "../src/core/types.js";
 import { REGISTRY } from "../src/plugins.js";
 import { GitHubClient } from "../src/impl/github/github-client.js";
@@ -14,8 +15,8 @@ import type { CliCommand, FactoryStore, NewWorkItem } from "../src/interfaces/fa
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { fakeRepoLookup } from "./helpers/fakes.js";
-import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
+import { fakeRepoLookup } from "./helpers/fakes/config.js";
+import { PROJECT_KEY, newStore, system } from "./helpers/store.js";
 
 // The `local` poll source (issues #199, #282): the controller reads CLI commands from the command inbox through
 // the shared reader (src/core/command-inbox.ts), and local replies live in the item thread. No GitHub call at all.

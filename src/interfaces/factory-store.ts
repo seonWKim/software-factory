@@ -325,7 +325,7 @@ export type LeaseResult ={ ok: true; run: Run } | { ok: false; reason: "lease_lo
 /** `actor`: the person (state change actor, run actor_id). `detail` gets `run_id`. `owner`: the lease owner, never a worker id. */
 export interface StartSessionInput {
   id: WorkItemId; expected_version: number; actor: Extract<Actor, { kind: "user" }>; patch: WorkItemPatch; reason: string; detail: StateChangeDetail;
-  owner: string; lease_ms: number; transcript_url: string | null;
+  owner: string; lease_ms: number; transcript_url: string | null; /** Absent: DEFAULT_COORDINATION. */ coordination?: CoordinationSettings;
 }
 
 export type StartSessionResult =
@@ -333,8 +333,8 @@ export type StartSessionResult =
   | { ok: true; item: WorkItem; run: Run; state_change: StateChange; cancelled: RunId[]; taken_over: RunId[] }
   | { ok: false; reason: "not_found" } | { ok: false; reason: "version_conflict"; current: WorkItem }
   | { ok: false; reason: "session_open" | "implement_run"; run_id: RunId } | { ok: false; reason: "reserved"; reservation: SessionReservation }
-  /** A running implement-type or interactive run of another item shares `paths` with this item's allowed_paths. */
-  | { ok: false; reason: "overlap"; work_item_id: WorkItemId; run_id: RunId; paths: string[] };
+  /** A running implement-type or interactive run of another item shares `paths` at `cost` >= `max_cost` (sessionHold: files_to_change, else allowed_paths). */
+  | { ok: false; reason: "overlap"; work_item_id: WorkItemId; run_id: RunId; paths: string[]; cost: number; max_cost: number };
 /** What `session note`, `--tokens`, `--transcript` and `finish` write (scanned by the caller). `note` is appended, the rest replace. */
 export interface SessionUpdate { note?: string; tokens?: number; transcript_url?: string; last_finish?: Omit<SessionFinish, "at"> }
 /** `applied`: the highest migration recorded in the database (0 when none). `latest`: the highest this code has. */
@@ -370,11 +370,11 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
    * parent link) and enqueues `enqueue` in the same transaction, only when created.
    */
   createWorkItem(
-    input: NewWorkItem,
-    actor: Actor,
-    opts?: { enqueue?: Omit<NewRun, "work_item_id">; detail?: StateChangeDetail },
+    input: NewWorkItem, actor: Actor, opts?: { enqueue?: Omit<NewRun, "work_item_id">; detail?: StateChangeDetail },
   ): Promise<{ item: WorkItem; created: boolean }>;
   getWorkItem(id: WorkItemId): Promise<WorkItem | null>;
+  /** IDs of the work items whose ID starts with `prefix`, in ID order: a key range, no list scan (design 05-sources, short IDs); none for "". Read-only. */
+  findWorkItemIds(prefix: string): Promise<WorkItemId[]>;
   getWorkItemBySource(type: SourceType, sourceId: string): Promise<WorkItem | null>;
   /**
    * The item in `project` whose PR (factory or adopted) has this change_ref (oldest if several). A row with

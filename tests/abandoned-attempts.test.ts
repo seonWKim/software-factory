@@ -5,7 +5,9 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import type { AbandonedAttempt } from "../src/interfaces/factory-store.js";
 import { newStore } from "./helpers/store.js";
-import { FakeAuth, FakeSource, alice, config, issueRef, recordingLog, settingsWith } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, config, issueRef, recordingLog, settingsWith } from "./helpers/fakes/config.js";
 
 // Design §5 Restarts (issue #210): an attempt the reaper cuts off gets an end line, "run abandoned".
 

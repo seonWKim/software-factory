@@ -6,7 +6,9 @@ import { describe, expect, it } from "vitest";
 import { GitHubForge } from "../../src/impl/github/github-forge.js";
 import type { Secret } from "../../src/interfaces/secret-store.js";
 import { ControllerRole } from "../../src/runtime/roles/controller-role.js";
-import { FakeAuth, cleanScanner, pipeline, silent } from "../helpers/fakes.js";
+import { FakeAuth } from "../helpers/fakes/runner.js";
+import { cleanScanner, silent } from "../helpers/fakes/config.js";
+import { pipeline } from "../helpers/harness.js";
 import { issue, system } from "../helpers/store.js";
 
 // RFC 0015 M7, a run's push and PR: the implement run's last step stores its branch in the factory repo and records

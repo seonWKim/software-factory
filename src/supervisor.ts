@@ -5,7 +5,8 @@
 // There it also runs `factory ui` as a child, swapped to the new folder on each new revision.
 
 import { type ChildProcess, fork } from "node:child_process";
-import { type Loaded, Plugins } from "./compose.js";
+import { type Loaded } from "./load-config.js";
+import { Plugins } from "./plugin-set.js";
 import { errorText, type Logger } from "./core/log.js";
 import type { Clock } from "./interfaces/clock.js";
 import {

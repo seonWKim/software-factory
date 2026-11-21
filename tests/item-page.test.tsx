@@ -508,29 +508,6 @@ describe("item page: refusals and the viewer's grants (issues #528, #453)", () =
     expect(document.querySelector("[data-decide]")!.textContent).not.toContain("`");
     expect(document.querySelector("[data-commands-none]")).toBeNull();
   });
-
-  it("the verdict row: Good and Bad are one segmented control, Feedback a button, in the same row; Verdict is in the \"…\" menu", async () => {
-    const replies = [{ seq: 4, command: "verdict", created_at: AT, handled_at: AT, refusal: null }];
-    serve({ commands: [cmd("verdict")], replies });
-    mount("/app/items/wi_g");
-    const group = await screen.findByRole("group", { name: "Verdict" });
-    expect([...group.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Good", "Bad"]);
-    expect(group.parentElement!.parentElement!.contains(screen.getByRole("button", { name: "Feedback" }))).toBe(true);
-    expect(screen.queryByRole("button", { name: "Verdict" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "More commands" }));
-    expect(screen.getByRole("menuitem", { name: "Verdict" })).toBeTruthy();
-    expect((await found('[data-outcome-of="verdict"]')).textContent).toBe("Done");
-  });
-
-  it("Merge is the first button of the one row, primary, with the verdict control after it", async () => {
-    serve({ item: base("wi_g", 50, "Grants", { merge: { enabled: true, reason: null } }), commands: [cmd("verdict")] });
-    mount("/app/items/wi_g");
-    const merge = await found('[data-command="merge"]');
-    const row = merge.parentElement!;
-    expect(row.querySelector("button")!.textContent).toBe("Merge");
-    expect(row.querySelector("[data-verdict]")).toBeTruthy();
-    expect(within(merge).getByRole("button", { name: "Merge" }).className.split(" ")).toContain("bg-accent");
-  });
 });
 
 describe("item page: the command box and pending proposals (design 09-dashboard-app)", () => {

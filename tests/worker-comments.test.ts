@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { pipeline, runComments } from "./helpers/fakes.js";
+import { pipeline } from "./helpers/harness.js";
+import { runComments } from "./helpers/fakes/config.js";
 
 // RFC 0015 M7, worker half: a run's comment is a thread entry that outbound delivers, never a write of the run's
 // own. A step that runs again after a restart records the same entry, so the comment leaves once.
