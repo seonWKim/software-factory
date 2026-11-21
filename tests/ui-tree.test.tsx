@@ -33,7 +33,7 @@ const ROWS = [
     run: { kind: "implement", status: "running", attempt: 1, worker_id: "host:7:0", started_at: AT, position: null },
   }),
   row(12, "blocked_by_task", "Phase two", { parent_id: "wi_10", phase: 2, waiting_on_number: 11, why: phaseHold(12, 11) }),
-  row(20, "blocked_by_task", "Held by coordination", {
+  row(20, "held", "Held by coordination", {
     why: why("held", "Held behind #11, which is running", [11]),
     run: { kind: "implement", status: "queued", attempt: 0, worker_id: null, started_at: null, position: 1 },
     claim: { decision: "held", holder: "#11", holder_id: "wi_11", approved: false, cost: 4, threshold: 2.5 },
@@ -114,6 +114,7 @@ describe("items tree", () => {
     expect(held("Phase three").getAttribute("href")).toBe("/app/items/wi_12");
     expect(held("Held by coordination").getAttribute("href")).toBe("/app/items/wi_11");
     expect(held("Phase two").textContent).toBe("Blocked by another task");
+    expect(held("Held by coordination").textContent).toBe("Held");
     expect(rowOf(tree, "Phase one").querySelector("[data-waits-for]")).toBeNull();
     for (const title of ["Phase two", "Held by coordination"]) {
       expect(rowOf(tree, title).textContent, title).not.toMatch(/waits for|o\/r#\d|wi_\d/);
@@ -131,6 +132,13 @@ describe("items tree", () => {
     expect(nodes.find((n) => n.item.id === "wi_20")!.children).toEqual([]);
   });
 
+  it("the Finished group shows the closed rows", async () => {
+    await mount();
+    fireEvent.click(screen.getByRole("tab", { name: "Finished 3" }));
+    await settle();
+    expect(titles(screen.getByRole("treegrid", { name: "Work items" }))).toEqual(["Finished split", "Closed alone"]); // the split's done phases sit under it, collapsed
+  });
+
   it("hides closed items and collapses a parent whose phases are all closed to one row; Show closed shows them", async () => {
     const tree = await mount();
     expect(titles(tree)).not.toContain("Closed alone");
@@ -140,14 +148,21 @@ describe("items tree", () => {
     expect(titles(await screen.findByRole("treegrid", { name: "Work items" }))).toContain("Closed alone");
   });
 
-  it("has no summary line; the state filter is tabs with the counts, and the Held tab filters the tree", async () => {
+  it("has no summary line; the state filter is five group tabs with the counts, empty ones hidden, and a group's Held tab filters the tree", async () => {
     await mount();
     expect(screen.queryByTestId("summary")).toBeNull();
     expect(screen.queryByText(/rate limit: ok/)).toBeNull();
-    fireEvent.click(screen.getByRole("tab", { name: /^Held 3/ }));
+    const groups = screen.getByRole("tablist", { name: "Filter by state" });
+    // No row is failed or stuck: the Problem group is hidden.
+    expect(within(groups).getAllByRole("tab").map((t) => t.textContent)).toEqual(["All 0", "Needs you 2", "Active 1", "Waiting 7", "Finished 3"]);
+    fireEvent.click(within(groups).getByRole("tab", { name: "Waiting 7" }));
+    const states = screen.getByRole("tablist", { name: "Filter Waiting by state" });
+    expect(within(states).getAllByRole("tab").map((t) => t.textContent)).toEqual(["All 7", "Needs triage 1", "Held 1", "Blocked by another task 5"]);
+    fireEvent.click(within(states).getByRole("tab", { name: "Held 1" }));
     await settle();
-    expect(titles(screen.getByRole("treegrid", { name: "Work items" }))).toEqual(["Split parent", "Phase two", "Phase three", "Held by coordination"]);
-    expect(screen.getByRole("tab", { name: /^Held 3/ }).getAttribute("aria-selected")).toBe("true");
+    expect(titles(screen.getByRole("treegrid", { name: "Work items" }))).toEqual(["Held by coordination"]);
+    expect(within(screen.getByRole("tablist", { name: "Filter Waiting by state" })).getByRole("tab", { name: "Held 1" }).getAttribute("aria-selected")).toBe("true");
+    expect(within(groups).getByRole("tab", { name: "Waiting 7" }).getAttribute("aria-selected")).toBe("true");
   });
 
   it("the Tree and List switch is a segmented control", async () => {
@@ -157,13 +172,14 @@ describe("items tree", () => {
     expect(within(view).getByRole("button", { name: "List" }).getAttribute("aria-pressed")).toBe("false");
   });
 
-  it("the needs filter shows Needs you and Needs triage, nothing from Blocked by another task", async () => {
+  it("the Needs you group shows Needs approval and Needs you, never Needs triage or Blocked by another task", async () => {
     await mount();
-    fireEvent.click(screen.getByRole("tab", { name: /^Needs you 3/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /^Needs you 2/ }));
     await settle();
     const shown = titles(screen.getByRole("treegrid", { name: "Work items" }));
-    expect(shown).toEqual(expect.arrayContaining(["Spec waiting", "Agent asks", "Triage asks"]));
-    for (const t of ["Dependency held", "Held by coordination", "Phase two"]) expect(shown).not.toContain(t);
+    // The count is the rows the filter shows.
+    expect(shown).toEqual(["Spec waiting", "Agent asks"]);
+    for (const t of ["Triage asks", "Dependency held", "Held by coordination", "Phase two"]) expect(shown).not.toContain(t);
   });
 
   it("search matches in the tree and keeps the matching item's parent for context", async () => {

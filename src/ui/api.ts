@@ -21,7 +21,7 @@ import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, activeRuns, closedFacetRows, itemCounts, itemState, latestDecision, holderTitles, listRows, readClaimPauses, readPhases, waitingOn, whyOf, withTitle } from "./list.js";
 import { runTokens } from "./deps.js";
 import { heldFailureOf, needCtx, needOf } from "./need.js";
-import { NEEDS_YOU } from "./priority.js";
+import { WITH_NEED } from "./priority.js";
 import { type PauseDeps, readPauses } from "./pause-api.js";
 import { failures } from "./failures.js";
 import { spend } from "./spend.js";
@@ -335,7 +335,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       id: it.id,
       source: { type: it.source.type, id: it.source.id, link: it.source.link },
       title: await c.text(it.title || null),
-      item_phase: r.level,
+      item_phase: r.level, state_label: r.label, // its words on the pages (src/shared/states.ts)
       reason_code: r.why.reason_code,
       stage: it.stage,
       tier: it.tier,
@@ -353,7 +353,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       conflicts: r.conflicts,
       merge_check,
       merge: await mergeReadiness(c.d, it, merge_check, allowed, r.pending),
-      ...(NEEDS_YOU.includes(r.level) ? { need: await c.need(it, merge_check), commands: await needsYouCommands(c.d, it, commandGrant, (v) => c.text(v)) } : {}),
+      ...(WITH_NEED.includes(r.level) ? { need: await c.need(it, merge_check), commands: await needsYouCommands(c.d, it, commandGrant, (v) => c.text(v)) } : {}),
       why: await c.why(r.why, it),
       parent_id: it.parent_id,
       phase: it.phase,

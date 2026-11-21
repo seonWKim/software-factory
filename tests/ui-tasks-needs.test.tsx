@@ -151,7 +151,8 @@ describe("Needs you", () => {
   });
 
   it("a merged item reads Merged, and the state opens a dialog with the full-page link", async () => {
-    s.items = [item("wi_1", { item_phase: "closed", close_reason: "completed", stage: "CLOSED" })];
+    // The server gives a completed close the state merged (src/ui/priority.ts closedLevel).
+    s.items = [item("wi_1", { item_phase: "merged", close_reason: "completed", stage: "CLOSED" })];
     await show();
     expect(await within(card("tk_built")).findByText("Merged", {}, SLOW)).toBeTruthy();
     fireEvent.click(within(card("tk_built")).getByRole("button", { name: "Work item state: tk_built" }));
