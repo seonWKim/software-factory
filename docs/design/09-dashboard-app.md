@@ -8,7 +8,10 @@ This file is an index. Each dashboard page keeps its decisions in its own topic 
 - [09-dashboard-api.md](09-dashboard-api.md): JSON API, serving `/app/`, build stamp, responsive check.
 - [09-dashboard-activity.md](09-dashboard-activity.md): the Activity page.
 - [09-dashboard-runners.md](09-dashboard-runners.md): the Runners page, Migrate now, Start and Restart now.
-- [09-dashboard-tasks.md](09-dashboard-tasks.md): the Tasks page, Calendar, Needs you, Project switcher.
+- [09-dashboard-tasks.md](09-dashboard-tasks.md): the Tasks list, row, Needs you.
+- [09-dashboard-tasks-quick-add.md](09-dashboard-tasks-quick-add.md): Tasks quick add and its preview.
+- [09-dashboard-tasks-calendar.md](09-dashboard-tasks-calendar.md): the Calendar page.
+- [09-dashboard-tasks-projects.md](09-dashboard-tasks-projects.md): the Project switcher and projects.
 - [09-dashboard-rules.md](09-dashboard-rules.md): the Rules page.
 - [09-dashboard-settings.md](09-dashboard-settings.md): the Settings and Plugins pages.
 - [09-dashboard-system.md](09-dashboard-system.md): the Work tree, Workers, Failures, Spend and Data pages.
