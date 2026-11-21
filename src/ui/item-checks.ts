@@ -1,0 +1,58 @@
+import type { DoneCheck } from "../core/done-checks.js";
+import type { Run } from "../core/types.js";
+
+// The item page's done-when checks (docs/design/09-dashboard-item.md, RFC 0024 WP3 phase 3): each done-when line with
+// its check and its latest result, read from the item's done_checks and the newest implement run that stored results.
+
+export type ItemCheckResult = "pass" | "fail" | "manual" | "not_run";
+
+/** One done-when line as `item.checks` serves it. `output_tail`: the failed run's output, on a failed line only. */
+export interface ItemCheckRow {
+  line: string;
+  check: { kind: "command" | "test" | "manual"; text: string };
+  result: ItemCheckResult;
+  output_tail: string | null;
+}
+
+const RESULTS: readonly string[] = ["pass", "fail", "manual", "not_run"];
+
+/** The per-line results an implement run's outcome carries (succeeded data or failed outcome), or null when it has none. */
+function storedResults(run: Run): { results: { line: string; result: ItemCheckResult }[]; tail: string | null } | null {
+  const o = run.outcome;
+  if (!o) return null;
+  const raw = o.status === "succeeded" ? o.data.done_checks : (o as { done_checks?: unknown }).done_checks;
+  if (!Array.isArray(raw)) return null;
+  const results = raw.flatMap((r: unknown) => {
+    const e = r as { line?: unknown; result?: unknown } | null;
+    return e && typeof e.line === "string" && typeof e.result === "string" && RESULTS.includes(e.result) ? [{ line: e.line, result: e.result as ItemCheckResult }] : [];
+  });
+  const tail = o.status === "failed" && typeof o.output_tail === "string" && o.output_tail !== "" ? o.output_tail : null;
+  return { results, tail };
+}
+
+/**
+ * The item's `checks`: null when it has no done_checks (triaged before them). Else one row per check in order: a manual
+ * line is `manual`; any other line takes the result the newest implement run stored for it (by place, when that run's
+ * line there is the same text), else `not_run`. A failed line carries that run's output tail. Each text passes `text`.
+ */
+export async function itemChecks(checks: readonly DoneCheck[] | null, runs: readonly Run[], text: (v: string, outcome?: boolean) => Promise<string>): Promise<ItemCheckRow[] | null> {
+  if (!checks) return null;
+  const newest = [...runs]
+    .filter((r) => r.kind === "implement")
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    .map(storedResults)
+    .find((s) => s !== null) ?? null;
+  const rows: ItemCheckRow[] = [];
+  for (const [i, c] of checks.entries()) {
+    const stored = newest?.results[i]?.line === c.line ? newest.results[i]!.result : null;
+    const result: ItemCheckResult = "manual" in c ? "manual" : stored === "pass" || stored === "fail" ? stored : "not_run";
+    const check = "manual" in c ? { kind: "manual" as const, text: c.reason } : "test_file" in c ? { kind: "test" as const, text: c.test_file } : { kind: "command" as const, text: c.command };
+    rows.push({
+      line: await text(c.line),
+      check: { kind: check.kind, text: await text(check.text) },
+      result,
+      output_tail: result === "fail" && newest?.tail ? await text(newest.tail, true) : null,
+    });
+  }
+  return rows;
+}

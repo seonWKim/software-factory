@@ -32,6 +32,7 @@ import { readCapabilities } from "./capabilities-api.js";
 import { readStanding } from "./standing-api.js";
 import { inProject, projectFilterRefusal } from "./tasks-api.js";
 import { itemPrefix, runParts, transcript } from "./transcript.js";
+import { itemChecks } from "./item-checks.js";
 import { type SystemDeps, parseRevision, systemActions } from "./system-actions.js";
 import { needsYouCount } from "./needs-you.js";
 import { latestWhyAnchor, threadRows } from "./thread.js";
@@ -448,6 +449,8 @@ async function item(c: ApiCtx, id: WorkItemId) {
       // About (design 09-dashboard-item): the intake text's first paragraph, and the spec once approved (done_criteria set), each text withheld on its own.
       request: await c.text(it.issue_text?.split(/\n[ \t]*\n/)[0]?.trim() || null),
       spec: it.done_criteria && { problem: (await c.text(it.problem))!, desired_output: await c.text(it.desired_output), done_criteria: await Promise.all(it.done_criteria.map(async (d) => (await c.text(d))!)) },
+      // Each done-when line with its check and latest result (design 09-dashboard-item); null before done_checks existed.
+      checks: await itemChecks(it.done_checks, runs, async (v, outcome) => (await c.text(v, outcome ? "run_outcome" : undefined))!),
     },
     timeline,
     runs: runRows,
