@@ -12,7 +12,7 @@ import type { SandboxHandle } from "../interfaces/sandbox.js";
 import { type DecisionAnswer, answerLines } from "../shared/command-notes.js";
 
 export { type LocalRoute, type PrText, TRUSTED_GIT_ENV, type WorkerDeps, hasTool, prTitle, routeFor, runPushIntents, threadDelivery };
-export { TRUSTED_GIT_KEYS, untrustedGitConfig } from "../core/git-trust.js";
+export { TRUSTED_GIT_KEYS, untrustedGitConfig } from "../shared/git-trust.js";
 
 /** At most one write of a run's last model output time per this many ms, and per a tenth of stall_ms (design 05-restarts). */
 export const OUTPUT_RECORD_MS = 30_000;

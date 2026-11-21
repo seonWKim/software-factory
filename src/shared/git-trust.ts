@@ -1,4 +1,4 @@
-// Which keys of a run's .git/config trusted git calls may read (design §5). Kernel code (RFC 0023 §3): the tool
+// Which keys of a run's .git/config trusted git calls may read (design §5). Shared kernel code (RFC 0023 §3; shared/ imports nothing outside itself): the tool
 // broker's trusted git and the worker share it without the broker importing the worker component.
 
 export const TRUSTED_GIT_KEYS = new Set([
