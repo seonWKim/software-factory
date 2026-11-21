@@ -1,58 +1,42 @@
 import { describe, expect, it } from "vitest";
-import { Worker } from "../src/worker/index.js";
-import type { WorkerId } from "../src/core/types.js";
-import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
-import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { storeSql } from "../src/impl/store/sql/store-sql.js";
-import { issue, newStore, system } from "./helpers/store.js";
-import { FakeBroker, FakeRunner, FakeSandbox, MemoryStorage, config, prompts, recordingLog, triageSpec } from "./helpers/fakes.js";
+import { pipeline } from "./helpers/fakes.js";
 
 // Issue #718: a run whose journal holds a succeeded step written by another code_version (a deploy between the
-// step and the takeover) is no longer failed as `not_resumable`. The worker that claims it on new code drops the
-// old journal and runs the run from the start (design 10-event-driven, "Claims still go through the store").
+// step and the takeover) is no longer failed as `not_resumable`. It ends as `code_version_restart`, an infra
+// failure, and the controller requeues the step as a new run with a new journal, which runs from the start and
+// counts as an infra restart (design 10-event-driven, "Claims still go through the store"; 05-restarts).
 
 describe("a run journaled by another code_version", () => {
-  it("is run again from the start on the new code, not failed with not_resumable", async () => {
-    const clock = new FakeClock();
-    const { store } = await newStore(clock);
-    const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
-    const [queued] = await store.listRuns(item.id);
-    const sql = storeSql(store);
+  it("is requeued as a new run from the start, counted as an infra restart, not failed with not_resumable", async () => {
+    const f = await pipeline();
+    const it0 = await f.submit();
+    const [first] = await f.runs(it0, "triage");
+    const sql = storeSql(f.store);
     // Old code finished the agent step, then the run went back to the queue (its worker restarted on a deploy).
-    const at = clock.now().toISOString();
-    await sql.run("UPDATE worker_runs SET code_version = ? WHERE id = ?", ["v-old", queued!.id]);
+    const at = f.clock.now().toISOString();
+    await sql.run("UPDATE worker_runs SET code_version = ? WHERE id = ?", ["v-old", first!.id]);
     await sql.run(
       "INSERT INTO worker_run_steps (run_id, step_id, attempt, status, result_ref, error_code, started_at, finished_at) VALUES (?, 'run-agent', 1, 'succeeded', ?, NULL, ?, ?)",
-      [queued!.id, JSON.stringify({ written_by: "v-old" }), at, at],
+      [first!.id, JSON.stringify({ written_by: "v-old" }), at, at],
     );
 
-    let agentRuns = 0;
-    const runner = new FakeRunner({
-      triage: () => {
-        agentRuns++;
-        return { output: triageSpec };
-      },
+    await f.step();
+    expect(await f.store.getRun(first!.id)).toMatchObject({
+      status: "failed", outcome: { status: "failed", error_code: "code_version_restart", infra: true },
     });
-    const log = recordingLog();
-    const worker = new Worker({
-      id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker: new FakeBroker(), storage: new MemoryStorage(),
-      clock, config, prompts, log, scanner: new PatternEgressScanner(async () => []), toolEnv: {}, awake: new NoKeepAwake(), code_version: "v-new",
-    });
+    expect(f.agentCalls("triage")).toBe(0);
+    expect(await f.item(it0)).toMatchObject({ blocked_on: "none", restart_count: 1 });
+    const retry = (await f.runs(it0, "triage")).find((r) => r.id !== first!.id);
+    expect(retry).toMatchObject({ status: "queued" });
 
-    expect(await worker.tick()).toBe(true);
-    const run = (await store.getRun(queued!.id))!;
-    expect(run.outcome).not.toMatchObject({ error_code: "not_resumable" });
-    expect(run).toMatchObject({ status: "succeeded" });
-    // From the start: the agent step ran on the new code, and the journal holds only the new code's step.
-    expect(agentRuns).toBe(1);
-    const steps = await sql.all("SELECT step_id, attempt, status, result_ref FROM worker_run_steps WHERE run_id = ?", [run.id]);
-    expect(steps.map((s) => [s.step_id, Number(s.attempt), s.status])).toEqual([["run-agent", run.attempt, "succeeded"]]);
+    // The retry is a new run with its own journal: it runs the agent on the new code.
+    f.clock.advance(f.config.retry_max_ms);
+    await f.step();
+    expect(await f.store.getRun(retry!.id)).toMatchObject({ status: "succeeded" });
+    expect(f.agentCalls("triage")).toBeGreaterThan(0);
+    const steps = await sql.all("SELECT result_ref FROM worker_run_steps WHERE run_id = ?", [retry!.id]);
     expect(steps.map((s) => String(s.result_ref))).not.toContain(JSON.stringify({ written_by: "v-old" }));
-    const [row] = await sql.all("SELECT code_version FROM worker_runs WHERE id = ?", [run.id]);
-    expect(row).toMatchObject({ code_version: "v-new" });
-    expect(log.lines.find((l) => l.msg === "journal from another code_version dropped; the run starts over")?.fields).toMatchObject({
-      run_id: run.id, code_version: "v-old",
-    });
+    expect((await f.runs(it0)).some((r) => r.outcome?.status === "failed" && r.outcome.error_code === "not_resumable")).toBe(false);
   });
 });

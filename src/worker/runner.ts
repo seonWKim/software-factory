@@ -1,7 +1,7 @@
 import { type RunCall, type RunKindDescriptor, loadRunKinds } from "./run-kind.js";
 import { gradeRun } from "./runs/improve/improve.run.js";
 import type { MergeCheckTools } from "./runs/merge-check/merge-check.run.js";
-import { type ExecutionEngine, type ExecutionEngines, LeaseLostError, RunDeadlineError, type RunRef, StepTimeoutError } from "./engine/index.js";
+import { type Adopted, type ExecutionEngine, type ExecutionEngines, LeaseLostError, RunDeadlineError, type RunRef, StepTimeoutError } from "./engine/index.js";
 import { JournalEngines } from "./engine/plugins/journal/journal-engine.js";
 import { type Period, type TickHandler, type TickSource, tickAt } from "../shared/ticks/tick-generator.js";
 import { TimeBasedTicks } from "../shared/ticks/plugins/time-based/time-based-tick-generator.js";
@@ -213,7 +213,8 @@ export class Worker {
 
   /**
    * Holds the claimed run in the engine, then executes it. A run journaled by code this worker cannot resume
-   * (another code_version) runs from the start: the engine drops its journal when it adopts it.
+   * (another code_version) ends as `code_version_restart`, infra: the controller's retry is a new run with a new
+   * journal, which runs from the start and counts toward max_restart (issue #718).
    */
   async execute(run: Run, token: number): Promise<void> {
     const engine = await this.engine();
@@ -221,15 +222,15 @@ export class Worker {
     const lease = new AbortController();
     this.leases.set(run.id, lease);
     try {
-      const held = await engine.adopt(ref, tickAt("claim", this.cfg.tick_ms, this.d.clock.now().getTime()));
-      await this.executeHeld(run, token, engine, held ? ref : null, lease);
+      const adopted = await engine.adopt(ref, tickAt("claim", this.cfg.tick_ms, this.d.clock.now().getTime()));
+      await this.executeHeld(run, token, engine, ref, adopted, lease);
     } finally {
       this.leases.delete(run.id);
       engine.release(ref);
     }
   }
 
-  async executeHeld(run: Run, token: number, engine: ExecutionEngine, ref: RunRef | null, lease: AbortController): Promise<void> {
+  async executeHeld(run: Run, token: number, engine: ExecutionEngine, ref: RunRef, adopted: Adopted, lease: AbortController): Promise<void> {
     const log = { run_id: run.id, work_item_id: run.work_item_id, kind: run.kind, attempt: run.attempt, worker_id: this.d.id };
     const startedAt = this.d.clock.now().getTime();
     this.d.log.info("run start", log);
@@ -248,7 +249,8 @@ export class Worker {
     let outcome: RunOutcome | null = null;
     let paused: RunPaused | null = null;
     try {
-      if (!ref) throw new RunFailure("lease_lost", "lease lost before the engine held the run", true);
+      if (adopted === "lost") throw new RunFailure("lease_lost", "lease lost before the engine held the run", true);
+      if (adopted === "foreign_journal") throw new RunFailure(CODE_VERSION_RESTART, "the run was journaled by another code_version; its retry starts over", true);
       const item = await this.d.store.getWorkItem(run.work_item_id);
       if (!item) throw new RunFailure("work_item_missing", run.work_item_id);
       const ctx: ToolCallContext = { run_id: run.id, work_item_id: item.id, lease_token: token };
@@ -1027,6 +1029,9 @@ export const HOOK_REFUSED = "hook_refused";
 
 /** WorkerDeps.code_version when the process names none. */
 const DEV_CODE_VERSION = "dev";
+
+/** A run another code_version journaled, which this worker's code cannot resume: its retry starts over (issue #718). */
+const CODE_VERSION_RESTART = "code_version_restart";
 
 /** The engine's errors as run failures: a lost lease and a step timeout are infra; a passed deadline is not. */
 function stepFailure(err: unknown): unknown {

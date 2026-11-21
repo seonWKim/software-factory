@@ -177,9 +177,9 @@ describe.each(BACKENDS)("execution-engine contract: journal on $name", (backend)
     const claimed = (await store.claimRun({ worker_id: "worker-a" as never, kinds: ["implement"], lease_ms: 5 * MIN }))!;
     const ref = { id, kind: "implement", attempt: claimed.attempt, lease_token: claimed.lease!.token };
     const now = { schedule: "claim", now: new Date(T0 + S).toISOString(), slot: 0 };
-    expect(await a.engine.adopt({ ...ref, lease_token: ref.lease_token + 1 }, now)).toBe(false);
+    expect(await a.engine.adopt({ ...ref, lease_token: ref.lease_token + 1 }, now)).toBe("lost");
     await expect(a.engine.step(ref, "prepare-branch", async () => 1)).rejects.toThrow(/lease/);
-    expect(await a.engine.adopt(ref, now)).toBe(true);
+    expect(await a.engine.adopt(ref, now)).toBe("held");
     expect(await a.engine.step(ref, "prepare-branch", async () => 1)).toBe(1);
     expect(await runRow(db[0], id)).toMatchObject({ status: "running", code_version: "v1", deadline_at: new Date(T0 + 60 * MIN).toISOString() });
     a.engine.release(ref);
@@ -391,7 +391,7 @@ describe.each(BACKENDS)("execution-engine contract: journal on $name", (backend)
     expect(await runRow(db[0], fresh)).toMatchObject({ code_version: "v2" });
   });
 
-  it("a run another claim path leased to newer code drops the old code's journal and runs from the start", async () => {
+  it("a run another claim path leased to newer code is not held, and keeps the old code's journal and stamp", async () => {
     const opened = await backend.open();
     const { db, store } = opened;
     const old = worker(db[0], "worker-old", { codeVersion: "v1" });
@@ -407,10 +407,10 @@ describe.each(BACKENDS)("execution-engine contract: journal on $name", (backend)
       leased.attempt, leased.lease_token, id,
     ]);
     const next = worker(db[1], "worker-new", { codeVersion: "v2" });
-    expect(await next.engine.adopt(leased, tickAt("claim", 10 * S, T0 + 30 * S))).toBe(true);
-    expect(await stepRows(db[0], id)).toEqual([]);
-    expect(await runRow(db[0], id)).toMatchObject({ status: "running", code_version: "v2" });
-    expect(await next.engine.step(leased, "prepare-branch", async () => "new branch")).toBe("new branch");
+    expect(await next.engine.adopt(leased, tickAt("claim", 10 * S, T0 + 30 * S))).toBe("foreign_journal");
+    expect(await stepRows(db[0], id)).toEqual([expect.objectContaining({ step_id: "prepare-branch", status: "succeeded" })]);
+    expect(await runRow(db[0], id)).toMatchObject({ status: "running", code_version: "v1" });
+    await expect(next.engine.step(leased, "run-agent", async () => "new")).rejects.toThrow(/lease/);
   });
 
   it("a journal write that fails while recording a failed step keeps the step's own error and logs the write", async () => {

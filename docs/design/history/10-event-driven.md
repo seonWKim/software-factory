@@ -3,8 +3,9 @@
 - **A run journaled by another code_version failed `not_resumable`** (decision changed 2026-11-21, issue #718;
   changes the 2026-11-09 "Resume across a deploy" rule under "Claims still go through the store's `claimRun`").
   Before: a run the store leased whose journal held a succeeded step from another `code_version` was refused by
-  `adopt` and failed `not_resumable` (infra); its retry was a new run with a new journal. Six runs failed this way
-  with finished agent work (the improver's pattern; the resume attempt itself was not in the evidence).
+  `adopt` and failed `not_resumable` (infra), as did a run whose lease was lost before `adopt` held it; its retry
+  was a new run with a new journal. Six runs failed this way with finished agent work (the improver's pattern; the
+  resume attempt itself was not in the evidence).
 - **Legacy contract checks and copies before it drops** (decision changed 2026-11-15). Before: two contract
   migrations, `20261109T0900-state-drop-legacy-tables` (M1's `legacy_*`) and
   `20261109T0901-inbound-drop-legacy-commands` (M4's), dropped their tables without checking that each row was in

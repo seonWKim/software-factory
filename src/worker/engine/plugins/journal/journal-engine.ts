@@ -12,7 +12,8 @@
 //   resumes it from the journal (one takeover path).
 // - code_version: a run with a stored step result from other code is resumed only if `resumes(version)` says so.
 //   Otherwise `claim` leaves it for a worker on that revision (RFC 0015 §8 version pinning), and `adopt`, whose
-//   run the store already leased to this worker, drops the old journal so the run starts over (issue #718).
+//   run the store already leased to this worker, answers `foreign_journal` so the runner ends it for a retry, a new
+//   run with a new journal (issue #718).
 
 import { errorText } from "../../../../core/log.js";
 import type { Row, SqlDriver, SqlExecutor, SqlValue } from "../../../../state/index.js";
@@ -21,6 +22,7 @@ import {
   LeaseLostError,
   RunDeadlineError,
   StepTimeoutError,
+  type Adopted,
   type EngineOptions,
   type ExecutionEngine,
   type ExecutionEngines,
@@ -98,30 +100,24 @@ export class JournalEngine implements ExecutionEngine {
     return ref && this.hold(ref.ref, ref.deadline);
   }
 
-  async adopt(run: RunRef, tick: Tick): Promise<boolean> {
+  async adopt(run: RunRef, tick: Tick): Promise<Adopted> {
     const now = this.observe(tick);
     const timeouts = this.opts.kinds[run.kind];
-    if (!timeouts) return false;
-    let dropped: string | null = null;
-    const deadline = await this.opts.db.transaction(async (tx): Promise<string | null> => {
+    if (!timeouts) return "lost";
+    const got = await this.opts.db.transaction(async (tx): Promise<string | Exclude<Adopted, "held">> => {
       const [row] = await tx.all(`SELECT status, lease_token, created_at, code_version, deadline_at FROM worker_runs WHERE id = ?`, [run.id]);
-      if (!row || row.status !== "running" || Number(row.lease_token) !== run.lease_token) return null;
-      // Leased to this worker already, so nobody else would take it: the run starts over on this code.
-      if (await this.foreignJournal(tx, run.id, row.code_version)) {
-        await tx.run("DELETE FROM worker_run_steps WHERE run_id = ?", [run.id]);
-        dropped = String(row.code_version);
-      }
+      if (!row || row.status !== "running" || Number(row.lease_token) !== run.lease_token) return "lost";
+      if (await this.foreignJournal(tx, run.id, row.code_version)) return "foreign_journal";
       const deadline = row.deadline_at === null ? iso(Date.parse(String(row.created_at)) + timeouts.schedule_to_close_ms) : String(row.deadline_at);
       const n = await tx.run(
         "UPDATE worker_runs SET code_version = ?, deadline_at = ?, updated_at = ? WHERE id = ? AND status = 'running' AND lease_token = ?",
         [this.opts.codeVersion, deadline, iso(now), run.id, run.lease_token],
       );
-      return n === 1 ? deadline : null;
+      return n === 1 ? deadline : "lost";
     });
-    if (deadline === null) return false;
-    if (dropped !== null) this.opts.log?.warn("journal from another code_version dropped; the run starts over", { run_id: run.id, code_version: dropped });
-    this.hold(run, deadline);
-    return true;
+    if (got === "lost" || got === "foreign_journal") return got;
+    this.hold(run, got);
+    return "held";
   }
 
   release(run: RunRef): void {
