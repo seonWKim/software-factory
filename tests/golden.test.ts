@@ -37,23 +37,12 @@ import type { EgressChannel, EgressScanner, ScanResult } from "../src/interfaces
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { SecretStore } from "../src/interfaces/secret-store.js";
 import { newStore } from "./helpers/store.js";
-import {
-  FakeForge, FakeAuth,
-  FakeBroker,
-  PROJECT as PROJECT_REF,
-  FakeGitHubDiff,
-  FakeRunner,
-  FakeSandbox,
-  FakeSource,
-  MemoryStorage,
-  alice,
-  cleanScanner,
-  config,
-  issueRef,
-  prompts,
-  silent,
-  triageSpec,
-} from "./helpers/fakes.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { PROJECT as PROJECT_REF, alice, cleanScanner, config, issueRef, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
+import { FakeGitHubDiff } from "./helpers/fakes/github.js";
+import { FakeSource } from "./helpers/fakes/source.js";
 import { TokenCredentials } from "../src/impl/github/token-credentials.js";
 import { REPO } from "./architecture/lib.js";
 

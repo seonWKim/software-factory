@@ -11,7 +11,9 @@ import type { AgentRunner } from "../src/interfaces/agent-runner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { type SettingsDeps, parseSettingsArgs, runSettings } from "../src/settings-cmd.js";
 import { Worker } from "../src/worker/index.js";
-import { FakeBroker, FakeSandbox, MemoryStorage, PROJECT, cleanScanner, config, prompts, silent } from "./helpers/fakes.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { PROJECT, cleanScanner, config, prompts, silent } from "./helpers/fakes/config.js";
 import { OTHER_PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
 // Issue #497: the daily improve run learns a tighter max_diff_lines per project from its stored report.

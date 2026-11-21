@@ -3,7 +3,7 @@
 // Moved out of the legacy controller (RFC 0015 M5); the merge and the base push are outbound deliveries (M8), the
 // conflict probe and the red-main check are still inline (unit-purity ratchet).
 
-import { checkCommands } from "../../../core/checks.js";
+import { checkCommands, runChecks } from "../../../core/checks.js";
 import { ALERT_DEDUPE_MS } from "../../../core/alarms.js";
 import { modeOf } from "../../../core/settings.js";
 import { AUTO_ACTOR, autoMergeRefusal, branchFor } from "../../../core/policy.js";
@@ -15,6 +15,7 @@ import { lastPrNotes } from "../../../core/pr-body.js";
 import { type Actor, type Run, type SourceRef, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { ExternalIdentity } from "../../../interfaces/auth-provider.js";
 import { LOCAL_GIT_HOST, basePushOutcome, basePushTarget, gitTarget, type ActionRow } from "../../../outbound/index.js";
+import { failingTestNames } from "../../../worker/index.js";
 import { AUTO, CONFLICT_PENDING, SYSTEM, awaitingMerge } from "../support.js";
 import type { ControllerWrite } from "../kernel.js";
 import type { Ctx } from "../context.js";
@@ -40,6 +41,12 @@ const MODE_HISTORY = 500;
 const AUTO_MERGE_BATCH = 20;
 /** Why auto mode went back to manual: the alert's error code (design 03-risk, stop conditions). */
 type AutoStop = "red_main" | "failure_alert" | "budget_checkpoint";
+
+/** What the red-main check's failing command printed: the failing tests by name (at most 10) and its tail (at most 2000 characters). */
+interface RedMainOutput {
+  failing_tests: string[];
+  output_tail: string;
+}
 
 /**
  * Why a branch that does not merge cleanly into the local base was not merged, with the conflicting files. `next`:
@@ -454,48 +461,59 @@ export class LocalMergeUnit {
 
   /**
    * Red main (design 03-risk): after an automatic merge, the install command, the checks and the UI check
-   * (`repo.ui_check`) run again on the new base tip in a fresh detached checkout. A failure, or a check that could
-   * not run, is red main (`redMain`): its alert and fix item on that tip, and auto mode set back to manual.
+   * (`repo.ui_check`) run again on the new base tip in a fresh detached checkout, through the merge check's runner
+   * (`runChecks`: its tail, at most CHECK_TAIL_CHARS). A failure, or a check that could not run, is red main
+   * (`redMain`): its alert, which keeps the failing tests and the output tail, its fix item on that tip, and auto mode
+   * set back to manual.
    */
   async redMainCheck(it: WorkItem): Promise<void> {
     const sandbox = this.c.k.d.sandbox;
     if (!sandbox) return;
     const { repo } = this.c.k.cfg;
     let failed: string | null = null;
+    let output: RedMainOutput | undefined;
     let tip: string | null = null;
     try {
-      const h = await sandbox.create({ repo: repo.path, branch: null, base_ref: repo.base_branch });
-      tip = h.base_sha ?? null;
+      const handle = await sandbox.create({ repo: repo.path, branch: null, base_ref: repo.base_branch });
+      tip = handle.base_sha ?? null;
       try {
-        for (const cmd of [repo.install_command, ...checkCommands(repo), ...(repo.ui_check ? [repo.ui_check.command] : [])]) {
-          const r = await sandbox.exec(h, cmd, { env: this.c.k.d.check_env ?? {}, timeout_ms: this.c.k.cfg.run_timeout_ms });
-          if (r.exit_code === 0) continue;
-          failed = `\`${cmd.join(" ")}\` ${r.timed_out ? "timed out" : `exited ${r.exit_code}`} on the new tip of \`${repo.base_branch}\``;
-          break;
+        const round = await runChecks({
+          sandbox, handle, commands: [repo.install_command, ...checkCommands(repo), ...(repo.ui_check ? [repo.ui_check.command] : [])],
+          env: { ...this.c.k.d.check_env }, timeout_ms: this.c.k.cfg.run_timeout_ms, signal: new AbortController().signal, redact: [],
+        });
+        if (round.failed) {
+          failed = `\`${round.failed.command.join(" ")}\` ${round.failed.how} on the new tip of \`${repo.base_branch}\``;
+          output = { failing_tests: failingTestNames(round.failed.tail), output_tail: round.failed.tail };
         }
       } finally {
-        await sandbox.destroy(h);
+        await sandbox.destroy(handle);
       }
     } catch (err) {
       failed = `the checks could not run on the new tip of \`${repo.base_branch}\`: ${err instanceof Error ? err.message.slice(0, 200) : "unknown error"}`;
     }
-    if (failed !== null) await this.redMain(it.project, tip ?? (await this.baseTip()), failed);
+    if (failed !== null) await this.redMain(it.project, tip ?? (await this.baseTip()), failed, output);
   }
 
   /**
    * The base branch fails a check on its own at `base_sha` (design 03-risk): one `red_main` alert keyed on that sha, in
    * manual and auto mode; one fix item filed through outbound (`file_fix_item`, keyed on that sha) by the first source
    * in `plugins.source` order that can file; and in auto mode the stop (`stopAuto`). Safe to run again: the alert's
-   * conditional insert and the action's key store each once. With no sha known, only the stop.
+   * conditional insert and the action's key store each once. With no sha known, only the stop. With `output` (the
+   * red-main check's), the alert's detail is JSON `{ text, failing_tests, output_tail }` (`redMainDetail` in
+   * src/ui/alarms.ts reads it back); else the text alone.
    */
-  async redMain(project: string, base_sha: string | null, detail: string): Promise<void> {
+  async redMain(project: string, base_sha: string | null, detail: string, output?: RedMainOutput): Promise<void> {
     if (base_sha !== null) {
-      // G5: the alert reaches the status page, so its detail is scanned as UI text first; the fix item's text is
-      // scanned by outbound before it leaves.
+      // G5: the alert reaches the status page, so its detail is scanned as UI text first, and the output tail as run
+      // outcome text, as the merge check scans it: a flagged tail is stored as null, the test names are kept. The fix
+      // item's text is scanned by outbound before it leaves.
       const scan = await this.c.k.reader.scan("ui", detail);
+      const text = scan.clean ? detail : null;
+      const tail = output && output.output_tail !== "" && (await this.c.k.reader.scan("run_outcome", output.output_tail)).clean ? output.output_tail : null;
+      const stored = output ? JSON.stringify({ text, failing_tests: output.failing_tests, output_tail: tail }) : text;
       const writes: ControllerWrite[] = [{
         kind: "alert", dedupe_ms: ALERT_DEDUPE_MS,
-        alert: { pattern: "red_main", pattern_key: `red_main:${base_sha}`, error_code: "red_main", count: 1, detail: scan.clean ? detail : null },
+        alert: { pattern: "red_main", pattern_key: `red_main:${base_sha}`, error_code: "red_main", count: 1, detail: stored },
       }];
       const filer = this.c.k.filer();
       const { base_branch } = this.c.k.cfg.repo;

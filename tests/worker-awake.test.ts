@@ -7,7 +7,9 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import type { AgentRunResult } from "../src/interfaces/agent-runner.js";
 import type { KeepAwake } from "../src/interfaces/keep-awake.js";
 import { issue, newStore, system } from "./helpers/store.js";
-import { FakeBroker, FakeRunner, FakeSandbox, MemoryStorage, config, prompts, recordingLog, triageSpec } from "./helpers/fakes.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { config, prompts, recordingLog, triageSpec } from "./helpers/fakes/config.js";
 
 /** Writes hold/release into the same list the runner writes to, so the order is visible. */
 class RecordingAwake implements KeepAwake {

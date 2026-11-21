@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { API, type ItemRow, type Items, type Overview, type SystemAction, useApi, useItems } from "../api.js";
+import { API, type ItemRow, type Items, type Overview, type SystemAction, mergeInFlight, useApi, useItems } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { Dialog } from "../components/ui/dialog.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
@@ -13,59 +13,83 @@ import { type NeedGroup, MergeCheckNote, allowEntries, needGroup, needsYou } fro
 import { ItemDecision } from "./decision-card.js";
 import { NeedActions, SendErrors, useCommandSend } from "./item-commands.js";
 import { FloorStatus } from "./pages.js";
-import { CheckRow, NEED_ROW } from "./system-banner.js";
+import { CheckRow } from "./system-banner.js";
 import { Card } from "../components/ui/card.js";
 import { Badge } from "../components/ui/badge.js";
+import { ListRow, ROW_TITLE } from "../components/ui/list-row.js";
+import type { MenuItem } from "../components/ui/menu.js";
+import { cn } from "../lib/cn.js";
 
-/** The five states a built task shows on its row, from its work item's level (src/ui/priority.ts); a closed item is "merged" only when it closed as completed. */
+/** The states a built task shows on its row, from its work item's level (src/ui/priority.ts); a closed item is "merged" only when it closed as completed. */
 const STATE_OF: Record<string, MessageKey> = {
   needs_approval: "tasks.state.spec",
   running: "tasks.state.running",
-  queued: "tasks.state.running",
   ready_to_merge: "tasks.state.merge",
   needs_you: "tasks.state.needs",
   needs_triage: "tasks.state.needs",
   stuck: "tasks.state.needs",
 };
 
-const stateKey = (it: ItemRow): MessageKey | null => (it.item_phase === "closed" ? (it.close_reason === "completed" ? "tasks.state.merged" : null) : (STATE_OF[it.item_phase] ?? null));
+/** A queued item is never Running: a queued triage run (or an approved one not queued yet) reads "Triage queued", any other "Queued". */
+const queuedKey = (it: ItemRow): MessageKey => ((it.run?.kind ?? it.kind) === "triage" ? "tasks.state.triageQueued" : "tasks.state.queued");
 
+const stateKey = (it: ItemRow): MessageKey | null => {
+  if (it.item_phase === "closed") return it.close_reason === "completed" ? "tasks.state.merged" : null;
+  return it.item_phase === "queued" ? queuedKey(it) : (STATE_OF[it.item_phase] ?? null);
+};
+
+/**
+ * The row's state words: a Merge under way says where it is, as the item page's button does (the server's pending
+ * request rule: "Merge queued (position N)", "Checking build"), with no Merge button; else the state's own words.
+ */
+const stateText = (it: ItemRow, key: MessageKey): string => (mergeInFlight(it.merge) ? it.merge.reason : t(key));
+
+/** A reason that is only a short status code ("failed: spec_conflict"): shown as a chip beside the badge, not as a line. */
+const CODE_REASON = /^[a-z][a-z ]{0,20}: [a-z0-9_.-]{1,40}$/i;
 /** An Answer-or-fix item's reason (the need's, else the why's en.ts text); empty for Merge and Approve, which say it with the badge. */
 const needReason = (it: ItemRow): string => (needGroup(it) === "answer" ? (it.need?.reason ?? (it.why ? whyText(it.why) : "")) : "");
 
 /**
- * The primary action and overflow menu of a waiting item (Merge, Approve, Retry, Answer, or Open), as in every Needs
- * you row. `cmd`: the row's sends (useCommandSend); `inlineErrors` false leaves a failed send's error to the row.
+ * The "⋯" menu of a waiting item, as in every Needs you row: its primary command first (Merge, Approve, Retry or
+ * Answer), then its other commands, then `extra` (the row's own actions). `cmd`: the row's sends (useCommandSend);
+ * `inlineErrors` false leaves a failed send's error to the row.
  */
-function RowActions({ it, cmd, inlineErrors = true }: { it: ItemRow; cmd: ReturnType<typeof useCommandSend>; inlineErrors?: boolean }) {
+function RowActions({ it, cmd, inlineErrors = true, extra, label }: { it: ItemRow; cmd: ReturnType<typeof useCommandSend>; inlineErrors?: boolean; extra?: readonly MenuItem[]; label?: string }) {
   const checking = it.merge_check?.state === "checking";
-  return <NeedActions id={it.id} title={it.title ?? it.id} commands={it.commands ?? []} pr={it.change_ref} group={needGroup(it)} merge={it.merge} source={it.source.type} checking={checking} cmd={cmd} allow={allowEntries(needReason(it))} inlineErrors={inlineErrors} />;
+  return <NeedActions id={it.id} title={it.title ?? it.id} commands={it.commands ?? []} pr={it.change_ref} group={needGroup(it)} merge={it.merge} checking={checking} cmd={cmd} allow={allowEntries(needReason(it))} inlineErrors={inlineErrors} extra={extra} label={label} />;
+}
+
+/** The work item a built task links to, from the items list; undefined while it loads or when the list lacks it. */
+export function useWorkItem(id: string | null): ItemRow | undefined {
+  const items = useApi<Items>(API.items).data?.items;
+  return id === null ? undefined : items?.find((i) => i.id === id);
+}
+
+/** True when the item waits on the owner (it is in Needs you): an open task's row then puts its commands in the row's menu. */
+export const waitsOnOwner = (it: ItemRow | undefined): it is ItemRow => it !== undefined && needsYou([it]).length > 0;
+
+/** An open task's menu when its work item waits on the owner: the item's commands first, then the task's own `extra`. */
+export function TaskItemMenu({ it, extra, label }: { it: ItemRow; extra: readonly MenuItem[]; label: string }) {
+  const cmd = useCommandSend(it.id);
+  return <RowActions it={it} cmd={cmd} extra={extra} label={label} />;
 }
 
 /**
- * The work item's state on a task's row. On an open task's row (`open`) a waiting item shows its state badge and its
- * one primary action (it is a Needs you row too); a done task's row keeps the plain state. Any other state is a
+ * The work item's state on a task's row. On an open task's row (`open`) a waiting item shows its state badge, its
+ * commands in the row's menu (it is a Needs you row too); a done task's row keeps the plain state. Any other state is a
  * button that opens its commands in a Dialog; nothing while the items list lacks the item.
  */
 export function WorkState({ id, title, open: taskOpen }: { id: string; title: string; open: boolean }) {
-  const items = useApi<Items>(API.items).data?.items;
-  const it = items?.find((i) => i.id === id);
+  const it = useWorkItem(id);
   const [open, setOpen] = useState(false);
-  const cmd = useCommandSend(id);
   const key = it ? stateKey(it) : null;
   if (!it || key === null) return null;
-  if (taskOpen && needsYou([it]).length > 0) {
-    return (
-      <>
-        <Badge level={it.item_phase}>{t(key)}</Badge>
-        <RowActions it={it} cmd={cmd} />
-      </>
-    );
-  }
+  // Its commands are in the row's menu (TaskItemMenu).
+  if (taskOpen && waitsOnOwner(it)) return <Badge level={it.item_phase}>{stateText(it, key)}</Badge>;
   return (
     <>
       <Button size="sm" variant="ghost" aria-label={t("tasks.stateOpen", { title })} onClick={() => setOpen(true)}>
-        <Badge level={it.item_phase}>{t(key)}</Badge>
+        <Badge level={it.item_phase}>{stateText(it, key)}</Badge>
       </Button>
       {open && (
         <Dialog title={it.title ?? title} confirmLabel={t("tasks.stateClose")} onConfirm={() => setOpen(false)} onClose={() => setOpen(false)}>
@@ -82,40 +106,56 @@ const GROUPS: readonly [NeedGroup, MessageKey][] = [["merge", "needs.groupMerge"
 /**
  * One compact Needs you row: the item (and its PR), its state as one badge, a merge check only when it is not
  * "mergeable", the reason only for an Answer-or-fix item (Merge and Approve say it with the badge; it links to the item's latest
- * thread entry when the need names one), and the primary action.
- * A failed send's error takes its own full-width line below the row's content, never the actions cell
- * (design-system/patterns.md C-050).
+ * thread entry when the need names one), on the shared ListRow; every action is in its "⋯" menu, the primary first.
+ * A failed send's error takes its own line below the row's content, never the menu cell (design-system/patterns.md C-050).
  */
 function WorkRow({ it }: { it: ItemRow }) {
   const cmd = useCommandSend(it.id);
   const checking = it.merge_check?.state === "checking";
   const reason = needReason(it);
+  const chip = CODE_REASON.test(reason);
+  const toNeed = it.need?.anchor ? `${itemPath(it.id)}#${it.need.anchor}` : null;
   return (
-    <li data-key={it.id} className={NEED_ROW}>
-      <div className="min-w-0 grow basis-64 space-y-1">
+    <ListRow
+      data-key={it.id}
+      title={
         <span className="flex min-w-0 items-baseline gap-2">
-          <Link href={itemPath(it.id)} title={t("needs.idHover", { id: it.id })} className="truncate font-medium text-text-1 hover:underline">
+          <Link href={itemPath(it.id)} title={it.title ?? undefined} className={cn(ROW_TITLE, "text-text-1 hover:underline")}>
             {it.title ?? shortSource(it.source.id)}
           </Link>
           {it.change_ref !== null && <span className="shrink-0 text-xs text-text-2 tabular-nums">#{it.change_ref}</span>}
         </span>
-        <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+      }
+      details={
+        <>
           <Badge level={it.item_phase}>{LEVEL_LABELS[it.item_phase] ?? it.item_phase}</Badge>
           {it.merge_check && !checking && it.merge_check.state !== "mergeable" && <MergeCheckNote check={it.merge_check} />}
-        </span>
-        {reason !== "" && (
-          <p data-need title={reason} className="line-clamp-2 text-xs break-words text-text-2">
-            {it.need?.anchor ? <Link href={`${itemPath(it.id)}#${it.need.anchor}`} className={LINK_CLASS}>{reason}</Link> : reason}
-          </p>
-        )}
-      </div>
-      <RowActions it={it} cmd={cmd} inlineErrors={false} />
+          {chip && (
+            <span data-need title={reason}>
+              {toNeed ? (
+                <Link href={toNeed} className="rounded-pill hover:opacity-80">
+                  <Badge>{reason}</Badge>
+                </Link>
+              ) : (
+                <Badge>{reason}</Badge>
+              )}
+            </span>
+          )}
+          {reason !== "" && !chip && (
+            <span data-need title={reason} className="min-w-0 flex-1 basis-40 truncate">
+              {toNeed ? <Link href={toNeed} className={LINK_CLASS}>{reason}</Link> : reason}
+            </span>
+          )}
+        </>
+      }
+      menu={<RowActions it={it} cmd={cmd} inlineErrors={false} />}
+    >
       {Object.values(cmd.local).some((l) => "error" in l) && (
-        <div data-row-error className="flex basis-full flex-col gap-1">
+        <div data-row-error className="flex flex-col gap-1">
           <SendErrors local={cmd.local} />
         </div>
       )}
-    </li>
+    </ListRow>
   );
 }
 

@@ -13,6 +13,9 @@ import type { UiDeps } from "./deps.js";
 
 export const RESUME_PATH = "/api/v1/pauses/resume";
 
+/** Where the dashboard resumes a pause: its row in Needs you on the Tasks page. */
+export const RESUME_IN_NEEDS_YOU = "Resume now in Needs you on Tasks";
+
 /** What the resume route needs beside the store. Built once per UI process (compose.ts buildUiParts). */
 export interface UiPauses {
   /** The factory user acting from this page (a linked local account, else `cli_user`), or null when there is none. */
@@ -62,7 +65,7 @@ export async function resumePause(d: PauseDeps, p: UiPauses, body: unknown): Pro
   }
   const decision = await p.authorize(user);
   if (!decision.allow) {
-    return { status: 403, value: { error: `Resuming needs write permission (approve_spec): ${decision.reason}. As the owner, Resume now on the Status page (/app/), or run \`factory resume ${name}\`.` } };
+    return { status: 403, value: { error: `Resuming needs write permission (approve_spec): ${decision.reason}. As the owner, ${RESUME_IN_NEEDS_YOU}, or run \`factory resume ${name}\`.` } };
   }
   const r = await endPause({ store: d.store, actor: user, log: p.log }, name);
   return { status: 200, value: { name, ended: r.ended, pauses: await activePauses(d) } };

@@ -13,7 +13,7 @@ import { IMPROVE_RUN_PATH } from "../src/ui/improve-api.js";
 import type { UiPauses } from "../src/ui/pause-api.js";
 import { type PauseDeps, type UiRequest, respond } from "../src/ui/server.js";
 import { type UiSettings, newCsrfToken } from "../src/ui/settings-api.js";
-import { PROJECT } from "./helpers/fakes.js";
+import { PROJECT } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 const HOST = "127.0.0.1:4310";

@@ -5,7 +5,10 @@ import type { AuthDecision, AuthProvider, ExternalIdentity, Principal } from "..
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { readTasks } from "../src/ui/tasks-api.js";
-import { FakeForge, FakeSandbox, FakeSource, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSandbox } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
 // A close of a work item as completed completes the plain tasks linked to it (design 02-tasks): a merge (issue #607), on

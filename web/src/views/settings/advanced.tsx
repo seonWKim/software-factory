@@ -19,7 +19,7 @@ import { FileKeysSection, KeyNameDetails, Outcome, editableKeys, useWrite } from
 import { Description, SettingsRow } from "../settings-row.js";
 import { withNodes } from "../standing.js";
 import { Editor } from "./editor.js";
-import { ADVANCED_GROUPS, appliesKey, groupOf } from "./advanced-groups.js";
+import { ADVANCED_GROUPS, appliesKey, groupOf, keyRank } from "./advanced-groups.js";
 import { SHORT_OBJECT, asObject, entries, modelSummary, stringOf, summaryOf } from "./values.js";
 import { Disclosure } from "../../components/ui/disclosure.js";
 import { Card } from "../../components/ui/card.js";
@@ -157,17 +157,30 @@ function KeyRows({ rows, view, resets }: { rows: readonly SettingRow[]; view: Se
  * each group opened by a heading row, then For developers as a collapsed table of its own.
  */
 function KeysTable({ view }: { view: SettingsView }) {
+  const [query, setQuery] = useState("");
   if (view.keys.length === 0) return <EmptyState title={t("settings.noKeys")} />;
   // The Reset column shows only while some key has an override to reset.
   const resets = view.keys.some((row) => row.source === "override");
   const head = [t("settings.colKey"), t("settings.colValue"), t("settings.details"), ...(resets ? [t("settings.colReset")] : [])];
-  const inGroup = (id: string) => view.keys.filter((row) => groupOf(row.key) === id);
+  // The search matches a key's name, its label and its help text; while it is on, For developers joins the table.
+  const needle = query.trim().toLowerCase();
+  const matches = (row: SettingRow) => needle === "" || [row.key, keyLabel(row.key), keyHelp(row.key, row.description)].some((s) => s.toLowerCase().includes(needle));
+  const inGroup = (id: string) => view.keys.filter((row) => groupOf(row.key) === id && matches(row)).sort((a, b) => keyRank(a.key) - keyRank(b.key));
   const groups = ADVANCED_GROUPS.map((g) => ({ ...g, rows: inGroup(g.id) }));
   const developers = groups.find((g) => g.id === "developers")!;
-  const shown = groups.filter((g) => g.id !== "developers" && g.rows.length > 0);
+  const shown = groups.filter((g) => (needle !== "" || g.id !== "developers") && g.rows.length > 0);
   return (
     <>
-      <Table label={t("settings.settableKeys")} head={head}>
+      <Input
+        type="search"
+        aria-label={t("settings.search")}
+        placeholder={t("settings.search")}
+        className="mb-3 w-full sm:max-w-sm"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+      />
+      {shown.length === 0 && <p data-no-match className="text-sm text-text-2">{t("settings.noMatch", { query: query.trim() })}</p>}
+      {shown.length > 0 && <Table label={t("settings.settableKeys")} head={head}>
         {shown.map((g) => (
           <Fragment key={g.id}>
             <Tr data-group={g.id}>
@@ -176,8 +189,8 @@ function KeysTable({ view }: { view: SettingsView }) {
             <KeyRows rows={g.rows} view={view} resets={resets} />
           </Fragment>
         ))}
-      </Table>
-      {developers.rows.length > 0 && (
+      </Table>}
+      {needle === "" && developers.rows.length > 0 && (
         <Disclosure data-group="developers" className="mt-3" summary={t(developers.title)}>
           <div className="mt-2">
             <Table label={t(developers.title)} head={head}>

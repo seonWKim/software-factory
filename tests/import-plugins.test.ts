@@ -20,7 +20,9 @@ import type { PackMcpServer } from "../src/interfaces/agent-runner.js";
 import { PackApprovalsStore } from "../src/packs/pack-approvals.store.js";
 import { PackEntriesStore, canonicalJson, descriptionHash, readPointer } from "../src/packs/pack-entries.store.js";
 import { WorkerPool } from "../src/worker/index.js";
-import { FakeBroker, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, config as fakeConfig, prompts as fakePrompts, silent, waitFor } from "./helpers/fakes.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config as fakeConfig, prompts as fakePrompts, silent, waitFor } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 // `factory plugins import` (design 11-plugin-import): scans the user-level Claude Code and Codex configs in a

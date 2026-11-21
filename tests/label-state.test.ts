@@ -5,7 +5,9 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubIssueSource, statusLabels } from "../src/impl/github/github-issue-source.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
-import { FakeAuth, FakeGitHubClient, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeGitHubClient } from "./helpers/fakes/github.js";
+import { cleanScanner, config, issueRef, silent } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
 // Label state per item and target (design §5, GitHub call budget): the GitHub source compares the stored state

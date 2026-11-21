@@ -14,7 +14,9 @@ import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { ExecOptions, ExecResult, Sandbox } from "../src/interfaces/sandbox.js";
 import { doctorChecks, toolchainChecks } from "../src/setup.js";
-import { config, pipeline } from "./helpers/fakes.js";
+import { config } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
+import { issue, system } from "./helpers/store.js";
 
 // The `toolchain` block (design 05-sandbox.md, issue #334): read-only caches, non-secret agent env, and a warm
 // step the worker runs before the agent. With no block, everything is as it was before the block existed.
@@ -239,7 +241,7 @@ describe("the worker's warm step", () => {
   });
 
   it("with no toolchain block: no warm step, and the agent spec has no toolchain fields", async () => {
-    const { f, before } = await world({});
+    const { f } = await world({});
     await f.submit();
     await f.step();
     expect(f.agentCalls("implement")).toBe(1);
@@ -248,6 +250,96 @@ describe("the worker's warm step", () => {
       expect(spec).not.toHaveProperty("readable_paths");
       expect(spec).not.toHaveProperty("toolchain_env");
     }
+  });
+});
+
+// A resolve run warms the branch tip before its merge (design 05-sandbox.md, 2026-11-20): the merged tree has
+// conflict markers in compiled files and does not build until the agent fixes them. Fakes only.
+describe("the resolve run's warm step", () => {
+  const toolchain: ToolchainConfig = { caches: ["/home/u/.gradle/caches"], env: {}, warm_command: ["./gradlew", "--quiet", "testClasses"] };
+  const WARM = "./gradlew --quiet testClasses";
+  const MARKED = "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> origin/main\n";
+
+  /**
+   * A queued resolve run on a branch that builds, whose merge conflicts in `path`: from the merge until the file has
+   * no markers, the warm command and the checks exit 1, as a compiler would. `events` logs each warm and the merge.
+   */
+  async function conflicted(path: string, check: string[], cfg: Partial<FactoryConfig>) {
+    const f = await pipeline({ config: { ...cfg, repo: { ...config.repo, check_commands: [check] } } });
+    Object.assign(f.sandbox, { mergeExit: 1, conflicts: [path], resolveChanged: [path] });
+    f.sandbox.files[path] = MARKED;
+    const events: string[] = [];
+    let merged = false;
+    const builds = () => !merged || !f.sandbox.files[path]!.includes("<<<<<<<");
+    const exec = f.sandbox.exec.bind(f.sandbox);
+    f.sandbox.exec = async (h, cmd, o) => {
+      const line = cmd.join(" ");
+      if (line.startsWith("git merge ")) (merged = true), events.push("merge");
+      if (line === WARM) events.push("warm");
+      if (line.startsWith("git grep")) f.sandbox.markers = builds() ? "" : `${path}\n`;
+      const r = await exec(h, cmd, o);
+      return (line === WARM || line === check.join(" ")) && !builds() ? { ...r, exit_code: 1 } : r;
+    };
+    const { item } = await f.store.createWorkItem(issue(7), system);
+    const moved = await f.store.transition({
+      id: item.id, expected_version: item.version, actor: system, reason: "test_setup",
+      patch: { stage: "RUNNING", change_ref: "42", allowed_paths: ["src/"] },
+      enqueue: { kind: "resolve", idempotency_key: `${item.id}:resolve:l0:r1`, input: { notes: "" } },
+    });
+    if (!moved.ok) throw new Error("setup");
+    return { f, item: moved.item, events };
+  }
+
+  /** The scripted resolve agent: it removes the markers from `path`. */
+  const resolving = (f: Awaited<ReturnType<typeof pipeline>>, path: string) => () => {
+    f.sandbox.files[path] = "merged\n";
+    return { output: { summary: "resolved", next_steps: "none" } };
+  };
+
+  it("warms the branch tip once, before the merge, so a merged tree that does not build still starts its agent", async () => {
+    const path = "src/main/java/UseCaseController.java";
+    const { f, item, events } = await conflicted(path, ["./gradlew", "--offline", "test"], { toolchain });
+    f.runner.script.resolve = resolving(f, path);
+    await f.w1.tick();
+    expect(events).toEqual(["warm", "merge"]);
+    expect(f.agentCalls("resolve")).toBe(1);
+    const run = (await f.runs(item, "resolve"))[0]!;
+    expect(run.outcome).not.toMatchObject({ error_code: WARM_FAILED });
+    expect(run.outcome).toMatchObject({ status: "succeeded", data: { result: "pushed", conflicts: [path] } });
+  });
+
+  it("a conflict in a compiled TypeScript file: the scripted agent removes the markers, the checks pass, the run pushes with no person", async () => {
+    const path = "src/core/policy.ts";
+    const { f, item } = await conflicted(path, ["npm", "run", "typecheck"], { toolchain });
+    f.runner.script.resolve = resolving(f, path);
+    await f.w1.tick();
+    const run = (await f.runs(item, "resolve"))[0]!;
+    expect(run.outcome).toMatchObject({ status: "succeeded", data: { result: "pushed", head_sha: "resolvedsha" } });
+    expect(run.outcome?.status === "succeeded" && run.outcome.data).not.toHaveProperty("needs_human");
+    expect(f.sandbox.commands).toContain("npm run typecheck");
+  });
+
+  it("a failing warm_command ends the run warm_failed before the merge and any agent, naming the command", async () => {
+    const path = "src/main/java/UseCaseController.java";
+    const { f, item, events } = await conflicted(path, ["./gradlew", "--offline", "test"], { toolchain });
+    f.runner.script.resolve = resolving(f, path);
+    f.sandbox.exits[WARM] = 1;
+    await f.w1.tick();
+    expect(events).toEqual(["warm"]);
+    expect(f.agentCalls("resolve")).toBe(0);
+    const run = (await f.runs(item, "resolve"))[0]!;
+    expect(run.outcome).toMatchObject({ status: "failed", error_code: WARM_FAILED, detail: `toolchain warm_command \`${WARM}\` exited 1; no agent started` });
+  });
+
+  it("with no toolchain block: no warm step, and the resolve agent spec has no toolchain fields", async () => {
+    const path = "src/main/java/UseCaseController.java";
+    const { f, events } = await conflicted(path, ["./gradlew", "--offline", "test"], {});
+    f.runner.script.resolve = resolving(f, path);
+    await f.w1.tick();
+    expect(events).toEqual(["merge"]);
+    const spec = f.runner.specs.find((s) => s.role === "resolve")!;
+    expect(spec).not.toHaveProperty("readable_paths");
+    expect(spec).not.toHaveProperty("toolchain_env");
   });
 });
 

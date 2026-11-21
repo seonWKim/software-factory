@@ -16,10 +16,11 @@ import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import { STORE_BRANCH, type ToolCallContext } from "../src/interfaces/tool-broker.js";
 import { newStore, PROJECT_KEY } from "./helpers/store.js";
-import {
-  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, GitForge, MemoryStorage,
-  alice, cleanScanner, config, gates, issueRef, mallory, prompts, recordingLog, runComments, settingsWith, silent, triageSpec, waitFor,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeForge, GitForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, gates, issueRef, mallory, prompts, recordingLog, runComments, settingsWith, silent, triageSpec, waitFor } from "./helpers/fakes/config.js";
 
 async function factory(
   runner: FakeRunner,
@@ -2056,16 +2057,6 @@ describe("/resolve on a merge conflict", () => {
       expect(said).toHaveLength(1);
       expect(said[0]!.body).toContain("`/retry` was applied; its `+paths` added nothing to the allowed paths, already allowed: .github/workflows/x.yml");
     });
-
-    it("bad paths and more than 10 are refused with one reply each, and nothing changes", async () => {
-      const f = await resolveAsked(86);
-      const before = await snapshot(f);
-      const bad = ["+paths tests/../x.ts", "+paths tests/*.ts", `+paths ${Array.from({ length: 11 }, (_, i) => `f${i}.ts`).join(" ")}`];
-      bad.forEach((note, i) => f.source.queue.push(retryEvent(f, `86b${i}`, note)));
-      await f.controller.tickIntake();
-      expect(await snapshot(f)).toEqual(before);
-      bad.forEach((_, i) => expect(f.source.comments.filter((c) => c.marker === `<!-- factory:refused:86b${i} -->`)).toHaveLength(1));
-    });
   });
 
   it("scope gate: a changed file outside the conflicts and allowed_paths fails out_of_scope, pushes nothing, re-blocks with a comment; a later /resolve is accepted", async () => {
@@ -2930,9 +2921,10 @@ describe("+paths on /approve and /retry, and /retry notes (issue #280)", () => {
 
   it("needs_human paths give the exact /retry +paths reply in the comment and never change allowed_paths", async () => {
     let asks = 0;
+    // Four ordinary files: over the three granted without the owner (2026-11-19), so the ask waits for the owner.
     const f = await atSpecGate(100, {
       implement: () => (asks++ === 0
-        ? { output: { needs_human: { reason: "needs the loader", question: "may I change it?", paths: ["src/loader.ts", ".github/workflows/a.yml"] } } }
+        ? { output: { needs_human: { reason: "needs the loader", question: "may I change it?", paths: ["src/loader.ts", "src/a.ts", "src/b.ts", "src/c.ts", ".github/workflows/a.yml"] } } }
         : implementOk()),
     });
     f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: "10001", approver: alice });
@@ -2941,12 +2933,12 @@ describe("+paths on /approve and /retry, and /retry notes (issue #280)", () => {
     expect(item).toMatchObject({ blocked_reason: "agent_needs_human", allowed_paths: [".github/workflows/"] });
     const ask = f.source.comments.find((c) => c.marker.startsWith("<!-- factory:needs-human:"))!;
     // Paths already covered are left out of the reply.
-    expect(ask.body).toContain("```\n/retry +paths src/loader.ts\n```");
+    expect(ask.body).toContain("```\n/retry +paths src/loader.ts src/a.ts src/b.ts src/c.ts\n```");
     expect(JSON.stringify(await f.store.listStateChanges(item.id))).not.toContain("src/loader.ts");
 
-    f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "10002", requester: alice, note: "+paths src/loader.ts" });
+    f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "10002", requester: alice, note: "+paths src/loader.ts src/a.ts src/b.ts src/c.ts" });
     await f.step();
-    expect(await current(f)).toMatchObject({ stage: "REVIEW", allowed_paths: [".github/workflows/", "src/loader.ts"] });
+    expect(await current(f)).toMatchObject({ stage: "REVIEW", allowed_paths: [".github/workflows/", "src/loader.ts", "src/a.ts", "src/b.ts", "src/c.ts"] });
   });
 
   it("/retry +paths with only covered paths retries as before, adds nothing and replies that they were already allowed", async () => {

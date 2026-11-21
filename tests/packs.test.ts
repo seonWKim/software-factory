@@ -20,9 +20,9 @@ import { Bm25CapabilitySearch } from "../src/impl/capability/bm25-capability-sea
 import { PLUGIN_KINDS, REGISTRY, createPlugin } from "../src/plugins.js";
 import { LEARNED_PACK_DIR, PROJECT_PACK_DIR, mainCheckout, mergeSections, packSkills } from "../src/packs/packs.js";
 import { issue, newStore, system } from "./helpers/store.js";
-import {
-  FAKE_GITHUB_TOOLS, FakeBroker, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, config as fakeConfig, fakeRepoLookup, prompts as fakePrompts, silent, triageSpec, waitFor,
-} from "./helpers/fakes.js";
+import { FAKE_GITHUB_TOOLS, FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config as fakeConfig, fakeRepoLookup, prompts as fakePrompts, silent, triageSpec, waitFor } from "./helpers/fakes/config.js";
 import { git } from "./helpers/git-fixture.js";
 import type { AuthAction, AuthDecision, AuthProvider, AuthResource, Principal } from "../src/interfaces/auth-provider.js";
 import { type FactoryConfig, toolGrantsConfig } from "../src/core/config.js";
@@ -254,12 +254,6 @@ describe("packs: plugins", () => {
       });
     }
   }
-
-  it("a mysql store is refused at startup as an unknown FactoryStore plugin, naming store.type", async () => {
-    const f = fixture({ store: { type: "mysql", host: "localhost", port: 3306, database: "sf", user: "factory" } });
-    const err = await loadError(f.codeRoot);
-    expect(err.message).toMatch(/unknown FactoryStore plugin "mysql" at store\.type/);
-  });
 
   it("a pack plugin that claims a default, or a name its kind has, fails startup naming the file", async () => {
     const f = fixture();

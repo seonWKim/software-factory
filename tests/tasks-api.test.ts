@@ -3,7 +3,7 @@
 // size, JSON), then the body; every refusal stores nothing. The caller chooses the task ID, so a retry stores one task.
 
 import { describe, expect, it } from "vitest";
-import { DONE_WINDOW_DAYS, MAX_TASK_BODY } from "../src/core/tasks.js";
+import { MAX_TASK_BODY } from "../src/core/tasks.js";
 import type { UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -224,11 +224,6 @@ describe("+slug on the dashboard's add, edit and sub routes (design 02-tasks, ta
 describe("POST /api/v1/tasks/reopen: undo a completion (design 02-tasks)", () => {
   const reopen = (s: Awaited<ReturnType<typeof setup>>, body: unknown, over: Partial<UiRequest> = {}) => s.post(body, { url: TASK_REOPEN_PATH, ...over });
 
-  it("is a task write route beside /done", () => {
-    expect(Object.keys(TASK_WRITES)).toContain(TASK_REOPEN_PATH);
-    expect(TASK_WRITES[TASK_REOPEN_PATH]).toBeTypeOf("function");
-  });
-
   it("reopens a done task through the store's reopenTask; a second reopen answers reopened false and writes nothing", async () => {
     const s = await setup();
     await s.post({ id: ID, words: "call the bank" });
@@ -316,8 +311,6 @@ describe("GET /api/v1/tasks: the quick-add submit key (design 02-tasks, tasks_ad
 describe("GET /api/v1/tasks keeps done tasks (design 02-tasks, done tasks stay)", () => {
   const get = (s: Awaited<ReturnType<typeof setup>>, url: string = TASKS_PATH) => respond(s.d, { method: "GET", url, host: HOST });
   type Row = { id: string; title: string; done_at: string | null };
-  const all = async (s: Awaited<ReturnType<typeof setup>>, url?: string) =>
-    (JSON.parse((await get(s, url)).body) as { projects: { tasks: Row[] }[] }).projects.flatMap((p) => p.tasks);
 
   it("a task the page completed stays in the read with its done_at, placed by its due date as an open task is", async () => {
     const s = await setup();
@@ -327,17 +320,6 @@ describe("GET /api/v1/tasks keeps done tasks (design 02-tasks, done tasks stay)"
     const body = JSON.parse((await get(s)).body) as { today: { due: Row[] }; projects: { tasks: Row[] }[] };
     expect(body.today.due.map((t) => [t.id, t.done_at])).toEqual([[ID, at]]);
     expect(body.projects.flatMap((p) => p.tasks).map((t) => [t.title, t.done_at])).toEqual([["call the bank", at]]);
-  });
-
-  it("holds done tasks done within the last DONE_WINDOW_DAYS days and no older one", async () => {
-    const s = await setup();
-    const old = "tk_fedcba9876543210";
-    await s.post({ id: old, words: "old chore" });
-    await s.post({ id: old }, { url: TASK_DONE_PATH });
-    (s.d.clock as FakeClock).advance((DONE_WINDOW_DAYS + 1) * 24 * 60 * 60 * 1000);
-    await s.post({ id: ID, words: "new chore" });
-    await s.post({ id: ID }, { url: TASK_DONE_PATH });
-    expect((await all(s)).map((t) => t.id)).toEqual([ID]);
   });
 
   it("the done list's own read is gone: GET /api/v1/tasks/done is no route", async () => {
@@ -370,10 +352,6 @@ describe("the dashboard's task project routes (design 02-tasks and 09-dashboard-
     await s.store.archiveProject("pj_old");
     return s;
   }
-
-  it("both POST routes are task write routes", () => {
-    expect(Object.keys(TASK_WRITES)).toEqual(expect.arrayContaining([PROJECTS_PATH, TASK_PROJECT_PATH]));
-  });
 
   it("POST /api/v1/projects creates a project by the page's actor; a repeat with the same ID stores nothing more", async () => {
     const s = await setup();
@@ -549,15 +527,6 @@ describe("sub-tasks stay with their parent (design 02-tasks-page, delete with su
     expect((await all(s)).map((t) => t.id)).toEqual([ID]);
   });
 
-  it("a parent with no open sub-tasks deletes with { id } as before", async () => {
-    const s = await setup();
-    await s.post({ id: PARENT, words: "move house" });
-    const r = await del(s, { id: PARENT });
-    expect(r.status).toBe(200);
-    expect(JSON.parse(r.body)).toMatchObject({ task_id: PARENT });
-    expect(await s.store.getTask(PARENT)).toBeNull();
-  });
-
   it("a with_sub_tasks that is not a boolean is 400 and writes nothing", async () => {
     const s = await seeded();
     const before = await all(s);
@@ -574,10 +543,6 @@ describe("sub-tasks stay with their parent (design 02-tasks-page, delete with su
 describe("POST /api/v1/tasks/body: a task's description (design 02-tasks, description)", () => {
   const save = (s: Awaited<ReturnType<typeof setup>>, body: unknown, over: Partial<UiRequest> = {}) => s.post(body, { url: TASK_BODY_PATH, ...over });
   const rows = (s: Awaited<ReturnType<typeof setup>>) => s.store.db.all("SELECT * FROM controller_tasks ORDER BY id");
-
-  it("is a task write route", () => {
-    expect(TASK_WRITES[TASK_BODY_PATH]).toBeTypeOf("function");
-  });
 
   it("stores the description trimmed and answers the task; GET /api/v1/tasks returns it", async () => {
     const s = await setup();

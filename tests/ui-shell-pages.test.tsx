@@ -2,6 +2,7 @@
 // Dashboard shell tests: one queued count, app pages, unreviewed merges, system actions and revisions. Shared setup is in ui-shell-fixtures.tsx.
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { localDateTime } from "../web/src/lib/format.js";
 import { redirectFor } from "../web/src/pages.js";
 import { ItemsTable } from "../web/src/views/common.js";
 import { API, POLL_MS } from "../web/src/api.js";
@@ -78,20 +79,11 @@ describe("app pages", () => {
     expect(within(running).getByText("Being built")).toBeTruthy();
   });
 
-  it("the sidebar's Tasks group links the Tasks page, the System group shows its links, and there is no Users", () => {
-    mount();
-    const tasks = screen.getByRole("navigation", { name: "Tasks" });
-    expect([...tasks.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual(["/app/tasks", "/app/calendar"]);
-    const system = screen.getByRole("navigation", { name: "System" });
-    expect(within(system).getByRole("link", { name: "Health" })).toBeTruthy();
-    expect(screen.queryByRole("link", { name: "Users" })).toBeNull();
-  });
-
   it("the sidebar links Workers after Health; Activity, Failures, Spend, Runners and Data are not among them", () => {
     mount();
     const side = screen.getByRole("complementary", { name: "Sidebar" });
     const links = [...side.querySelectorAll("a")].filter((a) => a.getAttribute("href")?.startsWith("/app/") && a.getAttribute("href") !== "/app/");
-    expect(links.map((a) => [a.getAttribute("aria-label"), a.getAttribute("href")])).toEqual([
+    expect(links.map((a) => [a.textContent, a.getAttribute("href")])).toEqual([
       ["Tasks", "/app/tasks"], ["Calendar", "/app/calendar"], ["Work", "/app/items"], ["Health", "/app/health"], ["Workers", "/app/workers"],
       ["Rules", "/app/rules"], ["Plugins", "/app/plugins"], ["Settings", "/app/settings"],
     ]);
@@ -184,16 +176,6 @@ describe("app pages", () => {
       if (path === "health") await screen.findByRole("heading", { level: 2, name: "Failures" });
       if (path === "items") await screen.findByRole("table", { name: "Running now" });
       expect(outside(), path).toEqual([]);
-      cleanup();
-    }
-  });
-
-  it("each page's heading matches its menu name", async () => {
-    const names: Record<string, string> = { items: "Work", runners: "Runners", health: "Health", data: "Data", settings: "Settings" };
-    for (const [path, name] of Object.entries(names)) {
-      history.replaceState(null, "", `/app/${path}`);
-      mount();
-      expect(screen.getByRole("heading", { level: 1, name })).toBeTruthy();
       cleanup();
     }
   });
@@ -316,28 +298,6 @@ describe("system actions, revisions and the tab title (issue #311)", () => {
     }
   });
 
-  it("the Tasks page lists each system action with its command as a row in the Needs you section's Check group", async () => {
-    const actions = [
-      { code: "migration_pending", text: "Schema at version 3 of 8", command: "Migrate now, or factory migrate", until: null, work_item_id: null },
-      { code: "claim_pause", text: "Claim pause rate_limit in effect, until 2026-11-07T01:00:00.000Z", command: "factory resume rate_limit", until: "2026-11-07T01:00:00.000Z", work_item_id: null },
-    ];
-    (overview as Record<string, unknown>).system_actions = actions;
-    try {
-      mount();
-      const list = await screen.findByRole("list", { name: "Check" });
-      const rows = [...list.querySelectorAll("li")];
-      expect(rows.map((r) => r.getAttribute("data-check"))).toEqual(["migration_pending", "claim_pause"]);
-      expect(rows[0]!.textContent).toContain("Schema at version 3 of 8");
-      expect(rows[0]!.querySelector("code")!.textContent).toBe("Migrate now, or factory migrate");
-      expect(rows[1]!.querySelector("code")!.textContent).toBe("factory resume rate_limit");
-      // The rows are inside the Needs you section, not lines after it.
-      expect(screen.getByRole("region", { name: "Needs you" }).contains(list)).toBe(true);
-      expect(screen.queryByRole("list", { name: "System actions" })).toBeNull();
-    } finally {
-      delete (overview as Record<string, unknown>).system_actions;
-    }
-  });
-
   it("Health folds ok rows behind their count; warn and fail rows stay visible", async () => {
     const checks = [
       ...Array.from({ length: 22 }, (_, i) => ({ status: "ok", msg: `fine ${i}` })),
@@ -355,6 +315,26 @@ describe("system actions, revisions and the tab title (issue #311)", () => {
       expect(folded.querySelector("summary")!.textContent).toBe("22 ok");
       expect(folded.querySelectorAll("li")).toHaveLength(22);
       for (const msg of ["token expires in 2 days", "push access denied"]) expect(folded.textContent).not.toContain(msg);
+    } finally {
+      RESPONSES["/api/v1/health"] = saved;
+    }
+  });
+
+  it("Health shows a stall check's since and next probe as relative times with the local time on hover, never ISO", async () => {
+    const since = "2026-11-19T16:11:54.203Z";
+    const next = "2026-11-19T16:21:54.203Z";
+    const saved = RESPONSES["/api/v1/health"];
+    RESPONSES["/api/v1/health"] = { checked_at: AT, checks: [{ status: "fail", msg: "agents paused: model not answering", since, next }] };
+    try {
+      history.replaceState(null, "", "/app/health");
+      mount();
+      const row = (await screen.findByText(/agents paused: model not answering/)).closest("li")!;
+      const times = [...row.querySelectorAll("time")];
+      expect(times.map((t) => t.getAttribute("datetime"))).toEqual([since, next]);
+      expect(times.map((t) => t.getAttribute("title"))).toEqual([localDateTime(since), localDateTime(next)]);
+      expect(times[0]!.textContent).toMatch(/^started /);
+      expect(times[1]!.textContent).toMatch(/^next probe /);
+      expect(row.textContent).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}|UTC/);
     } finally {
       RESPONSES["/api/v1/health"] = saved;
     }

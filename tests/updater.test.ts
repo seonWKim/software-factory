@@ -15,7 +15,7 @@ import type { ExecResult } from "../src/interfaces/sandbox.js";
 import { CODE_VERSION_ENV, CONFIG_ENV, type ChildHandle, type ChildLauncher, type ChildSpec, type CommandRunner, WORKER_INDEX_BASE_ENV } from "../src/interfaces/updater.js";
 import { REGISTRY, createPlugin } from "../src/plugins.js";
 import { SUPERVISED_ENV, createUpdater, supervise } from "../src/supervisor.js";
-import { recordingLog, waitFor } from "./helpers/fakes.js";
+import { recordingLog, waitFor } from "./helpers/fakes/config.js";
 
 // A fake git remote + checkout, fake npm, and a fake process launcher. Commands touch a real temp dir
 // (worktree add creates the directory, npm ci writes node_modules/, build writes dist/), so the updater's

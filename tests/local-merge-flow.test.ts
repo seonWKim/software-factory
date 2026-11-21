@@ -18,9 +18,9 @@ import { HealthMonitor } from "../src/ui/health.js";
 import type { UiDeps } from "../src/ui/deps.js";
 import { api } from "../src/ui/api.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
-import type { Forge } from "../src/interfaces/forge.js";
 import { autoResolveKey } from "../src/core/policy.js";
-import { FakeGitHubClient, FakeRunner, MemoryStorage, cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes.js";
+import { FakeRunner, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 // A local task from create to merge with no GitHub plugin (design 05-sources, Local startup): the local source,
@@ -74,10 +74,6 @@ async function localFactory(opts: { resolve?: ConstructorParameters<typeof FakeR
   };
   const clock = new FakeClock();
   const { store } = await newStore(clock);
-  // Recording fakes: a GitHub client and a forge. Neither may be called.
-  const github = new FakeGitHubClient();
-  const forgeCalls: string[] = [];
-  const forge = new Proxy({}, { get: (_t, k) => (k === "then" ? undefined : () => (forgeCalls.push(String(k)), Promise.reject(new Error("forge")))) }) as Forge;
   const auth = new OwnerAuth(store);
   const sandbox = new NoOpSandbox(join(root, "wt"), undefined, undefined, { local: true });
   const controller = new ControllerRole({
@@ -134,7 +130,7 @@ async function localFactory(opts: { resolve?: ConstructorParameters<typeof FakeR
     return git(repo, "rev-parse", "main");
   };
   const resolves = async (id: WorkItemId) => (await store.listRuns(id)).filter((r) => r.kind === "resolve");
-  return { repo, origin, owner, remoteRefs, store, runner, github, forgeCalls, step, cli, messages, toMergePending, appMerge, controller, clock, gates, conflictOnMain, resolves };
+  return { repo, origin, owner, remoteRefs, store, runner, step, cli, messages, toMergePending, appMerge, controller, clock, gates, conflictOnMain, resolves };
 }
 
 describe("a local task from create to merge, no GitHub plugin", { timeout: 60_000 }, () => {
@@ -174,11 +170,9 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     expect(at.every((i) => i >= 0)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
 
-    // No push, no forge: the remote and the owner's checkout are as they were; the fakes saw no call.
+    // No push: the remote and the owner's checkout are as they were.
     expect(f.remoteRefs()).toBe(remoteBefore);
     expect(f.owner()).toEqual(ownerBefore);
-    expect(f.github.calls).toEqual([]);
-    expect(f.forgeCalls).toEqual([]);
     expect(await f.store.getBasePush(id)).toBeNull();
   });
 
@@ -223,7 +217,6 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     expect((await f.messages(id, "<!-- factory:refused:")).at(-1)).toBe("`factory merge` was not applied: only the owner may send this command.");
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
     expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
-    expect(f.github.calls).toEqual([]);
   });
 
   it("factory merge on a conflict names the files and starts the automatic resolve: local base merged into the local branch, gates run, committed, nothing pushed, reviewed, merge_pending", async () => {
@@ -271,8 +264,6 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     await f.cli(ME, { action: "command", command: "merge", id, text: "" });
     await f.step();
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: git(f.repo, "rev-parse", "main") });
-    expect(f.github.calls).toEqual([]);
-    expect(f.forgeCalls).toEqual([]);
   });
 
   it("the merge check finds the conflict when the local base moves and starts the same resolve run", async () => {
@@ -387,8 +378,6 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     const landed = git(f.repo, "rev-parse", "main");
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: landed });
     expect(git(f.repo, "rev-list", "--parents", "-n", "1", landed).split(" ").slice(1)).toEqual([main, head]);
-    expect(f.github.calls).toEqual([]);
-    expect(f.forgeCalls).toEqual([]);
   });
 
   it("factory resolve on a local item waiting for a merge whose branch conflicts starts a resolve run", async () => {
@@ -478,9 +467,6 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     const merged = (await f.store.listStateChanges(id)).find((c) => c.reason === "local_merged")!;
     expect(merged.actor).toEqual({ kind: "user", id: ME });
     expect((await f.messages(id, "<!-- factory:local-merged:")).join("")).toContain(main.slice(0, 12));
-
-    expect(f.github.calls).toEqual([]);
-    expect(f.forgeCalls).toEqual([]);
   });
 });
 

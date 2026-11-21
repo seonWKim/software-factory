@@ -11,6 +11,7 @@ Pick the component by the need, before drawing anything by hand. A UI spec names
 | a state | `Badge` | A short state as a pill, tone from its level; never a hand-made chip or a bordered Button. |
 | an on/off choice in a list | Checkbox (none yet: `Switch` until it exists) | One box per row that turns that row's choice on or off. No Checkbox exists yet; a follow-up issue adds it. Until then use `Switch`, never a Button drawn as a box. |
 | a row's extra actions | `OverflowMenu` | The row's secondary actions behind one "more" button at its end, so the row stays one line. |
+| a row in a bordered list | `ListRow` | Leading control, one-line title with ellipsis, details line, every action in its ⋯ menu. |
 | input inside a list row | `Dialog` | A field a row action needs opens in a Dialog; the row's height never changes. |
 
 ## Card
@@ -87,7 +88,11 @@ A 16 px radio circle drawn from the tokens with its label (the radio's accessibl
 
 ## OverflowMenu
 
-A "more" button (a `ghost` Button at size `icon`) that opens a menu of actions: items `{ label, onSelect, danger?, disabled? }`. States: closed, open; item default, `danger` (bad text), `disabled`. Esc, a click outside or choosing an item closes it.
+A "more" button (a `ghost` Button at size `icon`) that opens a menu of actions: items `{ label, onSelect, danger?, disabled? }`. States: closed, open; item default, `danger` (bad text), `disabled`. Esc, a click outside or choosing an item closes it. The list ends at the button's right edge; when that would put its left part past the left edge of the page content (`main`, else the viewport), so the sidebar would cover its labels, it starts at the button's left edge instead (a measured check when it opens, no positioning library).
+
+## ListRow
+
+One row of a bordered list (`list-row.tsx`; the Tasks page's Needs you, date groups and Done all use it): an optional `leading` control (a task's Checkbox), the `title` on one full-width line cut with an ellipsis (the exported `ROW_TITLE` classes; the element carries the full text in `title`), a `details` line under it in `text-xs text-2` (state Badges, dates, projects, a reason), any `children` below (a form, an error), and the `menu` at the right: one `OverflowMenu` holding every action of the row, the primary first. No buttons beside the title and no raw IDs. 12px padding, 12px gaps; it never wraps the menu under the title. No variants or sizes.
 
 ## Kbd
 

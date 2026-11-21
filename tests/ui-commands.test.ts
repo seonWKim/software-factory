@@ -17,7 +17,9 @@ import { refusalText } from "../src/core/commands.js";
 import { REVISE_APPLIED } from "../src/controller/units/commands/queued-revise.js";
 import { runLocalCli } from "../src/core/local-cli.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
-import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent, waitFor } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, silent, waitFor } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 import { classifierAnswer } from "./helpers/classifier.js";
 
@@ -772,7 +774,7 @@ describe("the command box and pending proposals (design 09-dashboard-app)", () =
 /** A JSON response for the stubbed fetch. */
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-describe("the Merge button's Merging… state (item page and Needs-you row)", () => {
+describe("the Merge button's Merging… state (item page; on a Needs-you row, the menu's Merge)", () => {
   // The web views need a DOM; this file's other tests run on node, so only these set jsdom up (vitest's own environment).
   let teardown: (() => unknown) | undefined;
   let rtl: typeof import("@testing-library/react");
@@ -817,6 +819,16 @@ describe("the Merge button's Merging… state (item page and Needs-you row)", ()
   const READY = { enabled: true, reason: null };
   const wrap = (client: InstanceType<typeof QueryClient>, el: unknown) => createElement(QueryClientProvider, { client }, el as never);
   const mergeButton = () => rtl.screen.getByRole("button", { name: /^Merg/ }) as unknown as { disabled: boolean; textContent: string };
+  /** A Needs-you row's ⋯ menu, opened if closed (choosing an item closes it). */
+  const openRowMenu = () => {
+    const more = rtl.screen.getByRole("button", { name: "More commands" }) as unknown as HTMLElement;
+    if (more.getAttribute("aria-expanded") !== "true") rtl.fireEvent.click(more as never);
+  };
+  /** A Needs-you row's first menu item (Merge or the primary command), read with the menu open; every row action is in the menu. */
+  const firstItem = () => {
+    openRowMenu();
+    return rtl.screen.getAllByRole("menuitem")[0] as unknown as { disabled: boolean; textContent: string };
+  };
   /** Holds the POST open until the returned function is called. */
   const holdPost = () => {
     let release!: () => void;
@@ -871,22 +883,25 @@ describe("the Merge button's Merging… state (item page and Needs-you row)", ()
       return createElement(views.NeedActions as never, { id: "wi_1", title: "One", commands: [], pr: null, group: "merge", merge: READY, source: "local", checking: false, cmd, allow: [] });
     }
     rtl.render(wrap(client, createElement(Row)));
-    await rtl.waitFor(() => expect(mergeButton().disabled).toBe(false));
+    await rtl.waitFor(() => expect(firstItem().disabled).toBe(false));
+    expect(firstItem().textContent).toBe("Merge");
     const release = holdPost();
-    rtl.fireEvent.click(mergeButton() as never);
-    await rtl.waitFor(() => expect(mergeButton().textContent).toBe("Merging…"));
-    expect(mergeButton().disabled).toBe(true);
+    rtl.fireEvent.click(firstItem() as never);
+    // In flight: the row says Merging… beside its closed menu, and the menu's Merge reads Merging…, disabled.
+    await rtl.waitFor(() => expect(rtl.screen.getByText("Merging…")).toBeTruthy());
+    expect(firstItem().textContent).toBe("Merging…");
+    expect(firstItem().disabled).toBe(true);
     release();
     // Sent: the row reads the item until its reply; with none yet it stays Merging… and disabled.
     await rtl.waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([u]) => u === "/api/v1/items/wi_1")).toBe(true));
-    expect(mergeButton().textContent).toBe("Merging…");
-    expect(mergeButton().disabled).toBe(true);
+    expect(firstItem().textContent).toBe("Merging…");
+    expect(firstItem().disabled).toBe(true);
     // The controller refuses; the next read (the poll) brings the reply.
     itemReplies = [reply({ handled_at: "t", refusal: "the head moved" })];
     await client.invalidateQueries({ queryKey: ["/api/v1/items/wi_1"] });
     await rtl.waitFor(() => expect(rtl.screen.getByText("the head moved")).toBeTruthy());
-    expect(mergeButton().textContent).toBe("Merge");
-    expect(mergeButton().disabled).toBe(false);
+    expect(firstItem().textContent).toBe("Merge");
+    expect(firstItem().disabled).toBe(false);
   });
   /** What the server answers for an Approve it applied while handling the request (src/ui/commands.ts applyNow). */
   const applied = () => json({ seq: 5, outcome: "applied", refusal: null, state: { stage: "RUNNING", blocked_on: "none", blocked_reason: null, phase: "p", label: "Approved" } }, 202);
@@ -905,11 +920,14 @@ describe("the Merge button's Merging… state (item page and Needs-you row)", ()
       return approveRow(views.useCommandSend("wi_1"));
     }
     rtl.render(wrap(client, createElement(Row)));
-    const approve = () => rtl.screen.getByRole("button", { name: "Approve" }) as unknown as { disabled: boolean };
-    await rtl.waitFor(() => expect(approve().disabled).toBe(false));
+    await rtl.waitFor(() => expect(firstItem().disabled).toBe(false));
+    expect(firstItem().textContent).toBe("Approve");
     post = async () => applied();
-    rtl.fireEvent.click(approve() as never);
+    rtl.fireEvent.click(firstItem() as never);
+    // With the menu closed the row itself says Approved (a click never looks like nothing happened)…
     await rtl.waitFor(() => expect(rtl.screen.getByText("Approved")).toBeTruthy());
+    // …and the menu's Approve reads it too, disabled.
+    expect([firstItem().textContent, firstItem().disabled]).toEqual(["Approved", true]);
     expect(itemReads()).toBe(0);
     expect((client.getQueryData(["/api/v1/items"]) as { items: { stage: string; blocked_reason: string | null }[] }).items[0]).toMatchObject({ stage: "RUNNING", blocked_reason: null });
   });
@@ -921,13 +939,12 @@ describe("the Merge button's Merging… state (item page and Needs-you row)", ()
       return approveRow(views.useCommandSend("wi_1"));
     }
     rtl.render(wrap(client, createElement(Row)));
-    const approve = () => rtl.screen.getByRole("button", { name: "Approve" }) as unknown as { disabled: boolean };
-    await rtl.waitFor(() => expect(approve().disabled).toBe(false));
+    await rtl.waitFor(() => expect(firstItem().disabled).toBe(false));
     post = async () => json({
       seq: 5, outcome: "refused", refusal: "`/approve` was not applied: the spec is not waiting for approval (the item is waiting for a human merge).",
       state: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", phase: "waiting for a human merge", label: null },
     }, 202);
-    rtl.fireEvent.click(approve() as never);
+    rtl.fireEvent.click(firstItem() as never);
     await rtl.waitFor(() => expect(rtl.screen.getByText("/approve was not applied: the spec is not waiting for approval (the item is waiting for a human merge).")).toBeTruthy());
     expect((client.getQueryData(["/api/v1/items"]) as { items: { blocked_reason: string }[] }).items[0]!.blocked_reason).toBe("merge_pending");
   });
@@ -943,25 +960,30 @@ describe("the Merge button's Merging… state (item page and Needs-you row)", ()
       return createElement(views.NeedActions as never, { id: "wi_1", title: "One", commands: [], pr: null, group: "merge", merge, source: "local", checking: false, cmd, allow: [] });
     }
     rtl.render(wrap(client, createElement(Row)));
-    await rtl.waitFor(() => expect(mergeButton().disabled).toBe(false));
+    await rtl.waitFor(() => expect(firstItem().disabled).toBe(false));
     // The request path writes nothing for a Merge: the state stays merge_pending, the label says Merging….
     post = async () => json({
       seq: 5, outcome: "queued", refusal: null, state: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", phase: "p", label: "Merging…" },
     }, 202);
-    rtl.fireEvent.click(mergeButton() as never);
+    rtl.fireEvent.click(firstItem() as never);
     await rtl.waitFor(() => expect((client.getQueryData(["/api/v1/items"]) as { items: { merge: unknown }[] }).items[0]!.merge).toEqual({ enabled: false, reason: "Merging…" }));
     expect((client.getQueryData(["/api/v1/items"]) as { items: { blocked_reason: string }[] }).items[0]!.blocked_reason).toBe("merge_pending");
-    expect(mergeButton().textContent).toBe("Merging…");
-    expect(mergeButton().disabled).toBe(true);
+    expect(firstItem().textContent).toBe("Merging…");
+    expect(firstItem().disabled).toBe(true);
   });
 
-  it("on the item page: a Merge under way reads Checking…; one returned to merge_pending shows why beside Merge", async () => {
+  it("on the item page: a Merge under way reads Merge queued (position N), then Checking build; one returned to merge_pending shows why beside Merge", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const page = (merge: unknown, returned: string | null) =>
       wrap(client, createElement(views.MergeButton as never, { id: "wi_1", source: "local", merge, replies: [], returned }));
-    const view = rtl.render(page({ enabled: false, reason: "Checking…" }, null));
-    const checking = () => rtl.screen.getByRole("button", { name: "Checking…" }) as unknown as { disabled: boolean };
-    await rtl.waitFor(() => expect(checking().disabled).toBe(true));
+    const view = rtl.render(page({ enabled: false, reason: "Merge queued (position 2)" }, null));
+    const underWay = (name: string) => rtl.screen.getByRole("button", { name }) as unknown as { disabled: boolean };
+    await rtl.waitFor(() => expect(underWay("Merge queued (position 2)").disabled).toBe(true));
+    expect(rtl.screen.queryByRole("button", { name: "Merge" })).toBeNull();
+    view.rerender(page({ enabled: false, reason: "Checking build" }, null));
+    await rtl.waitFor(() => expect(underWay("Checking build").disabled).toBe(true));
+    // Each says where the merge is once: no status line repeats it beside the button.
+    expect(rtl.screen.getAllByText("Checking build")).toHaveLength(1);
     view.rerender(page(READY, "`src/a.ts` conflicts"));
     expect(mergeButton().textContent).toBe("Merge");
     expect(rtl.screen.getByText("src/a.ts conflicts")).toBeTruthy();
@@ -982,6 +1004,6 @@ describe("the Merge button's Merging… state (item page and Needs-you row)", ()
     }
     rtl.render(wrap(client, createElement(Row)));
     await rtl.waitFor(() => expect(rtl.screen.getByText("the merged commit conflicts in src/a.ts")).toBeTruthy());
-    expect(mergeButton().textContent).toBe("Merge");
+    expect(firstItem().textContent).toBe("Merge");
   });
 });

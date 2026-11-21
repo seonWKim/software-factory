@@ -52,7 +52,7 @@ Agent-neutral instructions. `CLAUDE.md` is a symlink to this file.
 
 A change to the dashboard (`web/`) reads `design-system/components.md`, `design-system/patterns.md` and `design-system/writing.md` (also for text the server writes for a page), composes from `web/src/components/ui/`, and follows `design-system/dx.md` for its build steps, checks and PR checklist.
 
-A UI change edits only the page file it touches (`docs/design/09-dashboard-<page>.md`, with its `docs/design/history/` file). The sidebar, top bar and shared components are in `docs/design/09-dashboard-shell.md`. `docs/design/09-dashboard-app.md` is an index; add no decision to it.
+A UI change edits only the page file it touches (`docs/design/09-dashboard-<page>.md`, with its `docs/design/history/` file). The sidebar and top bar are in `docs/design/09-dashboard-shell.md`, the shared components in `docs/design/09-dashboard-components.md`. `docs/design/09-dashboard-app.md` is an index; add no decision to it.
 
 ## Rules for agents working on this repo
 
