@@ -9,6 +9,8 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import { localWithOffset, modelStallChecks, modelStallLine } from "../src/ui/factory-status.js";
 import { HealthMonitor } from "../src/ui/health.js";
+import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
+import { TAIL_CHARS } from "../src/worker/support.js";
 import { FakeAuth } from "./helpers/fakes/runner.js";
 import { PROJECT, cleanScanner } from "./helpers/fakes/config.js";
 import { pipeline } from "./helpers/harness.js";
@@ -298,6 +300,63 @@ describe("one silent run or a silent model (decision of 2026-11-20)", () => {
     expect(await f.store.latestRunningOutput()).toBeNull();
     expect(await f.store.getClaimPause("model_stall")).toBe(iso(f.stalledAt + PROBE_MS));
     expect(await f.item(f.a)).toMatchObject({ blocked_on: "none" });
+  });
+});
+
+// A stalled run keeps the last TAIL_CHARS of its transcript as output_tail, run through the egress scan, so the
+// next stall can be read (the 2026-11-19 resolve stalls). A tail the scan flags is null; the code stays agent_stalled.
+describe("a stalled run's output tail", () => {
+  const SILENCE = "no model output for stall_ms (300000 ms) with no tool call open";
+  const transcript = `${"x".repeat(TAIL_CHARS)}{"type":"system","subtype":"task_started","description":"Run full test suite"}\n`;
+  const flagging: EgressScanner = {
+    scan: async (channel, text) => (text.includes("SECRETISH") ? { clean: false, findings: [{ rule: "test", channel }] } : { clean: true }),
+  };
+  const stalledRun = (t = transcript) => ({ status: "stalled" as const, output: null, error: SILENCE, transcript: t });
+
+  it("keeps the transcript's last TAIL_CHARS characters", async () => {
+    const f = await pipeline({ implement: () => stalledRun() });
+    const a = await f.submit();
+    await f.w1.tick();
+    await f.controller.tickRuns();
+    await f.w1.tick();
+    const [run] = await f.runs(a, "implement");
+    expect(run!.outcome).toMatchObject({ status: "failed", error_code: AGENT_STALLED, detail: SILENCE, output_tail: transcript.slice(-TAIL_CHARS) });
+  });
+
+  it("is null when the egress scan flags it, and the run is still agent_stalled", async () => {
+    const f = await pipeline({ implement: () => stalledRun(`${transcript}SECRETISH\n`), scanner: flagging });
+    const a = await f.submit();
+    await f.w1.tick();
+    await f.controller.tickRuns();
+    await f.w1.tick();
+    const [run] = await f.runs(a, "implement");
+    expect(run!.outcome).toMatchObject({ status: "failed", error_code: AGENT_STALLED, detail: SILENCE, output_tail: null });
+  });
+
+  /** A RUNNING item with PR 42 and one queued resolve run over a conflict in src/a.ts; its agent stalls with `t`. */
+  async function resolveStall(t: string, scanner?: EgressScanner) {
+    const f = await pipeline(scanner ? { scanner } : {});
+    f.runner.script.resolve = () => stalledRun(t);
+    Object.assign(f.sandbox, { mergeExit: 1, conflicts: ["src/a.ts"], resolveChanged: ["src/a.ts"] });
+    f.sandbox.files["src/a.ts"] = "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> origin/main\n";
+    const { item } = await f.store.createWorkItem(issue(7), system);
+    const moved = await f.store.transition({
+      id: item.id, expected_version: item.version, actor: system, reason: "test_setup",
+      patch: { stage: "RUNNING", change_ref: "42", allowed_paths: ["src/"] },
+      enqueue: { kind: "resolve", idempotency_key: `${item.id}:resolve:l0:r1`, input: { notes: "" } },
+    });
+    if (!moved.ok) throw new Error("setup");
+    await f.w1.tick();
+    return (await f.runs(moved.item, "resolve"))[0]!;
+  }
+
+  it("in the resolve step: kept, scanned, and null when flagged", async () => {
+    expect((await resolveStall(transcript)).outcome).toMatchObject({
+      status: "failed", error_code: AGENT_STALLED, detail: SILENCE, output_tail: transcript.slice(-TAIL_CHARS),
+    });
+    expect((await resolveStall(`${transcript}SECRETISH\n`, flagging)).outcome).toMatchObject({
+      status: "failed", error_code: AGENT_STALLED, detail: SILENCE, output_tail: null,
+    });
   });
 });
 
