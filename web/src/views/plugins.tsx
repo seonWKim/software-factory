@@ -19,7 +19,7 @@ import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { When, useNow } from "./common.js";
 import { ModelsTab } from "./plugins-models.js";
-import { MergeButton } from "./item-commands.js";
+import { MergeButton } from "./merge-button.js";
 import { withNodes } from "./standing.js";
 import { Badge } from "../components/ui/badge.js";
 import { Card } from "../components/ui/card.js";
