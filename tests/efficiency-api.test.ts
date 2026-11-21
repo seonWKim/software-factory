@@ -3,8 +3,8 @@
 // and unfinished items left out, titles through the Withholder, and a 405 for a POST (read-only).
 
 import { describe, expect, it } from "vitest";
-import type { MergeEvaluation } from "../src/core/merge-evaluation.js";
-import type { Run, RunOutcome, Timestamp, WorkItem, WorkItemId } from "../src/core/types.js";
+import { type MergeEvaluation, type MergeWindow, noVerdicts } from "../src/core/merge-evaluation.js";
+import type { Run, RunOutcome, Tier, Timestamp, WorkItem, WorkItemId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -22,6 +22,11 @@ const ok = (tokens: number, cost: number | null): RunOutcome => ({
   status: "succeeded", summary: "ok", data: { tokens, usage: { input_tokens: tokens, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: cost, model: null } },
 });
 
+const evaluation = (id: WorkItemId, tier: Tier | null, merged: number, over: Partial<MergeEvaluation> = {}): MergeEvaluation => ({
+  work_item_id: id, project: "p", merge_sha: `sha-${id}`, tier, merged_by: "system:merge", merged_at: iso(merged), token_cost: 0, title: null,
+  reverted: 0, fixed_forward: 0, verdicts: noVerdicts(), explicit: noVerdicts(), critical: 0, ...over,
+});
+
 /** A store fake: items, runs and merge evaluations in memory, with only the read methods efficiency uses. Writes throw. */
 function fakeStore() {
   const items = new Map<WorkItemId, WorkItem>();
@@ -29,7 +34,10 @@ function fakeStore() {
   const merges: MergeEvaluation[] = [];
   let n = 0;
   const reads = {
-    async listMergeEvaluations(since: Timestamp | null) { return merges.filter((m) => since === null || m.merged_at >= since); },
+    async listMergeEvaluations(w: MergeWindow) {
+      const since = w !== null && typeof w === "object" ? iso(Date.parse(NOW) - w.within_ms) : w;
+      return merges.filter((m) => since === null || m.merged_at >= since);
+    },
     async getWorkItem(id: WorkItemId) { return items.get(id) ?? null; },
     async listRuns(id: WorkItemId) { return runs.filter((r) => r.work_item_id === id); },
     async listWorkItemsWhere(f: { stage?: string; updated_since?: Timestamp }) {
@@ -51,8 +59,13 @@ function fakeStore() {
         runs.push({ id: `r${++n}`, work_item_id: id, kind: "implement", outcome: tokens === null ? null : ok(tokens, cost), started_at: iso(t), finished_at: iso(t + hours * HOUR), session_tokens: null } as Run);
         t += hours * HOUR;
       }
-      merges.push({ work_item_id: id, merged_at: iso(merged), title } as MergeEvaluation);
+      merges.push(evaluation(id, null, merged, { title }));
       return id;
+    },
+    /** A merge evaluation only (no item, so not a finished item), of `tier`, merged `mergedAgo` ago. */
+    merged(tier: Tier | null, mergedAgo: number, over: Partial<MergeEvaluation> = {}) {
+      merges.push(evaluation(`wi_${++n}` as WorkItemId, tier, ago(mergedAgo), over));
+      merges.sort((a, b) => a.merged_at.localeCompare(b.merged_at));
     },
     closed(close_reason: WorkItem["close_reason"], closedAgo: number) {
       const id = `wi_${++n}` as WorkItemId;
@@ -137,6 +150,22 @@ describe("GET /api/v1/efficiency", () => {
     expect(cur.slowest.map((i: any) => i.title)).toEqual(["[withheld: github_token]", "Fast"]);
     expect(cur.costliest.map((i: any) => i.title)).toEqual(["Fast", "[withheld: github_token]"]);
     expect(JSON.stringify(body)).not.toContain(SECRET);
+  });
+
+  it("carries the per-tier merge record and rule result, tiers 1 to 5 then untiered, the same as factory stats", async () => {
+    const f = fakeStore();
+    for (let i = 0; i < 50; i++) f.merged(2, 60 * DAY + i * HOUR); // old: in the rule's sample only
+    f.merged(2, DAY, { fixed_forward: 1, explicit: { ...noVerdicts(), changes: 1, accept: 2 } });
+    f.merged(4, DAY);
+    f.merged(null, 2 * DAY, { critical: 1, explicit: { ...noVerdicts(), reject: 1 } });
+    const { body } = await get(deps(f.store));
+    expect(body.merges.map((r: any) => r.tier)).toEqual([1, 2, 3, 4, 5, null]);
+    expect(body.merges[1]).toEqual({
+      tier: 2, merged: 1, reverted_or_fixed: 1, not_accept: 1, sample: 50, sample_bad: 1, sample_critical: 0, rule: "met", qualifies: true,
+    });
+    expect(body.merges[3]).toMatchObject({ tier: 4, merged: 1, rule: "never", qualifies: false });
+    expect(body.merges[5]).toMatchObject({ tier: null, merged: 1, not_accept: 1, sample_critical: 1, rule: "too_few", qualifies: false });
+    expect(body.merges[0]).toMatchObject({ tier: 1, merged: 0, sample: 0, rule: "too_few", qualifies: false });
   });
 
   it("is read-only: a POST gets 405", async () => {

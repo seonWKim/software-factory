@@ -10,7 +10,7 @@ import type {
 import type { AuthAction, AuthResource, LinkedAccount } from "./auth-provider.js";
 import type { SourceEvent } from "./source-adapter.js";
 import type { StatsRecord } from "../core/stats.js";
-import type { MergeEvaluation } from "../core/merge-evaluation.js";
+import type { MergeEvaluation, MergeWindow } from "../core/merge-evaluation.js";
 import type { LearnedSettingsStore } from "../core/learned-settings.js";
 import type { CommandProposalStore } from "../core/interpret.js";
 import type { TaskStore } from "../core/tasks.js";
@@ -430,8 +430,8 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   listVerdictsSince(since: Timestamp | null): Promise<Verdict[]>;
   /** Runs in `status` (of `kinds` when given), by finish time (`updated_at` on rows with none). Read-only. */
   listRunsFinishedSince(q: { status: RunStatus; kinds?: readonly RunKind[]; since: Timestamp | null }): Promise<Run[]>;
-  /** Stored per-merge evaluations merged at or after `since` (null: all), oldest first (design 06-measurement). Read-only. */
-  listMergeEvaluations(since: Timestamp | null): Promise<MergeEvaluation[]>;
+  /** Stored per-merge evaluations merged at or after `since` (null: all; `within_ms`: of the store's clock), oldest first (design 06-measurement). Read-only. */
+  listMergeEvaluations(since: MergeWindow): Promise<MergeEvaluation[]>;
 
   // Budget checkpoints (design §6)
 
