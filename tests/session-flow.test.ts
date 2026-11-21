@@ -674,7 +674,7 @@ describe("session flow and CLI", () => {
     expect([await files.list(), await files.read("../x" as WorkItemId)]).toEqual([[], null]);
   });
 
-  it("runSession maps the login to the GitHub account, keeps the lease until stopped, and finishes through the broker's store", async () => {
+  it("runSession with --as maps the login to the GitHub account, keeps the lease until stopped, and finishes through the broker's store", async () => {
     const h = await harness();
     const it0 = await h.running(1);
     const replies: Record<string, unknown> = {
@@ -684,7 +684,8 @@ describe("session flow and CLI", () => {
     const github = { request: async <T>(_m: string, path: string): Promise<T> => (path in replies ? (replies[path] as T) : Promise.reject(new Error("404"))) };
     const printed: string[] = [];
     const stop = new AbortController();
-    const deps = { sessions: h.sessions, config: h.cfg, github, readSpec: async () => SPEC_TEXT, print: (l: string) => printed.push(l), stop: stop.signal };
+    const identity = { user: "github:2" as UserId, from: "cli_user" as const };
+    const deps = { sessions: h.sessions, identity, githubSource: true, github, readSpec: async () => SPEC_TEXT, print: (l: string) => printed.push(l), stop: stop.signal };
     const started = runSession(deps, { cmd: "start", target: it0.id, as: "alice" });
     await waitFor(async () => (await h.runs(it0.id, "interactive")).length === 1, "session start");
     expect(printed).toContain("run folder: /wt/1");
@@ -697,5 +698,22 @@ describe("session flow and CLI", () => {
     const issues = githubIssues(github, { owner: "o", name: "r" });
     expect(await issues.issue(3)).toEqual({ source: { type: "github_issue", id: "o/r#3", link: "https://github.com/o/r/issues/3" }, title: "T", body: "", author: { provider: "github", subject: "9" } });
     expect([await issues.issue(4), await issues.issue(5)]).toEqual([null, null]);
+  });
+
+  it("runSession with no --as and the GitHub source off starts as the CLI identity with no GitHub call", async () => {
+    const h = await harness();
+    const it0 = await h.running(1);
+    let calls = 0;
+    const github = { request: async <T>(): Promise<T> => (calls++, Promise.reject(new Error("network_unavailable"))) };
+    const stop = new AbortController();
+    const deps = {
+      sessions: h.sessions, identity: { user: "github:1" as UserId, from: "cli_user" as const }, githubSource: false, github,
+      readSpec: async () => SPEC_TEXT, print: () => {}, stop: stop.signal,
+    };
+    const started = runSession(deps, { cmd: "start", target: it0.id });
+    await waitFor(async () => (await h.runs(it0.id, "interactive")).length === 1, "session start");
+    stop.abort();
+    expect(await started).toBe(0);
+    expect([(await h.runs(it0.id, "interactive"))[0]!.actor_id, calls]).toEqual(["github:1", 0]);
   });
 });
