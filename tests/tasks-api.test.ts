@@ -11,7 +11,7 @@ import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, type UiRequest, respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
 import { TASKS_PATH, TASK_BODY_PATH, TASK_DELETE_PATH, TASK_DONE_PATH, TASK_EDIT_PATH, TASK_REOPEN_PATH, TASK_SUB_PATH, TASK_WRITES } from "../src/ui/tasks-api.js";
-import { PROJECTS_PATH, TASK_PROJECT_PATH } from "../src/ui/projects-api.js";
+import { PROJECTS_PATH, PROJECT_DELETE_PATH, TASK_PROJECT_PATH } from "../src/ui/projects-api.js";
 import { newStore } from "./helpers/store.js";
 
 const HOST = "127.0.0.1:4310";
@@ -417,6 +417,43 @@ describe("the dashboard's task project routes (design 02-tasks and 09-dashboard-
     expect(JSON.parse(archived.body)).toEqual({ error: 'project "old" is archived; restore it first' });
     const off = await setup({ actor: null });
     expect((await link(off, { id: ID, project: "home", add: true })).status).toBe(503);
+    expect(await snapshot(s)).toEqual(before);
+  });
+
+  const remove = (s: S, body: unknown, over: Partial<UiRequest> = {}) => s.post(body, { url: PROJECT_DELETE_PATH, ...over });
+
+  it("POST /api/v1/projects/delete deletes the project and its links, as `factory project delete` does, and keeps every task", async () => {
+    const s = await seeded();
+    const tasksBefore = (await snapshot(s)).tasks;
+    const r = await remove(s, { project: "home" });
+    expect(r.status).toBe(200);
+    expect(JSON.parse(r.body)).toEqual({ project: "home", unlinked: [ID] });
+    expect(await s.store.getProjectBySlug("home")).toBeNull();
+    expect(await s.store.listTaskProjects(ID)).toEqual([]);
+    expect((await snapshot(s)).tasks).toEqual(tasksBefore);
+    // An archived project is deleted too, as the CLI does.
+    expect((await remove(s, { project: "old" })).status).toBe(200);
+    expect(await s.store.getProjectBySlug("old")).toBeNull();
+  });
+
+  it("POST /api/v1/projects/delete answers 404 for an unknown slug, 400 for a bad body, 503 with no actor, and refuses without the guards; each writes nothing", async () => {
+    const s = await seeded();
+    const before = await snapshot(s);
+    const unknown = await remove(s, { project: "garden" });
+    expect(unknown.status).toBe(404);
+    expect(JSON.parse(unknown.body)).toEqual({ error: 'no project "garden"' });
+    for (const body of [{}, { project: "Home" }, { project: 3 }, { project: "home", x: 1 }, "x"]) {
+      expect((await remove(s, body)).status, JSON.stringify(body)).toBe(400);
+    }
+    expect((await remove(s, { project: "home" }, { csrfToken: undefined })).status).toBe(403);
+    expect((await remove(s, { project: "home" }, { contentType: "text/plain" })).status).toBe(415);
+    for (const over of [{ host: "evil.example" }, { origin: "https://evil.example" }, { bodyTooLarge: true }, { body: "{not json" }] as Partial<UiRequest>[]) {
+      expect((await remove(s, { project: "home" }, over)).status, JSON.stringify(over)).toBeGreaterThanOrEqual(400);
+    }
+    const off = await setup({ actor: null });
+    await off.store.createProject({ id: "pj_home", name: "Home", created_by: ACTOR });
+    expect((await remove(off, { project: "home" })).status).toBe(503);
+    expect(await off.store.getProjectBySlug("home")).not.toBeNull();
     expect(await snapshot(s)).toEqual(before);
   });
 

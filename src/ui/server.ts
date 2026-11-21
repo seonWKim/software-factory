@@ -7,7 +7,7 @@
 // POST /api/v1/packs/approvals (design 11-packs, issue #589; packs-api.ts), POST /api/v1/rules/verdict (design §9,
 // issue #571; rules-api.ts), /api/v1/rules/edit and /api/v1/rules/pushbacks/dismiss (design 09-dashboard-rules, RULE_WRITES) and the task routes (design 02-tasks; tasks-api.ts TASK_WRITES: POST /api/v1/tasks, the quick-add box,
 // /api/v1/tasks/build, Build this, /api/v1/tasks/edit, /done, /delete and /sub, the Tasks page's row actions, and
-// projects-api.ts's /api/v1/tasks/project and /api/v1/projects, its project dialog) and the
+// projects-api.ts's /api/v1/tasks/project, /api/v1/projects and /api/v1/projects/delete, its project dialog and menu) and the
 // calendar routes (design 08-settings; calendar-api.ts: POST /api/v1/calendar/connect and /disconnect) and the Data page's Ask
 // (design 09-dashboard-app; data-ask.ts: POST /api/v1/data/ask) and the Plugins page's import (design 11-plugin-import;
 // plugins-import-api.ts: POST /api/v1/plugins/import) and Migrate now, Start and Restart now (design 08-self-update; migrate-api.ts:
