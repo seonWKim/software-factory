@@ -22,6 +22,7 @@ const EXEMPT: Record<string, string> = {
   "src/interfaces/secret-store.ts": "defines the SecretStore type and secretName(); holds and reads no value",
   "src/plugin-api.ts": "types only: passes the SecretStore into plugin contexts and declares secret names",
   "src/compose.ts": "wiring only: builds the SecretStore plugin and hands it to other plugins; reads no value",
+  "src/plugin-set.ts": "wiring only: builds the configured plugins (moved out of compose.ts) and hands the SecretStore to them; reads no value",
   "src/golden.ts": "wiring only: hands the SecretStore to the runner for golden runs; reads no value",
   "src/impl/claude/claude-shared.ts": "declares the Claude secret names for the plugin descriptors; reads no value",
   "src/impl/llm/claude-cli-llm-provider.ts": "follow-up: reads the Claude model credential",
