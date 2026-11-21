@@ -25,7 +25,7 @@ function resolve(file: string, spec: string, known: ReadonlySet<string>): string
 }
 
 /** The R1 rule an import from `me` to `to` breaks, or null. */
-export function brokenRule(me: Unit, to: Unit): string | null {
+function brokenRule(me: Unit, to: Unit): string | null {
   if (to.name === me.name || to.kind === "kernel") return null;
   if (me.kind === "kernel") return `kernel→${to.kind}`;
   if (me.kind === "adapter") return `adapter→${to.kind}`;
