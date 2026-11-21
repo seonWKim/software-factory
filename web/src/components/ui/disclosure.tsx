@@ -16,7 +16,7 @@ interface DisclosureProps extends Omit<HTMLAttributes<HTMLDetailsElement>, "chil
 }
 
 /**
- * The one show/hide section (docs/design/09-dashboard-shell.md, design-system/components.md): a native `<details>` with a
+ * The one show/hide section (docs/design/09-dashboard-components.md, design-system/components.md): a native `<details>` with a
  * `<summary>` that has one chevron marker (turned down when open) and one label style (`text-xs text-text-2`). Use it only
  * for long content (decision rule 2 in design-system/patterns.md). The open state is kept in React so `aria-expanded`
  * on the summary and the `open` attribute always agree; Enter and Space toggle it from the keyboard. Extra props

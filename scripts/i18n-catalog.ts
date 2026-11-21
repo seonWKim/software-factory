@@ -1,5 +1,5 @@
 // Generates web/src/i18n/en.ts, the English catalog barrel, from the area files in web/src/i18n/en/.
-// A local development script (design 09-dashboard-shell-text.md): `npm run i18n:catalog` writes the file, so adding an
+// A local development script (design 09-dashboard-components.md): `npm run i18n:catalog` writes the file, so adding an
 // area file never needs a hand edit to a shared import or spread line. tests/web-i18n-keys.test.ts fails when the
 // checked-in barrel differs from render().
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";

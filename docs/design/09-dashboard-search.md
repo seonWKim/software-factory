@@ -1,0 +1,9 @@
+# 9. Status page: dashboard search and help
+
+Split from [09-dashboard-shell.md](09-dashboard-shell.md) (2026-11-21, moved text, no decision changed).
+
+- **The `⌘K` search includes closed items, after open ones, labelled Merged or Closed (decision changed 2026-11-20; current; replaces "the search lists only the items the page has loaded", see History).** `SearchDialog` (`web/src/search.tsx`) reads the existing `GET /api/v1/items?closed=1` when it opens (`useApi`, the same cached read as Work's tree; no new endpoint) and merges it with the cached open items. Hits order: pages, open items, then closed items. A closed hit's right-hand label is `Merged` (`close_reason` completed) or `Closed` (any other), instead of `Items` (`search.merged`, `search.closed` in `web/src/i18n/en/shell.ts`). The read is capped at `LIST_LIMIT` (200 newest rows), so older closed items are not found; a store-side title search is a follow-up. A withheld title is not matched, and the hit shows the id.
+
+- **The `?` dialog and the `⌘K` search hold the command help (decision changed 2026-11-19; current; adds to "Menu names, groups and keyboard shortcuts", whose help listed only shortcuts and whose search only pages and items, see History).** `HelpDialog` (`web/src/search.tsx`) shows a Commands section under the shortcuts: each item command as typed, what it does and where to type it (an issue or Slack reply, or `factory <command> <item>`), from one list (`COMMAND_HELP`). `SearchDialog` shows it under its hits, filtered by the search text. It replaces the item page's command prose and "From a terminal" line (design 09-dashboard-item). Text is in `web/src/i18n/en/work.ts` (`commands.help.*`, `commands.helpWhere`).
+
+- Replaced decisions of this topic: [history/09-dashboard-search.md](history/09-dashboard-search.md).
