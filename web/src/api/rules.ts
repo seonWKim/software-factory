@@ -7,7 +7,7 @@ import { t } from "../i18n/index.js";
 import { getJson, postJson } from "./client.js";
 import { API } from "./routes.js";
 
-/** One standing rule of `/api/v1/standing` (design 05-standing-approvals). `last_used_at`: null, not recorded yet. */
+/** One standing rule of `/api/v1/standing` (design 05-standing-approvals): when it last fired (null: never) and the items it approved in the last 7 days. */
 export interface StandingRuleRow {
   rule: string;
   gate: string;
@@ -17,7 +17,8 @@ export interface StandingRuleRow {
   set_by: string | null;
   created_at: string | null;
   updated_at: string | null;
-  last_used_at: string | null;
+  last_fired_at: string | null;
+  recent: { id: string; title: string }[];
 }
 
 /** A proposal to turn a rule on that no one has answered yet. */
