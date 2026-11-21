@@ -1,7 +1,8 @@
 // The owner's CLIs print text, not JSON (checked 2026-11-12): these read the texts the agents-home plugin needs.
 // `evolve pending` lists what waits for a verdict; `evolve show <id>` gives one entry's detail (its form is assumed,
 // docs/plugins/tacit-ledger.md) and a class's draft (the owner's sample, 2026-11-13); `<home>/private/tacit/rules.md`
-// holds the promoted rules, a promote adds one block to it and a retire removes one.
+// holds the promoted rules, a promote adds one block to it, an edit rewrites one and a retire removes one;
+// `tacit show --active --unclustered` lists the pushbacks in no class yet (its form is assumed).
 
 import type {
   TacitApplied, TacitAppliedRule, TacitDraft, TacitEntryDetail, TacitEvidence, TacitOpenPushback, TacitPendingEntry, TacitPromotion, TacitRule,
@@ -124,8 +125,8 @@ function appliedRule(heading: string, body: readonly string[]): TacitAppliedRule
 /**
  * The whole rules file for the Applied group. Each `## ` block up to the next `#` heading is one rule: with a `C-` ID and
  * a `기본값` line it gives its `기본값`, `예외`, `범위` and the T- IDs and `판정일` of its `근거` line (a part it lacks is
- * absent; a repeated field line is added after the earlier one, on a new line); any other block is kept as raw text. The non-empty lines under `## 다른 곳에 인코딩된 규칙` are `elsewhere`, as
- * written. Lines inside a fenced code block (``` or ~~~) are skipped, so a format template in the file is no rule; an
+ * absent; a repeated field line is added after the earlier one, on a new line); any other block is kept as raw text.
+ * The non-empty lines under `## 다른 곳에 인코딩된 규칙` are `elsewhere`, as written. Lines inside a fenced code block (``` or ~~~) are skipped, so a format template in the file is no rule; an
  * unclosed fence runs to the end of the file.
  */
 export function parseApplied(text: string): TacitApplied {
