@@ -125,8 +125,8 @@ export const triageSpec = {
   in_short: "AS-IS: nothing checks the scope.\nTO-BE: CI checks the scope.",
   problem: "Add a CI scope gate",
   done_criteria: ["CI fails when files outside allowed_paths change"],
-  // One check per done-when line (design 04-triage, 2026-11-22): the fake repo's test command.
-  done_checks: [{ line: "CI fails when files outside allowed_paths change", command: "npm test" }],
+  // One check per done-when line (design 04-triage, 2026-11-22): a test file, so it holds whatever check commands a test sets.
+  done_checks: [{ line: "CI fails when files outside allowed_paths change", test_file: "tests/scope-gate.test.ts" }],
   desired_output: "workflow + test",
   scope: "CI only",
   allowed_paths: [".github/workflows/"],

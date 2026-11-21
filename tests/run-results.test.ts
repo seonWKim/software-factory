@@ -62,7 +62,7 @@ describe("the triage branch and done_checks", () => {
     const r = await autoTriage(triageSpec);
     expect(r.it.done_checks).toEqual(triageSpec.done_checks);
     const spec = r.source.comments.find((c) => c.marker.includes("spec:"))!.body;
-    expect(spec).toContain(`- ${triageSpec.done_criteria[0]} (check: \`npm test\`)`);
+    expect(spec).toContain(`- ${triageSpec.done_criteria[0]} (check: \`tests/scope-gate.test.ts\`)`);
   });
 
   it("refuses an answer without done_checks: nothing is stored and the item does not move on", async () => {
