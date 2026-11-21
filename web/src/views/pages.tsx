@@ -2,7 +2,7 @@ import { ListTodo } from "lucide-react";
 import { useMemo, useState } from "react";
 import {
   API, type FactoryState, type GitHubBudget, type Health, type HostSleepRow, type ItemDetail, type ItemRow, type Items, type Overview, type PauseRow, type PhaseRow, type PausesView, type QueueRow, type RunRow,
-  type UnreviewedMerges, type WorkerProcess, type WorkersView, useApi,
+  type RulesView, type UnreviewedMerges, type WorkerProcess, type WorkersView, useApi,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
@@ -15,6 +15,7 @@ import { ID_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import { FailuresSection } from "./failures.js";
 import { SpendSection } from "./spend.js";
 import { EfficiencyTab } from "./efficiency.js";
+import { Improve } from "./rules-improve.js";
 import { Markdown } from "../components/ui/markdown.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { Tabs } from "../components/ui/tabs.js";
@@ -720,7 +721,9 @@ function CheckList({ checks }: { checks: Health["checks"] }) {
   );
 }
 
-type HealthTab = "checks" | "pauses" | "sleeps" | "merges" | "efficiency" | "github";
+type HealthTab = "checks" | "pauses" | "sleeps" | "merges" | "efficiency" | "improve" | "github";
+
+
 
 /**
  * The GitHub budget tab (design 09-health, 2026-11-20): what the controller stored after its last poll, so no GitHub
@@ -797,9 +800,10 @@ export function HealthPage() {
   const merges = useApi<UnreviewedMerges>(API.unreviewedMerges, 30_000);
   const pauses = useApi<PausesView>(API.pauses);
   const overview = useApi<Overview>(API.overview);
+  const rules = useApi<RulesView>(API.rules);
   const viewer = useViewer();
   const held = (pauses.data?.pauses.length ?? 0) > 0;
-  const [picked, pick] = useUrlParam("tab", (v) => ["checks", "pauses", "sleeps", "merges", "efficiency", "github"].includes(v));
+  const [picked, pick] = useUrlParam("tab", (v) => ["checks", "pauses", "sleeps", "merges", "efficiency", "improve", "github"].includes(v));
   if (health.isError) return <><PageHeader title={t("page.health")} /><ErrorNote error={health.error} /></>;
   if (!health.data) return <><PageHeader title={t("page.health")} /><Loading rows={6} /></>;
   const order = ["fail", "warn", "ok"];
@@ -811,12 +815,15 @@ export function HealthPage() {
   const failing = checks.some((c) => c.status === "fail");
   const mergeList = merges.data?.merges;
   const budget = overview.data?.github_budget ?? null;
+  // The improve report (design 09-dashboard-system, 2026-11-21): from the rules read's `improve`; no tab without one.
+  const improve = rules.data?.improve ?? null;
   const options: { id: HealthTab; label: string }[] = [
     { id: "checks", label: `${t("health.tabChecks")} (${checks.length})${failing ? ` ${t("health.failMark")}` : ""}` },
     ...(held ? [{ id: "pauses" as const, label: `${t("pause.title")} (${pauses.data!.pauses.length})` }] : []),
     { id: "sleeps", label: `${t("health.sleeps")} (${sleeps.length})` },
     { id: "merges", label: `${t("health.merges")}${mergeList ? ` (${mergeList.length})` : ""}` },
     { id: "efficiency", label: t("efficiency.title") },
+    ...(improve ? [{ id: "improve" as const, label: t("health.tabImprove") }] : []),
     // Only while a GitHub budget is stored (GitHub selected and polled).
     ...(budget ? [{ id: "github" as const, label: t("health.githubBudget") }] : []),
   ];
@@ -894,6 +901,7 @@ export function HealthPage() {
         </div>
       )}
       {tab === "efficiency" && <EfficiencyTab />}
+      {tab === "improve" && improve && <Improve view={improve} />}
       {tab === "github" && budget && <GitHubBudgetTab budget={budget} tokenDays={overview.data?.github_token_days} />}
       <SpendSection />
       <FailuresSection />
