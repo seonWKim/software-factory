@@ -56,9 +56,10 @@ export class FakeSource implements PollSource {
     this.comments.push({ source, body, marker, url });
     return { url };
   }
+  /** Like GitHub's 👀: marking a message seen again adds no second reaction. */
   async markSeen(source: SourceRef, commentId: string | null): Promise<void> {
     if (this.reactionError) throw this.reactionError;
-    this.reactions.push({ source, comment_id: commentId });
+    if (!this.reactions.some((r) => r.source.id === source.id && r.comment_id === commentId)) this.reactions.push({ source, comment_id: commentId });
   }
   /** Every closeIssue call that succeeded, in order. */
   closed: SourceRef[] = [];
@@ -220,8 +221,9 @@ export class FakeStreamSource implements StreamSource {
     if (!this.comments.some((c) => c.marker === marker)) this.comments.push({ source, body, marker });
     return { url: null };
   }
+  /** Like Slack's 👀: marking a message seen again adds no second reaction. */
   async markSeen(source: SourceRef, commentId: string | null): Promise<void> {
-    this.reactions.push({ source, comment_id: commentId });
+    if (!this.reactions.some((r) => r.source.id === source.id && r.comment_id === commentId)) this.reactions.push({ source, comment_id: commentId });
   }
   async setStatus(source: SourceRef, status: WorkStatus, change_ref: string | null): Promise<void> {
     this.statusCalls.push({ source, status, change_ref });
