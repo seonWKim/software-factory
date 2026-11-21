@@ -39,6 +39,8 @@ export type FormName = "reject" | "revise" | "verdict";
  * reason that accepts Approve or Answer never shows Retry first.
  */
 const PRIMARY = ["approve", "resolve", "retry"];
+/** The main action of an item that stopped the same way three times (`repeated_stop`), in this order, before PRIMARY. */
+const AFTER_REPEATS = ["revise", "reject"];
 
 /** The verdicts a person gives, as `/verdict` takes them, with their button labels. */
 const VERDICTS = [["accept", "commands.accept"], ["changes", "commands.changes"], ["reject", "commands.reject"]] as const satisfies readonly (readonly [string, MessageKey])[];
@@ -223,12 +225,16 @@ export function withPaths(c: ItemCommand, note: string): string {
 }
 
 /**
- * The command the state asks for, of those the viewer may send: the one that allows a permission ask's paths, else
- * the first of approve, resolve and retry (PRIMARY order, not the API's), so Retry only when neither other applies.
+ * The command the state asks for, of those the viewer may send: the one that allows a permission ask's paths; else,
+ * on an item that stopped the same way three times (`repeated_stop`), Revise, then Reject; else the first of approve,
+ * resolve and retry (PRIMARY order, not the API's), so Retry only when neither other applies.
  */
 export function primaryOf(commands: readonly ItemCommand[]): ItemCommand | undefined {
-  const rank = (c: ItemCommand) => PRIMARY.indexOf(c.name) - (pathsOf(c).length > 0 ? PRIMARY.length : 0);
-  return commands.filter((c) => PRIMARY.includes(c.name) && c.allowed).sort((a, b) => rank(a) - rank(b))[0];
+  const allowed = commands.filter((c) => c.allowed);
+  const first = (names: readonly string[], cs: readonly ItemCommand[]) => cs.filter((c) => names.includes(c.name)).sort((a, b) => names.indexOf(a.name) - names.indexOf(b.name))[0];
+  return first(PRIMARY, allowed.filter((c) => pathsOf(c).length > 0))
+    ?? first(AFTER_REPEATS, allowed.filter((c) => c.repeated_stop))
+    ?? first(PRIMARY, allowed);
 }
 
 /**
@@ -394,7 +400,11 @@ const PRIMARY_LABEL: Record<string, MessageKey> = { approve: "needs.actApprove",
 /** The label of a primary that allows a permission ask's paths (it sends them as `+paths`). */
 const ALLOW_LABEL: Record<string, MessageKey> = { approve: "needs.actAllowApprove", retry: "needs.actAllowRetry", resolve: "needs.actAllowAnswer" };
 /** The primary button's label for `c`: what it does, naming the permission it gives when it carries paths. */
-export const primaryLabel = (c: ItemCommand): string => t((pathsOf(c).length > 0 ? ALLOW_LABEL : PRIMARY_LABEL)[c.name]!);
+export const primaryLabel = (c: ItemCommand): string => {
+  const key = (pathsOf(c).length > 0 ? ALLOW_LABEL : PRIMARY_LABEL)[c.name];
+  // Revise or Reject after a repeated stop (primaryOf): the command's own name.
+  return key ? t(key) : commandLabel(c.name);
+};
 /** The key that presses a row's primary button when the row is selected (never Merge). */
 export const PRIMARY_KEY = "p";
 
@@ -477,20 +487,26 @@ export function NeedActions({ id, title, commands, pr, group, merge, checking, c
   // list's next read moves the row on, so a click never looks like nothing happened.
   const sentLocal = primary ? local[primary.name] : undefined;
   const sent = sentLocal !== undefined && "seq" in sentLocal && !sentLocal.refusal ? sentLocal : null;
+  // Revise or Reject as the main action (a repeated stop, primaryOf) opens its dialog, as its menu entry does.
+  const sendPrimary = () => {
+    if (!primary) return;
+    if (DIALOGS.includes(primary.name)) setOpen(primary.name as FormName);
+    else void send(primary.name, withPaths(primary, ""));
+  };
   // A disabled Merge says why in its label ("Merge: 1 conflicting file"), as a disabled command's menu entry does.
   const mergeLabel = checking ? t("needs.checking") : queued ? (merge?.reason ?? t("commands.merging")) : merging ? t("commands.merging")
     : merge && !merge.enabled && merge.reason ? `${t("commands.merge")}: ${merge.reason}` : t("commands.merge");
   const head: MenuItem[] = group === "merge"
     ? [{ label: mergeLabel, action: "merge", disabled: off || checking || merging || !merge?.enabled, onSelect: () => void send("merge", "") }]
     : primary
-      ? [{ label: sent ? (sent.label ?? t("commands.sentWaiting")) : primaryLabel(primary), action: primary.name, disabled: off || sent !== null || !primary.allowed, onSelect: () => void send(primary.name, withPaths(primary, "")) }]
+      ? [{ label: sent ? (sent.label ?? t("commands.sentWaiting")) : primaryLabel(primary), action: primary.name, disabled: off || sent !== null || !primary.allowed, onSelect: sendPrimary }]
       : [];
   const items = [...head, ...rest, ...extra];
   return (
     <span ref={wrap} data-need-commands className="inline-flex flex-wrap items-center justify-end gap-2">
       {/* Every action is in the menu (owner feedback 2026-11-20); this hidden button only carries the row's "p" shortcut. */}
       {primary && group !== "merge" && (
-        <Button hidden data-shortcut={PRIMARY_KEY} data-command={primary.name} disabled={off || sent !== null || !primary.allowed} onClick={() => void send(primary.name, withPaths(primary, ""))} />
+        <Button hidden data-shortcut={PRIMARY_KEY} data-command={primary.name} disabled={off || sent !== null || !primary.allowed} onClick={sendPrimary} />
       )}
       {group === "merge" && merging && !queued && <OutcomeText outcome={{ tone: "status", text: t("commands.merging") }} />}
       {group === "merge" && !awaitsReply(outcome) && !queued && <OutcomeText outcome={outcome} />}
