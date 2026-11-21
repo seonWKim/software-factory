@@ -221,5 +221,10 @@ export interface WorkerDeps {
    * `repo.restart_command` in the repo's base checkout (design 04-gate-commands, restart). It rejects when the
    * command cannot start. Absent: a restart run fails with `no_host_exec`.
    */
+  /**
+   * `<state_dir>/run-deps` (compose): the run-side install cache a run folder's `repo.install_command` step clones
+   * node_modules from (src/worker/install-cache.ts, design 05-sandbox.md). Absent: every such step runs the install command.
+   */
+  install_cache?: string;
   host_exec?: (cmd: readonly string[], opts: { cwd: string; env: Readonly<Record<string, string>>; timeout_ms: number; signal: AbortSignal }) => Promise<ExecResult>;
 }

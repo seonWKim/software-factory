@@ -24,6 +24,7 @@ import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 import { STORE_BRANCH, type ToolCallContext, type ToolResult } from "../interfaces/tool-broker.js";
 import { checkWrapperSource, wrapperSeedFields } from "./toolchain-seeds.js";
 import { LiveTranscript } from "./live-transcript.js";
+import { cachedInstall, isInstallCommand } from "./install-cache.js";
 import { AGENT_FAILED, HOST_SLEEP_MS, INDEX_SIZE, LIVE_REPORT_PATHS, type LocalRoute, NETWORK_PAUSED_BY, NO_HOOKS, NO_USAGE, outputRecorder, PAUSABLE_KINDS, type ResumePlan, RunFailure, RunPaused, type RunScratch, TEST_WORKERS_ENV, TRUSTED_GIT_ENV, WARM_FAILED, WARM_KINDS, WORKER_INDEX_ENV, type WorkerDeps, addUsage, continues, fenced, gitIdentity, gitVerb, prTitle, type PrText, routeFor, runPushIntents, tail, threadDelivery, testWorkerShare, toolsNamed, untrustedGitConfig } from "./support.js";
 
 /** Agent plane host: claims runs, executes them in a Sandbox, reports outcomes. Never decides a transition; the controller does that from the outcome. Holds nothing between runs. */
@@ -703,21 +704,16 @@ export class Worker {
    * The toolchain's warm step (design 05-sandbox.md, issue #334), once per run of a warm kind: `warm_command` in
    * the run folder before the first agent step (resolve calls it on the branch tip before its merge), as the worker
    * (its tool env: the owner's HOME and caches, and the network), with the slot env and no credential or test database. It fills the caches the agent then reads offline. A failure ends the run before any agent starts, naming the command.
+   * A warm_command that is `repo.install_command` goes through the run-side install cache (install-cache.ts); a custom one runs as it is.
    */
   async warmOnce(run: Run, handle: SandboxHandle, signal: AbortSignal): Promise<void> {
     const s = this.scratch.get(run);
     if (!this.cfg.toolchain || !s || s.warmed || !WARM_KINDS.includes(run.kind)) return;
-    const round = await runChecks({
-      sandbox: this.d.sandbox,
-      handle,
-      commands: [this.cfg.toolchain.warm_command],
-      env: { ...this.d.toolEnv, ...this.slotEnv() },
-      timeout_ms: this.cfg.run_timeout_ms,
-      signal,
-      redact: [],
-    });
+    const warm = this.cfg.toolchain.warm_command;
+    const install = () => runChecks({ sandbox: this.d.sandbox, handle, commands: [warm], env: { ...this.d.toolEnv, ...this.slotEnv() }, timeout_ms: this.cfg.run_timeout_ms, signal, redact: [] });
+    const round = isInstallCommand(warm, this.cfg.repo.install_command) ? await cachedInstall(this, handle, install) : await install();
     if (signal.aborted) throw new RunFailure("lease_lost", "run aborted", true);
-    const f = round.failed;
+    const f = round?.failed;
     if (f) {
       throw new RunFailure(WARM_FAILED, `toolchain warm_command \`${commandText(f.command)}\` ${f.how}; no agent started`, true, f.tail ? { output_tail: f.tail } : {});
     }
