@@ -273,6 +273,7 @@ export async function readClaimPauses(store: FactoryStore): Promise<ClaimPauses>
     worker_kinds: await workerKindsNow(store),
     rate_limit: await store.getClaimPause("rate_limit"),
     model_stall: await store.getClaimPause("model_stall"),
+    model_credential: await store.getClaimPause("model_credential"),
     forge_auth: await store.getClaimPause("forge_auth"),
     preflight_access: await store.getClaimPause("preflight_access"),
   };

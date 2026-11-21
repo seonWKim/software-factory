@@ -13,7 +13,7 @@ import { LiveSettings } from "../core/settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelRunKind, type ModelTable, isModelRunKind, modelClassFor } from "../core/model-choice.js";
 import { errorText, type LogFields } from "../core/log.js";
 import { type CheckRound, checkCommands, commandText, failingTestFiles, mergeMiss, runChecks, withTestFiles } from "../core/checks.js";
-import { FORGE_AUTH, GITHUB_RATE_LIMIT, GITHUB_RATE_LIMITED, githubRateLimitReset, PREFLIGHT_ACCESS, preflightCheck, RATE_LIMITED, branchFor, wipBranchFor, canAutoMerge, NETWORK, NETWORK_PROBE_MS, NETWORK_UNAVAILABLE, classifyNetwork, failureClass } from "../core/policy.js";
+import { FORGE_AUTH, GITHUB_RATE_LIMIT, GITHUB_RATE_LIMITED, githubRateLimitReset, PREFLIGHT_ACCESS, preflightCheck, RATE_LIMITED, branchFor, wipBranchFor, canAutoMerge, NETWORK, NETWORK_PROBE_MS, NETWORK_UNAVAILABLE, failureClass, SETUP_MISSING } from "../core/policy.js";
 import { incompleteLabel, lastPrNotes, prBody } from "../core/pr-body.js";
 import type { MergeIO } from "../core/mechanical.js";
 import { Read, type ToolSpec } from "../core/tools/index.js";
@@ -25,7 +25,7 @@ import { STORE_BRANCH, type ToolCallContext, type ToolResult } from "../interfac
 import { checkWrapperSource, wrapperSeedFields } from "./toolchain-seeds.js";
 import { LiveTranscript } from "./live-transcript.js";
 import { cachedInstall, isInstallCommand } from "./install-cache.js";
-import { AGENT_FAILED, HOST_SLEEP_MS, INDEX_SIZE, LIVE_REPORT_PATHS, type LocalRoute, NETWORK_PAUSED_BY, NO_HOOKS, NO_USAGE, outputRecorder, PAUSABLE_KINDS, type ResumePlan, RunFailure, RunPaused, type RunScratch, TEST_WORKERS_ENV, TRUSTED_GIT_ENV, WARM_FAILED, WARM_KINDS, WORKER_INDEX_ENV, type WorkerDeps, addUsage, continues, fenced, gitIdentity, gitVerb, prTitle, type PrText, routeFor, runPushIntents, tail, threadDelivery, testWorkerShare, toolsNamed, untrustedGitConfig } from "./support.js";
+import { AGENT_FAILED, HOST_SLEEP_MS, INDEX_SIZE, LIVE_REPORT_PATHS, type LocalRoute, NETWORK_PAUSED_BY, NO_HOOKS, NO_USAGE, outputRecorder, PAUSABLE_KINDS, type ResumePlan, RunFailure, RunPaused, type RunScratch, TEST_WORKERS_ENV, TRUSTED_GIT_ENV, WARM_FAILED, WARM_KINDS, WORKER_INDEX_ENV, type WorkerDeps, addUsage, continues, fenced, gitIdentity, gitVerb, prTitle, type PrText, routeFor, runPushIntents, tail, threadDelivery, testWorkerShare, thrownFailure, toolsNamed, untrustedGitConfig, claimableKinds, requeueForCredential } from "./support.js";
 
 /** Agent plane host: claims runs, executes them in a Sandbox, reports outcomes. Never decides a transition; the controller does that from the outcome. Holds nothing between runs. */
 export class Worker {
@@ -173,9 +173,9 @@ export class Worker {
     if (this.d.active && !this.d.active()) return false;
     this.cfg = this.live.config();
     if (this.d.settings) this.runModels = this.live.models();
-    // The live run kinds (`worker_kinds`, design 05-interactive-sessions), coordination weights (design §5, 2026-11-03; absent: the defaults) and the factory's slot cap (design §5 2026-11-18), lone Workers too.
+    // The live run kinds (`worker_kinds`, design 05-interactive-sessions) less agent kinds with no model credential (design §5 Restarts), coordination weights (design §5, 2026-11-03; absent: the defaults) and the factory's slot cap (design §5 2026-11-18), lone Workers too.
     const run = await this.d.store.claimRun({
-      worker_id: this.d.id, kinds: this.live.values().worker_kinds, lease_ms: this.cfg.lease_ms, ...(this.cfg.coordination ? { coordination: this.cfg.coordination } : {}),
+      worker_id: this.d.id, kinds: await claimableKinds(this.d, this.live.values().worker_kinds), lease_ms: this.cfg.lease_ms, ...(this.cfg.coordination ? { coordination: this.cfg.coordination } : {}),
       workers: { count: this.live.workers() },
     });
     if (!run?.lease) return false;
@@ -290,9 +290,7 @@ export class Worker {
       if (err instanceof RunPaused) paused = err;
       else {
         // A DNS or connect error from git, the sandbox or the forge becomes network_unavailable (design §5 Restarts).
-        const failed = err instanceof RunFailure
-          ? { ...classifyNetwork(err.code, err.message), infra: err.infra, extra: err.extra }
-          : { ...classifyNetwork("exception", err instanceof Error ? err.message : ""), infra: true, extra: {} };
+        const failed = thrownFailure(err);
         outcome = { status: "failed", error_code: failed.code, detail: failed.detail.slice(0, 500), infra: failed.infra, ...failed.extra, usage };
       }
     } finally {
@@ -323,6 +321,8 @@ export class Worker {
       await this.requeueForNetwork(run, token, outcome.detail, log);
       return;
     }
+    // No model credential after the claim (design §5 Restarts, setup state): back in the queue, as for the network.
+    if (outcome.status === "failed" && outcome.error_code === SETUP_MISSING && isModelRunKind(run.kind) && this.d.modelCredential) return requeueForCredential(this.d, run, token, log);
     if (outcome.status === "failed" && outcome.error_code === RATE_LIMITED) {
       // Paused before the outcome is stored, so no worker anywhere claims in between (design §5 Restarts).
       const resume = outcome.reset_at ?? this.after(this.cfg.retry_max_ms);
