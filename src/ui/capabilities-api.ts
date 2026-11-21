@@ -33,6 +33,11 @@ import { Withholder } from "./withhold.js";
 /** Stored runs read for "last used": those finished in the last 30 days, newest first, at most this many. */
 const USAGE_RUNS = 100;
 const USAGE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+/**
+ * The windows read in turn until one holds USAGE_RUNS finished runs; the last is USAGE_WINDOW_MS. Newest first in
+ * each, so a short window that is full gives the same runs as the long one, without reading thousands of rows.
+ */
+const USAGE_WINDOWS_MS = [24 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000, USAGE_WINDOW_MS];
 /** The most transcript bytes read per run part. */
 const TRANSCRIPT_BYTES = 1024 * 1024;
 
@@ -172,6 +177,16 @@ async function transcriptHolds(
   return new Set(markers.filter((m) => known.get(m) === true));
 }
 
+/** The newest USAGE_RUNS runs finished within USAGE_WINDOW_MS, newest first: the shortest window that holds them is read. */
+async function recentFinishedRuns(store: Pick<FactoryStore, "listRunsFinishedWithin">): Promise<Run[]> {
+  let runs: Run[] = [];
+  for (const window of USAGE_WINDOWS_MS) {
+    runs = (await store.listRunsFinishedWithin(window)).filter((r) => r.finished_at !== null);
+    if (runs.length >= USAGE_RUNS) break;
+  }
+  return runs.slice(0, USAGE_RUNS);
+}
+
 /** What the list is read with: the store (runs, overrides), the scanner (the Withholder) and the transcript storage. */
 export type CapabilityDeps = Pick<UiDeps, "store" | "scanner" | "storage">;
 
@@ -183,7 +198,7 @@ export async function capabilityRows(d: CapabilityDeps, base: SettingsBase, sour
   const providers: ProviderSource[] = sources.providers.map((p) => ({ ...p, models: p.models ?? values.models }));
   const roles = { runner_roles: RUNNER_ROLES, llm_roles: LLM_ROLES };
 
-  const finished = (await d.store.listRunsFinishedWithin(USAGE_WINDOW_MS)).filter((r) => r.finished_at !== null).slice(0, USAGE_RUNS);
+  const finished = await recentFinishedRuns(d.store);
   const items = new Map(finished.map((r) => [r.id as string, r.work_item_id as string]));
   const runs: StoredRun[] = finished.map((r) => ({ id: r.id, kind: r.kind, finished_at: r.finished_at!, model: runModel(r) }));
   const skills = [...(await readSkills(sources.skill_folders)), ...(await importedSkills(d.store))];

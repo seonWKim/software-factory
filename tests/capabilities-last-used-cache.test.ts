@@ -124,3 +124,32 @@ describe("last used reads each finished run's transcript once", () => {
     expect(lastUsedOf(rows, "skill:deploy")).not.toBeNull();
   });
 });
+
+describe("last used reads the shortest run window that holds the newest runs", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+
+  it("widens to 30 days when the last day has too few runs, and still finds an older run's skill", async () => {
+    const { clock, store, storage, d } = await setup();
+    await finishedRun(store, storage, 1, skillCall("deploy"));
+    const at = clock.now().toISOString();
+    clock.advance(3 * DAY);
+    const windows: number[] = [];
+    const spy = Object.assign(Object.create(store) as FactoryStore, {
+      listRunsFinishedWithin: (ms: number) => (windows.push(ms), store.listRunsFinishedWithin(ms)),
+    });
+    const rows = await capabilityRows({ ...d, store: spy }, BASE, { skill_folders: [await skillFolder(["deploy"])], tools: [], providers: [] });
+    expect(lastUsedOf(rows, "skill:deploy")).toBe(at);
+    expect(windows).toEqual([DAY, 7 * DAY, 30 * DAY]);
+  });
+
+  it("reads only the last day when it holds the 100 newest runs", async () => {
+    const { store, d } = await setup();
+    const runs = Array.from({ length: 100 }, (_, n) => ({ id: `run_${n}`, work_item_id: `wi_${n}`, kind: "implement", finished_at: "2026-11-21T08:00:00.000Z", outcome: null }));
+    const windows: number[] = [];
+    const spy = Object.assign(Object.create(store) as FactoryStore, {
+      listRunsFinishedWithin: async (ms: number) => (windows.push(ms), runs as unknown as Awaited<ReturnType<FactoryStore["listRunsFinishedWithin"]>>),
+    });
+    await capabilityRows({ ...d, store: spy }, BASE, { skill_folders: [], tools: TOOLS, providers: [] });
+    expect(windows).toEqual([DAY]);
+  });
+});
