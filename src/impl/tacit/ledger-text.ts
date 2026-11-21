@@ -1,6 +1,7 @@
-// The owner's CLIs print text, not JSON (checked 2026-11-12): these read the texts the agents-home plugin needs.
-// `evolve pending` lists what waits for a verdict; `evolve show <id>` gives one entry's detail (its form is assumed,
-// docs/plugins/tacit-ledger.md) and a class's draft (the owner's sample, 2026-11-13); `<home>/private/tacit/rules.md`
+// The owner's CLIs print text (checked 2026-11-12), but `evolve show <P-id>` prints JSON (2026-11-22): these read what
+// the agents-home plugin needs. `evolve pending` lists what waits for a verdict; `evolve show <id>` gives one entry's
+// detail (JSON first, else the text form, which is assumed, docs/plugins/tacit-ledger.md) and a class's draft (the
+// owner's sample, 2026-11-13); `<home>/private/tacit/rules.md`
 // holds the promoted rules, a promote adds one block to it, an edit rewrites one and a retire removes one;
 // `tacit show --active --unclustered` lists the pushbacks in no class yet (its form is assumed).
 
@@ -165,8 +166,8 @@ export function parseApplied(text: string): TacitApplied {
 const DRAFT_HEADING = /^###\s+(C-\S+)(?:\s|$)/;
 /** `- 인시던트: …`, `- 초안: …`, `- 범위: …`: the draft's lines; the value follows the colon. */
 const DRAFT_LINE = /^-\s*(인시던트|초안|범위)\s*[:：]\s*(.*)$/;
-/** An incident ID on the `인시던트` line. */
-const INCIDENT_ID = /\bT-[0-9A-Za-z_]+/g;
+/** An incident ID on the `인시던트` or `근거` line, read whole with its hyphens: `T-0101`, `T-20261017-de7e`. */
+const INCIDENT_ID = /\bT-[0-9A-Za-z_]+(?:-[0-9A-Za-z_]+)*/g;
 /** Where the 초안 line's default ends and its exception starts. */
 const EXCEPTION_SPLIT = " / 예외: ";
 
@@ -381,8 +382,43 @@ function incidentRow(rest: string): { -readonly [K in keyof TacitEvidence]: Taci
 /** Newest first by date; an undated row after every dated one, each group in the ledger's order. */
 const newestFirst = (a: TacitEvidence, b: TacitEvidence): number => (b.date ?? "").localeCompare(a.date ?? "");
 
+/** What `evolve show` prints for an ID it does not know: `not found: <id>`. */
+const NOT_FOUND = /^not found:/i;
+
+/** A JSON value as a non-empty string, else undefined. */
+const textOf = (v: unknown): string | undefined => (typeof v === "string" && v.trim() !== "" ? v.trim() : undefined);
+
 /**
- * `evolve show <id>` as the entry's detail. Field lines (`기본값`, `예외`, `범위`, `근본 원인`, `설명`, `현재`, `변경`, or
+ * `evolve show <P-id>`'s JSON form (the owner's CLI, 2026-11-22) as the entry's detail: `kind` and `target` as given,
+ * `rationale` as the root reason (Why), `change` (free text) as `change`, and each string of `evidence` (IDs only) as
+ * an evidence row with its `ref`, in the ledger's order, their number the incident count. Other keys (id, ts, by,
+ * title, state, verdicts) are not read. Null when the text is not one JSON object.
+ */
+function showJson(id: string, text: string): TacitEntryDetail | null {
+  let v: unknown;
+  try {
+    v = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
+  const r = v as Record<string, unknown>;
+  const out: { -readonly [K in keyof TacitEntryDetail]: TacitEntryDetail[K] } = { id };
+  for (const [key, from] of [["kind", "kind"], ["target", "target"], ["root_reason", "rationale"], ["change", "change"]] as const) {
+    const value = textOf(r[from]);
+    if (value !== undefined) out[key] = value;
+  }
+  const refs = (Array.isArray(r.evidence) ? r.evidence : []).map(textOf).filter((e): e is string => e !== undefined);
+  if (refs.length > 0) {
+    out.incidents = refs.length;
+    out.evidence = refs.map((ref) => ({ ref }));
+  }
+  return out;
+}
+
+/**
+ * `evolve show <id>` as the entry's detail: its JSON form first (`showJson`), else the text form below; `not found:
+ * <id>` and an empty text are null. Field lines (`기본값`, `예외`, `범위`, `근본 원인`, `설명`, `현재`, `변경`, or
  * `default`, `exceptions`, `scope`, `root reason`, `kind`, `target`, `description`, `current`, `proposed`) give their
  * value; an indented line under one continues it. Each `- ` row under an `## incidents <n>` heading is one incident:
  * `- <ref> <YYYY-MM-DD>? — "<the owner's words>"`, and its indented `proposal:` / `제안:`, `root reason:` / `근본 원인:`
@@ -390,7 +426,12 @@ const newestFirst = (a: TacitEvidence, b: TacitEvidence): number => (b.date ?? "
  * the text lacks is absent; an empty text is null.
  */
 export function parseShow(id: string, text: string): TacitEntryDetail | null {
-  if (text.trim() === "") return null;
+  const trimmed = text.trim();
+  if (trimmed === "" || NOT_FOUND.test(trimmed)) return null;
+  if (trimmed.startsWith("{")) {
+    const json = showJson(id, trimmed);
+    if (json !== null) return json;
+  }
   const fields: Partial<Record<ShowKey, string>> = {};
   let field: ShowKey | null = null;
   let incidents: { count: number | null; rows: { -readonly [K in keyof TacitEvidence]: TacitEvidence[K] }[] } | null = null;

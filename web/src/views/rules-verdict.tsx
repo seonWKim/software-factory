@@ -3,7 +3,6 @@ import { type RefObject, useState } from "react";
 import { API, type AppliedRule, type RuleRow, type RuleVerdict, postRuleEdit, postRuleVerdict, useRuleEntry } from "../api.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
-import { Notice } from "../components/ui/notice.js";
 import { Textarea } from "../components/ui/textarea.js";
 import { t } from "../i18n/index.js";
 import { EntryDetail } from "./rules-detail.js";
@@ -11,7 +10,8 @@ import { CONSEQUENCE, VERDICTS, isClass, ruleName } from "./rules-shared.js";
 
 // The Rules page's verdict dialogs: Promote, Hold and Reject for a waiting entry (VerdictDialog, with the entry's full
 // title and detail above a required reason; Promote of a class also asks for the rule's wording, default and
-// exception, Promote of a proposal shows its Now and Proposed lines and is off until both are read), Retire of an
+// exception, Promote of a proposal shows its Now and Proposed lines, or its prose change, and is off until they are
+// read), Retire of an
 // applied class (RetireDialog), and Edit of an applied class (EditDialog: the same three fields as Promote, no reason,
 // no verdict). useSend posts one write; a refusal or a failed apply stays in the dialog.
 
@@ -70,8 +70,8 @@ function ReasonField({ id, value, onChange }: { id: string; value: string; onCha
 
 /**
  * The verdict dialog: the entry's full title and its detail above the fields, then a reason, and for promote of a class the rule's wording (prefilled with its title) and its
- * default and exception (prefilled from its draft). Promote of a proposal shows its Now and Proposed lines in the
- * detail and is off until both are read.
+ * default and exception (prefilled from its draft). Promote of a proposal shows its Now and Proposed lines (or its
+ * prose change) in the detail and is off until they are read; a prose change is recorded as applied to its target.
  */
 export function VerdictDialog({ entry, applied, verdict, token, returnFocusTo, onClose }: { entry: RuleRow; applied: AppliedRule[]; verdict: RuleVerdict; token: string; returnFocusTo: RefObject<HTMLElement | null>; onClose: () => void }) {
   const [reason, setReason] = useState("");
@@ -82,16 +82,17 @@ export function VerdictDialog({ entry, applied, verdict, token, returnFocusTo, o
   const promote = verdict === "promote" && isClass(entry.id);
   const applies = verdict === "promote" && !isClass(entry.id);
   const rule = { text: text.trim(), default: dflt.trim(), exception: exception.trim() };
-  // The same read as the detail above: a proposal applies only with both its Now and Proposed lines.
+  // The same read as the detail above: a proposal with Now or Proposed lines applies them; one with neither (a prose
+  // change) records the verdict as applied to its target. Send waits for the read, so the consequence shown is the one sent.
   const lines = useRuleEntry(entry.id, applies);
-  const noLines = applies && (lines.data?.detail?.current === undefined || lines.data.detail.proposed === undefined);
+  const prose = applies && !lines.isPending && lines.data?.detail?.current === undefined && lines.data?.detail?.proposed === undefined;
   const label = t(VERDICTS.find((v) => v.verdict === verdict)!.label);
   return (
     <Dialog
       title={t("rules.dialogTitle", { label, title: entry.title })}
-      consequence={t(promote ? "rules.consequencePromoteClass" : CONSEQUENCE[verdict])}
+      consequence={t(promote ? "rules.consequencePromoteClass" : prose ? "rules.consequencePromoteProse" : CONSEQUENCE[verdict])}
       confirmLabel={t("rules.send", { label: label.toLowerCase() })}
-      confirmDisabled={busy || reason.trim() === "" || (promote && Object.values(rule).includes("")) || noLines}
+      confirmDisabled={busy || reason.trim() === "" || (promote && Object.values(rule).includes("")) || (applies && lines.isPending)}
       danger={verdict === "reject"}
       error={error}
       onConfirm={() => void send({ id: entry.id, verdict, reason: reason.trim(), ...(promote ? rule : {}) }, label, entry.title)}
@@ -106,7 +107,6 @@ export function VerdictDialog({ entry, applied, verdict, token, returnFocusTo, o
           <RuleText id={`${entry.id}-exception`} label={t("rules.exception")} value={exception} onChange={setException} />
         </>
       )}
-      {noLines && !lines.isPending && <Notice tone="warn">{t("rules.applyNoLines")}</Notice>}
       <ReasonField id={entry.id} value={reason} onChange={setReason} />
     </Dialog>
   );

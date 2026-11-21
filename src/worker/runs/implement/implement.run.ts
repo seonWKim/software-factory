@@ -3,7 +3,7 @@ import { settingValues } from "../../../core/settings.js";
 import type { ModelClass } from "../../../core/model-choice.js";
 import { type DiffStat, type FloorHit, diffStat, overSizeLimit, requiredTier, sizeDetail } from "../../../core/diff-gate.js";
 import { NumstatError, diffGates, scopeGate } from "../../../core/pre-push.js";
-import { BASE_CHECKOUT_DIR, CHECKS_FAILED_RUN, type CheckResult, TOOLCHAIN_MISSING, PrePushSelection, checkCommands, checkedLines, commandText, failingTestFiles, toolchainMissing, withTestFiles } from "../../../core/checks.js";
+import { BASE_CHECKOUT_DIR, CHECKS_FAILED_RUN, type CheckResult, type DoneCheckResult, TOOLCHAIN_MISSING, PrePushSelection, checkCommands, checkedLines, checkedLinesText, commandText, doneCheckRound, failingTestFiles, manualLines, toolchainMissing, withTestFiles } from "../../../core/checks.js";
 import { IMPLEMENT_SCHEMA, NEEDS_HUMAN_MAX_CHARS, NEEDS_HUMAN_MAX_PATHS, type NeedsHuman, SPEC_CONFLICT, findingLine, parseImplement, parseReview } from "../../../core/outputs.js";
 import { CHECKS_ENV, CHECKS_ENV_LIMIT, PREFLIGHT_FAILED, branchFor, isCovered, wipBranchFor } from "../../../core/policy.js";
 import { mergeAppendedConflicts } from "../../../core/mechanical.js";
@@ -181,7 +181,7 @@ async function implement(
     return { floor_block: true, required_tier: requiredTier(floor), floor_paths: floor };
   }
   // The pre-push checks (design §4, decided 2026-11-03): after sync and the gates, before any handoff row or push.
-  let checked: { results: CheckResult[]; fixed: boolean };
+  let checked: { results: CheckResult[]; fixed: boolean; done: DoneCheckResult[] | undefined };
   const beforeChecks = beforeFix ?? (await w.git(handle, ["rev-parse", "HEAD"])).trim();
   // The fix steps' commits (the pack checks' and the checks') count like the implementer's (handoff rows include them too).
   const countFixCommits = async () => void (work.commits += Number((await w.git(handle, ["rev-list", "--count", `${beforeChecks}..HEAD`])).trim()) || 0);
@@ -239,7 +239,7 @@ async function implement(
   }
   let pr_intent: string | null = null;
   if (stored.forge) {
-    const description = w.prDescription(item, work, checkedLines(checked.results, { fixed: checked.fixed }));
+    const description = w.prDescription(item, work, [...checkedLines(checked.results, { fixed: checked.fixed }), ...manualLines(item.done_checks)]);
     pr_intent = await step("record-push", async () => (await w.recordPush(item, run, { branch, sha: stored.sha }, { title: prTitle(item), ...description })).pr);
   }
   // The conflicts the sync step resolved, for the derived counts (design §5 Merge conflict). `files`: what the PR
@@ -254,6 +254,7 @@ async function implement(
     missing: work.missing,
     deviations: work.deviations,
     ...(sync.conflicts.length ? { conflicts: sync.conflicts } : {}), test_selection: sel.record() ?? undefined, // the selection before push (design §4)
+    ...(checked.done ? { done_checks: checked.done } : {}), // each done-when line: pass, fail, manual or not_run (design §4)
   };
 }
 
@@ -763,26 +764,24 @@ async function mergeConflict(
  * run fails with `checks_failed`. Both rounds run in ratchet shrink mode (SHRINK_ENV). Returns the passing round's results and whether a
  * fix step ran; the caller commits the lowered lists, then runs the scope, size and floor gates again on the final diff.
  */
-async function checksBeforePush(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, signal: AbortSignal, s: FixContext, sel: PrePushSelection): Promise<{ results: CheckResult[]; fixed: boolean }> {
+async function checksBeforePush(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, signal: AbortSignal, s: FixContext, sel: PrePushSelection): Promise<{ results: CheckResult[]; fixed: boolean; done: DoneCheckResult[] | undefined }> {
   // Each round selects the test files its own diff reaches; enforce mode runs only those, shadow mode notes misses (design §4).
-  const round = async () => sel.saw(await w.runCheckList(run, handle, signal, { ...SHRINK_ENV, commands: await sel.commands(checkCommands(w.cfg.repo), (a) => w.git(handle, a), s.baseSha) }));
+  // The item's done checks run in the same round, after the check list (doneCheckRound); their failure is a failed check.
+  const done = doneCheckRound(w.cfg.repo, item.done_checks);
+  const round = async () => done.mark(sel.saw(await w.runCheckList(run, handle, signal, { ...SHRINK_ENV, commands: await sel.commands(done.commands, (a) => w.git(handle, a), s.baseSha) })));
   await cleanTree(w, handle);
   const first = await round();
-  if (!first.failed) return { results: first.results, fixed: false };
+  if (!first.failed) return { results: first.results, fixed: false, done: done.results(first) };
   // A missing install is the host's, not the branch's: no fix step, and an infra failure (issue #229).
   const missing = toolchainMissing(first.failed.tail);
-  if (missing) {
-    throw new RunFailure(TOOLCHAIN_MISSING, `\`${commandText(first.failed.command)}\` could not start its tools: ${missing}`.slice(0, 500), true, {
-      output_tail: first.failed.tail,
-    });
-  }
+  if (missing) throw new RunFailure(TOOLCHAIN_MISSING, `\`${commandText(first.failed.command)}\` could not start its tools: ${missing}`.slice(0, 500), true, { output_tail: first.failed.tail });
   await fixStep(w, run, item, handle, signal, s, first.failed);
   await cleanTree(w, handle);
   const second = await round();
-  if (!second.failed) return { results: second.results, fixed: true };
+  if (!second.failed) return { results: second.results, fixed: true, done: done.results(second) };
   const onBase = await failsOnBase(w, run, handle, signal, s.baseSha, second.failed);
   if (onBase) return checksEnv(w, run, item, second.failed, onBase);
-  return checksFailed(w, run, item, first.failed, second.failed);
+  return checksFailed(w, run, item, first.failed, second.failed, done.results(second));
 }
 
 /**
@@ -845,7 +844,7 @@ async function fixStep(
       "",
       "check" in failed
         ? `Before its gates, the factory ran the pack check \`${cmd}\` on this branch and it refused. Your work is already committed. Find the cause, fix it and commit the fix. Do not rebase, reset, amend or push: the factory runs the pack checks again (refusals past the check's retries fail the run), then its checks and the scope, size and floor gates, and pushes only if all pass. Change only files under the allowed paths.`
-        : `Before pushing, the factory ran its checks on this branch and \`${cmd}\` failed (${failed.how}). Your work is already committed. Find the cause, fix it, run \`${cmd}\` yourself to confirm, and commit the fix. Do not rebase, reset, amend or push: the factory runs every check again, then the scope, size and floor gates, and pushes only if all pass. This is the only fix step in this run. Change only files under the allowed paths.`,
+        : `Before pushing, the factory ran its checks on this branch and \`${cmd}\` failed (${failed.how})${checkedLinesText(failed)}. Your work is already committed. Its output below is what to fix: find the cause, fix it, run \`${cmd}\` yourself to confirm, and commit the fix. Do not rebase, reset, amend or push: the factory runs every check again, then the scope, size and floor gates, and pushes only if all pass. This is the only fix step in this run. Change only files under the allowed paths.`,
       "",
       ...output,
     ].join("\n"),
@@ -865,13 +864,13 @@ const RATCHET_LISTS = "tests/architecture/known-violations/";
 const SHRINK_ENV = { env: { SF_RATCHET_SHRINK: "1" } };
 
 /** `checks_failed` (a task failure): one comment naming the command, keyed on the run; nothing is pushed. */
-async function checksFailed(w: Worker, run: Run, item: WorkItem, first: CheckResult, second: CheckResult): Promise<never> {
+async function checksFailed(w: Worker, run: Run, item: WorkItem, first: CheckResult, second: CheckResult, done: DoneCheckResult[] | undefined): Promise<never> {
   const cmd = commandText(second.command);
   const before = commandText(first.command);
   const body = [
     "## Factory pre-push checks: push blocked",
     "",
-    `Before pushing, the implement run ran the checks (\`repo.check_commands\`). \`${before}\` failed (${first.how}); after one fix step, \`${cmd}\` failed (${second.how}).`,
+    `Before pushing, the implement run ran the checks (\`repo.check_commands\`). \`${before}\` failed (${first.how}); after one fix step, \`${cmd}\` failed (${second.how})${checkedLinesText(second)}.`,
     "",
     "Nothing was pushed to the change's branch. The run failed with `checks_failed`; the factory retries it from the kept commits until `max_attempts`.",
   ].join("\n");
@@ -879,9 +878,9 @@ async function checksFailed(w: Worker, run: Run, item: WorkItem, first: CheckRes
   // The failing tests by name (design §5 Restarts), so the detail says what broke, not only the exit code.
   const tests = failingTestNames(second.tail);
   const named = tests.length > 0 ? `; failing tests: ${tests.join(", ")}` : "";
-  throw new RunFailure(CHECKS_FAILED_RUN, `\`${cmd}\` ${second.how} after one fix step (before it: \`${before}\` ${first.how})${named}`.slice(0, 500), false, {
-    output_tail: second.tail,
-  });
+  throw new RunFailure(CHECKS_FAILED_RUN, `\`${cmd}\` ${second.how} after one fix step${checkedLinesText(second)} (before it: \`${before}\` ${first.how})${named}`.slice(0, 500), false, {
+    output_tail: second.tail, ...(done ? { done_checks: done } : {}), // each done-when line's result, on the failed outcome
+  } as RunFailure["extra"]);
 }
 
 /**

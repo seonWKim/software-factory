@@ -8,7 +8,7 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import type { TacitEntryDetail, TacitLedger, TacitPendingEntry } from "../src/interfaces/tacit-ledger.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import type { PauseDeps, UiPauses } from "../src/ui/pause-api.js";
-import { readRules } from "../src/ui/rules-api.js";
+import { readRuleEntry, readRules } from "../src/ui/rules-api.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
 import { config, silent } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
@@ -16,7 +16,8 @@ import { newStore } from "./helpers/store.js";
 const OWNER = "local:owner@example.com" as UserId;
 const SECRET = "sekret-token-value-0123456789";
 
-async function rules(pending: TacitPendingEntry[], show: (id: string) => Promise<TacitEntryDetail | null>) {
+/** The page's deps with a fake ledger that lists `pending` and shows `show`. */
+async function deps(pending: TacitPendingEntry[], show: (id: string) => Promise<TacitEntryDetail | null>): Promise<PauseDeps> {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   await store.claimOwner(OWNER);
@@ -24,12 +25,15 @@ async function rules(pending: TacitPendingEntry[], show: (id: string) => Promise
     enabled: true, capture: async () => {}, pending: async () => pending, show, verdict: async () => {}, rules: async () => [],
   };
   const pauses: UiPauses = { principal: async () => OWNER, authorize: async () => ({ allow: true }), csrfToken: newCsrfToken(), log: silent };
-  const d: PauseDeps = {
+  return {
     store, scanner: new PatternEgressScanner(async () => [SECRET]), clock, lease_ms: 300_000, health: new HealthMonitor(async () => [], clock), pauses,
     settings: { base: baseFromConfig(config), repo: config.repo, actor: OWNER, resolveProject: async () => null, csrfToken: pauses.csrfToken, integrations: [] },
     tacit: { ledger, settings: { refresh: async () => {}, values: () => ({ integrations: {} }) }, home: () => ({ path: "/h", missing: null, homes: [] }) },
   };
-  return (await readRules(d)).value as { entries: { id: string }[]; excerpts: Record<string, { before?: string; after?: string }> };
+}
+
+async function rules(pending: TacitPendingEntry[], show: (id: string) => Promise<TacitEntryDetail | null>) {
+  return (await readRules(await deps(pending, show))).value as { entries: { id: string }[]; excerpts: Record<string, { before?: string; after?: string }> };
 }
 
 const P = (id: string): TacitPendingEntry => ({ id, title: id, state: "open", kind: "edit-asset", target: "bin/evolve" });
@@ -57,5 +61,15 @@ describe("GET /api/v1/rules: excerpts", () => {
     });
     expect(v.excerpts).toEqual({});
     expect(v.entries.map((e) => e.id)).toEqual(["P-1", "P-2"]);
+  });
+});
+
+describe("GET /api/v1/rules/entry: a prose change", () => {
+  it("passes a proposal's change through the Withholder, beside its Why and its evidence rows", async () => {
+    const d = await deps([], async (id) => ({ id, target: "skills/review/SKILL.md", change: `paste ${SECRET} first`, root_reason: "tests skipped", incidents: 1, evidence: [{ ref: "T-20261017-de7e" }] }));
+    const v = (await readRuleEntry(d, "P-1")).value as { detail: Record<string, unknown> };
+    expect(JSON.stringify(v)).not.toContain(SECRET);
+    expect(v.detail.change).toMatch(/^\[withheld: /);
+    expect(v.detail).toMatchObject({ root_reason: "tests skipped", incidents: 1, evidence: [{ ref: "T-20261017-de7e" }] });
   });
 });

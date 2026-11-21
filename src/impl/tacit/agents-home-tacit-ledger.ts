@@ -8,7 +8,8 @@
 // rules file, then `tacit verdict <id> retire` runs (the file is put back if it fails), then `sync-agents`. A promote of
 // a proposal applies it (2026-11-18; evolve has no apply subcommand): the proposal's current lines, read from `evolve
 // show`, are replaced with its proposed lines in its target file only when they occur there exactly once, then
-// `evolve verdict <id> promote --reason <r> --applied-to <target>` runs (the file is put back if it fails). Factory
+// `evolve verdict <id> promote --reason <r> --applied-to <target>` runs (the file is put back if it fails); a proposal
+// whose change is prose (`evolve show`'s JSON, 2026-11-22) runs only that verdict and writes no file. Factory
 // processes only: an agent run never gets it. An edit of an applied class (2026-11-22) rewrites its block's heading,
 // default and exception lines in the rules file and runs `sync-agents`, with no verdict. The Pushbacks list reads
 // `tacit show --active --unclustered` and Dismiss runs `tacit status <T-id> noise`: both forms are assumed until the
@@ -145,10 +146,12 @@ export class AgentsHomeTacitLedger implements TacitLedger {
 
   /**
    * Promote of a proposal. Checks first, with nothing written and no verdict sent on a refusal: `evolve show <id>`
-   * reads, and gives a target, current lines and proposed lines; the target is a relative path with no `..` segment
-   * whose resolved path is a file inside the resolved home; the current lines occur there exactly once. Then they are
-   * replaced with the proposed lines and `evolve verdict <id> promote --reason <r> --applied-to <target>` runs; a
-   * failure (a non-zero exit or the timeout) puts the file back byte for byte and throws the CLI's error.
+   * reads and gives a target. A proposal with neither current nor proposed lines (its change is prose, the owner
+   * applied it) then runs only `evolve verdict <id> promote --reason <r> --applied-to <target>`, writing no file.
+   * Otherwise it must give both; the target is a relative path with no `..` segment whose resolved path is a file
+   * inside the resolved home; the current lines occur there exactly once. Then they are replaced with the proposed
+   * lines and the same verdict runs; a failure (a non-zero exit or the timeout) puts the file back byte for byte and
+   * throws the CLI's error.
    */
   private async apply(id: string, reason: string): Promise<void> {
     let shown: string;
@@ -158,8 +161,14 @@ export class AgentsHomeTacitLedger implements TacitLedger {
       throw new TacitRefusal(`the lines of ${id} could not be read: ${err instanceof Error ? err.message : String(err)}`);
     }
     const d = parseShow(id, shown);
-    const part = (["target", "current", "proposed"] as const).find((k) => d?.[k] === undefined);
-    if (d === null || part !== undefined) throw new TacitRefusal(`${id} (evolve show) has no ${part ?? "target"} line: nothing written`);
+    const verdict = ["verdict", id, "promote", "--reason", reason, "--applied-to"];
+    if (d?.target === undefined) throw new TacitRefusal(`${id} (evolve show) has no target line: nothing written`);
+    if (d.current === undefined && d.proposed === undefined) {
+      await this.run("evolve", [...verdict, d.target]);
+      return;
+    }
+    const part = (["current", "proposed"] as const).find((k) => d[k] === undefined);
+    if (part !== undefined) throw new TacitRefusal(`${id} (evolve show) has no ${part} line: nothing written`);
     const { target, current, proposed } = d as Required<Pick<TacitEntryDetail, "target" | "current" | "proposed">>;
     const pathError = relativePathError(target);
     if (pathError !== null) throw new TacitRefusal(`the target of ${id}, ${target}, ${pathError}: nothing written`);
@@ -169,9 +178,7 @@ export class AgentsHomeTacitLedger implements TacitLedger {
     const found = text.split(current).length - 1;
     if (found !== 1) throw new TacitRefusal(`the current lines of ${id} occur ${found} times in ${target}, not once: nothing written`);
     const at = text.indexOf(current);
-    await this.writeThen(file, before, text.slice(0, at) + proposed + text.slice(at + current.length), "evolve", [
-      "verdict", id, "promote", "--reason", reason, "--applied-to", target,
-    ]);
+    await this.writeThen(file, before, text.slice(0, at) + proposed + text.slice(at + current.length), "evolve", [...verdict, target]);
   }
 
   /**

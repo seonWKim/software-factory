@@ -16,8 +16,8 @@ const { RulesPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { RulesP
 // each under its line on what promoting one does; each card with its title, state, ID and one line of what it would
 // change, and its detail (what, before → after, why, evidence, where, related; an empty part left out) read from GET /api/v1/rules/entry only when the card opens. Promote, Hold and Reject ask for a
 // reason in a dialog before they send; Promote of a class (C-) sends the owner's wording, default and exception (the
-// last two prefilled from its draft), Promote of a proposal (P-) shows its Now and Proposed lines and sends only the
-// reason. A judged entry shows its decision and no
+// last two prefilled from its draft), Promote of a proposal (P-) shows its Now and Proposed lines (or its prose change,
+// recorded as applied to its target) and sends only the reason; with no target it is off, with its reason on the row. A judged entry shows its decision and no
 // verdict buttons; a class whose draft could not be read offers no Promote. With the ledger off (design 08-settings): a
 // picker over the known agents homes shows the chosen one's check, and one primary Turn on, when the home in use is
 // found, writes the `integrations` entry through POST /api/v1/settings and loads the rules with no reload.
@@ -276,20 +276,19 @@ describe("Rules page", () => {
     ]);
   });
 
-  it("promote of a proposal shows its Now and Proposed lines, asks for no wording or file, and sends only the reason; with no lines Send is off", async () => {
+  it("promote of a proposal shows its Now and Proposed lines, asks for no wording or file, and sends only the reason", async () => {
     current = view({
-      entries: [{ id: "P-20261101-158e", title: "Quiet notify", state: "open", kind: "edit-asset", target: "private/bin/notify", judged: null, draft: null, draft_error: null },
-        { id: "P-0009", title: "No lines", state: "open", kind: "edit-asset", target: "x.md", judged: null, draft: null, draft_error: null }],
+      entries: [{ id: "P-20261101-158e", title: "Quiet notify", state: "open", kind: "edit-asset", target: "private/bin/notify", judged: null, draft: null, draft_error: null }],
     });
-    detail = (id) => ({ id, error: null, detail: id === "P-0009" ? { id } : { id, target: "private/bin/notify", current: "notify --loud", proposed: "notify --quiet" } });
+    detail = (id) => ({ id, error: null, detail: { id, target: "private/bin/notify", current: "notify --loud", proposed: "notify --quiet" } });
     await show();
     await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
     choose(card("P-20261101-158e"), "Promote");
     for (const name of ["Rule wording", "Default", "Exception", "Applied to"]) expect(within(dialog()).queryByRole("textbox", { name })).toBeNull();
+    await waitFor(() => expect(dialog().querySelector('[data-change="proposed"]')!.textContent).toBe("notify --quiet"), SLOW);
     expect(dialog().querySelector("[data-dialog-consequence]")!.textContent).toBe(
       "Promoting replaces the Now lines with the Proposed lines in the target file, then records the verdict. If the Now lines are not there exactly once, or the change is refused, nothing is written and the error shows here.",
     );
-    await waitFor(() => expect(dialog().querySelector('[data-change="proposed"]')!.textContent).toBe("notify --quiet"), SLOW);
     expect(dialog().querySelector('[data-change="current"]')!.textContent).toBe("notify --loud");
     const confirm = within(dialog()).getByRole("button", { name: "Send promote" }) as HTMLButtonElement;
     expect(confirm.disabled).toBe(true);
@@ -299,11 +298,56 @@ describe("Rules page", () => {
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(sent()).toEqual([{ id: "P-20261101-158e", verdict: "promote", reason: "good shape" }]);
     await waitFor(() => expect(document.querySelector("dialog[data-dialog]")).toBeNull());
+  });
 
-    choose(card("P-0009"), "Promote");
-    expect((await within(dialog()).findByRole("alert", {}, SLOW)).textContent).toBe("Promote is off: this proposal gives no Now and Proposed lines to apply.");
-    fireEvent.change(within(dialog()).getByRole("textbox", { name: "Reason" }), { target: { value: "x" } });
-    expect((within(dialog()).getByRole("button", { name: "Send promote" }) as HTMLButtonElement).disabled).toBe(true);
+  it("a waiting proposal with a prose change is promoted from the page: its change shows, Send is on with a reason, the verdict is sent and the success message shows", async () => {
+    current = view({
+      entries: [{ id: "P-20261017-4c1d", title: "Review runs the tests", state: "open", kind: "edit-asset", target: "skills/review/SKILL.md", judged: null, draft: null, draft_error: null }],
+    });
+    detail = (id) => ({
+      id, error: null,
+      detail: { id, kind: "edit-asset", target: "skills/review/SKILL.md", change: "Run the changed tests before the verdict.", root_reason: "tests never ran", incidents: 2, evidence: [{ ref: "T-20261017-de7e" }, { ref: "T-20261017-9f3c" }] },
+    });
+    answer = { status: 200, body: { id: "P-20261017-4c1d", verdict: "promote" } };
+    await show();
+    await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
+    choose(card("P-20261017-4c1d"), "Promote");
+    await waitFor(() => expect(dialog().querySelector("[data-detail-change]")).not.toBeNull(), SLOW);
+    const what = dialog().querySelector('[data-detail-part="what"]')!;
+    expect(what.querySelector("h3")!.textContent).toBe("What it would change");
+    expect(what.querySelector("[data-detail-change]")!.textContent).toBe("Run the changed tests before the verdict.");
+    expect(dialog().querySelector('[data-detail-part="why"]')!.textContent).toContain("Root reason: tests never ran");
+    expect([...dialog().querySelectorAll("[data-evidence]")].map((e) => (e as HTMLElement).dataset.evidence)).toEqual(["T-20261017-de7e", "T-20261017-9f3c"]);
+    const consequence = dialog().querySelector("[data-dialog-consequence]")!.textContent!;
+    expect(consequence).toBe("Promoting records the verdict with this change as applied to its target file. Nothing is written to the file from here.");
+    expect(consequence).not.toMatch(/by hand|Now and Proposed/);
+    expect(within(dialog()).queryByRole("alert")).toBeNull();
+    const confirm = within(dialog()).getByRole("button", { name: "Send promote" }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    fireEvent.change(within(dialog()).getByRole("textbox", { name: "Reason" }), { target: { value: "applied it" } });
+    expect(confirm.disabled).toBe(false);
+    fireEvent.click(confirm);
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]!.url).toBe("/api/v1/rules/verdict");
+    expect(sent()).toEqual([{ id: "P-20261017-4c1d", verdict: "promote", reason: "applied it" }]);
+    await waitFor(() => expect(document.querySelector("dialog[data-dialog]")).toBeNull());
+    expect(screen.getByRole("status").textContent).toBe("Promote sent for Review runs the tests.");
+  });
+
+  it("a waiting proposal with no target: Promote and its menu item are off, the row says why, and no dialog opens", async () => {
+    current = view({ entries: [{ id: "P-0010", title: "No file named", state: "open", kind: "edit-asset", judged: null, draft: null, draft_error: null }] });
+    await show();
+    await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
+    const promote = within(card("P-0010")).getByRole("button", { name: "Promote" }) as HTMLButtonElement;
+    expect(promote.disabled).toBe(true);
+    fireEvent.click(within(card("P-0010")).getByRole("button", { name: /^Decide:/ }));
+    const item = within(card("P-0010")).getByRole("menuitem", { name: "Promote" }) as HTMLButtonElement;
+    expect(item.disabled).toBe(true);
+    fireEvent.click(item);
+    expect(document.querySelector("dialog[data-dialog]")).toBeNull();
+    expect((within(card("P-0010")).getByRole("menuitem", { name: "Hold" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(card("P-0010").querySelector("[data-no-target]")!.textContent).toBe("Promote is off: this proposal names no file it changes.");
+    expect(card("P-0007")).toBeNull();
   });
 
   it("a failed apply keeps the dialog open with the CLI's error", async () => {
@@ -425,7 +469,7 @@ describe("Rules page", () => {
     current = view({
       applied: {
         rules: [
-          { id: "C-001", name: "summary first", default: "Open with a summary.", exceptions: null, scope: "모든 문서", incidents: ["T-1", "T-2"], judged: "2026-11-13", raw: null },
+          { id: "C-001", name: "summary first", default: "Open with a summary.", exceptions: null, scope: "모든 문서", incidents: ["T-20261017-de7e", "T-20261019-5000"], judged: "2026-11-13", raw: null },
           { id: null, name: null, default: null, exceptions: null, scope: null, incidents: null, judged: null, raw: "## Notes\njust words" },
         ],
         elsewhere: ["- C-009 → CLAUDE.md"],
@@ -440,9 +484,10 @@ describe("Rules page", () => {
     // The row's sentence is the rule's name; its date and parts are behind Details, not on the row.
     expect(row.querySelector("p")!.textContent).toBe("summary first");
     expect(row.querySelector("[data-details]")).toBeNull();
-    for (const part of ["summary first", "모든 문서", "2026-11-13", "Open with a summary.", "not given", "2: T-1, T-2"]) expect(c).toContain(part);
-    // Details are a label/value list.
-    expect([...applied.querySelectorAll('[data-applied="C-001"] dt')].map((d) => d.textContent)).toEqual(["Default", "Exception", "Evidence", "Judged"]);
+    for (const part of ["summary first", "모든 문서", "2026-11-13", "Open with a summary.", "not given"]) expect(c).toContain(part);
+    // Details are a label/value list; the incident IDs are not one of its parts (they sit in the seen line's tooltip).
+    expect([...applied.querySelectorAll('[data-applied="C-001"] dt')].map((d) => d.textContent)).toEqual(["Default", "Exception", "Judged"]);
+    expect(c).not.toContain("T-2026");
     // An unreadable block says so; its raw text is behind Details.
     const raw = applied.querySelector<HTMLElement>("[data-applied-raw]")!;
     expect(raw.matches("[data-list-row]")).toBe(true);
@@ -456,6 +501,47 @@ describe("Rules page", () => {
     expect(screen.getAllByRole("button", { name: /^Actions:/ })).toHaveLength(1);
     expect(screen.queryAllByRole("button", { name: "Retire" })).toEqual([]);
     expect(screen.queryAllByRole("button", { name: /edit/i })).toEqual([]);
+  });
+
+  // wi_d4201038's last criterion: an applied rule says how often it was seen and when last; its incident IDs only in a tooltip.
+  const seenRow = async (incidents: string[] | null) => {
+    current = view({ applied: { rules: [{ id: "C-001", name: "summary first", default: "Open with a summary.", exceptions: null, scope: null, incidents, judged: null, raw: null }], elsewhere: [] } });
+    await show();
+    await screen.findByRole("list", { name: "In effect" }, SLOW);
+    return document.querySelector<HTMLElement>('[data-applied="C-001"]')!;
+  };
+
+  it("an applied rule with one incident T-20261017 shows \"Seen 1 time (Oct 17)\"; the ID is only in its tooltip", async () => {
+    const row = await seenRow(["T-20261017"]);
+    const seen = row.querySelector<HTMLElement>("[data-seen]")!;
+    expect(seen.textContent).toBe("Seen 1 time (Oct 17)");
+    expect(row.textContent).not.toContain("T-20261017");
+    fireEvent.mouseEnter(seen.querySelector("button")!.parentElement!);
+    expect(within(row).getByRole("tooltip").textContent).toBe("T-20261017");
+  });
+
+  it("the seen line counts each incident and dates the latest day, not the first or the last listed; the tooltip lists the IDs", async () => {
+    const row = await seenRow(["T-20261017-de7e", "T-20261107-aa11", "T-20261019-5000"]);
+    const seen = row.querySelector<HTMLElement>("[data-seen]")!;
+    expect(seen.textContent).toBe("Seen 3 times (Nov 7)");
+    expect(row.textContent).not.toMatch(/T-2026/);
+    fireEvent.mouseEnter(seen.querySelector("button")!.parentElement!);
+    expect(within(row).getByRole("tooltip").textContent).toBe("T-20261017-de7e, T-20261107-aa11, T-20261019-5000");
+  });
+
+  it("an incident listed twice counts once, in the line and in the tooltip", async () => {
+    const seen = (await seenRow(["T-20261107-aa11", "T-20261017-de7e", "T-20261107-aa11"])).querySelector<HTMLElement>("[data-seen]")!;
+    expect(seen.textContent).toBe("Seen 2 times (Nov 7)");
+    fireEvent.mouseEnter(seen.querySelector("button")!.parentElement!);
+    expect(screen.getByRole("tooltip").textContent).toBe("T-20261107-aa11, T-20261017-de7e");
+  });
+
+  it("an applied rule with no incidents shows no seen line; IDs with no day read \"Seen N times\" with no date", async () => {
+    expect((await seenRow(null)).querySelector("[data-seen]")).toBeNull();
+    cleanup();
+    expect((await seenRow([])).querySelector("[data-seen]")).toBeNull();
+    cleanup();
+    expect((await seenRow(["T-1", "T-2"])).querySelector("[data-seen]")!.textContent).toBe("Seen 2 times");
   });
 
   const APPLIED: RulesView["applied"] = {
@@ -811,7 +897,7 @@ describe("Rules page", () => {
     await screen.findByRole("list", { name: "In effect" }, SLOW);
     const ids = () => [...document.querySelectorAll<HTMLElement>("[data-applied]")].map((e) => e.dataset.applied);
     expect(ids()).toEqual(["C-001", "C-002"]);
-    expect(applied("C-001").textContent).toContain("2: T-1, T-2");
+    expect(applied("C-001").querySelector("[data-seen]")!.textContent).toBe("Seen 2 times");
     const search = screen.getByRole("searchbox", { name: /search/i });
     for (const [term, want] of [["SUMMARY", ["C-001"]], ["c-002", ["C-002"]], ["keep every", ["C-002"]], ["cli", ["C-002"]], ["", ["C-001", "C-002"]], ["zzz", []]] as const) {
       fireEvent.change(search, { target: { value: term } });
