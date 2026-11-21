@@ -4,7 +4,7 @@ import { cliUserConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import {
   CLI_NAME_ENV, CLI_TOP_WORDS, CREATE_NEXT_STEP, type CliAction, type CliIdentity, type LocalCliDeps, cliCommandListMarkdown, cliIdentity, cliName,
-  parseLocalCliArgs, parseSentence, resolveItemId, runLocalCli, runSentence, shortItemId,
+  parseLocalCliArgs, parseSentence, resolveItem, runLocalCli, runSentence, shortItemId,
 } from "../src/core/local-cli.js";
 import type { UserId, WorkItemId } from "../src/core/types.js";
 import { COMMAND_TABLE, SENTENCE_FORM, cliUsageOf } from "../src/core/command-table.js";
@@ -231,8 +231,8 @@ describe("work item IDs as a person reads them (design 05-sources, short IDs)", 
       expect(await run({ action: "show", id: token as WorkItemId })).toEqual({ code: 1, lines: [`no work item ${token}`] });
     }
     const reads: string[] = [];
-    const counted = { findWorkItemIds: (p: string) => (reads.push(p), store.findWorkItemIds(p)) };
-    for (const token of ["wi_", "", "zz", "wi_-x", "missing"]) expect(await resolveItemId(counted, token)).toEqual({ ok: false, lines: [`no work item ${token}`] });
+    const counted = { findWorkItemIds: (p: string) => (reads.push(p), store.findWorkItemIds(p)), getWorkItem: (id: WorkItemId) => (reads.push(id), store.getWorkItem(id)) };
+    for (const token of ["wi_", "", "zz", "wi_-x", "missing"]) expect(await resolveItem(counted, token)).toEqual({ code: 1, lines: [`no work item ${token}`] });
     expect(reads).toEqual([]);
   });
 

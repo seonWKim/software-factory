@@ -126,7 +126,6 @@ export type CliAction =
   | { action: "project"; verb: "list"; archived: boolean }
   | { action: "project"; verb: "rename"; slug: string; name: string }
   | { action: "project"; verb: "archive" | "restore" | "delete"; slug: string }
-  /** `id` as typed: a full, short or prefix work item ID, resolved by resolveItemId when the action runs. */
   | { action: "show"; id: WorkItemId }
   | { action: "command"; command: ItemCommand; id: WorkItemId; text: string }
   | { action: "help"; id: WorkItemId | null }
@@ -298,27 +297,19 @@ export interface LocalCliDeps {
   ui?: { port?: number };
 }
 
-export interface CliResult {
-  code: number;
-  lines: string[];
-}
+export interface CliResult { code: number; lines: string[] }
 
 /** A work item's short ID, as the dashboard shows it: the 8 hex characters after `wi_`; any other ID as it is. */
-export function shortItemId(id: string): string {
-  return /^wi_([0-9a-f]{8})/.exec(id)?.[1] ?? id;
-}
-
+export const shortItemId = (id: string): string => /^wi_([0-9a-f]{8})/.exec(id)?.[1] ?? id;
 /**
- * The one token rule of `task show`, every item command and `help` (design 05-sources, short IDs): the token, `wi_`
- * optional, is a prefix of the work item ID, so the full ID, the short ID and any unique prefix of either name the item.
- * A token with no hex characters after `wi_` reads nothing. Several matches are listed (full and short ID) and refused.
+ * The item a token names, for `task show`, every item command and `help` (design 05-sources, short IDs): the token, `wi_`
+ * optional, is a prefix of its ID; one with no hex after `wi_` reads nothing. None or several (listed) is a refusal.
  */
-export async function resolveItemId(store: Pick<FactoryStore, "findWorkItemIds">, token: string): Promise<{ ok: true; id: WorkItemId } | { ok: false; lines: string[] }> {
-  const rest = token.startsWith("wi_") ? token.slice("wi_".length) : token;
+export async function resolveItem(store: Pick<FactoryStore, "findWorkItemIds" | "getWorkItem">, token: string): Promise<WorkItem | CliResult> {
+  const rest = token.replace(/^wi_/, "");
   const ids = /[0-9a-f]/.test(rest) ? await store.findWorkItemIds(`wi_${rest}`) : [];
-  if (ids.length === 1) return { ok: true, id: ids[0]! };
-  if (ids.length === 0) return { ok: false, lines: [`no work item ${token}`] };
-  return { ok: false, lines: [`${token} names ${ids.length} work items; give more of its ID:`, ...ids.map((id) => `  ${id}\t${shortItemId(id)}`)] };
+  const item = ids.length === 1 ? await store.getWorkItem(ids[0]!) : null;
+  return item ?? { code: 1, lines: ids.length > 1 ? [`${token} names ${ids.length} work items; give more of its ID:`, ...ids.map((id) => `  ${id}\t${shortItemId(id)}`)] : [`no work item ${token}`] };
 }
 
 /** The most items, and the most open tasks, `task list` reads. */
@@ -331,12 +322,6 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
   // The new item's ID first (scripts read it), its short ID, then its link and what happens next.
   const link = (id: WorkItemId) => (d.ui ? [`http://127.0.0.1:${d.ui.port ?? UI_PORT}/app/items/${id}`] : []);
   const created = (id: WorkItemId, ...rest: string[]): CliResult => ({ code: 0, lines: [id, shortItemId(id), ...rest, ...link(id), CREATE_NEXT_STEP] });
-  // The token's item, or the refusal (no match, or the matches listed) as a failed result.
-  const itemOf = async (token: string): Promise<WorkItem | CliResult> => {
-    const r = await resolveItemId(d.store, token);
-    if (!r.ok) return { code: 1, lines: r.lines };
-    return (await d.store.getWorkItem(r.id)) ?? fail(`no work item ${token}`);
-  };
   // The first identity to write becomes the local owner (issue #318); anonymous never does.
   const claim = async () => (user === ANONYMOUS_USER ? null : d.store.claimOwner(user));
   switch (a.action) {
@@ -446,12 +431,12 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
     case "project":
       return runProject(d, a, fail, claim);
     case "show": {
-      const item = await itemOf(a.id);
+      const item = await resolveItem(d.store, a.id);
       if ("lines" in item) return item;
       return { code: 0, lines: await showLines(d, item) };
     }
     case "command": {
-      const item = await itemOf(a.id);
+      const item = await resolveItem(d.store, a.id);
       if ("lines" in item) return item;
       const name = a.command === MERGE_COMMAND ? `${cli} merge` : `/${a.command}`;
       // The controller's phase check, before any write: the same refusal it would post (issues #528, #523).
@@ -483,7 +468,7 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
     }
     case "help": {
       if (a.id === null) return { code: 0, lines: helpReply(null).split("\n") };
-      const item = await itemOf(a.id);
+      const item = await resolveItem(d.store, a.id);
       if ("lines" in item) return item;
       return { code: 0, lines: helpReply(itemCommandState(item, await d.store.listRuns(item.id))).split("\n") };
     }
@@ -531,18 +516,8 @@ async function runProject(
 
 async function showLines(d: LocalCliDeps, item: WorkItem): Promise<string[]> {
   const out: string[] = [
-    `${item.id}  ${item.title ?? ""}`,
-    "",
-    "State",
-    `  stage: ${item.stage}`,
-    `  blocked_on: ${item.blocked_on}`,
-    `  blocked_reason: ${item.blocked_reason ?? "-"}`,
-    `  close_reason: ${item.close_reason ?? "-"}`,
-    `  tier: ${item.tier ?? "-"}`,
-    `  change_ref: ${item.change_ref ?? "-"}`,
-    `  version: ${item.version}`,
-    "",
-    "Spec",
+    `${item.id}  ${item.title ?? ""}`, "", "State", `  stage: ${item.stage}`, `  blocked_on: ${item.blocked_on}`, `  blocked_reason: ${item.blocked_reason ?? "-"}`,
+    `  close_reason: ${item.close_reason ?? "-"}`, `  tier: ${item.tier ?? "-"}`, `  change_ref: ${item.change_ref ?? "-"}`, `  version: ${item.version}`, "", "Spec",
   ];
   if (item.done_criteria === null) out.push("  (no spec yet)", `  problem: ${item.problem}`);
   else {
