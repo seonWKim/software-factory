@@ -19,7 +19,7 @@ import type { Run, RunKind } from "../core/types.js";
 import { harnessToolName } from "../impl/runner/tool-bridge.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
-import { readRange } from "../interfaces/shared-storage.js";
+import { type SharedStorage, readRange } from "../interfaces/shared-storage.js";
 import type { ToolBroker } from "../interfaces/tool-broker.js";
 import {
   type Capability, type CapabilitySources, type ProviderSource, type Skill, type SkillRef, type StoredRun, type ToolSource,
@@ -141,6 +141,37 @@ async function transcriptText(d: Pick<UiDeps, "storage">, item: string, run: Sto
   return texts.join("\n");
 }
 
+/**
+ * Per storage, per finished run: the markers already looked for in its stored transcript and whether it holds each.
+ * A finished run's transcript does not change, so a later request reads it again only for a marker it was never
+ * searched for (a new skill or tool). A run with no transcript is not remembered: its transcript may still land.
+ */
+const runMarkers = new WeakMap<SharedStorage, Map<string, Map<string, boolean>>>();
+
+/** The run marker memory of `storage`, holding only `runs` (the rest left the read window). */
+function markerMemory(storage: SharedStorage, runs: readonly StoredRun[]): Map<string, Map<string, boolean>> {
+  let memory = runMarkers.get(storage);
+  if (!memory) runMarkers.set(storage, (memory = new Map()));
+  const keep = new Set(runs.map((r) => r.id));
+  for (const id of memory.keys()) if (!keep.has(id)) memory.delete(id);
+  return memory;
+}
+
+/** Which of `markers` the run's stored transcript holds (read only for markers not yet looked for); null when it has none. */
+async function transcriptHolds(
+  d: Pick<UiDeps, "storage">, memory: Map<string, Map<string, boolean>>, item: string, run: StoredRun, markers: readonly string[],
+): Promise<ReadonlySet<string> | null> {
+  const known = memory.get(run.id) ?? new Map<string, boolean>();
+  const unknown = markers.filter((m) => !known.has(m));
+  if (unknown.length > 0) {
+    const text = await transcriptText(d, item, run);
+    if (text === null) return null;
+    for (const m of unknown) known.set(m, text.includes(m));
+    memory.set(run.id, known);
+  }
+  return new Set(markers.filter((m) => known.get(m) === true));
+}
+
 /** What the list is read with: the store (runs, overrides), the scanner (the Withholder) and the transcript storage. */
 export type CapabilityDeps = Pick<UiDeps, "store" | "scanner" | "storage">;
 
@@ -160,11 +191,12 @@ export async function capabilityRows(d: CapabilityDeps, base: SettingsBase, sour
     ...skills.map((k): [string, string[]] => [`skill:${k.name}`, [`"skill":"${k.name}"`]]),
     ...sources.tools.map((t): [string, string[]] => [toolId(t), [harnessToolName(grantName(t))]]),
   ]);
+  const memory = d.storage ? markerMemory(d.storage, runs) : null;
   const used = await lastUsed(
     runs,
     providers.filter((p) => p.selected).map((p) => ({ id: providerId(p), roles: providerRoles(p, roles), models: Object.values(p.models) })),
     markers,
-    (run) => transcriptText(d, items.get(run.id)!, run),
+    async (run, wanted) => (memory === null ? null : transcriptHolds(d, memory, items.get(run.id)!, run, wanted)),
   );
   const list = capabilityList({ skills, sources: { tools: sources.tools, providers }, grants: values.tool_grants, ...roles, last_used: used });
 
