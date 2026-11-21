@@ -2,13 +2,13 @@
 // worker claims an agent run, queued items say they wait for a model credential, Needs you shows one row with the
 // fix, and the queued run starts by itself once the credential is in the file, with no restart and no /retry.
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { modelCredentialCheck } from "../src/compose.js";
+import { modelCredentialCheck, modelCredentialDialog } from "../src/compose.js";
 import type { FactoryConfig } from "../src/core/config.js";
-import type { WorkerId } from "../src/core/types.js";
+import type { UserId, WorkerId } from "../src/core/types.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -18,7 +18,9 @@ import { REGISTRY } from "../src/plugins.js";
 import { RESUMABLE_PAUSES, parseResumeArgs } from "../src/resume-cmd.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { HealthMonitor } from "../src/ui/health.js";
+import { MODEL_CREDENTIAL_PATH } from "../src/ui/model-credential-api.js";
 import { resumePause } from "../src/ui/pause-api.js";
+import { newCsrfToken } from "../src/ui/settings-api.js";
 import { type ApiDeps, respond } from "../src/ui/server.js";
 import { Worker } from "../src/worker/index.js";
 import { whyText } from "../web/src/lib/format.js";
@@ -73,7 +75,7 @@ async function factory() {
   const get = async <T>(url: string) => JSON.parse((await respond(d, { method: "GET", url, host: "127.0.0.1:4310" })).body) as T;
   const overview = () => get<{ needs_you: number; system_actions: { code: string; text: string; command: string }[] }>("/api/v1/overview");
   const row = async () => (await get<{ items: { id: string; why: Parameters<typeof whyText>[0] }[] }>("/api/v1/items")).items.find((r) => r.id === item.id)!;
-  return { file, clock, store, runner, log, item, tick, d, overview, row, check };
+  return { dir, file, clock, store, runner, log, item, tick, d, overview, row, check };
 }
 
 describe("a missing model credential (design §5 Restarts, setup state)", () => {
@@ -87,7 +89,7 @@ describe("a missing model credential (design §5 Restarts, setup state)", () => 
     expect(await f.store.listRunsFinishedWithin(3_600_000)).toEqual([]);
     expect((await f.store.listRuns(f.item.id)).map((r) => [r.kind, r.status])).toEqual([["triage", "queued"]]);
     const o = await f.overview();
-    expect(o.system_actions).toEqual([{ code: "model_credential", text: "Add a model credential: run `npm run setup`", command: "npm run setup", until: null }]);
+    expect(o.system_actions).toEqual([{ code: "model_credential", text: "Add a model credential", command: "Add model credential, or npm run setup", until: null }]);
     expect(o.needs_you).toBe(1);
     expect(whyText((await f.row()).why)).toBe("Waiting for a model credential");
     // One warning for the store-wide pause, from the tick that started it, not one per tick or per worker.
@@ -108,6 +110,36 @@ describe("a missing model credential (design §5 Restarts, setup state)", () => 
     expect(f.runner.specs.map((s) => s.role)).toEqual(["triage"]);
     expect((await f.overview()).system_actions).toEqual([]);
     expect(await f.store.listStateChanges(f.item.id)).not.toContainEqual(expect.objectContaining({ reason: "run_retry_scheduled" }));
+  });
+
+  // Bug: the dashboard says a credential is missing but cannot add one; the owner must open a terminal for `npm run setup`.
+  it("the dashboard's Add model credential writes the secret file (made when absent), Needs you clears, and the next tick claims the run", async () => {
+    const f = await factory();
+    await f.tick();
+    const [queued] = await f.store.listRuns(f.item.id);
+    const owner = "local:owner@example.com" as UserId;
+    await f.store.claimOwner(owner);
+    rmSync(f.file); // no secret file: the dialog makes it, as `npm run setup` would
+    const dialog = modelCredentialDialog({ registry: REGISTRY, plugins: SELECTION, secretsFile: f.file })!;
+    expect(dialog.secrets).toEqual(["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]);
+    const csrfToken = newCsrfToken();
+    const settings = { base: {} as never, repo: { owner: "o", name: "r" }, actor: owner, resolveProject: async () => null, csrfToken, modelCredential: dialog };
+    const pauses = { principal: async () => owner, authorize: async () => ({ allow: true }), csrfToken, log: f.log };
+    const d: ApiDeps = { ...f.d, settings, pauses };
+    const r = await respond(d, {
+      method: "POST", url: MODEL_CREDENTIAL_PATH, host: "127.0.0.1:4310", origin: "http://127.0.0.1:4310", contentType: "application/json", csrfToken,
+      body: JSON.stringify({ values: { CLAUDE_CODE_OAUTH_TOKEN: TOKEN } }),
+    });
+    expect(JSON.parse(r.body)).toEqual({ saved: ["CLAUDE_CODE_OAUTH_TOKEN"], resumed: true });
+    expect(r.body).not.toContain(TOKEN);
+    expect(readFileSync(f.file, "utf8")).toContain(`CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}`);
+    expect(statSync(f.file).mode & 0o777).toBe(0o600);
+    expect((await f.overview()).system_actions).toEqual([]);
+    // The workers' secret store reads the file again within RELOAD_MS: no restart.
+    f.clock.advance(RELOAD_MS);
+    await f.tick();
+    expect((await f.store.getRun(queued!.id))!.status).toBe("succeeded");
+    expect(f.log.lines.map((l) => JSON.stringify(l))).not.toContainEqual(expect.stringContaining(TOKEN));
   });
 
   // Bug: Resume now (or `factory resume`) ends the pause while no credential exists, so the next claims fail.
