@@ -2,7 +2,7 @@
 // node:http only, bound to 127.0.0.1 with no host option. GET and HEAD only, on every path (/api/health too),
 // except the write routes: POST /api/v1/settings (design §8, issue #236), POST /api/v1/items/:id/commands
 // (design §9, issue #227; commands.ts), POST /api/v1/pauses/resume (design §5 Restarts, issue #291), POST
-// /api/v1/agents/stop (design 05-restart-pauses, Stop all agents; agents-api.ts), POST
+// /api/v1/agents/stop (design 05-restart-pauses, Stop all agents; pause-api.ts), POST
 // /api/v1/standing (design 05-standing-approvals, issue #300; standing-api.ts), POST /api/v1/improve/run (design §7, issue #508; improve-api.ts) and
 // POST /api/v1/packs/approvals (design 11-packs, issue #589; packs-api.ts), POST /api/v1/rules/verdict (design §9,
 // issue #571; rules-api.ts) and the task routes (design 02-tasks; tasks-api.ts TASK_WRITES: POST /api/v1/tasks, the quick-add box,
@@ -32,8 +32,7 @@ import { type ApiDeps, api, apiError, isApiPath } from "./api.js";
 import { DEFAULT_APP_DIR, appText, isAppPath, serveApp } from "./app.js";
 import { MAX_COMMAND_BODY, commandsPathId, commandsPost, staleCsrf } from "./commands.js";
 import { CSRF_HEADER, SETTINGS_PATH, csrfMatches, writeSettings } from "./settings-api.js";
-import { RESUME_PATH, resumePause } from "./pause-api.js";
-import { STOP_PATH, stopAllAgents } from "./agents-api.js";
+import { RESUME_PATH, STOP_PATH, resumePause, stopAllAgents } from "./pause-api.js";
 import { STANDING_PATH, writeStanding } from "./standing-api.js";
 import { PACK_APPROVALS_PATH, writePackApproval } from "./packs-api.js";
 import { TASKS_PATH, TASK_PREVIEW_PATH, TASK_WRITES, readTaskPreview, readTasks } from "./tasks-api.js";

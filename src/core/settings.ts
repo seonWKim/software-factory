@@ -397,10 +397,7 @@ export function keyRefusal(key: string): string | null {
   return `"${key}" is not settable; the settable keys are ${SETTABLE_KEYS.join(", ")}`;
 }
 
-/**
- * `workers` from factory.config.json: absent means 1, otherwise an integer of 0 or more or startup fails. 0: no worker
- * claims a run and running runs finish (design 05-restart-pauses, 2026-11-21).
- */
+/** `workers` from factory.config.json: absent means 1, otherwise an integer of 0 or more (0: none claims) or startup fails. */
 export function workerCount(value: unknown): number {
   if (value === undefined) return 1;
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {

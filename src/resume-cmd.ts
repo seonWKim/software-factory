@@ -1,7 +1,7 @@
 // `factory resume [name | --all]` (design §5 Restarts, issue #291) and `factory stop` (design 05-restart-pauses,
 // 2026-11-21): ends a claim pause, or the owner pause, now instead of waiting for its time. The dashboard's "Resume
-// now" button (src/ui/pause-api.ts) ends one through endPause below and its "Stop all agents" (src/ui/agents-api.ts)
-// starts the owner pause through stopAgents, so the CLI and the page write the same log line. Every write is a
+// now" button (src/ui/pause-api.ts) ends one through endPause below and its "Stop all agents" (same file) starts
+// the owner pause through stopAgents, so the CLI and the page write the same log line. Every write is a
 // conditional store write: a second resume, or one with no pause in effect, changes nothing; a second stop keeps the
 // first one's row.
 //

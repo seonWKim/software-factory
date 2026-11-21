@@ -7,11 +7,13 @@
 import type { Logger } from "../core/log.js";
 import type { Timestamp, UserId } from "../core/types.js";
 import type { AuthDecision, AuthProvider } from "../interfaces/auth-provider.js";
-import { OWNER_PAUSE, RESUMABLE_PAUSES, RESUME_NAMES, type ResumablePause, endPause, isResumablePause, ownerPause } from "../resume-cmd.js";
+import { OWNER_PAUSE, RESUMABLE_PAUSES, RESUME_NAMES, type ResumablePause, endPause, isResumablePause, ownerPause, stopAgents } from "../resume-cmd.js";
 import type { ApiResult } from "./api.js";
 import type { UiDeps } from "./deps.js";
 
 export const RESUME_PATH = "/api/v1/pauses/resume";
+/** Stop all agents in the top bar (design 05-restart-pauses): starts the owner pause, which Resume now ends. */
+export const STOP_PATH = "/api/v1/agents/stop";
 
 /** Where the dashboard resumes a pause: its row in Needs you on the Tasks page. */
 export const RESUME_IN_NEEDS_YOU = "Resume now in Needs you on Tasks";
@@ -73,4 +75,18 @@ export async function resumePause(d: PauseDeps, p: UiPauses, body: unknown): Pro
   }
   const r = await endPause({ store: d.store, actor: user, log: p.log }, name);
   return { status: 200, value: { name, ended: r.ended, pauses: await activePauses(d) } };
+}
+
+/** POST /api/v1/agents/stop, after the request guards: the owner check, as resumePause's, then the owner pause. */
+export async function stopAllAgents(d: PauseDeps, p: UiPauses): Promise<ApiResult> {
+  const user = await p.principal();
+  if (user === null) {
+    return { status: 403, value: { error: "No factory user acts from this page: link your local account or set cli_user." } };
+  }
+  const decision = await p.authorize(user);
+  if (!decision.allow) {
+    return { status: 403, value: { error: `Stopping needs write permission (approve_spec): ${decision.reason}. As the owner, run \`factory stop\`.` } };
+  }
+  const r = await stopAgents({ store: d.store, actor: user, log: p.log });
+  return { status: 200, value: { name: OWNER_PAUSE, stopped: r.stopped, since: r.since, pauses: await activePauses(d) } };
 }
