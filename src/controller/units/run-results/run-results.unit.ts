@@ -542,6 +542,8 @@ export class RunResultsUnit {
     }
     if (!this.c.unit("transitions").expects(it, run.kind)) return { patch: {}, actor: SYSTEM, reason: "run_ignored", ack_run: run.id };
     const code = failedCode(run);
+    // The session that took the item over replaced this run (design 05-interactive-sessions): acked, never retried.
+    if (takenOver(run)) return { patch: {}, actor: SYSTEM, reason: "run_ignored", detail: { run_id: run.id, error_code: code }, ack_run: run.id };
     if (run.kind === "resolve") return this.resolveFailed(it, run, code);
     if (run.kind === "interactive") return sessionReleased(it, run, code);
     // The provider's account or config needs a person (design §5 Restarts): no retry would get further.
@@ -722,7 +724,7 @@ export class RunResultsUnit {
     }
     const limit = task >= max_attempts ? "max_attempts" : infra >= max_restart ? "max_restart" : null;
     // Neither a rate limit, a stall, a checks_env run nor a taken-over run is an attempt: they never reach a limit (design §5 Restarts).
-    if (cls !== "rate_limited" && cls !== "stalled" && cls !== "checks_env" && !takenOver(run) && limit) {
+    if (cls !== "rate_limited" && cls !== "stalled" && cls !== "checks_env" && limit) {
       const patch = { ...restart, blocked_on: "human" as const, blocked_reason: limit };
       const url = await this.lastAttemptComment(it, run, code, limit, limit === "max_attempts" ? task : infra, footerAfter(it, patch));
       return {
