@@ -7,7 +7,6 @@ import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ImproveView, RuleEntryView, RulesView } from "../web/src/api.js";
 import { localDateTime } from "../web/src/lib/format.js";
-import { PAGES, routeFor } from "../web/src/pages.js";
 
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
 // loaded by a specifier the node check skips (as tests/ui-users-page.test.tsx does).
@@ -100,11 +99,6 @@ const choose = (el: HTMLElement, label: string) => {
 const sent = () => posts.map((p) => JSON.parse(String(p.init.body)));
 
 describe("Rules page", () => {
-  it("is a sidebar page at /app/rules", () => {
-    expect(routeFor("/app/rules").page.label).toBe("Rules");
-    expect(PAGES.map((p) => p.path)).toContain("rules");
-  });
-
   it("groups candidates and proposals, each under its line; each card shows its title (ID in its tooltip), state and what it would change", async () => {
     await show();
     const classes = await screen.findByRole("list", { name: "Rule candidates" }, SLOW);

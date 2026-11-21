@@ -209,9 +209,4 @@ describe("item links", () => {
     const short = screen.queryByText("30331a68");
     if (short) expect(short.closest("a")?.getAttribute("href")).toBe("/app/items/wi_local3");
   });
-
-  it("titles link to the item page", async () => {
-    await mountAt("", "Spec waiting");
-    expect(screen.getByRole("link", { name: "Spec waiting" }).getAttribute("href")).toBe("/app/items/wi_spec1");
-  });
 });

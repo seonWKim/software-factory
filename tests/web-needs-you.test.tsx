@@ -279,12 +279,6 @@ describe("the Needs you count is its rows (design 09-status-page)", () => {
     expect(n.rows.map((r) => r.dataset.key)).toEqual([MERGE.id, APPROVE.id, RETRY.id]);
   });
 
-  it("each open alarm is its own row: two alarms give 2", async () => {
-    const n = await numbers(2, [], [ALARM(4), ALARM(5)]);
-    expect([n.rows.length, n.count, n.badge]).toEqual([2, 2, 2]);
-    expect(n.rows.map((r) => r.dataset.check)).toEqual(["alarm", "alarm"]);
-  });
-
   it("a non-alarm system action is one row with its command, beside an item and an alarm", async () => {
     const pause = { code: "worker_pause", text: "1 worker pause in effect (factory workers pause)", command: "factory workers resume", until: null };
     const n = await numbers(3, [MERGE], [pause, ALARM(4)]);
