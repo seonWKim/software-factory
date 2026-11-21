@@ -1,8 +1,8 @@
 {
-  "compose.ts": 1318,
+  "compose.ts": 1201,
   "controller/units/commands/commands.unit.ts": 738,
   "controller/units/run-results/run-results.unit.ts": 1161,
-  "core/settings.ts": 774,
+  "core/settings.ts": 773,
   "core/types.ts": 732,
   "golden.ts": 677,
   "impl/github/github-issue-source.ts": 719,

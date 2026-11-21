@@ -29,8 +29,9 @@ import { PackCheckRunner } from "./runtime/hooks/pack-checks.js";
 import { type HookDescriptor, UNCALLED_HOOK_POINTS } from "./shared/hook.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import {
-  BUILT_IN_SETTINGS, HEARTBEAT_LEASE_MESSAGE, type LearnedSettingsSource, booleanSetting, intakeLabel, LiveSettings, maxWorkers, positiveInteger, settingValues, settingsBase, settingsLayers, workerCount,
+  BUILT_IN_SETTINGS, HEARTBEAT_LEASE_MESSAGE, type LearnedSettingsSource, booleanSetting, intakeLabel, LiveSettings, maxWorkers, positiveInteger, settingValues, settingsLayers, workerCount,
 } from "./core/settings.js";
+import { settingsBase } from "./core/settings-base.js";
 import { WorkerPool } from "./worker/index.js";
 import type { LocalRoute } from "./worker/index.js";
 import { type BrokerDeps, Plugins } from "./plugin-set.js";
@@ -1197,4 +1198,4 @@ function isTier(n: number): n is Tier {
 }
 
 export { Plugins } from "./plugin-set.js";
-export { settingsBase } from "./core/settings.js";
+export { settingsBase } from "./core/settings-base.js";

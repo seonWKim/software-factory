@@ -6,7 +6,6 @@ import { FallbackLLM } from "./core/fallback-llm.js";
 import { FallbackRunner } from "./core/fallback-runner.js";
 import type { Loaded } from "./compose.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
-import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
 import type { Forge } from "./interfaces/forge.js";
@@ -16,8 +15,12 @@ import type { Sandbox } from "./interfaces/sandbox.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
 import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { Logger } from "./core/log.js";
+import type { ConnectContext } from "./plugin-api.js";
 import { type BaseContext, createPlugin, selectedLlms, selectedRunners } from "./plugins.js";
 import type { LocalRoute } from "./worker/index.js";
+
+/** The Clock port, named through the plugin API so this file reads no clock itself (tests/architecture/no-clock). */
+type Clock = ConnectContext["clock"];
 
 /** The broker plugin local items always take (Plugins.localRoute). */
 const LOCAL_BROKER = "local";
