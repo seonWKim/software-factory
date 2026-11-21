@@ -68,18 +68,19 @@ the topic file, never this index; add a line here only for a new topic file. "§
 ## 9. Status page
 - [09-status-page.md](design/09-status-page.md): the read-only status page, its guards.
 - [09-health.md](design/09-health.md): the Health panel, schema probe.
-- [09-dashboard-app.md](design/09-dashboard-app.md): index of the dashboard page topics.
-- [09-dashboard-shell.md](design/09-dashboard-shell.md): sidebar, top bar, shared components.
-- [09-dashboard-shell-text.md](design/09-dashboard-shell-text.md): plain words, `t()`, i18n catalog.
-- [09-dashboard-shell-serving.md](design/09-dashboard-shell-serving.md): serving, API, build stamp, responsive check.
-- [09-dashboard-activity.md](design/09-dashboard-activity.md): the Activity page.
+- [09-dashboard-app.md](design/09-dashboard-app.md): index of dashboard topics.
+- [09-dashboard-shell.md](design/09-dashboard-shell.md): sidebar, top bar, theme, mode.
+- [09-dashboard-components.md](design/09-dashboard-components.md): shared pieces, plain words, i18n.
+- [09-dashboard-search.md](design/09-dashboard-search.md): `⌘K` search, `?` help.
+- [09-dashboard-api.md](design/09-dashboard-api.md): API, serving, responsive check.
+- [09-dashboard-activity.md](design/09-dashboard-activity.md): Activity page.
 - [09-dashboard-runners.md](design/09-dashboard-runners.md): the Runners page, Migrate now.
 - [09-dashboard-tasks.md](design/09-dashboard-tasks.md): Tasks, Calendar, Needs you, Project switcher.
-- [09-dashboard-rules.md](design/09-dashboard-rules.md): the Rules page: verdicts, Promote, Retire.
-- [09-dashboard-settings.md](design/09-dashboard-settings.md): the Settings and Plugins pages.
+- [09-dashboard-rules.md](design/09-dashboard-rules.md): Rules: verdicts, Promote, Retire.
+- [09-dashboard-settings.md](design/09-dashboard-settings.md): Settings and Plugins.
 - [09-dashboard-system.md](design/09-dashboard-system.md): Work, Failures, Spend, Data.
 - [09-dashboard-workers.md](design/09-dashboard-workers.md): run timeline, dependency graph.
-- [09-dashboard-item.md](design/09-dashboard-item.md): the item page: thread, transcripts.
+- [09-dashboard-item.md](design/09-dashboard-item.md): item page, thread, transcripts.
 - [09-dashboard-item-commands.md](design/09-dashboard-item-commands.md): item commands, dialogs, Merge button.
 - [09-status-banner.md](design/09-status-banner.md): the supervisor banner.
 - [09-notifications.md](design/09-notifications.md): owner notices, kinds, quiet hours.
