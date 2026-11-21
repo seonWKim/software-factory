@@ -5,7 +5,8 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import axe from "axe-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../web/src/App.js";
-import { EXPANDED_KEY, VIEW_KEY, buildTree } from "../web/src/views/tree.js";
+import { EXPANDED_KEY, VIEW_KEY } from "../web/src/views/tree.js";
+import { buildTree } from "../web/src/views/tree-model.js";
 
 // The Work items tree (design §9): split parents with their phases, who holds what and why, keyboard use, one
 // request per poll, and the flat list kept behind the List toggle.

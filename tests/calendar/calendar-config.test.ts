@@ -6,7 +6,7 @@ import { build, loadConfig } from "../../src/compose.js";
 import { TOP_LEVEL_KEYS } from "../../src/config-keys.js";
 import { FakeClock } from "../../src/impl/clock/fake-clock.js";
 import { PLUGINS_KEYS, REGISTRY, selectPlugins, selectedCalendars, withPlugin } from "../../src/plugins.js";
-import { fakeRepoLookup } from "../helpers/fakes.js";
+import { fakeRepoLookup } from "../helpers/fakes/config.js";
 import { FakeCalendarSource } from "./fakes.js";
 
 // The top-level `calendar` key (design 02-tasks, calendar): a list of CalendarSource plugin names, default [], checked

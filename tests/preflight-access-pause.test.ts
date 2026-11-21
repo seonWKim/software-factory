@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Timestamp, WorkerId } from "../src/core/types.js";
 import type { ToolResult } from "../src/interfaces/tool-broker.js";
-import { pipeline } from "./helpers/fakes.js";
+import { pipeline } from "./helpers/harness.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 
 // Design §5 Restarts (issue #216): a push_access or pr_api preflight check that fails other than with a 401/403 is
@@ -89,7 +89,7 @@ describe("preflight-access pause", () => {
   });
 
   it("two workers failing push_access at the same moment: one pause row, one comment, one log line", async () => {
-    const f = await pipeline();
+    const f = await pipeline({ config: { workers: 2 } });
     const a = await f.submit();
     const b = await f.submit();
     await f.w1.tick();
@@ -117,7 +117,7 @@ describe("preflight-access pause", () => {
   });
 
   it("a failure during the pause moves its end later but posts and logs nothing; one after it ends starts a new pause", async () => {
-    const f = await pipeline();
+    const f = await pipeline({ config: { workers: 2 } });
     await f.submit();
     const b = await f.submit();
     await f.w1.tick();

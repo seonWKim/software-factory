@@ -4,7 +4,7 @@ import { GitHubForge } from "../src/impl/github/github-forge.js";
 import { forgeAuthRefused } from "../src/impl/github/pull-requests.js";
 import { GitHubError, type GitHubClient } from "../src/impl/github/github-client.js";
 import type { ToolResult } from "../src/interfaces/tool-broker.js";
-import { pipeline } from "./helpers/fakes.js";
+import { pipeline } from "./helpers/harness.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 
 // Design §5 Restarts: a 401 or 403 from the forge pauses implement-type claims (implement and update) for every
@@ -71,7 +71,7 @@ describe("forge-auth pause", () => {
   });
 
   it("each pause posts one comment on the item whose run started it and logs one line", async () => {
-    const f = await pipeline();
+    const f = await pipeline({ config: { workers: 2 } });
     const a = await f.submit();
     const b = await f.submit();
     // Triage both: two implement runs queued.
@@ -151,7 +151,7 @@ describe("forge-auth pause", () => {
   });
 
   it("two workers refused at the same moment post one owner comment and log one line", async () => {
-    const f = await pipeline();
+    const f = await pipeline({ config: { workers: 2 } });
     const a = await f.submit();
     const b = await f.submit();
     await f.w1.tick();

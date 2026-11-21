@@ -8,7 +8,7 @@ import { PROTECTED_PATHS, protectedCategory } from "../src/core/standing.js";
 import { parseTriage } from "../src/core/outputs.js";
 import { PROVIDER_SETUP } from "../src/interfaces/agent-runner.js";
 import type { WorkItemId } from "../src/core/types.js";
-import { triageSpec } from "./helpers/fakes.js";
+import { triageSpec } from "./helpers/fakes/config.js";
 
 describe("policy", () => {
   const floors = [{ prefix: "prompts/", tier: 3 as const }, { prefix: "src/impl/broker/", tier: 4 as const }];

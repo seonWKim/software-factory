@@ -2,7 +2,7 @@ import { FakeClock } from "../../src/impl/clock/fake-clock.js";
 import { GitHubClient } from "../../src/impl/github/github-client.js";
 import type { PollContext } from "../../src/impl/github/github-issue-source.js";
 import type { GitHubCredentials } from "../../src/interfaces/github-credentials.js";
-import { silent } from "./fakes.js";
+import { silent } from "./fakes/config.js";
 
 /** Records every request; GET answers come from `responses` by path prefix (without query), else []; text GETs from `texts`. */
 export class RecordingGitHubClient extends GitHubClient {

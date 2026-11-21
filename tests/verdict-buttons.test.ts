@@ -11,7 +11,7 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import { resultMarker } from "../src/impl/source/slack-format.js";
 import { SlackSource, slackSourceId } from "../src/impl/source/slack-source.js";
 import type { AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../src/interfaces/auth-provider.js";
-import { recordingLog } from "./helpers/fakes.js";
+import { recordingLog } from "./helpers/fakes/config.js";
 import { BOT, CHANNEL, FakeSlackApi, FakeSocket, TEAM } from "./helpers/slack.js";
 import { PROJECT_KEY, newStore, system } from "./helpers/store.js";
 

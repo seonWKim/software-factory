@@ -23,7 +23,7 @@ import type { Sandbox } from "../src/interfaces/sandbox.js";
 import carry from "../src/outbound/migrations/20261109T1200-outbound-carry-base-pushes.migration.js";
 import { actionOf } from "../src/outbound/intents.js";
 import type { MigrationDb, SqlDriver } from "../src/state/index.js";
-import { cleanScanner, config, silent } from "./helpers/fakes.js";
+import { cleanScanner, config, silent } from "./helpers/fakes/config.js";
 import { newStore, system, w1 } from "./helpers/store.js";
 
 // The base push (design 05-sources, Local items; RFC 0015 M8): a merge delivered with a forge selected stores one

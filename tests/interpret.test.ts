@@ -7,7 +7,9 @@ import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
-import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, mallory, silent } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, mallory, silent } from "./helpers/fakes/config.js";
 import { newStore, PROJECT_KEY } from "./helpers/store.js";
 import { classifierAnswer } from "./helpers/classifier.js";
 

@@ -11,10 +11,11 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { PROJECT_KEY, issue, newStore, system, w2 } from "./helpers/store.js";
-import {
-  FakeForge, FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
-  alice, cleanScanner, config as baseConfig, issueRef, prompts, recordingLog, settingsWith, silent, triageSpec, waitFor,
-} from "./helpers/fakes.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config as baseConfig, issueRef, prompts, recordingLog, settingsWith, silent, triageSpec, waitFor } from "./helpers/fakes/config.js";
 
 // Design 2026-11-03, "Settings change at runtime": each settable key takes effect at the point its row gives,
 // with no restart. Every override here is written to the store, as `factory settings set` does, and read back
@@ -24,7 +25,8 @@ type Fn = (spec: AgentRunSpec) => Partial<AgentRunResult>;
 const NAMES = { cheap: "file-cheap", standard: "file-standard", strong: "file-strong" };
 
 async function harness(opts: { triage?: Fn; implement?: Fn; review?: Fn; config?: Partial<FactoryConfig> } = {}) {
-  const config: FactoryConfig = { ...baseConfig, dials: { spec_gate_min_tier: 3, auto_merge_max_tier: 0 }, ...opts.config };
+  // workers 4: the slot cap counts every running run, lone Workers too, and some tests leave runs running.
+  const config: FactoryConfig = { ...baseConfig, workers: 4, dials: { spec_gate_min_tier: 3, auto_merge_max_tier: 0 }, ...opts.config };
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
@@ -381,10 +383,12 @@ describe("workers: the pool grows and shrinks with no restart", () => {
         return typeof v === "function" ? v.bind(target) : v;
       },
     });
-    const settings = new LiveSettings({ config: baseConfig, base: baseFromConfig(baseConfig), source: store });
+    // workers 4: item 1's run on the other worker takes a slot (the cap counts every running run), and w1 still claims.
+    const config: FactoryConfig = { ...baseConfig, workers: 4 };
+    const settings = new LiveSettings({ config, base: baseFromConfig(config), source: store });
     const worker = new Worker({
       id: "w1" as WorkerId, store: spy, sandbox: new FakeSandbox(), runner: new FakeRunner({}), broker: new FakeBroker(),
-      storage: new MemoryStorage(), clock, config: baseConfig, prompts, log: silent, scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(), settings,
+      storage: new MemoryStorage(), clock, config, prompts, log: silent, scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(), settings,
     });
     await worker.tick();
     expect(claimed.at(-1)).toBeNull();

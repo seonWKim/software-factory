@@ -27,6 +27,9 @@ export function useLocationPath(): [string, (to: string, replace?: boolean) => v
 
 export const NavProvider = NavContext.Provider;
 
+/** The app's in-place navigate, as a Link uses it: for an action that goes to a page from a menu item. */
+export const useNavigate = (): ((to: string) => void) => useContext(NavContext);
+
 export function Link({ href, onClick, ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) {
   const navigate = useContext(NavContext);
   const click = (e: MouseEvent<HTMLAnchorElement>) => {

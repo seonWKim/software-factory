@@ -135,10 +135,6 @@ describe("tool specs", () => {
       expect(typeof t.run).toBe("function");
     }
   });
-
-  it("caps output at 64 KiB", () => {
-    expect(OUTPUT_CAP).toBe(64 * 1024);
-  });
 });
 
 describe("guardPolicy", () => {

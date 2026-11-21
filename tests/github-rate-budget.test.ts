@@ -8,7 +8,9 @@ import { OpaqueSecret } from "../src/impl/secrets/env-file-secret-store.js";
 import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import { secretName } from "../src/interfaces/secret-store.js";
-import { FakeAuth, FakeSource, cleanScanner, config, recordingLog, silent } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { cleanScanner, config, recordingLog, silent } from "./helpers/fakes/config.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 // The GitHub request budget (issue #254): every response's rate-limit headers are kept, and under 10% (or

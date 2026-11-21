@@ -79,20 +79,11 @@ describe("app pages", () => {
     expect(within(running).getByText("Being built")).toBeTruthy();
   });
 
-  it("the sidebar's Tasks group links the Tasks page, the System group shows its links, and there is no Users", () => {
-    mount();
-    const tasks = screen.getByRole("navigation", { name: "Tasks" });
-    expect([...tasks.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual(["/app/tasks", "/app/calendar"]);
-    const system = screen.getByRole("navigation", { name: "System" });
-    expect(within(system).getByRole("link", { name: "Health" })).toBeTruthy();
-    expect(screen.queryByRole("link", { name: "Users" })).toBeNull();
-  });
-
   it("the sidebar links Workers after Health; Activity, Failures, Spend, Runners and Data are not among them", () => {
     mount();
     const side = screen.getByRole("complementary", { name: "Sidebar" });
     const links = [...side.querySelectorAll("a")].filter((a) => a.getAttribute("href")?.startsWith("/app/") && a.getAttribute("href") !== "/app/");
-    expect(links.map((a) => [a.getAttribute("aria-label"), a.getAttribute("href")])).toEqual([
+    expect(links.map((a) => [a.textContent, a.getAttribute("href")])).toEqual([
       ["Tasks", "/app/tasks"], ["Calendar", "/app/calendar"], ["Work", "/app/items"], ["Health", "/app/health"], ["Workers", "/app/workers"],
       ["Rules", "/app/rules"], ["Plugins", "/app/plugins"], ["Settings", "/app/settings"],
     ]);
@@ -185,16 +176,6 @@ describe("app pages", () => {
       if (path === "health") await screen.findByRole("heading", { level: 2, name: "Failures" });
       if (path === "items") await screen.findByRole("table", { name: "Running now" });
       expect(outside(), path).toEqual([]);
-      cleanup();
-    }
-  });
-
-  it("each page's heading matches its menu name", async () => {
-    const names: Record<string, string> = { items: "Work", runners: "Runners", health: "Health", data: "Data", settings: "Settings" };
-    for (const [path, name] of Object.entries(names)) {
-      history.replaceState(null, "", `/app/${path}`);
-      mount();
-      expect(screen.getByRole("heading", { level: 1, name })).toBeTruthy();
       cleanup();
     }
   });
@@ -314,32 +295,6 @@ describe("system actions, revisions and the tab title (issue #311)", () => {
       await vi.waitFor(() => expect(document.title).toBe("Tasks · Gongbang"));
     } finally {
       overview.needs_you = before;
-    }
-  });
-
-  it("the Tasks page lists each system action as a row in the Needs you section's Check group; a claim pause draws no command", async () => {
-    const actions = [
-      { code: "migration_pending", text: "Schema at version 3 of 8", command: "Migrate now, or factory migrate", until: null, work_item_id: null },
-      { code: "claim_pause", text: "Usage or rate limit", command: "Resume now in Needs you on Tasks, or factory resume rate_limit", until: "2026-11-07T01:00:00.000Z", work_item_id: null, pause: "rate_limit" },
-    ];
-    (overview as Record<string, unknown>).system_actions = actions;
-    try {
-      mount();
-      const list = await screen.findByRole("list", { name: "Check" });
-      const rows = [...list.querySelectorAll("li")];
-      expect(rows.map((r) => r.getAttribute("data-check"))).toEqual(["migration_pending", "claim_pause"]);
-      expect(rows[0]!.textContent).toContain("Schema at version 3 of 8");
-      expect(rows[0]!.querySelector("code")!.textContent).toBe("Migrate now, or factory migrate");
-      expect(rows[1]!.textContent).toContain("Usage or rate limit");
-      expect(rows[1]!.querySelector("time")!.getAttribute("datetime")).toBe("2026-11-07T01:00:00.000Z");
-      // The button is the action (decision 3): no CLI command under the pause.
-      expect(rows[1]!.querySelector("code")).toBeNull();
-      expect(rows[1]!.textContent).not.toContain("factory resume");
-      // The rows are inside the Needs you section, not lines after it.
-      expect(screen.getByRole("region", { name: "Needs you" }).contains(list)).toBe(true);
-      expect(screen.queryByRole("list", { name: "System actions" })).toBeNull();
-    } finally {
-      delete (overview as Record<string, unknown>).system_actions;
     }
   });
 

@@ -4,7 +4,10 @@ import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/typ
 import type { AppCommandRequest } from "../src/interfaces/factory-store.js";
 import type { AuthAction, AuthProvider, AuthResource, Principal } from "../src/interfaces/auth-provider.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
-import { FakeAuth, FakeForge, FakeSource, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
 // The dashboard's reject and verdict (issue #452): an app `reject` goes through the `/reject` transition and its

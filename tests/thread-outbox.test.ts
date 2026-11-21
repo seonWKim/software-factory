@@ -8,10 +8,10 @@ import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { SourceAdapter } from "../src/interfaces/source-adapter.js";
-import {
-  FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSlackPollSource, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef,
-  prompts, silent, triageSpec,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeSlackPollSource, FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore, w1 } from "./helpers/store.js";
 
 // Thread first, then the outbox (issue #282): the controller writes every message to the item thread, and only the

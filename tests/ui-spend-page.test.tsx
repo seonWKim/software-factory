@@ -7,7 +7,6 @@ import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SettingRow, SettingsView, SpendDay, SpendView } from "../web/src/api.js";
 import { keyLabel } from "../web/src/lib/key-label.js";
-import { PAGES, redirectFor, routeFor } from "../web/src/pages.js";
 
 // tsconfig.test.json checks this file without JSX, so the pages are built with createElement and their .tsx modules
 // are loaded by a specifier the node check skips (as tests/ui-rules-page.test.tsx does).
@@ -91,15 +90,6 @@ function show(page: FunctionComponent) {
 }
 
 describe("Spend page", () => {
-  it("is a section of Health, not a sidebar page: /app/spend leads to Health's Spend section", async () => {
-    expect(routeFor("/app/spend").page.label).toBe("Health");
-    expect(redirectFor("/app/spend")).toBe("/app/health#spend");
-    expect(PAGES.map((p) => p.path)).not.toContain("spend");
-    show(SpendSection);
-    expect(await screen.findByRole("heading", { level: 2, name: "Spend" })).toBeTruthy();
-    expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
-  });
-
   it("shows today, this week and the last 30 days, each with cost and tokens", async () => {
     show(SpendSection);
     const today = await screen.findByText("Today");

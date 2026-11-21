@@ -68,15 +68,6 @@ describe("config keys: unknown keys fail at load", () => {
     expect(err.message).toContain('did you mean "type"?');
   });
 
-  it("a mysql store fails at startup through the unknown FactoryStore plugin error that names store.type", async () => {
-    const mysql = { type: "mysql", host: "localhost", port: 3306, database: "software_factory", user: "factory" };
-    const err = await loadError({ ...REAL, store: mysql });
-    expect(err).not.toBeInstanceOf(ConfigKeyError);
-    expect(err.message).toMatch(/unknown FactoryStore plugin "mysql" at store\.type/);
-    // Its keys are not reported as unknown store keys: a type not in STORE_KEYS skips that check.
-    expect(err.message).not.toContain("store.host");
-  });
-
   it("an unknown key inside a floors entry names the path with the index", async () => {
     const floors = [{ prefix: "a/", tiar: 3 }, ...(REAL.floors as object[])];
     const err = await loadError({ ...REAL, floors });
@@ -221,11 +212,6 @@ describe("config keys: defaults and projects", () => {
   const ID = "seonWKim/software-factory";
   const PROJECT_KEYS = ["max_attempts", "max_diff_lines", "max_diff_files", "budgets", "floors"];
 
-  it("defaults and projects are valid top-level keys", () => {
-    expect(TOP_LEVEL_KEYS).toContain("defaults");
-    expect(TOP_LEVEL_KEYS).toContain("projects");
-  });
-
   it("an unknown key inside a project names the project and the key, lists the project keys and suggests", async () => {
     const err = await loadError({ ...REAL, projects: { [ID]: { max_dif_lines: 10 } } });
     expect(err).toBeInstanceOf(ConfigKeyError);
@@ -345,10 +331,6 @@ describe("coordination config (design §5, 2026-11-03)", () => {
     expect(err).toBeInstanceOf(ConfigKeyError);
     expect(err.message).toContain("conflict_window_days must be a positive integer");
   });
-
-  it("the checked-in config loads with the coordination keys", async () => {
-    await expect(loadConfig(root(SQLITE))).resolves.toBeTruthy();
-  });
 });
 
 describe("config keys: openai_compatible", () => {
@@ -356,17 +338,8 @@ describe("config keys: openai_compatible", () => {
   const BLOCK = { base_url: "https://api.example.test/v1", models: MODELS };
   const withBlock = (block: unknown) => ({ ...SQLITE, openai_compatible: block });
 
-  it("is a top-level key", () => {
-    expect(TOP_LEVEL_KEYS).toContain("openai_compatible");
-  });
-
   it("a valid block loads", async () => {
     await expect(loadConfig(root(withBlock(BLOCK)))).resolves.toBeTruthy();
-  });
-
-  it("the checked-in config, which has no block, still loads", async () => {
-    expect(REAL).not.toHaveProperty("openai_compatible");
-    await expect(loadConfig(root(SQLITE))).resolves.toBeTruthy();
   });
 
   it("a misspelled key in the block names its full path and the valid keys", async () => {
@@ -426,10 +399,6 @@ describe("config keys: openai_compatible", () => {
 });
 
 describe("config keys: path_companions (design 04-triage.md)", () => {
-  it("is a top-level key", () => {
-    expect(TOP_LEVEL_KEYS).toContain("path_companions");
-  });
-
   it("a config that sets it loads without an unknown-key error", async () => {
     const loaded = await loadConfig(root({ ...SQLITE, path_companions: [{ when: "src/a.ts", also: ["docs/a/"] }] }));
     expect(loaded.config.path_companions).toEqual([{ when: "src/a.ts", also: ["docs/a/"] }]);

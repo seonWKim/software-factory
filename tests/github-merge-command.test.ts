@@ -4,7 +4,10 @@ import { githubCommand } from "../src/core/command-inbox.js";
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../src/interfaces/auth-provider.js";
 import { runLocalCli } from "../src/core/local-cli.js";
-import { FakeForge, FakeSandbox, FakeSlackPollSource, FakeSource, cleanScanner, config, issueRef, silent, slackRef } from "./helpers/fakes.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSandbox } from "./helpers/fakes/runner.js";
+import { FakeSlackPollSource, FakeSource } from "./helpers/fakes/source.js";
+import { cleanScanner, config, issueRef, silent, slackRef } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
 // A merge command from the command inbox on a non-local item (design 04-gate-commands, 2026-11-18): a GitHub `/merge`

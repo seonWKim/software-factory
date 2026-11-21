@@ -7,7 +7,7 @@ import { build, loadConfig, settingsBase } from "../../src/compose.js";
 import { OWNER_KEYS, parseSettable, resolveSettings } from "../../src/core/settings.js";
 import { FakeClock } from "../../src/impl/clock/fake-clock.js";
 import { REGISTRY, withPlugin } from "../../src/plugins.js";
-import { fakeRepoLookup } from "../helpers/fakes.js";
+import { fakeRepoLookup } from "../helpers/fakes/config.js";
 import { FakeCalendarSource } from "./fakes.js";
 
 // The live `calendar` setting (design 08-settings, 2026-11-13): an owner-only list of calendar plugin names over the

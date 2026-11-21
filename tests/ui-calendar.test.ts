@@ -15,6 +15,7 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import { storeSql } from "../src/impl/store/sql/store-sql.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { REGISTRY, type Registry, withPlugin } from "../src/plugins.js";
+import { connectCalendar } from "../src/setup.js";
 import { UiCalendar, uiCalendar } from "../src/ui/calendar-api.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import type { UiPauses } from "../src/ui/pause-api.js";
@@ -153,7 +154,7 @@ async function page(o: { secrets?: string; calendar?: string[]; as?: UserId; def
   const base = settingsBase(loaded);
   const settings: UiSettings = {
     base, repo: { owner: "o", name: "r" }, actor: OWNER, resolveProject: async () => null, csrfToken: newCsrfToken(),
-    calendar: uiCalendar(loaded, { store, actor: OWNER, clock, base }),
+    calendar: uiCalendar(loaded, { store, actor: OWNER, clock, base, connect: connectCalendar }),
   };
   const log = new MemLog();
   const pauses: UiPauses = { principal: async () => o.as ?? OWNER, authorize: async () => ({ allow: true }), csrfToken: settings.csrfToken, log };

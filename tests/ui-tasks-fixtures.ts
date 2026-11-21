@@ -2,7 +2,7 @@
 // state as s.current, s.posts and so on, because an ES import cannot be reassigned. This file holds no test, so vitest's
 // include glob does not pick it up.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { type FunctionComponent, createElement } from "react";
 import { expect, vi } from "vitest";
 import type { ItemRow, TaskRow, TasksView } from "../web/src/api.js";
@@ -107,3 +107,18 @@ export async function show() {
 }
 
 export const card = (id: string) => document.querySelector<HTMLElement>(`[data-task="${id}"]`)!;
+
+/** Opens a row's "⋯" menu (every row action is in it, owner feedback 2026-11-20) and returns its items' labels. */
+export function menuItems(row: HTMLElement): string[] {
+  const more = row.querySelector<HTMLButtonElement>("[data-row-menu] [aria-haspopup=menu]")!;
+  if (more.getAttribute("aria-expanded") !== "true") fireEvent.click(more);
+  return [...row.querySelectorAll<HTMLButtonElement>("[role=menu] [role=menuitem]")].map((b) => b.textContent!);
+}
+/** Opens a row's "⋯" menu and chooses the item named `name`; returns that item. */
+export function chooseMenu(row: HTMLElement, name: string): HTMLButtonElement {
+  menuItems(row);
+  const item = [...row.querySelectorAll<HTMLButtonElement>("[role=menu] [role=menuitem]")].find((b) => b.textContent === name);
+  if (!item) throw new Error(`no menu item ${name} in ${row.getAttribute("data-task") ?? row.getAttribute("data-key")}`);
+  fireEvent.click(item);
+  return item;
+}

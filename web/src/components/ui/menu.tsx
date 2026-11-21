@@ -1,5 +1,5 @@
 import { Check } from "lucide-react";
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "../../lib/cn.js";
 import { Button } from "./button.js";
 import { DISABLED, FOCUS } from "./control.js";
@@ -19,14 +19,28 @@ export interface MenuItem {
   action?: string;
 }
 
+/** The room kept between an opened list and the edge of the page content (or of the viewport). */
+const EDGE_PX = 8;
+
 /**
  * A button that opens a list of actions; Esc, a click outside or choosing an item closes it. The button shows "⋯"
  * unless `icon` is given (a picker such as the theme menu); items with `checked` mark the current choice.
+ * The list ends at the button's right edge, or starts at its left edge when ending there would put its left part past
+ * the left edge of the page content (`main`, else the viewport), where the sidebar would cover its labels.
  */
 export function OverflowMenu({ label, items, icon }: { label: string; items: readonly MenuItem[]; icon?: ReactNode }) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
+  const list = useRef<HTMLUListElement>(null);
+  const [fromStart, setFromStart] = useState(false);
   const id = useId();
+  // A measured check when it opens (no positioning library), as Select picks above or below.
+  useLayoutEffect(() => {
+    if (!open || !root.current || !list.current) return;
+    const button = root.current.getBoundingClientRect();
+    const edge = (root.current.closest("main")?.getBoundingClientRect().left ?? 0) + EDGE_PX;
+    setFromStart(button.right - list.current.getBoundingClientRect().width < edge);
+  }, [open]);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
@@ -44,7 +58,7 @@ export function OverflowMenu({ label, items, icon }: { label: string; items: rea
         {icon ?? <span aria-hidden>⋯</span>}
       </Button>
       {open && (
-        <ul id={id} role="menu" aria-label={label} className="absolute right-0 z-10 mt-1 min-w-40 rounded-control border border-border bg-surface py-1 shadow">
+        <ul ref={list} id={id} role="menu" aria-label={label} data-side={fromStart ? "start" : "end"} className="absolute z-10 mt-1 min-w-40 rounded-control border border-border bg-surface py-1 shadow data-[side=end]:right-0 data-[side=start]:left-0">
           {items.map((item) => (
             <li key={item.label} role="none">
               <button

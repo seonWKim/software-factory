@@ -11,7 +11,8 @@ import { OpaqueSecret } from "../src/impl/secrets/env-file-secret-store.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import { secretName } from "../src/interfaces/secret-store.js";
 import type { ToolResult } from "../src/interfaces/tool-broker.js";
-import { cleanScanner, pipeline } from "./helpers/fakes.js";
+import { cleanScanner } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 
 // Design §5 Restarts: a GitHub rate limit (a 403 or 429 that says so, or the client's own refusal with no calls

@@ -8,7 +8,6 @@ import { Plugins, loadConfig } from "../src/compose.js";
 import { FallbackLLM } from "../src/core/fallback-llm.js";
 import { FallbackRunner } from "../src/core/fallback-runner.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { TRIAGE_SCHEMA } from "../src/core/outputs.js";
 import { Bash, Edit, Glob, Grep, Read, type ToolSpec, Write } from "../src/core/tools/index.js";
 import type { RunId, WorkItemId, WorkerId } from "../src/core/types.js";
 import { WRITE_TOOLS, Worker } from "../src/worker/index.js";
@@ -23,9 +22,11 @@ import type { ExecOptions, ExecResult, Sandbox, SandboxHandle } from "../src/int
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
 import { REGISTRY } from "../src/plugins.js";
 import { type FakeOpenAIServer, type ScriptedResponse, completion, startFakeOpenAIServer } from "./helpers/fake-openai-server.js";
-import {
-  FakeForge, FakeAuth, FakeBroker, FakeSandbox, FakeSource, MemoryStorage, alice, config as fakeConfig, issueRef, prompts, silent, waitFor,
-} from "./helpers/fakes.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeAuth, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, config as fakeConfig, issueRef, prompts, silent, waitFor } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 // Issue #194 (phase 4 of #163): the `openai-compatible` AgentRunner. Its tool loop runs against the fake

@@ -14,7 +14,11 @@ import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import { STORE_BRANCH, type ToolBroker, type ToolCallContext, type ToolDescriptor, type ToolResult } from "../src/interfaces/tool-broker.js";
-import { FakeForge, FAKE_GITHUB_TOOLS, FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, recordingLog, runComments } from "./helpers/fakes.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FAKE_GITHUB_TOOLS } from "./helpers/fakes/broker.js";
+import { FakeAuth, FakeRunner, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, recordingLog, runComments } from "./helpers/fakes/config.js";
 import { git, gitTemplate } from "./helpers/git-fixture.js";
 import { newStore } from "./helpers/store.js";
 

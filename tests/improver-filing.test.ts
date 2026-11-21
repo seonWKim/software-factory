@@ -20,7 +20,10 @@ import { LocalSource } from "../src/impl/source/local-source.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 import { AGENT_STALLED } from "../src/core/policy.js";
 import { HOTSPOT } from "../src/core/hotspots.js";
-import { FakeAuth, FakeBroker, FakeSandbox, MemoryStorage, PROJECT, alice, config, issueRef, pipeline, prompts, silent, triageSpec } from "./helpers/fakes.js";
+import { FakeAuth, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { PROJECT, alice, config, issueRef, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 import { RecordingGitHubClient } from "./helpers/github.js";
 
 const noRunner = { run: () => { throw new Error("the improve run called the agent runner"); } } as unknown as AgentRunner;
@@ -85,7 +88,8 @@ async function setup(sourcesOf: (store: FactoryStore) => SourceAdapter[], authOf
   const controller = new ControllerRole({ store, sources, auth: await authOf(store), clock, config, log: silent, scanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner: noRunner, broker: new FakeBroker(), storage,
-    clock, config, prompts, log: silent, scanner, toolEnv: {}, awake: new NoKeepAwake(),
+    // The improve run claims while other runs are left running: the slot cap counts them, so allow a few.
+    clock, config: { ...config, workers: 4 }, prompts, log: silent, scanner, toolEnv: {}, awake: new NoKeepAwake(),
   });
   let n = 0;
   /** Claims the queued triage run and fails it now (then the clock moves a second). */

@@ -3,6 +3,7 @@ export const shell = {
   "app.name": "Gongbang",
   "nav.sidebar": "Sidebar",
   "nav.tasks": "Tasks",
+  "nav.needYou": ", {count} need you",
   "nav.system": "System",
   "nav.setup": "Setup",
   "page.tasks": "Tasks",

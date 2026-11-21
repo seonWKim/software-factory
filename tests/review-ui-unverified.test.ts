@@ -17,7 +17,8 @@ import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Worker, reviewComment } from "../src/worker/index.js";
-import { FakeRunner, MemoryStorage, cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes.js";
+import { FakeRunner, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 // A UI change the review could not check (design 04-agents, 2026-11-19): the reviewer sets `ui_unverified`, the
