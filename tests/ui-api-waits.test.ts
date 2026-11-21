@@ -525,6 +525,7 @@ describe("ui api: Needs you, Needs triage and Blocked by another task", () => {
   it("a triage run's ask is in Needs triage with the question and an Answer link; an implement ask stays in Needs you", async () => {
     const asks = new Map<string, "triage" | "implement">();
     const { d, store } = await withAsks(asks);
+    await store.setSettingOverride({ key: "review_time", project: "", value: '""', actor: "local:owner" }); // every waiting ask counts: none held until review_time
     const triage = await make(store, 40, "Unclear issue");
     await patch(store, triage, { blocked_on: "human", blocked_reason: "agent_needs_human", failure_comment_url: "https://github.com/o/r/issues/40#c1" });
     const impl = await make(store, 41, "Implement asks");
