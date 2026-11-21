@@ -4,6 +4,8 @@
 
 import type { FactoryConfig } from "./config.js";
 import { failingTests, stripAnsi } from "./output-summary.js";
+import { type TestSelection, selectTests } from "./test-selection.js";
+import type { TrustedGit } from "./pre-push.js";
 import type { ExecResult, Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 
 /**
@@ -163,4 +165,25 @@ export function checkedLines(results: readonly CheckResult[], o: { fixed: boolea
   return results.map(
     (r) => `Checked before push: \`${commandText(r.command)}\` ${r.how}${o.fixed ? " (after one fix step)" : ""}`,
   );
+}
+
+/**
+ * `commands` with the one whose argv equals `repo.test_command` run on the selected files only (appended as the base
+ * rerun appends them, withTestFiles); every other command, typecheck included, runs whole. No `repo.test_selection`:
+ * `commands` as they are. The selection and its reason go to `log` before any command runs; a selection that cannot
+ * be made (git failed) runs the full list.
+ */
+export async function selectedChecks(
+  repo: Pick<FactoryConfig["repo"], "test_command" | "test_selection">, commands: readonly (readonly string[])[], git: TrustedGit, baseSha: string, log: (line: string) => void,
+): Promise<string[][]> {
+  const same = (c: readonly string[]) => c.length === repo.test_command.length && c.every((a, i) => a === repo.test_command[i]);
+  if (!repo.test_selection || !commands.some(same)) return commands.map((c) => [...c]);
+  let s: TestSelection;
+  try {
+    s = await selectTests(git, baseSha, repo.test_selection);
+  } catch (err) {
+    s = { full: true, reason: `full: the selection failed: ${err instanceof Error ? err.message : "unknown"}`.slice(0, 300) };
+  }
+  log(`test selection: ${s.reason}${s.full ? "" : `: ${s.files.join(" ")}`}`);
+  return commands.map((c) => (same(c) && !s.full ? withTestFiles(c, s.files) : [...c]));
 }

@@ -7,7 +7,7 @@ import { parseTriage } from "./outputs.js";
 import { IMPLEMENT_KINDS, INTERACTIVE, SESSION_ABANDONED, SESSION_RELEASED, branchFor, effectiveTier, floorTier } from "./policy.js";
 import { NumstatError, diffGates, scopeGate } from "./pre-push.js";
 import { type LearnedSettingsSource, settingValues } from "./settings.js";
-import { selectedChecks } from "./test-selection.js";
+import { selectedChecks } from "./checks.js";
 import type { Run, RunId, SourceRef, SourceType, Timestamp, WorkItem, WorkItemId, WorkItemPatch } from "./types.js";
 import { type LocalRoute, TRUSTED_GIT_ENV, hasTool, prTitle, routeFor, runPushIntents } from "./worker-deps.js";
 import type { AuthProvider, ExternalIdentity } from "../interfaces/auth-provider.js";

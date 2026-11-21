@@ -1,4 +1,3 @@
-import { withTestFiles } from "./checks.js";
 import type { FactoryConfig } from "./config.js";
 import type { TrustedGit } from "./pre-push.js";
 
@@ -39,7 +38,7 @@ function fullReason(path: string, hubs: readonly string[]): string | null {
 }
 
 /** The tracked file `spec` names from `from`, trying the TypeScript sources a `.js` specifier stands for; null when none. */
-export function resolveSpecifier(from: string, spec: string, known: ReadonlySet<string>): string | null {
+function resolveSpecifier(from: string, spec: string, known: ReadonlySet<string>): string | null {
   // The importer's folder joined with the specifier, `.` and `..` segments folded (core/ imports no node: module).
   const parts: string[] = [];
   for (const seg of [...from.split("/").slice(0, -1), ...spec.split("/")]) {
@@ -107,27 +106,6 @@ export async function selectTests(git: TrustedGit, baseSha: string, cfg: TestSel
   const reached = [...picked].sort();
   const files = [...reached, ...cfg.always.filter((a) => !picked.has(a))];
   return { full: false, files, reason: `${files.length} files, ${reached.length} reaching the ${sources.length} changed source and test files, plus ${cfg.always.length} always-run` };
-}
-
-/**
- * `commands` with the one whose argv equals `repo.test_command` run on the selected files only (appended as the base
- * rerun appends them, withTestFiles); every other command, typecheck included, runs whole. No `repo.test_selection`:
- * `commands` as they are. The selection and its reason go to `log` before any command runs; a selection that cannot
- * be made (git failed) runs the full list.
- */
-export async function selectedChecks(
-  repo: Pick<FactoryConfig["repo"], "test_command" | "test_selection">, commands: readonly (readonly string[])[], git: TrustedGit, baseSha: string, log: (line: string) => void,
-): Promise<string[][]> {
-  const same = (c: readonly string[]) => c.length === repo.test_command.length && c.every((a, i) => a === repo.test_command[i]);
-  if (!repo.test_selection || !commands.some(same)) return commands.map((c) => [...c]);
-  let s: TestSelection;
-  try {
-    s = await selectTests(git, baseSha, repo.test_selection);
-  } catch (err) {
-    s = { full: true, reason: `full: the selection failed: ${err instanceof Error ? err.message : "unknown"}`.slice(0, 300) };
-  }
-  log(`test selection: ${s.reason}${s.full ? "" : `: ${s.files.join(" ")}`}`);
-  return commands.map((c) => (same(c) && !s.full ? withTestFiles(c, s.files) : [...c]));
 }
 
 const repoRelative = (v: unknown): v is string =>

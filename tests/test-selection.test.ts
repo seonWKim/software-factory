@@ -2,7 +2,8 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { importersOf, selectTests, selectedChecks, testSelectionConfig } from "../src/core/test-selection.js";
+import { selectedChecks } from "../src/core/checks.js";
+import { importersOf, selectTests, testSelectionConfig } from "../src/core/test-selection.js";
 import { git, gitTemplate } from "./helpers/git-fixture.js";
 
 // Test selection before push (design §4, decided 2026-11-21), on a fixture repository: which test files the check
