@@ -12,7 +12,7 @@ import { OwnerAuth } from "../src/core/authorize.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { cleanScanner, config, silent } from "./helpers/fakes.js";
+import { cleanScanner, config, silent } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore, system } from "./helpers/store.js";
 
 const ME = "local:me@example.com" as UserId;

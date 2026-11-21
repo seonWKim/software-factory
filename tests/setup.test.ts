@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { loadConfig } from "../src/compose.js";
+import { loadConfig } from "../src/load-config.js";
 import { GitHubClient, GitHubError } from "../src/impl/github/github-client.js";
 import { secretName } from "../src/interfaces/secret-store.js";
 import { createLabels } from "../src/impl/github/github-issue-source.js";

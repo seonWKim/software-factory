@@ -18,7 +18,7 @@
 
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
-import type { Loaded } from "../compose.js";
+import type { Loaded } from "../load-config.js";
 import { checkConfigKeys, configFailLines } from "../config-keys.js";
 import { type LearnedSetting, learnedFromRows } from "../core/learned-settings.js";
 import { type ProjectRef, rekeyProjectSettings } from "../core/project.js";

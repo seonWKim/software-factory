@@ -8,7 +8,7 @@ import { WORK_STATUSES } from "../src/core/status-label.js";
 import type { UserId } from "../src/core/types.js";
 import { GitHubClient, GitHubError } from "../src/impl/github/github-client.js";
 import { GitHubIssueSource, statusLabels } from "../src/impl/github/github-issue-source.js";
-import { issueRef, silent } from "./helpers/fakes.js";
+import { issueRef, silent } from "./helpers/fakes/config.js";
 import { RecordingGitHubClient as FakeClient } from "./helpers/github.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 

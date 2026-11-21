@@ -1,5 +1,5 @@
 import { refusalReply } from "./authorize.js";
-import { checkedLines, commandText, failingTestFiles, runChecks } from "./checks.js";
+import { PrePushSelection, checkedLines, commandText, failingTestFiles, runChecks } from "./checks.js";
 import type { FactoryConfig } from "./config.js";
 import { requiredTier } from "./diff-gate.js";
 import type { Logger } from "./log.js";
@@ -8,7 +8,7 @@ import { IMPLEMENT_KINDS, INTERACTIVE, SESSION_ABANDONED, SESSION_RELEASED, bran
 import { NumstatError, diffGates, scopeGate } from "./pre-push.js";
 import { type LearnedSettingsSource, settingValues } from "./settings.js";
 import type { Run, RunId, SourceRef, SourceType, Timestamp, WorkItem, WorkItemId, WorkItemPatch } from "./types.js";
-import { type LocalRoute, TRUSTED_GIT_ENV, hasTool, prTitle, routeFor, runPushIntents } from "./worker-deps.js";
+import { type LocalRoute, TRUSTED_GIT_ENV, baseRefspec, hasTool, prTitle, routeFor, runPushIntents } from "./worker-deps.js";
 import type { AuthProvider, ExternalIdentity } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
@@ -175,7 +175,7 @@ export class Sessions {
     }
   }
 
-  /** One start attempt with the item as it is now. `busy`: a running run of another item shares its files; the run folder is kept for the next try. */
+  /** One start attempt with the item as it is now. `busy`: a running run of another item shares its files at the workers' cost (sessionHold); the run folder is kept for the next try. */
   private async begin(it: WorkItem, c: BeginContext, made?: SandboxHandle): Promise<(SessionResult & { file?: SessionFile }) | { busy: string; handle: SandboxHandle }> {
     const cfg = this.d.config;
     const patch = c.patch(it);
@@ -185,7 +185,7 @@ export class Sessions {
     const branch = branchFor(it, cfg.branch_prefix);
     const handle = made ?? await routeFor(this.d, it).sandbox.create({ repo: cfg.repo.path, branch, base_ref: cfg.repo.base_branch });
     const { actor } = c;
-    const r = await this.d.store.startSession({ id: it.id, expected_version: it.version, actor, patch, reason: SESSION_STARTED, detail: { spec_source: source }, owner: this.d.owner, lease_ms: cfg.lease_ms, transcript_url: c.transcript_url });
+    const r = await this.d.store.startSession({ id: it.id, expected_version: it.version, actor, patch, reason: SESSION_STARTED, detail: { spec_source: source }, owner: this.d.owner, lease_ms: cfg.lease_ms, transcript_url: c.transcript_url, ...(cfg.coordination ? { coordination: cfg.coordination } : {}) });
     if (!r.ok && r.reason === "overlap") return { busy: await this.storeRefusal(r), handle };
     if (!r.ok) {
       await routeFor(this.d, it).sandbox.destroy(handle).catch(() => undefined);
@@ -221,7 +221,7 @@ export class Sessions {
   private async storeRefusal(r: Exclude<StartSessionResult, { ok: true }>): Promise<string> {
     if (r.reason === "overlap") {
       const other = await this.d.store.getWorkItem(r.work_item_id);
-      return `running work on ${other?.source.id ?? r.work_item_id} (run ${r.run_id}) overlaps the allowed_paths: ${r.paths.join(", ")}`;
+      return `running work on ${other?.source.id ?? r.work_item_id} (run ${r.run_id}) overlaps at cost ${r.cost} (max_coordination_cost ${r.max_cost}): ${r.paths.join(", ")}`;
     }
     if (r.reason === "not_found" || r.reason === "version_conflict") return "the item changed while the session was starting; run the command again";
     if (r.reason === "reserved") return reservedBy(r.reservation);
@@ -287,7 +287,9 @@ export class Sessions {
   }
 
   /**
-   * The gates in order: scope, size, floor, then `repo.test_command` in the run folder (skipped after a failed gate).
+   * The gates in order: scope, size, floor, then `repo.test_command` in the run folder (skipped after a failed gate),
+   * narrowed by `repo.test_selection` to the test files the diff reaches when that key is set.
+   * Every diff (commits, gates, test selection) is against gateBase: only the item's own changes count.
    * A failure lists the reasons, records them as the last finish, keeps the session open and pushes nothing. All
    * pass: the branch stored through the item's broker, the push and PR recorded as keyed intents (a local item: its
    * local branch, no PR), then the run completes as succeeded; the controller moves the item to REVIEW with a review
@@ -305,8 +307,10 @@ export class Sessions {
     const reasons: string[] = [];
     let paths: string[] = [];
     let commits = 0;
+    let base = "";
     try {
-      const base = file.folder.base_sha ?? (await git(["rev-parse", "--verify", "--end-of-options", `origin/${cfg.repo.base_branch}^{commit}`])).trim();
+      const start = file.folder.base_sha ?? (await git(["rev-parse", "--verify", "--end-of-options", `origin/${cfg.repo.base_branch}^{commit}`])).trim();
+      base = await this.gateBase(handle, item, start);
       const dirty = await git(["status", "--porcelain", "-z", "--untracked-files=normal"]);
       if (dirty.replace(/\0/g, "").trim() !== "") reasons.push("uncommitted changes in the run folder: commit or remove them (only commits are pushed)");
       commits = (await git(["rev-list", `${base}..HEAD`])).split("\n").filter(Boolean).length;
@@ -326,8 +330,14 @@ export class Sessions {
     const test = commandText(cfg.repo.test_command);
     if (reasons.length > 0) return this.refuseFinish(file, reasons, [`tests: \`${test}\` not run (an earlier gate failed)`]);
     const signal = o.signal ?? new AbortController().signal;
-    const checked = await runChecks({ sandbox: this.d.sandbox, handle, commands: [cfg.repo.test_command], env: { ...this.d.toolEnv }, timeout_ms: cfg.run_timeout_ms, signal, redact: [] });
+    // The test command on the test files the branch's diff reaches in enforce mode, whole in shadow mode (design §4,
+    // test selection); no `repo.test_selection`: the whole command. A finish counts toward the mode switch when it
+    // passes, or at once when it shows a miss; a refused finish without one is not counted, so a retry counts once.
+    const sel = await PrePushSelection.open(this.d.store, cfg.repo, item.project, (line) => this.d.log.info(line, { work_item_id: item.id, run_id: file.run_id }));
+    const commands = await sel.commands([cfg.repo.test_command], git, base);
+    const checked = sel.saw(await runChecks({ sandbox: this.d.sandbox, handle, commands, env: { ...this.d.toolEnv }, timeout_ms: cfg.run_timeout_ms, signal, redact: [] }));
     if (o.signal?.aborted) return this.refuseFinish(file, ["tests: stopped before they finished"]);
+    if (!checked.failed || sel.misses.length > 0) await sel.note(this.d, item.project, file.run_id);
     if (checked.failed) {
       const shown = await this.failureLines(checked.failed.tail);
       return this.refuseFinish(file, [`tests: \`${test}\` ${checked.failed.how}`], shown.before, shown.after);
@@ -360,7 +370,7 @@ export class Sessions {
     await this.d.store.updateSession(file.run_id, file.token, { last_finish: { ok: true, reasons: [], pr_number: null } });
     const done = await this.d.store.completeRun(file.run_id, file.token, {
       status: "succeeded", summary: "interactive session finished",
-      data: { pr_number: null, pr_url: null, commits, files: paths.slice(0, MAX_PR_FILES), ...(pr_intent ? { pr_pending: true, pr_intent } : {}) },
+      data: { pr_number: null, pr_url: null, commits, files: paths.slice(0, MAX_PR_FILES), ...(pr_intent ? { pr_pending: true, pr_intent } : {}), test_selection: sel.record() ?? undefined },
     });
     if (!done.ok) return refused(`refused: the session ended before it could complete; ${pr_intent === null ? "the branch is committed" : "the push and PR are queued"}`);
     await this.d.files.remove(item.id);
@@ -435,6 +445,34 @@ export class Sessions {
     if (!isTokenCount(o.tokens)) return { refuse: "refused: --tokens takes a whole number of 0 or more" };
     const t = await this.d.store.updateSession(open.file.run_id, open.file.token, { tokens: o.tokens });
     return t.ok ? open : { refuse: "refused: the session has ended" };
+  }
+
+  /**
+   * The base the finish gates diff against, by the implement run's rule (syncBase): the base branch fetched from the
+   * factory repo as the worker fetches it (`updateBase`, then `baseRefspec` into the run folder's `origin/<base>`).
+   * When that tip moved forward from `start` (the base the session started on) and HEAD contains it, the session has
+   * merged or rebased onto it, and the gates diff against it, so files only the base changed are not counted. Else
+   * `start`, as before (also when the fetch fails: a local action never waits on the forge). Either way the gates see
+   * the tree HEAD has against one base commit, so an edit made in a merge commit itself still counts.
+   */
+  private async gateBase(handle: SandboxHandle, item: WorkItem, start: string): Promise<string> {
+    const { repo } = this.d.config;
+    const route = routeFor(this.d, item);
+    const run = (args: string[]) => this.d.sandbox.exec(handle, ["git", ...args], { env: { ...this.d.toolEnv, ...TRUSTED_GIT_ENV } });
+    try {
+      const fresh = await route.sandbox.updateBase({ repo: repo.path, base_ref: repo.base_branch });
+      if (fresh === start) return start;
+      if ((await run(["fetch", "--quiet", "--no-tags", repo.path, baseRefspec(this.d.config, route.local)])).exit_code !== 0) return start;
+      const fetched = await run(["rev-parse", "--verify", "--end-of-options", `origin/${repo.base_branch}^{commit}`]);
+      if (fetched.exit_code !== 0 || fetched.stdout.trim() !== fresh) return start;
+      // Forward only from the session's own base, and already in the branch: what syncBase merges, the session merged.
+      const forward = await run(["merge-base", "--is-ancestor", start, fresh]);
+      const contained = forward.exit_code === 0 ? await run(["merge-base", "--is-ancestor", fresh, "HEAD"]) : forward;
+      return contained.exit_code === 0 ? fresh : start;
+    } catch (err) {
+      this.d.log.warn("finish: the base fetch failed; the gates diff against the session's start base", { work_item_id: item.id, error: err instanceof Error ? err.message : "unknown" });
+      return start;
+    }
   }
 
   /** Trusted git in the run folder: the env ranks above the folder's own git config, as for the worker's calls. */

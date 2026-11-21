@@ -15,11 +15,11 @@ import {
   conflictWindowStart,
   holdOutcome,
   holdsOn,
-  shortRef,
+  sessionHold, shortRef,
 } from "../../../core/coordination.js";
 import {
   GITHUB_RATE_LIMIT, IMPLEMENT_KINDS, INTERACTIVE, MODEL_ANSWERED, MODEL_STALL, NETWORK, NETWORK_ANSWERED, PROBE_PAUSES, type ProbePause,
-  SESSION_LOST, TAKEOVER_OUTCOME, failureClass, pathsOverlap, probePauseOf,
+  SESSION_LOST, TAKEOVER_OUTCOME, failureClass, probePauseOf,
 } from "../../../core/policy.js";
 import { prNumber } from "../../../core/change-ref.js";
 import { assertProjectKey } from "../../../core/project.js";
@@ -546,12 +546,12 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
       // allowed_paths overlap do run side by side; their conflicts are resolved at merge.
       const writing = await tx.all(`SELECT work_item_id FROM worker_runs WHERE status = 'running' AND kind IN (${writeKinds})`, [...IMPLEMENT_KINDS]);
       const busy = new Set(writing.map((r) => r.work_item_id as string));
-      // Open sessions (design §5, 2026-11-01): an implement-type run waits while its item has one or overlaps one.
-      const sessions = (await this.runningPaths(tx, [INTERACTIVE])).map((r) => ({ id: r.work_item_id as string, paths: parseList(r.allowed_paths) }));
+      // Open sessions (design §5, 2026-11-01): an implement-type run waits while its item has one, or while its cost against one reaches max_cost (sessionHold, 2026-11-21).
+      const sessions = await this.runningItems(tx, [INTERACTIVE]), sc = input.coordination ?? DEFAULT_COORDINATION;
       const overlapsSession = async (itemId: string): Promise<boolean> => {
-        if (sessions.length === 0 || sessions.some((x) => x.id === itemId)) return sessions.length > 0;
+        if (sessions.length === 0 || sessions.some((x) => x.item.id === itemId)) return sessions.length > 0;
         const it = await this.selectItem(tx, itemId as WorkItemId);
-        return it !== null && sessions.some((x) => pathsOverlap(it.allowed_paths, x.paths).length > 0);
+        return it !== null && sessionHold(it, sessions, await this.projectConflicts(tx, it.project, sc), sc) !== null;
       };
 
       // Queued runs by kind rank (CLAIM_ORDER: merge check and resolve first, implement last), then created_at, then insertion
@@ -1001,8 +1001,8 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
             [now, run.id as string],
           );
         } else if (run.kind === INTERACTIVE) {
-          // A closed terminal does not come back (design §5, 2026-11-01): never requeued, whatever the attempt count.
-          const lost: RunOutcome = { status: "failed", error_code: SESSION_LOST, detail: "the session's lease expired", infra: false };
+          // A closed terminal does not come back (design §5, 2026-11-01): never requeued; the detail names the last heartbeat.
+          const lost: RunOutcome = { status: "failed", error_code: SESSION_LOST, detail: `the session's lease expired; last heartbeat at ${String(run.updated_at)}`, infra: false };
           outcome = "failed";
           moved = await tx.run(
             "UPDATE worker_runs SET status = 'failed', outcome = ?, lease_owner = NULL, lease_expires_at = NULL, finished_at = ?, updated_at = ? WHERE id = ? AND status = 'running'",
@@ -1066,12 +1066,10 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
       if (open) return { ok: false, reason: "session_open", run_id: open.id as RunId };
       const writes = (r: Row) => (IMPLEMENT_KINDS as readonly string[]).includes(r.kind as string), writer = own.find((r) => writes(r) && r.status === "running");
       if (writer) return { ok: false, reason: "implement_run", run_id: writer.id as RunId };
-      for (const o of await this.runningPaths(tx, [...IMPLEMENT_KINDS, INTERACTIVE])) {
-        const paths = pathsOverlap(input.patch.allowed_paths ?? current.allowed_paths, parseList(o.allowed_paths));
-        if (o.work_item_id !== input.id && paths.length > 0) {
-          return { ok: false, reason: "overlap", work_item_id: o.work_item_id as WorkItemId, run_id: o.id as RunId, paths };
-        }
-      }
+      // Running work of another item refuses only at the workers' cost (sessionHold, design 05-dependencies 2026-11-21).
+      const s = input.coordination ?? DEFAULT_COORDINATION, mine = { ...current, files_to_change: input.patch.files_to_change ?? current.files_to_change, allowed_paths: input.patch.allowed_paths ?? current.allowed_paths };
+      const hold = sessionHold(mine, await this.runningItems(tx, [...IMPLEMENT_KINDS, INTERACTIVE]), await this.projectConflicts(tx, current.project, s), s);
+      if (hold) return { ok: false, reason: "overlap", work_item_id: hold.holder.work_item_id as WorkItemId, run_id: hold.run_id as RunId, paths: hold.shared.map((p) => p.path), cost: hold.cost, max_cost: s.max_cost };
       const runId = newId("run") as RunId;
       const now = this.now();
       const session: SessionRecord = { notes: [], last_finish: null };
@@ -1117,13 +1115,13 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
     });
   }
 
-  /** Running runs of `kinds` with their item's allowed_paths. */
-  private runningPaths(tx: SqlExecutor, kinds: readonly RunKind[]): Promise<Row[]> {
-    return tx.all(
-      `SELECT r.id, r.work_item_id, w.allowed_paths FROM worker_runs r JOIN controller_work_items w ON w.id = r.work_item_id
-       WHERE r.status = 'running' AND r.kind IN (${placeholders(kinds.length)}) ORDER BY r.created_at, r.${this.db.dialect.seq}`,
-      [...kinds],
-    );
+  /** Running runs of `kinds` with their items; the recorded conflicts of one project inside `conflict_window_days`. */
+  private async runningItems(tx: SqlExecutor, kinds: readonly RunKind[]): Promise<{ run_id: string; item: WorkItem }[]> {
+    return (await tx.all(`SELECT r.id AS run_id, w.* FROM worker_runs r JOIN controller_work_items w ON w.id = r.work_item_id
+       WHERE r.status = 'running' AND r.kind IN (${placeholders(kinds.length)}) ORDER BY r.created_at, r.${this.db.dialect.seq}`, [...kinds])).map((r) => ({ run_id: r.run_id as string, item: rowToWorkItem(r) }));
+  }
+  private async projectConflicts(q: SqlExecutor, project: string, s: CoordinationSettings): Promise<Map<string, number>> {
+    return (await this.conflictsByProject(q, [project], conflictWindowStart(this.clock.now(), s))).get(project) ?? new Map<string, number>();
   }
 
   async listRunsByKind(kind: RunKind, statuses: readonly RunStatus[]): Promise<Run[]> {
@@ -2713,11 +2711,6 @@ function rowToWorkerPause(r: Row): WorkerPause {
  * review and triage; then the branch writers, implement last; improve after all. Within a kind, created_at, then insertion order.
  */
 const CLAIM_ORDER: readonly RunKind[] = ["restart", "merge-check", "resolve", "review", "triage", "update", "implement"];
-
-/** A JSON string array column (allowed_paths). */
-function parseList(value: unknown): string[] {
-  return typeof value === "string" ? (JSON.parse(value) as string[]) : [];
-}
 
 /** Link codes are stored only as this hash (design 2026-11-01). */
 function hashCode(code: string): string {

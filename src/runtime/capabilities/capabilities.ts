@@ -210,13 +210,14 @@ export interface StoredRun {
  * When each capability was last used, from stored runs only (newest first):
  * - a provider entry: the newest run of one of its roles whose reported model is one of the entry's model names;
  * - a skill or tool: the newest run whose stored transcript holds one of its markers (`markers`, by capability id).
- * `transcript(run)` reads one run's stored transcript, null when it has none; it is asked only while a marker is unfound.
+ * `holds(run, markers)` says which of `markers` one run's stored transcript holds, null when it has none; it is asked
+ * only while a marker is unfound, and only for the unfound ones.
  */
 export async function lastUsed(
   runs: readonly StoredRun[],
   providers: readonly { id: string; roles: readonly string[]; models: readonly string[] }[],
   markers: ReadonlyMap<string, readonly string[]>,
-  transcript: (run: StoredRun) => Promise<string | null>,
+  holds: (run: StoredRun, markers: readonly string[]) => Promise<ReadonlySet<string> | null>,
 ): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   for (const p of providers) {
@@ -227,10 +228,10 @@ export async function lastUsed(
   const open = new Map([...markers].filter(([, m]) => m.length > 0));
   for (const run of runs) {
     if (open.size === 0) break;
-    const text = await transcript(run);
-    if (text === null) continue;
+    const held = await holds(run, [...new Set([...open.values()].flat())]);
+    if (held === null) continue;
     for (const [id, m] of open) {
-      if (!m.some((x) => text.includes(x))) continue;
+      if (!m.some((x) => held.has(x))) continue;
       out.set(id, run.finished_at);
       open.delete(id);
     }

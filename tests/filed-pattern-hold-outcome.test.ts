@@ -8,7 +8,9 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import outcomeMigration from "../src/controller/migrations/20261111T1500-controller-filed-pattern-outcome.migration.js";
 import { tableColumns, type MigrationDb } from "../src/state/index.js";
-import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
 // Issue #511: a failed run of a filed pattern holds its item for a person at once (design 05-alarms), and a filed

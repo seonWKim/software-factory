@@ -5,7 +5,11 @@
     "owner": "seonWKim", "name": "software-factory", "path": ".", "base_branch": "main",
     "install_command": ["npm", "ci"], "test_command": ["npm", "test"],
     "check_commands": [["npm", "run", "typecheck"], ["npm", "test"]],
-    "ui_check": { "command": ["npm", "run", "-s", "check:responsive"], "paths": ["web/", "src/ui/"] }
+    "ui_check": { "command": ["npm", "run", "-s", "check:responsive"], "paths": ["web/", "src/ui/"] },
+    "test_selection": {
+      "hubs": ["src/compose.ts", "src/config-keys.ts", "src/core/config.ts", "src/ui/api.ts", "src/plugins.ts", "src/plugin-api.ts", "src/interfaces/factory-store.ts"],
+      "always": ["tests/architecture/", "tests/boundaries.test.ts", "tests/plugins.test.ts", "tests/check-commands.test.ts", "tests/docs-index.test.ts", "tests/docs-size.test.ts", "tests/worker/run-kind-problems.test.ts", "tests/plugin-discovery.test.ts"]
+    }
   },
   "toolchain": {
     "warm_command": ["sh", "-c", "npm ci && if [ -f node_modules/electron/install.js ]; then node node_modules/electron/install.js; fi"]

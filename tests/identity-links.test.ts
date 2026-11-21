@@ -7,7 +7,8 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { LINK_CODE_MAX_FAILURES, LINK_CODE_TTL_MS } from "../src/interfaces/factory-store.js";
 import { newStore } from "./helpers/store.js";
-import { FakeSource, cleanScanner, config, issueRef, recordingLog } from "./helpers/fakes.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { cleanScanner, config, issueRef, recordingLog } from "./helpers/fakes/config.js";
 
 // Identity links and one-time link codes (design 2026-11-01, issue #107). The store cases that every store must also
 // pass are in tests/store-contract.test.ts ("identity links").

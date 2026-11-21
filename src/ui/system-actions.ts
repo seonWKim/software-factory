@@ -8,11 +8,11 @@ import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import type { FactoryStore } from "../interfaces/factory-store.js";
+import type { AlertPattern, FactoryStore } from "../interfaces/factory-store.js";
 import { MIGRATION_PENDING } from "../interfaces/updater.js";
-import { type Check, TOKEN_WARN_DAYS } from "../setup.js";
+import { type Check, TOKEN_WARN_DAYS } from "../core/health-check.js";
 import type { FactoryStatus } from "./factory-status.js";
-import { type AutoStopNote, alarmCommand, alarmText, alarmUntil, lastAutoStop, openAlarms } from "./alarms.js";
+import { type AutoStopNote, alarmCommand, alarmFullText, alarmUntil, lastAutoStop, openAlarms, redMainDetail } from "./alarms.js";
 import type { ResumablePause } from "../resume-cmd.js";
 import { RESUME_IN_NEEDS_YOU, activePauses } from "./pause-api.js";
 
@@ -26,7 +26,13 @@ export interface SystemAction {
   command: string;
   /** When it ends by itself (a claim pause's end, model_stall's next probe, an alarm's close), else null. */
   until: string | null;
-  /** On the alarm of the auto-mode stop still in force (design 03-risk): its Needs-you row's stop line and its button. */
+  /** On an alarm: its pattern and error code, which pick its row's menu (What failed, Show failures). */
+  pattern?: AlertPattern;
+  error_code?: string;
+  /** On a red_main alarm: what the red-main check printed (empty and null when it kept nothing). */
+  failing_tests?: string[];
+  output_tail?: string | null;
+  /** On the alarm of the auto-mode stop still in force (design 03-risk): its Needs-you row's sentence and menu. */
   auto_stop?: AutoStopNote;
   /** On a claim pause: the pause's name, which its Needs-you row's Resume now posts. */
   pause?: ResumablePause;
@@ -161,8 +167,13 @@ export async function systemActions(x: SystemInput): Promise<SystemAction[]> {
 
   const stop = await lastAutoStop(x.store);
   for (const a of await openAlarms(x.store, x.now)) {
-    add("alarm", a.detail === null ? alarmText(a) : `${alarmText(a)}: ${a.detail}`, alarmCommand(a), alarmUntil(a));
-    if (stop?.alert_id === a.id) out.at(-1)!.auto_stop = stop;
+    add("alarm", alarmFullText(a), alarmCommand(a), alarmUntil(a));
+    const row = Object.assign(out.at(-1)!, { pattern: a.pattern, error_code: a.error_code });
+    if (a.pattern === "red_main") {
+      const output = redMainDetail(a).output;
+      Object.assign(row, { failing_tests: output?.failing_tests ?? [], output_tail: output?.output_tail ?? null });
+    }
+    if (stop?.alert_id === a.id) row.auto_stop = stop;
   }
 
   const server = x.deps.revision ?? null;

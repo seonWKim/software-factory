@@ -4,7 +4,14 @@
 
 import type { FactoryConfig } from "./config.js";
 import { failingTests, stripAnsi } from "./output-summary.js";
+import { type SelectionMode, type SelectionRecord, type TestSelection, noteSelection, selectTests, selectionMode, uncovered } from "./test-selection.js";
+import type { TrustedGit } from "./pre-push.js";
+import type { RunId } from "./types.js";
+import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { ExecResult, Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
+
+// The merge-check run gets it through the runner's check tools, as the other check helpers (worker/runner.ts).
+export { mergeMiss } from "./test-selection.js";
 
 /**
  * The run failure code of an implement run whose checks failed twice (before and after its one fix step). A
@@ -163,4 +170,91 @@ export function checkedLines(results: readonly CheckResult[], o: { fixed: boolea
   return results.map(
     (r) => `Checked before push: \`${commandText(r.command)}\` ${r.how}${o.fixed ? " (after one fix step)" : ""}`,
   );
+}
+
+/**
+ * `commands` with the one whose argv equals `repo.test_command` run on the selected files only in enforce mode (appended
+ * as the base rerun appends them, withTestFiles); every other command, typecheck included, runs whole, and in shadow
+ * mode every command does. No `repo.test_selection`: `commands` as they are, no selection. The selection, its mode and
+ * its reason go to `log` before any command runs; a selection that cannot be made (git failed) is full.
+ */
+export async function selectedChecks(
+  repo: Pick<FactoryConfig["repo"], "test_command" | "test_selection">, commands: readonly (readonly string[])[], git: TrustedGit, baseSha: string, log: (line: string) => void,
+  mode: SelectionMode,
+): Promise<{ commands: string[][]; selection: TestSelection | null }> {
+  const same = (c: readonly string[]) => c.length === repo.test_command.length && c.every((a, i) => a === repo.test_command[i]);
+  if (!repo.test_selection || !commands.some(same)) return { commands: commands.map((c) => [...c]), selection: null };
+  let s: TestSelection;
+  try {
+    s = await selectTests(git, baseSha, repo.test_selection);
+  } catch (err) {
+    s = { full: true, reason: `full: the selection failed: ${err instanceof Error ? err.message : "unknown"}`.slice(0, 300) };
+  }
+  log(`test selection (${mode}): ${s.reason}${s.full ? "" : `: ${s.files.join(" ")}`}`);
+  return { commands: commands.map((c) => (same(c) && !s.full && mode === "enforce" ? withTestFiles(c, s.files) : [...c])), selection: s };
+}
+
+/**
+ * One check before push's test selection (design §4, shadow mode), for the implement run's rounds and the interactive
+ * finish: the project's stored mode, read once; each round's commands (selectedChecks); and, in shadow mode, the
+ * failing test files of the whole test command that the round's narrowed selection left out (misses).
+ */
+export class PrePushSelection {
+  private last: TestSelection | null = null;
+  private ran = false;
+  private readonly missed = new Set<string>();
+
+  private constructor(
+    readonly mode: SelectionMode, private readonly repo: Pick<FactoryConfig["repo"], "test_command" | "test_selection">, private readonly log: (line: string) => void,
+  ) {}
+
+  /** The stored mode is read only when `repo.test_selection` is set. */
+  static async open(
+    store: Pick<FactoryStore, "getLearnedSetting">, repo: Pick<FactoryConfig["repo"], "test_command" | "test_selection">, project: string, log: (line: string) => void,
+  ): Promise<PrePushSelection> {
+    return new PrePushSelection(repo.test_selection ? await selectionMode(store, project) : "shadow", repo, log);
+  }
+
+  async commands(commands: readonly (readonly string[])[], git: TrustedGit, baseSha: string): Promise<string[][]> {
+    const s = await selectedChecks(this.repo, commands, git, baseSha, this.log, this.mode);
+    this.last = s.selection ?? this.last;
+    return s.commands;
+  }
+
+  /** A round's result, noted: whether the test command ran, and in shadow mode its failing files outside the selection. */
+  saw<R extends CheckRound>(round: R): R {
+    const t = this.repo.test_command;
+    const test = round.results.find((r) => t.every((a, i) => r.command[i] === a));
+    if (!this.last || !test) return round;
+    this.ran = true;
+    if (this.mode === "shadow" && !test.ok && !this.last.full) for (const f of uncovered(this.last.files, failingTestFiles(test.tail))) this.missed.add(f);
+    return round;
+  }
+
+  get misses(): string[] {
+    return [...this.missed];
+  }
+
+  /** What the run records: the last selection, its mode and, after a miss, the missed files and the diff's files. Null: none made. */
+  record(): SelectionRecord | null {
+    const s = this.last;
+    if (!s) return null;
+    const miss = this.missed.size > 0 ? { misses: this.misses, changed: s.full ? [] : s.changed } : {};
+    return { mode: this.mode, full: s.full, files: s.full ? [] : s.files, reason: s.reason, ...miss };
+  }
+
+  /**
+   * Counts the run toward the mode switch (noteSelection): a miss, or a clean run; nothing in enforce mode or when the
+   * test command never ran. A failed note is logged, never the run's failure.
+   */
+  async note(d: { store: Parameters<typeof noteSelection>[0]["store"]; clock: { now(): Date } }, project: string, run_id: RunId): Promise<void> {
+    if (this.mode !== "shadow" || !this.ran) return;
+    try {
+      const to = await noteSelection(d, project, this.missed.size > 0 ? "miss" : "clean", run_id);
+      if (this.missed.size > 0) this.log(`test selection miss: ${this.misses.join(" ")} (changed: ${this.record()?.changed?.join(" ") ?? ""})`);
+      if (to) this.log(`test selection mode for ${project} is now ${to}`);
+    } catch (err) {
+      this.log(`test selection: the run could not be counted: ${err instanceof Error ? err.message : "unknown"}`.slice(0, 300));
+    }
+  }
 }

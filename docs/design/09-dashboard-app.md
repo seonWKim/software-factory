@@ -2,7 +2,10 @@
 
 This file is an index. Each dashboard page keeps its decisions in its own topic file, so a UI change edits only the file for the page it touches. Each topic file states its current decision first and links its replaced decisions in `history/`.
 
-- [09-dashboard-shell.md](09-dashboard-shell.md): sidebar, top bar, theme, dialogs, i18n catalog, responsive check, JSON API, serving `/app/`.
+- [09-dashboard-shell.md](09-dashboard-shell.md): sidebar, top bar, theme, mode, menu names.
+- [09-dashboard-components.md](09-dashboard-components.md): shared page pieces, dialogs, plain words, `t()`, the i18n catalog.
+- [09-dashboard-search.md](09-dashboard-search.md): the `⌘K` search, the `?` help.
+- [09-dashboard-api.md](09-dashboard-api.md): JSON API, serving `/app/`, build stamp, responsive check.
 - [09-dashboard-activity.md](09-dashboard-activity.md): the Activity page.
 - [09-dashboard-runners.md](09-dashboard-runners.md): the Runners page, Migrate now, Start and Restart now.
 - [09-dashboard-tasks.md](09-dashboard-tasks.md): the Tasks list, row, Needs you.

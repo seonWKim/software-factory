@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Run, RunOutcome } from "../src/core/types.js";
 import { STORE_BRANCH, type ToolResult } from "../src/interfaces/tool-broker.js";
-import { pipeline, runComments } from "./helpers/fakes.js";
+import { pipeline } from "./helpers/harness.js";
+import { runComments } from "./helpers/fakes/config.js";
 
 // Design §5 Restarts: a failure of the run's last step (storing its branch, RFC 0015 M7) after a successful agent step
 // leaves the run's commits on a wip branch, under the branch prefix. The retry checks that branch out and stores it

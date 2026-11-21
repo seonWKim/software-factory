@@ -3,7 +3,9 @@ import { CALENDAR_SYNC_MS, syncCalendars } from "../../src/calendar/index.js";
 import { ControllerRole } from "../../src/runtime/roles/controller-role.js";
 import type { CalendarSource } from "../../src/interfaces/calendar-source.js";
 import type { SqlDriver } from "../../src/state/index.js";
-import { FakeAuth, FakeSource, cleanScanner, config, silent } from "../helpers/fakes.js";
+import { FakeAuth } from "../helpers/fakes/runner.js";
+import { FakeSource } from "../helpers/fakes/source.js";
+import { cleanScanner, config, silent } from "../helpers/fakes/config.js";
 import { newStore } from "../helpers/store.js";
 import { FakeCalendarSource, calendarEvent } from "./fakes.js";
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseTriage } from "../src/core/outputs.js";
-import { triageSpec } from "./helpers/fakes.js";
+import { triageSpec } from "./helpers/fakes/config.js";
 
 // Triage refuses `.claude/` paths (design 04-triage.md, 2026-11-15): they are owner-only, and the agent sandbox
 // refuses every write there, so a spec naming one would stop its implement run and wait on a person.

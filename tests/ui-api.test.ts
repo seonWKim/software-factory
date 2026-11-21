@@ -462,11 +462,6 @@ describe("GET /api/v1/tasks/preview: the quick-add preview (design 09-dashboard-
     expect(await store.listTasks(10)).toEqual([]);
   });
 
-  it("every week as the last two words is the weekly repeat, with nothing unread", async () => {
-    const { d } = await readOnly();
-    expect(await json(d, preview("review PRs tomorrow every week"))).toMatchObject({ ok: true, title: "review PRs", recurrence: "week", unread: [] });
-  });
-
   it("words the parser refuses answer 200 with the reason; no words or too many answer 400", async () => {
     const { d } = await readOnly();
     expect(await json(d, preview("standup 13pm"))).toEqual({ ok: false, reason: expect.stringContaining("not a time: 13pm") });

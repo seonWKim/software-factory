@@ -13,7 +13,7 @@ import type { SourceAdapter, SourceNotice } from "../src/interfaces/source-adapt
 import { recordAction } from "../src/outbound/index.js";
 import { tickAt } from "../src/shared/ticks/tick-generator.js";
 import { type ApiDeps, respond } from "../src/ui/server.js";
-import { cleanScanner, config, silent } from "./helpers/fakes.js";
+import { cleanScanner, config, silent } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 // Task reminders (design 02-tasks, schedule a task): the task-reminders unit sends one reminder at a task's time, by

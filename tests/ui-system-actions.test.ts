@@ -24,7 +24,10 @@ import { issue, newStore, system } from "./helpers/store.js";
 const REV_A = "a".repeat(40);
 const REV_B = "b".repeat(40);
 
-interface Action { code: string; text: string; command: string; until: string | null; work_item_id: string | null; pause?: string }
+interface Action {
+  code: string; text: string; command: string; until: string | null; work_item_id: string | null; pause?: string;
+  pattern?: string; error_code?: string; failing_tests?: string[]; output_tail?: string | null;
+}
 interface Overview { needs_you: number; system_actions: Action[]; server_rev: string | null; github_token_days: number | "unknown" | null }
 
 afterEach(() => {
@@ -199,6 +202,30 @@ describe("system actions: open alarms", () => {
     expect(codes(o).filter((c) => c === "alarm")).toHaveLength(2);
     expect(codes(o)).toContain("worker_pause");
     expect(o.needs_you).toBe(3);
+  });
+});
+
+describe("system actions: an alarm's pattern, error code and red-main output", () => {
+  it("each alarm carries its pattern and error code; a red_main alarm carries the failing tests and tail its detail keeps, and its text stays the sentence", async () => {
+    const { overview, store } = await setup();
+    const detail = JSON.stringify({ text: "`npm test` exited 1 on the new tip of `main`", failing_tests: ["tests/a.test.ts > adds"], output_tail: "FAIL tests/a.test.ts > adds" });
+    await store.recordAlert({ pattern: "red_main", pattern_key: "red_main:abc", error_code: "red_main", count: 1, detail }, ALERT_DEDUPE_MS);
+    await store.recordAlert({ pattern: "repeated_error", pattern_key: "repeated_error:a", error_code: "checks_failed", count: 4, detail: null }, ALERT_DEDUPE_MS);
+    const alarms = (await overview()).system_actions.filter((a) => a.code === "alarm");
+    const red = alarms.find((a) => a.pattern === "red_main")!;
+    expect(red).toMatchObject({ error_code: "red_main", failing_tests: ["tests/a.test.ts > adds"], output_tail: "FAIL tests/a.test.ts > adds" });
+    expect(red.text).toBe("Alarm: the base branch fails its checks on its own at `abc`; merge-queue changes wait until it moves: `npm test` exited 1 on the new tip of `main`");
+    const repeated = alarms.find((a) => a.pattern === "repeated_error")!;
+    expect(repeated.error_code).toBe("checks_failed");
+    expect(repeated).not.toHaveProperty("failing_tests");
+  });
+
+  it("a red_main alarm stored before the output was kept (plain text detail) carries no tests and a null tail", async () => {
+    const { overview, store } = await setup();
+    await store.recordAlert({ pattern: "red_main", pattern_key: "red_main:abc", error_code: "red_main", count: 1, detail: "`npm test` exited 1" }, ALERT_DEDUPE_MS);
+    const red = (await overview()).system_actions.find((a) => a.code === "alarm")!;
+    expect(red).toMatchObject({ pattern: "red_main", failing_tests: [], output_tail: null });
+    expect(red.text).toMatch(/: `npm test` exited 1$/);
   });
 });
 

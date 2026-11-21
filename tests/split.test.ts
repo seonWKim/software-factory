@@ -5,7 +5,7 @@ import {
   splitThresholds, suggestSplit,
 } from "../src/core/split.js";
 import { renderSpec } from "../src/core/spec-comment.js";
-import { gates, issueRef, triageSpec } from "./helpers/fakes.js";
+import { gates, issueRef, triageSpec } from "./helpers/fakes/config.js";
 
 const limits = { max_diff_lines: gates().max_diff_lines, max_diff_files: gates().max_diff_files };
 const phase = (n: number) => ({

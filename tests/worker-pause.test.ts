@@ -6,9 +6,10 @@ import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { buildClaudeArgs } from "../src/impl/runner/claude-code-runner.js";
-import {
-  FakeBroker, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, config, pipeline, prompts, recordingLog, runComments, triageSpec, waitFor,
-} from "./helpers/fakes.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, prompts, recordingLog, runComments, triageSpec, waitFor } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 // Design §5 Pause: `workers pause <n>`, `workers pause --all` and `workers resume`, on a fake clock. A pause puts the

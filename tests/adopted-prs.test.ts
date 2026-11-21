@@ -15,10 +15,11 @@ import type { ExternalIdentity } from "../src/interfaces/auth-provider.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { ForgeEvent } from "../src/interfaces/forge.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
-import {
-  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
-  alice, cleanScanner, config, issueRef, mallory, prompts, recordingLog, silent, triageSpec,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, mallory, prompts, recordingLog, silent, triageSpec } from "./helpers/fakes/config.js";
 import { newStore, PROJECT_KEY } from "./helpers/store.js";
 
 // Pull requests the factory did not open (design 2026-11-01): adoption, `factory: skip`, a person's pushes

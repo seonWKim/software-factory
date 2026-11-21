@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MERGE_QUEUE_DEPTH_MAX, mergeQueueDepth } from "../src/compose.js";
+import { MERGE_QUEUE_DEPTH_MAX, mergeQueueDepth } from "../src/config-values.js";
 
 // `merge_queue.depth` (RFC 0015 §7 Merge queue): absent is the solo default 1; a value outside 1..10 fails startup.
 

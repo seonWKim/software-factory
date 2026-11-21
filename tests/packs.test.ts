@@ -6,7 +6,9 @@ import { dirname, join } from "node:path";
 import * as childProcess from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import packCommand from "../src/cli/handlers/pack/pack.command.js";
-import { type Loaded, Plugins, build, fillPrompt, loadConfig } from "../src/compose.js";
+import { type Loaded, fillPrompt, loadConfig } from "../src/load-config.js";
+import { Plugins } from "../src/plugin-set.js";
+import { build } from "../src/compose.js";
 import type { EgressChannel, EgressScanner, ScanResult } from "../src/interfaces/egress-scanner.js";
 import { PackEntriesStore, addLine, addPack, canonicalJson, descriptionHash, moduleHash, readPointer } from "../src/packs/pack-entries.store.js";
 import { serverDescriptor } from "../src/import/mcp-servers.js";
@@ -20,9 +22,9 @@ import { Bm25CapabilitySearch } from "../src/impl/capability/bm25-capability-sea
 import { PLUGIN_KINDS, REGISTRY, createPlugin } from "../src/plugins.js";
 import { LEARNED_PACK_DIR, PROJECT_PACK_DIR, mainCheckout, mergeSections, packSkills } from "../src/packs/packs.js";
 import { issue, newStore, system } from "./helpers/store.js";
-import {
-  FAKE_GITHUB_TOOLS, FakeBroker, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, config as fakeConfig, fakeRepoLookup, prompts as fakePrompts, silent, triageSpec, waitFor,
-} from "./helpers/fakes.js";
+import { FAKE_GITHUB_TOOLS, FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config as fakeConfig, fakeRepoLookup, prompts as fakePrompts, silent, triageSpec, waitFor } from "./helpers/fakes/config.js";
 import { git } from "./helpers/git-fixture.js";
 import type { AuthAction, AuthDecision, AuthProvider, AuthResource, Principal } from "../src/interfaces/auth-provider.js";
 import { type FactoryConfig, toolGrantsConfig } from "../src/core/config.js";
@@ -1062,7 +1064,8 @@ describe("packs: the pack tool broker (approval before the call, no credential t
     const s = await open();
     expect(s.broker.listTools([GRANT, "test.read_note"]).map((t) => t.name)).toEqual([GRANT]);
     expect(s.broker.allTools().map((t) => t.name)).toContain(GRANT);
-    expect(await s.broker.call(s.ctx, "test.read_note", {})).toMatchObject({ ok: true });
+    // A tool the inner broker serves (FakeBroker's preflight) goes to it, never to a pack tool's code.
+    expect(await s.broker.call(s.ctx, "forge.preflight", {})).toMatchObject({ ok: true });
     expect(s.reached).toEqual([]);
   });
 

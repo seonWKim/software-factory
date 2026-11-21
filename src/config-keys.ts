@@ -2,7 +2,7 @@
 // ("plugin" for "plugins", "hots" for "host") fails at load instead of silently falling back to a default.
 // Only unknown keys are checked here; value and shape checks stay where they were.
 
-import type { FileConfig } from "./compose.js";
+import type { FileConfig } from "./load-config.js";
 import { CAPABILITIES_KEYS, COORDINATION_KEYS, TOOLCHAIN_KEYS, capabilitiesProblems, coordinationProblems, goldenConfig } from "./core/config.js";
 import { pathCompanionProblems } from "./core/companions.js";
 import { packsProblems } from "./packs/packs.js";
@@ -122,7 +122,7 @@ export const STORE_KEYS: Readonly<Record<string, readonly string[]>> = {
   sqlite: ["type"],
 };
 
-export const REPO_KEYS = ["owner", "name", "path", "base_branch", "install_command", "test_command", "check_commands", "ui_check", "restart_command"] as const satisfies readonly (keyof FileConfig["repo"])[];
+export const REPO_KEYS = ["owner", "name", "path", "base_branch", "install_command", "test_command", "check_commands", "ui_check", "restart_command", "test_selection"] as const satisfies readonly (keyof FileConfig["repo"])[];
 export const DIALS_KEYS = ["spec_gate_min_tier", "auto_merge_max_tier"] as const satisfies readonly (keyof FileConfig["dials"])[];
 export const FLOOR_KEYS = ["prefix", "tier"] as const satisfies readonly (keyof NonNullable<FileConfig["floors"]>[number])[];
 export const MODELS_KEYS = ["cheap", "standard", "strong"] as const satisfies readonly (keyof FileConfig["models"])[];

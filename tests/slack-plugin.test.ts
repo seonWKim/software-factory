@@ -14,7 +14,7 @@ import { interpretReply } from "../src/core/interpret.js";
 import { SlackSource, type SlackSourceDeps } from "../src/impl/source/slack-source.js";
 import slackPlugin from "../src/impl/source/slack.plugin.js";
 import { REGISTRY } from "../src/plugins.js";
-import { cleanScanner, recordingLog } from "./helpers/fakes.js";
+import { cleanScanner, recordingLog } from "./helpers/fakes/config.js";
 import { BOT, CHANNEL, FakeSocket, eventEnvelope, mention } from "./helpers/slack.js";
 
 const REPO = { owner: "o", name: "r" };

@@ -2,7 +2,9 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildUiParts, loadConfig, uiUserId } from "../src/compose.js";
+import { buildUiParts } from "../src/compose.js";
+import { loadConfig } from "../src/load-config.js";
+import { uiUserId } from "../src/config-values.js";
 import { goldenConfig } from "../src/core/config.js";
 import type { CliIdentity } from "../src/core/local-cli.js";
 import type { UserId } from "../src/core/types.js";
@@ -98,6 +100,18 @@ describe("config keys: unknown keys fail at load", () => {
     for (const bad of ["bin/stop && bin/start", [], ["bin/restart", ""], [1], null]) {
       const err = await loadError({ ...REAL, repo: { ...repo, restart_command: bad } });
       expect(err.message, JSON.stringify(bad)).toContain("repo.restart_command must be a non-empty array of non-empty strings (argv)");
+    }
+  });
+
+  it("repo.test_selection: absent is off, this repo's hubs and always lists load, a bad value fails startup naming the key", async () => {
+    const { test_selection, ...repo } = REAL.repo as Record<string, unknown>;
+    expect(test_selection).toBeDefined();
+    expect((await loadConfig(root({ ...REAL, repo }))).config.repo.test_selection).toBeUndefined();
+    const set = await loadConfig(root(REAL));
+    expect(set.config.repo.test_selection).toEqual(test_selection);
+    for (const bad of [[], { hubs: ["src/"], always: [] }, { hubs: [], always: ["/abs/"] }, { hubs: [], always: [], extra: 1 }]) {
+      const err = await loadError({ ...REAL, repo: { ...repo, test_selection: bad } });
+      expect(err.message, JSON.stringify(bad)).toContain("repo.test_selection");
     }
   });
 
