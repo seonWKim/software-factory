@@ -452,6 +452,7 @@ async function item(c: ApiCtx, id: WorkItemId) {
       item_phase: st.level,
       reason_code: st.why.reason_code,
       why: await c.why(st.why, it),
+      ...(await about(c, it)),
     },
     timeline,
     runs: runRows,
@@ -466,6 +467,21 @@ async function item(c: ApiCtx, id: WorkItemId) {
     thread: await threadRows(s, it.id, it.source.type, async (v) => (await c.text(v))!, changes),
     commands: await itemCommands(it, runs, await actorGrant(c.d, "approve_spec")(), (v) => c.text(v)), spec: await waitingSpec(it, runs, (v) => c.text(v)), // the viewer's (#453)
     replies: await itemReplies(c.d, it.id, (v) => c.text(v)), proposals: await itemProposals(c.d, it.id, (v) => c.text(v)), // pending, from the thread's markers
+  };
+}
+
+/**
+ * What the item page's About says (design 09-dashboard-item): `request`, the first paragraph of the intake text (null
+ * without one), and `spec`, the approved spec (null while `done_criteria` is null, before the owner confirms it). Each
+ * text passes the Withholder on its own, each done criterion too. Stored fields only: no backfill.
+ */
+async function about(c: ApiCtx, it: WorkItem) {
+  const first = it.issue_text?.split(/\n[ \t]*\n/)[0]?.trim();
+  const criteria: string[] = [];
+  for (const d of it.done_criteria ?? []) criteria.push((await c.text(d))!);
+  return {
+    request: first ? await c.text(first) : null,
+    spec: it.done_criteria === null ? null : { problem: (await c.text(it.problem))!, desired_output: await c.text(it.desired_output), done_criteria: criteria },
   };
 }
 
