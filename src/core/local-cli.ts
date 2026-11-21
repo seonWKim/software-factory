@@ -19,7 +19,7 @@ import { CREATE_HELP, LOCAL_ID, NO_PROJECT_KEY, buildTask, createLocalItem, crea
  * to it, as `task build` links one (design 02-tasks); `task add` stores a plain task from quick-add words and `task
  * done` completes one and `task reopen` undoes that, `task edit`, `task delete` and `task sub` change, remove and nest one (design 02-tasks: no
  * work item, no triage); `project …` keeps the task projects and `task project` links a task to one, unlinks it or moves it
- * (design 02-tasks, task projects); `task list` and `task show` read the store; `approve`,
+ * (design 02-tasks, task projects); `task list` and `task show` read the store; `task paths` (as `/paths`), `approve`,
  * `retry`, `revise`, `reject`, `resolve`, `hold` and `verdict` append one row to the CLI command log (`command_inbox`) and change no item
  * state, for an item of any source; `approve` first runs the controller's phase check (`approveRefusal`) and refuses
  * with its text before any write (issue #528), and `verdict` its parser and closed-item check (`verdictRefusal`,
@@ -104,9 +104,8 @@ export const SENTENCE_APP_COMMAND = "sentence";
 export const CANCEL_APP_COMMAND = "proposal_cancel";
 
 const ITEM_COMMANDS = ["approve", "retry", "revise", "reject", "resolve", "verdict", "hold"] as const;
-
-/** `merge` is the local merge (src/core/local-merge.ts); the others are the comment commands of the same name. */
-export type ItemCommand = (typeof ITEM_COMMANDS)[number] | typeof MERGE_COMMAND;
+/** `merge` is the local merge (src/core/local-merge.ts); `paths` is `task paths`; the others are the comment commands of the same name. */
+export type ItemCommand = (typeof ITEM_COMMANDS)[number] | typeof MERGE_COMMAND | "paths";
 
 export type CliAction =
   /** `project`: the `--project` slug, left out for the work item only; `depends_on`: the `--depends-on` id (design 05-dependencies). */
@@ -188,6 +187,7 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
       const parsed = parseQuickAdd(words.join(" "));
       return parsed.ok ? { action: "sub", parent, task: parsed.task } : bad(`task sub: ${parsed.reason}`);
     }
+    if (sub === "paths") return rest.length > 1 ? { action: "command", command: "paths", id: rest[0] as WorkItemId, text: rest.slice(1).join(" ") } : bad("task paths needs a work item ID and at least one +<path>"); // stored as `/paths`
     if (sub === "delete") return rest.length === 1 && rest[0] ? { action: "delete", id: rest[0] } : bad("task delete needs one task ID");
     if (sub === "done") return rest.length === 1 && rest[0] ? { action: "done", id: rest[0] } : bad("task done needs one task ID");
     if (sub === "reopen") return rest.length === 1 && rest[0] ? { action: "reopen", id: rest[0] } : bad("task reopen needs one task ID");
