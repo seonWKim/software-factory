@@ -187,6 +187,10 @@ export interface ItemDetail {
     item_phase: string;
     reason_code: string;
     why?: Why;
+    /** The request's first paragraph; null without one. Withheld text is "[withheld: <rule>]". */
+    request?: string | null;
+    /** The approved spec, each text withheld on its own; null until the owner confirms it. */
+    spec?: { problem: string; desired_output: string | null; done_criteria: string[] } | null;
   };
   timeline: {
     version: number;

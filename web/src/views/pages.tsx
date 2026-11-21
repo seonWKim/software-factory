@@ -28,6 +28,7 @@ import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
 import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, When, byId, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
 import { ItemDecision } from "./decision-card.js";
+import { ItemAbout } from "./item-about.js";
 import { ResumeNow, type SupervisorActionName, SupervisorActions } from "./system-banner.js";
 import { Thread } from "./thread.js";
 import { transcriptPath } from "./transcript.js";
@@ -369,6 +370,7 @@ export function ItemPage({ id }: { id: string }) {
           {t("item.phase", { phase: item.phase ?? "?" })} <Link href={itemPath(item.parent_id)} className={LINK_CLASS}>{t("item.splitParent")}</Link>
         </p>
       )}
+      <ItemAbout item={item} />
       <ItemDecision
         id={item.id}
         commands={q.data.commands ?? []}
