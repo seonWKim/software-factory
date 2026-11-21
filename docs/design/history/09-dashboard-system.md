@@ -1,5 +1,6 @@
 ## History
 
+- **The improve report sat on the Rules page** (decision changed 2026-11-21, the Improve tab decision at the top of 09-dashboard-system.md). Before: it was the last card of the Rules page (above the ledger-off EmptyState when the ledger was off), each failure group titled by its error code in monospace with its detail, draft and filing always shown.
 - **Failures and pauses printed stored names; times had four shapes** (decision changed 2026-11-19, the plain words decision at the top of 09-dashboard-system.md). Before: a failure group printed its error code under the title, a pause its name before its label, a check its raw status, and times read "12s", "4m ago", "in 4m" and "(as of 4m ago)".
 - **Failures, Spend and Data drew their own block headings** (until 2026-11-19, the Cards decision at the top). Before: Failures and Spend were a `<section>` with a raw `text-base` h2 over `Section`s with no surface; Data's table was a `<section>` with a monospace h2 beside its range, filter and paging; Work's blocks were `Section`s and its empty match an `Empty` line.
 - **Table docs described every `legacy_` copy** (decision changed 2026-11-15, the legacy contract in 10-event-driven). Before: State's table docs gave each `legacy_` copy a line, `HIDDEN_COLUMNS` listed the legacy copies of the token and hash columns, and the Ask model saw every table.
