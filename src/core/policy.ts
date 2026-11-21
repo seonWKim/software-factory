@@ -277,9 +277,13 @@ export const SETUP_MISSING = "setup_missing";
 export const MODEL_CREDENTIAL = "model_credential" as const;
 export const MODEL_CREDENTIAL_UNTIL = "9999-12-31T23:59:59.999Z" as Timestamp;
 
-/** Thrown where a model credential is read and none is in the secret store. Its message names the secrets, never a value. */
-export class SetupMissing extends Error {
-  readonly code = SETUP_MISSING;
+/**
+ * Whether `err` says no model credential is in the secret store: an Error whose `code` is SETUP_MISSING, as the
+ * claude-code runner throws it (an adapter, it tags the error rather than import this module). Its message names
+ * the secrets, never a value.
+ */
+export function isSetupMissing(err: unknown): err is Error {
+  return err instanceof Error && (err as { code?: unknown }).code === SETUP_MISSING;
 }
 
 /** The network probe's first wait and its longest one (design §5 Restarts): 30 s, backing off to 5 min. */

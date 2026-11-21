@@ -7,7 +7,7 @@ import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { type AgentRunResult, PROVIDER_SETUP } from "../src/interfaces/agent-runner.js";
-import { SetupMissing } from "../src/core/policy.js";
+import { SETUP_MISSING } from "../src/core/policy.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import { newStore } from "./helpers/store.js";
 import { FakeForge } from "./helpers/fakes/forge.js";
@@ -305,7 +305,7 @@ describe("setup_missing (design §5 Restarts, setup state)", () => {
     let present = true;
     let missing = true;
     const f = await factory({
-      triage: () => (missing ? () => { throw new SetupMissing("no model credential in the secret file"); } : undefined) as Outcome,
+      triage: () => (missing ? () => { throw Object.assign(new Error("no model credential in the secret file"), { code: SETUP_MISSING }); } : undefined) as Outcome,
       modelCredential: async () => present,
     });
     const it0 = await f.submit();

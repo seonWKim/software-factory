@@ -23,9 +23,8 @@ import type { KeepAwake } from "../interfaces/keep-awake.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 import { STORE_BRANCH, type ToolCallContext, type ToolResult } from "../interfaces/tool-broker.js";
 import { checkWrapperSource, wrapperSeedFields } from "./toolchain-seeds.js";
-import { claimableKinds, requeueForCredential } from "../core/worker-deps.js";
 import { LiveTranscript } from "./live-transcript.js";
-import { AGENT_FAILED, HOST_SLEEP_MS, INDEX_SIZE, LIVE_REPORT_PATHS, type LocalRoute, NETWORK_PAUSED_BY, NO_HOOKS, NO_USAGE, outputRecorder, PAUSABLE_KINDS, type ResumePlan, RunFailure, RunPaused, type RunScratch, TEST_WORKERS_ENV, TRUSTED_GIT_ENV, WARM_FAILED, WARM_KINDS, WORKER_INDEX_ENV, type WorkerDeps, addUsage, continues, fenced, gitIdentity, gitVerb, prTitle, type PrText, routeFor, runPushIntents, tail, threadDelivery, testWorkerShare, thrownFailure, toolsNamed, untrustedGitConfig } from "./support.js";
+import { AGENT_FAILED, HOST_SLEEP_MS, INDEX_SIZE, LIVE_REPORT_PATHS, type LocalRoute, NETWORK_PAUSED_BY, NO_HOOKS, NO_USAGE, outputRecorder, PAUSABLE_KINDS, type ResumePlan, RunFailure, RunPaused, type RunScratch, TEST_WORKERS_ENV, TRUSTED_GIT_ENV, WARM_FAILED, WARM_KINDS, WORKER_INDEX_ENV, type WorkerDeps, addUsage, continues, fenced, gitIdentity, gitVerb, prTitle, type PrText, routeFor, runPushIntents, tail, threadDelivery, testWorkerShare, thrownFailure, toolsNamed, untrustedGitConfig, claimableKinds, requeueForCredential } from "./support.js";
 
 /** Agent plane host: claims runs, executes them in a Sandbox, reports outcomes. Never decides a transition; the controller does that from the outcome. Holds nothing between runs. */
 export class Worker {
@@ -321,6 +320,7 @@ export class Worker {
       await this.requeueForNetwork(run, token, outcome.detail, log);
       return;
     }
+    // No model credential after the claim (design §5 Restarts, setup state): back in the queue, as for the network.
     if (outcome.status === "failed" && outcome.error_code === SETUP_MISSING && isModelRunKind(run.kind) && this.d.modelCredential) return requeueForCredential(this.d, run, token, log);
     if (outcome.status === "failed" && outcome.error_code === RATE_LIMITED) {
       // Paused before the outcome is stored, so no worker anywhere claims in between (design §5 Restarts).
