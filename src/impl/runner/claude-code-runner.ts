@@ -1,11 +1,10 @@
 import { access, constants, mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { readOnlyOverlaps } from "../../core/config.js";
+import { SetupMissing } from "../../core/policy.js";
 import { FORBIDDEN_ENV, guardPolicy } from "../../core/tools/index.js";
 import { toolchainEnvKeyRefusal } from "../../core/tools/policy.js";
-import {
-  type AgentRunResult, type AgentRunSpec, type AgentRunner, SESSION_ROLES, toolsNotExposedMessage,
-} from "../../interfaces/agent-runner.js";
+import { type AgentRunResult, type AgentRunSpec, type AgentRunner, SESSION_ROLES, toolsNotExposedMessage } from "../../interfaces/agent-runner.js";
 import type { Sandbox } from "../../interfaces/sandbox.js";
 import { type SecretStore, secretName } from "../../interfaces/secret-store.js";
 import { type After, GATE_HOOKS_DIR, type RunningGateHooks, startGateHooks, stopTimeoutDetail } from "./gate-hooks.js";
@@ -247,12 +246,13 @@ export function buildClaudeArgs(
   ];
 }
 
+/** The subscription token, else the API key. None: SetupMissing, which the worker requeues (design §5 Restarts, setup state). */
 export async function harnessCredential(secrets: SecretStore): Promise<HarnessCredential> {
-  const oauth = await secrets.get(secretName("CLAUDE_CODE_OAUTH_TOKEN"));
-  if (oauth) return { name: "CLAUDE_CODE_OAUTH_TOKEN", value: oauth.reveal() };
-  const key = await secrets.get(secretName("ANTHROPIC_API_KEY"));
-  if (key) return { name: "ANTHROPIC_API_KEY", value: key.reveal() };
-  throw new Error("no model credential in the secret file (docs/setup.md §3)");
+  for (const name of ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"] as const) {
+    const secret = await secrets.get(secretName(name));
+    if (secret) return { name, value: secret.reveal() };
+  }
+  throw new SetupMissing("no model credential in the secret file (docs/setup.md §3): one of CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY (run: npm run setup)");
 }
 
 export class ClaudeCodeRunner implements AgentRunner {

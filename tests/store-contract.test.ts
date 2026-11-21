@@ -1125,6 +1125,29 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       },
     );
 
+    // Bug: the missing model credential's pause lives in one process (or runs out at a time), so another worker
+    // claims agent runs that fail, or the pause starts again on every check and logs once per tick.
+    it("the model_credential pause is one row every store on the database sees: started once, in effect until ended", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "sf-credential-pause-"));
+      const clock = new FakeClock();
+      const open = async () => {
+        const s = new SqlFactoryStore(new SqliteDriver(join(dir, "factory.db")), clock);
+        await s.migrate();
+        return s;
+      };
+      const [a, b] = [await open(), await open()];
+      const forever = "9999-12-31T23:59:59.999Z" as Timestamp;
+      expect((await a.pauseClaims(forever, "model_credential")).started).toBe(true);
+      expect((await b.pauseClaims(forever, "model_credential")).started).toBe(false);
+      clock.advance(400 * 24 * 3_600_000);
+      expect(await b.getClaimPause("model_credential")).toBe(forever);
+      expect(await b.endClaimPause("model_credential")).toEqual({ ended: true });
+      expect(await a.getClaimPause("model_credential")).toBeNull();
+      expect((await a.pauseClaims(forever, "model_credential")).started).toBe(true);
+      await a.close();
+      await b.close();
+    });
+
     it("ending a model_stall pause also clears model_stall_since, even after the probe time passed", async () => {
       const { store, clock } = await make();
       await store.pauseClaims(later(clock, 1_000), "model_stall");

@@ -7,6 +7,7 @@ import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { type AgentRunResult, PROVIDER_SETUP } from "../src/interfaces/agent-runner.js";
+import { SetupMissing } from "../src/core/policy.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import { newStore } from "./helpers/store.js";
 import { FakeForge } from "./helpers/fakes/forge.js";
@@ -27,6 +28,7 @@ async function factory(opts: {
   review?: () => Outcome;
   config?: Partial<FactoryConfig>;
   scanner?: EgressScanner;
+  modelCredential?: () => Promise<boolean>;
 }) {
   // spec_gate_min_tier 3: a tier-2 triage is auto-approved, so implement and review follow at once.
   const config: FactoryConfig = { ...baseConfig, dials: { spec_gate_min_tier: 3, auto_merge_max_tier: 0 }, ...opts.config };
@@ -49,7 +51,7 @@ async function factory(opts: {
   const worker = (id: string) =>
     new Worker({
       id: id as WorkerId, store, sandbox: new FakeSandbox(), runner, broker: new FakeBroker(), storage: new MemoryStorage(),
-      clock, config, prompts, log, scanner, toolEnv: {}, awake: new NoKeepAwake(),
+      clock, config, prompts, log, scanner, toolEnv: {}, awake: new NoKeepAwake(), ...(opts.modelCredential ? { modelCredential: opts.modelCredential } : {}),
     });
   const w1 = worker("w1");
   const w2 = worker("w2");
@@ -293,6 +295,34 @@ describe("rate limits", () => {
     expect(await f.w2.tick()).toBe(false);
     f.clock.advance(1);
     expect(await f.w2.tick()).toBe(true);
+  });
+});
+
+describe("setup_missing (design §5 Restarts, setup state)", () => {
+  // Bug: a run whose runner finds no model credential is stored as a failure: it is retried, counted toward
+  // max_restart or the repeated-failure rule, and its zero-token failures raise the alarm and the model_stall pause.
+  it("a runner with no model credential after the claim puts the run back in the queue: no retry, no count, no failed run", async () => {
+    let present = true;
+    let missing = true;
+    const f = await factory({
+      triage: () => (missing ? () => { throw new SetupMissing("no model credential in the secret file"); } : undefined) as Outcome,
+      modelCredential: async () => present,
+    });
+    const it0 = await f.submit();
+    const [queued] = await f.runs(it0, "triage");
+    expect(await f.w1.tick()).toBe(true); // the check passed; the runner then found none (the credential went meanwhile)
+    present = false;
+    await f.step();
+    expect(await f.runs(it0)).toMatchObject([{ id: queued!.id, status: "queued", outcome: null, paused_by: "system:setup_missing" }]);
+    expect(await f.store.listRunsFinishedWithin(3_600_000)).toEqual([]);
+    expect(await f.item(it0)).toMatchObject({ blocked_on: "none", restart_count: 0 });
+    expect(await f.store.getClaimPause("model_credential")).not.toBeNull();
+
+    present = true;
+    missing = false;
+    await f.step();
+    expect(await f.store.getClaimPause("model_credential")).toBeNull();
+    expect((await f.runs(it0, "triage")).map((r) => [r.id, r.status])).toEqual([[queued!.id, "succeeded"]]);
   });
 });
 

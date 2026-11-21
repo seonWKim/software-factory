@@ -31,8 +31,13 @@ export class OpaqueSecret implements Secret {
   }
 }
 
+/** The least time between two reads of the secret file after the first (design §5 Restarts, setup state). */
+export const RELOAD_MS = 5_000;
+
 /**
- * Reads the secret file once, lazily, in the worker/controller process (G1). Never logs values.
+ * Reads the secret file lazily, in the worker/controller process (G1). Never logs values. It reads it again, at most
+ * once per RELOAD_MS, when a declared name has no value or the last read failed, so a credential added while the
+ * factory runs (`npm run setup`) is found with no restart (decision of 2026-11-21; it was read once per process).
  * `names`: the secret names the selected plugins declare (src/plugins.ts). Only those keys are loaded,
  * returned by get and scanned; any other key in the file (a plain setting such as MYSQL_HOST, or a
  * secret no selected plugin declares) is ignored. No names: nothing is loaded.
@@ -40,27 +45,43 @@ export class OpaqueSecret implements Secret {
  */
 export class EnvFileSecretStore implements SecretStore {
   private loaded: Promise<Map<SecretName, string>> | null = null;
+  private loadedAt = 0;
+  private failed = false;
+  /** Every value any read loaded: a value scanned once stays scanned, also after it left the file. */
+  private readonly seen = new Set<string>();
   private readonly names: ReadonlySet<SecretName>;
 
   constructor(
     private readonly path: string,
     names: Iterable<SecretName> = [],
     private readonly extraScanValues: readonly string[] = [],
+    private readonly now: () => number = Date.now,
   ) {
     this.names = new Set(names);
   }
 
   async get(name: SecretName): Promise<Secret | null> {
-    const value = (await this.load()).get(name);
+    let value = (await this.load(false)).get(name);
+    if (!value && this.names.has(name)) value = (await this.load(true)).get(name);
     return value ? new OpaqueSecret(name, value) : null;
   }
 
   async valuesForScan(): Promise<readonly string[]> {
-    return [...(await this.load()).values(), ...this.extraScanValues];
+    for (const v of (await this.load(false)).values()) this.seen.add(v);
+    return [...this.seen, ...this.extraScanValues];
   }
 
-  private load(): Promise<Map<SecretName, string>> {
-    this.loaded ??= readFile(this.path, "utf8").then((text) => parseEnvFile(text, this.names), (err: NodeJS.ErrnoException) => {
+  /** The values of the last read; a new read first, when there is none yet, or when `again` (or a failed read) and RELOAD_MS passed. */
+  private load(again: boolean): Promise<Map<SecretName, string>> {
+    if (this.loaded !== null && !((again || this.failed) && this.now() - this.loadedAt >= RELOAD_MS)) return this.loaded;
+    this.loadedAt = this.now();
+    this.failed = false;
+    this.loaded = readFile(this.path, "utf8").then((text) => {
+      const values = parseEnvFile(text, this.names);
+      for (const v of values.values()) this.seen.add(v);
+      return values;
+    }, (err: NodeJS.ErrnoException) => {
+      this.failed = true;
       if (err.code === "ENOENT") throw new Error(`secret file not found at ${this.path} (see docs/setup.md)`);
       throw new Error(`cannot read secret file at ${this.path}: ${err.code ?? "unknown error"}`);
     });
