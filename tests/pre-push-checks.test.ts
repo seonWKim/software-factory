@@ -133,6 +133,8 @@ async function setup(opts: {
   /** Files committed to the base branch before the item starts. */
   base?: Record<string, string>;
   floors?: Floor[];
+  /** Merged into the repo config: test_command and test_selection. */
+  repo?: Partial<FactoryConfig["repo"]>;
 } = {}) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
@@ -144,7 +146,7 @@ async function setup(opts: {
 
   const cfg: FactoryConfig = {
     ...config,
-    repo: { ...config.repo, path: repo, check_commands: opts.checks ?? CHECKS },
+    repo: { ...config.repo, path: repo, check_commands: opts.checks ?? CHECKS, ...opts.repo },
     settings: { ...config.settings, defaults: { ...config.settings.defaults, max_attempts: opts.max_attempts ?? 3, ...(opts.floors ? { floors: opts.floors } : {}) } },
   };
   let implementCount = 0;
@@ -558,5 +560,52 @@ describe("implement run: the factory lowers shrunk ratchet counts before push", 
     expect(item).toMatchObject({ stage: "REVIEW", change_ref: "42" });
     const branch = `refs/heads/factory/${item.id}`;
     expect(git(f.origin, "log", "--format=%s", `main..${branch}`)).toBe("implementer edits a (1)");
+  });
+});
+
+// Test selection (design §4, decided 2026-11-21): with repo.test_selection, only the check equal to
+// repo.test_command runs on the test files the round's own diff reaches, plus the always-run list.
+describe("implement run: test selection before push", { timeout: 60_000 }, () => {
+  const TESTS = ["sh", "-c", "exit 0", "tests"];
+  const base = {
+    "src/b.ts": "export const b = 1;\n",
+    "src/c.ts": "export const c = 1;\n",
+    "tests/b.test.ts": 'import { b } from "../src/b.js";\n',
+    "tests/c.test.ts": 'import { c } from "../src/c.js";\n',
+    "tests/always.test.ts": "\n",
+  };
+  const selection = { hubs: [], always: ["tests/always.test.ts"] };
+
+  it("each round narrows only the test command to the files its own diff reaches, and logs the selection first", async () => {
+    const f = await setup({
+      base, checks: [TYPECHECK, TESTS], repo: { test_command: TESTS, test_selection: selection },
+      implement: (wd) => {
+        commitFile(wd, "src/b.ts", "export const b = 2;\n", "change b");
+        commitFile(wd, "src/type-error.txt", "broken\n", "add a fault");
+      },
+      fix: (wd) => {
+        removeFile(wd, "src/type-error.txt", "fix: remove the fault");
+        commitFile(wd, "src/c.ts", "export const c = 2;\n", "change c");
+      },
+    });
+    const item = await f.approveAndImplement();
+    expect(item.stage).toBe("REVIEW");
+    const ran = f.checkExecs().map((e) => e.cmd);
+    // Round one stops at the typecheck, which runs whole; round two's diff (src/a.txt, src/b.ts, src/c.ts) also reaches tests/c.test.ts.
+    expect(ran).toEqual([TYPECHECK.join(" "), TYPECHECK.join(" "), "sh -c exit 0 tests tests/b.test.ts tests/c.test.ts tests/always.test.ts"]);
+    const run = (await f.implementRuns(item.id))[0]!;
+    const logged = f.log.lines.filter((l) => l.msg.startsWith("test selection: "));
+    expect(logged.map((l) => l.msg)).toEqual([
+      "test selection: 2 files, 1 reaching the 3 changed source and test files, plus 1 always-run: tests/b.test.ts tests/always.test.ts",
+      "test selection: 3 files, 2 reaching the 3 changed source and test files, plus 1 always-run: tests/b.test.ts tests/c.test.ts tests/always.test.ts",
+    ]);
+    expect(logged.every((l) => l.fields?.run_id === run.id)).toBe(true);
+  });
+
+  it("without repo.test_selection the test command runs whole, and nothing is logged", async () => {
+    const f = await setup({ base, checks: [TYPECHECK, TESTS], repo: { test_command: TESTS } });
+    await f.approveAndImplement();
+    expect(f.checkExecs().map((e) => e.cmd)).toEqual([TYPECHECK.join(" "), "sh -c exit 0 tests"]);
+    expect(f.log.lines.some((l) => l.msg.startsWith("test selection"))).toBe(false);
   });
 });

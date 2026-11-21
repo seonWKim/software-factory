@@ -103,6 +103,18 @@ describe("config keys: unknown keys fail at load", () => {
     }
   });
 
+  it("repo.test_selection: absent is off, this repo's hubs and always lists load, a bad value fails startup naming the key", async () => {
+    const { test_selection, ...repo } = REAL.repo as Record<string, unknown>;
+    expect(test_selection).toBeDefined();
+    expect((await loadConfig(root({ ...REAL, repo }))).config.repo.test_selection).toBeUndefined();
+    const set = await loadConfig(root(REAL));
+    expect(set.config.repo.test_selection).toEqual(test_selection);
+    for (const bad of [[], { hubs: ["src/"], always: [] }, { hubs: [], always: ["/abs/"] }, { hubs: [], always: [], extra: 1 }]) {
+      const err = await loadError({ ...REAL, repo: { ...repo, test_selection: bad } });
+      expect(err.message, JSON.stringify(bad)).toContain("repo.test_selection");
+    }
+  });
+
   it('a sqlite store with the key "host" fails', async () => {
     const err = await loadError({ ...REAL, store: { type: "sqlite", host: "localhost" } });
     expect(err.message).toContain("store.host");

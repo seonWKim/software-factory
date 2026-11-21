@@ -7,6 +7,7 @@ import { parseTriage } from "./outputs.js";
 import { IMPLEMENT_KINDS, INTERACTIVE, SESSION_ABANDONED, SESSION_RELEASED, branchFor, effectiveTier, floorTier } from "./policy.js";
 import { NumstatError, diffGates, scopeGate } from "./pre-push.js";
 import { type LearnedSettingsSource, settingValues } from "./settings.js";
+import { selectedChecks } from "./checks.js";
 import type { Run, RunId, SourceRef, SourceType, Timestamp, WorkItem, WorkItemId, WorkItemPatch } from "./types.js";
 import { type LocalRoute, TRUSTED_GIT_ENV, hasTool, prTitle, routeFor, runPushIntents } from "./worker-deps.js";
 import type { AuthProvider, ExternalIdentity } from "../interfaces/auth-provider.js";
@@ -287,7 +288,8 @@ export class Sessions {
   }
 
   /**
-   * The gates in order: scope, size, floor, then `repo.test_command` in the run folder (skipped after a failed gate).
+   * The gates in order: scope, size, floor, then `repo.test_command` in the run folder (skipped after a failed gate),
+   * narrowed by `repo.test_selection` to the test files the diff reaches when that key is set.
    * A failure lists the reasons, records them as the last finish, keeps the session open and pushes nothing. All
    * pass: the branch stored through the item's broker, the push and PR recorded as keyed intents (a local item: its
    * local branch, no PR), then the run completes as succeeded; the controller moves the item to REVIEW with a review
@@ -305,8 +307,9 @@ export class Sessions {
     const reasons: string[] = [];
     let paths: string[] = [];
     let commits = 0;
+    let base = "";
     try {
-      const base = file.folder.base_sha ?? (await git(["rev-parse", "--verify", "--end-of-options", `origin/${cfg.repo.base_branch}^{commit}`])).trim();
+      base = file.folder.base_sha ?? (await git(["rev-parse", "--verify", "--end-of-options", `origin/${cfg.repo.base_branch}^{commit}`])).trim();
       const dirty = await git(["status", "--porcelain", "-z", "--untracked-files=normal"]);
       if (dirty.replace(/\0/g, "").trim() !== "") reasons.push("uncommitted changes in the run folder: commit or remove them (only commits are pushed)");
       commits = (await git(["rev-list", `${base}..HEAD`])).split("\n").filter(Boolean).length;
@@ -326,7 +329,9 @@ export class Sessions {
     const test = commandText(cfg.repo.test_command);
     if (reasons.length > 0) return this.refuseFinish(file, reasons, [`tests: \`${test}\` not run (an earlier gate failed)`]);
     const signal = o.signal ?? new AbortController().signal;
-    const checked = await runChecks({ sandbox: this.d.sandbox, handle, commands: [cfg.repo.test_command], env: { ...this.d.toolEnv }, timeout_ms: cfg.run_timeout_ms, signal, redact: [] });
+    // The test command on the test files the branch's diff reaches (design §4, test selection); absent: the whole command.
+    const commands = await selectedChecks(cfg.repo, [cfg.repo.test_command], git, base, (line) => this.d.log.info(line, { work_item_id: item.id, run_id: file.run_id }));
+    const checked = await runChecks({ sandbox: this.d.sandbox, handle, commands, env: { ...this.d.toolEnv }, timeout_ms: cfg.run_timeout_ms, signal, redact: [] });
     if (o.signal?.aborted) return this.refuseFinish(file, ["tests: stopped before they finished"]);
     if (checked.failed) {
       const shown = await this.failureLines(checked.failed.tail);

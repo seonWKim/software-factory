@@ -36,6 +36,7 @@ import {
   agentStopChecks, alarmConfig, argvConfig, checkCommandsConfig, expandHome, hookNames, isTier, mergeQueueDepth, retryConfig, stallConfig,
   statsConfig, testCommand, toolchainConfig, uiPort, uiUserId,
 } from "./config-values.js";
+import { testSelectionConfig } from "./core/test-selection.js";
 
 /** The store is SQLite (design 05-coordination.md): another type fails at startup as an unknown FactoryStore plugin. */
 export type StoreConfig = { type: "sqlite" };
@@ -46,11 +47,10 @@ export interface FileConfig {
   /**
    * install_command, test_command: argv, defaults ["npm", "ci"] and ["npm", "test"]. check_commands: a list of
    * argv, the pre-push checks (design §4); absent: [test_command]. ui_check: the merge-time UI check (uiCheckConfig).
-   * restart_command: argv, the restart run's command (design 04-gate-commands, restart); absent: off. */
+   * restart_command: argv, the restart run's command (design 04-gate-commands, restart); absent: off. test_selection: testSelectionConfig. */
   repo: {
-    owner: string; name: string; path: string; base_branch: string;
-    install_command?: unknown; test_command?: unknown; check_commands?: unknown; ui_check?: unknown; restart_command?: unknown;
-  };
+    owner: string; name: string; path: string; base_branch: string; install_command?: unknown; test_command?: unknown;
+    check_commands?: unknown; ui_check?: unknown; restart_command?: unknown; test_selection?: unknown };
   intake_label: string;
   /** Prefix of the status labels (docs/plugins.md, SourceAdapter). Absent: "sf: ". */
   status_label_prefix?: string;
@@ -364,14 +364,14 @@ export async function loadConfig(
   const secretsFile = defaultSecretsFile();
 
   const home = process.env.HOME ?? "";
-  const { check_commands: rawChecks, ui_check: rawUiCheck, restart_command: rawRestart, ...fileRepo } = file.repo;
+  const { check_commands: rawChecks, ui_check: rawUiCheck, restart_command: rawRestart, test_selection: rawSelection, ...fileRepo } = file.repo;
   const config: LoadedConfig = {
     repo: {
       ...fileRepo,
       path: repoPath,
       install_command: argvConfig("repo.install_command", file.repo.install_command, ["npm", "ci"]),
       test_command: testCommand(file.repo.test_command),
-      ...checkCommandsConfig(rawChecks), ...uiCheckConfig(rawUiCheck), ...(rawRestart === undefined ? {} : { restart_command: argvConfig("repo.restart_command", rawRestart, ["bin/restart"]) }),
+      ...checkCommandsConfig(rawChecks), ...uiCheckConfig(rawUiCheck), ...testSelectionConfig(rawSelection), ...(rawRestart === undefined ? {} : { restart_command: argvConfig("repo.restart_command", rawRestart, ["bin/restart"]) }),
     },
     ...(local ? { local_only: true as const } : {}),
     intake_label: intakeLabel(file.intake_label),
