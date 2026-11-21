@@ -1,8 +1,9 @@
 import type { DoneCheck } from "../core/done-checks.js";
-import type { Run } from "../core/types.js";
+import type { Run, WorkItem } from "../core/types.js";
 
-// The item page's done-when checks (docs/design/09-dashboard-item.md, RFC 0024 WP3 phase 3): each done-when line with
-// its check and its latest result, read from the item's done_checks and the newest implement run that stored results.
+// The item page's About fields (docs/design/09-dashboard-item.md): the request, the approved spec, and the done-when
+// checks (RFC 0024 WP3 phase 3), each done-when line with its check and its latest result, read from the item's
+// done_checks and the newest implement run that stored results.
 
 export type ItemCheckResult = "pass" | "fail" | "manual" | "not_run";
 
@@ -55,4 +56,18 @@ export async function itemChecks(checks: readonly DoneCheck[] | null, runs: read
     });
   }
   return rows;
+}
+
+type Text = (v: string | null, channel?: "run_outcome") => Promise<string | null>;
+
+/**
+ * About's fields on GET /api/v1/items/:id: the intake text's first paragraph, the spec once approved (done_criteria
+ * set), and the checks; each text withheld on its own, an output tail on the run_outcome channel.
+ */
+export async function aboutFields(it: WorkItem, runs: readonly Run[], text: Text) {
+  return {
+    request: await text(it.issue_text?.split(/\n[ \t]*\n/)[0]?.trim() || null),
+    spec: it.done_criteria && { problem: (await text(it.problem))!, desired_output: await text(it.desired_output), done_criteria: await Promise.all(it.done_criteria.map(async (d) => (await text(d))!)) },
+    checks: await itemChecks(it.done_checks, runs, async (v, outcome) => (await text(v, outcome ? "run_outcome" : undefined))!),
+  };
 }
