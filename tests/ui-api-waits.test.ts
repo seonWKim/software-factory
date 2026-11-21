@@ -442,7 +442,8 @@ describe("ui api: open alarms in Needs you and the why sentence (design 09-statu
   const whyItem = async (d: UiDeps, id: string) => whyText((await json<{ item: { why: WhyBody } }>(d, `/api/v1/items/${encodeURIComponent(id)}`)).item.why);
 
   it("the overview lists an open alarm in Needs you with where to look and when it closes, and drops it once resolved", async () => {
-    const { d, clock } = await alarmed();
+    const { d, store, clock } = await alarmed();
+    await store.setSettingOverride({ key: "review_time", project: "", value: '""', actor: "local:owner" }); // every waiting ask counts: none held until review_time
     const created = clock.now().getTime();
     const o = await overview(d);
     expect(o.system_actions).toContainEqual({
@@ -530,6 +531,7 @@ describe("ui api: Needs you, Needs triage and Blocked by another task", () => {
 
   it("the overview's needs_you counts Needs you and Needs triage items plus system actions, nothing from Blocked by another task", async () => {
     const { d, store } = await seeded();
+    await store.setSettingOverride({ key: "review_time", project: "", value: '""', actor: "local:owner" }); // every waiting ask counts: none held until review_time
     const count = async () => (await json<{ needs_you: number }>(d, "/api/v1/overview")).needs_you;
     const before = await count();
     const dep = await make(store, 50, "Waits on a dependency");

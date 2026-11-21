@@ -95,7 +95,8 @@ describe("ui api: runs, queue, workers, overview, health", () => {
   });
 
   it("/overview gives the numbers for the same store", async () => {
-    const { d } = await seeded();
+    const { d, store } = await seeded();
+    await store.setSettingOverride({ key: "review_time", project: "", value: '""', actor: "local:owner" }); // every waiting ask counts: none held until review_time
     const o = await json<{
       stages: Record<string, number>; needs_you: number; running: number; queued: number; last_24h: { succeeded: number; failed: number; tokens: number };
     }>(d, "/api/v1/overview");

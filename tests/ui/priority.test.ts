@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LEVEL_LABELS, LEVELS, NEEDS_YOU, type PriorityInput, levelOf, rank } from "../../src/ui/priority.js";
+import { LEVEL_LABELS, LEVELS, NEEDS_YOU, type PriorityInput, askReason, holdingNow, levelOf, rank } from "../../src/ui/priority.js";
 
 const NOW = new Date("2026-11-01T12:00:00.000Z");
 const LEASE = 60_000;
@@ -203,5 +203,57 @@ describe("ui priority", () => {
     expect(rank([merge], NOW, LEASE)[0]!.badges).toEqual(["merge queued (position 2)"]);
     expect(levelOf({ ...merge, pending: null }, NOW, LEASE)).toBe("ready_to_merge");
     expect(levelOf({ ...merge, stage: "CLOSED", close_reason: "completed" }, NOW, LEASE)).toBe("closed");
+  });
+});
+
+describe("ui priority: rank reason and held asks (design 09-status-page)", () => {
+  // Local times: review_time is read on the machine's clock, not UTC.
+  const local = (h: number, m: number) => new Date(2026, 10, 2, h, m);
+  const WORDS = /^(Merge|Blocks another item|Held until \d\d:\d\d|Waiting for you)$/;
+
+  it("holds before review_time only, and never with review_time empty", () => {
+    expect(holdingNow("09:00", local(8, 59))).toBe(true);
+    expect(holdingNow("09:00", local(0, 0))).toBe(true);
+    expect(holdingNow("09:00", local(9, 0))).toBe(false);
+    expect(holdingNow("09:00", local(23, 30))).toBe(false);
+    for (const t of [local(0, 0), local(8, 0), local(23, 59)]) expect(holdingNow("", t)).toBe(false);
+  });
+
+  it("a merge and an ask that blocks another item are never held; any other ask reads Held until <review_time>", () => {
+    const merge = item("merge", { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
+    const blocks = item("blocks", { blocked_on: "human", blocked_reason: "max_loops", dependents: 1 });
+    const ask = item("ask", { blocked_on: "human", blocked_reason: "max_loops" });
+    const reason = (i: PriorityInput, holding: boolean) => askReason(i, levelOf(i, NOW, LEASE), "09:00", holding);
+    expect(reason(merge, true)).toEqual({ rank_reason: "Merge", held: false });
+    expect(reason(blocks, true)).toEqual({ rank_reason: "Blocks another item", held: false });
+    expect(reason(ask, true)).toEqual({ rank_reason: "Held until 09:00", held: true });
+    expect(reason(ask, false)).toEqual({ rank_reason: "Waiting for you", held: false });
+    // A level that asks nothing of a person has no rank reason.
+    expect(reason(item("running", { run: running("implement", 0) }), true)).toBeNull();
+  });
+
+  it("10 open asks: each one carries one of the fixed rank reason words", () => {
+    const asks = [
+      item("merge-1", { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" }),
+      item("merge-2", { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", dependents: 2 }),
+      item("approval", { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" }),
+      item("approval-blocks", { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", dependents: 1 }),
+      item("failed", { blocked_on: "human", blocked_reason: "run_failed:implement:diff_too_large" }),
+      item("loops", { blocked_on: "human", blocked_reason: "max_loops" }),
+      item("conflict", { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict" }),
+      item("budget", { blocked_on: "budget", blocked_reason: "budget_checkpoint" }),
+      item("triage", { stage: "NEW", blocked_on: "human", blocked_reason: "agent_needs_human", asked_by: "triage" }),
+      item("ask", { blocked_on: "human", blocked_reason: "agent_needs_human", asked_by: "implement" }),
+    ];
+    for (const holding of [true, false]) {
+      const ranked = rank(asks, NOW, LEASE);
+      expect(ranked.map((r) => r.input.name).sort()).toEqual(asks.map((a) => a.name).sort());
+      const reasons = new Map(ranked.map((r) => [r.input.name, askReason(r.input, r.level, "09:00", holding)]));
+      for (const [name, r] of reasons) expect(r?.rank_reason, name).toMatch(WORDS);
+      expect(reasons.get("merge-1")!.rank_reason).toBe("Merge");
+      expect(reasons.get("merge-2")!.rank_reason).toBe("Merge");
+      expect(reasons.get("approval-blocks")!.rank_reason).toBe("Blocks another item");
+      expect(reasons.get("loops")!).toEqual(holding ? { rank_reason: "Held until 09:00", held: true } : { rank_reason: "Waiting for you", held: false });
+    }
   });
 });

@@ -11,6 +11,8 @@
 // GET /api/v1/settings, /session, /pauses and /standing are here.
 
 import { phaseOf } from "../core/phase.js";
+import { prNumber } from "../core/change-ref.js";
+import { UNKNOWN_PROJECT_LABEL } from "../core/project.js";
 import { readProjectLabel } from "../core/project-labels.js";
 import { conflictCounts } from "../core/resolve.js";
 import type { HostSleep, Run, RunAttempt, Stage, StateChange, Timestamp, WorkItem, WorkItemId } from "../core/types.js";
@@ -21,7 +23,7 @@ import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, activeRuns, closedFacetRows, itemCounts, itemState, latestDecision, holderTitles, listRows, readClaimPauses, readPhases, waitingOn, whyOf, withTitle } from "./list.js";
 import { runTokens } from "./deps.js";
 import { heldFailureOf, needCtx, needOf } from "./need.js";
-import { NEEDS_YOU } from "./priority.js";
+import { NEEDS_YOU, askReason, holdingNow } from "./priority.js";
 import { type PauseDeps, readPauses } from "./pause-api.js";
 import { failures } from "./failures.js";
 import { spend } from "./spend.js";
@@ -179,6 +181,13 @@ class ApiCtx {
     return n ? { number: Number(n), url: it.source.link } : null;
   }
 
+  /** `review_time` (design 09-status-page) and whether non-urgent asks are held now: read once per request. */
+  private review?: Promise<{ review_time: string; holding: boolean }>;
+  holding(): Promise<{ review_time: string; holding: boolean }> {
+    this.review ??= effectiveGlobal(this.d, "review_time").then(({ value }) => ({ review_time: value, holding: holdingNow(value, this.now) }));
+    return this.review;
+  }
+
   /**
    * `why` as the API returns it: the reason code (the app words it), each value and alarm through the Withholder, the
    * refs as numbers, the holder's id, and `ref_url`, the repository issue URL to append a ref to (null: not an issue or PR URL).
@@ -268,7 +277,7 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
     plugins: c.d.plugins ?? { issues: null },
     ...(factory === undefined ? {} : { factory }),
     stages,
-    needs_you: await needsYouCount(s, system_actions), // the Needs-you rows: the waiting items, one per system action
+    needs_you: await needsYouCount(s, system_actions, (await c.holding()).holding), // the Needs-you rows not held: the waiting items, one per system action
     system_actions,
     /** Days left on the GitHub token from this process's last health run; "unknown" before one; null: no expiry check. */
     github_token_days: c.d.lastChecks?.tokenDays() ?? null,
@@ -302,11 +311,18 @@ async function unreviewedMerges(c: ApiCtx, params: URLSearchParams): Promise<Api
     const label = await c.projectLabel(m.project);
     // Scan the whole sha, then shorten it: a cut-off secret would no longer match a rule.
     const sha = await c.text(m.merge_sha);
+    const pr = prUrl(m.project, label, m.change_ref);
     out.push({
       project: await c.text(label),
-      // The store keeps no link for an unreviewed merge yet (UnreviewedMerge carries only the ref): text only.
+      // The store keeps no link for an unreviewed merge (UnreviewedMerge carries only the ref): change_url stays null;
+      // review_url and checks_url are derived below.
       change_ref: m.change_ref,
       change_url: null,
+      // The PR's links from the stored project label and ref, no forge call; null for a non-GitHub project.
+      review_url: pr && (await c.text(pr)),
+      checks_url: pr && (await c.text(`${pr}/checks`)),
+      // The store keeps no check verdict for an unreviewed merge (merge checks are stored per work item).
+      check_verdict: null,
       merge_sha: sha === m.merge_sha ? sha.slice(0, 7) : sha,
       merged_by: m.merger_id === null ? "unknown" : await c.text(m.merger_id),
       merged_by_name: m.merger_id === null ? null : await c.text(await displayName(c.d.displayNames, m.merger_id)),
@@ -314,6 +330,15 @@ async function unreviewedMerges(c: ApiCtx, params: URLSearchParams): Promise<Api
     });
   }
   return ok({ as_of: c.now.toISOString(), merges: out });
+}
+
+/**
+ * The PR URL of a change on `project`: `https://<label>/pull/<n>`, the rule of changeFields
+ * (src/impl/store/sql/change-fields.ts), for a GitHub project key whose label is stored and a numeric ref; else null.
+ */
+function prUrl(project: string, label: string, change_ref: string): string | null {
+  const n = prNumber({ change_ref });
+  return n !== null && project.startsWith("github:") && label !== UNKNOWN_PROJECT_LABEL ? `https://${label}/pull/${n}` : null;
 }
 
 async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
@@ -327,6 +352,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
   for (const m of await c.d.store.listMergeChecks(shown.filter((r) => phaseOf(r.item) === "merge_pending").map((r) => r.item.id))) checks.set(m.work_item_id, m);
   const out = [];
   const [allowed, commandGrant] = [actorGrant(c.d, "approve_merge"), actorGrant(c.d, "approve_spec")]; // each asked once per list
+  const { review_time, holding } = await c.holding();
   for (const r of shown) {
     const it = r.item;
     const decision = r.decision; // the current run's only: an earlier run's hold is stale
@@ -353,6 +379,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       conflicts: r.conflicts,
       merge_check,
       merge: await mergeReadiness(c.d, it, merge_check, allowed, r.pending),
+      ...askReason(r.input, r.level, review_time, holding), // rank_reason and held, on an ask only
       ...(NEEDS_YOU.includes(r.level) ? { need: await c.need(it, merge_check), commands: await needsYouCommands(c.d, it, commandGrant, (v) => c.text(v)) } : {}),
       why: await c.why(r.why, it),
       parent_id: it.parent_id,
