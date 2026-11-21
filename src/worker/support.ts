@@ -3,7 +3,7 @@ import type { DiffStat } from "../core/diff-gate.js";
 import { MAX_COMMAND_PATHS, retryPathsReply } from "../core/commands.js";
 import { type ReviewOutput, builtDifferentlyOf, specFindings, unverifiedOf } from "../core/outputs.js";
 import { AGENT_STALLED, RATE_LIMITED } from "../core/policy.js";
-import { type LocalRoute, type PrText, TRUSTED_GIT_ENV, type WorkerDeps, hasTool, prTitle, routeFor, runPushIntents, threadDelivery } from "../core/worker-deps.js";
+import { type LocalRoute, type PrText, TRUSTED_GIT_ENV, type WorkerDeps, baseRefspec, hasTool, prTitle, routeFor, runPushIntents, threadDelivery } from "../core/worker-deps.js";
 import { failingTests, stripAnsi } from "../core/output-summary.js";
 import { Bash, Edit, Glob, Grep, Read, TOOLS, type ToolSpec, Write } from "../core/tools/index.js";
 import type { Run, RunId, RunKind, RunResume, RunUsage, Timestamp, WipRef, WorkItem } from "../core/types.js";
@@ -11,7 +11,7 @@ import type { AgentRunResult } from "../interfaces/agent-runner.js";
 import type { SandboxHandle } from "../interfaces/sandbox.js";
 import { type DecisionAnswer, answerLines } from "../shared/command-notes.js";
 
-export { type LocalRoute, type PrText, TRUSTED_GIT_ENV, type WorkerDeps, hasTool, prTitle, routeFor, runPushIntents, threadDelivery };
+export { type LocalRoute, type PrText, TRUSTED_GIT_ENV, type WorkerDeps, baseRefspec, hasTool, prTitle, routeFor, runPushIntents, threadDelivery };
 export { TRUSTED_GIT_KEYS, untrustedGitConfig } from "../shared/git-trust.js";
 
 /** At most one write of a run's last model output time per this many ms, and per a tenth of stall_ms (design 05-restarts). */

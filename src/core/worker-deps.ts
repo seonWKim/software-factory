@@ -31,9 +31,8 @@ export interface LocalRoute {
 /**
  * The refspec that copies the base branch from the factory repo into a run folder's `origin/<base>`: the factory
  * repo's `origin/<base>`, or its local `refs/heads/<base>` for a local item (`local`, from routeFor) or when no forge
- * plugin is selected (`local_only`). `session finish`'s gate base fetches with it; it is the rule of the implement run's
- * own `baseRefspec` (src/worker/runs/implement/implement.run.ts), which keeps its copy only because a new import of
- * this legacy file from a component would raise the dependency-direction ratchet.
+ * plugin is selected (`local_only`). One rule for both readers: the implement run fetches with it (through
+ * worker/support.ts) and `session finish`'s gate base does too.
  */
 export function baseRefspec(cfg: Pick<FactoryConfig, "repo" | "local_only">, local: boolean): string {
   const base = cfg.repo.base_branch;
