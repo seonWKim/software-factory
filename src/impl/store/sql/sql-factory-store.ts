@@ -122,6 +122,7 @@ import * as notices from "./notices.js";
 import * as noticeMessages from "./notice-messages.js";
 import * as posted from "./posted-comments.js";
 import * as verdicts from "./verdicts.js";
+import { SQL_DRIVER } from "./store-sql.js";
 
 /**
  * FactoryStore over a SqlDriver (SQLite; `db` is public for components owning tables). Every write is one driver transaction. Correctness
@@ -129,6 +130,11 @@ import * as verdicts from "./verdicts.js";
  * status, lease token), and uniqueness is enforced by keys, with a duplicate treated as "already there". Task projects: SqlProjectStore, through SqlRunOutputStore.
  */
 export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
+  /** The driver, for storeSql (store-sql.ts) without importing this class. */
+  get [SQL_DRIVER](): SqlDriver {
+    return this.db;
+  }
+
   constructor(db: SqlDriver, private readonly clock: Clock) {
     super(db, () => clock.now().toISOString() as Timestamp);
   }
