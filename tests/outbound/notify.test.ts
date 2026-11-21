@@ -7,7 +7,7 @@ import { aggregate } from "../../src/outbound/aggregator/aggregator.js";
 import { NOTIFY_BATCHING, batchingPolicies, isNotifyDestination, policyFor } from "../../src/outbound/aggregator/batching.js";
 import { Outbound, buildTargets, recordAction, type Delivery } from "../../src/outbound/index.js";
 import { tickAt } from "../../src/shared/ticks/tick-generator.js";
-import { cleanScanner, silent } from "../helpers/fakes.js";
+import { cleanScanner, silent } from "../helpers/fakes/config.js";
 import { newStore } from "../helpers/store.js";
 
 // Design 12-notification-channels: an adapter's notices (`<type>:notify`) wait in a fixed 60 s window, go out as one

@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { loadConfig } from "../src/compose.js";
+import { loadConfig } from "../src/load-config.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { WorkItemId, WorkerId } from "../src/core/types.js";
@@ -15,7 +15,11 @@ import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import type { ForgeEvent } from "../src/interfaces/forge.js";
 import { STORE_BRANCH, type ToolBroker, type ToolCallContext, type ToolDescriptor, type ToolResult } from "../src/interfaces/tool-broker.js";
-import { FAKE_GITHUB_TOOLS, FakeAuth, FakeRunner, GitForge, FakeSource, MemoryStorage, alice, config, silent, cleanScanner, fakePrRef, runComments } from "./helpers/fakes.js";
+import { FAKE_GITHUB_TOOLS } from "./helpers/fakes/broker.js";
+import { FakeAuth, FakeRunner, MemoryStorage } from "./helpers/fakes/runner.js";
+import { GitForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, config, silent, cleanScanner, fakePrRef, runComments } from "./helpers/fakes/config.js";
 import { git, gitTemplate } from "./helpers/git-fixture.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 

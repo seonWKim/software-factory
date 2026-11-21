@@ -4,7 +4,9 @@ import { outboundServiceAuth } from "../../src/impl/auth/audited-auth.js";
 import { DELIVERY_COMPLETED } from "../../src/outbound/topics/deliveries-results.topic.js";
 import { ControllerRole } from "../../src/runtime/roles/controller-role.js";
 import { ManualTickGenerator } from "../../src/shared/ticks/plugins/manual/manual-tick-generator.js";
-import { FakeAuth, cleanScanner, pipeline, silent } from "../helpers/fakes.js";
+import { FakeAuth } from "../helpers/fakes/runner.js";
+import { cleanScanner, silent } from "../helpers/fakes/config.js";
+import { pipeline } from "../helpers/harness.js";
 
 // RFC 0015 §8 (M9): outbound sends under its service passport. Every write is `use_tool` on its target by
 // `service:outbound`, audited; a refused one is not sent. These fail if outbound writes with no decision, under

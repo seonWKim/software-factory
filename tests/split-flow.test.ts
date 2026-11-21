@@ -8,7 +8,9 @@ import type { RunOutcome, SourceRef, UserId, WorkItem } from "../src/core/types.
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { SourceCloseReason } from "../src/interfaces/source-adapter.js";
-import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent, triageSpec } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, silent, triageSpec } from "./helpers/fakes/config.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 
 // Split specs (design 2026-11-01): a large estimate gives a split spec; /approve queues one sub-issue per phase,

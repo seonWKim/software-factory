@@ -3,7 +3,7 @@ import { settingValues } from "../../../core/settings.js";
 import type { ModelClass } from "../../../core/model-choice.js";
 import { type DiffStat, type FloorHit, diffStat, overSizeLimit, requiredTier, sizeDetail } from "../../../core/diff-gate.js";
 import { NumstatError, diffGates, scopeGate } from "../../../core/pre-push.js";
-import { BASE_CHECKOUT_DIR, CHECKS_FAILED_RUN, type CheckResult, TOOLCHAIN_MISSING, checkCommands, checkedLines, commandText, failingTestFiles, toolchainMissing, withTestFiles } from "../../../core/checks.js";
+import { BASE_CHECKOUT_DIR, CHECKS_FAILED_RUN, type CheckResult, TOOLCHAIN_MISSING, PrePushSelection, checkCommands, checkedLines, commandText, failingTestFiles, toolchainMissing, withTestFiles } from "../../../core/checks.js";
 import { IMPLEMENT_SCHEMA, NEEDS_HUMAN_MAX_CHARS, NEEDS_HUMAN_MAX_PATHS, type NeedsHuman, SPEC_CONFLICT, findingLine, parseImplement, parseReview } from "../../../core/outputs.js";
 import { CHECKS_ENV, CHECKS_ENV_LIMIT, PREFLIGHT_FAILED, branchFor, isCovered, wipBranchFor } from "../../../core/policy.js";
 import { mergeAppendedConflicts } from "../../../core/mechanical.js";
@@ -13,7 +13,7 @@ import type { Run, RunResume, WipRef, WorkItem } from "../../../core/types.js";
 import type { AgentRunSpec, GateHooks, PackRefusal } from "../../../interfaces/agent-runner.js";
 import type { SandboxHandle } from "../../../interfaces/sandbox.js";
 import { PREFLIGHT, type ToolCallContext } from "../../../interfaces/tool-broker.js";
-import { BUDGET_NEXT_STEPS, type ContinueWip, DIFF_CHECK_MS, type DiffBudget, type FixContext, LOOP_STARTS, MAX_CONFLICT_COMMITS, MAX_PR_FILES, NO_COMMITS_DETAIL, NO_HOOKS, PAUSE_NEXT_STEPS, type ResumePlan, RunFailure, RunPaused, STOPPED_CODES, STOPPED_NEXT_STEPS, WIP_TEXT_CHARS, continues, failingTestNames, fenced, gitIdentity, hasTool, prTitle, renderBudget, renderContinueNewSession, renderMergeCheckFailure, renderNewSessionResume, renderRequest, renderSessionResume, renderWorkItem, runCommits, scopeReply, specQuery, tail } from "../../support.js";
+import { BUDGET_NEXT_STEPS, type ContinueWip, DIFF_CHECK_MS, type DiffBudget, type FixContext, LOOP_STARTS, MAX_CONFLICT_COMMITS, MAX_PR_FILES, NO_COMMITS_DETAIL, NO_HOOKS, PAUSE_NEXT_STEPS, type ResumePlan, RunFailure, RunPaused, STOPPED_CODES, STOPPED_NEXT_STEPS, WIP_TEXT_CHARS, baseRefspec, continues, failingTestNames, fenced, gitIdentity, hasTool, prTitle, renderBudget, renderContinueNewSession, renderMergeCheckFailure, renderNewSessionResume, renderRequest, renderSessionResume, renderWorkItem, runCommits, scopeReply, specQuery, tail } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { RESUME_LOST, fetchBundle, saveBundle } from "../../bundle.js";
 import { decisionsSection } from "../../../shared/command-notes.js";
@@ -165,6 +165,7 @@ async function implement(
   // The files an earlier sync of these commits conflicted in still pass the scope gate.
   const conflicts = [...new Set([...work.conflicts, ...sync.conflicts])];
   const fix: FixContext = { gitDir, dirs, model, start, baseSha: sync.baseSha };
+  const sel = await PrePushSelection.open(w.d.store, w.cfg.repo, item.project, (line) => w.d.log.info(line, { run_id: run.id }));
   let beforeFix: string | null = null; // HEAD before the first before_finish fix step, so its commits are counted
   // before_finish pack checks (design §4, issue #494): a refusal sends the agent back up to the check's retries, then
   // fails the run; a pass skips nothing: the gates, the checks and the gates again on a fix all still run below.
@@ -183,18 +184,18 @@ async function implement(
   let checked: { results: CheckResult[]; fixed: boolean };
   const beforeChecks = beforeFix ?? (await w.git(handle, ["rev-parse", "HEAD"])).trim();
   // The fix steps' commits (the pack checks' and the checks') count like the implementer's (handoff rows include them too).
-  const countFixCommits = async () => {
-    work.commits += Number((await w.git(handle, ["rev-list", "--count", `${beforeChecks}..HEAD`])).trim()) || 0;
-  };
+  const countFixCommits = async () => void (work.commits += Number((await w.git(handle, ["rev-list", "--count", `${beforeChecks}..HEAD`])).trim()) || 0);
   try {
-    checked = await checksBeforePush(w, run, item, handle, signal, fix);
+    checked = await checksBeforePush(w, run, item, handle, signal, fix, sel);
   } catch (err) {
-    // Each keeps the commits on a wip branch, so the retry starts from them.
+    // Each keeps the commits on a wip branch, so the retry starts from them. A run whose failures fail on the base too is not counted (design §4, shadow mode).
     if (!(err instanceof RunFailure) || ![CHECKS_FAILED_RUN, CHECKS_ENV, TOOLCHAIN_MISSING].includes(err.code)) throw err;
+    if (err.code !== CHECKS_ENV) await sel.note(w.d, item.project, run.id);
     await countFixCommits();
     const head = (await w.git(handle, ["rev-parse", "HEAD"])).trim();
-    throw await keepAt(err, head, conflicts);
+    throw await keepAt(new RunFailure(err.code, err.message, err.infra, { ...err.extra, test_selection: sel.record() ?? undefined }), head, conflicts);
   }
+  await sel.note(w.d, item.project, run.id);
   // The lists the checks' shrink mode lowered (design §4) are committed alone; like a fix, they go through every gate again.
   const lowered = await commitWorktree(w, handle, "Lower the shrunk known-violations counts", [RATCHET_LISTS]);
   if (checked.fixed || packFixed || lowered) {
@@ -205,9 +206,7 @@ async function implement(
     if (floor) return { floor_block: true, required_tier: requiredTier(floor), floor_paths: floor };
   }
   // First parent only: the agent's commits plus our merge commits, not the base commits they brought in.
-  const pushedCommits = (await w.git(handle, [
-    "rev-list", "--reverse", ...(sync.merged || resumed ? ["--first-parent"] : []), `${start}..HEAD`,
-  ])).split("\n").filter(Boolean);
+  const pushedCommits = (await w.git(handle, ["rev-list", "--reverse", ...(sync.merged || resumed ? ["--first-parent"] : []), `${start}..HEAD`])).split("\n").filter(Boolean);
   // A resumed run's commits were recorded by the run that made them: no second row for one commit.
   await step("record-handoffs", async () => {
     const recorded = resumed ? new Set((await w.d.store.listHandoffs(item.id)).map((h) => h.commit_sha)) : new Set<string>();
@@ -254,7 +253,7 @@ async function implement(
     pr_summary: work.summary.slice(0, WIP_TEXT_CHARS),
     missing: work.missing,
     deviations: work.deviations,
-    ...(sync.conflicts.length ? { conflicts: sync.conflicts } : {}),
+    ...(sync.conflicts.length ? { conflicts: sync.conflicts } : {}), test_selection: sel.record() ?? undefined, // the selection before push (design §4)
   };
 }
 
@@ -462,7 +461,7 @@ async function preflight(w: Worker, item: WorkItem, handle: SandboxHandle, ctx: 
   } catch (err) {
     throw new RunFailure(PREFLIGHT_FAILED, `base_fetch: ${err instanceof Error ? err.message : "unknown"}`.slice(0, 500));
   }
-  const fetched = await w.gitRaw(handle, ["fetch", "--quiet", "--no-tags", repo.path, baseRefspec(w, item)]);
+  const fetched = await w.gitRaw(handle, ["fetch", "--quiet", "--no-tags", repo.path, baseRefspec(w.cfg, w.route(item).local)]);
   if (fetched.exit_code !== 0) throw new RunFailure(PREFLIGHT_FAILED, `base_fetch: ${fetched.stderr.trim()}`.slice(0, 500));
 }
 
@@ -553,7 +552,7 @@ async function syncBase(
   const baseRef = `origin/${repo.base_branch}`;
   // From the factory repo, freshly fetched outside the clone; never the clone's own remote (design §5).
   const fresh = await w.route(item).sandbox.updateBase({ repo: repo.path, base_ref: repo.base_branch });
-  await w.git(handle, ["fetch", "--quiet", "--no-tags", repo.path, baseRefspec(w, item)]);
+  await w.git(handle, ["fetch", "--quiet", "--no-tags", repo.path, baseRefspec(w.cfg, w.route(item).local)]);
   const baseSha = (await w.git(handle, ["rev-parse", "--verify", "--end-of-options", `${baseRef}^{commit}`])).trim();
   if (baseSha !== fresh) throw new RunFailure("untrusted_base", "the clone's base does not match the factory repo's");
   // The fetched base may only move forward from the base the sandbox resolved before any agent ran.
@@ -764,16 +763,11 @@ async function mergeConflict(
  * run fails with `checks_failed`. Both rounds run in ratchet shrink mode (SHRINK_ENV). Returns the passing round's results and whether a
  * fix step ran; the caller commits the lowered lists, then runs the scope, size and floor gates again on the final diff.
  */
-async function checksBeforePush(
-  w: Worker,
-  run: Run,
-  item: WorkItem,
-  handle: SandboxHandle,
-  signal: AbortSignal,
-  s: FixContext,
-): Promise<{ results: CheckResult[]; fixed: boolean }> {
+async function checksBeforePush(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, signal: AbortSignal, s: FixContext, sel: PrePushSelection): Promise<{ results: CheckResult[]; fixed: boolean }> {
+  // Each round selects the test files its own diff reaches; enforce mode runs only those, shadow mode notes misses (design §4).
+  const round = async () => sel.saw(await w.runCheckList(run, handle, signal, { ...SHRINK_ENV, commands: await sel.commands(checkCommands(w.cfg.repo), (a) => w.git(handle, a), s.baseSha) }));
   await cleanTree(w, handle);
-  const first = await w.runCheckList(run, handle, signal, SHRINK_ENV);
+  const first = await round();
   if (!first.failed) return { results: first.results, fixed: false };
   // A missing install is the host's, not the branch's: no fix step, and an infra failure (issue #229).
   const missing = toolchainMissing(first.failed.tail);
@@ -784,7 +778,7 @@ async function checksBeforePush(
   }
   await fixStep(w, run, item, handle, signal, s, first.failed);
   await cleanTree(w, handle);
-  const second = await w.runCheckList(run, handle, signal, SHRINK_ENV);
+  const second = await round();
   if (!second.failed) return { results: second.results, fixed: true };
   const onBase = await failsOnBase(w, run, handle, signal, s.baseSha, second.failed);
   if (onBase) return checksEnv(w, run, item, second.failed, onBase);
@@ -1079,15 +1073,6 @@ async function previousContext(w: Worker, item: WorkItem, run: Run): Promise<str
     parts.push("", `Last noted next steps: ${handoffs.at(-1)!.next_steps}`);
   }
   return parts.join("\n").trim();
-}
-
-/**
- * The base branch copied from the factory repo into a run folder's `origin/<base>`: the factory repo's
- * `origin/<base>`, or its local `refs/heads/<base>` when no forge plugin is selected (`local_only`).
- */
-function baseRefspec(w: Worker, item: WorkItem): string {
-  const base = w.cfg.repo.base_branch;
-  return `+${w.cfg.local_only || w.route(item).local ? `refs/heads/${base}` : `refs/remotes/origin/${base}`}:refs/remotes/origin/${base}`;
 }
 
 export default defineRunKind({

@@ -2,7 +2,7 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadConfig } from "../src/compose.js";
+import { loadConfig } from "../src/load-config.js";
 import { INBOX_RETENTION_DEPRECATED } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { inboxCursorName } from "../src/inbound/index.js";
@@ -12,16 +12,10 @@ import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { REGISTRY, createPlugin } from "../src/plugins.js";
-import {
-  FakeAuth,
-  FakeStreamSource,
-  cleanScanner,
-  config,
-  fakeStreamRegistry,
-  recordingLog,
-  silent,
-  waitFor,
-} from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeStreamSource } from "./helpers/fakes/source.js";
+import { cleanScanner, config, recordingLog, silent, waitFor } from "./helpers/fakes/config.js";
+import { fakeStreamRegistry } from "./helpers/harness.js";
 import { newStore } from "./helpers/store.js";
 
 const SLACK = "slack_thread" as const;

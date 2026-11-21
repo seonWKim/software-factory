@@ -5,18 +5,14 @@ import {
   mergeInFlight, mergeReturned, plainRefusal, postCommand, showsMerge, useApi,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
-import { FOCUS } from "../components/ui/control.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
 import { Radio } from "../components/ui/radio.js";
-import { type MenuItem, OverflowMenu, Tooltip } from "../components/ui/menu.js";
+import { type MenuItem, OverflowMenu } from "../components/ui/menu.js";
 import { Select } from "../components/ui/select.js";
 import { Textarea } from "../components/ui/textarea.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { cn } from "../lib/cn.js";
-import { Link } from "../nav.js";
-import { itemPath } from "../pages.js";
 import { type Outcome, OutcomeText, PendingProposals } from "./command-box.js";
 import { RejectDialog, ReviseDialog, commandLabel, type CommandDialogProps } from "./item-decisions.js";
 
@@ -43,6 +39,8 @@ export type FormName = "reject" | "revise" | "verdict";
  * reason that accepts Approve or Answer never shows Retry first.
  */
 const PRIMARY = ["approve", "resolve", "retry"];
+/** The main action of an item that stopped the same way three times (`repeated_stop`), in this order, before PRIMARY. */
+const AFTER_REPEATS = ["revise", "reject"];
 
 /** The verdicts a person gives, as `/verdict` takes them, with their button labels. */
 const VERDICTS = [["accept", "commands.accept"], ["changes", "commands.changes"], ["reject", "commands.reject"]] as const satisfies readonly (readonly [string, MessageKey])[];
@@ -227,12 +225,16 @@ export function withPaths(c: ItemCommand, note: string): string {
 }
 
 /**
- * The command the state asks for, of those the viewer may send: the one that allows a permission ask's paths, else
- * the first of approve, resolve and retry (PRIMARY order, not the API's), so Retry only when neither other applies.
+ * The command the state asks for, of those the viewer may send: the one that allows a permission ask's paths; else,
+ * on an item that stopped the same way three times (`repeated_stop`), Revise, then Reject; else the first of approve,
+ * resolve and retry (PRIMARY order, not the API's), so Retry only when neither other applies.
  */
 export function primaryOf(commands: readonly ItemCommand[]): ItemCommand | undefined {
-  const rank = (c: ItemCommand) => PRIMARY.indexOf(c.name) - (pathsOf(c).length > 0 ? PRIMARY.length : 0);
-  return commands.filter((c) => PRIMARY.includes(c.name) && c.allowed).sort((a, b) => rank(a) - rank(b))[0];
+  const allowed = commands.filter((c) => c.allowed);
+  const first = (names: readonly string[], cs: readonly ItemCommand[]) => cs.filter((c) => names.includes(c.name)).sort((a, b) => names.indexOf(a.name) - names.indexOf(b.name))[0];
+  return first(PRIMARY, allowed.filter((c) => pathsOf(c).length > 0))
+    ?? first(AFTER_REPEATS, allowed.filter((c) => c.repeated_stop))
+    ?? first(PRIMARY, allowed);
 }
 
 /**
@@ -398,7 +400,11 @@ const PRIMARY_LABEL: Record<string, MessageKey> = { approve: "needs.actApprove",
 /** The label of a primary that allows a permission ask's paths (it sends them as `+paths`). */
 const ALLOW_LABEL: Record<string, MessageKey> = { approve: "needs.actAllowApprove", retry: "needs.actAllowRetry", resolve: "needs.actAllowAnswer" };
 /** The primary button's label for `c`: what it does, naming the permission it gives when it carries paths. */
-export const primaryLabel = (c: ItemCommand): string => t((pathsOf(c).length > 0 ? ALLOW_LABEL : PRIMARY_LABEL)[c.name]!);
+export const primaryLabel = (c: ItemCommand): string => {
+  const key = (pathsOf(c).length > 0 ? ALLOW_LABEL : PRIMARY_LABEL)[c.name];
+  // Revise or Reject after a repeated stop (primaryOf): the command's own name.
+  return key ? t(key) : commandLabel(c.name);
+};
 /** The key that presses a row's primary button when the row is selected (never Merge). */
 export const PRIMARY_KEY = "p";
 
@@ -412,7 +418,6 @@ export interface NeedActionsProps {
   /** "merge": the primary button is Merge (disabled with the reason, or "Checking…" while the merge check runs). */
   group: "merge" | "approve" | "answer";
   merge?: MergeReadiness | undefined;
-  source: string;
   checking: boolean;
   /** The row's command sender, shared with its Why text. */
   cmd: ReturnType<typeof useCommandSend>;
@@ -420,6 +425,10 @@ export interface NeedActionsProps {
   allow: readonly { label: string; note: string }[];
   /** False: the row shows the failed sends itself (SendErrors on its own line, design-system C-050), not this cell. */
   inlineErrors?: boolean;
+  /** The row's own actions after the item's commands (a task row's Add sub-task, Projects, Delete): one menu per row. */
+  extra?: readonly MenuItem[] | undefined;
+  /** The menu button's accessible name; default "More actions". */
+  label?: string | undefined;
 }
 
 /** The errors of a row's failed sends and refused transitions, one alert each (NeedActions' `cmd.local`). */
@@ -437,7 +446,7 @@ export function SendErrors({ local }: { local: Record<string, LocalSend> }) {
  * a failed send shows its error in the cell (or, with `inlineErrors` false, where the row puts SendErrors), a sent
  * one in a short status message that outlives the row.
  */
-export function NeedActions({ id, title, commands, pr, group, merge, source, checking, cmd, allow, inlineErrors = true }: NeedActionsProps) {
+export function NeedActions({ id, title, commands, pr, group, merge, checking, cmd, allow, inlineErrors = true, extra = [], label }: NeedActionsProps) {
   const { on, busy, local, send: post } = cmd;
   const [open, setOpen] = useState<FormName | null>(null);
   const wrap = useRef<HTMLSpanElement>(null);
@@ -468,7 +477,7 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
     setOpen(null);
   };
   const canRetry = commands.some((c) => c.name === "retry" && c.allowed);
-  const items = [
+  const rest = [
     ...others.map((c) => menuEntry(c, off, () => (DIALOGS.includes(c.name) ? setOpen(c.name as FormName) : void send(c.name, withPaths(c, ""))))),
     ...allow.map((a) => ({ label: a.label, disabled: off || !canRetry, onSelect: () => void send("retry", a.note) })),
   ];
@@ -478,36 +487,35 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
   // list's next read moves the row on, so a click never looks like nothing happened.
   const sentLocal = primary ? local[primary.name] : undefined;
   const sent = sentLocal !== undefined && "seq" in sentLocal && !sentLocal.refusal ? sentLocal : null;
+  // Revise or Reject as the main action (a repeated stop, primaryOf) opens its dialog, as its menu entry does.
+  const sendPrimary = () => {
+    if (!primary) return;
+    if (DIALOGS.includes(primary.name)) setOpen(primary.name as FormName);
+    else void send(primary.name, withPaths(primary, ""));
+  };
+  // A disabled Merge says why in its label ("Merge: 1 conflicting file"), as a disabled command's menu entry does.
+  const mergeLabel = checking ? t("needs.checking") : queued ? (merge?.reason ?? t("commands.merging")) : merging ? t("commands.merging")
+    : merge && !merge.enabled && merge.reason ? `${t("commands.merge")}: ${merge.reason}` : t("commands.merge");
+  const head: MenuItem[] = group === "merge"
+    ? [{ label: mergeLabel, action: "merge", disabled: off || checking || merging || !merge?.enabled, onSelect: () => void send("merge", "") }]
+    : primary
+      ? [{ label: sent ? (sent.label ?? t("commands.sentWaiting")) : primaryLabel(primary), action: primary.name, disabled: off || sent !== null || !primary.allowed, onSelect: sendPrimary }]
+      : [];
+  const items = [...head, ...rest, ...extra];
   return (
     <span ref={wrap} data-need-commands className="inline-flex flex-wrap items-center justify-end gap-2">
-      {group === "merge" ? (
-        <span data-command="merge" className="inline-flex items-center gap-2">
-          <Tooltip text={merge && !merge.enabled && merge.reason ? merge.reason : source === "local" ? t("commands.mergeLocal") : t("commands.mergePr")}>
-            <Button variant="secondary" data-action="merge" disabled={off || checking || merging || !merge?.enabled} onClick={() => void send("merge", "")}>
-              {checking ? t("needs.checking") : queued ? merge?.reason : merging ? t("commands.merging") : t("commands.merge")}
-            </Button>
-          </Tooltip>
-          {!awaitsReply(outcome) && !queued && <OutcomeText outcome={outcome} />}
-        </span>
-      ) : primary ? (
-        <span data-command={primary.name} className="inline-flex">
-          <Tooltip text={pathsOf(primary).length > 0
-            ? t("needs.allowPaths", { paths: pathsOf(primary).join(", "), key: PRIMARY_KEY })
-            : t("needs.withKey", { label: primaryLabel(primary), key: PRIMARY_KEY })}>
-            <Button variant="secondary" data-shortcut={PRIMARY_KEY} data-action={primary.name} data-sent={sent ? "" : undefined} disabled={off || sent !== null} onClick={() => void send(primary.name, withPaths(primary, ""))}>
-              {sent ? (sent.label ?? t("commands.sentWaiting")) : primaryLabel(primary)}
-            </Button>
-          </Tooltip>
-        </span>
-      ) : (
-        <Link href={itemPath(id)} data-command="open" data-action="open" className={cn("inline-flex min-h-8 items-center rounded-control border border-border-strong bg-surface px-3 text-sm font-medium text-text-1 hover:bg-surface-2", FOCUS)}>
-          {t("needs.actOpen")}
-        </Link>
+      {/* Every action is in the menu (owner feedback 2026-11-20); this hidden button only carries the row's "p" shortcut. */}
+      {primary && group !== "merge" && (
+        <Button hidden data-shortcut={PRIMARY_KEY} data-command={primary.name} disabled={off || sent !== null || !primary.allowed} onClick={sendPrimary} />
       )}
-      <OverflowMenu label={t("commands.more")} items={items.length > 0 ? items : [{ label: t("needs.noMore"), disabled: true, onSelect: () => undefined }]} />
-      {applied.filter((text) => text !== sent?.label).map((text) => (
+      {group === "merge" && merging && !queued && <OutcomeText outcome={{ tone: "status", text: t("commands.merging") }} />}
+      {group === "merge" && !awaitsReply(outcome) && !queued && <OutcomeText outcome={outcome} />}
+      <OverflowMenu label={label ?? t("commands.more")} items={items.length > 0 ? items : [{ label: t("needs.noMore"), disabled: true, onSelect: () => undefined }]} />
+      {/* The menu closes on a send, so the row itself says what happened: the applied label, else "Sent, waiting…". */}
+      {applied.map((text) => (
         <OutcomeText key={text} outcome={{ tone: "status", text }} />
       ))}
+      {sent !== null && !sent.label && <OutcomeText outcome={{ tone: "status", text: t("commands.sentWaiting") }} />}
       {inlineErrors && <SendErrors local={local} />}
       {open !== null && (
         <CommandDialog

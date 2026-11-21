@@ -6,7 +6,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ImproveView, RuleEntryView, RulesView } from "../web/src/api.js";
-import { PAGES, routeFor } from "../web/src/pages.js";
+import { localDateTime } from "../web/src/lib/format.js";
 
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
 // loaded by a specifier the node check skips (as tests/ui-users-page.test.tsx does).
@@ -91,14 +91,14 @@ const card = (id: string) => document.querySelector<HTMLElement>(`[data-rule="${
 /** A card's "Why and where" toggle: the summary of its Disclosure. */
 const whyToggle = (id: string) => within(card(id)).getByText("Why and where").closest("summary")!;
 const dialog = () => document.querySelector<HTMLDialogElement>("dialog[data-dialog]")!;
+/** Picks a verdict from a card's ⋯ menu. */
+const choose = (el: HTMLElement, label: string) => {
+  fireEvent.click(within(el).getByRole("button", { name: /^Decide:/ }));
+  fireEvent.click(within(el).getByRole("menuitem", { name: label }));
+};
 const sent = () => posts.map((p) => JSON.parse(String(p.init.body)));
 
 describe("Rules page", () => {
-  it("is a sidebar page at /app/rules", () => {
-    expect(routeFor("/app/rules").page.label).toBe("Rules");
-    expect(PAGES.map((p) => p.path)).toContain("rules");
-  });
-
   it("groups candidates and proposals, each under its line; each card shows its title (ID in its tooltip), state and what it would change", async () => {
     await show();
     const classes = await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
@@ -126,7 +126,7 @@ describe("Rules page", () => {
     expect(order).toEqual(["Keep existing CLI flags.", "Pending"]);
     expect(card("P-0007").textContent).toContain("Held");
     expect(card("P-0007").querySelector("[data-rule-title]")!.textContent).toBe("Split the review prompt");
-    expect(card("P-0007").querySelector("[data-rule-what]")!.textContent).toBe("edit-asset: prompts/review.md");
+    expect(card("P-0007").querySelector("[data-rule-what]")!.textContent).toBe("edit-asset: review.md");
     // No detail is read on page load.
     expect(gets.filter((u) => u.includes("/rules/entry"))).toEqual([]);
     expect(document.querySelector("[data-rule-detail]")).toBeNull();
@@ -192,7 +192,7 @@ describe("Rules page", () => {
   it("a verdict button asks for a reason before it sends; promote of a class sends the edited wording, default and exception", async () => {
     await show();
     await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
-    fireEvent.click(within(card("C-012")).getByRole("button", { name: "Promote" }));
+    choose(card("C-012"), "Promote");
     const confirm = within(dialog()).getByRole("button", { name: "Send promote" }) as HTMLButtonElement;
     expect(confirm.disabled).toBe(true);
     expect(posts).toEqual([]);
@@ -231,15 +231,17 @@ describe("Rules page", () => {
     expect(within(card("C-012")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Keep existing CLI flags."]);
     expect(whyToggle("C-012")).not.toBeNull();
     expect(card("C-013").querySelector("[data-draft-error]")!.textContent).toContain("evolve show exited 1");
-    expect((within(card("C-013")).getByRole("button", { name: "Promote" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((within(card("C-013")).getByRole("button", { name: "Hold" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(within(card("C-012")).queryByRole("button", { name: /^Decide:/ })).toBeNull();
+    fireEvent.click(within(card("C-013")).getByRole("button", { name: /^Decide:/ }));
+    expect((within(card("C-013")).getByRole("menuitem", { name: "Promote" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(card("C-013")).getByRole("menuitem", { name: "Hold" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("hold and reject send only the reason; they ask for no wording and no applied-to file", async () => {
     await show();
     await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
     for (const [label, reason] of [["Hold", "wait"], ["Reject", "not code"]] as const) {
-      fireEvent.click(within(card("P-0007")).getByRole("button", { name: label }));
+      choose(card("P-0007"), label);
       for (const name of ["Rule wording", "Default", "Exception", "Applied to"]) expect(within(dialog()).queryByRole("textbox", { name })).toBeNull();
       fireEvent.change(within(dialog()).getByRole("textbox", { name: "Reason" }), { target: { value: reason } });
       fireEvent.click(within(dialog()).getByRole("button", { name: `Send ${label.toLowerCase()}` }));
@@ -259,7 +261,7 @@ describe("Rules page", () => {
     detail = (id) => ({ id, error: null, detail: id === "P-0009" ? { id } : { id, target: "private/bin/notify", current: "notify --loud", proposed: "notify --quiet" } });
     await show();
     await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
-    fireEvent.click(within(card("P-20261101-158e")).getByRole("button", { name: "Promote" }));
+    choose(card("P-20261101-158e"), "Promote");
     for (const name of ["Rule wording", "Default", "Exception", "Applied to"]) expect(within(dialog()).queryByRole("textbox", { name })).toBeNull();
     expect(dialog().querySelector("[data-dialog-consequence]")!.textContent).toBe(
       "Promoting replaces the Now lines with the Proposed lines in the target file, then records the verdict. If the Now lines are not there exactly once, or evolve refuses, nothing is written and the error shows here.",
@@ -275,7 +277,7 @@ describe("Rules page", () => {
     expect(sent()).toEqual([{ id: "P-20261101-158e", verdict: "promote", reason: "good shape" }]);
     await waitFor(() => expect(document.querySelector("dialog[data-dialog]")).toBeNull());
 
-    fireEvent.click(within(card("P-0009")).getByRole("button", { name: "Promote" }));
+    choose(card("P-0009"), "Promote");
     expect((await within(dialog()).findByRole("alert", {}, SLOW)).textContent).toBe("Promote is off: this proposal gives no Now and Proposed lines to apply.");
     fireEvent.change(within(dialog()).getByRole("textbox", { name: "Reason" }), { target: { value: "x" } });
     expect((within(dialog()).getByRole("button", { name: "Send promote" }) as HTMLButtonElement).disabled).toBe(true);
@@ -286,7 +288,7 @@ describe("Rules page", () => {
     answer = { status: 502, body: { error: "The ledger refused the verdict: evolve verdict exited 1: evolve: P-0007 was judged already" } };
     await show();
     await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
-    fireEvent.click(within(card("P-0007")).getByRole("button", { name: "Promote" }));
+    choose(card("P-0007"), "Promote");
     await waitFor(() => expect(dialog().querySelector('[data-change="proposed"]')).not.toBeNull(), SLOW);
     fireEvent.change(within(dialog()).getByRole("textbox", { name: "Reason" }), { target: { value: "x" } });
     fireEvent.click(within(dialog()).getByRole("button", { name: "Send promote" }));
@@ -296,7 +298,7 @@ describe("Rules page", () => {
   it("promote of a class keeps its own help text and has no Applied to field", async () => {
     await show();
     await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
-    fireEvent.click(within(card("C-012")).getByRole("button", { name: "Promote" }));
+    choose(card("C-012"), "Promote");
     expect(dialog().querySelector("[data-dialog-consequence]")!.textContent).toBe(
       "Promoting writes this rule into your rules file, records the verdict and runs sync-agents; it is part of every run's prompt from the next run on.",
     );
@@ -307,7 +309,7 @@ describe("Rules page", () => {
     answer = { status: 403, body: { error: "Only the owner judges rules; you are local:alice." } };
     await show();
     await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
-    fireEvent.click(within(card("C-012")).getByRole("button", { name: "Hold" }));
+    choose(card("C-012"), "Hold");
     fireEvent.change(within(dialog()).getByRole("textbox", { name: "Reason" }), { target: { value: "x" } });
     fireEvent.click(within(dialog()).getByRole("button", { name: "Send hold" }));
     expect((await within(dialog()).findByRole("alert", {}, SLOW)).textContent).toContain("Only the owner");
@@ -566,18 +568,37 @@ describe("Rules page", () => {
     expect(screen.getByText("No applied rule matches.")).not.toBeNull();
   });
 
-  it("a disabled Promote says why in a Tooltip; Promote is primary, Hold secondary, Reject danger and last", async () => {
+  it("the verdicts are items of one ⋯ menu, Promote first and Reject last in the danger tone; a disabled Promote says why in the row", async () => {
     current = view({ entries: [{ id: "C-013", title: "Summary first.", state: "pending", judged: null, draft: null, draft_error: "x" }, ...view().entries] });
     await show();
     await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
-    const buttons = within(card("C-012")).getAllByRole("button").map((b) => b.textContent);
-    expect(buttons).toEqual(["Keep existing CLI flags.", "Promote", "Hold", "Reject"]);
-    expect(whyToggle("C-012")).not.toBeNull();
-    expect(within(card("C-012")).getByRole("button", { name: "Promote" }).className).toContain("bg-accent");
-    expect(within(card("C-012")).getByRole("button", { name: "Reject" }).className).toContain("text-failed");
-    const off = within(card("C-013")).getByRole("button", { name: "Promote" });
-    fireEvent.mouseEnter(off.parentElement!);
-    expect((await screen.findByRole("tooltip")).textContent).toContain("Promote is off");
+    expect(within(card("C-012")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Keep existing CLI flags.", "⋯"]);
+    fireEvent.click(within(card("C-012")).getByRole("button", { name: /^Decide:/ }));
+    const items = within(card("C-012")).getAllByRole("menuitem");
+    expect(items.map((i) => i.textContent)).toEqual(["Promote", "Hold", "Reject"]);
+    expect(items[2]!.className).toContain("text-pill-bad-fg");
+    fireEvent.click(within(card("C-013")).getByRole("button", { name: /^Decide:/ }));
+    expect((within(card("C-013")).getByRole("menuitem", { name: "Promote" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(card("C-013").querySelector("[data-draft-error]")!.textContent).toContain("Promote is off");
+  });
+
+  it("a waiting proposal shows its short file name and its before and after without a click; one without lines shows no excerpt", async () => {
+    current = view({
+      entries: [
+        { id: "P-20261103-34e9", title: "Quiet notify", state: "open", kind: "edit-asset", target: "bin/evolve", judged: null, draft: null, draft_error: null },
+        { id: "P-0007", title: "Split the review prompt", state: "held", kind: "edit-asset", target: "prompts/review.md", judged: null, draft: null, draft_error: null },
+      ],
+      excerpts: { "P-20261103-34e9": { before: "notify every hour", after: "notify at 8am" } },
+    } as Partial<RulesView>);
+    await show();
+    await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
+    const row = card("P-20261103-34e9");
+    expect(row.querySelector("[data-rule-what]")!.textContent).toBe("edit-asset: evolve");
+    expect(row.querySelector('[data-excerpt="before"]')!.textContent).toBe("Beforenotify every hour");
+    expect(row.querySelector('[data-excerpt="after"]')!.textContent).toBe("Afternotify at 8am");
+    expect(row.querySelector("[data-rule-what]")!.textContent).not.toContain("bin/");
+    expect(card("P-0007").querySelector("[data-rule-excerpt]")).toBeNull();
+    expect(card("P-0007").textContent).not.toContain("not given");
   });
 
   it("the verdict dialog titles the verdict and the entry title, shows the full title and detail above the fields, and labels the reason as it reads", async () => {
@@ -586,7 +607,7 @@ describe("Rules page", () => {
     detail = { id: "C-037", error: null, detail: { id: "C-037", incidents: 2, scope: "software" } };
     await show();
     await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
-    fireEvent.click(within(card("C-037")).getByRole("button", { name: "Promote" }));
+    choose(card("C-037"), "Promote");
     expect(within(dialog()).getByRole("heading", { level: 2 }).textContent).toBe(`Promote: ${long}`);
     expect(dialog().querySelector("h2")!.textContent).not.toContain("C-037");
     expect(dialog().querySelector("[data-dialog-summary]")!.textContent).toBe(long);
@@ -616,7 +637,7 @@ describe("Rules page", () => {
   const openDialog = async (label: string) => {
     await show();
     await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
-    fireEvent.click(within(card("P-20261103-34e9")).getByRole("button", { name: label }));
+    choose(card("P-20261103-34e9"), label);
     await waitFor(() => expect(dialog().querySelector("[data-rule-detail]")).not.toBeNull(), SLOW);
   };
 
@@ -731,7 +752,11 @@ describe("Rules page: improve report and Run now (design 07-self-improvement, 20
     current = view({ improve: improve() });
     await show();
     const s = await section();
-    expect(s.querySelector("[data-improve-window]")!.textContent).toContain("2 groups (4 runs), 1 single-run patterns");
+    const windowText = s.querySelector("[data-improve-window]")!.textContent!;
+    expect(windowText).toContain("2 groups (4 runs), 1 single-run patterns");
+    // Each instant in the viewer's local time, never as the ISO text the API sent.
+    expect(windowText).toContain(`Window ${localDateTime(report!.window_start)} to ${localDateTime(report!.window_end)}, reported ${localDateTime(report!.created_at)}.`);
+    expect(windowText).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
     const rows = [...s.querySelectorAll<HTMLElement>("[data-improve-group]")];
     expect(rows.map((r) => r.dataset.improveGroup)).toEqual(["checks_failed", "no_commits"]);
     expect(rows[0]!.querySelector("[data-draft]")!.textContent).toContain("a flaky port");

@@ -256,6 +256,23 @@ describe("ClaudeCodeRunner: only model output restarts the stall clock (issue #2
     }).run(spec());
     expect(r.status).toBe("completed");
   });
+
+  it("calls on_output for each chunk of model output (assistant, thinking, tool result), never for other system events", async () => {
+    const seen: string[] = [];
+    let last = "";
+    const r = await runnerWith(async (_opts, out) => {
+      for (const [name, event] of [
+        ["init", { type: "system", subtype: "init" }], ["retry", retry], ["thinking", { type: "system", subtype: "thinking_tokens", estimated_tokens: 5 }],
+        ["assistant", toolUse("toolu_1")], ["tool_result", toolResult("toolu_1")], ["result", RESULT],
+      ] as const) {
+        last = name;
+        out(event);
+      }
+      return { exit_code: 0 };
+    }).run({ ...spec(), on_output: () => seen.push(last) });
+    expect(r.status).toBe("completed");
+    expect(seen).toEqual(["thinking", "assistant", "tool_result"]);
+  });
 });
 
 // The 2026-11-19/20 resolve stalls: every stored detail named stall_ms. The agent started its checks as a background

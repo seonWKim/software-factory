@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PROJECT_RETRY_MS, build, loadConfig, resolvedConfig, startupProject } from "../src/compose.js";
+import { PROJECT_RETRY_MS, build, startupProject } from "../src/compose.js";
+import { loadConfig, resolvedConfig } from "../src/load-config.js";
 import { githubProjectKey, resolveProject } from "../src/impl/github/forge.plugin.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import {
@@ -11,7 +12,6 @@ import {
 import { readProjectLabel, saveProject, saveProjectLabel } from "../src/core/project-labels.js";
 import { type FactoryConfig, cliUserConfig } from "../src/core/config.js";
 import type { UserId } from "../src/core/types.js";
-import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { GitHubClient, GitHubError, webHost } from "../src/impl/github/github-client.js";
@@ -24,7 +24,11 @@ import type { UiDeps } from "../src/ui/deps.js";
 import type { Secret } from "../src/interfaces/secret-store.js";
 import { REGISTRY, withPlugin } from "../src/plugins.js";
 import { GitHubForge } from "../src/impl/github/github-forge.js";
-import { FakeAuth, FakeForge, FakeSource, PROJECT, alice, cleanScanner, config, fakeGitHubAccess, issueRef, recordingLog, triageSpec } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { PROJECT, alice, cleanScanner, config, issueRef, recordingLog, triageSpec } from "./helpers/fakes/config.js";
+import { fakeGitHubAccess } from "./helpers/fakes/github.js";
 import { issue, system, w1 } from "./helpers/store.js";
 
 // Projects are keyed by GitHub's repository node ID (design 2026-11-01): `github:github.com:<node id>`, with

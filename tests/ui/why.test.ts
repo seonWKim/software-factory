@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { type WhyInput, deadlocked, refsOf, whyWaiting } from "../../src/ui/why.js";
-import { whyText } from "../../web/src/lib/format.js";
+import { localDateTime, whyText } from "../../web/src/lib/format.js";
 
 // The server sends a reason code with its values; the web app words it (en.ts, one text per reason code). `said`
 // is the text a person reads for an input.
@@ -25,6 +25,8 @@ function input(p: Partial<Omit<WhyInput, "item">> & { item?: Partial<WhyInput["i
 const held = (holder_kind: "running" | "pr" | "waiting", run_id = "run_q") =>
   ({ run_id, decision: "held" as const, holder_ref: "#92", holder_kind, approved_by: null });
 const UNTIL = "2026-11-07T12:30:00.000Z";
+/** The pause end or retry time as the viewer reads it: local, never UTC or ISO. */
+const LOCAL = localDateTime(UNTIL);
 
 describe("whyWaiting: every case", () => {
   const cases: [string, WhyInput, string, string, number[]][] = [
@@ -42,10 +44,10 @@ describe("whyWaiting: every case", () => {
     ["deadlock", input({ run: running, decision: { run_id: "run_r", decision: "deadlock", holder_ref: "#92", holder_kind: "waiting", approved_by: null, holder_title: "Other item" } }), `Running at the same time as "Other item", which changes some of the same files. If they clash, you'll be asked when it merges.`, "factory", []],
     ["deadlock, holder without a title", input({ run: running, decision: { run_id: "run_r", decision: "deadlock", holder_ref: "#92", holder_kind: "pr", approved_by: null } }), "Running at the same time as another item, which changes some of the same files. If they clash, you'll be asked when it merges.", "factory", []],
     ["running", input({ run: running }), "Running implement", "factory", []],
-    ["rate limit", input({ run: queued("triage"), pauses: { rate_limit: UNTIL } }), "Paused by a usage or rate limit until 2026-11-07 12:30 UTC", "factory", []],
+    ["rate limit", input({ run: queued("triage"), pauses: { rate_limit: UNTIL } }), `Paused by a usage or rate limit until ${LOCAL}`, "factory", []],
     ["model stall", input({ run: queued("review"), pauses: { model_stall: UNTIL } }), "Paused: the model is not answering; runs start again once a probe answers", "factory", []],
-    ["forge auth", input({ run: queued("implement"), pauses: { forge_auth: UNTIL } }), "Paused: the forge refused the factory's credentials, until 2026-11-07 12:30 UTC", "human", []],
-    ["preflight access", input({ run: queued("update"), pauses: { preflight_access: UNTIL } }), "Paused: a push or PR access check failed, until 2026-11-07 12:30 UTC", "human", []],
+    ["forge auth", input({ run: queued("implement"), pauses: { forge_auth: UNTIL } }), `Paused: the forge refused the factory's credentials, until ${LOCAL}`, "human", []],
+    ["preflight access", input({ run: queued("update"), pauses: { preflight_access: UNTIL } }), `Paused: a push or PR access check failed, until ${LOCAL}`, "human", []],
     ["dependency, two", input({ run: queued(), item: { blocked_on: "dependency", blocked_reason: "waiting for #12 and #13 to merge" } }), "Waiting for #12 and #13 to merge", "other_item", [12, 13]],
     ["dependency, other repo", input({ item: { blocked_on: "dependency", blocked_reason: "waiting for o/other#4 to merge" } }), "Waiting for o/other#4 to merge", "other_item", []],
     ["dependency, no reason", input({ item: { blocked_on: "dependency" } }), "Waiting for another issue to merge", "other_item", []],
@@ -55,7 +57,7 @@ describe("whyWaiting: every case", () => {
     ["held by running", input({ run: queued(), decision: held("running") }), "Held behind #92, which is running", "other_item", [92]],
     ["held by PR", input({ run: queued(), decision: held("pr") }), "Held behind #92, which has an open PR", "other_item", [92]],
     ["held by queued", input({ run: queued(), decision: held("waiting") }), "Held behind #92, which is queued ahead of it", "other_item", [92]],
-    ["retry backoff", input({ run: queued(), not_before: UNTIL }), "Retry waits until 2026-11-07 12:30 UTC", "factory", []],
+    ["retry backoff", input({ run: queued(), not_before: UNTIL }), `Retry waits until ${LOCAL}`, "factory", []],
     ["queued", input({ run: queued() }), "Queued at position 3", "factory", []],
     ["queued, no position", input({ run: queued("triage", null) }), "Queued triage", "factory", []],
     ["idle", input(), "Nothing moves it: no run is queued", "human", []],
@@ -63,6 +65,14 @@ describe("whyWaiting: every case", () => {
   it.each(cases)("%s", (_name, x, text, next_actor, refs) => {
     const w = whyWaiting(x);
     expect({ text: whyText(w), next_actor: w.next_actor, refs: w.refs }).toEqual({ text, next_actor, refs });
+  });
+
+  it("a retry wait or claim pause sends its end as an ISO field; the text never says UTC", () => {
+    for (const x of [input({ run: queued(), not_before: UNTIL }), input({ run: queued(), pauses: { rate_limit: UNTIL } }), input({ run: queued(), pauses: { forge_auth: UNTIL } }), input({ run: queued(), pauses: { preflight_access: UNTIL } })]) {
+      const w = whyWaiting(x);
+      expect(w.params.until).toBe(UNTIL);
+      expect(whyText(w)).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}|UTC/);
+    }
   });
 
   it("a person's block with no stored reason names the item's state and the next step, never \"no reason\"", () => {

@@ -144,12 +144,17 @@ export async function readRules(d: PauseDeps): Promise<ApiResult> {
     error = `The ledger could not be read: ${errorText(err)}`;
   }
   const shown = [];
+  const excerpts: Record<string, Excerpt> = {};
   for (const e of entries) {
     const proposal = { ...(e.kind !== undefined ? { kind: await text(e.kind) } : {}), ...(e.target !== undefined ? { target: await text(e.target) } : {}) };
     const draft = e.draft === undefined ? null : {
       default: await text(e.draft.default), exception: await text(e.draft.exception),
       incidents: await Promise.all(e.draft.incidents.map(text)), scope: await text(e.draft.scope),
     };
+    if ((e.judged ?? null) === null && tacitIdKind(e.id) === "proposal") {
+      const x = await excerptOf(tacit, e.id, text);
+      if (x !== null) excerpts[await text(e.id)] = x;
+    }
     shown.push({
       id: await text(e.id), title: await text(e.title), state: e.state, ...proposal, judged: e.judged ?? null, draft,
       draft_error: e.draft_error === undefined ? null : await text(e.draft_error),
@@ -158,10 +163,48 @@ export async function readRules(d: PauseDeps): Promise<ApiResult> {
   return {
     status: 200,
     value: {
-      enabled: true, entries: shown, applied: await readApplied(tacit, text), retired: await readRetired(tacit, text),
+      enabled: true, entries: shown, excerpts, applied: await readApplied(tacit, text), retired: await readRetired(tacit, text),
       error: error === null ? null : await text(error), csrf_token: d.pauses?.csrfToken ?? null, judge, home: null, turn_on: null, improve,
     },
   };
+}
+
+/** The most lines and characters of each side a proposal's row shows before it is opened. */
+const EXCERPT_LINES = 3;
+const EXCERPT_CHARS = 200;
+
+/** A waiting proposal's before and after lines for its row; a side the ledger does not give is absent. */
+export type Excerpt = { before?: string; after?: string };
+
+/** The first changed lines of one side: what stays after the lines both sides share at the start and the end, cut to the row's limits. */
+function changedLines(own: string[], other: string[]): string {
+  let start = 0;
+  while (start < own.length && start < other.length && own[start] === other[start]) start++;
+  let end = 0;
+  while (end < own.length - start && end < other.length - start && own[own.length - 1 - end] === other[other.length - 1 - end]) end++;
+  return own.slice(start, own.length - end).slice(0, EXCERPT_LINES).join("\n").slice(0, EXCERPT_CHARS);
+}
+
+/**
+ * The excerpt of proposal `id` from `TacitLedger.show` (its current and proposed lines), each side through `text`;
+ * null when the ledger gives neither side, has no `show` or fails: the row then shows no excerpt line.
+ */
+async function excerptOf(tacit: TacitLedger, id: string, text: (v: string) => Promise<string>): Promise<Excerpt | null> {
+  let detail: TacitEntryDetail | null = null;
+  try {
+    detail = (await tacit.show?.(id)) ?? null;
+  } catch {
+    return null;
+  }
+  const lines = (v: string | undefined) => (v === undefined || v.trim() === "" ? null : v.split("\n"));
+  const before = lines(detail?.current);
+  const after = lines(detail?.proposed);
+  const out: Excerpt = {};
+  const b = before === null ? "" : changedLines(before, after ?? []);
+  const a = after === null ? "" : changedLines(after, before ?? []);
+  if (b.trim() !== "") out.before = await text(b);
+  if (a.trim() !== "") out.after = await text(a);
+  return out.before === undefined && out.after === undefined ? null : out;
 }
 
 /**

@@ -8,9 +8,11 @@ import { GitHubForge } from "../src/impl/github/github-forge.js";
 import type { BaseChecks, PrChecks } from "../src/interfaces/forge.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Worker } from "../src/worker/index.js";
-import {
-  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, config, issueRef, prompts, silent, triageSpec,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, config, issueRef, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { RecordingGitHubClient } from "./helpers/github.js";
 import { newStore } from "./helpers/store.js";
 

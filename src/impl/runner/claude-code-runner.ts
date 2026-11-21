@@ -8,7 +8,7 @@ import {
 } from "../../interfaces/agent-runner.js";
 import type { Sandbox } from "../../interfaces/sandbox.js";
 import { type SecretStore, secretName } from "../../interfaces/secret-store.js";
-import { GATE_HOOKS_DIR, type RunningGateHooks, startGateHooks } from "./gate-hooks.js";
+import { type After, GATE_HOOKS_DIR, type RunningGateHooks, startGateHooks, stopTimeoutDetail } from "./gate-hooks.js";
 import { copyToolchainSeeds } from "./toolchain-seeds.js";
 import { type BridgeArgs, type GrantedToolDeps, harnessToolName, withRunBridge } from "./tool-bridge.js";
 
@@ -27,6 +27,8 @@ export interface ClaudeCodeRunnerOptions {
    * The broker and scanner granted tools go through (architecture §5). Absent: the runner exposes no tools and refuses a run with grants.
    */
   tools?: GrantedToolDeps;
+  /** The gate Stop check's time limit. Absent: STOP_CHECK_MS (gate-hooks.ts). */
+  stopCheckMs?: number;
 }
 
 /** The harness credential: the one secret the agent process holds (architecture §5). */
@@ -298,7 +300,9 @@ export class ClaudeCodeRunner implements AgentRunner {
       dir: join(this.opts.claudeConfigDir, GATE_HOOKS_DIR, spec.run_id),
       spec: { ...spec, gate_hooks: g },
       sandbox: this.opts.sandbox,
+      after,
       ...(this.opts.tools ? { scanner: this.opts.tools.scanner } : {}),
+      ...(this.opts.stopCheckMs === undefined ? {} : { stop_check_ms: this.opts.stopCheckMs }),
     }).catch(() => null);
     if (!hooks) return this.runClaude(spec, bridge);
     try {
@@ -325,15 +329,16 @@ export class ClaudeCodeRunner implements AgentRunner {
     const model = this.opts.models[spec.model_class];
     const stallMs = spec.stall_ms ?? DEFAULT_STALL_MS;
     const firstOutputMs = spec.first_output_ms ?? DEFAULT_FIRST_OUTPUT_MS;
-    const watch = new StallWatch(stallMs, firstOutputMs, hooks ? () => hooks.checking() : undefined);
-    let result: Awaited<ReturnType<Sandbox["exec"]>>;
+    const watch = new StallWatch(stallMs, firstOutputMs, hooks ? () => hooks.checking() : undefined, spec.on_output);
+    let result: Awaited<ReturnType<Sandbox["exec"]>>, soFar = ""; // soFar: stdout so far, for the live transcript (spec.live)
     try {
       result = await this.opts.sandbox.exec(spec.sandbox, buildClaudeArgs(spec, model, this.opts.claudeBin, bridge, [tmp], hooks?.settings), {
         env: { ...env, ...FOREGROUND_ENV },
         stdin: spec.prompt,
-        timeout_ms: spec.timeout_ms,
-        signal: AbortSignal.any([spec.signal, watch.signal]),
-        onStdout: (chunk) => watch.feed(chunk),
+        // A backstop: the hooks' deadline ends the run first; a Stop check past its own limit fails it naming the check.
+        timeout_ms: spec.timeout_ms + (hooks?.maxCheckMs ?? 0),
+        signal: AbortSignal.any([spec.signal, watch.signal, ...(hooks ? [hooks.deadline] : [])]),
+        onStdout: (chunk) => { watch.feed(chunk); if (spec.live) spec.live((soFar += chunk)); },
       });
     } finally {
       watch.stop();
@@ -346,17 +351,17 @@ export class ClaudeCodeRunner implements AgentRunner {
     const usage = parsed ? usageOf(parsed) : stream.usage;
     const did_work = stream.did_work;
     if (spec.signal.aborted) return { status: "aborted", output: null, transcript: result.stdout, usage, did_work };
+    const stopTimeout = hooks?.stopTimeout();
+    if (stopTimeout) return { status: "failed", output: null, transcript: result.stdout, usage, error: stopTimeoutDetail(stopTimeout), did_work };
     if (watch.stalled) {
       const error = watch.stalled === "first_output"
         ? `no model output within first_output_ms (${firstOutputMs} ms)`
         : `no model output for stall_ms (${stallMs} ms) with no tool call open`;
       return { status: "stalled", output: null, transcript: result.stdout, usage, error, did_work };
     }
-    if (result.timed_out) return { status: "timed_out", output: null, transcript: result.stdout, usage, did_work };
-
+    if (result.timed_out || hooks?.deadline.aborted) return { status: "timed_out", output: null, transcript: result.stdout, usage, did_work };
     if (parsed === null) {
-      const error = `claude exited ${result.exit_code} without JSON output`;
-      return { status: "failed", output: null, transcript: result.stdout + result.stderr, usage, error, did_work };
+      return { status: "failed", output: null, transcript: result.stdout + result.stderr, usage, error: `claude exited ${result.exit_code} without JSON output`, did_work };
     }
 
     if (parsed.api_error_status === 429) {
@@ -460,11 +465,12 @@ export const DEFAULT_FIRST_OUTPUT_MS = 180_000;
  * tool call at once, then the model waits idle for the task): a `task_started` system event opens one, its
  * `task_notification` or a `task_updated` to an end status closes it, and a `background_tasks_changed` event sets the
  * list; a closed task restarts the clock, as a tool result does. Nor does the clock run while `held` (a gate Stop
- * check running its commands); the run timeout still bounds all three. Out of time: `signal` aborts, `stalled` says why.
+ * check running its commands); the run timeout bounds tool calls and tasks, the Stop check's own limit bounds a check.
+ * Out of time: `signal` aborts, `stalled` says why. `onModel` hears each model output.
  */
 class StallWatch {
   private readonly ctl = new AbortController();
-  private timer: ReturnType<typeof setTimeout> | null = null;
+  private cancel = (): void => {};
   private readonly open = new Set<string>();
   private readonly tasks = new Set<string>();
   private partial = "";
@@ -472,7 +478,7 @@ class StallWatch {
   private seenModel = false;
   stalled: false | "first_output" | "silence" = false;
 
-  constructor(private readonly ms: number, private readonly firstOutputMs: number, private readonly held = () => false) {
+  constructor(private readonly ms: number, private readonly firstOutputMs: number, private readonly held = () => false, private readonly onModel?: () => void) {
     this.arm();
   }
 
@@ -490,14 +496,13 @@ class StallWatch {
     let model = false;
     for (const line of lines) if (this.track(line)) model = true;
     if (!model) return;
-    this.seenModel = true;
+    this.seenModel = true; this.onModel?.(); // onModel: the run's last output time (design 05-restarts)
     this.arm();
   }
 
   stop(): void {
     this.done = true;
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = null;
+    this.cancel();
   }
 
   /** Tracks the line's tool blocks and background tasks; true when it is model output or ends a call or task. */
@@ -538,15 +543,14 @@ class StallWatch {
 
   /** Restarts the clock when no tool call or background task is open; stops it while one is. */
   private arm(): void {
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = null;
+    this.cancel();
     if (this.done || this.open.size > 0 || this.tasks.size > 0) return;
     const first = !this.seenModel && this.firstOutputMs <= this.ms;
-    this.timer = setTimeout(() => {
+    this.cancel = after(first ? this.firstOutputMs : this.ms, () => {
       if (this.held()) return this.arm();
       this.stalled = first ? "first_output" : "silence";
       this.ctl.abort();
-    }, first ? this.firstOutputMs : this.ms);
+    });
   }
 }
 
@@ -555,6 +559,9 @@ const FOREGROUND_ENV: Readonly<Record<string, string>> = { CLAUDE_CODE_DISABLE_B
 
 /** The `task_updated` statuses that end a background task. */
 const TASK_END: ReadonlySet<string> = new Set(["completed", "failed", "killed", "stopped"]);
+
+/** The runner's one timer, also the gate hooks' (the Stop check's limit, the run deadline): returns its cancel. */
+const after: After = (ms, fn) => { const t = setTimeout(fn, ms); return () => clearTimeout(t); };
 
 /** Characters of an unfinished stdout line kept for tool tracking. */
 const PARTIAL_LIMIT = 4 * 1024 * 1024;

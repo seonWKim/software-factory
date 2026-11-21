@@ -1,4 +1,4 @@
-import { Plugins } from "../../../compose.js";
+import { Plugins } from "../../../plugin-set.js";
 import { llmCheckFromPlugins, parseLlmCheckArgs } from "../../../llm-check.js";
 import { defineCommand } from "../../command.js";
 
