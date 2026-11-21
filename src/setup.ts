@@ -15,11 +15,12 @@ import { llmCheckFromPlugins } from "./llm-check.js";
 import { GitHubError } from "./impl/github/github-client.js";
 import { prFlagLabels, statusLabels } from "./impl/github/github-issue-source.js";
 import { baseEnv, runProcess } from "./impl/process/run-process.js";
+import { SANDBOX_LINES, type SandboxEnforcement, probeOsSandbox } from "./impl/runner/os-sandbox.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
 import type { GitHubApi } from "./interfaces/github-credentials.js";
 import { storeSql, storeSqlOrNull } from "./impl/store/sql/store-sql.js";
 import type { SecretName, SecretStore } from "./interfaces/secret-store.js";
-import type { ConnectContext } from "./plugin-api.js";
+import { type ConnectContext, selectedRunners } from "./plugin-api.js";
 import { REGISTRY, type SecretDeclaration, connectHooks, createPlugin, declaredSecrets, selectedSetups } from "./plugins.js";
 import type { Ask } from "./cli/handlers/setup/ask.js";
 import { storeRunAttemptChecks } from "./worker/migrations/run-attempt-status.js";
@@ -72,10 +73,14 @@ export function checksExitCode(checks: readonly Check[]): number {
  * itself. Messages may carry error text from GitHub, so a surface that shows them to anyone but the operator's terminal must
  * egress-scan them first (the status page does).
  */
-export async function doctorChecks(loaded: Loaded, opts: { github?: boolean } = {}): Promise<Check[]> {
+/** `opts.sandbox`: the OS sandbox probe (tests pass a fake); doctor prints one warn per line the OS does not enforce. */
+export async function doctorChecks(loaded: Loaded, opts: { github?: boolean; sandbox?: () => Promise<SandboxEnforcement> } = {}): Promise<Check[]> {
   // Setup passes the person's GitHub answer, which a declined config diff leaves unwritten.
   const github = opts.github ?? loaded.config.local_only !== true;
   const checks: Check[] = [configFileCheck(loaded), ...settingsChecks(loaded), ...(await toolchainChecks(loaded.config))];
+  const box = await (opts.sandbox ?? (() => probeOsSandbox({ runners: selectedRunners(loaded.plugins) })))();
+  const on = (k: (typeof SANDBOX_LINES)[number]) => box[k].enforced;
+  checks.push(...SANDBOX_LINES.map((k) => ({ ok: on(k), warn: !on(k), msg: `sandbox ${k}: ${on(k) ? "OS-enforced" : "not OS-enforced, so auto mode is refused"} (${box[k].why})` })));
   const add = (ok: boolean, msg: string, warn = false, plain?: string) => checks.push({ ok, msg, warn, ...(plain !== undefined && { plain }) });
 
   try {
