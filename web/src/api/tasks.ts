@@ -1,6 +1,6 @@
 // The Tasks page: GET /api/v1/tasks (useTasks), GET /api/v1/tasks/preview (getTaskPreview), POST /api/v1/tasks (postTaskAdd), /api/v1/tasks/build (postTaskBuild),
 // the row actions under /api/v1/tasks (postTaskAction: edit, done, reopen, delete and sub), POST /api/v1/projects
-// (postProject), POST /api/v1/tasks/project (postTaskProject) and POST /api/v1/tasks/body (postTaskBody).
+// (postProject), POST /api/v1/projects/delete (postProjectDelete), POST /api/v1/tasks/project (postTaskProject) and POST /api/v1/tasks/body (postTaskBody).
 
 import { useQuery } from "@tanstack/react-query";
 import { t } from "../i18n/index.js";
@@ -145,6 +145,12 @@ export async function postProject(token: string, id: string, name: string): Prom
   const r = await postJson<{ project?: ProjectChoice; error?: string }>(API.projects, token, { id, name });
   if (r.ok && r.value.project) return { ok: true, project: r.value.project };
   return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+}
+
+/** POST /api/v1/projects/delete: deletes the project by slug, as `factory project delete` does; its tasks stay. A refusal (404, …) comes back as `{ ok: false, error }`. */
+export async function postProjectDelete(token: string, project: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await postJson<{ error?: string }>(API.projectDelete, token, { project });
+  return r.ok ? { ok: true } : { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
 /** POST /api/v1/tasks/project: adds the task to the project (`add`) or removes it. A refusal comes back as `{ ok: false, error }`. */

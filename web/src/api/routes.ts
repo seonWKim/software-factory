@@ -48,6 +48,7 @@ export const API = {
   /** What quick add would store for these words, from the server's parser; writes nothing. */
   taskPreview: (words: string) => `/api/v1/tasks/preview?words=${encodeURIComponent(words)}`,
   projects: "/api/v1/projects",
+  projectDelete: "/api/v1/projects/delete",
   taskProject: "/api/v1/tasks/project",
   calendar: "/api/v1/calendar",
   calendarConnect: "/api/v1/calendar/connect",
