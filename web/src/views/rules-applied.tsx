@@ -12,6 +12,7 @@ import { Markdown } from "../components/ui/markdown.js";
 import { OverflowMenu, Tooltip } from "../components/ui/menu.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
+import { localShortDate } from "../lib/format.js";
 import { EntryDetail } from "./rules-detail.js";
 import { EditDialog, RetireDialog } from "./rules-verdict.js";
 import { ROW_PAD, STACK_NARROW, muted, ruleName } from "./rules-shared.js";
@@ -21,10 +22,11 @@ const LIST = "divide-y divide-border rounded-control border border-border";
 
 // The Rules page's applied rules, inside its In effect section (since 2026-11-22): the promoted rules file in the file's
 // order, one compact row per rule (its plain sentence, the rule name else its default, with its ID in a tooltip; its
-// scope; the "Suggested to retire" badge; a ⋯ menu with Edit, Open evidence and Retire) whose Details hold a
-// label/value list (stacked below `sm`; each default and exception line on its own line) with the default, exception,
-// evidence and judged date. A search over ID, name, default and scope and the Suggest button sit above the rows. An
-// unparsable block's raw text is behind Details too. Scope and the encoded-elsewhere lines render through Markdown.
+// scope; "Seen N times (Mon D)" with the incident IDs in its tooltip; the "Suggested to retire" badge; a ⋯ menu with
+// Edit, Open evidence and Retire) whose Details hold a label/value list (stacked below `sm`; each default and exception
+// line on its own line) with the default, exception and judged date. A search over ID, name, default and scope and the
+// Suggest button sit above the rows. An unparsable block's raw text is behind Details too. Scope and the
+// encoded-elsewhere lines render through Markdown.
 
 /** One label and its value in an applied rule's details (a KeyValue item); no value reads "not given". */
 const part = (key: string, label: MessageKey, value: ReactNode): KeyValueItem => ({
@@ -41,11 +43,30 @@ const md = (value: string | null): ReactNode =>
     </div>
   );
 
-/** The evidence as a count and the incident IDs once each; nothing when the block gave none. */
-function evidence(incidents: string[] | null): ReactNode {
-  if (incidents === null) return null;
+/** The day an incident ID starts with (T-YYYYMMDD…) as a local time, so no time zone shifts it; null for any other ID. */
+const incidentDay = (id: string): string | null => {
+  const m = /^T-(\d{4})(\d{2})(\d{2})/.exec(id);
+  return m === null ? null : `${m[1]}-${m[2]}-${m[3]}T00:00:00`;
+};
+
+/**
+ * How often the rule was seen: "Seen N times (Mon D)", N its incidents counted once each and the date the latest
+ * incident's day; no date when no ID carries one. The incident IDs sit only in the tooltip. Nothing when it lists none.
+ */
+function Seen({ incidents }: { incidents: string[] | null }) {
+  if (incidents === null || incidents.length === 0) return null;
   const ids = [...new Set(incidents)];
-  return <p className="text-sm break-words">{t("rules.appliedEvidence", { count: ids.length, ids: ids.join(", ") })}</p>;
+  const count = ids.length;
+  const last = ids.map(incidentDay).filter((d) => d !== null).sort().at(-1);
+  const label =
+    last === undefined
+      ? t(count === 1 ? "rules.seenOne" : "rules.seen", { count })
+      : t(count === 1 ? "rules.seenOneOn" : "rules.seenOn", { count, date: localShortDate(last) });
+  return (
+    <div data-seen className="text-text-2">
+      <IdDetails label={label} id={ids.join(", ")} what="incident IDs" />
+    </div>
+  );
 }
 
 /** One promoted block: its sentence and parts; an unparsable block says so, its raw text behind Details. */
@@ -110,6 +131,7 @@ function AppliedClass({ rule, id, token, round, applied }: { rule: AppliedRule; 
       }
     >
       {rule.scope !== null && rule.scope !== "" && <div className="line-clamp-2 break-keep text-text-2">{md(rule.scope)}</div>}
+      <Seen incidents={rule.incidents} />
       {suggested.length > 0 && (
         <ul data-suggested className="space-y-0.5">
           {suggested.map((r) => (
@@ -125,7 +147,6 @@ function AppliedClass({ rule, id, token, round, applied }: { rule: AppliedRule; 
           items={[
             part("default", "rules.appliedDefault", md(rule.default)),
             part("exception", "rules.appliedException", md(rule.exceptions)),
-            part("evidence", "rules.appliedIncidents", evidence(rule.incidents)),
             part("judged", "rules.appliedJudged", rule.judged === null ? null : <p className="text-sm">{rule.judged}</p>),
           ]}
         />
