@@ -16,7 +16,6 @@ import { ConsoleLogger } from "./impl/log/console-logger.js";
 import { baseEnv } from "./impl/process/run-process.js";
 import type { UserId, WorkItemId } from "./core/types.js";
 import type { ExternalIdentity } from "./interfaces/auth-provider.js";
-import type { Clock } from "./interfaces/clock.js";
 import type { KeepAwake } from "./interfaces/keep-awake.js";
 
 export const SESSION_USAGE = `factory interactive start <issue number | work item id> [--spec <file> [--wait]] [--transcript <url>] [--as <github login>]
@@ -138,7 +137,7 @@ export function sessionWho(loaded: Loaded, env: CliEnvironment): SessionWho {
 }
 
 /** The selected `plugins.awake`, built as the worker's is (design 05-interactive-sessions, 2026-11-21). */
-export function sessionAwake(loaded: Loaded, clock: Clock): Promise<KeepAwake> {
+export function sessionAwake(loaded: Loaded, clock: SessionParts["clock"]): Promise<KeepAwake> {
   return createPlugin(loaded.registry, "awake", loaded.plugins.awake, { ...new Plugins(loaded).base, clock });
 }
 
