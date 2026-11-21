@@ -19,7 +19,7 @@ import { t } from "../i18n/index.js";
 import { AgentsHomePicker } from "./agents-home-picker.js";
 import { Applied } from "./rules-applied.js";
 import { EntryDetail } from "./rules-detail.js";
-import { GROUPS, PAGE_WIDTH, PROSE, ROW_PAD, STATE_LABEL, STATE_LEVEL, VERDICTS, isClass, muted } from "./rules-shared.js";
+import { GROUPS, PAGE_WIDTH, PROSE, ROW_PAD, STATE_LABEL, STATE_LEVEL, VERDICTS, isClass, muted, proposalLine } from "./rules-shared.js";
 import { VerdictDialog } from "./rules-verdict.js";
 import { ApprovalsSection } from "./standing.js";
 
@@ -34,16 +34,9 @@ import { ApprovalsSection } from "./standing.js";
 // holding Promote (off, with its reason in the row, when the draft could not be read), Hold and Reject (danger, last);
 // each opens a dialog (rules-verdict.tsx). Only the owner sends. Auto-approve specs (standing.tsx) sits below the
 // waiting list. Applied (rules-applied.tsx) and Retired are their own tabs. The improve report is a tab on Health.
-// With the ledger off the page is an EmptyState whose action is Turn on (stores `integrations`,
+// With the ledger off the page is an EmptyState whose action is Turn on, first, above Auto-approve specs (stores `integrations`,
 // the plugin name only, through POST /api/v1/settings, then loads the rules), and an agents home picker over the
 // known homes (AGENTS_HOME when set, ~/.agents) shows the chosen one's check: both CLIs executable, else the missing file.
-
-/** A proposal's kind and target as one line; a part the ledger did not list reads "not given". */
-const proposalLine = (kind: string | undefined, target: string | undefined): string =>
-  t("rules.whatProposal", { kind: kind ?? t("rules.notGiven"), target: target === undefined ? t("rules.notGiven") : shortName(target) });
-
-/** A target's file name: its last path segment ("bin/evolve" is "evolve"); the full path stays in the detail. */
-const shortName = (target: string): string => target.split("/").filter(Boolean).pop() ?? target;
 
 /** A waiting proposal's first changed lines, by ID, from `GET /api/v1/rules`; a side the ledger did not give is absent. */
 type Excerpt = { before?: string; after?: string };
@@ -204,8 +197,8 @@ export function RulesPage() {
       <>
         <PageHeader title={title} />
         <div className={`${PAGE_WIDTH} space-y-4`}>
-          <ApprovalsSection />
           <LedgerOff view={v} />
+          <ApprovalsSection />
         </div>
       </>
     );

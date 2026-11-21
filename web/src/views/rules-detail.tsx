@@ -7,7 +7,7 @@ import { Loading } from "../components/ui/parts.js";
 import { Notice } from "../components/ui/notice.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { fileLines, isClass, line, muted, quote, ruleName } from "./rules-shared.js";
+import { fileLines, isClass, line, muted, proposalLine, quote, ruleName } from "./rules-shared.js";
 
 // The Rules page's entry detail, read on demand through GET /api/v1/rules/entry?id= and never on page load: a
 // description, what it would change, before → after, why, the evidence (newest first, 3 shown, the rest behind
@@ -90,7 +90,7 @@ function Detail({ entry, d, applied }: { entry: RuleRow; d: RuleDetail; applied:
           {kind === undefined && target === undefined
             ? [<p key="none" className={muted}>{t("rules.notGiven")}</p>]
             : [
-              kind !== undefined && <p key="kind" className={line}>{t("rules.whatKind", { kind })}</p>,
+              kind !== undefined && <p key="kind" className={line}>{t("rules.whatKind", { kind: proposalLine(kind, target) })}</p>,
               target !== undefined && <p key="target" className={`${line} font-mono`}>{t("rules.whatTarget", { target })}</p>,
             ]}
         </DetailPart>

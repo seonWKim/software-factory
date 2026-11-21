@@ -88,9 +88,6 @@ export function VerdictDialog({ entry, applied, verdict, token, returnFocusTo, o
       onClose={onClose}
       returnFocusTo={returnFocusTo}
     >
-      <p data-dialog-summary className="min-w-0 text-sm font-medium text-pretty break-words whitespace-pre-wrap">
-        {entry.title}
-      </p>
       <EntryDetail entry={entry} applied={applied} />
       {promote && (
         <>
@@ -106,7 +103,7 @@ export function VerdictDialog({ entry, applied, verdict, token, returnFocusTo, o
 }
 
 /** Retire of an applied class: the required reason, then the verdict (the server removes the rule's block first). */
-export function RetireDialog({ id, name, token, onClose }: { id: string; name: string; token: string; onClose: () => void }) {
+export function RetireDialog({ id, name, token, returnFocusTo, onClose }: { id: string; name: string; token: string; returnFocusTo?: RefObject<HTMLElement | null>; onClose: () => void }) {
   const [reason, setReason] = useState("");
   const { busy, error, send } = useSendVerdict(token, onClose);
   const label = t("rules.retire");
@@ -120,6 +117,7 @@ export function RetireDialog({ id, name, token, onClose }: { id: string; name: s
       error={error}
       onConfirm={() => void send({ id, verdict: "retire", reason: reason.trim() }, label, name)}
       onClose={onClose}
+      {...(returnFocusTo ? { returnFocusTo } : {})}
     >
       <ReasonField id={id} value={reason} onChange={setReason} />
     </Dialog>
