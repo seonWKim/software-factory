@@ -279,6 +279,7 @@ describe("needs_you: the number of Needs-you rows (design 09-status-page)", () =
 
   /** The overview, checked against the rows the section lists for the same reads: the waiting items, then one per system action. */
   async function counted(s: Awaited<ReturnType<typeof setup>>) {
+    await s.store.setSettingOverride({ key: "review_time", project: "", value: '""', actor: "local:owner" }); // every waiting item is a row: none held until review_time
     const o = await s.overview();
     const r = await respond(s.d, { method: "GET", url: "/api/v1/items", host: "127.0.0.1:4310" });
     const levels = (JSON.parse(r.body) as { items: { item_phase: string }[] }).items.map((i) => i.item_phase);
