@@ -414,6 +414,8 @@ export async function loadConfig(
       join(home, ".netrc"),
       join(home, ".my.cnf"),
       join(home, ".mylogin.cnf"),
+      // GnuPG keys (RFC 0024 WP2 step A).
+      join(home, ".gnupg"),
     ],
     agent_git_identity: file.agent_git_identity,
     budget_min_sample: budget.budget_min_sample,

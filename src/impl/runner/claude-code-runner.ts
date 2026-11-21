@@ -7,6 +7,7 @@ import { type AgentRunResult, type AgentRunSpec, type AgentRunner, SESSION_ROLES
 import type { Sandbox } from "../../interfaces/sandbox.js";
 import { type SecretStore, secretName } from "../../interfaces/secret-store.js";
 import { type After, GATE_HOOKS_DIR, type RunningGateHooks, startGateHooks, stopTimeoutDetail } from "./gate-hooks.js";
+import { type CheckoutDenial, checkoutDenial } from "./os-sandbox.js";
 import { copyToolchainSeeds } from "./toolchain-seeds.js";
 import { type BridgeArgs, type GrantedToolDeps, harnessToolName, withRunBridge } from "./tool-bridge.js";
 
@@ -27,24 +28,18 @@ export interface ClaudeCodeRunnerOptions {
   tools?: GrantedToolDeps;
   /** The gate Stop check's time limit. Absent: STOP_CHECK_MS (gate-hooks.ts). */
   stopCheckMs?: number;
+  /** The owner's live checkout (`repo.path`), denied to agents but for the run's own folders (`checkoutDenial`). Absent: not denied. */
+  checkout?: string;
 }
 
 /** The harness credential: the one secret the agent process holds (architecture §5). */
-export interface HarnessCredential {
-  name: "CLAUDE_CODE_OAUTH_TOKEN" | "ANTHROPIC_API_KEY";
-  value: string;
-}
+export interface HarnessCredential { name: "CLAUDE_CODE_OAUTH_TOKEN" | "ANTHROPIC_API_KEY"; value: string }
 
 /**
  * The per-run toolchain homes (design 05-sandbox.md, issue #334): with a `toolchain` block, each tool's home is `<TMPDIR>/toolchain/<name>`, which the agent
  * may write, never a shared cache; a `toolchain.env` entry may point one elsewhere. Gradle's starts with a copy of the warmed wrapper (`copyToolchainSeeds`).
  */
-export const TOOLCHAIN_HOMES: Readonly<Record<string, string>> = {
-  npm_config_cache: "npm",
-  CARGO_HOME: "cargo",
-  PIP_CACHE_DIR: "pip",
-  GRADLE_USER_HOME: "gradle",
-};
+export const TOOLCHAIN_HOMES: Readonly<Record<string, string>> = { npm_config_cache: "npm", CARGO_HOME: "cargo", PIP_CACHE_DIR: "pip", GRADLE_USER_HOME: "gradle" };
 
 /**
  * G1: the agent's whole environment, built from scratch. Nothing is inherited from the worker. With
@@ -134,17 +129,14 @@ const PATH_SCOPED_TOOLS: ReadonlySet<string> = new Set(["Edit", "Write"]);
 
 /**
  * G1 (subprocess scrub), G3 (OS sandbox denyRead), G4 (permission deny rules), and the write allow rules (design
- * §5 Sandbox): native Write and Edit are allowed only under the run folder (`workdir`) and `writable_paths`, the
- * roots `guardPolicy` gives the shared file tools, and under the runner's own temp folders (`tmp`, the run's
- * TMPDIR); one `Edit(//<root>/**)` rule each (Claude Code's Edit rules cover Write too). `--allowedTools` does
- * not name Write or Edit, and in `-p` mode a call no rule allows is refused, so a Write to any other path (the
- * owner's live checkout included) never runs. No `workdir`: no run folder rule. The paths come from
- * `guardPolicy`, the same policy the shared tools enforce. Relative entries resolve against `workdir`.
+ * §5 Sandbox): native Write and Edit only under the run folder (`workdir`), `writable_paths` (the roots `guardPolicy`
+ * gives the shared tools) and `tmp` (the run's TMPDIR), one `Edit(//<root>/**)` rule each (they cover Write too). In
+ * `-p` mode a call no rule allows is refused, so a Write elsewhere (the live checkout included) never runs.
  *
- * Read-only folders (`readable_paths`: toolchain caches and read-only inputs, design 05-sandbox.md): in `sandbox.filesystem.allowRead` (the OS read allow
- * list) and, so no write root can cover them, in `denyWrite` and an `Edit(//<cache>/**)` deny rule; never in
- * `allowWrite` or `permissions.allow`. A cache that overlaps a `deny_paths` entry is dropped here too (startup
- * already refuses it), so `allowRead` never reopens a denied folder. None: no key is added.
+ * Read-only folders (`readable_paths`: caches and read-only inputs, design 05-sandbox.md): in `allowRead` (the OS read
+ * allow list), `denyWrite` and an `Edit(//<cache>/**)` deny rule. `checkout`: its folder in `denyRead`, its carve-outs
+ * in `allowRead`, its other entries in `Read` deny rules. A cache or carve-out that overlaps a `deny_paths` entry is
+ * dropped (startup already refuses a cache), so `allowRead` never reopens a denied folder.
  *
  * Network: `allowLocalBinding` lets sandboxed commands bind and connect on localhost only, so tests that start a
  * local server (`listen 127.0.0.1:0`) run. No `allowedDomains` entry is added, so every other host stays denied
@@ -155,18 +147,21 @@ export function buildHarnessSettings(
   spec: Pick<AgentRunSpec, "deny_paths" | "writable_paths" | "readable_paths">,
   workdir?: string,
   tmp: readonly string[] = [],
+  checkout?: CheckoutDenial | null,
 ): Record<string, unknown> {
   const policy = guardPolicy({
     workdir: workdir ?? "/", deny_paths: spec.deny_paths, writable_paths: spec.writable_paths, readable_paths: spec.readable_paths ?? [], env_allowlist: {},
   });
   const writeRoots = [...(workdir === undefined ? [] : [policy.workdir]), ...policy.writable_paths, ...tmp];
   const caches = policy.readable_paths.filter((c) => readOnlyOverlaps([c], policy.deny_paths).length === 0);
+  const open = [...caches, ...(checkout?.carve_outs ?? []).filter((c) => readOnlyOverlaps([c], policy.deny_paths).length === 0)];
+  const readDeny = (p: string) => [`Read(${rulePath(p)})`, `Read(${rulePath(p)}/**)`];
   return {
     env: { CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1", npm_config_update_notifier: "false" },
     permissions: {
       allow: writeRoots.map((r) => `Edit(${rulePath(r)}/**)`),
       deny: [
-        ...policy.deny_paths.flatMap((p) => [`Read(${rulePath(p)})`, `Read(${rulePath(p)}/**)`]),
+        ...[...policy.deny_paths, ...(checkout?.read_denies ?? [])].flatMap(readDeny),
         ...caches.map((c) => `Edit(${rulePath(c)}/**)`),
         ...ENV_FILE_DENY,
         ...HARNESS_ONLY_DENY,
@@ -177,9 +172,10 @@ export function buildHarnessSettings(
       autoAllowBashIfSandboxed: true,
       allowUnsandboxedCommands: false,
       filesystem: {
-        denyRead: [...policy.deny_paths],
+        denyRead: [...policy.deny_paths, ...(checkout ? [checkout.checkout] : [])],
         allowWrite: [...policy.writable_paths],
-        ...(caches.length > 0 ? { allowRead: [...caches], denyWrite: [...caches] } : {}),
+        ...(open.length > 0 ? { allowRead: open } : {}),
+        ...(caches.length > 0 ? { denyWrite: [...caches] } : {}),
       },
       network: { allowLocalBinding: true },
       credentials: { envVars: [{ name: "GITHUB_TOKEN", mode: "deny" }, { name: "GH_TOKEN", mode: "deny" }] },
@@ -211,6 +207,7 @@ export function buildClaudeArgs(
   bridge?: BridgeArgs,
   tmp: readonly string[] = [],
   hooks?: Record<string, unknown>,
+  checkout?: CheckoutDenial | null,
 ): string[] {
   // Exactly the spec's tools, in its order: the runner adds none. Granted broker tools come only through the bridge.
   // Write and Edit are offered but allowed only by the settings' path-scoped rules, never as bare names.
@@ -229,7 +226,7 @@ export function buildClaudeArgs(
     // the same object `--output-format json` prints.
     "--output-format", "stream-json",
     "--verbose",
-    "--settings", JSON.stringify({ ...buildHarnessSettings(spec, spec.sandbox?.workdir, writes ? tmp : []), ...(hooks ? { hooks } : {}) }),
+    "--settings", JSON.stringify({ ...buildHarnessSettings(spec, spec.sandbox?.workdir, writes ? tmp : [], checkout), ...(hooks ? { hooks } : {}) }),
     "--setting-sources", "project",
     "--strict-mcp-config",
     // The run's only MCP servers, when it has granted tools or pack MCP servers: bridges to the worker side (tool-bridge.ts).
@@ -320,6 +317,9 @@ export class ClaudeCodeRunner implements AgentRunner {
     const tmp = join(home, "tmp");
     await mkdir(tmp, { recursive: true });
     await copyToolchainSeeds(spec.toolchain_seeds ?? [], join(tmp, "toolchain", TOOLCHAIN_HOMES.GRADLE_USER_HOME!, "wrapper", "dists"), spec.deny_paths);
+    const { checkout, claudeConfigDir, homesDir } = this.opts; // Read rules leave all run homes; the OS only this run's
+    const workdir = spec.sandbox?.workdir;
+    const denial = checkout && workdir ? await checkoutDenial(checkout, [workdir, home, claudeConfigDir], [homesDir]) : null;
 
     const env = buildAgentEnv(spec, await harnessCredential(this.opts.secrets), {
       home,
@@ -332,7 +332,7 @@ export class ClaudeCodeRunner implements AgentRunner {
     const watch = new StallWatch(stallMs, firstOutputMs, hooks ? () => hooks.checking() : undefined, spec.on_output);
     let result: Awaited<ReturnType<Sandbox["exec"]>>, soFar = ""; // soFar: stdout so far, for the live transcript (spec.live)
     try {
-      result = await this.opts.sandbox.exec(spec.sandbox, buildClaudeArgs(spec, model, this.opts.claudeBin, bridge, [tmp], hooks?.settings), {
+      result = await this.opts.sandbox.exec(spec.sandbox, buildClaudeArgs(spec, model, this.opts.claudeBin, bridge, [tmp], hooks?.settings, denial), {
         env: { ...env, ...FOREGROUND_ENV },
         stdin: spec.prompt,
         // A backstop: the hooks' deadline ends the run first; a Stop check past its own limit fails it naming the check.
