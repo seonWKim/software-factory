@@ -19,7 +19,7 @@ import { MODEL_CREDENTIAL } from "../core/policy.js";
 
 /**
  * The missing model credential's Needs-you row (design §9): the fix in its title, no command; its action opens the Add
- * model credential dialog (model-credential-api.ts). It ends once the dialog saves one, or a worker finds one.
+ * model credential dialog (model-credential.ts). It ends once the dialog saves one, or a worker finds one.
  */
 export const MODEL_CREDENTIAL_TITLE = "Add a model credential";
 

@@ -18,7 +18,7 @@ import { REGISTRY } from "../src/plugins.js";
 import { RESUMABLE_PAUSES, parseResumeArgs } from "../src/resume-cmd.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { HealthMonitor } from "../src/ui/health.js";
-import { MODEL_CREDENTIAL_PATH } from "../src/ui/model-credential-api.js";
+import { MODEL_CREDENTIAL_PATH } from "../src/ui/model-credential.js";
 import { resumePause } from "../src/ui/pause-api.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
 import { type ApiDeps, respond } from "../src/ui/server.js";

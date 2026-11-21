@@ -11,7 +11,7 @@
 // calendar routes (design 08-settings; calendar-api.ts: POST /api/v1/calendar/connect and /disconnect) and the Data page's Ask
 // (design 09-dashboard-app; data-ask.ts: POST /api/v1/data/ask) and the Plugins page's import (design 11-plugin-import;
 // plugins-import-api.ts: POST /api/v1/plugins/import) and Migrate now, Start and Restart now (design 08-self-update; migrate-api.ts:
-// POST /api/v1/migrate and POST /api/v1/supervisor) and the Add model credential dialog (design 09-status-page; model-credential-api.ts:
+// POST /api/v1/migrate and POST /api/v1/supervisor) and the Add model credential dialog (design 09-status-page; model-credential.ts:
 // POST /api/v1/model-credential), each guarded in this order: Host, then an Origin equal to the Host's own http origin, then Content-Type
 // application/json, then the per-process CSRF token in x-csrf-token; the resume, stop, standing, improve, migrate and supervisor routes then
 // check the owner (approve_spec), the rules, calendar, model credential and Ask routes the owner, the pack approvals route approve_tool, the task routes
@@ -24,7 +24,7 @@
 // /api/v1 (api.ts, GET /api/v1/notices in notices-api.ts, GET /api/v1/rules and /api/v1/rules/entry in rules-api.ts, GET
 // /api/v1/tasks (`?project=<slug>`: the project switcher) and GET /api/v1/tasks/preview (the quick-add preview) in tasks-api.ts, GET /api/v1/plugins (the Plugins page) in plugins-api.ts and GET
 // /api/v1/calendar in calendar-api.ts, GET /api/v1/supervisor (what Migrate now, Start and Restart now may do) in migrate-api.ts, GET /api/v1/calendar/events (the Calendar page's range read) in
-// calendar-events-api.ts, GET /api/v1/model-credential (the dialog's secret names) in model-credential-api.ts; errors as JSON) and the app under /app (app.ts; its own
+// calendar-events-api.ts, GET /api/v1/model-credential (the dialog's secret names) in model-credential.ts; errors as JSON) and the app under /app (app.ts; its own
 // CSP, errors as text).
 
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
@@ -37,7 +37,7 @@ import { RESUME_PATH, STOP_PATH, resumePause, stopAllAgents } from "./pause-api.
 import { STANDING_PATH, writeStanding } from "./standing-api.js";
 import { PACK_APPROVALS_PATH, writePackApproval } from "./packs-api.js";
 import { TASKS_PATH, TASK_PREVIEW_PATH, TASK_WRITES, readTaskPreview, readTasks } from "./tasks-api.js";
-import { RULES_PATH, RULE_ENTRY_PATH, RULE_WRITES, readRuleEntry, readRules } from "./rules-api.js";
+import { RULES_PATH, RULE_ENTRY_PATH, RULE_WRITES, ownerOf, readRuleEntry, readRules } from "./rules-api.js";
 import { IMPROVE_RUN_PATH, type ImproveRunDeps, improveRunWired, runImproveNow } from "./improve-api.js";
 import { NOTICES_PATH, readNotices } from "./notices-api.js";
 import { Activity } from "./background-refresh.js";
@@ -46,7 +46,7 @@ import { PLUGINS_IMPORT_PATH, readPluginsImport, writePluginsImport } from "./pl
 import { CALENDAR_CONNECT_PATH, CALENDAR_DISCONNECT_PATH, CALENDAR_PATH, readCalendarStatus, writeCalendar } from "./calendar-api.js";
 import { CALENDAR_EVENTS_PATH, readCalendarEvents } from "./calendar-events-api.js";
 import { DATA_ASK_PATH, askData } from "./data-ask.js";
-import { MODEL_CREDENTIAL_PATH, readModelCredential, writeModelCredential } from "./model-credential-api.js";
+import { MODEL_CREDENTIAL_PATH, readModelCredential, writeModelCredential } from "./model-credential.js";
 import { MIGRATE_PATH, type MigrateDeps, SUPERVISOR_PATH, postMigrate, postSupervisor, readSupervisor } from "./migrate-api.js";
 import { APP_HOME, STYLE_HASH, errorPage } from "./html.js";
 
@@ -212,7 +212,7 @@ async function writePost(d: ServerDeps, req: UiRequest, route: WriteRoute): Prom
     : route === "rules" ? await RULE_WRITES[pathOf(req.url)]!(d, d.pauses!, body)
     : route === "tasks" ? await TASK_WRITES[pathOf(req.url)]!(d, body)
     : route === "calendar" ? await writeCalendar(d, pathOf(req.url), body)
-    : route === "model_credential" ? await writeModelCredential(d, body)
+    : route === "model_credential" ? await writeModelCredential(d, d.pauses ? (does) => ownerOf(d, d.pauses!, does) : null, body)
     : route === "ask" ? await askData(d, d.settings!.ask!, body)
     : route === "migrate" ? await postMigrate(d.migrate!, d.pauses!, body)
     : route === "supervisor" ? await postSupervisor(d.migrate!, d.pauses!, body)

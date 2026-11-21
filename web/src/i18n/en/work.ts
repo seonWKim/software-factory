@@ -68,6 +68,12 @@ export const work = {
   "needs.actAllowRetry": "Allow and retry",
   "needs.actAllowAnswer": "Allow and answer",
   "needs.checking": "Checking…",
+  "needs.addCredential": "Add model credential",
+  "needs.credentialTitle": "Add a model credential",
+  "needs.credentialConsequence": "Saved on this computer for the agents only. It is never shown again. Waiting runs start on their own within seconds.",
+  "needs.credentialOneOf": "Fill in one of these.",
+  "needs.credentialSave": "Save",
+  "needs.credentialSaved": "Model credential saved",
   "needs.noMore": "No other commands",
   "why.allow": "Allow {file} and retry",
   // Why an item waits: one text per reason code (src/ui/why.ts ReasonCode); `{name}` is a value the API sends.

@@ -11,7 +11,7 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { type SecretName, secretName } from "../src/interfaces/secret-store.js";
 import { HealthMonitor } from "../src/ui/health.js";
-import { MODEL_CREDENTIAL_PATH } from "../src/ui/model-credential-api.js";
+import { MODEL_CREDENTIAL_PATH } from "../src/ui/model-credential.js";
 import type { UiPauses } from "../src/ui/pause-api.js";
 import { type ApiDeps, type UiRequest, respond } from "../src/ui/server.js";
 import { type UiSettings, newCsrfToken } from "../src/ui/settings-api.js";

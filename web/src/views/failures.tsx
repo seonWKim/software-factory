@@ -12,6 +12,7 @@ import { BASE, itemPath } from "../pages.js";
 import { RawDetails, When, WorkerName, useNow } from "./common.js";
 import { Card, CardSection } from "../components/ui/card.js";
 import { EmptyState } from "../components/ui/notice.js";
+import { AddModelCredential } from "./model-credential-dialog.js";
 
 const WINDOWS = ["24h", "7d"] as const;
 type Window = (typeof WINDOWS)[number];
@@ -30,6 +31,9 @@ function copyOf(code: string): { title: string; meaning: string; next: string } 
     ? { title: t(key("title")), meaning: t(key("meaning")), next: t(key("next")) }
     : { title: code, meaning: t("failures.unknownMeaning"), next: t("failures.unknownNext") };
 }
+
+/** A run that found no model credential (design 05-restart-pauses): its group opens the Add model credential dialog. */
+const SETUP_MISSING = "setup_missing";
 
 /** The Work page narrowed to the items a group hit. */
 const workPath = (group: FailureGroup): string => `${BASE}items?ids=${[...new Set(group.runs.map((r) => r.work_item_id))].map(encodeURIComponent).join(",")}`;
@@ -69,8 +73,9 @@ export function FailureGroupView({ group, now, titles }: { group: FailureGroup; 
         <span className="basis-full text-pretty text-text-2">{copy.meaning}</span>
         <span className="basis-full text-pretty">{copy.next}</span>
       </Button>
-      <p className="px-3 pb-2 text-sm">
+      <p className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 pb-2 text-sm">
         <Link href={workPath(group)} className={LINK_CLASS}>{t("failures.viewItems")}</Link>
+        {group.code === SETUP_MISSING && <AddModelCredential />}
       </p>
       {copy.title !== group.code && (
         <RawDetails className="px-3 pb-2"><span className="font-mono text-xs" data-testid="failure-code">{group.code}</span></RawDetails>

@@ -4,8 +4,8 @@
 // pasted values to the factory's secret file through the setup writer (the one `npm run setup` and the calendar connect
 // use), then ends the store-wide `model_credential` claim pause, so Needs you clears and the next worker tick claims the
 // waiting runs (its secret store reads the file again within seconds, worker-deps.ts claimableKinds). The request
-// guards (Host, Origin, Content-Type, CSRF token, body size, JSON) run in server.ts; then the owner check (the store's
-// owner only); every refusal comes before any write. Write-only: no value is returned, logged or stored in the store;
+// guards (Host, Origin, Content-Type, CSRF token, body size, JSON) run in server.ts; then the owner check server.ts
+// passes in (rules-api.ts ownerOf: the store's owner only); every refusal comes before any write. Write-only: no value is returned, logged or stored in the store;
 // answers and log lines name secrets, never values.
 
 import { MODEL_CREDENTIAL } from "../core/policy.js";
@@ -13,7 +13,6 @@ import { errorText } from "../core/log.js";
 import type { SecretName } from "../interfaces/secret-store.js";
 import { type ApiResult, apiError } from "./api.js";
 import type { PauseDeps } from "./pause-api.js";
-import { ownerOf } from "./rules-api.js";
 import { Withholder } from "./withhold.js";
 
 export const MODEL_CREDENTIAL_PATH = "/api/v1/model-credential";
@@ -42,13 +41,16 @@ export function readModelCredential(d: PauseDeps): ApiResult {
   return { status: 200, value: { secrets: m.secrets, csrf_token: d.settings!.csrfToken } };
 }
 
+/** Who acts from the page when it is the store's owner, else why not (rules-api.ts ownerOf, given what the action does). */
+export type OwnerCheck = (does: string) => Promise<{ user: string } | { error: string }>;
+
 /** POST /api/v1/model-credential after server.ts's guards: the owner check, the body, the write, then the pause ends. */
-export async function writeModelCredential(d: PauseDeps, body: unknown): Promise<ApiResult> {
+export async function writeModelCredential(d: PauseDeps, owner: OwnerCheck | null, body: unknown): Promise<ApiResult> {
   const m = d.settings?.modelCredential;
   if (!m) return apiError(404, "Not found.");
   const w = new Withholder(d.scanner);
   const text = async (v: string) => (await w.plain(v)).text;
-  const who = d.pauses ? await ownerOf(d, d.pauses, "adds a model credential") : { error: "The page has no owner check: adding a model credential is off." };
+  const who = owner ? await owner("adds a model credential") : { error: "The page has no owner check: adding a model credential is off." };
   if ("error" in who) return apiError(403, await text(who.error));
   const b = parseBody(body, m.secrets);
   if ("error" in b) return apiError(400, b.error);
