@@ -3,40 +3,40 @@
 
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { dirname,join,resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
-type FactoryConfig,type LoadedConfig,type Prompts,type StatsConfig,type ToolchainConfig,uiCheckConfig,uiCheckSentence,
-coordinationConfig,mergeQueuePushBase,readOnlyInputsConfig,retentionConfig
+  type FactoryConfig, type LoadedConfig, type Prompts, type StatsConfig, type ToolchainConfig, uiCheckConfig, uiCheckSentence, coordinationConfig,
+  mergeQueuePushBase, readOnlyInputsConfig, retentionConfig,
 } from "./core/config.js";
-import { type ProjectRef,localProjectKey,projectLabel,rekeyProjectSettings } from "./core/project.js";
+import { type ProjectRef, localProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { pathCompanionsConfig } from "./core/companions.js";
-import { checkCommands,commandText } from "./core/checks.js";
-import { type SplitLimits,splitThresholds } from "./core/split.js";
+import { checkCommands, commandText } from "./core/checks.js";
+import { type SplitLimits, splitThresholds } from "./core/split.js";
 import type { Tier } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
-import { type ModelNames,type ModelTable,parseModelBy,parseModels } from "./core/model-choice.js";
+import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./core/model-choice.js";
 import {
-BUILT_IN_SETTINGS,HEARTBEAT_LEASE_MESSAGE,booleanSetting,intakeLabel,maxWorkers,settingValues,settingsLayers,workerCount
+  BUILT_IN_SETTINGS, HEARTBEAT_LEASE_MESSAGE, booleanSetting, intakeLabel, maxWorkers, settingValues, settingsLayers, workerCount,
 } from "./core/settings.js";
-import { checkConfigKeys,removedKeysWarning } from "./config-keys.js";
+import { checkConfigKeys, removedKeysWarning } from "./config-keys.js";
 import { checkStatePaths } from "./state-paths.js";
 import { DEFAULT_STATUS_LABEL_PREFIX } from "./interfaces/forge.js";
 import { CONFIG_ENV } from "./interfaces/updater.js";
 import { updaterConfig } from "./impl/updater/config.js";
 import { LOCAL_KEY_FILE } from "./identity/index.js";
-import { type PackTool,withPackTools } from "./impl/broker/pack-tools.js";
+import { type PackTool, withPackTools } from "./impl/broker/pack-tools.js";
 import type { RepoRef } from "./impl/github/github-client.js";
-// The GitHub forge's descriptor: the one GitHub module a config with no GitHub plugin loads (descriptors only).
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
 import type { SlackConfig } from "./impl/source/slack-config.js";
 import { defaultSecretsFile } from "./impl/secrets/env-file-secret-store.js";
-import { REGISTRY,type Registry,type Selection,selectPlugins,selectedSources,withPackPlugins } from "./plugins.js";
+import { REGISTRY, type Registry, type Selection, selectPlugins, selectedSources, withPackPlugins } from "./plugins.js";
 import { batchingPolicies } from "./outbound/index.js";
-import { type Pack,autoApproveReadOnly,findPacks,packPluginFiles,packPrompts } from "./packs/packs.js";
+import { type Pack, autoApproveReadOnly, findPacks, packPluginFiles, packPrompts } from "./packs/packs.js";
 import {
-  agentStopChecks, alarmConfig, argvConfig, checkCommandsConfig, expandHome, hookNames, isRecord, isTier, mergeQueueDepth, retryConfig, stallConfig, statsConfig, testCommand, toolchainConfig,
-  uiPort, uiUserId,
+  agentStopChecks, alarmConfig, argvConfig, checkCommandsConfig, expandHome, hookNames, isTier, mergeQueueDepth, retryConfig, stallConfig,
+  statsConfig, testCommand, toolchainConfig, uiPort, uiUserId,
 } from "./config-values.js";
+
 /** The store is SQLite (design 05-coordination.md): another type fails at startup as an unknown FactoryStore plugin. */
 export type StoreConfig = { type: "sqlite" };
 

@@ -2,39 +2,39 @@
 // lives in load-config.ts and config-values.ts, so code that only reads config does not load this file.
 // Environment (local / cloud) is chosen here; core code never branches on it.
 
-import { mkdir,stat } from "node:fs/promises";
-import { availableParallelism,hostname } from "node:os";
+import { mkdir, stat } from "node:fs/promises";
+import { availableParallelism, hostname } from "node:os";
 import { join } from "node:path";
-import { type FactoryConfig,cliUserConfig,toolGrantsConfig } from "./core/config.js";
-import { type ProjectRef } from "./core/project.js";
-import { saveProject,saveProjectLabel } from "./core/project-labels.js";
-import { errorText,type Logger } from "./core/log.js";
-import type { CliEnvironment,CliIdentity } from "./core/local-cli.js";
-import { canMergeLocal,forgeRoles } from "./core/local-merge.js";
+import { type FactoryConfig, cliUserConfig, toolGrantsConfig } from "./core/config.js";
+import type { ProjectRef } from "./core/project.js";
+import { saveProject, saveProjectLabel } from "./core/project-labels.js";
+import { errorText, type Logger } from "./core/log.js";
+import type { CliEnvironment, CliIdentity } from "./core/local-cli.js";
+import { canMergeLocal, forgeRoles } from "./core/local-merge.js";
 import { StoredLearnedSettings } from "./core/learned-settings.js";
 import type { UserId } from "./core/types.js";
-import { gitHost,hostId } from "./runtime/host-id.js";
+import { gitHost, hostId } from "./runtime/host-id.js";
 import { ControllerRole } from "./runtime/roles/controller-role.js";
-import { SqlHookAudit,loadHooks } from "./runtime/index.js";
+import { SqlHookAudit, loadHooks } from "./runtime/index.js";
 import { PackCheckRunner } from "./runtime/hooks/pack-checks.js";
-import { type HookDescriptor,UNCALLED_HOOK_POINTS } from "./shared/hook.js";
-import { type LearnedSettingsSource,LiveSettings,maxWorkers,workerCount } from "./core/settings.js";
+import { type HookDescriptor, UNCALLED_HOOK_POINTS } from "./shared/hook.js";
+import { type LearnedSettingsSource, LiveSettings, maxWorkers, workerCount } from "./core/settings.js";
 import { settingsBase } from "./core/settings-base.js";
 import { WorkerPool } from "./worker/index.js";
 import type { LocalRoute } from "./worker/index.js";
-import { type BrokerDeps,Plugins } from "./plugin-set.js";
+import { type BrokerDeps, Plugins } from "./plugin-set.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
 import type { GitHubApi } from "./interfaces/github-credentials.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
-import { type Forge } from "./interfaces/forge.js";
+import type { Forge } from "./interfaces/forge.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
-import type { AuthAction,AuthDecision,AuthProvider } from "./interfaces/auth-provider.js";
+import type { AuthAction, AuthDecision, AuthProvider } from "./interfaces/auth-provider.js";
 import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
-import { CODE_VERSION_ENV,SUPERVISOR_STATUS_FILE,WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
-import { ProfileStore,startIdentity,type IdentityRuntime } from "./identity/index.js";
-import { controllerServiceAuth,outboundServiceAuth } from "./impl/auth/audited-auth.js";
+import { CODE_VERSION_ENV, SUPERVISOR_STATUS_FILE, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
+import { ProfileStore, startIdentity, type IdentityRuntime } from "./identity/index.js";
+import { controllerServiceAuth, outboundServiceAuth } from "./impl/auth/audited-auth.js";
 import { OwnerAuth } from "./core/authorize.js";
 import { PassportToolBroker } from "./impl/broker/passport-broker.js";
 import { packToolBrokers } from "./impl/broker/pack-tools.js";
@@ -42,23 +42,23 @@ import { storeSql } from "./impl/store/sql/store-sql.js";
 import { RunPassports } from "./worker/passports/run-passports.js";
 import type { RepoRef } from "./impl/github/github-client.js";
 // The GitHub forge's descriptor: the one GitHub module a config with no GitHub plugin loads (descriptors only).
-import { type RepoLookup,resolveProject } from "./impl/github/forge.plugin.js";
+import { type RepoLookup, resolveProject } from "./impl/github/forge.plugin.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { UiCommands } from "./ui/commands.js";
-import { type UiSettings,configWriter,newCsrfToken,storeProjectResolver } from "./ui/settings-api.js";
+import { type UiSettings, configWriter, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
 import type { UiPauses } from "./ui/pause-api.js";
-import { type UiTacit,uiTacit } from "./ui/rules-api.js";
-import { baseEnv,runProcess } from "./impl/process/run-process.js";
+import { type UiTacit, uiTacit } from "./ui/rules-api.js";
+import { baseEnv, runProcess } from "./impl/process/run-process.js";
 import { LiveTacit } from "./runtime/live-tacit.js";
 import { LiveCalendars } from "./calendar/index.js";
 import {
-INTEGRATION_KINDS,createPlugin,selectedRunners,selectedSources
+  INTEGRATION_KINDS, createPlugin, selectedRunners, selectedSources,
 } from "./plugins.js";
-import { packChecks,packSkills } from "./packs/packs.js";
-import { importedMcpRefusals,listRequestedMcpTools } from "./import/mcp-tool-lists.js";
+import { packChecks, packSkills } from "./packs/packs.js";
+import { importedMcpRefusals, listRequestedMcpTools } from "./import/mcp-tool-lists.js";
 import { startPackMcpServer } from "./impl/runner/pack-mcp-client.js";
 import { PackGuidance } from "./impl/capability/project-guidance.js";
-import { LearnedRules,joinGuidance } from "./core/learned-rules.js";
+import { LearnedRules, joinGuidance } from "./core/learned-rules.js";
 import { checkToolchainEnv, codeVersion, readRestarts, uiCommandsActor, uiUserId, workerIndexBase } from "./config-values.js";
 import { type Loaded, loadConfig, localProject, resolvedConfig } from "./load-config.js";
 

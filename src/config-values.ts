@@ -3,18 +3,18 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
-AGENT_STOP_CHECKS_DEFAULT,ALARM_DEFAULTS,STALL_DEFAULTS,type StatsConfig,type ToolchainConfig,readOnlyFolders
+  AGENT_STOP_CHECKS_DEFAULT, ALARM_DEFAULTS, STALL_DEFAULTS, type StatsConfig, type ToolchainConfig, readOnlyFolders,
 } from "./core/config.js";
 import { toolchainEnvKeyRefusal } from "./core/tools/policy.js";
 import type { CliIdentity } from "./core/local-cli.js";
-import type { Tier,UserId,VerdictSeverity } from "./core/types.js";
+import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import { positiveInteger } from "./core/settings.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
-import { type ChildRestart,type SupervisorStatus } from "./interfaces/updater.js";
-// The GitHub forge's descriptor: the one GitHub module a config with no GitHub plugin loads (descriptors only).
+import { type ChildRestart, type SupervisorStatus } from "./interfaces/updater.js";
 import type { UiCommands } from "./ui/commands.js";
 import type { FileConfig } from "./load-config.js";
+
 /** SF_WORKER_INDEX_BASE as set by the supervisor: unset, empty or not a non-negative integer means 0. */
 export function workerIndexBase(value: string | undefined): number {
   if (value === undefined || !/^\d+$/.test(value.trim())) return 0;
@@ -261,4 +261,4 @@ export function isTier(n: number): n is Tier {
   return Number.isInteger(n) && n >= 1 && n <= 5;
 }
 
-export const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
