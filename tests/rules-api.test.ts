@@ -10,7 +10,7 @@ import { HealthMonitor } from "../src/ui/health.js";
 import type { PauseDeps, UiPauses } from "../src/ui/pause-api.js";
 import { readRules } from "../src/ui/rules-api.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
-import { config, silent } from "./helpers/fakes.js";
+import { config, silent } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 const OWNER = "local:owner@example.com" as UserId;

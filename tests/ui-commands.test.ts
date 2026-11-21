@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { uiCommandsActor } from "../src/compose.js";
+import { uiCommandsActor } from "../src/config-values.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { OwnerAuth } from "../src/core/authorize.js";
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
@@ -10,14 +10,16 @@ import { oneTapNote, pendingFeedback, verdictNote } from "../web/src/views/item-
 import type { AppCommandRequest } from "../src/interfaces/factory-store.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import { parseProposalMarker } from "../src/core/interpret.js";
-import type { PageAction } from "../src/ui/commands.js";
+import { type PageAction, stopCount } from "../src/ui/commands.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, type UiDeps, respond } from "../src/ui/server.js";
 import { refusalText } from "../src/core/commands.js";
 import { REVISE_APPLIED } from "../src/controller/units/commands/queued-revise.js";
 import { runLocalCli } from "../src/core/local-cli.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
-import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent, waitFor } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, silent, waitFor } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 import { classifierAnswer } from "./helpers/classifier.js";
 
@@ -491,6 +493,63 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
       patch: { loop_count: 1 }, detail: { comment_ids: JSON.stringify([`app-${r.seq}`]), feedback: "keep the old flag" },
     });
     expect(pendingFeedback(await timeline())).toEqual([]);
+  });
+
+  describe("repeated_stop (design 09-dashboard-item-commands, 2026-11-20)", () => {
+    const FAILED = "run_failed:implement:agent_error";
+    type Row = { name: string; repeated_stop?: boolean };
+    /** An item whose block `patch` was set `n` times, cleared in between, as a retry and the next failure leave it. */
+    const stoppedTimes = async (h: Awaited<ReturnType<typeof harness>>, patch: WorkItemPatch, n: number, at: number) => {
+      let it = await h.itemIn(patch, at);
+      for (let i = 1; i < n; i++) {
+        for (const p of [{ blocked_on: "none", blocked_reason: null }, patch] as WorkItemPatch[]) {
+          const r = await h.store.transition({ id: it.id, expected_version: it.version, actor: { kind: "system", id: "system:test" }, reason: "setup", patch: p });
+          if (!r.ok) throw new Error("setup");
+          it = r.item;
+        }
+      }
+      return it;
+    };
+    const rowsOf = async (d: ApiDeps, it: WorkItem) => (await listed(d, it)).commands as Row[];
+    const listRows = async (d: ApiDeps, it: WorkItem) => {
+      const all = JSON.parse((await respond(d, { method: "GET", url: "/api/v1/items", host: HOST })).body) as { items: { id: string; commands?: Row[] }[] };
+      return all.items.find((x) => x.id === it.id)?.commands ?? [];
+    };
+
+    it("stopCount counts the state changes that set the current blocked_reason, the current one included", () => {
+      const set = (to: string | null) => ({ changes: { blocked_reason: { from: null, to } } }) as never;
+      expect(stopCount({ blocked_reason: "x" }, [set("x"), set(null), set("y"), set("x"), { changes: {} } as never])).toBe(2);
+      expect(stopCount({ blocked_reason: null }, [set(null)])).toBe(0);
+    });
+
+    it("from the third identical stop every command row of the item and the list carries repeated_stop: true; before it none does", async () => {
+      const h = await harness({ localAuth: true });
+      const owner = "local:owner@example.com" as UserId;
+      await h.store.claimOwner(owner);
+      const patch: WorkItemPatch = { stage: "RUNNING", blocked_on: "human", blocked_reason: FAILED };
+      const twice = await stoppedTimes(h, patch, 2, 1);
+      const thrice = await stoppedTimes(h, patch, 3, 2);
+      for (const rows of [await rowsOf(page(h, owner), twice), await listRows(page(h, owner), twice)]) {
+        expect(rows.map((r) => r.name)).toContain("retry");
+        for (const r of rows) expect(r.repeated_stop, r.name).toBeUndefined();
+      }
+      for (const rows of [await rowsOf(page(h, owner), thrice), await listRows(page(h, owner), thrice)]) {
+        expect(rows.map((r) => r.name)).toEqual(expect.arrayContaining(["retry", "revise", "reject"]));
+        for (const r of rows) expect(r.repeated_stop, r.name).toBe(true);
+      }
+    });
+
+    it("any current blocked_reason counts: a spec back at the gate a third time carries repeated_stop on every row", async () => {
+      const h = await harness({ localAuth: true });
+      const owner = "local:owner@example.com" as UserId;
+      await h.store.claimOwner(owner);
+      const twice = await stoppedTimes(h, SPEC_PENDING, 2, 1);
+      const gate = await stoppedTimes(h, SPEC_PENDING, 3, 2);
+      for (const r of await rowsOf(page(h, owner), twice)) expect(r.repeated_stop, r.name).toBeUndefined();
+      const rows = await rowsOf(page(h, owner), gate);
+      expect(rows.map((r) => r.name)).toEqual(expect.arrayContaining(["approve", "revise", "reject"]));
+      for (const r of rows) expect(r.repeated_stop, r.name).toBe(true);
+    });
   });
 });
 

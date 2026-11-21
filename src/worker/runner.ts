@@ -1,5 +1,4 @@
 import { type RunCall, type RunKindDescriptor, loadRunKinds } from "./run-kind.js";
-import { gradeRun } from "./runs/improve/improve.run.js";
 import type { MergeCheckTools } from "./runs/merge-check/merge-check.run.js";
 import { type Adopted, type ExecutionEngine, type ExecutionEngines, LeaseLostError, RunDeadlineError, type RunRef, StepTimeoutError } from "./engine/index.js";
 import { JournalEngines } from "./engine/plugins/journal/journal-engine.js";
@@ -13,7 +12,7 @@ import { type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor, readOnlyOv
 import { LiveSettings } from "../core/settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelRunKind, type ModelTable, isModelRunKind, modelClassFor } from "../core/model-choice.js";
 import { errorText, type LogFields } from "../core/log.js";
-import { type CheckRound, checkCommands, commandText, failingTestFiles, runChecks, withTestFiles } from "../core/checks.js";
+import { type CheckRound, checkCommands, commandText, failingTestFiles, mergeMiss, runChecks, withTestFiles } from "../core/checks.js";
 import { FORGE_AUTH, GITHUB_RATE_LIMIT, GITHUB_RATE_LIMITED, githubRateLimitReset, PREFLIGHT_ACCESS, preflightCheck, RATE_LIMITED, branchFor, wipBranchFor, canAutoMerge, NETWORK, NETWORK_PROBE_MS, NETWORK_UNAVAILABLE, classifyNetwork, failureClass } from "../core/policy.js";
 import { incompleteLabel, lastPrNotes, prBody } from "../core/pr-body.js";
 import type { MergeIO } from "../core/mechanical.js";
@@ -38,7 +37,7 @@ export class Worker {
   readonly live: LiveSettings;
 
   /** The check helpers the merge-check run uses, injected so the run imports no legacy core module. */
-  readonly checkTools: MergeCheckTools = { checkCommands, failingTestFiles, withTestFiles };
+  readonly checkTools: MergeCheckTools = { checkCommands, failingTestFiles, withTestFiles, mergeMiss };
 
   /** The settings of the run being executed, read once at its claim. Scratch for one run, like `meters`. */
   cfg: FactoryConfig;
@@ -212,9 +211,8 @@ export class Worker {
   }
 
   /**
-   * Holds the claimed run in the engine, then executes it. A run journaled by code this worker cannot resume
-   * (another code_version) ends as `code_version_restart`, infra: the controller's retry is a new run with a new
-   * journal, which runs from the start and counts toward max_restart (issue #718).
+   * Holds the claimed run in the engine, then executes it. A run another code_version journaled ends as `code_version_restart`,
+   * infra: its retry is a new run with a new journal that starts over and counts toward max_restart (issue #718).
    */
   async execute(run: Run, token: number): Promise<void> {
     const engine = await this.engine();
@@ -222,8 +220,7 @@ export class Worker {
     const lease = new AbortController();
     this.leases.set(run.id, lease);
     try {
-      const adopted = await engine.adopt(ref, tickAt("claim", this.cfg.tick_ms, this.d.clock.now().getTime()));
-      await this.executeHeld(run, token, engine, ref, adopted, lease);
+      await this.executeHeld(run, token, engine, ref, await engine.adopt(ref, tickAt("claim", this.cfg.tick_ms, this.d.clock.now().getTime())), lease);
     } finally {
       this.leases.delete(run.id);
       engine.release(ref);
@@ -284,7 +281,8 @@ export class Worker {
       };
       // Graded by judges independent of the producing call (design §7); then recorded next to the run's usage, so cost
       // and failure rate can be compared per class. data.tokens: the full count, where readers from before usage existed look for it.
-      const data = await gradeRun(this, run, item, model, await this.role({ run, item, ctx, signal, model: model ?? "cheap", step }), signal);
+      const produced = await this.role({ run, item, ctx, signal, model: model ?? "cheap", step });
+      const data = (await [...(await loadRunKinds()).values()].find((k) => k.grade)?.grade?.(this, run, item, model, produced, signal)) ?? produced;
       const withUsage = { ...data, tokens: usageTokens(usage), usage };
       outcome = { status: "succeeded", summary: `${run.kind} done`, data: model ? { ...withUsage, ...this.modelRecord(model) } : withUsage };
     } catch (err) {

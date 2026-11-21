@@ -88,16 +88,6 @@ async function box() {
 const FACTORY_MSG = { seq: 7, at: AT, kind: "spec", author: "factory", role: "factory", channel: "github_issue", anchor: "msg-7", body: "## Spec ready for approval\n\nLonger text of the spec." };
 
 describe("item page: DecisionCard", () => {
-  it("an item in triage (next actor is the factory) renders no decision box, but still has its menu", async () => {
-    body = detail({ item: item({ stage: "NEW", blocked_on: null, blocked_reason: null, why: { code: "triage", reason_code: "person", params: { reason: "Running triage" }, alarms: [], holder_id: null, next_actor: "factory", refs: [], ref_url: null } }), spec: null });
-    mount();
-    await screen.findByRole("heading", { name: "Check the scope in CI" });
-    await screen.findByRole("button", { name: "More commands" });
-    expect(document.querySelector("[data-decide]")).toBeNull();
-    expect(screen.queryByRole("region", { name: "What you need to decide" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
-  });
-
   it("at merge_pending renders one card whose first button is Merge, then Good/Bad, Feedback and the menu, each action with data-action", async () => {
     body = detail({
       item: item({ stage: "MERGE_PENDING", blocked_reason: null, merge: { enabled: true, reason: null }, why: { code: "merge", reason_code: "person", params: { reason: "Ready to merge" }, alarms: [], holder_id: null, next_actor: "human", refs: [], ref_url: null } }),

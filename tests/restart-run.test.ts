@@ -7,7 +7,9 @@ import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { Worker } from "../src/worker/index.js";
 import { KINDS } from "../src/worker/support.js";
 import { loadRunKinds } from "../src/worker/run-kind.js";
-import { FakeBroker, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, config, prompts, silent } from "./helpers/fakes.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, prompts, silent } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
 // The restart run kind (design 04-gate-commands, restart): `repo.restart_command` on the host through the worker's

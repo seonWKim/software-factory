@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { stallConfig } from "../src/compose.js";
+import { stallConfig } from "../src/config-values.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { AGENT_STALLED, failureClass, retryKey } from "../src/core/policy.js";
 import type { RunId, RunKind, RunOutcome, Timestamp } from "../src/core/types.js";
@@ -9,7 +9,9 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import { localWithOffset, modelStallChecks, modelStallLine } from "../src/ui/factory-status.js";
 import { HealthMonitor } from "../src/ui/health.js";
-import { FakeAuth, PROJECT, cleanScanner, pipeline } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { PROJECT, cleanScanner } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 import { issue, newStore, system, w1, w2 } from "./helpers/store.js";
 
 // Design §5 Restarts, stalls: a run that ends `stalled` (the model printed nothing for stall_ms) spends no

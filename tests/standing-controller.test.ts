@@ -7,7 +7,10 @@ import type { Tier, UserId, WorkItem, WorkerId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { newStore } from "./helpers/store.js";
-import { FakeAuth, FakeForge, FakeSource, alice, cleanScanner, config, issueRef, mallory, silent, triageSpec } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, mallory, silent, triageSpec } from "./helpers/fakes/config.js";
 
 const RULE = "spec-t1";
 /** A floor at tier 1, so a spec that touches it stays at tier 1 and only the floor-path check keeps it at the gate. */

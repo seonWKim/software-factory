@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { storeSql } from "../src/impl/store/sql/store-sql.js";
-import { pipeline } from "./helpers/fakes.js";
+import { pipeline } from "./helpers/harness.js";
 
 // Issue #718: a run whose journal holds a succeeded step written by another code_version (a deploy between the
 // step and the takeover) is no longer failed as `not_resumable`. It ends as `code_version_restart`, an infra

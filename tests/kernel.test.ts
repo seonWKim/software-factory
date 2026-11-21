@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ControllerDeps } from "../src/core/controller-deps.js";
 import { Kernel } from "../src/controller/units/kernel.js";
-import { FakeForge, cleanScanner, config, silent } from "./helpers/fakes.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { cleanScanner, config, silent } from "./helpers/fakes/config.js";
 
 /** A kernel over `forge` alone: no store call is made here. Signals are discovered from an empty folder. */
 function kernel(forge: FakeForge | null) {

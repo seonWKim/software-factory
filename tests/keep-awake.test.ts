@@ -9,7 +9,7 @@ import {
   requireExecutable,
 } from "../src/impl/awake/caffeinate-keep-awake.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
-import { recordingLog } from "./helpers/fakes.js";
+import { recordingLog } from "./helpers/fakes/config.js";
 
 class FakeChild implements AwakeChild {
   killed = 0;

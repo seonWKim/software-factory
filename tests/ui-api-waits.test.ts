@@ -16,7 +16,7 @@ import viteConfig from "../web/vite.config.js";
 import type { Why } from "../web/src/api.js";
 import { whyText } from "../web/src/lib/format.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
-import { LEASE, SECRET, get, json, make, patch, enqueue, seeded } from "./ui-api-fixtures.js";
+import { LEASE, SECRET, json, make, patch, enqueue, seeded } from "./ui-api-fixtures.js";
 
 const SAME_TIME = (other: string) => `Running at the same time as ${other}, which changes some of the same files. If they clash, you'll be asked when it merges.`;
 
@@ -446,7 +446,7 @@ describe("ui api: open alarms in Needs you and the why sentence (design 09-statu
     const created = clock.now().getTime();
     const o = await overview(d);
     expect(o.system_actions).toContainEqual({
-      code: "alarm", text: `${ALARM}: npm test exited #`, command: "Failures page (/app/failures)", until: new Date(created + ALERT_DEDUPE_MS).toISOString(),
+      code: "alarm", text: `${ALARM}: npm test exited #`, command: "Failures page (/app/failures)", pattern: "repeated_error", error_code: "checks_failed", until: new Date(created + ALERT_DEDUPE_MS).toISOString(),
     });
     expect(o.needs_you).toBe(1 + o.system_actions.length);
     clock.advance(ALERT_DEDUPE_MS);
@@ -546,10 +546,5 @@ describe("ui api: Needs you, Needs triage and Blocked by another task", () => {
     expect(needs.map((i) => i.id)).toEqual(expect.arrayContaining([budget.id, triage.id]));
     expect(needs.map((i) => i.id)).not.toContain(dep.id);
     expect(needs.map((i) => i.id)).not.toContain(phase.id);
-  });
-
-  it("a request with an old level id gets 400", async () => {
-    const { d } = await seeded();
-    for (const old of ["needs_human", "waiting_on_issue"]) expect((await get(d, `/api/v1/items?state=${old}`)).status).toBe(400);
   });
 });

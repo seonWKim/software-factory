@@ -18,9 +18,11 @@ import { WorkerPool } from "../src/worker/index.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type UiSettings, readSettings } from "../src/ui/settings-api.js";
 import { newStore } from "./helpers/store.js";
-import {
-  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, cleanScanner, config, prompts, silent,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { cleanScanner, config, prompts, silent } from "./helpers/fakes/config.js";
 
 /** A ledger that is on and lists one entry named after it. */
 const fakeLedger = (name: string): TacitLedger => ({

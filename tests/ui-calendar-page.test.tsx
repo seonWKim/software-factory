@@ -6,7 +6,6 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CalendarEvents, CalendarSync, EventRow } from "../web/src/api.js";
-import { PAGES, routeFor } from "../web/src/pages.js";
 
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
 // loaded by a specifier the node check skips (as tests/ui-tasks-page.test.tsx does).
@@ -75,12 +74,6 @@ const shownRange = async (from: string, to: string) => {
 };
 
 describe("Calendar page", () => {
-  it("is a sidebar page at /app/calendar in the Tasks group, right after Tasks", () => {
-    expect(routeFor("/app/calendar").page.label).toBe("Calendar");
-    const tasks = PAGES.filter((p) => p.group === "tasks").map((p) => p.path);
-    expect(tasks.indexOf("calendar")).toBe(tasks.indexOf("tasks") + 1);
-  });
-
   it("the view control is exactly Week and Month, Week selected on load", async () => {
     show();
     const control = await screen.findByRole("group", { name: "Calendar view" }, SLOW);

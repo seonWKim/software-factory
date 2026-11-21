@@ -1,17 +1,19 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
-import { API, type AutoStop, type MigrateDryRun, type PausesView, type SettingsView, type SupervisorView, type SystemAction, postMigrate, postResume, postSupervisor, useApi } from "../api.js";
+import { type ReactNode, useEffect, useState } from "react";
+import { API, type AutoStop, type FactoryState, type MigrateDryRun, type PausesView, type SettingsView, type SupervisorView, type SystemAction, postMigrate, postResume, postSupervisor, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
+import { Disclosure } from "../components/ui/disclosure.js";
 import { BANNER_LINK_CLASS } from "../components/ui/link-style.js";
+import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
-import { useNavigate } from "../nav.js";
 import { ListRow, ROW_TITLE } from "../components/ui/list-row.js";
-import { OverflowMenu } from "../components/ui/menu.js";
-import { BASE } from "../pages.js";
+import { type MenuItem, OverflowMenu } from "../components/ui/menu.js";
 import { When, useNow } from "./common.js";
-import { AutoStopNote, alarmAnchor } from "./settings/general.js";
+import { alarmAnchor } from "./settings/general.js";
+import { Outcome, useWrite } from "./settings-file-keys.js";
+import { ShowFailuresDialog, WhatFailedDialog } from "./alarm-dialogs.js";
 
 /**
  * Shown while the app was built from another revision than the server it talks to runs (design §9): the tab
@@ -26,8 +28,93 @@ export function RevisionBanner({ server, web }: { server: string | null | undefi
   );
 }
 
+/** This browser's last seen factory revision, and the revision whose update note waits for a Dismiss (design 09-dashboard-shell). */
+export const SEEN_REV_KEY = "sf-factory-rev";
+export const UPDATE_NOTE_KEY = "sf-update-note";
 
-const FAILURES = `${BASE}failures`;
+/** Storage can throw (private mode, blocked site data): then nothing is stored and no note shows. */
+function stored(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function store(key: string, value: string | null): void {
+  try {
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch {
+    // no storage: nothing kept
+  }
+}
+
+/**
+ * Notes `rev` as seen and says whether its update note shows: when this browser had stored another revision, `rev` is
+ * an update, kept until Dismiss. A first visit (none stored) only stores it.
+ */
+function noteFor(rev: string): boolean {
+  const seen = stored(SEEN_REV_KEY);
+  if (seen !== rev) {
+    store(SEEN_REV_KEY, rev);
+    if (seen !== null) store(UPDATE_NOTE_KEY, rev);
+  }
+  return stored(UPDATE_NOTE_KEY) === rev;
+}
+
+const shortRev = (rev: string) => rev.slice(0, 7);
+
+/**
+ * One note after the factory moved to a new revision (design 09-dashboard-shell): "Updated to <rev>: N changes", the
+ * commit subjects behind a Changes toggle, and Dismiss, which this browser keeps for that revision. Without a count
+ * (git failed, or no previous_rev) it names the revision only.
+ */
+export function UpdateNote({ factory }: { factory: FactoryState | null | undefined }) {
+  const rev = factory?.rev ?? null;
+  const [shown, setShown] = useState<string | null>(null);
+  useEffect(() => setShown(rev !== null && noteFor(rev) ? rev : null), [rev]);
+  if (rev === null || shown !== rev) return null;
+  const count = factory?.changes?.count ?? null;
+  const subjects = count === null ? [] : (factory?.changes?.subjects ?? []);
+  const short = shortRev(rev);
+  const dismiss = () => {
+    store(UPDATE_NOTE_KEY, null);
+    setShown(null);
+  };
+  return (
+    <div role="status" data-testid="update-note" className="flex flex-wrap items-start gap-x-3 gap-y-1 border-b border-pill-info-border bg-pill-info-bg px-4 py-2 text-sm text-pill-info-fg">
+      <div className="min-w-0 grow basis-64">
+        <p data-update-text className="text-pretty">
+          {count === null ? t("update.noteNoCount", { rev: short }) : count === 1 ? t("update.noteOne", { rev: short }) : t("update.note", { rev: short, count })}
+        </p>
+        {subjects.length > 0 && (
+          <Disclosure summary={t("update.changes")}>
+            <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs wrap-anywhere">
+              {subjects.map((s, i) => <li key={i}>{s}</li>)}
+            </ul>
+            {count !== null && count > subjects.length && <p className="mt-1 text-xs">{t("update.more", { count: count - subjects.length })}</p>}
+          </Disclosure>
+        )}
+      </div>
+      <Button variant="ghost" size="sm" onClick={dismiss}>{t("update.dismiss")}</Button>
+    </div>
+  );
+}
+
+/**
+ * The running revision in the header (design 09-dashboard-shell): its short form, and "up to date" or "N behind" when the
+ * status file says (a separate code checkout). Hidden without a factory status or a running revision.
+ */
+export function FactoryRevision({ factory }: { factory: FactoryState | null | undefined }) {
+  if (!factory?.rev) return null;
+  const rev = shortRev(factory.rev);
+  const behind = factory.behind ?? null;
+  const text = behind === null ? rev : behind === 0 ? t("update.revCurrent", { rev }) : t("update.revBehind", { rev, count: behind });
+  return (
+    <span data-testid="factory-rev" title={t("update.revLabel")} className="shrink-0 font-mono text-xs whitespace-nowrap text-text-2">{text}</span>
+  );
+}
 
 /**
  * One system action as a Needs-you row in the Check group (design 09-status-page): an open alarm (AlarmRow), a claim
@@ -214,28 +301,88 @@ function SupervisorDialog({ action, token, onClose }: { action: "start" | "resta
   );
 }
 
+/** Each auto-mode stop's cause (its alarm's error code, design 03-risk), as the alarm row's sentence names it. */
+const STOP_CAUSE: Readonly<Record<string, MessageKey>> = {
+  red_main: "needs.autoStopRedMain",
+  budget_checkpoint: "needs.autoStopBudget",
+  failure_alert: "needs.autoStopFailure",
+};
+
+/** A time of day in the browser's time zone, hours and minutes (16:03). */
+const clockTime = (at: string) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+
 /**
- * An open alarm's row on the shared ListRow: its text on one line, the full text (with the detail) behind a toggle,
- * and "Open on Failures" in its "⋯" menu (every row action is in the menu, owner feedback 2026-11-20). The auto-mode stop's alarm (design 03-risk) is the target of the Settings link to it and has
- * "Turn auto back on" as its button, with "Open on Failures" in the same "⋯" menu. No dismiss: an alarm closes by itself.
+ * An open alarm's row on the shared ListRow (design 09-dashboard-tasks), every action in its "⋯" menu. The auto-mode
+ * stop's alarm (design 03-risk) is AutoStopRow. A red_main alarm has What failed; a repeated error has Show failures;
+ * both open a dialog on this page. Other alarms show the server's sentence and have no menu. No dismiss: an alarm
+ * closes by itself.
  */
 function AlarmRow({ action }: { action: SystemAction }) {
-  const stop = action.auto_stop;
-  const navigate = useNavigate();
+  if (action.auto_stop) return <AutoStopRow action={action} stop={action.auto_stop} />;
+  const what = action.pattern === "red_main" ? "what_failed" : action.pattern === "repeated_error" && action.error_code ? "show_failures" : null;
+  return <AlarmMenuRow action={action} title={action.text} lead={[]} dialog={what} output={action} />;
+}
+
+/**
+ * The auto-mode stop's row, the target of the Settings link to it: one sentence in local time, "Auto mode stopped at
+ * 16:03: <cause>", with the server's full text behind a Details toggle (closed); its menu has Turn auto back on, then
+ * What failed.
+ */
+function AutoStopRow({ action, stop }: { action: SystemAction; stop: AutoStop }) {
+  const turnOn = useTurnAutoOn();
+  const cause = STOP_CAUSE[stop.cause];
+  const sentence = t("needs.autoStopped", { time: clockTime(stop.at), cause: cause ? t(cause) : stop.cause });
+  const lead = [{ label: t("needs.autoStopTurnOn"), action: "auto_on", disabled: !turnOn.ready, onSelect: turnOn.write }];
+  return (
+    <AlarmMenuRow action={action} id={alarmAnchor(stop.alert_id)} title={sentence} lead={lead} dialog="what_failed" output={stop}>
+      <Disclosure data-alarm-details lazy summary={t("needs.alarmDetails")}>
+        <p className="text-xs text-pretty wrap-anywhere text-text-2">{action.text}</p>
+      </Disclosure>
+      <Outcome error={turnOn.error} done={null} />
+    </AlarmMenuRow>
+  );
+}
+
+/** An alarm row's ListRow: its title on one line, `lead` then the item that opens its dialog in the "⋯" menu, and the dialog. */
+function AlarmMenuRow({ action, id, title, lead, dialog, output, children }: {
+  action: SystemAction;
+  id?: string;
+  title: string;
+  lead: MenuItem[];
+  dialog: "what_failed" | "show_failures" | null;
+  output: Pick<SystemAction, "failing_tests" | "output_tail">;
+  children?: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const opener = dialog === "what_failed" ? "needs.whatFailed" : "needs.showFailures";
+  const items = dialog === null ? lead : [...lead, { label: t(opener), action: dialog, onSelect: () => setOpen(true) }];
   return (
     <ListRow
       data-check="alarm"
-      {...(stop ? { id: alarmAnchor(stop.alert_id) } : {})}
-      title={<p data-alarm-summary title={action.text} className={cn(ROW_TITLE, "text-text-1")}>{action.text}</p>}
-      menu={<OverflowMenu label={t("commands.more")} items={[{ label: t("needs.alarmOpen"), action: "failures", onSelect: () => navigate(FAILURES) }]} />}
+      {...(id ? { id } : {})}
+      title={<p data-alarm-summary title={title} className={cn(ROW_TITLE, "text-text-1")}>{title}</p>}
+      {...(items.length > 0 ? { menu: <OverflowMenu label={t("commands.more")} items={items} /> } : {})}
     >
-      {stop && <AutoStopLine stop={stop} />}
+      {children}
+      {open && dialog === "what_failed" && <WhatFailedDialog output={output} onClose={() => setOpen(false)} />}
+      {open && dialog === "show_failures" && <ShowFailuresDialog code={action.error_code ?? ""} onClose={() => setOpen(false)} />}
     </ListRow>
   );
 }
 
-/** The auto-mode stop's when and why with "Turn auto back on"; it reads the settings view for the button's write. */
-function AutoStopLine({ stop }: { stop: AutoStop }) {
-  const settings = useApi<SettingsView>(API.settings);
-  return <AutoStopNote stop={stop} view={settings.data} />;
+/**
+ * Turn auto back on from the auto-stop row: mode auto at once (no confirmation) through POST /api/v1/settings, the
+ * same write as the Settings note's button, at the project's level when it has its own mode. Not ready while the
+ * settings view loads or a write is under way.
+ */
+function useTurnAutoOn() {
+  const view = useApi<SettingsView>(API.settings).data;
+  const { busy, error, write } = useWrite(view?.csrf_token ?? "");
+  const row = view?.keys.find((k) => k.key === "mode");
+  const own = view && row && view.project !== null ? row.projects.some((p) => p.project === view.project) : false;
+  return {
+    ready: row !== undefined && !busy,
+    error,
+    write: () => void write({ action: "set", key: "mode", value: JSON.stringify("auto"), ...(own && view ? { project: view.repo } : {}) }),
+  };
 }

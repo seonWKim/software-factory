@@ -14,9 +14,11 @@ import { failingTestFiles } from "../src/core/checks.js";
 import { NEEDS_HUMAN_MAX_CHARS, NEEDS_HUMAN_MAX_PATHS } from "../src/core/outputs.js";
 import { isCovered } from "../src/core/policy.js";
 import { newStore } from "./helpers/store.js";
-import {
-  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, config, issueRef, prompts, recordingLog, silent, triageSpec,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, config, issueRef, prompts, recordingLog, silent, triageSpec } from "./helpers/fakes/config.js";
 
 // An implement run's needs-human ask for test paths only is granted once without the owner (design 05-restarts,
 // 2026-11-15): the owner's `/retry +paths` transition, applied by the controller with the system actor.

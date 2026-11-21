@@ -5,7 +5,7 @@ import { inShortParagraphs, lastPrNotes, prBody, splitSummary } from "../src/cor
 import type { Run } from "../src/core/types.js";
 import { openOrUpdatePr } from "../src/impl/github/pull-requests.js";
 import { GitHubError, type GitHubClient } from "../src/impl/github/github-client.js";
-import { pipeline } from "./helpers/fakes.js";
+import { pipeline } from "./helpers/harness.js";
 
 const SUMMARY = [
   "## In short (AS-IS → TO-BE)",

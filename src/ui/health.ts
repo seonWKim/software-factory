@@ -9,7 +9,7 @@ import { readStoredProject } from "../core/project-labels.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
-import { type Check, type CheckStatus, checkStatus } from "../setup.js";
+import { type Check, type CheckStatus, checkStatus } from "../core/health-check.js";
 import { type Activity, BackgroundSnapshot } from "./background-refresh.js";
 import { Withholder } from "./withhold.js";
 

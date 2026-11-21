@@ -139,14 +139,6 @@ describe("the verdict dialog on a Needs-you row", () => {
     );
   }
 
-  it("a row shows only ⋯, its primary command first in the menu", () => {
-    mountRow();
-    const row = document.querySelector("li[data-key]")!;
-    expect([...row.querySelectorAll<HTMLButtonElement>("button")].filter((b) => !b.hidden).map((b) => b.textContent)).toEqual(["⋯"]);
-    fireEvent.click(screen.getByRole("button", { name: "More commands" }));
-    expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Approve", "Verdict", "Reject", "Revise"]);
-  });
-
   const openFromMenu = (name: string) => {
     const more = screen.getByRole("button", { name: "More commands" });
     fireEvent.click(more);

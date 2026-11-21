@@ -7,7 +7,7 @@ import type { RunKind } from "../src/core/types.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import { ClaudeCodeRunner, buildClaudeArgs } from "../src/impl/runner/claude-code-runner.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
-import { FakeSandbox } from "./helpers/fakes.js";
+import { FakeSandbox } from "./helpers/fakes/runner.js";
 
 // Design §5 Pause: session persistence for implement, review and resolve runs, off for triage and update;
 // `--resume <id>` continues a stored session on the same host. Sessions and run folders go when the run ends.

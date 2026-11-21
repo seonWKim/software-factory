@@ -9,6 +9,8 @@
 // A failing UI check runs once more on the base alone, in a fresh checkout at the checked base: when the base fails
 // it too, the result is `base_red` (red main, design 03-risk), not this change's failing checks. A UI check's
 // failure always keeps an output tail: with no output, its reason (a command that could not run, its exit).
+// A failing test file the item's selection before push skipped in enforce mode is a test selection miss (design §4):
+// the red result names it (`selection_miss`) and the project's selection goes back to shadow mode.
 // Install and checks run on the project's Node major (.nvmrc, else package.json engines; node-version.ts); a project
 // whose Node is not installed fails the run with checks_env rather than checking on another Node.
 
@@ -22,6 +24,8 @@ export interface MergeCheckTools {
   checkCommands(repo: Worker["cfg"]["repo"]): string[][];
   failingTestFiles(text: string): string[];
   withTestFiles(cmd: readonly string[], files: readonly string[]): string[];
+  /** Test selection's revert (design §4): failing files the item's enforced selection left out switch it back to shadow. */
+  mergeMiss(d: Worker["d"], item: RunCall["item"], failing: readonly string[], run_id: RunCall["run"]["id"]): Promise<{ selection_miss?: string[] }>;
 }
 
 type CheckRound = Awaited<ReturnType<Worker["runCheckList"]>>;
@@ -78,7 +82,8 @@ async function mergeCheck(w: Worker, c: RunCall): Promise<Record<string, unknown
     const install = await runOn([[...w.cfg.repo.install_command]]);
     if (install.failed) return red(install.failed);
     const list = await checkList(w, runOn);
-    if (list.failed) return red(list.failed);
+    // The list stays whole in every selection mode; a failing file the item's enforced selection skipped is a miss.
+    if (list.failed) return { ...(await red(list.failed)), ...(await w.checkTools.mergeMiss(w.d, item, w.checkTools.failingTestFiles(list.failed.tail), run.id)) };
     const uiFailed = uiCheck ? (await runOn(uiCheck)).failed : null;
     if (uiFailed) {
       const onBase = await baseUiCheck(w, c, base_ref, base_sha, uiCheck!, node);

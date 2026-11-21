@@ -6,7 +6,9 @@ import { NETWORK_UNAVAILABLE, classifyNetwork, unreachableHost } from "../src/co
 import type { WorkItemId, WorkerId } from "../src/core/types.js";
 import { NETWORK_PAUSED_BY } from "../src/worker/index.js";
 import type { ToolCallContext } from "../src/interfaces/tool-broker.js";
-import { FakeNetworkProbe, cleanScanner, pipeline } from "./helpers/fakes.js";
+import { FakeNetworkProbe } from "./helpers/fakes/runner.js";
+import { cleanScanner } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 // Design §5 Restarts, network pause: a git call, push, preflight or model request that cannot reach its host is

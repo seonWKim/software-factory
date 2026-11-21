@@ -13,7 +13,10 @@ import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { type TacitLedger, type TacitPromotion, TacitRefusal, TacitSyncFailed } from "../src/interfaces/tacit-ledger.js";
 import type { SqlDriver } from "../src/state/index.js";
-import { FakeAuth, FakeForge, FakeSource, alice, config, issueRef, silent } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, config, issueRef, silent } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore, system, w1 } from "./helpers/store.js";
 
 // The owner's tacit ledger (issue #570): a /revise, a /reject and a `changes` verdict each capture one record, keyed
