@@ -416,6 +416,9 @@ export async function loadConfig(
       join(home, ".mylogin.cnf"),
       // GnuPG keys (RFC 0024 WP2 step A).
       join(home, ".gnupg"),
+      // The desktop app's profile: its Chromium session may hold dashboard cookies a run could use to act as the owner.
+      // A plain home path: on a host without it (not macOS, no desktop app) the entry denies nothing.
+      join(home, "Library", "Application Support", "software-factory"),
     ],
     agent_git_identity: file.agent_git_identity,
     budget_min_sample: budget.budget_min_sample,
