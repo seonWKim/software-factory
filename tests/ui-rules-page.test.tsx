@@ -726,7 +726,8 @@ describe("Rules page", () => {
   });
 
   it("two sections, In effect then Waiting for you, and one Details at the end; no tabs; every row in both is a ListRow", async () => {
-    current = view({ applied: APPLIED, improve: { report: null } as unknown as NonNullable<RulesView["improve"]> });
+    const report = { window_start: AT, window_end: AT, created_at: AT, runs: 0, patterns: 0, groups: [] };
+    current = view({ applied: APPLIED, improve: { report, run_now: false, csrf_token: null } });
     standing = {
       as_of: AT, csrf_token: TOKEN,
       rules: [{ rule: "spec-t1", gate: "spec", tier: 1, threshold: 3, enabled: true, set_by: "github:1", created_at: AT, updated_at: AT, last_fired_at: null, recent: [] }],
@@ -764,6 +765,19 @@ describe("Rules page", () => {
     for (const part of ["[data-retired-part]", "[data-how]"]) expect(details.querySelector(part)).not.toBeNull();
     // No improve report on the page itself.
     expect(screen.queryByText("Improve report")).toBeNull();
+  });
+
+  it("Details has no improve report link when the improve view carries no report, or none at all", async () => {
+    current = view({ applied: APPLIED, improve: { report: null, run_now: true, csrf_token: TOKEN } });
+    await show();
+    const details = await openDetails();
+    expect(details.querySelector("[data-how]")).not.toBeNull();
+    expect(details.querySelector("[data-improve-link]")).toBeNull();
+    expect(within(details).queryByRole("link", { name: "See the improve report on the Health page" })).toBeNull();
+    cleanup();
+    current = view({ applied: APPLIED });
+    await show();
+    expect((await openDetails()).querySelector("[data-improve-link]")).toBeNull();
   });
 
   it("a standing rule that is off sits under Details, with its switch; In effect says so when nothing is on", async () => {

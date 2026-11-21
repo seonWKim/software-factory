@@ -283,7 +283,7 @@ export function RulesPage() {
       </Card>
       <Disclosure data-page-details className="mt-6" summary={t("rules.details")}>
         <div className="mt-3 space-y-6">
-          {v.improve !== null && v.improve !== undefined && (
+          {v.improve?.report != null && (
             <p data-improve-link className="text-sm">
               <Link href={`${BASE}health?tab=improve`} className={LINK_CLASS}>{t("rules.improveLink")}</Link>
             </p>
