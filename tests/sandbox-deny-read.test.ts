@@ -37,14 +37,26 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("the read denial built from deny_paths", () => {
-  it("adds ~/.gnupg; the earlier home entries stay as they were", async () => {
+  it("adds ~/.gnupg and the desktop app's profile; the earlier home entries stay as they were", async () => {
     const deny = (await loadConfig(REPO)).config.deny_paths;
     const home = deny.filter((p) => p.startsWith(`${fakeHome}/`)).map((p) => p.slice(fakeHome.length + 1));
     expect(home).toEqual([
       ".config/software-factory", // the secret file's folder: .env, the Google client JSON, github-app.pem
       ".ssh", ".aws", ".config/gh", ".claude", ".gitconfig", ".git-credentials", ".netrc", ".my.cnf", ".mylogin.cnf",
-      ".gnupg",
+      ".gnupg", "Library/Application Support/software-factory",
     ]);
+  });
+
+  it("denies the desktop app's profile to Bash (denyRead) and the native file tools (Read rules)", async () => {
+    // A planted fixture under the temp HOME, never the owner's real profile.
+    const profile = join(fakeHome, "Library", "Application Support", "software-factory");
+    put(join(profile, "Partitions", "main", "Cookies"), "planted-cookie");
+    const { config } = await loadConfig(REPO);
+    const s = buildHarnessSettings({ deny_paths: config.deny_paths, writable_paths: [] }, "/run") as {
+      permissions: { deny: string[] }; sandbox: { filesystem: { denyRead: string[] } };
+    };
+    expect(s.sandbox.filesystem.denyRead).toContain(profile);
+    expect(s.permissions.deny).toEqual(expect.arrayContaining([`Read(/${profile}/**)`]));
   });
 });
 

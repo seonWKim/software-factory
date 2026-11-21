@@ -50,6 +50,15 @@ Produce:
 - done_criteria: concrete, checkable conditions. Each one should be testable by a reviewer.
   One condition per entry. Put the most important first: only the first 10 are shown, the rest are folded
   (the implementer still gets all of them).
+- done_checks: how each done-when line is checked, one entry per done_criteria entry, in the same order, with
+  `line` the done-when line exactly as written. Each entry has one of three forms:
+  - a command: `{"line": "...", "command": "..."}`, one of the project's check commands as written here:
+    {{check_commands}}. No other command is accepted.
+  - a test file: `{"line": "...", "test_file": "tests/..."}`, a repo-relative test file under `tests/` that
+    checks the line (it may be one the change adds).
+  - manual, with a reason: `{"line": "...", "manual": true, "reason": "..."}`, only when no command or test
+    file can check the line (for example a docs wording); the reason says why a person checks it.
+  An answer without done_checks, or with a done-when line that has neither a check nor a manual reason, is refused.
 - desired_output: what the change should contain (code, tests, docs), only where the done criteria do not
   already say it. It is hidden when it repeats them.
 - in_scope: what this change covers, one item per entry.
@@ -125,6 +134,7 @@ you split):
   "decisions": [],
   "applied_defaults": [],
   "done_criteria": ["..."],
+  "done_checks": [{ "line": "...", "test_file": "tests/example.test.ts" }],
   "desired_output": "...",
   "in_scope": ["..."],
   "out_of_scope": ["..."],

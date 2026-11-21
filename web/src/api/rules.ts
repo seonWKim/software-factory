@@ -77,6 +77,8 @@ export interface RuleDetail {
   /** A proposal's current lines of its target and the change it proposes, when the ledger carries them. */
   current?: string;
   proposed?: string;
+  /** A proposal's change in prose, when it gives no current and proposed lines. */
+  change?: string;
   incidents?: number;
   /** The incidents, newest first. */
   evidence?: RuleEvidence[];
@@ -221,8 +223,9 @@ export async function postStanding(
 
 /**
  * POST /api/v1/rules/verdict: a verdict with its reason, and for promote of a class (C-) the owner's wording, default
- * and exception. Promote of a proposal (P-) takes none: the server applies its current → proposed lines, and a failed
- * apply comes back as the error, with nothing written.
+ * and exception. Promote of a proposal (P-) takes none: the server applies its current → proposed lines (a prose change:
+ * it records the verdict as applied to its target and writes nothing), and a failed apply comes back as the error, with
+ * nothing written.
  */
 export async function postRuleVerdict(
   token: string,

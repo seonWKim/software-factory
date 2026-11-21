@@ -33,7 +33,8 @@ import { ApprovalsSection, StandingProposal, StandingRule } from "./standing.js"
 // search and Suggest. Waiting for you: the pending standing proposals (Accept visible, Decline in ⋯), then the entries
 // the ledger has not judged (judged null), candidates (`C-…`) before structure proposals (`P-…`); each is a ListRow
 // whose title is an IdDetails (the ID in its tooltip), whose details line has its Badge and, for a proposal, its plain
-// kind and file count, with Promote visible (off, with its reason in the row, when the draft could not be read); its
+// kind and file count, with Promote visible (off, with its reason in the row, when a class's draft could not be read or
+// a proposal names no target file); its
 // ⋯ menu lists every verdict, Promote, Hold and Reject (danger, last), so all three are in one place; each opens a dialog (rules-verdict.tsx). Its before and after lines,
 // why and where sit behind "Why and where" (rules-detail.tsx). With none waiting an EmptyState gives the next step.
 // Details: the improve report link (Health's Improve tab), standing rules that are off, decided entries, the pushbacks
@@ -60,6 +61,9 @@ function ExcerptBlock({ excerpt }: { excerpt: Excerpt }) {
   );
 }
 
+/** The line in a row that says why its Promote is off. */
+const OFF_LINE = "text-xs text-pretty break-words break-keep text-pill-bad-fg";
+
 function RuleCard({ entry, excerpt, applied, token }: { entry: RuleRow; excerpt?: Excerpt | undefined; applied: AppliedRule[]; token: string | null }) {
   const [open, setOpen] = useState<RuleVerdict | null>(null);
   const menu = useRef<HTMLDivElement>(null);
@@ -68,6 +72,9 @@ function RuleCard({ entry, excerpt, applied, token }: { entry: RuleRow; excerpt?
   const [from, setFrom] = useState<"button" | "menu">("menu");
   const menuButton = { get current() { return from === "button" ? promote.current : (menu.current?.querySelector<HTMLElement>("button[aria-haspopup]") ?? null); } };
   const noDraft = isClass(entry.id) && entry.draft === null;
+  // A proposal is promoted to its target file: with none named, Promote is off and the row says why.
+  const noTarget = !isClass(entry.id) && (entry.target ?? "").trim() === "";
+  const promoteOff = noDraft || noTarget;
   const badge = entry.judged !== null ? (
     <span data-judged>
       <Badge level="ready_to_merge">{t("rules.judged", { decision: entry.judged })}</Badge>
@@ -100,7 +107,7 @@ function RuleCard({ entry, excerpt, applied, token }: { entry: RuleRow; excerpt?
             <OverflowMenu
               label={t("rules.actions", { title: entry.title })}
               items={VERDICTS.map((v) => ({
-                label: t(v.label), action: v.verdict, danger: v.variant === "danger", disabled: v.verdict === "promote" && noDraft, onSelect: () => { setFrom("menu"); setOpen(v.verdict); },
+                label: t(v.label), action: v.verdict, danger: v.variant === "danger", disabled: v.verdict === "promote" && promoteOff, onSelect: () => { setFrom("menu"); setOpen(v.verdict); },
               }))}
             />
           </div>
@@ -109,7 +116,7 @@ function RuleCard({ entry, excerpt, applied, token }: { entry: RuleRow; excerpt?
     >
       {token !== null && entry.judged === null && (
         <ButtonRow>
-          <Button ref={promote} size="sm" disabled={noDraft} onClick={() => { setFrom("button"); setOpen("promote"); }}>
+          <Button ref={promote} size="sm" disabled={promoteOff} onClick={() => { setFrom("button"); setOpen("promote"); }}>
             {t("rules.promote")}
           </Button>
         </ButtonRow>
@@ -119,8 +126,13 @@ function RuleCard({ entry, excerpt, applied, token }: { entry: RuleRow; excerpt?
         <EntryDetail entry={entry} applied={applied} />
       </Disclosure>
       {entry.judged === null && entry.draft_error !== null && (
-        <p data-draft-error className="text-xs text-pretty break-words break-keep text-pill-bad-fg">
+        <p data-draft-error className={OFF_LINE}>
           {t("rules.draftError", { error: entry.draft_error })}
+        </p>
+      )}
+      {entry.judged === null && noTarget && (
+        <p data-no-target className={OFF_LINE}>
+          {t("rules.noTarget")}
         </p>
       )}
       {open !== null && token !== null && <VerdictDialog entry={entry} applied={applied} verdict={open} token={token} returnFocusTo={menuButton} onClose={() => setOpen(null)} />}

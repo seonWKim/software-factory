@@ -163,7 +163,7 @@ describe("triage scope lists and decisions", () => {
 
   it("the other triage fields stay required", () => {
     expect([...TRIAGE_SCHEMA.required].sort()).toEqual([
-      "allowed_paths", "desired_output", "done_criteria", "estimated_files", "estimated_lines", "files_to_change", "in_scope",
+      "allowed_paths", "desired_output", "done_checks", "done_criteria", "estimated_files", "estimated_lines", "files_to_change", "in_scope",
       "in_short", "out_of_scope", "problem", "tier", "tier_reason",
     ]);
   });

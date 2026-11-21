@@ -3952,7 +3952,8 @@ describe("20261112T1200-controller-change-ref-only on an existing SQLite databas
       for (const t of ["controller_work_items", "controller_unreviewed_merges"]) {
         expect(cols(db, t)).not.toContain("pr_number");
         expect(cols(db, `legacy_${t}`)).toContain("pr_number");
-        const kept = cols(db, t).join(", ");
+        // A column a later migration added (controller_work_items.done_checks) is only on the new table.
+        const kept = cols(db, t).filter((c) => cols(db, `legacy_${t}`).includes(c)).join(", ");
         // Every row, every value, in both the new table and its legacy copy.
         expect(rows(db, `SELECT ${kept} FROM ${t} ORDER BY id`)).toEqual(rows(db, `SELECT ${kept} FROM legacy_${t} ORDER BY id`));
       }
