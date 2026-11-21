@@ -423,7 +423,7 @@ describe("Rules page", () => {
     current = view({
       applied: {
         rules: [
-          { id: "C-001", name: "summary first", default: "Open with a summary.", exceptions: null, scope: "모든 문서", incidents: ["T-1", "T-2"], judged: "2026-11-13", raw: null },
+          { id: "C-001", name: "summary first", default: "Open with a summary.", exceptions: null, scope: "모든 문서", incidents: ["T-20261017-de7e", "T-20261019-5000"], judged: "2026-11-13", raw: null },
           { id: null, name: null, default: null, exceptions: null, scope: null, incidents: null, judged: null, raw: "## Notes\njust words" },
         ],
         elsewhere: ["- C-009 → CLAUDE.md"],
@@ -438,9 +438,10 @@ describe("Rules page", () => {
     // The row's sentence is the rule's name; its date and parts are behind Details, not on the row.
     expect(row.querySelector("p")!.textContent).toBe("summary first");
     expect(row.querySelector("[data-details]")).toBeNull();
-    for (const part of ["summary first", "모든 문서", "2026-11-13", "Open with a summary.", "not given", "2: T-1, T-2"]) expect(c).toContain(part);
-    // Details are a label/value list.
-    expect([...applied.querySelectorAll('[data-applied="C-001"] dt')].map((d) => d.textContent)).toEqual(["Default", "Exception", "Evidence", "Judged"]);
+    for (const part of ["summary first", "모든 문서", "2026-11-13", "Open with a summary.", "not given"]) expect(c).toContain(part);
+    // Details are a label/value list; the incident IDs are not one of its parts (they sit in the seen line's tooltip).
+    expect([...applied.querySelectorAll('[data-applied="C-001"] dt')].map((d) => d.textContent)).toEqual(["Default", "Exception", "Judged"]);
+    expect(c).not.toContain("T-2026");
     // An unreadable block says so; its raw text is behind Details.
     const raw = applied.querySelector<HTMLElement>("[data-applied-raw]")!;
     expect(raw.matches("[data-list-row]")).toBe(true);
@@ -454,6 +455,47 @@ describe("Rules page", () => {
     expect(screen.getAllByRole("button", { name: /^Actions:/ })).toHaveLength(1);
     expect(screen.queryAllByRole("button", { name: "Retire" })).toEqual([]);
     expect(screen.queryAllByRole("button", { name: /edit/i })).toEqual([]);
+  });
+
+  // wi_d4201038's last criterion: an applied rule says how often it was seen and when last; its incident IDs only in a tooltip.
+  const seenRow = async (incidents: string[] | null) => {
+    current = view({ applied: { rules: [{ id: "C-001", name: "summary first", default: "Open with a summary.", exceptions: null, scope: null, incidents, judged: null, raw: null }], elsewhere: [] } });
+    await show();
+    await screen.findByRole("list", { name: "In effect" }, SLOW);
+    return document.querySelector<HTMLElement>('[data-applied="C-001"]')!;
+  };
+
+  it("an applied rule with one incident T-20261017 shows \"Seen 1 time (Oct 17)\"; the ID is only in its tooltip", async () => {
+    const row = await seenRow(["T-20261017"]);
+    const seen = row.querySelector<HTMLElement>("[data-seen]")!;
+    expect(seen.textContent).toBe("Seen 1 time (Oct 17)");
+    expect(row.textContent).not.toContain("T-20261017");
+    fireEvent.mouseEnter(seen.querySelector("button")!.parentElement!);
+    expect(within(row).getByRole("tooltip").textContent).toBe("T-20261017");
+  });
+
+  it("the seen line counts each incident and dates the latest day, not the first or the last listed; the tooltip lists the IDs", async () => {
+    const row = await seenRow(["T-20261017-de7e", "T-20261107-aa11", "T-20261019-5000"]);
+    const seen = row.querySelector<HTMLElement>("[data-seen]")!;
+    expect(seen.textContent).toBe("Seen 3 times (Nov 7)");
+    expect(row.textContent).not.toMatch(/T-2026/);
+    fireEvent.mouseEnter(seen.querySelector("button")!.parentElement!);
+    expect(within(row).getByRole("tooltip").textContent).toBe("T-20261017-de7e, T-20261107-aa11, T-20261019-5000");
+  });
+
+  it("an incident listed twice counts once, in the line and in the tooltip", async () => {
+    const seen = (await seenRow(["T-20261107-aa11", "T-20261017-de7e", "T-20261107-aa11"])).querySelector<HTMLElement>("[data-seen]")!;
+    expect(seen.textContent).toBe("Seen 2 times (Nov 7)");
+    fireEvent.mouseEnter(seen.querySelector("button")!.parentElement!);
+    expect(screen.getByRole("tooltip").textContent).toBe("T-20261107-aa11, T-20261017-de7e");
+  });
+
+  it("an applied rule with no incidents shows no seen line; IDs with no day read \"Seen N times\" with no date", async () => {
+    expect((await seenRow(null)).querySelector("[data-seen]")).toBeNull();
+    cleanup();
+    expect((await seenRow([])).querySelector("[data-seen]")).toBeNull();
+    cleanup();
+    expect((await seenRow(["T-1", "T-2"])).querySelector("[data-seen]")!.textContent).toBe("Seen 2 times");
   });
 
   const APPLIED: RulesView["applied"] = {
@@ -809,7 +851,7 @@ describe("Rules page", () => {
     await screen.findByRole("list", { name: "In effect" }, SLOW);
     const ids = () => [...document.querySelectorAll<HTMLElement>("[data-applied]")].map((e) => e.dataset.applied);
     expect(ids()).toEqual(["C-001", "C-002"]);
-    expect(applied("C-001").textContent).toContain("2: T-1, T-2");
+    expect(applied("C-001").querySelector("[data-seen]")!.textContent).toBe("Seen 2 times");
     const search = screen.getByRole("searchbox", { name: /search/i });
     for (const [term, want] of [["SUMMARY", ["C-001"]], ["c-002", ["C-002"]], ["keep every", ["C-002"]], ["cli", ["C-002"]], ["", ["C-001", "C-002"]], ["zzz", []]] as const) {
       fireEvent.change(search, { target: { value: term } });
