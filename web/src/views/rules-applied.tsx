@@ -3,7 +3,6 @@ import { type RulesView, type AppliedRule, useRuleEntry } from "../api.js";
 import { Dialog } from "../components/ui/dialog.js";
 import { Button } from "../components/ui/button.js";
 import { Badge } from "../components/ui/badge.js";
-import { Card } from "../components/ui/card.js";
 import { IdDetails } from "../components/ui/copy.js";
 import { Disclosure } from "../components/ui/disclosure.js";
 import { Input } from "../components/ui/input.js";
@@ -15,14 +14,17 @@ import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { EntryDetail } from "./rules-detail.js";
 import { EditDialog, RetireDialog } from "./rules-verdict.js";
-import { PROSE, ROW_PAD, STACK_NARROW, muted, ruleName } from "./rules-shared.js";
+import { ROW_PAD, STACK_NARROW, muted, ruleName } from "./rules-shared.js";
 import type { ReactNode } from "react";
 
-// The Rules page's applied rules group: the promoted rules file in the file's order, one compact row per rule (name
-// with its ID in a tooltip, scope, judged date, the "Suggested to retire" badge, and a ⋯ menu with Edit, Open evidence
-// and Retire) that expands to a label/value list (stacked below `sm`; each default and exception line on its own line),
-// with a search over ID, name, default and scope; it is the Applied tab. Suggest reads each class's retire suggestions
-// on demand. Scope and the encoded-elsewhere lines render through Markdown.
+const LIST = "divide-y divide-border rounded-control border border-border";
+
+// The Rules page's applied rules, inside its In effect section (since 2026-11-22): the promoted rules file in the file's
+// order, one compact row per rule (its plain sentence, the rule name else its default, with its ID in a tooltip; its
+// scope; the "Suggested to retire" badge; a ⋯ menu with Edit, Open evidence and Retire) whose Details hold a
+// label/value list (stacked below `sm`; each default and exception line on its own line) with the default, exception,
+// evidence and judged date. A search over ID, name, default and scope and the Suggest button sit above the rows. An
+// unparsable block's raw text is behind Details too. Scope and the encoded-elsewhere lines render through Markdown.
 
 /** One label and its value in an applied rule's details (a KeyValue item); no value reads "not given". */
 const part = (key: string, label: MessageKey, value: ReactNode): KeyValueItem => ({
@@ -46,13 +48,15 @@ function evidence(incidents: string[] | null): ReactNode {
   return <p className="text-sm break-words">{t("rules.appliedEvidence", { count: ids.length, ids: ids.join(", ") })}</p>;
 }
 
-/** One promoted block: its ID, name and parts; an unparsable block shows its raw text. */
+/** One promoted block: its sentence and parts; an unparsable block says so, its raw text behind Details. */
 function AppliedCard({ rule, token, round, applied }: { rule: AppliedRule; token: string | null; round: number; applied: AppliedRule[] }) {
   if (rule.raw !== null || rule.id === null) {
     return (
-      <li data-applied-raw className="p-3 max-sm:p-2">
-        <ValueBlock>{rule.raw}</ValueBlock>
-      </li>
+      <ListRow data-applied-raw className={ROW_PAD} title={<p className={`${ROW_TITLE} font-medium`}>{t("rules.appliedRaw")}</p>}>
+        <Disclosure summary={t("rules.appliedDetails")}>
+          <ValueBlock>{rule.raw}</ValueBlock>
+        </Disclosure>
+      </ListRow>
     );
   }
   return <AppliedClass rule={rule} id={rule.id} token={token} round={round} applied={applied} />;
@@ -97,14 +101,7 @@ function AppliedClass({ rule, id, token, round, applied }: { rule: AppliedRule; 
           <IdDetails label={name} id={id} what="rule ID" />
         </p>
       }
-      details={
-        (suggested.length > 0 || rule.judged !== null) && (
-          <>
-            {suggested.length > 0 && <Badge level="needs_approval">{t("rules.suggested")}</Badge>}
-            {rule.judged !== null && <span className="tabular-nums">{rule.judged}</span>}
-          </>
-        )
-      }
+      details={suggested.length > 0 && <Badge level="needs_approval">{t("rules.suggested")}</Badge>}
       menu={
         // For anyone but the owner Edit and Retire are off, and the menu's tooltip says why; Open evidence stays on.
         <div ref={menu}>
@@ -144,42 +141,44 @@ function AppliedClass({ rule, id, token, round, applied }: { rule: AppliedRule; 
 const matches = (r: AppliedRule, query: string): boolean =>
   [r.id, r.name, r.default, r.scope, r.raw].some((v) => v !== null && v.toLowerCase().includes(query));
 
-/** The Applied tab: the promoted rules in the file's order with a search, and the encoded-elsewhere lines, with Suggest. Not shown when the file has none. */
-export function Applied({ applied, token }: { applied: NonNullable<RulesView["applied"]>; token: string | null }) {
+/**
+ * The applied rules inside In effect: a search and Suggest above the promoted rules in the file's order, then the
+ * encoded-elsewhere lines. Nothing when the file has none. `before` (the standing rules' rows) leads the same list.
+ */
+export function Applied({ applied, token, before }: { applied: NonNullable<RulesView["applied"]>; token: string | null; before?: ReactNode }) {
   const { rules, elsewhere } = applied;
   // Each Suggest press is a new round of reads; 0 until the first press.
   const [round, setRound] = useState(0);
   const [query, setQuery] = useState("");
-  if (rules.length === 0 && elsewhere.length === 0) return null;
-  const suggest = rules.some((r) => r.raw === null && r.id !== null) && (
-    <Button size="sm" onClick={() => setRound(round + 1)}>
-      {t("rules.suggest")}
-    </Button>
-  );
+  if (rules.length === 0 && elsewhere.length === 0) return before ? <ul aria-label={t("rules.inEffect")} className={LIST}>{before}</ul> : null;
   const q = query.trim().toLowerCase();
   const shown = rules.filter((r) => matches(r, q));
+  const tools = rules.some((r) => r.raw === null && r.id !== null);
   return (
-    <Card title={t("rules.groupApplied")} count={rules.length} action={suggest}>
-      <div className="space-y-2">
-          <p data-group-line className={`${PROSE} ${muted}`}>
-            {t("rules.groupAppliedLine")} {t("rules.appliedOrder")}
-          </p>
-          {rules.length > 0 && <Input type="search" aria-label={t("rules.appliedSearch")} placeholder={t("rules.appliedSearch")} className="w-full" value={query} onChange={(e) => setQuery(e.target.value)} />}
-          {shown.length > 0 && (
-            <ul aria-label={t("rules.groupApplied")} className="divide-y divide-border rounded-control border border-border">
-              {shown.map((r, i) => (
-                <AppliedCard key={r.id ?? `raw${i}`} rule={r} token={token} round={round} applied={rules} />
-              ))}
-            </ul>
-          )}
-          {rules.length > 0 && shown.length === 0 && <p className={muted}>{t("rules.appliedNone")}</p>}
-          {elsewhere.length > 0 && (
-            <div data-elsewhere className="space-y-1">
-              <h3 className="text-xs font-semibold text-text-2">{t("rules.elsewhere")}</h3>
-              <Markdown text={elsewhere.join("\n")} />
-            </div>
-          )}
-      </div>
-    </Card>
+    <div className="space-y-2">
+      {tools && (
+        <div className="flex items-center gap-2">
+          <Input type="search" aria-label={t("rules.appliedSearch")} placeholder={t("rules.appliedSearch")} className="min-w-0 flex-1" value={query} onChange={(e) => setQuery(e.target.value)} />
+          <Button onClick={() => setRound(round + 1)}>
+            {t("rules.suggest")}
+          </Button>
+        </div>
+      )}
+      {(before || shown.length > 0) && (
+        <ul aria-label={t("rules.inEffect")} className={LIST}>
+          {before}
+          {shown.map((r, i) => (
+            <AppliedCard key={r.id ?? `raw${i}`} rule={r} token={token} round={round} applied={rules} />
+          ))}
+        </ul>
+      )}
+      {rules.length > 0 && shown.length === 0 && <p className={muted}>{t("rules.appliedNone")}</p>}
+      {elsewhere.length > 0 && (
+        <div data-elsewhere className="space-y-1">
+          <h3 className="text-xs font-semibold text-text-2">{t("rules.elsewhere")}</h3>
+          <Markdown text={elsewhere.join("\n")} />
+        </div>
+      )}
+    </div>
   );
 }

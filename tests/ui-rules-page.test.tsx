@@ -85,40 +85,51 @@ afterEach(() => {
 });
 
 async function show() {
-  // Each test starts on the Waiting tab: the tab a test picked stays in the URL otherwise.
   history.replaceState(null, "", "/app/rules");
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(createElement(QueryClientProvider, { client }, createElement(RulesPage)));
 }
 
-/** Selects one of the page's tabs ("Waiting", "Applied", "Retired") once the rules are loaded. */
-async function openTab(name: string) {
-  fireEvent.click(await screen.findByRole("tab", { name }, SLOW));
+/** The page's two sections, by title. */
+const section = (name: "In effect" | "Waiting for you") => screen.getByRole("region", { name });
+/** Opens the page's one Details disclosure (at its end) once the rules are loaded, and returns it. */
+async function openDetails(): Promise<HTMLElement> {
+  const details = await waitFor(() => {
+    const d = document.querySelector<HTMLDetailsElement>("details[data-page-details]");
+    if (!d) throw new Error("no page Details yet");
+    return d;
+  }, SLOW);
+  if (!details.open) fireEvent.click(details.querySelector("summary")!);
+  return details;
 }
 
 const card = (id: string) => document.querySelector<HTMLElement>(`[data-rule="${id}"]`)!;
 /** A card's "Why and where" toggle: the summary of its Disclosure. */
 const whyToggle = (id: string) => within(card(id)).getByText("Why and where").closest("summary")!;
 const dialog = () => document.querySelector<HTMLDialogElement>("dialog[data-dialog]")!;
-/** Picks a verdict from a card's ⋯ menu. */
+/** Picks a verdict: Promote is the row's visible button; Hold and Reject are items of its ⋯ menu. */
 const choose = (el: HTMLElement, label: string) => {
+  if (label === "Promote") {
+    fireEvent.click(within(el).getByRole("button", { name: "Promote" }));
+    return;
+  }
   fireEvent.click(within(el).getByRole("button", { name: /^Decide:/ }));
   fireEvent.click(within(el).getByRole("menuitem", { name: label }));
 };
 const sent = () => posts.map((p) => JSON.parse(String(p.init.body)));
 
 describe("Rules page", () => {
-  it("groups candidates and proposals, each under its line; each card shows its title (ID in its tooltip), state and what it would change", async () => {
+  it("Waiting for you groups candidates then proposals, each under its line; each row shows its title (ID in its tooltip), state and what kind of change it is", async () => {
     await show();
-    const classes = await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
-    const proposals = screen.getByRole("list", { name: "Structure proposals" });
+    const waiting = await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
+    const classes = within(waiting).getByRole("list", { name: "Rule candidates" });
+    const proposals = within(waiting).getByRole("list", { name: "Structure proposals" });
     expect(within(classes).getAllByRole("listitem").map((li) => li.dataset.rule)).toEqual(["C-012"]);
     expect(within(proposals).getAllByRole("listitem").map((li) => li.dataset.rule)).toEqual(["P-0007"]);
-    // Candidates first, each group with its one line on what promoting one does.
-    const groups = screen.getAllByRole("region").map((r) => [r.getAttribute("aria-label"), r.querySelector("[data-group-line]")!.textContent]);
-    expect(groups).toEqual([
-      ["Rule candidates", "Promoting a candidate adds its rule to every run's prompt from the next run on."],
-      ["Structure proposals", "Promoting a proposal shows its before and after, then applies it to the target file once you confirm."],
+    // Candidates first, each group (a part of the section, not a region) with its one line on what promoting one does.
+    expect([...waiting.querySelectorAll("[data-group-line]")].map((l) => l.textContent)).toEqual([
+      "Promoting a candidate adds its rule to every run's prompt from the next run on.",
+      "Promoting a proposal shows its before and after, then applies it to the target file once you confirm.",
     ]);
     expect(card("C-012").querySelector("[data-rule-title]")!.textContent).toBe("Keep existing CLI flags.");
     expect(card("C-012").textContent).toContain("Pending");
@@ -135,7 +146,8 @@ describe("Rules page", () => {
     expect(card("C-012").querySelector("[data-details]")!.textContent).toBe("Pending");
     expect(card("P-0007").textContent).toContain("Held");
     expect(card("P-0007").querySelector("[data-rule-title]")!.textContent).toBe("Split the review prompt");
-    expect(card("P-0007").querySelector("[data-rule-what]")!.textContent).toBe("Edit a file: review.md");
+    // No file name or path in the row: one file reads "1 file".
+    expect(card("P-0007").querySelector("[data-rule-what]")!.textContent).toBe("Edit a file: 1 file");
     // No detail is read on page load.
     expect(gets.filter((u) => u.includes("/rules/entry"))).toEqual([]);
     expect(document.querySelector("[data-rule-detail]")).toBeNull();
@@ -150,7 +162,7 @@ describe("Rules page", () => {
       },
     };
     await show();
-    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
+    await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
     const toggle = whyToggle("C-012");
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(toggle);
@@ -171,11 +183,11 @@ describe("Rules page", () => {
   it("a proposal's detail shows its kind and target; Why and Where it applies are left out when the ledger gives nothing, with no \"not given\"", async () => {
     detail = { id: "P-0007", error: null, detail: { id: "P-0007" } };
     await show();
-    await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
+    await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
     fireEvent.click(whyToggle("P-0007"));
     await waitFor(() => expect(card("P-0007").querySelector("[data-detail-part]")).not.toBeNull(), SLOW);
     const part = (name: string) => card("P-0007").querySelector(`[data-detail-part="${name}"]`);
-    expect(part("what")!.textContent).toContain("Kind: Edit a file: review.md");
+    expect(part("what")!.textContent).toContain("Kind: Edit a file: 1 file");
     expect(part("what")!.textContent).toContain("Changes: prompts/review.md");
     for (const name of ["why", "where", "change", "evidence", "related"]) expect(part(name)).toBeNull();
     expect(card("P-0007").querySelector("[data-rule-detail]")!.textContent).not.toContain("not given");
@@ -190,7 +202,7 @@ describe("Rules page", () => {
     it(`a show that ${name}: the card keeps its title and says the detail could not be read`, async () => {
       detail = answerWith;
       await show();
-      await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
+      await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
       fireEvent.click(whyToggle("C-012"));
       await waitFor(() => expect(card("C-012").querySelector("[data-rule-detail]")).not.toBeNull(), SLOW);
       expect(card("C-012").querySelector("[data-rule-detail]")!.textContent).toBe("The detail could not be read.");
@@ -200,7 +212,7 @@ describe("Rules page", () => {
 
   it("a verdict button asks for a reason before it sends; promote of a class sends the edited wording, default and exception", async () => {
     await show();
-    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
+    await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
     choose(card("C-012"), "Promote");
     const confirm = within(dialog()).getByRole("button", { name: "Send promote" }) as HTMLButtonElement;
     expect(confirm.disabled).toBe(true);
@@ -234,7 +246,7 @@ describe("Rules page", () => {
       ],
     });
     await show();
-    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
+    await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
     expect(card("C-012").querySelector("[data-judged]")!.textContent).toBe("Judged: promote");
     expect(card("C-012").textContent).not.toContain("Pending");
     expect(within(card("C-012")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Keep existing CLI flags."]);
@@ -242,13 +254,13 @@ describe("Rules page", () => {
     expect(card("C-013").querySelector("[data-draft-error]")!.textContent).toContain("evolve show exited 1");
     expect(within(card("C-012")).queryByRole("button", { name: /^Decide:/ })).toBeNull();
     fireEvent.click(within(card("C-013")).getByRole("button", { name: /^Decide:/ }));
-    expect((within(card("C-013")).getByRole("menuitem", { name: "Promote" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(card("C-013")).getByRole("button", { name: "Promote" }) as HTMLButtonElement).disabled).toBe(true);
     expect((within(card("C-013")).getByRole("menuitem", { name: "Hold" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("hold and reject send only the reason; they ask for no wording and no applied-to file", async () => {
     await show();
-    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
+    await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
     for (const [label, reason] of [["Hold", "wait"], ["Reject", "not code"]] as const) {
       choose(card("P-0007"), label);
       for (const name of ["Rule wording", "Default", "Exception", "Applied to"]) expect(within(dialog()).queryByRole("textbox", { name })).toBeNull();
@@ -269,7 +281,7 @@ describe("Rules page", () => {
     });
     detail = (id) => ({ id, error: null, detail: id === "P-0009" ? { id } : { id, target: "private/bin/notify", current: "notify --loud", proposed: "notify --quiet" } });
     await show();
-    await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
+    await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
     choose(card("P-20261101-158e"), "Promote");
     for (const name of ["Rule wording", "Default", "Exception", "Applied to"]) expect(within(dialog()).queryByRole("textbox", { name })).toBeNull();
     expect(dialog().querySelector("[data-dialog-consequence]")!.textContent).toBe(
@@ -296,7 +308,7 @@ describe("Rules page", () => {
     detail = (id) => ({ id, error: null, detail: { id, target: "prompts/review.md", current: "a", proposed: "b" } });
     answer = { status: 502, body: { error: "The ledger refused the verdict: evolve verdict exited 1: evolve: P-0007 was judged already" } };
     await show();
-    await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
+    await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
     choose(card("P-0007"), "Promote");
     await waitFor(() => expect(dialog().querySelector('[data-change="proposed"]')).not.toBeNull(), SLOW);
     fireEvent.change(within(dialog()).getByRole("textbox", { name: "Reason" }), { target: { value: "x" } });
@@ -306,7 +318,7 @@ describe("Rules page", () => {
 
   it("promote of a class keeps its own help text and has no Applied to field", async () => {
     await show();
-    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
+    await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
     choose(card("C-012"), "Promote");
     expect(dialog().querySelector("[data-dialog-consequence]")!.textContent).toBe(
       "Promoting writes this rule into your rules, records the verdict and updates your agents' instructions; it is part of every run's prompt from the next run on.",
@@ -317,7 +329,7 @@ describe("Rules page", () => {
   it("a refusal stays in the dialog", async () => {
     answer = { status: 403, body: { error: "Only the owner judges rules; you are local:alice." } };
     await show();
-    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
+    await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
     choose(card("C-012"), "Hold");
     fireEvent.change(within(dialog()).getByRole("textbox", { name: "Reason" }), { target: { value: "x" } });
     fireEvent.click(within(dialog()).getByRole("button", { name: "Send hold" }));
@@ -382,7 +394,7 @@ describe("Rules page", () => {
     expect(posts[0]!.url).toBe("/api/v1/settings");
     expect(new Headers(posts[0]!.init.headers).get("x-csrf-token")).toBe(TOKEN);
     expect(sent()).toEqual([{ action: "set", key: "integrations", value: '{"tacit":"agents-home"}' }]);
-    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
+    await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
     expect(card("C-012")).not.toBeNull();
   });
 
@@ -392,7 +404,7 @@ describe("Rules page", () => {
     await show();
     fireEvent.click(await screen.findByRole("button", { name: "Turn on" }, SLOW));
     expect((await screen.findByRole("alert", {}, SLOW)).textContent).toContain("only by the owner");
-    expect(screen.queryByRole("list", { name: "Rule candidates" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Waiting for you" })).toBeNull();
   });
 
   it("ledger off, home not found: names the missing file, with no path field and no Turn on, and tells nobody where to put the CLIs", async () => {
@@ -407,7 +419,7 @@ describe("Rules page", () => {
     expect(h1s()).toEqual(["Rules"]);
   });
 
-  it("Applied group after the waiting groups: each block's parts, \"not given\" for a missing one, raw text, the elsewhere lines; none when empty or off", async () => {
+  it("In effect lists each applied rule's sentence; its parts, \"not given\" for a missing one, and an unreadable block's raw text sit behind Details; the elsewhere lines follow", async () => {
     current = view({
       applied: {
         rules: [
@@ -418,16 +430,22 @@ describe("Rules page", () => {
       },
     });
     await show();
-    await openTab("Applied");
-    const applied = await screen.findByRole("list", { name: "Applied" }, SLOW);
-    // The Applied tab holds the one Applied card, and no waiting group.
-    expect(screen.getAllByRole("region").map((r) => r.getAttribute("aria-label"))).toEqual(["Applied"]);
-    const c = applied.querySelector<HTMLElement>('[data-applied="C-001"]')!.textContent!;
+    const applied = await screen.findByRole("list", { name: "In effect" }, SLOW);
+    expect(applied.closest("section")!.getAttribute("aria-label")).toBe("In effect");
+    const row = applied.querySelector<HTMLElement>('[data-applied="C-001"]')!;
+    const c = row.textContent!;
     expect(c).not.toContain("C-001");
+    // The row's sentence is the rule's name; its date and parts are behind Details, not on the row.
+    expect(row.querySelector("p")!.textContent).toBe("summary first");
+    expect(row.querySelector("[data-details]")).toBeNull();
     for (const part of ["summary first", "모든 문서", "2026-11-13", "Open with a summary.", "not given", "2: T-1, T-2"]) expect(c).toContain(part);
     // Details are a label/value list.
     expect([...applied.querySelectorAll('[data-applied="C-001"] dt')].map((d) => d.textContent)).toEqual(["Default", "Exception", "Evidence", "Judged"]);
-    expect(applied.querySelector("[data-applied-raw]")!.textContent).toBe("## Notes\njust words");
+    // An unreadable block says so; its raw text is behind Details.
+    const raw = applied.querySelector<HTMLElement>("[data-applied-raw]")!;
+    expect(raw.matches("[data-list-row]")).toBe(true);
+    expect(raw.querySelector("p")!.textContent).toBe("A rule this page could not read");
+    expect(raw.querySelector("details pre, details [data-value-block], details")!.textContent).toContain("## Notes\njust words");
     expect(document.querySelector("[data-elsewhere]")!.textContent).toContain("Encoded elsewhere");
     // The elsewhere lines go through Markdown: a list item, no raw "- ".
     expect(document.querySelector("[data-elsewhere]")!.textContent).toContain("C-009 → CLAUDE.md");
@@ -452,8 +470,7 @@ describe("Rules page", () => {
     current = view({ applied: APPLIED });
     detail = (id) => ({ id, error: null, detail: null, retire: id === "C-001" ? ["no new incident for 44 days since judged on 2026-10-01", "covered by C-002"] : [] });
     await show();
-    await openTab("Applied");
-    await screen.findByRole("list", { name: "Applied" }, SLOW);
+    await screen.findByRole("list", { name: "In effect" }, SLOW);
     // Nothing is suggested, and no entry read, before the press.
     expect(gets.filter((u) => u.includes("/rules/entry"))).toEqual([]);
     expect(screen.queryByText("Suggested to retire")).toBeNull();
@@ -475,8 +492,7 @@ describe("Rules page", () => {
     current = view({ applied: APPLIED });
     answer = { status: 200, body: { id: "C-001", verdict: "retire" } };
     await show();
-    await openTab("Applied");
-    await screen.findByRole("list", { name: "Applied" }, SLOW);
+    await screen.findByRole("list", { name: "In effect" }, SLOW);
     expect(applied("C-001").querySelector("textarea, input")).toBeNull();
     // No visible Retire button: Retire is the danger item of the row's ⋯ menu, at the right of the title line.
     expect(within(applied("C-001")).queryByRole("button", { name: "Retire" })).toBeNull();
@@ -501,8 +517,7 @@ describe("Rules page", () => {
   it("a user who is not the owner sees the menu's Edit and Retire disabled, with the owner-only tooltip; Open evidence stays on", async () => {
     current = view({ applied: APPLIED, judge: "Only the owner judges rules; you are local:alice." });
     await show();
-    await openTab("Applied");
-    await screen.findByRole("list", { name: "Applied" }, SLOW);
+    await screen.findByRole("list", { name: "In effect" }, SLOW);
     fireEvent.click(within(applied("C-001")).getByRole("button", { name: "Actions: summary first" }));
     for (const name of ["Edit", "Retire"]) {
       const item = within(applied("C-001")).getByRole("menuitem", { name }) as HTMLButtonElement;
@@ -519,8 +534,7 @@ describe("Rules page", () => {
   it("each applied class's ⋯ menu holds Edit, Open evidence and Retire in that order; a raw block has no menu", async () => {
     current = view({ applied: APPLIED });
     await show();
-    await openTab("Applied");
-    await screen.findByRole("list", { name: "Applied" }, SLOW);
+    await screen.findByRole("list", { name: "In effect" }, SLOW);
     expect(screen.getAllByRole("button", { name: /^Actions:/ })).toHaveLength(2);
     expect(document.querySelector("[data-applied-raw] [data-row-menu]")).toBeNull();
     fireEvent.click(within(applied("C-001")).getByRole("button", { name: "Actions: summary first" }));
@@ -534,8 +548,7 @@ describe("Rules page", () => {
     current = view({ applied: { rules: [rule], elsewhere: [] } });
     answer = { status: 200, body: { id: "C-001" } };
     await show();
-    await openTab("Applied");
-    await screen.findByRole("list", { name: "Applied" }, SLOW);
+    await screen.findByRole("list", { name: "In effect" }, SLOW);
     fireEvent.click(within(applied("C-001")).getByRole("button", { name: "Actions: summary first" }));
     fireEvent.click(within(applied("C-001")).getByRole("menuitem", { name: "Edit" }));
     const d = dialog();
@@ -563,8 +576,7 @@ describe("Rules page", () => {
     current = view({ applied: APPLIED });
     answer = { status: 502, body: { error: "The rule was saved, but sync-agents failed: locked" } };
     await show();
-    await openTab("Applied");
-    await screen.findByRole("list", { name: "Applied" }, SLOW);
+    await screen.findByRole("list", { name: "In effect" }, SLOW);
     fireEvent.click(within(applied("C-001")).getByRole("button", { name: "Actions: summary first" }));
     fireEvent.click(within(applied("C-001")).getByRole("menuitem", { name: "Edit" }));
     fireEvent.change(within(dialog()).getByRole("textbox", { name: "Exception" }), { target: { value: "none" } });
@@ -581,8 +593,7 @@ describe("Rules page", () => {
       },
     });
     await show();
-    await openTab("Applied");
-    await screen.findByRole("list", { name: "Applied" }, SLOW);
+    await screen.findByRole("list", { name: "In effect" }, SLOW);
     fireEvent.click(within(applied("C-001")).getByRole("button", { name: "Actions: summary first" }));
     fireEvent.click(within(applied("C-001")).getByRole("menuitem", { name: "Open evidence" }));
     const d = dialog();
@@ -600,20 +611,19 @@ describe("Rules page", () => {
   it("a rule with two default lines shows each on its own line in its Details", async () => {
     current = view({ applied: { rules: [{ ...APPLIED!.rules[0]!, default: "Open with a summary.\nKeep it to one line." }], elsewhere: [] } });
     await show();
-    await openTab("Applied");
-    await screen.findByRole("list", { name: "Applied" }, SLOW);
+    await screen.findByRole("list", { name: "In effect" }, SLOW);
     const lines = applied("C-001").querySelectorAll("[data-lines] > [data-markdown]");
     expect([...lines].map((l) => l.textContent)).toEqual(["Open with a summary.", "Keep it to one line."]);
   });
 
   const PUSHBACKS = { rows: [{ id: "T-0201", pushback: "keep the --json flag", date: "2026-11-20" }, { id: "T-0202", pushback: "요약 먼저", date: null }], error: null };
 
-  it("Pushbacks is a Card after Applied with its count: each row the owner's words and date, no ID, and one secondary sm Dismiss", async () => {
+  it("Pushbacks sits under the page's Details with its count: each row the owner's words and date, no ID, and one secondary sm Dismiss", async () => {
     current = view({ applied: APPLIED, pushbacks: PUSHBACKS });
     await show();
-    await openTab("Applied");
-    const list = await screen.findByRole("list", { name: "Pushbacks" }, SLOW);
-    expect(screen.getAllByRole("region").map((r) => r.getAttribute("aria-label"))).toEqual(["Applied", "Pushbacks"]);
+    const details = await openDetails();
+    const list = await within(details).findByRole("list", { name: "Pushbacks" }, SLOW);
+    expect(list.closest("details[data-page-details]")).toBe(details);
     expect(screen.getByRole("region", { name: "Pushbacks" }).textContent).toContain("2");
     const rows = within(list).getAllByRole("listitem");
     expect(rows.map((r) => r.querySelector("[data-pushback-words]")!.textContent)).toEqual(["keep the --json flag", "요약 먼저"]);
@@ -632,7 +642,7 @@ describe("Rules page", () => {
     current = view({ applied: APPLIED, pushbacks: PUSHBACKS });
     answer = { status: 200, body: { id: "T-0201" } };
     await show();
-    await openTab("Applied");
+    await openDetails();
     const list = await screen.findByRole("list", { name: "Pushbacks" }, SLOW);
     fireEvent.click(within(within(list).getAllByRole("listitem")[0]!).getByRole("button", { name: "Dismiss" }));
     expect(dialog().querySelector("[data-dialog-consequence]")!.textContent).toContain("noise");
@@ -648,7 +658,7 @@ describe("Rules page", () => {
   it("a user who is not the owner sees Dismiss disabled with the owner-only tooltip", async () => {
     current = view({ applied: APPLIED, pushbacks: PUSHBACKS, judge: "Only the owner judges rules; you are local:alice." });
     await show();
-    await openTab("Applied");
+    await openDetails();
     const list = await screen.findByRole("list", { name: "Pushbacks" }, SLOW);
     const row = within(list).getAllByRole("listitem")[0]!;
     const button = within(row).getByRole("button", { name: "Dismiss" }) as HTMLButtonElement;
@@ -660,31 +670,29 @@ describe("Rules page", () => {
   it("no Pushbacks card with the ledger giving none; an unreadable list is a Notice and the rest of the page loads", async () => {
     current = view({ applied: APPLIED });
     await show();
-    await openTab("Applied");
-    await screen.findByRole("list", { name: "Applied" }, SLOW);
+    await screen.findByRole("list", { name: "In effect" }, SLOW);
     expect(screen.queryByRole("region", { name: "Pushbacks" })).toBeNull();
     cleanup();
     current = view({ applied: APPLIED, pushbacks: { rows: [], error: "The pushbacks could not be read: boom" } });
     await show();
-    await openTab("Applied");
+    await openDetails();
     const card = await screen.findByRole("region", { name: "Pushbacks" }, SLOW);
     expect(card.textContent).toContain("The pushbacks could not be read.");
-    expect(screen.getByRole("list", { name: "Applied" })).toBeTruthy();
+    expect(screen.getByRole("list", { name: "In effect" })).toBeTruthy();
   });
 
-  it("the Retired tab lists each rule's reason and date; an empty state when the ledger has none", async () => {
+  it("Retired sits under the page's Details: each rule's reason and date; a line when the ledger has none", async () => {
     current = view({ applied: APPLIED, retired: [{ id: "C-007", reason: "covered by C-001", date: "2026-11-14" }] });
     await show();
-    await openTab("Retired");
-    const region = await screen.findByRole("region", { name: "Retired" }, SLOW);
-    expect(region.querySelector('[data-retired-rule="C-007"]')!.textContent).toBe("Retired ruleRetired 2026-11-14: covered by C-001");
-    expect(screen.queryByRole("list", { name: "Applied" })).toBeNull();
+    const details = await openDetails();
+    const list = within(details).getByRole("list", { name: "Retired" });
+    expect(list.querySelector('[data-retired-rule="C-007"]')!.textContent).toBe("Retired ruleRetired 2026-11-14: covered by C-001");
+    expect(list.querySelector('[data-retired-rule="C-007"]')!.matches("[data-list-row]")).toBe(true);
+    expect(screen.queryByRole("region", { name: "Retired" })).toBeNull();
     cleanup();
     current = view({ applied: APPLIED, retired: [] });
     await show();
-    await openTab("Retired");
-    await screen.findByText("No rule has been retired.", {}, SLOW);
-    expect(screen.queryByRole("region", { name: "Retired" })).toBeNull();
+    expect(within(await openDetails()).getByText("No rule has been retired.")).not.toBeNull();
   });
 
   const judgedEntries = (): RulesView["entries"] => [
@@ -697,43 +705,79 @@ describe("Rules page", () => {
     await show();
     await screen.findByText("Nothing waits for a verdict", {}, SLOW);
     expect(document.querySelector("[data-waiting]")!.textContent).toBe("0 waiting");
-    expect(screen.queryByRole("list", { name: "Rule candidates" })).toBeNull();
-    expect(screen.queryByRole("list", { name: "Structure proposals" })).toBeNull();
-    expect(document.querySelector("[data-decided] summary")!.textContent).toBe("2 decided");
+    expect(section("Waiting for you").querySelector("li[data-rule]")).toBeNull();
+    // The decided entries sit under the page's Details, under an "N decided" heading.
+    const details = await openDetails();
+    expect(details.querySelector("[data-decided] h3")!.textContent).toBe("2 decided");
+    expect(within(details).getByRole("list", { name: "Decided" }).contains(card("P-0007"))).toBe(true);
     expect(card("P-0007").textContent).toContain("Judged: reject");
   });
 
-  it("the waiting count and the group counts exclude judged entries; one PageHeader names the page and holds How this works", async () => {
+  it("the waiting count and the section count exclude judged entries; one PageHeader names the page; How this works is under Details", async () => {
     current = view({ entries: [...judgedEntries(), ...view().entries] });
     await show();
-    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
+    await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
     expect(document.querySelector("[data-waiting]")!.textContent).toBe("2 waiting");
-    expect(screen.getByRole("region", { name: "Rule candidates" }).querySelectorAll("li[data-rule]")).toHaveLength(1);
+    expect(section("Waiting for you").querySelectorAll("li[data-rule]")).toHaveLength(2);
     expect(h1s()).toEqual(["Rules"]);
-    const how = document.querySelector<HTMLDetailsElement>("details[data-how]")!;
-    expect(how.querySelector("summary")!.textContent).toBe("How this works");
-    expect(how.open).toBe(false);
+    const details = document.querySelector<HTMLDetailsElement>("details[data-page-details]")!;
+    expect(details.open).toBe(false);
+    expect(details.querySelector("[data-how] h3")!.textContent).toBe("How this works");
   });
 
-  it("shared Tabs named Rules: Waiting is selected on load and holds the waiting groups then Auto-approve specs; Applied is its own tab and says its order", async () => {
-    current = view({ applied: APPLIED });
-    standing = { as_of: AT, csrf_token: TOKEN, rules: [], proposals: [{ id: "sp_1", rule: "spec-t1", run_length: 3, threshold: 3, created_at: AT }] };
+  it("two sections, In effect then Waiting for you, and one Details at the end; no tabs; every row in both is a ListRow", async () => {
+    current = view({ applied: APPLIED, improve: { report: null } as unknown as NonNullable<RulesView["improve"]> });
+    standing = {
+      as_of: AT, csrf_token: TOKEN,
+      rules: [{ rule: "spec-t1", gate: "spec", tier: 1, threshold: 3, enabled: true, set_by: "github:1", created_at: AT, updated_at: AT, last_fired_at: null, recent: [] }],
+      proposals: [{ id: "sp_1", rule: "spec-t1", run_length: 3, threshold: 3, created_at: AT }],
+    };
     await show();
-    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
-    const tabs = within(screen.getByRole("tablist", { name: "Rules" })).getAllByRole("tab");
-    expect(tabs.map((t) => [t.textContent, t.getAttribute("aria-selected")])).toEqual([["Waiting", "true"], ["Applied", "false"], ["Retired", "false"]]);
-    // The waiting list comes first; Auto-approve specs sits below it; no Applied or improve report on this tab.
-    await screen.findByRole("region", { name: "Auto-approve specs" }, SLOW);
-    expect(screen.getAllByRole("region").map((r) => r.getAttribute("aria-label"))).toEqual(["Rule candidates", "Structure proposals", "Auto-approve specs"]);
-    expect(screen.queryByRole("list", { name: "Applied" })).toBeNull();
+    await waitFor(() => expect(document.querySelector('[data-proposal="sp_1"]')).not.toBeNull(), SLOW);
+    // Exactly two regions, in this order; no tablist.
+    expect(screen.getAllByRole("region").map((r) => r.getAttribute("aria-label"))).toEqual(["In effect", "Waiting for you"]);
+    expect(screen.queryByRole("tablist")).toBeNull();
+    // In effect: the standing rule that is on, then the applied rules.
+    const effect = within(section("In effect")).getByRole("list", { name: "In effect" });
+    const rows = [...effect.querySelectorAll<HTMLElement>(":scope > li")];
+    expect(rows.map((r) => r.dataset.rule ?? r.dataset.applied ?? "raw")).toEqual(["spec-t1", "C-001", "C-002", "raw"]);
+    expect(rows.every((r) => r.matches("[data-list-row]"))).toBe(true);
+    expect(within(section("In effect")).getByText("Approves tier 1 plans for you")).not.toBeNull();
+    // Waiting for you: the standing proposal, then candidates, then structure proposals, each group a list of its own.
+    const waiting = section("Waiting for you");
+    expect([...waiting.querySelectorAll("ul")].map((u) => u.getAttribute("aria-label"))).toEqual(["Turn on auto-approve", "Rule candidates", "Structure proposals"]);
+    const wrows = [...waiting.querySelectorAll<HTMLElement>("ul > li")];
+    expect(wrows.map((r) => r.dataset.proposal ?? r.dataset.rule)).toEqual(["sp_1", "C-012", "P-0007"]);
+    expect(wrows.every((r) => r.matches("[data-list-row]"))).toBe(true);
+    // The waiting count is a Badge beside the title, counting the standing proposal too.
+    const badge = document.querySelector<HTMLElement>("[data-waiting]")!;
+    expect(badge.querySelector("[data-level]")!.textContent).toBe("3 waiting");
+    expect(badge.parentElement!.querySelector("h1")!.textContent).toBe("Rules");
+    // One Details disclosure, the page's last element, holding the improve link, Retired and How this works.
+    const all = document.querySelectorAll("details[data-page-details]");
+    expect(all).toHaveLength(1);
+    const details = all[0]!;
+    expect(details.querySelector("summary")!.textContent).toBe("Details");
+    expect(details.parentElement!.lastElementChild).toBe(details);
+    const link = details.querySelector<HTMLAnchorElement>("[data-improve-link] a")!;
+    expect([link.textContent, link.getAttribute("href")]).toEqual(["See the improve report on the Health page", "/app/health?tab=improve"]);
+    for (const part of ["[data-retired-part]", "[data-how]"]) expect(details.querySelector(part)).not.toBeNull();
+    // No improve report on the page itself.
     expect(screen.queryByText("Improve report")).toBeNull();
-    // The waiting count is a Badge beside the title, not an action at the header's end.
-    const waiting = document.querySelector<HTMLElement>("[data-waiting]")!;
-    expect(waiting.querySelector("[data-level]")!.textContent).toBe("2 waiting");
-    expect(waiting.parentElement!.querySelector("h1")!.textContent).toBe("Rules");
-    fireEvent.click(tabs[1]!);
-    expect((await screen.findByRole("list", { name: "Applied" }, SLOW)).closest("section")!.textContent).toContain("Listed in the order of your rules.");
-    expect(screen.queryByRole("list", { name: "Rule candidates" })).toBeNull();
+  });
+
+  it("a standing rule that is off sits under Details, with its switch; In effect says so when nothing is on", async () => {
+    standing = {
+      as_of: AT, csrf_token: TOKEN,
+      rules: [{ rule: "spec-t1", gate: "spec", tier: 1, threshold: 3, enabled: false, set_by: null, created_at: null, updated_at: null, last_fired_at: null, recent: [] }],
+      proposals: [],
+    };
+    await show();
+    const details = await openDetails();
+    await waitFor(() => expect(details.querySelector('[data-standing-off] [data-rule="spec-t1"]')).not.toBeNull(), SLOW);
+    expect(within(details).getByRole("switch", { name: "Approves tier 1 plans for you" })).not.toBeNull();
+    expect(section("In effect").querySelector('[data-rule="spec-t1"]')).toBeNull();
+    expect(section("In effect").querySelector("[data-in-effect-empty]")!.textContent).toBe("No rule is in effect yet.");
   });
 
   it("the search filters Applied rows case-insensitively over ID, name, default and scope; evidence is counted once per incident", async () => {
@@ -748,8 +792,7 @@ describe("Rules page", () => {
       },
     });
     await show();
-    await openTab("Applied");
-    await screen.findByRole("list", { name: "Applied" }, SLOW);
+    await screen.findByRole("list", { name: "In effect" }, SLOW);
     const ids = () => [...document.querySelectorAll<HTMLElement>("[data-applied]")].map((e) => e.dataset.applied);
     expect(ids()).toEqual(["C-001", "C-002"]);
     expect(applied("C-001").textContent).toContain("2: T-1, T-2");
@@ -761,21 +804,22 @@ describe("Rules page", () => {
     expect(screen.getByText("No applied rule matches.")).not.toBeNull();
   });
 
-  it("the verdicts are items of one ⋯ menu, Promote first and Reject last in the danger tone; a disabled Promote says why in the row", async () => {
+  it("Promote is the row's visible action; its ⋯ menu lists every verdict, Promote first and Reject last in the danger tone; a disabled Promote says why in the row", async () => {
     current = view({ entries: [{ id: "C-013", title: "Summary first.", state: "pending", judged: null, draft: null, draft_error: "x" }, ...view().entries] });
     await show();
-    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
-    expect(within(card("C-012")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Keep existing CLI flags.", "⋯"]);
+    await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
+    expect(within(card("C-012")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Keep existing CLI flags.", "Promote", "⋯"]);
+    // Promote is a secondary button, not the view's primary action.
+    expect(within(card("C-012")).getByRole("button", { name: "Promote" }).className).not.toContain("bg-accent");
     fireEvent.click(within(card("C-012")).getByRole("button", { name: /^Decide:/ }));
     const items = within(card("C-012")).getAllByRole("menuitem");
     expect(items.map((i) => i.textContent)).toEqual(["Promote", "Hold", "Reject"]);
     expect(items[2]!.className).toContain("text-pill-bad-fg");
-    fireEvent.click(within(card("C-013")).getByRole("button", { name: /^Decide:/ }));
-    expect((within(card("C-013")).getByRole("menuitem", { name: "Promote" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(card("C-013")).getByRole("button", { name: "Promote" }) as HTMLButtonElement).disabled).toBe(true);
     expect(card("C-013").querySelector("[data-draft-error]")!.textContent).toContain("Promote is off");
   });
 
-  it("a waiting proposal shows its short file name and its before and after without a click; one without lines shows no excerpt", async () => {
+  it("a waiting proposal's row shows its kind and file count only; its before and after lines are behind Why and where; one without lines shows no excerpt", async () => {
     current = view({
       entries: [
         { id: "P-20261103-34e9", title: "Quiet notify", state: "open", kind: "edit-asset", target: "bin/evolve", judged: null, draft: null, draft_error: null },
@@ -784,14 +828,19 @@ describe("Rules page", () => {
       excerpts: { "P-20261103-34e9": { before: "notify every hour", after: "notify at 8am" } },
     } as Partial<RulesView>);
     await show();
-    await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
+    await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
     const row = card("P-20261103-34e9");
-    expect(row.querySelector("[data-rule-what]")!.textContent).toBe("Edit a file: evolve");
+    expect(row.querySelector("[data-rule-what]")!.textContent).toBe("Edit a file: 1 file");
+    expect(row.querySelector("[data-rule-excerpt]")).toBeNull();
+    expect(row.textContent).not.toContain("notify every hour");
+    fireEvent.click(whyToggle("P-20261103-34e9"));
+    await waitFor(() => expect(row.querySelector("details [data-rule-excerpt]")).not.toBeNull(), SLOW);
     expect(row.querySelector('[data-excerpt="before"]')!.textContent).toBe("Beforenotify every hour");
     expect(row.querySelector('[data-excerpt="after"]')!.textContent).toBe("Afternotify at 8am");
     expect(row.querySelector("[data-rule-what]")!.textContent).not.toContain("bin/");
+    fireEvent.click(whyToggle("P-0007"));
+    await waitFor(() => expect(card("P-0007").querySelector("[data-rule-detail]")).not.toBeNull(), SLOW);
     expect(card("P-0007").querySelector("[data-rule-excerpt]")).toBeNull();
-    expect(card("P-0007").textContent).not.toContain("not given");
   });
 
   it("the verdict dialog titles the verdict and the entry title, shows the title once and the detail above the fields, and labels the reason as it reads", async () => {
@@ -799,7 +848,7 @@ describe("Rules page", () => {
     current = view({ entries: [{ id: "C-037", title: long, state: "pending", judged: null, draft: { default: "d", exception: "e", incidents: ["T-1"], scope: "s" }, draft_error: null }] });
     detail = { id: "C-037", error: null, detail: { id: "C-037", incidents: 2, scope: "software" } };
     await show();
-    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
+    await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
     choose(card("C-037"), "Promote");
     expect(within(dialog()).getByRole("heading", { level: 2 }).textContent).toBe(`Promote: ${long}`);
     expect(dialog().querySelector("h2")!.textContent).not.toContain("C-037");
@@ -833,7 +882,7 @@ describe("Rules page", () => {
   ];
   const openDialog = async (label: string) => {
     await show();
-    await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
+    await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
     choose(card("P-20261103-34e9"), label);
     await waitFor(() => expect(dialog().querySelector("[data-rule-detail]")).not.toBeNull(), SLOW);
   };
@@ -920,7 +969,7 @@ describe("Rules page", () => {
 
   it("each waiting row's ⋯ menu sits at the right end of its title line, not on a line of its own", async () => {
     await show();
-    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
+    await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
     for (const id of ["C-012", "P-0007"]) {
       const menu = card(id).querySelector<HTMLElement>("[data-row-menu]")!;
       // The menu is the row's last child, beside the column that holds the title, in the same flex row.
@@ -942,10 +991,10 @@ describe("Rules page", () => {
     });
     detail = (id) => ({ id, error: null, detail: { id } });
     await show();
-    await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
+    await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
     const what = (id: string) => card(id).querySelector("[data-rule-what]")!.textContent;
     expect(["P-1", "P-2", "P-3", "P-4"].map(what)).toEqual([
-      "Edit a file: 4 files", "Turn a learning into a rule: learnings.md", "Add a new file: SKILL.md", "Change: x.md",
+      "Edit a file: 4 files", "Turn a learning into a rule: 1 file", "Add a new file: 1 file", "Change: 1 file",
     ]);
     for (const raw of ["edit-asset", "promote-learning", "new-asset", "rename-thing"]) expect(document.body.textContent).not.toContain(raw);
     fireEvent.click(within(card("P-1")).getByText("Why and where").closest("summary")!);
@@ -974,11 +1023,32 @@ describe("Rules page", () => {
     for (const [key, text] of Object.entries(rules)) expect([key, text]).not.toEqual([key, expect.stringMatching(/evolve|tacit|sync-agents|ledger|bin\//i)]);
   });
 
-  it("no Applied group when the file holds nothing or the ledger is off", async () => {
+  it("the intro says what the page is for in plain words, and no raw rule ID, provider ID, ISO time or kind shows outside Details", async () => {
+    current = view({ entries: [...view().entries, { id: "P-0009", title: "Quiet notify", state: "open", kind: "edit-asset", target: "bin/evolve", judged: null, draft: null, draft_error: null }] });
+    standing = {
+      as_of: AT, csrf_token: TOKEN,
+      rules: [{ rule: "spec-t1", gate: "spec", tier: 1, threshold: 3, enabled: true, set_by: "github:123", created_at: "2026-11-19T12:41:45.603Z", updated_at: AT, last_fired_at: null, recent: [] }],
+      proposals: [{ id: "sp_1", rule: "spec-t1", run_length: 3, threshold: 3, created_at: "2026-11-19T12:41:45.603Z" }],
+    };
+    await show();
+    await waitFor(() => expect(document.querySelector('[data-proposal="sp_1"]')).not.toBeNull(), SLOW);
+    expect(document.querySelector("header p")!.textContent).toBe("When you correct the agents, the factory suggests rules. Approve, hold, or reject them here.");
+    const copy = document.body.cloneNode(true) as HTMLElement;
+    // Outside every Details disclosure (closed or not) and the tooltips.
+    copy.querySelectorAll("details, [data-raw], [role=tooltip]").forEach((n) => n.remove());
+    const text = copy.textContent!;
+    for (const raw of ["spec-t1", "github:", "2026-11-19T", "edit-asset"]) expect(text).not.toContain(raw);
+    expect(text).toContain("Approves tier 1 plans for you");
+    const how = document.querySelector<HTMLElement>("[data-how]")!.textContent!;
+    for (const word of [/pushback/i, /ledger/i, /agents home/i]) expect(how).not.toMatch(word);
+  });
+
+  it("In effect says nothing is in effect when the file holds nothing and no standing rule is on", async () => {
     current = view({ applied: { rules: [], elsewhere: [] } });
     await show();
-    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
+    await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
     expect(screen.queryByRole("region", { name: "Applied" })).toBeNull();
+    expect(section("In effect").querySelector("[data-in-effect-empty]")!.textContent).toBe("No rule is in effect yet.");
   });
 
   it("ledger off for a user who is not the owner: the reason, and no Turn on", async () => {
