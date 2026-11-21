@@ -67,10 +67,13 @@ export class FakeForge implements Forge {
     return { number: n, url: this.prRef(n).link };
   }
 
+  /** Open PRs by number: like GitHub's, each is reported (change_open) on every poll while it is here, after `queue`. */
+  openPrs = new Map<number, Extract<ForgeEvent, { kind: "change_open" }>>();
+
   async poll(cursor: string | null): Promise<ForgePollResult> {
     this.polls.push(cursor);
     if (this.pollError) throw this.pollError;
-    const events = this.queue;
+    const events = [...this.queue, ...this.openPrs.values()];
     this.queue = [];
     return { events, next_cursor: String(Number(cursor ?? "0") + 1) };
   }
@@ -81,9 +84,12 @@ export class FakeForge implements Forge {
   prRef(pr_number: number): SourceRef {
     return { type: "github_issue", id: `o/r#${pr_number}`, link: `https://github.com/o/r/pull/${pr_number}` };
   }
+  /** Like GitHub's: only a ref equal to its own prRef (another repository's PR is not one). */
   prNumberOf(ref: SourceRef): number | null {
     const m = /\/pull\/(\d+)$/.exec(ref.link);
-    return ref.type === "github_issue" && m ? Number(m[1]) : null;
+    if (ref.type !== "github_issue" || !m) return null;
+    const ours = this.prRef(Number(m[1]));
+    return ours.id === ref.id && ours.link === ref.link ? Number(m[1]) : null;
   }
   async postPrComment(pr_number: number, body: string, marker: string): Promise<{ url: string }> {
     if (this.commentError) throw this.commentError;
@@ -123,7 +129,11 @@ export class FakeForge implements Forge {
     this.prStates.set(input.pr, "closed");
     return "closed";
   }
-  /** What prChecks answers, one entry per call, oldest first; once empty, every call answers `passed`. */
+  /**
+   * A test-only override of prChecks: scripted summaries, one per call, oldest first. Once empty, prChecks sums
+   * `checkList` up as the real forges sum their check results: any failed check fails it (with the failed names),
+   * else any pending one keeps it pending, else (no check at all included) passed.
+   */
   checkResults: PrChecks[] = [];
   /** Every PR number prChecks was asked about, in order. */
   checkCalls: number[] = [];
@@ -132,7 +142,11 @@ export class FakeForge implements Forge {
   async prChecks(pr_number: number): Promise<PrChecks> {
     this.checkCalls.push(pr_number);
     if (this.checksError) throw this.checksError;
-    return this.checkResults.shift() ?? { state: "passed" };
+    const scripted = this.checkResults.shift();
+    if (scripted) return scripted;
+    const failed = this.checkList.filter((c) => c.result === "failed").map((c) => c.name);
+    if (failed.length) return { state: "failed", failed };
+    return this.checkList.some((c) => c.result === "pending") ? { state: "pending" } : { state: "passed" };
   }
   /** What prCheckResults answers (each check's name and result); every PR asked for is recorded in `checkResultCalls`. */
   checkList: PrCheckResult[] = [];
