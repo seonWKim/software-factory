@@ -192,9 +192,9 @@ describe("Failures card: plain titles", () => {
 
   // RFC 0024 WP1 added setup_missing (no model credential); without its catalog entries the group shows the raw code
   // and "This error code has no plain description yet."
-  it("explains setup_missing in plain words, with the next step Run npm run setup", async () => {
+  it("explains setup_missing in plain words, with a next step that names no command", async () => {
     const { html, visible } = await renderGroup("setup_missing");
-    for (const text of ["Model credential missing", "No model credential is saved yet, so agent runs wait until one is added.", "Run npm run setup."]) expect(visible).toContain(`>${text}<`);
+    for (const text of ["Model credential missing", "No model credential is saved yet, so agent runs wait until one is added.", "Add a model credential on this computer. Waiting runs start on their own within seconds."]) expect(visible).toContain(`>${text}<`);
     expect(visible).not.toMatch(/setup_missing|no plain description/);
     expect(html).toContain("setup_missing");
   });

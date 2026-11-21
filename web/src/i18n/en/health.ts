@@ -46,7 +46,7 @@ export const health = {
   "failure.provider_setup.next": "Set up the provider's credentials in Settings, then retry the item.",
   "failure.setup_missing.title": "Model credential missing",
   "failure.setup_missing.meaning": "No model credential is saved yet, so agent runs wait until one is added.",
-  "failure.setup_missing.next": "Run npm run setup.",
+  "failure.setup_missing.next": "Add a model credential on this computer. Waiting runs start on their own within seconds.",
   "failure.abandoned.title": "Interactive task abandoned",
   "failure.abandoned.meaning": "The person abandoned the interactive task.",
   "failure.abandoned.next": "Nothing to fix. Start a new interactive task if the work is still wanted.",
