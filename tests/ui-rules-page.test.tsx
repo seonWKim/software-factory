@@ -132,7 +132,9 @@ describe("Rules page", () => {
       "Promoting a proposal shows its before and after, then applies it to the target file once you confirm.",
     ]);
     expect(card("C-012").querySelector("[data-rule-title]")!.textContent).toBe("Keep existing CLI flags.");
-    expect(card("C-012").textContent).toContain("Pending");
+    // A pending rule shows the state table's Needs approval (decision 3: pending, open and held map to table states).
+    expect(card("C-012").textContent).toContain("Needs approval");
+    expect(card("C-012").querySelector("[data-status='needs_approval']")).not.toBeNull();
     // The ID is not printed; it is in the tooltip of the title.
     expect(card("C-012").textContent).not.toContain("C-012");
     fireEvent.mouseEnter(card("C-012").querySelector("[data-id]")!.parentElement!);
@@ -143,8 +145,8 @@ describe("Rules page", () => {
     expect(card("C-012").textContent).not.toContain("Rule:");
     // Each entry is a ListRow: the title line first, then the details line with the state badge.
     expect(card("C-012").matches("[data-list-row]")).toBe(true);
-    expect(card("C-012").querySelector("[data-details]")!.textContent).toBe("Pending");
-    expect(card("P-0007").textContent).toContain("Held");
+    expect(card("C-012").querySelector("[data-details]")!.textContent).toBe("Needs approval");
+    expect(card("P-0007").querySelector("[data-status='held']")!.textContent).toBe("Held");
     expect(card("P-0007").querySelector("[data-rule-title]")!.textContent).toBe("Split the review prompt");
     // No file name or path in the row: one file reads "1 file".
     expect(card("P-0007").querySelector("[data-rule-what]")!.textContent).toBe("Edit a file: 1 file");
@@ -248,7 +250,7 @@ describe("Rules page", () => {
     await show();
     await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
     expect(card("C-012").querySelector("[data-judged]")!.textContent).toBe("Judged: promote");
-    expect(card("C-012").textContent).not.toContain("Pending");
+    expect(card("C-012").textContent).not.toContain("Needs approval");
     expect(within(card("C-012")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Keep existing CLI flags."]);
     expect(whyToggle("C-012")).not.toBeNull();
     expect(card("C-013").querySelector("[data-draft-error]")!.textContent).toContain("evolve show exited 1");

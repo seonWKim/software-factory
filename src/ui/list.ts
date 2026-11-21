@@ -10,7 +10,7 @@ import { type SettingsBase, resolveSettings } from "../core/settings.js";
 import type { ClaimDecision, Run, RunKind, StateChange, WorkItem, WorkItemId } from "../core/types.js";
 import { alarmText, alarmsFor, itemAlarms, openAlarms } from "./alarms.js";
 import { type FilterRow, type Filters, runKindOf, searchKeys } from "./filters.js";
-import { filterShowsFinished } from "../shared/states.js";
+import { filterShowsFinished, stateLabel } from "../shared/states.js";
 import { type Level, type Pending, type PriorityInput, closedLevel, levelOf, rank } from "./priority.js";
 import { heldFailureOf, needCtx } from "./need.js";
 import { type ClaimPauses, type HeldFailure, type Why, type WhyInput, deadlocked, heldBy, refsOf, whyWaiting, withAlarms } from "./why.js";
@@ -30,6 +30,8 @@ export interface ListCtx {
 /** One ranked row of the list, with what the filters read. */
 export interface ListRow extends FilterRow {
   item: WorkItem;
+  /** The state table's label for the row's level: the words the pages show (the API's `state_label`). */
+  label: string;
   input: PriorityInput;
   runStatus: "queued" | "running" | null;
   /** The item's queued or running run, and a queued run's 1-based place in the queue. */
@@ -89,6 +91,7 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
       item: it,
       input: r.input,
       level: r.level,
+      label: stateLabel(r.level),
       stage: it.stage,
       tier: it.tier,
       kind: runKindOf(it.blocked_reason, r.input.run?.kind ?? (r.input.pending?.command === "approve" ? r.input.pending.kind : null)),

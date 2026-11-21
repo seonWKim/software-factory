@@ -8,9 +8,8 @@ import { t } from "../i18n/index.js";
 /** Muted text; break-keep keeps a Korean word whole when the line wraps. */
 export const muted = "text-xs text-pretty break-keep text-text-2";
 
-export const STATE_LABEL: Record<string, MessageKey> = { open: "rules.stateOpen", pending: "rules.statePending", held: "rules.stateHeld" };
-/** The Badge level of each state, so open, pending and held look different. */
-export const STATE_LEVEL: Record<string, string> = { open: "running", pending: "needs_approval" };
+/** A rule's state as a key of the one state table (src/shared/states.ts), whose label and tone its pill shows. */
+export const RULE_STATE: Readonly<Record<string, string>> = { open: "running", pending: "needs_approval", held: "held" };
 /** The page's list column: its two sections and Details. */
 export const PAGE_WIDTH = "max-w-5xl";
 /** The reading width of description prose (a group's line, How this works). */

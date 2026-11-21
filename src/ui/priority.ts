@@ -14,6 +14,12 @@ export type Level = ItemState;
 /** The Needs-you group (ready to merge, needs approval, needs you): never triage, a failed run or another task's block. */
 export const NEEDS_YOU: readonly Level[] = groupStates("needs");
 
+/**
+ * The levels whose list rows carry their need and their commands (src/ui/api.ts): the Needs-you group, a failed run
+ * (Retry, Reject) in Problem, and a triage run's ask (its question and Answer) in Waiting.
+ */
+export const WITH_NEED: readonly Level[] = [...NEEDS_YOU, "failed", "needs_triage"];
+
 /** A closed item's level: merged when it closed as completed (phase done), rejected when rejected, closed otherwise. */
 export function closedLevel(i: Pick<PriorityInput, "stage" | "blocked_on" | "blocked_reason" | "close_reason">): Level {
   return phaseOf(i) === "done" ? "merged" : i.close_reason === "rejected" ? "rejected" : "closed";

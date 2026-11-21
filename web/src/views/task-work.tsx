@@ -5,7 +5,7 @@ import { Dialog } from "../components/ui/dialog.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { ErrorNote } from "../components/ui/parts.js";
 import type { MessageKey } from "../i18n/en.js";
-import { LEVEL_LABELS, shortSource, whyText } from "../lib/format.js";
+import { shortSource, whyText } from "../lib/format.js";
 import { t } from "../i18n/index.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
@@ -16,34 +16,17 @@ import { NeedActions, SendErrors } from "./item-commands.js";
 import { FloorStatus } from "./pages.js";
 import { CheckRow } from "./system-banner.js";
 import { Card } from "../components/ui/card.js";
-import { Badge } from "../components/ui/badge.js";
+import { Badge, StatusBadge } from "../components/ui/badge.js";
 import { ListRow, ROW_TITLE } from "../components/ui/list-row.js";
 import type { MenuItem } from "../components/ui/menu.js";
 import { cn } from "../lib/cn.js";
 
-/** The states a built task shows on its row, from its work item's level (src/ui/priority.ts); a closed item is "merged" only when it closed as completed. */
-const STATE_OF: Record<string, MessageKey> = {
-  needs_approval: "tasks.state.spec",
-  running: "tasks.state.running",
-  ready_to_merge: "tasks.state.merge",
-  needs_you: "tasks.state.needs",
-  needs_triage: "tasks.state.needs",
-  stuck: "tasks.state.needs",
-};
-
-/** A queued item is never Running: a queued triage run (or an approved one not queued yet) reads "Triage queued", any other "Queued". */
-const queuedKey = (it: ItemRow): MessageKey => ((it.run?.kind ?? it.kind) === "triage" ? "tasks.state.triageQueued" : "tasks.state.queued");
-
-const stateKey = (it: ItemRow): MessageKey | null => {
-  if (it.item_phase === "closed") return it.close_reason === "completed" ? "tasks.state.merged" : null;
-  return it.item_phase === "queued" ? queuedKey(it) : (STATE_OF[it.item_phase] ?? null);
-};
-
 /**
- * The row's state words: a Merge under way says where it is, as the item page's button does (the server's pending
- * request rule: "Merge queued (position N)", "Checking build"), with no Merge button; else the state's own words.
+ * A built task's work item state as one pill: the state table's label, except that a Merge under way says where it
+ * is, as the item page's button does (the server's pending request rule: "Merge queued (position N)", "Checking
+ * build"), with no Merge button.
  */
-const stateText = (it: ItemRow, key: MessageKey): string => (mergeInFlight(it.merge) ? it.merge.reason : t(key));
+const ItemState = ({ it }: { it: ItemRow }) => <StatusBadge state={it.item_phase}>{mergeInFlight(it.merge) ? it.merge.reason : undefined}</StatusBadge>;
 
 /** A reason that is only a short status code ("failed: spec_conflict"): shown as a chip beside the badge, not as a line. */
 const CODE_REASON = /^[a-z][a-z ]{0,20}: [a-z0-9_.-]{1,40}$/i;
@@ -83,14 +66,13 @@ export function TaskItemMenu({ it, extra, label }: { it: ItemRow; extra: readonl
 export function WorkState({ id, title, open: taskOpen }: { id: string; title: string; open: boolean }) {
   const it = useWorkItem(id);
   const [open, setOpen] = useState(false);
-  const key = it ? stateKey(it) : null;
-  if (!it || key === null) return null;
+  if (!it) return null;
   // Its commands are in the row's menu (TaskItemMenu).
-  if (taskOpen && waitsOnOwner(it)) return <Badge level={it.item_phase}>{stateText(it, key)}</Badge>;
+  if (taskOpen && waitsOnOwner(it)) return <ItemState it={it} />;
   return (
     <>
       <Button size="sm" variant="ghost" aria-label={t("tasks.stateOpen", { title })} onClick={() => setOpen(true)}>
-        <Badge level={it.item_phase}>{stateText(it, key)}</Badge>
+        <ItemState it={it} />
       </Button>
       {open && (
         <Dialog title={it.title ?? title} confirmLabel={t("tasks.stateClose")} onConfirm={() => setOpen(false)} onClose={() => setOpen(false)}>
@@ -129,7 +111,7 @@ function WorkRow({ it }: { it: ItemRow }) {
       }
       details={
         <>
-          <Badge level={it.item_phase}>{LEVEL_LABELS[it.item_phase] ?? it.item_phase}</Badge>
+          <StatusBadge state={it.item_phase} />
           {it.merge_check && !checking && it.merge_check.state !== "mergeable" && <MergeCheckNote check={it.merge_check} />}
           {chip && (
             <span data-need title={reason}>

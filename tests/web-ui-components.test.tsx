@@ -9,7 +9,8 @@ import { ButtonRow } from "../web/src/components/ui/button-row.js";
 import { Field } from "../web/src/components/ui/field.js";
 import { Input } from "../web/src/components/ui/input.js";
 import { OverflowMenu, Tooltip } from "../web/src/components/ui/menu.js";
-import { Badge, LEVEL_TONE } from "../web/src/components/ui/badge.js";
+import { Badge, StatusBadge, TONE_CLASS } from "../web/src/components/ui/badge.js";
+import { STATES } from "../src/shared/states.js";
 import { Card, CardSection } from "../web/src/components/ui/card.js";
 import { ListRow, ROW_TITLE } from "../web/src/components/ui/list-row.js";
 import { EmptyState, Kbd, Notice, PageHeader } from "../web/src/components/ui/notice.js";
@@ -238,11 +239,11 @@ describe("OverflowMenu and Tooltip", () => {
 });
 
 describe("status and message pieces", () => {
-  it("Badge is a pill with a dot that takes its tone from LEVEL_TONE; a level with no tone is neutral", () => {
-    for (const [level, tone] of Object.entries(LEVEL_TONE)) {
+  it("Badge is a pill with a dot that takes its tone from the state table; a level with no state is neutral", () => {
+    for (const [level, { tone }] of Object.entries(STATES)) {
       render(<Badge level={level}>b</Badge>);
       const badge = screen.getByText("b");
-      for (const c of tone.split(" ")) expect(badge.className).toContain(c);
+      for (const c of TONE_CLASS[tone].split(" ")) expect(badge.className).toContain(c);
       expect(badge.className).toContain("rounded-pill");
       expect(badge.getAttribute("data-level")).toBe(level);
       expect(badge.querySelector("[aria-hidden]")!.className).toContain("bg-current");
@@ -252,7 +253,22 @@ describe("status and message pieces", () => {
     expect(screen.getByText("x").className).toContain("bg-surface-2");
   });
 
-  it("no second colour map or badge: only badge.tsx holds the tones, and Section, StatusBadge and Empty are gone", () => {
+  it("StatusBadge shows a state's label in its tone with data-status; its own words when given", () => {
+    for (const [state, { label, tone }] of Object.entries(STATES)) {
+      render(<StatusBadge state={state} />);
+      const badge = screen.getByText(label);
+      expect(badge.getAttribute("data-status")).toBe(state);
+      for (const c of TONE_CLASS[tone].split(" ")) expect(badge.className).toContain(c);
+      cleanup();
+    }
+    render(<StatusBadge state="ready_to_merge">Merge queued (position 2)</StatusBadge>);
+    expect(screen.getByText("Merge queued (position 2)").getAttribute("data-status")).toBe("ready_to_merge");
+    cleanup();
+    render(<StatusBadge state="some_state" />);
+    expect(screen.getByText("some state").className).toContain("bg-surface-2");
+  });
+
+  it("no second colour map or badge: only badge.tsx holds the tones and StatusBadge, and Section and Empty are gone", () => {
     for (const f of readdirSync("web/src/components/ui").filter((n) => n.endsWith(".tsx") && n !== "badge.tsx")) {
       const src = readFileSync(`web/src/components/ui/${f}`, "utf8");
       expect(src, f).not.toContain("ready_to_merge");

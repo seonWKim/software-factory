@@ -61,8 +61,8 @@ export const ITEM_STATES: readonly ItemState[] = STATE_KEYS.filter((k): k is Ite
 export const isState = (key: string): key is StateKey => Object.hasOwn(STATES, key);
 export const isGroup = (value: string): value is StateGroup => (STATE_GROUPS as readonly string[]).includes(value);
 
-/** The state's label; an unknown key as words (underscores to spaces). */
-export const stateLabel = (key: string): string => (isState(key) ? STATES[key].label : key.replaceAll("_", " "));
+/** The state's label; an unknown key as words (underscores to spaces); none as "". */
+export const stateLabel = (key: string | null | undefined): string => (!key ? "" : isState(key) ? STATES[key].label : key.replaceAll("_", " "));
 
 /** The state's tone; an unknown or missing key is neutral. */
 export const stateTone = (key: string | null | undefined): Tone => (key && isState(key) ? STATES[key].tone : "neutral");

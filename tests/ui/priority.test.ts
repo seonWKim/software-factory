@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { STATES } from "../../src/shared/states.js";
-import { LEVELS, NEEDS_YOU, type PriorityInput, levelOf, rank } from "../../src/ui/priority.js";
+import { LEVELS, NEEDS_YOU, type PriorityInput, WITH_NEED, levelOf, rank } from "../../src/ui/priority.js";
 
 const NOW = new Date("2026-11-01T12:00:00.000Z");
 const LEASE = 60_000;
@@ -89,6 +89,9 @@ describe("ui priority", () => {
   it("the Needs-you group is ready to merge, needs approval and needs you: never triage, failed or blocked", () => {
     for (const l of ["ready_to_merge", "needs_approval", "needs_you"]) expect(NEEDS_YOU).toContain(l);
     for (const l of ["needs_triage", "failed", "blocked_by_task", "held"]) expect(NEEDS_YOU as readonly string[]).not.toContain(l);
+    // A failed row keeps its need and its commands (Retry, Reject), and a triage ask its question.
+    for (const l of [...NEEDS_YOU, "failed", "needs_triage"]) expect(WITH_NEED).toContain(l);
+    for (const l of ["stuck", "running", "held", "blocked_by_task", "merged"]) expect(WITH_NEED as readonly string[]).not.toContain(l);
   });
 
   it("a closed item is merged when it closed as completed, rejected when rejected, closed otherwise", () => {
