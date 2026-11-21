@@ -26,10 +26,11 @@ import type { Sandbox } from "../src/interfaces/sandbox.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import { autoResolveKey } from "../src/core/policy.js";
 import { NODE_PROBE, offNode, onNode } from "../src/worker/runs/merge-check/node-version.js";
-import {
-  FakeAuth, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, cleanScanner, config, fakeRepoLookup, pipeline, prompts, silent,
-  triageSpec,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, fakeRepoLookup, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 const PR = 7;

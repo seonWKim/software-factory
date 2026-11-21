@@ -12,16 +12,10 @@ import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { REGISTRY, createPlugin } from "../src/plugins.js";
-import {
-  FakeAuth,
-  FakeStreamSource,
-  cleanScanner,
-  config,
-  fakeStreamRegistry,
-  recordingLog,
-  silent,
-  waitFor,
-} from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeStreamSource } from "./helpers/fakes/source.js";
+import { cleanScanner, config, recordingLog, silent, waitFor } from "./helpers/fakes/config.js";
+import { fakeStreamRegistry } from "./helpers/harness.js";
 import { newStore } from "./helpers/store.js";
 
 const SLACK = "slack_thread" as const;

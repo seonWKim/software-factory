@@ -17,8 +17,9 @@ import type { KeepAwake } from "../src/interfaces/keep-awake.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import { runDevChild } from "../src/supervisor.js";
 import { issue, newStore, system } from "./helpers/store.js";
-import {
-  FakeBroker, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, config, prompts, recordingLog, silent, triageSpec, waitFor, fakeRepoLookup } from "./helpers/fakes.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, prompts, recordingLog, silent, triageSpec, waitFor, fakeRepoLookup } from "./helpers/fakes/config.js";
 
 afterEach(() => {
   vi.unstubAllEnvs();

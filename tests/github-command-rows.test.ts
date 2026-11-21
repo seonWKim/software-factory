@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { githubCommand, syncedCommand } from "../src/core/command-inbox.js";
-import { issueRef } from "./helpers/fakes.js";
+import { issueRef } from "./helpers/fakes/config.js";
 
 // GitHub comment commands as command inbox rows (issue #284): what the GitHub poll writes and the reader maps back.
 

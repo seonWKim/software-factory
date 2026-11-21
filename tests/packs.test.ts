@@ -20,9 +20,9 @@ import { Bm25CapabilitySearch } from "../src/impl/capability/bm25-capability-sea
 import { PLUGIN_KINDS, REGISTRY, createPlugin } from "../src/plugins.js";
 import { LEARNED_PACK_DIR, PROJECT_PACK_DIR, mainCheckout, mergeSections, packSkills } from "../src/packs/packs.js";
 import { issue, newStore, system } from "./helpers/store.js";
-import {
-  FAKE_GITHUB_TOOLS, FakeBroker, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, config as fakeConfig, fakeRepoLookup, prompts as fakePrompts, silent, triageSpec, waitFor,
-} from "./helpers/fakes.js";
+import { FAKE_GITHUB_TOOLS, FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config as fakeConfig, fakeRepoLookup, prompts as fakePrompts, silent, triageSpec, waitFor } from "./helpers/fakes/config.js";
 import { git } from "./helpers/git-fixture.js";
 import type { AuthAction, AuthDecision, AuthProvider, AuthResource, Principal } from "../src/interfaces/auth-provider.js";
 import { type FactoryConfig, toolGrantsConfig } from "../src/core/config.js";

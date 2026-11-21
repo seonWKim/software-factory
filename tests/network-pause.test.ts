@@ -6,7 +6,9 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { HttpNetworkProbe, probeTargets } from "../src/impl/network-probe/http-network-probe.js";
 import type { Selection } from "../src/plugin-api.js";
 import { localWithOffset, modelStallChecks, modelStallLine } from "../src/ui/factory-status.js";
-import { FakeAuth, FakeNetworkProbe, FakeSource, cleanScanner, config, recordingLog } from "./helpers/fakes.js";
+import { FakeAuth, FakeNetworkProbe } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { cleanScanner, config, recordingLog } from "./helpers/fakes/config.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 
 // Design §5 Restarts, network pause: the `network` claim pause holds every claim until a network probe passes.

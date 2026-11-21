@@ -23,7 +23,11 @@ import type { UiDeps } from "../src/ui/deps.js";
 import type { Secret } from "../src/interfaces/secret-store.js";
 import { REGISTRY, withPlugin } from "../src/plugins.js";
 import { GitHubForge } from "../src/impl/github/github-forge.js";
-import { FakeAuth, FakeForge, FakeSource, PROJECT, alice, cleanScanner, config, fakeGitHubAccess, issueRef, recordingLog, triageSpec } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { PROJECT, alice, cleanScanner, config, issueRef, recordingLog, triageSpec } from "./helpers/fakes/config.js";
+import { fakeGitHubAccess } from "./helpers/fakes/github.js";
 import { issue, system, w1 } from "./helpers/store.js";
 
 // Projects are keyed by GitHub's repository node ID (design 2026-11-01): `github:github.com:<node id>`, with

@@ -6,7 +6,8 @@ import { loadConfig } from "../src/compose.js";
 import { checkCommands, redact } from "../src/core/checks.js";
 import type { WorkItem } from "../src/core/types.js";
 import { STORE_BRANCH } from "../src/interfaces/tool-broker.js";
-import { config, pipeline, runComments } from "./helpers/fakes.js";
+import { config, runComments } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 import { issue, system } from "./helpers/store.js";
 
 // repo.check_commands (design §4, decided 2026-11-03): one list of checks, run before every push, in the

@@ -5,7 +5,10 @@ import { Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
-import { FakeGitHubClient, FakeSandbox, MemoryStorage, alice, cleanScanner, issueRef, pipeline, prompts, runComments } from "./helpers/fakes.js";
+import { FakeGitHubClient } from "./helpers/fakes/github.js";
+import { FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { alice, cleanScanner, issueRef, prompts, runComments } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 
 // A local item with GitHub selected (design 05-sources): its gate comments stay in its item thread, so the
 // implement run makes no forge comment. A GitHub item keeps its comments on its issue.

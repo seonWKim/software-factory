@@ -3,7 +3,7 @@ import { TRIGGER_FAILURES, systemSource, triggerImprove, triggerImproveKey } fro
 import type { Actor, Run, RunId, Timestamp, WorkItem, WorkItemId } from "../src/core/types.js";
 import type { FactoryStore, NewRun, NewWorkItem } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { PROJECT } from "./helpers/fakes.js";
+import { PROJECT } from "./helpers/fakes/config.js";
 
 // Issue #514: the failure-count trigger on a fake store (plain maps, no database). The store is the only shared
 // state: replicas are two triggerImprove calls on one fake store, with no process memory between them.

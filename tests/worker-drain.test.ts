@@ -7,7 +7,10 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { runDevChild } from "../src/supervisor.js";
 import { issue, newStore, system } from "./helpers/store.js";
-import { FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, cleanScanner, config, prompts, recordingLog, silent, triageSpec, waitFor } from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { cleanScanner, config, prompts, recordingLog, silent, triageSpec, waitFor } from "./helpers/fakes/config.js";
 
 /** A worker over a real (in-memory) store with two queued triage runs; the first blocks until released. */
 async function setup() {

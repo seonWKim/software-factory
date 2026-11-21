@@ -11,9 +11,11 @@ import type { Run, RunKind, Tier, UserId, WorkItem, WorkItemId, WorkerId } from 
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { STORE_BRANCH } from "../src/interfaces/tool-broker.js";
 import { FileSessionFiles, githubIssues, parseSessionArgs, runSession } from "../src/session-cmd.js";
-import {
-  FakeAuth, FakeBroker, FakeForge, FakeIssues, FakeSandbox, FakeSource, MemorySessionFiles, alice, cleanScanner, config, issueRef, mallory, silent, waitFor,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeIssues, FakeSandbox, MemorySessionFiles } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, mallory, silent, waitFor } from "./helpers/fakes/config.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 // `factory session` (design §5, 2026-11-01) on fakes: sandbox, broker, auth and issues are fakes; the SQLite store

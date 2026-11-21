@@ -22,9 +22,11 @@ import type { ExecOptions, ExecResult, Sandbox, SandboxHandle } from "../src/int
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
 import { REGISTRY } from "../src/plugins.js";
 import { type FakeOpenAIServer, type ScriptedResponse, completion, startFakeOpenAIServer } from "./helpers/fake-openai-server.js";
-import {
-  FakeForge, FakeAuth, FakeBroker, FakeSandbox, FakeSource, MemoryStorage, alice, config as fakeConfig, issueRef, prompts, silent, waitFor,
-} from "./helpers/fakes.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeAuth, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, config as fakeConfig, issueRef, prompts, silent, waitFor } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 // Issue #194 (phase 4 of #163): the `openai-compatible` AgentRunner. Its tool loop runs against the fake

@@ -12,7 +12,10 @@ import type { GitHubCredentials } from "../src/interfaces/github-credentials.js"
 import type { ForgeEvent } from "../src/interfaces/forge.js";
 import type { SourceAdapter } from "../src/interfaces/source-adapter.js";
 import type { ExecResult } from "../src/interfaces/sandbox.js";
-import { FakeAuth, type FakeSandbox, FakeSource, alice, cleanScanner, config, pipeline, silent, triageSpec } from "./helpers/fakes.js";
+import { FakeAuth, type FakeSandbox } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, silent, triageSpec } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 import { PROJECT_KEY, issue, newStore, system, w1 } from "./helpers/store.js";
 
 const ALL: RunKind[] = ["triage", "implement", "review", "update", "resolve"];

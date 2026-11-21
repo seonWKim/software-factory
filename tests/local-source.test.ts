@@ -14,7 +14,7 @@ import type { CliCommand, FactoryStore, NewWorkItem } from "../src/interfaces/fa
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { fakeRepoLookup } from "./helpers/fakes.js";
+import { fakeRepoLookup } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore, system } from "./helpers/store.js";
 
 // The `local` poll source (issues #199, #282): the controller reads CLI commands from the command inbox through

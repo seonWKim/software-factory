@@ -27,7 +27,7 @@ import { type PluginRows, pluginLines, pluginRows } from "../src/ui/plugins-api.
 import { type ApiDeps, respond } from "../src/ui/server.js";
 import { type UiSettings, newCsrfToken, storeProjectResolver } from "../src/ui/settings-api.js";
 import { newStore } from "./helpers/store.js";
-import { silent } from "./helpers/fakes.js";
+import { silent } from "./helpers/fakes/config.js";
 
 const ME = "local:me@example.com" as UserId;
 // Built here so no secret-shaped literal sits in the repository.

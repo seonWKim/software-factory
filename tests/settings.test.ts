@@ -28,7 +28,7 @@ import type { UserId } from "../src/core/types.js";
 import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
 import { LiveIntakeLabel } from "../src/impl/github/intake-label.js";
 import { settingsChecks } from "../src/setup.js";
-import { config } from "./helpers/fakes.js";
+import { config } from "./helpers/fakes/config.js";
 import { RecordingGitHubClient } from "./helpers/github.js";
 import { newStore } from "./helpers/store.js";
 

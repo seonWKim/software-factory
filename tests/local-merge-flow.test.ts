@@ -19,7 +19,8 @@ import type { UiDeps } from "../src/ui/deps.js";
 import { api } from "../src/ui/api.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { autoResolveKey } from "../src/core/policy.js";
-import { FakeRunner, MemoryStorage, cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes.js";
+import { FakeRunner, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 // A local task from create to merge with no GitHub plugin (design 05-sources, Local startup): the local source,

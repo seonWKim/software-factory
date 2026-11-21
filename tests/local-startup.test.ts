@@ -12,7 +12,7 @@ import { runProcess } from "../src/impl/process/run-process.js";
 import { REGISTRY, type Registry, withPlugin } from "../src/plugins.js";
 import type { Selection } from "../src/plugin-api.js";
 import type { ToolBroker } from "../src/interfaces/tool-broker.js";
-import { fakeGitHubAccess } from "./helpers/fakes.js";
+import { fakeGitHubAccess } from "./helpers/fakes/github.js";
 
 // Startup with no GitHub plugin selected (design 05-sources, Local startup): no GitHub credential is read, no
 // repository lookup is made, the broker is the local one, and nothing fetches origin.

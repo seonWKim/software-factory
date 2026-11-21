@@ -9,10 +9,11 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import { type AgentRunResult, PROVIDER_SETUP } from "../src/interfaces/agent-runner.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import { newStore } from "./helpers/store.js";
-import {
-  FakeForge, FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
-  alice, config as baseConfig, gates, issueRef, prompts, recordingLog, settingsWith, triageSpec,
-} from "./helpers/fakes.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, config as baseConfig, gates, issueRef, prompts, recordingLog, settingsWith, triageSpec } from "./helpers/fakes/config.js";
 
 // Design §5 Restarts: automatic retry with backoff, the rate-limit pause, infra vs task budgets.
 
