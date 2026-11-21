@@ -6,7 +6,8 @@ import type { FactoryConfig } from "./config.js";
 import { failingTests, stripAnsi } from "./output-summary.js";
 import { type SelectionMode, type SelectionRecord, type TestSelection, noteSelection, selectTests, selectionMode, uncovered } from "./test-selection.js";
 import type { TrustedGit } from "./pre-push.js";
-import type { RunId } from "./types.js";
+import type { DoneCheck } from "./done-checks.js";
+import type { RunId, StateChangeDetail } from "./types.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { ExecResult, Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 
@@ -94,6 +95,8 @@ export interface CheckResult {
   how: string;
   /** The last CHECK_TAIL_CHARS of stdout and stderr, redacted. Empty for a passing check. */
   tail: string;
+  /** The done-when lines this command checks (doneCheckRound); absent: none. */
+  lines?: string[];
 }
 
 export interface CheckRound {
@@ -257,4 +260,73 @@ export class PrePushSelection {
       this.log(`test selection: the run could not be counted: ${err instanceof Error ? err.message : "unknown"}`.slice(0, 300));
     }
   }
+}
+
+/** One done-when line's result in an implement run's check round (design 04-pre-push-gates, RFC 0024 WP3 phase 2). */
+export interface DoneCheckResult {
+  line: string;
+  /** `not_run`: an earlier command of the round failed first. */
+  result: "pass" | "fail" | "manual" | "not_run";
+  /** The command as shown (commandText), or the manual reason. */
+  check: string;
+}
+
+/** The argv of one done check: its repo check command, `repo.test_command` on its test file only, or null (manual). */
+function doneCheckArgv(repo: FactoryConfig["repo"], c: DoneCheck): string[] | null {
+  if ("manual" in c) return null;
+  if ("test_file" in c) return withTestFiles(repo.test_command, [c.test_file]);
+  return checkCommands(repo).find((cmd) => commandText(cmd) === c.command) ?? null;
+}
+
+/**
+ * An implement run's check round with the item's done checks (design 04-pre-push-gates): the repo's check list, then
+ * each test file check (`repo.test_command` on that file only) not already in it; a command check is the repo command
+ * it names, run once. `manual` lines run nothing. `mark` puts each command's done-when lines on a round's results, by
+ * place (a selection keeps the order). Null done_checks: the check list as before.
+ */
+export function doneCheckRound(repo: FactoryConfig["repo"], checks: readonly DoneCheck[] | null): {
+  commands: string[][]; mark<R extends CheckRound>(round: R): R; results(round: CheckRound): DoneCheckResult[] | undefined;
+} {
+  const commands = checkCommands(repo);
+  const lines: string[][] = commands.map(() => []);
+  // Each check's place in `commands`: -1 for a manual line (or a command no longer in the list), which runs nothing.
+  const at = (checks ?? []).map((c) => {
+    const argv = doneCheckArgv(repo, c);
+    if (!argv) return -1;
+    let i = commands.findIndex((cmd) => commandText(cmd) === commandText(argv));
+    if (i < 0) i = commands.push(argv) - 1;
+    (lines[i] ??= []).push(c.line);
+    return i;
+  });
+  return {
+    commands,
+    mark: (round) => {
+      for (const [i, r] of round.results.entries()) if (lines[i]?.length) r.lines = [...lines[i]!];
+      return round;
+    },
+    results: (round) => checks?.map((c, i): DoneCheckResult => {
+      if ("manual" in c) return { line: c.line, result: "manual", check: c.reason };
+      const r = at[i]! < 0 ? undefined : round.results[at[i]!];
+      return { line: c.line, result: !r ? "not_run" : r.ok ? "pass" : "fail", check: "command" in c ? c.command : commandText(commands[at[i]!]!) };
+    }),
+  };
+}
+
+/** The words after a failed command that name the done-when lines it checks; empty when it checks none. */
+export function checkedLinesText(r: Pick<CheckResult, "lines">): string {
+  return r.lines?.length ? `; it checks the done-when line${r.lines.length === 1 ? "" : "s"} ${r.lines.map((l) => JSON.stringify(l)).join(", ")}` : "";
+}
+
+/**
+ * The done-when lines' results an implement run's outcome carries (`done_checks`: on the succeeded data, or on a failed
+ * outcome) as a state change's detail field, JSON text as `failed_checks` is; absent when the outcome has none.
+ */
+export function doneChecksDetail(fields: object | null | undefined): StateChangeDetail | undefined {
+  const done = (fields as { done_checks?: unknown } | null | undefined)?.done_checks;
+  return Array.isArray(done) ? { done_checks: JSON.stringify(done) } : undefined;
+}
+
+/** The PR body's line per manual done-when line: listed for a person, not run. */
+export function manualLines(checks: readonly DoneCheck[] | null): string[] {
+  return (checks ?? []).flatMap((c) => ("manual" in c ? [`Not run, a person checks it: "${c.line}" (${c.reason})`] : []));
 }
