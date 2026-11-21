@@ -22,9 +22,11 @@ import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm
 import { packPrompts } from "../src/packs/packs.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Worker } from "../src/worker/index.js";
-import {
-  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, PROJECT, alice, cleanScanner, config, issueRef, prompts, silent, triageSpec,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { PROJECT, alice, cleanScanner, config, issueRef, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 const STYLE = "Short sentences. Plain words, no jargon. Lead with the decision.";

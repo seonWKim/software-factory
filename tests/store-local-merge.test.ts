@@ -11,7 +11,7 @@ import type { UserId, WorkItemId } from "../src/core/types.js";
 import { OwnerAuth } from "../src/core/authorize.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
-import { cleanScanner, config, silent } from "./helpers/fakes.js";
+import { cleanScanner, config, silent } from "./helpers/fakes/config.js";
 import { BACKENDS, system, w1 } from "./helpers/store.js";
 
 // The local merge on a shared store (design 05-sources, Local items; enterprise): two controllers, standing in for

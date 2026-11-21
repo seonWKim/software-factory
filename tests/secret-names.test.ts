@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fakeRepoLookup } from "./helpers/fakes.js";
+import { fakeRepoLookup } from "./helpers/fakes/config.js";
 import { Plugins, build, loadConfig } from "../src/compose.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { envExampleValueLines } from "../src/impl/egress/pattern-egress-scanner.js";

@@ -24,7 +24,10 @@ import { issue, newStore, system } from "./helpers/store.js";
 const REV_A = "a".repeat(40);
 const REV_B = "b".repeat(40);
 
-interface Action { code: string; text: string; command: string; until: string | null; work_item_id: string | null }
+interface Action {
+  code: string; text: string; command: string; until: string | null; work_item_id: string | null; pause?: string;
+  pattern?: string; error_code?: string; failing_tests?: string[]; output_tail?: string | null;
+}
 interface Overview { needs_you: number; system_actions: Action[]; server_rev: string | null; github_token_days: number | "unknown" | null }
 
 afterEach(() => {
@@ -139,15 +142,26 @@ describe("system actions: GitHub token expiry from the last health run", () => {
 });
 
 describe("system actions: claim and worker pauses", () => {
-  it("a claim pause in effect is listed with its end time, the dashboard's Resume now first and its CLI command after", async () => {
+  it("a claim pause in effect is listed by its plain name, its pause and end time, Needs you's Resume now first and its CLI command after", async () => {
     const { overview, store, clock } = await setup();
     const until = new Date(clock.now().getTime() + 3_600_000).toISOString() as Timestamp;
     await store.pauseClaims(until, "rate_limit");
     const o = await overview();
-    const command = "Resume now on the Status page (/app/), or factory resume rate_limit";
-    expect(o.system_actions).toContainEqual({ code: "claim_pause", text: `Claim pause rate_limit in effect, until ${until}`, command, until });
+    const command = "Resume now in Needs you on Tasks, or factory resume rate_limit";
+    expect(o.system_actions).toContainEqual({ code: "claim_pause", text: "Usage or rate limit", command, until, pause: "rate_limit" });
     expect(command.indexOf("Resume now")).toBeLessThan(command.indexOf("factory resume"));
     expect(o.needs_you).toBe(1);
+  });
+
+  it("model_stall's row is named \"Model not answering\" and until is its next probe; no text names the Status page", async () => {
+    const { overview, store, clock } = await setup();
+    const probe = new Date(clock.now().getTime() + 60_000).toISOString() as Timestamp;
+    await store.pauseClaims(probe, "model_stall");
+    const row = (await overview()).system_actions.find((a) => a.code === "claim_pause")!;
+    expect(row).toMatchObject({ text: "Model not answering", pause: "model_stall", until: probe });
+    expect(row.text).not.toMatch(/model_stall|Claim pause|\d{4}-\d{2}-\d{2}T/);
+    expect(row.command).toContain("factory resume model_stall");
+    expect(row.command).not.toContain("Status page");
   });
 
   it("a worker pause is listed with `factory workers resume`, until it is resumed", async () => {
@@ -188,6 +202,30 @@ describe("system actions: open alarms", () => {
     expect(codes(o).filter((c) => c === "alarm")).toHaveLength(2);
     expect(codes(o)).toContain("worker_pause");
     expect(o.needs_you).toBe(3);
+  });
+});
+
+describe("system actions: an alarm's pattern, error code and red-main output", () => {
+  it("each alarm carries its pattern and error code; a red_main alarm carries the failing tests and tail its detail keeps, and its text stays the sentence", async () => {
+    const { overview, store } = await setup();
+    const detail = JSON.stringify({ text: "`npm test` exited 1 on the new tip of `main`", failing_tests: ["tests/a.test.ts > adds"], output_tail: "FAIL tests/a.test.ts > adds" });
+    await store.recordAlert({ pattern: "red_main", pattern_key: "red_main:abc", error_code: "red_main", count: 1, detail }, ALERT_DEDUPE_MS);
+    await store.recordAlert({ pattern: "repeated_error", pattern_key: "repeated_error:a", error_code: "checks_failed", count: 4, detail: null }, ALERT_DEDUPE_MS);
+    const alarms = (await overview()).system_actions.filter((a) => a.code === "alarm");
+    const red = alarms.find((a) => a.pattern === "red_main")!;
+    expect(red).toMatchObject({ error_code: "red_main", failing_tests: ["tests/a.test.ts > adds"], output_tail: "FAIL tests/a.test.ts > adds" });
+    expect(red.text).toBe("Alarm: the base branch fails its checks on its own at `abc`; merge-queue changes wait until it moves: `npm test` exited 1 on the new tip of `main`");
+    const repeated = alarms.find((a) => a.pattern === "repeated_error")!;
+    expect(repeated.error_code).toBe("checks_failed");
+    expect(repeated).not.toHaveProperty("failing_tests");
+  });
+
+  it("a red_main alarm stored before the output was kept (plain text detail) carries no tests and a null tail", async () => {
+    const { overview, store } = await setup();
+    await store.recordAlert({ pattern: "red_main", pattern_key: "red_main:abc", error_code: "red_main", count: 1, detail: "`npm test` exited 1" }, ALERT_DEDUPE_MS);
+    const red = (await overview()).system_actions.find((a) => a.code === "alarm")!;
+    expect(red).toMatchObject({ pattern: "red_main", failing_tests: [], output_tail: null });
+    expect(red.text).toMatch(/: `npm test` exited 1$/);
   });
 });
 

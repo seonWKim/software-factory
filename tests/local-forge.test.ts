@@ -19,7 +19,9 @@ import { REGISTRY } from "../src/plugins.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { api } from "../src/ui/api.js";
 import { HealthMonitor } from "../src/ui/health.js";
-import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes/config.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 const SHA = "0123abcd0123abcd0123abcd0123abcd0123abcd";

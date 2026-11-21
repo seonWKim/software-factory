@@ -19,9 +19,10 @@ import { EnvFileSecretStore, parseEnvFile } from "../src/impl/secrets/env-file-s
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import { secretName } from "../src/interfaces/secret-store.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
-import {
-  FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, config, issueRef, prompts, silent, cleanScanner,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, config, issueRef, prompts, silent, cleanScanner } from "./helpers/fakes/config.js";
 import { STORE_BRANCH } from "../src/interfaces/tool-broker.js";
 
 const cred = { name: "CLAUDE_CODE_OAUTH_TOKEN" as const, value: "oauth-value-123456" };

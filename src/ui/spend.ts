@@ -18,6 +18,8 @@ export interface SpendCtx {
   /** The value, or the withheld marker. */
   text(value: string): Promise<string>;
   now: Date;
+  /** The live daily and weekly budgets in dollars; null: none set. */
+  budgets: { daily_usd: number | null; weekly_usd: number | null };
 }
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
@@ -53,6 +55,6 @@ export async function spend(c: SpendCtx, params: URLSearchParams): Promise<{ sta
   }
   return {
     status: 200,
-    value: { as_of: c.now.toISOString(), today: utcDay(now), week_start: utcDay(weekStart(now)), ...s, days, items, items_total: s.items.length },
+    value: { as_of: c.now.toISOString(), today: utcDay(now), week_start: utcDay(weekStart(now)), budgets: c.budgets, ...s, days, items, items_total: s.items.length },
   };
 }

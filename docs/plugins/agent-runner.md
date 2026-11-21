@@ -2,6 +2,8 @@
 
 What it does: runs one tool-using agent loop in a sandbox and returns its structured output and transcript. A runner reports a usage or rate limit as `status: "rate_limited"` (with `reset_at` if it knows it), never as a plain failure, so the factory pauses instead of spending an attempt.
 
+Live output (`AgentRunSpec.live`, optional; design 09-dashboard-item, live transcript): a runner that streams its output calls `live(output so far)` each time it grows; the worker stores it as the step's transcript while the run runs, at most every 5 s and egress-scanned on `log`. The callback is synchronous and never throws. `claude-code` calls it from its stdout stream, next to the stall watch; the fallback chain passes it to the member that is running; `openai-compatible` and the scripted runners ignore it, so their transcripts are stored only when the step ends.
+
 Plugins:
 
 - `claude-code`: `ClaudeCodeRunner` (`claude -p`), with a per-run HOME and a factory-owned `CLAUDE_CONFIG_DIR` under `<state_dir>/agents`, and the harness deny rules of architecture §5.

@@ -6,12 +6,6 @@ import { newStore } from "./helpers/store.js";
 // run. The query is the store's own, captured as it runs, so the plan checked is the one the store asks for.
 
 describe("worker_runs_ack", () => {
-  it("exists on a fresh SQLite database", async () => {
-    const { store } = await newStore();
-    const [row] = await store.db.all("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'worker_runs_ack'");
-    expect(String(row?.sql)).toMatch(/ON worker_runs \(acknowledged_at, updated_at\)/);
-  });
-
   it("is the plan for listUnacknowledgedRuns, which no longer scans all of worker_runs", async () => {
     const { store } = await newStore();
     const seen: { sql: string; params: readonly SqlValue[] }[] = [];

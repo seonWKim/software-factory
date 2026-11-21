@@ -7,7 +7,11 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import type { RunPassportIssuer, RunPassportRequest } from "../src/interfaces/tool-broker.js";
 import { newStore } from "./helpers/store.js";
-import { FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, config, issueRef, prompts, silent, triageSpec } from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, config, issueRef, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 
 // G2 (RFC 0015 §8, M9): the worker mints a run passport before a run's first broker call and forgets it when the run
 // ends. Without `begin` the passport broker refuses every credentialed call; without `end` tokens pile up.

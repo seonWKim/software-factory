@@ -97,6 +97,8 @@ export interface SpendView {
   /** Today's UTC day and the Monday its week began (YYYY-MM-DD). */
   today: string;
   week_start: string;
+  /** The daily and weekly budgets in dollars; null: none set. */
+  budgets: { daily_usd: number | null; weekly_usd: number | null };
   from: string;
   to: string;
   total: SpendTotals;

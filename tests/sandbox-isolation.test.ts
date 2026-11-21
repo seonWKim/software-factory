@@ -14,7 +14,8 @@ import type { GitHubClient } from "../src/impl/github/github-client.js";
 import { EMPTY_HOOKS_DIR, NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { Secret } from "../src/interfaces/secret-store.js";
-import { FakeRunner, MemoryStorage, cleanScanner, config, prompts, settingsWith, silent } from "./helpers/fakes.js";
+import { FakeRunner, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, prompts, settingsWith, silent } from "./helpers/fakes/config.js";
 import { git, gitTemplate } from "./helpers/git-fixture.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 

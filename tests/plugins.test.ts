@@ -57,7 +57,9 @@ import {
   selectedSources,
   withPlugin,
 } from "../src/plugins.js";
-import { FakeSlackPollSource, fakeSlackPollRegistry, fakeRepoLookup } from "./helpers/fakes.js";
+import { FakeSlackPollSource } from "./helpers/fakes/source.js";
+import { fakeSlackPollRegistry } from "./helpers/harness.js";
+import { fakeRepoLookup } from "./helpers/fakes/config.js";
 import { TokenCredentials } from "../src/impl/github/token-credentials.js";
 
 const REPO_ROOT = join(import.meta.dirname, "..");

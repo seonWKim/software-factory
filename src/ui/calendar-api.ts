@@ -22,6 +22,7 @@
 
 import { type SyncOutcome, readSyncStates } from "../calendar/index.js";
 import type { Loaded } from "../compose.js";
+import type { connectCalendar } from "../setup.js";
 import { errorText } from "../core/log.js";
 import { type SettingsBase, resolveSettings } from "../core/settings.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
@@ -136,9 +137,13 @@ export class UiCalendar {
 
 /**
  * The UI process's Calendar section (compose.ts buildUiParts): the calendar plugins with a connect hook, and the one
- * connect flow the CLI runs (src/setup.ts connectCalendar, loaded when a connect runs), writing as the Settings writer.
+ * connect flow the CLI runs (`connect`: src/setup.ts connectCalendar, which the composition root passes in so this
+ * route never imports setup.ts or the root; RFC 0023 §5 step 2), writing as the Settings writer.
  */
-export function uiCalendar(loaded: Loaded, o: { store: FactoryStore; actor: string; clock: ConnectContext["clock"]; base: SettingsBase }): UiCalendar {
+export function uiCalendar(
+  loaded: Loaded,
+  o: { store: FactoryStore; actor: string; clock: ConnectContext["clock"]; base: SettingsBase; connect: typeof connectCalendar },
+): UiCalendar {
   return new UiCalendar({
     plugins: connectHooks(loaded.registry)
       .filter((h) => h.kind === "calendar")
@@ -149,7 +154,7 @@ export function uiCalendar(loaded: Loaded, o: { store: FactoryStore; actor: stri
       })),
     listed: async () => resolveSettings(o.base, await o.store.listSettingOverrides()).values.calendar,
     run: async (name, disconnect, io) =>
-      (await import("../setup.js")).connectCalendar({
+      o.connect({
         loaded, store: o.store, actor: o.actor, clock: o.clock, name, disconnect, beforeWrite: io.beforeWrite, ownClient: io.ownClient,
         io: { ask: { hidden: io.hidden, yesNo: async (_q, dflt) => dflt }, print: () => undefined, openBrowser: io.openBrowser },
       }),

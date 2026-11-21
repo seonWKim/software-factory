@@ -17,8 +17,9 @@ import type { KeepAwake } from "../src/interfaces/keep-awake.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import { runDevChild } from "../src/supervisor.js";
 import { issue, newStore, system } from "./helpers/store.js";
-import {
-  FakeBroker, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, config, prompts, recordingLog, silent, triageSpec, waitFor, fakeRepoLookup } from "./helpers/fakes.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, prompts, recordingLog, silent, triageSpec, waitFor, fakeRepoLookup } from "./helpers/fakes/config.js";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -215,9 +216,9 @@ describe("worker pool", () => {
     for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
     expect(s.started()).toBe(1);
     expect(await s.store.listRunsByStatus(["queued"], 10)).toHaveLength(1);
-    const owners = ["host:42:0", "host:42:1", "host:42:2"];
     const pooled = s.claimRun.mock.calls.slice(1).map(([input]) => input); // the first is this test's own claim
-    expect(pooled.every((input) => input.workers?.count === 1 && input.workers.owners.join() === owners.join())).toBe(true);
+    // Every claim passes the live cap only: the store counts every process's running runs, not a list of owners.
+    expect(pooled.every((input) => JSON.stringify(input.workers) === JSON.stringify({ count: 1 }))).toBe(true);
     // The loop above `workers` claims; the one after it never runs.
     expect(pooled.map((input) => input.worker_id)).toContain("host:42:1");
     expect(pooled.map((input) => input.worker_id)).not.toContain("host:42:2");

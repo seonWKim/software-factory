@@ -15,7 +15,7 @@ import type { ExecResult } from "../src/interfaces/sandbox.js";
 import { CODE_VERSION_ENV, CONFIG_ENV, type ChildHandle, type ChildLauncher, type ChildSpec, type CommandRunner, WORKER_INDEX_BASE_ENV } from "../src/interfaces/updater.js";
 import { REGISTRY, createPlugin } from "../src/plugins.js";
 import { SUPERVISED_ENV, createUpdater, supervise } from "../src/supervisor.js";
-import { recordingLog, waitFor } from "./helpers/fakes.js";
+import { recordingLog, waitFor } from "./helpers/fakes/config.js";
 
 // A fake git remote + checkout, fake npm, and a fake process launcher. Commands touch a real temp dir
 // (worktree add creates the directory, npm ci writes node_modules/, build writes dist/), so the updater's
@@ -901,6 +901,26 @@ describe("updater: git-worktree status file", () => {
 
     await updater.shutdown();
     expect(read()).toMatchObject({ state: "stopped", child_pid: null });
+  });
+
+  it("previous_rev names the revision the new child replaced: null on the first start, kept over a crash restart", async () => {
+    const file = join(mkdtempSync(join(tmpdir(), "sf-status-")), "supervisor.json");
+    const read = () => JSON.parse(readFileSync(file, "utf8")) as { state: string; rev: string | null; previous_rev: string | null };
+    const { world, launcher, clock, updater } = setup({ statusFile: file });
+    await updater.start();
+    expect(read()).toMatchObject({ state: "running", rev: "c1", previous_rev: null });
+
+    world.push("c2", ["src/core/worker.ts"]);
+    await updater.poll();
+    expect(read()).toMatchObject({ state: "running", rev: "c2", previous_rev: "c1" });
+
+    // The same revision started again after a crash replaces nothing: previous_rev stays c1.
+    launcher.children[1]!.exit(1);
+    await waitFor(() => read().state === "crashed", "crashed status");
+    clock.advance(30_000);
+    await updater.poll();
+    expect(read()).toMatchObject({ state: "running", rev: "c2", previous_rev: "c1" });
+    await updater.shutdown();
   });
 
   it("a child that exits on its own is crashed with its error; repeated crashes keep the first time", async () => {

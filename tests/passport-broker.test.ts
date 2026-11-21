@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LocalAuthProvider, NotAuthenticated, PassportService, REVOCATIONS_TICK, localKeyFile, secretKeyring } from "../src/identity/index.js";
+import { NotAuthenticated, PassportService, REVOCATIONS_TICK, localKeyFile, secretKeyring } from "../src/identity/index.js";
 import { controllerServiceAuth } from "../src/impl/auth/audited-auth.js";
 import { PassportToolBroker, type HeldRunPassport } from "../src/impl/broker/passport-broker.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";

@@ -25,7 +25,7 @@ import { MIGRATE_PATH, SUPERVISOR_PATH, type UiMigrate } from "../src/ui/migrate
 import type { UiPauses } from "../src/ui/pause-api.js";
 import { type ServerDeps, type UiRequest, respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
-import { waitFor } from "./helpers/fakes.js";
+import { waitFor } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
 const HOST = "127.0.0.1:4310";

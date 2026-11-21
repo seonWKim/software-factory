@@ -21,7 +21,7 @@ import { HealthMonitor } from "../src/ui/health.js";
 import type { UiPauses } from "../src/ui/pause-api.js";
 import { type ApiDeps, type UiRequest, respond } from "../src/ui/server.js";
 import type { ImportItem, PluginsImportView, PluginsView } from "../web/src/api.js";
-import { silent } from "./helpers/fakes.js";
+import { silent } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 import { startPackMcpServer } from "../src/impl/runner/pack-mcp-client.js";
 import { listRequestedMcpTools } from "../src/import/mcp-tool-lists.js";

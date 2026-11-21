@@ -23,7 +23,9 @@ import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { issue, newStore, system } from "./helpers/store.js";
-import { FakeAuth, FakeBroker, FakeSandbox, MemoryStorage, PROJECT, config, prompts, silent } from "./helpers/fakes.js";
+import { FakeAuth, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { PROJECT, config, prompts, silent } from "./helpers/fakes/config.js";
 
 const noRunner = { run: () => { throw new Error("the improve run called the agent runner"); } } as unknown as AgentRunner;
 
@@ -73,7 +75,8 @@ async function setup() {
   const controller = new ControllerRole({ store, sources: [new LocalSource(store)], auth: new FakeAuth(), clock, config, log: silent, scanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner: noRunner, broker: new FakeBroker(), storage: new MemoryStorage(),
-    clock, config: { ...config, repo: { ...config.repo, path: repo.dir } }, prompts, log: silent, scanner, toolEnv: {}, awake: new NoKeepAwake(),
+    // The improve run claims while other runs are left running: the slot cap counts them, so allow a few.
+    clock, config: { ...config, workers: 4, repo: { ...config.repo, path: repo.dir } }, prompts, log: silent, scanner, toolEnv: {}, awake: new NoKeepAwake(),
   });
   let n = 0;
   /** A finished run of a new item: `kind` with `outcome`, finished now (then the clock moves a second). */

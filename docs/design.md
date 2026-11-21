@@ -18,30 +18,30 @@ the topic file, never this index; add a line here only for a new topic file. "§
 
 ## 4. Agents
 - [04-agents.md](design/04-agents.md): the agent roles, model class per run kind and tier, "In short".
-- [04-gate-commands.md](design/04-gate-commands.md): the human commands, refusals, footers, app requests, verdict buttons.
-- [04-spec-gate-commands.md](design/04-spec-gate-commands.md): spec answers, `/revise` and `/resolve` forms, widening allowed paths.
+- [04-gate-commands.md](design/04-gate-commands.md): human commands, refusals, footers, verdict buttons.
+- [04-spec-gate-commands.md](design/04-spec-gate-commands.md): spec answers, `/revise`, `/resolve`, widening paths.
 - [04-chat-commands.md](design/04-chat-commands.md): commands in your own words: classifier, chat answers, proposals.
 - [04-verdicts.md](design/04-verdicts.md): `/verdict` on every surface, implicit verdicts, pushback capture.
-- [04-closing-source-issue.md](design/04-closing-source-issue.md): closing the source issue stops the item, its runs and its PR; `/reject` at any open phase.
-- [04-pre-push-gates.md](design/04-pre-push-gates.md): the scope, size and floor gates before a push, and sync with the base.
+- [04-closing-source-issue.md](design/04-closing-source-issue.md): closing the source issue stops the item, runs and PR; `/reject`.
+- [04-pre-push-gates.md](design/04-pre-push-gates.md): scope, size and floor gates before a push.
 - [04-triage.md](design/04-triage.md): path companions, files triage adds to allowed paths, topic folders.
 - [04-split-specs.md](design/04-split-specs.md): size estimates, splitting a big spec into phases, the phase hold.
 
 ## 5. Coordination
 - [05-coordination.md](design/05-coordination.md): isolation, claim order, leases and fencing, the SQLite store.
-- [05-dependencies.md](design/05-dependencies.md): parallel workers, hold policy, cost threshold, hotspots, dependency reads.
+- [05-dependencies.md](design/05-dependencies.md): parallel workers, hold policy, cost threshold, hotspots.
 - [05-restarts.md](design/05-restarts.md): stalled runs, the model probe, retries, backoff, sending to a human.
-- [05-restart-asks.md](design/05-restart-asks.md): runs that ask for allowed paths, test paths or an unmerged dependency.
+- [05-restart-asks.md](design/05-restart-asks.md): runs that ask for paths or a dependency.
 - [05-restart-pauses.md](design/05-restart-pauses.md): restart history, claim pauses, rate limits, `checks_env`, drains.
 - [05-alarms.md](design/05-alarms.md): the alarm step: repeated errors, zero-token runs.
 - [05-sandbox.md](design/05-sandbox.md): the sandbox interface, one git folder per run, guarded tools.
-- [05-merge-conflict.md](design/05-merge-conflict.md): update runs on unmergeable PRs, the automatic resolve, `/resolve`.
+- [05-merge-conflict.md](design/05-merge-conflict.md): update runs on unmergeable PRs, `/resolve`.
 - [05-ci-gate.md](design/05-ci-gate.md): the CI workflow and the controller's check gate before a merge.
 - [05-sources.md](design/05-sources.md): local items and startup, thread and outbox, CLI intake.
 - [05-slack-intake.md](design/05-slack-intake.md): Slack presses, mentions, spec messages, replies, reactions.
 - [05-github-sync.md](design/05-github-sync.md): the GitHub client, PRs through the forge, sync records, call budget.
 - [05-stream-intake.md](design/05-stream-intake.md): local and stream intake, several sources, adopted PRs.
-- [05-interactive-sessions.md](design/05-interactive-sessions.md): a person's own LLM session on an item as an `interactive` run.
+- [05-interactive-sessions.md](design/05-interactive-sessions.md): a person's own LLM session as an `interactive` run.
 - [05-status-labels.md](design/05-status-labels.md): the eight status labels and when the controller sets them.
 - [05-standing-approvals.md](design/05-standing-approvals.md): what every spec decision records, the run check.
 
@@ -52,8 +52,8 @@ the topic file, never this index; add a line here only for a new topic file. "§
 - [06-efficiency.md](design/06-efficiency.md): items finished per period; tokens and time per item.
 
 ## 7. Self-improvement
-- [07-self-improvement.md](design/07-self-improvement.md): how the factory changes its own behaviour, the doc index in the prompt.
-- [07-improve-report.md](design/07-improve-report.md): the improve report, Run now, retire suggestions, improve triggers.
+- [07-self-improvement.md](design/07-self-improvement.md): how the factory changes its own behaviour.
+- [07-improve-report.md](design/07-improve-report.md): improve report, Run now, retire suggestions.
 
 ## 8. Operations
 - [08-plugins.md](design/08-plugins.md): named plugins and the registry, login plugin, secret names.
@@ -68,16 +68,19 @@ the topic file, never this index; add a line here only for a new topic file. "§
 ## 9. Status page
 - [09-status-page.md](design/09-status-page.md): the read-only status page, its guards.
 - [09-health.md](design/09-health.md): the Health panel, schema probe.
-- [09-dashboard-app.md](design/09-dashboard-app.md): index of the dashboard page topics.
-- [09-dashboard-shell.md](design/09-dashboard-shell.md): sidebar, top bar, shared components, API.
-- [09-dashboard-activity.md](design/09-dashboard-activity.md): the Activity page.
+- [09-dashboard-app.md](design/09-dashboard-app.md): index of dashboard topics.
+- [09-dashboard-shell.md](design/09-dashboard-shell.md): sidebar, top bar, theme, mode.
+- [09-dashboard-components.md](design/09-dashboard-components.md): shared pieces, plain words, i18n.
+- [09-dashboard-search.md](design/09-dashboard-search.md): `⌘K` search, `?` help.
+- [09-dashboard-api.md](design/09-dashboard-api.md): API, serving, responsive check.
+- [09-dashboard-activity.md](design/09-dashboard-activity.md): Activity page.
 - [09-dashboard-runners.md](design/09-dashboard-runners.md): the Runners page, Migrate now.
 - [09-dashboard-tasks.md](design/09-dashboard-tasks.md): Tasks, Calendar, Needs you, Project switcher.
-- [09-dashboard-rules.md](design/09-dashboard-rules.md): the Rules page: verdicts, Promote, Retire.
-- [09-dashboard-settings.md](design/09-dashboard-settings.md): the Settings and Plugins pages.
+- [09-dashboard-rules.md](design/09-dashboard-rules.md): Rules: verdicts, Promote, Retire.
+- [09-dashboard-settings.md](design/09-dashboard-settings.md): Settings and Plugins.
 - [09-dashboard-system.md](design/09-dashboard-system.md): Work, Failures, Spend, Data.
 - [09-dashboard-workers.md](design/09-dashboard-workers.md): run timeline, dependency graph.
-- [09-dashboard-item.md](design/09-dashboard-item.md): the item page: thread, transcripts.
+- [09-dashboard-item.md](design/09-dashboard-item.md): item page, thread, transcripts.
 - [09-dashboard-item-commands.md](design/09-dashboard-item-commands.md): item commands, dialogs, Merge button.
 - [09-status-banner.md](design/09-status-banner.md): the supervisor banner.
 - [09-notifications.md](design/09-notifications.md): owner notices, kinds, quiet hours.
@@ -96,4 +99,4 @@ the topic file, never this index; add a line here only for a new topic file. "§
 - [11-signal-ledger.md](design/11-signal-ledger.md): the `controller_signals` table, signal sources, tags, backfill.
 
 ## 12. Notification channels
-- [12-notification-channels.md](design/12-notification-channels.md): per-person channel picker, outbox rows; design only.
+- [12-notification-channels.md](design/12-notification-channels.md): channel picker, outbox rows; design only.

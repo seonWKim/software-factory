@@ -18,7 +18,7 @@ import { REGISTRY, type Registry, withPlugin } from "../src/plugins.js";
 import { type Check, checkLine, checkStatus, checksExitCode, doctor, doctorChecks } from "../src/setup.js";
 import { HEALTH_MIN_INTERVAL_MS, HealthMonitor, reportRows } from "../src/ui/health.js";
 import { type UiDeps, type UiResponse, respond } from "../src/ui/server.js";
-import { fakeGitHubAccess } from "./helpers/fakes.js";
+import { fakeGitHubAccess } from "./helpers/fakes/github.js";
 import { BACKENDS } from "./helpers/store.js";
 
 const REPO_ROOT = join(import.meta.dirname, "..");

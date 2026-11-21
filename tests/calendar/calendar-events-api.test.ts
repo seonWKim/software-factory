@@ -9,7 +9,9 @@ import type { SqlDriver } from "../../src/state/index.js";
 import { CALENDAR_EVENTS_PATH, MAX_SPAN_DAYS } from "../../src/ui/calendar-events-api.js";
 import { HealthMonitor } from "../../src/ui/health.js";
 import { type ApiDeps, respond } from "../../src/ui/server.js";
-import { FakeAuth, FakeSource, cleanScanner, config, silent } from "../helpers/fakes.js";
+import { FakeAuth } from "../helpers/fakes/runner.js";
+import { FakeSource } from "../helpers/fakes/source.js";
+import { cleanScanner, config, silent } from "../helpers/fakes/config.js";
 import { newStore } from "../helpers/store.js";
 import { FakeCalendarSource, calendarEvent } from "./fakes.js";
 

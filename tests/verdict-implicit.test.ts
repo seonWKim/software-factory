@@ -9,7 +9,10 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
-import { FakeAuth, FakeForge, FakeSource, alice, cleanScanner, config, issueRef, recordingLog } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, recordingLog } from "./helpers/fakes/config.js";
 import { newStore, system, PROJECT_KEY } from "./helpers/store.js";
 
 // Implicit verdicts (design §4, issue #316): a merge, a person's push and a revert of a factory PR each record one

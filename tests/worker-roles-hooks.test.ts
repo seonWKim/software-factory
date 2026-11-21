@@ -10,7 +10,9 @@ import { RoleCatalog, SqlHookAudit, loadRoles } from "../src/runtime/index.js";
 import { defineHook, type HookDescriptor } from "../src/shared/hook.js";
 import { defineRole } from "../src/shared/role.js";
 import { issue, newStore, system } from "./helpers/store.js";
-import { FakeBroker, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, config, prompts, recordingLog, triageSpec } from "./helpers/fakes.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, prompts, recordingLog, triageSpec } from "./helpers/fakes/config.js";
 
 // M10 wiring (design 10-event-driven): the run roles drive the worker's prompts and tools, and the owner's
 // `before_run` hooks run at run start, after the guards, failing closed.

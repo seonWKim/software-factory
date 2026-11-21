@@ -5,7 +5,7 @@ import type { Worker } from "../src/worker/runner.js";
 import type { RunCall } from "../src/worker/run-kind.js";
 import { RunFailure } from "../src/worker/support.js";
 import triage from "../src/worker/runs/triage/triage.run.js";
-import { triageSpec } from "./helpers/fakes.js";
+import { triageSpec } from "./helpers/fakes/config.js";
 
 // Issue #488: a tool-call markup refusal gets one re-prompt in the same step; nothing else does.
 const STRAY = `The runner fails.</problem>\n<${"parameter"} name="decisions">[]`;

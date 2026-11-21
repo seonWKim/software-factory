@@ -17,10 +17,11 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { STORE_BRANCH } from "../src/interfaces/tool-broker.js";
-import {
-  FakeAuth, FakeBroker, FakeIssues, FakeRunner, FakeSandbox, FakeForge, FakeSource, MemorySessionFiles, MemoryStorage, alice, cleanScanner, config, issueRef,
-  mallory, prompts, silent, triageSpec,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeIssues, FakeRunner, FakeSandbox, MemorySessionFiles, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, mallory, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
 // A local task end to end (issue #200): filed and approved from the CLI, read by the `local` source, applied by

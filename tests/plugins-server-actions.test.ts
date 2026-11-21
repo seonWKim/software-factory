@@ -14,7 +14,7 @@ import { writePackApproval } from "../src/ui/packs-api.js";
 import { readPlugins } from "../src/ui/plugins-api.js";
 import type { ApiDeps } from "../src/ui/server.js";
 import type { UiSettings } from "../src/ui/settings-api.js";
-import { cleanScanner, silent } from "./helpers/fakes.js";
+import { cleanScanner, silent } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 // The server side of the Plugins page's actions (design 09-dashboard-app and 11-packs, 2026-11-16): pack approval add,

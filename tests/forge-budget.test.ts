@@ -15,7 +15,8 @@ import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import { secretName } from "../src/interfaces/secret-store.js";
 import { syncChecks } from "../src/ui/health.js";
-import { FakeAuth, cleanScanner, config, recordingLog } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, recordingLog } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
 const credentials: GitHubCredentials = { token: async () => new OpaqueSecret(secretName("GITHUB_TOKEN"), "ghs_test") };

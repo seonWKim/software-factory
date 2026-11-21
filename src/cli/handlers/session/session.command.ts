@@ -1,7 +1,7 @@
 import { buildSessionParts } from "../../../compose.js";
-import { SESSION_USAGE, parseSessionArgs, runSession, sessionDeps } from "../../../session-cmd.js";
+import { SESSION_USAGE, parseSessionArgs, runSession, sessionDeps, sessionWho } from "../../../session-cmd.js";
 import { defineCommand } from "../../command.js";
-import { stopOnSignals } from "../../support.js";
+import { cliEnvironment, stopOnSignals } from "../../support.js";
 
 export default defineCommand({
   names: ["interactive", "session"],
@@ -15,9 +15,10 @@ export default defineCommand({
       return 1;
     }
     const loaded = await ctx.load();
+    const who = sessionWho(loaded, await cliEnvironment(loaded.root));
     const parts = await buildSessionParts(loaded);
     try {
-      return await runSession(sessionDeps(parts, loaded.stateDir, stopOnSignals()), action);
+      return await runSession(sessionDeps(parts, loaded.stateDir, stopOnSignals(), who), action);
     } finally {
       await parts.close();
     }
