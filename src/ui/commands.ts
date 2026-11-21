@@ -304,8 +304,6 @@ export interface ItemCommandRow {
 
 /** The identical stops from which an item's main action is Revise or Reject (design 09-dashboard-item-commands, 2026-11-20). */
 export const REPEATED_STOP = 3;
-/** The commands that answer a stop (a failed or asking run); only an item where one applies counts its stops. */
-const STOP_COMMANDS: readonly string[] = ["retry", "resolve"];
 
 /** How many state changes set the item's current blocked_reason, the current stop included (0 when it has none). */
 export function stopCount(it: Pick<WorkItem, "blocked_reason">, changes: readonly StateChange[]): number {
@@ -351,8 +349,8 @@ export async function itemCommands(
   const reason = grant.allow ? null : await text(grant.reason);
   const paths = await askedPaths(it, runs, text);
   const cmds = commandsFor(itemCommandState(it, runs)).filter((c) => APP_COMMANDS.includes(c.name));
-  // A stop answered by Retry or Answer, blocked on a person: its state changes say how often it stopped this way.
-  const stops = it.blocked_on === "human" && grant.changes && cmds.some((c) => STOP_COMMANDS.includes(c.name)) ? stopCount(it, await grant.changes(it.id)) : 0;
+  // Its state changes say how often the item stopped with its current blocked_reason (none read when it has none).
+  const stops = it.blocked_reason !== null && grant.changes ? stopCount(it, await grant.changes(it.id)) : 0;
   const rows: ItemCommandRow[] = cmds.map((c) => ({
     name: c.name, usage: c.usage, description: c.description, allowed: grant.allow, reason,
     ...(paths.length > 0 && PATHS_COMMANDS.includes(c.name) ? { paths } : {}),

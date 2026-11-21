@@ -537,12 +537,16 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
       }
     });
 
-    it("a gate the item reached three times is no stop: a spec back at the gate after revisions keeps Approve first", async () => {
+    it("any current blocked_reason counts: a spec back at the gate a third time carries repeated_stop on every row", async () => {
       const h = await harness({ localAuth: true });
       const owner = "local:owner@example.com" as UserId;
       await h.store.claimOwner(owner);
-      const gate = await stoppedTimes(h, SPEC_PENDING, 3, 1);
-      for (const r of await rowsOf(page(h, owner), gate)) expect(r.repeated_stop, r.name).toBeUndefined();
+      const twice = await stoppedTimes(h, SPEC_PENDING, 2, 1);
+      const gate = await stoppedTimes(h, SPEC_PENDING, 3, 2);
+      for (const r of await rowsOf(page(h, owner), twice)) expect(r.repeated_stop, r.name).toBeUndefined();
+      const rows = await rowsOf(page(h, owner), gate);
+      expect(rows.map((r) => r.name)).toEqual(expect.arrayContaining(["approve", "revise", "reject"]));
+      for (const r of rows) expect(r.repeated_stop, r.name).toBe(true);
     });
   });
 });
