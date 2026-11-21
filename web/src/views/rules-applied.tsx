@@ -6,27 +6,26 @@ import { Card } from "../components/ui/card.js";
 import { IdDetails } from "../components/ui/copy.js";
 import { Disclosure } from "../components/ui/disclosure.js";
 import { Input } from "../components/ui/input.js";
+import { KeyValue, type KeyValueItem, ValueBlock } from "../components/ui/key-value.js";
+import { ListRow, ROW_TITLE } from "../components/ui/list-row.js";
 import { Markdown } from "../components/ui/markdown.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { RetireDialog } from "./rules-verdict.js";
-import { muted, ruleName } from "./rules-shared.js";
+import { PROSE, ROW_PAD, STACK_NARROW, muted, ruleName } from "./rules-shared.js";
 import type { ReactNode } from "react";
 
 // The Rules page's applied rules group: the promoted rules file in the file's order, one compact row per rule (name
 // with its ID in a tooltip, scope, judged date, the "Suggested to retire" badge and Retire) that expands to a
-// label/value list, with a search over ID, name, default and scope; it is collapsed while something waits. Suggest
+// label/value list (stacked below `sm`), with a search over ID, name, default and scope; it is the Applied tab. Suggest
 // reads each class's retire suggestions on demand. Scope and the encoded-elsewhere lines render through Markdown.
 
-/** One label and its value in an applied rule's details; no value reads "not given". */
-function AppliedPart({ label, children }: { label: MessageKey; children: ReactNode }) {
-  return (
-    <>
-      <dt className="text-xs font-semibold text-text-2">{t(label)}</dt>
-      <dd className="min-w-0">{children ?? <span className="text-sm text-text-2">{t("rules.notGiven")}</span>}</dd>
-    </>
-  );
-}
+/** One label and its value in an applied rule's details (a KeyValue item); no value reads "not given". */
+const part = (key: string, label: MessageKey, value: ReactNode): KeyValueItem => ({
+  key,
+  term: <span className="font-semibold">{t(label)}</span>,
+  value: value ?? <span className="text-sm text-text-2">{t("rules.notGiven")}</span>,
+});
 
 /** A text part through Markdown, or nothing when the rule has none. */
 const md = (value: string | null): ReactNode => (value === null || value === "" ? null : <Markdown text={value} />);
@@ -42,8 +41,8 @@ function evidence(incidents: string[] | null): ReactNode {
 function AppliedCard({ rule, token, round }: { rule: AppliedRule; token: string | null; round: number }) {
   if (rule.raw !== null || rule.id === null) {
     return (
-      <li data-applied-raw className="p-3">
-        <pre className="font-mono text-xs break-words whitespace-pre-wrap">{rule.raw}</pre>
+      <li data-applied-raw className="p-3 max-sm:p-2">
+        <ValueBlock>{rule.raw}</ValueBlock>
       </li>
     );
   }
@@ -59,20 +58,29 @@ function AppliedClass({ rule, id, token, round }: { rule: AppliedRule; id: strin
   const [retiring, setRetiring] = useState(false);
   const suggested = useRuleEntry(id, round > 0, round).data?.retire ?? [];
   return (
-    <li data-applied={id} className="space-y-1 p-3">
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <p className="min-w-0 text-sm font-medium text-pretty break-words">
+    <ListRow
+      data-applied={id}
+      className={ROW_PAD}
+      title={
+        <p className={`${ROW_TITLE} font-medium`} title={ruleName(rule)}>
           <IdDetails label={ruleName(rule)} id={id} what="rule ID" />
         </p>
-        {suggested.length > 0 && <Badge level="needs_approval">{t("rules.suggested")}</Badge>}
-        {rule.judged !== null && <span className={`${muted} tabular-nums`}>{rule.judged}</span>}
-        <div className="ml-auto">
-          <Button variant="danger" size="sm" disabled={token === null} title={token === null ? t("rules.retireOwner") : undefined} onClick={() => setRetiring(true)}>
-            {t("rules.retire")}
-          </Button>
-        </div>
-      </div>
-      {rule.scope !== null && rule.scope !== "" && <div className="line-clamp-2 text-text-2">{md(rule.scope)}</div>}
+      }
+      details={
+        (suggested.length > 0 || rule.judged !== null) && (
+          <>
+            {suggested.length > 0 && <Badge level="needs_approval">{t("rules.suggested")}</Badge>}
+            {rule.judged !== null && <span className="tabular-nums">{rule.judged}</span>}
+          </>
+        )
+      }
+      menu={
+        <Button variant="danger" size="sm" disabled={token === null} title={token === null ? t("rules.retireOwner") : undefined} onClick={() => setRetiring(true)}>
+          {t("rules.retire")}
+        </Button>
+      }
+    >
+      {rule.scope !== null && rule.scope !== "" && <div className="line-clamp-2 break-keep text-text-2">{md(rule.scope)}</div>}
       {suggested.length > 0 && (
         <ul data-suggested className="space-y-0.5">
           {suggested.map((r) => (
@@ -83,15 +91,18 @@ function AppliedClass({ rule, id, token, round }: { rule: AppliedRule; id: strin
         </ul>
       )}
       <Disclosure summary={t("rules.appliedDetails")}>
-        <dl className="mt-2 grid grid-cols-[5rem_minmax(0,1fr)] gap-x-3 gap-y-2">
-          <AppliedPart label="rules.appliedDefault">{md(rule.default)}</AppliedPart>
-          <AppliedPart label="rules.appliedException">{md(rule.exceptions)}</AppliedPart>
-          <AppliedPart label="rules.appliedIncidents">{evidence(rule.incidents)}</AppliedPart>
-          <AppliedPart label="rules.appliedJudged">{rule.judged === null ? null : <p className="text-sm">{rule.judged}</p>}</AppliedPart>
-        </dl>
+        <KeyValue
+          className={`mt-2 ${STACK_NARROW}`}
+          items={[
+            part("default", "rules.appliedDefault", md(rule.default)),
+            part("exception", "rules.appliedException", md(rule.exceptions)),
+            part("evidence", "rules.appliedIncidents", evidence(rule.incidents)),
+            part("judged", "rules.appliedJudged", rule.judged === null ? null : <p className="text-sm">{rule.judged}</p>),
+          ]}
+        />
       </Disclosure>
       {retiring && token !== null && <RetireDialog id={id} name={ruleName(rule)} token={token} onClose={() => setRetiring(false)} />}
-    </li>
+    </ListRow>
   );
 }
 
@@ -99,11 +110,8 @@ function AppliedClass({ rule, id, token, round }: { rule: AppliedRule; id: strin
 const matches = (r: AppliedRule, query: string): boolean =>
   [r.id, r.name, r.default, r.scope, r.raw].some((v) => v !== null && v.toLowerCase().includes(query));
 
-/**
- * The promoted rules in the file's order with a search, and the encoded-elsewhere lines, with Suggest; collapsed while
- * `collapsed` (something waits). Not shown when the file has none.
- */
-export function Applied({ applied, token, collapsed }: { applied: NonNullable<RulesView["applied"]>; token: string | null; collapsed: boolean }) {
+/** The Applied tab: the promoted rules in the file's order with a search, and the encoded-elsewhere lines, with Suggest. Not shown when the file has none. */
+export function Applied({ applied, token }: { applied: NonNullable<RulesView["applied"]>; token: string | null }) {
   const { rules, elsewhere } = applied;
   // Each Suggest press is a new round of reads; 0 until the first press.
   const [round, setRound] = useState(0);
@@ -118,9 +126,8 @@ export function Applied({ applied, token, collapsed }: { applied: NonNullable<Ru
   const shown = rules.filter((r) => matches(r, q));
   return (
     <Card title={t("rules.groupApplied")} count={rules.length} action={suggest}>
-      <Disclosure defaultOpen={!collapsed} summary={t("rules.appliedShow")}>
-        <div className="mt-2 space-y-2">
-          <p data-group-line className={muted}>
+      <div className="space-y-2">
+          <p data-group-line className={`${PROSE} ${muted}`}>
             {t("rules.groupAppliedLine")} {t("rules.appliedOrder")}
           </p>
           {rules.length > 0 && <Input type="search" aria-label={t("rules.appliedSearch")} placeholder={t("rules.appliedSearch")} className="w-full" value={query} onChange={(e) => setQuery(e.target.value)} />}
@@ -138,8 +145,7 @@ export function Applied({ applied, token, collapsed }: { applied: NonNullable<Ru
               <Markdown text={elsewhere.join("\n")} />
             </div>
           )}
-        </div>
-      </Disclosure>
+      </div>
     </Card>
   );
 }
