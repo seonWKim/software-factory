@@ -1064,7 +1064,8 @@ describe("packs: the pack tool broker (approval before the call, no credential t
     const s = await open();
     expect(s.broker.listTools([GRANT, "test.read_note"]).map((t) => t.name)).toEqual([GRANT]);
     expect(s.broker.allTools().map((t) => t.name)).toContain(GRANT);
-    expect(await s.broker.call(s.ctx, "test.read_note", {})).toMatchObject({ ok: true });
+    // A tool the inner broker serves (FakeBroker's preflight) goes to it, never to a pack tool's code.
+    expect(await s.broker.call(s.ctx, "forge.preflight", {})).toMatchObject({ ok: true });
     expect(s.reached).toEqual([]);
   });
 
