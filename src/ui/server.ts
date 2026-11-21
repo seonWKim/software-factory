@@ -5,7 +5,7 @@
 // /api/v1/agents/stop (design 05-restart-pauses, Stop all agents; pause-api.ts), POST
 // /api/v1/standing (design 05-standing-approvals, issue #300; standing-api.ts), POST /api/v1/improve/run (design §7, issue #508; improve-api.ts) and
 // POST /api/v1/packs/approvals (design 11-packs, issue #589; packs-api.ts), POST /api/v1/rules/verdict (design §9,
-// issue #571; rules-api.ts) and the task routes (design 02-tasks; tasks-api.ts TASK_WRITES: POST /api/v1/tasks, the quick-add box,
+// issue #571; rules-api.ts), /api/v1/rules/edit and /api/v1/rules/pushbacks/dismiss (design 09-dashboard-rules, RULE_WRITES) and the task routes (design 02-tasks; tasks-api.ts TASK_WRITES: POST /api/v1/tasks, the quick-add box,
 // /api/v1/tasks/build, Build this, /api/v1/tasks/edit, /done, /delete and /sub, the Tasks page's row actions, and
 // projects-api.ts's /api/v1/tasks/project and /api/v1/projects, its project dialog) and the
 // calendar routes (design 08-settings; calendar-api.ts: POST /api/v1/calendar/connect and /disconnect) and the Data page's Ask
@@ -36,7 +36,7 @@ import { RESUME_PATH, STOP_PATH, resumePause, stopAllAgents } from "./pause-api.
 import { STANDING_PATH, writeStanding } from "./standing-api.js";
 import { PACK_APPROVALS_PATH, writePackApproval } from "./packs-api.js";
 import { TASKS_PATH, TASK_PREVIEW_PATH, TASK_WRITES, readTaskPreview, readTasks } from "./tasks-api.js";
-import { RULES_PATH, RULE_ENTRY_PATH, RULE_VERDICT_PATH, readRuleEntry, readRules, writeRuleVerdict } from "./rules-api.js";
+import { RULES_PATH, RULE_ENTRY_PATH, RULE_WRITES, readRuleEntry, readRules } from "./rules-api.js";
 import { IMPROVE_RUN_PATH, type ImproveRunDeps, improveRunWired, runImproveNow } from "./improve-api.js";
 import { NOTICES_PATH, readNotices } from "./notices-api.js";
 import { Activity } from "./background-refresh.js";
@@ -153,7 +153,7 @@ function writeRoute(d: ServerDeps, req: UiRequest): WriteRoute | null {
   if (path === IMPROVE_RUN_PATH && improveRunWired(d)) return "improve";
   if (path === PACK_APPROVALS_PATH && d.pauses?.auth !== undefined) return "packs";
   if (path === PLUGINS_IMPORT_PATH && d.pauses !== undefined) return "import";
-  if (path === RULE_VERDICT_PATH && d.pauses !== undefined) return "rules";
+  if (Object.hasOwn(RULE_WRITES, path) && d.pauses !== undefined) return "rules";
   if (Object.hasOwn(TASK_WRITES, path) && d.commands !== undefined) return "tasks";
   if ((path === CALENDAR_CONNECT_PATH || path === CALENDAR_DISCONNECT_PATH) && d.settings?.calendar !== undefined) return "calendar";
   if (path === DATA_ASK_PATH && d.settings?.ask !== undefined) return "ask";
@@ -205,7 +205,7 @@ async function writePost(d: ServerDeps, req: UiRequest, route: WriteRoute): Prom
     : route === "improve" ? await runImproveNow(d as ImproveRunDeps)
     : route === "packs" ? await writePackApproval(d, d.pauses!, body)
     : route === "import" ? await writePluginsImport(d, d.pauses!, body)
-    : route === "rules" ? await writeRuleVerdict(d, d.pauses!, body)
+    : route === "rules" ? await RULE_WRITES[pathOf(req.url)]!(d, d.pauses!, body)
     : route === "tasks" ? await TASK_WRITES[pathOf(req.url)]!(d, body)
     : route === "calendar" ? await writeCalendar(d, pathOf(req.url), body)
     : route === "ask" ? await askData(d, d.settings!.ask!, body)
@@ -232,7 +232,7 @@ export async function respond(d: ServerDeps, req: UiRequest): Promise<UiResponse
     return json(r.status, r.value);
   }
   // A POST anywhere else is a JSON 405, whatever the area: a script that posts reads one error format.
-  if (req.method === "POST") return areaError("api", 405, "Only the settings, item commands, pause resume, standing, improve run, pack approvals, plugins import, rule verdict, task, calendar, data ask, migrate and supervisor routes take a POST.", { allow: ALLOW });
+  if (req.method === "POST") return areaError("api", 405, "Only the settings, item commands, pause resume, standing, improve run, pack approvals, plugins import, rule verdict, rule edit, pushback dismiss, task, calendar, data ask, migrate and supervisor routes take a POST.", { allow: ALLOW });
   if (req.method !== "GET" && req.method !== "HEAD") return areaError(area, 405, "This page is read-only.", { allow: ALLOW });
 
   let url: URL;
