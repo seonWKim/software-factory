@@ -74,4 +74,4 @@
 - **PR body.** A successful run's PR body has one "Checked before push: `<command>` passed" line per command (`(after one fix step)` when one ran), and no other line, under its `## Tests` heading; the body's full layout is in `04-agents.md` (PR body and incomplete PRs).
 - **Checks run with no database (decision changed 2026-11-13, issue #579; before: see History).** Check commands get the worker's tool env and its slot env (`SF_WORKER_INDEX`, `SF_TEST_WORKERS`) only (and `SF_RATCHET_SHRINK`, above), in every run. The worker makes no per-run database, redacts no database value from check output and adds no skip line to the PR body.
 
-- Replaced decisions of this topic: [history/04-pre-push-gates.md](history/04-pre-push-gates.md).
+Replaced: frozen history/04-pre-push-gates.md; new ones in history/04-pre-push-gates/
