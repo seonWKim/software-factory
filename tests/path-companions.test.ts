@@ -154,12 +154,31 @@ describe("built-in companion rules", () => {
     ["web/src/views/settings-calendar.tsx", "web/src/i18n/en/settings.ts"],
     ["web/src/views/settings/editor.tsx", "web/src/i18n/en/settings.ts"],
     ["web/src/components/rules.tsx", "web/src/i18n/en/rules.ts"],
-  ])("a web view or component %s adds its i18n area file %s and the generated barrel", (file, area) => {
+  ])("a web view or component %s whose area file exists adds only its i18n area file %s, not the barrel", (file, area) => {
     const { paths, added } = allowedAfter([file]);
     expect(paths).toContain(area);
     expect(added).toContainEqual({ path: area, because: file });
+    expect(paths).not.toContain("web/src/i18n/en.ts");
+    expect(added.map((a) => a.path)).not.toContain("web/src/i18n/en.ts");
+  });
+
+  it("a new area file named by triage also adds the generated barrel the answer names", () => {
+    const view = "web/src/views/quotas.tsx";
+    const out = applyCompanions(
+      answer({ allowed_paths: [view, "web/src/i18n/en/quotas.ts"], files_to_change: [view, "web/src/i18n/en/quotas.ts", "web/src/i18n/en.ts"] }),
+      [],
+      [],
+    );
+    const paths = (out.answer as { allowed_paths: string[] }).allowed_paths;
+    expect(paths).toContain("web/src/i18n/en/quotas.ts");
     expect(paths).toContain("web/src/i18n/en.ts");
-    expect(added).toContainEqual({ path: "web/src/i18n/en.ts", because: file });
+    expect(out.added).toContainEqual({ path: "web/src/i18n/en.ts", because: "web/src/i18n/en.ts" });
+  });
+
+  it("a plan for one page's text names neither the design index nor the barrel", () => {
+    const { paths } = allowedAfter(["web/src/views/tasks.tsx", "web/src/i18n/en/tasks.ts"]);
+    expect(paths).not.toContain("docs/design.md");
+    expect(paths).not.toContain("web/src/i18n/en.ts");
   });
 
   it("a web file that names no area adds neither an area file nor the barrel", () => {

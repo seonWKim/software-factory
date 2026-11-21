@@ -176,7 +176,7 @@ export class Sessions {
     }
   }
 
-  /** One start attempt with the item as it is now. `busy`: a running run of another item shares its files; the run folder is kept for the next try. */
+  /** One start attempt with the item as it is now. `busy`: a running run of another item shares its files at the workers' cost (sessionHold); the run folder is kept for the next try. */
   private async begin(it: WorkItem, c: BeginContext, made?: SandboxHandle): Promise<(SessionResult & { file?: SessionFile }) | { busy: string; handle: SandboxHandle }> {
     const cfg = this.d.config;
     const patch = c.patch(it);
@@ -186,7 +186,7 @@ export class Sessions {
     const branch = branchFor(it, cfg.branch_prefix);
     const handle = made ?? await routeFor(this.d, it).sandbox.create({ repo: cfg.repo.path, branch, base_ref: cfg.repo.base_branch });
     const { actor } = c;
-    const r = await this.d.store.startSession({ id: it.id, expected_version: it.version, actor, patch, reason: SESSION_STARTED, detail: { spec_source: source }, owner: this.d.owner, lease_ms: cfg.lease_ms, transcript_url: c.transcript_url });
+    const r = await this.d.store.startSession({ id: it.id, expected_version: it.version, actor, patch, reason: SESSION_STARTED, detail: { spec_source: source }, owner: this.d.owner, lease_ms: cfg.lease_ms, transcript_url: c.transcript_url, ...(cfg.coordination ? { coordination: cfg.coordination } : {}) });
     if (!r.ok && r.reason === "overlap") return { busy: await this.storeRefusal(r), handle };
     if (!r.ok) {
       await routeFor(this.d, it).sandbox.destroy(handle).catch(() => undefined);
@@ -222,7 +222,7 @@ export class Sessions {
   private async storeRefusal(r: Exclude<StartSessionResult, { ok: true }>): Promise<string> {
     if (r.reason === "overlap") {
       const other = await this.d.store.getWorkItem(r.work_item_id);
-      return `running work on ${other?.source.id ?? r.work_item_id} (run ${r.run_id}) overlaps the allowed_paths: ${r.paths.join(", ")}`;
+      return `running work on ${other?.source.id ?? r.work_item_id} (run ${r.run_id}) overlaps at cost ${r.cost} (max_coordination_cost ${r.max_cost}): ${r.paths.join(", ")}`;
     }
     if (r.reason === "not_found" || r.reason === "version_conflict") return "the item changed while the session was starting; run the command again";
     if (r.reason === "reserved") return reservedBy(r.reservation);
