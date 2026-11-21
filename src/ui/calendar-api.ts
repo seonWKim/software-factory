@@ -21,7 +21,7 @@
 // the owner connects again. No secret value is returned, logged or stored: errors name steps, never values.
 
 import { type SyncOutcome, readSyncStates } from "../calendar/index.js";
-import type { Loaded } from "../compose.js";
+import type { Loaded } from "../load-config.js";
 import type { connectCalendar } from "../setup.js";
 import { errorText } from "../core/log.js";
 import { type SettingsBase, resolveSettings } from "../core/settings.js";

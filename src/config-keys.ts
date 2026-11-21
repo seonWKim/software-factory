@@ -2,7 +2,7 @@
 // ("plugin" for "plugins", "hots" for "host") fails at load instead of silently falling back to a default.
 // Only unknown keys are checked here; value and shape checks stay where they were.
 
-import type { FileConfig } from "./compose.js";
+import type { FileConfig } from "./load-config.js";
 import { CAPABILITIES_KEYS, COORDINATION_KEYS, TOOLCHAIN_KEYS, capabilitiesProblems, coordinationProblems, goldenConfig } from "./core/config.js";
 import { pathCompanionProblems } from "./core/companions.js";
 import { packsProblems } from "./packs/packs.js";

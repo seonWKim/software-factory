@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { uiPort } from "../src/compose.js";
+import { uiPort } from "../src/config-values.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { UserId, WorkItem, WorkItemId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";

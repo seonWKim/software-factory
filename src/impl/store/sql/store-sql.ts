@@ -1,12 +1,18 @@
 // The store's SQL database, for a component that owns its own tables (RFC 0015 §6.3, e.g. Identity's
 // identity_profiles) while the legacy FactoryStore still opens the connection. Goes when the runtime hands
 // components their driver.
+//
+// The SQL store marks itself with SQL_DRIVER, so reading the driver does not load the store class: a component that
+// needs only its tables (the worker's journal, hook audit and pack grants) stays off the whole SQL store (RFC 0023 R1).
 
 import type { FactoryStore } from "../../../interfaces/factory-store.js";
 import type { SqlDriver } from "../../../state/index.js";
-import { SqlFactoryStore } from "./sql-factory-store.js";
+
+/** The key under which a SQL-backed FactoryStore exposes its driver. */
+export const SQL_DRIVER: unique symbol = Symbol.for("software-factory.sql-driver");
 
 export function storeSql(store: FactoryStore): SqlDriver {
-  if (store instanceof SqlFactoryStore) return store.db;
+  const db = (store as { [SQL_DRIVER]?: SqlDriver })[SQL_DRIVER];
+  if (db) return db;
   throw new Error("the selected store plugin is not a SQL store");
 }

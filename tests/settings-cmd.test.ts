@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { retryConfig, stallConfig } from "../src/compose.js";
+import { retryConfig, stallConfig } from "../src/config-values.js";
 import { coordinationConfig } from "../src/core/config.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
 import { SETTABLE_KEYS, type SettingsBase, intakeLabel } from "../src/core/settings.js";

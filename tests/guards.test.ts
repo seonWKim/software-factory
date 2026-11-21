@@ -470,7 +470,7 @@ describe("Tool broker store: .env.example at HEAD must hold no values", () => {
 
 describe("G3/G4: deny paths from the real config", () => {
   it("cover the secret dir, the store, the test MySQL login, and admin credential files", async () => {
-    const { loadConfig } = await import("../src/compose.js");
+    const { loadConfig } = await import("../src/load-config.js");
     const loaded = await loadConfig(new URL("..", import.meta.url).pathname);
     const home = process.env.HOME ?? "";
     for (const p of [loaded.secretsFile.replace(/\/[^/]+$/, ""), `${loaded.stateDir}/db`, `${loaded.stateDir}/test-mysql.url`, `${home}/.my.cnf`, `${home}/.mylogin.cnf`]) {

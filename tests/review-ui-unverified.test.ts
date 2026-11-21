@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { localProject } from "../src/compose.js";
+import { localProject } from "../src/load-config.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import { type CliAction, runLocalCli } from "../src/core/local-cli.js";
 import { parseReview, REVIEW_SCHEMA, type ReviewOutput } from "../src/core/outputs.js";
