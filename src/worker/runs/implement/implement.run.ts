@@ -3,6 +3,7 @@ import { settingValues } from "../../../core/settings.js";
 import type { ModelClass } from "../../../core/model-choice.js";
 import { type DiffStat, type FloorHit, diffStat, overSizeLimit, requiredTier, sizeDetail } from "../../../core/diff-gate.js";
 import { NumstatError, diffGates, scopeGate } from "../../../core/pre-push.js";
+import { selectedChecks } from "../../../core/test-selection.js";
 import { BASE_CHECKOUT_DIR, CHECKS_FAILED_RUN, type CheckResult, TOOLCHAIN_MISSING, checkCommands, checkedLines, commandText, failingTestFiles, toolchainMissing, withTestFiles } from "../../../core/checks.js";
 import { IMPLEMENT_SCHEMA, NEEDS_HUMAN_MAX_CHARS, NEEDS_HUMAN_MAX_PATHS, type NeedsHuman, SPEC_CONFLICT, findingLine, parseImplement, parseReview } from "../../../core/outputs.js";
 import { CHECKS_ENV, CHECKS_ENV_LIMIT, PREFLIGHT_FAILED, branchFor, isCovered, wipBranchFor } from "../../../core/policy.js";
@@ -764,16 +765,11 @@ async function mergeConflict(
  * run fails with `checks_failed`. Both rounds run in ratchet shrink mode (SHRINK_ENV). Returns the passing round's results and whether a
  * fix step ran; the caller commits the lowered lists, then runs the scope, size and floor gates again on the final diff.
  */
-async function checksBeforePush(
-  w: Worker,
-  run: Run,
-  item: WorkItem,
-  handle: SandboxHandle,
-  signal: AbortSignal,
-  s: FixContext,
-): Promise<{ results: CheckResult[]; fixed: boolean }> {
+async function checksBeforePush(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, signal: AbortSignal, s: FixContext): Promise<{ results: CheckResult[]; fixed: boolean }> {
+  // Each round narrows the test command to the test files its own diff reaches (design §4, test selection).
+  const round = async () => w.runCheckList(run, handle, signal, { ...SHRINK_ENV, commands: await selectedChecks(w.cfg.repo, checkCommands(w.cfg.repo), (a) => w.git(handle, a), s.baseSha, (line) => w.d.log.info(line, { run_id: run.id })) });
   await cleanTree(w, handle);
-  const first = await w.runCheckList(run, handle, signal, SHRINK_ENV);
+  const first = await round();
   if (!first.failed) return { results: first.results, fixed: false };
   // A missing install is the host's, not the branch's: no fix step, and an infra failure (issue #229).
   const missing = toolchainMissing(first.failed.tail);
@@ -784,7 +780,7 @@ async function checksBeforePush(
   }
   await fixStep(w, run, item, handle, signal, s, first.failed);
   await cleanTree(w, handle);
-  const second = await w.runCheckList(run, handle, signal, SHRINK_ENV);
+  const second = await round();
   if (!second.failed) return { results: second.results, fixed: true };
   const onBase = await failsOnBase(w, run, handle, signal, s.baseSha, second.failed);
   if (onBase) return checksEnv(w, run, item, second.failed, onBase);

@@ -15,7 +15,8 @@ import { FakeAuth, FakeIssues, FakeSandbox, MemorySessionFiles } from "./helpers
 import { FakeBroker } from "./helpers/fakes/broker.js";
 import { FakeForge } from "./helpers/fakes/forge.js";
 import { FakeSource } from "./helpers/fakes/source.js";
-import { alice, cleanScanner, config, issueRef, mallory, silent, waitFor } from "./helpers/fakes/config.js";
+import { alice, cleanScanner, config, issueRef, mallory, recordingLog, silent, waitFor } from "./helpers/fakes/config.js";
+import type { Logger } from "../src/core/log.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 // `factory session` (design §5, 2026-11-01) on fakes: sandbox, broker, auth and issues are fakes; the SQLite store
@@ -30,10 +31,10 @@ const SPEC_TEXT = JSON.stringify(SPEC);
 const AWS_SHAPED = ["AKIA", "ABCDEFGHIJKLMNOP"].join("");
 const W1 = "w1" as WorkerId;
 
-async function harness(o: { local?: LocalRoute } = {}) {
+async function harness(o: { local?: LocalRoute; config?: FactoryConfig; log?: Logger } = {}) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
-  const cfg: FactoryConfig = config;
+  const cfg: FactoryConfig = o.config ?? config;
   const sandbox = new FakeSandbox();
   sandbox.changedFiles = ["src/a/x.ts"];
   const broker = new FakeBroker();
@@ -71,8 +72,8 @@ async function harness(o: { local?: LocalRoute } = {}) {
 }
 type H = Awaited<ReturnType<typeof harness>>;
 /** A harness with an open session on item #1 (`it0`, allowed `paths`); `file` is its local record. */
-async function started(paths = ["src/a/"]) {
-  const h = await harness();
+async function started(paths = ["src/a/"], o: Parameters<typeof harness>[0] = {}) {
+  const h = await harness(o);
   const it0 = await h.running(1, paths);
   const r = await h.start(it0.id);
   expect(r.ok).toBe(true);
@@ -508,6 +509,25 @@ describe("session finish", () => {
     expect(out).toContain("did not pass the egress scan");
     expect(out).not.toContain(AWS_SHAPED);
     expect(out).not.toContain("failing test files");
+  });
+
+  it("with repo.test_selection the test command runs on the files the diff reaches plus the always-run list, logged first; without it, whole", async () => {
+    const log = recordingLog();
+    const selecting: FactoryConfig = { ...config, repo: { ...config.repo, test_selection: { hubs: [], always: ["tests/architecture/"] } } };
+    const h = await started(["src/a/"], { config: selecting, log });
+    // The import graph: one git grep (`path\0match` per line); tests/y.test.ts reaches another file.
+    h.sandbox.markers = 'tests/x.test.ts\0from "../src/a/x.js"\ntests/y.test.ts\0from "../src/b.js"\n';
+    expect((await h.sessions.finish({})).ok).toBe(true);
+    expect(h.sandbox.commands).toEqual(["npm test -- tests/x.test.ts tests/architecture/"]);
+    const run = (await h.runs(h.it0.id, "interactive"))[0]!;
+    expect(log.lines.filter((l) => l.msg.startsWith("test selection: "))).toEqual([{
+      level: "info", msg: "test selection: 2 files, 1 reaching the 1 changed source and test files, plus 1 always-run: tests/x.test.ts tests/architecture/", fields: { work_item_id: h.it0.id, run_id: run.id },
+    }]);
+
+    const whole = await started();
+    whole.sandbox.markers = h.sandbox.markers;
+    expect((await whole.sessions.finish({})).ok).toBe(true);
+    expect(whole.sandbox.commands).toEqual(["npm test"]);
   });
 
   it("a floor hit is refused with the paths and the required tier; the session stays open and no floor_blocked is written", async () => {
