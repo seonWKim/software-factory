@@ -67,7 +67,12 @@ export const gitVerb = (args: readonly string[]): string => {
   return args[i] ?? "";
 };
 
-export const KINDS: readonly RunKind[] = ["triage", "implement", "review", "update", "resolve", "improve", "merge-check", "restart"];
+/**
+ * No fixed claim list here any more: a worker claims the live `worker_kinds` setting (design 05-interactive-sessions).
+ * The pool's startup check (pool.ts, outside this change's paths) still imports the old name; it is the core list
+ * of every claimable kind, WORKER_KINDS, not a second list.
+ */
+export { WORKER_KINDS as KINDS } from "../core/settings.js";
 /** Files of a PR kept as its pr_files (design §5, 2026-11-03); past the size gate's file cap anyway. */
 export const MAX_PR_FILES = 500;
 /** The read role's tools (triage): only `read` capability, no write or exec tool. */
