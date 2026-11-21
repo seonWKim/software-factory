@@ -375,6 +375,11 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
     opts?: { enqueue?: Omit<NewRun, "work_item_id">; detail?: StateChangeDetail },
   ): Promise<{ item: WorkItem; created: boolean }>;
   getWorkItem(id: WorkItemId): Promise<WorkItem | null>;
+  /**
+   * The IDs of the work items whose ID starts with `prefix`, in ID order: a range read on the stored ID, never a list
+   * scan (the CLI's short ID lookup, design 05-sources). An empty prefix matches none. Read-only.
+   */
+  findWorkItemIds(prefix: string): Promise<WorkItemId[]>;
   getWorkItemBySource(type: SourceType, sourceId: string): Promise<WorkItem | null>;
   /**
    * The item in `project` whose PR (factory or adopted) has this change_ref (oldest if several). A row with

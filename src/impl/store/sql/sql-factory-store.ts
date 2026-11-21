@@ -197,6 +197,14 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
     return this.selectItem(this.db, id);
   }
 
+  async findWorkItemIds(prefix: string): Promise<WorkItemId[]> {
+    if (prefix === "") return [];
+    // Every ID starting with `prefix` sorts in [prefix, prefix with its last character raised by one): a primary key range.
+    const end = prefix.slice(0, -1) + String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1);
+    const rows = await this.db.all("SELECT id FROM controller_work_items WHERE id >= ? AND id < ? ORDER BY id", [prefix, end]);
+    return rows.map((r) => r.id as WorkItemId);
+  }
+
   async getWorkItemBySource(type: SourceType, sourceId: string): Promise<WorkItem | null> {
     return this.selectItemBySource(this.db, type, sourceId);
   }
