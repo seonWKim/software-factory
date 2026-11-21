@@ -1,5 +1,5 @@
 import { refusalReply } from "./authorize.js";
-import { checkedLines, commandText, failingTestFiles, runChecks } from "./checks.js";
+import { PrePushSelection, checkedLines, commandText, failingTestFiles, runChecks } from "./checks.js";
 import type { FactoryConfig } from "./config.js";
 import { requiredTier } from "./diff-gate.js";
 import type { Logger } from "./log.js";
@@ -7,7 +7,6 @@ import { parseTriage } from "./outputs.js";
 import { IMPLEMENT_KINDS, INTERACTIVE, SESSION_ABANDONED, SESSION_RELEASED, branchFor, effectiveTier, floorTier } from "./policy.js";
 import { NumstatError, diffGates, scopeGate } from "./pre-push.js";
 import { type LearnedSettingsSource, settingValues } from "./settings.js";
-import { selectedChecks } from "./checks.js";
 import type { Run, RunId, SourceRef, SourceType, Timestamp, WorkItem, WorkItemId, WorkItemPatch } from "./types.js";
 import { type LocalRoute, TRUSTED_GIT_ENV, hasTool, prTitle, routeFor, runPushIntents } from "./worker-deps.js";
 import type { AuthProvider, ExternalIdentity } from "../interfaces/auth-provider.js";
@@ -329,10 +328,14 @@ export class Sessions {
     const test = commandText(cfg.repo.test_command);
     if (reasons.length > 0) return this.refuseFinish(file, reasons, [`tests: \`${test}\` not run (an earlier gate failed)`]);
     const signal = o.signal ?? new AbortController().signal;
-    // The test command on the test files the branch's diff reaches (design §4, test selection); absent: the whole command.
-    const commands = await selectedChecks(cfg.repo, [cfg.repo.test_command], git, base, (line) => this.d.log.info(line, { work_item_id: item.id, run_id: file.run_id }));
-    const checked = await runChecks({ sandbox: this.d.sandbox, handle, commands, env: { ...this.d.toolEnv }, timeout_ms: cfg.run_timeout_ms, signal, redact: [] });
+    // The test command on the test files the branch's diff reaches in enforce mode, whole in shadow mode (design §4,
+    // test selection); no `repo.test_selection`: the whole command. A finish counts toward the mode switch when it
+    // passes, or at once when it shows a miss; a refused finish without one is not counted, so a retry counts once.
+    const sel = await PrePushSelection.open(this.d.store, cfg.repo, item.project, (line) => this.d.log.info(line, { work_item_id: item.id, run_id: file.run_id }));
+    const commands = await sel.commands([cfg.repo.test_command], git, base);
+    const checked = sel.saw(await runChecks({ sandbox: this.d.sandbox, handle, commands, env: { ...this.d.toolEnv }, timeout_ms: cfg.run_timeout_ms, signal, redact: [] }));
     if (o.signal?.aborted) return this.refuseFinish(file, ["tests: stopped before they finished"]);
+    if (!checked.failed || sel.misses.length > 0) await sel.note(this.d, item.project, file.run_id);
     if (checked.failed) {
       const shown = await this.failureLines(checked.failed.tail);
       return this.refuseFinish(file, [`tests: \`${test}\` ${checked.failed.how}`], shown.before, shown.after);
@@ -365,7 +368,7 @@ export class Sessions {
     await this.d.store.updateSession(file.run_id, file.token, { last_finish: { ok: true, reasons: [], pr_number: null } });
     const done = await this.d.store.completeRun(file.run_id, file.token, {
       status: "succeeded", summary: "interactive session finished",
-      data: { pr_number: null, pr_url: null, commits, files: paths.slice(0, MAX_PR_FILES), ...(pr_intent ? { pr_pending: true, pr_intent } : {}) },
+      data: { pr_number: null, pr_url: null, commits, files: paths.slice(0, MAX_PR_FILES), ...(pr_intent ? { pr_pending: true, pr_intent } : {}), test_selection: sel.record() ?? undefined },
     });
     if (!done.ok) return refused(`refused: the session ended before it could complete; ${pr_intent === null ? "the branch is committed" : "the push and PR are queued"}`);
     await this.d.files.remove(item.id);

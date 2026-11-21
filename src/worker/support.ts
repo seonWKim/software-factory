@@ -135,7 +135,11 @@ export class RunFailure extends Error {
     readonly code: string,
     detail: string,
     readonly infra = false,
-    readonly extra: { output_tail?: string; reset_at?: Timestamp | null; wip?: WipRef } = {},
+    readonly extra: {
+      output_tail?: string; reset_at?: Timestamp | null; wip?: WipRef;
+      /** The implement run's test selection before push (design §4, shadow mode), recorded on the failed outcome. */
+      test_selection?: object | undefined;
+    } = {},
   ) {
     super(detail);
   }

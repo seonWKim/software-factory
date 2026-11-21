@@ -12,7 +12,7 @@ import { type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor, readOnlyOv
 import { LiveSettings } from "../core/settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelRunKind, type ModelTable, isModelRunKind, modelClassFor } from "../core/model-choice.js";
 import { errorText, type LogFields } from "../core/log.js";
-import { type CheckRound, checkCommands, commandText, failingTestFiles, runChecks, withTestFiles } from "../core/checks.js";
+import { type CheckRound, checkCommands, commandText, failingTestFiles, mergeMiss, runChecks, withTestFiles } from "../core/checks.js";
 import { FORGE_AUTH, GITHUB_RATE_LIMIT, GITHUB_RATE_LIMITED, githubRateLimitReset, PREFLIGHT_ACCESS, preflightCheck, RATE_LIMITED, branchFor, wipBranchFor, canAutoMerge, NETWORK, NETWORK_PROBE_MS, NETWORK_UNAVAILABLE, classifyNetwork, failureClass } from "../core/policy.js";
 import { incompleteLabel, lastPrNotes, prBody } from "../core/pr-body.js";
 import type { MergeIO } from "../core/mechanical.js";
@@ -37,7 +37,7 @@ export class Worker {
   readonly live: LiveSettings;
 
   /** The check helpers the merge-check run uses, injected so the run imports no legacy core module. */
-  readonly checkTools: MergeCheckTools = { checkCommands, failingTestFiles, withTestFiles };
+  readonly checkTools: MergeCheckTools = { checkCommands, failingTestFiles, withTestFiles, mergeMiss };
 
   /** The settings of the run being executed, read once at its claim. Scratch for one run, like `meters`. */
   cfg: FactoryConfig;
