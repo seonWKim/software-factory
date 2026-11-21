@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { type RulesView, type AppliedRule, useRuleEntry } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { Badge } from "../components/ui/badge.js";
@@ -9,6 +9,7 @@ import { Input } from "../components/ui/input.js";
 import { KeyValue, type KeyValueItem, ValueBlock } from "../components/ui/key-value.js";
 import { ListRow, ROW_TITLE } from "../components/ui/list-row.js";
 import { Markdown } from "../components/ui/markdown.js";
+import { OverflowMenu, Tooltip } from "../components/ui/menu.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { RetireDialog } from "./rules-verdict.js";
@@ -16,7 +17,7 @@ import { PROSE, ROW_PAD, STACK_NARROW, muted, ruleName } from "./rules-shared.js
 import type { ReactNode } from "react";
 
 // The Rules page's applied rules group: the promoted rules file in the file's order, one compact row per rule (name
-// with its ID in a tooltip, scope, judged date, the "Suggested to retire" badge and Retire) that expands to a
+// with its ID in a tooltip, scope, judged date, the "Suggested to retire" badge, and Retire in its ⋯ menu) that expands to a
 // label/value list (stacked below `sm`), with a search over ID, name, default and scope; it is the Applied tab. Suggest
 // reads each class's retire suggestions on demand. Scope and the encoded-elsewhere lines render through Markdown.
 
@@ -56,6 +57,9 @@ function AppliedCard({ rule, token, round }: { rule: AppliedRule; token: string 
  */
 function AppliedClass({ rule, id, token, round }: { rule: AppliedRule; id: string; token: string | null; round: number }) {
   const [retiring, setRetiring] = useState(false);
+  const menu = useRef<HTMLDivElement>(null);
+  // The menu item that opened the dialog is gone when it closes: focus goes back to the ⋯ button.
+  const menuButton = { get current() { return menu.current?.querySelector<HTMLElement>("button[aria-haspopup]") ?? null; } };
   const suggested = useRuleEntry(id, round > 0, round).data?.retire ?? [];
   return (
     <ListRow
@@ -75,9 +79,16 @@ function AppliedClass({ rule, id, token, round }: { rule: AppliedRule; id: strin
         )
       }
       menu={
-        <Button variant="danger" size="sm" disabled={token === null} title={token === null ? t("rules.retireOwner") : undefined} onClick={() => setRetiring(true)}>
-          {t("rules.retire")}
-        </Button>
+        // Retire is the danger item of the row's ⋯ menu; for anyone but the owner it is off, and the menu says why.
+        token === null ? (
+          <Tooltip text={t("rules.retireOwner")} align="end">
+            <OverflowMenu label={t("rules.appliedActions", { name: ruleName(rule) })} items={[{ label: t("rules.retire"), action: "retire", danger: true, disabled: true, onSelect: () => {} }]} />
+          </Tooltip>
+        ) : (
+          <div ref={menu}>
+            <OverflowMenu label={t("rules.appliedActions", { name: ruleName(rule) })} items={[{ label: t("rules.retire"), action: "retire", danger: true, onSelect: () => setRetiring(true) }]} />
+          </div>
+        )
       }
     >
       {rule.scope !== null && rule.scope !== "" && <div className="line-clamp-2 break-keep text-text-2">{md(rule.scope)}</div>}
@@ -101,7 +112,7 @@ function AppliedClass({ rule, id, token, round }: { rule: AppliedRule; id: strin
           ]}
         />
       </Disclosure>
-      {retiring && token !== null && <RetireDialog id={id} name={ruleName(rule)} token={token} onClose={() => setRetiring(false)} />}
+      {retiring && token !== null && <RetireDialog id={id} name={ruleName(rule)} token={token} returnFocusTo={menuButton} onClose={() => setRetiring(false)} />}
     </ListRow>
   );
 }

@@ -44,3 +44,26 @@ export const fileLines = "rounded-control bg-surface p-2 font-mono text-xs break
 
 /** An applied rule's name, else its default, else "not given". */
 export const ruleName = (r: AppliedRule): string => r.name || r.default || t("rules.notGiven");
+
+/** A proposal's kind in plain words: edit-asset, promote-learning and new-asset by name, any other kind "Change"; never the raw kind. */
+const KIND_LABEL: Record<string, MessageKey> = {
+  "edit-asset": "rules.kindEditAsset",
+  "promote-learning": "rules.kindPromoteLearning",
+  "new-asset": "rules.kindNewAsset",
+};
+export const kindLabel = (kind: string): string => t(KIND_LABEL[kind] ?? "rules.kindOther");
+
+/**
+ * A target in short: a comma-separated list of more than one file reads "N files"; one file reads its last path segment
+ * ("bin/evolve" is "evolve"). The full target stays in "Why and where".
+ */
+export function targetLabel(target: string): string {
+  const files = target.split(",").map((f) => f.trim()).filter(Boolean);
+  if (files.length > 1) return t("rules.files", { count: files.length });
+  const one = files[0] ?? target;
+  return one.split("/").filter(Boolean).pop() ?? one;
+}
+
+/** A proposal's change line: its kind and target in short; a part the ledger did not list reads "not given". */
+export const proposalLine = (kind: string | undefined, target: string | undefined): string =>
+  t("rules.whatProposal", { kind: kind === undefined ? t("rules.notGiven") : kindLabel(kind), target: target === undefined ? t("rules.notGiven") : targetLabel(target) });
