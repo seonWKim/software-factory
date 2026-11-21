@@ -4,6 +4,10 @@
 export interface FactoryState {
   state: string;
   rev: string | null;
+  /** The revision the child on `rev` replaced; null: none yet. Absent from an older server. */
+  previous_rev?: string | null;
+  /** The commits of previous_rev..rev: count (null: git could not say) and at most 20 subjects; null: no previous_rev. */
+  changes?: { count: number | null; subjects: string[] } | null;
   target_rev: string | null;
   child_pid: number | null;
   since: string;
