@@ -1,5 +1,5 @@
 // Health's Efficiency tab (design 06-efficiency): GET /api/v1/efficiency, finished items per hour, day and week, and
-// each week's token and time figures per finished item. Null figures mean no data, never 0.
+// each week's token and time figures per finished item, and the per-tier merge record. Null figures mean no data, never 0.
 
 import { useApi } from "./client.js";
 
@@ -44,6 +44,22 @@ export interface EfficiencyWeek {
   costliest: EfficiencyItem[];
 }
 
+/** One tier's merge record (tier null: untiered) and the auto-merge rule's result; read-only, nothing merges on it. */
+export interface EfficiencyTierMerges {
+  tier: number | null;
+  /** Merges in the last 30 days. */
+  merged: number;
+  reverted_or_fixed: number;
+  /** Explicit owner verdicts other than accept on those merges. */
+  not_accept: number;
+  /** The merges the rule read: the tier's last 50 at most. */
+  sample: number;
+  sample_bad: number;
+  sample_critical: number;
+  rule: "met" | "not_met" | "too_few" | "never";
+  qualifies: boolean;
+}
+
 export interface EfficiencyView {
   as_of: string;
   hours: EfficiencyChart;
@@ -53,6 +69,8 @@ export interface EfficiencyView {
   week_figures: EfficiencyWeek[];
   left_out: { total: number; cancelled: number; rejected: number; failed: number };
   runs_without_usage: number;
+  /** Tiers 1–5, then untiered. */
+  merges: EfficiencyTierMerges[];
 }
 
 /** The figures, read again every minute while the tab is open. */
