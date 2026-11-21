@@ -3,9 +3,11 @@ import type { ItemDetail } from "../api.js";
 import { Card } from "../components/ui/card.js";
 import { Disclosure } from "../components/ui/disclosure.js";
 import { t } from "../i18n/index.js";
+import { ItemChecks } from "./item-checks.js";
 
-// The item page's About (docs/design/09-dashboard-item.md): the request's first paragraph, and the approved spec
-// collapsed below it. A text the API withheld (`[withheld: <rule>]`) shows the withheld note, never the marker.
+// The item page's About (docs/design/09-dashboard-item.md): the request's first paragraph, the done-when lines with
+// their checks and latest results, and the approved spec collapsed below them (without its done-when list while the
+// checks show it). A text the API withheld (`[withheld: <rule>]`) shows the withheld note, never the marker.
 
 const TEXT = "text-sm text-pretty break-words whitespace-pre-line";
 
@@ -29,19 +31,26 @@ function Part({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-/** About under the item's title; nothing when the item has neither a request nor an approved spec. */
-export function ItemAbout({ item }: { item: Pick<ItemDetail["item"], "request" | "spec"> }) {
+/** About under the item's title; nothing when the item has no request, no approved spec and no checks. */
+export function ItemAbout({ item }: { item: Pick<ItemDetail["item"], "request" | "spec" | "checks"> }) {
   const request = item.request ?? null;
   const spec = item.spec ?? null;
-  if (request === null && spec === null) return null;
+  const checks = item.checks?.length ? item.checks : null;
+  if (request === null && spec === null && checks === null) return null;
   return (
     <Card title={t("item.about")}>
       {request !== null && <div data-about-request><AboutText value={request} /></div>}
+      {checks !== null && (
+        <div data-about-checks className={request !== null ? "mt-3 min-w-0" : "min-w-0"}>
+          <h3 className="mb-1 text-xs text-text-2">{t("item.checks")}</h3>
+          <ItemChecks checks={checks} />
+        </div>
+      )}
       {spec !== null && (
-        <Disclosure data-about-spec className={request !== null ? "mt-3" : undefined} summary={t("item.aboutSpec")}>
+        <Disclosure data-about-spec className={request !== null || checks !== null ? "mt-3" : undefined} summary={t("item.aboutSpec")}>
           <Part label={t("spec.problem")}><AboutText value={spec.problem} /></Part>
           {spec.desired_output !== null && <Part label={t("spec.desired_output")}><AboutText value={spec.desired_output} /></Part>}
-          {spec.done_criteria.length > 0 && (
+          {checks === null && spec.done_criteria.length > 0 && (
             <Part label={t("spec.done_criteria")}>
               <ul aria-label={t("spec.done_criteria")} className="list-disc space-y-1 pl-6">
                 {spec.done_criteria.map((c, i) => <AboutText key={i} as="li" value={c} />)}
