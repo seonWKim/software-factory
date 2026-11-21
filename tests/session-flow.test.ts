@@ -260,11 +260,11 @@ describe("session start", () => {
   });
 
 
-  it("a run cancelled by an accepted takeover is no attempt: taking over more often than max_attempts never holds the item", async () => {
+  it("a run cancelled by an accepted takeover is no attempt and gets no retry: taking over more often than max_attempts never holds the item", async () => {
     const h = await harness();
     const it0 = await h.running(1);
-    await h.enqueue(it0, "implement", "i1");
     for (let n = 0; n <= settingValues(h.cfg.project.key, h.cfg.settings).max_attempts; n++) {
+      await h.enqueue(it0, "implement", `i${n}`); // a fresh implement run each time, as a /retry after the abandon queues
       const queued = (await h.runs(it0.id, "implement")).filter((x) => x.status === "queued");
       expect(queued).toHaveLength(1);
       const r = await h.start(it0.id);
@@ -274,8 +274,10 @@ describe("session start", () => {
       // One state change: the start itself, naming the run it took over.
       expect((await h.store.listStateChanges(it0.id)).at(-1)).toMatchObject({ reason: "session_started", detail: { taken_over: cancelled.id } });
       await h.controller.tickRuns();
-      const applied = (await h.store.listStateChanges(it0.id)).find((c) => c.detail?.run_id === cancelled.id && c.reason !== "session_started");
-      expect(applied?.detail).toMatchObject({ task_failures: 0 });
+      // The session replaced the run: acknowledged with no retry, so nothing is left queued for a worker after the session.
+      expect((await h.store.getRun(cancelled.id))!.acknowledged_at).not.toBeNull();
+      expect((await h.store.listStateChanges(it0.id)).at(-1)).toMatchObject({ reason: "run_ignored" });
+      expect((await h.runs(it0.id, "implement")).filter((x) => x.status === "queued")).toEqual([]);
       expect((await h.item(it0.id)).blocked_reason).not.toBe("max_attempts");
       await h.sessions.abandon({ id: it0.id });
       await h.controller.tickRuns();

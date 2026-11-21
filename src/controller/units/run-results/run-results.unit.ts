@@ -530,7 +530,7 @@ export class RunResultsUnit {
     };
   }
 
-  /** A failed or cancelled run's decision, before its usage is added (`apply` does that). */
+  /** A failed or cancelled run's decision, before its usage is added (`apply` does that). A takeover's run: no retry (05-restarts). */
   async applyFailedRun(it: WorkItem, run: Run): Promise<Decision> {
     // One owner comment per forge-auth pause, from the run that started it (marker-keyed on the pause end).
     if (run.outcome?.status === "failed" && run.outcome.error_code === FORGE_AUTH && run.outcome.pause_started) {
@@ -540,7 +540,7 @@ export class RunResultsUnit {
     if (run.outcome?.status === "failed" && run.outcome.error_code === PREFLIGHT_ACCESS && run.outcome.pause_started) {
       await this.preflightAccessComment(it, run);
     }
-    if (!this.c.unit("transitions").expects(it, run.kind)) return { patch: {}, actor: SYSTEM, reason: "run_ignored", ack_run: run.id };
+    if (takenOver(run) || !this.c.unit("transitions").expects(it, run.kind)) return { patch: {}, actor: SYSTEM, reason: "run_ignored", ack_run: run.id };
     const code = failedCode(run);
     if (run.kind === "resolve") return this.resolveFailed(it, run, code);
     if (run.kind === "interactive") return sessionReleased(it, run, code);
@@ -721,8 +721,8 @@ export class RunResultsUnit {
       }
     }
     const limit = task >= max_attempts ? "max_attempts" : infra >= max_restart ? "max_restart" : null;
-    // Neither a rate limit, a stall, a checks_env run, a missing model credential nor a taken-over run is an attempt: they never reach a limit (design §5 Restarts).
-    if (cls !== "rate_limited" && cls !== "stalled" && cls !== "checks_env" && cls !== "setup_missing" && !takenOver(run) && limit) {
+    // Neither a rate limit, a stall, a checks_env run nor a missing model credential is an attempt: they never reach a limit (design §5 Restarts).
+    if (cls !== "rate_limited" && cls !== "stalled" && cls !== "checks_env" && cls !== "setup_missing" && limit) {
       const patch = { ...restart, blocked_on: "human" as const, blocked_reason: limit };
       const url = await this.lastAttemptComment(it, run, code, limit, limit === "max_attempts" ? task : infra, footerAfter(it, patch));
       return {

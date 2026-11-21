@@ -1711,6 +1711,28 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect(ack.ok).toBe(true);
     });
 
+    it("any close cancels the item's queued runs without the flag, a merge's too; an already closed item's transition cancels nothing", async () => {
+      const { store, clock } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      const queue = async (v: number, key: string) => {
+        const r = await store.transition({ id: item.id, expected_version: v, patch: {}, actor: system, reason: "x", enqueue: { kind: "implement", idempotency_key: key } });
+        if (!r.ok) throw new Error(r.reason);
+        return r.enqueued!;
+      };
+      const retry = await queue(1, "i:a1"); // a retry queued while the item was open (a takeover's, before 2026-11-22)
+      const merged = await store.transition({
+        id: item.id, expected_version: 2, actor: system, reason: "local_merged",
+        patch: { stage: "CLOSED", close_reason: "completed", merge_sha: "m".repeat(40), blocked_on: "none", blocked_reason: null },
+      });
+      if (!merged.ok) throw new Error(merged.reason);
+      expect(merged.cancelled).toEqual([retry.id]);
+      expect(await store.getRun(retry.id)).toMatchObject({ status: "cancelled", acknowledged_at: null, lease: null });
+      clock.advance(120_000);
+      expect(await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE })).toBeNull();
+      const late = await queue(3, "late"); // a transition on a closed item is no close
+      expect((await store.getRun(late.id))!.status).toBe("queued");
+    });
+
     it("leaves a running run alone, and cancels nothing without the flag or when the transition loses", async () => {
       const { store } = await make();
       const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
