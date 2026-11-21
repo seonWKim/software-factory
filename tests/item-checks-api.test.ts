@@ -4,6 +4,7 @@ import type { RunOutcome, WorkItem } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
+import { HealthMonitor } from "../src/ui/health.js";
 import type { UiDeps } from "../src/ui/server.js";
 import { newStore, w1 } from "./helpers/store.js";
 import { LEASE, SECRET, enqueue, json, make, patch } from "./ui-api-fixtures.js";
@@ -23,7 +24,7 @@ type Checks = { item: { checks: unknown } };
 async function setup() {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
-  const d: UiDeps = { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE };
+  const d: UiDeps = { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE, health: new HealthMonitor(async () => [], clock) };
   return { store, clock, d };
 }
 
