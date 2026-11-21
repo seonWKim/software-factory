@@ -26,6 +26,7 @@ describe("statusOf", () => {
     ["CLOSED wont_do", item("CLOSED", "none", null, "wont_do"), "rejected"],
     ["CLOSED duplicate", item("CLOSED", "none", null, "duplicate"), "rejected"],
     ["CLOSED failed", item("CLOSED", "none", null, "failed"), "rejected"],
+    ["RUNNING, released by its interactive session", item("RUNNING", "human", "session_released"), "needs_human"],
     ["unknown reason, blocked on human", item("RUNNING", "human", "something_new"), "needs_human"],
     ["unknown reason with no reason at all", item("NEW", "human", null), "needs_human"],
     ["blocked on upstream", item("RUNNING", "upstream", "x"), "needs_human"],
