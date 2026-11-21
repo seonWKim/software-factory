@@ -1001,8 +1001,8 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
             [now, run.id as string],
           );
         } else if (run.kind === INTERACTIVE) {
-          // A closed terminal does not come back (design §5, 2026-11-01): never requeued, whatever the attempt count.
-          const lost: RunOutcome = { status: "failed", error_code: SESSION_LOST, detail: "the session's lease expired", infra: false };
+          // A closed terminal does not come back (design §5, 2026-11-01): never requeued; the detail names the last heartbeat.
+          const lost: RunOutcome = { status: "failed", error_code: SESSION_LOST, detail: `the session's lease expired; last heartbeat at ${String(run.updated_at)}`, infra: false };
           outcome = "failed";
           moved = await tx.run(
             "UPDATE worker_runs SET status = 'failed', outcome = ?, lease_owner = NULL, lease_expires_at = NULL, finished_at = ?, updated_at = ? WHERE id = ? AND status = 'running'",

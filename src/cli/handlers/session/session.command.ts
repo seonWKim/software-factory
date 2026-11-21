@@ -1,5 +1,5 @@
 import { buildSessionParts } from "../../../compose.js";
-import { SESSION_USAGE, parseSessionArgs, runSession, sessionDeps, sessionWho } from "../../../session-cmd.js";
+import { SESSION_USAGE, parseSessionArgs, runSession, sessionAwake, sessionDeps, sessionWho } from "../../../session-cmd.js";
 import { defineCommand } from "../../command.js";
 import { cliEnvironment, stopOnSignals } from "../../support.js";
 
@@ -18,7 +18,8 @@ export default defineCommand({
     const who = sessionWho(loaded, await cliEnvironment(loaded.root));
     const parts = await buildSessionParts(loaded);
     try {
-      return await runSession(sessionDeps(parts, loaded.stateDir, stopOnSignals(), who), action);
+      const awake = await sessionAwake(loaded, parts.clock);
+      return await runSession(sessionDeps(parts, loaded.stateDir, stopOnSignals(), who, awake), action);
     } finally {
       await parts.close();
     }
