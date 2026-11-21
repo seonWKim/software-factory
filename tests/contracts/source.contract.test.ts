@@ -199,4 +199,3 @@ sourceContract("fake (FakeStreamSource)", async () => {
     },
   };
 });
-

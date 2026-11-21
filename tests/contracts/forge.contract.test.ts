@@ -92,9 +92,9 @@ forgeContract("fake", async () => {
       const s = forge.prStatus(n);
       return s ? [s] : [];
     },
-    // No `checks` hook: FakeForge's prChecks does not sum checkList up as the real forges sum prCheckResults (it
-    // answers its scripted checkResults, else passed). Coupling them changes what tests/review-cheap-checks.test.ts
-    // sets up (a failed check there would fail the CI gate), which is outside this item's paths: a follow-up.
+    async checks(_n, results) {
+      forge.checkList = results;
+    },
     async requestChanges(n, review_id, reviewer) {
       const head_branch = forge.openPrs.get(n)?.head_branch ?? "";
       forge.queue.push({

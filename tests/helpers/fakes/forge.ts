@@ -129,7 +129,11 @@ export class FakeForge implements Forge {
     this.prStates.set(input.pr, "closed");
     return "closed";
   }
-  /** What prChecks answers, one entry per call, oldest first; once empty, every call answers `passed`. */
+  /**
+   * A test-only override of prChecks: scripted summaries, one per call, oldest first. Once empty, prChecks sums
+   * `checkList` up as the real forges sum their check results: any failed check fails it (with the failed names),
+   * else any pending one keeps it pending, else (no check at all included) passed.
+   */
   checkResults: PrChecks[] = [];
   /** Every PR number prChecks was asked about, in order. */
   checkCalls: number[] = [];
@@ -138,7 +142,11 @@ export class FakeForge implements Forge {
   async prChecks(pr_number: number): Promise<PrChecks> {
     this.checkCalls.push(pr_number);
     if (this.checksError) throw this.checksError;
-    return this.checkResults.shift() ?? { state: "passed" };
+    const scripted = this.checkResults.shift();
+    if (scripted) return scripted;
+    const failed = this.checkList.filter((c) => c.result === "failed").map((c) => c.name);
+    if (failed.length) return { state: "failed", failed };
+    return this.checkList.some((c) => c.result === "pending") ? { state: "pending" } : { state: "passed" };
   }
   /** What prCheckResults answers (each check's name and result); every PR asked for is recorded in `checkResultCalls`. */
   checkList: PrCheckResult[] = [];
