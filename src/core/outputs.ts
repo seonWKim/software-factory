@@ -1,5 +1,6 @@
 import { isCovered } from "./policy.js";
 import { MAX_PHASES, MIN_PHASES, type SplitLimits, splitError } from "./split.js";
+import { DEPENDENCY_OPTIONS, proposedDependency } from "./task-build.js";
 import type { Tier } from "./types.js";
 
 // Structured outputs of each agent role: JSON Schema for the harness + a validator for the control plane.
@@ -346,7 +347,7 @@ function parseQuestion(d: Record<string, unknown>, at: string): SpecDecision | s
   if (!isStr(d.question) || d.question.trim() === "") return `${at}.question: must be a non-empty string`;
   if (!isStr(d.reason) || d.reason.trim() === "") return `${at}.reason: must be a non-empty string`;
   if (d.default !== undefined && d.default !== null && !isStr(d.default)) return `${at}.default: must be a string`;
-  const options = d.options ?? [];
+  const options = proposedDependency(d.question) !== null ? DEPENDENCY_OPTIONS : d.options ?? []; // a dependency proposal is always yes/no (design 04-triage)
   if (!isStrs(options) || options.some((o) => o.trim() === "") || (options.length > 0 && (options.length < MIN_OPTIONS || options.length > MAX_OPTIONS))) {
     return `${at}.options: must be [] or ${MIN_OPTIONS} to ${MAX_OPTIONS} non-empty strings`;
   }
@@ -587,8 +588,7 @@ export function parseReview(v: unknown): Validation<ReviewOutput> {
     ok: true,
     value: {
       verdict: parsed.length > findings.length ? "bug" : verdict, tier, findings: parsed, summary, ...(unverified.length > 0 ? { unverified } : {}),
-      ...(v.ui_unverified === true ? { ui_unverified: true } : {}), ...(built.length > 0 ? { built_differently: built } : {}),
-      ...(ask.value ? { needs_human: ask.value } : {}),
+      ...(v.ui_unverified === true ? { ui_unverified: true } : {}), ...(built.length > 0 ? { built_differently: built } : {}), ...(ask.value ? { needs_human: ask.value } : {}),
     },
   };
 }

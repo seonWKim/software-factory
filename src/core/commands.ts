@@ -38,7 +38,6 @@ export type CommandPhase =
   | "merge_pending"
   | "max_loops"
   | "merge_conflict"
-  /** RUNNING after an interactive session ended without a PR (abandoned or its lease lost); nothing is queued. */
   | "session_released"
   | "other_blocked"
   /** CLOSED with its PR merged: only a `/verdict` still applies (design §4). */
@@ -67,7 +66,7 @@ export interface CommandState {
   asked_by?: RunKind;
 }
 
-export type CommandName = "approve" | "reject" | "revise" | "retry" | "resolve" | "budget" | "verdict" | "standing" | "link" | "help";
+export type CommandName = "approve" | "reject" | "revise" | "retry" | "resolve" | "hold" | "budget" | "verdict" | "standing" | "link" | "help";
 
 export interface CommandSpec {
   name: CommandName;
@@ -143,8 +142,7 @@ export const COMMANDS: readonly CommandSpec[] = [
       "`/retry +paths <path>...` (at most 10, notes on the lines below) after a failed implement or resolve run also adds those paths to the allowed paths; a resolve run gets the notes without the `+paths` line. " +
       "At a dependency closed without a merge, it reads the dependencies again and starts the implement run if none is still closed. " +
       "At the review loop limit, it starts an implement run with the loop count reset; `+paths` applies there too. " +
-      "On an item held for a recurring failure, it lifts the hold so the item's queued runs start. On a held phase of a split, it releases the phase into triage once the previous phase closed without a merge. " +
-      "After an interactive session ended without a PR, it queues the implement run (which a new `interactive start` can take over); `+paths` applies there too",
+      "On an item held for a recurring failure, it lifts the hold so the item's queued runs start. On a held phase of a split, it releases the phase into triage once the previous phase closed without a merge. After an interactive session ended without a PR, it queues the implement run (which a new `interactive start` can take over); `+paths` applies there too",
     // At a dependency closed unmerged it reads the dependencies again (design §5); at a phase hold it releases the phase unless the previous one is open (design 04-split-specs).
     phases: ["failed_run", "failed_review", "too_large", "failed_implement", "agent_needs_human", "repeated_failure", "dependency_closed", "max_loops", "recurring_failure", "phase_hold", "session_released"],
     needs_pr: false,
@@ -162,6 +160,8 @@ export const COMMANDS: readonly CommandSpec[] = [
     needs_pr: false,
     changes_state: true,
   },
+  { name: "hold", usage: "/hold <id>", phases: [], local_phases: ["agent_needs_human"], asked_by: ["implement"], needs_pr: false, changes_state: true, // a local implement stop (design 05-dependencies)
+    description: "Hold until <id> merges: writes a `Depends on: <id>` line in the item's problem and queues the implement run, which waits for <id> (a local wi_… item, or a built task tk_…) to merge and then starts on its own. Refused for an ID that names no local item, the item itself, or an item already merged" },
   {
     name: "budget",
     usage: "/budget [tokens]",
@@ -216,6 +216,7 @@ export function commandSpec(name: CommandName): CommandSpec {
 
 /** blocked_reason prefix (with `blocked_on: human`) of an item whose dependency closed without a merge (design §5). */
 export { DEPENDENCY_CLOSED } from "./phase.js";
+export { LOCAL_ID, dependsOnIds, localItemOf, wantedDependsOn, withDependsOn } from "./task-build.js"; // for `/hold` and the coordination unit
 
 /** Block reasons whose step `/retry` reads from the stage (or, for the agent blocks, from the item's runs first). */
 const STAGE_RETRY_REASONS: readonly (string | null)[] = ["max_attempts", "max_restart", AGENT_NEEDS_HUMAN, REPEATED_FAILURE];
@@ -226,8 +227,7 @@ const STAGE_RETRY_REASONS: readonly (string | null)[] = ["max_attempts", "max_re
  * first (`blockingRunKind`), since a resolve block has an implement block's stage.
  */
 export function failedRunKind(it: WorkItem): RunKind | undefined {
-  // A released interactive session (RUNNING only): its step is the implement run the session replaced.
-  if (it.blocked_reason === SESSION_RELEASED) return it.stage === "RUNNING" ? "implement" : undefined;
+  if (it.blocked_reason === SESSION_RELEASED) return it.stage === "RUNNING" ? "implement" : undefined; // the run a released session replaced
   const kind = it.blocked_reason?.match(/^run_failed:(triage|implement|review|update):/)?.[1] as RunKind | undefined;
   if (kind) return kind;
   if (!STAGE_RETRY_REASONS.includes(it.blocked_reason)) return undefined;
@@ -272,9 +272,8 @@ export function itemCommandState(it: ItemState, runs: readonly Run[]): CommandSt
 export const appliesLocally = (c: CommandSpec, s: CommandState): boolean => s.local === true && !s.has_pr && (c.local_phases?.includes(s.phase) ?? false);
 
 export function applies(c: CommandSpec, s: CommandState): boolean {
-  if (appliesLocally(c, s)) return true;
-  if (!c.phases.includes(s.phase) || (c.needs_pr && !s.has_pr && !s.local)) return false;
-  return s.phase !== "agent_needs_human" || !c.asked_by || (s.asked_by !== undefined && c.asked_by.includes(s.asked_by));
+  const asked = s.phase !== "agent_needs_human" || !c.asked_by || (s.asked_by !== undefined && c.asked_by.includes(s.asked_by));
+  return asked && (appliesLocally(c, s) || (c.phases.includes(s.phase) && (!c.needs_pr || s.has_pr || s.local === true)));
 }
 
 /** Whether `c` is accepted as a comment on the item's PR with its PR meaning (`pr_phases`); needs a PR. */
@@ -359,16 +358,13 @@ export function helpReply(s: CommandState | null): string {
 }
 
 const PHASE_LABELS: Record<CommandPhase, string> = {
-  triaging: "triaging", spec_pending: "spec waiting for approval", budget_checkpoint: "paused at a budget checkpoint",
-  max_revisions: "spec at the revision limit", implementing: "implementing", dependency_hold: "waiting for a dependency to merge",
-  dependency_closed: "blocked: a dependency was closed without a merge", floor_tier: "blocked by the floor check",
-  rule_of_two: "waiting for a person to approve its run (Rule of Two)", too_large: "blocked: the change was too large",
-  failed_implement: "blocked by a failed implement run", failed_review: "blocked by a failed review run", failed_run: "blocked by a failed run",
-  agent_needs_human: "blocked: the agent asked for a human", repeated_failure: "blocked: a run failed the same way twice",
-  recurring_failure: "held: its run failed like a known recurring failure", reviewing: "in review", merge_pending: "waiting for a human merge",
-  max_loops: "review loop limit reached", merge_conflict: "PR has a merge conflict",
-  session_released: "released: its session ended without a PR", other_blocked: "blocked for another reason", merged: "merged",
-  closed: "closed", phase_hold: "held: waiting for the previous phase of its split",
+  triaging: "triaging", spec_pending: "spec waiting for approval", budget_checkpoint: "paused at a budget checkpoint", max_revisions: "spec at the revision limit", implementing: "implementing",
+  dependency_hold: "waiting for a dependency to merge", dependency_closed: "blocked: a dependency was closed without a merge", floor_tier: "blocked by the floor check",
+  rule_of_two: "waiting for a person to approve its run (Rule of Two)", too_large: "blocked: the change was too large", failed_implement: "blocked by a failed implement run",
+  failed_review: "blocked by a failed review run", failed_run: "blocked by a failed run", agent_needs_human: "blocked: the agent asked for a human",
+  repeated_failure: "blocked: a run failed the same way twice", recurring_failure: "held: its run failed like a known recurring failure", reviewing: "in review", merge_pending: "waiting for a human merge",
+  max_loops: "review loop limit reached", merge_conflict: "PR has a merge conflict", session_released: "released: its session ended without a PR", other_blocked: "blocked for another reason",
+  merged: "merged", closed: "closed", phase_hold: "held: waiting for the previous phase of its split",
 };
 
 /** The phase in the words the owner sees: `/help`, the command table and every refusal use it, never a stage name. */
@@ -386,7 +382,8 @@ function whenText(c: CommandSpec): string {
         ? "any open or merged item"
         : c.phases.map((p) => PHASE_LABELS[p]).join(", ");
   const on = (label: string, ps?: readonly CommandPhase[]) => (ps?.length ? `; ${label}: ${ps.map((p) => PHASE_LABELS[p]).join(", ")}` : "");
-  return (c.needs_pr ? `${where}, once it has a PR (a local item needs none)` : where) + on("on a local item with no PR", c.local_phases) + on("on its PR", c.pr_phases);
+  // A command that applies only to a local item (`phases` empty) starts with its local phases.
+  return ((c.needs_pr ? `${where}, once it has a PR (a local item needs none)` : where) + on("on a local item with no PR", c.local_phases) + on("on its PR", c.pr_phases)).replace(/^; /, "");
 }
 
 /** The command table in SET_UP.md, generated from COMMANDS; a test keeps the two equal. */

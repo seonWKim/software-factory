@@ -1,6 +1,74 @@
 import type { FactoryStore } from "../interfaces/factory-store.js";
+import { dependsOnLines } from "./coordination.js";
 import { ProjectRefused, type Task, projectRefusal, taskBody } from "./tasks.js";
-import type { UserId, WorkItem } from "./types.js";
+import type { UserId, WorkItem, WorkItemId } from "./types.js";
+
+/**
+ * The dependency edge of a local item (design 05-dependencies): a `Depends on: <id>` line in its problem, naming a
+ * wi_ (work item) or tk_ (task) id. `task create --depends-on`, an approved yes to triage's "Depends on wi_X? yes/no"
+ * and `/hold <id>` all write this one line; the local source reads it.
+ */
+export const dependsOnLine = (id: string): string => `Depends on: ${id}`;
+
+/** `task create --help`: its flags, `--depends-on` among them. */
+export const CREATE_HELP = "--title <t> --body-file <f> [--project <project_slug>] [--depends-on <id>]. `--depends-on <id>` writes a " +
+  "`Depends on: <id>` line in the item's problem, so its implement run waits until that local item (wi_…, or a built task tk_…) merges";
+
+/** A wi_ or tk_ id as `--depends-on` and `/hold` take it. */
+export const LOCAL_ID = /^(?:wi|tk)_[\w-]+$/;
+
+/** The wi_ and tk_ ids on the `Depends on:` lines of `text`, in order, each once. */
+export function dependsOnIds(text: string): string[] {
+  return [...new Set(dependsOnLines(text).flatMap((l) => [...l.matchAll(/\b(?:wi|tk)_[\w-]+/g)].map((m) => m[0])))];
+}
+
+/** `text` with a `Depends on:` line for each of `ids` it does not name yet, after a blank line; `text` itself when none is missing. */
+export function withDependsOn(text: string, ids: readonly string[]): string {
+  const have = dependsOnIds(text);
+  const missing = [...new Set(ids)].filter((id) => !have.includes(id));
+  return missing.length === 0 ? text : [text.trimEnd(), missing.map(dependsOnLine).join("\n")].filter((t) => t !== "").join("\n\n");
+}
+
+/**
+ * Triage's dependency proposal (design 04-triage): a request that says it runs after another local item is asked as
+ * this yes/no decision, never as free text; an approved yes writes the item's `Depends on: <id>` line.
+ */
+export const dependencyQuestion = (id: string): string => `Depends on ${id}? yes/no`;
+const DEPENDENCY_QUESTION = /^\s*Depends on ((?:wi|tk)_[\w-]+)\?\s*yes\/no\s*$/i;
+/** The options of a dependency proposal, whatever triage wrote. */
+export const DEPENDENCY_OPTIONS: readonly string[] = ["yes", "no"];
+
+/** The wi_ or tk_ id a dependency proposal's question names; null for any other question. */
+export function proposedDependency(question: string): string | null {
+  return DEPENDENCY_QUESTION.exec(question)?.[1] ?? null;
+}
+
+/** Whether an answer to a dependency proposal is yes (`yes`, `Yes, wait`); anything else is no. */
+export const answersYes = (answer: string | null): boolean => /^\s*yes\b/i.test(answer ?? "");
+
+/**
+ * The ids a local item's `Depends on:` lines must name (design 05-dependencies, 2026-11-20): each item the owner
+ * answered yes to in a dependency proposal (`answers`, the approval's), then each line of the request as filed
+ * (`task create --depends-on`), which triage's spec replaces; never the item itself. None for an item of another source.
+ */
+export function wantedDependsOn(
+  it: Pick<WorkItem, "id" | "source" | "issue_text">, answers: readonly { question: string; answer: string | null }[],
+): string[] {
+  if (it.source.type !== "local") return [];
+  const yes = answers.flatMap((a) => {
+    const id = proposedDependency(a.question);
+    return id !== null && answersYes(a.answer) ? [id] : [];
+  });
+  return [...new Set([...yes, ...dependsOnIds(it.issue_text ?? "")])].filter((id) => id !== it.id);
+}
+
+/** The local work item a wi_ id names, or the one task tk_'s build made; null for none, or an item that is not local. */
+export async function localItemOf(store: Pick<FactoryStore, "getTask" | "getWorkItem">, id: string): Promise<WorkItem | null> {
+  if (!LOCAL_ID.test(id)) return null;
+  const wi = id.startsWith("tk_") ? (await store.getTask(id))?.work_item_id ?? null : (id as WorkItemId);
+  const item = wi ? await store.getWorkItem(wi) : null;
+  return item?.source.type === "local" ? item : null;
+}
 
 /**
  * Build this (design 02-tasks, issue #607): a plain task sent to intake as one local work item, the link stored on
