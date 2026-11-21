@@ -1,8 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { Plugins } from "../../../plugin-set.js";
-import { settingsBase } from "../../../core/settings-base.js";
+import { Plugins, settingsBase } from "../../../compose.js";
 import { foundLine, importLine, storeFound } from "../../../import/import-plugins.js";
 import { type Found, IMPORT_KINDS, IMPORT_SOURCES, type ImportKind, type ImportSource, type ScanResult, scanFolder, scanUserConfigs } from "../../../import/scan.js";
 import { createPlugin } from "../../../plugins.js";

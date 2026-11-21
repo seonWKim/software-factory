@@ -1,8 +1,4 @@
-import { Plugins } from "../../../plugin-set.js";
-import { loadConfig, localProject } from "../../../load-config.js";
-import { ownerRefusal } from "../../../compose.js";
-import { resolveProject } from "../../../impl/github/forge.plugin.js";
-import { settingsBase } from "../../../core/settings-base.js";
+import { Plugins, loadConfig, localProject, ownerRefusal, resolveProject, settingsBase } from "../../../compose.js";
 import { MODE_USAGE, SETTINGS_TOP_WORDS, SETTINGS_USAGE, parseModeArgs, parseSettingsArgs, runSettings } from "../../../settings-cmd.js";
 import { configWriter, storeProjectResolver } from "../../../ui/settings-api.js";
 import { defineCommand } from "../../command.js";

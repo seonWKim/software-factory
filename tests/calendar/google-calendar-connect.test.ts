@@ -13,9 +13,7 @@ import {
   TOKEN_URL,
 } from "../../src/calendar/plugins/google-calendar/google-calendar-source.js";
 import { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_HTTP_TIMEOUT_MS, GOOGLE_REFRESH_TOKEN } from "../../src/calendar/plugins/google-calendar/google-calendar.plugin.js";
-import { buildStatsStore } from "../../src/compose.js";
-import { loadConfig } from "../../src/load-config.js";
-import { settingsBase } from "../../src/core/settings-base.js";
+import { buildStatsStore, loadConfig, settingsBase } from "../../src/compose.js";
 import { resolveSettings } from "../../src/core/settings.js";
 import { FakeClock } from "../../src/impl/clock/fake-clock.js";
 import { storeSql } from "../../src/impl/store/sql/store-sql.js";

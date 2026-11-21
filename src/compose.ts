@@ -495,3 +495,10 @@ export async function buildStatsStore(loaded: Loaded): Promise<FactoryStore> {
 
 export { Plugins } from "./plugin-set.js";
 export { settingsBase } from "./core/settings-base.js";
+// Config reading moved to load-config.ts and config-values.ts (RFC 0023 step 2e); re-exported for the code that also wires.
+export {
+  CHECK_COMMANDS_PLACEHOLDER, cliConfig, CONFIG_FILE, type FileConfig, fillPrompt, FORGE_PLACEHOLDER, loadConfig, type Loaded, localProject, resolvedConfig, selectsGitHub, SPLIT_PLACEHOLDERS, type StoreConfig, TOOLCHAIN_PLACEHOLDER, UI_CHECK_PLACEHOLDER, withForgeDefault,
+} from "./load-config.js";
+export {
+  agentStopChecks, alarmConfig, argvConfig, checkCommandsConfig, checkToolchainEnv, codeVersion, DEFAULT_UI_PORT, hookNames, isLoopback, MERGE_QUEUE_DEPTH_MAX, mergeQueueDepth, readRestarts, RETRY_DEFAULTS, retryConfig, stallConfig, STATS_MIN_SAMPLE_DEFAULT, statsConfig, testCommand, toolchainConfig, uiCommandsActor, uiPort, uiUserId, workerIndexBase,
+} from "./config-values.js";

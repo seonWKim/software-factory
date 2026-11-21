@@ -6,9 +6,7 @@ import type { GoogleClient } from "../src/calendar/plugins/google-calendar/defau
 import { googleCalendarConnect } from "../src/calendar/plugins/google-calendar/google-calendar-connect.js";
 import { CALENDAR_READONLY_SCOPE, EVENTS_API, GoogleCalendarSource, type HttpClient, TOKEN_URL } from "../src/calendar/plugins/google-calendar/google-calendar-source.js";
 import { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN } from "../src/calendar/plugins/google-calendar/google-calendar.plugin.js";
-import { type Loaded, loadConfig } from "../src/load-config.js";
-import { buildStatsStore } from "../src/compose.js";
-import { settingsBase } from "../src/core/settings-base.js";
+import { type Loaded, buildStatsStore, loadConfig, settingsBase } from "../src/compose.js";
 import type { LogFields, Logger } from "../src/core/log.js";
 import { resolveSettings } from "../src/core/settings.js";
 import type { UserId } from "../src/core/types.js";

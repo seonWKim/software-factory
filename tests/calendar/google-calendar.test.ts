@@ -15,8 +15,7 @@ import {
   TOKEN_URL,
   calendarIds,
 } from "../../src/calendar/plugins/google-calendar/google-calendar-source.js";
-import { build } from "../../src/compose.js";
-import { loadConfig } from "../../src/load-config.js";
+import { build, loadConfig } from "../../src/compose.js";
 import { FakeClock } from "../../src/impl/clock/fake-clock.js";
 import type { Secret, SecretName, SecretStore } from "../../src/interfaces/secret-store.js";
 import { REGISTRY } from "../../src/plugins.js";

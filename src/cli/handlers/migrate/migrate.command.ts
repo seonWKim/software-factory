@@ -1,8 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { type Loaded } from "../../../load-config.js";
-import { Plugins } from "../../../plugin-set.js";
-import { resolveProject } from "../../../impl/github/forge.plugin.js";
+import { type Loaded, Plugins, resolveProject } from "../../../compose.js";
 import { type ResolveRepo, runProjectKeyStep } from "../../../impl/store/project-keys.js";
 import { migrateSqlite, rehearseSqlite, sqlitePendingSteps } from "../../../impl/store/sqlite/rehearse.js";
 import { SqliteDriver } from "../../../impl/store/sqlite/sqlite-driver.js";

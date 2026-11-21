@@ -3,8 +3,7 @@
 
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { type CliEnvironment, type CliIdentity, type FactoryStore, buildStatsStore } from "../compose.js";
-import { type Loaded } from "../load-config.js";
+import { type CliEnvironment, type CliIdentity, type FactoryStore, type Loaded, buildStatsStore } from "../compose.js";
 import { loadedIdentity } from "./support.js";
 
 /** What a command is called with: by main.ts, by another command (setup runs settings) or by a test. */

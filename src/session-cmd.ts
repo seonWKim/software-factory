@@ -4,8 +4,7 @@
 
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Loaded } from "./load-config.js";
-import type { SessionParts } from "./compose.js";
+import type { Loaded, SessionParts } from "./compose.js";
 import { cliUserConfig } from "./core/config.js";
 import { selectedSources } from "./plugins.js";
 import { hostId } from "./runtime/host-id.js";
