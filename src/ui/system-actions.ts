@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import type { AlertPattern, FactoryStore } from "../interfaces/factory-store.js";
 import { MIGRATION_PENDING } from "../interfaces/updater.js";
-import { type Check, TOKEN_WARN_DAYS } from "../setup.js";
+import { type Check, TOKEN_WARN_DAYS } from "../core/health-check.js";
 import type { FactoryStatus } from "./factory-status.js";
 import { type AutoStopNote, alarmCommand, alarmFullText, alarmUntil, lastAutoStop, openAlarms, redMainDetail } from "./alarms.js";
 import type { ResumablePause } from "../resume-cmd.js";

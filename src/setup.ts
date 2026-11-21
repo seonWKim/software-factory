@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { type SyncOutcome, syncCalendars } from "./calendar/index.js";
 import { type Loaded, Plugins, buildStatsStore, settingsBase } from "./compose.js";
 import { runCanary } from "./canary.js";
+import { type Check, type CheckStatus, TOKEN_FAIL_DAYS, TOKEN_WARN_DAYS, checkStatus } from "./core/health-check.js";
 import { type LoadedConfig, readOnlyOverlaps } from "./core/config.js";
 import { describeSettings, resolveSettings, settingsFor } from "./core/settings.js";
 import { llmCheckFromPlugins } from "./llm-check.js";
@@ -42,19 +43,7 @@ export function neededSecrets(
 
 // doctor
 
-/**
- * `warn`: not a doctor failure (hardening local use may skip). `token_days`: the token expiry check's whole days left. `fix`:
- * how to fix a FAIL whose `msg` is outside text as it came (an error, a version). `plain`: Health's sentence, no path (doctor
- * prints `msg`, Health shows it behind Details). `label`: a GitHub status label's name; Health folds those into one row.
- * `since` / `next`: ISO instants kept out of `msg` (a probe pause's start, next probe), shown locally. */
-export type Check = { ok: boolean; msg: string; warn?: boolean; token_days?: number; fix?: string; plain?: string; label?: string; since?: string; next?: string };
-
-/** A check's result in one word: what doctor prints and the status page shows. */
-export type CheckStatus = "ok" | "warn" | "fail";
-
-export function checkStatus(c: Check): CheckStatus {
-  return c.ok ? "ok" : c.warn ? "warn" : "fail";
-}
+export { type Check, type CheckStatus, TOKEN_FAIL_DAYS, TOKEN_WARN_DAYS, checkStatus } from "./core/health-check.js";
 
 const STATUS_WORD: Record<CheckStatus, string> = { ok: "ok  ", warn: "warn", fail: "FAIL" };
 const STATUS_MARK: Record<CheckStatus, string> = { ok: "✓", warn: "!", fail: "✗" };
@@ -189,9 +178,6 @@ export async function toolchainChecks(config: Pick<LoadedConfig, "toolchain" | "
   return checks;
 }
 
-/** At or under this many days left a token is a FAIL; under TOKEN_WARN_DAYS a warn (design §9 Health). */
-export const TOKEN_FAIL_DAYS = 0;
-export const TOKEN_WARN_DAYS = 3;
 
 /**
  * The GitHub token's expiry line. An App sign-in (`grant` present) is always ok and makes no read: the factory mints

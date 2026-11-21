@@ -32,9 +32,9 @@ export default definePlugin({
       repo: c.repo,
       log: c.log,
       // `settings list` and `settings history` from Slack: the CLI's own reads over the same store and config file.
-      // Imported when asked: compose.ts loads the plugin registry, which imports this file.
+      // Imported when asked, so the plugin registry's load doesn't pull in the settings command.
       settings: async (args) => {
-        const [{ settingsBase }, { parseSettingsArgs, runSettings }] = await Promise.all([import("../../compose.js"), import("../../settings-cmd.js")]);
+        const [{ settingsBase }, { parseSettingsArgs, runSettings }] = await Promise.all([import("../../core/settings.js"), import("../../settings-cmd.js")]);
         const a = parseSettingsArgs(args);
         if ("error" in a) return { ok: false, lines: [a.error] };
         if (a.action !== "list" && a.action !== "history") return { ok: false, lines: [`settings ${a.action} is not run from Slack`] };

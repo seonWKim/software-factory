@@ -6,7 +6,7 @@ import { readFile } from "node:fs/promises";
 import { readStoredProject } from "../core/project-labels.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { SupervisorStatus } from "../interfaces/updater.js";
-import type { Check } from "../setup.js";
+import type { Check } from "../core/health-check.js";
 
 /** What the page shows: the file's status, or null when there is none (not started with `factory dev`). */
 export type FactoryStatus = SupervisorStatus & {
