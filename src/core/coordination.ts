@@ -1,5 +1,5 @@
 import { isUnder, pathsOverlap } from "./policy.js";
-import type { DependencyKind, DependencyState, SharedPath, SourceRef, Timestamp } from "./types.js";
+import type { DependencyKind, DependencyState, SharedPath, SourceRef, Timestamp, WorkItem } from "./types.js";
 
 /**
  * Coordination (design §5, decided 2026-11-03): when an implement run may start next to other work. Pure: no
@@ -219,6 +219,27 @@ export function holdsOn(
   }
   const rank = (h: Hold) => (h.holder.kind === "waiting" ? 1 : 0);
   return holds.sort((x, y) => rank(x) - rank(y) || y.cost - x.cost);
+}
+
+/** An item as the session rule reads it: the files it claims are `files_to_change`, else `allowed_paths`. */
+export type ClaimingItem = Pick<WorkItem, "id" | "project" | "files_to_change" | "allowed_paths">;
+
+/**
+ * The interactive session rule (design 05-dependencies, decided 2026-11-21): a session start next to running work,
+ * and a claim next to an open session, use the workers' cost rule (`holdsOn`) instead of refusing on any shared
+ * path, so shared mechanical paths (0.25) and unnamed shared indexes no longer hold. `running`: the other side's
+ * running runs with their items. The highest hold (cost at or above `max_cost`) with its run, or null.
+ */
+export function sessionHold(
+  candidate: ClaimingItem,
+  running: readonly { run_id: string; item: ClaimingItem }[],
+  conflicts: ReadonlyMap<string, number>,
+  s: CoordinationSettings,
+): (Hold & { run_id: string }) | null {
+  const files = (it: ClaimingItem) => it.files_to_change ?? it.allowed_paths;
+  const holders = running.map(({ item }): Holder => ({ work_item_id: item.id, project: item.project, ref: item.id, kind: "running", files: files(item), fallback: false }));
+  const hold = holdsOn({ work_item_id: candidate.id, project: candidate.project, files: files(candidate) }, holders, conflicts, s)[0];
+  return hold ? { ...hold, run_id: running.find((r) => r.item.id === hold.holder.work_item_id)!.run_id } : null;
 }
 
 /**
