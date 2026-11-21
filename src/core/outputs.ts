@@ -1,6 +1,9 @@
+import { DONE_CHECKS_SCHEMA, type DoneCheck, parseDoneChecks } from "./done-checks.js";
 import { isCovered } from "./policy.js";
 import { MAX_PHASES, MIN_PHASES, type SplitLimits, splitError } from "./split.js";
+import { DEPENDENCY_OPTIONS, proposedDependency } from "./task-build.js";
 import type { Tier } from "./types.js";
+export { doneCheckCommands } from "./done-checks.js"; // the triage branch's check_commands (src/core/done-checks.ts)
 
 // Structured outputs of each agent role: JSON Schema for the harness + a validator for the control plane.
 // Agents can be wrong; nothing they return is trusted until it passes these.
@@ -10,6 +13,7 @@ export interface TriageOutput {
   in_short: string;
   problem: string;
   done_criteria: string[];
+  done_checks?: DoneCheck[]; // one check per done-when line, in order (design 04-triage, 2026-11-22); absent on an older answer or a session's spec without one
   desired_output: string;
   /** In and out of scope as one text: the stored `scope`, from `in_scope` and `out_of_scope` (issue #229), else an older output's own `scope`. */
   scope: string;
@@ -172,12 +176,12 @@ export const TRIAGE_SCHEMA = {
   additionalProperties: false,
   required: [
     "in_short", "problem", "done_criteria", "desired_output", "in_scope", "out_of_scope", "allowed_paths",
-    "files_to_change", "tier", "tier_reason", "estimated_lines", "estimated_files",
+    "files_to_change", "tier", "tier_reason", "estimated_lines", "estimated_files", "done_checks",
   ],
   properties: {
     in_short: { type: "string" },
     problem: { type: "string" },
-    done_criteria: { ...strings, minItems: 1 },
+    done_criteria: { ...strings, minItems: 1 }, done_checks: DONE_CHECKS_SCHEMA,
     decisions: {
       type: "array",
       maxItems: MAX_DECISIONS,
@@ -346,7 +350,7 @@ function parseQuestion(d: Record<string, unknown>, at: string): SpecDecision | s
   if (!isStr(d.question) || d.question.trim() === "") return `${at}.question: must be a non-empty string`;
   if (!isStr(d.reason) || d.reason.trim() === "") return `${at}.reason: must be a non-empty string`;
   if (d.default !== undefined && d.default !== null && !isStr(d.default)) return `${at}.default: must be a string`;
-  const options = d.options ?? [];
+  const options = proposedDependency(d.question) !== null ? DEPENDENCY_OPTIONS : d.options ?? []; // a dependency proposal is always yes/no (design 04-triage)
   if (!isStrs(options) || options.some((o) => o.trim() === "") || (options.length > 0 && (options.length < MIN_OPTIONS || options.length > MAX_OPTIONS))) {
     return `${at}.options: must be [] or ${MIN_OPTIONS} to ${MAX_OPTIONS} non-empty strings`;
   }
@@ -441,8 +445,8 @@ function parsePhases(v: unknown): Validation<TriagePhase[] | undefined> {
   return { ok: true, value: phases };
 }
 
-/** Validates a triage answer; with `limits` (the item's size caps) an estimate over the split threshold also needs 2 to 4 phases. */
-export function parseTriage(v: unknown, limits?: SplitLimits): Validation<TriageOutput> {
+/** Validates a triage answer; with `limits` (the item's size caps) an estimate over the split threshold also needs 2 to 4 phases, and `check_commands` (the triage branch's) requires done_checks. */
+export function parseTriage(v: unknown, limits?: SplitLimits & { check_commands?: readonly string[] }): Validation<TriageOutput> {
   if (!isObj(v)) return { ok: false, error: "not an object" };
   const {
     in_short, problem, done_criteria, desired_output, scope, allowed_paths, files_to_change, tier, tier_reason, estimated_lines,
@@ -468,10 +472,12 @@ export function parseTriage(v: unknown, limits?: SplitLimits): Validation<Triage
   const applied_defaults = v.applied_defaults ?? [];
   if (!isStrs(applied_defaults)) return { ok: false, error: "applied_defaults: must be a list of strings" };
   if (!isStrs(done_criteria) || done_criteria.length === 0) return { ok: false, error: "done_criteria" };
+  const checks = parseDoneChecks(v.done_checks, done_criteria, limits?.check_commands);
+  if (!checks.ok) return checks;
   // Bare tool-call markup (issue #446) is refused, never repaired: the run is retried like any invalid output.
   const markup = markupError({
     in_short, problem, desired_output, tier_reason, ...(lists ? { in_scope: scoped.in_scope, out_of_scope: scoped.out_of_scope } : { scope: scoped.scope }),
-    done_criteria, applied_defaults,
+    done_criteria, applied_defaults, done_checks: (checks.value ?? []).flatMap((c) => ("reason" in c ? [c.reason] : [])),
     decisions: [...decisions, ...decision_items.flatMap((d) => [d.reason ?? "", ...(d.options ?? []), ...(d.option_changes ?? []).flatMap((c) => c.done_when)])],
   });
   if (markup) return { ok: false, error: markup };
@@ -497,7 +503,7 @@ export function parseTriage(v: unknown, limits?: SplitLimits): Validation<Triage
     ok: true,
     value: {
       in_short, problem, done_criteria, desired_output, ...scoped, allowed_paths, files_to_change, tier, tier_reason, estimated_lines,
-      estimated_files, decisions, decision_items, applied_defaults, ...(phases.value ? { phases: phases.value } : {}),
+      estimated_files, decisions, decision_items, applied_defaults, ...(phases.value ? { phases: phases.value } : {}), ...(checks.value ? { done_checks: checks.value } : {}),
     },
   };
 }
@@ -587,8 +593,7 @@ export function parseReview(v: unknown): Validation<ReviewOutput> {
     ok: true,
     value: {
       verdict: parsed.length > findings.length ? "bug" : verdict, tier, findings: parsed, summary, ...(unverified.length > 0 ? { unverified } : {}),
-      ...(v.ui_unverified === true ? { ui_unverified: true } : {}), ...(built.length > 0 ? { built_differently: built } : {}),
-      ...(ask.value ? { needs_human: ask.value } : {}),
+      ...(v.ui_unverified === true ? { ui_unverified: true } : {}), ...(built.length > 0 ? { built_differently: built } : {}), ...(ask.value ? { needs_human: ask.value } : {}),
     },
   };
 }

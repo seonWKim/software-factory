@@ -1,6 +1,7 @@
 // Domain types shared by every layer. No vendor types here.
 // Field names follow docs/design.md §2. IDs only, never display names.
 
+import type { DoneCheck } from "./done-checks.js";
 type Brand<T, B extends string> = T & { readonly __brand: B };
 
 export type WorkItemId = Brand<string, "WorkItemId">;
@@ -77,10 +78,7 @@ export interface WorkItem {
   fixes_pr: number | null;
   /** URL of the posted spec comment, set with READY + spec_pending. Null before it, and on older items. */
   spec_comment_url: string | null;
-  /**
-   * URL of the last failure comment, set by the transition that blocks on a failed run. Null when that
-   * comment was withheld by the egress scan or never posted, and on older items.
-   */
+  /** URL of the last failure comment, set by the transition that blocks on a failed run. Null when that comment was withheld by the egress scan or never posted, and on older items. */
   failure_comment_url: string | null;
   /**
    * The issue text as received at intake (title and body). Triage overwrites `problem` with the spec; a
@@ -114,6 +112,8 @@ export interface WorkItem {
    * for an item without a PR (design 2026-11-03). Null before triage, and on items from before it was stored.
    */
   files_to_change: string[] | null;
+  /** Triage's check per done-when line, in order (design 04-triage, 2026-11-22). Null before triage, and on items triaged before it was stored. */
+  done_checks: DoneCheck[] | null;
   /**
    * The files the item's PR changes, as its last implement run pushed them (design 2026-11-03). Null with no
    * PR, and on PRs opened before it was stored: the coordination cost then falls back to `allowed_paths`.

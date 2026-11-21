@@ -178,12 +178,12 @@ export class CommandsUnit {
     const item = await this.c.k.reader.getWorkItem(id as WorkItemId);
     // Any source's item (design 05-sources, CLI intake): identity provider `local`, judged by the local auth plugin; never waits on its source.
     if (!item) return;
-    // A proposal's confirm press (proposals.ts) and `factory merge <id>` skip the comment mapping.
+    // A proposal's confirm press (proposals.ts), `factory merge <id>` and `/hold <id>` (the coordination unit's) skip the comment mapping.
     if (c.command === CONFIRM_COMMAND) return confirmProposal(this.c, c, item, { event: (r, s) => proposalEvent(r, s, localIdentity(c.actor)), say: refusalText });
     if (c.command === MERGE_COMMAND && item.source.type === LOCAL_SOURCE) return void (await this.c.unit("local-merge").mergeLocal(item.id, localIdentity(c.actor), c.key));
     if (c.command === MERGE_COMMAND) return this.c.unit("pr-events").mergeCommand(item, localIdentity(c.actor), c.key, item.source);
-    const e = commandEvent(c, item.source);
-    if (e) await this.c.dispatch(e);
+    if (c.command === "hold") return void (await this.c.unit("coordination").holdCommand(item, { who: localIdentity(c.actor) }, c.key, String(c.args.text ?? "")));
+    const e = commandEvent(c, item.source); if (e) await this.c.dispatch(e);
   }
 
   /**
@@ -497,11 +497,11 @@ export class CommandsUnit {
     await answerPlain(this.c, item, e, async () => commandFooter(await this.stateOf(item)));
   }
 
-  /** The dashboard's Confirm all, Cancel or sentence (proposals.ts appProposal), and `restart` (the local-merge unit's, from the page or `factory restart`); undefined for any other app command. */
+  /** The dashboard's Confirm all, Cancel or sentence (proposals.ts appProposal), `hold` (the coordination unit's) and `restart` (the local-merge unit's, from the page or `factory restart`); undefined for any other app command. */
   appProposal(r: AppCommandRequest, item: WorkItem, key: string): Promise<string | null> | undefined {
-    const kind = r.command === CONFIRM_COMMAND ? "confirm" : r.command === CANCEL_APP_COMMAND ? "cancel" : r.command === SENTENCE_APP_COMMAND ? "sentence" : null;
-    const who = localIdentity(r.actor);
+    if (r.command === "hold") return this.c.unit("coordination").holdCommand(item, { app: r.actor }, key, typeof r.args.note === "string" ? r.args.note : "");
     if (r.command === RESTART_COMMAND) return this.c.unit("local-merge").restart(item, r.actor, key, { [APP_REQUEST]: r.seq });
+    const who = localIdentity(r.actor), kind = r.command === CONFIRM_COMMAND ? "confirm" : r.command === CANCEL_APP_COMMAND ? "cancel" : r.command === SENTENCE_APP_COMMAND ? "sentence" : null;
     return kind ? appProposal(this.c, r, item, key, kind, { who, event: (row, s) => proposalEvent(row, s, who), say: refusalText, footer: async () => commandFooter(await this.stateOf(item)) }) : undefined;
   }
 
@@ -627,7 +627,7 @@ export class CommandsUnit {
     const refuse = await this.c.unit("closes").rejectRefusal(it);
     if (refuse !== null) return { refuse };
     const patch = { stage: "CLOSED", close_reason: "rejected", blocked_on: "upstream", blocked_reason: SOURCE_CLOSE_PENDING, spec_feedback: e.reason.trim() || null } as const;
-    return { patch, actor, reason: "spec_rejected", cancel_queued_runs: true, cancel_running_runs: true };
+    return { patch, actor, reason: "spec_rejected", cancel_running_runs: true };
   }
 
   /**

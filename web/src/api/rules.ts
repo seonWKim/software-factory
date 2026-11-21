@@ -77,6 +77,8 @@ export interface RuleDetail {
   /** A proposal's current lines of its target and the change it proposes, when the ledger carries them. */
   current?: string;
   proposed?: string;
+  /** A proposal's change in prose, when it gives no current and proposed lines. */
+  change?: string;
   incidents?: number;
   /** The incidents, newest first. */
   evidence?: RuleEvidence[];
@@ -168,18 +170,34 @@ export interface ImproveReportView {
   created_at: string;
   /** The runs in all groups. */
   runs: number;
-  /** Single-run patterns. */
+  /** Single-run patterns (not shown). */
   patterns: number;
   groups: ImproveGroupView[];
 }
 
-/** One failure group: its draft's cause and fix, or one note (withheld, failed, skipped); `filing` null: not filed yet. */
+/** One failure group: its draft's cause and fix, or one note (withheld, failed, skipped); `filing` null: not filed yet; `hotspot` marks a file. */
 export interface ImproveGroupView {
   error_code: string;
   detail: string | null;
   runs: number;
-  draft: { cause: string | null; fix: string | null; note: string | null } | null;
-  filing: string | null;
+  /** True for an often-edited file (its `detail` is the file), not a failure group. */
+  hotspot: boolean;
+  draft: { cause: string | null; fix: string | null; note: ImproveNote | null } | null;
+  filing: ImproveFilingView | null;
+}
+
+/** A draft that was skipped, failed or withheld: `reason` is the stored code, or `withheld`. */
+export interface ImproveNote {
+  status: string;
+  reason: string;
+}
+
+/** A group's filing: `reason` is the code of a skipped or failed one (`withheld` for a withheld one), else null; `runs` the new runs a comment named. */
+export interface ImproveFilingView {
+  status: "filed" | "linked" | "commented" | "skipped" | "withheld" | "failed";
+  reason: string | null;
+  ref: string | null;
+  runs: number | null;
 }
 
 export type RuleVerdict = "promote" | "reject" | "hold" | "retire";
@@ -205,8 +223,9 @@ export async function postStanding(
 
 /**
  * POST /api/v1/rules/verdict: a verdict with its reason, and for promote of a class (C-) the owner's wording, default
- * and exception. Promote of a proposal (P-) takes none: the server applies its current → proposed lines, and a failed
- * apply comes back as the error, with nothing written.
+ * and exception. Promote of a proposal (P-) takes none: the server applies its current → proposed lines (a prose change:
+ * it records the verdict as applied to its target and writes nothing), and a failed apply comes back as the error, with
+ * nothing written.
  */
 export async function postRuleVerdict(
   token: string,

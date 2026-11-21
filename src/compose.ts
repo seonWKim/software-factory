@@ -57,6 +57,7 @@ import {
 import { packChecks, packSkills } from "./packs/packs.js";
 import { importedMcpRefusals, listRequestedMcpTools } from "./import/mcp-tool-lists.js";
 import { startPackMcpServer } from "./impl/runner/pack-mcp-client.js";
+import { type SandboxEnforcement, probeOsSandbox } from "./impl/runner/os-sandbox.js";
 import { PackGuidance } from "./impl/capability/project-guidance.js";
 import { LearnedRules, joinGuidance } from "./core/learned-rules.js";
 import { checkToolchainEnv, codeVersion, readRestarts, uiCommandsActor, uiUserId, workerIndexBase } from "./config-values.js";
@@ -433,6 +434,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   };
   // The mode switch, the auto-merge tier and a loosening change need approve_merge on the project (design 08-settings), as the Merge button.
   settings.mayApproveMerge = async () => refusalOf(await onProject(opts.identity.user, "approve_merge"));
+  settings.sandbox = () => sandboxEnforcement(loaded); // `mode auto` needs the OS sandbox, as from the CLI (design 05-sandbox.md)
   settings.editFile = configWriter({ loaded, store, sandbox: await p.sandbox(), now: () => clock.now().toISOString(), actor: opts.identity.user, loadConfig, project: async () => (await settings.resolveProject())?.key ?? null });
   settings.calendar = (await import("./ui/calendar-api.js")).uiCalendar(loaded, {
     store, actor: settings.actor, clock, base: settings.base, connect: async (r) => (await import("./setup.js")).connectCalendar(r),
@@ -454,6 +456,11 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
 }
 
 const refusalOf = (d: AuthDecision): string | null => (d.allow ? null : d.reason);
+
+/** Whether reads, writes and network are OS-enforced for the selected runners (doctor's probe), asked before `mode` becomes auto. */
+export function sandboxEnforcement(loaded: Pick<Loaded, "plugins">): Promise<SandboxEnforcement> {
+  return probeOsSandbox({ runners: selectedRunners(loaded.plugins) });
+}
 
 /** The owner check, with no forge call: how a CLI command is authorized (approve_tool, `factory settings`, `factory resume`). */
 export async function localAuth(_loaded: Loaded, store: FactoryStore): Promise<AuthProvider> {

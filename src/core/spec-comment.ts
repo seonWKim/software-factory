@@ -1,5 +1,6 @@
 import { type CommandState, commandFooter } from "./commands.js";
 import type { AddedPath } from "./companions.js";
+import { doneCheckText } from "./done-checks.js";
 import { MAX_DECISIONS, type OptionChange, type TriageOutput, type TriagePhase } from "./outputs.js";
 import { type MissingAnswer, missingAnswers, missingValues, specText } from "./given-values.js";
 import { inShortParagraphs } from "./pr-body.js";
@@ -182,7 +183,9 @@ export function renderSpec(
   }
   // Owner defaults triage applied instead of asking (issue #315): shown apart, so they are not mistaken for questions.
   if (spec.applied_defaults?.length) out.push("### Applied defaults", ...spec.applied_defaults.map((d) => `- ${d}`), "");
-  out.push("### Done when", ...bulletsFolded(spec.done_criteria, VISIBLE_DONE, (n) => `${n} more done criteria`), "");
+  // Each line with its check or manual reason (design 04-triage, 2026-11-22); an older spec has none.
+  const done = spec.done_criteria.map((c, i) => (spec.done_checks?.[i] ? `${c} (${doneCheckText(spec.done_checks[i])})` : c));
+  out.push("### Done when", ...bulletsFolded(done, VISIBLE_DONE, (n) => `${n} more done criteria`), "");
   if (!repeatsDone(spec.desired_output, spec.done_criteria)) {
     out.push("<details><summary>What the PR contains</summary>", "", spec.desired_output, "", "</details>", "");
   }
