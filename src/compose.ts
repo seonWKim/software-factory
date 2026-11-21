@@ -308,6 +308,7 @@ export async function build(
     prompts: loaded.prompts,
     log: new ConsoleLogger(clock, "worker"),
     toolEnv: baseEnv(), host_exec: runProcess, // the restart run's command, on the host in the base checkout (design 04-gate-commands)
+    install_cache: join(stateDir, "run-deps"), // cloned node_modules per lock file; the updater's deps/ is its own (design 05-sandbox)
     // Split over the runs running on this host at each claim as SF_TEST_WORKERS, so parallel test runs do not each take every CPU.
     cpus: availableParallelism(),
     models: { table: loaded.model_by, names: loaded.models },

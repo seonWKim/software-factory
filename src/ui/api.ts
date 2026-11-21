@@ -32,6 +32,7 @@ import { readCapabilities } from "./capabilities-api.js";
 import { readStanding } from "./standing-api.js";
 import { inProject, projectFilterRefusal } from "./tasks-api.js";
 import { itemPrefix, runParts, transcript } from "./transcript.js";
+import { aboutFields } from "./item-checks.js";
 import { type SystemDeps, parseRevision, systemActions } from "./system-actions.js";
 import { needsYouCount } from "./needs-you.js";
 import { latestWhyAnchor, threadRows } from "./thread.js";
@@ -445,9 +446,8 @@ async function item(c: ApiCtx, id: WorkItemId) {
       item_phase: st.level,
       reason_code: st.why.reason_code,
       why: await c.why(st.why, it),
-      // About (design 09-dashboard-item): the intake text's first paragraph, and the spec once approved (done_criteria set), each text withheld on its own.
-      request: await c.text(it.issue_text?.split(/\n[ \t]*\n/)[0]?.trim() || null),
-      spec: it.done_criteria && { problem: (await c.text(it.problem))!, desired_output: await c.text(it.desired_output), done_criteria: await Promise.all(it.done_criteria.map(async (d) => (await c.text(d))!)) },
+      // About (design 09-dashboard-item): the request, the approved spec and the done-when checks, each text withheld on its own.
+      ...(await aboutFields(it, runs, (v, ch) => c.text(v, ch))),
     },
     timeline,
     runs: runRows,
