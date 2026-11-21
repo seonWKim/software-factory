@@ -126,8 +126,8 @@ function appliedRule(heading: string, body: readonly string[]): TacitAppliedRule
  * The whole rules file for the Applied group. Each `## ` block up to the next `#` heading is one rule: with a `C-` ID and
  * a `기본값` line it gives its `기본값`, `예외`, `범위` and the T- IDs and `판정일` of its `근거` line (a part it lacks is
  * absent; a repeated field line is added after the earlier one, on a new line); any other block is kept as raw text.
- * The non-empty lines under `## 다른 곳에 인코딩된 규칙` are `elsewhere`, as written. Lines inside a fenced code block (``` or ~~~) are skipped, so a format template in the file is no rule; an
- * unclosed fence runs to the end of the file.
+ * The non-empty lines under `## 다른 곳에 인코딩된 규칙` are `elsewhere`, as written. Lines inside a fenced code block
+ * (``` or ~~~) are skipped, so a format template in the file is no rule; an unclosed fence runs to the end of the file.
  */
 export function parseApplied(text: string): TacitApplied {
   const rules: TacitAppliedRule[] = [];
