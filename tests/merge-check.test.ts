@@ -529,14 +529,18 @@ describe("merge check run: the UI check (fake sandbox)", () => {
 
   /** `ui`: the UI check's reply in the merged checkout (the first) and in the base's (the second): an exit and output, or a throw. */
   type UiReply = { exit: number; out?: string } | "throw";
-  async function mergeCheckRun(o: { ui_check?: typeof ui_check; changed: string[]; exits?: Record<string, number>; ui?: { merged: UiReply; base?: UiReply } }) {
-    const repo = { ...config.repo, check_commands: [["npm", "run", "typecheck"], ["npm", "test"]], ...(o.ui_check ? { ui_check: o.ui_check } : {}) };
+  async function mergeCheckRun(o: { ui_check?: typeof ui_check; check_tz?: string; changed: string[]; exits?: Record<string, number>; ui?: { merged: UiReply; base?: UiReply } }) {
+    const repo = {
+      ...config.repo, check_commands: [["npm", "run", "typecheck"], ["npm", "test"]], ...(o.ui_check ? { ui_check: o.ui_check } : {}), ...(o.check_tz ? { check_tz: o.check_tz } : {}),
+    };
     const f = await pipeline({ config: { repo } });
     f.sandbox.changedFiles = o.changed;
     Object.assign(f.sandbox.exits, o.exits ?? {});
     const exec = f.sandbox.exec.bind(f.sandbox);
     const handles: string[] = [];
+    const tz: [string, string | undefined][] = []; // each non-git command and the TZ it ran with
     f.sandbox.exec = async (h, cmd, eo) => {
+      if (cmd[0] !== "git") tz.push([cmd.join(" "), eo.env?.TZ]);
       const r = await exec(h, cmd, eo);
       if (!handles.includes(h.id)) handles.push(h.id);
       if (!o.ui || cmd.join(" ") !== "npm run check:responsive") return r;
@@ -554,8 +558,22 @@ describe("merge check run: the UI check (fake sandbox)", () => {
     const run = (await f.runs(moved.item, "merge-check"))[0]!;
     const diffs = f.sandbox.gitCalls.filter((c) => c.startsWith("diff --name-only") && !c.includes("--diff-filter=U"));
     const data = run.outcome?.status === "succeeded" ? run.outcome.data : {};
-    return { commands: f.sandbox.commands, diffs, outcome: run.outcome, data, created: f.sandbox.created, gitCalls: f.sandbox.gitCalls, destroyed: f.sandbox.destroyed };
+    return { commands: f.sandbox.commands, diffs, outcome: run.outcome, data, created: f.sandbox.created, gitCalls: f.sandbox.gitCalls, destroyed: f.sandbox.destroyed, tz };
   }
+
+  it("with repo.check_tz, the install command, the checks, the UI check and its base rerun all run with TZ set to that zone", async () => {
+    const r = await mergeCheckRun({ ui_check, check_tz: "UTC", changed: ["web/a.css"], ui: { merged: { exit: 1 } } });
+    const all = ["npm ci", "npm run typecheck", "npm test", "npm run check:responsive", "npm ci", "npm run check:responsive"];
+    expect(r.commands).toEqual(all);
+    expect(r.tz.filter(([c]) => all.includes(c))).toEqual(all.map((c) => [c, "UTC"]));
+  });
+
+  it("with no repo.check_tz, no merge-check command gets a TZ variable and the result is unchanged", async () => {
+    const r = await mergeCheckRun({ ui_check, changed: ["web/a.css"] });
+    expect(r.commands).toEqual(["npm ci", "npm run typecheck", "npm test", "npm run check:responsive"]);
+    expect(r.tz.every(([, zone]) => zone === undefined)).toBe(true);
+    expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "green" } });
+  });
 
   it("a merged result touching web/ runs the UI check after the install command and the checks", async () => {
     const r = await mergeCheckRun({ ui_check, changed: ["README.md", "web/src/App.tsx"] });
@@ -895,8 +913,11 @@ describe("merge queue: a failing UI check (real git)", { timeout: 120_000 }, () 
   const ident = ["-c", "user.name=t", "-c", "user.email=t@example.com"];
   const sh = (cwd: string, ...args: string[]) => git(cwd, ...args).trim();
 
-  /** A local factory over a real repo whose `check:responsive` script is `script`; `depth`: the merge queue's depth. */
-  async function uiFactory(script: string, depth = 1) {
+  /**
+   * A local factory over a real repo whose `check:responsive` script is `script`; `depth`: the merge queue's depth.
+   * `o.test`: the test command (default: passes); `o.check_tz`: repo.check_tz; `o.machine_tz`: the worker's own TZ.
+   */
+  async function uiFactory(script: string, depth = 1, o: { test?: string[]; check_tz?: string; machine_tz?: string } = {}) {
     const root = mkdtempSync(join(tmpdir(), "sf-ui-check-"));
     const repo = join(root, "repo");
     sh(root, "init", "--quiet", "-b", "main", repo);
@@ -909,7 +930,10 @@ describe("merge queue: a failing UI check (real git)", { timeout: 120_000 }, () 
     const pass = ["sh", "-c", "exit 0"];
     const cfg: FactoryConfig = {
       ...config, project, local_only: true, merge_queue_depth: depth,
-      repo: { ...config.repo, path: repo, install_command: pass, test_command: pass, ui_check: { command: ["npm", "run", "check:responsive"], paths: ["web/", "src/ui/"] } },
+      repo: {
+        ...config.repo, path: repo, install_command: pass, test_command: o.test ?? pass, ui_check: { command: ["npm", "run", "check:responsive"], paths: ["web/", "src/ui/"] },
+        ...(o.check_tz ? { check_tz: o.check_tz } : {}),
+      },
     };
     const clock = new FakeClock();
     const { store } = await newStore(clock);
@@ -932,7 +956,8 @@ describe("merge queue: a failing UI check (real git)", { timeout: 120_000 }, () 
     const broker = new LocalToolBroker({ store, scanner: cleanScanner, branchPrefix: cfg.branch_prefix, repoPath: repo });
     const worker = new Worker({
       id: "w1" as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config: cfg, prompts,
-      log: silent, scanner: cleanScanner, toolEnv: { PATH: process.env.PATH ?? "", HOME: root, GIT_CONFIG_GLOBAL: "/dev/null" }, awake: new NoKeepAwake(),
+      log: silent, scanner: cleanScanner, toolEnv: { PATH: process.env.PATH ?? "", HOME: root, GIT_CONFIG_GLOBAL: "/dev/null", ...(o.machine_tz ? { TZ: o.machine_tz } : {}) },
+      awake: new NoKeepAwake(),
     });
     const step = async () => {
       await controller.tickIntake();
@@ -977,6 +1002,34 @@ describe("merge queue: a failing UI check (real git)", { timeout: 120_000 }, () 
     expect(refused.join("\n")).toContain("`npm run check:responsive`");
     expect(refused.join("\n")).toContain("did not move and the change left the merge queue");
     expect((await f.store.listAlerts({ limit: 10 })).some((a) => a.pattern === "red_main")).toBe(false);
+  });
+
+  // The red-main incident of 2026-11-22 (fixed by wi_74ef152e): a fixture window of exactly one UTC day. 20:00Z on
+  // 2026-11-22 is already 2026-11-23 in Asia/Seoul, so this test passes on the owner's machine and fails under UTC.
+  const oneUtcDay = ["node", "-e", "process.exit(new Date('2026-11-22T20:00:00Z').getDate() === 23 ? 0 : 1)"];
+
+  it("repo.check_tz UTC on an Asia/Seoul machine: a test that passes only outside UTC passes the implement checks and turns the merge check red", async () => {
+    const f = await uiFactory("exit 0", 1, { test: oneUtcDay, check_tz: "UTC", machine_tz: "Asia/Seoul" });
+    const id = await f.ready("Web change");
+    const mainBefore = sh(f.repo, "rev-parse", "main");
+
+    await f.merge(id);
+    await f.step();
+
+    expect(sh(f.repo, "rev-parse", "main")).toBe(mainBefore);
+    const check = (await f.store.listRuns(id)).find((r) => r.kind === "merge-check")!;
+    expect(check.outcome).toMatchObject({ status: "succeeded", data: { result: "red", why: "checks", command: oneUtcDay.join(" ") } });
+  });
+
+  it("with no repo.check_tz, the same test on the same machine passes the merge check: nothing changes", async () => {
+    const f = await uiFactory("exit 0", 1, { test: oneUtcDay, machine_tz: "Asia/Seoul" });
+    const id = await f.ready("Web change");
+
+    await f.merge(id);
+    await f.step();
+
+    const check = (await f.store.listRuns(id)).find((r) => r.kind === "merge-check")!;
+    expect(check.outcome).toMatchObject({ status: "succeeded", data: { result: "green" } });
   });
 
   it("main fails alone: the queued changes stay queued with no loop, one red_main alert and one fix item for the base sha, and no check again until main moves", async () => {
