@@ -21,6 +21,8 @@ export interface Project {
   created_at: Timestamp;
   /** When it was archived; null while it is active. */
   archived_at: Timestamp | null;
+  /** Its base folder on this machine, stored as the resolved real path (design 02-tasks, project files); null: none set. */
+  base_folder: string | null;
 }
 
 export interface NewProject {
@@ -41,6 +43,8 @@ export type CreateProjectResult = { ok: true; project: Project } | InvalidName |
 export type RenameProjectResult = { ok: true; project: Project } | { ok: false; reason: "not_found" } | InvalidName | SlugTaken;
 /** `changed`: false when it was in that state already (nothing written). */
 export type ArchiveProjectResult = { ok: true; project: Project; changed: boolean } | { ok: false; reason: "not_found" };
+/** Refused, with nothing written, for an unknown or archived project. */
+export type SetProjectFolderResult = { ok: true; project: Project } | { ok: false; reason: "not_found" | "archived" };
 /** `unlinked`: the IDs of the tasks that were in it, now in it no more; the tasks themselves are untouched. */
 export type DeleteProjectResult = { ok: true; project: Project; unlinked: string[] } | { ok: false; reason: "not_found" };
 /** `changed`: false when the task was in it already (nothing written). */
@@ -64,6 +68,8 @@ export interface ProjectStore {
   archiveProject(id: string): Promise<ArchiveProjectResult>;
   /** Clears archived_at, conditional on it being set. */
   restoreProject(id: string): Promise<ArchiveProjectResult>;
+  /** Sets the base folder (a resolved real path the caller checked), conditional on the project being active. */
+  setProjectFolder(id: string, folder: string): Promise<SetProjectFolderResult>;
   /** Deletes the project and its link rows in one transaction; no task row changes. */
   deleteProject(id: string): Promise<DeleteProjectResult>;
   /** Links the task, unless linked; refused for an unknown task or project, or an archived project. */
