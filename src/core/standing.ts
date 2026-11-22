@@ -6,7 +6,6 @@ import { changesNoFile, latestSpec } from "./commands.js";
 import { floorTier } from "./policy.js";
 import type { Floor, SettingsLayers } from "./settings.js";
 import { droppedAnswers, droppedValues } from "./spec-comment.js";
-import { ownerAnswersFor } from "../shared/command-notes.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import type {
   Actor, GateOutcome, SpecKind, StandingGate, StandingRule, StateChange, StateChangeDetail, Tier, Timestamp, UserId, WorkItem,
@@ -276,13 +275,18 @@ const WAITING_SCAN = 100;
  * reads only: each item's latest spec (a split or not; held when it changes no file, or dropped request values or
  * owner answers) and its project's floors from `layers`.
  */
-export async function waitingForRule(r: Pick<FactoryStore, "listWorkItemsWhere" | "listRuns" | "listStateChanges">, layers: SettingsLayers): Promise<WorkItem[]> {
+export async function waitingForRule(
+  r: Pick<FactoryStore, "listWorkItemsWhere" | "listRuns">,
+  layers: SettingsLayers,
+  /** The owner's stored answers for the item's spec (shared/command-notes ownerAnswersFor; core does not import shared). */
+  answersOf: (it: WorkItem) => Promise<readonly { answer: string | null }[]>,
+): Promise<WorkItem[]> {
   const out: WorkItem[] = [];
   for (const it of await r.listWorkItemsWhere({ stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", limit: WAITING_SCAN })) {
     if (it.tier !== STANDING_TIER) continue;
     const spec = latestSpec(await r.listRuns(it.id));
     if (!spec) continue;
-    const answers = await ownerAnswersFor(it, (id) => r.listStateChanges(id));
+    const answers = await answersOf(it);
     const held = changesNoFile(spec) || droppedValues(spec, it.issue_text).length + droppedAnswers(spec, answers).length > 0;
     if (ruleWouldApprove(it, { split: Boolean(spec.phases), held }, floorsOf(layers, it.project))) out.push(it);
   }

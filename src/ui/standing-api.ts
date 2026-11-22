@@ -8,6 +8,7 @@
 
 import { SPEC_GATE, STANDING_APPROVED, STANDING_TIER, findRule, parseRuleId, ruleId, standingActor, waitingForRule } from "../core/standing.js";
 import type { StandingProposal, StandingRule, UserId } from "../core/types.js";
+import { ownerAnswersFor } from "../shared/command-notes.js";
 import type { ApiResult } from "./api.js";
 import type { PauseDeps, UiPauses } from "./pause-api.js";
 import { effectiveGlobal, writeSettings } from "./settings-api.js";
@@ -76,7 +77,8 @@ export async function readStanding(d: PauseDeps) {
     });
   }
   const waiting = [];
-  for (const it of await waitingForRule(d.store, d.settings?.base.layers ?? { defaults: {}, projects: {} })) {
+  const layers = d.settings?.base.layers ?? { defaults: {}, projects: {} };
+  for (const it of await waitingForRule(d.store, layers, (x) => ownerAnswersFor(x, (id) => d.store.listStateChanges(id)))) {
     waiting.push({ id: await text(it.id), title: await text(it.title ?? it.id) });
   }
   return { as_of: d.clock.now().toISOString(), csrf_token: d.pauses?.csrfToken ?? null, rules, proposals, waiting };
