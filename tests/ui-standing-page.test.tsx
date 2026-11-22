@@ -172,7 +172,7 @@ describe("Standing approvals section (stubbed API)", { timeout: TEST_MS }, () =>
     const list = await show();
     fireEvent.click(within(ruleItem(list, "spec-t1")).getByRole("switch", { name: "Approves tier 1 plans for you" }));
     const preview = (await screen.findByRole("dialog")).querySelector<HTMLElement>("[data-preview]")!;
-    expect(preview.textContent).toContain("Waiting items this would approve now");
+    expect(preview.textContent).toContain("Waiting items this rule covers");
     expect([...preview.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["Fix the login", "Ship docs"]);
     expect(preview.textContent).not.toContain("wi_1");
     // Turned to off in the dialog, the change approves nothing.

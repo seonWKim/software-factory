@@ -33,7 +33,7 @@ export const rules = {
   "standing.removeConsequence": "The rule is deleted. Each plan waits for your approval, and the factory may suggest the rule again after enough approvals in a row.",
   "standing.thresholdLabel": "Approvals in a row before the factory suggests a rule",
   "standing.thresholdHelp": "A whole number, 1 or more. Plans count only when you approved them unchanged.",
-  "standing.previewTitle": "Waiting items this would approve now",
+  "standing.previewTitle": "Waiting items this rule covers",
   "standing.previewNone": "none",
   "standing.pending": "Pending proposals",
   "standing.title": "Standing approvals",
