@@ -89,7 +89,7 @@ function mediaType(value: string | undefined): string {
  * route itself. Every refusal comes before any store write. A missing or stale token is the coded 403 (stale_csrf)
  * the page retries once with a fresh token.
  */
-export async function writePost(d: ServerDeps, req: UiRequest, route: WriteRoute): Promise<ApiResult> {
+async function writePost(d: ServerDeps, req: UiRequest, route: WriteRoute): Promise<ApiResult> {
   const own = `http://${(req.host ?? "").trim().toLowerCase()}`;
   if (req.origin === undefined || req.origin.trim().toLowerCase() !== own) return apiError(403, "Origin must be this page's own origin.");
   if (mediaType(req.contentType) !== "application/json") return apiError(415, "Content-Type must be application/json.");
