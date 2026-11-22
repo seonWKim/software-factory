@@ -31,7 +31,7 @@ function useCopy(value: string) {
 export function CopyButton({ value, what }: { value: string; what: string }) {
   const { done, copy } = useCopy(value);
   return (
-    <button type="button" aria-label={t("copy.label", { what })} title={t("copy.label", { what })} className={cn("ml-1 shrink-0", SMALL)} onClick={copy}>
+    <button type="button" aria-label={t("copy.label", { what })} title={t("copy.label", { what })} className={cn("ml-1 inline-flex min-h-6 min-w-6 shrink-0 items-center justify-center", SMALL)} onClick={copy}>
       {done ? t("copy.done") : t("copy.button")}
     </button>
   );
@@ -52,7 +52,7 @@ export function IdDetails({ label, id }: { label: string; id: string; what: stri
   const { done, copy } = useCopy(id);
   return (
     <Tooltip text={id}>
-      <button type="button" data-id className="cursor-pointer text-left font-sans text-sm" onClick={copy}>
+      <button type="button" data-id className="min-h-6 min-w-6 cursor-pointer text-left font-sans text-sm" onClick={copy}>
         {done ? t("copy.done") : label}
       </button>
     </Tooltip>

@@ -48,7 +48,7 @@ export function Disclosure({ summary, children, defaultOpen = false, lazy = fals
         onClick={onClick}
         onKeyDown={onKeyDown}
         onKeyUp={onKeyUp}
-        className={cn("flex w-fit cursor-pointer list-none items-center gap-1 text-xs text-pretty text-text-2 [&::-webkit-details-marker]:hidden", FOCUS)}
+        className={cn("flex min-h-6 w-fit cursor-pointer list-none items-center gap-1 text-xs text-pretty text-text-2 [&::-webkit-details-marker]:hidden", FOCUS)}
       >
         <ChevronRight aria-hidden className={cn("size-4 shrink-0 motion-safe:transition-transform", open && "rotate-90")} />
         {summary}

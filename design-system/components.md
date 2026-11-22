@@ -104,7 +104,7 @@ A keyboard key as text, such as Esc. No variants or sizes.
 
 ## Tooltip
 
-A short hint on hover and keyboard focus, hidden by Esc or leaving. Variants (`placement`): `top` (default), `bottom`. States: hidden, shown.
+A short hint on hover and keyboard focus, hidden by Esc or leaving. Variants (`placement`): `top` (default), `bottom`, `beside` (level with the trigger's top, right of it for `align` `start`, left for `end`; for a trigger inside a scroller). States: hidden, shown.
 
 ## Button
 
@@ -116,7 +116,7 @@ A native `input type=checkbox` drawn from the tokens: a 16 px box (`size-4`) ins
 
 ## Switch
 
-A `role=switch` button with `aria-checked`, 20 by 36 px; the thumb moves by a class. Controlled by `checked` and `onCheckedChange`. One size. States: on (`text-1` track), off (`border-strong` track), focus-visible, `disabled`.
+A `role=switch` button with `aria-checked`, 24 px high (the smallest target) around a drawn 20 by 36 px track; the thumb moves by a class. Controlled by `checked` and `onCheckedChange`. One size. States: on (`text-1` track), off (`border-strong` track), focus-visible, `disabled`.
 
 ## SegmentedControl
 

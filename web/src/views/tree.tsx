@@ -83,11 +83,11 @@ function NodeItem(props: { node: TreeNode; now: number; byNumber: ReadonlyMap<nu
         {({ hasChildItems, isExpanded, level }) => (
           <div className={cn("flex items-start gap-1 border-b border-border pr-1", indentFor(level))}>
             {hasChildItems ? (
-              <Button slot="chevron" className="mt-1 w-5 shrink-0 text-text-2" aria-label={isExpanded ? t("tree.collapse") : t("tree.expand")}>
+              <Button slot="chevron" className="mt-0.5 flex size-6 shrink-0 items-center justify-center text-text-2" aria-label={isExpanded ? t("tree.collapse") : t("tree.expand")}>
                 {isExpanded ? "▾" : "▸"}
               </Button>
             ) : (
-              <span className="w-5 shrink-0" aria-hidden />
+              <span className="w-6 shrink-0" aria-hidden />
             )}
             <Row {...props} />
           </div>

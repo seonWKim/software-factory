@@ -197,7 +197,7 @@ export function ActivityPage() {
               <div key={k} className="rounded-control border border-border px-3 py-2">
                 <dt className="text-xs text-text-2">{k}</dt>
                 <dd className="text-lg font-semibold tabular-nums">
-                  {href ? <Link href={href} className={LINK_CLASS}>{v}</Link> : v}
+                  {href ? <Link href={href} className={cn("min-w-6", LINK_CLASS)}>{v}</Link> : v}
                 </dd>
               </div>
             ))}

@@ -24,3 +24,4 @@
 
 - **Menu names and the Users page** (decision changed 2026-11-11). Before: the sidebar listed Floor, Work items, Workers, Queue, Health, Failures, Settings and Users, then Data in a Tools group; the Floor showed Needs you, Running now, Queue and the last 24 hours on one page; `/app/users` showed the local users with owner controls (issue #445); the shell had no keyboard handling.
 - **The top bar wrapped onto a second row** (decision changed 2026-11-22, issue #763, the top bar decision at the top). Before: the header was `flex-wrap`, so the Theme control dropped to a second row when the items did not fit at 390px.
+- **Stop all agents: "Below `sm` the top bar wraps as before"** (decision changed 2026-11-22, issue #763, the top bar decision at the top). Before: the Stop all agents decision said the top bar wraps below `sm`.

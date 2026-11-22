@@ -277,11 +277,12 @@ describe("sidebar in the icon-only layout", () => {
 
 describe("top bar", () => {
   // jsdom has no layout, so this checks the classes that keep the bar inside a 390px screen (checked by screenshot).
-  it("wraps and keeps the icon buttons at full size", async () => {
+  it("stays on one row and keeps the icon buttons at full size", async () => {
     mount();
     await waitBadge();
     const header = document.querySelector("header")!;
-    expect(header.className.split(" ")).toContain("flex-wrap");
+    // One row at 390px (issue #763): a wrapping header dropped Theme onto a second row.
+    expect(header.className.split(" ")).not.toContain("flex-wrap");
     expect(within(header).getByRole("button", { name: "Refresh" }).className.split(" ")).toContain("shrink-0");
   });
 
