@@ -25,7 +25,7 @@ export const GROUP_KEYS: Readonly<Record<AdvancedGroupId, readonly string[]>> = 
     "workers", "worker_kinds", "mode", "auto_merge_max_tier", "spend.daily_budget_usd", "spend.weekly_budget_usd", "hold_policy",
     "phases_auto_approve", "standing_approvals.threshold",
     // The size and time limits of one run.
-    "max_diff_lines", "max_diff_files", "run_timeout_ms", "stall_ms", "first_output_ms", "probe_interval_ms",
+    "max_diff_lines", "max_diff_files", "run_timeout_ms", "agent_stop_check_ms", "stall_ms", "first_output_ms", "probe_interval_ms",
     // What a run may touch, then alarms and intake.
     "auto_grant_test_paths", "test_globs", "tool_grants", "conflict_hotspot_threshold",
     "alarm_repeat_count", "alarm_window_minutes", "alarm_restart_count", "intake_label",
