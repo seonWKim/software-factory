@@ -24,7 +24,7 @@ import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEv
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 import { answerPlain, appProposal, confirmProposal, storeProposals } from "./proposals.js";
-import { FEEDBACK_REQUIRED, applyQueued, feedbackScan, queueRevise, replyQueued } from "./queued-revise.js"; import { scanClean } from "./scan.js"; import { recheckRetry } from "./premise-recheck.js"; import { commandText, pathsCommand } from "./paths.js";
+import { FEEDBACK_REQUIRED, applyQueued, feedbackScan, queueRevise, replyQueued } from "./queued-revise.js"; import { scanClean } from "./scan.js"; import { recheckRetry } from "./premise-recheck.js"; import { commandText, pathsCommand } from "./paths.js"; import { noteCommand, noteOnSource } from "./note.js";
 
 type AppSender = { user_id: UserId } | null;
 type ItemCommandEvent = Exclude<CommandEvent, { kind: "budget_continue" }>;
@@ -170,19 +170,19 @@ export class CommandsUnit {
       const e = synced.event, who = { provider: "github" as const, subject: c.actor.slice("github:".length) };
       if (!this.c.k.hasAdapter(synced.source.type)) return;
       if (c.command === MERGE_COMMAND) await this.c.k.guard("event:merge", () => this.c.unit("pr-events").mergeComment(c.key, who, synced.source, c.args.pr));
+      else if (c.command === "note") await this.c.k.guard("event:note", () => noteOnSource(this.c, synced.source, who, c.key.slice("github:".length), String(c.args.text ?? ""), { say: refusalText, closed: CLOSED_REFUSAL }));
       else if (e) await this.c.k.guard(`event:${e.kind}`, () => this.c.dispatch(e));
       return;
     }
-    const id = c.args.item;
-    if (typeof id !== "string" || id === "") return;
-    const item = await this.c.k.reader.getWorkItem(id as WorkItemId);
+    const id = c.args.item; if (typeof id !== "string" || id === "") return;
     // Any source's item (design 05-sources, CLI intake): identity provider `local`, judged by the local auth plugin; never waits on its source.
-    if (!item) return;
-    // A proposal's confirm press (proposals.ts), `factory merge <id>` and `/hold <id>` (the coordination unit's) skip the comment mapping.
+    const item = await this.c.k.reader.getWorkItem(id as WorkItemId); if (!item) return;
+    // A proposal's confirm press (proposals.ts), `factory merge <id>`, `/hold <id>` (the coordination unit's) and `/note` (note.ts) skip the comment mapping.
     if (c.command === CONFIRM_COMMAND) return confirmProposal(this.c, c, item, { event: (r, s) => proposalEvent(r, s, localIdentity(c.actor)), say: refusalText });
     if (c.command === MERGE_COMMAND && item.source.type === LOCAL_SOURCE) return void (await this.c.unit("local-merge").mergeLocal(item.id, localIdentity(c.actor), c.key));
     if (c.command === MERGE_COMMAND) return this.c.unit("pr-events").mergeCommand(item, localIdentity(c.actor), c.key, item.source);
     if (c.command === "hold") return void (await this.c.unit("coordination").holdCommand(item, { who: localIdentity(c.actor) }, c.key, String(c.args.text ?? "")));
+    if (c.command === "note") return noteCommand(this.c, item, localIdentity(c.actor), c.key, String(c.args.text ?? ""), { say: refusalText, closed: CLOSED_REFUSAL });
     const e = commandEvent(c, item.source); if (e) await this.c.dispatch(e);
   }
 
