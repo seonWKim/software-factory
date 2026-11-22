@@ -264,8 +264,7 @@ export type BudgetCheckpointResult =
 export interface WorkItemFilter {
   stage?: Stage | undefined;
   blocked_on?: BlockedOn | undefined; blocked_reason?: string | undefined;
-  exclude_closed?: boolean | undefined; // Leave out CLOSED items. Ignored when `stage` is given.
-  exclude_system?: boolean | undefined; // Leave out system items (blocked_reason system_item).
+  exclude_closed?: boolean | undefined; exclude_system?: boolean | undefined; // Leave out CLOSED items (ignored when `stage` is given) / system items (blocked_reason system_item).
   /** Only items updated at or after this time (with `stage: "CLOSED"`, the closes since then: owner notices). */
   updated_since?: Timestamp | undefined;
   limit: number;

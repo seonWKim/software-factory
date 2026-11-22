@@ -2670,9 +2670,7 @@ function whereOf(filter: Omit<WorkItemFilter, "limit">): { where: string; params
   if (filter.stage !== undefined) {
     where.push("stage = ?");
     params.push(filter.stage);
-  } else if (filter.exclude_closed) {
-    where.push("stage <> 'CLOSED'");
-  }
+  } else if (filter.exclude_closed) where.push("stage <> 'CLOSED'");
   if (filter.exclude_system) where.push("(blocked_reason IS NULL OR blocked_reason <> 'system_item')");
   if (filter.blocked_on !== undefined) {
     where.push("blocked_on = ?");
