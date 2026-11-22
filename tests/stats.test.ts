@@ -8,7 +8,7 @@ import { loadConfig } from "../src/load-config.js";
 import type { StatsConfig } from "../src/core/config.js";
 import { type MergeEvaluation, noVerdicts } from "../src/core/merge-evaluation.js";
 import {
-  type StatsRecord, aggregateAutonomy, aggregateStats, aggregateTierMerges, collectAutonomy, collectStats, collectTierMerges, formatStatsText, tierRule,
+  type StatsRecord, aggregateAutonomy, aggregateStats, aggregateTierMerges, collectAutonomy, collectStats, collectTierMerges, droppedBack, formatStatsText, tierRule,
 } from "../src/core/stats.js";
 import type { Tier, Timestamp, UserId, VerdictSeverity, WorkItemId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -331,6 +331,14 @@ describe("factory stats: per-tier merge record and rule (design 06-measurement)"
     const old = [ev(1, { reverted: 1 }), ev(1, { fixed_forward: 1 }), ev(1, { critical: 1 })];
     expect(tierRule(1, [...old, ...clean(50)])).toBe("met");
     expect(tierRule(1, [...clean(50), ...old])).toBe("not_met");
+  });
+
+  it("the drop-back: 2 reverted or fixed-forward merges among the last 20 drop a tier back, 1 does not, older ones are not read", () => {
+    expect(droppedBack([...clean(19), ev(1, { reverted: 1 })])).toBe(false);
+    expect(droppedBack([...clean(18), ev(1, { reverted: 1 }), ev(1, { fixed_forward: 1 })])).toBe(true);
+    expect(droppedBack([ev(1, { reverted: 1 }), ...clean(10), ev(1, { fixed_forward: 1 })])).toBe(true); // fewer than 20 merges
+    expect(droppedBack([ev(1, { reverted: 1 }), ev(1, { reverted: 1 }), ...clean(20)])).toBe(false);
+    expect(droppedBack([ev(1, { reverted: 1 }), ...clean(19), ev(1, { reverted: 1 })])).toBe(false); // the first is the 21st from the end
   });
 
   it("fewer than 50 merges never qualify, however clean", () => {

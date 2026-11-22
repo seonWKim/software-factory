@@ -43,7 +43,7 @@ const READS = [
   "listDeliveries", "listRuns", "listUnacknowledgedRuns", "listStateChanges", "listBudgetCheckpoints", "listClaimDecisions", "getTierHistory",
   "getMergeCheck", "getAppCommandRequest", "listItemMessages", "listSettingChanges", "getWorkItemByMergeSha",
   "listVerdicts", "listStandingRules", "latestSignalTimes", "listSignalRefs", "listStateChangesSince", "listVerdictsSince", "listRunsFinishedSince",
-  "listNoticesFor", "listHeldNotices", "listDueReminders",
+  "listNoticesFor", "listHeldNotices", "listDueReminders", "listMergeEvaluations",
 ] as const;
 
 /**
