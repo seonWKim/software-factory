@@ -6,7 +6,7 @@ import { type Column, DataTable } from "../components/ui/data-table.js";
 import { type MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
-import { ID_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
+import { BLOCK_LINK_CLASS, ID_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import { duration, isHttpUrl, isWorkerId, localDateTime, relativeTime, shortSource, whyText, workerName } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
@@ -229,7 +229,7 @@ export function ItemsTable({ items, now, label, empty, plugins }: { items: reado
       header: t("col.item"),
       className: "max-w-md",
       render: (it) => (
-        <Link href={itemPath(it.id)} data-raw className={cn("block font-medium sm:truncate", LINK_CLASS)}>
+        <Link href={itemPath(it.id)} data-raw className={cn("font-medium sm:truncate", BLOCK_LINK_CLASS)}>
           {it.title ?? shortSource(it.source.id)}
         </Link>
       ),

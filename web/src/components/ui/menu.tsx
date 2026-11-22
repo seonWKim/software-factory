@@ -92,14 +92,17 @@ export function OverflowMenu({ label, items, icon }: { label: string; items: rea
 
 /** Where the bubble sits along its trigger: centred (default), from its left edge, or ending at its right edge. */
 const ALIGN = { center: "left-1/2 -translate-x-1/2", start: "left-0", end: "right-0" } as const;
+/** `beside`: level with the trigger's top, to its right (`start`, `center`) or its left (`end`); for a trigger inside a scroller that would clip a bubble above it. */
+const BESIDE = { center: "left-full pl-1", start: "left-full pl-1", end: "right-full pr-1" } as const;
+const PLACE = { top: "bottom-full pb-1", bottom: "top-full pt-1" } as const;
 
 /**
- * A short hint for its child, shown on hover and on keyboard focus, hidden by Esc. `placement` is above (default) or
- * below. It stays open while the pointer or focus is inside it, so a link in `text` can be clicked or tabbed to.
+ * A short hint for its child, shown on hover and on keyboard focus, hidden by Esc. `placement` is above (default),
+ * below, or beside the trigger from its top edge. It stays open while the pointer or focus is inside it, so a link in `text` can be clicked or tabbed to.
  */
 export function Tooltip({ text, placement = "top", align = "center", className, children }: {
   text: ReactNode;
-  placement?: "top" | "bottom";
+  placement?: "top" | "bottom" | "beside";
   align?: keyof typeof ALIGN;
   /** Classes for the wrapper around the trigger, such as a size. */
   className?: string;
@@ -120,7 +123,7 @@ export function Tooltip({ text, placement = "top", align = "center", className, 
       {children}
       {shown && (
         // The padding, not a margin, bridges trigger and bubble, so the pointer can move onto the bubble.
-        <span id={id} role="tooltip" className={cn("absolute z-10", ALIGN[align], placement === "top" ? "bottom-full pb-1" : "top-full pt-1")}>
+        <span id={id} role="tooltip" className={cn("absolute z-10", placement === "beside" ? cn("top-0", BESIDE[align]) : cn(ALIGN[align], PLACE[placement]))}>
           <span className="block w-max max-w-56 rounded-control bg-text-1 px-2 py-1 text-xs text-surface">{text}</span>
         </span>
       )}

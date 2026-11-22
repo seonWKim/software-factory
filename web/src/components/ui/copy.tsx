@@ -32,7 +32,7 @@ function useCopy(value: string) {
 export function CopyButton({ value, what }: { value: string; what: string }) {
   const { done, copy } = useCopy(value);
   return (
-    <button type="button" aria-label={t("copy.label", { what })} title={t("copy.label", { what })} className={cn("ml-1 shrink-0", SMALL)} onClick={copy}>
+    <button type="button" aria-label={t("copy.label", { what })} title={t("copy.label", { what })} className={cn("ml-1 inline-flex min-h-6 min-w-6 shrink-0 items-center justify-center", SMALL)} onClick={copy}>
       {done ? t("copy.done") : t("copy.button")}
     </button>
   );
