@@ -1,8 +1,9 @@
 import type { ReactNode } from "react";
 import type { ItemDetail } from "../api.js";
-import { Card } from "../components/ui/card.js";
+import { Card, SUB_TITLE } from "../components/ui/card.js";
 import { Disclosure } from "../components/ui/disclosure.js";
 import { t } from "../i18n/index.js";
+import { cn } from "../lib/cn.js";
 import { ItemChecks } from "./item-checks.js";
 
 // The item page's About (docs/design/09-dashboard-item.md): the request's first paragraph, the done-when lines with
@@ -25,7 +26,7 @@ function AboutText({ value, as: As = "p" }: { value: string; as?: "p" | "li" }) 
 function Part({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="mt-3 min-w-0">
-      <h3 className="text-xs text-text-2">{label}</h3>
+      <h3 className={SUB_TITLE}>{label}</h3>
       {children}
     </div>
   );
@@ -42,7 +43,7 @@ export function ItemAbout({ item }: { item: Pick<ItemDetail["item"], "request" |
       {request !== null && <div data-about-request><AboutText value={request} /></div>}
       {checks !== null && (
         <div data-about-checks className={request !== null ? "mt-3 min-w-0" : "min-w-0"}>
-          <h3 className="mb-1 text-xs text-text-2">{t("item.checks")}</h3>
+          <h3 className={cn("mb-1", SUB_TITLE)}>{t("item.checks")}</h3>
           <ItemChecks checks={checks} />
         </div>
       )}

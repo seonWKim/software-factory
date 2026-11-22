@@ -1,7 +1,7 @@
 // A conflict resolution whose checks fail only on test files it may not edit (design 05-merge-conflict, 2026-11-18):
 // the implement run asks for those files instead of failing with merge_conflict, and the retry prompt names the
 // failing tests with the check output. Kept out of implement.run.ts, which may not grow (file budget). It imports no
-// legacy core module (dependency-direction ratchet): implement.run.ts passes the rules in (AskRules).
+// legacy core module (dependency-direction ratchet): implement-sync.ts passes the rules in (AskRules).
 
 import type { Worker } from "../../runner.js";
 import { failingTestNames, fenced } from "../../support.js";
@@ -9,7 +9,7 @@ import { failingTestNames, fenced } from "../../support.js";
 /** A failed check, as runCheckList reports it. */
 type Failed = { readonly command: readonly string[]; readonly how: string; readonly tail: string };
 
-/** The rules the ask follows, from the legacy core modules implement.run.ts already imports. */
+/** The rules the ask follows, from the legacy core modules implement-sync.ts already imports (legacy-imports.ts). */
 export interface AskRules {
   /** The test files a check's output reports as failed (failingTestFiles). */
   failingTestFiles(text: string): string[];

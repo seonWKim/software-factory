@@ -4,7 +4,7 @@
 import { type TriagePhase, parseTriage } from "../../../core/outputs.js";
 import { runKey } from "../../../core/policy.js";
 import { specDecisionDetail } from "../../../core/standing.js";
-import { PHASE_HOLD, PHASES_OPEN, SPLIT_APPROVED, SPLIT_FILING, parseSubIssues, phaseIssueBody, phaseLinkDetail, phaseMarker, phaseTitle } from "../../../core/split.js";
+import { PHASE_HOLD, PHASES_OPEN, SPLIT_APPROVED, SPLIT_FILING, goalLinesText, parseSubIssues, phaseIssueBody, phaseLinkDetail, phaseMarker, phaseTitle } from "../../../core/split.js";
 import { type Actor, type SourceRef, type StateChange, type StateChangeDetail, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { ActionRow } from "../../../outbound/index.js";
 import { type Decision, DELIVERY_FAILED, type Refusal, SYSTEM, completed, splitFiling, splitOpen, footerAfter } from "../support.js";
@@ -57,12 +57,17 @@ export class PhasesUnit {
 
   /** The phases of the spec waiting at the gate: those of the latest succeeded triage run, or null for no split. */
   async specPhases(it: WorkItem): Promise<TriagePhase[] | null> {
+    return (await this.specSplit(it))?.phases ?? null;
+  }
+
+  /** The split of the latest succeeded triage run: its phases and the goal lines of the same run, or null for no split. */
+  private async specSplit(it: WorkItem): Promise<{ phases: TriagePhase[]; goal: string[] | undefined } | null> {
     const run = (await this.c.k.d.store.listRuns(it.id))
       .filter((r) => r.kind === "triage" && r.outcome?.status === "succeeded" && r.acknowledged_at !== null)
       .at(-1);
     if (run?.outcome?.status !== "succeeded") return null;
     const parsed = parseTriage(run.outcome.data.spec);
-    return parsed.ok && parsed.value.phases ? parsed.value.phases : null;
+    return parsed.ok && parsed.value.phases ? { phases: parsed.value.phases, goal: parsed.value.goal_done_when } : null;
   }
 
   /**
@@ -127,11 +132,12 @@ export class PhasesUnit {
     const it = await this.c.k.d.store.getWorkItem(id);
     if (!it || !splitFiling(it)) return;
     const claim = await this.splitClaim(id);
-    const phases = await this.specPhases(it);
-    if (!claim || !phases) {
+    const split = await this.specSplit(it);
+    if (!claim || !split) {
       this.c.k.d.log.warn("split filing has no claim or no phases; left as it is", { work_item_id: id });
       return;
     }
+    const { phases, goal } = split;
     const known = new Map((await this.c.k.d.store.listPhases(id)).map((p) => [p.phase, p.source]));
     const d = claim.detail ?? {};
     const local = d.filing === LOCAL_FILING;
@@ -145,13 +151,16 @@ export class PhasesUnit {
     const tag = typeof d.tag === "string" ? (JSON.parse(d.tag) as StateChangeDetail) : null;
     const patch = { blocked_on: "upstream" as const, blocked_reason: PHASES_OPEN };
     if (local) {
-      await this.c.unit("outbox").comment(it, `split:${it.id}`,
+      await this.c.unit("outbox").comment(it, `split:${it.id}`, [
         `The split spec was approved, so the factory filed its ${phases.length} phases as local tasks, each starting when the one before it closes as completed: ` +
-          `${refs.map((r) => r.link).join(", ")}. This thread closes as completed when the last one does.`);
+          `${refs.map((r) => r.link).join(", ")}. This thread closes as completed when the last one does.`,
+        ...goalLinesText(goal),
+      ].join("\n"));
     } else await this.c.unit("outbox").comment(it, `split:${it.id}`, [
       `The split spec was approved, so the factory filed ${phases.length} phases as sub-issues of this issue:`,
       "",
       ...refs.map((r, i) => `${i + 1}. ${r.link}${i === 0 ? " (starts now)" : " (waits for the phase before it)"}`),
+      ...goalLinesText(goal),
       "",
       this.c.k.cfg.phases_auto_approve === true
         ? "Each phase gets its own spec, approved by this `/approve` (`phases_auto_approve`), so it is implemented without asking again. This issue closes as completed when the last phase does."
@@ -166,6 +175,7 @@ export class PhasesUnit {
       detail: {
         phases: phases.length,
         sub_issues: JSON.stringify(refs.map((r) => r.id)),
+        ...(goal ? { goal_done_when: JSON.stringify(goal) } : {}),
         ...(typeof d.note === "string" ? { note: d.note } : {}),
         ...specDecisionDetail({ tier: it.tier, kind: "split", outcome: "approved", spec_changed: false, actor: claim.actor }),
         ...tag,

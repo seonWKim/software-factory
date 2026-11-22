@@ -10,7 +10,7 @@ import { type Column, DataTable } from "../components/ui/data-table.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
-import { EMPTY_BOX, Notice, PageHeader } from "../components/ui/notice.js";
+import { EMPTY_BOX, Notice, PageHeader, PageToolbar } from "../components/ui/notice.js";
 import { cn } from "../lib/cn.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { Tabs } from "../components/ui/tabs.js";
@@ -22,7 +22,7 @@ import { ModelsTab } from "./plugins-models.js";
 import { MergeButton } from "./merge-button.js";
 import { withNodes } from "./standing.js";
 import { Badge } from "../components/ui/badge.js";
-import { Card } from "../components/ui/card.js";
+import { Card, SUB_TITLE } from "../components/ui/card.js";
 
 // The Plugins page (design 09-dashboard-app, 2026-11-16): what the agents can use, in four tabs (MCP, Skills, Tools, Models),
 // read from GET /api/v1/plugins, the rows `factory plugins list` prints. "Plugins" here are agent capabilities, never
@@ -187,7 +187,7 @@ function resultText(r: ImportResult): string {
 function ImportResults({ results }: { results: readonly ImportResult[] }) {
   return (
     <section className="flex flex-col gap-1">
-      <h3 className="text-sm font-semibold">{t("plugins.importResults")}</h3>
+      <h3 className={SUB_TITLE}>{t("plugins.importResults")}</h3>
       <ul aria-label={t("plugins.importResults")} className="flex flex-col gap-1">
         {results.map((r) => {
           const ok = r.outcome === "stored" || r.outcome === "already_added";
@@ -516,9 +516,10 @@ export function PluginsPage() {
   return (
     <>
       <PageHeader title={t("page.plugins")} description={t("plugins.intro")} />
-      <div className="flex flex-col gap-3">
-        <Tabs label={t("plugins.tabs")} options={TABS.map((x) => ({ id: x.id, label: t(x.label) }))} value={tab} onChange={choose} />
+      <PageToolbar tabs={<Tabs label={t("plugins.tabs")} options={TABS.map((x) => ({ id: x.id, label: t(x.label) }))} value={tab} onChange={choose} />}>
         {tab !== "models" && <Input type="search" aria-label={t("plugins.search")} placeholder={t("plugins.search")} className="w-full sm:max-w-sm" value={query} onChange={(e) => setQuery(e.target.value)} />}
+      </PageToolbar>
+      <div className="flex flex-col gap-3">
         {outcome && (
           <Notice tone={outcome.ok ? "ok" : "bad"}>
             {outcome.lines.map((l, i) => <span key={i} className="block break-words">{l}</span>)}

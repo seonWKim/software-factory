@@ -1,8 +1,12 @@
-// The daily improve run, the improve run a burst or an old failure triggers, and filing an improve run's report.
+// The daily improve run, the improve run a burst or an old failure triggers, filing an improve run's report, and the
+// design learnings: capturing the owner's corrections to UI changes and committing them in one batch per improve run.
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
-import { FIX_SPEC_APPROVED, enqueueImprove, fileReport, markerKey, settleOutcomes, triggerImprove, utcDay } from "../../../core/improver.js";
-import { type FiledPattern, type Run, type SourceRef, type WorkItem } from "../../../core/types.js";
+import {
+  type DesignLearningSource, FIX_SPEC_APPROVED, type FilingDeps, LEARNINGS_HEAD, LEARNINGS_PATH, captureDesignLearning, captureKey, enqueueImprove, fileProposals,
+  fileReport, isDesignFinding, markerKey, renderLine, settleOutcomes, triggerImprove, utcDay,
+} from "../../../core/improver.js";
+import { type FiledPattern, type Run, type SourceRef, type Timestamp, type WorkItem } from "../../../core/types.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
@@ -13,11 +17,22 @@ export class ImproveUnit {
   /** The UTC day whose improve run this process saw queued (design §7). A cache only: the run's key dedupes. */
   improveDay: string | null = null;
 
-  /** Each tick: the day's improve run, the trigger check, then the outcomes of filed patterns due one. */
+  /** Each tick: the day's improve run, the trigger check, the outcomes of filed patterns due one, then promoted proposals. */
   async improveStep(): Promise<void> {
     await this.dailyStep();
     await this.triggerStep();
     await this.outcomeStep();
+    await this.proposalStep();
+  }
+
+  /**
+   * Files one work item per entity proposal the owner promoted (design §7, #496), through the first source that can file,
+   * as improve patterns are: the diff as an unverified draft, never applied or merged. One caller takes each (a store claim).
+   */
+  private async proposalStep(): Promise<void> {
+    for (const p of await fileProposals({ store: this.c.k.d.store, file: this.filer() }, this.c.k.project())) {
+      this.c.k.d.log.info("proposal filed", { proposal_id: p.id, ref: p.filed_ref?.id });
+    }
   }
 
   /**
@@ -61,16 +76,65 @@ export class ImproveUnit {
   async fileImprove(run: Run): Promise<void> {
     const report = await this.c.k.d.store.getImproveReport(run.id);
     if (!report) return;
-    const filer = this.c.k.sources.find((s) => typeof s.fileIssue === "function");
     const done = await fileReport({
       store: this.c.k.d.store,
       scanner: this.c.k.d.scanner,
       clock: this.c.k.d.clock,
-      file: filer?.fileIssue ? (input) => filer.fileIssue!(input) : null,
+      file: this.filer(),
       comment: (ref, body, marker) => this.commentFiled(ref, body, marker),
     }, report);
     const count = (status: string) => done.groups.filter((g) => g.filing?.status === status).length;
     this.c.k.d.log.info("improve report filed", { report_id: report.id, filed: count("filed"), commented: count("commented"), skipped: count("skipped") });
+    await this.c.k.guard("design learnings commit", () => this.commitLearnings(run));
+  }
+
+  /**
+   * The project's design learnings not in design-system/learnings.md yet, appended to it on the local base in one
+   * commit for the improve run `run` (design 07-design-learnings). The action, keyed by the run and its lines, is stored
+   * before the lines are marked taken, so a crash between the two appends them again next time, and the append skips a
+   * line the file holds. No sandbox that can commit locally: the lines wait in the store.
+   */
+  private async commitLearnings(run: Run): Promise<void> {
+    const merge = this.c.unit("local-merge");
+    if (!merge.canAppend()) return;
+    const lines = (await this.c.k.d.store.listDesignLearnings(this.c.k.project())).filter((l) => l.batch === null);
+    if (lines.length === 0) return;
+    const batch = `${run.id}-${lines[0]!.id}-${lines.at(-1)!.id}-${lines.length}`;
+    await merge.appendToBase(`design_learnings:${batch}`, {
+      path: LEARNINGS_PATH, head: LEARNINGS_HEAD, lines: lines.map(renderLine), branch: `${this.c.k.cfg.branch_prefix}design-learnings-${batch}`,
+      message: `Design learnings: ${lines.length} new ${lines.length === 1 ? "line" : "lines"}\n\nAppended by improve run ${run.id} (design 07-design-learnings).`,
+    });
+    await this.c.k.d.store.markDesignLearningBatch(lines.map((l) => l.id), run.id);
+  }
+
+  /**
+   * An owner correction on `it` kept as a design learnings line (design 07-design-learnings): a `/revise` or `/reject`
+   * with words (`pushback`, keyed by its comment) or an explicit `changes` verdict with a reason (`verdict`). Only an
+   * item whose change touches `web/`. A failure is logged: the command it follows has applied.
+   */
+  async captureCorrection(it: WorkItem, source: Extract<DesignLearningSource, "pushback" | "verdict">, comment_id: string, words: string): Promise<void> {
+    await this.c.k.guard("design learnings", async () => {
+      await captureDesignLearning(this.c.k.d, it, { source, key: captureKey[source](it.id, comment_id), words, at: this.now() });
+    });
+  }
+
+  /** Each design-system finding of a finished review run on `it`, kept as a line keyed by the run and the finding's place. */
+  async captureReview(it: WorkItem, run: Run, findings: readonly Parameters<typeof isDesignFinding>[0][]): Promise<void> {
+    await this.c.k.guard("design learnings", async () => {
+      for (const [i, f] of findings.entries()) {
+        if (isDesignFinding(f)) await captureDesignLearning(this.c.k.d, it, { source: "review", key: captureKey.review(run.id, i), words: f.text, at: run.finished_at ?? this.now() });
+      }
+    });
+  }
+
+  private now(): Timestamp {
+    return this.c.k.d.clock.now().toISOString() as Timestamp;
+  }
+
+  /** The first source in `plugins.source` order that can file (`fileIssue`), bound; null when none can. */
+  private filer(): FilingDeps["file"] {
+    const filer = this.c.k.sources.find((s) => typeof s.fileIssue === "function");
+    return filer?.fileIssue ? (input) => filer.fileIssue!(input) : null;
   }
 
   /** A comment on a filed item: through its thread (and the outbox) when the store holds it, else to its source. */

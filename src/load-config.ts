@@ -10,6 +10,7 @@ import {
 } from "./core/config.js";
 import { type ProjectRef, localProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { pathCompanionsConfig } from "./core/companions.js";
+import { improverConfig } from "./core/proposals.js";
 import { checkCommands, commandText } from "./core/checks.js";
 import { type SplitLimits, splitThresholds } from "./core/split.js";
 import type { Tier } from "./core/types.js";
@@ -423,6 +424,7 @@ export async function loadConfig(
     agent_git_identity: file.agent_git_identity,
     budget_min_sample: budget.budget_min_sample,
     path_companions: pathCompanionsConfig(raw),
+    improver: improverConfig(raw), // improver.max_proposals, improver.schedule, distill.min_cases (design 07)
     // Coordination (design §5): the threshold, hotspots and mechanical paths, checked at load by checkConfigKeys.
     coordination: coordinationConfig(raw),
   };
