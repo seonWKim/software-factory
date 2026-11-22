@@ -127,7 +127,7 @@ function WorkRow({ it }: { it: ItemRow }) {
             </span>
           )}
           {reason !== "" && !chip && (
-            <span data-need title={reason} className="min-w-0 flex-1 basis-40 truncate">
+            <span data-need title={reason} className="min-w-0 flex-1 basis-40 sm:truncate">
               {toNeed ? <Link href={toNeed} className={LINK_CLASS}>{reason}</Link> : reason}
             </span>
           )}

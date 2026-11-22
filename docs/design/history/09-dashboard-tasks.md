@@ -28,3 +28,4 @@
 
 - **Needs-you Why column** (decision changed 2026-11-07). Before: the Why column showed the item's badges, which repeated the State (for example "needs approval"), or the raw blocked reason; the reason was built only in the classic page.
 - **The Tasks row ID was the only link** (decision changed 2026-11-19, the Tasks row line at the top). Before: the accent mono work item ID linked to the item and the title was plain text.
+- **A Needs-you reason was cut with an ellipsis at every width** (decision changed 2026-11-22, issue #763, the reason decision at the top). Before: the reason span used `truncate` at every width, so a 390px phone never saw the full reason.
