@@ -324,6 +324,39 @@ describe("setup_missing (design §5 Restarts, setup state)", () => {
     expect(await f.store.getClaimPause("model_credential")).toBeNull();
     expect((await f.runs(it0, "triage")).map((r) => [r.id, r.status])).toEqual([[queued!.id, "succeeded"]]);
   });
+
+  // Bug (issue 757): a missing credential failed each run as `exception`, which was retried (run_retry_scheduled),
+  // and after a streak raised the zero_tokens alarm and the model_stall pause with its probe every 10 minutes.
+  it("the issue's trace: one queued run with no outcome, no run_retry_scheduled, no zero_tokens alarm, no model_stall pause", async () => {
+    let present = true;
+    const f = await factory({
+      // The runner reads the same secret file as the check: the credential went between the check and the read.
+      triage: () => () => {
+        present = false;
+        throw Object.assign(new Error("no model credential in the secret file (docs/setup.md §3)"), { code: SETUP_MISSING });
+      },
+      modelCredential: async () => present,
+    });
+    const items = [await f.submit(), await f.submit()];
+    for (let i = 0; i < 4; i++) {
+      await f.step();
+      await f.controller.tickAlarms();
+      await f.controller.tickModelProbe();
+      f.clock.advance(MAX);
+    }
+    const [first, second] = await Promise.all(items.map((it) => f.runs(it)));
+    expect(first).toMatchObject([{ kind: "triage", status: "queued", outcome: null }]);
+    expect(second).toMatchObject([{ kind: "triage", status: "queued", outcome: null }]);
+    expect(f.runner.specs.filter((s) => s.role === "triage")).toHaveLength(1); // only the one claim before the pause
+    expect(await f.store.listRunsFinishedWithin(3_600_000)).toEqual([]);
+    for (const it of items) {
+      expect((await f.store.listStateChanges(it.id)).map((c) => c.reason)).not.toContain("run_retry_scheduled");
+      expect(await f.item(it)).toMatchObject({ blocked_on: "none", restart_count: 0 });
+    }
+    expect((await f.store.listAlerts({ limit: 50 })).map((a) => a.pattern)).not.toContain("zero_tokens");
+    expect(await f.store.getClaimPause("model_stall")).toBeNull();
+    expect(await f.store.getClaimPause("model_credential")).not.toBeNull();
+  });
 });
 
 describe("provider_setup", () => {

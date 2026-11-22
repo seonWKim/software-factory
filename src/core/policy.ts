@@ -130,10 +130,11 @@ export function takenOver(run: Pick<Run, "status" | "outcome">): boolean {
 /**
  * True when a plain retry is likely to clear the failed run's outcome (design 05-alarms, held items): a stall,
  * a usage or rate limit, or an infra failure. Any other failure is the task's own, which a retry alone repeats.
+ * A missing model credential (`setup_missing`) is neither: no retry succeeds until the owner adds the credential.
  */
 export function retryClears(outcome: RunOutcome | null): boolean {
   const c = failureClass(outcome);
-  return c === "stalled" || c === "rate_limited" || c === "setup_missing" || c === "infra";
+  return c === "stalled" || c === "rate_limited" || c === "infra";
 }
 
 /**
