@@ -4,7 +4,7 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ItemRow } from "../web/src/api.js";
-import { SLOW, TOKEN, card, chooseMenu, item, menuItems, reset, row, s, show, teardown, view } from "./ui-tasks-fixtures.js";
+import { SLOW, TOKEN, card, json, chooseMenu, item, menuItems, reset, row, s, show, teardown, view } from "./ui-tasks-fixtures.js";
 
 beforeEach(reset);
 afterEach(teardown);
@@ -218,5 +218,63 @@ describe("Needs you", () => {
     await show();
     fireEvent.click(within(card("tk_now")).getByRole("checkbox", { name: "Complete: tk_now" }));
     await waitFor(() => expect(s.posts.some((p) => p.url.includes("done"))).toBe(true), SLOW);
+  });
+
+  /** This browser's local storage as a map: jsdom's is off without a storage file. */
+  const storage = (stored: Record<string, string> = {}) => {
+    const m = new Map(Object.entries(stored));
+    vi.stubGlobal("localStorage", { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v), removeItem: (k: string) => void m.delete(k) });
+    return m;
+  };
+  /** The fixture's fetch stub, with GET /api/v1/unreviewed-merges answered from `merges`. */
+  const withMerges = (merges: object[]) => {
+    const base = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => (url === "/api/v1/unreviewed-merges" ? json(200, { as_of: "2026-11-12T00:00:00.000Z", merges }) : base(url, init))));
+  };
+  const merge = (ref: string, at: string, extra: object = {}) => ({ project: "o/r", change_ref: ref, change_url: null, review_url: `https://github.com/o/r/pull/${ref}`, checks_url: `https://github.com/o/r/pull/${ref}/checks`, check_verdict: null, merge_sha: "abc1234", merged_by: "x", recorded_at: at, ...extra });
+
+  it("lists every ask with its rank reason and says how many are held until the review time", async () => {
+    s.items = Array.from({ length: 10 }, (_, i) => item(`wi_${i}`, { title: `Ask ${i}`, rank_reason: i < 3 ? "Held until 09:00" : "Waiting for you", held: i < 3 }));
+    await show();
+    const el = await section();
+    expect(el.querySelectorAll("li[data-key]").length).toBe(10);
+    expect(el.querySelectorAll("[data-rank]").length).toBe(10);
+    expect(within(el).getAllByText("Held until 09:00")).toHaveLength(3);
+    expect(within(el).getByText("3 held until 09:00")).toBeTruthy();
+    expect(el.querySelector("h2 + span")!.textContent).toBe("7");
+  });
+
+  it("Merged without you lists merges since the last look with their checks and review links; Worth sampling lists failed first", async () => {
+    const kept = storage({ "factory.needs-you.last-look": String(Date.parse("2026-11-10T00:00:00.000Z")) });
+    withMerges([merge("3", "2026-11-12T00:00:00.000Z"), merge("2", "2026-11-11T00:00:00.000Z", { check_verdict: "failed" }), merge("1", "2026-11-01T00:00:00.000Z", { check_verdict: "reverted" })]);
+    await show();
+    const fresh = await screen.findByRole("region", { name: "Merged without you" }, SLOW);
+    expect(fresh.querySelectorAll("li").length).toBe(2);
+    expect(within(fresh).getAllByRole("link", { name: "Checks" })[0]!.getAttribute("href")).toBe("https://github.com/o/r/pull/3/checks");
+    expect(within(fresh).getAllByRole("link", { name: "Review" })).toHaveLength(2);
+    const sample = await screen.findByRole("region", { name: "Worth sampling" }, SLOW);
+    expect([...sample.querySelectorAll("li")].map((l) => l.querySelector("a")!.textContent)).toEqual(["PR #2", "PR #1", "PR #3"]);
+    expect([...sample.querySelectorAll("[data-risk]")].map((r) => r.textContent)).toEqual(["Checks failed", "Reverted", "Not reviewed"]);
+    // The look was stored: this visit's time replaces the old one.
+    expect(Number(kept.get("factory.needs-you.last-look"))).toBeGreaterThan(Date.parse("2026-11-12T00:00:00.000Z"));
+  });
+
+  it("a first visit counts the last 7 days of merges", async () => {
+    storage();
+    const day = 24 * 3600 * 1000;
+    withMerges([merge("9", new Date(Date.now() - 2 * day).toISOString()), merge("8", new Date(Date.now() - 20 * day).toISOString())]);
+    await show();
+    const fresh = await screen.findByRole("region", { name: "Merged without you" }, SLOW);
+    expect(fresh.querySelectorAll("li").length).toBe(1);
+  });
+
+  it("puts Quick add after the cards and before the list", async () => {
+    withMerges([merge("9", new Date().toISOString())]);
+    s.items = [item("wi_1")];
+    await show();
+    const names = ["Needs you", "Merged without you", "Worth sampling", "Open tasks"].map((n) => screen.getByRole("region", { name: n }));
+    const input = document.querySelector("form, input")!;
+    const order = [...names.slice(0, 3), input, names[3]!];
+    for (let i = 1; i < order.length; i++) expect(order[i - 1]!.compareDocumentPosition(order[i]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
