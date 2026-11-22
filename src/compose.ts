@@ -2,9 +2,9 @@
 // lives in load-config.ts and config-values.ts, so code that only reads config does not load this file.
 // Environment (local / cloud) is chosen here; core code never branches on it.
 
-import { mkdir, stat } from "node:fs/promises";
+import { mkdir, stat, writeFile } from "node:fs/promises";
 import { availableParallelism, hostname } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { type FactoryConfig, cliUserConfig, toolGrantsConfig } from "./core/config.js";
 import type { ProjectRef } from "./core/project.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
@@ -337,13 +337,45 @@ export async function build(
  * selected runner declares no such group: it reads no model credential. Presence only: no value leaves the store.
  */
 export function modelCredentialCheck(loaded: Pick<Loaded, "registry" | "plugins">, secrets: SecretStore): (() => Promise<string | null>) | null {
-  const groups = selectedRunners(loaded.plugins).map((n) => (loaded.registry.runner.secrets[n] ?? []).filter((d) => d.oneOf === "model credential"));
-  if (groups.length === 0 || groups.some((g) => g.length === 0)) return null;
-  const declared = [...new Map(groups.flat().map((d) => [d.name, d])).values()];
+  const declared = modelCredentialSecrets(loaded);
+  if (declared === null) return null;
   const readable: SecretStore = { get: (name) => secrets.get(name).catch(() => null), valuesForScan: () => secrets.valuesForScan() };
   return async () => {
     const { secretChecks } = await import("./setup.js");
     return (await secretChecks(declared, readable)).find((c) => !c.ok)?.msg ?? null;
+  };
+}
+
+/**
+ * The "model credential" group every selected runner declares, each name once in declaration order; null when a
+ * selected runner declares none (it reads no model credential). The worker's check and the dashboard's dialog read it.
+ */
+function modelCredentialSecrets(loaded: Pick<Loaded, "registry" | "plugins">) {
+  const groups = selectedRunners(loaded.plugins).map((n) => (loaded.registry.runner.secrets[n] ?? []).filter((d) => d.oneOf === "model credential"));
+  if (groups.length === 0 || groups.some((g) => g.length === 0)) return null;
+  return [...new Map(groups.flat().map((d) => [d.name, d])).values()];
+}
+
+/**
+ * The dashboard's Add model credential dialog (design 09-status-page): the declared names, each value written by the
+ * setup writer `npm run setup` uses, into the secret file, made (folder 700, file 600) when absent. Undefined when no
+ * selected runner reads a model credential.
+ */
+export function modelCredentialDialog(loaded: Pick<Loaded, "registry" | "plugins" | "secretsFile">): UiSettings["modelCredential"] {
+  const declared = modelCredentialSecrets(loaded);
+  if (declared === null) return undefined;
+  return {
+    secrets: declared.map((d) => d.name),
+    save: async (values) => {
+      const { setSecret } = await import("./setup.js");
+      const file = loaded.secretsFile;
+      await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+      await writeFile(file, "", { flag: "a", mode: 0o600 });
+      for (const { name } of declared) {
+        const v = values.get(name);
+        if (v !== undefined) await setSecret(file, name, v);
+      }
+    },
   };
 }
 
@@ -441,6 +473,8 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   settings.calendar = (await import("./ui/calendar-api.js")).uiCalendar(loaded, {
     store, actor: settings.actor, clock, base: settings.base, connect: async (r) => (await import("./setup.js")).connectCalendar(r),
   }); // its Calendar section
+  const modelCredential = modelCredentialDialog(loaded);
+  if (modelCredential) settings.modelCredential = modelCredential; // the Add model credential dialog (Needs you, Failures)
   settings.ask = { llm: await p.llm(secrets).catch(() => null), log: new ConsoleLogger(clock, "ask") }; // the Data page's Ask: the Model plugin, null when it cannot be built
   const cliUser = cliUserConfig(loaded.file);
   const pauses: UiPauses = {

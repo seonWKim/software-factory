@@ -5,7 +5,7 @@ import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { Dialog } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
-import { Input } from "../components/ui/input.js";
+import { Input, PASSWORD } from "../components/ui/input.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { t } from "../i18n/index.js";
@@ -45,12 +45,6 @@ export function CalendarSection({ token }: { token: string }) {
     </div>
   );
 }
-
-/**
- * A password field from the shared Input, whose typed variants are text, search and number only: it hands `type` to the
- * native field as given. Adding `password` to Input's variants (components.md) is a follow-up outside this change.
- */
-const PASSWORD = { type: "password" } as unknown as { type: "text" };
 
 /** What the last Connect answered, until the next one. */
 type Asking = { needs: string[] } | null;
