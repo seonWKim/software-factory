@@ -119,12 +119,50 @@ describe("merge evaluations: the read, from store data only", () => {
     expect(all.map((e) => e.work_item_id)).toEqual([a.id, b.id]);
     expect(all[0]).toMatchObject({
       merge_sha: "sha-a", project: a.project, tier: 2, merged_by: merger.id, token_cost: 1200, title: "First",
-      reverted: 1, fixed_forward: 1, verdicts: { ...noVerdicts(), changes: 1 },
+      reverted: 1, fixed_forward: 1, verdicts: { ...noVerdicts(), changes: 1 }, explicit: { ...noVerdicts(), changes: 1 }, critical: 0,
     });
-    expect(all[1]).toMatchObject({ merge_sha: "sha-b", token_cost: 300, reverted: 0, fixed_forward: 0, verdicts: noVerdicts(), title: null });
+    expect(all[1]).toMatchObject({ merge_sha: "sha-b", token_cost: 300, reverted: 0, fixed_forward: 0, verdicts: noVerdicts(), explicit: noVerdicts(), critical: 0, title: null });
     // `since` keeps only the merges at or after it.
     expect((await store.listMergeEvaluations(all[1]!.merged_at)).map((e) => e.work_item_id)).toEqual([b.id]);
 
     expect(digestMerges(all)).toEqual({ merged: 2, reverted: 1, fixed_forward: 1, verdicts: { ...noVerdicts(), changes: 1 }, tokens: 1500 });
+  });
+
+  it("returns each merge's explicit verdicts by kind and its critical count apart from implicit verdicts", async () => {
+    const { store } = await newStore();
+    const a = await merge(store, await item(store, 1), "sha-a");
+    const verdict = async (i: number, v: { verdict: "accept" | "changes" | "reject"; severity: "none" | "minor" | "critical"; implicit: boolean }) => {
+      const cur = (await store.getWorkItem(a.id))!;
+      const r = await store.recordVerdict({
+        id: a.id, expected_version: cur.version, actor: human, reason: "x", comment_id: `${v.implicit ? "implicit:" : ""}c${i}`, target: "pr",
+        pr_head: v.implicit ? `h${i}` : null, ...v,
+      });
+      if (!r.ok) throw new Error(r.reason);
+    };
+    await verdict(1, { verdict: "changes", severity: "critical", implicit: false });
+    await verdict(2, { verdict: "reject", severity: "minor", implicit: false });
+    await verdict(3, { verdict: "accept", severity: "none", implicit: false });
+    // An implicit critical (a person's push) is not an owner verdict: not in `explicit`, not in `critical`.
+    await verdict(4, { verdict: "changes", severity: "critical", implicit: true });
+
+    const [e] = await store.listMergeEvaluations(null);
+    expect(e).toMatchObject({
+      verdicts: { ...noVerdicts(), accept: 1, changes: 2, reject: 1 },
+      explicit: { ...noVerdicts(), accept: 1, changes: 1, reject: 1 },
+      critical: 1,
+    });
+  });
+
+  it("`within_ms` keeps the merges of that last stretch of the store's clock", async () => {
+    const clock = new FakeClock("2026-10-01T00:00:00.000Z");
+    const { store } = await newStore(clock);
+    const old = await merge(store, await item(store, 1), "sha-old");
+    clock.advance(40 * 86_400_000);
+    const recent = await merge(store, await item(store, 2), "sha-new");
+    clock.advance(1000);
+    const ids = async (w: Parameters<FactoryStore["listMergeEvaluations"]>[0]) => (await store.listMergeEvaluations(w)).map((e) => e.work_item_id);
+    expect(await ids({ within_ms: 30 * 86_400_000 })).toEqual([recent.id]);
+    expect(await ids({ within_ms: 50 * 86_400_000 })).toEqual([old.id, recent.id]);
+    expect(await ids(null)).toEqual([old.id, recent.id]);
   });
 });

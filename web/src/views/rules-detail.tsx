@@ -12,8 +12,12 @@ import { fileLines, isClass, line, muted, proposalLine, quote, ruleName } from "
 // The Rules page's entry detail, read on demand through GET /api/v1/rules/entry?id= and never on page load: a
 // description, what it would change, before → after, why, the evidence (newest first, 3 shown, the rest behind
 // "Show all N"), where it applies and the related applied rules (sharing an incident ID or naming the target file).
-// Each part is left out when it has nothing; only "what" says "not given". The card's disclosure and the verdict
-// dialogs both show it through EntryDetail.
+// Each part is left out when it has nothing; only "what" says "not given". The card's disclosure, the verdict
+// dialogs and an applied rule's Open evidence dialog all show it through EntryDetail, which takes an ID and a title
+// (and a waiting entry's kind, target and draft when it has them).
+
+/** What the detail needs of an entry: its ID and title, and a waiting entry's kind, target and draft when it has them. */
+export type DetailEntry = Pick<RuleRow, "id" | "title"> & Partial<Pick<RuleRow, "kind" | "target" | "draft">>;
 
 /** One part of the detail: its label, then its lines; nothing at all when it has none. */
 function DetailPart({ label, part, children }: { label: MessageKey; part: string; children: ReactNode[] }) {
@@ -70,11 +74,11 @@ function related(applied: AppliedRule[], ids: ReadonlySet<string>, target: strin
 }
 
 /**
- * The detail in its order: a description, what it would change (a proposal's kind and target), before → after, why,
+ * The detail in its order: a description, what it would change (a proposal's kind, target and prose change), before → after, why,
  * the evidence, where it applies, and the related applied rules. A part with nothing to show is left out; only "what"
  * says "not given".
  */
-function Detail({ entry, d, applied }: { entry: RuleRow; d: RuleDetail; applied: AppliedRule[] }) {
+function Detail({ entry, d, applied }: { entry: DetailEntry; d: RuleDetail; applied: AppliedRule[] }) {
   const kind = d.kind ?? entry.kind;
   const target = d.target ?? entry.target;
   const rule = d.default ?? entry.draft?.default;
@@ -87,11 +91,12 @@ function Detail({ entry, d, applied }: { entry: RuleRow; d: RuleDetail; applied:
       {d.description !== undefined && <p data-detail-description className={line}>{d.description}</p>}
       {!isClass(entry.id) && (
         <DetailPart label="rules.detailWhat" part="what">
-          {kind === undefined && target === undefined
+          {kind === undefined && target === undefined && d.change === undefined
             ? [<p key="none" className={muted}>{t("rules.notGiven")}</p>]
             : [
               kind !== undefined && <p key="kind" className={line}>{t("rules.whatKind", { kind: proposalLine(kind, target) })}</p>,
               target !== undefined && <p key="target" className={`${line} font-mono`}>{t("rules.whatTarget", { target })}</p>,
+              d.change !== undefined && <p key="change" data-detail-change className={line}>{d.change}</p>,
             ]}
         </DetailPart>
       )}
@@ -133,7 +138,7 @@ function Detail({ entry, d, applied }: { entry: RuleRow; d: RuleDetail; applied:
 }
 
 /** The detail, read once when the card opens; "could not be read" when the ledger gave none or failed. */
-export function EntryDetail({ entry, applied }: { entry: RuleRow; applied: AppliedRule[] }) {
+export function EntryDetail({ entry, applied }: { entry: DetailEntry; applied: AppliedRule[] }) {
   const q = useRuleEntry(entry.id, true);
   if (q.isPending) return <Loading rows={2} />;
   const d = q.data?.detail ?? null;

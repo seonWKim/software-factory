@@ -17,7 +17,10 @@ describe("one queued count", () => {
     history.replaceState(null, "", "/app/items");
     mount();
     const filters = await screen.findByRole("tablist", { name: "Filter by state" });
-    expect(await within(filters).findByRole("tab", { name: `Queued ${queue.queue.length}` })).toBeTruthy();
+    // Queued is a state of the Active group: its tab is in the second row once Active is chosen.
+    fireEvent.click(await within(filters).findByRole("tab", { name: /^Active/ }));
+    const states = await screen.findByRole("tablist", { name: "Filter Active by state" });
+    expect(await within(states).findByRole("tab", { name: `Queued ${queue.queue.length}` })).toBeTruthy();
     expect(queue.queue.length).toBe(overview.queued);
   });
 
@@ -26,7 +29,9 @@ describe("one queued count", () => {
     mount();
     await vi.waitFor(() => expect(location.pathname + location.search).toBe("/app/items?state=queued"));
     const filters = screen.getByRole("tablist", { name: "Filter by state" });
-    expect(within(filters).getByRole("tab", { name: /^Queued/ }).getAttribute("aria-selected")).toBe("true");
+    expect(within(filters).getByRole("tab", { name: /^Active/ }).getAttribute("aria-selected")).toBe("true");
+    const states = screen.getByRole("tablist", { name: "Filter Active by state" });
+    expect(within(states).getByRole("tab", { name: /^Queued/ }).getAttribute("aria-selected")).toBe("true");
     expect(await screen.findByRole("table", { name: "Queued runs" })).toBeTruthy();
   });
 
@@ -184,9 +189,11 @@ describe("app pages", () => {
     mount();
     fireEvent.click(await screen.findByText("Spec waiting"));
     expect(location.pathname).toBe("/app/items/wi_1");
-    expect(await screen.findByText("git_failed")).toBeTruthy();
-    expect(screen.getByText(": git merge: boom", { exact: false })).toBeTruthy();
-    expect(screen.getByText("intake")).toBeTruthy();
+    const runs = await screen.findByRole("table", { name: "Runs" });
+    // One error line in words; the code and the full text sit behind Details.
+    expect(within(runs).getByText("A git command failed")).toBeTruthy();
+    expect(runs.querySelector("[data-raw]")?.textContent).toContain("git merge: boom");
+    expect(screen.getByText("Created by a person")).toBeTruthy();
     // The breadcrumb back to the list (the sidebar's entry is the current page).
     fireEvent.click(screen.getByRole("link", { name: "Work", current: false }));
     expect(location.pathname).toBe("/app/items");

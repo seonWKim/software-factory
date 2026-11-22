@@ -127,7 +127,7 @@ describe.each(BACKENDS)("factory settings: $name", ({ make }) => {
     const { store } = await make();
     const d = deps(store);
     const cases: [string, string, string][] = [
-      ["workers", "0", "workers must be an integer of 1 or more (got 0)"],
+      ["workers", "-1", "workers must be an integer of 0 or more (got -1)"],
       ["max_attempts", "x", "max_attempts must be a positive integer"],
       ["max_diff_lines", "1.5", "max_diff_lines must be a positive integer"],
       ["retry_base_ms", "-1", "retry_base_ms must be a positive integer"],

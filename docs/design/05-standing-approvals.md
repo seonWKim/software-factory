@@ -1,9 +1,11 @@
 # 5. Coordination: standing approvals
 
-- **The page shows and changes rules** (decision changed 2026-11-08, issue #300, phase 3 of 3 of #293; before: rules
-  and proposals were shown and changed only through `/standing`, see History). The Settings page's "Standing
-  approvals" section lists each rule (gate, tier, the effective threshold, on or off, who set it, created, and last
-  used, which is not recorded yet and shows "not recorded") with an on or off switch, and each pending proposal (its
+- **The page shows and changes rules** (decision changed 2026-11-21, wi_1cf90455; before: "last used" was not
+  recorded and showed "not recorded", see History). On the Rules page each rule that is on is a row of "In effect"
+  and each one that is off a row under its Details (since 2026-11-22): its switch, its sentence, when it last fired and
+  the items it approved in the last 7 days, each linked by its title; gate, tier, the effective threshold, who set it
+  and created behind the row's Details. Pending proposals are rows of "Waiting for you". Firings are read, never written, from the
+  stored `standing_approved` state changes whose actor is `standing:<rule>`. Each pending proposal (its
   rule not on and not written since the proposal was stored, read from the stored rows alone) with Accept and
   Decline. Read: `GET /api/v1/standing`; write: `POST /api/v1/standing` with `{ rule, enabled, proposal? }`, behind
   the resume route's guards and its owner check (`approve_spec`, the `/approve` check), so the page accepts what

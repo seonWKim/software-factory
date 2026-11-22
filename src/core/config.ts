@@ -310,7 +310,7 @@ export interface LoadedConfig {
    * of its own. A PR-only key; absent or false (the default): every pack entry needs the owner's approval.
    */
   packs_auto_approve_read_only?: boolean;
-  /** Worker loops in one `dev` or `worker` process (architecture §4). An integer of 1 or more; default 1. */
+  /** Worker loops in one `dev` or `worker` process (architecture §4). An integer of 0 or more (0: none claims); default 1. */
   workers: number;
   /**
    * Worker slots in one process, the most `workers` can be raised to live (`factory settings set workers`).

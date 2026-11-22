@@ -88,6 +88,8 @@ const spec = {
   in_short: "AS-IS: a.\nTO-BE: b.",
   problem: "Change a",
   done_criteria: ["a changes"],
+  // Manual: a test file check would run `repo.test_command` on it in every round (tests/done-checks-run.test.ts covers that).
+  done_checks: [{ line: "a changes", manual: true, reason: "a person reads a" }],
   desired_output: "a",
   scope: "src only",
   allowed_paths: ["src/"],

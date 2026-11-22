@@ -1,5 +1,8 @@
 ## History
 
+- **Last fired replaces last used** (decision changed 2026-11-21, wi_1cf90455). Before: each rule showed "last
+  used", always null and shown as "not recorded". After: `last_fired_at` and `recent` (items of the last 7 days) come
+  from the stored `standing_approved` state changes.
 - **A rule acts at the spec gate** (decision changed 2026-11-07, issue #299). Before: spec decisions were recorded and
   checked and nothing acted on them; no command accepted or declined a rule, no proposal was posted, and
   `standing_approvals.threshold` was named as a config key to be wired later.

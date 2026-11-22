@@ -2,6 +2,8 @@
 // @ts-nocheck -- tsconfig.test.json has no DOM or JSX; like the other ui tests this file typechecks under the web config.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../web/src/App.js";
 import { Markdown } from "../web/src/components/ui/markdown.js";
@@ -63,6 +65,27 @@ const DETAILS: Record<string, unknown> = {
     item: base("wi_done", 21, "Finished interactive"),
     timeline: [],
     runs: [{ id: "run_i_2", kind: "interactive", status: "succeeded", attempt: 1, started_at: AT, finished_at: AT, created_at: AT, tokens: 0, error: null }],
+  },
+  "/api/v1/items/wi_about": {
+    as_of: AT,
+    item: base("wi_about", 30, "About spec", {
+      request: "Item page shows what the work is about",
+      spec: { problem: "The page shows no text about the work.", desired_output: "[withheld: github_token]", done_criteria: ["About shows the summary", "[withheld: github_token]", "Spec starts collapsed"] },
+    }),
+    timeline: [],
+    runs: [],
+  },
+  "/api/v1/items/wi_request": {
+    as_of: AT,
+    item: base("wi_request", 31, "Request only", { request: "Only the request so far", spec: null }),
+    timeline: [],
+    runs: [],
+  },
+  "/api/v1/items/wi_withheld": {
+    as_of: AT,
+    item: base("wi_withheld", 32, "Flagged request", { request: "[withheld: github_token]", spec: null }),
+    timeline: [],
+    runs: [],
   },
   "/api/v1/items/wi_p1": {
     as_of: AT,
@@ -126,9 +149,14 @@ describe("item page: timeline spec", () => {
   it("shows the spec collapsed behind 'spec written (show)' and renders it as markdown when opened, never escaped JSON", async () => {
     mount("/app/items/wi_parent");
     const timeline = await screen.findByRole("region", { name: "Timeline" });
-    // Short changes read as words, not JSON text.
-    expect(timeline.textContent).toContain("stage: NEW → READY");
-    expect(timeline.textContent).toContain("stage: – → NEW");
+    // Short changes read as words, not JSON text, and only behind Details.
+    const raw = [...timeline.querySelectorAll("[data-raw]")].map((d) => d.textContent).join("\n");
+    expect(raw).toContain("stage: NEW → READY");
+    expect(raw).toContain("stage: – → NEW");
+    const visible = timeline.cloneNode(true) as HTMLElement;
+    visible.querySelectorAll("[data-raw]").forEach((n) => n.remove());
+    expect(visible.textContent).not.toContain("NEW → READY");
+    expect(visible.textContent).toContain("Created by the factory");
     const toggle = within(timeline).getByRole("button", { name: "spec written (show)" });
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     expect(timeline.textContent).not.toContain("The page prints");
@@ -165,15 +193,15 @@ describe("item page: links and runs", () => {
     expect(document.querySelector('a[href^="javascript:"]')).toBeNull();
   });
 
-  it("the Runs table shows each run's kind and ID, its attempt and its status", async () => {
+  it("the Runs table shows each run's step and ID, its try and its result", async () => {
     mount("/app/items/wi_parent");
     const table = await screen.findByRole("table", { name: "Runs" });
     const run = table.querySelector<HTMLElement>('tr[data-run="run_triage_1"]')!;
     const cells = [...run.querySelectorAll("td")].map((c) => c.textContent);
     expect(cells[0]).toContain("triage");
     expect(cells[0]).toContain("run_triage_1");
-    expect(cells[1]).toContain("2");
-    expect(cells[2]).toBe("Succeeded");
+    expect(cells[1]).toBe("Try 2");
+    expect(cells[2]).toBe("Done");
   });
 });
 
@@ -648,5 +676,155 @@ describe("item page: Interactive task badge", () => {
     const table = await screen.findByRole("table", { name: "Runs" });
     expect(screen.getAllByText("Interactive task")).toHaveLength(1);
     expect(table.querySelector('tr[data-run="run_i_2"] td')!.textContent).toContain("Interactive task");
+  });
+});
+
+describe("item page: timeline and Runs in plain words", () => {
+  const ME = "local:me";
+  const entry = (version: number, reason: string, actor: { kind: string; id: string }, changes = {}) => ({ version, at: AT, actor, reason, changes, detail: null });
+  const run = (id: string, kind: string, status: string, attempt: number, error = null) => ({ id, kind, status, attempt, started_at: AT, finished_at: AT, created_at: AT, tokens: 5, error });
+
+  /** Every reason literal the controller's units write, but the two that are not timeline reasons (a redeem-code refusal, a run attempt's). */
+  function controllerReasons(): string[] {
+    const dir = join(import.meta.dirname, "..", "src", "controller", "units");
+    const files = readdirSync(dir, { recursive: true }).filter((f) => String(f).endsWith(".unit.ts"));
+    return [...new Set(files.flatMap((f) => [...readFileSync(join(dir, String(f)), "utf8").matchAll(/\breason: "([a-z_]+)"/g)].map((m) => m[1]!)))];
+  }
+
+  /** The item page with a timeline and runs, the viewer being `ME`; the page's element once its timeline shows. */
+  async function serveWords(timeline: unknown[], runs: unknown[]) {
+    const detail = { as_of: AT, item: base("wi_w", 40, "Words"), timeline, runs, commands: [], replies: [] };
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const path = url.split("?")[0]!;
+      const body = path === "/api/v1/items/wi_w" ? detail : path === "/api/v1/session" ? { as_of: AT, csrf_token: "t", commands_enabled: true, actor: ME, actor_source: "environment" } : path === "/api/v1/overview" ? { as_of: AT, stages: {}, needs_you: 0, running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 } } : undefined;
+      if (body === undefined) return new Response(JSON.stringify({ error: "Not found." }), { status: 404 });
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    }));
+    mount("/app/items/wi_w");
+    return screen.findByRole("region", { name: "Timeline" });
+  }
+
+  /** A section's text without its Details. */
+  const visible = (el: HTMLElement) => {
+    const copy = el.cloneNode(true) as HTMLElement;
+    copy.querySelectorAll("[data-raw]").forEach((n) => n.remove());
+    return copy.textContent ?? "";
+  };
+
+  it("has a sentence for every reason the controller writes, and shows no snake_case word outside Details", async () => {
+    const { en } = await import("../web/src/i18n/en.js");
+    const reasons = [...new Set([...controllerReasons().filter((r) => r !== "invalid" && r !== "lease_expired"), "intake", "interactive_takeover"])];
+    expect(reasons.filter((r) => !(`timeline.${r}` in en))).toEqual([]);
+    const timeline = await serveWords(reasons.map((r, i) => entry(i + 1, r, { kind: "user", id: ME })), []);
+    const rows = [...timeline.querySelectorAll("li")].filter((li) => li.parentElement?.tagName === "OL");
+    expect(rows).toHaveLength(reasons.length);
+    for (const row of rows) expect(visible(row)).not.toMatch(/[a-z]+_[a-z_]+/);
+  });
+
+  it("reads the viewer's actions as 'You …' and another person's as 'A person …', and an unknown reason as Changed", async () => {
+    const timeline = await serveWords([
+      entry(1, "retry_requested", { kind: "user", id: ME }, { blocked_on: { from: '"human"', to: '"none"' } }),
+      entry(2, "interactive_takeover", { kind: "user", id: ME }),
+      entry(3, "intake", { kind: "user", id: ME }),
+      entry(4, "retry_requested", { kind: "user", id: "github:77", name: "Dana Smith" }),
+      entry(5, "brand_new_reason", { kind: "system", id: "system" }),
+    ], []);
+    const text = visible(timeline);
+    for (const s of ["You asked for a retry", "You took over in a terminal", "Created by you", "A person asked for a retry", "Changed"]) expect(text).toContain(s);
+    expect(text).not.toContain("Dana");
+    expect(text).not.toContain("brand_new_reason");
+    expect(text).not.toContain("blocked_on");
+    const raw = [...timeline.querySelectorAll("[data-raw]")].map((d) => d.textContent).join("\n");
+    expect(raw).toContain("blocked_on: human → none");
+    expect(raw).toContain("brand_new_reason");
+  });
+
+  it("the Runs table reads Step / Try / Result, folds consecutive cancelled tries, and shows one error line", async () => {
+    await serveWords([], [
+      run("run_a", "implement", "canceled", 0),
+      run("run_b", "implement", "canceled", 0),
+      run("run_c", "implement", "canceled", 0),
+      run("run_d", "implement", "failed", 1, { code: "schedule_to_close", detail: "run run_d passed its schedule_to_close deadline 2026-11-16T22:39:21.171Z" }),
+      run("run_e", "implement", "failed", 2, { code: "some_unlisted_code", detail: "long text" }),
+    ]);
+    const table = await screen.findByRole("table", { name: "Runs" });
+    expect(within(table).getAllByRole("columnheader").slice(0, 3).map((h) => h.textContent)).toEqual(["Step", "Try", "Result"]);
+    const rows = [...table.querySelectorAll("tr[data-run]")];
+    expect(rows.map((r) => r.getAttribute("data-run"))).toEqual(["run_e", "run_d", "run_c"]);
+    const folded = rows[2]!;
+    expect(folded.querySelectorAll("td")[1]!.textContent).toBe("3 tries");
+    expect(folded.querySelectorAll("td")[2]!.textContent).toBe("Stopped");
+    const ids = [...folded.querySelectorAll("[data-raw] li")].map((l) => l.textContent);
+    expect(ids).toEqual(["run_c", "run_b", "run_a"]);
+    const timedOut = rows[1]!;
+    expect(visible(timedOut as HTMLElement)).toContain("Timed out before it started");
+    expect(visible(timedOut as HTMLElement)).not.toMatch(/2026-11-16|schedule_to_close/);
+    expect(timedOut.querySelector("[data-raw]")?.textContent).toContain("2026-11-16T22:39:21.171Z");
+    expect(rows[0]!.querySelectorAll("td")[3]!.textContent).toContain("Failed");
+    expect(visible(rows[0] as HTMLElement)).not.toContain("some_unlisted_code");
+  });
+});
+
+describe("item page: About (the request and the approved spec)", () => {
+  it("a request with an approved spec: About under the title with the summary line, the spec collapsed", async () => {
+    mount("/app/items/wi_about");
+    const about = await screen.findByRole("region", { name: "About" });
+    expect(about.textContent).toContain("Item page shows what the work is about");
+    // Under the title: About comes before the decision box and every other Card.
+    const regions = [...document.querySelectorAll("section[aria-label]")];
+    expect(regions[0]).toBe(about);
+    const toggle = about.querySelector("summary")!;
+    expect(toggle.textContent).toBe("Approved spec");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(about.querySelector("details")!.open).toBe(false);
+    expect(within(about).queryAllByRole("button")).toEqual([]);
+    expect(about.textContent).not.toMatch(/wi_about/);
+  });
+
+  it("expanding the spec shows the problem, the desired output and each done criterion as a list item", async () => {
+    mount("/app/items/wi_about");
+    const about = await screen.findByRole("region", { name: "About" });
+    fireEvent.click(about.querySelector("summary")!);
+    expect(about.querySelector("details")!.open).toBe(true);
+    for (const label of ["Problem", "Desired output", "Done criteria"]) expect(within(about).getByText(label)).toBeTruthy();
+    expect(about.textContent).toContain("The page shows no text about the work.");
+    const items = within(within(about).getByRole("list", { name: "Done criteria" })).getAllByRole("listitem");
+    expect(items.map((li) => li.textContent)).toEqual(["About shows the summary", "Withheld: the egress scan flagged this text.", "Spec starts collapsed"]);
+  });
+
+  it("a withheld text shows the withheld note, never the marker", async () => {
+    mount("/app/items/wi_withheld");
+    const about = await screen.findByRole("region", { name: "About" });
+    expect(about.textContent).toContain("Withheld: the egress scan flagged this text.");
+    expect(about.textContent).not.toContain("[withheld");
+    // The spec's withheld desired output and criterion read the same way.
+    cleanup();
+    mount("/app/items/wi_about");
+    const spec = await screen.findByRole("region", { name: "About" });
+    fireEvent.click(spec.querySelector("summary")!);
+    expect(spec.querySelectorAll("[data-withheld]").length).toBe(2);
+    expect(spec.textContent).not.toContain("[withheld");
+  });
+
+  it("a request with no approved spec: About with the summary only, no spec Disclosure", async () => {
+    mount("/app/items/wi_request");
+    const about = await screen.findByRole("region", { name: "About" });
+    expect(about.textContent).toContain("Only the request so far");
+    expect(about.querySelector("details")).toBeNull();
+  });
+
+  it("an item with neither a request nor a spec shows no About", async () => {
+    mount("/app/items/wi_done");
+    await screen.findByRole("table", { name: "Runs" });
+    expect(screen.queryByRole("region", { name: "About" })).toBeNull();
+  });
+
+  it("at 390 px the About text wraps (break-words)", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    mount("/app/items/wi_about");
+    const about = await screen.findByRole("region", { name: "About" });
+    const summary = about.querySelector<HTMLElement>("[data-about-request] p")!;
+    expect(summary.className).toContain("break-words");
+    expect(about.className).toContain("min-w-0");
   });
 });

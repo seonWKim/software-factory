@@ -38,7 +38,7 @@ Direction: `tighten-only` keys may only be tightened by a lower level (owner →
 | `merge_queue.depth` | controller | review | global | free |  | `1` | Merge queue entries checked at once from the head, each on the base plus those ahead (1 to 10). |
 | `message_style` | worker | runtime | global | free |  | `""` | The owner's wording and tone for text the agents write, added after each role's instructions. |
 | `mode` | controller | runtime | project | free | dial (approve_merge) | `"manual"` | Manual waits for a person at every spec and merge; auto approves and merges what it may itself. |
-| `model_by` | worker | runtime | global | free |  | `{"triage":"cheap","implement":{"1":"standard","2":"standard","3":"strong","4":"strong","5":"strong"},"review":"standard","resolve":{"1":"standard","2":"standard","3":"strong","4":"strong","5":"strong"},"retry_up":true}` | Which model class each run kind uses per tier, and whether a retry goes one class up. |
+| `model_by` | worker | runtime | global | free |  | `{"triage":"cheap","implement":{"1":"standard","2":"standard","3":"strong","4":"strong","5":"strong"},"review":{"1":"standard","2":"standard","3":"strong","4":"strong","5":"strong"},"resolve":{"1":"standard","2":"standard","3":"strong","4":"strong","5":"strong"},"retry_up":true}` | Which model class each run kind uses per tier, and whether a retry goes one class up. |
 | `models` | worker | runtime | global | free |  | `{"cheap":"haiku","standard":"sonnet","strong":"opus"}` | The model name used for each model class: cheap, standard and strong. |
 | `notice_kinds` | controller | runtime | global | free |  | `["spec","merge","failure","other","finished"]` | Which notices are raised: spec, merge, failure, other, finished; a kind left out raises none. |
 | `notify_channels` | controller | runtime | global | free |  | `[]` | Source plugins that also get the owner's notices, e.g. slack; one without notifyOwner gets none. |
@@ -52,6 +52,7 @@ Direction: `tighten-only` keys may only be tightened by a lower level (owner →
 | `repo` | runtime | review | global | free |  |  | The repository the factory works on, its base branch and its install and test commands. |
 | `retry_base_ms` | controller | runtime | global | free |  | `60000` | Wait before the first automatic retry; each next retry waits twice as long. |
 | `retry_max_ms` | controller | runtime | global | free |  | `1800000` | Longest wait between retries, and the pause after a rate limit with no reset time. |
+| `review_time` | controller | runtime | global | free |  | `"09:00"` | Local time, HH:MM, until which asks that are no merge and block nothing are held; empty is off. |
 | `run_timeout_ms` | worker | runtime | global | free |  | `2700000` | Longest an agent run may take before it is stopped. |
 | `secrets` | guards | review | global | tighten-only | guard |  | Which secret store tools read credentials from; agents never see them. |
 | `spend.daily_budget_usd` | controller | runtime | global | free |  |  | Dollars per UTC day; spend at 80% and 100% of it alerts once each in Needs you. None: no budget. |

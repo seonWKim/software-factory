@@ -35,6 +35,13 @@ Produce:
   becomes. The default's paths belong in allowed_paths, never in extra_paths. Write `[]` when no option changes
   anything. The spec shows these next to each option, and an approval that picks an option whose extra_paths the
   allowed paths do not cover is refused until the owner adds them with `+paths`.
+- Dependencies: when the request says it must run after, builds on or waits for another item named by its id
+  (for example "after wi_X merges"), propose the dependency in the yes/no form, never as a free-text decision:
+  `{ "question": "Depends on wi_X? yes/no", "reason": "...", "options": ["yes", "no"], "default": "yes", "option_changes": [], "owner_only": false }`,
+  with the id as the request writes it (`wi_…` or `tk_…`). If the owner answers yes, the factory writes the
+  `Depends on: wi_X` line itself and holds the implement run until wi_X merges; if no, the text stays a note. Never
+  write a line starting with "Depends on" in `problem` yourself. A `Depends on:` line already in the request is
+  kept by the factory: do not ask about it.
 - Check the design against the principles in the repository's agent instructions (AGENTS.md or CLAUDE.md) before writing decisions. A design that breaks a principle goes under decisions, with the principle named. A point AGENTS.md or CLAUDE.md already decides is not a decision: follow it and don't ask about it.
 - Owner defaults: the owner's standing answers are listed at the end of this prompt, under "Owner defaults".
   When one answers a question you would ask, apply it instead of asking.
@@ -43,6 +50,15 @@ Produce:
 - done_criteria: concrete, checkable conditions. Each one should be testable by a reviewer.
   One condition per entry. Put the most important first: only the first 10 are shown, the rest are folded
   (the implementer still gets all of them).
+- done_checks: how each done-when line is checked, one entry per done_criteria entry, in the same order, with
+  `line` the done-when line exactly as written. Each entry has one of three forms:
+  - a command: `{"line": "...", "command": "..."}`, one of the project's check commands as written here:
+    {{check_commands}}. No other command is accepted.
+  - a test file: `{"line": "...", "test_file": "tests/..."}`, a repo-relative test file under `tests/` that
+    checks the line (it may be one the change adds).
+  - manual, with a reason: `{"line": "...", "manual": true, "reason": "..."}`, only when no command or test
+    file can check the line (for example a docs wording); the reason says why a person checks it.
+  An answer without done_checks, or with a done-when line that has neither a check nor a manual reason, is refused.
 - desired_output: what the change should contain (code, tests, docs), only where the done criteria do not
   already say it. It is hidden when it repeats them.
 - in_scope: what this change covers, one item per entry.
@@ -118,6 +134,7 @@ you split):
   "decisions": [],
   "applied_defaults": [],
   "done_criteria": ["..."],
+  "done_checks": [{ "line": "...", "test_file": "tests/example.test.ts" }],
   "desired_output": "...",
   "in_scope": ["..."],
   "out_of_scope": ["..."],

@@ -164,9 +164,35 @@ describe("system actions: claim and worker pauses", () => {
     expect(row.command).not.toContain("Status page");
   });
 
-  it("a worker pause is listed with `factory workers resume`, until it is resumed", async () => {
+  // Bug: the missing model credential shows twice (its own row and a claim_pause row whose Resume now cannot end
+  // it), or its row does not say how to fix it.
+  it("a missing model credential is one row with the fix in its title and no Resume now; it goes once the pause ends", async () => {
+    const { overview, store } = await setup();
+    await store.pauseClaims("9999-12-31T23:59:59.999Z" as Timestamp, "model_credential");
+    const o = await overview();
+    expect(o.system_actions).toEqual([{ code: "model_credential", text: "Add a model credential: run `npm run setup`", command: "npm run setup", until: null }]);
+    expect(o.needs_you).toBe(1);
+    await store.endClaimPause("model_credential");
+    expect(codes(await overview())).toEqual([]);
+  });
+
+  it("the owner pause (`factory stop`, the all-workers row) is a pause row with Resume now and `factory resume owner`, not a worker pause row", async () => {
     const { overview, store } = await setup();
     await store.pauseWorkers({ all: true }, "local:me");
+    expect((await overview()).system_actions).toEqual([
+      { code: "claim_pause", text: "Agents stopped", command: "Resume now in Needs you on Tasks, or factory resume owner", until: null, pause: "owner" },
+    ]);
+    await store.resumeWorkers();
+    expect(codes(await overview())).toEqual([]);
+  });
+
+  it("a per-worker pause is listed with `factory workers resume`, until it is resumed", async () => {
+    const { overview, store } = await setup();
+    const { item } = await store.createWorkItem(issue(6), system);
+    const cur = (await store.getWorkItem(item.id))!;
+    await store.transition({ id: item.id, expected_version: cur.version, patch: { stage: "RUNNING" }, actor: system, reason: "x", enqueue: { kind: "implement", idempotency_key: "i" } });
+    await store.claimRun({ worker_id: "host:1:0" as WorkerId, kinds: ["implement"], lease_ms: 60_000 });
+    expect((await store.pauseWorkers({ count: 1 }, "local:me")).paused).toEqual(["host:1:0"]);
     expect((await overview()).system_actions).toEqual([
       { code: "worker_pause", text: "1 worker pause in effect (factory workers pause)", command: "factory workers resume", until: null },
     ]);
@@ -193,14 +219,14 @@ describe("system actions: claim deadlock", () => {
 });
 
 describe("system actions: open alarms", () => {
-  it("each open alarm is listed and is its own Needs-you row: two alarms and a worker pause add 3 to needs_you", async () => {
+  it("each open alarm is listed and is its own Needs-you row: two alarms and the owner pause add 3 to needs_you", async () => {
     const { overview, store } = await setup();
     await store.recordAlert({ pattern: "repeated_error", pattern_key: "repeated_error:a", error_code: "checks_failed", count: 4, detail: null }, ALERT_DEDUPE_MS);
     await store.recordAlert({ pattern: "zero_tokens", pattern_key: "zero_tokens", error_code: "zero_tokens", count: 3, detail: null }, ALERT_DEDUPE_MS);
     await store.pauseWorkers({ all: true }, "local:me");
     const o = await overview();
     expect(codes(o).filter((c) => c === "alarm")).toHaveLength(2);
-    expect(codes(o)).toContain("worker_pause");
+    expect(codes(o)).toContain("claim_pause");
     expect(o.needs_you).toBe(3);
   });
 });
@@ -253,6 +279,7 @@ describe("needs_you: the number of Needs-you rows (design 09-status-page)", () =
 
   /** The overview, checked against the rows the section lists for the same reads: the waiting items, then one per system action. */
   async function counted(s: Awaited<ReturnType<typeof setup>>) {
+    await s.store.setSettingOverride({ key: "review_time", project: "", value: '""', actor: "local:owner" }); // every waiting item is a row: none held until review_time
     const o = await s.overview();
     const r = await respond(s.d, { method: "GET", url: "/api/v1/items", host: "127.0.0.1:4310" });
     const levels = (JSON.parse(r.body) as { items: { item_phase: string }[] }).items.map((i) => i.item_phase);
@@ -289,7 +316,7 @@ describe("needs_you: the number of Needs-you rows (design 09-status-page)", () =
     await s.store.pauseWorkers({ all: true }, "local:me");
     await s.store.pauseWorkers({ all: true }, "local:me");
     const before = await counted(s);
-    expect(codes(before.o)).toEqual(["migration_pending", "worker_pause"]);
+    expect(codes(before.o)).toEqual(["migration_pending", "claim_pause"]);
     expect(before.o.needs_you).toBe(2);
     await alarm(s.store, "checks_failed");
     expect((await counted(s)).o.needs_you).toBe(3);

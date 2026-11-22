@@ -1,5 +1,5 @@
 // System actions in Needs you (design §9 Status page, issue #311): what the factory needs from the operator
-// besides a work item. A pending migration, a GitHub token that expires within 3 days, a claim pause or a
+// besides a work item. A pending migration, a GitHub token that expires within 3 days, a missing model credential, a claim pause or a
 // worker pause in effect, an open alarm, and a dashboard or UI server that runs another
 // revision than it should. Each is one Needs-you row (needs-you.ts) and names the command that clears it (an alarm: where to look into it). Store reads and in-process values only: the overview poll
 // asks GitHub nothing (the token's days come from this process's last health run).
@@ -15,8 +15,12 @@ import type { FactoryStatus } from "./factory-status.js";
 import { type AutoStopNote, alarmCommand, alarmFullText, alarmUntil, lastAutoStop, openAlarms, redMainDetail } from "./alarms.js";
 import type { ResumablePause } from "../resume-cmd.js";
 import { RESUME_IN_NEEDS_YOU, activePauses } from "./pause-api.js";
+import { MODEL_CREDENTIAL } from "../core/policy.js";
 
-export type SystemActionCode = "migration_pending" | "token_expiring" | "claim_pause" | "worker_pause" | "alarm" | "revision_mismatch";
+/** The missing model credential's Needs-you row (design §9): the fix in its title; it ends once a worker finds the credential. */
+export const MODEL_CREDENTIAL_TITLE = "Add a model credential: run `npm run setup`";
+
+export type SystemActionCode = "migration_pending" | "token_expiring" | "model_credential" | "claim_pause" | "worker_pause" | "alarm" | "revision_mismatch";
 
 export interface SystemAction {
   code: SystemActionCode;
@@ -44,6 +48,7 @@ const PAUSE_NAMES: Record<ResumablePause, string> = {
   forge_auth: "Forge refused the credentials",
   preflight_access: "Push or PR access check failed",
   model_stall: "Model not answering",
+  owner: "Agents stopped",
 };
 
 /**
@@ -138,7 +143,7 @@ export interface SystemInput {
   dashboardRev: string | null;
 }
 
-/** Every system action in effect, in a fixed order: migration, token, pauses, alarms, revisions. */
+/** Every system action in effect, in a fixed order: migration, token, model credential, pauses, alarms, revisions. */
 export async function systemActions(x: SystemInput): Promise<SystemAction[]> {
   const out: SystemAction[] = [];
   const add = (code: SystemActionCode, text: string, command: string, until: string | null = null) =>
@@ -153,14 +158,19 @@ export async function systemActions(x: SystemInput): Promise<SystemAction[]> {
     add("token_expiring", days <= 0 ? "The GitHub token has expired or expires today" : `The GitHub token expires in ${days} day${days === 1 ? "" : "s"}`, "npm run setup -- --rotate-github");
   }
 
+  // One row for the missing model credential: it is no resumable pause, so the claim_pause rows below never list it.
+  if ((await x.store.getClaimPause(MODEL_CREDENTIAL)) !== null) add("model_credential", MODEL_CREDENTIAL_TITLE, "npm run setup");
+
   for (const p of await activePauses(x)) {
-    // The plain name; the row shows `until` (model_stall's next probe) as a relative time. The dashboard action first,
-    // the CLI command as the fallback; the Tasks row draws the button, never this command.
+    // The plain name; the row shows `until` (model_stall's next probe) as a relative time; the owner pause has none, and
+    // its row reads when it began from GET /api/v1/pauses. The dashboard action first, the CLI command as the fallback;
+    // the Tasks row draws the button, never this command.
     add("claim_pause", PAUSE_NAMES[p.name], `${RESUME_IN_NEEDS_YOU}, or factory resume ${p.name}`, p.ends_at);
     out.at(-1)!.pause = p.name;
   }
-  const workerPauses = await x.store.listWorkerPauses();
-  // The CLI only: the dashboard has no worker pause or resume control yet.
+  // The all-workers row is the owner pause above (`factory stop`); this row counts the per-worker pauses only, set on the
+  // CLI: the dashboard has no per-worker pause or resume control.
+  const workerPauses = (await x.store.listWorkerPauses()).filter((p) => p.worker_id !== "*");
   if (workerPauses.length > 0) {
     add("worker_pause", `${workerPauses.length} worker pause${workerPauses.length === 1 ? "" : "s"} in effect (factory workers pause)`, "factory workers resume");
   }

@@ -285,7 +285,7 @@ export const SETTABLE_KEYS = [
   "alarm_repeat_count", "alarm_window_minutes", "alarm_restart_count",
   "standing_approvals.threshold",
   "mode", "auto_merge_max_tier",
-  "message_style", "notice_kinds", "quiet_hours", "notify_channels", "integrations", "calendar",
+  "message_style", "notice_kinds", "quiet_hours", "review_time", "notify_channels", "integrations", "calendar",
   "stall_ms", "probe_interval_ms", "auth_pause_ms", "max_coordination_cost", "hotspot_weight", "mechanical_weight", "intake_label", "spend.daily_budget_usd", "spend.weekly_budget_usd", "tool_grants", "conflict_hotspot_threshold",
   "worker_kinds",
 ] as const;
@@ -341,7 +341,7 @@ export interface SettableValues {
   mode: Mode;
   auto_merge_max_tier: number;
   message_style: string;
-  notice_kinds: NoticeKind[]; quiet_hours: string; notify_channels: string[];
+  notice_kinds: NoticeKind[]; quiet_hours: string; review_time: string; notify_channels: string[];
   integrations: Readonly<Record<string, string>>; calendar: readonly string[]; // interface → plugin name (no entry: the config's choice); calendar plugin names
   stall_ms: number; probe_interval_ms: number; auth_pause_ms: number; conflict_hotspot_threshold: number;
   max_coordination_cost: number; hotspot_weight: number; mechanical_weight: number; tool_grants: ToolGrants; // run kind → granted tools (design 08-settings)
@@ -374,7 +374,7 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   mode: "manual",
   auto_merge_max_tier: 0,
   message_style: "",
-  notice_kinds: [...NOTICE_KINDS], quiet_hours: "", notify_channels: [], integrations: {}, calendar: [],
+  notice_kinds: [...NOTICE_KINDS], quiet_hours: "", review_time: "09:00", notify_channels: [], integrations: {}, calendar: [],
   stall_ms: STALL_DEFAULTS.stall_ms, probe_interval_ms: STALL_DEFAULTS.probe_interval_ms, conflict_hotspot_threshold: DEFAULT_HOTSPOT_THRESHOLD,
   auth_pause_ms: 1_800_000, // shown as the default; with no override and no file value it follows the effective retry_max_ms
   max_coordination_cost: DEFAULT_COORDINATION.max_cost, hotspot_weight: DEFAULT_COORDINATION.hotspot_weight, mechanical_weight: DEFAULT_COORDINATION.mechanical_weight, tool_grants: {},
@@ -397,11 +397,11 @@ export function keyRefusal(key: string): string | null {
   return `"${key}" is not settable; the settable keys are ${SETTABLE_KEYS.join(", ")}`;
 }
 
-/** `workers` from factory.config.json: absent means 1, otherwise an integer of 1 or more or startup fails. */
+/** `workers` from factory.config.json: absent means 1, otherwise an integer of 0 or more (0: none claims) or startup fails. */
 export function workerCount(value: unknown): number {
   if (value === undefined) return 1;
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-    throw new Error(`workers must be an integer of 1 or more (got ${JSON.stringify(value) ?? String(value)})`);
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw new Error(`workers must be an integer of 0 or more (got ${JSON.stringify(value) ?? String(value)})`);
   }
   return value;
 }
@@ -409,7 +409,7 @@ export function workerCount(value: unknown): number {
 /**
  * `max_workers` from factory.config.json: the worker slots a process has, which sizes the supervisor's worker
  * index block. Absent means `workers`; otherwise an integer of at least `workers` or startup fails. The live
- * `workers` setting may go anywhere from 1 to this without a restart.
+ * `workers` setting may go anywhere from 0 to this without a restart.
  */
 export function maxWorkers(workers: number, value: unknown): number {
   if (value === undefined) return workers;
@@ -449,7 +449,7 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
       if (value === undefined) throw new Error("model_by must be an object");
       return parseModelBy(value) as SettableValues[K];
     case "workers":
-      if (value === undefined) throw new Error("workers must be an integer of 1 or more (got undefined)");
+      if (value === undefined) throw new Error("workers must be an integer of 0 or more (got undefined)");
       return workerCount(value) as SettableValues[K];
     case "phases_auto_approve": case "auto_grant_test_paths": return booleanSetting(key, value) as SettableValues[K];
     case "hold_policy": return parseHoldPolicy(value) as SettableValues[K];
@@ -464,7 +464,7 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
     case "message_style":
       return parseMessageStyle(value) as SettableValues[K];
     case "notice_kinds": return parseNoticeKinds(value) as SettableValues[K];
-    case "quiet_hours": return quietHoursSetting(value) as SettableValues[K];
+    case "quiet_hours": return quietHoursSetting(value) as SettableValues[K]; case "review_time": if (value === "" || (typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value))) return value as SettableValues[K]; throw new Error('review_time must be "HH:MM" (24-hour, local time, 00:00 to 23:59), or "" to turn holding off'); // design 09-status-page
     case "notify_channels": return parseNotifyChannels(value) as SettableValues[K];
     case "integrations": return integrationEntries(value) as SettableValues[K]; case "tool_grants": return toolGrantsShape(value) as SettableValues[K];
     case "calendar": case "test_globs": try { return parseNotifyChannels(value) as SettableValues[K]; } catch { throw new Error(`${key} must be a list of distinct ${key === "calendar" ? "calendar plugin names" : "globs"}, or [] for none`); } // the same list check

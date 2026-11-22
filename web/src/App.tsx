@@ -18,7 +18,7 @@ import { HealthPage, ItemPage, ItemsPage, RunnersPage } from "./views/pages.js";
 import { PluginsPage } from "./views/plugins.js";
 import { SettingsPage } from "./views/settings.js";
 import { ModeSwitch } from "./views/settings/general.js";
-import { FactoryRevision, RevisionBanner, UpdateNote } from "./views/system-banner.js";
+import { FactoryRevision, RevisionBanner, StopAllAgents, UpdateNote } from "./views/system-banner.js";
 import { TranscriptView, transcriptRoute } from "./views/transcript.js";
 import { RulesPage } from "./views/rules.js";
 import { CalendarPage } from "./views/calendar.js";
@@ -104,6 +104,7 @@ export function App() {
             <span className="ml-auto shrink-0 text-sm whitespace-nowrap text-text-2" aria-live="polite">
               {overview.isError ? t("topbar.updateFailed") : null}
             </span>
+            <StopAllAgents />
             <Button variant="ghost" size="icon" aria-label={t("search.open")} className="shrink-0" onClick={() => setDialog("search")}>
               <Search aria-hidden className="size-4" />
             </Button>

@@ -11,9 +11,11 @@ import { PAGE_COMMANDS_PATH } from "../pages.js";
 import { OutcomeText, PendingProposals, SENTENCE } from "./command-box.js";
 import { PersonName } from "./common.js";
 import {
-  CommandDialog, DIALOGS, type FormName, ItemCommands, MENU, MergeButton, menuEntry, type OneTapChoice, QueuedFeedbackList, commandOutcome, notAllowed, oneTapNote, pathsOf,
-  primaryLabel, primaryOf, useCommandSend, withPaths,
+  CommandDialog, DIALOGS, type FormName, ItemCommands, MENU, menuEntry, type OneTapChoice, QueuedFeedbackList, oneTapNote, pathsOf,
+  primaryLabel, primaryOf, withPaths,
 } from "./item-commands.js";
+import { commandOutcome, notAllowed, useCommandSend } from "./command-send.js";
+import { MergeButton } from "./merge-button.js";
 import { ApproveDialog, type DecisionChoice, DecisionsPanel, InShort, approvePhase, chosenAnswers, commandLabel, initialChoices } from "./item-decisions.js";
 import { summaryOf, threadOrder } from "./thread.js";
 

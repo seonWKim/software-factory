@@ -359,10 +359,10 @@ describe("a built task's Work row: queued and pending states", () => {
   const run = (kind: string) => ({ kind, status: "queued", attempt: 1, worker_id: null, started_at: null, position: 1 });
   const state = async (text: string) => within(card("tk_built")).findByText(text, {}, SLOW);
 
-  it("a queued triage run reads Triage queued, never Running", async () => {
+  it("a queued triage run reads the state table's Queued, never Running", async () => {
     s.items = [item("wi_1", { item_phase: "queued", blocked_on: "none", stage: "NEW", run: run("triage") })];
     await show();
-    expect(await state("Triage queued")).toBeTruthy();
+    expect((await state("Queued")).getAttribute("data-status")).toBe("queued");
     expect(within(card("tk_built")).queryByText("Running")).toBeNull();
   });
 

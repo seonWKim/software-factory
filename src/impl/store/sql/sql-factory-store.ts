@@ -197,24 +197,24 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
     return this.selectItem(this.db, id);
   }
 
+  async findWorkItemIds(prefix: string): Promise<WorkItemId[]> {
+    const end = prefix.slice(0, -1) + String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1); // IDs with the prefix sort in [prefix, end)
+    return prefix === "" ? [] : (await this.db.all("SELECT id FROM controller_work_items WHERE id >= ? AND id < ? ORDER BY id", [prefix, end])).map((r) => r.id as WorkItemId);
+  }
+
   async getWorkItemBySource(type: SourceType, sourceId: string): Promise<WorkItem | null> {
     return this.selectItemBySource(this.db, type, sourceId);
   }
 
   async getWorkItemByPr(project: string, change_ref: string): Promise<WorkItem | null> {
-    const [row] = await this.db.all(
-      `SELECT * FROM controller_work_items WHERE project = ? AND change_ref = ?
-         ORDER BY created_at, ${this.db.dialect.seq} LIMIT 1`,
-      [project, change_ref],
-    );
+    const sql = `SELECT * FROM controller_work_items WHERE project = ? AND change_ref = ? ORDER BY created_at, ${this.db.dialect.seq} LIMIT 1`;
+    const [row] = await this.db.all(sql, [project, change_ref]);
     return row ? rowToWorkItem(row) : null;
   }
 
   async getWorkItemByMergeSha(project: string, sha: string): Promise<WorkItem | null> {
-    const [row] = await this.db.all(
-      `SELECT * FROM controller_work_items WHERE merge_sha = ? AND project = ? ORDER BY created_at, ${this.db.dialect.seq} LIMIT 1`,
-      [sha, project],
-    );
+    const sql = `SELECT * FROM controller_work_items WHERE merge_sha = ? AND project = ? ORDER BY created_at, ${this.db.dialect.seq} LIMIT 1`;
+    const [row] = await this.db.all(sql, [sha, project]);
     return row ? rowToWorkItem(row) : null;
   }
 
@@ -285,11 +285,11 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
     if (input.ack_run !== undefined) {
       await tx.run("UPDATE worker_runs SET acknowledged_at = ?, updated_at = ? WHERE id = ?", [now, now, input.ack_run]);
     }
-    const enqueued = input.enqueue ? await this.insertRun(tx, { ...input.enqueue, work_item_id: input.id }) : null;
-    const cancelled = [
-      ...(input.cancel_queued_runs ? await this.cancelRuns(tx, input.id, "queued", now) : []),
+    const cancelled = [ // any close cancels the item's queued runs, whichever path closes it (design 05-restarts, 2026-11-22)
+      ...(input.cancel_queued_runs || (current.stage !== "CLOSED" && input.patch.stage === "CLOSED") ? await this.cancelRuns(tx, input.id, "queued", now) : []),
       ...(input.cancel_running_runs ? await this.cancelRuns(tx, input.id, "running", now) : []),
     ];
+    const enqueued = input.enqueue ? await this.insertRun(tx, { ...input.enqueue, work_item_id: input.id }) : null;
     const item = (await this.selectItem(tx, input.id))!;
     // Closing the item settles its checkpoints that have no outcome yet (design §6).
     const outcome = item.close_reason === null ? null : OUTCOME[item.close_reason];
@@ -385,7 +385,7 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
   listStateChangesSince(q: Parameters<FactoryStore["listStateChangesSince"]>[0]): Promise<StateChange[]> { return signals.listStateChangesSince(this.db, q); }
   listVerdictsSince(since: Timestamp | null): Promise<Verdict[]> { return signals.listVerdictsSince(this.db, since); }
   listRunsFinishedSince(q: Parameters<FactoryStore["listRunsFinishedSince"]>[0]): Promise<Run[]> { return signals.listRunsFinishedSince(this.db, q); }
-  listMergeEvaluations(since: Timestamp | null) { return evaluations.listMergeEvaluations(this.db, since); }
+  listMergeEvaluations(since: Parameters<FactoryStore["listMergeEvaluations"]>[0]) { return evaluations.listMergeEvaluations(this.db, since !== null && typeof since === "object" ? this.after(-since.within_ms) : since); }
   // Command proposals (design 04-gate-commands, issue #584): command-proposals.ts
   recordCommandProposals(rows: Parameters<FactoryStore["recordCommandProposals"]>[0]) { return proposals.recordCommandProposals(this.db, rows, this.now()); }
   listCommandProposals(proposal_id: string) { return proposals.listCommandProposals(this.db, proposal_id); }

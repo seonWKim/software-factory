@@ -4,7 +4,7 @@ import { cliUserConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import {
   CLI_NAME_ENV, CLI_TOP_WORDS, CREATE_NEXT_STEP, type CliAction, type CliIdentity, type LocalCliDeps, cliCommandListMarkdown, cliIdentity, cliName,
-  parseLocalCliArgs, parseSentence, runLocalCli, runSentence,
+  parseLocalCliArgs, parseSentence, resolveItem, runLocalCli, runSentence, shortItemId,
 } from "../src/core/local-cli.js";
 import type { UserId, WorkItemId } from "../src/core/types.js";
 import { COMMAND_TABLE, SENTENCE_FORM, cliUsageOf } from "../src/core/command-table.js";
@@ -104,7 +104,8 @@ describe("task create", () => {
     const { store, d, reads } = await setup();
     const r = await runLocalCli({ ...d, ui: {} }, { action: "create", title: "Add a gate", bodyFile: "body.md" });
     expect(r.code).toBe(0);
-    expect(r.lines).toEqual([r.lines[0], `http://127.0.0.1:4310/app/items/${r.lines[0]}`, "triage queued; you'll be asked to approve the spec"]);
+    expect(r.lines).toEqual([r.lines[0], shortItemId(r.lines[0]!), `http://127.0.0.1:4310/app/items/${r.lines[0]}`, "triage queued; you'll be asked to approve the spec"]);
+    expect(r.lines[1]).toBe(r.lines[0]!.slice(3, 11));
     const item = (await store.getWorkItem(r.lines[0] as WorkItemId))!;
     expect(item).toMatchObject({
       title: "Add a gate", requester_id: USER, project: PROJECT_KEY, problem: "Add a gate\n\nthe body", stage: "NEW",
@@ -118,9 +119,9 @@ describe("task create", () => {
   it("the link uses the configured ui.port; with no port (a chat caller) only the ID and the next step print", async () => {
     const { d } = await setup();
     const linked = await runLocalCli({ ...d, ui: { port: 5123 } }, { action: "create", title: "t", bodyFile: "b" });
-    expect(linked.lines[1]).toBe(`http://127.0.0.1:5123/app/items/${linked.lines[0]}`);
+    expect(linked.lines[2]).toBe(`http://127.0.0.1:5123/app/items/${linked.lines[0]}`);
     const bare = await runLocalCli(d, { action: "create", title: "t", bodyFile: "b" });
-    expect(bare.lines).toEqual([bare.lines[0], CREATE_NEXT_STEP]);
+    expect(bare.lines).toEqual([bare.lines[0], shortItemId(bare.lines[0]!), CREATE_NEXT_STEP]);
     expect(bare.lines[0]).toMatch(/^wi_/);
   });
 
@@ -132,13 +133,64 @@ describe("task create", () => {
   });
 });
 
+describe("task create --depends-on (design 05-dependencies, 2026-11-20)", () => {
+  it("--help lists --depends-on <id>, and the flag parses with a wi_ or tk_ ID only", () => {
+    const help = parseLocalCliArgs("task", ["create", "--help"]);
+    expect(help).toMatchObject({ error: expect.stringContaining("--depends-on <id>") });
+    expect((help as { error: string }).error).toContain("task create --title <t> --body-file <f> [--depends-on <id>]");
+    expect(parseLocalCliArgs("task", ["create", "--title", "T", "--body-file", "b.md", "--depends-on", "wi_abc"])).toEqual({
+      action: "create", title: "T", bodyFile: "b.md", depends_on: "wi_abc",
+    });
+    expect(parseLocalCliArgs("task", ["create", "--depends-on", "tk_1", "--title", "T", "--body-file", "b.md", "--project", "home"])).toEqual({
+      action: "create", title: "T", bodyFile: "b.md", depends_on: "tk_1", project: "home",
+    });
+    for (const bad of ["#12", "abc", ""]) {
+      expect(parseLocalCliArgs("task", ["create", "--title", "T", "--body-file", "b.md", "--depends-on", bad]), bad).toMatchObject({ error: expect.stringContaining("--depends-on") });
+    }
+  });
+
+  it("stores a `Depends on: <id>` line in the new item's problem", async () => {
+    const { store, run } = await setup();
+    const first = (await run({ action: "create", title: "First", bodyFile: "a.md" })).lines[0] as WorkItemId;
+    const r = await run({ action: "create", title: "Second", bodyFile: "b.md", depends_on: first });
+    expect(r.code).toBe(0);
+    const item = (await store.getWorkItem(r.lines[0] as WorkItemId))!;
+    expect(item.problem).toBe(`Second\n\nthe body\n\nDepends on: ${first}`);
+    expect(item.issue_text).toBe(item.problem);
+  });
+
+  it("refuses an ID that names no local item, with a message and nothing written", async () => {
+    const { store, run } = await setup();
+    await store.createWorkItem(issue(9), system);
+    const gh = (await store.listWorkItems(10))[0]!.id;
+    const before = await snapshot(store);
+    for (const id of ["wi_nosuch", "tk_nosuch", gh]) {
+      const r = await run({ action: "create", title: "Second", bodyFile: "b.md", depends_on: id });
+      expect(r, id).toEqual({ code: 1, lines: [`--depends-on ${id} names no local work item or built task, so nothing was created`] });
+    }
+    expect(await snapshot(store)).toEqual(before);
+  });
+});
+
+describe("hold", () => {
+  it("parses `hold <id> <wi_ or tk_ id>` and stores `/hold` for the controller; a missing or bad ID is refused", async () => {
+    expect(parseLocalCliArgs("hold", ["wi_a", "wi_b"])).toEqual({ action: "command", command: "hold", id: "wi_a", text: "wi_b" });
+    for (const args of [["wi_a"], ["wi_a", "soon"], ["wi_a", "wi_b", "wi_c"]]) expect(parseLocalCliArgs("hold", args), args.join(" ")).toHaveProperty("error");
+    const { store, run } = await setup();
+    const id = (await run({ action: "create", title: "First", bodyFile: "a.md" })).lines[0] as WorkItemId;
+    const r = await run({ action: "command", command: "hold", id, text: "wi_other" });
+    expect(r.code).toBe(0);
+    expect((await store.listCliCommandsAfter(0, 10)).map((c) => [c.command, c.args])).toEqual([["hold", { item: id, text: "wi_other" }]]);
+  });
+});
+
 describe("task list and task show", () => {
-  it("list prints each local item's ID, title, stage and blocked reason; GitHub items are left out", async () => {
+  it("list prints each local item's ID, short ID, title, stage and blocked reason; GitHub items are left out", async () => {
     const { store, run } = await setup();
     await store.createWorkItem(issue(9), system);
     const id = (await run({ action: "create", title: "Local one", bodyFile: "b" })).lines[0]!;
     const r = await run({ action: "list" });
-    expect(r).toEqual({ code: 0, lines: [`${id}\tLocal one\tNEW\t-`] });
+    expect(r).toEqual({ code: 0, lines: [`${id}\t${id.slice(3, 11)}\tLocal one\tNEW\t-`] });
   });
 
   it("show prints the item's state, spec, runs and stored messages", async () => {
@@ -181,6 +233,75 @@ describe("task list and task show", () => {
   it("show for a missing item fails", async () => {
     const { run } = await setup();
     expect((await run({ action: "show", id: "wi_missing" as WorkItemId })).code).toBe(1);
+  });
+});
+
+describe("work item IDs as a person reads them (design 05-sources, short IDs)", () => {
+  /** 17 items, so two share their first hex character (pigeonhole): that character names several. */
+  async function many() {
+    const s = await setup();
+    const ids: WorkItemId[] = [];
+    for (let n = 1; n <= 17; n++) ids.push((await s.store.createWorkItem(issue(n), system)).item.id);
+    const hex = ids.map((id) => id.slice(3, 4)).find((c, i, all) => all.indexOf(c) !== i)!;
+    return { ...s, ids, hex, shared: ids.filter((id) => id.startsWith(`wi_${hex}`)).sort() };
+  }
+
+  it("shortItemId is the 8 hex characters after wi_; any other ID as it is", () => {
+    expect(shortItemId("wi_c86970ff1a73401c952d9228d6156b6d")).toBe("c86970ff");
+    expect(shortItemId("local-f77945b7-9bb4")).toBe("local-f77945b7-9bb4");
+  });
+
+  it("task show resolves the full ID, the short ID and any unique prefix of either, with or without wi_", async () => {
+    const { run, ids, hex } = await many();
+    const id = ids.find((x) => !x.startsWith(`wi_${hex}`))!;
+    const full = await run({ action: "show", id });
+    expect(full.code).toBe(0);
+    for (const token of [shortItemId(id), `wi_${shortItemId(id)}`, id.slice(3, 9), id.slice(0, 9), id.slice(3)]) {
+      expect(await run({ action: "show", id: token as WorkItemId }), token).toEqual(full);
+    }
+  });
+
+  it("an ambiguous prefix lists every matching full ID with its short ID, exits 1 and writes nothing", async () => {
+    const { store, run, hex, shared } = await many();
+    const before = await snapshot(store);
+    for (const a of [
+      { action: "show", id: hex }, { action: "help", id: `wi_${hex}` },
+      ...(["approve", "retry", "revise", "reject", "resolve", "verdict", "merge"] as const).map((command) => ({ action: "command", command, id: hex, text: command === "verdict" ? "accept none fine" : "" })),
+    ] as CliAction[]) {
+      const r = await run(a);
+      expect(r.code, a.action).toBe(1);
+      expect(r.lines.slice(1)).toEqual(shared.map((id) => `  ${id}\t${shortItemId(id)}`));
+    }
+    expect(await snapshot(store)).toEqual(before);
+    expect(await store.getOwner()).toBeNull();
+  });
+
+  it("a token with no match, or with no hex characters after wi_, is refused as no work item and reads no rows", async () => {
+    const { store, run } = await many();
+    for (const token of ["wi_", "", "wi_zz", "f77945b7-x", "wi_ffffffffffffffffffffffffffffffff0"]) {
+      expect(await run({ action: "show", id: token as WorkItemId })).toEqual({ code: 1, lines: [`no work item ${token}`] });
+    }
+    const reads: string[] = [];
+    const counted = { findWorkItemIds: (p: string) => (reads.push(p), store.findWorkItemIds(p)), getWorkItem: (id: WorkItemId) => (reads.push(id), store.getWorkItem(id)) };
+    for (const token of ["wi_", "", "zz", "wi_-x", "missing"]) expect(await resolveItem(counted, token)).toEqual({ code: 1, lines: [`no work item ${token}`] });
+    expect(reads).toEqual([]);
+  });
+
+  it("every item command and help resolve a short ID; the stored command carries the full ID", async () => {
+    const { store, run } = await setup();
+    const id = (await run({ action: "create", title: "t", bodyFile: "b" })).lines[0] as WorkItemId;
+    const short = shortItemId(id) as WorkItemId;
+    const commands = ["approve", "retry", "revise", "reject", "resolve", "verdict", "merge"] as const;
+    for (const command of commands) {
+      // approve where the spec waits for it, the others where the item waits for a merge.
+      await at(store, id, command === "approve" ? undefined : { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42" });
+      expect(await run({ action: "help", id: short })).toEqual(await run({ action: "help", id }));
+      const r = await run({ action: "command", command, id: short, text: command === "verdict" ? "accept none fine" : "" });
+      expect(r.lines.join("\n"), command).toContain(id);
+    }
+    const stored = await store.listCliCommandsAfter(0, 100);
+    expect(stored.map((c) => c.command)).toEqual(expect.arrayContaining([...commands]));
+    for (const c of stored) expect(c.args.item).toBe(id);
   });
 });
 

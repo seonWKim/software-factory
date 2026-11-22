@@ -5,7 +5,8 @@
 // applies: on confirm it replaces the proposal's current lines (from `evolve show`) with its proposed lines in its
 // target file, only when they occur there exactly once, then runs `evolve verdict <id> promote --reason <r>
 // --applied-to <target>`. A failed apply (a refusal, a non-zero exit, the timeout) leaves the file as it was and shows
-// the CLI's error in the dialog. The Rules page here talks to the real route (`respond`) over a stubbed fetch, and the
+// the CLI's error in the dialog. A proposal whose change is prose (`evolve show`'s JSON) records the verdict as applied
+// to its target and writes no file. The Rules page here talks to the real route (`respond`) over a stubbed fetch, and the
 // route to a temp agents home whose stub evolve takes only the real forms: no real home, no network.
 
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -210,15 +211,25 @@ describe("Rules page: promote of a proposal applies it", () => {
     expect(s.verdicts()).toEqual([]);
   }, 30_000);
 
-  it("a proposal with no proposed line: Send stays off and the dialog says why", async () => {
-    writeFileSync(join(s.root, "show"), `# P-0007 Split the review prompt\ntarget: ${TARGET}\ncurrent: Review the change.\n`);
+  it("a proposal whose change is prose (evolve show's JSON): Send is on with a reason, the verdict is recorded with --applied-to its target, and no file is written", async () => {
+    writeFileSync(join(s.root, "show"), `${JSON.stringify({
+      id: "P-0007", ts: "2026-10-17T21:04:11+09:00", by: "evolve", kind: "edit-asset", target: TARGET, title: "Split the review prompt",
+      rationale: "Reviews skip the tests.", change: "Ask the reviewer to run the changed tests.", evidence: ["T-20261017-de7e"], state: "open", verdicts: [],
+    })}\n`);
     await show(await deps());
     await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
     choose(card(), "Promote");
-    expect((await within(dialog()!).findByRole("alert", {}, SLOW)).textContent).toBe("Promote is off: this proposal gives no Now and Proposed lines to apply.");
-    fireEvent.change(within(dialog()!).getByRole("textbox", { name: "Reason" }), { target: { value: "x" } });
-    expect((within(dialog()!).getByRole("button", { name: "Send promote" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(posts).toEqual([]);
+    await waitFor(() => expect(dialog()!.querySelector("[data-detail-change]")!.textContent).toBe("Ask the reviewer to run the changed tests."), SLOW);
+    expect(dialog()!.querySelector("[data-dialog-consequence]")!.textContent).not.toMatch(/by hand|Now and Proposed/);
+    expect(within(dialog()!).queryByRole("alert")).toBeNull();
+    fireEvent.change(within(dialog()!).getByRole("textbox", { name: "Reason" }), { target: { value: "applied it" } });
+    const confirm = within(dialog()!).getByRole("button", { name: "Send promote" }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(false);
+    fireEvent.click(confirm);
+    await waitFor(() => expect(dialog()).toBeNull(), SLOW);
+    expect(posts).toEqual([{ id: "P-0007", verdict: "promote", reason: "applied it" }]);
+    expect(s.verdicts()).toEqual([`verdict promote ${TARGET}`]);
+    expect(s.target()).toBe(BEFORE);
   }, 30_000);
 
   it("the route refuses a target outside the home with nothing written and no verdict sent", async () => {

@@ -1,9 +1,13 @@
-// The owner's CLIs print text, not JSON (checked 2026-11-12): these read the texts the agents-home plugin needs.
-// `evolve pending` lists what waits for a verdict; `evolve show <id>` gives one entry's detail (its form is assumed,
-// docs/plugins/tacit-ledger.md) and a class's draft (the owner's sample, 2026-11-13); `<home>/private/tacit/rules.md`
-// holds the promoted rules, a promote adds one block to it and a retire removes one.
+// The owner's CLIs print text (checked 2026-11-12), but `evolve show <P-id>` prints JSON (2026-11-22): these read what
+// the agents-home plugin needs. `evolve pending` lists what waits for a verdict; `evolve show <id>` gives one entry's
+// detail (JSON first, else the text form, which is assumed, docs/plugins/tacit-ledger.md) and a class's draft (the
+// owner's sample, 2026-11-13); `<home>/private/tacit/rules.md`
+// holds the promoted rules, a promote adds one block to it, an edit rewrites one and a retire removes one;
+// `tacit show --active --unclustered` lists the pushbacks in no class yet (its form is assumed).
 
-import type { TacitApplied, TacitAppliedRule, TacitDraft, TacitEntryDetail, TacitEvidence, TacitPendingEntry, TacitPromotion, TacitRule } from "../../interfaces/tacit-ledger.js";
+import type {
+  TacitApplied, TacitAppliedRule, TacitDraft, TacitEntryDetail, TacitEvidence, TacitOpenPushback, TacitPendingEntry, TacitPromotion, TacitRule,
+} from "../../interfaces/tacit-ledger.js";
 
 /** `## proposals (open) 1`, `## proposals (held) 0`, `## tacit Pending 1`, `## tacit Held 0`: the state word. */
 const PENDING_HEADING = /^##\s+(?:proposals\s+\((open|held)\)|tacit\s+(pending|held))(?:\s|$)/i;
@@ -98,8 +102,10 @@ function appliedRule(heading: string, body: readonly string[]): TacitAppliedRule
     const f = RULE_FIELD.exec(line);
     const e = EVIDENCE_LINE.exec(line);
     if (f) {
+      // A repeated field line is added after the earlier one, on its own line.
       field = FIELD_KEY[f[1] as keyof typeof FIELD_KEY];
-      fields[field] = afterColon(f[2]!);
+      const value = afterColon(f[2]!);
+      fields[field] = fields[field] === undefined ? value : `${fields[field]}\n${value}`;
     } else if (e) {
       field = null;
       const text = e[1]!;
@@ -120,9 +126,9 @@ function appliedRule(heading: string, body: readonly string[]): TacitAppliedRule
 /**
  * The whole rules file for the Applied group. Each `## ` block up to the next `#` heading is one rule: with a `C-` ID and
  * a `기본값` line it gives its `기본값`, `예외`, `범위` and the T- IDs and `판정일` of its `근거` line (a part it lacks is
- * absent); any other block is kept as raw text. The non-empty lines under `## 다른 곳에 인코딩된 규칙` are `elsewhere`, as
- * written. Lines inside a fenced code block (``` or ~~~) are skipped, so a format template in the file is no rule; an
- * unclosed fence runs to the end of the file.
+ * absent; a repeated field line is added after the earlier one, on a new line); any other block is kept as raw text.
+ * The non-empty lines under `## 다른 곳에 인코딩된 규칙` are `elsewhere`, as written. Lines inside a fenced code block
+ * (``` or ~~~) are skipped, so a format template in the file is no rule; an unclosed fence runs to the end of the file.
  */
 export function parseApplied(text: string): TacitApplied {
   const rules: TacitAppliedRule[] = [];
@@ -160,8 +166,8 @@ export function parseApplied(text: string): TacitApplied {
 const DRAFT_HEADING = /^###\s+(C-\S+)(?:\s|$)/;
 /** `- 인시던트: …`, `- 초안: …`, `- 범위: …`: the draft's lines; the value follows the colon. */
 const DRAFT_LINE = /^-\s*(인시던트|초안|범위)\s*[:：]\s*(.*)$/;
-/** An incident ID on the `인시던트` line. */
-const INCIDENT_ID = /\bT-[0-9A-Za-z_]+/g;
+/** An incident ID on the `인시던트` or `근거` line, read whole with its hyphens: `T-0101`, `T-20261017-de7e`. */
+const INCIDENT_ID = /\bT-[0-9A-Za-z_]+(?:-[0-9A-Za-z_]+)*/g;
 /** Where the 초안 line's default ends and its exception starts. */
 const EXCEPTION_SPLIT = " / 예외: ";
 
@@ -233,11 +239,102 @@ export function withRuleBlock(text: string, id: string, rule: TacitPromotion, dr
  * included, so it undoes `withRuleBlock`; every other byte as it was. Null when the file has no `## <id>` heading.
  */
 export function withoutRuleBlock(text: string, id: string): string | null {
+  const b = ruleBlock(text, id);
+  return b === null ? null : [...b.lines.slice(0, b.at), ...b.lines.slice(b.end)].join("");
+}
+
+/** `text` as lines that keep their line ends, and the block of `id`: its heading line `at` up to `end` (the next `#` heading, or the end); null with no `## <id>` heading. */
+function ruleBlock(text: string, id: string): { lines: string[]; at: number; end: number } | null {
   const lines = text.split(/(?<=\n)/);
   const at = lines.findIndex((l) => RULE_HEADING.exec(l.trim())?.[1] === id);
   if (at < 0) return null;
   const next = lines.findIndex((l, i) => i > at && l.trim().startsWith("#"));
-  return [...lines.slice(0, at), ...(next < 0 ? [] : lines.slice(next))].join("");
+  return { lines, at, end: next < 0 ? lines.length : next };
+}
+
+/** The `예외` label a block gets when it has none (the one `withRuleBlock` writes). */
+const EXCEPTION_LABEL = "- 예외 (이럴 땐 override):";
+
+/** A value's lines, each with its runs of space as one space; empty lines dropped. */
+const valueLines = (v: string): string[] => v.split(/\r?\n/).map(oneLine).filter((l) => l !== "");
+
+/**
+ * `text` with the block of `id` edited: its heading line becomes `## <id> <wording>`, and its `기본값` and `예외` lines
+ * (each with its indented continuation lines) become one line per line of the new value, under the label the first
+ * such line had (a repeated line is dropped, its value now in the first). A block with no `예외` line gets one after
+ * its `기본값` lines. Its `근거` and `범위` lines and every other byte stay as they were. Null when the file has no
+ * `## <id>` heading.
+ */
+export function withEditedBlock(text: string, id: string, rule: TacitPromotion): string | null {
+  const b = ruleBlock(text, id);
+  if (b === null) return null;
+  const end = (l: string) => /\r?\n$/.exec(l)?.[0] ?? "";
+  const nl = end(b.lines[b.at]!) || "\n";
+  const values = { 기본값: valueLines(rule.default), 예외: valueLines(rule.exception) };
+  const out = [`## ${id} ${oneLine(rule.wording)}${end(b.lines[b.at]!)}`];
+  const done = { 기본값: false, 예외: false };
+  let afterDefault = -1;
+  let skipping = false;
+  for (const l of b.lines.slice(b.at + 1, b.end)) {
+    const f = RULE_FIELD.exec(l.trim());
+    const key = f?.[1] === "기본값" || f?.[1] === "예외" ? f[1] : null;
+    if (key !== null) {
+      skipping = true;
+      if (done[key]) continue;
+      done[key] = true;
+      // The line's own label (indent, dash, word and any note) up to its colon.
+      const word = l.indexOf(key);
+      const colon = l.slice(word).search(/[:：]/);
+      const label = colon < 0 ? `${l.slice(0, word + key.length)}:` : l.slice(0, word + colon + 1);
+      out.push(values[key].map((v) => `${label} ${v}`).join(nl) + end(l));
+      if (key === "기본값") afterDefault = out.length;
+      continue;
+    }
+    if (skipping && l.trim() !== "" && /^\s/.test(l)) continue;
+    skipping = false;
+    out.push(l);
+  }
+  /** Adds `lines` after `out[at - 1]`; the last line of the file (no line end) moves its end-of-file to the new line. */
+  const insert = (at: number, lines: string[]) => {
+    const tail = end(out[at - 1]!);
+    if (tail === "") out[at - 1] += nl;
+    out.splice(at, 0, lines.join(nl) + (tail === "" ? "" : nl));
+  };
+  if (!done.기본값) {
+    insert(1, values.기본값.map((v) => `- 기본값: ${v}`));
+    afterDefault = 2;
+  }
+  if (!done.예외) insert(afterDefault, values.예외.map((v) => `${EXCEPTION_LABEL} ${v}`));
+  return [...b.lines.slice(0, b.at), ...out, ...b.lines.slice(b.end)].join("");
+}
+
+/** `- T-0201 2026-11-20 — "words"`: one row of `tacit show --active --unclustered` (assumed form). */
+const PUSHBACK_ROW = /^-\s+(T-[0-9A-Za-z_-]+)(?:\s+(.*))?$/;
+
+/**
+ * `tacit show --active --unclustered` as pushbacks (its form is assumed, docs/plugins/tacit-ledger.md): each
+ * `- <T-id> <YYYY-MM-DD>? — "<the owner's words>"` row is one, its words unquoted (a row with no dash: the rest of
+ * the line). Headings and blank lines are skipped. Text with other lines and no row throws: the form is not the one
+ * read here, and the page says the list could not be read.
+ */
+export function parsePushbacks(text: string): TacitOpenPushback[] {
+  const out: TacitOpenPushback[] = [];
+  let other = false;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === "" || line.startsWith("#")) continue;
+    const m = PUSHBACK_ROW.exec(line);
+    if (!m) {
+      other = true;
+      continue;
+    }
+    // The space before the dash is the one incidentRow looks for when the row gives no date.
+    const row = incidentRow(` ${m[2] ?? ""}`);
+    const words = row.quote ?? row.ref ?? "";
+    out.push({ id: m[1]!, pushback: words, ...(row.date !== undefined ? { date: row.date } : {}) });
+  }
+  if (out.length === 0 && other) throw new Error("tacit show printed no pushback row (- T-<id> <date> — \"<words>\")");
+  return out;
 }
 
 /** `- 기본값: …`, `근본 원인: …`, `kind: …`: a detail field line, with or without the list dash; the value follows the colon. */
@@ -285,8 +382,43 @@ function incidentRow(rest: string): { -readonly [K in keyof TacitEvidence]: Taci
 /** Newest first by date; an undated row after every dated one, each group in the ledger's order. */
 const newestFirst = (a: TacitEvidence, b: TacitEvidence): number => (b.date ?? "").localeCompare(a.date ?? "");
 
+/** What `evolve show` prints for an ID it does not know: `not found: <id>`. */
+const NOT_FOUND = /^not found:/i;
+
+/** A JSON value as a non-empty string, else undefined. */
+const textOf = (v: unknown): string | undefined => (typeof v === "string" && v.trim() !== "" ? v.trim() : undefined);
+
 /**
- * `evolve show <id>` as the entry's detail. Field lines (`기본값`, `예외`, `범위`, `근본 원인`, `설명`, `현재`, `변경`, or
+ * `evolve show <P-id>`'s JSON form (the owner's CLI, 2026-11-22) as the entry's detail: `kind` and `target` as given,
+ * `rationale` as the root reason (Why), `change` (free text) as `change`, and each string of `evidence` (IDs only) as
+ * an evidence row with its `ref`, in the ledger's order, their number the incident count. Other keys (id, ts, by,
+ * title, state, verdicts) are not read. Null when the text is not one JSON object.
+ */
+function showJson(id: string, text: string): TacitEntryDetail | null {
+  let v: unknown;
+  try {
+    v = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
+  const r = v as Record<string, unknown>;
+  const out: { -readonly [K in keyof TacitEntryDetail]: TacitEntryDetail[K] } = { id };
+  for (const [key, from] of [["kind", "kind"], ["target", "target"], ["root_reason", "rationale"], ["change", "change"]] as const) {
+    const value = textOf(r[from]);
+    if (value !== undefined) out[key] = value;
+  }
+  const refs = (Array.isArray(r.evidence) ? r.evidence : []).map(textOf).filter((e): e is string => e !== undefined);
+  if (refs.length > 0) {
+    out.incidents = refs.length;
+    out.evidence = refs.map((ref) => ({ ref }));
+  }
+  return out;
+}
+
+/**
+ * `evolve show <id>` as the entry's detail: its JSON form first (`showJson`), else the text form below; `not found:
+ * <id>` and an empty text are null. Field lines (`기본값`, `예외`, `범위`, `근본 원인`, `설명`, `현재`, `변경`, or
  * `default`, `exceptions`, `scope`, `root reason`, `kind`, `target`, `description`, `current`, `proposed`) give their
  * value; an indented line under one continues it. Each `- ` row under an `## incidents <n>` heading is one incident:
  * `- <ref> <YYYY-MM-DD>? — "<the owner's words>"`, and its indented `proposal:` / `제안:`, `root reason:` / `근본 원인:`
@@ -294,7 +426,12 @@ const newestFirst = (a: TacitEvidence, b: TacitEvidence): number => (b.date ?? "
  * the text lacks is absent; an empty text is null.
  */
 export function parseShow(id: string, text: string): TacitEntryDetail | null {
-  if (text.trim() === "") return null;
+  const trimmed = text.trim();
+  if (trimmed === "" || NOT_FOUND.test(trimmed)) return null;
+  if (trimmed.startsWith("{")) {
+    const json = showJson(id, trimmed);
+    if (json !== null) return json;
+  }
   const fields: Partial<Record<ShowKey, string>> = {};
   let field: ShowKey | null = null;
   let incidents: { count: number | null; rows: { -readonly [K in keyof TacitEvidence]: TacitEvidence[K] }[] } | null = null;

@@ -5,15 +5,20 @@
 import { describe, expect, it, vi } from "vitest";
 import { QUEUED_RUN } from "../src/core/commands.js";
 import type { AuthDecision } from "../src/interfaces/auth-provider.js";
-import type { Timestamp, UserId, WorkItemId } from "../src/core/types.js";
+import type { Timestamp, UserId, WorkItem, WorkItemId } from "../src/core/types.js";
+import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { HealthMonitor } from "../src/ui/health.js";
-import { type UiDeps, wire } from "../src/ui/server.js";
-import { type FileKeysView, type UiSettings, fileKeysOf, newCsrfToken, writeSettings } from "../src/ui/settings-api.js";
+import { stateLabel } from "../src/shared/states.js";
+import { type UiDeps, respond, wire } from "../src/ui/server.js";
+import { type FileKeysView, type UiSettings, fileKeysOf, newCsrfToken, storeProjectResolver, writeSettings } from "../src/ui/settings-api.js";
+import { saveProjectLabel } from "../src/core/project-labels.js";
+import { localProjectKey } from "../src/core/project.js";
+import { PROJECT } from "./helpers/fakes/config.js";
 import type { ConfigEditRequest, ConfigEditResult } from "../src/core/config-writer.js";
 import { type PauseDeps, resumePause } from "../src/ui/pause-api.js";
-import { issue, newStore, system, w1 } from "./helpers/store.js";
+import { OTHER_PROJECT_KEY, issue, newStore, system, w1 } from "./helpers/store.js";
 import { LEASE, SECRET, ROUTES, get, json, make, patch, enqueue, seeded } from "./ui-api-fixtures.js";
 
 describe("ui api: contract", () => {
@@ -88,7 +93,7 @@ describe("ui api: items", () => {
     const open = (await store.listWorkItemsWhere({ exclude_closed: true, limit: 1000 })).length;
     expect(list.counts.open).toBe(open);
     expect(o.open).toBe(list.counts.open);
-    expect(list.items.filter((i) => i.item_phase !== "closed")).toHaveLength(open);
+    expect(list.items.filter((i) => !["merged", "closed", "rejected"].includes(i.item_phase))).toHaveLength(open);
   });
 
   it("the default list has every open item ranked, and the filters narrow it", async () => {
@@ -105,6 +110,22 @@ describe("ui api: items", () => {
     expect(kind.items).toMatchObject([{ id: items.running2.id, run_status: "running" }]);
   });
 
+  it("each row carries state_label, the state table's label for its item_phase, in every group", async () => {
+    const { d, store, items } = await seeded();
+    const waiting = await make(store, 60, "Waits on a phase");
+    await patch(store, waiting, { blocked_on: "upstream", blocked_reason: "phase_hold" });
+    const failed = await make(store, 61, "Failed run");
+    await patch(store, failed, { stage: "RUNNING", blocked_on: "human", blocked_reason: "run_failed:implement:agent_error" });
+    const list = await json<{ items: { id: string; item_phase: string; state_label: string }[] }>(d, "/api/v1/items?closed=1");
+    const label = (id: string) => list.items.find((i) => i.id === id)!.state_label;
+    expect(label(items.merge.id)).toBe("Ready to merge"); // Needs you
+    expect(label(items.queued.id)).toBe("Queued"); // Active
+    expect(label(waiting.id)).toBe("Blocked by another task"); // Waiting
+    expect(label(failed.id)).toBe("Failed"); // Problem
+    expect(label(items.done.id)).toBe("Merged"); // Finished
+    for (const i of list.items) expect(i.state_label, i.id).toBe(stateLabel(i.item_phase));
+  });
+
   it("returns the filter counts the page's options show", async () => {
     const { d } = await seeded();
     const api = await json<{ facets: { allStates: number; state: Record<string, number>; stage: Record<string, number> } }>(d, "/api/v1/items");
@@ -112,6 +133,8 @@ describe("ui api: items", () => {
     // The closed item counts under Closed though the default list leaves it out (same rule as every facet).
     expect(api.facets.stage.CLOSED).toBe(1);
     expect(api.facets.state.closed).toBe(1);
+    expect(api.facets.state.finished).toBe(1);
+    expect(api.facets.state.merged).toBe(1);
   });
 
   it("the Closed facet counts the closed items that match the other filters (148 closed items)", async () => {
@@ -235,6 +258,63 @@ describe("ui api: items", () => {
     expect(new Set(attempts.map((a) => a.started_at)).size).toBe(3);
     expect(new Set(attempts.map((a) => a.finished_at)).size).toBe(3);
     for (const a of attempts) expect(a.finished_at > a.started_at).toBe(true);
+  });
+});
+
+describe("ui api: the item's request and spec (About on the item page)", () => {
+  /** A fake scanner: flags any text with FLAGME under the rule fake_rule, nothing else. */
+  const scanner: EgressScanner = {
+    scan: async (channel, text) => (text.includes("FLAGME") ? { clean: false, findings: [{ rule: "fake_rule", channel }] } : { clean: true }),
+  };
+  type About = { item: { request: string | null; spec: { problem: string; desired_output: string | null; done_criteria: string[] } | null } };
+  /** A fake store's item: the stored fields given here over a seeded item's, read as an existing item is (no migration). */
+  async function about(fields: Partial<WorkItem>) {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const it0 = await make(store, 60, "About me");
+    const faked = new Proxy(store, {
+      get(target, key) {
+        if (key === "getWorkItem") return async (id: WorkItemId) => { const it = await target.getWorkItem(id); return it && { ...it, ...fields }; };
+        const v = Reflect.get(target, key) as unknown;
+        return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+      },
+    });
+    const d: UiDeps = { store: faked, scanner, clock, lease_ms: LEASE, health: new HealthMonitor(async () => [], clock) };
+    return { body: await json<About>(d, `/api/v1/items/${encodeURIComponent(it0.id)}`), list: await json<{ items: Record<string, unknown>[] }>(d, "/api/v1/items") };
+  }
+
+  it("a request with an approved spec: the request's first paragraph and the problem, output and each criterion", async () => {
+    const { body } = await about({
+      issue_text: "Item page shows what the work is about\n\nThe item page says\nwhat the work is about.",
+      problem: "The page shows no text.", desired_output: "An About card.", done_criteria: ["About shows", "Spec collapses"],
+    });
+    expect(body.item.request).toBe("Item page shows what the work is about");
+    expect(body.item.spec).toEqual({ problem: "The page shows no text.", desired_output: "An About card.", done_criteria: ["About shows", "Spec collapses"] });
+  });
+
+  it("a request with no approved spec (done_criteria null): the request only, spec null", async () => {
+    const { body } = await about({ issue_text: "Just a request", problem: "Draft spec", done_criteria: null });
+    expect(body.item).toMatchObject({ request: "Just a request", spec: null });
+  });
+
+  it("a spec without a request (issue_text null or empty): request null, the spec as stored", async () => {
+    for (const issue_text of [null, ""]) {
+      const { body } = await about({ issue_text, problem: "P", desired_output: null, done_criteria: ["C"] });
+      expect(body.item).toMatchObject({ request: null, spec: { problem: "P", desired_output: null, done_criteria: ["C"] } });
+    }
+  });
+
+  it("a flagged text is withheld whole, each criterion on its own; the list rows get no request or spec", async () => {
+    const { body, list } = await about({
+      issue_text: "Request FLAGME text\n\nmore", problem: "Problem FLAGME", desired_output: "Output", done_criteria: ["Clean one", "Leaky FLAGME", "Clean two"],
+    });
+    expect(body.item.request).toBe("[withheld: fake_rule]");
+    expect(body.item.spec).toEqual({ problem: "[withheld: fake_rule]", desired_output: "Output", done_criteria: ["Clean one", "[withheld: fake_rule]", "Clean two"] });
+    expect(JSON.stringify(body)).not.toContain("FLAGME");
+    for (const row of list.items) {
+      expect(row).not.toHaveProperty("request");
+      expect(row).not.toHaveProperty("spec");
+    }
   });
 });
 
@@ -474,5 +554,99 @@ describe("GET /api/v1/tasks/preview: the quick-add preview (design 09-dashboard-
     const r = await get(d, preview(`call ${SECRET} tomorrow`));
     expect(r.status).toBe(200);
     expect(r.body).not.toContain(SECRET);
+  });
+});
+
+describe("ui api: rank reason, held asks and review_time (design 09-status-page)", () => {
+  const ORIGIN = "http://127.0.0.1:4310";
+  const WORDS = /^(Merge|Blocks another item|Held until \d\d:\d\d|Waiting for you)$/;
+  type Row = { id: string; item_phase: string; rank_reason?: string; held?: boolean };
+  type Overview = { needs_you: number; system_actions: unknown[] };
+
+  /** The seeded store (a spec to approve, a merge, a custom ask) with settings, its clock at 08:00 local time. */
+  async function setup() {
+    const s = await seeded();
+    await saveProjectLabel(s.store, PROJECT);
+    const now = s.clock.now();
+    const eight = new Date(now);
+    eight.setHours(8, 0, 0, 0);
+    if (eight.getTime() <= now.getTime()) eight.setDate(eight.getDate() + 1);
+    s.clock.advance(eight.getTime() - now.getTime());
+    const settings: UiSettings = {
+      base: { file: {}, layers: { defaults: {}, projects: {} } }, repo: { owner: "o", name: "r" }, actor: "local:owner",
+      resolveProject: storeProjectResolver(s.store, { owner: "o", name: "r" }), csrfToken: newCsrfToken(),
+    };
+    return { ...s, d: { ...s.d, settings } as UiDeps };
+  }
+  const post = (d: UiDeps, body: unknown) =>
+    respond(d, { method: "POST", url: "/api/v1/settings", host: "127.0.0.1:4310", origin: ORIGIN, contentType: "application/json", csrfToken: d.settings!.csrfToken, body: JSON.stringify(body) });
+  const setReviewTime = async (d: UiDeps, value: string) => expect((await post(d, { action: "set", key: "review_time", value: JSON.stringify(value) })).status).toBe(200);
+  const rows = async (d: UiDeps) => (await json<{ items: Row[] }>(d, "/api/v1/items")).items;
+
+  it("before review_time the overview counts the waiting merges and system actions only; with review_time empty every ask counts", async () => {
+    const { d } = await setup();
+    // Default 09:00, the clock at 08:00: the spec approval and the custom ask are held, the merge is not.
+    let o = await json<Overview>(d, "/api/v1/overview");
+    expect(o.needs_you).toBe(1 + o.system_actions.length);
+    await setReviewTime(d, "");
+    o = await json<Overview>(d, "/api/v1/overview");
+    expect(o.needs_you).toBe(3 + o.system_actions.length);
+    await setReviewTime(d, "07:30"); // past it: nothing is held
+    o = await json<Overview>(d, "/api/v1/overview");
+    expect(o.needs_you).toBe(3 + o.system_actions.length);
+  });
+
+  it("each ask row carries rank_reason in fixed words and held; a merge is never held; a row that asks nothing has neither", async () => {
+    const { d, items } = await setup();
+    let list = await rows(d);
+    const of = (id: string) => list.find((r) => r.id === id)!;
+    expect(of(items.merge.id)).toMatchObject({ rank_reason: "Merge", held: false });
+    expect(of(items.approve.id)).toMatchObject({ rank_reason: "Held until 09:00", held: true });
+    expect(of(items.secretive.id)).toMatchObject({ rank_reason: "Held until 09:00", held: true });
+    expect(of(items.running.id)).not.toHaveProperty("rank_reason");
+    expect(of(items.running.id)).not.toHaveProperty("held");
+    await setReviewTime(d, "");
+    list = await rows(d);
+    expect(of(items.approve.id)).toMatchObject({ rank_reason: "Waiting for you", held: false });
+    expect(of(items.merge.id)).toMatchObject({ rank_reason: "Merge", held: false });
+  });
+
+  it("10 open asks: each row has one of the fixed words", async () => {
+    const { d, store } = await setup();
+    for (let n = 20; n < 27; n++) await patch(store, await make(store, n, `Ask ${n}`), { blocked_on: "human", blocked_reason: n % 2 ? "max_loops" : "merge_conflict" });
+    const asks = (await rows(d)).filter((r) => ["ready_to_merge", "needs_approval", "needs_you", "needs_triage"].includes(r.item_phase));
+    expect(asks.length).toBeGreaterThanOrEqual(10);
+    for (const r of asks) expect(r.rank_reason, r.id).toMatch(WORDS);
+  });
+
+  it("POST /api/v1/settings takes review_time as HH:MM from 00:00 to 23:59 or empty, and refuses anything else naming the key", async () => {
+    const { d, store } = await setup();
+    for (const ok of ["00:00", "23:59", "09:30", ""]) await setReviewTime(d, ok);
+    for (const bad of ["9am", "24:00", "9:00", "09:60", "09:00-10:00"]) {
+      const r = await post(d, { action: "set", key: "review_time", value: JSON.stringify(bad) });
+      expect(r.status, bad).not.toBe(200);
+      expect(JSON.parse(r.body).error, bad).toContain("review_time");
+    }
+    expect((await store.listSettingOverrides()).find((o) => o.key === "review_time")?.value).toBe('""');
+  });
+});
+
+describe("ui api: unreviewed merge links (design 09-status-page)", () => {
+  type Merge = { change_ref: string; change_url: string | null; checks_url: string | null; review_url: string | null; check_verdict: unknown };
+  /** Every forge method fails: the read must make no forge call. */
+  const forge = new Proxy({}, { get: (_t, name) => () => { throw new Error(`forge call: ${String(name)}`); } });
+
+  it("each row carries the PR's checks and review links from the stored label and ref, no verdict, and no forge call", async () => {
+    const { d, store, clock } = await seeded();
+    await saveProjectLabel(store, PROJECT);
+    await store.recordUnreviewedMerge({ project: PROJECT.key, change_ref: "7", merge_sha: "a".repeat(40), merger_id: null });
+    clock.advance(1000);
+    await store.recordUnreviewedMerge({ project: OTHER_PROJECT_KEY, change_ref: "8", merge_sha: "b".repeat(40), merger_id: null }); // no stored label
+    clock.advance(1000);
+    await store.recordUnreviewedMerge({ project: localProjectKey("ab".repeat(8)), change_ref: "9", merge_sha: "c".repeat(40), merger_id: null });
+    const merges = (await json<{ merges: Merge[] }>({ ...d, forge } as unknown as UiDeps, "/api/v1/unreviewed-merges")).merges;
+    const of = (ref: string) => merges.find((m) => m.change_ref === ref)!;
+    expect(of("7")).toMatchObject({ review_url: "https://github.com/o/r/pull/7", checks_url: "https://github.com/o/r/pull/7/checks", check_verdict: null });
+    for (const ref of ["8", "9"]) expect(of(ref), ref).toMatchObject({ review_url: null, checks_url: null, check_verdict: null });
   });
 });

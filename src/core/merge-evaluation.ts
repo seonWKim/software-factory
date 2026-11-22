@@ -24,7 +24,14 @@ export interface MergeEvaluation {
   readonly fixed_forward: number;
   /** Stored verdicts of the item (explicit and implicit) by kind. */
   readonly verdicts: Readonly<Record<VerdictKind, number>>;
+  /** The item's explicit verdicts (`/verdict` comments, never implicit ones) by kind. */
+  readonly explicit: Readonly<Record<VerdictKind, number>>;
+  /** The item's explicit verdicts with severity `critical`. */
+  readonly critical: number;
 }
+
+/** Which merges a read returns: merged at or after a time, within the last `within_ms` of the store's clock, or all (null). */
+export type MergeWindow = Timestamp | { readonly within_ms: number } | null;
 
 /** Every verdict kind: the ones a person writes, and `reverted` (implicit only). */
 export const ALL_VERDICT_KINDS: readonly VerdictKind[] = [...VERDICT_KINDS, "reverted"];

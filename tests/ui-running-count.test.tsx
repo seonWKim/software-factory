@@ -18,13 +18,14 @@ const row = (n: number) => ({
 const run = (n: number, status = "running") => ({ id: `run_${n}`, status, kind: "implement", work_item_id: `wi_${n}`, attempt: 1, owner: "h:1:0", heartbeat_at: AT, started_at: AT, lease_expires_at: AT, created_at: AT });
 const rows = [1, 2, 3].map(row);
 // No row is at level running, while three runs are running.
-const items = { as_of: AT, total: 3, items: rows, facets: { allStates: 3, state: { queued: 3 } }, counts: { open: 3, running: 3 } };
+const items = { as_of: AT, total: 3, items: rows, facets: { allStates: 3, state: { active: 3, queued: 3 } }, counts: { open: 3, running: 3 } };
 const overview = { as_of: AT, stages: { RUNNING: 3 }, needs_you: 0, open: 3, running: 3, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 } };
 
 function client() {
   const c = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, refetchInterval: false } } });
   c.setQueryData([API.items], items);
   c.setQueryData([`${API.items}?closed=1`], items);
+  c.setQueryData([`${API.items}?state=active`], items);
   c.setQueryData([API.overview], overview);
   c.setQueryData([API.runs], { as_of: AT, runs: [run(1), run(2), run(3), run(4, "succeeded")] });
   c.setQueryData([API.queue], { as_of: AT, queue: [] });
@@ -42,8 +43,11 @@ describe("the running count on Work and Activity", () => {
     expect(within(section).getByRole("heading", { name: "Running now" }).parentElement.textContent).toBe("Running now3");
     cleanup();
     render(<QueryClientProvider client={c}><ItemsPage /></QueryClientProvider>);
-    expect(screen.getByText("Running 3")).toBeTruthy();
+    // Running is a second-row tab under the Active group.
+    fireEvent.click(screen.getByRole("tab", { name: "Active 3" }));
+    const states = () => screen.getByRole("tablist", { name: "Filter Active by state" });
+    expect(within(states()).getByRole("tab", { name: "Running 3" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "List" }));
-    expect(screen.getByText("Running 3")).toBeTruthy();
+    expect(within(states()).getByRole("tab", { name: "Running 3" })).toBeTruthy();
   });
 });
