@@ -122,6 +122,7 @@ import * as notices from "./notices.js";
 import * as noticeMessages from "./notice-messages.js";
 import * as posted from "./posted-comments.js";
 import * as verdicts from "./verdicts.js";
+import * as standing from "./standing-rules.js";
 
 /**
  * FactoryStore over a SqlDriver (SQLite; `db` is public for components owning tables). Every write is one driver transaction. Correctness
@@ -1247,30 +1248,12 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
     return filed.setFiledPatternOutcome(this.db, id, outcome, at);
   }
 
-  // Standing approvals (design 05-standing-approvals)
-
-  async putStandingRule(input: NewStandingRule): Promise<StandingRule> {
-    return this.db.transaction(async (tx) => {
-      const now = this.now();
-      const enabled = input.enabled ? 1 : 0;
-      const inserted = await this.insertOnce(
-        tx,
-        "INSERT INTO controller_standing_rules (gate, tier, enabled, set_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-        [input.gate, input.tier, enabled, input.set_by, now, now],
-      );
-      if (!inserted) {
-        await tx.run("UPDATE controller_standing_rules SET enabled = ?, set_by = ?, updated_at = ? WHERE gate = ? AND tier = ?", [
-          enabled, input.set_by, now, input.gate, input.tier,
-        ]);
-      }
-      const [row] = await tx.all("SELECT * FROM controller_standing_rules WHERE gate = ? AND tier = ?", [input.gate, input.tier]);
-      return rowToStandingRule(row!);
-    });
-  }
-
-  async listStandingRules(): Promise<StandingRule[]> {
-    return (await this.db.all("SELECT * FROM controller_standing_rules ORDER BY gate, tier")).map(rowToStandingRule);
-  }
+  // Standing approvals (design 05-standing-approvals); rules and their change records: standing-rules.ts
+  putStandingRule(input: NewStandingRule): Promise<StandingRule> { return standing.putStandingRule(this.db, this.now(), input); }
+  listStandingRules(): Promise<StandingRule[]> { return standing.listStandingRules(this.db); }
+  deleteStandingRule(input: Parameters<FactoryStore["deleteStandingRule"]>[0]) { return standing.deleteStandingRule(this.db, this.now(), input); }
+  recordStandingRuleChange(input: Parameters<FactoryStore["recordStandingRuleChange"]>[0]) { return standing.recordStandingRuleChange(this.db, this.now(), input); }
+  listStandingRuleChanges() { return standing.listStandingRuleChanges(this.db); }
 
   async recordStandingProposal(input: NewStandingProposal): Promise<{ proposal: StandingProposal; created: boolean }> {
     const proposal: StandingProposal = { ...input, id: newId("sp") as StandingProposalId, created_at: this.now() };
@@ -2780,17 +2763,6 @@ function rowToImproveReport(row: Row): ImproveReport {
     groups: JSON.parse(row.failure_groups as string) as ImproveReport["groups"],
     patterns: JSON.parse(row.patterns as string) as ImproveReport["patterns"],
     created_at: row.created_at as Timestamp,
-  };
-}
-
-function rowToStandingRule(row: Row): StandingRule {
-  return {
-    gate: row.gate as StandingGate,
-    tier: Number(row.tier) as Tier,
-    enabled: Number(row.enabled) === 1,
-    set_by: row.set_by as UserId,
-    created_at: row.created_at as Timestamp,
-    updated_at: row.updated_at as Timestamp,
   };
 }
 
