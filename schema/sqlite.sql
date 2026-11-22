@@ -358,12 +358,32 @@ CREATE TABLE calendar_events (
     PRIMARY KEY (source, event_id)
   );
 
+CREATE TABLE calendar_sync_requests (
+    id            TEXT PRIMARY KEY,
+    from_date     TEXT NOT NULL,
+    to_date       TEXT NOT NULL,
+    pending_key   TEXT,
+    requested_by  TEXT NOT NULL,
+    requested_at  TEXT NOT NULL,
+    claimed_at    TEXT,
+    done_at       TEXT,
+    results       TEXT
+  );
+
 CREATE TABLE calendar_sync_state (
     source        TEXT PRIMARY KEY,
     next_sync_at  TEXT NOT NULL,
     synced_at     TEXT,
     error         TEXT,
     error_at      TEXT
+  );
+
+CREATE TABLE calendar_synced_ranges (
+    source     TEXT NOT NULL,
+    from_at    TEXT NOT NULL,
+    to_at      TEXT NOT NULL,
+    synced_at  TEXT NOT NULL,
+    PRIMARY KEY (source, from_at, to_at)
   );
 
 CREATE TABLE controller_alert_patterns (
@@ -438,6 +458,23 @@ CREATE TABLE controller_dependency_edges (
     PRIMARY KEY (work_item_id, depends_on)
   );
 
+CREATE TABLE controller_design_learnings (
+    seq            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_key    TEXT NOT NULL,
+    work_item_id   TEXT NOT NULL,
+    capture_key    TEXT NOT NULL UNIQUE,
+    source         TEXT NOT NULL,
+    built          TEXT NOT NULL,
+    words          TEXT NOT NULL,
+    page           TEXT NOT NULL,
+    kind           TEXT,
+    at             TEXT NOT NULL,
+    supersedes     TEXT,
+    superseded_by  TEXT,
+    batch          TEXT,
+    created_at     TEXT NOT NULL
+  );
+
 CREATE TABLE controller_file_conflicts (
     project_key  TEXT NOT NULL,
     path         TEXT NOT NULL,
@@ -478,6 +515,29 @@ CREATE TABLE controller_handoffs (
     next_steps    TEXT NOT NULL,
     at            TEXT NOT NULL,
     UNIQUE (run_id, commit_sha)
+  );
+
+CREATE TABLE controller_improve_proposals (
+    id                 TEXT PRIMARY KEY,
+    project            TEXT NOT NULL,
+    report_id          TEXT NOT NULL,
+    pattern_key        TEXT NOT NULL,
+    error_code         TEXT NOT NULL,
+    run_count          INTEGER NOT NULL,
+    file               TEXT NOT NULL,
+    state              TEXT NOT NULL,
+    reason             TEXT,
+    why                TEXT,
+    diff               TEXT,
+    evidence           TEXT,
+    rules              TEXT,
+    needs_human_merge  INTEGER NOT NULL,
+    decided_by         TEXT,
+    decided_at         TEXT,
+    filing_at          TEXT,
+    filed_ref          TEXT,
+    created_at         TEXT NOT NULL,
+    UNIQUE (report_id, pattern_key)
   );
 
 CREATE TABLE controller_improve_reports (
@@ -606,6 +666,26 @@ CREATE TABLE controller_projects (
     created_by   TEXT NOT NULL,
     created_at   TEXT NOT NULL,
     archived_at  TEXT
+  , base_folder TEXT);
+
+CREATE TABLE controller_schedule_runs (
+    schedule_id    TEXT NOT NULL,
+    occurrence_at  TEXT NOT NULL,
+    outcome        TEXT NOT NULL,
+    recorded_at    TEXT NOT NULL,
+    PRIMARY KEY (schedule_id, occurrence_at)
+  );
+
+CREATE TABLE controller_schedules (
+    id             TEXT PRIMARY KEY,
+    title          TEXT NOT NULL,
+    cadence_kind   TEXT NOT NULL,
+    cadence_spec   TEXT NOT NULL,
+    zone           TEXT NOT NULL,
+    created_by     TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    next_due_at    TEXT,
+    running_since  TEXT
   );
 
 CREATE TABLE controller_signals (
@@ -628,6 +708,17 @@ CREATE TABLE controller_standing_proposals (
     threshold   INTEGER NOT NULL,
     created_at  TEXT NOT NULL,
     UNIQUE (gate, tier, run_length)
+  );
+
+CREATE TABLE controller_standing_rule_changes (
+    seq           INTEGER PRIMARY KEY AUTOINCREMENT,
+    gate          TEXT NOT NULL,
+    tier          INTEGER NOT NULL,
+    action        TEXT NOT NULL,
+    before_value  TEXT,
+    after_value   TEXT,
+    actor         TEXT NOT NULL,
+    at            TEXT NOT NULL
   );
 
 CREATE TABLE controller_standing_rules (
@@ -1778,6 +1869,8 @@ CREATE INDEX bus_system_alerts_retries_due ON bus_system_alerts_retries (next_at
 
 CREATE INDEX calendar_events_starts ON calendar_events (starts_at);
 
+CREATE UNIQUE INDEX calendar_sync_requests_pending ON calendar_sync_requests (pending_key);
+
 CREATE INDEX child_restarts_at ON "legacy_child_restarts" (at);
 
 CREATE INDEX claim_decisions_work_item ON "legacy_claim_decisions" (work_item_id, at);
@@ -1792,7 +1885,11 @@ CREATE INDEX controller_claim_decisions_work_item ON controller_claim_decisions 
 
 CREATE INDEX controller_dependency_edges_target ON controller_dependency_edges (depends_on);
 
+CREATE INDEX controller_design_learnings_project ON controller_design_learnings (project_key, seq);
+
 CREATE INDEX controller_handoffs_item ON controller_handoffs (work_item_id, at);
+
+CREATE INDEX controller_improve_proposals_project ON controller_improve_proposals (project, created_at);
 
 CREATE INDEX controller_improve_reports_project ON controller_improve_reports (project_key, created_at);
 
@@ -1811,6 +1908,8 @@ CREATE INDEX controller_notices_undelivered ON controller_notices (delivered_at,
 CREATE INDEX controller_outbox_pending ON controller_outbox (published_at, seq);
 
 CREATE INDEX controller_pause_history_ended ON controller_pause_history (ended_at);
+
+CREATE INDEX controller_schedules_due ON controller_schedules (next_due_at);
 
 CREATE INDEX controller_signals_item ON controller_signals (work_item_id, at);
 

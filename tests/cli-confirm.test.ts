@@ -4,6 +4,7 @@ import { type LocalCliDeps, parseLocalCliArgs, runLocalCli } from "../src/core/l
 import type { UserId, WorkItem, WorkItemId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // `factory confirm <proposal-id>` (design 04-gate-commands): one `proposal_confirm` command row for a stored proposal
 // with a pending command, as the CLI identity; the controller applies it (tests/command-proposals.test.ts). Store only.
@@ -14,7 +15,7 @@ const PROP = "prop_cli1";
 async function setup() {
   const { store } = await newStore();
   let n = 0;
-  const d: LocalCliDeps = { store, identity: { user: ME, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "", newId: () => `k${++n}` };
+  const d: LocalCliDeps = { answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: ME, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "", newId: () => `k${++n}` };
   const { item } = await store.createWorkItem(issue(1), system);
   return { store, d, item };
 }

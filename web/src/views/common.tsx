@@ -48,7 +48,7 @@ export function useViewer(): string | null {
 /** A worker as "worker N" (its slot number), the full ID behind it (decision 3 of the readable-names change). */
 export function WorkerName({ id }: { id: string | null | undefined }) {
   if (!id) return <>–</>;
-  return <IdDetails label={workerName(id)} id={id} what="worker ID" />;
+  return <IdDetails label={workerName(id)} id={id} what="worker ID" nowrap />;
 }
 
 /**
@@ -58,7 +58,7 @@ export function WorkerName({ id }: { id: string | null | undefined }) {
 export function PersonName({ id, name, viewer }: { id: string | null; name?: string | null | undefined; viewer: string | null }) {
   if (!id || id === "system") return <>{t("person.factory")}</>;
   if (isWorkerId(id)) return <WorkerName id={id} />;
-  return <IdDetails label={id === viewer ? t("person.you") : (name || t("person.other"))} id={id} what="user ID" />;
+  return <IdDetails label={id === viewer ? t("person.you") : (name || t("person.other"))} id={id} what="user ID" nowrap />;
 }
 
 /**
@@ -83,7 +83,7 @@ export function SourceLink({ source, className, itemId }: { source: { id: string
 /** An item's title linking to its page, wrapping at any width; "Untitled item" when it has none. */
 export function ItemTitle({ id, title }: { id: string; title: string | null }) {
   return (
-    <Link href={itemPath(id)} className={cn("font-medium", LINK_CLASS)}>
+    <Link href={itemPath(id)} data-raw={title !== null ? "" : undefined} className={cn("font-medium", LINK_CLASS)}>
       {title ?? t("item.untitled")}
     </Link>
   );
@@ -102,6 +102,21 @@ export function MergeCheckNote({ check }: { check: MergeCheckView }) {
       {mergeCheckLabel(check)}
     </span>
   );
+}
+
+/** A snake_case name or an item ID, as `npm run check:responsive`'s raw-name rule finds them (scripts/responsive/rules.mjs). */
+const RAW_NAME = /\b(?:wi_[0-9a-z]+|[a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b/g;
+
+/** A sentence that may quote names as written (a check's message): each snake_case name or item ID in it sits in `data-raw`, the words around it stay plain. */
+export function RawNames({ text }: { text: string }) {
+  const parts: ReactNode[] = [];
+  let last = 0;
+  for (const m of text.matchAll(RAW_NAME)) {
+    parts.push(text.slice(last, m.index), <span key={m.index} data-raw>{m[0]}</span>);
+    last = m.index + m[0].length;
+  }
+  parts.push(text.slice(last));
+  return <>{parts}</>;
 }
 
 /** `#N` not part of `owner/name#N`, as the server reads refs (src/ui/why.ts). */
@@ -217,6 +232,7 @@ export function ItemsTable({ items, now, label, empty, plugins }: { items: reado
       </>
     ),
     title: it.title ?? t("item.untitled"),
+    titleRaw: it.title !== null,
     href: itemPath(it.id),
     why: it.why ? <WhyText why={it.why} /> : it.blocked_reason || undefined,
     worker: it.run?.worker_id ? <WorkerName id={it.run.worker_id} /> : undefined,

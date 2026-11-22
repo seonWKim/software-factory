@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { API, type ItemRow as Item, type Items, type Overview, type SystemAction, mergeInFlight, useApi, useItems } from "../api.js";
+import { useEffect, useMemo, useState } from "react";
+import { API, type ItemRow as Item, type Items, type Overview, type SystemAction, type UnreviewedMerges, mergeCheckLabel, mergeInFlight, useApi, useItems } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { Dialog } from "../components/ui/dialog.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
@@ -9,16 +9,20 @@ import { whyText } from "../lib/format.js";
 import { t } from "../i18n/index.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
-import { type NeedGroup, MergeCheckNote, allowEntries, needGroup, needsYou } from "./common.js";
+import { type NeedGroup, allowEntries, needGroup, needsYou } from "./common.js";
 import { ItemDecision } from "./decision-card.js";
 import { useCommandSend } from "./command-send.js";
-import { NeedActions, SendErrors } from "./item-commands.js";
+import { NeedActions, sendErrorTexts, useMergeReply } from "./item-commands.js";
 import { FloorStatus } from "./pages.js";
 import { CheckRow } from "./system-banner.js";
-import { Card } from "../components/ui/card.js";
+import { OutcomeText } from "./command-box.js";
+import { Card, SUB_TITLE } from "../components/ui/card.js";
 import { Badge, StatusBadge } from "../components/ui/badge.js";
 import type { MenuItem } from "../components/ui/menu.js";
+import { ListRow, ROW_TITLE } from "../components/ui/list-row.js";
+import { cn } from "../lib/cn.js";
 import { ItemRow } from "./item-row.js";
+import { lastLook, markLook } from "../lib/last-look.js";
 
 /**
  * A built task's work item state as one pill: the state table's label, except that a Merge under way says where it
@@ -86,30 +90,39 @@ export function WorkState({ id, title, open: taskOpen }: { id: string; title: st
 const GROUPS: readonly [NeedGroup, MessageKey][] = [["merge", "needs.groupMerge"], ["approve", "needs.groupApprove"], ["answer", "needs.groupAnswer"]];
 
 /**
- * One Needs you row, an ItemRow (comfortable, as every row on Tasks): its state as one badge, the item's title linking
- * to it, then why: a merge check only when it is not "mergeable", the reason only for an Answer-or-fix item (Merge and
- * Approve say it with the badge; it links to the item's latest thread entry when the need names one). Every action is
- * in its "⋯" menu, the primary first; its PR, as a muted number, follows. A failed send's error is the row's second line, never the menu cell
- * (design-system/patterns.md C-050).
+ * One Needs you row, an ItemRow (comfortable, as every row on Tasks): its state as one badge (a merge check's
+ * conflicts are that state: "Conflicts: N files", the files on hover, not "Ready to merge" beside them), the item's
+ * title linking to it, then why: its rank reason, and the reason only for an Answer-or-fix item (Merge and Approve say
+ * it with the badge; it links to the item's latest thread entry when the need names one). Every action is in its "⋯"
+ * menu, the primary first; its PR, as a muted number, follows. A failed send's error and a merge's refusal are the
+ * row's second line, never the menu cell (design-system/patterns.md C-050).
  */
 function WorkRow({ it }: { it: Item }) {
   const cmd = useCommandSend(it.id);
-  const checking = it.merge_check?.state === "checking";
+  const merge = useMergeReply(it.id, needGroup(it), it.merge, cmd);
+  const errors = [...new Set([...sendErrorTexts(cmd.local), ...(merge.outcome?.tone === "error" ? [merge.outcome.text] : [])])];
+  const conflicts = it.merge_check?.state === "conflicts" ? it.merge_check : null;
   const reason = needReason(it);
   const chip = CODE_REASON.test(reason);
   const toNeed = it.need?.anchor ? `${itemPath(it.id)}#${it.need.anchor}` : null;
-  const check = it.merge_check && !checking && it.merge_check.state !== "mergeable";
   return (
     <ItemRow
       variant="comfortable"
       itemId={it.id}
       data-key={it.id}
-      badge={<StatusBadge state={it.item_phase} />}
+      badge={conflicts ? (
+        <span data-merge-check="conflicts" title={conflicts.conflicts.join("\n")}>
+          <Badge level="failed">{mergeCheckLabel(conflicts)}</Badge>
+        </span>
+      ) : (
+        <StatusBadge state={it.item_phase} />
+      )}
       title={it.title ?? t("item.untitled")}
+      titleRaw={it.title !== null}
       href={itemPath(it.id)}
       why={
         <>
-          {check && <MergeCheckNote check={it.merge_check!} />}
+          {it.rank_reason !== undefined && <span data-rank><Badge level={it.held ? "held" : undefined}>{it.rank_reason}</Badge></span>}
           {chip && (
             <span data-need title={reason}>
               {toNeed ? (
@@ -130,9 +143,9 @@ function WorkRow({ it }: { it: Item }) {
       }
       details={it.change_ref !== null && <span className="shrink-0 tabular-nums">#{it.change_ref}</span>}
       menu={<RowActions it={it} cmd={cmd} inlineErrors={false} />}
-      second={Object.values(cmd.local).some((l) => "error" in l) && (
-        <div data-row-error className="flex flex-col gap-1">
-          <SendErrors local={cmd.local} />
+      second={errors.length > 0 && (
+        <div data-row-error className="flex min-w-0 flex-col gap-1">
+          {errors.map((text) => <OutcomeText key={text} outcome={{ tone: "error", text }} />)}
         </div>
       )}
     />
@@ -151,13 +164,76 @@ export function NeedsList({ items, checks = [] }: { items: readonly Item[]; chec
     <div className="space-y-3">
       {groups.map((g) => (
         <div key={g.title} className="space-y-1">
-          <h3 className="text-xs font-medium text-text-2">{g.title}</h3>
+          <h3 className={SUB_TITLE}>{g.title}</h3>
           <ul aria-label={g.title} className="divide-y divide-border rounded-control border border-border">
             {g.rows}
           </ul>
         </div>
       ))}
     </div>
+  );
+}
+
+/** The time of a held ask's "Held until HH:MM" rank reason; null when the ask is not held. */
+const heldTime = (it: Item): string | null => (it.held ? /^Held until (.+)$/.exec(it.rank_reason ?? "")?.[1] ?? null : null);
+
+/** The merge's risk badge: its stored verdict (failed, reverted), else "Not reviewed". */
+function riskOf(verdict: string | null | undefined): { key: "tasks.riskFailed" | "tasks.riskReverted" | "tasks.riskUnreviewed"; level: string | undefined } {
+  if (verdict === "failed") return { key: "tasks.riskFailed", level: "failed" };
+  if (verdict === "reverted") return { key: "tasks.riskReverted", level: "failed" };
+  return { key: "tasks.riskUnreviewed", level: undefined };
+}
+
+type Merge = UnreviewedMerges["merges"][number];
+
+/** One merged PR as a row: its link, its checks and review links, its risk badge (`risk`) and who merged it. */
+function MergeRow({ m, risk }: { m: Merge; risk: boolean }) {
+  const label = t("tasks.mergeLink", { ref: m.change_ref });
+  const r = riskOf(m.check_verdict);
+  return (
+    <ListRow
+      data-key={m.change_ref}
+      title={m.review_url ? <a href={m.review_url} target="_blank" rel="noreferrer" className={cn(ROW_TITLE, LINK_CLASS)}>{label}</a> : <span className={ROW_TITLE}>{label}</span>}
+      details={
+        <>
+          {risk && <span data-risk><Badge level={r.level}>{t(r.key)}</Badge></span>}
+          {m.checks_url && <a href={m.checks_url} target="_blank" rel="noreferrer" className={LINK_CLASS}>{t("tasks.checksLink")}</a>}
+          {m.review_url && <a href={m.review_url} target="_blank" rel="noreferrer" className={LINK_CLASS}>{t("tasks.reviewLink")}</a>}
+          {m.project && <span>{m.project}</span>}
+        </>
+      }
+    />
+  );
+}
+
+const MergeList = ({ merges, title, risk }: { merges: readonly Merge[]; title: string; risk: boolean }) => (
+  <Card title={title} count={merges.length}>
+    <ul aria-label={title} className="divide-y divide-border rounded-control border border-border">
+      {merges.map((m) => <MergeRow key={`${m.project}:${m.change_ref}`} m={m} risk={risk} />)}
+    </ul>
+  </Card>
+);
+
+/**
+ * The merged-without-you and worth-sampling cards (design 09-dashboard-tasks): the PRs that merged with no work item.
+ * The first lists those since the owner's last look (this browser's local storage; a first visit the last 7 days); the
+ * second all of them, failed or reverted first, then newest first. A merge is urgent: no review time holds it.
+ * The last look is read once at mount and stored then, so these cards keep their rows while the page is open.
+ */
+function MergeCards() {
+  const merges = useApi<UnreviewedMerges>(API.unreviewedMerges, 30_000).data?.merges;
+  const [since] = useState(() => lastLook(Date.now()));
+  useEffect(() => markLook(Date.now()), []);
+  if (!merges || merges.length === 0) return null;
+  const fresh = merges.filter((m) => Date.parse(m.recorded_at) > since);
+  const bad = (m: Merge) => (m.check_verdict === "failed" || m.check_verdict === "reverted" ? 0 : 1);
+  // Array.sort is stable: the API's newest-first order holds within each verdict.
+  const sample = [...merges].sort((a, b) => bad(a) - bad(b));
+  return (
+    <>
+      {fresh.length > 0 && <MergeList merges={fresh} title={t("tasks.mergedWithoutYou")} risk={false} />}
+      <MergeList merges={sample} title={t("tasks.worthSampling")} risk />
+    </>
   );
 }
 
@@ -176,14 +252,18 @@ export function NeedsYou({ project, linked }: { project: string | null; linked: 
   const checks = project === null ? (overview.data?.system_actions ?? []) : [];
   const status = project === null && <FloorStatus />;
   if (items.isError) return <><ErrorNote error={items.error} />{status}</>;
-  const count = needs.length + checks.length;
+  const held = needs.filter((it) => it.held === true);
+  const count = needs.length - held.length + checks.length;
+  const until = held.map(heldTime).find((x) => x !== null);
   return (
     <>
-      {linked !== null && count > 0 && (
+      {linked !== null && needs.length + checks.length > 0 && (
         <Card title={t("page.needs")} count={count}>
+          {held.length > 0 && until && <p className="mb-3 text-sm text-text-2">{t("tasks.heldUntil", { count: held.length, time: until })}</p>}
           <NeedsList items={needs} checks={checks} />
         </Card>
       )}
+      {project === null && <MergeCards />}
       {status}
     </>
   );

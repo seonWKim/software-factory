@@ -286,7 +286,7 @@ export class ClaudeCodeRunner implements AgentRunner {
 
   /**
    * The gate hooks (design §4, issue #302), for an implement step the worker gave them to: the hook folder in the
-   * harness config dir for the call, then the blocks it recorded on the result. Every other step runs as before.
+   * harness config dir for the call, then the blocks and the Stop checks' test selection lines it recorded on the result. Every other step runs as before.
    */
   private async runWith(spec: AgentRunSpec, bridge?: BridgeArgs): Promise<AgentRunResult> {
     await mkdir(this.opts.claudeConfigDir, { recursive: true });
@@ -304,8 +304,8 @@ export class ClaudeCodeRunner implements AgentRunner {
     if (!hooks) return this.runClaude(spec, bridge);
     try {
       const result = await this.runClaude(spec, bridge, hooks);
-      const blocks = await hooks.blocks();
-      return blocks.length > 0 ? { ...result, gate_blocks: blocks } : result;
+      const [blocks, selections] = [await hooks.blocks(), hooks.selections()];
+      return { ...result, ...(blocks.length > 0 ? { gate_blocks: blocks } : {}), ...(selections.length > 0 ? { stop_selections: selections } : {}) };
     } finally {
       await hooks.close();
     }

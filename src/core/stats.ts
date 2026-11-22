@@ -1,4 +1,5 @@
 import type { StatsConfig } from "./config.js";
+import { type OwnerFigures, ownerFigures } from "./efficiency.js";
 import type { MergeEvaluation } from "./merge-evaluation.js";
 import { DAY_MS } from "./spend.js";
 import type { Stage, Tier, VerdictSeverity, WorkItemId, WorkItemOrigin } from "./types.js";
@@ -75,6 +76,8 @@ export interface StatsReport {
   autonomy?: AutonomyReport;
   /** Per-tier merge record and the auto-merge rule, tiers 1–5 plus untiered. Absent in reports built before it existed. */
   merges?: TierMergeRow[];
+  /** What the merges of the last 30 days took from the owner (design 06-efficiency). Absent in reports built before it existed. */
+  owner?: OwnerFigures;
   /** Finished `interactive` runs (design §5, 2026-11-01), any item, and their reported tokens. Counts only, no ids. */
   interactive?: { runs: number; tokens: number };
 }
@@ -139,7 +142,7 @@ const bad = (m: RuleMerge): boolean => m.reverted > 0 || m.fixed_forward > 0;
 /**
  * Pure, the one auto-merge rule (design 06-measurement): a tier qualifies when its last 50 merges (`last`, oldest
  * first; only the last 50 are read) hold at most 1 reverted or fixed-forward merge and no critical verdict. Fewer than
- * 50 merges never qualify; tiers 4 and 5 never do. Read-only: nothing reads it to merge yet.
+ * 50 merges never qualify; tiers 4 and 5 never do. Auto mode's merge reads it at each merge (autoMergeRefusal).
  */
 export function tierRule(tier: Tier | null, last: readonly RuleMerge[]): TierRuleResult {
   if (tier !== null && NEVER_QUALIFY.includes(tier)) return "never";
@@ -147,6 +150,19 @@ export function tierRule(tier: Tier | null, last: readonly RuleMerge[]): TierRul
   const sample = last.slice(-TIER_RULE_SAMPLE);
   const ok = sample.filter(bad).length <= TIER_RULE_MAX_BAD && sample.every((m) => m.critical === 0);
   return ok ? "met" : "not_met";
+}
+
+/** The drop-back reads each tier's last 20 merges. */
+export const DROP_BACK_SAMPLE = 20;
+/** Reverted or fixed-forward merges among those 20 that drop a tier back to a person's merge. */
+export const DROP_BACK_BAD = 2;
+
+/**
+ * Pure, the drop-back (design 03-risk): true when at least 2 of the tier's last 20 merges (`last`, oldest first; only
+ * the last 20 are read) were reverted or fixed forward. 1 does not drop it back.
+ */
+export function droppedBack(last: readonly RuleMerge[]): boolean {
+  return last.slice(-DROP_BACK_SAMPLE).filter(bad).length >= DROP_BACK_BAD;
 }
 
 export interface TierMergeRow {
@@ -195,6 +211,18 @@ export async function collectTierMerges(store: Pick<FactoryStore, "listMergeEval
   return aggregateTierMerges(all, recent);
 }
 
+/**
+ * The owner figures of the last 30 days' merges: one merge evaluations read and one state changes read per merged
+ * item. An item merged twice counts once, at its latest merge.
+ */
+export async function collectOwnerFigures(store: Pick<FactoryStore, "listMergeEvaluations" | "listStateChanges">): Promise<OwnerFigures> {
+  const latest = new Map<WorkItemId, MergeEvaluation>();
+  for (const e of await store.listMergeEvaluations({ within_ms: MERGE_WINDOW_DAYS * DAY_MS })) latest.set(e.work_item_id, e);
+  const merged = [];
+  for (const [id, e] of latest) merged.push({ changes: await store.listStateChanges(id), reverted_or_fixed: bad(e) });
+  return ownerFigures(merged);
+}
+
 /** Autonomy from one read-only store read; `factory stats` and the dashboard route both call it. */
 export async function collectAutonomy(store: Pick<FactoryStore, "listStatsRecords">): Promise<AutonomyReport> {
   return aggregateAutonomy(await store.listStatsRecords([]));
@@ -202,7 +230,7 @@ export async function collectAutonomy(store: Pick<FactoryStore, "listStatsRecord
 
 /** Reads through read-only store methods; the narrow type keeps every write method out of reach. */
 export async function collectStats(
-  store: Pick<FactoryStore, "listStatsRecords" | "listRunsByKind" | "listMergeEvaluations">,
+  store: Pick<FactoryStore, "listStatsRecords" | "listRunsByKind" | "listMergeEvaluations" | "listStateChanges">,
   config: StatsConfig,
 ): Promise<StatsReport> {
   const records = await store.listStatsRecords([STATS_REASONS.reject, STATS_REASONS.retry]);
@@ -210,13 +238,27 @@ export async function collectStats(
   const interactive = { runs: sessions.length, tokens: sum(sessions.map((r) => r.session_tokens ?? 0)) };
   const autonomy = await collectAutonomy(store);
   const merges = await collectTierMerges(store);
-  return { config, tiers: aggregateStats(records, config), adopted: aggregateAdopted(records, config), autonomy, merges, interactive };
+  const owner = await collectOwnerFigures(store);
+  return { config, tiers: aggregateStats(records, config), adopted: aggregateAdopted(records, config), autonomy, merges, owner, interactive };
 }
 
 /** The one Autonomy line of `factory stats`. */
 function formatAutonomy(a: AutonomyReport): string {
   if (a.autonomy === null) return "autonomy: not enough data (no merged factory items)";
   return `autonomy: ${a.autonomy.toFixed(2)} (${a.merged - a.with_push} of ${a.merged} merged factory items with no person's push)`;
+}
+
+/** The owner lines of `factory stats`, each labelled with its window; a figure with no data says so, never 0. */
+function formatOwner(o: OwnerFigures): string[] {
+  const window = `last ${MERGE_WINDOW_DAYS} days`;
+  const value = (v: number | null, text: (n: number) => string) => (v === null ? "no data" : text(v));
+  return [
+    "",
+    `human touches per merged item (${window}): ${value(o.touches_per_merged, (n) => `${n.toFixed(2)} (${o.asks} asks, ${o.merged} merged)`)}`,
+    `median hours waiting on the owner (${window}): ${value(o.wait_hours_median, (n) => n.toFixed(1))}`,
+    `revert/fix-forward rate (${window}): ${value(o.revert_rate, (n) => `${n.toFixed(2)} (${o.reverted_or_fixed} of ${o.merged} merged)`)}`,
+    "asks: entries into a state waiting on the owner, recorded from 2026-11-22; the wait runs until the item's next state change.",
+  ];
 }
 
 export function tierLabel(tier: Tier | null): string {
@@ -282,6 +324,7 @@ export function formatStatsText(report: StatsReport): string {
     "/reject and /retry count applied commands only (spec_rejected, retry_requested); refused commands are not counted.",
     ...(report.interactive ? [`interactive sessions: ${report.interactive.runs} finished, ${report.interactive.tokens} tokens reported (factory session).`] : []),
     ...(report.merges ? formatTierMerges(report.merges) : []),
+    ...(report.owner ? formatOwner(report.owner) : []),
   ].join("\n");
 }
 

@@ -190,6 +190,13 @@ describe("Needs you on the Tasks page", () => {
     expect(location.pathname).toBe("/app/tasks");
   });
 
+  it("a red main's What failed lists a failed suite's entry next to a failed test", async () => {
+    const suite = "tests/ui-calendar-page.test.tsx > (suite failed): Cannot bundle Node.js built-in node:sqlite";
+    const [row] = await alarmRows([RED_MAIN({ failing_tests: [suite, "tests/a.test.ts > adds"], output_tail: null })]);
+    const dialog = choose(row!, "What failed");
+    expect([...dialog.querySelectorAll("[data-failing-tests] li")].map((li) => li.textContent)).toEqual([suite, "tests/a.test.ts > adds"]);
+  });
+
   it("a red main with no output kept says so in What failed, with no empty block; names kept from a flagged tail still show", async () => {
     const [none, flagged] = await alarmRows([
       RED_MAIN({ failing_tests: [], output_tail: null }),
@@ -237,5 +244,19 @@ describe("Needs you on the Tasks page", () => {
     const refused = (await screen.findByRole("region", { name: "Needs you" })).querySelector<HTMLElement>('li[data-check="migration_pending"]')!;
     await within(refused).findByText(NOT_LIVE);
     expect(within(refused).queryByRole("button")).toBeNull();
+  });
+
+  it("shows each ask's rank reason, and the held ones with the review time they wait for", async () => {
+    const asks = [SPEC, row(31, "needs_approval", "Held spec", { blocked_on: "human", commands: ["approve"].map(cmd) })];
+    responses["/api/v1/items"] = { ...(responses["/api/v1/items"] as object), items: [{ ...asks[0], rank_reason: "Blocks another item", held: false }, { ...asks[1], rank_reason: "Held until 09:00", held: true }] };
+    mount();
+    const section = await screen.findByRole("region", { name: "Needs you" });
+    const reasons = await waitFor(() => {
+      const found = [...section.querySelectorAll("[data-rank]")].map((r) => r.textContent);
+      expect(found).toHaveLength(2);
+      return found;
+    });
+    expect(reasons).toEqual(["Blocks another item", "Held until 09:00"]);
+    expect(within(section).getByText("1 held until 09:00")).toBeTruthy();
   });
 });

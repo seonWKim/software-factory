@@ -7,7 +7,7 @@ import { BACKENDS } from "./helpers/store.js";
 const STEP = 32;
 const TABLES = ["standing_rules", "standing_proposals"];
 /** The same tables under their RFC 0015 names, after the prefix migration. */
-const STORE_TABLES = ["controller_standing_rules", "controller_standing_proposals"];
+const STORE_TABLES = ["controller_standing_rules", "controller_standing_proposals", "controller_standing_rule_changes"];
 const owner = "github:1" as UserId;
 
 /** Column names per table of `CREATE TABLE` statements, in order. Keys and constraints are left out. */
@@ -69,5 +69,37 @@ describe.each(BACKENDS)("standing approvals: store methods ($name)", ({ make }) 
     expect(off.updated_at > rule.updated_at).toBe(true);
     await store.putStandingRule({ gate: "spec", tier: 1, enabled: true, set_by: owner });
     expect((await store.listStandingRules()).map((r) => [r.tier, r.enabled])).toEqual([[1, true], [2, false]]);
+  });
+
+  it("putStandingRule records each write: add with no row before, then pause, with the actor's user ID", async () => {
+    const { store } = await make();
+    await store.putStandingRule({ gate: "spec", tier: 1, enabled: true, set_by: owner });
+    await store.putStandingRule({ gate: "spec", tier: 1, enabled: false, set_by: "github:2" as UserId });
+    const changes = await store.listStandingRuleChanges();
+    expect(changes.map(({ action, before, after, actor }) => ({ action, before, after, actor }))).toEqual([
+      { action: "add", before: null, after: { enabled: true }, actor: owner },
+      { action: "pause", before: { enabled: true }, after: { enabled: false }, actor: "github:2" },
+    ]);
+    expect(changes[0]!.seq < changes[1]!.seq).toBe(true);
+  });
+
+  it("deleteStandingRule deletes the row and records remove; with no row it writes nothing and answers false", async () => {
+    const { store } = await make();
+    expect(await store.deleteStandingRule({ gate: "spec", tier: 1, actor: owner })).toBe(false);
+    expect(await store.listStandingRuleChanges()).toEqual([]);
+    await store.putStandingRule({ gate: "spec", tier: 1, enabled: true, set_by: owner });
+    expect(await store.deleteStandingRule({ gate: "spec", tier: 1, actor: owner })).toBe(true);
+    expect(await store.listStandingRules()).toEqual([]);
+    expect((await store.listStandingRuleChanges()).at(-1)).toMatchObject({ action: "remove", before: { enabled: true }, after: null, actor: owner });
+    // A second remove finds no row.
+    expect(await store.deleteStandingRule({ gate: "spec", tier: 1, actor: owner })).toBe(false);
+    expect((await store.listStandingRuleChanges()).filter((c) => c.action === "remove")).toHaveLength(1);
+  });
+
+  it("recordStandingRuleChange stores an edit with its before and after values", async () => {
+    const { store } = await make();
+    const c = await store.recordStandingRuleChange({ gate: "spec", tier: 1, action: "edit", before: { threshold: 10 }, after: { threshold: 6 }, actor: owner });
+    expect(c).toMatchObject({ action: "edit", before: { threshold: 10 }, after: { threshold: 6 }, actor: owner });
+    expect(await store.listStandingRuleChanges()).toContainEqual(c);
   });
 });

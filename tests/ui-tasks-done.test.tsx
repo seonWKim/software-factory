@@ -1,16 +1,28 @@
 // @vitest-environment jsdom
 /// <reference lib="dom" />
 /// <reference lib="dom.iterable" />
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskRow } from "../web/src/api.js";
-import { SLOW, TOKEN, card, chooseMenu, item, menuItems, reset, row, s, show, show2, teardown, view } from "./ui-tasks-fixtures.js";
+import { SLOW, TOKEN, TasksPage, card, chooseMenu, item, menuItems, reset, row, s, show, teardown, view } from "./ui-tasks-fixtures.js";
 
 beforeEach(reset);
 afterEach(teardown);
 
-// Done tasks stay in the Tasks list in text-2, never struck through, with Reopen in the ⋯ menu (design 02-tasks, done
-// tasks stay; design 09-dashboard-tasks, one ItemRow).
+// Done tasks stay on the Tasks page in text-2, never struck through, with Reopen in the ⋯ menu (design 02-tasks, done
+// tasks stay; design 09-dashboard-tasks, one ItemRow), all of them in one Done group below the list that is closed on
+// load (design 02-tasks-page, 2026-11-22).
+
+/** Opens the closed Done group ("N done") below the list, so its rows are drawn. */
+async function openDone() {
+  const summary = await screen.findByText(/^\d+ done$/, undefined, SLOW);
+  fireEvent.click(summary.closest("summary")!);
+}
+
+/** The page's drawn task rows, in order. */
+const drawn = () => [...document.querySelectorAll<HTMLElement>("[data-task]")].map((e) => e.dataset.task);
 
 describe("done tasks stay, in text-2 (design 02-tasks, done tasks stay)", () => {
   const AT = "2026-11-12T09:10:00.000Z";
@@ -20,24 +32,28 @@ describe("done tasks stay, in text-2 (design 02-tasks, done tasks stay)", () => 
   /** Today's tk_now as the server places it, done or open. */
   const withNow = (now: TaskRow) => view({ today: { overdue: view().today.overdue, due: [now] } });
 
-  it("a task marked done from the list stays in it: its title in text-2 with no strikethrough, Reopen in its menu and no checkbox", async () => {
+  it("a task marked done from the list moves into the closed Done group: opened, its title in text-2 with no strikethrough, Reopen in its menu and no checkbox", async () => {
     await show();
     s.answer = { status: 200, body: { task_id: "tk_now", completed: true, next_id: null } };
     s.current = withNow(done("tk_now", { due_date: "2026-11-12", due_time: "09:00" }));
     fireEvent.click(within(card("tk_now")).getByRole("checkbox", { name: "Complete: tk_now" }));
-    await waitFor(() => expect(card("tk_now").hasAttribute("data-done")).toBe(true), SLOW);
+    // It leaves today's group; the Done group stays closed, so its row is not drawn.
+    await screen.findByText("1 done", undefined, SLOW);
+    expect(drawn()).not.toContain("tk_now");
+    await openDone();
+    expect(card("tk_now").hasAttribute("data-done")).toBe(true);
     expect(menuItems(card("tk_now"))).toEqual(["Reopen"]);
     expect(title("tk_now").className.split(" ")).toContain("text-text-2");
     expect(title("tk_now").className.split(" ")).not.toContain("line-through");
     expect(within(card("tk_now")).queryByRole("checkbox")).toBeNull();
-    expect(card("tk_now").hasAttribute("data-done")).toBe(true);
-    expect([...document.querySelectorAll<HTMLElement>("[data-task]")].map((e) => e.dataset.task).slice(0, 2)).toEqual(["tk_late", "tk_now"]);
+    expect(drawn().at(-1)).toBe("tk_now");
   });
 
   it("a task whose factory work merged shows done, with its work item, Reopen and Copy ID, not removed", async () => {
     s.items = [item("wi_1", { item_phase: "closed", close_reason: "completed", stage: "CLOSED" })];
     s.current = view({ projects: [{ list: null, tasks: [done("tk_built", { work_item_id: "wi_1" }), row("tk_inbox")] }] });
     await show();
+    await openDone();
     expect(title("tk_built").className.split(" ")).toContain("text-text-2");
     // Its title links to the work item; the raw ID is not shown (design-system/writing.md).
     expect(within(card("tk_built")).getByRole("link", { name: "tk_built" }).getAttribute("href")).toBe("/app/items/wi_1");
@@ -59,6 +75,7 @@ describe("done tasks stay, in text-2 (design 02-tasks, done tasks stay)", () => 
       }],
     });
     await show();
+    await openDone();
     // A rejected or wont_do close leaves the task open: not done, its checkbox still there, the reason beside it.
     expect(title("tk_rejected").className.split(" ")).not.toContain("text-text-2");
     expect(within(card("tk_rejected")).getByRole("checkbox", { name: "Complete: tk_rejected" })).toBeTruthy();
@@ -74,6 +91,7 @@ describe("done tasks stay, in text-2 (design 02-tasks, done tasks stay)", () => 
   it("Reopen posts { id } to the reopen route with the token; the row shows open again", async () => {
     s.current = withNow(done("tk_now", { due_date: "2026-11-12" }));
     await show();
+    await openDone();
     s.answer = { status: 200, body: { task_id: "tk_now", reopened: true, removed_next: null } };
     const reopened = withNow(row("tk_now", { due_date: "2026-11-12" }));
     chooseMenu(card("tk_now"), "Reopen");
@@ -91,7 +109,8 @@ describe("done tasks stay, in text-2 (design 02-tasks, done tasks stay)", () => 
   it("a done row's only control is its menu, holding only Reopen: no checkbox, Build this, edit, sub-task, projects or delete; and it is not styled overdue", async () => {
     // A done task the server still sent as overdue is listed under Done, so the page has no Overdue list to wait for.
     s.current = view({ today: { overdue: [done("tk_late", { due_date: "2026-11-10" })], due: [] } });
-    await show2();
+    render(createElement(QueryClientProvider, { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) }, createElement(TasksPage)));
+    await openDone();
     const c = within(card("tk_late"));
     expect(c.getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual(["More actions: tk_late"]);
     expect(menuItems(card("tk_late"))).toEqual(["Reopen"]);
@@ -113,14 +132,20 @@ describe("done tasks stay, in text-2 (design 02-tasks, done tasks stay)", () => 
       projects: [{ list: null, tasks: [done("tk_past", { due_date: "2026-11-11" }), done("tk_soon", { due_date: "2026-11-13" }), row("tk_inbox")] }],
     });
     await show();
-    const headings = screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent).filter((h) => !h!.startsWith("Timeline"));
-    expect(headings.slice(-2)).toEqual(["No date", "Done"]);
+    const headings = () => screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent).filter((h) => !h!.startsWith("Timeline"));
+    // Closed on load: no Done heading, no done row and no Reopen until it is opened.
+    expect(headings().at(-1)).toBe("No date");
+    expect(drawn()).not.toEqual(expect.arrayContaining(["tk_past"]));
+    expect(screen.queryByRole("button", { name: /Reopen/ })).toBeNull();
+    await openDone();
+    expect(headings().slice(-2)).toEqual(["No date", "Done"]);
     const group = (name: string) => screen.getByRole("heading", { name }).parentElement!;
     const ids = (name: string) => [...group(name).querySelectorAll<HTMLElement>("[data-task]")].map((e) => e.dataset.task);
     expect(ids("Overdue")).toEqual(["tk_late"]);
     expect(ids("Done")).toEqual(expect.arrayContaining(["tk_past", "tk_sent"]));
-    expect(ids("Done")).not.toContain("tk_now");
-    expect(ids("Done")).not.toContain("tk_soon");
+    // A done task due today or later is under Done too, never in its day.
+    expect(ids("Done")).toEqual(expect.arrayContaining(["tk_now", "tk_soon"]));
+    expect(drawn().filter((id) => id === "tk_now")).toHaveLength(1);
     expect(title("tk_past").className.split(" ")).toContain("text-text-2");
     expect(card("tk_past").textContent).toContain("Done 2026-11-12");
   });
@@ -128,6 +153,7 @@ describe("done tasks stay, in text-2 (design 02-tasks, done tasks stay)", () => 
   it("a refused reopen shows its reason in the row, and the row stays done", async () => {
     s.current = withNow(done("tk_now", { recurrence: "week" }));
     await show();
+    await openDone();
     s.answer = { status: 409, body: { error: "its next occurrence is done: undo that one first" } };
     chooseMenu(card("tk_now"), "Reopen");
     expect((await within(card("tk_now")).findByRole("alert", undefined, SLOW)).textContent).toBe("its next occurrence is done: undo that one first");
@@ -143,6 +169,7 @@ describe("done tasks stay, in text-2 (design 02-tasks, done tasks stay)", () => 
   it("with no commands actor a done row has no Reopen button", async () => {
     s.current = view({ can_build: false, projects: [{ list: null, tasks: [done("tk_a")] }] });
     await show();
+    await openDone();
     expect(title("tk_a").className.split(" ")).toContain("text-text-2");
     expect(screen.queryByRole("button", { name: /Reopen/ })).toBeNull();
   });

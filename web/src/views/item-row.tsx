@@ -38,6 +38,8 @@ export interface ItemRowSlots {
   /** The title's text; it links to `href`, or is plain text with none (an unbuilt task). */
   title: string;
   href?: string | null | undefined;
+  /** The title is stored text that may quote names as written (`data-raw`, the responsive check's raw-name rule skips it). */
+  titleRaw?: boolean;
   /** Classes added to the title (a late or done task's colour). */
   titleClassName?: string | undefined;
   /** Shown in place of the title while the row edits it (a task's edit form). */
@@ -72,7 +74,7 @@ function Title({ s, className }: { s: ItemRowSlots; className: string }) {
   if (s.editing) return <>{s.editing}</>;
   if (s.href) {
     return (
-      <Link href={s.href} title={s.title} data-row-title className={cn(className, LINK_CLASS, s.titleClassName)}>
+      <Link href={s.href} title={s.title} data-row-title data-raw={s.titleRaw ? "" : undefined} className={cn(className, LINK_CLASS, s.titleClassName)}>
         {s.title}
       </Link>
     );

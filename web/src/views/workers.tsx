@@ -3,7 +3,7 @@ import { type GraphEdge, type GraphNode, type ItemGraph, WINDOW_MS, WORKER_WINDO
 import { Card } from "../components/ui/card.js";
 import { FOCUS } from "../components/ui/control.js";
 import { Tooltip } from "../components/ui/menu.js";
-import { EmptyState, PageHeader } from "../components/ui/notice.js";
+import { EmptyState, PageHeader, PageToolbar } from "../components/ui/notice.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { en, type MessageKey } from "../i18n/en.js";
@@ -241,7 +241,7 @@ export function DependencyGraph({ data, highlight, onHighlight }: { data: ItemGr
                           highlight === n.id && "ring-2 ring-text-1",
                         )}
                       >
-                        <span className="truncate">{lines[0]}</span>
+                        <span data-raw className="truncate">{lines[0]}</span>
                       </Link>
                     </Tooltip>
                   </li>
@@ -256,7 +256,7 @@ export function DependencyGraph({ data, highlight, onHighlight }: { data: ItemGr
   );
 }
 
-/** The Workers page: the window switch, the timeline card and the graph card. Nothing on it edits anything. */
+/** The Workers page: the window switch in its PageToolbar, the timeline card and the graph card. Nothing on it edits anything. */
 export function WorkersPage() {
   const [win, setWin] = useState<WorkerWindow>("6h");
   const [highlight, setHighlight] = useState<string | null>(null);
@@ -265,10 +265,11 @@ export function WorkersPage() {
   return (
     <div>
       <PageHeader title={t("page.workers")} description={t("workers.description")} />
-      <Card
-        title={t("workers.timeline.title")}
-        action={<SegmentedControl label={t("workers.window")} options={WORKER_WINDOWS.map((w) => ({ id: w, label: w }))} value={win} onChange={setWin} />}
-      >
+      {/* The window narrows both cards, so it is a page control: the toolbar's second row. */}
+      <PageToolbar>
+        <SegmentedControl label={t("workers.window")} options={WORKER_WINDOWS.map((w) => ({ id: w, label: w }))} value={win} onChange={setWin} />
+      </PageToolbar>
+      <Card title={t("workers.timeline.title")}>
         {runs.data ? <Timeline data={runs.data} windowMs={WINDOW_MS[win]} highlight={highlight} /> : runs.isError ? <ErrorNote error={runs.error} /> : <Loading />}
       </Card>
       <Card title={t("workers.graph.title")}>

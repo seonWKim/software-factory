@@ -15,8 +15,9 @@ const { RulesPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { RulesP
 
 // Standing approvals on the Rules page (issue #300, design 05-standing-approvals and §9; two sections since 2026-11-22):
 // a rule that is on is a row of In effect, one that is off a row under the page's Details, each with its switch; a
-// pending proposal is a row of Waiting for you with Accept visible and Decline in its ⋯ menu. Each write is a
-// POST /api/v1/standing with the CSRF token; a refusal shows beside its item. Who set a rule reads "you" or "a person",
+// pending proposal is a row of Waiting for you with Accept visible and Decline in its ⋯ menu. A rule is turned on,
+// paused, edited or removed in a Dialog (its switch or its ⋯ menu), which lists the waiting items the change would
+// approve now. Each write is a POST /api/v1/standing with the CSRF token; a refusal shows in the dialog or beside its item. Who set a rule reads "you" or "a person",
 // never the user ID, and the dates are local.
 
 const TOKEN = "tok_standing";
@@ -146,13 +147,107 @@ describe("Standing approvals section (stubbed API)", { timeout: TEST_MS }, () =>
     expect(screen.queryByText("Auto-approve specs")).toBeNull();
   });
 
-  it("the switch posts the rule and its new state with the CSRF token", async () => {
+  it("the switch opens the Turn on dialog, not an inline form; its confirm posts the rule and its new state with the CSRF token", async () => {
     const list = await show();
-    fireEvent.click(within(ruleItem(list, "spec-t1")).getByRole("switch", { name: "Approves tier 1 plans for you" }));
+    const li = ruleItem(list, "spec-t1");
+    fireEvent.click(within(li).getByRole("switch", { name: "Approves tier 1 plans for you" }));
+    const dialog = await screen.findByRole("dialog");
+    // The dialog sits outside the row, so the row's height does not change; nothing is posted before the confirm.
+    expect(li.contains(dialog)).toBe(false);
+    expect(posts).toEqual([]);
+    expect(within(dialog).getByRole("switch", { name: "Approves tier 1 plans for you" }).getAttribute("aria-checked")).toBe("true");
+    // Cancel (secondary) comes before the confirm (primary, last).
+    const buttons = within(dialog).getAllByRole("button").filter((b) => b.getAttribute("role") !== "switch");
+    expect(buttons.map((b) => b.textContent)).toEqual(["Cancel", "Turn on"]);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Turn on" }));
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]!.url).toBe("/api/v1/standing");
     expect(new Headers(posts[0]!.init.headers).get("x-csrf-token")).toBe(TOKEN);
     expect(JSON.parse(String(posts[0]!.init.body))).toEqual({ rule: "spec-t1", enabled: true });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("the Turn on dialog lists the waiting items the rule would approve now, and says none when there are none", async () => {
+    view = { ...view, waiting: [{ id: "wi_1", title: "Fix the login" }, { id: "wi_2", title: "Ship docs" }] };
+    const list = await show();
+    fireEvent.click(within(ruleItem(list, "spec-t1")).getByRole("switch", { name: "Approves tier 1 plans for you" }));
+    const preview = (await screen.findByRole("dialog")).querySelector<HTMLElement>("[data-preview]")!;
+    expect(preview.textContent).toContain("Waiting items this rule covers");
+    expect([...preview.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["Fix the login", "Ship docs"]);
+    expect(preview.textContent).not.toContain("wi_1");
+    // Turned to off in the dialog, the change approves nothing.
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("switch"));
+    expect(preview.querySelector("[data-preview-none]")!.textContent).toBe("none");
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(posts).toEqual([]);
+    cleanup();
+    view = { ...standing(), waiting: [] };
+    const again = await show();
+    fireEvent.click(within(ruleItem(again, "spec-t1")).getByRole("switch", { name: "Approves tier 1 plans for you" }));
+    expect((await screen.findByRole("dialog")).querySelector("[data-preview-none]")!.textContent).toBe("none");
+  });
+
+  it("Pause, from the ⋯ menu of a rule that is on, posts it off", async () => {
+    view = { ...view, rules: [{ ...view.rules[0]!, enabled: true }] };
+    const list = await show();
+    await waitFor(() => expect(ruleItem(list, "spec-t1")).not.toBeNull(), SLOW);
+    const li = ruleItem(list, "spec-t1");
+    fireEvent.click(within(li).getByRole("button", { name: /^More:/ }));
+    fireEvent.click(within(li).getByRole("menuitem", { name: "Pause" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("switch").getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Pause" }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(JSON.parse(String(posts[0]!.init.body))).toEqual({ rule: "spec-t1", enabled: false });
+  });
+
+  it("Edit opens a dialog with the threshold field and posts the new threshold", async () => {
+    const list = await show();
+    const li = ruleItem(list, "spec-t1");
+    fireEvent.click(within(li).getByRole("button", { name: /^More:/ }));
+    fireEvent.click(within(li).getByRole("menuitem", { name: "Edit" }));
+    const dialog = await screen.findByRole("dialog");
+    const field = within(dialog).getByLabelText("Approvals in a row before the factory suggests a rule") as HTMLInputElement;
+    expect(field.value).toBe("10");
+    const save = within(dialog).getByRole("button", { name: "Save" }) as HTMLButtonElement;
+    fireEvent.change(field, { target: { value: "0" } });
+    expect(save.disabled).toBe(true);
+    fireEvent.change(field, { target: { value: "6" } });
+    expect(save.disabled).toBe(false);
+    expect(dialog.querySelector("[data-preview-none]")!.textContent).toBe("none");
+    fireEvent.click(save);
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(JSON.parse(String(posts[0]!.init.body))).toEqual({ rule: "spec-t1", action: "edit", threshold: 6 });
+  });
+
+  it("Remove opens a dialog whose danger confirm, last, posts the remove; it is off for a rule with no stored row", async () => {
+    const list = await show();
+    const li = ruleItem(list, "spec-t1");
+    fireEvent.click(within(li).getByRole("button", { name: /^More:/ }));
+    fireEvent.click(within(li).getByRole("menuitem", { name: "Remove" }));
+    const dialog = await screen.findByRole("dialog");
+    const buttons = within(dialog).getAllByRole("button");
+    expect(buttons.map((b) => b.textContent)).toEqual(["Cancel", "Remove"]);
+    fireEvent.click(buttons[1]!);
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(JSON.parse(String(posts[0]!.init.body))).toEqual({ rule: "spec-t1", action: "remove" });
+    cleanup();
+    view = { ...standing(), rules: [{ ...standing().rules[0]!, created_at: null, set_by: null }] };
+    const fresh = await show();
+    const row = ruleItem(fresh, "spec-t1");
+    fireEvent.click(within(row).getByRole("button", { name: /^More:/ }));
+    expect((within(row).getByRole("menuitem", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("a refused change keeps its dialog open and says which permission is missing", async () => {
+    answer = { status: 403, body: { error: "Changing a standing rule needs the approve_spec permission: no_role." } };
+    const list = await show();
+    fireEvent.click(within(ruleItem(list, "spec-t1")).getByRole("switch", { name: "Approves tier 1 plans for you" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Turn on" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toContain("approve_spec permission");
+    expect(screen.getByRole("dialog")).toBe(dialog);
   });
 
   it("Accept (visible) and Decline (in the ⋯ menu) post the proposal's answer", async () => {
@@ -233,12 +328,18 @@ describe("Standing approvals section against a server that keeps the rule", () =
     }));
     const switchOf = (list: HTMLElement) => within(ruleItem(list, "spec-t1")).getByRole("switch", { name: "Approves tier 1 plans for you" });
 
+    /** The row's switch opens the dialog; its confirm (`label`) sends the change. */
+    const toggle = async (list: HTMLElement, label: string) => {
+      fireEvent.click(switchOf(list));
+      fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: label }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), SLOW);
+    };
+
     let list = await show();
     expect(switchOf(list).getAttribute("aria-checked")).toBe("true");
-    fireEvent.click(switchOf(list));
+    await toggle(list, "Pause");
     await waitFor(() => expect(switchOf(list).getAttribute("aria-checked")).toBe("false"), SLOW);
-    await waitFor(() => expect((switchOf(list) as HTMLButtonElement).disabled).toBe(false), SLOW);
-    fireEvent.click(switchOf(list));
+    await toggle(list, "Turn on");
     await waitFor(() => expect(switchOf(list).getAttribute("aria-checked")).toBe("true"), SLOW);
     expect(writes).toEqual([false, true]);
 

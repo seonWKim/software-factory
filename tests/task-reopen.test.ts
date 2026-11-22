@@ -4,6 +4,7 @@ import type { NewTask } from "../src/core/tasks.js";
 import type { UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { issue, newStore, system } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // Undo a task's completion (design 02-tasks): reopenTask sets done_at back to NULL where it is set, in one transaction;
 // a recurring task's open next occurrence is deleted with it, a done one refuses it. Plain tasks only: work items stay final.
@@ -14,7 +15,7 @@ const DAY = 24 * 60 * 60 * 1000;
 async function setup() {
   const clock = new FakeClock("2026-11-11T12:00:00.000Z");
   const { store } = await newStore(clock);
-  const d: LocalCliDeps = { store, identity: { user: USER, from: "git user.email" }, project: async () => null, read: async () => "", newId: () => "x" };
+  const d: LocalCliDeps = { answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: USER, from: "git user.email" }, project: async () => null, read: async () => "", newId: () => "x" };
   const cli = (...args: string[]) => {
     const a = parseLocalCliArgs("task", args);
     if ("error" in a) throw new Error(a.error);

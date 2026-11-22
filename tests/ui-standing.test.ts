@@ -65,7 +65,11 @@ async function setup(opts: { user?: UserId | null; wired?: boolean } = {}) {
     health: new HealthMonitor(async () => [], clock),
     ...(opts.wired === false ? {} : { pauses }),
   };
-  const rows = async () => (await real.listTableRows({ table: "controller_standing_rules", limit: 200 }))!.rows;
+  // The rule rows and their change records: a refusal leaves both as they were.
+  const rows = async () => [
+    ...(await real.listTableRows({ table: "controller_standing_rules", limit: 200 }))!.rows,
+    ...(await real.listTableRows({ table: "controller_standing_rule_changes", limit: 200 }))!.rows,
+  ];
   return { d, real, clock, pauses, log, rows, writes: () => writes };
 }
 
@@ -88,6 +92,8 @@ describe("GET /api/v1/standing", () => {
     expect(rule).toMatchObject({ gate: "spec", tier: 1, threshold: 10, enabled: false, set_by: null, created_at: null, last_fired_at: null, recent: [] });
     expect(rule).not.toHaveProperty("last_used_at");
     expect(v.proposals).toEqual([]);
+    // The preview of what the rule would approve now: nothing waits (tests/standing-changes.test.ts lists items).
+    expect(v.waiting).toEqual([]);
   });
 
   it("shows the stored rule and the effective threshold override", async () => {
@@ -169,6 +175,8 @@ describe("POST /api/v1/standing", () => {
       { msg: "standing rule on", fields: { rule: "spec-t1", user_id: OWNER } },
       { msg: "standing rule off", fields: { rule: "spec-t1", user_id: OWNER } },
     ]);
+    // One change record per write, the same rows `/standing accept|decline` writes, with the user ID and no name.
+    expect((await real.listStandingRuleChanges()).map((c) => [c.action, c.actor])).toEqual([["add", OWNER], ["pause", OWNER]]);
   });
 
   it("off, then on: a fresh GET (the page's reload) shows the last write", async () => {
@@ -239,7 +247,7 @@ describe("POST /api/v1/standing", () => {
     const before = await rows();
     const r = await respond(d, post(pauses, { rule: "spec-t1", enabled: true }));
     expect(r.status).toBe(403);
-    expect(parse(r).error).toContain("approve_spec");
+    expect(parse(r).error).toContain("needs the approve_spec permission");
     expect(await rows()).toEqual(before);
     expect(writes()).toBe(0);
     expect(log.lines).toEqual([]);

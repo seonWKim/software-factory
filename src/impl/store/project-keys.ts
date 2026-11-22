@@ -11,7 +11,7 @@ import { type ProjectRef, isLegacyProject, projectLabelCursor } from "../../core
 import type { Row, SqlExecutor } from "../../state/index.js";
 
 /** Every table with a project column. A new one must be added here (tests/project-migration.test.ts checks). */
-export const PROJECT_TABLES = ["controller_work_items", "controller_unreviewed_merges"] as const;
+export const PROJECT_TABLES = ["controller_work_items", "controller_unreviewed_merges", "controller_improve_proposals"] as const;
 export type ProjectTable = (typeof PROJECT_TABLES)[number];
 
 /** A project value that is not a key: `owner/name` before this step. Keys always contain ':'. */

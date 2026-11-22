@@ -8,7 +8,7 @@ import { loadConfig } from "../src/load-config.js";
 import type { StatsConfig } from "../src/core/config.js";
 import { type MergeEvaluation, noVerdicts } from "../src/core/merge-evaluation.js";
 import {
-  type StatsRecord, aggregateAutonomy, aggregateStats, aggregateTierMerges, collectAutonomy, collectStats, collectTierMerges, formatStatsText, tierRule,
+  type StatsRecord, aggregateAutonomy, aggregateStats, aggregateTierMerges, collectAutonomy, collectStats, collectTierMerges, droppedBack, formatStatsText, tierRule,
 } from "../src/core/stats.js";
 import type { Tier, Timestamp, UserId, VerdictSeverity, WorkItemId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -333,6 +333,14 @@ describe("factory stats: per-tier merge record and rule (design 06-measurement)"
     expect(tierRule(1, [...clean(50), ...old])).toBe("not_met");
   });
 
+  it("the drop-back: 2 reverted or fixed-forward merges among the last 20 drop a tier back, 1 does not, older ones are not read", () => {
+    expect(droppedBack([...clean(19), ev(1, { reverted: 1 })])).toBe(false);
+    expect(droppedBack([...clean(18), ev(1, { reverted: 1 }), ev(1, { fixed_forward: 1 })])).toBe(true);
+    expect(droppedBack([ev(1, { reverted: 1 }), ...clean(10), ev(1, { fixed_forward: 1 })])).toBe(true); // fewer than 20 merges
+    expect(droppedBack([ev(1, { reverted: 1 }), ev(1, { reverted: 1 }), ...clean(20)])).toBe(false);
+    expect(droppedBack([ev(1, { reverted: 1 }), ...clean(19), ev(1, { reverted: 1 })])).toBe(false); // the first is the 21st from the end
+  });
+
   it("fewer than 50 merges never qualify, however clean", () => {
     expect(tierRule(1, clean(49))).toBe("too_few");
     expect(tierRule(1, [])).toBe("too_few");
@@ -405,6 +413,47 @@ describe("factory stats: per-tier merge record and rule (design 06-measurement)"
       ["5", "0", "0", "0", "never"],
       ["untiered", "0", "0", "0", "too few merges (0 of 50)"],
     ]);
+  });
+});
+
+describe("factory stats: what merges took from the owner (design 06-efficiency)", () => {
+  const config: StatsConfig = { weights: WEIGHTS, min_sample: 2 };
+  const HOUR = 3_600_000;
+
+  it("human touches per merged item, median hours waiting on the owner and the revert/fix-forward rate, each labelled with its window", async () => {
+    const clock = new FakeClock("2026-11-01T00:00:00.000Z");
+    const { store } = await newStore(clock);
+    const { item } = await store.createWorkItem(issue(1), system);
+    const asked = await store.transition({
+      id: item.id, expected_version: item.version, actor: system, reason: "spec_pending",
+      patch: { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" }, detail: { ask_reason: "spec_pending", ask_tier: 1 },
+    });
+    if (!asked.ok) throw new Error(asked.reason);
+    clock.advance(3 * HOUR);
+    const approved = await store.transition({ id: item.id, expected_version: asked.item.version, actor: human, reason: "spec_approved", patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null } });
+    if (!approved.ok) throw new Error(approved.reason);
+    const merged = await store.transition({ id: item.id, expected_version: approved.item.version, actor: system, reason: "pr_merged", patch: { stage: "CLOSED", close_reason: "completed", merge_sha: "sha1" } });
+    if (!merged.ok) throw new Error(merged.reason);
+    const { item: other } = await store.createWorkItem(issue(2), system);
+    const m2 = await store.transition({ id: other.id, expected_version: other.version, actor: system, reason: "pr_merged", patch: { stage: "CLOSED", close_reason: "completed", merge_sha: "sha2" } });
+    if (!m2.ok) throw new Error(m2.reason);
+    await store.transition({ id: other.id, expected_version: m2.item.version, patch: {}, actor: system, reason: "reverted" });
+
+    const report = await collectStats(store, config);
+    expect(report.owner).toEqual({ merged: 2, asks: 1, touches_per_merged: 0.5, wait_hours_median: 3, revert_rate: 0.5, reverted_or_fixed: 1 });
+    const lines = formatStatsText(report).split("\n");
+    expect(lines).toContain("human touches per merged item (last 30 days): 0.50 (1 asks, 2 merged)");
+    expect(lines).toContain("median hours waiting on the owner (last 30 days): 3.0");
+    expect(lines).toContain("revert/fix-forward rate (last 30 days): 0.50 (1 of 2 merged)");
+  });
+
+  it("a window with no asks shows no data, never 0", async () => {
+    const { store } = await newStore();
+    const report = await collectStats(store, config);
+    const text = formatStatsText(report);
+    expect(text).toContain("human touches per merged item (last 30 days): no data");
+    expect(text).toContain("median hours waiting on the owner (last 30 days): no data");
+    expect(text).toContain("revert/fix-forward rate (last 30 days): no data");
   });
 });
 

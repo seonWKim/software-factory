@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import {
-  SYSTEM_ITEM, dailyImproveKey, enqueueImprove, groupFailures, issueMarker, markerKey, systemSource, utcDay,
+  SYSTEM_ITEM, dailyImproveKey, enqueueImprove, groupFailures, issueMarker, markerKey, runImprove, systemSource, utcDay,
 } from "../src/core/improver.js";
+import { ASK_PROPOSAL, type AskRow, OWNER_ASK, type ProposalRow } from "../src/core/owner-asks.js";
 import { Worker } from "../src/worker/index.js";
 import type { Run, RunId, Timestamp, WorkItemId, WorkerId } from "../src/core/types.js";
 import type { AgentRunner } from "../src/interfaces/agent-runner.js";
@@ -172,6 +173,46 @@ describe("improve: the run", () => {
     await c.tickRuns();
     expect((await store.getRun(run!.id))!.acknowledged_at).not.toBeNull();
     expect(await store.getWorkItem(run!.work_item_id)).toMatchObject({ stage: before.stage, blocked_reason: SYSTEM_ITEM });
+  });
+});
+
+describe("improve: the owner's asks (design 07-improve-report)", () => {
+  /** An item of `project` that asks the owner for `reason` now, answered `answer` an hour later (null: not answered). */
+  async function ask(store: FactoryStore, clock: FakeClock, n: number, reason: string, answer: string | null, project = PROJECT.key) {
+    const { item } = await store.createWorkItem({ ...issue(n), project }, system);
+    const asked = await store.transition({
+      id: item.id, expected_version: item.version, actor: system, reason, patch: { blocked_on: "human", blocked_reason: `${reason}:x` }, detail: { ask_reason: reason, ask_tier: 1 },
+    });
+    if (!asked.ok) throw new Error(asked.reason);
+    if (answer === null) return;
+    clock.advance(3_600_000);
+    const r = await store.transition({ id: item.id, expected_version: asked.item.version, actor: system, reason: answer, patch: { blocked_on: "none", blocked_reason: null } });
+    if (!r.ok) throw new Error(r.reason);
+  }
+
+  it("lists the window's top ask reasons with their counts, and proposes a reason approved unchanged 10 times in a row as text only", async () => {
+    const clock = new FakeClock("2026-03-01T00:00:00.000Z");
+    const { store } = await newStore(clock);
+    let n = 0;
+    // Before the window: nine approvals unchanged, which only the proposal reads.
+    for (let i = 0; i < 9; i++) await ask(store, clock, ++n, "spec_pending", "spec_approved");
+    clock.set("2026-03-04T01:00:00.000Z");
+    await ask(store, clock, ++n, "spec_pending", "spec_approved"); // the tenth in a row
+    await ask(store, clock, ++n, "run_failed", null);
+    await ask(store, clock, ++n, "run_failed", "retry_requested");
+    await ask(store, clock, ++n, "max_loops", "spec_rejected", "github:github.com:R_other"); // another project
+    clock.set("2026-03-05T06:00:00.000Z");
+    const { run } = await enqueueImprove({ store, clock }, PROJECT.key, "daily");
+
+    const report = await runImprove({ store, storage: new MemoryStorage(), scanner: cleanScanner }, run!, { project: PROJECT.key });
+    const asks = report.patterns.filter((p) => p.error_code === OWNER_ASK) as AskRow[];
+    expect(asks.map((r) => [r.detail, r.asks, r.answered, r.approved_unchanged])).toEqual([["run_failed", 2, 1, 0], ["spec_pending", 1, 1, 1]]);
+    const proposals = report.patterns.filter((p) => p.error_code === ASK_PROPOSAL) as ProposalRow[];
+    expect(proposals.map((r) => [r.detail, r.run_length])).toEqual([["spec_pending", 10]]);
+    expect(proposals[0]!.text).toContain("`/standing`");
+    expect(report.patterns.map((p) => p.error_code)).toEqual([OWNER_ASK, OWNER_ASK, ASK_PROPOSAL]);
+    // Text only: no standing rule is written.
+    expect(await store.listStandingRules()).toEqual([]);
   });
 });
 

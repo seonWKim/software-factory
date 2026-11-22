@@ -18,6 +18,7 @@ import { RowForm } from "./forms.js";
 import type { Nested } from "./groups.js";
 import { ALERT, Rows, idFor, useTaskAction } from "./shared.js";
 import { Badge } from "../../components/ui/badge.js";
+import { SUB_TITLE } from "../../components/ui/card.js";
 
 /** A linked task's item's close reason, as the row says it in its details line, open or done (design 02-tasks). */
 const closedKey = (reason: NonNullable<TaskRow["close_reason"]>): MessageKey =>
@@ -206,7 +207,7 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
 export function Group({ title, rows, overdue }: { title: string; rows: readonly Nested[]; overdue: boolean }) {
   return (
     <div className="space-y-1">
-      <h3 className={cn("text-xs font-medium", overdue ? "text-pill-bad-fg" : "text-text-2")}>{title}</h3>
+      <h3 className={SUB_TITLE}>{title}</h3>
       <ul aria-label={title} className="divide-y divide-border rounded-control border border-border">
         {rows.map(({ row, sub }) => (
           <TaskCard key={row.id} task={row} overdue={overdue} sub={sub} />

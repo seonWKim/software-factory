@@ -14,7 +14,9 @@ import { type MenuItem, OverflowMenu } from "../components/ui/menu.js";
 import { When, useNow } from "./common.js";
 import { alarmAnchor } from "./settings/general.js";
 import { Outcome, useWrite } from "./settings-file-keys.js";
+import { ModeDialog } from "./settings/mode-dialog.js";
 import { ShowFailuresDialog, WhatFailedDialog } from "./alarm-dialogs.js";
+import { ModelCredentialDialog } from "./model-credential-dialog.js";
 
 /**
  * Shown while the app was built from another revision than the server it talks to runs (design §9): the tab
@@ -119,11 +121,12 @@ export function FactoryRevision({ factory }: { factory: FactoryState | null | un
 
 /**
  * One system action as a Needs-you row in the Check group (design 09-status-page): an open alarm (AlarmRow), a claim
- * pause (PauseCheckRow), else its sentence and the command that clears it.
+ * pause (PauseCheckRow), a missing model credential (ModelCredentialRow), else its sentence and the command that clears it.
  */
 export function CheckRow({ action }: { action: SystemAction }) {
   if (action.code === "alarm") return <AlarmRow action={action} />;
   if (action.code === "claim_pause" && action.pause) return <PauseCheckRow action={action} pause={action.pause} />;
+  if (action.code === "model_credential") return <ModelCredentialRow action={action} />;
   return (
     <ListRow
       data-check={action.code}
@@ -155,6 +158,23 @@ function PauseCheckRow({ action, pause }: { action: SystemAction; pause: string 
       {...(action.until !== null ? { details: <When at={action.until} now={now} label={label} /> } : {})}
     >
       <ResumeNow name={pause} token={token} />
+    </ListRow>
+  );
+}
+
+/**
+ * The missing model credential's Needs-you row (design 09-status-page): its sentence, no command, and Add model
+ * credential in its "⋯" menu, which opens the dialog; the row keeps its height.
+ */
+function ModelCredentialRow({ action }: { action: SystemAction }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <ListRow
+      data-check="model_credential"
+      title={<p title={action.text} className={cn(ROW_TITLE, "text-text-1")}>{action.text}</p>}
+      menu={<OverflowMenu label={t("commands.more")} items={[{ label: t("needs.addCredential"), action: "add_model_credential", onSelect: () => setOpen(true) }]} />}
+    >
+      {open && <ModelCredentialDialog onClose={() => setOpen(false)} />}
     </ListRow>
   );
 }
@@ -395,14 +415,16 @@ function AlarmRow({ action }: { action: SystemAction }) {
  */
 function AutoStopRow({ action, stop }: { action: SystemAction; stop: AutoStop }) {
   const turnOn = useTurnAutoOn();
+  const [confirming, setConfirming] = useState(false);
   const cause = STOP_CAUSE[stop.cause];
   const sentence = t("needs.autoStopped", { time: clockTime(stop.at), cause: cause ? t(cause) : stop.cause });
-  const lead = [{ label: t("needs.autoStopTurnOn"), action: "auto_on", disabled: !turnOn.ready, onSelect: turnOn.write }];
+  const lead = [{ label: t("needs.autoStopTurnOn"), action: "auto_on", disabled: !turnOn.ready, onSelect: () => setConfirming(true) }];
   return (
     <AlarmMenuRow action={action} id={alarmAnchor(stop.alert_id)} title={sentence} lead={lead} dialog="what_failed" output={stop}>
       <Disclosure data-alarm-details lazy summary={t("needs.alarmDetails")}>
         <p className="text-xs text-pretty wrap-anywhere text-text-2">{action.text}</p>
       </Disclosure>
+      {confirming && <ModeDialog to="auto" busy={turnOn.busy} error={turnOn.error} onConfirm={() => void turnOn.write().then((ok) => ok && setConfirming(false))} onClose={() => setConfirming(false)} />}
       <Outcome error={turnOn.error} done={null} />
     </AlarmMenuRow>
   );
@@ -425,7 +447,7 @@ function AlarmMenuRow({ action, id, title, lead, dialog, output, children }: {
     <ListRow
       data-check="alarm"
       {...(id ? { id } : {})}
-      title={<p data-alarm-summary title={title} className={cn(ROW_TITLE, "text-text-1")}>{title}</p>}
+      title={<p data-alarm-summary data-raw title={title} className={cn(ROW_TITLE, "text-text-1")}>{title}</p>}
       {...(items.length > 0 ? { menu: <OverflowMenu label={t("commands.more")} items={items} /> } : {})}
     >
       {children}
@@ -436,8 +458,8 @@ function AlarmMenuRow({ action, id, title, lead, dialog, output, children }: {
 }
 
 /**
- * Turn auto back on from the auto-stop row: mode auto at once (no confirmation) through POST /api/v1/settings, the
- * same write as the Settings note's button, at the project's level when it has its own mode. Not ready while the
+ * Turn auto back on from the auto-stop row, once its ModeDialog is confirmed: mode auto through POST /api/v1/settings,
+ * the same write as the Settings note's button, at the project's level when it has its own mode. Not ready while the
  * settings view loads or a write is under way.
  */
 function useTurnAutoOn() {
@@ -447,7 +469,8 @@ function useTurnAutoOn() {
   const own = view && row && view.project !== null ? row.projects.some((p) => p.project === view.project) : false;
   return {
     ready: row !== undefined && !busy,
+    busy,
     error,
-    write: () => void write({ action: "set", key: "mode", value: JSON.stringify("auto"), ...(own && view ? { project: view.repo } : {}) }),
+    write: () => write({ action: "set", key: "mode", value: JSON.stringify("auto"), ...(own && view ? { project: view.repo } : {}) }),
   };
 }

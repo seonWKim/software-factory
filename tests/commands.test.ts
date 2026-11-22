@@ -14,7 +14,7 @@ import { runLocalCli } from "../src/core/local-cli.js";
 import { githubCommand } from "../src/core/command-inbox.js";
 import type { AuthProvider } from "../src/interfaces/auth-provider.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
-import { storedAnswers } from "../src/shared/command-notes.js";
+import { answersDetail, splitAnswers, storedAnswers } from "../src/shared/command-notes.js";
 import { retry } from "../src/controller/units/support.js";
 import { FakeAuth } from "./helpers/fakes/runner.js";
 import { FakeSlackPollSource, FakeSource } from "./helpers/fakes/source.js";
@@ -172,6 +172,16 @@ describe("command table", () => {
     expect(f.at(-1)).toBe("No command changes this item's state now.");
   });
 
+  it("a failure footer names each command with its first sentence only and points to /help for the rest", () => {
+    const f = commandFooter(s("failed_implement")).split("\n");
+    const retry = f.find((l) => l.startsWith("- `/retry`"));
+    expect(retry).toBe("- `/retry`: Run the failed run again.");
+    expect(f.join("\n")).not.toContain("+paths");
+    expect(f.at(-1)).toBe(`- \`/help\`: ${commandSpec("help").description}.`);
+    // /help keeps every command's full text.
+    expect(helpReply(s("failed_implement"))).toContain(`: ${commandSpec("retry").description}.`);
+  });
+
   it("an unknown-command reply names the word, then the footer", () => {
     const r = unknownCommandReply("xyz", s("failed_run"));
     expect(r.split("\n")[0]).toBe('Unknown command "/xyz".');
@@ -321,7 +331,7 @@ describe("command table", () => {
     expect(hold.description).toMatch(/^Hold until <id> merges: writes a `Depends on: <id>` line/);
     const local = { phase: "agent_needs_human" as const, has_pr: false, local: true as const };
     expect(applies(hold, { ...local, asked_by: "implement" })).toBe(true);
-    expect(commandFooter({ ...local, asked_by: "implement" })).toContain(`- \`/hold <id>\`: ${hold.description}.`);
+    expect(commandFooter({ ...local, asked_by: "implement" })).toContain(`- \`/hold <id>\`: ${hold.description.split(". Refused")[0]}.\n`);
     // A resolve run that asked, any other phase, a GitHub item, or a local item's PR: not offered.
     expect(applies(hold, { ...local, asked_by: "resolve" })).toBe(false);
     for (const phase of COMMAND_PHASES.filter((p) => p !== "agent_needs_human")) expect(applies(hold, { phase, has_pr: false, local: true }), phase).toBe(false);
@@ -680,7 +690,7 @@ describe("answers to the spec's decisions on /approve (issue #526)", () => {
     await h.controller.handleEvent({ kind: "spec_approved", source: byComment.source, comment_id: "c1", approver: alice, note: NOTE });
     await h.controller.handleEvent({ kind: "spec_approved", source: bySlack.source, comment_id: "s2", approver: { provider: "slack", subject: "U2", login: "u" }, note: NOTE });
     await h.store.recordAppCommandRequest({ key: "k3", actor: ME, command: "approve", args: { work_item_id: byApp.id, note: NOTE } });
-    const cli = { store: h.store, identity: { user: ME, from: "git user.email" as const }, project: async () => PROJECT_KEY, read: async () => "", newId: () => "x" };
+    const cli = { answers: { split: splitAnswers, detail: answersDetail }, store: h.store, identity: { user: ME, from: "git user.email" as const }, project: async () => PROJECT_KEY, read: async () => "", newId: () => "x" };
     expect((await runLocalCli(cli, { action: "command", command: "approve", id: byCli.id, text: NOTE })).code).toBe(0);
     await h.controller.tickCommands();
 
@@ -792,7 +802,7 @@ describe("answers to the spec's decisions on /approve (issue #526)", () => {
         await h.controller.handleEvent({ kind: "spec_approved", source: byComment.source, comment_id: "w1", approver: alice, note: "1: Only warn" });
         await h.controller.handleEvent({ kind: "spec_approved", source: bySlack.source, comment_id: "w2", approver: { provider: "slack", subject: "U2", login: "u" }, note: "1: Only warn" });
       }
-      const cli = { store: h.store, identity: { user: ME, from: "git user.email" as const }, project: async () => PROJECT_KEY, read: async () => "", newId: () => "x" };
+      const cli = { answers: { split: splitAnswers, detail: answersDetail }, store: h.store, identity: { user: ME, from: "git user.email" as const }, project: async () => PROJECT_KEY, read: async () => "", newId: () => "x" };
       expect((await runLocalCli(cli, { action: "command", command: "approve", id: byCli.id, text: "1: Only warn" })).code).toBe(0);
       await h.store.recordAppCommandRequest({ key: "k73", actor: ME, command: "approve", args: { work_item_id: byApp.id, note: "1: Only warn" } });
       await h.controller.tickCommands();
@@ -897,7 +907,7 @@ describe("one refusal and help text on every surface (issue #528)", () => {
       await controller.tickCommands();
       return source.comments.find((c) => c.source.id === it.source.id && c.marker.startsWith(`<!-- factory:${kind}:`) && c.marker.includes(String(id)))?.body;
     };
-    const cli = { store, identity: { user: ME, from: "cli_user" as const }, project: async () => PROJECT_KEY, read: async () => "", newId: () => `n${++comments}` };
+    const cli = { answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: ME, from: "cli_user" as const }, project: async () => PROJECT_KEY, read: async () => "", newId: () => `n${++comments}` };
     return { store, itemIn, comment, cli };
   }
 

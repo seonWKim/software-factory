@@ -6,6 +6,7 @@ import { MAX_PROJECT_NAME, MAX_PROJECT_SLUG, isProjectSlug, projectName, project
 import type { UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { newStore } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 describe("projectName", () => {
   it("trims the name and folds runs of whitespace to one space", () => {
@@ -85,7 +86,7 @@ const USER = "local:dev@example.com" as UserId;
 async function cliSetup() {
   const { store } = await newStore(new FakeClock("2026-11-14T09:00:00.000Z"));
   let n = 0;
-  const d: LocalCliDeps = { store, identity: { user: USER, from: "git user.email" }, project: async () => null, read: async () => "", newId: () => `id${++n}` };
+  const d: LocalCliDeps = { answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: USER, from: "git user.email" }, project: async () => null, read: async () => "", newId: () => `id${++n}` };
   /** As typed: `factory <word> <args...>`. */
   const run = async (word: string, ...args: string[]) => {
     const a = parseLocalCliArgs(word, args);

@@ -115,29 +115,26 @@ describe("app pages", () => {
     }
   });
 
-  it("/app/workers opens the Workers page with no redirect; /app/runners still opens Runners; /app/users is no longer an old path", async () => {
+  it("/app/workers opens the Workers page with no redirect; /app/users is no longer an old path", async () => {
     history.replaceState(null, "", "/app/workers");
     mount();
     expect(await screen.findByRole("heading", { level: 1, name: "Workers" })).toBeTruthy();
     expect(location.pathname).toBe("/app/workers");
     expect(redirectFor("/app/workers")).toBeNull();
-    cleanup();
-    history.replaceState(null, "", "/app/runners");
-    mount();
-    expect(await screen.findByRole("heading", { level: 1, name: "Runners" })).toBeTruthy();
-    expect(location.pathname).toBe("/app/runners");
     expect(redirectFor("/app/users")).toBeNull();
   });
 
-  it("/app/spend, /app/failures and /app/activity redirect, keeping the query; /app/queue still does", async () => {
-    expect(redirectFor("/app/spend")).toBe("/app/health#spend");
-    expect(redirectFor("/app/failures")).toBe("/app/health#failures");
-    expect(redirectFor("/app/failures", "?window=7d")).toBe("/app/health?window=7d#failures");
+  it("/app/spend, /app/failures and /app/runners redirect to their Health tab, keeping the query; /app/activity and /app/queue still do", async () => {
+    expect(redirectFor("/app/spend")).toBe("/app/health?tab=spend");
+    expect(redirectFor("/app/failures")).toBe("/app/health?tab=failures");
+    expect(redirectFor("/app/failures", "?window=7d")).toBe("/app/health?tab=failures&window=7d");
+    expect(redirectFor("/app/runners")).toBe("/app/health?tab=runners");
     expect(redirectFor("/app/activity")).toBe("/app/items");
     expect(redirectFor("/app/queue")).toBe("/app/items?state=queued");
     for (const [from, to] of [
-      ["/app/spend", "/app/health#spend"],
-      ["/app/failures?window=7d", "/app/health?window=7d#failures"],
+      ["/app/spend", "/app/health?tab=spend"],
+      ["/app/failures?window=7d", "/app/health?tab=failures&window=7d"],
+      ["/app/runners", "/app/health?tab=runners"],
       ["/app/activity", "/app/items"],
     ] as const) {
       history.replaceState(null, "", from);
@@ -147,11 +144,20 @@ describe("app pages", () => {
     }
   });
 
-  it("Health has Spend and Failures sections as level-2 headings under its one h1; Work holds the Activity content", async () => {
+  it("Health draws Spend and Failures only in their tabs, as level-2 headings under its one h1; Work holds the Activity content", async () => {
     history.replaceState(null, "", "/app/health");
     mount();
+    await screen.findByText("push access denied");
+    // The Checks tab: neither section draws below the tabs, and the Failures window switch is not shown.
+    expect(screen.queryByRole("heading", { level: 2, name: "Spend" })).toBeNull();
+    expect(screen.queryByRole("heading", { level: 2, name: "Failures" })).toBeNull();
+    expect(document.querySelector("[data-failures-window]")).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Spend" }));
     expect(await screen.findByRole("heading", { level: 2, name: "Spend" })).toBeTruthy();
-    expect(screen.getByRole("heading", { level: 2, name: "Failures" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { level: 2, name: "Failures" })).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Failures" }));
+    expect(await screen.findByRole("heading", { level: 2, name: "Failures" })).toBeTruthy();
+    expect(document.querySelector("[data-failures-window]")).not.toBeNull();
     expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
     cleanup();
     history.replaceState(null, "", "/app/items");
@@ -161,7 +167,7 @@ describe("app pages", () => {
   });
 
   it("every sidebar page has exactly one h1, its menu name, from its own PageHeader", async () => {
-    const names: Record<string, string> = { "": "Tasks", tasks: "Tasks", calendar: "Calendar", items: "Work", runners: "Runners", health: "Health", rules: "Rules", data: "Data", settings: "Settings" };
+    const names: Record<string, string> = { "": "Tasks", tasks: "Tasks", calendar: "Calendar", items: "Work", health: "Health", rules: "Rules", data: "Data", settings: "Settings" };
     for (const [path, name] of Object.entries(names)) {
       history.replaceState(null, "", `/app/${path}`);
       mount();
@@ -171,14 +177,25 @@ describe("app pages", () => {
     }
   });
 
+  it("Tasks and Work each say in their header what they are for", async () => {
+    for (const [path, name, text] of [["tasks", "Tasks", "Tasks = what I plan and what needs me"], ["items", "Work", "Work = what the factory is doing"]] as const) {
+      history.replaceState(null, "", `/app/${path}`);
+      mount();
+      const h1 = await screen.findByRole("heading", { level: 1, name });
+      expect(h1.closest("header")!.textContent).toContain(text);
+      cleanup();
+    }
+  });
+
   it("every page's h1 is in the page title type, and every h2 is the title of a Card (Health's Spend and Failures too)", async () => {
-    const names: Record<string, string> = { tasks: "Tasks", calendar: "Calendar", items: "Work", runners: "Runners", health: "Health", rules: "Rules", plugins: "Plugins", data: "Data", settings: "Settings" };
+    const names: Record<string, string> = { tasks: "Tasks", calendar: "Calendar", items: "Work", "health?tab=runners": "Health", "health?tab=failures": "Health", rules: "Rules", plugins: "Plugins", data: "Data", settings: "Settings" };
     const outside = () => screen.queryAllByRole("heading", { level: 2 }).filter((h) => !h.closest("section.rounded-card.bg-surface.shadow-sm")).map((h) => h.textContent);
     for (const [path, name] of Object.entries(names)) {
       history.replaceState(null, "", `/app/${path}`);
       mount();
       expect((await screen.findByRole("heading", { level: 1, name })).className).toContain("text-xl font-semibold");
-      if (path === "health") await screen.findByRole("heading", { level: 2, name: "Failures" });
+      if (path === "health?tab=failures") await screen.findByRole("heading", { level: 2, name: "Failures" });
+      if (path === "health?tab=runners") await screen.findByRole("heading", { level: 2, name: "Worker processes" });
       if (path === "items") await screen.findByRole("table", { name: "Running now" });
       expect(outside(), path).toEqual([]);
       cleanup();
@@ -189,9 +206,11 @@ describe("app pages", () => {
     mount();
     fireEvent.click(await screen.findByText("Spec waiting"));
     expect(location.pathname).toBe("/app/items/wi_1");
-    expect(await screen.findByText("git_failed")).toBeTruthy();
-    expect(screen.getByText(": git merge: boom", { exact: false })).toBeTruthy();
-    expect(screen.getByText("intake")).toBeTruthy();
+    const runs = await screen.findByRole("table", { name: "Runs" });
+    // One error line in words; the code and the full text sit behind Details.
+    expect(within(runs).getByText("A git command failed")).toBeTruthy();
+    expect(runs.querySelector("[data-raw]")?.textContent).toContain("git merge: boom");
+    expect(screen.getByText("Created by a person")).toBeTruthy();
     // The breadcrumb back to the list (the sidebar's entry is the current page).
     fireEvent.click(screen.getByRole("link", { name: "Work", current: false }));
     expect(location.pathname).toBe("/app/items");
@@ -212,13 +231,13 @@ describe("app pages", () => {
     mount();
     await screen.findByText("push access denied");
     const tabs = screen.getAllByRole("tab");
-    expect(tabs.map((x) => x.textContent!.replace(/\s*\(.*$/, ""))).toEqual(["Checks", "Host sleeps", "Merged without review", "Efficiency"]);
+    expect(tabs.map((x) => x.textContent!.replace(/\s*\(.*$/, ""))).toEqual(["Checks", "Spend", "Failures", "Runners", "Host sleeps", "Merged without review", "Efficiency"]);
     expect(tabs[0]!.getAttribute("aria-selected")).toBe("true");
     expect(tabs[0]!.textContent).toContain("(2)");
     expect(tabs[0]!.textContent).toContain("failing");
-    expect(tabs[1]!.textContent).toContain("(0)");
+    expect(tabs[4]!.textContent).toContain("(0)");
     const length = history.length;
-    fireEvent.click(tabs[1]!);
+    fireEvent.click(tabs[4]!);
     expect(location.search).toBe("?tab=sleeps");
     expect(history.length).toBe(length);
     expect(screen.getByText("No host sleep recorded.")).toBeTruthy();

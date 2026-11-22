@@ -96,7 +96,7 @@ const PAGES_UNDER_TEST: { name: string; path: string; ready: string }[] = [
   { name: "Work", path: "/app/items", ready: "Agent asked" },
   { name: "Health", path: "/app/health", ready: "Health" },
   { name: "Health, claim pauses", path: "/app/health?tab=pauses", ready: "Resume now" },
-  { name: "Health, failures", path: "/app/health#failures", ready: "Health" },
+  { name: "Health, failures", path: "/app/health?tab=failures", ready: "Health" },
   { name: "Rules", path: "/app/rules", ready: "Rules" },
   { name: "Plugins", path: "/app/plugins", ready: "Plugins" },
   { name: "Settings", path: "/app/settings", ready: "Settings" },
@@ -203,8 +203,8 @@ describe("plain labels", () => {
     const { container } = mount();
     await screen.findAllByText("Spec waiting");
     const timeline = await screen.findByRole("heading", { name: "Timeline" }).then((h) => h.closest("section, div")!.parentElement!);
-    await waitFor(() => expect(timeline.textContent).toContain("Waiting on: none → human"));
-    expect(visibleText(timeline as HTMLElement)).toContain("Tokens: 0 → 1200");
+    await waitFor(() => expect(timeline.textContent).toContain("blocked_on: none → human"));
+    expect(visibleText(timeline as HTMLElement)).not.toContain("1200");
     const raw = [...container.querySelectorAll("[data-raw]")].filter((d) => d.textContent?.includes("blocked_on: none → human"));
     expect(raw.length).toBe(1);
     expect(within(raw[0] as HTMLElement).getByText("Details")).toBeTruthy();

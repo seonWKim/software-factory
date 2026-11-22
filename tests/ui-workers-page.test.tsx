@@ -3,21 +3,32 @@
 /// <reference lib="dom.iterable" />
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { type FunctionComponent, createElement } from "react";
+import { Fragment, type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Failures, WorkersView } from "../web/src/api.js";
 import { LocalToolBroker } from "../src/impl/broker/local-tool-broker.js";
 
-// The Workers, Failures and Floor pages (issue #312): one row per worker process with its running count and a
+// Health's Runners tab (formerly the Runners page, design 09-dashboard-runners), Failures and Work's Activity (issue
+// #312): one row per worker process with its running count and a
 // "Finishing up" badge while it drains, the effective worker count once, failed runs grouped by code, and the Floor's failed count
 // linking to the Failures view. Built with createElement and a loader the node check skips, as the Settings
 // page test does (tsconfig.test.json is checked without JSX).
 const mod = async (name: string) => (await import(/* @vite-ignore */ `../web/src/views/${name}.js`)) as Record<string, FunctionComponent>;
 const pages = await mod("pages");
-const WorkersPage = pages.RunnersPage!;
+const WorkersPage = pages.RunnersTab!;
+// The code-revision line Health shows once above its tabs (the Runners page drew it before 2026-11-22).
+const CodeRevision = pages.CodeRevision as unknown as FunctionComponent<{ factory: unknown }>;
 const ActivityPage = pages.ActivityPage!;
 const PluginsPage = (await mod("plugins")).PluginsPage!;
-const FailuresSection = (await mod("failures")).FailuresSection!;
+const failuresMod = await mod("failures");
+const FailuresSection = failuresMod.FailuresSection!;
+// Health's wiring: the window lives in the page (`?window=`), its switch in the page toolbar, the section reads it.
+const useFailuresWindow = failuresMod.useFailuresWindow as unknown as () => [string, (w: string) => void];
+const FailuresWindowSwitch = failuresMod.FailuresWindowSwitch as FunctionComponent<{ value: string; onChange: (w: string) => void }>;
+const WindowedFailures: FunctionComponent = () => {
+  const [win, setWin] = useFailuresWindow();
+  return createElement(Fragment, null, createElement(FailuresWindowSwitch, { value: win, onChange: setWin }), createElement(FailuresSection as FunctionComponent<{ win: string }>, { win }));
+};
 
 const AT = new Date().toISOString();
 const proc = (n: number, extra: object = {}) => ({
@@ -94,7 +105,7 @@ function show(page: FunctionComponent) {
   render(createElement(QueryClientProvider, { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) }, createElement(page)));
 }
 
-describe("Workers page", () => {
+describe("Health's Runners tab", () => {
   it("shows a row per process; the draining one says it is finishing up, with its running count", async () => {
     show(WorkersPage);
     const rows = await screen.findAllByTestId("worker-process");
@@ -154,8 +165,8 @@ describe("Workers page", () => {
 
   it("the code-revision line names the version and how it compares with the latest code, in plain words", async () => {
     for (const [behind, badge] of [[0, "Up to date with the latest code"], [4, "4 commits behind the latest code"]] as const) {
-      overrides["/api/v1/overview"] = { ...overview, factory: { ...overview.factory, rev: "3dc0029abcdef", behind } };
-      show(WorkersPage);
+      const factory = { ...overview.factory, rev: "3dc0029abcdef", behind };
+      show(() => createElement(CodeRevision, { factory }));
       const line = await screen.findByTestId("code-revision");
       expect(line.textContent).toBe(`Running version 3dc0029${badge}`);
       expect(line.textContent).not.toContain("origin/main");
@@ -170,12 +181,12 @@ describe("Workers page", () => {
   });
 });
 
-describe("plain words on the Runners and Plugins pages", () => {
-  it("the Runners page shows no snake_case token or internal word outside Details and tooltips", async () => {
+describe("plain words on the Runners tab and the Plugins page", () => {
+  it("the Runners tab shows no snake_case token or internal word outside Details and tooltips", async () => {
     overrides["/api/v1/overview"] = { ...overview, factory: { ...overview.factory, behind: 2 } };
     show(WorkersPage);
     await screen.findAllByTestId("worker-process");
-    await screen.findByTestId("code-revision");
+    await screen.findByTestId("effective-workers");
     expect(INTERNAL_WORDS.exec(visibleText(document.body))?.[0] ?? null).toBeNull();
   });
 
@@ -195,10 +206,10 @@ describe("plain words on the Runners and Plugins pages", () => {
 });
 
 describe("Activity", () => {
-  it("links the failed count in the last 24 hours to Failures with the 24h window", async () => {
+  it("links the failed count in the last 24 hours to Health's Failures tab with the 24h window", async () => {
     show(ActivityPage);
     const link = await screen.findByRole("link", { name: "7" });
-    expect(link.getAttribute("href")).toBe("/app/failures?window=24h");
+    expect(link.getAttribute("href")).toBe("/app/health?tab=failures&window=24h");
   });
 });
 
@@ -239,13 +250,14 @@ describe("Failures page", () => {
   });
 
   it("reads the window from the link and switches to 7 days", async () => {
-    history.replaceState(null, "", "/app/failures?window=7d");
-    show(FailuresSection);
+    history.replaceState(null, "", "/app/health?tab=failures&window=7d");
+    show(WindowedFailures);
     await screen.findAllByTestId("failure-group");
     expect(fetched).toContain("/api/v1/failures?window=7d");
     expect(within(screen.getByRole("group", { name: "Window" })).getByRole("button", { name: "Last 7 days" }).getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(screen.getByRole("button", { name: "Last 24 hours" }));
     await vi.waitFor(() => expect(fetched).toContain("/api/v1/failures?window=24h"));
+    expect(new URLSearchParams(location.search).get("window")).toBe("24h");
   });
 
   it("states the cap when runs were left out", async () => {

@@ -1,5 +1,7 @@
 ## History
 
+- **Red main per failing test** (decision changed 2026-11-23; changed step 2 "Red main" of the 2026-11-16 decision). Before: "when every failed PR check also fails on the base branch's head commit (`Forge.baseChecks`, the same summary rule as `prChecks`), the item stays in `REVIEW` with `blocked_on: ci` and `blocked_reason: main is red: <test>` [...] Only some failed checks red on base: the normal path." Check names only: a PR whose `test` check failed for its own reason while main's `test` was red waited on main, and one whose only failing test was main's could be sent back for it (wi_c3cba3a9, #772).
+
 - **Rerun once** (decision changed 2026-11-18; changed step 4 "Otherwise" of the 2026-11-16 decision). Before: failed checks on a factory PR, past conflict first, red main and an unchanged head, went straight back to implement ("`loop_count + 1` and an implement run, or `max_loops`, as before") with the check names only, and the decision said "Not detected: failing tests outside the diff on a check that is not red on base (the forge gives check names only; follow-up issue)". A flaky test cost a loop, and wi_88435e43 (PR #699) stopped for a human to read the CI log.
 
 - **Slowest test files on main** (new decision, 2026-11-09, issue #469). Before: job `test` printed only vitest's default output, so nothing ranked the slow test files.

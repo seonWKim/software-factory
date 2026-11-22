@@ -1,12 +1,12 @@
 import { CalendarDays } from "lucide-react";
-import { useState } from "react";
-import { type CalendarDay, type CalendarEvents, type CalendarSync, type EventRow, useCalendarEvents } from "../api.js";
+import { useRef, useState } from "react";
+import { API, type CalendarDay, type CalendarEvents, type CalendarSync, type EventRow, type Session, postCalendarSync, useApi, useCalendarEvents } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
-import { EmptyState, Notice, PageHeader } from "../components/ui/notice.js";
+import { EmptyState, Notice, PageHeader, PageToolbar } from "../components/ui/notice.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { ErrorNote, Loading, Table, Td, Tr } from "../components/ui/parts.js";
-import { CARD_TITLE, Card } from "../components/ui/card.js";
+import { Card, SUB_TITLE } from "../components/ui/card.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
@@ -18,10 +18,13 @@ import { dayLabel } from "./tasks/groups.js";
 // read-only, from GET /api/v1/calendar/events with the first and last day shown. Week: Monday to Sunday as seven columns.
 // Month: a Monday-first grid, up to 3 events a day and then "+N more". Previous and next move by one week or month;
 // Today returns to the period holding today in the browser's time zone, and today's date is circled. The period's
-// heading is the toolbar's h2. Each event has a colour strip chosen from its source's name and names its source only when
+// heading is the Card's h2; the view switch and the period buttons are the page's PageToolbar. Each event has a colour strip chosen from its source's name and names its source only when
 // several calendars are connected. A day the last syncs did not cover is shaded, never drawn empty, and one note above the
 // grid names those days; an empty synced day shows no text. A source whose last sync failed is named with its last sync time, and its stored
 // events stay listed. With no calendar connected the empty state links to the Integrations tab of Settings.
+// Sync (after Today, shown once a calendar is connected) and the note's "Sync these days" post one request to sync
+// every calendar for the days shown (POST /api/v1/calendar/sync); both show "Syncing…", disabled, until the request
+// is done (the read's `sync_pending`), and a second press sends nothing.
 
 const VIEWS = [
   { id: "week", label: t("calendarPage.week") },
@@ -100,7 +103,7 @@ function WeekDays({ label, days, today, showSource }: { label: string; days: rea
     <ol aria-label={label} className="grid min-w-[56rem] grid-cols-7 gap-2">
       {days.map((d) => (
         <li key={d.date} data-day={d.date} {...(d.synced ? {} : { "data-not-synced": "" })} className={cn("min-w-0 space-y-1 rounded-control p-1", !d.synced && SHADED)}>
-          <h3 className="text-xs font-medium text-text-2">
+          <h3 className={SUB_TITLE}>
             <span {...(d.date === today ? { "data-today": "" } : {})} className={cn(d.date === today && TODAY_RING)}>{dayLabel(d.date)}</span>
           </h3>
           {d.synced && d.events.length > 0 && (
@@ -171,7 +174,7 @@ function StaleCalendars({ calendar }: { calendar: readonly CalendarSync[] }) {
   return (
     <Notice tone="warn" title={t("calendarPage.syncFailed")}>
       {failed.map((c) => (
-        <p key={c.source} data-calendar-stale={c.source} className="text-pretty break-words">
+        <p key={c.source} data-calendar-stale={c.source} data-raw className="text-pretty break-words">
           {t("calendarPage.stale", { source: c.source, when: when(c.synced_at) })}
         </p>
       ))}
@@ -197,18 +200,62 @@ function unsyncedDays(days: readonly CalendarDay[]): string {
   return runs.map(([a, b]) => (a === b ? short(a!) : t("calendarPage.dayRange", { from: short(a!), to: short(b!) }))).join(", ");
 }
 
-function Events({ v, view, label }: { v: CalendarEvents; view: View; label: string }) {
+/** The days on screen synced on request: the POST, then the read's `sync_pending` until the controller ran it. */
+function useSyncDays(from: string, to: string, v: CalendarEvents | undefined, reread: () => unknown) {
+  const token = useApi<Session>(API.session, false).data?.csrf_token;
+  const [posting, setPosting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Set at once on a press, so a second press before the next render sends nothing.
+  const sending = useRef(false);
+  const busy = posting || (v?.from === from && v.to === to && v.sync_pending);
+  const sync = async () => {
+    if (sending.current || busy || !token) return;
+    sending.current = true;
+    setPosting(true);
+    setError(null);
+    try {
+      const r = await postCalendarSync(token, from, to);
+      if (!r.ok) setError(r.error);
+      await reread();
+    } finally {
+      sending.current = false;
+      setPosting(false);
+    }
+  };
+  return { busy, error, sync, ready: token !== undefined };
+}
+
+type SyncDays = ReturnType<typeof useSyncDays>;
+
+/** A Sync button: its label, else "Syncing…" and disabled while the sync is pending. */
+function SyncButton({ s, label }: { s: SyncDays; label: string }) {
+  return (
+    <Button disabled={s.busy || !s.ready} aria-busy={s.busy} onClick={() => void s.sync()}>
+      {s.busy ? t("calendarPage.syncing") : label}
+    </Button>
+  );
+}
+
+function Events({ v, view, label, s }: { v: CalendarEvents; view: View; label: string; s: SyncDays }) {
   if (v.calendar.length === 0) {
     return <EmptyState icon={CalendarDays} title={t("calendarPage.emptyNone")} action={<Link href={CONNECT_PATH} className={cn(LINK_CLASS, "text-sm")}>{t("calendarPage.connect")}</Link>} />;
   }
   const today = iso(new Date());
   const showSource = v.calendar.length > 1;
   return (
-    <>
+    <div className="space-y-3">
       <StaleCalendars calendar={v.calendar} />
-      {v.days.some((d) => !d.synced) && <Notice tone="info">{t("calendarPage.notSyncedDays", { days: unsyncedDays(v.days) })}</Notice>}
+      {s.error !== null && <Notice tone="bad">{s.error}</Notice>}
+      {v.days.some((d) => !d.synced) && (
+        <Notice tone="info">
+          <div data-not-synced-note className="flex flex-wrap items-center justify-between gap-2">
+            <p className="min-w-0 text-pretty">{t("calendarPage.notSyncedDays", { days: unsyncedDays(v.days) })}</p>
+            <SyncButton s={s} label={t("calendarPage.syncDays")} />
+          </div>
+        </Notice>
+      )}
       {view === "week" ? <WeekDays label={label} days={v.days} today={today} showSource={showSource} /> : <MonthGrid label={label} days={v.days} today={today} showSource={showSource} />}
-    </>
+    </div>
   );
 }
 
@@ -219,28 +266,30 @@ export function CalendarPage() {
   const label = heading(view, shown);
   const q = useCalendarEvents(iso(shown.from), iso(shown.to));
   const v = q.data;
+  const s = useSyncDays(iso(shown.from), iso(shown.to), v, q.refetch);
   return (
     <>
     <PageHeader title={t("page.calendar")} />
-    <div className="flex flex-col gap-6">
-      <Card label={label}>
-        <div data-calendar-toolbar className="flex flex-wrap items-center gap-2">
-          <h2 aria-live="polite" className={cn(CARD_TITLE, "mr-auto")}>{label}</h2>
-          <SegmentedControl label={t("calendarPage.view")} options={VIEWS} value={view} onChange={setView} />
-          <ButtonRow role="group" aria-label={t("calendarPage.period")}>
-            <Button aria-label={t(view === "week" ? "calendarPage.previousWeek" : "calendarPage.previousMonth")} onClick={() => setFocus(step(view, focus, -1))}>
-              {t("calendarPage.previous")}
-            </Button>
-            <Button aria-label={t(view === "week" ? "calendarPage.nextWeek" : "calendarPage.nextMonth")} onClick={() => setFocus(step(view, focus, 1))}>
-              {t("calendarPage.next")}
-            </Button>
-            <Button onClick={() => setFocus(new Date())}>{t("calendarPage.today")}</Button>
-          </ButtonRow>
-        </div>
-
-        {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <Events v={v} view={view} label={label} />}
-      </Card>
-    </div>
+    <PageToolbar>
+      {/* The page's controls (09-dashboard-tasks, Calendar): the view switch, the period buttons, then Sync, in one row. */}
+      <div data-calendar-toolbar className="flex min-w-0 flex-wrap items-center gap-2">
+        <SegmentedControl label={t("calendarPage.view")} options={VIEWS} value={view} onChange={setView} />
+        <ButtonRow role="group" aria-label={t("calendarPage.period")}>
+          <Button aria-label={t(view === "week" ? "calendarPage.previousWeek" : "calendarPage.previousMonth")} onClick={() => setFocus(step(view, focus, -1))}>
+            {t("calendarPage.previous")}
+          </Button>
+          <Button aria-label={t(view === "week" ? "calendarPage.nextWeek" : "calendarPage.nextMonth")} onClick={() => setFocus(step(view, focus, 1))}>
+            {t("calendarPage.next")}
+          </Button>
+          <Button onClick={() => setFocus(new Date())}>{t("calendarPage.today")}</Button>
+        </ButtonRow>
+        {v !== undefined && v.calendar.length > 0 && <SyncButton s={s} label={t("calendarPage.sync")} />}
+      </div>
+    </PageToolbar>
+    {/* The period ("Nov 9 – 15, 2026") is the Card's h2, announced when it changes. */}
+    <Card title={label} live>
+      {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <Events v={v} view={view} label={label} s={s} />}
+    </Card>
     </>
   );
 }

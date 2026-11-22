@@ -1,13 +1,20 @@
+import type { SelectionMode, TestSelectionConfig } from "../core/test-selection.js";
 import type { ToolSpec } from "../core/tools/types.js";
 import type { RunId, RunKind, WorkItemId } from "../core/types.js";
 import type { SandboxHandle } from "./sandbox.js";
 
 // The tool-using loop. First impl: ClaudeCodeRunner (`claude -p` in the sandbox workdir).
 
+/**
+ * The role an agent step runs as: its run's kind, or `review-confirm`, the review run's confirm step per finding
+ * (design 04-agents), which runs inside a review run with its own role, prompt and tools.
+ */
+export type AgentRole = RunKind | "review-confirm";
+
 export interface AgentRunSpec {
   run_id: RunId;
   work_item_id: WorkItemId;
-  role: RunKind;
+  role: AgentRole;
   sandbox: SandboxHandle;
   system_prompt: string;
   prompt: string;
@@ -136,6 +143,19 @@ export interface GateHooks {
    * a pass approves nothing (the path check still runs). Absent: none enabled.
    */
   on_tool_call?: PackGate;
+  /**
+   * The Stop check's test selection (design §4): the project's stored mode, read per step as the check before push
+   * reads it, with `repo.test_command` and `repo.test_selection`. The Stop check narrows its check list with the check
+   * before push's own rule (`selectedChecks`) and counts nothing toward the mode switch. Absent: the check list whole.
+   */
+  selection?: StopSelection;
+}
+
+/** What the Stop check narrows its test command with: the stored mode and the repo's selection config. */
+export interface StopSelection {
+  mode: SelectionMode;
+  test_command: string[];
+  test_selection: TestSelectionConfig;
 }
 
 /** The points a pack check runs at; the same list as PACK_CHECK_POINTS in src/shared/hook.ts. */
@@ -182,8 +202,8 @@ export interface GateBlock {
   attempt: number;
 }
 
-/** The roles whose agent sessions a runner keeps (design §5 Pause): triage and update never keep one. */
-export const SESSION_ROLES: readonly RunKind[] = ["implement", "review", "resolve"];
+/** The roles whose agent sessions a runner keeps (design §5 Pause): triage, update and review-confirm never keep one. */
+export const SESSION_ROLES: readonly AgentRole[] = ["implement", "review", "resolve"];
 
 export interface AgentRunResult {
   /**
@@ -239,6 +259,8 @@ export interface AgentRunResult {
   fallbacks?: { from: string; to: string; reason: string }[];
   /** Each time a gate hook sent the agent back in this call, in order (`AgentRunSpec.gate_hooks`). */
   gate_blocks?: GateBlock[];
+  /** The test selection line each Stop check of this call logged (`test selection (<mode>): …`), in order (`GateHooks.selection`). */
+  stop_selections?: string[];
 }
 
 /** The error code of a run the provider refused for its account or config: quota, API key or model name. */
