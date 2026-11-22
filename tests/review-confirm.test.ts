@@ -130,6 +130,15 @@ describe("review confirm runs", () => {
     expect(review.unconfirmed ?? []).toEqual([]);
   });
 
+  it("a bug verdict with no findings at all stays a bug and still sends the item back", async () => {
+    const f = await factory({ reviews: [bug([])] });
+    const it0 = await f.start();
+    expect(f.confirmSpecs()).toEqual([]);
+    expect(it0.loop_count).toBe(1);
+    expect(await f.reasons()).toContain("review_bug");
+    expect((await f.stored()).verdict).toBe("bug");
+  });
+
   for (const [name, answer] of [
     ["fails", { status: "failed", error: "boom" }],
     ["times out", { status: "timed_out" }],

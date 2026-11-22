@@ -97,14 +97,14 @@ const isBuiltDifferentlyFinding = (f: ReviewFinding): boolean => f.kind === "cod
 /**
  * The review after its confirm runs (design 04-agents): `confirmed[i]` answers the i-th of `r.findings` that is not a
  * built-differently finding; false moves it to `unconfirmed`, true or null (the run failed or gave no valid answer)
- * keeps it. With no finding left the verdict is "pass".
+ * keeps it. When every finding moved to `unconfirmed` the verdict is "pass"; a verdict with no findings at all stays.
  */
 function withConfirmations(r: ReviewOutput, confirmed: readonly (boolean | null)[]): ReviewOutput {
   const findings: ReviewFinding[] = [], unconfirmed: ReviewFinding[] = [];
   let i = 0;
   for (const f of r.findings) (isBuiltDifferentlyFinding(f) || confirmed[i++] !== false ? findings : unconfirmed).push(f);
   const { unconfirmed: _fromAgent, ...rest } = r;
-  return { ...rest, verdict: findings.length === 0 ? "pass" : r.verdict, findings, ...(unconfirmed.length > 0 ? { unconfirmed } : {}) };
+  return { ...rest, verdict: unconfirmed.length > 0 && findings.length === 0 ? "pass" : r.verdict, findings, ...(unconfirmed.length > 0 ? { unconfirmed } : {}) };
 }
 
 /**
