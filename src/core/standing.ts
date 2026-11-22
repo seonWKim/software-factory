@@ -2,8 +2,12 @@
 // (gate, tier), and the pure parts of acting on it: rule IDs, the `/standing` arguments, when a proposal is due and
 // which allowed paths a rule never approves. The controller does the reads, writes and posts.
 
+import { changesNoFile, latestSpec } from "./commands.js";
 import { floorTier } from "./policy.js";
-import type { Floor } from "./settings.js";
+import type { Floor, SettingsLayers } from "./settings.js";
+import { droppedAnswers, droppedValues } from "./spec-comment.js";
+import { ownerAnswersFor } from "../shared/command-notes.js";
+import type { FactoryStore } from "../interfaces/factory-store.js";
 import type {
   Actor, GateOutcome, SpecKind, StandingGate, StandingRule, StateChange, StateChangeDetail, Tier, Timestamp, UserId, WorkItem,
 } from "./types.js";
@@ -254,6 +258,35 @@ export function ruleWouldApprove(
   if (it.stage !== "READY" || it.blocked_on !== "human" || it.blocked_reason !== "spec_pending") return false;
   if (it.tier !== STANDING_TIER || spec.split || spec.held) return false;
   return protectedCategory(it.allowed_paths, floors) === null;
+}
+
+/**
+ * A project's floors from the file's layers: its own, else `defaults`, else none (settingsFor's order; floors have no
+ * learned layer). Read here, not through settingsFor: core/settings reaches this module (auto-grant, improver).
+ */
+function floorsOf(layers: SettingsLayers, project: string): readonly Floor[] {
+  return (Object.hasOwn(layers.projects, project) ? layers.projects[project]!.floors : undefined) ?? layers.defaults.floors ?? [];
+}
+
+/** Items waiting at the spec gate the preview reads, most recently updated first. */
+const WAITING_SCAN = 100;
+
+/**
+ * The items waiting now that the rule would approve (ruleWouldApprove), most recently updated first, from store
+ * reads only: each item's latest spec (a split or not; held when it changes no file, or dropped request values or
+ * owner answers) and its project's floors from `layers`.
+ */
+export async function waitingForRule(r: Pick<FactoryStore, "listWorkItemsWhere" | "listRuns" | "listStateChanges">, layers: SettingsLayers): Promise<WorkItem[]> {
+  const out: WorkItem[] = [];
+  for (const it of await r.listWorkItemsWhere({ stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", limit: WAITING_SCAN })) {
+    if (it.tier !== STANDING_TIER) continue;
+    const spec = latestSpec(await r.listRuns(it.id));
+    if (!spec) continue;
+    const answers = await ownerAnswersFor(it, (id) => r.listStateChanges(id));
+    const held = changesNoFile(spec) || droppedValues(spec, it.issue_text).length + droppedAnswers(spec, answers).length > 0;
+    if (ruleWouldApprove(it, { split: Boolean(spec.phases), held }, floorsOf(layers, it.project))) out.push(it);
+  }
+  return out;
 }
 
 // Changes to a rule (design 05-standing-approvals, 2026-11-22): one record per change, with who made it.
