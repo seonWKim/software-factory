@@ -51,6 +51,7 @@ describe("/paths on a running item", () => {
     expect(added[0]).toMatchObject({
       actor: { kind: "user", id: "github:1" },
       detail: { comment_id: "501", added_paths: JSON.stringify(["src/x.ts", "tests/y.test.ts"]), note: "the test asserts the old text" },
+      changes: { allowed_paths: { from: [".github/workflows/"], to: [".github/workflows/", "src/x.ts", "tests/y.test.ts"] } },
     });
     // No run is queued or stopped: the implement run already queued takes the list when it starts.
     expect((await f.runs(f.it0)).map((r) => [r.kind, r.status])).toEqual([["triage", "succeeded"], ["implement", "queued"]]);
