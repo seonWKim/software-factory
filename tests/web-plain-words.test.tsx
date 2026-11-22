@@ -96,7 +96,7 @@ const PAGES_UNDER_TEST: { name: string; path: string; ready: string }[] = [
   { name: "Work", path: "/app/items", ready: "Agent asked" },
   { name: "Health", path: "/app/health", ready: "Health" },
   { name: "Health, claim pauses", path: "/app/health?tab=pauses", ready: "Resume now" },
-  { name: "Health, failures", path: "/app/health#failures", ready: "Health" },
+  { name: "Health, failures", path: "/app/health?tab=failures", ready: "Health" },
   { name: "Rules", path: "/app/rules", ready: "Rules" },
   { name: "Plugins", path: "/app/plugins", ready: "Plugins" },
   { name: "Settings", path: "/app/settings", ready: "Settings" },

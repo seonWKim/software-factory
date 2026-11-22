@@ -132,6 +132,7 @@ export const work = {
   "activity.succeeded": "Runs succeeded",
   "activity.failed": "Runs failed",
   "activity.openItems": "Open items",
+  "work.pageDescription": "Work = what the factory is doing",
   "col.tokens": "Tokens",
   "items.all": "All",
   "items.idsFilter": "Showing {count} items from Failures.",

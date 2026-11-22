@@ -90,6 +90,8 @@ export const tasks = {
   "tasks.emptyAll": "No open task. Add a task in the field above.",
   "tasks.noDate": "No date",
   "tasks.doneGroup": "Done",
+  "tasks.doneCount": "{count} done",
+  "tasks.pageDescription": "Tasks = what I plan and what needs me",
   "tasks.listLabel": "Open tasks",
   "tasks.heldUntil": "{count} held until {time}",
   "tasks.mergedWithoutYou": "Merged without you",

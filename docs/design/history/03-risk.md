@@ -1,5 +1,6 @@
 ## History
 
+- Until 2026-11-22: "Turn auto back on" (the last stop is shown decision) wrote mode auto at once, with no confirmation; it now asks in the shared Dialog first (design 09-dashboard-settings).
 - Until 2026-11-09: `tests/architecture/` was not on the gate list; a spec allowing `tests/` could be auto-approved and its change auto-merged. Changed to put the ratchets on the gate list above.
 - Until 2026-11-07: floors were folders only, and no test checked that credential readers sit under one. The GitHub App and token credential files fell outside every floor, so a change to them could pass at tier 2 or 3. Changed to give each a tier-4 file floor and to add the credential-floor test.
 - Until 2026-11-08 (issue #444): a spec was approved only by `/approve`, or by the standing rule at tier 1; a local change merged only through `factory merge`; `auto_merge_max_tier` was fixed at 0 by the startup check and `canAutoMerge` never allowed a merge; decisions had no owner-only marker; and nothing reacted to a red main. Changed to the `mode` setting and the auto-merge tier setting above.

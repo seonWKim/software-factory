@@ -10,6 +10,7 @@ import { t } from "../../i18n/index.js";
 import { Outcome, StringListControl, useWrite } from "../settings-file-keys.js";
 import { HOLD_CHOICE, HOLD_CHOICES, HOLD_MODES, SHORT_OBJECT, type HoldChoice, type HoldDraft, asObject, entries, holdOf, pretty, stringItems, stringOf, summaryOf } from "./values.js";
 import { Disclosure } from "../../components/ui/disclosure.js";
+import { ModeDialog, type ModeTarget } from "./mode-dialog.js";
 
 const TIERS = ["cheap", "standard", "strong"] as const;
 /** message_style (design 04-agents): what it does in one line, and an example. */
@@ -20,30 +21,44 @@ const STYLE_EXAMPLE = t("settings.styleExample");
  * The edit control for one value: a number field, a switch, a text field per tier, or JSON. No min or max on
  * the field: the server's checks decide, and their message shows next to the field.
  */
-export function Editor({ row, label, value, token, project, floating = false }: { row: SettingRow; label: string; value: string; token: string; project?: string; floating?: boolean }) {
+export function Editor({ row, label, value, token, project }: { row: SettingRow; label: string; value: string; token: string; project?: string }) {
   const { busy, error, done, write } = useWrite(token);
+  // The mode the Mode switch asks to change to, while its confirmation is open.
+  const [pendingMode, setPendingMode] = useState<ModeTarget | null>(null);
   const [draft, setDraft] = useState<string | null>(null);
   const [tiers, setTiers] = useState<Record<string, string> | null>(null);
   const [hold, setHold] = useState<HoldDraft | null>(null);
   const [items, setItems] = useState<string[] | null>(null);
   const uid = useId();
   const target = project === undefined ? {} : { project };
-  const save = async (text: string) => {
-    if (await write({ action: "set", key: row.key, value: text, ...target })) {
+  const save = async (text: string): Promise<boolean> => {
+    const ok = await write({ action: "set", key: row.key, value: text, ...target });
+    if (ok) {
       setDraft(null);
       setTiers(null);
       setHold(null);
       setItems(null);
     }
+    return ok;
   };
 
   let control;
   if (row.key === "mode") {
-    // The mode (design 03-risk): on is auto, off is manual. JSON text, as `factory settings set mode` takes it.
+    // The mode (design 03-risk): on is auto, off is manual. JSON text, as `factory settings set mode` takes it. A change
+    // asks first in ModeDialog; only Confirm writes (design 09-dashboard-settings, 2026-11-22).
     control = (
       <span className="flex items-center gap-2 text-sm">
-        <Switch aria-label={label} checked={value === '"auto"'} disabled={busy} onCheckedChange={(next) => void save(JSON.stringify(next ? "auto" : "manual"))} />
+        <Switch aria-label={label} checked={value === '"auto"'} disabled={busy} onCheckedChange={(next) => setPendingMode(next ? "auto" : "manual")} />
         {value === '"auto"' ? t("settings.modeAuto") : t("settings.modeManual")}
+        {pendingMode && (
+          <ModeDialog
+            to={pendingMode}
+            busy={busy}
+            error={error}
+            onConfirm={() => void save(JSON.stringify(pendingMode)).then((ok) => ok && setPendingMode(null))}
+            onClose={() => setPendingMode(null)}
+          />
+        )}
       </span>
     );
   } else if (row.kind === "boolean") {
@@ -172,17 +187,10 @@ export function Editor({ row, label, value, token, project, floating = false }: 
       </form>
     );
   }
-  // In the top bar the outcome floats below the control, so a refusal never pushes the bar's other items onto two lines.
   return (
-    <div className={floating ? "relative" : undefined}>
+    <div>
       {control}
-      {floating && (error || done) ? (
-        <div className="absolute top-full left-0 z-10 mt-2 w-80 rounded-control border border-border bg-surface p-2 shadow-md">
-          <Outcome error={error} done={done} />
-        </div>
-      ) : (
-        <Outcome error={error} done={done} />
-      )}
+      <Outcome error={error} done={done} />
     </div>
   );
 }
