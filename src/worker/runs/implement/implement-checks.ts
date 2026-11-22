@@ -1,7 +1,7 @@
 // The implement run's pre-push checks and gates (design §4): the check rounds and their fix step, the base rerun,
 // the agent's gate hooks, and the scope, size and floor gates. Split out of implement.run.ts so parallel items
 // that change different parts of the run do not share one file.
-import { AGENT_STOP_CHECKS_DEFAULT, settingValues, type FloorHit, NumstatError, diffGates, scopeGate, BASE_CHECKOUT_DIR, CHECKS_FAILED_RUN, type CheckResult, type DoneCheckResult, TOOLCHAIN_MISSING, type PrePushSelection, checkCommands, checkedLinesText, commandText, doneCheckRound, failingTestFiles, toolchainMissing, withTestFiles, IMPLEMENT_SCHEMA, parseImplement, CHECKS_ENV, CHECKS_ENV_LIMIT, type Run, type WorkItem, type GateHooks, type PackRefusal, type SandboxHandle } from "./legacy-imports.js";
+import { AGENT_STOP_CHECKS_DEFAULT, settingValues, type FloorHit, NumstatError, diffGates, scopeGate, BASE_CHECKOUT_DIR, CHECKS_FAILED_RUN, type CheckResult, type DoneCheckResult, TOOLCHAIN_MISSING, PrePushSelection, checkCommands, checkedLinesText, commandText, doneCheckRound, failingTestFiles, toolchainMissing, withTestFiles, IMPLEMENT_SCHEMA, parseImplement, CHECKS_ENV, CHECKS_ENV_LIMIT, type Run, type WorkItem, type GateHooks, type PackRefusal, type StopSelection, type SandboxHandle } from "./legacy-imports.js";
 import { type FixContext, NO_HOOKS, RunFailure, failingTestNames, gitIdentity, renderWorkItem, scopeReply, tail } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { outputLines } from "./conflict-ask.js";
@@ -103,7 +103,7 @@ export async function fixStep(
     output_schema: IMPLEMENT_SCHEMA,
     writable_paths: [s.gitDir],
     env_allowlist: gitIdentity(w.cfg.agent_git_identity),
-    gate_hooks: gateHooks(w, run, item, s.start, s.baseSha),
+    gate_hooks: gateHooks(w, run, item, s.start, s.baseSha, (await PrePushSelection.open(w.d.store, w.cfg.repo, item.project, () => {})).mode),
   }, "check" in failed ? `pack-${failed.check}` : "fix");
   const out = parseImplement(result.output);
   if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
@@ -157,20 +157,19 @@ async function checksEnv(w: Worker, run: Run, item: WorkItem, failed: CheckResul
 }
 
 /**
- * The gate hooks for an implement agent step (design §4, issue #302): the values the worker's gates use, the
- * check list with the check env (no test database), and the Stop hook's cap with what earlier steps used.
+ * The gate hooks for an implement agent step (design §4, issue #302): the values the worker's gates use, the check list
+ * with the check env (no test database), the Stop hook's cap with what earlier steps used, and the test selection.
  */
-export function gateHooks(w: Worker, run: Run, item: WorkItem, start: string, baseSha: string): GateHooks {
+export function gateHooks(w: Worker, run: Run, item: WorkItem, start: string, baseSha: string, mode: StopSelection["mode"]): GateHooks {
   const { max_diff_lines, max_diff_files } = settingValues(item.project, w.cfg.settings, w.d.learned);
   return {
-    allowed_paths: [...item.allowed_paths],
-    start_sha: start,
-    base_sha: baseSha,
+    allowed_paths: [...item.allowed_paths], start_sha: start, base_sha: baseSha,
     limits: { max_diff_lines, max_diff_files },
     check_commands: checkCommands(w.cfg.repo),
     check_env: { ...w.d.toolEnv, ...w.slotEnv() },
     stop_checks: w.cfg.agent_stop_checks ?? AGENT_STOP_CHECKS_DEFAULT,
     stop_blocks_used: w.scratch.get(run)?.stop_blocks ?? 0,
+    ...(w.cfg.repo.test_selection ? { selection: { mode, test_command: [...w.cfg.repo.test_command], test_selection: w.cfg.repo.test_selection } } : {}),
   };
 }
 

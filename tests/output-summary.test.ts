@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { toolchainMissing } from "../src/core/checks.js";
-import { failingTestDetails, failingTests, firstErrorLine, stripAnsi } from "../src/core/output-summary.js";
+import { failingTestFiles, toolchainMissing } from "../src/core/checks.js";
+import { failingTestDetails, failingTests, failingTestsAndSuites, firstErrorLine, stripAnsi } from "../src/core/output-summary.js";
 
 // What a person reads first in a failure comment (issue #229).
 describe("output summary", () => {
@@ -29,6 +29,51 @@ describe("output summary", () => {
     expect(toolchainMissing("sh: tsc: command not found")).toContain("tsc");
     expect(toolchainMissing("Error: Cannot find module './missing-file.js'")).toBeNull();
     expect(toolchainMissing("AssertionError: expected 1 to be 2")).toBeNull();
+  });
+});
+
+// A file vitest fails before its tests run is a failed suite; failing_tests lists it next to failed tests (design 10-event-driven).
+describe("failingTestsAndSuites", () => {
+  const suiteOnly = [
+    "\u001b[31m⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯\u001b[39m",
+    "",
+    "\u001b[31m FAIL \u001b[39m tests/ui-calendar-page.test.tsx [ tests/ui-calendar-page.test.tsx ]",
+    "Error: Cannot bundle Node.js built-in node:sqlite",
+    "TypeError: a later error of the same suite",
+    "⎯⎯⎯⎯⎯⎯⎯[1/1]⎯",
+    "(node:123) ExperimentalWarning: SQLite is an experimental feature",
+  ].join("\n");
+
+  it("one failed suite and no failed test names the file and its first error line", () => {
+    expect(failingTestsAndSuites(suiteOnly, 10)).toEqual(["tests/ui-calendar-page.test.tsx > (suite failed): Cannot bundle Node.js built-in node:sqlite"]);
+  });
+
+  it("lists failed tests and failed suites in output order, each once, at most `max` in total", () => {
+    const mixed = [
+      " FAIL  tests/a.test.ts [ tests/a.test.ts ]",
+      "⎯⎯⎯⎯⎯⎯⎯[1/3]⎯",
+      "Error: after the separator is not this suite's",
+      " FAIL  tests/b.test.ts > adds 3ms",
+      "AssertionError: expected 1 to be 2",
+      " FAIL  tests/c.test.tsx [ tests/c.test.tsx ]",
+      "SyntaxError: Unexpected token",
+      " FAIL  tests/b.test.ts > adds",
+      " FAIL  tests/c.test.tsx [ tests/c.test.tsx ]",
+    ].join("\n");
+    expect(failingTestsAndSuites(mixed, 10)).toEqual([
+      "tests/a.test.ts > (suite failed)",
+      "tests/b.test.ts > adds",
+      "tests/c.test.tsx > (suite failed): SyntaxError: Unexpected token",
+    ]);
+    const many = Array.from({ length: 12 }, (_, i) => (i % 2 ? ` FAIL  tests/t${i}.test.ts > case` : ` FAIL  tests/t${i}.test.ts [ tests/t${i}.test.ts ]\nError: ${"x".repeat(400)}`)).join("\n");
+    const got = failingTestsAndSuites(many, 10);
+    expect(got.map((t) => t.split(" > ")[0])).toEqual(Array.from({ length: 10 }, (_, i) => `tests/t${i}.test.ts`));
+    expect(got[0]!.length).toBeLessThanOrEqual(`tests/t0.test.ts > (suite failed): `.length + 300);
+  });
+
+  it("failingTestFiles still reads no file from suite-only output, so no rerun or conflict ask changes", () => {
+    expect(failingTestFiles(suiteOnly)).toEqual([]);
+    expect(failingTests(suiteOnly)).toEqual([]);
   });
 });
 

@@ -229,7 +229,7 @@ export function ItemsTable({ items, now, label, empty, plugins }: { items: reado
       header: t("col.item"),
       className: "max-w-md",
       render: (it) => (
-        <Link href={itemPath(it.id)} data-raw className={cn("font-medium sm:truncate", BLOCK_LINK_CLASS)}>
+        <Link href={itemPath(it.id)} data-raw data-row-title className={cn("font-medium sm:truncate", BLOCK_LINK_CLASS)}>
           {it.title ?? shortSource(it.source.id)}
         </Link>
       ),

@@ -59,7 +59,7 @@ function useBuild(task: TaskRow, token: string | null) {
 function Title({ task, className, onOpen }: { task: TaskRow; className: string; onOpen: (() => void) | null }) {
   if (task.work_item_id !== null) {
     return (
-      <Link href={itemPath(task.work_item_id)} title={task.title} className={cn(className, "text-text-1 hover:underline")}>
+      <Link href={itemPath(task.work_item_id)} data-row-title title={task.title} className={cn(className, "text-text-1 hover:underline")}>
         {task.title}
       </Link>
     );
@@ -67,7 +67,7 @@ function Title({ task, className, onOpen }: { task: TaskRow; className: string; 
   if (onOpen !== null) {
     return (
       // The title stays the paragraph's text; the shared Button lies over it, so the row keeps its height.
-      <p title={task.title} className={cn(className, "relative hover:underline")}>
+      <p data-row-title title={task.title} className={cn(className, "relative hover:underline")}>
         {task.title}
         <Button
           variant="ghost"
@@ -79,7 +79,7 @@ function Title({ task, className, onOpen }: { task: TaskRow; className: string; 
       </p>
     );
   }
-  return <p title={task.title} className={className}>{task.title}</p>;
+  return <p data-row-title title={task.title} className={className}>{task.title}</p>;
 }
 
 export function TaskCard({ task, overdue: inOverdue = false, sub = false, date = null }: { task: TaskRow; overdue?: boolean; sub?: boolean; date?: string | null }) {

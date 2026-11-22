@@ -78,7 +78,7 @@ describe("shortcuts", () => {
     await screen.findByText("First spec");
     press("k", { metaKey: true });
     const box = await screen.findByRole("dialog", { name: "Search" });
-    expect(box.textContent).toContain("Runners");
+    expect(box.textContent).toContain("Health");
     expect(box.textContent).toContain("Second spec");
     fireEvent.change(screen.getByPlaceholderText("Search pages and items"), { target: { value: "second" } });
     fireEvent.click(screen.getByRole("option", { name: /Second spec/ }).querySelector("button")!);
@@ -108,6 +108,8 @@ describe("shortcuts", () => {
     const data = screen.getAllByRole("option").find((o) => o.textContent?.startsWith("Data"))!;
     expect(data.textContent).toBe("DataDeveloper page");
     expect(box.textContent?.split("Developer page").length).toBe(2);
+    // Runners is a Health tab now, not a page of its own.
+    expect(screen.getAllByRole("option").some((o) => o.textContent?.startsWith("Runners"))).toBe(false);
   });
 
   it("? lists every shortcut, Escape closes it", () => {
@@ -115,6 +117,8 @@ describe("shortcuts", () => {
     press("?");
     const box = screen.getByRole("dialog", { name: "Keyboard shortcuts" });
     expect(box.textContent).toContain("g a");
+    // g a goes to Work, so its row says Work: the Activity page is gone.
+    expect(box.textContent).not.toContain("Activity");
     fireEvent.keyDown(box, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
   });

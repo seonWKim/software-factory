@@ -78,6 +78,7 @@ async function implement(
           ].filter(Boolean).join("\n\n"),
           specQuery(item),
         );
+      const mode = (await PrePushSelection.open(w.d.store, w.cfg.repo, item.project, () => {})).mode; // the stored test selection mode, per step
       // The mid-run diff check: every DIFF_CHECK_MS on the clock while the agent step runs.
       const watch: DiffBudget = { limits, stop: new AbortController(), over: null };
       const stopWatch = new AbortController();
@@ -85,7 +86,7 @@ async function implement(
       // The spec of the step's turns, built per turn. writable_paths: none, as the run's git folder is inside its
       // workdir. Never the owner's checkout or its .git (architecture §5).
       const turn = () => ({ model_class: model, output_schema: IMPLEMENT_SCHEMA, writable_paths: [],
-        env_allowlist: gitIdentity(w.cfg.agent_git_identity), gate_hooks: gateHooks(w, run, item, start, baseSha) });
+        env_allowlist: gitIdentity(w.cfg.agent_git_identity), gate_hooks: gateHooks(w, run, item, start, baseSha, mode) });
       const result = await w.agent(run, item, handle, AbortSignal.any([signal, watch.stop.signal]), { prompt, ...turn() },
         plan ? `resumed-${ctx.lease_token}` : undefined, {
         pausable: true, resume: plan?.session ?? kept,

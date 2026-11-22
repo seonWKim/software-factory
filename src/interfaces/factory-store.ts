@@ -19,6 +19,8 @@ import type { PostedCommentReads } from "../core/reaction-verdict.js";
 import type { RunOutputStore } from "../core/stall.js";
 import type { SessionReservation, SessionReservationStore } from "../core/session.js";
 import type { ProposalStore } from "../core/proposals.js";
+import type { StandingChangeStore } from "../core/standing.js";
+import type { ScheduleStore } from "../core/schedule.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
@@ -60,8 +62,7 @@ export interface AdoptedPr {
 }
 
 /**
- * The head of an open PR as a poll saw it, against the item's last recorded head (design 2026-11-01).
- * Applies only while the item's last_head_sha still equals `expected_head`.
+ * The head of an open PR as a poll saw it, against the item's last recorded head (design 2026-11-01). Applies only while the item's last_head_sha still equals `expected_head`.
  */
 export interface RecordPrHeadInput {
   id: WorkItemId;
@@ -264,7 +265,7 @@ export type BudgetCheckpointResult =
 export interface WorkItemFilter {
   stage?: Stage | undefined;
   blocked_on?: BlockedOn | undefined; blocked_reason?: string | undefined;
-  exclude_closed?: boolean | undefined; // Leave out CLOSED items. Ignored when `stage` is given.
+  exclude_closed?: boolean | undefined; exclude_system?: boolean | undefined; // Leave out CLOSED items (ignored when `stage` is given) / system items (blocked_reason system_item).
   /** Only items updated at or after this time (with `stage: "CLOSED"`, the closes since then: owner notices). */
   updated_since?: Timestamp | undefined;
   limit: number;
@@ -355,7 +356,7 @@ export interface NoticeMessageStore {
   getNoticeQuestion(id: string): Promise<NoticeQuestion | null>;
 }
 
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore {
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes
@@ -392,7 +393,7 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   listWorkItemsWhere(filter: WorkItemFilter): Promise<WorkItem[]>;
   /** Number of items matching `filter`, with no limit. Read-only. */
   countWorkItemsWhere(filter: Omit<WorkItemFilter, "limit">): Promise<number>;
-  /** Number of work items in each stage. Every stage is present, 0 when it has none. Read-only. */
+  /** Number of work items in each stage, system items (blocked_reason system_item) left out. Every stage is present, 0 when it has none. Read-only. */
   countWorkItemsByStage(): Promise<Record<Stage, number>>;
   /**
    * The only way to change a work item: conditional update + state_changes row (+ optional ack/enqueue).
@@ -606,9 +607,8 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   /** Sets the outcome of row `id` only while it has none: true when this call wrote it, false when one was there. */
   setFiledPatternOutcome(id: FiledPatternId, outcome: NonNullable<FiledPattern["outcome"]>, at: Timestamp): Promise<boolean>;
 
-  // Standing approvals (design 05-standing-approvals). Stored only: nothing acts on a rule or a proposal yet.
-
-  /** Writes the rule of (gate, tier): a new row, or the stored row's `enabled` and `set_by` with a new `updated_at`. */
+  // Standing approvals (design 05-standing-approvals); deleting a rule and its change records: StandingChangeStore.
+  /** Writes the rule of (gate, tier), a new row or the stored row's `enabled` and `set_by` with a new `updated_at`, and its change record. */
   putStandingRule(input: NewStandingRule): Promise<StandingRule>;
   /** Every rule, by gate then tier. */
   listStandingRules(): Promise<StandingRule[]>;

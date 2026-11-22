@@ -190,6 +190,13 @@ describe("Needs you on the Tasks page", () => {
     expect(location.pathname).toBe("/app/tasks");
   });
 
+  it("a red main's What failed lists a failed suite's entry next to a failed test", async () => {
+    const suite = "tests/ui-calendar-page.test.tsx > (suite failed): Cannot bundle Node.js built-in node:sqlite";
+    const [row] = await alarmRows([RED_MAIN({ failing_tests: [suite, "tests/a.test.ts > adds"], output_tail: null })]);
+    const dialog = choose(row!, "What failed");
+    expect([...dialog.querySelectorAll("[data-failing-tests] li")].map((li) => li.textContent)).toEqual([suite, "tests/a.test.ts > adds"]);
+  });
+
   it("a red main with no output kept says so in What failed, with no empty block; names kept from a flagged tail still show", async () => {
     const [none, flagged] = await alarmRows([
       RED_MAIN({ failing_tests: [], output_tail: null }),

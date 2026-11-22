@@ -1,8 +1,11 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Fragment, type ReactNode, useState } from "react";
-import { API, type StandingProposalRow, type StandingRuleRow, type StandingView, postStanding, useApi } from "../api.js";
+import { Fragment, type ReactNode, useId, useState } from "react";
+import { API, type StandingProposalRow, type StandingRuleRow, type StandingView, type StandingWriteBody, postStanding, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
+import { Dialog } from "../components/ui/dialog.js";
+import { Field } from "../components/ui/field.js";
+import { Input } from "../components/ui/input.js";
 import { ErrorNote } from "../components/ui/parts.js";
 import { Switch } from "../components/ui/switch.js";
 import type { MessageKey } from "../i18n/en.js";
@@ -22,8 +25,10 @@ import { ROW_PAD } from "./rules-shared.js";
 // approved in the last 7 days (linked by title); behind Details its ID, gate, tier, threshold, who set it ("you" for the
 // viewer, else "a person"; never the user ID) and when it was created. A rule that is off is a row under the page's
 // Details. Each pending proposal is a row of Waiting for you: Accept visible, Decline in its ⋯ menu. With the ledger
-// off the same rows sit in one card (ApprovalsSection). Every write is POST /api/v1/standing with the CSRF token; the
-// server runs the owner check (approve_spec), and a refusal shows beside the item it came from.
+// off the same rows sit in one card (ApprovalsSection). A rule is turned on (add), paused, edited (the threshold) or
+// removed in a Dialog, from its Switch or its ⋯ menu, never in the row; each dialog lists the waiting items the change
+// would approve now, or "none". Every write is POST /api/v1/standing with the CSRF token; the server runs the owner
+// check (approve_spec), and a refusal shows in the dialog, or beside the proposal it came from.
 
 const muted = "text-xs text-pretty break-keep text-text-2";
 
@@ -48,16 +53,22 @@ function useStandingWrite(token: string | null) {
   const client = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const write = async (body: { rule: string; enabled: boolean; proposal?: string }) => {
-    if (token === null) return;
+  /** Sends `body`; true once the server took it (and the read is refreshed), false on a refusal, kept in `error`. */
+  const write = async (body: StandingWriteBody): Promise<boolean> => {
+    if (token === null) return false;
     setBusy(true);
     setError(null);
     try {
       const r = await postStanding(token, body);
-      if (!r.ok) setError(r.error);
-      else await client.invalidateQueries({ queryKey: [API.standing] });
+      if (!r.ok) {
+        setError(r.error);
+        return false;
+      }
+      await client.invalidateQueries({ queryKey: [API.standing] });
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -74,23 +85,28 @@ function firedText(at: string | null, now: number): string {
   return at === null ? t("standing.neverFired") : t("standing.lastFired", { when: relativeTime(at, now) });
 }
 
+/** What a rule's dialog changes: turn it on (add, creating its row), turn it off (pause), the threshold (edit), or delete its row (remove). */
+export type RuleAction = "add" | "pause" | "edit" | "remove";
+
 /**
  * One standing rule as a ListRow: its Switch, its sentence, then on or off, when it last fired and the items it
- * approved in the last 7 days, each a link named by its title (no ID); its raw facts behind Details.
+ * approved in the last 7 days, each a link named by its title (no ID); its raw facts behind Details. The Switch and
+ * the ⋯ menu (Turn on or Pause, Edit, Remove) each open the rule's Dialog; the row itself never grows.
  */
 export function StandingRule({ rule, token }: { rule: StandingRuleRow; token: string | null }) {
-  const { busy, error, write } = useStandingWrite(token);
+  const [action, setAction] = useState<RuleAction | null>(null);
   const viewer = useViewer();
   const now = useNow();
   const sentence = ruleSentence(rule.tier);
   // A server from before the firings were read sends neither field: no firing then.
   const recent = rule.recent ?? [];
   const firedAt = rule.last_fired_at ?? null;
+  const off = token === null;
   return (
     <ListRow
       data-rule={rule.rule}
       className={ROW_PAD}
-      leading={<Switch aria-label={sentence} checked={rule.enabled} disabled={busy} onCheckedChange={(next) => void write({ rule: rule.rule, enabled: next })} />}
+      leading={<Switch aria-label={sentence} checked={rule.enabled} disabled={off} onCheckedChange={(next) => setAction(next ? "add" : "pause")} />}
       title={<p data-rule-sentence className={`${ROW_TITLE} font-medium`} title={sentence}>{sentence}</p>}
       details={
         <>
@@ -107,6 +123,19 @@ export function StandingRule({ rule, token }: { rule: StandingRuleRow; token: st
           </span>
         </>
       }
+      menu={
+        <OverflowMenu
+          label={t("standing.actions", { rule: sentence })}
+          items={[
+            rule.enabled
+              ? { label: t("standing.pause"), action: "pause", disabled: off, onSelect: () => setAction("pause") }
+              : { label: t("standing.turnOn"), action: "add", disabled: off, onSelect: () => setAction("add") },
+            { label: t("standing.edit"), action: "edit", disabled: off, onSelect: () => setAction("edit") },
+            // A rule with no stored row has nothing to remove.
+            { label: t("standing.remove"), action: "remove", danger: true, disabled: off || rule.created_at === null, onSelect: () => setAction("remove") },
+          ]}
+        />
+      }
     >
       <RawDetails>
         <p className={muted}>
@@ -118,8 +147,79 @@ export function StandingRule({ rule, token }: { rule: StandingRuleRow; token: st
           {firedAt !== null && t("standing.firedAt", { when: localDateTime(firedAt) })}
         </p>
       </RawDetails>
-      <Refusal error={error} />
+      {action !== null && <RuleDialog rule={rule} action={action} token={token} onClose={() => setAction(null)} />}
     </ListRow>
+  );
+}
+
+/** A threshold the field holds: a whole number above 0, else null. */
+const thresholdOf = (text: string): number | null => (/^\d+$/.test(text.trim()) && Number(text) > 0 ? Number(text) : null);
+
+/**
+ * The Dialog of one rule change. Add and Pause show the rule's Switch (the state to save), Edit the threshold Field,
+ * Remove only its consequence with a danger confirm. Each lists, before the confirm, the waiting items the change
+ * would approve now (`waiting` of the read, when the change leaves the rule on), or "none". It closes once the server
+ * took the change; a refusal stays in it.
+ */
+function RuleDialog({ rule, action, token, onClose }: { rule: StandingRuleRow; action: RuleAction; token: string | null; onClose: () => void }) {
+  const { busy, error, write } = useStandingWrite(token);
+  // The read the page already holds (one query per URL): its preview of the waiting items.
+  const waiting = useApi<StandingView>(API.standing).data?.waiting ?? [];
+  const [on, setOn] = useState(action === "add");
+  const [threshold, setThreshold] = useState(String(rule.threshold));
+  const fieldId = useId();
+  const sentence = ruleSentence(rule.tier);
+  const toggles = action === "add" || action === "pause";
+  const asked = thresholdOf(threshold);
+  const approves = toggles && on ? waiting : [];
+  const send = async () => {
+    const body: StandingWriteBody = action === "remove" ? { rule: rule.rule, action: "remove" }
+      : action === "edit" ? { rule: rule.rule, action: "edit", threshold: asked! }
+      : { rule: rule.rule, enabled: on };
+    if (await write(body)) onClose();
+  };
+  const title = action === "remove" ? t("standing.removeTitle", { rule: sentence })
+    : action === "edit" ? t("standing.editTitle", { rule: sentence })
+    : t(on ? "standing.turnOnTitle" : "standing.pauseTitle", { rule: sentence });
+  const consequence = action === "remove" ? t("standing.removeConsequence")
+    : action === "edit" ? t("standing.editConsequence")
+    : t(on ? "standing.onConsequence" : "standing.pauseConsequence", { tier: rule.tier });
+  const confirm = action === "remove" ? t("standing.remove") : action === "edit" ? t("standing.save") : t(on ? "standing.turnOn" : "standing.pause");
+  // Nothing to send: the state the rule already has, or a threshold that is not a whole number above 0.
+  const idle = toggles ? on === rule.enabled : action === "edit" ? asked === null : false;
+  return (
+    <Dialog
+      title={title}
+      consequence={consequence}
+      confirmLabel={confirm}
+      confirmDisabled={busy || idle}
+      danger={action === "remove"}
+      error={error}
+      onConfirm={() => void send()}
+      onClose={onClose}
+    >
+      {toggles && (
+        <div data-rule-state className="flex items-center gap-2 text-sm">
+          <Switch aria-label={sentence} checked={on} disabled={busy} onCheckedChange={setOn} />
+          <span>{on ? t("standing.on") : t("standing.off")}</span>
+        </div>
+      )}
+      {action === "edit" && (
+        <Field label={t("standing.thresholdLabel")} htmlFor={fieldId} help={t("standing.thresholdHelp")}>
+          <Input id={fieldId} type="number" min={1} step={1} inputMode="numeric" value={threshold} disabled={busy} onChange={(e) => setThreshold(e.target.value)} />
+        </Field>
+      )}
+      <div data-preview className="text-sm">
+        <p className="font-medium">{t("standing.previewTitle")}</p>
+        {approves.length === 0 ? (
+          <p data-preview-none className="text-text-2">{t("standing.previewNone")}</p>
+        ) : (
+          <ul className="mt-1 list-disc pl-5">
+            {approves.map((item) => <li key={item.id} className="break-words">{item.title}</li>)}
+          </ul>
+        )}
+      </div>
+    </Dialog>
   );
 }
 

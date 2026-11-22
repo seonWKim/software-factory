@@ -10,6 +10,7 @@ import { type UiDeps, respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
 import { alice, cleanScanner, settingsWith, triageSpec } from "./helpers/fakes/config.js";
 import { pipeline } from "./helpers/harness.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // A spec's premise (design 04-spec-gate-commands, 2026-11-20): a spec whose files_to_change is empty changes no file
 // in this repo, so no surface approves it; a /retry on an item whose last change is over a day old re-checks the
@@ -94,7 +95,7 @@ describe("a spec that changes no file in this repo", () => {
     const it0 = await f.submit();
     await f.step();
     const before = await f.shape(it0);
-    const cli = { store: f.store, identity: { user: "1" as UserId, from: "cli_user" as const }, project: async () => it0.project, read: async () => "", newId: () => "n1" };
+    const cli = { answers: { split: splitAnswers, detail: answersDetail }, store: f.store, identity: { user: "1" as UserId, from: "cli_user" as const }, project: async () => it0.project, read: async () => "", newId: () => "n1" };
     // `factory approve`'s own check reads the item's fields only, so it stores the command for the controller (FakeAuth reads the local user `1` as github:1).
     expect((await runLocalCli(cli, { action: "command", command: "approve", id: it0.id, text: "" })).code).toBe(0);
     await f.controller.tickCommands();

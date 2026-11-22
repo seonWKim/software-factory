@@ -4,7 +4,7 @@ import { MAX_COMMAND_PATHS, retryPathsReply } from "../core/commands.js";
 import { type ReviewOutput, builtDifferentlyOf, specFindings, unverifiedOf } from "../core/outputs.js";
 import { AGENT_STALLED, RATE_LIMITED, SETUP_MISSING, classifyNetwork, isSetupMissing } from "../core/policy.js";
 import { type LocalRoute, type PrText, TRUSTED_GIT_ENV, type WorkerDeps, baseRefspec, claimableKinds, hasTool, prTitle, requeueForCredential, routeFor, runPushIntents, threadDelivery } from "../core/worker-deps.js";
-import { failingTests, stripAnsi } from "../core/output-summary.js";
+import { failingTestsAndSuites, stripAnsi } from "../core/output-summary.js";
 import { Bash, Edit, Glob, Grep, Read, TOOLS, type ToolSpec, Write } from "../core/tools/index.js";
 import type { Run, RunId, RunKind, RunResume, RunUsage, Timestamp, WipRef, WorkItem } from "../core/types.js";
 import type { AgentRunResult } from "../interfaces/agent-runner.js";
@@ -249,12 +249,15 @@ export const PAUSE_NEXT_STEPS = "continue the work item from the WIP commit; fin
 /** Transcript scan rules that fail the run: a real secret value, or the canary a test agent was told to find (G6). */
 export const TRANSCRIPT_FAIL_RULES: readonly string[] = ["known_secret", "factory_canary"];
 
-/** The most failing test names a `checks_failed` detail or a red merge check lists. */
+/** The most failing tests and suites a `checks_failed` detail or a red merge check lists. */
 const MAX_FAILING_TESTS = 10;
 
-/** The failing tests a check's output names (`file > name`, as vitest prints them), at most MAX_FAILING_TESTS. */
+/**
+ * The failing tests (`file > name`, as vitest prints them) and failed suites (`file > (suite failed): <first error
+ * line>`) a check's output names, in output order, at most MAX_FAILING_TESTS in total.
+ */
 export function failingTestNames(output: string): string[] {
-  return failingTests(output, MAX_FAILING_TESTS);
+  return failingTestsAndSuites(output, MAX_FAILING_TESTS);
 }
 
 export function tail(s: string): string {

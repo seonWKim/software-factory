@@ -114,6 +114,7 @@ describe("ui priority", () => {
   });
 
   it("a running run within its lease is running, past it is stuck", () => {
+    expect(levelOf(item("s", { stage: "NEW", blocked_on: "upstream", blocked_reason: "system_item" }), NOW, LEASE)).toBe("system");
     expect(levelOf(item("a", { run: running("implement", 0.5) }), NOW, LEASE)).toBe("running");
     expect(levelOf(item("b", { run: running("implement", 2) }), NOW, LEASE)).toBe("stuck");
   });

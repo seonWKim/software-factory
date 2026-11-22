@@ -14,7 +14,7 @@ export const RUN_KINDS: readonly RunKind[] = ["triage", "implement", "review", "
  * every Finished level (src/shared/states.ts inStateFilter), as older links meant it.
  */
 export type StateFilter = StateGroup | Level;
-const STATE_VALUES: readonly StateFilter[] = [...STATE_GROUPS, ...LEVELS];
+const STATE_VALUES: readonly StateFilter[] = [...STATE_GROUPS, ...LEVELS.filter((l) => l !== "system")];
 
 /** Longest search text kept; the rest is cut. */
 export const MAX_QUERY = 200;

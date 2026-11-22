@@ -14,6 +14,7 @@ import { type MenuItem, OverflowMenu } from "../components/ui/menu.js";
 import { When, useNow } from "./common.js";
 import { alarmAnchor } from "./settings/general.js";
 import { Outcome, useWrite } from "./settings-file-keys.js";
+import { ModeDialog } from "./settings/mode-dialog.js";
 import { ShowFailuresDialog, WhatFailedDialog } from "./alarm-dialogs.js";
 import { ModelCredentialDialog } from "./model-credential-dialog.js";
 
@@ -418,14 +419,16 @@ function AlarmRow({ action }: { action: SystemAction }) {
  */
 function AutoStopRow({ action, stop }: { action: SystemAction; stop: AutoStop }) {
   const turnOn = useTurnAutoOn();
+  const [confirming, setConfirming] = useState(false);
   const cause = STOP_CAUSE[stop.cause];
   const sentence = t("needs.autoStopped", { time: clockTime(stop.at), cause: cause ? t(cause) : stop.cause });
-  const lead = [{ label: t("needs.autoStopTurnOn"), action: "auto_on", disabled: !turnOn.ready, onSelect: turnOn.write }];
+  const lead = [{ label: t("needs.autoStopTurnOn"), action: "auto_on", disabled: !turnOn.ready, onSelect: () => setConfirming(true) }];
   return (
     <AlarmMenuRow action={action} id={alarmAnchor(stop.alert_id)} title={sentence} lead={lead} dialog="what_failed" output={stop}>
       <Disclosure data-alarm-details lazy summary={t("needs.alarmDetails")}>
         <p className="text-xs text-pretty wrap-anywhere text-text-2">{action.text}</p>
       </Disclosure>
+      {confirming && <ModeDialog to="auto" busy={turnOn.busy} error={turnOn.error} onConfirm={() => void turnOn.write().then((ok) => ok && setConfirming(false))} onClose={() => setConfirming(false)} />}
       <Outcome error={turnOn.error} done={null} />
     </AlarmMenuRow>
   );
@@ -459,8 +462,8 @@ function AlarmMenuRow({ action, id, title, lead, dialog, output, children }: {
 }
 
 /**
- * Turn auto back on from the auto-stop row: mode auto at once (no confirmation) through POST /api/v1/settings, the
- * same write as the Settings note's button, at the project's level when it has its own mode. Not ready while the
+ * Turn auto back on from the auto-stop row, once its ModeDialog is confirmed: mode auto through POST /api/v1/settings,
+ * the same write as the Settings note's button, at the project's level when it has its own mode. Not ready while the
  * settings view loads or a write is under way.
  */
 function useTurnAutoOn() {
@@ -470,7 +473,8 @@ function useTurnAutoOn() {
   const own = view && row && view.project !== null ? row.projects.some((p) => p.project === view.project) : false;
   return {
     ready: row !== undefined && !busy,
+    busy,
     error,
-    write: () => void write({ action: "set", key: "mode", value: JSON.stringify("auto"), ...(own && view ? { project: view.repo } : {}) }),
+    write: () => write({ action: "set", key: "mode", value: JSON.stringify("auto"), ...(own && view ? { project: view.repo } : {}) }),
   };
 }

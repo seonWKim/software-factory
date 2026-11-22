@@ -15,7 +15,7 @@ for a new topic. "§5" means `05-*`.
 - [02-tasks-build.md](design/02-tasks-build.md): Build this, merge close.
 - [02-tasks-edit.md](design/02-tasks-edit.md): edit, delete, sub-tasks.
 - [02-tasks-page.md](design/02-tasks-page.md): what the Tasks page lists, edits and completes.
-- [02-tasks-calendar.md](design/02-tasks-calendar.md): calendar component, Google sync, events in tasks.
+- [02-tasks-calendar.md](design/02-tasks-calendar.md): calendar, Google sync, events in tasks.
 
 ## 3. Risk
 - [03-risk.md](design/03-risk.md): how the tier is set and rechecked, and the safety ratchet.
@@ -23,17 +23,17 @@ for a new topic. "§5" means `05-*`.
 ## 4. Agents
 - [04-agents.md](design/04-agents.md): agent roles, model class per run kind and tier.
 - [04-gate-commands.md](design/04-gate-commands.md): human commands, refusals, footers.
-- [04-spec-gate-commands.md](design/04-spec-gate-commands.md): spec answers, `/revise`, `/resolve`, widening paths.
+- [04-spec-gate-commands.md](design/04-spec-gate-commands.md): spec answers, `/revise`, `/resolve`.
 - [04-chat-commands.md](design/04-chat-commands.md): plain-words classifier, chat answers, proposals.
 - [04-verdicts.md](design/04-verdicts.md): `/verdict` everywhere, implicit verdicts, pushback capture.
-- [04-closing-source-issue.md](design/04-closing-source-issue.md): closing the source issue stops item, runs, PR; `/reject`.
+- [04-closing-source-issue.md](design/04-closing-source-issue.md): a source issue close stops item, runs, PR.
 - [04-pre-push-gates.md](design/04-pre-push-gates.md): scope, size and floor gates before a push.
-- [04-triage.md](design/04-triage.md): path companions, files triage adds to allowed paths, topic folders.
-- [04-split-specs.md](design/04-split-specs.md): size estimates, splitting a spec into phases, phase hold.
+- [04-triage.md](design/04-triage.md): path companions, allowed paths, topic folders.
+- [04-split-specs.md](design/04-split-specs.md): size estimates, phases, phase hold.
 
 ## 5. Coordination
 - [05-coordination.md](design/05-coordination.md): claim order, leases, fencing.
-- [05-dependencies.md](design/05-dependencies.md): parallel workers, hold policy, cost threshold, hotspots.
+- [05-dependencies.md](design/05-dependencies.md): parallel workers, hold policy, cost threshold.
 - [05-restarts.md](design/05-restarts.md): stalled runs, retries, backoff, handoff.
 - [05-restart-asks.md](design/05-restart-asks.md): runs that ask for paths or a dependency.
 - [05-restart-pauses.md](design/05-restart-pauses.md): claim pauses, rate limits, drains.
@@ -42,10 +42,10 @@ for a new topic. "§5" means `05-*`.
 - [05-merge-conflict.md](design/05-merge-conflict.md): update runs on unmergeable PRs, `/resolve`.
 - [05-ci-gate.md](design/05-ci-gate.md): CI workflow and the controller's check gate before a merge.
 - [05-sources.md](design/05-sources.md): local items and startup, thread and outbox, CLI intake.
-- [05-slack-intake.md](design/05-slack-intake.md): Slack presses, mentions, spec posts, replies, emoji.
+- [05-slack-intake.md](design/05-slack-intake.md): Slack presses, mentions, replies, emoji.
 - [05-github-sync.md](design/05-github-sync.md): GitHub client, forge PRs, call budget.
 - [05-stream-intake.md](design/05-stream-intake.md): stream intake, many sources, adopted PRs.
-- [05-interactive-sessions.md](design/05-interactive-sessions.md): own LLM session as an `interactive` run.
+- [05-interactive-sessions.md](design/05-interactive-sessions.md): own LLM session as a run.
 - [05-status-labels.md](design/05-status-labels.md): the eight status labels.
 - [05-standing-approvals.md](design/05-standing-approvals.md): what spec decisions record, the run check.
 
@@ -56,8 +56,10 @@ for a new topic. "§5" means `05-*`.
 - [06-efficiency.md](design/06-efficiency.md): items, tokens and time per period.
 
 ## 7. Self-improvement
-- [07-self-improvement.md](design/07-self-improvement.md): how the factory changes its own behaviour.
-- [07-improve-report.md](design/07-improve-report.md): improve report, Run now, retire suggestions.
+- [07-self-improvement.md](design/07-self-improvement.md): how the factory changes itself.
+- [07-conflict-hotspots.md](design/07-conflict-hotspots.md): hotspots.
+- [07-learned-rules.md](design/07-learned-rules.md): learned rules.
+- [07-improve-report.md](design/07-improve-report.md): improve report, Run now, retirement.
 - [07-design-learnings.md](design/07-design-learnings.md): UI corrections.
 
 ## 8. Operations
@@ -69,6 +71,7 @@ for a new topic. "§5" means `05-*`.
 - [08-enterprise.md](design/08-enterprise.md): one owner, many workers, local first, audit.
 - [08-teardown.md](design/08-teardown.md): `factory teardown`.
 - [08-retention.md](design/08-retention.md): daily retention pass and its periods.
+- [08-schedules.md](design/08-schedules.md): schedules, their runs.
 
 ## 9. Status page
 - [09-status-page.md](design/09-status-page.md): read-only status page.

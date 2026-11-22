@@ -457,10 +457,17 @@ describe("path_companions load check", () => {
       expect(await allowedFor("src/impl/store/sql/sql-factory-store.ts")).toContain("src/impl/store/sql/");
     });
 
-    const KIND_FILES = ["src/worker/settings/worker-kinds.setting.ts", "docs/settings.md", "tests/worker-kinds.test.ts", "tests/settings-catalog.test.ts"];
-    it("a new run kind (the RunKind union and a run folder) adds the worker_kinds setting, its catalog page and both tests", async () => {
+    const KIND_FILES = [
+      "src/core/settings.ts",
+      "src/worker/settings/worker-kinds.setting.ts",
+      "docs/settings.md",
+      "tests/settings-catalog.test.ts",
+      "tests/worker-kinds.test.ts",
+      "tests/architecture/rule-of-two.test.ts",
+    ];
+    it("a new run kind (the RunKind union and a run folder) adds WORKER_KINDS, the worker_kinds setting, its catalog page, the catalog test and the two tests that pin the kind and role lists", async () => {
       const loaded = await loadConfig(root(SQLITE));
-      const files = ["src/core/types.ts", "src/worker/runs/screenshot/screenshot.run.ts"];
+      const files = ["src/core/types.ts", "src/worker/runs/judge/judge.run.ts"];
       const a = applyCompanions(answer({ allowed_paths: files, files_to_change: files }), loaded.config.path_companions ?? [], []).answer as { allowed_paths: string[]; applied_defaults: string[] };
       expect(a.allowed_paths).toEqual(expect.arrayContaining(KIND_FILES));
       expect(a.applied_defaults.some((d) => d.startsWith("Added by companion rule: a new run kind"))).toBe(true);

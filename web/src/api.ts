@@ -2,7 +2,7 @@
 // web/src/api/: one file per resource holds its endpoints, types, hooks and POST helpers (client.ts: the shared
 // fetch, polling and CSRF retry; routes.ts: the route map). A new endpoint goes in its resource file.
 
-export { POLL_MS, getJson, useApi, useManualApi } from "./api/client.js";
+export { POLL_MS, getJson, postJson, useApi, useManualApi } from "./api/client.js";
 export * from "./api/routes.js";
 export * from "./api/overview.js";
 export * from "./api/health.js";
