@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { CALENDAR_SYNC_MS } from "../../src/calendar/index.js";
+import { CALENDAR_SYNC_MS, MAX_SPAN_DAYS } from "../../src/calendar/index.js";
 import { syncWindow } from "../../src/calendar/calendar-sync.js";
 import { FakeClock } from "../../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../../src/impl/egress/pattern-egress-scanner.js";
 import type { CalendarSource } from "../../src/interfaces/calendar-source.js";
 import { ControllerRole } from "../../src/runtime/roles/controller-role.js";
 import type { SqlDriver } from "../../src/state/index.js";
-import { CALENDAR_EVENTS_PATH, MAX_SPAN_DAYS } from "../../src/ui/calendar-events-api.js";
+import { CALENDAR_EVENTS_PATH } from "../../src/ui/calendar-events-api.js";
 import { HealthMonitor } from "../../src/ui/health.js";
 import { type ApiDeps, respond } from "../../src/ui/server.js";
 import { FakeAuth } from "../helpers/fakes/runner.js";
