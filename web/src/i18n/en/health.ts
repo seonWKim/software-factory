@@ -2,6 +2,7 @@
 export const health = {
   "running.empty": "No run is running. Queued runs start when a worker is free.",
   "running.label": "Running now",
+  "running.heartbeat": "heartbeat {time}",
   "queue.empty": "The queue is empty.",
   "queue.now": "now",
   "failures.window": "Window",
@@ -270,6 +271,7 @@ export const health = {
   "efficiency.ruleTooFew": "Too few merges: {count} of 50",
   "efficiency.ruleNever": "Never",
   "tree.waitsFor": "Waits for {title}",
+  "tree.heldBehind": "Held behind {title}",
   "tree.queue": " · queue {position}",
   "tree.pr": "PR #{ref}",
   "tree.collapse": "Collapse",

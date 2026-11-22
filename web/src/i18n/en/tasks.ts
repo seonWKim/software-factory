@@ -7,7 +7,6 @@ export const tasks = {
   "tasks.editHint": "A title, a date (today, tomorrow, YYYY-MM-DD), a time (3pm, HH:MM), a duration (45m, 1h30m), !1 to !3 and #project. Enter saves, Esc cancels.",
   "tasks.save": "Save",
   "tasks.description": "Description",
-  "tasks.descriptionLabel": "Description: {title}",
   "tasks.descriptionHint": "Build this sends the title and this description to the factory.",
   "tasks.descriptionBuilt": "Built as {id}: the work item keeps the text it was built with; a change here stays on the task.",
   "tasks.descriptionSaved": "Description saved: {title}",

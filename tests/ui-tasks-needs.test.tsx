@@ -118,7 +118,7 @@ describe("Needs you", () => {
     expect(within(card("tk_built")).getAllByRole("button", { name: /More/ })).toHaveLength(1);
     const items = menuItems(card("tk_built"));
     expect(items[0]).toBe("Merge");
-    expect(items.slice(-2)).toEqual(["Projects…", "Delete"]);
+    expect(items.slice(-3)).toEqual(["Projects…", "Delete", "Copy ID"]);
     expect(within(card("tk_built")).queryByRole("button", { name: "Work item state: tk_built" })).toBeNull();
     const el = await section();
     expect([...el.querySelectorAll<HTMLElement>("li[data-key]")].map((r) => r.dataset.key)).toEqual(["wi_1"]);
@@ -200,12 +200,13 @@ describe("Needs you", () => {
     expect(s.posts.filter((p) => p.url.endsWith("/commands")).map((p) => new Headers(p.init.headers).get("x-csrf-token"))).toEqual([TOKEN, TOKEN]);
     const actions = row.querySelector<HTMLElement>("[data-need-commands]")!;
     expect(actions.contains(error)).toBe(false);
-    // Its own line in the content column, after the title and the details line; the menu cell stays one button wide.
-    const line = error.closest<HTMLElement>("[data-row-error]")!;
+    // The ItemRow's second line in the content column, after the line with the title; the menu cell stays one button wide.
+    expect(error.closest("[data-row-error]")).not.toBeNull();
+    const line = error.closest<HTMLElement>("[data-row-second]")!;
     const column = line.parentElement!;
     expect(column.parentElement).toBe(row);
     const children = [...column.children];
-    expect(children.indexOf(line)).toBeGreaterThan(children.indexOf(column.querySelector("[data-details]")!));
+    expect(children.indexOf(line)).toBeGreaterThan(children.indexOf(within(row).getByRole("link", { name: "Task title that keeps its space" }).parentElement!));
     expect(row.querySelector("[data-row-menu]")!.contains(error)).toBe(false);
     // The title keeps its space: one truncated line in a column that takes the rest of the row, the actions beside it.
     const title = within(row).getByRole("link", { name: "Task title that keeps its space" });

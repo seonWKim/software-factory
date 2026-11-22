@@ -124,15 +124,15 @@ const stepsNow = () => within(screen.getByRole("list", { name: "Transcript steps
 const stepsOf = async () => within(await screen.findByRole("list", { name: "Transcript steps" })).getAllByRole("listitem");
 
 describe("item page: Runs section", () => {
-  it("lists kind, attempt, status, error, worker, started, took and tokens, and links a stored transcript", async () => {
+  it("lists status, kind and attempt, took and tokens, worker and started, the error on its second line, and links a stored transcript", async () => {
     mount(`/app/items/${ITEM}`);
     const table = await screen.findByRole("table", { name: "Runs" });
     const head = within(table).getAllByRole("columnheader").map((h) => h.textContent);
-    for (const h of ["Kind", "Attempt", "Status", "Error", "Worker", "Started", "Took", "Tokens", "Transcript"]) expect(head).toContain(h);
-    expect(head.indexOf("Kind")).toBeLessThan(head.indexOf("Attempt"));
-    expect(head.indexOf("Worker")).toBeLessThan(head.indexOf("Tokens"));
+    expect(head).toEqual(["Status", "Run", "Detail", "Worker", "Started", "Transcript"]);
     const failed = table.querySelector(`tr[data-run="${FAILED}"]`)!;
-    expect(failed.textContent).toContain("Project checks failed");
+    expect(failed.querySelector("[data-row-title]")!.textContent).toBe("Implement #2");
+    expect(failed.querySelector("[data-row-second]")!.textContent).toContain("Project checks failed");
+    expect(failed.textContent).toContain("took 3m");
     // The raw code is behind Details (data-raw), not in the row's text.
     expect(failed.querySelector("[data-raw]")?.textContent).toContain("checks_failed");
     const worker = failed.querySelector("[data-id]")!;

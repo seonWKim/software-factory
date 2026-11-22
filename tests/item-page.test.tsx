@@ -8,7 +8,7 @@ import { Markdown } from "../web/src/components/ui/markdown.js";
 
 // The item page (design §9, issue #313): a split parent lists its phases and a phase links back to its parent;
 // the spec triage wrote sits behind "spec written (show)" and renders as markdown, never as escaped JSON; the
-// spec comment and PR link only for http(s) URLs; the Runs table names each run by kind and ID. A waiting spec
+// spec comment and PR link only for http(s) URLs; the Runs table names each run by kind and attempt. A waiting spec
 // (issue #526) shows In short above Commands, its decisions as questions, and a confirm step before approve; Reject
 // and Revise open a dialog (issue #527).
 
@@ -186,15 +186,17 @@ describe("item page: links and runs", () => {
     expect(document.querySelector('a[href^="javascript:"]')).toBeNull();
   });
 
-  it("the Runs table shows each run's kind and ID, its attempt and its status", async () => {
+  it("the Runs table shows each run as an ItemRow: its status, then its kind and attempt as the title, its ID only behind Copy ID", async () => {
     mount("/app/items/wi_parent");
     const table = await screen.findByRole("table", { name: "Runs" });
     const run = table.querySelector<HTMLElement>('tr[data-run="run_triage_1"]')!;
     const cells = [...run.querySelectorAll("td")].map((c) => c.textContent);
-    expect(cells[0]).toContain("triage");
-    expect(cells[0]).toContain("run_triage_1");
-    expect(cells[1]).toContain("2");
-    expect(cells[2]).toBe("Succeeded");
+    expect(cells[0]).toBe("Succeeded");
+    expect(cells[1]).toBe("Triage #2");
+    expect(run.dataset.itemId).toBe("wi_parent");
+    expect(run.textContent).not.toMatch(/run_|wi_/);
+    fireEvent.click(within(run).getByRole("button", { name: "More actions: Triage #2" }));
+    expect(within(run).getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Copy ID"]);
   });
 });
 
@@ -659,7 +661,7 @@ describe("item page: Interactive task badge", () => {
     const table = await screen.findByRole("table", { name: "Runs" });
     const heading = screen.getByRole("heading", { level: 1 });
     expect(within(heading.parentElement!.parentElement!).getByText("Interactive task")).toBeTruthy();
-    const cell = table.querySelector<HTMLElement>('tr[data-run="run_i_1"] td')!;
+    const cell = table.querySelector<HTMLElement>('tr[data-run="run_i_1"] [data-row-title]')!;
     expect(cell.textContent).toContain("Interactive task");
     expect(cell.textContent).not.toMatch(/\binteractive\b/);
   });
@@ -667,8 +669,9 @@ describe("item page: Interactive task badge", () => {
   it("a finished interactive run shows no header badge, only the kind label in the table", async () => {
     mount("/app/items/wi_done");
     const table = await screen.findByRole("table", { name: "Runs" });
-    expect(screen.getAllByText("Interactive task")).toHaveLength(1);
-    expect(table.querySelector('tr[data-run="run_i_2"] td')!.textContent).toContain("Interactive task");
+    // No header badge: the run's title is the only text that names it.
+    expect(screen.queryAllByText("Interactive task")).toHaveLength(0);
+    expect(table.querySelector('tr[data-run="run_i_2"] [data-row-title]')!.textContent).toBe("Interactive task #1");
   });
 });
 

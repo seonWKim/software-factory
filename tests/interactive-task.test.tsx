@@ -74,7 +74,7 @@ describe("interactive tasks (a person handles the item in their own session)", (
       const header = (await screen.findByRole("heading", { level: 1, name: "Handled by a person" })).closest("header")!;
       expect(within(header).getByText(BADGE)).toBeTruthy();
       const runs = screen.getByRole("table", { name: "Runs" });
-      expect(runs.querySelector('[data-run="run_i"] td')!.textContent).toContain(BADGE);
+      expect(runs.querySelector('[data-run="run_i"] [data-row-title]')!.textContent).toContain(BADGE);
     } finally {
       delete fx.RESPONSES[url];
     }

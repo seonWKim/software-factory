@@ -26,55 +26,71 @@ const heads = (c: HTMLElement) => [...c.querySelectorAll("th")].map((h) => h.tex
 const cells = (c: HTMLElement) => [...c.querySelectorAll("tbody tr:first-child td")] as HTMLElement[];
 
 describe("ItemsTable columns and links (issue #240)", () => {
-  it("links the title to the item page and the Item cell not to GitHub", () => {
+  // Each row is an ItemRow (design 09-dashboard-system): State, Item (the title, the link), Why, Worker, Since, then the
+  // PR as the row's action beside its "⋯" menu; a column empty in every row is left out.
+  const menuOf = (row: HTMLElement) => {
+    fireEvent.click(row.querySelector<HTMLButtonElement>("[data-row-menu] [aria-haspopup=menu]")!);
+    return [...row.querySelectorAll<HTMLButtonElement>("[role=menuitem]")];
+  };
+
+  it("links the title to the item page and the Item cell not to GitHub; the row carries the item's ID only as data-item-id", () => {
     const c = itemsTable([trow(1)], GH);
-    const item = cells(c)[0]!;
+    const item = cells(c)[1]!;
     expect(item.querySelectorAll("a")).toHaveLength(1);
     expect(item.querySelector("a")!.getAttribute("href")).toBe("/app/items/wi_1");
     expect(item.textContent).toBe("Title 1");
+    const tr = c.querySelector<HTMLElement>("tbody tr")!;
+    expect(tr.dataset.itemId).toBe("wi_1");
+    expect(tr.textContent).not.toMatch(/wi_1|o\/r#1/);
   });
 
-  it("shows the item's short number, never its ID, as the link text when there is no title", () => {
-    const a = cells(itemsTable([trow(2, { title: null })], GH))[0]!.querySelector("a")!;
-    expect(a.textContent).toBe("#2");
+  it("shows Untitled item, never an ID or source number, as the link text when there is no title", () => {
+    const a = cells(itemsTable([trow(2, { title: null })], GH))[1]!.querySelector("a")!;
+    expect(a.textContent).toBe("Untitled item");
     expect(a.getAttribute("href")).toBe("/app/items/wi_2");
   });
 
-  it("with GitHub: Issue links to the issue, PR to the PR, a dash when there is none", () => {
+  it("with GitHub: the PR is the row's action, the issue opens from the ⋯ menu, and Copy ID copies the item's ID", async () => {
+    const write = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: write } });
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
     const c = itemsTable([trow(3, { change_ref: "9", change_url: "https://github.com/o/r/pull/9" }), trow(4)], GH);
-    expect(heads(c)).toEqual(["Item", "State", "Why", "Since", "Issue", "PR"]);
+    expect(heads(c)).toEqual(["State", "Item", "Since", "PR"]);
     const [r1, r2] = [...c.querySelectorAll("tbody tr")] as HTMLElement[];
-    const t1 = [...r1!.querySelectorAll("td")];
-    expect(t1[4]!.querySelector("a")!.getAttribute("href")).toBe("https://github.com/o/r/issues/3");
-    expect(t1[4]!.textContent).toBe("#3");
-    expect(t1[5]!.querySelector("a")!.getAttribute("href")).toBe("https://github.com/o/r/pull/9");
-    expect(t1[5]!.textContent).toBe("#9");
-    expect([...r2!.querySelectorAll("td")][5]!.textContent).toBe("–");
+    const action = r1!.querySelector("[data-row-action] a")!;
+    expect(action.getAttribute("href")).toBe("https://github.com/o/r/pull/9");
+    expect(action.textContent).toBe("PR #9");
+    expect(r2!.querySelector("[data-row-action]")).toBeNull();
+    const items = menuOf(r1!);
+    expect(items.map((b) => b.textContent)).toEqual(["Open issue #3", "Copy ID"]);
+    fireEvent.click(items[0]!);
+    expect(open).toHaveBeenCalledWith("https://github.com/o/r/issues/3", "_blank", "noopener,noreferrer");
+    fireEvent.click(menuOf(r1!)[1]!);
+    expect(write).toHaveBeenCalledWith("wi_3");
   });
 
-  it("without GitHub: no Issue column; the PR column shows the stored link, or a dash with no change_ref", () => {
+  it("without GitHub: no issue anywhere; the PR shows the stored link, and the menu holds only Copy ID", () => {
     for (const plugins of [NONE, undefined]) {
       const c = itemsTable([trow(5, { change_ref: "9", change_url: "https://forge.example/o/r/pull/9" }), trow(4)], plugins);
-      expect(heads(c)).toEqual(["Item", "State", "Why", "Since", "PR"]);
       expect(c.innerHTML).not.toContain("github.com");
-      const [r1, r2] = [...c.querySelectorAll("tbody tr")] as HTMLElement[];
-      expect([...r1!.querySelectorAll("td")][4]!.querySelector("a")!.getAttribute("href")).toBe("https://forge.example/o/r/pull/9");
-      expect([...r2!.querySelectorAll("td")][4]!.textContent).toBe("–");
+      const [r1] = [...c.querySelectorAll("tbody tr")] as HTMLElement[];
+      expect(r1!.querySelector("[data-row-action] a")!.getAttribute("href")).toBe("https://forge.example/o/r/pull/9");
+      expect(menuOf(r1!).map((b) => b.textContent)).toEqual(["Copy ID"]);
       cleanup();
     }
   });
 
-  it("an adopted PR shows a dash under Issue and its number under PR", () => {
+  it("an adopted PR has no issue in its menu and its number as the action", () => {
     const c = itemsTable([trow(6, { issue: null, change_ref: "6", change_url: "https://github.com/o/r/pull/6" })], GH);
-    const td = cells(c);
-    expect(td[4]!.textContent).toBe("–");
-    expect(td[5]!.textContent).toBe("#6");
+    const tr = c.querySelector<HTMLElement>("tbody tr")!;
+    expect(tr.querySelector("[data-row-action]")!.textContent).toBe("PR #6");
+    expect(menuOf(tr).map((b) => b.textContent)).toEqual(["Copy ID"]);
   });
 
   it("a change_ref without a stored change_url shows the ref as text", () => {
-    const td = cells(itemsTable([trow(7, { change_ref: "7", change_url: null })], GH));
-    expect(td[5]!.textContent).toBe("#7");
-    expect(td[5]!.querySelector("a")).toBeNull();
+    const action = itemsTable([trow(7, { change_ref: "7", change_url: null })], GH).querySelector("[data-row-action]")!;
+    expect(action.textContent).toBe("PR #7");
+    expect(action.querySelector("a")).toBeNull();
   });
 });
 

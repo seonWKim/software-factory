@@ -101,14 +101,13 @@ describe("shared link style", () => {
     for (const a of side.querySelectorAll("a")) expect(a.className).not.toContain(LINK_CLASS);
   });
 
-  it("renders a change_ref with no change_url, and the placeholder, as plain text", () => {
+  it("renders a change_ref with no change_url as plain text, in the row's action", () => {
     const rows = [row(2, { issue: null, change_ref: "5", change_url: null })];
     const { container } = render(<ItemsTable items={rows} now={Date.parse(AT)} label="Needs you" empty="none" plugins={{ issues: "github" }} />);
-    const cells = [...container.querySelectorAll("td")];
-    const last = cells.slice(-2);
-    expect(last.map((c) => c.textContent)).toEqual(["–", "#5"]);
-    for (const c of last) expect(c.querySelector("a")).toBeNull();
-    expect(last.map((c) => c.innerHTML).join()).not.toContain("accent");
+    const action = container.querySelector("[data-row-action]")!;
+    expect(action.textContent).toBe("PR #5");
+    expect(action.querySelector("a")).toBeNull();
+    expect(action.innerHTML).not.toContain("accent");
   });
 
 });

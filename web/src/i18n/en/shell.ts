@@ -51,6 +51,7 @@ export const shell = {
   "copy.label": "Copy {what}",
   "copy.button": "Copy",
   "copy.done": "Copied",
+  "copy.id": "Copy ID",
   "person.you": "you",
   "person.other": "a person",
   "person.factory": "the factory",
