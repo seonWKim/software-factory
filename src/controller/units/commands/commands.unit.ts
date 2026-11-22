@@ -23,7 +23,7 @@ import { answersDetail, splitAnswers } from "../../../shared/command-notes.js";
 import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEvent, COMMAND, MAX_CONFLICT_RETRIES, MAX_FEEDBACK_CHARS, FLOOR_TIER, RULE_OF_TWO, CONFLICT_PENDING, SOURCE_CLOSE_PENDING, SYSTEM, retry, footerAfter, alreadyAllowed } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
-import { answerPlain, appProposal, confirmProposal, storeProposals } from "./proposals.js";
+import { answerPlain, appProposal, confirmProposal, storeProposals } from "./proposals.js"; import { RUN_NEXT_COMMAND, runNext } from "./run-next.js";
 import { FEEDBACK_REQUIRED, applyQueued, feedbackScan, queueRevise, replyQueued } from "./queued-revise.js"; import { scanClean } from "./scan.js"; import { recheckRetry } from "./premise-recheck.js"; import { commandText, pathsCommand } from "./paths.js";
 
 type AppSender = { user_id: UserId } | null;
@@ -49,10 +49,7 @@ const PR_NAME = (ref: string) => `PR #${ref}`;
 /** State change reasons of PR feedback that started an implement run (design §4). */
 const PR_REVISE = "pr_revise_requested";
 const PR_CHANGES = "pr_changes_requested";
-/**
- * The feedback of a "Request changes" review: its body, then each line comment as `path:line` and its text.
- * Untrusted text; the worker fences it.
- */
+/** The feedback of a "Request changes" review: its body, then each line comment as `path:line` and its text. Untrusted text; the worker fences it. */
 function reviewFeedback(e: PrReviewEvent): string {
   const parts = e.body.trim() ? [e.body.trim()] : [];
   const lines = e.comments.filter((c) => c.body.trim()).map((c) => {
@@ -496,10 +493,11 @@ export class CommandsUnit {
     await answerPlain(this.c, item, e, async () => commandFooter(await this.stateOf(item)));
   }
 
-  /** The dashboard's Confirm all, Cancel or sentence (proposals.ts appProposal), `hold` (the coordination unit's) and `restart` (the local-merge unit's, from the page or `factory restart`); undefined for any other app command. */
+  /** The dashboard's Confirm all, Cancel or sentence (proposals.ts appProposal), `hold` (the coordination unit's), `restart` (the local-merge unit's) and `run-next` (run-next.ts), each also from its CLI command; undefined for any other app command. */
   appProposal(r: AppCommandRequest, item: WorkItem, key: string): Promise<string | null> | undefined {
     if (r.command === "hold") return this.c.unit("coordination").holdCommand(item, { app: r.actor }, key, typeof r.args.note === "string" ? r.args.note : "");
     if (r.command === RESTART_COMMAND) return this.c.unit("local-merge").restart(item, r.actor, key, { [APP_REQUEST]: r.seq });
+    if (r.command === RUN_NEXT_COMMAND) return runNext(this.c, item, r.actor, key);
     const who = localIdentity(r.actor), kind = r.command === CONFIRM_COMMAND ? "confirm" : r.command === CANCEL_APP_COMMAND ? "cancel" : r.command === SENTENCE_APP_COMMAND ? "sentence" : null;
     return kind ? appProposal(this.c, r, item, key, kind, { who, event: (row, s) => proposalEvent(row, s, who), say: refusalText, footer: async () => commandFooter(await this.stateOf(item)) }) : undefined;
   }

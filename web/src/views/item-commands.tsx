@@ -5,6 +5,7 @@ import {
   alreadyQueued, mergeInFlight, mergeReturned, plainRefusal, showsMerge, useApi,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { ButtonRow } from "../components/ui/button-row.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
 import { Radio } from "../components/ui/radio.js";
@@ -30,7 +31,8 @@ import { RejectDialog, ReviseDialog, commandLabel, type CommandDialogProps } fro
 // `<kind> <severity> <reason>` (verdictNote). A permission ask's paths (the item API's `paths`) go with the command
 // that allows them as `+paths` (withPaths). Feedback a `/revise` queued while implementing is listed until the run that
 // applies it starts (pendingFeedback). A merged item with `repo.restart_command` set has a `restart` row: the Restart
-// app button (RestartButton), which sends `restart` with no note, as `factory restart` does.
+// app button (RestartButton), which sends `restart` with no note, as `factory restart` does. An item with a queued run
+// has Run next (RunNextButton, design 05-coordination), which sends `run-next` with no note, as `factory run-next` does.
 
 /** Every command that opens a dialog from a button: reject and revise (their forms), and verdict (its Accept, Changes or Reject choice). */
 export const DIALOGS = ["reject", "revise", "verdict"];
@@ -181,17 +183,23 @@ export function ItemCommands({ id, commands, reason = null }: { id: string; comm
   // Verdict and Reject: in the "…" menu, one the viewer may not send disabled with its reason.
   const menuItems = commands.filter((c) => MENU.includes(c.name)).map((c) => menuEntry(c, !enabled || busy, () => setOpen(c.name as FormName)));
   const restart = commands.find((c) => c.name === "restart");
+  const queued = data?.runs.some((r) => r.status === "queued") ?? false;
   return (
     <div ref={wrap} className="mt-2">
       {reason}
       <QueuedFeedbackList timeline={data?.timeline} />
       {restart && <RestartButton command={restart} on={enabled} busy={busy} replies={data?.replies ?? []} local={local.restart} send={() => void post("restart", "")} />}
-      {commands.length === 0 && !showsMerge(detail?.merge) && (
+      {commands.length === 0 && !queued && !showsMerge(detail?.merge) && (
         <p data-commands-none className="mt-2 text-sm text-pretty text-text-2">
           {t("commands.none")}
         </p>
       )}
-      {menuItems.length > 0 && <div data-item-menu className="mt-2 flex"><OverflowMenu label={t("commands.more")} items={menuItems} /></div>}
+      {(queued || menuItems.length > 0) && (
+        <ButtonRow data-item-menu className="mt-2">
+          {queued && <RunNextButton on={enabled} busy={busy} replies={data?.replies ?? []} local={local["run-next"]} send={() => void post("run-next", "")} />}
+          {menuItems.length > 0 && <OverflowMenu label={t("commands.more")} items={menuItems} />}
+        </ButtonRow>
+      )}
       <PendingProposals proposals={data?.proposals ?? []} enabled={enabled} busy={busy} outcomes={(proposal) => commandOutcome([], proposal, local[proposal])} send={post} />
       {open !== null && (
         <CommandDialog
@@ -206,6 +214,25 @@ export function ItemCommands({ id, commands, reason = null }: { id: string; comm
         />
       )}
     </div>
+  );
+}
+
+/**
+ * Run next (design 05-coordination): a secondary button, beside the "…" menu, on an item with a queued run. It sends
+ * `run-next` with no note; "Moving…" until the controller's reply, then "Moved to the front of the queue" (its reply in
+ * the thread gives the position) or the refusal. The controller checks the owner and starts nothing that is held.
+ */
+function RunNextButton({ on, busy, replies, local, send }: { on: boolean; busy: boolean; replies: readonly CommandReply[]; local: LocalSend | undefined; send: () => void }) {
+  const reply = commandOutcome(replies, "run-next", local);
+  const waiting = busy || awaitsReply(reply);
+  const outcome: Outcome = waiting ? null : reply?.tone === "status" && reply.text === t("commands.done") ? { tone: "status", text: t("commands.runNextDone") } : reply;
+  return (
+    <span data-command="run-next" className="inline-flex flex-wrap items-center gap-2">
+      <Button variant="secondary" data-action="run-next" disabled={!on || waiting} title={t("commands.runNextTitle")} onClick={send}>
+        {waiting ? t("commands.runNextMoving") : t("commands.runNext")}
+      </Button>
+      <OutcomeText outcome={outcome} />
+    </span>
   );
 }
 

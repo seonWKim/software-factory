@@ -12,21 +12,24 @@ import type { CommandName } from "./commands.js";
 export type CommandWho = "anyone" | "submit_work" | "approve_spec" | "approve_merge" | "owner";
 
 /**
- * The CLI handler that runs it: local tasks, item commands, settings and the mode, or (`sentence`) the
- * plain-words reader, which `factory` runs for any first word no handler claims (src/main.ts).
+ * The CLI handler that runs it: local tasks, item commands, settings and the mode, (`queue`) the queue's own
+ * handler (src/cli/handlers/run-next), or (`sentence`) the plain-words reader, which `factory` runs for any first
+ * word no handler claims (src/main.ts).
  */
-export type CommandGroup = "task" | "item" | "settings" | "sentence";
+export type CommandGroup = "task" | "item" | "settings" | "queue" | "sentence";
 
 /** The sentence form's name: `factory "<words>"`, a command in the owner's own words (design 04-gate-commands). */
 export const SENTENCE_FORM = '"<words>"';
 
 /**
  * What the chat form takes after its words: nothing, one ID, free text (notes, feedback, a reason), any words
- * (checked by the CLI's own parser), (`request`) the whole mention, in plain words, which is never parsed, or
+ * (checked by the CLI's own parser), (`request`) the whole mention, in plain words, which is never parsed,
  * (`comment`) a comment command the chat parser leaves to the comment parser (`parseComment`), so a chat source
- * keeps it on its comment path: `/verdict` in a Slack thread (design 04-gate-commands, verdict command).
+ * keeps it on its comment path: `/verdict` in a Slack thread (design 04-gate-commands, verdict command), or
+ * (`no_chat`) no chat form at all: a command of the CLI and the dashboard only, with `chat` empty, which the chat
+ * parser never reads and the chat lists leave out (`run-next`, design 05-coordination).
  */
-export type ChatArgs = "none" | "id" | "text" | "any" | "request" | "comment";
+export type ChatArgs = "none" | "id" | "text" | "any" | "request" | "comment" | "no_chat";
 
 export interface TableCommand {
   /** The words after `factory`, e.g. `task show`. */
@@ -165,6 +168,12 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
     prints: ITEM_PRINTS, chat: "merge", chat_args: "none", item: true, edge: false,
   },
   {
+    name: "run-next", args: "<id>", who: "approve_spec", group: "queue",
+    does: "Move the item's queued run to queue position 1, ahead of earlier Run next moves; it starts nothing a busy item, a dependency, " +
+      "a coordination hold, paused claims or a rate limit keeps queued (the item page's Run next; not in chat)",
+    prints: ITEM_PRINTS, chat: "", chat_args: "no_chat", item: true, edge: false,
+  },
+  {
     name: SENTENCE_FORM, args: "", who: "approve_spec", group: "sentence",
     does: "Read a command in your own words with the plain-words reader; in chat, a reply with no mention in an item's thread the factory owns. " +
       "Nothing changes: each proposed command is stored as pending until it is confirmed",
@@ -232,11 +241,11 @@ export function commandLine(c: TableCommand): string {
 }
 
 /**
- * The SET_UP.md chat list, one bullet per command, each without a leading `/` (an item command is typed in its item's
+ * The SET_UP.md chat list, one bullet per command with a chat form, each without a leading `/` (an item command is typed in its item's
  * thread, where the bare word works). tests/command-table.test.ts fails when SET_UP.md differs.
  */
 export function chatCommandListMarkdown(): string {
-  return COMMAND_TABLE.map((c) => {
+  return COMMAND_TABLE.filter((c) => c.chat_args !== "no_chat").map((c) => {
     const where = c.edge ? "; refused in chat until #479, so use the CLI"
       : c.item ? ", in the item's thread"
       : c.group === "sentence" ? "; in an item's thread the factory owns, a reply with no mention" : "";
@@ -259,7 +268,7 @@ function chatWords(c: TableCommand): string[] {
   return out;
 }
 
-const BY_WORDS = COMMAND_TABLE.filter((c) => c.chat_args !== "request" && c.chat_args !== "comment").sort((a, b) => chatWords(b).length - chatWords(a).length);
+const BY_WORDS = COMMAND_TABLE.filter((c) => !["request", "comment", "no_chat"].includes(c.chat_args)).sort((a, b) => chatWords(b).length - chatWords(a).length);
 
 /**
  * The chat command in `text` (the words after a mention), or null when it is none: then it is a request, a comment

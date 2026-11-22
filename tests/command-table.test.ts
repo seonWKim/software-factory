@@ -8,6 +8,7 @@ import { type CommandPhase, THREAD_BARE_COMMANDS, chatForm, chatHelpReply, comma
 import { CLI_TOP_WORDS, parseLocalCliArgs, parseSentence } from "../src/core/local-cli.js";
 import { SETTINGS_TOP_WORDS, parseModeArgs, parseSettingsArgs } from "../src/settings-cmd.js";
 import { APP_COMMANDS } from "../src/ui/commands.js";
+import RUN_NEXT from "../src/cli/handlers/run-next/run-next.command.js";
 
 /** A form with each placeholder filled: `<id>` an ID, a choice (`a|b` or `<a|b>`) its first option, `[...]` dropped. */
 function example(form: string): string {
@@ -24,6 +25,7 @@ function example(form: string): string {
 function cliParse(c: TableCommand): { error: string } | object {
   if (c.group === "sentence") return parseSentence(["approve", "the", "spec"]);
   const [word, ...args] = example(cliUsageOf(c)).split(" ");
+  if (c.group === "queue") return RUN_NEXT.names.includes(word!) && args.length === 1 ? {} : { error: `the run-next handler does not take ${word}` };
   if ((SETTINGS_TOP_WORDS as readonly string[]).includes(word!)) return word === "mode" ? parseModeArgs(args) : parseSettingsArgs(args);
   if ((CLI_TOP_WORDS as readonly string[]).includes(word!)) return parseLocalCliArgs(word!, args);
   return { error: `no CLI handler takes ${word}` };
@@ -34,8 +36,8 @@ describe("the command table", () => {
     for (const c of COMMAND_TABLE) expect({ name: c.name, r: cliParse(c) }).not.toMatchObject({ r: { error: expect.anything() } });
   });
 
-  it("every entry has a chat form the chat parser reads back as that entry; a request is never parsed; a comment form is the comment parser's", () => {
-    for (const c of COMMAND_TABLE) {
+  it("every entry but a no_chat one has a chat form the chat parser reads back as that entry; a request is never parsed; a comment form is the comment parser's", () => {
+    for (const c of COMMAND_TABLE.filter((x) => x.chat_args !== "no_chat")) {
       expect(c.chat, c.name).not.toBe("");
       const parsed = parseChatCommand(example(c.chat));
       if (c.chat_args === "request") expect(parsed, c.name).toBeNull();
@@ -44,6 +46,16 @@ describe("the command table", () => {
         expect(parseComment(example(c.chat)), c.name).toMatchObject({ kind: "command", name: c.name });
       } else expect(parsed?.kind === "command" ? parsed.entry.name : null, c.name).toBe(c.name);
     }
+  });
+
+  it("`run-next` is a CLI and item-page command with no chat access: no chat form, never parsed from chat, in no chat list", () => {
+    const entry = COMMAND_TABLE.find((c) => c.name === "run-next");
+    expect(entry).toMatchObject({ group: "queue", item: true, who: "approve_spec", chat: "", chat_args: "no_chat", edge: false });
+    expect(APP_COMMANDS).toContain("run-next");
+    for (const t of ["run-next wi_1", "/run-next wi_1", "/run-next", withSlash("run-next", THREAD_BARE_COMMANDS) ?? "run-next"]) expect(parseChatCommand(t), t).toBeNull();
+    expect(chatCommandListMarkdown()).not.toContain("run-next");
+    const thread = commandState({ stage: "READY", blocked_on: "human", blocked_reason: "merge_pending", change_ref: null });
+    for (const state of [null, thread]) expect(chatHelpReply(() => true, state)).not.toContain("run-next");
   });
 
   it("`verdict` is a table entry whose chat form stays on the comment path, also bare in an item's thread", () => {
@@ -55,7 +67,7 @@ describe("the command table", () => {
   });
 
   it("a chat command stands for the CLI argv of the same command, the item ID coming from the thread", () => {
-    for (const c of COMMAND_TABLE.filter((x) => x.chat_args !== "request" && x.chat_args !== "comment" && !x.edge)) {
+    for (const c of COMMAND_TABLE.filter((x) => !["request", "comment", "no_chat"].includes(x.chat_args) && !x.edge)) {
       const parsed = parseChatCommand(example(c.chat));
       if (parsed?.kind !== "command") throw new Error(c.name);
       const { word, args } = chatCliArgv(parsed, c.item ? "wi_1" : null);
@@ -102,7 +114,7 @@ describe("the command table", () => {
     const setup = readFileSync(new URL("../SET_UP.md", import.meta.url), "utf8");
     expect(setup).toContain(chatCommandListMarkdown());
     const listed = setup.split("\n").filter((l) => l.startsWith("- `@bot ")).map((l) => /^- `@bot ([^`]+)`/.exec(l)![1]);
-    expect(listed).toEqual(COMMAND_TABLE.map((c) => c.chat.replace(/^\//, "")));
+    expect(listed).toEqual(COMMAND_TABLE.filter((c) => c.chat_args !== "no_chat").map((c) => c.chat.replace(/^\//, "")));
     expect(listed.filter((l) => l!.startsWith("/"))).toEqual([]);
   });
 });

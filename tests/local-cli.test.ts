@@ -92,7 +92,8 @@ describe("parseLocalCliArgs", () => {
 
   it("the top-level words are the first word of every task and item command in the command table, `confirm` among them", () => {
     // The settings handler takes its own words; the sentence form takes any word no handler claims (src/main.ts).
-    const local = COMMAND_TABLE.filter((c) => c.group !== "settings" && c.group !== "sentence");
+    // The settings handler takes its own words, and so does the queue's (src/cli/handlers/run-next).
+    const local = COMMAND_TABLE.filter((c) => c.group !== "settings" && c.group !== "sentence" && c.group !== "queue");
     expect([...new Set(local.map((c) => c.name.split(" ")[0]))]).toEqual([...CLI_TOP_WORDS]);
     expect(CLI_TOP_WORDS).toContain("confirm");
     expect(CLI_TOP_WORDS).not.toContain(SENTENCE_FORM);
