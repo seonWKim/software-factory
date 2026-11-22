@@ -11,10 +11,12 @@ import { dirname, join } from "node:path";
 import type { LoadedConfig, Prompts } from "./core/config.js";
 import { DEFAULT_MODEL_TABLE, type ModelTable, isModelRunKind, modelClassFor } from "./core/model-choice.js";
 import type { ProjectRef } from "./core/project.js";
-import { REVIEW_CONFIRM_SCHEMA, REVIEW_SCHEMA, findingLine, parseReview, parseReviewConfirm } from "./core/outputs.js";
+import { REVIEW_CONFIRM_SCHEMA, REVIEW_SCHEMA, TRIAGE_SCHEMA, findingLine, parseReview, parseReviewConfirm, parseTriage } from "./core/outputs.js";
+import { isCovered } from "./core/policy.js";
 import type { RunId, RunKind, StateChange, WorkItem, WorkItemId } from "./core/types.js";
 import { ROLES_DIR, goldenCasesByRole, loadRoles } from "./runtime/index.js";
 import { implementReplayRunner } from "./controller/golden-gate/implement-replay.js";
+import { loadTriageCases, triageReplayRunner } from "./controller/golden-gate/triage-replay.js";
 import { ROLE_NAME, type RoleDescriptor } from "./shared/role.js";
 import { toolsNamed } from "./worker/index.js";
 import type { AgentRole, AgentRunner } from "./interfaces/agent-runner.js";
@@ -79,9 +81,8 @@ export async function readPrRecord(
     outcome = revert ? (revert.reason as "reverted" | "fixed_forward") : "clean_merge";
   } else outcome = "held";
 
-  const sources = [human, outcome === "reverted" || outcome === "fixed_forward" ? revert : null].filter(
-    (c): c is StateChange => c !== null,
-  );
+  const rev = revert && (outcome === "reverted" || outcome === "fixed_forward") ? revert : null;
+  const sources = [human, rev].filter((c): c is StateChange => c !== null);
   return {
     item,
     record: {
@@ -89,10 +90,7 @@ export async function readPrRecord(
       work_item_id: item.id,
       outcome,
       human_verdict: human ? { reason: human.reason, actor_id: human.actor.id, record_id: human.id } : null,
-      revert_reason:
-        revert && (outcome === "reverted" || outcome === "fixed_forward")
-          ? { reason: revert.reason, record_id: revert.id, detail: revert.detail }
-          : null,
+      revert_reason: rev ? { reason: rev.reason, record_id: rev.id, detail: rev.detail } : null,
       source_record_ids: sources.map((c) => c.id),
     },
   };
@@ -106,16 +104,10 @@ export async function readPrRecord(
 export function decideExpect(outcome: PrOutcome, requested: Expect | undefined): Expect {
   if (outcome === "clean_merge") {
     if (requested === "should_pass") return "should_pass";
-    throw new GoldenError(
-      requested === "should_flag"
-        ? "a should_flag case cannot come from a clean merge"
-        : "a clean merge can only be a should_pass case, and only with an explicit --expect should_pass",
-    );
+    throw new GoldenError(requested === "should_flag" ? "a should_flag case cannot come from a clean merge" : "a clean merge can only be a should_pass case, and only with an explicit --expect should_pass");
   }
   if (requested === "should_pass") throw new GoldenError(`a should_pass case cannot come from a ${outcome} PR`);
-  if (requested === undefined && outcome === "held") {
-    throw new GoldenError("a held PR has no outcome yet; pass --expect should_flag to add it anyway");
-  }
+  if (requested === undefined && outcome === "held") throw new GoldenError("a held PR has no outcome yet; pass --expect should_flag to add it anyway");
   return "should_flag";
 }
 
@@ -203,21 +195,8 @@ export async function addCase(deps: AddDeps, opts: AddOptions): Promise<{ dir: s
   const expect = decideExpect(record.outcome, requested);
 
   const diff = await deps.github.pullDiff(pr);
-  const kase: GoldenCase = {
-    id,
-    pr_number: pr,
-    work_item_id: item.id,
-    expect,
-    outcome: record.outcome,
-    human_verdict: record.human_verdict,
-    revert_reason: record.revert_reason,
-    source_record_ids: record.source_record_ids,
-  };
-  const files: Record<string, string> = {
-    [CASE_DIFF]: diff,
-    [CASE_INSTRUCTION]: renderSpec(item),
-    "case.json": `${JSON.stringify(kase, null, 2)}\n`,
-  };
+  const kase: GoldenCase = { id, pr_number: pr, work_item_id: item.id, expect, outcome: record.outcome, human_verdict: record.human_verdict, revert_reason: record.revert_reason, source_record_ids: record.source_record_ids };
+  const files: Record<string, string> = { [CASE_DIFF]: diff, [CASE_INSTRUCTION]: renderSpec(item), "case.json": `${JSON.stringify(kase, null, 2)}\n` };
   await scanAll(deps.scanner, "commit", Object.values(files), rel);
 
   await mkdir(golden, { recursive: true });
@@ -247,23 +226,9 @@ function checkRole(name: string): string {
 /** The work item spec, in the same form the worker gives the reviewer (`renderWorkItem` with the spec). */
 export function renderSpec(item: WorkItem): string {
   return [
-    `# Work item ${item.id}`,
-    "",
-    `Source: ${item.source.link}`,
-    "",
-    "## Problem",
-    "",
-    item.problem,
-    "",
-    "## Done criteria",
-    ...(item.done_criteria ?? []).map((c) => `- ${c}`),
-    "",
-    `## Desired output\n\n${item.desired_output ?? ""}`,
-    "",
-    `## Scope\n\n${item.scope ?? ""}`,
-    "",
-    "## Allowed paths (do not change files outside these)",
-    ...item.allowed_paths.map((p) => `- ${p}`),
+    `# Work item ${item.id}`, "", `Source: ${item.source.link}`, "", "## Problem", "", item.problem, "", "## Done criteria", ...(item.done_criteria ?? []).map((c) => `- ${c}`), "",
+    `## Desired output\n\n${item.desired_output ?? ""}`, "", `## Scope\n\n${item.scope ?? ""}`, "",
+    "## Allowed paths (do not change files outside these)", ...item.allowed_paths.map((p) => `- ${p}`),
   ].join("\n");
 }
 
@@ -312,13 +277,15 @@ export async function buildGoldenRunDeps(
   const clock = await p.clock();
   const secrets = await p.secrets();
   const scanner = await p.scanner(secrets);
-  const sandbox = await p.sandbox(), runner = implementReplayRunner(await p.runner(sandbox, secrets), sandbox, join(loaded.root, ROLES_DIR));
+  const rolesDir = join(loaded.root, ROLES_DIR), sandbox = await p.sandbox(), runner = triageReplayRunner(implementReplayRunner(await p.runner(sandbox, secrets), sandbox, rolesDir), rolesDir, TRIAGE_PARTS);
   // The loaded prompts carry their placeholders filled; a prompt file outside them is read as it is.
   const loadedPrompts: Record<string, string | undefined> = { ...loaded.prompts };
   const prompt = async (file: string) => loadedPrompts[file.replace(/\.md$/, "")] ?? readFile(join(loaded.root, "prompts", file), "utf8");
   const resultsDir = join(loaded.stateDir, "golden", "results");
-  return { rolesDir: join(loaded.root, ROLES_DIR), roles: await loadRoles(), prompt, resultsDir, sandbox, runner, scanner, clock, config: loaded.config, ...(loaded.model_by ? { model_by: loaded.model_by } : {}) };
+  return { rolesDir, roles: await loadRoles(), prompt, resultsDir, sandbox, runner, scanner, clock, config: loaded.config, ...(loaded.model_by ? { model_by: loaded.model_by } : {}) };
 }
+
+export const TRIAGE_PARTS = { schema: TRIAGE_SCHEMA, parse: (v: unknown) => parseTriage(v), covered: isCovered }; // a triage replay's schema, parser, path check
 
 export type Verdict = "bug" | "pass" | "errored";
 
@@ -346,7 +313,10 @@ export interface Rates {
   rates: { pass_rate: Rate; catch_rate: Rate; false_alarm_rate: Rate };
 }
 
-export interface GoldenReport extends Rates {
+/** pass^k over a role's cases (design 06-measurement): `pass_k` is null with fewer than 2 replays; `unstable` lists `<role>/<case id>: m/k` for each case with mixed replays. */
+export interface Stability { replays: number; pass_k: Rate | null; unstable: string[] }
+
+export interface GoldenReport extends Rates, Stability {
   role: string;
   cases: CaseResult[];
   totals: Pick<CaseResult, "input_tokens" | "output_tokens" | "wall_ms">;
@@ -375,6 +345,22 @@ export function computeRates(results: readonly Pick<CaseResult, "expect" | "verd
   return { counts: { should_flag: flag, should_pass: pass }, rates };
 }
 
+/**
+ * pass_k = cases whose `replays` replays all match expect / cases (an errored replay does not match, so its case fails).
+ * A case with some replays matching and some not is unstable, listed as `<role>/<id>: m/k`. With fewer than 2 replays: no pass_k, no list.
+ */
+export function computeStability(role: string, results: readonly Pick<CaseResult, "id" | "expect" | "verdict">[], replays: number): Stability {
+  if (replays < 2) return { replays, pass_k: null, unstable: [] };
+  const matched = new Map<string, number>();
+  for (const r of results) matched.set(r.id, (matched.get(r.id) ?? 0) + (r.verdict !== "errored" && matches(r) ? 1 : 0));
+  const stable = [...matched.values()].filter((m) => m === replays).length;
+  const unstable = [...matched].filter(([, m]) => m > 0 && m < replays).map(([id, m]) => `${role}/${id}: ${m}/${replays}`);
+  return { replays, pass_k: { numerator: stable, denominator: matched.size, value: matched.size === 0 ? null : stable / matched.size }, unstable };
+}
+
+/** `pass_k: n/d = value` lines (and the unstable cases) for a report with 2 or more replays; nothing otherwise. */
+const stabilityLines = (s: Stability): string[] => (s.pass_k ? [formatRate("pass_k", s.pass_k), ...s.unstable.map((u) => `unstable ${u}`)] : []);
+
 function formatRate(name: string, r: Rate): string {
   return r.value === null ? `${name}: n/a (${r.numerator}/${r.denominator})` : `${name}: ${r.numerator}/${r.denominator} = ${r.value.toFixed(3)}`;
 }
@@ -387,21 +373,21 @@ export function formatReport(report: GoldenReport): string {
     ...report.cases.map((c) => `  case ${c.id} (${c.expect}): ${c.verdict}, ${c.verdict === "errored" ? "n/a" : matches(c) ? "match" : "miss"}; ${usageText(c)}`),
     `total (${report.role}, ${report.cases.length} cases): ${usageText(report.totals)}`,
     formatRate("pass_rate", report.rates.pass_rate),
+    ...(report.pass_k ? [formatRate("pass_k", report.pass_k)] : []),
     formatRate("catch_rate", report.rates.catch_rate),
     formatRate("false_alarm_rate", report.rates.false_alarm_rate),
     `errored: ${f.errored + p.errored} (should_flag ${f.errored}, should_pass ${p.errored}), excluded from every rate`,
+    ...report.unstable.map((u) => `unstable ${u}`),
     `results: ${report.results_file}`,
   ].join("\n");
 }
 
 interface LoadedCase {
-  id: string;
-  expect: Expect;
+  id: string; expect: Expect;
   /** The prompt files the case replays (`case.json` `prompts`, else the role's prompt). */
   prompts: string[];
-  work_item_id: string;
-  diff: string;
-  spec: string;
+  work_item_id: string; spec: string;
+  diff: string | null; // null for a triage case: it replays its instruction.md alone
 }
 
 /** The role's descriptor, refusing a role with none or with no prompt (it calls no model, so nothing to replay). */
@@ -412,12 +398,10 @@ function roleFor(deps: Pick<GoldenRunDeps, "roles">, name: string): RoleDescript
   return role as RoleDescriptor & { prompt: string };
 }
 
-/**
- * The role's cases (goldenCasesByRole), sorted by id; with `only`, just the cases tagged with one of those
- * prompts. A malformed case fails the whole run before any agent runs.
- */
+/** The role's cases (goldenCasesByRole), sorted by id; with `only`, just the cases tagged with one of those prompts. A malformed case fails the whole run before any agent runs. */
 async function loadCases(rolesDir: string, role: RoleDescriptor & { prompt: string }, only?: readonly string[], ids?: readonly string[]): Promise<LoadedCase[]> {
   const out: LoadedCase[] = [];
+  if (role.name === "triage") loadTriageCases(rolesDir); // a triage case with bad `checks` is malformed too
   for (const id of (goldenCasesByRole(rolesDir).get(role.name) ?? []).filter((i) => !ids || ids.includes(i))) {
     const dir = join(rolesDir, role.name, "golden", id);
     const meta = JSON.parse(await readFile(join(dir, "case.json"), "utf8")) as { expect?: string; work_item_id?: string; prompts?: unknown };
@@ -425,13 +409,13 @@ async function loadCases(rolesDir: string, role: RoleDescriptor & { prompt: stri
     const prompts = casePrompts(meta.prompts, id) ?? [role.prompt];
     if (only && !prompts.some((p) => only.includes(p))) continue;
     const work_item_id = typeof meta.work_item_id === "string" ? meta.work_item_id : `golden_${id}`;
-    out.push({ id, expect, prompts, work_item_id, diff: await readFile(join(dir, CASE_DIFF), "utf8"), spec: await readFile(join(dir, CASE_INSTRUCTION), "utf8") });
+    out.push({ id, expect, prompts, work_item_id, diff: role.name === "triage" ? null : await readFile(join(dir, CASE_DIFF), "utf8"), spec: await readFile(join(dir, CASE_INSTRUCTION), "utf8") });
   }
   return out;
 }
 
-/** The replay prompt: the stored spec plus the stored diff, in the worker's review layout. */
-export const replayPrompt = (c: Pick<LoadedCase, "spec" | "diff">) => `${c.spec}\n\n## Diff\n\n\`\`\`diff\n${c.diff}\n\`\`\``;
+/** The replay prompt: the stored spec plus the stored diff, in the worker's review layout; the spec alone with no diff. */
+export const replayPrompt = (c: Pick<LoadedCase, "spec" | "diff">) => (c.diff === null ? c.spec : `${c.spec}\n\n## Diff\n\n\`\`\`diff\n${c.diff}\n\`\`\``);
 
 /** Replays every case of `role` (with `ids`, only those) `replays` times each (default once), then writes the results file. Each replay gets its own detached sandbox (`branch: null`), destroyed after. No doc index: a replay does not depend on the docs. */
 export async function runCases(deps: GoldenRunDeps, opts: { role: string; prompts?: readonly string[]; ids?: readonly string[]; replays?: number }): Promise<GoldenReport> {
@@ -441,17 +425,19 @@ export async function runCases(deps: GoldenRunDeps, opts: { role: string; prompt
   const stamp = deps.clock.now().toISOString();
   const signal = deps.signal ?? new AbortController().signal;
   const results: CaseResult[] = [];
-  for (const c of cases) for (let n = 0; n < (opts.replays ?? 1); n++) results.push(await runOne(deps, role, system, c, `${stamp}_${c.id}${n > 0 ? `_${n}` : ""}`, signal));
+  const replays = opts.replays ?? 1;
+  for (const c of cases) for (let n = 0; n < replays; n++) results.push(await runOne(deps, role, system, c, `${stamp}_${c.id}${n > 0 ? `_${n}` : ""}`, signal));
 
   const rates = computeRates(results);
+  const stability = computeStability(role.name, results, replays);
   const sum = (k: keyof GoldenReport["totals"]) => results.reduce((n, r) => n + r[k], 0);
   const totals = { input_tokens: sum("input_tokens"), output_tokens: sum("output_tokens"), wall_ms: sum("wall_ms") };
-  const body = `${JSON.stringify({ at: stamp, role: role.name, cases: results, totals, ...rates }, null, 2)}\n`;
+  const body = `${JSON.stringify({ at: stamp, role: role.name, cases: results, totals, ...rates, ...stability }, null, 2)}\n`;
   await scanAll(deps.scanner, "run_outcome", [body], "the results file");
   await mkdir(deps.resultsDir, { recursive: true });
   const file = join(deps.resultsDir, `${stamp.replace(/[:.]/g, "-")}.json`);
   await writeFile(file, body, { flag: "wx" });
-  return { ...rates, role: role.name, cases: results, totals, results_file: file };
+  return { ...rates, ...stability, role: role.name, cases: results, totals, results_file: file };
 }
 
 function casePrompts(v: unknown, id: string): string[] | null {
@@ -585,6 +571,9 @@ export interface CompareReport {
   prompts: string[];
   base: Rates["rates"] | null;
   head: Rates["rates"] | null;
+  /** Each side's replays, pass_k and unstable cases; null when skipped. */
+  base_stability: Stability | null;
+  head_stability: Stability | null;
   /** `<resultsDir>/compare-<timestamp>/compare.json`. */
   record_file: string;
 }
@@ -612,13 +601,15 @@ export function compareRates(base: Rates["rates"], head: Rates["rates"], margin 
  */
 export async function compareCases(
   deps: GoldenRunDeps,
-  opts: { role: string; basePrompt: string; changed: readonly string[] | null },
+  opts: { role: string; basePrompt: string; changed: readonly string[] | null; replays?: number },
 ): Promise<CompareReport> {
   const { name: role, prompt } = roleFor(deps, opts.role);
   const dir = join(deps.resultsDir, `compare-${deps.clock.now().toISOString().replace(/[:.]/g, "-")}`);
   const prompts = affectedPrompts(opts.changed, [prompt]);
   let base: Rates["rates"] | null = null;
   let head: Rates["rates"] | null = null;
+  let base_stability: Stability | null = null;
+  let head_stability: Stability | null = null;
   let verdict: { outcome: CompareOutcome; reason: string | null };
   if (prompts.length === 0) {
     verdict = { outcome: "skipped", reason: `the change touches neither prompts/${prompt} nor the code that fills or sends prompts` };
@@ -626,13 +617,16 @@ export async function compareCases(
     verdict = { outcome: "skipped", reason: `no golden cases tagged ${prompts.join(", ")} in ${ROLES_DIR}/${role}/golden` };
   } else {
     // The same replay path for both sides; each side keeps its own results file.
-    const run = (p: GoldenRunDeps["prompt"], side: string) => runCases({ ...deps, prompt: p, resultsDir: join(dir, side) }, { role, prompts });
-    base = (await run(async () => opts.basePrompt, "base")).rates;
-    head = (await run(deps.prompt, "head")).rates;
+    const run = (p: GoldenRunDeps["prompt"], side: string) => runCases({ ...deps, prompt: p, resultsDir: join(dir, side) }, { role, prompts, replays: opts.replays ?? 1 });
+    const [b, h] = [await run(async () => opts.basePrompt, "base"), await run(deps.prompt, "head")];
+    base = b.rates;
+    head = h.rates;
+    base_stability = { replays: b.replays, pass_k: b.pass_k, unstable: b.unstable };
+    head_stability = { replays: h.replays, pass_k: h.pass_k, unstable: h.unstable };
     verdict = compareRates(base, head);
   }
   const record_file = join(dir, "compare.json");
-  const report: CompareReport = { role, ...verdict, margin: GOLDEN_MARGIN, prompts, base, head, record_file };
+  const report: CompareReport = { role, ...verdict, margin: GOLDEN_MARGIN, prompts, base, head, base_stability, head_stability, record_file };
   const body = `${JSON.stringify({ ...report, record_file: undefined }, null, 2)}\n`;
   await scanAll(deps.scanner, "run_outcome", [body], "the compare record");
   await mkdir(dir, { recursive: true });
@@ -642,15 +636,15 @@ export async function compareCases(
 
 /** The compare report as Markdown, for a terminal or a job summary. */
 export function formatCompare(r: CompareReport): string {
-  const side = (name: string, rates: Rates["rates"] | null) =>
-    rates ? [`- ${name}: ${formatRate("catch_rate", rates.catch_rate)}; ${formatRate("false_alarm_rate", rates.false_alarm_rate)}`] : [];
+  const side = (name: string, rates: Rates["rates"] | null, st: Stability | null) =>
+    rates ? [`- ${name}: ${formatRate("catch_rate", rates.catch_rate)}; ${formatRate("false_alarm_rate", rates.false_alarm_rate)}`, ...(st ? stabilityLines(st).map((l) => `  - ${l}`) : [])] : [];
   return [
     `## golden compare (${r.role}): ${r.outcome}`,
     "",
     ...(r.outcome === "skipped" ? [`Comparison skipped: ${r.reason}.`] : []),
     ...(r.outcome === "fail" ? [`Failed: ${r.reason}.`] : []),
-    ...side("base", r.base),
-    ...side("head", r.head),
+    ...side("base", r.base, r.base_stability),
+    ...side("head", r.head, r.head_stability),
     `- margin: ${r.margin}`,
     ...(r.prompts.length > 0 ? [`- prompts: ${r.prompts.join(", ")}`] : []),
     `- record: ${r.record_file}`,

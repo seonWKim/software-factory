@@ -10,7 +10,7 @@ import { ListRow, ROW_TITLE } from "../../components/ui/list-row.js";
 import type { MessageKey } from "../../i18n/en.js";
 import { t } from "../../i18n/index.js";
 import { cn } from "../../lib/cn.js";
-import { localDateTime } from "../../lib/format.js";
+import { dueText, localDateTime } from "../../lib/format.js";
 import { Link } from "../../nav.js";
 import { itemPath } from "../../pages.js";
 import { TaskItemMenu, WorkState, useWorkItem, waitsOnOwner } from "../task-work.js";
@@ -82,7 +82,7 @@ function Title({ task, className, onOpen }: { task: TaskRow; className: string; 
   return <p data-row-title title={task.title} className={className}>{task.title}</p>;
 }
 
-export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { task: TaskRow; overdue?: boolean; sub?: boolean }) {
+export function TaskCard({ task, overdue: inOverdue = false, sub = false, date = null }: { task: TaskRow; overdue?: boolean; sub?: boolean; date?: string | null }) {
   const { token, titles, completed } = useContext(Rows);
   const row = useRef<HTMLLIElement>(null);
   const action = useTaskAction(token);
@@ -92,7 +92,7 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
   const [mode, setMode] = useState<"view" | "edit" | "sub" | "delete" | "projects" | "description">("view");
   const [checked, setChecked] = useState(false);
   const parent = task.parent_task_id ?? null;
-  const due = task.due_date === null ? null : task.due_time === null ? task.due_date : `${task.due_date} ${task.due_time}`;
+  const due = dueText(task.due_date, task.due_time, date);
   // A timed task's stored duration; none stored: none shown.
   const minutes = task.due_time === null ? null : (task.duration_minutes ?? null);
   const close = () => {
@@ -229,13 +229,13 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
 }
 
 /** One heading and its list; the rows are the page's share of the group. */
-export function Group({ title, rows, overdue }: { title: string; rows: readonly Nested[]; overdue: boolean }) {
+export function Group({ title, rows, overdue, date = null }: { title: string; rows: readonly Nested[]; overdue: boolean; date?: string | null }) {
   return (
     <div className="space-y-1">
       <h3 className={SUB_TITLE}>{title}</h3>
       <ul aria-label={title} className="divide-y divide-border rounded-control border border-border">
         {rows.map(({ row, sub }) => (
-          <TaskCard key={row.id} task={row} overdue={overdue} sub={sub} />
+          <TaskCard key={row.id} task={row} overdue={overdue} sub={sub} date={date} />
         ))}
       </ul>
     </div>

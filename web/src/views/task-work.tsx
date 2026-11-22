@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { API, type ItemRow, type Items, type Overview, type SystemAction, type UnreviewedMerges, mergeCheckLabel, mergeInFlight, useApi, useItems } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { Dialog } from "../components/ui/dialog.js";
-import { LINK_CLASS } from "../components/ui/link-style.js";
+import { BLOCK_LINK_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import { ErrorNote } from "../components/ui/parts.js";
 import type { MessageKey } from "../i18n/en.js";
 import { shortSource, whyText } from "../lib/format.js";
@@ -108,7 +108,7 @@ function WorkRow({ it }: { it: ItemRow }) {
       data-key={it.id}
       title={
         <span className="flex min-w-0 items-baseline gap-2">
-          <Link href={itemPath(it.id)} title={it.title ?? undefined} data-raw className={cn(ROW_TITLE, "text-text-1 hover:underline")}>
+          <Link href={itemPath(it.id)} title={it.title ?? undefined} data-raw className={cn(ROW_TITLE, "leading-6 text-text-1 hover:underline")}>
             {it.title ?? shortSource(it.source.id)}
           </Link>
           {it.change_ref !== null && <span className="shrink-0 text-xs text-text-2 tabular-nums">#{it.change_ref}</span>}
@@ -136,8 +136,9 @@ function WorkRow({ it }: { it: ItemRow }) {
             </span>
           )}
           {reason !== "" && !chip && (
-            <span data-need title={reason} className="min-w-0 flex-1 basis-40 truncate">
-              {toNeed ? <Link href={toNeed} className={LINK_CLASS}>{reason}</Link> : reason}
+            // Below sm the reason wraps onto as many lines as it needs; from sm up it is one line cut with an ellipsis.
+            <span data-need title={reason} className="min-w-0 flex-1 basis-40 break-words sm:truncate">
+              {toNeed ? <Link href={toNeed} className={cn("sm:truncate", BLOCK_LINK_CLASS)}>{reason}</Link> : reason}
             </span>
           )}
         </>
@@ -194,7 +195,7 @@ function MergeRow({ m, risk }: { m: Merge; risk: boolean }) {
   return (
     <ListRow
       data-key={m.change_ref}
-      title={m.review_url ? <a href={m.review_url} target="_blank" rel="noreferrer" className={cn(ROW_TITLE, LINK_CLASS)}>{label}</a> : <span className={ROW_TITLE}>{label}</span>}
+      title={m.review_url ? <a href={m.review_url} target="_blank" rel="noreferrer" className={cn(ROW_TITLE, "leading-6", BLOCK_LINK_CLASS)}>{label}</a> : <span className={ROW_TITLE}>{label}</span>}
       details={
         <>
           {risk && <span data-risk><Badge level={r.level}>{t(r.key)}</Badge></span>}

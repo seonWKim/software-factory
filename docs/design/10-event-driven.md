@@ -10,9 +10,14 @@ force.
 
 - **Every table carries its owner's prefix** (since 2026-11-08): `bus_`, `inbound_`, `controller_`, `worker_`,
   `outbound_`, `identity_`/`authz_`, `runtime_`, `ui_`, `ext_<name>_`. A component's code names only its own
-  tables (`tests/architecture/table-ownership.test.ts`). The generated `schema/sqlite.sql` is
-  the full table list; `npm run schema:snapshot` rewrites it, and
-  `tests/architecture/schema-snapshot.test.ts` fails when it is stale.
+  tables (`tests/architecture/table-ownership.test.ts`).
+- **The generated table list is one file per owner prefix under `schema/sqlite/`** (decision changed 2026-11-22,
+  issue #754; replaces "one generated `schema/sqlite.sql`", see History). Each prefix that has tables gets
+  `schema/sqlite/<prefix>.sql` (`bus.sql`, `controller.sql`, `authz.sql`, ...) with every table and index of that
+  owner; tables with no prefix are in `unprefixed.sql`. `npm run schema:snapshot` rewrites the files and removes any
+  it no longer produces; `tests/architecture/schema-snapshot.test.ts` fails when one is stale, missing or extra.
+  Reason: the one file was a path companion of every migration, so items for different owners held each other on
+  it (5 held items in a week, no conflict runs). One file per table (about 104) would pass the file cap.
 - **Schema changes are timestamped migrations** (since 2026-11-08): `<yyyymmddThhmm>-<component>-<slug>.migration.ts`
   in the owning component's `migrations/` folder, found by discovery, recorded in `runtime_schema_migrations`.
   They run after the frozen numbered baseline (the list in `src/impl/store/sqlite/schema.ts`), which gets no
