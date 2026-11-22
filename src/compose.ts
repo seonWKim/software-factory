@@ -1,5 +1,6 @@
 // Composition root: the only place that reads env/files for config and picks implementations.
 // Environment (local / cloud) is chosen here; core code never branches on it.
+
 import { createHash } from "node:crypto";
 import { mkdir, readFile, stat } from "node:fs/promises";
 import { availableParallelism, hostname } from "node:os";
@@ -31,8 +32,7 @@ import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import {
   BUILT_IN_SETTINGS, type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, type LearnedSettingsSource, booleanSetting, intakeLabel, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, positiveInteger, settingValues, settingsLayers, workerCount,
 } from "./core/settings.js";
-import { WorkerPool } from "./worker/index.js";
-import type { LocalRoute } from "./worker/index.js";
+import { type LocalRoute, WorkerPool } from "./worker/index.js";
 import { FallbackLLM } from "./core/fallback-llm.js";
 import { FallbackRunner } from "./core/fallback-runner.js";
 import { checkConfigKeys, removedKeysWarning } from "./config-keys.js";
@@ -444,8 +444,7 @@ export async function loadConfig(
     merge_queue_depth: mergeQueueDepth(file), merge_queue_push_base: mergeQueuePushBase(file.merge_queue),
     ...(file.hooks === undefined ? {} : { hooks: hookNames(file.hooks) }),
     ...(autoApproveReadOnly(file.packs) ? { packs_auto_approve_read_only: true } : {}),
-    workers,
-    max_workers,
+    workers, max_workers,
     deny_paths: [
       dirname(secretsFile),
       join(stateDir, "db"),
@@ -466,7 +465,8 @@ export async function loadConfig(
     ],
     agent_git_identity: file.agent_git_identity,
     budget_min_sample: budget.budget_min_sample,
-    path_companions: pathCompanionsConfig(raw), improver: improverConfig(raw), // improver and distill (design 07, entity proposals)
+    path_companions: pathCompanionsConfig(raw),
+    improver: improverConfig(raw), // improver.max_proposals, improver.schedule, distill.min_cases (design 07)
     // Coordination (design §5): the threshold, hotspots and mechanical paths, checked at load by checkConfigKeys.
     coordination: coordinationConfig(raw),
   };

@@ -6,12 +6,13 @@ import {
 import { runCases } from "../../../golden.js";
 import { factoryGit } from "../../../impl/broker/trusted-git.js";
 import { loadRoles } from "../../../runtime/index.js";
-import { addUsage, type renderWorkItem } from "../../support.js";
+import { addUsage } from "../../support.js";
 import type { Worker } from "../../runner.js";
-import { DEFAULT_TIMEOUTS, defineRunKind } from "../../run-kind.js";
+import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
 
-type Run = Parameters<typeof runImprove>[1];
-type WorkItem = Parameters<typeof renderWorkItem>[0];
+// The run and item a kind is handed; core/types.js is legacy code a component may not import more of (tests/architecture).
+type Run = RunCall["run"];
+type WorkItem = RunCall["item"];
 
 /**
  * The improve run (design §7): no sandbox, no agent. One plain model call per group, with no tools; its usage
