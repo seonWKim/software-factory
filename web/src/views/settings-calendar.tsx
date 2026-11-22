@@ -109,7 +109,7 @@ function CalendarRow({ plugin, token }: { plugin: CalendarPluginView; token: str
   return (
     <li data-calendar={plugin.name} className="flex flex-col gap-1">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="font-medium wrap-anywhere">{plugin.name}</span>
+        <span data-raw className="font-medium wrap-anywhere">{plugin.name}</span>
         <Badge level={plugin.connected ? "ready_to_merge" : undefined}>{plugin.connected ? t("calendar.connected") : t("calendar.notConnected")}</Badge>
         <span className="text-xs text-text-2 tabular-nums">
           {plugin.synced_at ? <When at={plugin.synced_at} now={now} label="calendar.lastSync" /> : t("calendar.neverSynced")}
@@ -120,7 +120,7 @@ function CalendarRow({ plugin, token }: { plugin: CalendarPluginView; token: str
           {t("calendar.reconnect")}
         </p>
       ) : (
-        plugin.error && <p className="text-xs text-pretty break-words text-pill-bad-fg">{t("calendar.lastError", { error: plugin.error })}</p>
+        plugin.error && <p data-raw className="text-xs text-pretty break-words text-pill-bad-fg">{t("calendar.lastError", { error: plugin.error })}</p>
       )}
       {!plugin.connected && !plugin.default_client && <p className="text-xs text-pretty text-text-2">{t("calendar.noDefaultClient")}</p>}
       <Attempt plugin={plugin} consent={consent} />

@@ -444,7 +444,7 @@ function AlarmMenuRow({ action, id, title, lead, dialog, output, children }: {
     <ListRow
       data-check="alarm"
       {...(id ? { id } : {})}
-      title={<p data-alarm-summary title={title} className={cn(ROW_TITLE, "text-text-1")}>{title}</p>}
+      title={<p data-alarm-summary data-raw title={title} className={cn(ROW_TITLE, "text-text-1")}>{title}</p>}
       {...(items.length > 0 ? { menu: <OverflowMenu label={t("commands.more")} items={items} /> } : {})}
     >
       {children}

@@ -52,7 +52,7 @@ function MiniChart({ title, chart, label, selected, onSelect }: {
           return (
             <li key={b.start} title={text} className="flex h-full min-w-0 flex-1 items-end">
               {onSelect ? (
-                <Button variant="ghost" size="sm" aria-pressed={selected === b.start} onClick={() => onSelect(b.start)} className="h-full w-full items-end! px-0!">
+                <Button data-chart-bar variant="ghost" size="sm" aria-pressed={selected === b.start} onClick={() => onSelect(b.start)} className="h-full w-full items-end! px-0!">
                   <span className="sr-only">{text}</span>
                   {bar}
                 </Button>

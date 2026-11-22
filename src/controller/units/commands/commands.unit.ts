@@ -239,7 +239,7 @@ export class CommandsUnit {
     const refusal = await this.applyCommand(item.id, e, { kind: "user", id: principal.user_id }, input.note, tag, input.paths);
     const said = refusal === null ? alreadyAllowed(item, e, input.paths) : null; if (said) await this.c.unit("outbox").post(item, said.target, said.body, said.marker); if (refusal === null) await this.c.k.guard("standing", () => this.c.unit("standing").afterSpecCommand(item.id, e, principal.user_id));
     if (refusal === null && e.kind === "spec_rejected") await this.c.unit("closes").afterReject(item.id);
-    if (refusal === null && (e.kind === "spec_rejected" || e.kind === "revise_requested")) await this.c.unit("outbox").captureTacit(item, e.comment_id, e.kind === "spec_rejected" ? e.reason : e.feedback);
+    if (refusal === null && (e.kind === "spec_rejected" || e.kind === "revise_requested")) { const words = e.kind === "spec_rejected" ? e.reason : e.feedback; await this.c.unit("outbox").captureTacit(item, e.comment_id, words); await this.c.unit("improve").captureCorrection(item, "pushback", e.comment_id, words); }
     if (refusal === null && e.kind === "revise_requested") await replyQueued(this.c, item, e.comment_id);
     return refusal;
   }
