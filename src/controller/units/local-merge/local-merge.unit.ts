@@ -12,12 +12,13 @@ import {
 } from "../../../core/local-merge.js";
 import { gatePathTouched } from "../../../core/improver.js";
 import { lastPrNotes } from "../../../core/pr-body.js";
+import { droppedBack, tierRule } from "../../../core/stats.js";
 import { type Actor, RECURRING_FAILURE, type Run, type SourceRef, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { ExternalIdentity } from "../../../interfaces/auth-provider.js";
 import { LOCAL_GIT_HOST, basePushOutcome, basePushTarget, gitTarget, type ActionRow } from "../../../outbound/index.js";
 import { failingTestNames } from "../../../worker/index.js";
 import { AUTO, CONFLICT_PENDING, SYSTEM, awaitingMerge } from "../support.js";
-import type { ControllerWrite } from "../kernel.js";
+import type { ControllerReader, ControllerWrite } from "../kernel.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
@@ -436,12 +437,13 @@ export class LocalMergeUnit {
    * through mergeLocal (actor `system:auto`, the mode change on its state change) when autoMergeRefusal allows it:
    * the change enters the merge queue, so a failing check or a conflict on its merged result moves nothing. One try per
    * passed review: a refusal is posted once under a key of that review run, and the item stays in merge_pending for a person.
-   * A sync source's item is never merged here (no forge merge to call); it waits as in manual mode, with no post.
+   * A sync source's item waits as in manual mode, with no post (no forge merge to call). Merge records: one store read per step.
    */
   async autoMergeStep(): Promise<void> {
     const r = this.c.k.live.resolved();
     if (r.global.mode.value !== "auto" && !Object.values(r.projects).some((p) => p.mode?.value === "auto")) return;
     const waiting = await this.c.k.reader.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "human", limit: AUTO_MERGE_BATCH });
+    let merges: Awaited<ReturnType<ControllerReader["listMergeEvaluations"]>> | null = null;
     for (const it of waiting) {
       if (!awaitingMerge(it) || it.source.type !== LOCAL_SOURCE || it.change_ref !== null) continue;
       const auto = await this.autoMode(it.project);
@@ -451,12 +453,12 @@ export class LocalMergeUnit {
       const key = `auto-merge:${it.id}:${review?.id ?? `v${it.version}`}`;
       if ((await this.c.k.reader.listItemMessages(it.id)).some((m) => m.marker.endsWith(`:${key} -->`))) continue;
       const missing = lastPrNotes(await this.c.k.reader.listRuns(it.id))?.missing ?? [];
+      const tier = it.tier ?? 5;
+      const record = (merges ??= await this.c.k.reader.listMergeEvaluations(null)).filter((m) => m.tier === tier);
       const refusal = autoMergeRefusal({
-        tier: it.tier ?? 5,
-        max_tier: this.c.k.live.values().auto_merge_max_tier,
-        incomplete: missing.length > 0,
-        gate_path: gatePathTouched([...it.allowed_paths, ...(it.pr_files ?? [])]),
-        local: true,
+        tier, max_tier: this.c.k.live.values().auto_merge_max_tier, incomplete: missing.length > 0,
+        gate_path: gatePathTouched([...it.allowed_paths, ...(it.pr_files ?? [])]), local: true,
+        rule: tierRule(tier, record), dropped_back: droppedBack(record),
       });
       if (refusal === null) {
         await this.c.k.guard("auto merge", async () => void (await this.mergeLocal(it.id, AUTO_MERGE, key, { mode_change: auto.seq })));
