@@ -35,4 +35,5 @@ kebab-case (KeepAwake is `keep-awake.md`).
 | TacitLedger | `agents-home`, `none` | [tacit-ledger.md](plugins/tacit-ledger.md) |
 | AppShell (wired by the desktop entry, not chosen in config) | `macos` | [app-shell.md](plugins/app-shell.md) |
 | CalendarSource (optional; top-level `calendar` list, default `[]`) | `google-calendar` | [calendar-source.md](plugins/calendar-source.md) |
+| ScheduleAction (optional; `plugins.schedule_action`, no default) | none | [schedule-action.md](plugins/schedule-action.md) |
 | Forge (optional; follows `plugins.source`: `github` with `github-issues`, else none) | `github`, `local` | [forge.md](plugins/forge.md) |
