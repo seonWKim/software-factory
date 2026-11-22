@@ -294,13 +294,13 @@ export class RunResultsUnit {
         case "review": {
           // The worker withheld finding text its scan flagged (issue #222): only the rule names reached here.
           if (Array.isArray(data.egress_rules)) return this.leakBlock(it, run, data.egress_rules.map(String), { token_cost: tokens }, "review");
-          // The worker's cheap checks (issue #223): nothing to review, or an unchanged head, whose last verdict stands (none replayed).
+          // The worker's cheap checks (issue #223): nothing to review, or the head the last verdict was for. An
+          // unchanged head keeps the item's state as it is: the last verdict was applied already, none is replayed.
           if (data.no_agent === EMPTY_DIFF) return this.emptyDiff(it, run, tokens);
           if (data.no_agent === UNCHANGED_HEAD) return this.unchangedHead(it, run);
           const parsed = parseReview(data.review);
           if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
-          await this.c.unit("improve").captureReview(it, run, parsed.value.findings); // design-system findings, design 07-design-learnings
-          const tier = effectiveTier(parsed.value.tier, floorTier(it.allowed_paths, this.c.k.settings(it.project).floors), it.tier);
+          const tier = effectiveTier(parsed.value.tier, floorTier(it.allowed_paths, this.c.k.settings(it.project).floors), it.tier); await this.c.unit("improve").captureReview(it, run, parsed.value.findings);
           if (parsed.value.verdict === "bug" && it.origin === "adopted") {
             // A person's branch: the review comment is on the PR, and the author fixes it. No implement run.
             return {

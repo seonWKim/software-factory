@@ -1,11 +1,11 @@
-// The improve run (design §7, issues #306, #307, #308, #571): a daily look back at failed runs and the owner's pushbacks, no agent. The project's failed runs in a window are
-// grouped by error code and normalized detail, its pushbacks by their normalized words (code `pushback`); each group of 2+ gets one plain model call (no tools) for a draft; one
-// report is stored for the learner (learnFromReport); the controller files its groups (fileReport). The flaky tests merge checks named in the window are listed with the patterns
-// (code `flaky_test`), never drafted or filed. So are the files that conflicted or held items back often in 7 days (code `hotspot`, src/core/hotspots.ts), filed, never drafted.
-export { learnFromReport } from "./learned-settings.js";
+// The improve run (design §7, issues #306, #307, #308, #571): a daily look back at failed runs and the owner's pushbacks,
+// no agent. The project's failed runs in a window are grouped by error code and normalized detail, its pushbacks by their
+// normalized words (code `pushback`); each group of 2+ gets one plain model call (no tools) for a draft; one report is stored for the learner (learnFromReport); the controller files its groups (fileReport).
+// The flaky tests merge checks named in the window are listed with the patterns (code `flaky_test`), never drafted or filed.
+// So are the files that conflicted or held items back often in 7 days (code `hotspot`, src/core/hotspots.ts), filed, never drafted.
+export { learnFromReport } from "./learned-settings.js"; export { type DesignLearningSource, LEARNINGS_HEAD, LEARNINGS_PATH, captureDesignLearning, captureKey, isDesignFinding, learnDesign, renderLine } from "./design-learnings.js";
 export { FLAKY_TEST, PUSHBACK, type Pushback, groupFailures, normalizeDetail } from "./failure-groups.js";
 export { NO_SCORER, type Grade, type GradeSubject, type Scorer, improvePrompts, scoreRun, scorerFor } from "./scorer.js";
-export { type DesignLearningSource, LEARNINGS_HEAD, LEARNINGS_PATH, captureDesignLearning, captureKey, isDesignFinding, learnDesign, renderLine } from "./design-learnings.js";
 
 import { cyrb53 } from "./hash.js";
 import { PUSHBACK, flakyTests, groupFailures, pushbacksIn, reviewable } from "./failure-groups.js";
