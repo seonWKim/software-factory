@@ -10,9 +10,9 @@ import { CopyText } from "../components/ui/copy.js";
 import { Input } from "../components/ui/input.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
 import { ErrorNote, Loading, Table, Td, Tr } from "../components/ui/parts.js";
-import { Notice, PageHeader, EmptyState } from "../components/ui/notice.js";
+import { Notice, PageHeader, PageToolbar, EmptyState } from "../components/ui/notice.js";
 import { ID_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
-import { FailuresSection } from "./failures.js";
+import { FailuresSection, FailuresWindowSwitch, useFailuresWindow } from "./failures.js";
 import { SpendSection } from "./spend.js";
 import { EfficiencyTab } from "./efficiency.js";
 import { Improve } from "./rules-improve.js";
@@ -21,13 +21,13 @@ import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { Tabs } from "../components/ui/tabs.js";
 import { cn } from "../lib/cn.js";
 import { useUrlParam } from "../lib/url-param.js";
-import type { MessageKey } from "../i18n/en.js";
+import { type MessageKey, en } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { duration, errorLabel, groupedInteger, isHttpUrl, localClock, localDateTime, relativeTime, runStatusLabel, termLabel, shortItemId, shortRev, tokens } from "../lib/format.js";
+import { duration, groupedInteger, isHttpUrl, isWorkerId, localClock, localDateTime, relativeTime, runStatusLabel, termLabel, shortItemId, shortRev, tokens, workerName } from "../lib/format.js";
 import { GROUP_LABELS, ITEM_STATES, STATE_GROUPS, type StateGroup, groupOf, groupStates, isGroup, stateLabel } from "../../../src/shared/states.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
-import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, When, byId, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
+import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, RawNames, When, byId, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
 import { ItemDecision } from "./decision-card.js";
 import { ItemAbout } from "./item-about.js";
 import { ResumeNow, type SupervisorActionName, SupervisorActions } from "./system-banner.js";
@@ -36,7 +36,7 @@ import { transcriptPath } from "./transcript.js";
 import { ItemsTree, type View, VIEW_KEY, useExpanded } from "./tree.js";
 import { type TreeFilter, buildTree, defaultExpanded, itemMatches, parentIds } from "./tree-model.js";
 import { Disclosure } from "../components/ui/disclosure.js";
-import { Card } from "../components/ui/card.js";
+import { Card, SUB_TITLE } from "../components/ui/card.js";
 import { Badge, StatusBadge } from "../components/ui/badge.js";
 import { Tooltip } from "../components/ui/menu.js";
 
@@ -197,7 +197,7 @@ export function ActivityPage() {
               <div key={k} className="rounded-control border border-border px-3 py-2">
                 <dt className="text-xs text-text-2">{k}</dt>
                 <dd className="text-lg font-semibold tabular-nums">
-                  {href ? <Link href={href} className={LINK_CLASS}>{v}</Link> : v}
+                  {href ? <Link href={href} className={cn("min-w-6", LINK_CLASS)}>{v}</Link> : v}
                 </dd>
               </div>
             ))}
@@ -293,7 +293,33 @@ export function ItemsPage() {
   return (
     <>
       <PageHeader title={t("page.work")} />
-      <div className="mb-2 flex flex-wrap items-center gap-2">
+      <PageToolbar
+        tabs={
+          <div className="flex min-w-0 flex-col gap-2">
+            <Tabs
+              label={t("items.filterByState")}
+              options={[
+                { id: ALL, label: t("items.filterCount", { label: t("items.all"), count: allCount }) },
+                ...STATE_GROUPS.filter(shows).map((g) => ({ id: g, label: t("items.filterCount", { label: GROUP_LABELS[g], count: counted(g) }) })),
+              ]}
+              value={group ?? ALL}
+              onChange={(id) => setState(id === ALL ? null : id)}
+            />
+            {group && (
+              <Tabs
+                label={t("items.filterGroup", { group: GROUP_LABELS[group] })}
+                options={[
+                  { id: group, label: t("items.filterCount", { label: t("items.all"), count: counted(group) }) },
+                  // `closed` is the Finished group's older link value (src/shared/states.ts inStateFilter): All shows those rows.
+                  ...groupStates(group).filter((s) => s !== "closed" && shows(s)).map((s) => ({ id: s, label: t("items.filterCount", { label: stateLabel(s), count: counted(s) }) })),
+                ]}
+                value={state ?? group}
+                onChange={setState}
+              />
+            )}
+          </div>
+        }
+      >
         <Input
           type="search"
           value={q}
@@ -310,7 +336,7 @@ export function ItemsPage() {
             <Button size="sm" onClick={() => setExpanded([])}>{t("items.collapseAll")}</Button>
           </ButtonRow>
         )}
-      </div>
+      </PageToolbar>
       {ids && (
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <Notice tone="info">{t("items.idsFilter", { count: ids.size })}</Notice>
@@ -318,29 +344,6 @@ export function ItemsPage() {
         </div>
       )}
       {rateLimit?.ends_at && <div className="mb-3"><Notice tone="warn">{t("items.rateLimit", { state: t("items.ratePaused", { time: rateLimit.ends_at }) })}</Notice></div>}
-      <Tabs
-        label={t("items.filterByState")}
-        className={group ? "mb-2" : "mb-3"}
-        options={[
-          { id: ALL, label: t("items.filterCount", { label: t("items.all"), count: allCount }) },
-          ...STATE_GROUPS.filter(shows).map((g) => ({ id: g, label: t("items.filterCount", { label: GROUP_LABELS[g], count: counted(g) }) })),
-        ]}
-        value={group ?? ALL}
-        onChange={(id) => setState(id === ALL ? null : id)}
-      />
-      {group && (
-        <Tabs
-          label={t("items.filterGroup", { group: GROUP_LABELS[group] })}
-          className="mb-3"
-          options={[
-            { id: group, label: t("items.filterCount", { label: t("items.all"), count: counted(group) }) },
-            // `closed` is the Finished group's older link value (src/shared/states.ts inStateFilter): All shows those rows.
-            ...groupStates(group).filter((s) => s !== "closed" && shows(s)).map((s) => ({ id: s, label: t("items.filterCount", { label: stateLabel(s), count: counted(s) }) })),
-          ]}
-          value={state ?? group}
-          onChange={setState}
-        />
-      )}
       {queuedView ? (
         <Card title={t("queue.title")} count={queue.data?.queue.length}>
           {queue.isError ? <ErrorNote error={queue.error} /> : !queue.data || !items.data ? <Loading rows={4} /> : <QueueTable queue={queue.data.queue} items={itemsById} now={now} />}
@@ -389,7 +392,7 @@ export function ItemPage({ id }: { id: string }) {
         <span className="text-text-3"> / </span>
         <Link href={itemPath(item.id)} aria-current="page" title={item.id} className={cn("inline-block max-w-[16ch] truncate align-bottom tabular-nums", ID_CLASS)}>{short}</Link>
       </nav>
-      <PageHeader title={item.title ?? short} actions={runs.some(isInteractiveRun) ? <InteractiveBadge /> : undefined} />
+      <PageHeader title={<span data-raw>{item.title ?? short}</span>} actions={runs.some(isInteractiveRun) ? <InteractiveBadge /> : undefined} />
       {item.parent_id && (
         <p data-testid="parent" className="mt-1 text-sm">
           {t("item.phase", { phase: item.phase ?? "?" })} <Link href={itemPath(item.parent_id)} className={LINK_CLASS}>{t("item.splitParent")}</Link>
@@ -454,26 +457,36 @@ export function ItemPage({ id }: { id: string }) {
       )}
       <Card title={t("item.runs")} count={runs.length}>
         {runs.length === 0 ? <EmptyState title={t("item.noRun")} /> : (
-          <Table label={t("item.runs")} head={[t("item.kind"), t("col.attempt"), t("item.status"), t("item.error"), t("col.worker"), t("item.started"), t("item.took"), t("col.tokens"), t("item.transcript")]}>
-            {[...runs].reverse().map((r) => (
+          <Table label={t("item.runs")} head={[t("item.step"), t("item.try"), t("item.result"), t("item.error"), t("col.worker"), t("item.started"), t("item.took"), t("col.tokens"), t("item.transcript")]}>
+            {foldRuns(runs).map(({ run: r, tries }) => (
               <Tr key={r.id} data-run={r.id}>
                 <Td className="min-w-40">
-                  {runKindLabel(r.kind)} <code className="font-mono text-xs break-all text-text-2">{r.id}</code>
+                  {runKindLabel(r.kind)}{" "}
+                  {tries.length === 1 ? <code className="font-mono text-xs break-all text-text-2">{r.id}</code> : (
+                    <RawDetails className="mt-1">
+                      <ul aria-label={t("item.runIds")} className="mt-1 font-mono text-xs break-all">
+                        {tries.map((x) => <li key={x.id}>{x.id}</li>)}
+                      </ul>
+                    </RawDetails>
+                  )}
                 </Td>
-                <Td className="tabular-nums">{t("item.attempt", { attempt: r.attempt })}</Td>
-                <Td><StatusBadge state={r.status} /></Td>
+                <Td className="tabular-nums">{tries.length > 1 ? t("item.foldedTries", { count: tries.length }) : t("item.tryNumber", { number: Math.max(1, r.attempt) })}</Td>
+                <Td><StatusBadge state={r.status}>{runResultLabel(r.status)}</StatusBadge></Td>
                 <Td className="max-w-md min-w-40 text-xs break-words text-text-1">
                   {r.error ? (
                     <>
-                      <span className="font-medium">{r.error.code ? errorLabel(r.error.code) : t("format.unknown")}</span>{r.error.detail ? `: ${r.error.detail}` : ""}
-                      {r.error.code && <RawDetails><code className="font-mono">{r.error.code}</code></RawDetails>}
+                      <span className="font-medium">{errorSentence(r.error.code)}</span>
+                      <RawDetails>
+                        {r.error.code && <code className="font-mono">{r.error.code}</code>}
+                        {r.error.detail && <p className="mt-1 whitespace-pre-wrap">{r.error.detail}</p>}
+                      </RawDetails>
                     </>
                   ) : "–"}
                 </Td>
                 <Td><WorkerName id={r.attempts?.at(-1)?.worker_id} /></Td>
                 <Td className="tabular-nums whitespace-nowrap"><When at={r.started_at} now={now} /></Td>
                 <Td className="tabular-nums">{r.started_at && r.finished_at ? duration(Date.parse(r.finished_at) - Date.parse(r.started_at)) : "–"}</Td>
-                <Td className="tabular-nums">{tokens(r.tokens)}</Td>
+                <Td className="tabular-nums">{tokens(tries.reduce((sum, x) => sum + (x.tokens ?? 0), 0))}</Td>
                 <Td className="whitespace-nowrap">
                   {(transcripts[r.id]?.length ?? 0) > 0 ? (
                     <Link href={transcriptPath(item.id, r.id)} className={LINK_CLASS}>{t("item.open")}</Link>
@@ -535,7 +548,7 @@ function Phases({ phases }: { phases: readonly PhaseRow[] }) {
         {phases.map((p) => (
           <li key={p.id} data-phase={p.phase} className="flex min-w-0 items-baseline gap-2">
             <span className="shrink-0 text-text-3 tabular-nums">{p.phase}.</span>
-            <Link href={itemPath(p.id)} className={cn("min-w-0 break-words", LINK_CLASS)}>{p.title ?? p.source.id}</Link>
+            <Link href={itemPath(p.id)} data-raw className={cn("min-w-0 break-words", LINK_CLASS)}>{p.title ?? p.source.id}</Link>
             <Badge>{p.stage}</Badge>
           </li>
         ))}
@@ -580,11 +593,6 @@ function shortValue(v: unknown): string {
   return String(v);
 }
 
-/** A short change value for a sentence: a stored code (`wont_do`) as words, anything else as `shortValue`. */
-function plainValue(v: unknown): string {
-  return typeof v === "string" ? termLabel(v) : shortValue(v);
-}
-
 /** A health check's status word. */
 const CHECK_KEYS: Readonly<Record<string, MessageKey>> = { ok: "check.ok", warn: "check.warn", fail: "check.fail" };
 const checkLabel = (status: string): string => (CHECK_KEYS[status] ? t(CHECK_KEYS[status]) : status);
@@ -593,6 +601,42 @@ const checkLabel = (status: string): string => (CHECK_KEYS[status] ? t(CHECK_KEY
 function specMarkdown(v: unknown): string {
   if (Array.isArray(v)) return v.map((x) => `- ${shortValue(x)}`).join("\n");
   return shortValue(v);
+}
+
+/** The runs, newest first, with consecutive cancelled tries of one step folded into one row (its newest try, and every folded try). */
+function foldRuns(runs: ItemDetail["runs"]): { run: ItemDetail["runs"][number]; tries: ItemDetail["runs"] }[] {
+  const rows: { run: ItemDetail["runs"][number]; tries: ItemDetail["runs"] }[] = [];
+  for (const run of [...runs].reverse()) {
+    const prev = rows.at(-1);
+    if (prev && run.status === "canceled" && prev.run.status === "canceled" && prev.run.kind === run.kind) prev.tries.push(run);
+    else rows.push({ run, tries: [run] });
+  }
+  return rows;
+}
+
+/** A run's status as the Result column reads it. */
+const runResultLabel = (status: string): string => (`item.result.${status}` in en ? t(`item.result.${status}` as MessageKey) : termLabel(status));
+
+/** A run error's one line: the sentence for its code, else "Failed". The code and the full text go behind Details. */
+function errorSentence(code: string | null | undefined): string {
+  const key = code ? [`item.error.${code}`, `term.${code}`, `failure.${code}.title`].find((k) => k in en) : undefined;
+  return t((key ?? "item.errorFailed") as MessageKey);
+}
+
+/** The timeline's actor as a phrase: "you" for the viewer, "the factory", "worker 2", else "a person" (never a name). */
+function actorPhrase(actor: TimelineEntry["actor"], viewer: string | null): string {
+  const id = actor.kind === "system" ? null : actor.id;
+  if (!id || id === "system") return t("person.factory");
+  if (isWorkerId(id)) return workerName(id);
+  return id === viewer ? t("person.you") : t("person.other");
+}
+
+/** One timeline row's sentence ("You asked for a retry"); "Changed" for a reason with no sentence. */
+function timelineSentence(entry: TimelineEntry, viewer: string | null): string {
+  const key = `timeline.${entry.reason}`;
+  if (!entry.reason || !(key in en)) return t("item.change");
+  const whom = actorPhrase(entry.actor, viewer);
+  return t(key as MessageKey, { who: whom.charAt(0).toLocaleUpperCase() + whom.slice(1), whom });
 }
 
 function TimelineRow({ entry, now, viewer }: { entry: TimelineEntry; now: number; viewer: string | null }) {
@@ -604,21 +648,14 @@ function TimelineRow({ entry, now, viewer }: { entry: TimelineEntry; now: number
     <li className="flex gap-3">
       <span className="w-16 shrink-0 text-right text-text-3 tabular-nums"><When at={entry.at} now={now} /></span>
       <div className="min-w-0 flex-1 break-words">
-        <span className="font-medium">{entry.reason ? termLabel(entry.reason) : t("item.change")}</span>
-        <span className="text-text-3">{t("item.by")}</span>
-        <PersonName id={entry.actor.kind === "system" ? null : entry.actor.id} name={entry.actor.name} viewer={viewer} />
-        {short.length > 0 && (
-          <span className="text-text-2">
-            {" "}— {short.map(([f, c]) => `${termLabel(f)}: ${plainValue(parseValue(c.from))} → ${plainValue(parseValue(c.to))}`).join(", ")}
-          </span>
-        )}
-        {short.length > 0 && (
-          <RawDetails className="mt-1">
-            <ul className="mt-1 font-mono text-xs break-all">
-              {short.map(([f, c]) => <li key={f}>{`${f}: ${shortValue(parseValue(c.from))} → ${shortValue(parseValue(c.to))}`}</li>)}
-            </ul>
-          </RawDetails>
-        )}
+        <span className="font-medium">{timelineSentence(entry, viewer)}</span>
+        <RawDetails className="mt-1">
+          <ul className="mt-1 font-mono text-xs break-all">
+            {entry.reason && <li>{entry.reason}</li>}
+            <li>{entry.actor.id}</li>
+            {short.map(([f, c]) => <li key={f}>{`${f}: ${shortValue(parseValue(c.from))} → ${shortValue(parseValue(c.to))}`}</li>)}
+          </ul>
+        </RawDetails>
         {spec.length > 0 && (
           <div className="mt-1">
             <Button variant="ghost" size="sm" aria-expanded={open} onClick={() => setOpen(!open)} className={LINK_CLASS}>
@@ -628,7 +665,7 @@ function TimelineRow({ entry, now, viewer }: { entry: TimelineEntry; now: number
               <div data-spec className="mt-2 space-y-3 rounded-control border border-border p-3">
                 {spec.map(([f, c]) => (
                   <div key={f}>
-                    <h3 className="mb-1 text-xs font-semibold text-text-2">{SPEC_FIELDS[f]}</h3>
+                    <h3 className={cn("mb-1", SUB_TITLE)}>{SPEC_FIELDS[f]}</h3>
                     <Markdown text={specMarkdown(parseValue(c.to))} />
                   </div>
                 ))}
@@ -736,8 +773,9 @@ function CheckList({ checks }: { checks: Health["checks"] }) {
       {checks.map((c, i) => (
         <li key={i} className="flex items-baseline gap-2">
           <Badge level={HEALTH_TONE[c.status]}>{checkLabel(c.status)}</Badge>
+          {/* The sentence is plain words, any name it quotes as written in data-raw; the detail is behind RawDetails. */}
           <span className="min-w-0 text-pretty break-words">
-            {c.msg}
+            <RawNames text={c.msg} />
             {c.since !== undefined && <span className="text-text-2">{" · "}<When at={c.since} now={now} label="health.checkSince" /></span>}
             {c.next !== undefined && <span className="text-text-2">{" · "}<When at={c.next} now={now} label="health.checkNext" /></span>}
             {c.detail !== undefined && <RawDetails className="mt-1"><code className="font-mono text-xs whitespace-pre-wrap break-all">{c.detail}</code></RawDetails>}
@@ -831,6 +869,8 @@ export function HealthPage() {
   const viewer = useViewer();
   const held = (pauses.data?.pauses.length ?? 0) > 0;
   const [picked, pick] = useUrlParam("tab", (v) => ["checks", "pauses", "sleeps", "merges", "efficiency", "improve", "github"].includes(v));
+  // The Failures window (`?window=`): a page control in the toolbar's second row, read by FailuresSection below every tab.
+  const [failuresWindow, setFailuresWindow] = useFailuresWindow();
   if (health.isError) return <><PageHeader title={t("page.health")} /><ErrorNote error={health.error} /></>;
   if (!health.data) return <><PageHeader title={t("page.health")} /><Loading rows={6} /></>;
   const order = ["fail", "warn", "ok"];
@@ -858,8 +898,10 @@ export function HealthPage() {
   return (
     <>
       <PageHeader title={t("page.health")} />
+      <PageToolbar tabs={<Tabs label={t("health.tabs")} options={options} value={tab} onChange={pick} />}>
+        <FailuresWindowSwitch value={failuresWindow} onChange={setFailuresWindow} />
+      </PageToolbar>
       <CodeRevision factory={overview.data?.factory} />
-      <Tabs label={t("health.tabs")} options={options} value={tab} onChange={pick} />
       {tab === "checks" && (
         <Card title={checksTitle(checks.length, open.length, relativeTime(health.data.checked_at, now))}>
           <CheckList checks={open} />
@@ -893,7 +935,7 @@ export function HealthPage() {
                       <ul className="ml-4 list-disc">
                         {[...h.runs].map(([id, r]) => (
                           <li key={id}>
-                            <Link href={itemPath(r.work_item_id)} className={LINK_CLASS}>{r.work_item_id}</Link>: {runStatusLabel(r.status)}
+                            <Link href={itemPath(r.work_item_id)} data-raw className={LINK_CLASS}>{r.work_item_id}</Link>: {runStatusLabel(r.status)}
                           </li>
                         ))}
                       </ul>
@@ -931,7 +973,7 @@ export function HealthPage() {
       {tab === "improve" && improve && <Improve view={improve} />}
       {tab === "github" && budget && <GitHubBudgetTab budget={budget} tokenDays={overview.data?.github_token_days} />}
       <SpendSection />
-      <FailuresSection />
+      <FailuresSection win={failuresWindow} />
     </>
   );
 }

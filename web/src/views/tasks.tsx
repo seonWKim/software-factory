@@ -4,7 +4,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { API, type ProjectChoice, type TaskRow, type TasksView, postTaskAction, useTasks } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { announceStatus } from "../components/ui/dialog.js";
-import { EmptyState, PageHeader } from "../components/ui/notice.js";
+import { EmptyState, PageHeader, PageToolbar } from "../components/ui/notice.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { OverflowMenu } from "../components/ui/menu.js";
 import { Pagination } from "../components/ui/pagination.js";
@@ -44,7 +44,7 @@ import { Card } from "../components/ui/card.js";
 // project's "⋯" menu, after the tabs, holds Delete: the danger Dialog names the project and its task count (from the
 // loaded read) and says the tasks are kept; confirm posts POST /api/v1/projects/delete (`factory project delete`), the
 // tab goes at once and the filter falls back to All projects (design 09-dashboard-tasks).
-// The page's order (design 09-dashboard-app): the project tabs, Quick add, Needs you, the list; the blocks
+// The page's order (design 09-dashboard-app): the project tabs, Needs you, Merged without you, Worth sampling, Quick add, the list; the blocks
 // are spaced by one flex gap, the Section gap of design-system/patterns.md.
 
 /** The one paginated list; page 1 opens on the overdue and today groups. */
@@ -133,8 +133,8 @@ export function TasksPage() {
   return (
     <>
     <PageHeader title={t("page.tasks")} />
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-col items-start gap-3">
+    <PageToolbar
+      tabs={
         <ProjectTabs
           projects={known.current}
           value={project}
@@ -150,21 +150,24 @@ export function TasksPage() {
             </>
           }
         />
-        {adding && token !== null && <AddProjectDialog token={token} returnFocusTo={addButton} onCreated={setProject} onClose={() => setAdding(false)} />}
-        {deleting !== null && token !== null && (
-          <DeleteProjectDialog
-            project={deleting}
-            tasks={held}
-            token={token}
-            returnFocusTo={addButton}
-            onDeleted={() => {
-              known.current = known.current.filter((p) => p.slug !== deleting.slug);
-              if (project === deleting.slug) setProject(null);
-            }}
-            onClose={() => setDeleting(null)}
-          />
-        )}
-      </div>
+      }
+    />
+    {adding && token !== null && <AddProjectDialog token={token} returnFocusTo={addButton} onCreated={setProject} onClose={() => setAdding(false)} />}
+    {deleting !== null && token !== null && (
+      <DeleteProjectDialog
+        project={deleting}
+        tasks={held}
+        token={token}
+        returnFocusTo={addButton}
+        onDeleted={() => {
+          known.current = known.current.filter((p) => p.slug !== deleting.slug);
+          if (project === deleting.slug) setProject(null);
+        }}
+        onClose={() => setDeleting(null)}
+      />
+    )}
+    <div className="flex flex-col gap-6">
+      <NeedsYou project={project} linked={linked} />
       <div className="space-y-1">
         <QuickAdd token={v?.csrf_token ?? null} addKey={v?.add_key ?? "enter"} project={project} />
         {undo.error !== null && (
@@ -173,7 +176,6 @@ export function TasksPage() {
           </p>
         )}
       </div>
-      <NeedsYou project={project} linked={linked} />
       <div>
         <Card label={t("tasks.listLabel")}>
           <div className="space-y-3">

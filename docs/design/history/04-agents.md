@@ -1,5 +1,6 @@
 ## History
 
+- **Each review finding is confirmed before it sends the item back** (decision changed 2026-11-22). Before: every finding of a review sent the item back at once, with no check: a `code` finding started another implement run (a review loop) and a `spec` finding a spec revision, so a wrong finding cost a full loop.
 - **Review class per tier** (decision changed 2026-11-22, owner answer 1). Before: "Review moves from strong to standard by default, which lowers the reviewer's model: a human confirms this at merge." Review used `standard` at every tier, so tier 3–5 changes, implemented with `strong`, were reviewed with the weaker model.
 - **Done-when lines built differently** (decision changed 2026-11-20). Before: the reviewer checked each done criterion against the diff and flagged only a criterion it judged unmet, so a line built differently for a reason in an owner note or decision passed silently and the owner never saw the gap; the review output had no field for it.
 - **A UI change the review could not check** (decision changed 2026-11-19). Before: the reviewer listed a UI change's unrun build, type-check and screenshots under `unverified`, which never changed the verdict, so the header read `pass` and auto mode could merge it with nobody having seen the UI; a project without `repo.ui_check` got no UI check at all.
