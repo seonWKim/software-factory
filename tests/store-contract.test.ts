@@ -674,6 +674,16 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect(await store.countWorkItemsByStage()).toEqual({ NEW: 1, READY: 0, RUNNING: 0, REVIEW: 0, CLOSED: 1 });
     });
 
+    it("system items are left out of countWorkItemsByStage and of lists that exclude them", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      const sys = await store.createWorkItem({ ...issue(2), hold: { blocked_on: "upstream", blocked_reason: "system_item" } }, system);
+      expect((await store.countWorkItemsByStage()).NEW).toBe(1);
+      expect((await store.listWorkItemsWhere({ exclude_system: true, limit: 10 })).map((i) => i.id)).toEqual([item.id]);
+      expect(await store.countWorkItemsWhere({ exclude_system: true })).toBe(1);
+      expect((await store.listWorkItemsWhere({ limit: 10 })).map((i) => i.id)).toContain(sys.item.id);
+    });
+
     it("listRunsByStatus returns runs in the given statuses, oldest first, up to the limit", async () => {
       const { store, clock } = await make();
       for (let n = 1; n <= 3; n++) {
