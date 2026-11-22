@@ -1,9 +1,6 @@
 import { Plugins, build } from "../../../compose.js";
 import type { WorkItemId } from "../../../core/types.js";
 import { modelStallLine } from "../../../ui/factory-status.js";
-import { NO_FILTERS } from "../../../ui/filters.js";
-import { listRows } from "../../../ui/list.js";
-import { Withholder } from "../../../ui/withhold.js";
 import { defineCommand } from "../../command.js";
 import { statusLines } from "./lines.js";
 
@@ -27,6 +24,8 @@ export default defineCommand({
       if (flag === "--json") console.log(JSON.stringify(fields, null, 2));
       else if (flag === "--raw") console.table(fields);
       else {
+        // Loaded only here: the other forms of status need none of the dashboard's list code.
+        const [{ NO_FILTERS }, { listRows }, { Withholder }] = await Promise.all([import("../../../ui/filters.js"), import("../../../ui/list.js"), import("../../../ui/withhold.js")]);
         // The dashboard's own ranked rows (listRows), so the state words match its list.
         const ctx = { store: app.store, w: new Withholder(await new Plugins(app.loaded).scanner(app.secrets)), now: app.clock.now(), lease_ms: app.loaded.config.lease_ms };
         const ids = new Set(items.map((i) => i.id));
