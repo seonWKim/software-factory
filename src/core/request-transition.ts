@@ -352,6 +352,38 @@ export function resolveHeld(it: Pick<WorkItem, "stage" | "blocked_on" | "blocked
   return last?.kind === "resolve";
 }
 
+/** The reason of the owner's `factory merge` on an item a failed merge check stopped at max_loops: max_loops → merge_pending. */
+export const MERGE_CHECK_AGAIN = "merge_check_again";
+
+/**
+ * Stopped at `max_loops` by a failed merge check (design 04-spec-gate-commands, 2026-11-23): a local item with no PR,
+ * blocked on a human with max_loops, whose latest max_loops state change carries the merge queue's `entry_id`. A
+ * max_loops from implement loops (a review or feedback round) carries none.
+ */
+export function mergeCheckStopped(it: Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason" | "change_ref">, changes: readonly Pick<StateChange, "reason" | "detail">[]): boolean {
+  if (it.stage !== "REVIEW" || it.blocked_on !== "human" || it.blocked_reason !== "max_loops" || it.change_ref !== null) return false;
+  return typeof changes.filter((c) => c.reason === "max_loops").at(-1)?.detail?.entry_id === "string";
+}
+
+/**
+ * The owner's `factory merge` on an item mergeCheckStopped: one state change back to merge_pending under
+ * MERGE_CHECK_AGAIN, the owner as actor, so the change enters the merge queue for one more check. The loop count is
+ * not checked; a failed check stops it at max_loops again. Null when the item no longer is there.
+ */
+export function mergeCheckAgain(it: WorkItem, changes: readonly StateChange[], actor: Actor): Transition | null {
+  if (!mergeCheckStopped(it, changes)) return null;
+  return { patch: { blocked_on: "human", blocked_reason: "merge_pending" }, actor, reason: MERGE_CHECK_AGAIN, detail: { loop_count: it.loop_count } };
+}
+
+/** `/help`'s line for `factory merge <id>` on an item mergeCheckStopped (src/core/commands.ts helpReply). */
+export const MERGE_CHECK_HELP_LINE = "- `factory merge <id>` **(now)**: The owner checks the merged result once more and it merges when the check passes; the loop count does not block it, and a failed check stops it here again.";
+
+/** The reason for `/retry` on an item mergeCheckStopped: no run failed, and `factory merge` is a choice. */
+export function mergeCheckRetryRefusal(id: string): string {
+  return "the item reached the review loop limit because its merged result failed the merge check, so there is no failed run to retry; " +
+    `run \`factory merge ${id}\` to check the merged result once more, \`/revise <feedback>\` for a new spec, or \`/reject <reason>\` to close`;
+}
+
 /** Which merge an item takes (design 05-sources): a local item with no PR the local merge, any other its PR's merge. */
 export function mergeRoute(it: Pick<WorkItem, "source" | "change_ref">): "local" | "pr" {
   return it.source.type === LOCAL_SOURCE && it.change_ref === null ? "local" : "pr";
@@ -364,7 +396,9 @@ export type ChangeName = (change_ref: string) => string;
  * Why the local merge does not apply to `it` (`canMerge`: a sandbox that merges locally), or null. A local item parked
  * on its merge conflict passes too (design §5 Merge conflict, 2026-11-20): the controller probes its branch as it is,
  * so a branch fixed by hand goes to a fresh review and one that still conflicts is refused with its files. `held`: it
- * is held after its resolve failed (resolveHeld), which passes like a parked one (2026-11-21).
+ * is held after its resolve failed (resolveHeld), which passes like a parked one (2026-11-21), or a failed merge check
+ * stopped it at max_loops (mergeCheckStopped, design 04-spec-gate-commands 2026-11-23), which the owner's merge
+ * sends to one more check. A max_loops from implement loops is refused.
  */
 export function localMergeRefusal(it: WorkItem, canMerge: boolean, name: ChangeName, held = false): string | null {
   if (!(awaitingMerge(it) || conflictParked(it) || held) || it.change_ref !== null) {
