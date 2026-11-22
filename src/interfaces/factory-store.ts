@@ -19,6 +19,7 @@ import type { PostedCommentReads } from "../core/reaction-verdict.js";
 import type { RunOutputStore } from "../core/stall.js";
 import type { SessionReservation, SessionReservationStore } from "../core/session.js";
 import type { ProposalStore } from "../core/proposals.js";
+import type { StandingChangeStore } from "../core/standing.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
@@ -355,7 +356,7 @@ export interface NoticeMessageStore {
   getNoticeQuestion(id: string): Promise<NoticeQuestion | null>;
 }
 
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore {
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes
@@ -606,9 +607,8 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   /** Sets the outcome of row `id` only while it has none: true when this call wrote it, false when one was there. */
   setFiledPatternOutcome(id: FiledPatternId, outcome: NonNullable<FiledPattern["outcome"]>, at: Timestamp): Promise<boolean>;
 
-  // Standing approvals (design 05-standing-approvals). Stored only: nothing acts on a rule or a proposal yet.
-
-  /** Writes the rule of (gate, tier): a new row, or the stored row's `enabled` and `set_by` with a new `updated_at`. */
+  // Standing approvals (design 05-standing-approvals); deleting a rule and its change records: StandingChangeStore.
+  /** Writes the rule of (gate, tier), a new row or the stored row's `enabled` and `set_by` with a new `updated_at`, and its change record. */
   putStandingRule(input: NewStandingRule): Promise<StandingRule>;
   /** Every rule, by gate then tier. */
   listStandingRules(): Promise<StandingRule[]>;

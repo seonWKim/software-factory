@@ -35,6 +35,8 @@ export const TABLE_DOCS: Readonly<Record<string, string>> = {
   controller_projects: "Projects the owner groups plain tasks in, each with its unique slug and when it was archived.",
   controller_signals:"The signal ledger: gate decisions, verdicts, failed runs and other signals, as ids and codes only.",
   controller_standing_proposals: "Offers to turn on a standing approval after a run of the same approvals.",
+  controller_standing_rule_changes: "Every change to a standing approval (turned on, paused, threshold changed, removed): before, after and who made it.",
+  "controller_standing_rule_changes.actor": "The user ID of who made the change, never a display name.",
   controller_standing_rules: "Standing approvals: the gates the factory passes by itself, per tier.",
   controller_state_changes: "Every work item state change: who made it, why, and the fields it changed.",
   "controller_state_changes.changes": "JSON of the fields changed, each with its old and new value.",
