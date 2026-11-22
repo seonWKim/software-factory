@@ -585,8 +585,8 @@ export interface Prompts {
   triage: string;
   implement: string;
   review: string;
-  /** prompts/resolve.md. Absent when the file is missing; a resolve run then fails with `prompt_missing`. */
-  resolve?: string;
+  resolve?: string; // prompts/resolve.md; absent when the file is missing: a resolve run then fails with `prompt_missing`
+  "review-confirm"?: string; // prompts/review-confirm.md (design 04-agents); absent: each confirm step fails and its finding stays
   /** prompts/improve.md, the improve run's system prompt (design §7). Absent: the improve run asks no model. */
   improve?: string;
 }
