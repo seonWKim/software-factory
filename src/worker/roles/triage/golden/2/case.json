@@ -1,0 +1,10 @@
+{
+  "id": "2",
+  "work_item_id": "golden_triage_2",
+  "expect": "should_pass",
+  "uses": ["prompt:triage.md"],
+  "note": "Vague-requester persona: the cause and the fix are open, so the spec must ask the owner.",
+  "checks": [
+    { "kind": "asks_question" }
+  ]
+}
