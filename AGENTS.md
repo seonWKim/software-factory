@@ -2,6 +2,12 @@
 
 A software factory for one owner: a set of agents that takes work items (GitHub issues, Slack threads) through triage → implement → review → human gate. Built by hand to a minimal version, then built further by itself.
 
+## North star
+
+The best self-evolving software factory for one person.
+
+Weigh every change against it: does it make the factory better at building software for its one owner, or better at improving itself? When two choices are otherwise equal, pick the one that serves this.
+
 ## Where things are
 
 | File | What |
