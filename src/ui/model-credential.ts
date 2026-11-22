@@ -2,13 +2,14 @@
 // /api/v1/model-credential names the secrets the selected runners declare for their model credential (the `oneOf`
 // group compose.ts modelCredentialSecrets reads) and the page's CSRF token; POST /api/v1/model-credential writes the
 // pasted values to the factory's secret file through the setup writer (the one `npm run setup` and the calendar connect
-// use), then ends the store-wide `model_credential` claim pause, so Needs you clears and the next worker tick claims the
-// waiting runs (its secret store reads the file again within seconds, worker-deps.ts claimableKinds). The request
+// use). It leaves the store-wide `model_credential` claim pause to the workers: the first worker tick whose secret
+// store has read the file again (within RELOAD_MS, env-file-secret-store.ts) ends it and claims the waiting runs, and
+// Needs you clears (worker-deps.ts claimableKinds). Ending it here would race that reload: a tick before it finds no
+// credential, starts the pause again and logs the warning again. The request
 // guards (Host, Origin, Content-Type, CSRF token, body size, JSON) run in server.ts; then the owner check server.ts
 // passes in (rules-api.ts ownerOf: the store's owner only); every refusal comes before any write. Write-only: no value is returned, logged or stored in the store;
 // answers and log lines name secrets, never values.
 
-import { MODEL_CREDENTIAL } from "../core/policy.js";
 import { errorText } from "../core/log.js";
 import { type ApiResult, apiError } from "./api.js";
 import type { PauseDeps } from "./pause-api.js";
@@ -43,7 +44,7 @@ export function readModelCredential(d: PauseDeps): ApiResult {
 /** Who acts from the page when it is the store's owner, else why not (rules-api.ts ownerOf, given what the action does). */
 export type OwnerCheck = (does: string) => Promise<{ user: string } | { error: string }>;
 
-/** POST /api/v1/model-credential after server.ts's guards: the owner check, the body, the write, then the pause ends. */
+/** POST /api/v1/model-credential after server.ts's guards: the owner check, the body, the write; the next worker tick that sees it ends the pause. */
 export async function writeModelCredential(d: PauseDeps, owner: OwnerCheck | null, body: unknown): Promise<ApiResult> {
   const m = d.settings?.modelCredential;
   if (!m) return apiError(404, "Not found.");
@@ -60,9 +61,8 @@ export async function writeModelCredential(d: PauseDeps, owner: OwnerCheck | nul
     return apiError(422, await text(errorText(err)));
   }
   const names = [...b.values.keys()];
-  const resumed = (await d.store.endClaimPause(MODEL_CREDENTIAL)).ended;
-  d.pauses?.log.info("model credential saved from the dashboard", { secrets: names.join(","), by: who.user, resumed });
-  return { status: 200, value: { saved: names, resumed } };
+  d.pauses?.log.info("model credential saved from the dashboard", { secrets: names.join(","), by: who.user });
+  return { status: 200, value: { saved: names } };
 }
 
 /** `{ values: { NAME: value } }` with at least one declared name and only declared names; empty values are left out. */

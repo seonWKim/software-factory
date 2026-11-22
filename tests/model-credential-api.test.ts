@@ -96,14 +96,15 @@ describe("Add model credential (design 09-status-page)", () => {
   });
 
   // Bug: the only way to add the credential is `npm run setup` in a terminal; the dashboard says one is missing and stops there.
-  it("POST writes the value under the declared name, ends the pause, and Needs you clears; no answer or log carries the value", async () => {
+  // Bug: the write ends the pause itself, and a worker tick before its secret store reads the file again starts it
+  // again (the end-to-end race is in model-credential-setup.test.ts); the first tick that sees the credential ends it.
+  it("POST writes the value under the declared name and leaves the pause to the workers; no answer or log carries the value", async () => {
     const p = await page();
     expect(await p.codes()).toContain("model_credential");
     const r = await p.post({ values: { [OAUTH]: `  ${VALUE}\n`, [API_KEY]: "" } });
-    expect(r).toEqual({ status: 200, value: { saved: [OAUTH], resumed: true } });
+    expect(r).toEqual({ status: 200, value: { saved: [OAUTH] } });
     expect([...p.saved]).toEqual([[OAUTH, VALUE]]);
-    expect(await p.store.getClaimPause(MODEL_CREDENTIAL)).toBeNull();
-    expect(await p.codes()).not.toContain("model_credential");
+    expect(await p.store.getClaimPause(MODEL_CREDENTIAL)).not.toBeNull();
     expect(p.log.lines.some((l) => l.startsWith("model credential saved") && l.includes(OAUTH))).toBe(true);
     expectNoValue(p);
   });

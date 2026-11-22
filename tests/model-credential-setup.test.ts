@@ -113,7 +113,9 @@ describe("a missing model credential (design §5 Restarts, setup state)", () => 
   });
 
   // Bug: the dashboard says a credential is missing but cannot add one; the owner must open a terminal for `npm run setup`.
-  it("the dashboard's Add model credential writes the secret file (made when absent), Needs you clears, and the next tick claims the run", async () => {
+  // Bug: the save ends the pause at once, but the workers' secret store reads the file again only after RELOAD_MS, so a
+  // tick in that window finds no credential, starts the pause again, logs the warning again, and the row comes back.
+  it("the dashboard's Add model credential writes the secret file (made when absent); a tick before the reload keeps the pause quietly, the first after it clears Needs you and claims the run", async () => {
     const f = await factory();
     await f.tick();
     const [queued] = await f.store.listRuns(f.item.id);
@@ -130,15 +132,26 @@ describe("a missing model credential (design §5 Restarts, setup state)", () => 
       method: "POST", url: MODEL_CREDENTIAL_PATH, host: "127.0.0.1:4310", origin: "http://127.0.0.1:4310", contentType: "application/json", csrfToken,
       body: JSON.stringify({ values: { CLAUDE_CODE_OAUTH_TOKEN: TOKEN } }),
     });
-    expect(JSON.parse(r.body)).toEqual({ saved: ["CLAUDE_CODE_OAUTH_TOKEN"], resumed: true });
+    expect(JSON.parse(r.body)).toEqual({ saved: ["CLAUDE_CODE_OAUTH_TOKEN"] });
     expect(r.body).not.toContain(TOKEN);
     expect(readFileSync(f.file, "utf8")).toContain(`CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}`);
     expect(statSync(f.file).mode & 0o777).toBe(0o600);
-    expect((await f.overview()).system_actions).toEqual([]);
-    // The workers' secret store reads the file again within RELOAD_MS: no restart.
+    const warnings = () => f.log.lines.filter((l) => l.msg.startsWith("model credential missing")).length;
+    const before = warnings();
+    const pause = await f.store.getClaimPause("model_credential");
+    // Inside the reload window the workers still read the old file: the pause that holds stays as it was, no new warning.
+    f.clock.advance(1000);
+    await f.tick();
+    expect(await f.store.getClaimPause("model_credential")).toEqual(pause);
+    expect(warnings()).toBe(before);
+    expect((await f.store.getRun(queued!.id))!.status).toBe("queued");
+    // The workers' secret store reads the file again within RELOAD_MS: the next tick ends the pause, no restart.
     f.clock.advance(RELOAD_MS);
     await f.tick();
+    expect(await f.store.getClaimPause("model_credential")).toBeNull();
+    expect((await f.overview()).system_actions).toEqual([]);
     expect((await f.store.getRun(queued!.id))!.status).toBe("succeeded");
+    expect(warnings()).toBe(before);
     expect(f.log.lines.map((l) => JSON.stringify(l))).not.toContainEqual(expect.stringContaining(TOKEN));
   });
 

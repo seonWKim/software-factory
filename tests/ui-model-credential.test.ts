@@ -29,7 +29,7 @@ let answer: { status: number; body: unknown };
 
 beforeEach(() => {
   posts = [];
-  answer = { status: 200, body: { saved: [SECRETS[0]], resumed: true } };
+  answer = { status: 200, body: { saved: [SECRETS[0]] } };
   // jsdom has no showModal: open by the attribute.
   HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", ""); };
   vi.stubGlobal("location", { ...window.location, search: "" });
