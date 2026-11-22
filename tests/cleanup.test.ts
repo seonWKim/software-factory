@@ -2,7 +2,7 @@
 // the history lines, failures, the dry run, the off switch, handler discovery and each handler. Real git in temporary
 // repositories and run folders made by NoOpSandbox; a fake store, clock and process table.
 
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -92,9 +92,10 @@ async function machine(ids: readonly string[] = ["wi_1"]) {
   const detached = (await sandbox.create({ repo: dir, branch: null, base_ref: "main" })).workdir;
   const procs: HostProcess[] = [];
   const stopped: number[] = [];
+  const tempRoot = realpathSync(mkdtempSync(join(tmpdir(), "sf-cleanup-agent-tmp-")));
   const env: CleanupEnv = {
     repo: dir, worktreesDir, branchPrefix: "factory/", baseBranch: "main", run: runProcess,
-    processes: { list: async () => procs, stop: async (pid) => void stopped.push(pid) },
+    processes: { list: async () => procs, stop: async (pid) => void stopped.push(pid) }, agentTempRoots: [tempRoot],
   };
   const clock = new FakeClock("2026-11-20T00:00:00.000Z");
   const store = new FakeStore(clock);
@@ -106,7 +107,16 @@ async function machine(ids: readonly string[] = ["wi_1"]) {
       store: store.api, env: { ...env, ...(o.run ? { run: o.run } : {}) }, clock, log, host: "h1",
       config: { enabled: o.enabled ?? true, keep_hours: o.keep_hours ?? 24 },
     });
-  return { dir, worktreesDir, folders, detached, env, clock, store, procs, stopped, errors, cleaner };
+  /** The temp folder Claude Code leaves for `runFolder`, with a file in it, last used at the fake clock's time. */
+  const agentTemp = (runFolder: string) => {
+    const path = join(tempRoot, runFolder.replace(/[^A-Za-z0-9]/g, "-"));
+    mkdirSync(join(path, "tasks"), { recursive: true });
+    writeFileSync(join(path, "tasks", "out.txt"), "x".repeat(4096));
+    const at = clock.now();
+    for (const p of [join(path, "tasks"), path]) utimesSync(p, at, at);
+    return path;
+  };
+  return { dir, worktreesDir, folders, detached, env, clock, store, procs, stopped, errors, cleaner, tempRoot, agentTemp };
 }
 
 type Machine = Awaited<ReturnType<typeof machine>>;
@@ -317,8 +327,9 @@ describe("cleanup.enabled", () => {
 describe("handler discovery", () => {
   it("finds the run-folder, branch and process handlers, one folder each, a process stopping before its folder goes", async () => {
     const names = (await discoverHandlers()).map((h) => h.name);
-    expect(names).toEqual(expect.arrayContaining(["process", "run-folder", "branch"]));
+    expect(names).toEqual(expect.arrayContaining(["process", "agent-temp", "run-folder", "branch"]));
     expect(names.indexOf("process")).toBeLessThan(names.indexOf("run-folder"));
+    expect(names.indexOf("agent-temp")).toBeLessThan(names.indexOf("run-folder"));
   });
 
   it("refuses a handler file whose default export is not defineCleanupHandler", async () => {
@@ -429,6 +440,67 @@ describe("process handler", () => {
     expect(parseLsofCwd("p12\ncnode\nfcwd\nn/a/b\np13\ncChrome Helper\nfcwd\nn/c d\n")).toEqual([
       { pid: 12, command: "node", cwd: "/a/b" }, { pid: 13, command: "Chrome Helper", cwd: "/c d" },
     ]);
+  });
+});
+
+describe("agent-temp handler", () => {
+  it("lists the agent's temp folder of each run folder, under that folder while it is there, and accepts only those", async () => {
+    const m = await machine();
+    const h = await handler("agent-temp");
+    const withFolder = m.agentTemp(m.folders.wi_1!);
+    const orphan = m.agentTemp(join(m.worktreesDir, "sbx_0badc0de"));
+    m.agentTemp(join(m.dir, "elsewhere", "sbx_12345678"));
+    mkdirSync(join(m.tempRoot, "-Users-someone"));
+    const listed = await h.list(m.env);
+    expect(listed.map((r) => r.key).sort()).toEqual([withFolder, orphan].sort());
+    expect(listed.find((r) => r.key === withFolder)!.parent).toBe(m.folders.wi_1);
+    const gone = listed.find((r) => r.key === orphan)!;
+    expect(gone.parent).toBeUndefined();
+    expect(gone.item_id).toBeNull();
+    expect(gone.idle_since).toBe(m.clock.now().getTime());
+    expect(h.accepts(gone)).toBe(true);
+    expect(h.accepts({ kind: "run-folder", key: "/x", label: "", item_id: "wi_1", data: { path: "/x" } })).toBe(false);
+  });
+
+  it("cleanup removes the temp folder and reports the bytes freed", async () => {
+    const m = await machine();
+    const h = await handler("agent-temp");
+    const path = m.agentTemp(m.folders.wi_1!);
+    const r = (await h.list(m.env)).find((x) => x.key === path)!;
+    expect((await h.cleanup(r, m.env)).bytes).toBeGreaterThan(0);
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it("goes with its closed item's run folder, one history line with its size", async () => {
+    const m = await machine();
+    const path = m.agentTemp(m.folders.wi_1!);
+    closedPastKeep(m);
+    const r = await m.cleaner().sweep();
+    expect(labels(r.removed)).toEqual(expect.arrayContaining([`agent temp folder ${path}`, `run folder ${m.folders.wi_1}`]));
+    expect(existsSync(path)).toBe(false);
+    const lines = m.store.history("wi_1").map((c) => c.detail!).filter((d) => d.removed === `agent temp folder ${path}`);
+    expect(lines).toEqual([expect.objectContaining({ kind: "agent-temp", bytes_freed: expect.any(Number) })]);
+  });
+
+  it("in use: the temp folder of a run that is still running stays", async () => {
+    const m = await machine();
+    const path = m.agentTemp(m.folders.wi_1!);
+    closedPastKeep(m);
+    m.store.run("wi_1", { status: "running" });
+    const r = await m.cleaner().sweep();
+    expect(keptReason(r, `agent temp folder ${path}`)).toContain("is running");
+    expect(existsSync(path)).toBe(true);
+  });
+
+  it("one whose run folder is gone goes once it was not used for keep_hours; before that it stays", async () => {
+    const m = await machine();
+    const path = m.agentTemp(join(m.worktreesDir, "sbx_0badc0de"));
+    m.clock.advance(23 * HOUR);
+    expect(keptReason(await m.cleaner().sweep(), `agent temp folder ${path}`)).toContain("cleanup.keep_hours");
+    expect(existsSync(path)).toBe(true);
+    m.clock.advance(2 * HOUR);
+    expect(labels((await m.cleaner().sweep()).removed)).toContain(`agent temp folder ${path}`);
+    expect(existsSync(path)).toBe(false);
   });
 });
 

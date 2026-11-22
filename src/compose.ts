@@ -64,7 +64,7 @@ import { LearnedRules, joinGuidance } from "./core/learned-rules.js";
 import { checkToolchainEnv, codeVersion, readRestarts, uiCommandsActor, uiUserId, workerIndexBase } from "./config-values.js";
 import { type Loaded, loadConfig, localProject, resolvedConfig } from "./load-config.js";
 import { reviewReplay } from "./golden-replay.js";
-import { Cleaner, type CleanupStore, cleanupConfig, hostProcesses } from "./cleanup/index.js";
+import { Cleaner, type CleanupStore, agentTempRoots, cleanupConfig, hostProcesses } from "./cleanup/index.js";
 
 export { CODE_ROOT_ENV, CONFIG_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 
@@ -168,7 +168,7 @@ export async function hostCleaner(loaded: Loaded, store: CleanupStore, clock: Cl
   const worktreesDir = await realpath(loaded.worktreesDir).catch(() => loaded.worktreesDir);
   return new Cleaner({
     store, clock, config: cleanupConfig(loaded.file), host: hostId(loaded.stateDir), log: new ConsoleLogger(clock, "cleanup"),
-    env: { repo: repo.path, worktreesDir, branchPrefix: branch_prefix, baseBranch: repo.base_branch, run: runProcess, processes: hostProcesses(runProcess, repo.path) },
+    env: { repo: repo.path, worktreesDir, branchPrefix: branch_prefix, baseBranch: repo.base_branch, run: runProcess, processes: hostProcesses(runProcess, repo.path), agentTempRoots: agentTempRoots() },
   });
 }
 
@@ -307,7 +307,7 @@ export async function build(
     ...(loaded.config.local_only === true ? {} : { github_budget: () => github.status(), refresh_forge_budget: () => github.refreshSharedBudget() }),
     // The red-main check after an automatic merge (design 03-risk) runs the checks with the worker's base env.
     check_env: baseEnv(),
-    cleanup: await hostCleaner(loaded, store, clock), // closed items' run folders, branches and processes (design 08-cleanup)
+    cleanup: await hostCleaner(loaded, store, clock), // closed items' run folders, branches, processes and agent temp folders (design 08-cleanup)
   });
 
   const id_prefix = `${hostname()}:${process.pid}`;

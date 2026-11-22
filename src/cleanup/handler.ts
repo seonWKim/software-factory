@@ -31,6 +31,8 @@ export interface CleanupEnv {
   readonly baseBranch: string;
   readonly run: CommandRunner;
   readonly processes: ProcessTable;
+  /** Where an agent runtime leaves a temp folder per run folder it ran in (Claude Code: `/tmp/claude-<uid>`). */
+  readonly agentTempRoots: readonly string[];
 }
 
 /** One thing a handler may remove. */
@@ -44,6 +46,11 @@ export interface Resource {
   /** The work item it belongs to; null: none, and it stays with `unowned` as the reason. */
   readonly item_id: string | null;
   readonly unowned?: string;
+  /**
+   * Of a resource with no item and no parent that nothing uses any more: when it was last used (ms). It goes once
+   * `cleanup.keep_hours` passed since then, instead of staying with `unowned` as the reason.
+   */
+  readonly idle_since?: number;
   /** The key of the resource it lives in: it goes only in a pass where that one goes too. */
   readonly parent?: string;
   /** The handler's own facts (a path, a sha, a pid). */

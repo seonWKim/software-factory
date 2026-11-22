@@ -89,8 +89,8 @@ export class Cleaner {
       if (scope && (r.item_id === null || !scope.has(r.item_id))) continue;
       const handler = handlers.find((h) => h.accepts(r)) ?? null;
       let keep = handler ? null : "no handler accepts it";
-      if (keep === null && r.item_id === null) keep = r.unowned ?? "it belongs to no work item";
-      if (keep === null) keep = await guard(r.item_id!);
+      if (keep === null && r.item_id === null) keep = r.idle_since === undefined ? r.unowned ?? "it belongs to no work item" : this.idle(r.idle_since, now);
+      else if (keep === null) keep = await guard(r.item_id!);
       if (keep === null) keep = await handler!.keep(r, this.d.env).catch((err: unknown) => `its check failed: ${errorText(err)}`);
       byKey.set(r.key, { resource: r, handler, item_id: r.item_id, keep });
     }
@@ -179,6 +179,12 @@ export class Cleaner {
       });
       if (res.ok || res.reason !== "version_conflict") return;
     }
+  }
+
+  /** Why a resource of no item last used at `since` stays at `now`: unused less than keep_hours, else null. */
+  private idle(since: number, now: number): string | null {
+    const until = since + this.d.config.keep_hours * HOUR_MS;
+    return until > now ? `used less than cleanup.keep_hours ago; kept until ${new Date(until).toISOString()}` : null;
   }
 
   /** When the item closed: its latest change to CLOSED, else `fallback` (its updated_at). */
