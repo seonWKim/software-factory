@@ -106,6 +106,6 @@ describe("the run-failed comment of a repeated failure", () => {
     expect(sentence).not.toMatch(/`[a-z]+_[a-z]+`/);
     expect(sentence).not.toContain("agent_failed");
     expect(rest).toContain("<summary>Details</summary>");
-    expect(rest).toContain("Error code: `agent_failed`");
+    expect(rest).toContain("Error code `agent_failed`: the agent exited with an error.");
   });
 });
