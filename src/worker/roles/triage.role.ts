@@ -12,5 +12,5 @@ export default defineRole({
   rule_of_two: { untrusted_input: true, sensitive_access: true, external_effect: false },
   proposes: ["spec"],
   approves: [],
-  golden: { min_cases: 1 },
+  golden: { min_cases: 6 },
 });

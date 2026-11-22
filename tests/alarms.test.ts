@@ -12,7 +12,8 @@ import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { ChildRestart } from "../src/interfaces/updater.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { alarmCommand, alarmText, alarmsFor, openAlarms } from "../src/ui/alarms.js";
+import { alarmCommand, alarmFullText, alarmText, alarmsFor, openAlarms } from "../src/ui/alarms.js";
+import { UNKNOWN_FAILURE } from "../src/ui/why.js";
 import { FakeAuth } from "./helpers/fakes/runner.js";
 import { FakeSource } from "./helpers/fakes/source.js";
 import { cleanScanner, config, issueRef, silent } from "./helpers/fakes/config.js";
@@ -125,7 +126,10 @@ describe("alarms: zero-token runs", () => {
     expect(alerts[0]).toMatchObject({ pattern: "zero_tokens", error_code: "zero_tokens", count: 3 });
     // The detail adds only how the last run ended: the alarm sentence (alarmText) already says the streak.
     expect(alerts[0]!.detail).toBe("the last failed with b");
-    expect(`${alarmText(alerts[0]!)}: ${alerts[0]!.detail}`).toBe("Alarm: 3 agent runs in a row used no tokens: the last failed with b");
+    // The owner reads the error in words, never its code: "b" has none, so a generic sentence.
+    expect(alarmFullText(alerts[0]!)).toBe(`${alarmText(alerts[0]!)}: the last one failed (${UNKNOWN_FAILURE.charAt(0).toLowerCase()}${UNKNOWN_FAILURE.slice(1, -1)})`);
+    expect(alarmFullText({ ...alerts[0]!, detail: "the last failed with exception" })).toBe("Alarm: 3 agent runs in a row used no tokens: the last one failed (the worker hit an unexpected error)");
+    expect(alarmFullText({ ...alerts[0]!, detail: "the last succeeded" })).toBe("Alarm: 3 agent runs in a row used no tokens: the last one succeeded");
     const probeAt = new Date(clock.now().getTime() + STALL_DEFAULTS.probe_interval_ms).toISOString();
     expect(await store.getClaimPause("model_stall")).toBe(probeAt);
   });

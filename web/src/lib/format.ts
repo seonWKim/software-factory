@@ -55,6 +55,22 @@ export function localDateTime(at: string): string {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 
+/**
+ * A task's due text in the viewer's locale: the time alone when the date is the heading's (`heading`), else date and time
+ * ("Nov 21, 9:00 AM"), or the date alone for a task with no time; null for no date, or a dated heading and no time.
+ */
+export function dueText(date: string | null, time: string | null, heading: string | null): string | null {
+  if (date === null) return null;
+  const [y, m, d] = date.split("-").map(Number);
+  const [h, min] = time === null ? [undefined, undefined] : time.split(":").map(Number);
+  if (!y || !m || !d || (time !== null && (h === undefined || min === undefined || Number.isNaN(h) || Number.isNaN(min)))) return time === null ? date : `${date} ${time}`;
+  const at = new Date(y, m - 1, d, h ?? 0, min ?? 0);
+  const day: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" };
+  const clock: Intl.DateTimeFormatOptions = { hour: "numeric", minute: "2-digit" };
+  if (date === heading) return time === null ? null : new Intl.DateTimeFormat(locale(), clock).format(at);
+  return new Intl.DateTimeFormat(locale(), time === null ? day : { ...day, ...clock }).format(at);
+}
+
 /** An ISO time as the viewer's short local date ("Nov 18"); the text itself when it is not one. */
 export function localShortDate(at: string): string {
   const d = new Date(at);
