@@ -275,12 +275,14 @@ export interface ClaimInput {
   worker_id: WorkerId;
   kinds: readonly RunKind[];
   lease_ms: number;
-  /** The coordination threshold and weights (design §5, 2026-11-03). Absent: DEFAULT_COORDINATION. */
-  coordination?: CoordinationSettings;
+  coordination?: CoordinationSettings; // The coordination threshold and weights (design §5, 2026-11-03). Absent: DEFAULT_COORDINATION.
   workers?: { count: number }; // The slot cap (design §5, 2026-11-18; per factory since 2026-11-20): the live `workers`, counted over every process's running runs. Absent: none.
+  passed?: (p: PassedOver) => void; // Told, after the claim commits, of each run it newly passed over for a holder (design §5, 2026-11-23): the pool logs it.
 }
-/** The slot cap's one slot beyond `workers` (design §5, 2026-11-22): only these kinds take it, while `workers` runs of any kind run. */
-export const EXTRA_SLOT_KINDS: readonly RunKind[] = ["merge-check"];
+/** A queued run the claim passed over for another item: an open session it overlaps, or a coordination hold. */
+export interface PassedOver { run_id: RunId; work_item_id: WorkItemId; kind: RunKind; reason: "session" | "held"; holder: WorkItemId }
+export type QueuedRun = Run & { passed_over_by: WorkItemId | null }; // The item the claim last passed it over for; null when none or once claimed.
+export const EXTRA_SLOT_KINDS: readonly RunKind[] = ["merge-check"]; // The slot cap's one slot beyond `workers` (design §5, 2026-11-22): only these kinds take it, while `workers` runs of any kind run.
 
 /** `/approve` on an implement run held by coordination cost (design §5, 2026-11-03). */
 export interface ApproveClaimHoldInput {
@@ -455,24 +457,22 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   // Runs
 
   /**
-   * Pull-based claim: among queued runs of the given kinds whose `not_before` has passed, the first in claim order (Run next
-   * first, the latest first; then kind rank: merge-check, resolve, review, triage, update, implement; then created_at, then
-   * insertion order) → running, attempt + 1, new lease with token + 1. An implement-type run whose item already has one
-   * running, or a run over the slot cap (`input.workers`, EXTRA_SLOT_KINDS), is skipped, never blocking the runs after it. Returns null while the `rate_limit`, `model_stall` or `network`
-   * claim pause is in effect; while the `forge_auth` pause is, implement-type runs (implement, update) are skipped and stay
-   * queued; while the `github_rate_limit` pause is, implement-type and review runs are skipped and stay queued (triage and
-   * resolve claim). Coordination (design §5, 2026-11-03), in the same transaction as the claim: a queued `implement` run is
-   * skipped, and stays queued, while its item is `blocked_on: dependency` or has a dependency edge that is not satisfied (state
-   * `merged`, or the work item of `depends_on` closed `completed` with a merge sha), and, for an item with no PR, while its
-   * coordination cost against a holder is at or above `coordination.max_cost` (see src/core/coordination.ts; files: pr_files,
-   * else files_to_change, else allowed_paths). Holders: items with an implement-type run running, items with an open PR, other
-   * claimable queued implement runs. A run held only by queued runs is claimed (the deadlock rule); a run with an approved hold
-   * is claimed. Every cost decision is stored as the run's claim decision, rewritten only when it changes. Reads only the store.
+   * Pull-based claim: among queued runs of the given kinds whose `not_before` has passed, the first in claim order (Run next first, the latest first; then kind rank:
+   * merge-check, resolve, review, triage, update, implement; then created_at, then insertion order) → running, attempt + 1, new lease with token + 1. An implement-type
+   * run whose item already has one running, or a run over the slot cap (`input.workers`, EXTRA_SLOT_KINDS), is skipped, never blocking the runs after it. Returns null
+   * while the `rate_limit`, `model_stall` or `network` claim pause is in effect; while the `forge_auth` pause is, implement-type runs (implement, update) are skipped and stay
+   * queued; while the `github_rate_limit` pause is, implement-type and review runs are skipped and stay queued (triage and resolve claim). Coordination (design §5,
+   * 2026-11-03), in the same transaction as the claim: a queued `implement` run is skipped, and stays queued, while its item is `blocked_on: dependency` or has a dependency
+   * edge that is not satisfied (state `merged`, or the work item of `depends_on` closed `completed` with a merge sha), and, for an item with no PR, while its coordination
+   * cost against a holder is at or above `coordination.max_cost` (see src/core/coordination.ts; files: pr_files, else files_to_change, else allowed_paths). Holders: items with
+   * an implement-type run running, items with an open PR, other claimable queued implement runs. A run held only by queued runs is claimed (the deadlock rule); a run with
+   * an approved hold is claimed. Every cost decision is stored as the run's claim decision, rewritten only when it changes. Reads only the store.
    * Also null while `worker_pauses` holds a row for `input.worker_id` or the all-flag `*` (design §5 Pause). A run of an item held with `recurring_failure` (05-alarms) stays queued.
-   * Sessions (design §5, 2026-11-01): an `interactive` run is never claimed; an implement-type run stays queued while its item
-   * has an open session (a running interactive run) or its allowed_paths overlap one's. A paused run (paused_at set) is claimed
-   * like any queued run, but the claim adds nothing to `attempt` and clears paused_at and paused_by; its session_id and resume stay for the worker.
-   * Every claim, a resume included, writes one `running` attempt record (design §6) in the same transaction.
+   * Sessions (design §5, 2026-11-01): an `interactive` run is never claimed; an implement-type run stays queued while its item has an open session (a running interactive
+   * run) or its allowed_paths overlap one's. A paused run (paused_at set) is claimed like any queued run, but the claim adds nothing to `attempt` and clears paused_at and
+   * paused_by; its session_id and resume stay for the worker.
+   * Every claim, a resume included, writes one `running` attempt record (design §6) in the same transaction. A run passed over for another item (its session, a held cost
+   * decision) stores it as `passed_over_by` and tells `input.passed` when it changes; the claim clears it.
    */
   claimRun(input: ClaimInput): Promise<Run | null>;
   /**
@@ -568,7 +568,7 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   /** Runs (any item) in one of `statuses`, oldest first by created_at. Read-only. */
   listRunsByStatus(statuses: readonly RunStatus[], limit: number): Promise<Run[]>;
   /** Queued runs (any item) in claimRun's order, the queue positions the pages show (design §5, 2026-11-22). Read-only. */
-  listQueuedInClaimOrder(limit: number): Promise<Run[]>;
+  listQueuedInClaimOrder(limit: number): Promise<QueuedRun[]>;
   /** Run next (design §5, 2026-11-22): the item's queued runs (not interactive) go first in claim order, ahead of earlier bumps; starts nothing. Returns them, none when it has none. */
   runNext(id: WorkItemId): Promise<Run[]>;
   /** Runs whose finished_at lies within the last `window_ms` of the store's clock, newest first; never one with no finished_at (null). Read-only. */

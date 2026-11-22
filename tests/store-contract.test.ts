@@ -14,7 +14,7 @@ import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { ARCHIVE_ONLY, RENAMES } from "../src/state/migrations/20261108T1300-state-prefix-tables.migration.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
-import type { FactoryStore, ForgeBudget, NewAlert, WorkerProcessReport } from "../src/interfaces/factory-store.js";
+import type { FactoryStore, ForgeBudget, NewAlert, PassedOver, WorkerProcessReport } from "../src/interfaces/factory-store.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { recordAction } from "../src/outbound/intents.js";
 import { MIGRATIONS_TABLE, type MigrationDb, type SqlDriver, applyMigrations, discoverMigrations } from "../src/state/index.js";
@@ -2822,6 +2822,26 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect(await store.listCliCommandsAfter(0, 10)).toEqual([]);
     });
 
+    it("an implement run passed over for a coordination hold stores its holder and reports it once; a later run is claimed past it", async () => {
+      const { store } = await make();
+      const ids: WorkItemId[] = [];
+      for (const n of [1, 2]) {
+        const { item } = await store.createWorkItem(issue(n), system);
+        await store.transition({ id: item.id, expected_version: 1, actor: system, reason: "x", patch: { stage: "RUNNING", files_to_change: ["src/worker/runner.ts"], allowed_paths: ["src/worker/"] } });
+        await store.transition({ id: item.id, expected_version: 2, patch: {}, actor: system, reason: "x", enqueue: { kind: "implement", idempotency_key: `${n}:implement` } });
+        ids.push(item.id);
+      }
+      const passed: PassedOver[] = [];
+      const claim = () => store.claimRun({ worker_id: w1, kinds: ALL_KINDS, lease_ms: LEASE, passed: (p) => passed.push(p) });
+      expect((await claim())?.work_item_id).toBe(ids[0]);
+      await store.createWorkItem(issue(3), system, { enqueue: { kind: "triage", idempotency_key: "3:triage" } });
+      expect((await claim())?.idempotency_key).toBe("3:triage");
+      expect(await claim()).toBeNull();
+      const held = (await store.listQueuedInClaimOrder(10)).find((r) => r.work_item_id === ids[1])!;
+      expect(held.passed_over_by).toBe(ids[0]);
+      expect(passed).toEqual([{ run_id: held.id, work_item_id: ids[1], kind: "implement", reason: "held", holder: ids[0] }]);
+    });
+
     it("listClaimDecisionsSince lists every item's claim decisions written at or after a time, oldest first", async () => {
       const { store, clock } = await make();
       const ids: WorkItemId[] = [];
@@ -3540,6 +3560,30 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
         [1, "failed", "session_lost", "task"],
       ]);
       expect((await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))?.work_item_id).toBe(it1.id);
+    });
+
+    it("a run passed over for another item's session stores that holder and reports it once, after the claim; the claim clears it", async () => {
+      const { store, clock } = await make();
+      const s = await start(store, await seed(store, 1, ["src/a/"]));
+      if (!s.ok) throw new Error(s.reason);
+      const it1 = await seed(store, 2, ["src/a/y.ts"]);
+      await store.transition({ id: it1.id, expected_version: it1.version, actor: system, reason: "x", patch: { stage: "RUNNING" }, enqueue: { kind: "implement", idempotency_key: "i2" } });
+      const passed: PassedOver[] = [];
+      const claim = () => store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE, coordination: STRICT, passed: (p) => passed.push(p) });
+      const queued = async () => (await store.listQueuedInClaimOrder(10)).find((r) => r.idempotency_key === "i2");
+      expect(await claim()).toBeNull();
+      expect(await claim()).toBeNull(); // unchanged: written and reported once
+      expect(passed).toEqual([{ run_id: (await queued())!.id, work_item_id: it1.id, kind: "implement", reason: "session", holder: s.item.id }]);
+      expect((await queued())!.passed_over_by).toBe(s.item.id);
+      clock.advance(LEASE + 1);
+      await store.expireLeases(5);
+      const run = await claim();
+      expect(run?.work_item_id).toBe(it1.id);
+      expect(passed).toHaveLength(1);
+      // Paused back to the queue, it names no holder: the claim cleared it.
+      const resume = { host: "h", folder: "sbx_1", base_sha: null, start_sha: null, head: null, bundle: null };
+      expect((await store.pauseRun(run!.id, run!.lease!.token, { paused_by: "github:1", session_id: null, resume })).ok).toBe(true);
+      expect((await queued())!.passed_over_by).toBeNull();
     });
 
     it("a session start and a claim next to an open session use the workers' cost: mechanical paths and unnamed shared indexes never hold, a hotspot does", async () => {

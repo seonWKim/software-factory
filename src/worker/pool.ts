@@ -6,7 +6,8 @@ import { Worker, type WorkerPlugins } from "./runner.js";
 import type { WorkerDeps } from "./support.js";
 import type { ExecutionEngines } from "./engine/index.js";
 import type { TickSource } from "../shared/ticks/tick-generator.js";
-import type { FactoryStore } from "../interfaces/factory-store.js";
+import type { ClaimInput, FactoryStore } from "../interfaces/factory-store.js";
+import type { Logger } from "../core/log.js";
 import type { KeepAwake } from "../interfaces/keep-awake.js";
 
 export interface WorkerPoolDeps extends Omit<WorkerDeps, "id" | "index" | "active" | "hostRuns"> {
@@ -54,8 +55,8 @@ interface Slot {
  * from claiming and `run` resolves only once every in-flight run has finished.
  *
  * Live size (design 2026-11-03): each tick the pool re-reads the settings. Slots below the effective `workers`
- * run, and so does the first slot above them (design 2026-11-18): it claims only while every slot holds an implement
- * or resolve run, and the store gives it only a short run, so a merge check never waits for a build. A slot above those
+ * run, and so does the first slot above them (design 2026-11-22): it claims only while every slot holds a run of any
+ * kind, and the store gives it only a merge check, so a merge check never waits behind a full queue. A slot above those
  * stops claiming, finishes its current run and stops; a stopped slot starts again once `workers` rises. The slot
  * count is the file's `max_workers` (absent: its `workers`), which sizes the supervisor's index block, so no
  * index is ever shared with another process.
@@ -64,6 +65,7 @@ interface Slot {
  * a settings change, drain), never on an unchanged tick. Each tick the pool writes its row to the store (pid,
  * host, slots, max_slots, busy, index_base, started_at); while draining it keeps writing with slots 0 until the
  * last run ends, then removes the row. A failed write is logged once per failure streak and never stops a slot.
+ * A queued run a slot's claim passes over for another item is logged once, `run passed over` (design §5, 2026-11-23).
  */
 export class WorkerPool {
   /** Every slot's Worker, running or not. Slot i has index `index_base + i`. */
@@ -83,14 +85,14 @@ export class WorkerPool {
     const { id_prefix, index_base = 0, engines, ticks, pack_checks, imported_mcp_refusals, list_mcp_tools: _list, ...shared } = d;
     const awake = new CountedKeepAwake(d.awake);
     this.live = d.settings ?? LiveSettings.fixed(d.config, d.models);
-    const settings = this.live;
+    const settings = this.live, store = loggingPassOvers(d.store, d.log);
     const size = d.config.max_workers ?? d.config.workers;
     this.slotAwake = Array.from({ length: size }, () => new SlotAwake(awake));
     const ids = Array.from({ length: size }, (_, i) => `${id_prefix}:${index_base + i}` as WorkerId);
     this.workers = ids.map((id, i) => {
       const index = index_base + i;
       const slotAwake = this.slotAwake[i]!;
-      return new Worker({ ...shared, settings, id, index, awake: slotAwake, active: () => this.claims(i), hostRuns: () => this.hostRuns() }, {
+      return new Worker({ ...shared, store, settings, id, index, awake: slotAwake, active: () => this.claims(i), hostRuns: () => this.hostRuns() }, {
         ...(engines ? { engines } : {}), ...(ticks ? { ticks } : {}), ...(pack_checks ? { pack_checks } : {}), ...(imported_mcp_refusals ? { imported_mcp_refusals } : {}),
       });
     });
@@ -357,4 +359,14 @@ export class CountedKeepAwake implements KeepAwake {
     this.chain = result.catch(() => undefined);
     return result;
   }
+}
+
+/**
+ * The store as the slots use it: each claim reports the runs it newly passes over for another item (an overlapping
+ * session, a coordination hold) as one `run passed over` line naming the holder (design §5, 2026-11-23). Every other
+ * member is the store's own.
+ */
+export function loggingPassOvers(store: FactoryStore, log: Logger): FactoryStore {
+  const claimRun = (input: ClaimInput) => store.claimRun({ ...input, passed: (p) => log.info("run passed over", { ...p }) });
+  return new Proxy(store, { get: (t, k) => (k === "claimRun" ? claimRun : Reflect.get(t, k, t)) });
 }

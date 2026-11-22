@@ -6,7 +6,7 @@
   "golden.ts": 677,
   "impl/github/github-issue-source.ts": 719,
   "impl/runner/claude-code-runner.ts": 660,
-  "impl/store/sql/sql-factory-store.ts": 2816,
+  "impl/store/sql/sql-factory-store.ts": 2815,
   "impl/store/sqlite/schema.ts": 736,
   "impl/updater/git-worktree.ts": 903,
   "interfaces/factory-store.ts": 1347,

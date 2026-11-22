@@ -4,6 +4,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { QUEUED_RUN } from "../src/core/commands.js";
+import { DEFAULT_COORDINATION } from "../src/core/coordination.js";
 import type { AuthDecision } from "../src/interfaces/auth-provider.js";
 import type { Timestamp, UserId, WorkItem, WorkItemId } from "../src/core/types.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
@@ -677,5 +678,28 @@ describe("ui api: queue positions in claim order (design 05-coordination, 2026-1
     expect(await positions(d, ids)).toEqual([[3, 3, 3], [1, 1, 1], [2, 2, 2]]);
     await store.runNext(items.queued.id);
     expect(await positions(d, ids)).toEqual([[1, 1, 1], [2, 2, 2], [3, 3, 3]]);
+  });
+});
+
+describe("ui api: a run passed over names its holder (design 05-coordination, 2026-11-23)", () => {
+  type Why = { code: string; reason_code: string; params: Record<string, unknown>; holder_id: string | null };
+  it("an implement run passed over for another item's open session is held behind that item on the item page, the Items list and the Queue", async () => {
+    const { d, store } = await seeded();
+    const host = await patch(store, await make(store, 30, "Session item"), { allowed_paths: ["src/a/"] });
+    const s = await store.startSession({
+      id: host.id, expected_version: host.version, actor: { kind: "user", id: "github:5" as UserId }, patch: { stage: "RUNNING" }, reason: "session_started",
+      detail: { spec_source: "owner" }, owner: "session:h:1", lease_ms: LEASE, transcript_url: null,
+    });
+    if (!s.ok) throw new Error(s.reason);
+    const waiting = await make(store, 31, "Waiting item");
+    await enqueue(store, waiting, "implement", "w:i", { stage: "RUNNING", allowed_paths: ["src/a/y.ts"] });
+    expect(await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE, coordination: { ...DEFAULT_COORDINATION, max_cost: 1 } })).toBeNull();
+    const held = { code: "held", reason_code: "held_running", params: { holder: "Session item" }, holder_id: host.id };
+    const page = await json<{ item: { why: Why } }>(d, `/api/v1/items/${encodeURIComponent(waiting.id)}`);
+    expect(page.item.why).toMatchObject(held);
+    const list = await json<{ items: { id: string; why: Why }[] }>(d, "/api/v1/items");
+    expect(list.items.find((r) => r.id === waiting.id)?.why).toMatchObject(held);
+    const queue = await json<{ queue: { work_item_id: string; why: Why }[] }>(d, "/api/v1/queue");
+    expect(queue.queue.find((q) => q.work_item_id === waiting.id)?.why).toMatchObject(held);
   });
 });

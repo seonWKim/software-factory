@@ -57,7 +57,7 @@ const showsClosed = (f: Filters) => f.closed || filterShowsFinished(f.state) || 
 /** Every listed item, ranked (closed items too when the filters may show them). */
 export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
   const items = await c.store.listWorkItemsWhere({ exclude_closed: !showsClosed(f), limit: LIST_LIMIT });
-  const { active, position } = await activeRuns(c.store);
+  const { active, position, passedBy } = await activeRuns(c.store);
   const pauses = await readClaimPauses(c.store);
   const open = await openAlarms(c.store, c.now);
   // One read for every row's latest claim decision; only an active implement run gets one.
@@ -82,7 +82,7 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
       conflicts: conflictCounts(runs, changes),
       decision,
       alarms,
-      why: pendingWhy(pending, alarms) ?? whyOf(it, run, position.get(run?.id ?? "") ?? null, withTitle(decision, titles), pauses, waiting, c.now, alarms, await heldFailureOf(needCtx(c.store, c.w), it, runs)),
+      why: pendingWhy(pending, alarms) ?? whyOf(it, run, position.get(run?.id ?? "") ?? null, withTitle(decision, titles, run, passedBy.get(run?.id ?? "")), pauses, waiting, c.now, alarms, await heldFailureOf(needCtx(c.store, c.w), it, runs)),
     });
   }
 
@@ -176,13 +176,13 @@ export function priorityInput(
  * state). A pending Merge's place reads the other items at merge_pending only when this item has one.
  */
 export async function itemState(c: ListCtx, it: WorkItem, runs: readonly Run[], changes: readonly StateChange[]): Promise<{ why: Why; level: Level; pending: Pending | null }> {
-  const { active, position } = await activeRuns(c.store);
+  const { active, position, passedBy } = await activeRuns(c.store);
   const run = active.get(it.id) ?? null;
   const decision = await latestDecision(c.store, it.id, run);
   const waiting = waitingOn(it, await readPhases(c.store, [it]));
   const alarms = await itemAlarms(c.store, await openAlarms(c.store, c.now), it);
   const pending = pendingOf(it, run, changes, await itemMergePosition(c.store, it));
-  const why = pendingWhy(pending, alarms) ?? whyOf(it, run, position.get(run?.id ?? "") ?? null, withTitle(decision, await holderTitles(c.store, [decision])), await readClaimPauses(c.store), waiting, c.now, alarms, await heldFailureOf(needCtx(c.store, c.w), it, runs));
+  const why = pendingWhy(pending, alarms) ?? whyOf(it, run, position.get(run?.id ?? "") ?? null, withTitle(decision, await holderTitles(c.store, [decision]), run, passedBy.get(run?.id ?? "")), await readClaimPauses(c.store), waiting, c.now, alarms, await heldFailureOf(needCtx(c.store, c.w), it, runs));
   return { why, level: levelOf(priorityInput(it, run, runs, decision, waiting, changes, pending), c.now, c.lease_ms), pending };
 }
 
@@ -274,16 +274,34 @@ function issueNumber(it: WorkItem): number | null {
   return m ? Number(m[1]) : null;
 }
 
-/** Every item's queued or running run (running wins) and each queued run's 1-based place in claim order (the store's, design §5 2026-11-22), the Queue's order. */
-export async function activeRuns(store: FactoryStore): Promise<{ active: Map<WorkItemId, Run>; position: Map<string, number> }> {
+/** The work item a queued run was passed over for, with its title (activeRuns `passedBy`). */
+export interface PassedOverBy {
+  id: WorkItemId;
+  title: string | null;
+}
+
+/**
+ * Every item's queued or running run (running wins), each queued run's 1-based place in claim order (the store's, design §5
+ * 2026-11-22), the Queue's order, and the item each queued run was last passed over for while that item still runs (design §5,
+ * 2026-11-23; a holder that stopped names none): one title read per distinct holder.
+ */
+export async function activeRuns(store: FactoryStore): Promise<{ active: Map<WorkItemId, Run>; position: Map<string, number>; passedBy: Map<string, PassedOverBy> }> {
   const active = new Map<WorkItemId, Run>();
   const position = new Map<string, number>();
-  for (const [i, r] of (await store.listQueuedInClaimOrder(LIST_LIMIT)).entries()) {
+  const queued = await store.listQueuedInClaimOrder(LIST_LIMIT);
+  for (const [i, r] of queued.entries()) {
     position.set(r.id, i + 1);
     if (!active.has(r.work_item_id)) active.set(r.work_item_id, r);
   }
   for (const r of await store.listRunsByStatus(["running"], LIST_LIMIT)) active.set(r.work_item_id, r); // running wins
-  return { active, position };
+  const passedBy = new Map<string, PassedOverBy>(), titles = new Map<WorkItemId, string | null>();
+  for (const r of queued) {
+    const id = r.passed_over_by;
+    if (!id || active.get(id)?.status !== "running") continue;
+    if (!titles.has(id)) titles.set(id, (await store.getWorkItem(id))?.title ?? null);
+    passedBy.set(r.id, { id, title: titles.get(id)! });
+  }
+  return { active, position, passedBy };
 }
 
 /** The claim pauses in effect, as the claim reads them (four store reads). */
@@ -327,8 +345,14 @@ export async function holderTitles(store: FactoryStore, decisions: readonly (Cla
   return out;
 }
 
-/** The decision with its holder's title, for whyWaiting; as is when it has no holder item. */
-export function withTitle(decision: ClaimDecision | null, titles: ReadonlyMap<WorkItemId, string | null>) {
+/**
+ * The decision with its holder's title, for whyWaiting; as is when it has no holder item. A run the claim passed over for
+ * a running item (`by`, activeRuns `passedBy`) and no stored decision holds is held behind that item (design §5, 2026-11-23).
+ */
+export function withTitle(decision: ClaimDecision | null, titles: ReadonlyMap<WorkItemId, string | null>, run: Run | null = null, by: PassedOverBy | null = null): WhyInput["decision"] {
+  if (by && run && !heldBy(decision, run) && !deadlocked(decision, run)) {
+    return { decision: "held", holder_kind: "running", holder_ref: "", run_id: run.id, approved_by: null, holder_work_item_id: by.id, holder_title: by.title };
+  }
   return decision && { ...decision, holder_title: decision.holder_work_item_id ? (titles.get(decision.holder_work_item_id) ?? null) : null };
 }
 
