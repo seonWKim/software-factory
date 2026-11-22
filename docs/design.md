@@ -67,7 +67,7 @@ for a new topic. "§5" means `05-*`.
 - [08-retention.md](design/08-retention.md): daily retention pass and its periods.
 
 ## 9. Status page
-- [09-status-page.md](design/09-status-page.md): read-only status page, its guards.
+- [09-status-page.md](design/09-status-page.md): read-only status page.
 - [09-health.md](design/09-health.md): Health panel, schema probe.
 - [09-dashboard-app.md](design/09-dashboard-app.md): index of dashboard topics.
 - [09-dashboard-shell.md](design/09-dashboard-shell.md): sidebar, top bar, theme, mode.
@@ -76,7 +76,8 @@ for a new topic. "§5" means `05-*`.
 - [09-dashboard-api.md](design/09-dashboard-api.md): API, serving, responsive check.
 - [09-dashboard-activity.md](design/09-dashboard-activity.md): Activity page.
 - [09-dashboard-runners.md](design/09-dashboard-runners.md): Runners page, Migrate now.
-- [09-dashboard-tasks.md](design/09-dashboard-tasks.md): Tasks list, row, Needs you.
+- [09-dashboard-tasks.md](design/09-dashboard-tasks.md): Tasks list, row.
+- [09-dashboard-tasks-needs.md](design/09-dashboard-tasks-needs.md): Needs you.
 - [09-dashboard-tasks-quick-add.md](design/09-dashboard-tasks-quick-add.md): Quick add.
 - [09-dashboard-tasks-calendar.md](design/09-dashboard-tasks-calendar.md): Calendar page.
 - [09-dashboard-tasks-projects.md](design/09-dashboard-tasks-projects.md): Project switcher.
@@ -86,7 +87,7 @@ for a new topic. "§5" means `05-*`.
 - [09-dashboard-system.md](design/09-dashboard-system.md): Work, Failures, Spend, Data.
 - [09-dashboard-workers.md](design/09-dashboard-workers.md): run timeline, dependency graph.
 - [09-dashboard-item.md](design/09-dashboard-item.md): item page, thread, transcripts.
-- [09-dashboard-item-commands.md](design/09-dashboard-item-commands.md): item commands, dialogs, Merge button.
+- [09-dashboard-item-commands.md](design/09-dashboard-item-commands.md): item commands, Merge button.
 - [09-status-banner.md](design/09-status-banner.md): supervisor banner.
 - [09-notifications.md](design/09-notifications.md): owner notices, kinds, quiet hours.
 - [09-desktop-app.md](design/09-desktop-app.md): macOS app.
@@ -95,13 +96,13 @@ for a new topic. "§5" means `05-*`.
 
 ## 10. Event-driven factory
 - [10-event-driven.md](design/10-event-driven.md): tables, migrations, journaled runs, merge queue.
-- [10-event-bus.md](design/10-event-bus.md): sql bus, consumer groups, dead letters, inbound, units.
-- [10-event-outbound.md](design/10-event-outbound.md): outbound deliveries, retry, run roles, hooks.
+- [10-event-bus.md](design/10-event-bus.md): sql bus, consumer groups, dead letters.
+- [10-event-outbound.md](design/10-event-outbound.md): outbound deliveries, retry, hooks.
 
 ## 11. Packs and signal ledger
-- [11-packs.md](design/11-packs.md): pack layers (base, org, project, learned), the `packs` key.
+- [11-packs.md](design/11-packs.md): pack layers, the `packs` key.
 - [11-plugin-import.md](design/11-plugin-import.md): `plugins import` of skills and MCP servers.
-- [11-signal-ledger.md](design/11-signal-ledger.md): `controller_signals` table, sources, tags, backfill.
+- [11-signal-ledger.md](design/11-signal-ledger.md): `controller_signals`, sources, tags.
 
 ## 12. Notification channels
 - [12-notification-channels.md](design/12-notification-channels.md): channel picker, outbox rows.
