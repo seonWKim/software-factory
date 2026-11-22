@@ -1,0 +1,11 @@
+{
+  "id": "6",
+  "work_item_id": "golden_triage_6",
+  "expect": "should_pass",
+  "uses": ["prompt:triage.md"],
+  "note": "Feature-requester persona: an open choice of channel, so the spec asks, and the first slice stays in src/digest/.",
+  "checks": [
+    { "kind": "asks_question" },
+    { "kind": "names_paths", "paths": ["src/digest/"] }
+  ]
+}
