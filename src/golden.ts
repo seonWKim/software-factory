@@ -346,7 +346,10 @@ export interface Rates {
   rates: { pass_rate: Rate; catch_rate: Rate; false_alarm_rate: Rate };
 }
 
-export interface GoldenReport extends Rates {
+/** pass^k over a role's cases (design 06-measurement): `pass_k` is null with fewer than 2 replays; `unstable` lists `<role>/<case id>: m/k` for each case with mixed replays. */
+export interface Stability { replays: number; pass_k: Rate | null; unstable: string[] }
+
+export interface GoldenReport extends Rates, Stability {
   role: string;
   cases: CaseResult[];
   totals: Pick<CaseResult, "input_tokens" | "output_tokens" | "wall_ms">;
@@ -375,6 +378,22 @@ export function computeRates(results: readonly Pick<CaseResult, "expect" | "verd
   return { counts: { should_flag: flag, should_pass: pass }, rates };
 }
 
+/**
+ * pass_k = cases whose `replays` replays all match expect / cases (an errored replay does not match, so its case fails).
+ * A case with some replays matching and some not is unstable, listed as `<role>/<id>: m/k`. With fewer than 2 replays: no pass_k, no list.
+ */
+export function computeStability(role: string, results: readonly Pick<CaseResult, "id" | "expect" | "verdict">[], replays: number): Stability {
+  if (replays < 2) return { replays, pass_k: null, unstable: [] };
+  const matched = new Map<string, number>();
+  for (const r of results) matched.set(r.id, (matched.get(r.id) ?? 0) + (r.verdict !== "errored" && matches(r) ? 1 : 0));
+  const stable = [...matched.values()].filter((m) => m === replays).length;
+  const unstable = [...matched].filter(([, m]) => m > 0 && m < replays).map(([id, m]) => `${role}/${id}: ${m}/${replays}`);
+  return { replays, pass_k: { numerator: stable, denominator: matched.size, value: matched.size === 0 ? null : stable / matched.size }, unstable };
+}
+
+/** `pass_k: n/d = value` lines (and the unstable cases) for a report with 2 or more replays; nothing otherwise. */
+const stabilityLines = (s: Stability): string[] => (s.pass_k ? [formatRate("pass_k", s.pass_k), ...s.unstable.map((u) => `unstable ${u}`)] : []);
+
 function formatRate(name: string, r: Rate): string {
   return r.value === null ? `${name}: n/a (${r.numerator}/${r.denominator})` : `${name}: ${r.numerator}/${r.denominator} = ${r.value.toFixed(3)}`;
 }
@@ -387,9 +406,11 @@ export function formatReport(report: GoldenReport): string {
     ...report.cases.map((c) => `  case ${c.id} (${c.expect}): ${c.verdict}, ${c.verdict === "errored" ? "n/a" : matches(c) ? "match" : "miss"}; ${usageText(c)}`),
     `total (${report.role}, ${report.cases.length} cases): ${usageText(report.totals)}`,
     formatRate("pass_rate", report.rates.pass_rate),
+    ...(report.pass_k ? [formatRate("pass_k", report.pass_k)] : []),
     formatRate("catch_rate", report.rates.catch_rate),
     formatRate("false_alarm_rate", report.rates.false_alarm_rate),
     `errored: ${f.errored + p.errored} (should_flag ${f.errored}, should_pass ${p.errored}), excluded from every rate`,
+    ...report.unstable.map((u) => `unstable ${u}`),
     `results: ${report.results_file}`,
   ].join("\n");
 }
@@ -441,17 +462,19 @@ export async function runCases(deps: GoldenRunDeps, opts: { role: string; prompt
   const stamp = deps.clock.now().toISOString();
   const signal = deps.signal ?? new AbortController().signal;
   const results: CaseResult[] = [];
-  for (const c of cases) for (let n = 0; n < (opts.replays ?? 1); n++) results.push(await runOne(deps, role, system, c, `${stamp}_${c.id}${n > 0 ? `_${n}` : ""}`, signal));
+  const replays = opts.replays ?? 1;
+  for (const c of cases) for (let n = 0; n < replays; n++) results.push(await runOne(deps, role, system, c, `${stamp}_${c.id}${n > 0 ? `_${n}` : ""}`, signal));
 
   const rates = computeRates(results);
+  const stability = computeStability(role.name, results, replays);
   const sum = (k: keyof GoldenReport["totals"]) => results.reduce((n, r) => n + r[k], 0);
   const totals = { input_tokens: sum("input_tokens"), output_tokens: sum("output_tokens"), wall_ms: sum("wall_ms") };
-  const body = `${JSON.stringify({ at: stamp, role: role.name, cases: results, totals, ...rates }, null, 2)}\n`;
+  const body = `${JSON.stringify({ at: stamp, role: role.name, cases: results, totals, ...rates, ...stability }, null, 2)}\n`;
   await scanAll(deps.scanner, "run_outcome", [body], "the results file");
   await mkdir(deps.resultsDir, { recursive: true });
   const file = join(deps.resultsDir, `${stamp.replace(/[:.]/g, "-")}.json`);
   await writeFile(file, body, { flag: "wx" });
-  return { ...rates, role: role.name, cases: results, totals, results_file: file };
+  return { ...rates, ...stability, role: role.name, cases: results, totals, results_file: file };
 }
 
 function casePrompts(v: unknown, id: string): string[] | null {
@@ -585,6 +608,9 @@ export interface CompareReport {
   prompts: string[];
   base: Rates["rates"] | null;
   head: Rates["rates"] | null;
+  /** Each side's replays, pass_k and unstable cases; null when skipped. */
+  base_stability: Stability | null;
+  head_stability: Stability | null;
   /** `<resultsDir>/compare-<timestamp>/compare.json`. */
   record_file: string;
 }
@@ -612,13 +638,15 @@ export function compareRates(base: Rates["rates"], head: Rates["rates"], margin 
  */
 export async function compareCases(
   deps: GoldenRunDeps,
-  opts: { role: string; basePrompt: string; changed: readonly string[] | null },
+  opts: { role: string; basePrompt: string; changed: readonly string[] | null; replays?: number },
 ): Promise<CompareReport> {
   const { name: role, prompt } = roleFor(deps, opts.role);
   const dir = join(deps.resultsDir, `compare-${deps.clock.now().toISOString().replace(/[:.]/g, "-")}`);
   const prompts = affectedPrompts(opts.changed, [prompt]);
   let base: Rates["rates"] | null = null;
   let head: Rates["rates"] | null = null;
+  let base_stability: Stability | null = null;
+  let head_stability: Stability | null = null;
   let verdict: { outcome: CompareOutcome; reason: string | null };
   if (prompts.length === 0) {
     verdict = { outcome: "skipped", reason: `the change touches neither prompts/${prompt} nor the code that fills or sends prompts` };
@@ -626,13 +654,16 @@ export async function compareCases(
     verdict = { outcome: "skipped", reason: `no golden cases tagged ${prompts.join(", ")} in ${ROLES_DIR}/${role}/golden` };
   } else {
     // The same replay path for both sides; each side keeps its own results file.
-    const run = (p: GoldenRunDeps["prompt"], side: string) => runCases({ ...deps, prompt: p, resultsDir: join(dir, side) }, { role, prompts });
-    base = (await run(async () => opts.basePrompt, "base")).rates;
-    head = (await run(deps.prompt, "head")).rates;
+    const run = (p: GoldenRunDeps["prompt"], side: string) => runCases({ ...deps, prompt: p, resultsDir: join(dir, side) }, { role, prompts, replays: opts.replays ?? 1 });
+    const [b, h] = [await run(async () => opts.basePrompt, "base"), await run(deps.prompt, "head")];
+    base = b.rates;
+    head = h.rates;
+    base_stability = { replays: b.replays, pass_k: b.pass_k, unstable: b.unstable };
+    head_stability = { replays: h.replays, pass_k: h.pass_k, unstable: h.unstable };
     verdict = compareRates(base, head);
   }
   const record_file = join(dir, "compare.json");
-  const report: CompareReport = { role, ...verdict, margin: GOLDEN_MARGIN, prompts, base, head, record_file };
+  const report: CompareReport = { role, ...verdict, margin: GOLDEN_MARGIN, prompts, base, head, base_stability, head_stability, record_file };
   const body = `${JSON.stringify({ ...report, record_file: undefined }, null, 2)}\n`;
   await scanAll(deps.scanner, "run_outcome", [body], "the compare record");
   await mkdir(dir, { recursive: true });
@@ -642,15 +673,15 @@ export async function compareCases(
 
 /** The compare report as Markdown, for a terminal or a job summary. */
 export function formatCompare(r: CompareReport): string {
-  const side = (name: string, rates: Rates["rates"] | null) =>
-    rates ? [`- ${name}: ${formatRate("catch_rate", rates.catch_rate)}; ${formatRate("false_alarm_rate", rates.false_alarm_rate)}`] : [];
+  const side = (name: string, rates: Rates["rates"] | null, st: Stability | null) =>
+    rates ? [`- ${name}: ${formatRate("catch_rate", rates.catch_rate)}; ${formatRate("false_alarm_rate", rates.false_alarm_rate)}`, ...(st ? stabilityLines(st).map((l) => `  - ${l}`) : [])] : [];
   return [
     `## golden compare (${r.role}): ${r.outcome}`,
     "",
     ...(r.outcome === "skipped" ? [`Comparison skipped: ${r.reason}.`] : []),
     ...(r.outcome === "fail" ? [`Failed: ${r.reason}.`] : []),
-    ...side("base", r.base),
-    ...side("head", r.head),
+    ...side("base", r.base, r.base_stability),
+    ...side("head", r.head, r.head_stability),
     `- margin: ${r.margin}`,
     ...(r.prompts.length > 0 ? [`- prompts: ${r.prompts.join(", ")}`] : []),
     `- record: ${r.record_file}`,

@@ -17,6 +17,7 @@ import {
   buildGoldenRunDeps,
   compareCases,
   computeRates,
+  computeStability,
   formatReport,
   parseAddArgs,
   parseRunArgs,
@@ -486,7 +487,7 @@ describe("golden run", () => {
     expect(files).toEqual(["2026-11-01T12-00-00-000Z.json"]);
     expect(report.results_file).toBe(join(deps.resultsDir, files[0]!));
     const json = JSON.parse(await readFile(join(deps.resultsDir, files[0]!), "utf8"));
-    expect(Object.keys(json).sort()).toEqual(["at", "cases", "counts", "rates", "role", "totals"]);
+    expect(Object.keys(json).sort()).toEqual(["at", "cases", "counts", "pass_k", "rates", "replays", "role", "totals", "unstable"]);
     expect(json.role).toBe("review");
     expect(json.cases).toEqual([
       { id: "1", expect: "should_flag", verdict: "bug", findings: ["off by one in x.ts"], input_tokens: 10, output_tokens: 5, wall_ms: 0 },
@@ -698,6 +699,45 @@ describe("implement cases (eval on change)", () => {
   });
 });
 
+describe("pass_k", () => {
+  /** Answers a case's replays in order: the nth replay of case `1` gets `answers[n]`. */
+  function sequence(answers: AgentRunResult["output"][]) {
+    let n = 0;
+    return new FakeRunner({ review: () => ({ output: answers[n++ % answers.length] }) });
+  }
+
+  it("a case that passes 2 of 3 replays: pass_rate 2/3, pass_k 0/1, listed unstable, stored and printed", async () => {
+    const deps = runDeps(sequence([REVIEW_BUG, REVIEW_PASS, REVIEW_BUG]));
+    await writeCase(deps.casesDir, "1", "should_flag");
+    const report = await runCases(deps, { role: "review", replays: 3 });
+    expect(report.rates.pass_rate).toEqual({ numerator: 2, denominator: 3, value: 2 / 3 });
+    expect(report.pass_k).toEqual({ numerator: 0, denominator: 1, value: 0 });
+    expect(report.unstable).toEqual(["review/1: 2/3"]);
+    const text = formatReport(report);
+    expect(text).toContain("pass_rate: 2/3 = 0.667");
+    expect(text).toContain("pass_k: 0/1 = 0.000");
+    expect(text).toContain("review/1: 2/3");
+    const stored = JSON.parse(await readFile(report.results_file, "utf8"));
+    expect(stored).toMatchObject({ replays: 3, pass_k: { numerator: 0, denominator: 1 }, unstable: ["review/1: 2/3"] });
+  });
+
+  it("counts a case only when every replay matches; all-fail and errored cases are not unstable", () => {
+    const r = (id: string, verdict: CaseResult["verdict"]) => ({ id, expect: "should_flag" as const, verdict });
+    const s = computeStability("review", [r("a", "bug"), r("a", "bug"), r("b", "pass"), r("b", "pass"), r("c", "bug"), r("c", "errored")], 2);
+    expect(s.pass_k).toEqual({ numerator: 1, denominator: 3, value: 1 / 3 });
+    expect(s.unstable).toEqual(["review/c: 1/2"]);
+  });
+
+  it("with one replay there is no pass_k, null in the results file, and nothing printed", async () => {
+    const deps = runDeps(sequence([REVIEW_BUG]));
+    await writeCase(deps.casesDir, "1", "should_flag");
+    const report = await runCases(deps, { role: "review" });
+    expect(report.pass_k).toBeNull();
+    expect(formatReport(report)).not.toContain("pass_k");
+    expect(JSON.parse(await readFile(report.results_file, "utf8"))).toMatchObject({ replays: 1, pass_k: null, unstable: [] });
+  });
+});
+
 describe("rates", () => {
   const r = (expectValue: "should_flag" | "should_pass", verdict: CaseResult["verdict"]): CaseResult => ({
     id: Math.random().toString(36).slice(2),
@@ -731,7 +771,7 @@ describe("rates", () => {
     const only = computeRates([r("should_flag", "bug"), r("should_pass", "errored")]);
     expect(only.rates.catch_rate).toEqual({ numerator: 1, denominator: 1, value: 1 });
     expect(only.rates.false_alarm_rate).toEqual({ numerator: 0, denominator: 0, value: null });
-    const text = formatReport({ ...only, role: "review", cases: [], totals: { input_tokens: 0, output_tokens: 0, wall_ms: 0 }, results_file: "x" });
+    const text = formatReport({ ...only, replays: 1, pass_k: null, unstable: [], role: "review", cases: [], totals: { input_tokens: 0, output_tokens: 0, wall_ms: 0 }, results_file: "x" });
     expect(text).toContain("catch_rate: 1/1 = 1.000");
     expect(text).toContain("false_alarm_rate: n/a (0/0)");
     expect(text).not.toContain("NaN");
