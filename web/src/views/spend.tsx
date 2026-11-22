@@ -55,7 +55,7 @@ function DayDetail({ d }: { d: SpendDay }) {
         <span role="list" aria-label={t("spend.dayTop")} className="block space-y-0.5">
           {d.top.map((it) => (
             <span role="listitem" key={it.work_item_id} className="flex gap-2">
-              <Link href={itemPath(it.work_item_id)} className={`min-w-0 flex-1 truncate ${BANNER_LINK_CLASS}`}>{it.title ?? it.work_item_id}</Link>
+              <Link href={itemPath(it.work_item_id)} data-raw className={`min-w-0 flex-1 truncate ${BANNER_LINK_CLASS}`}>{it.title ?? it.work_item_id}</Link>
               <span className="tabular-nums">{usd(it.cost_usd)}</span>
             </span>
           ))}
@@ -90,7 +90,7 @@ function DailyChart({ days, selected, onSelect }: { days: readonly SpendDay[]; s
             {days.map((d, i) => (
               <li key={d.day} data-day={d.day} className="flex h-full min-w-0 flex-1">
                 <Tooltip text={<DayDetail d={d} />} align={i < days.length / 3 ? "start" : i >= (2 * days.length) / 3 ? "end" : "center"} className="h-full w-full">
-                  <Button variant="ghost" size="sm" aria-pressed={selected === d.day} onClick={() => onSelect(selected === d.day ? null : d.day)} className="h-full w-full items-end! px-0!">
+                  <Button data-chart-bar variant="ghost" size="sm" aria-pressed={selected === d.day} onClick={() => onSelect(selected === d.day ? null : d.day)} className="h-full w-full items-end! px-0!">
                     <span className="sr-only">{t("spend.bar", { day: d.day, cost: usd(d.cost_usd) })}</span>
                     <span aria-hidden className={cn("w-full rounded-t-control bg-accent", selected !== null && selected !== d.day && "opacity-40")} style={{ height: pct(d.cost_usd) }} />
                   </Button>
@@ -109,7 +109,7 @@ function DailyChart({ days, selected, onSelect }: { days: readonly SpendDay[]; s
 }
 
 const columns = (): readonly Column<SpendItem>[] => [
-  { key: "item", header: t("col.item"), render: (r) => <Link href={itemPath(r.work_item_id)} className={LINK_CLASS}>{r.title ?? r.work_item_id}</Link> },
+  { key: "item", header: t("col.item"), render: (r) => <Link href={itemPath(r.work_item_id)} data-raw className={LINK_CLASS}>{r.title ?? r.work_item_id}</Link> },
   { key: "cost", header: t("col.cost"), numeric: true, render: (r) => usd(r.cost_usd) },
   { key: "tokens", header: t("col.tokens"), numeric: true, render: (r) => tokens(r.tokens) },
   { key: "runs", header: t("col.runs"), numeric: true, render: (r) => r.runs },

@@ -3,7 +3,7 @@
 /// <reference lib="dom.iterable" />
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { type FunctionComponent, createElement } from "react";
+import { Fragment, type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Failures, WorkersView } from "../web/src/api.js";
 import { LocalToolBroker } from "../src/impl/broker/local-tool-broker.js";
@@ -17,7 +17,15 @@ const pages = await mod("pages");
 const WorkersPage = pages.RunnersPage!;
 const ActivityPage = pages.ActivityPage!;
 const PluginsPage = (await mod("plugins")).PluginsPage!;
-const FailuresSection = (await mod("failures")).FailuresSection!;
+const failuresMod = await mod("failures");
+const FailuresSection = failuresMod.FailuresSection!;
+// Health's wiring: the window lives in the page (`?window=`), its switch in the page toolbar, the section reads it.
+const useFailuresWindow = failuresMod.useFailuresWindow as unknown as () => [string, (w: string) => void];
+const FailuresWindowSwitch = failuresMod.FailuresWindowSwitch as FunctionComponent<{ value: string; onChange: (w: string) => void }>;
+const WindowedFailures: FunctionComponent = () => {
+  const [win, setWin] = useFailuresWindow();
+  return createElement(Fragment, null, createElement(FailuresWindowSwitch, { value: win, onChange: setWin }), createElement(FailuresSection as FunctionComponent<{ win: string }>, { win }));
+};
 
 const AT = new Date().toISOString();
 const proc = (n: number, extra: object = {}) => ({
@@ -240,12 +248,13 @@ describe("Failures page", () => {
 
   it("reads the window from the link and switches to 7 days", async () => {
     history.replaceState(null, "", "/app/failures?window=7d");
-    show(FailuresSection);
+    show(WindowedFailures);
     await screen.findAllByTestId("failure-group");
     expect(fetched).toContain("/api/v1/failures?window=7d");
     expect(within(screen.getByRole("group", { name: "Window" })).getByRole("button", { name: "Last 7 days" }).getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(screen.getByRole("button", { name: "Last 24 hours" }));
     await vi.waitFor(() => expect(fetched).toContain("/api/v1/failures?window=24h"));
+    expect(new URLSearchParams(location.search).get("window")).toBe("24h");
   });
 
   it("states the cap when runs were left out", async () => {

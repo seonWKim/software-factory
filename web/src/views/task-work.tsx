@@ -15,7 +15,7 @@ import { useCommandSend } from "./command-send.js";
 import { NeedActions, SendErrors } from "./item-commands.js";
 import { FloorStatus } from "./pages.js";
 import { CheckRow } from "./system-banner.js";
-import { Card } from "../components/ui/card.js";
+import { Card, SUB_TITLE } from "../components/ui/card.js";
 import { Badge, StatusBadge } from "../components/ui/badge.js";
 import { ListRow, ROW_TITLE } from "../components/ui/list-row.js";
 import type { MenuItem } from "../components/ui/menu.js";
@@ -104,7 +104,7 @@ function WorkRow({ it }: { it: ItemRow }) {
       data-key={it.id}
       title={
         <span className="flex min-w-0 items-baseline gap-2">
-          <Link href={itemPath(it.id)} title={it.title ?? undefined} className={cn(ROW_TITLE, "text-text-1 hover:underline")}>
+          <Link href={itemPath(it.id)} title={it.title ?? undefined} data-raw className={cn(ROW_TITLE, "text-text-1 hover:underline")}>
             {it.title ?? shortSource(it.source.id)}
           </Link>
           {it.change_ref !== null && <span className="shrink-0 text-xs text-text-2 tabular-nums">#{it.change_ref}</span>}
@@ -156,7 +156,7 @@ export function NeedsList({ items, checks = [] }: { items: readonly ItemRow[]; c
     <div className="space-y-3">
       {groups.map((g) => (
         <div key={g.title} className="space-y-1">
-          <h3 className="text-xs font-medium text-text-2">{g.title}</h3>
+          <h3 className={SUB_TITLE}>{g.title}</h3>
           <ul aria-label={g.title} className="divide-y divide-border rounded-control border border-border">
             {g.rows}
           </ul>

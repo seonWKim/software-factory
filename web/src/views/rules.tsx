@@ -4,7 +4,7 @@ import { type ReactNode, useRef, useState } from "react";
 import { API, type AppliedRule, type RetiredRule, type RuleRow, type RuleVerdict, type RulesView, type StandingView, postSettings, useApi } from "../api.js";
 import { Badge, StatusBadge } from "../components/ui/badge.js";
 import { Button } from "../components/ui/button.js";
-import { Card, CardSection } from "../components/ui/card.js";
+import { Card, CardSection, SUB_TITLE } from "../components/ui/card.js";
 import { IdDetails } from "../components/ui/copy.js";
 import { ListRow, ROW_TITLE } from "../components/ui/list-row.js";
 import { ButtonRow } from "../components/ui/button-row.js";
@@ -15,20 +15,20 @@ import { announceStatus } from "../components/ui/dialog.js";
 import { Disclosure } from "../components/ui/disclosure.js";
 import { OverflowMenu } from "../components/ui/menu.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
-import { EmptyState, Notice, PageHeader } from "../components/ui/notice.js";
+import { EmptyState, Notice, PageHeader, PageToolbar } from "../components/ui/notice.js";
 import { ValueBlock } from "../components/ui/key-value.js";
 import { t } from "../i18n/index.js";
 import { AgentsHomePicker } from "./agents-home-picker.js";
-import { Applied } from "./rules-applied.js";
+import { Applied, AppliedSearch, hasAppliedTools } from "./rules-applied.js";
 import { Pushbacks } from "./rules-pushbacks.js";
 import { EntryDetail } from "./rules-detail.js";
-import { GROUPS, PAGE_WIDTH, PROSE, ROW_PAD, RULE_STATE, VERDICTS, isClass, muted, proposalLine } from "./rules-shared.js";
+import { GROUPS, PROSE, ROW_PAD, RULE_STATE, VERDICTS, isClass, muted, proposalLine } from "./rules-shared.js";
 import { VerdictDialog } from "./rules-verdict.js";
 import { ApprovalsSection, StandingProposal, StandingRule } from "./standing.js";
 
 // The Rules page (design 09-dashboard-rules.md, issue #571; two sections since 2026-11-22, the owner's choice over
 // tabs): one PageHeader that says what the page is for, with the waiting count as a Badge beside the title, then in a
-// max-w-5xl column exactly two sections, "In effect" and "Waiting for you", and one "Details" disclosure at the end.
+// read-width column (PageHeader `width="read"`) exactly two sections, "In effect" and "Waiting for you", and one "Details" disclosure at the end.
 // In effect: each standing rule that is on (standing.tsx), then the ledger's applied rules (rules-applied.tsx), with a
 // search and Suggest. Waiting for you: the pending standing proposals (Accept visible, Decline in ⋯), then the entries
 // the ledger has not judged (judged null), candidates (`C-…`) before structure proposals (`P-…`); each is a ListRow
@@ -53,7 +53,7 @@ function ExcerptBlock({ excerpt }: { excerpt: Excerpt }) {
     <div data-rule-excerpt className="grid gap-2 sm:grid-cols-2">
       {sides.map(([k, label]) => (
         <div key={k} data-excerpt={k} className="min-w-0 space-y-1">
-          <h3 className="text-xs font-semibold text-text-2">{t(label)}</h3>
+          <h3 className={SUB_TITLE}>{t(label)}</h3>
           <ValueBlock>{excerpt[k]}</ValueBlock>
         </div>
       ))}
@@ -164,7 +164,7 @@ function LedgerOff({ view }: { view: RulesView }) {
   };
   const canTurnOn = view.turn_on !== null && view.csrf_token !== null;
   return (
-    <div className={`${PAGE_WIDTH} space-y-3`}>
+    <div className="space-y-3">
       <EmptyState
         title={t("rules.ledgerOff")}
         action={
@@ -207,7 +207,7 @@ const LIST = "divide-y divide-border rounded-control border border-border";
 function DetailsPart({ title, children, ...rest }: { title: string; children: ReactNode; [data: `data-${string}`]: string | boolean }) {
   return (
     <div className="space-y-2" {...rest}>
-      <h3 className="text-sm font-semibold">{title}</h3>
+      <h3 className={SUB_TITLE}>{title}</h3>
       {children}
     </div>
   );
@@ -216,15 +216,17 @@ function DetailsPart({ title, children, ...rest }: { title: string; children: Re
 export function RulesPage() {
   const rules = useApi<RulesView>(API.rules);
   const standing = useApi<StandingView>(API.standing);
+  // The applied-rules search, in the toolbar's second row (the page's one filter).
+  const [query, setQuery] = useState("");
   const v = rules.data;
   const title = t("page.rules");
-  if (rules.isError) return <><PageHeader title={title} /><ErrorNote error={rules.error} /></>;
-  if (!v) return <><PageHeader title={title} /><Loading rows={3} /></>;
+  if (rules.isError) return <><PageHeader title={title} width="read" /><ErrorNote error={rules.error} /></>;
+  if (!v) return <><PageHeader title={title} width="read" /><Loading rows={3} /></>;
   if (!v.enabled) {
     return (
       <>
-        <PageHeader title={title} />
-        <div className={`${PAGE_WIDTH} space-y-4`}>
+        <PageHeader title={title} width="read" />
+        <div className="space-y-4">
           <LedgerOff view={v} />
           <ApprovalsSection />
         </div>
@@ -246,18 +248,24 @@ export function RulesPage() {
   const excerpts = (v as RulesView & { excerpts?: Record<string, Excerpt> }).excerpts;
   const onRows = on.map((r) => <StandingRule key={r.rule} rule={r} token={standingToken} />);
   return (
-    <div className={`${PAGE_WIDTH} space-y-4`}>
+    <div className="space-y-4">
       <PageHeader
         title={title}
+        width="read"
         badge={<span data-waiting><Badge level={waitCount > 0 ? "needs_approval" : undefined}>{t("rules.waiting", { count: waitCount })}</Badge></span>}
         description={t("rules.pageDescription")}
       />
+      {hasAppliedTools(v.applied) && (
+        <PageToolbar>
+          <AppliedSearch value={query} onChange={setQuery} />
+        </PageToolbar>
+      )}
       {v.judge !== null && <Notice tone="warn">{t("rules.readOnly")}{v.judge}</Notice>}
       {v.error !== null && <Notice tone="bad">{v.error}</Notice>}
       <Card title={t("rules.inEffect")} count={inEffect}>
         {standing.isError && <ErrorNote error={standing.error} />}
         {v.applied !== null && (v.applied.rules.length > 0 || v.applied.elsewhere.length > 0) ? (
-          <Applied applied={v.applied} token={token} before={onRows.length > 0 ? onRows : undefined} />
+          <Applied applied={v.applied} token={token} before={onRows.length > 0 ? onRows : undefined} query={query} />
         ) : onRows.length > 0 ? (
           <ul aria-label={t("rules.inEffect")} className={LIST}>{onRows}</ul>
         ) : (
