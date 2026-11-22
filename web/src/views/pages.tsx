@@ -462,10 +462,10 @@ export function ItemPage({ id }: { id: string }) {
               <Tr key={r.id} data-run={r.id}>
                 <Td className="min-w-40">
                   {runKindLabel(r.kind)}{" "}
-                  {tries.length === 1 ? <code className="font-mono text-xs break-all text-text-2">{r.id}</code> : (
+                  {tries.length === 1 ? <code className="font-mono text-xs break-all text-text-2" title={r.id}>{shortRunId(r.id)}</code> : (
                     <RawDetails className="mt-1">
                       <ul aria-label={t("item.runIds")} className="mt-1 font-mono text-xs break-all">
-                        {tries.map((x) => <li key={x.id}>{x.id}</li>)}
+                        {tries.map((x) => <li key={x.id}><code>{x.id}</code></li>)}
                       </ul>
                     </RawDetails>
                   )}
@@ -477,6 +477,7 @@ export function ItemPage({ id }: { id: string }) {
                     <>
                       <span className="font-medium">{errorSentence(r.error.code)}</span>
                       <RawDetails>
+                        <p>{t("item.runId")} <code className="font-mono break-all">{r.id}</code></p>
                         {r.error.code && <code className="font-mono">{r.error.code}</code>}
                         {r.error.detail && <p className="mt-1 whitespace-pre-wrap">{r.error.detail}</p>}
                       </RawDetails>
@@ -603,6 +604,12 @@ function specMarkdown(v: unknown): string {
   return shortValue(v);
 }
 
+/**
+ * A run's short ID for the Runs table: "f726027e" for "run_f726027e…", the first 8 of its 32 hex characters; any other
+ * ID as it is. The full ID is the tooltip, and under the error's Details.
+ */
+const shortRunId = (id: string): string => /^run_([0-9a-f]{8})[0-9a-f]{24}$/.exec(id)?.[1] ?? id;
+
 /** The runs, newest first, with consecutive cancelled tries of one step folded into one row (its newest try, and every folded try). */
 function foldRuns(runs: ItemDetail["runs"]): { run: ItemDetail["runs"][number]; tries: ItemDetail["runs"] }[] {
   const rows: { run: ItemDetail["runs"][number]; tries: ItemDetail["runs"] }[] = [];
@@ -651,9 +658,9 @@ function TimelineRow({ entry, now, viewer }: { entry: TimelineEntry; now: number
         <span className="font-medium">{timelineSentence(entry, viewer)}</span>
         <RawDetails className="mt-1">
           <ul className="mt-1 font-mono text-xs break-all">
-            {entry.reason && <li>{entry.reason}</li>}
-            <li>{entry.actor.id}</li>
-            {short.map(([f, c]) => <li key={f}>{`${f}: ${shortValue(parseValue(c.from))} → ${shortValue(parseValue(c.to))}`}</li>)}
+            {entry.reason && <li><code>{entry.reason}</code></li>}
+            <li><code>{entry.actor.id}</code></li>
+            {short.map(([f, c]) => <li key={f}><code>{`${f}: ${shortValue(parseValue(c.from))} → ${shortValue(parseValue(c.to))}`}</code></li>)}
           </ul>
         </RawDetails>
         {spec.length > 0 && (

@@ -1,0 +1,11 @@
+{
+  "id": "1",
+  "work_item_id": "golden_triage_1",
+  "expect": "should_pass",
+  "uses": ["prompt:triage.md"],
+  "note": "Maintainer persona: a small, exact fix. The spec asks nothing and names the two files.",
+  "checks": [
+    { "kind": "no_question" },
+    { "kind": "names_paths", "paths": ["src/golden.ts", "tests/golden.test.ts"] }
+  ]
+}

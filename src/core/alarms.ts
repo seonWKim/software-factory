@@ -123,7 +123,8 @@ function zeroTokens(newestFirst: readonly Run[], threshold: number): AlarmFindin
   while (streak < agent.length && runTokenCount(agent[streak]!) === 0) streak++;
   if (streak < threshold) return [];
   const last = agent[0]!.outcome;
-  // How the last run ended only: the alarm's sentence (alarmText in src/ui/alarms.ts) already says the streak.
+  // How the last run ended only: the alarm's sentence (alarmText in src/ui/alarms.ts) already says the streak. The
+  // stored detail keeps the code; alarmFullText there reads this exact form and words the code for the owner.
   const detail = last?.status === "failed" ? `the last failed with ${last.error_code}` : "the last succeeded";
   return [{ pattern: "zero_tokens", pattern_key: "zero_tokens", error_code: "zero_tokens", count: streak, detail }];
 }

@@ -8,6 +8,7 @@ import { MODEL_RUN_KINDS } from "../core/model-choice.js";
 import { AUTO_ACTOR } from "../core/policy.js";
 import { type Run, type WorkItem, runTokenCount } from "../core/types.js";
 import type { Alert, FactoryStore } from "../interfaces/factory-store.js";
+import { failureWords } from "./why.js";
 
 /** Most alerts one view reads: far more than the patterns that can alert within one dedupe window. */
 const ALERTS_READ = 100;
@@ -32,10 +33,10 @@ export function alarmUntil(a: Alert): string {
 
 /** The alarm in one plain sentence, without its detail or any time (the why-it-waits sentence names it this way; the page shows `auto_stop.at`). */
 export function alarmText(a: Alert): string {
-  if (a.pattern === "repeated_error") return `Alarm: ${a.error_code} failed ${a.count} runs on several items`;
+  if (a.pattern === "repeated_error") return `Alarm: ${a.count} runs on several items failed the same way (${clause(failureWords(a.error_code))})`;
   if (a.pattern === "zero_tokens") return `Alarm: ${a.count} agent runs in a row used no tokens`;
-  if (a.pattern === "auto_stopped") return `Alarm: back to manual: ${AUTO_STOP_TEXT[a.error_code] ?? a.error_code}`;
-  if (a.pattern === "dead_letter") return `Alarm: a message on ${deadLetterTopic(a)} was dead-lettered (${DEAD_LETTER_TEXT[a.error_code] ?? a.error_code})`;
+  if (a.pattern === "auto_stopped") return `Alarm: back to manual: ${AUTO_STOP_TEXT[a.error_code] ?? "a check the factory has no plain words for yet"}`;
+  if (a.pattern === "dead_letter") return `Alarm: a message on ${deadLetterTopic(a)} was dead-lettered (${DEAD_LETTER_TEXT[a.error_code] ?? "for a reason the factory has no plain words for yet"})`;
   if (a.pattern === "spend_budget") return `Alarm: spending passed ${spendOf(a).pct}% of the ${spendOf(a).period} budget`;
   if (a.pattern === "red_main") return `Alarm: the base branch fails its checks on its own at \`${redMainSha(a).slice(0, 12)}\`; merge-queue changes wait until it moves`;
   return `Alarm: the factory restarted ${a.count} times in ${RESTART_WINDOW_MS / 60_000} minutes`;
@@ -73,9 +74,22 @@ export function redMainDetail(a: Alert): { text: string | null; output: CheckOut
   }
 }
 
+/** A plain-words sentence as a clause inside another: lower case first letter, no closing period. */
+const clause = (sentence: string) => sentence.charAt(0).toLowerCase() + sentence.slice(1).replace(/\.$/, "");
+
+/**
+ * A zero-token alert's detail (core/alarms.ts zeroTokens: "the last failed with <code>" or "the last succeeded")
+ * in plain words: how the last run ended, its error in words (failureWords), never the code.
+ */
+function zeroTokensDetail(detail: string): string {
+  const failed = /^the last failed with (.+)$/.exec(detail);
+  if (failed) return `the last one failed (${clause(failureWords(failed[1]!))})`;
+  return detail === "the last succeeded" ? "the last one succeeded" : detail;
+}
+
 /** An alarm's sentence with its detail, as Needs you and the alarms API show it. */
 export function alarmFullText(a: Alert): string {
-  const detail = a.pattern === "red_main" ? redMainDetail(a).text : a.detail;
+  const detail = a.pattern === "red_main" ? redMainDetail(a).text : a.pattern === "zero_tokens" && a.detail !== null ? zeroTokensDetail(a.detail) : a.detail;
   return detail === null ? alarmText(a) : `${alarmText(a)}: ${detail}`;
 }
 

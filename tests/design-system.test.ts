@@ -260,6 +260,13 @@ describe("contrast", () => {
     });
   }
 
+  for (const [theme, selector] of [["light", ":root"], ["dark", "\\.dark"]] as const) {
+    it(`the current-page fill (sidebar-active) is at least 1.1:1 from the sidebar in ${theme}`, () => {
+      const t = (name: string) => new RegExp(`--${name}: (#[0-9A-Fa-f]{6});`).exec(theme === "light" ? block(":root") : block(selector) + block(":root"))![1]!;
+      expect(ratio(t("sidebar-active"), t("sidebar")), `${theme} sidebar-active on sidebar`).toBeGreaterThanOrEqual(1.1);
+    });
+  }
+
   it("the type scale has a size and a line height per step", () => {
     for (const step of ["xs", "sm", "base", "lg", "xl"]) {
       expect(css).toMatch(new RegExp(`--fs-${step}: [\\d.]+rem;`));
@@ -292,13 +299,13 @@ describe("the Gongbang mark in the dashboard", () => {
     expect(hex.toUpperCase()).toBe(tokens.colors.dark!.ember!.toUpperCase());
     expect(svg).not.toContain("data-min-px");
     const css = readFileSync(join(WEB_SRC, "tokens.css"), "utf8");
-    expect(css).toMatch(/:root \{[^}]*--ember: #FB923C;/);
-    expect(css).toMatch(/\.dark \{[^}]*--ember: #FB923C;/);
+    expect(css).toMatch(/:root \{[^}]*--ember: #F2A55F;/);
+    expect(css).toMatch(/\.dark \{[^}]*--ember: #F2A55F;/);
     expect(readFileSync(join(WEB_SRC, "index.css"), "utf8")).toContain("--color-ember: var(--ember);");
     expect(readFileSync(join(WEB_SRC, "components", "ui", "brand.tsx"), "utf8")).toContain("fill-ember");
   });
 
-  it("the sidebar mark draws icon.svg's square and 공", () => {
+  it("the sidebar mark draws icon.svg's square and glyph", () => {
     // Read as text: this suite is type-checked without JSX.
     const brand = readFileSync(join(WEB_SRC, "components", "ui", "brand.tsx"), "utf8");
     const square = /MARK_SQUARE = \{ x: (\d+), y: (\d+), size: (\d+), rx: (\d+) \}/.exec(brand)!;
