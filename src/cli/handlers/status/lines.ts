@@ -1,7 +1,7 @@
 
 /** What a line reads of one row of the dashboard's list (`ListRow` in ui/list.ts). */
 export interface StatusRow {
-  item: { id: string; title: string; blocked_reason: string | null };
+  item: { id: string; title: string | null; blocked_reason: string | null };
   label: string;
 }
 
