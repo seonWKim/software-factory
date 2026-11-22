@@ -9,7 +9,7 @@ Pick the component by the need, before drawing anything by hand. A UI spec names
 | Need | Component | Usage |
 |---|---|---|
 | a state | `StatusBadge` for an item, run or worker state, else `Badge` | `StatusBadge` shows the state table's label and tone (`src/shared/states.ts`) with `data-status`; `Badge` any other short status as a pill, tone from a state table key; never a hand-made chip or a bordered Button. |
-| an on/off choice in a list | `Checkbox` | One box per row that turns that row's choice on or off (a task's completion, a project in a dialog); never a Button drawn as a box. |
+| an on/off choice in a list | Checkbox (none yet: `Switch` until it exists) | One box per row that turns that row's choice on or off. No Checkbox exists yet; a follow-up issue adds it. Until then use `Switch`, never a Button drawn as a box. |
 | a row's extra actions | `OverflowMenu` | The row's secondary actions behind one "more" button at its end, so the row stays one line. |
 | a row of a list of work items | `ItemRow` (`web/src/views/item-row.tsx`) | Tasks, Needs you, Work (table and tree), Runners' running runs, the item page's Runs: StatusBadge · title (the link) · why · project · worker · age · one primary action · ⋯ menu; Copy ID in the menu, never an ID in the text. Design 09-dashboard-tasks. |
 | any other row in a bordered list | `ListRow` | Leading control, one-line title with ellipsis, details line, every action in its ⋯ menu. |
@@ -98,6 +98,10 @@ A "more" button (a `ghost` Button at size `icon`) that opens a menu of actions: 
 ## ListRow
 
 One row of a bordered list that is not a work item (`list-row.tsx`; the Check and alarm rows of Needs you, Rules and Standing rules; a work item's row is `ItemRow`): an optional `leading` control (a Switch or Checkbox), the `title` on one full-width line cut with an ellipsis (the exported `ROW_TITLE` classes; the element carries the full text in `title`), a `details` line under it in `text-xs text-2` (state Badges, dates, projects, a reason), any `children` below (a form, an error), and the `menu` at the right: one `OverflowMenu` holding every action of the row, the primary first. No buttons beside the title and no raw IDs. 12px padding, 12px gaps; it never wraps the menu under the title. No variants or sizes.
+
+## ItemRow
+
+One row of a list of work items (`web/src/views/item-row.tsx`): Tasks, Needs you, Work (table and tree), Runners' running runs and the item page's Runs. Slots in order: `StatusBadge` · title (the link to the item; plain text for an unbuilt task) · why · project · worker · age · one primary action · ⋯ menu (an `OverflowMenu`; Copy ID lives there, never an ID in the row text). A second line only for "held behind X" or an error. The row carries `data-item-id` (an unbuilt task carries `data-task` instead). Variants `compact` (Work, Runners) and `comfortable` (Tasks) change spacing only. A done row is `text-2`, never struck through.
 
 ## Kbd
 
