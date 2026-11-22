@@ -106,10 +106,10 @@ export class LocalMergeUnit {
         : await this.c.unit("auth").authorize(who, "approve_merge", item.id);
     // The merge gate (core request-transition, through the commands unit): waiting for its merge, no PR, a sandbox that merges.
     const sandbox = this.c.k.d.sandbox;
-    // An item held after its resolve failed is parked on that conflict: the gate checks it as parked.
+    // Held after its resolve failed: parked. `again`: a failed merge check's max_loops (2026-11-23), back to merge_pending for one more check.
     const parked = conflictParked(item) || (item.blocked_reason === RECURRING_FAILURE && resolveHeld(item, await this.c.k.reader.listRuns(item.id)));
-    const asGated = parked ? { ...item, blocked_reason: CONFLICT_PENDING } : item;
-    const gate = "refuse" in principal ? null : this.c.unit("commands").merge.localRefusal(asGated, canMergeLocal(sandbox));
+    const again = !auto && !parked && this.c.unit("commands").merge.stopped(item, await this.c.k.reader.listStateChanges(item.id));
+    const gate = "refuse" in principal ? null : this.c.unit("commands").merge.localRefusal(item, canMergeLocal(sandbox), parked || again);
     let refusal: string;
     if ("refuse" in principal) refusal = principal.refuse;
     // The gate refuses when the sandbox cannot merge; its check again here only narrows the sandbox's type.
@@ -126,6 +126,7 @@ export class LocalMergeUnit {
         refusal = r;
       } else {
         // Ready and approved: the change enters the merge queue, which checks its merged result before it lands.
+        if (again) await this.c.unit("transitions").decide(item.id, async (it) => this.c.unit("commands").merge.again(it, await this.c.k.reader.listStateChanges(it.id), { kind: "user", id: principal.user_id as UserId }));
         const r = await this.c.unit("merge-queue").enter(item, auto ? AUTO_ACTOR : principal.user_id, key, detail);
         if (r === null) return null;
         refusal = r;
