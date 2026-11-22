@@ -1,4 +1,4 @@
-# History: 7. Self-improvement, conflict hotspots
+## History
 
 - **Hotspot count and split files** (decision changed 2026-11-18). Before: the hotspot count added every conflict run and held item on a file from the last 7 days, never checking whether a merge had since split, moved or deleted the file or whether the file was still at the base head, and the filed task listed run and item IDs with no dates.
 - **Conflict hotspots** (decision changed 2026-11-18). Before: the improve run grouped failed runs by error code and normalized detail only, so `merge_conflict` failures on the same file, each naming a different set of files, never grouped; no step counted conflicts or coordination holds per file, a failure stored its conflicting files only in its detail text, and only groups of two or more failed runs were filed.
