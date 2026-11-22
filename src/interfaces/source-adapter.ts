@@ -69,6 +69,12 @@ export type SourceEvent =
    * line included); untrusted. Absent or empty means no note.
    */
   | { kind: "retry_requested"; source: SourceRef; comment_id: string; requester: ExternalIdentity; note?: string }
+  /**
+   * `/paths +<path>...` (design 05-interactive-sessions): widens a running item's allowed paths. `note`: the trimmed
+   * text after the command, the `+<path>` words on its first line and a note on the lines below; untrusted. The
+   * controller splits the paths with commandText (controller/units/commands/paths.ts), then parseCommandPaths. Absent or empty: no paths, which the controller refuses.
+   */
+  | { kind: "paths_requested"; source: SourceRef; comment_id: string; requester: ExternalIdentity; note?: string }
   /** `/help`: the controller replies once with every command, marking the ones that apply now. */
   | { kind: "help_requested"; source: SourceRef; comment_id: string; requester: ExternalIdentity }
   /**

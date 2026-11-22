@@ -438,6 +438,23 @@ CREATE TABLE controller_dependency_edges (
     PRIMARY KEY (work_item_id, depends_on)
   );
 
+CREATE TABLE controller_design_learnings (
+    seq            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_key    TEXT NOT NULL,
+    work_item_id   TEXT NOT NULL,
+    capture_key    TEXT NOT NULL UNIQUE,
+    source         TEXT NOT NULL,
+    built          TEXT NOT NULL,
+    words          TEXT NOT NULL,
+    page           TEXT NOT NULL,
+    kind           TEXT,
+    at             TEXT NOT NULL,
+    supersedes     TEXT,
+    superseded_by  TEXT,
+    batch          TEXT,
+    created_at     TEXT NOT NULL
+  );
+
 CREATE TABLE controller_file_conflicts (
     project_key  TEXT NOT NULL,
     path         TEXT NOT NULL,
@@ -478,6 +495,29 @@ CREATE TABLE controller_handoffs (
     next_steps    TEXT NOT NULL,
     at            TEXT NOT NULL,
     UNIQUE (run_id, commit_sha)
+  );
+
+CREATE TABLE controller_improve_proposals (
+    id                 TEXT PRIMARY KEY,
+    project            TEXT NOT NULL,
+    report_id          TEXT NOT NULL,
+    pattern_key        TEXT NOT NULL,
+    error_code         TEXT NOT NULL,
+    run_count          INTEGER NOT NULL,
+    file               TEXT NOT NULL,
+    state              TEXT NOT NULL,
+    reason             TEXT,
+    why                TEXT,
+    diff               TEXT,
+    evidence           TEXT,
+    rules              TEXT,
+    needs_human_merge  INTEGER NOT NULL,
+    decided_by         TEXT,
+    decided_at         TEXT,
+    filing_at          TEXT,
+    filed_ref          TEXT,
+    created_at         TEXT NOT NULL,
+    UNIQUE (report_id, pattern_key)
   );
 
 CREATE TABLE controller_improve_reports (
@@ -606,7 +646,7 @@ CREATE TABLE controller_projects (
     created_by   TEXT NOT NULL,
     created_at   TEXT NOT NULL,
     archived_at  TEXT
-  );
+  , base_folder TEXT);
 
 CREATE TABLE controller_signals (
     id            TEXT PRIMARY KEY,
@@ -1792,7 +1832,11 @@ CREATE INDEX controller_claim_decisions_work_item ON controller_claim_decisions 
 
 CREATE INDEX controller_dependency_edges_target ON controller_dependency_edges (depends_on);
 
+CREATE INDEX controller_design_learnings_project ON controller_design_learnings (project_key, seq);
+
 CREATE INDEX controller_handoffs_item ON controller_handoffs (work_item_id, at);
+
+CREATE INDEX controller_improve_proposals_project ON controller_improve_proposals (project, created_at);
 
 CREATE INDEX controller_improve_reports_project ON controller_improve_reports (project_key, created_at);
 

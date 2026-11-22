@@ -91,12 +91,14 @@ describe("Calendar page", () => {
     expect(screen.queryByRole("button", { name: "Upcoming" })).toBeNull();
   });
 
-  it("one toolbar holds the view switch, then Previous, Next and Today", async () => {
+  it("one row of the page toolbar holds the view switch, then Previous, Next and Today, outside the Card", async () => {
     show();
     const toolbar = (await screen.findByRole("group", { name: "Calendar view" }, SLOW)).parentElement!;
     expect(toolbar.hasAttribute("data-calendar-toolbar")).toBe(true);
     expect(within(toolbar).getAllByRole("button").map((b) => b.textContent)).toEqual(["Week", "Month", "Previous", "Next", "Today"]);
     expect(document.querySelectorAll("[data-calendar-toolbar]")).toHaveLength(1);
+    expect(toolbar.closest("[data-page-toolbar]")).not.toBeNull();
+    expect(toolbar.closest("section")).toBeNull();
   });
 
   it("Week shows Monday to Sunday of the current week, each day's events all-day first, then timed by time, with time or 'all day' and source", async () => {
@@ -126,18 +128,19 @@ describe("Calendar page", () => {
     expect(empty.querySelector("p, ul")).toBeNull();
   });
 
-  it("the period heading is the only h2, in the toolbar row, and the Card has no title", async () => {
+  it("the period heading is the only h2, the Card's title, announced when it changes", async () => {
     show();
     await shownRange("2026-11-09", "2026-11-15");
     const h2 = screen.getByRole("heading", { level: 2 });
-    expect(h2.closest("[data-calendar-toolbar]")).not.toBeNull();
     expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(1);
+    expect(h2.closest("[data-calendar-toolbar]")).toBeNull();
+    expect(h2.getAttribute("aria-live")).toBe("polite");
     const card = screen.getByRole("region", { name: "Nov 9 – 15, 2026" });
-    expect(card.querySelector("[data-calendar-toolbar] h2")).toBe(h2);
+    expect(card.querySelector("h2")).toBe(h2);
     press("Month");
     await shownRange("2026-11-01", "2026-11-30");
     expect(heading()).toBe("November 2026");
-    expect(screen.getByRole("heading", { level: 2 }).closest("[data-calendar-toolbar]")).not.toBeNull();
+    expect(screen.getByRole("region", { name: "November 2026" }).querySelector("h2")!.textContent).toBe("November 2026");
   });
 
   it("today is circled in Week and Month, and no other day is", async () => {

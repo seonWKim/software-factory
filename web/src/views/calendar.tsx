@@ -3,10 +3,10 @@ import { useState } from "react";
 import { type CalendarDay, type CalendarEvents, type CalendarSync, type EventRow, useCalendarEvents } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
-import { EmptyState, Notice, PageHeader } from "../components/ui/notice.js";
+import { EmptyState, Notice, PageHeader, PageToolbar } from "../components/ui/notice.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { ErrorNote, Loading, Table, Td, Tr } from "../components/ui/parts.js";
-import { CARD_TITLE, Card } from "../components/ui/card.js";
+import { Card, SUB_TITLE } from "../components/ui/card.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
@@ -18,7 +18,7 @@ import { dayLabel } from "./tasks/groups.js";
 // read-only, from GET /api/v1/calendar/events with the first and last day shown. Week: Monday to Sunday as seven columns.
 // Month: a Monday-first grid, up to 3 events a day and then "+N more". Previous and next move by one week or month;
 // Today returns to the period holding today in the browser's time zone, and today's date is circled. The period's
-// heading is the toolbar's h2. Each event has a colour strip chosen from its source's name and names its source only when
+// heading is the Card's h2; the view switch and the period buttons are the page's PageToolbar. Each event has a colour strip chosen from its source's name and names its source only when
 // several calendars are connected. A day the last syncs did not cover is shaded, never drawn empty, and one note above the
 // grid names those days; an empty synced day shows no text. A source whose last sync failed is named with its last sync time, and its stored
 // events stay listed. A connected calendar that has not synced yet is named with "Not synced yet". The read lists the
@@ -102,7 +102,7 @@ function WeekDays({ label, days, today, showSource }: { label: string; days: rea
     <ol aria-label={label} className="grid min-w-[56rem] grid-cols-7 gap-2">
       {days.map((d) => (
         <li key={d.date} data-day={d.date} {...(d.synced ? {} : { "data-not-synced": "" })} className={cn("min-w-0 space-y-1 rounded-control p-1", !d.synced && SHADED)}>
-          <h3 className="text-xs font-medium text-text-2">
+          <h3 className={SUB_TITLE}>
             <span {...(d.date === today ? { "data-today": "" } : {})} className={cn(d.date === today && TODAY_RING)}>{dayLabel(d.date)}</span>
           </h3>
           {d.synced && d.events.length > 0 && (
@@ -173,7 +173,7 @@ function StaleCalendars({ calendar }: { calendar: readonly CalendarSync[] }) {
   return (
     <Notice tone="warn" title={t("calendarPage.syncFailed")}>
       {failed.map((c) => (
-        <p key={c.source} data-calendar-stale={c.source} className="text-pretty break-words">
+        <p key={c.source} data-calendar-stale={c.source} data-raw className="text-pretty break-words">
           {t("calendarPage.stale", { source: c.source, when: when(c.synced_at) })}
         </p>
       ))}
@@ -221,12 +221,12 @@ function Events({ v, view, label }: { v: CalendarEvents; view: View; label: stri
   const today = iso(new Date());
   const showSource = v.calendar.length > 1;
   return (
-    <>
+    <div className="space-y-3">
       <StaleCalendars calendar={v.calendar} />
       <UnsyncedCalendars unsynced={unsynced} />
       {unsynced.length === 0 && v.days.some((d) => !d.synced) && <Notice tone="info">{t("calendarPage.notSyncedDays", { days: unsyncedDays(v.days) })}</Notice>}
       {view === "week" ? <WeekDays label={label} days={v.days} today={today} showSource={showSource} /> : <MonthGrid label={label} days={v.days} today={today} showSource={showSource} />}
-    </>
+    </div>
   );
 }
 
@@ -240,25 +240,25 @@ export function CalendarPage() {
   return (
     <>
     <PageHeader title={t("page.calendar")} />
-    <div className="flex flex-col gap-6">
-      <Card label={label}>
-        <div data-calendar-toolbar className="flex flex-wrap items-center gap-2">
-          <h2 aria-live="polite" className={cn(CARD_TITLE, "mr-auto")}>{label}</h2>
-          <SegmentedControl label={t("calendarPage.view")} options={VIEWS} value={view} onChange={setView} />
-          <ButtonRow role="group" aria-label={t("calendarPage.period")}>
-            <Button aria-label={t(view === "week" ? "calendarPage.previousWeek" : "calendarPage.previousMonth")} onClick={() => setFocus(step(view, focus, -1))}>
-              {t("calendarPage.previous")}
-            </Button>
-            <Button aria-label={t(view === "week" ? "calendarPage.nextWeek" : "calendarPage.nextMonth")} onClick={() => setFocus(step(view, focus, 1))}>
-              {t("calendarPage.next")}
-            </Button>
-            <Button onClick={() => setFocus(new Date())}>{t("calendarPage.today")}</Button>
-          </ButtonRow>
-        </div>
-
-        {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <Events v={v} view={view} label={label} />}
-      </Card>
-    </div>
+    <PageToolbar>
+      {/* The page's controls (09-dashboard-tasks, Calendar): the view switch, then the period buttons, in one row. */}
+      <div data-calendar-toolbar className="flex min-w-0 flex-wrap items-center gap-2">
+        <SegmentedControl label={t("calendarPage.view")} options={VIEWS} value={view} onChange={setView} />
+        <ButtonRow role="group" aria-label={t("calendarPage.period")}>
+          <Button aria-label={t(view === "week" ? "calendarPage.previousWeek" : "calendarPage.previousMonth")} onClick={() => setFocus(step(view, focus, -1))}>
+            {t("calendarPage.previous")}
+          </Button>
+          <Button aria-label={t(view === "week" ? "calendarPage.nextWeek" : "calendarPage.nextMonth")} onClick={() => setFocus(step(view, focus, 1))}>
+            {t("calendarPage.next")}
+          </Button>
+          <Button onClick={() => setFocus(new Date())}>{t("calendarPage.today")}</Button>
+        </ButtonRow>
+      </div>
+    </PageToolbar>
+    {/* The period ("Nov 9 – 15, 2026") is the Card's h2, announced when it changes. */}
+    <Card title={label} live>
+      {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <Events v={v} view={view} label={label} />}
+    </Card>
     </>
   );
 }
