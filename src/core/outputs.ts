@@ -1,6 +1,6 @@
 import { DONE_CHECKS_SCHEMA, type DoneCheck, parseDoneChecks } from "./done-checks.js";
 import { isCovered } from "./policy.js";
-import { MAX_PHASES, MIN_PHASES, type SplitLimits, splitError } from "./split.js";
+import { MAX_PHASES, MIN_PHASES, type SplitLimits, parseGoalLines, splitError } from "./split.js";
 import { DEPENDENCY_OPTIONS, proposedDependency } from "./task-build.js";
 import type { Tier } from "./types.js";
 export { doneCheckCommands } from "./done-checks.js"; // the triage branch's check_commands (src/core/done-checks.ts)
@@ -38,6 +38,7 @@ export interface TriageOutput {
   estimated_files: number;
   /** A split into 2 to 4 ordered phases, each mergeable on its own: required over the split threshold (src/core/split.ts), else absent. */
   phases?: TriagePhase[];
+  goal_done_when?: string[]; // a split's goal lines, in order (design 04-split-specs, 2026-11-22); only with phases
 }
 
 /**
@@ -204,11 +205,8 @@ export const TRIAGE_SCHEMA = {
     tier_reason: { type: "string" },
     estimated_lines: count,
     estimated_files: count,
-    phases: {
-      type: "array",
-      maxItems: MAX_PHASES,
-      items: closed({ title: { type: "string" }, problem: { type: "string" }, done_criteria: { ...strings, minItems: 1 }, allowed_paths: { ...strings, minItems: 1 } }),
-    },
+    phases: { type: "array", maxItems: MAX_PHASES, items: closed({ title: { type: "string" }, problem: { type: "string" }, done_criteria: { ...strings, minItems: 1 }, allowed_paths: { ...strings, minItems: 1 } }) },
+    goal_done_when: { ...strings, description: "Only with phases: what the whole split must do once every phase merged, one line each." },
   },
 };
 
@@ -469,7 +467,7 @@ export function parseTriage(v: unknown, limits?: SplitLimits & { check_commands?
   // Bare tool-call markup (issue #446) is refused, never repaired: the run is retried like any invalid output.
   const markup = markupError({
     in_short, problem, desired_output, tier_reason, ...(lists ? { in_scope: scoped.in_scope, out_of_scope: scoped.out_of_scope } : { scope: scoped.scope }),
-    done_criteria, applied_defaults, done_checks: (checks.value ?? []).flatMap((c) => ("reason" in c ? [c.reason] : [])),
+    done_criteria, applied_defaults, goal_done_when: isStrs(v.goal_done_when) ? v.goal_done_when : undefined, done_checks: (checks.value ?? []).flatMap((c) => ("reason" in c ? [c.reason] : [])),
     decisions: [...decisions, ...decision_items.flatMap((d) => [d.reason ?? "", ...(d.options ?? []), ...(d.option_changes ?? []).flatMap((c) => c.done_when)])],
   });
   if (markup) return { ok: false, error: markup };
@@ -487,6 +485,8 @@ export function parseTriage(v: unknown, limits?: SplitLimits & { check_commands?
   if (!isCount(estimated_lines) || !isCount(estimated_files)) return { ok: false, error: "estimated_lines/estimated_files" };
   const phases = parsePhases(v.phases);
   if (!phases.ok) return phases;
+  const goal = parseGoalLines(v.goal_done_when, phases.value?.length ?? 0);
+  if (!goal.ok) return goal;
   if (limits) {
     const err = splitError({ estimated_lines, estimated_files }, phases.value?.length ?? 0, limits);
     if (err) return { ok: false, error: err };
@@ -495,7 +495,8 @@ export function parseTriage(v: unknown, limits?: SplitLimits & { check_commands?
     ok: true,
     value: {
       in_short, problem, done_criteria, desired_output, ...scoped, allowed_paths, files_to_change, tier, tier_reason, estimated_lines,
-      estimated_files, decisions, decision_items, applied_defaults, ...(phases.value ? { phases: phases.value } : {}), ...(checks.value ? { done_checks: checks.value } : {}),
+      estimated_files, decisions, decision_items, applied_defaults, ...(phases.value ? { phases: phases.value } : {}), ...(goal.value ? { goal_done_when: goal.value } : {}),
+      ...(checks.value ? { done_checks: checks.value } : {}),
     },
   };
 }

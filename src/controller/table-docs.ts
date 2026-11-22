@@ -9,6 +9,8 @@ export const TABLE_DOCS: Readonly<Record<string, string>> = {
   "controller_budget_checkpoints.answer": "The owner's answer: more budget, or stop.",
   controller_claim_decisions: "Why a run was started or held when a worker claimed it (coordination cost, dependencies).",
   controller_command_proposals: "Commands the factory read from a message, waiting for the owner to confirm or cancel them.",
+  controller_design_learnings: "Owner corrections to dashboard changes, one line each, as design-system/learnings.md shows them.",
+  "controller_design_learnings.capture_key": "The item and the comment, verdict or review finding the line came from; one line per key.",
   controller_dependency_edges: "Links between work items (one depends on another) and whether each is met.",
   controller_file_conflicts: "Files a change conflicted on, per project, used to weigh coordination cost.",
   controller_filed_patterns: "Failure patterns the improve run filed as work items, and what came of each.",

@@ -657,8 +657,9 @@ describe("Settings page: the typed form of the file-only keys (design 08-setting
     expect(keyOf(section, "plugins.runner").querySelector("details")!.textContent).not.toContain("guard");
     // The read-only keys' reason sits under the name as the description.
     expect(section.querySelector('tr[data-read-only="env"] p')!.textContent).toContain("locally or in the cloud");
-    // The sub-heading is drawn like the section title.
-    for (const name of ["Read-only keys", "Change on a local branch"]) expect(screen.getByRole("heading", { name }).className).toContain("text-balance text-base font-semibold");
+    // The section title is the Card's h2; the sub-group under it is an h3 in the one sub-group style.
+    expect(screen.getByRole("heading", { level: 2, name: "Change on a local branch" }).className).toContain("text-balance text-base font-semibold");
+    expect(screen.getByRole("heading", { level: 3, name: "Read-only keys" }).className).toContain("text-xs font-medium text-text-2");
   });
 
   it("Save sends edit-file through the writer, then shows the branch and a Merge button that merges the item locally", async () => {
@@ -795,6 +796,9 @@ describe("Settings page: Mode lines, grouped Advanced keys and plain timing (des
   it("search keeps the keys whose name, label or help text matches, For developers too, and says when none matches", async () => {
     const table = await show();
     const search = screen.getByRole("searchbox", { name: "Search settings" });
+    // The search is a page filter: in the PageToolbar's second row, not inside the Settable keys card.
+    expect(search.closest("[data-page-toolbar]")).not.toBeNull();
+    expect(search.closest("section")).toBeNull();
     fireEvent.change(search, { target: { value: "TICK_MS" } });
     // The settable keys only: the file keys and PR-only tables below are not searched.
     const shownKeys = () => [...(screen.queryByRole("table", { name: "Settable keys" })?.querySelectorAll("tr[data-key]") ?? []), ...document.querySelectorAll("details[data-group] tr[data-key]")].map((r) => r.getAttribute("data-key"));

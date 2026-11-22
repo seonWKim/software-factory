@@ -142,6 +142,14 @@ export function canMergeLocal(sandbox: Sandbox | undefined): sandbox is LocalMer
 }
 
 /**
+ * Whether the sandbox can append to a file on the local base (design 07-design-learnings): it merges locally, reads
+ * local branches and files, and commits one file on a new local branch, with no checkout and no network call.
+ */
+export function canAppendLocal(sandbox: Sandbox | undefined): boolean {
+  return canMergeLocal(sandbox) && canReadLocal(sandbox) && typeof sandbox.readLocalFile === "function" && typeof sandbox.commitNewBranch === "function";
+}
+
+/**
  * The controller's forge and link reader (issue #273; design 05-sources, Local items): a selected forge is both.
  * With none, `local` (the local forge compose builds) reads links, and is the forge too only when it pushes the base
  * (`merge_queue.push_base` and an origin), so the default stays no forge, no push row and no remote call.

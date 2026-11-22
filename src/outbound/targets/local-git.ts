@@ -1,5 +1,5 @@
-// The `local` target's git writes (RFC 0015 §7, M8): the merge queue's landing (`merge`) and the base push that
-// follows it (`push_base`) leave through outbound, from the factory repo of the host the destination names
+// The `local` target's git writes (RFC 0015 §7, M8): the merge queue's landing (`merge`), the base push that
+// follows it (`push_base`) and lines appended to one file on the base (`append_lines`, design 07-design-learnings) leave through outbound, from the factory repo of the host the destination names
 // (`git:<host>:<base>`). Both go through `LocalGit`, built here from the sandbox (the factory repo's merge and the
 // remote base's fetch) and the forge (the push, which holds the credentials), the target's dependency (TargetDeps).
 // A delivery's outcome is its `delivered_ref` (JSON, at most 1024 characters), which the controller applies on
@@ -39,11 +39,29 @@ export interface GitBasePushSpec {
 /** `pushed`: the remote base is at `sha` (it contains the merge). `conflicts`: it moved and does not merge cleanly. */
 export type GitBasePushResult = { readonly pushed: string } | { readonly conflicts: readonly string[] };
 
+export interface GitAppendSpec {
+  readonly base_ref: string;
+  /** The file, relative to the repo root. */
+  readonly path: string;
+  /** The file's first text when the base has no such file. */
+  readonly head: string;
+  /** Whole lines, in order; one the file holds already is not appended again. */
+  readonly lines: readonly string[];
+  /** The branch the commit is made on before it merges, unique per request; the base's commit is added to it. */
+  readonly branch: string;
+  readonly message: string;
+}
+
+/** `appended`: the base holds the lines at `sha`. `already`: the file held every line, nothing moved. */
+export type GitAppendResult = { readonly appended: number; readonly sha: string } | { readonly already: true };
+
 /** The factory repo's git writes, as the `local` target makes them. */
 export interface LocalGit {
   merge(spec: GitMergeSpec): Promise<GitMergeResult>;
   /** Brings the remote base into the local one and pushes it; null when the project has no remote to push to. */
   readonly pushBase: ((spec: GitBasePushSpec) => Promise<GitBasePushResult>) | null;
+  /** Appends lines to one file on the local base in one commit; null when the sandbox cannot commit to a local branch. Throws when the base moved. */
+  readonly appendLines: ((spec: GitAppendSpec) => Promise<GitAppendResult>) | null;
 }
 
 interface GitConfig {
@@ -67,6 +85,11 @@ interface RepoSandbox {
   syncBase?(spec: { repo: string; base_ref: string; merge_sha: string; message: string; identity: { name: string; email: string } }): Promise<
     { synced: true; local: string; remote: string; contains: boolean } | { synced: false; conflicts: string[] }
   >;
+  localBranch?(spec: { repo: string; branch: string }): Promise<string | null>;
+  readLocalFile?(spec: { repo: string; ref: string; path: string }): Promise<{ commit: string; text: string } | null>;
+  commitNewBranch?(spec: {
+    repo: string; base_ref: string; parent: string; branch: string; path: string; content: string; message: string; identity: { name: string; email: string };
+  }): Promise<{ created: true; sha: string } | { created: false; reason: "exists" | "base_moved" }>;
 }
 
 function repoSandbox(sandbox: unknown): RepoSandbox | null {
@@ -81,6 +104,7 @@ export function localGit(sandbox: unknown, forge: TargetDeps["forge"], cfg: () =
   const repo = repoSandbox(sandbox);
   if (repo === null) return null;
   const sync = repo.syncBase?.bind(repo);
+  const [branchOf, read, commit] = [repo.localBranch?.bind(repo), repo.readLocalFile?.bind(repo), repo.commitNewBranch?.bind(repo)];
   return {
     async merge(spec) {
       const c = cfg();
@@ -102,12 +126,43 @@ export function localGit(sandbox: unknown, forge: TargetDeps["forge"], cfg: () =
       await forge.pushBase!({ repo: c.repo, base_ref: spec.base_ref, sha: s.local, expected_sha: s.remote });
       return { pushed: s.local };
     },
+    // One commit with the file's new text on a branch made from the base, merged into the base conditionally on it. A
+    // retry after the branch was made finds it (`exists`, the same base and lines) and merges it; a moved base throws.
+    appendLines: !branchOf || !read || !commit ? null : async (spec) => {
+      const c = cfg();
+      const file = await read({ repo: c.repo, ref: spec.base_ref, path: spec.path });
+      const parent = file?.commit ?? (await branchOf({ repo: c.repo, branch: spec.base_ref }));
+      if (parent === null) throw new Error(`the factory repo has no local branch \`${spec.base_ref}\``);
+      const content = appendNew(file?.text ?? null, spec.head, spec.lines);
+      if (content === null) return { already: true };
+      const branch = `${spec.branch}-${parent.slice(0, 12)}`;
+      const made = await commit({ repo: c.repo, base_ref: spec.base_ref, parent, branch, path: spec.path, content: content.text, message: spec.message, identity: c.identity });
+      if (!made.created && made.reason === "base_moved") throw new Error(`the base \`${spec.base_ref}\` moved; appended again`);
+      const r = await repo.mergeLocal({
+        repo: c.repo, base_ref: spec.base_ref, branch, message: spec.message, identity: c.identity, checks: [], timeout_ms: c.timeout_ms, expected_base: parent,
+      });
+      if (!r.merged) throw new Error(r.refused ?? `the base \`${spec.base_ref}\` moved; appended again`);
+      return { appended: content.appended, sha: r.sha };
+    },
   };
 }
 
-/** Whether `git` can deliver `row` here: a merge needs the factory repo, a base push its remote too. */
+/**
+ * `file` with `lines` appended (design 07-design-learnings): every earlier byte kept as it is, a line the file holds
+ * already not appended again, a missing file (null) started with `head`. Null when nothing is new.
+ */
+export function appendNew(file: string | null, head: string, lines: readonly string[]): { text: string; appended: number } | null {
+  const text = file ?? head;
+  const have = new Set(text.split("\n"));
+  const fresh = lines.filter((l) => !have.has(l));
+  if (fresh.length === 0) return null;
+  return { text: `${text}${text === "" || text.endsWith("\n") ? "" : "\n"}${fresh.join("\n")}\n`, appended: fresh.length };
+}
+
+/** Whether `git` can deliver `row` here: a merge needs the factory repo, a base push its remote too, an append a local commit. */
 export function gitAccepts(git: LocalGit | null, row: ActionRow): boolean {
   if (row.action === "merge") return git !== null;
+  if (row.action === "append_lines") return git?.appendLines != null;
   return row.action === "push_base" && git?.pushBase != null;
 }
 
@@ -134,6 +189,12 @@ export async function deliverGit(git: LocalGit, row: ActionRow): Promise<{ url: 
     });
     const out = r.merged ? { ...r, not_updated: capped(r.not_updated) } : "refused" in r ? { merged: false, refused: r.refused.slice(0, MAX_TEXT) } : r;
     return { url: null, ref: JSON.stringify(out) };
+  }
+  if (row.action === "append_lines" && git.appendLines) {
+    const r = await git.appendLines({
+      base_ref: String(a.base_ref), path: String(a.path), head: String(a.head), lines: JSON.parse(String(a.lines)) as string[], branch: String(a.branch), message: String(a.message),
+    });
+    return { url: null, ref: JSON.stringify(r) };
   }
   if (row.action !== "push_base" || !git.pushBase) throw new Error(`the local target does not deliver ${row.action}`);
   const r = await git.pushBase({ base_ref: String(a.base_ref), merge_sha: String(a.merge_sha), message: String(a.message) });

@@ -156,8 +156,7 @@ function KeyRows({ rows, view, resets }: { rows: readonly SettingRow[]; view: Se
  * The settable keys in groups (design 09-dashboard-settings): Retries, Limits, Models and Notices as rows of one table,
  * each group opened by a heading row, then For developers as a collapsed table of its own.
  */
-function KeysTable({ view }: { view: SettingsView }) {
-  const [query, setQuery] = useState("");
+function KeysTable({ view, query }: { view: SettingsView; query: string }) {
   if (view.keys.length === 0) return <EmptyState title={t("settings.noKeys")} />;
   // The Reset column shows only while some key has an override to reset.
   const resets = view.keys.some((row) => row.source === "override");
@@ -171,14 +170,6 @@ function KeysTable({ view }: { view: SettingsView }) {
   const shown = groups.filter((g) => (needle !== "" || g.id !== "developers") && g.rows.length > 0);
   return (
     <>
-      <Input
-        type="search"
-        aria-label={t("settings.search")}
-        placeholder={t("settings.search")}
-        className="mb-3 w-full sm:max-w-sm"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-      />
       {shown.length === 0 && <p data-no-match className="text-sm text-text-2">{t("settings.noMatch", { query: query.trim() })}</p>}
       {shown.length > 0 && <Table label={t("settings.settableKeys")} head={head}>
         {shown.map((g) => (
@@ -219,7 +210,7 @@ function ValueCell({ row, view }: { row: SettingRow; view: SettingsView }) {
       {row.key === "model_by" && <ModelSummary value={row.value} />}
       {SECTION_KEYS[row.key] ? (
         <p className="text-xs text-pretty text-text-2">
-          <span className="font-mono wrap-anywhere">{row.value}</span> · {t(SECTION_KEYS[row.key]!)}
+          <span data-raw className="font-mono wrap-anywhere">{row.value}</span> · {t(SECTION_KEYS[row.key]!)}
         </p>
       ) : (
         <Editor row={row} label={label} value={row.value} token={view.csrf_token} />
@@ -299,8 +290,19 @@ function PageCommands() {
   );
 }
 
-/** The Advanced tab: the settable keys, the file keys, the PR-only keys, the history, Commands and the ignored overrides. */
-export function AdvancedTab({ view: v }: { view: SettingsView }) {
+/**
+ * The search over the settable keys (name, label, help text). A page filter, so Settings renders it in its PageToolbar's
+ * second row while the Advanced tab is open and passes the text to AdvancedTab.
+ */
+export function SettingsSearch({ value, onChange }: { value: string; onChange: (query: string) => void }) {
+  return <Input type="search" aria-label={t("settings.search")} placeholder={t("settings.search")} className="w-full sm:max-w-sm" value={value} onChange={(e) => onChange(e.target.value)} />;
+}
+
+/**
+ * The Advanced tab: the settable keys (narrowed by `query`, the toolbar's search), the file keys, the PR-only keys, the
+ * history, Commands and the ignored overrides.
+ */
+export function AdvancedTab({ view: v, query }: { view: SettingsView; query: string }) {
   const now = useNow();
   // The keys the typed form edits leave the PR-only table; the remaining keys change only by a reviewed PR.
   const editable = editableKeys(v);
@@ -315,7 +317,7 @@ export function AdvancedTab({ view: v }: { view: SettingsView }) {
       <Card title={t("settings.settableKeys")} count={v.keys.length}>
         <p className="mb-2 text-sm text-pretty text-text-2">{t("settings.settableIntro")}</p>
         <ProjectLabel view={v} />
-        <KeysTable view={v} />
+        <KeysTable view={v} query={query} />
       </Card>
       <FileKeysSection view={v} />
       <Card title={PR_ONLY_TITLE} count={prOnly.length}>

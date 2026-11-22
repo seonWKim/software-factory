@@ -3,7 +3,7 @@ import { type GraphEdge, type GraphNode, type ItemGraph, WINDOW_MS, WORKER_WINDO
 import { Card } from "../components/ui/card.js";
 import { FOCUS } from "../components/ui/control.js";
 import { Tooltip } from "../components/ui/menu.js";
-import { EmptyState, PageHeader } from "../components/ui/notice.js";
+import { EmptyState, PageHeader, PageToolbar } from "../components/ui/notice.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { en, type MessageKey } from "../i18n/en.js";
@@ -153,19 +153,24 @@ export function Timeline({ data, windowMs, highlight }: { data: WindowRuns; wind
               return (
                 <li key={run.id} className="absolute" style={{ left: pct(s.start), width: `max(${((s.end - s.start) / windowMs) * 100}%, 4px)`, top: lane * LANE_PX + 4, height: LANE_PX - 8 }}>
                   <Tooltip text={<TipText lines={lines} />} placement={lane < lanes / 2 ? "bottom" : "top"} align={s.start - from < windowMs / 2 ? "start" : "end"} className="h-full w-full">
+                    <span
+                      aria-hidden
+                      data-bar
+                      className={cn(
+                        "block h-full w-full rounded-control",
+                        KIND_FILL[kindCategory(run.kind)],
+                        STATUS_LOOK[run.status],
+                        lit && "ring-2 ring-text-1 ring-offset-1 ring-offset-surface",
+                        highlight !== null && !lit && "opacity-40",
+                      )}
+                    />
+                    {/* The link is the bar's hit area, centred on it and at least 24x24px (the small-target rule); the drawn bar keeps its time width. */}
                     <Link
                       href={itemPath(run.work_item_id)}
                       aria-label={`${lines[0]}: ${lines[2]}`}
                       data-run={run.id}
                       data-highlight={lit ? "true" : undefined}
-                      className={cn(
-                        "block h-full w-full rounded-control",
-                        KIND_FILL[kindCategory(run.kind)],
-                        STATUS_LOOK[run.status],
-                        FOCUS,
-                        lit && "ring-2 ring-text-1 ring-offset-1 ring-offset-surface",
-                        highlight !== null && !lit && "opacity-40",
-                      )}
+                      className={cn("absolute top-1/2 left-1/2 h-full min-h-6 w-full min-w-6 -translate-x-1/2 -translate-y-1/2 rounded-control", FOCUS)}
                     />
                   </Tooltip>
                 </li>
@@ -241,7 +246,7 @@ export function DependencyGraph({ data, highlight, onHighlight }: { data: ItemGr
                           highlight === n.id && "ring-2 ring-text-1",
                         )}
                       >
-                        <span className="truncate">{lines[0]}</span>
+                        <span data-raw className="truncate">{lines[0]}</span>
                       </Link>
                     </Tooltip>
                   </li>
@@ -256,7 +261,7 @@ export function DependencyGraph({ data, highlight, onHighlight }: { data: ItemGr
   );
 }
 
-/** The Workers page: the window switch, the timeline card and the graph card. Nothing on it edits anything. */
+/** The Workers page: the window switch in its PageToolbar, the timeline card and the graph card. Nothing on it edits anything. */
 export function WorkersPage() {
   const [win, setWin] = useState<WorkerWindow>("6h");
   const [highlight, setHighlight] = useState<string | null>(null);
@@ -265,10 +270,11 @@ export function WorkersPage() {
   return (
     <div>
       <PageHeader title={t("page.workers")} description={t("workers.description")} />
-      <Card
-        title={t("workers.timeline.title")}
-        action={<SegmentedControl label={t("workers.window")} options={WORKER_WINDOWS.map((w) => ({ id: w, label: w }))} value={win} onChange={setWin} />}
-      >
+      {/* The window narrows both cards, so it is a page control: the toolbar's second row. */}
+      <PageToolbar>
+        <SegmentedControl label={t("workers.window")} options={WORKER_WINDOWS.map((w) => ({ id: w, label: w }))} value={win} onChange={setWin} />
+      </PageToolbar>
+      <Card title={t("workers.timeline.title")}>
         {runs.data ? <Timeline data={runs.data} windowMs={WINDOW_MS[win]} highlight={highlight} /> : runs.isError ? <ErrorNote error={runs.error} /> : <Loading />}
       </Card>
       <Card title={t("workers.graph.title")}>

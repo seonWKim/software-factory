@@ -367,6 +367,32 @@ describe("on this repo", () => {
   });
 });
 
+// Prompts and AGENTS.md keep only what the code cannot show (wi_e42e8e51): no rule a test already enforces, no
+// restated stack fact, and each instruction said once.
+describe("prompts and AGENTS.md hold no rule a test enforces and say each rule once", () => {
+  const agents = readFileSync(join(import.meta.dirname, "..", "AGENTS.md"), "utf8");
+
+  it("AGENTS.md drops the rules tests enforce: the plugin descriptor, layer imports, hex colours, the symlink and the gate list", () => {
+    for (const s of ["tests/plugins.test.ts fails otherwise", "tests/boundaries.test.ts", "no hex colours", "is a symlink to this file", "always need a human merge"])
+      expect(agents, s).not.toContain(s);
+    expect(agents).not.toContain("See the maintainability rule below");
+  });
+
+  it("the triage prompt asks for an empty decisions list once, in the output shape", () => {
+    const text = prompt("triage");
+    expect(text).not.toContain("Always include the field");
+    expect(text).toMatch(/include `decisions` even when it is empty/);
+  });
+
+  it("the review prompt says once where cleanup notes, unverified checks and ui_unverified go", () => {
+    const text = prompt("review");
+    expect(text.match(/cleanup chance/g)).toHaveLength(1);
+    expect(text).not.toContain("goes under `unverified`, never in findings");
+    expect(text).toContain("Never put them in findings");
+    expect(text).not.toContain("Leave `ui_unverified` out for any other diff");
+  });
+});
+
 describe("prompts/review.md: a UI change that could not be checked (design 04-agents, 2026-11-19)", () => {
   const text = prompt("review");
 
@@ -500,7 +526,7 @@ describe("design-system: the component table and the Stays fixed list", () => {
     const at = readme.indexOf("## Stays fixed");
     expect(at).toBeGreaterThanOrEqual(0);
     const section = readme.slice(at, readme.indexOf("\n## ", at + 1));
-    for (const item of ["brand colour", "the one primary action per view", "page header and Card structure", "no raw IDs on a page"])
+    for (const item of ["celadon glaze palette", "the one primary action per view", "page header and Card structure", "no raw IDs on a page"])
       expect(section, item).toContain(item);
   });
 });
