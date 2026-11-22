@@ -9,6 +9,9 @@
 //                   was 9ch wide).
 //   tall-fixed      a position:fixed or sticky element covers more than 40% of the viewport's height.
 //   overlay-bounds  an open dialog, popover, menu, listbox or tooltip extends past the viewport.
+//   small-target    a painted interactive element (button, link, input, select, textarea, summary, or a role of
+//                   button, menuitem, checkbox, radio, switch, tab) is smaller than 24x24 CSS px; links in running
+//                   text count too.
 //   unreachable     the page is taller than the viewport but html or body hides vertical overflow.
 //
 // The page template's structure (docs/design/09-dashboard-shell.md, design-system/patterns.md), one rule each:
@@ -26,7 +29,7 @@
 // Elements that are not painted (display:none, visibility:hidden, opacity:0, zero size) and screen-reader-only
 // boxes (1px, clipped) are skipped.
 
-export const LIMITS = { letterWrapCh: 12, maxFixedShare: 0.4, buttonHeights: [28, 32], pageWidths: ["--page-wide", "--page-read"], maxTitleLines: 2 };
+export const LIMITS = { letterWrapCh: 12, maxFixedShare: 0.4, buttonHeights: [28, 32], pageWidths: ["--page-wide", "--page-read"], maxTitleLines: 2, minTarget: 24 };
 
 /**
  * Runs in the page: `failures` as { rule, selector, detail }, each failing element marked for the screenshot, and
@@ -132,6 +135,7 @@ export function checkLayout(limits) {
     return range.getBoundingClientRect().right;
   };
 
+  const interactive = 'button, a[href], input:not([type=hidden]), select, textarea, summary, [role=button], [role=menuitem], [role=checkbox], [role=radio], [role=switch], [role=tab]';
   const overlays = "dialog[open], :popover-open, [role=dialog], [role=alertdialog], [role=menu], [role=listbox], [role=tooltip]";
   for (const el of document.body.querySelectorAll("*")) {
     if (!painted(el)) continue;
@@ -147,6 +151,11 @@ export function checkLayout(limits) {
     } else if (!insideClipX(el) && s.overflowX === "visible") {
       const right = Math.max(0, ...[...el.childNodes].filter((n) => n.nodeType === 3 && n.textContent.trim()).map((n) => textRight(n)));
       if (right > W + 1) fail("offscreen", el, `its text runs to ${Math.round(right)}px, viewport ${W}px`);
+    }
+
+    // small-target
+    if (el.matches(interactive) && (r.width < limits.minTarget - 0.5 || r.height < limits.minTarget - 0.5)) {
+      fail("small-target", el, `${Math.round(r.width)}x${Math.round(r.height)}px, under ${limits.minTarget}x${limits.minTarget}px`);
     }
 
     // tall-fixed

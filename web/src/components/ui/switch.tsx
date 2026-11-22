@@ -18,9 +18,9 @@ export function Switch({ checked, onCheckedChange, className, disabled, ...props
       disabled={disabled}
       onClick={() => onCheckedChange(!checked)}
       className={cn(
-        "inline-flex h-5 w-9 shrink-0 items-center rounded-pill border border-transparent motion-safe:transition-colors",
+        // The button is 24px tall (the small-target rule); the drawn track inside it stays 20 by 36px.
+        "inline-flex h-6 w-9 shrink-0 items-center rounded-pill",
         "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus disabled:opacity-50",
-        checked ? "bg-text-1" : "bg-border-strong",
         className,
       )}
       {...props}
@@ -28,10 +28,17 @@ export function Switch({ checked, onCheckedChange, className, disabled, ...props
       <span
         aria-hidden
         className={cn(
-          "block size-4 rounded-pill bg-surface shadow motion-safe:transition-transform",
-          checked ? "translate-x-4" : "translate-x-0",
+          "inline-flex h-5 w-9 items-center rounded-pill border border-transparent motion-safe:transition-colors",
+          checked ? "bg-text-1" : "bg-border-strong",
         )}
-      />
+      >
+        <span
+          className={cn(
+            "block size-4 rounded-pill bg-surface shadow motion-safe:transition-transform",
+            checked ? "translate-x-4" : "translate-x-0",
+          )}
+        />
+      </span>
     </button>
   );
 }

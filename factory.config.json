@@ -84,7 +84,7 @@
   "agent_stop_checks": 3,
   "max_coordination_cost": 2.5,
   "hotspot_weight": 3.0,
-  "hotspot_paths": ["src/impl/store/sqlite/schema.ts", "docs/design.md", "SET_UP.md"],
+  "hotspot_paths": ["src/impl/store/sqlite/schema.ts", "SET_UP.md"],
   "mechanical_weight": 0.25,
   "mechanical_paths": ["docs/design/", "docs/design.md", "docs/plugins.md", "docs/plugins/"],
   "path_companions": [
@@ -97,8 +97,8 @@
     },
     { "when": "src/config-keys.ts", "also": ["tests/config-keys.test.ts"], "reason": "a config key change needs its key test" },
     { "when": "docs/design/", "also": ["docs/design.md"], "reason": "a new design topic file needs its index line" },
-    { "when": "src/controller/migrations/", "also": ["schema/sqlite.sql"], "reason": "a migration regenerates schema/sqlite.sql (npm run schema:snapshot)" },
-    { "when": "src/impl/store/sqlite/schema.ts", "also": ["schema/sqlite.sql"], "reason": "a schema change regenerates schema/sqlite.sql (npm run schema:snapshot)" },
+    { "when": "src/controller/migrations/", "also": ["schema/sqlite/"], "reason": "a migration regenerates schema/sqlite/ (npm run schema:snapshot)" },
+    { "when": "src/impl/store/sqlite/schema.ts", "also": ["schema/sqlite/"], "reason": "a schema change regenerates schema/sqlite/ (npm run schema:snapshot)" },
     {
       "when": "src/controller/migrations/",
       "also": ["src/controller/table-docs.ts"],

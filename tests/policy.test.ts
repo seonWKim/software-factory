@@ -75,7 +75,8 @@ describe("policy", () => {
     expect(thrownFailure(new Error("boom")).code).toBe("exception");
     const outcome = { status: "failed" as const, error_code: SETUP_MISSING, detail: f.detail, infra: true };
     expect(failureClass(outcome)).toBe("setup_missing");
-    expect(retryClears(outcome)).toBe(true);
+    // A retry cannot succeed until the credential exists: Retry is not the clearing action for it.
+    expect(retryClears(outcome)).toBe(false);
   });
 
   it("maps factory branches back to work items", () => {

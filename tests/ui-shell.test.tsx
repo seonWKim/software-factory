@@ -40,8 +40,8 @@ describe("app shell", () => {
     expect(mark.querySelector("path")!.getAttribute("fill-rule")).toBe("evenodd");
     const ember = mark.querySelector("circle")!;
     expect(ember.getAttribute("class")).toBe("fill-ember");
-    expect([ember.getAttribute("cx"), ember.getAttribute("cy")]).toEqual(["800", "224"]);
-    expect(Number(ember.getAttribute("r"))).toBeCloseTo((2.5 * 1024) / 24, 1);
+    expect([ember.getAttribute("cx"), ember.getAttribute("cy")]).toEqual(["691.6", "332.4"]);
+    expect(Number(ember.getAttribute("r"))).toBeCloseTo((2 * 1024) / 24, 1);
   });
 
   it("polls every 3 s while visible and stops while the document is hidden", async () => {
@@ -248,7 +248,7 @@ describe("sidebar", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "Settings" })).toBeTruthy();
     const open = within(side).getByRole("link", { name: "Settings" });
     expect(open.getAttribute("aria-current")).toBe("page");
-    expect(open.className.split(" ")).toEqual(expect.arrayContaining(["bg-surface-2", "font-medium"]));
+    expect(open.className.split(" ")).toEqual(expect.arrayContaining(["bg-sidebar-active", "font-medium"]));
   });
 });
 
@@ -277,11 +277,12 @@ describe("sidebar in the icon-only layout", () => {
 
 describe("top bar", () => {
   // jsdom has no layout, so this checks the classes that keep the bar inside a 390px screen (checked by screenshot).
-  it("wraps and keeps the icon buttons at full size", async () => {
+  it("stays on one row and keeps the icon buttons at full size", async () => {
     mount();
     await waitBadge();
     const header = document.querySelector("header")!;
-    expect(header.className.split(" ")).toContain("flex-wrap");
+    // One row at 390px (issue #763): a wrapping header dropped Theme onto a second row.
+    expect(header.className.split(" ")).not.toContain("flex-wrap");
     expect(within(header).getByRole("button", { name: "Refresh" }).className.split(" ")).toContain("shrink-0");
   });
 

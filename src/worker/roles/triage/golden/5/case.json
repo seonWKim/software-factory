@@ -1,0 +1,12 @@
+{
+  "id": "5",
+  "work_item_id": "golden_triage_5",
+  "expect": "should_pass",
+  "uses": ["prompt:triage.md"],
+  "note": "Docs-writer persona: a docs-only change with one file and no open question.",
+  "checks": [
+    { "kind": "no_question" },
+    { "kind": "names_paths", "paths": ["docs/design/04-triage.md"] },
+    { "kind": "refuses_scope", "paths": ["src/"] }
+  ]
+}
