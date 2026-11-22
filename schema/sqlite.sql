@@ -358,12 +358,32 @@ CREATE TABLE calendar_events (
     PRIMARY KEY (source, event_id)
   );
 
+CREATE TABLE calendar_sync_requests (
+    id            TEXT PRIMARY KEY,
+    from_date     TEXT NOT NULL,
+    to_date       TEXT NOT NULL,
+    pending_key   TEXT,
+    requested_by  TEXT NOT NULL,
+    requested_at  TEXT NOT NULL,
+    claimed_at    TEXT,
+    done_at       TEXT,
+    results       TEXT
+  );
+
 CREATE TABLE calendar_sync_state (
     source        TEXT PRIMARY KEY,
     next_sync_at  TEXT NOT NULL,
     synced_at     TEXT,
     error         TEXT,
     error_at      TEXT
+  );
+
+CREATE TABLE calendar_synced_ranges (
+    source     TEXT NOT NULL,
+    from_at    TEXT NOT NULL,
+    to_at      TEXT NOT NULL,
+    synced_at  TEXT NOT NULL,
+    PRIMARY KEY (source, from_at, to_at)
   );
 
 CREATE TABLE controller_alert_patterns (
@@ -1828,6 +1848,8 @@ CREATE INDEX bus_system_alerts_published ON bus_system_alerts (published_at);
 CREATE INDEX bus_system_alerts_retries_due ON bus_system_alerts_retries (next_attempt_at);
 
 CREATE INDEX calendar_events_starts ON calendar_events (starts_at);
+
+CREATE UNIQUE INDEX calendar_sync_requests_pending ON calendar_sync_requests (pending_key);
 
 CREATE INDEX child_restarts_at ON "legacy_child_restarts" (at);
 

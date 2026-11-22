@@ -2104,6 +2104,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "runtime_config_file_changes", // file-only key edits (design 08-settings): src/state/migrations/20261113T1200-state-config-file-changes
       "calendar_events", // the calendar component: src/calendar/migrations/20261112T1700-calendar-events
       "calendar_sync_state",
+      "calendar_sync_requests", "calendar_synced_ranges", // on-demand sync: src/calendar/migrations/20261121T1001-calendar-sync-requests
       // The sql bus's own tables (RFC 0015 M3).
       "bus_scheduler",
       "bus_topics",

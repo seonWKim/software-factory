@@ -1,5 +1,7 @@
 ## History
 
+- **A not-synced day had no action on the page** (until 2026-11-22, wi_76e42fbc; replaced by the Calendar Sync decision at the top of 09-dashboard-tasks.md). The toolbar held the view switch, Previous, Next and Today only, and the not-synced Notice named the days with no button, so a day outside the scheduled sync's window (one day back to 30 days ahead) stayed not synced; the page counted a day as synced only inside the last scheduled sync's window.
+
 - **A Merge row with conflicts said "Ready to merge" and "Conflicts: N files"** (until 2026-11-22, wi_96248745). Before: the row showed the Ready to merge badge (ok tone) and the merge check's conflicts beside it, two labels that disagreed while Merge was off.
 - **The Tasks page was project tabs, Quick add, Needs you, list, and Needs you had no rank reason** (until 2026-11-22, wi_6e3785f5; replaced by the Needs you card decision at the top of 09-dashboard-tasks.md). Quick add sat between the tabs and the Needs you card; a Needs you row showed its state and need but not why it ranked where it did; held asks and the merges recorded without a work item were not on the Tasks page (merges showed only on Health, "Merged without review").
 - **A task project was deleted only from the CLI** (until 2026-11-22, wi_a6302071; replaced by the project delete decision at the top of 09-dashboard-tasks.md). `factory project delete <slug>` deleted the project and its task links and kept the tasks; the Tasks page listed the projects as tabs but had no delete, and no dashboard route deleted a project.

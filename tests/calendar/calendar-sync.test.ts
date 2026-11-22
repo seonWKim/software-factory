@@ -66,7 +66,7 @@ describe("calendar sync", () => {
     await step();
     expect(work.windows).toHaveLength(1);
 
-    // At the due time: one more sync, which replaces the source's events with what it answers now.
+    // At the due time: one more sync, which replaces the source's events in its window with what it answers now.
     clock.advance(1_000);
     work.list = [calendarEvent("c")];
     await step();
@@ -74,6 +74,23 @@ describe("calendar sync", () => {
     expect(work.windows).toHaveLength(2);
     expect(home.windows).toHaveLength(2);
     expect((await rows("calendar_events")).filter((r) => r.source === "work").map((r) => r.event_id)).toEqual(["c"]);
+  });
+
+  it("a sync replaces only the stored events that overlap its window; events outside it stay, and an answered one is not doubled", async () => {
+    // The harness's clock starts at 2026-01-01T00:00Z: the window runs from 2025-12-31 to 2026-01-31.
+    const old = calendarEvent("old", { starts_at: "2025-12-01T09:00:00.000Z", ends_at: "2025-12-01T10:00:00.000Z" });
+    const work = new FakeCalendarSource([old, calendarEvent("a"), calendarEvent("edge", { starts_at: "2025-12-30T23:00:00.000Z", ends_at: "2025-12-31T01:00:00.000Z" })]);
+    const { clock, step, rows } = await harness([{ name: "work", source: work }]);
+    await step();
+    work.list = [calendarEvent("b")];
+    clock.advance(CALENDAR_SYNC_MS);
+    await step();
+    // "a" and "edge" (it ends inside the window) were in the window and are no longer answered: gone. "old" stays.
+    expect((await rows("calendar_events")).map((r) => r.event_id).sort()).toEqual(["b", "old"]);
+    work.list = [{ ...old, title: "renamed" }, calendarEvent("b")];
+    clock.advance(CALENDAR_SYNC_MS);
+    await step();
+    expect((await rows("calendar_events")).map((r) => [r.event_id, r.title]).sort()).toEqual([["b", "event b"], ["old", "renamed"]]);
   });
 
   it("the stored due time holds across replicas: a second controller on the same store does not sync again", async () => {
