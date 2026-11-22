@@ -42,6 +42,7 @@ import { type RetireRule, retireSuggestions } from "../core/rule-retirement.js";
 import { LiveSettings } from "../core/settings.js";
 import { type AgentsHomeCheck, checkAgentsHome } from "../impl/tacit/agents-home-tacit-ledger.js";
 import { LiveTacit } from "../runtime/live-tacit.js";
+import type { AskRow, ProposalRow } from "../core/owner-asks.js";
 import type { FailureGroup, ImproveReport, UserId } from "../core/types.js";
 import {
   type TacitEntryDetail, type TacitEvidence, type TacitLedger, type TacitPendingEntry, type TacitPromotion, TacitRefusal, TacitSyncFailed, tacitIdKind,
@@ -231,7 +232,11 @@ async function readImprove(d: PauseDeps, text: (v: string) => Promise<string>) {
   return { report: report === null ? null : await improveReport(report, text), run_now: button !== null, csrf_token: button?.csrfToken ?? null };
 }
 
-/** The report's window, counts and one row per failure group (draft and filing), each text through `text`. */
+/**
+ * The report's window, counts and one row per failure group (draft and filing); its top ask reasons (count and the
+ * share of the answered ones approved unchanged, null with none answered) and its standing approval proposals as
+ * text (design 07-improve-report). Each text through `text`.
+ */
 async function improveReport(r: ImproveReport, text: (v: string) => Promise<string>) {
   const opt = async (v: string | null) => (v === null || v === "" ? null : await text(v));
   const groups = [];
@@ -242,11 +247,22 @@ async function improveReport(r: ImproveReport, text: (v: string) => Promise<stri
       draft: await improveDraft(g, text), filing: await improveFiling(g, text),
     });
   }
+  const asks = [];
+  for (const a of r.patterns.filter(isAskRow)) {
+    asks.push({ reason: await text(a.detail), asks: a.asks, answered: a.answered, share_unchanged: a.answered === 0 ? null : a.approved_unchanged / a.answered });
+  }
+  const proposals = [];
+  for (const p of r.patterns.filter(isProposalRow)) proposals.push({ reason: await text(p.detail), run_length: p.run_length, text: await text(p.text) });
+  const failures = r.patterns.filter((g) => !isAskRow(g) && !isProposalRow(g));
   return {
     window_start: r.window_start, window_end: r.window_end, created_at: r.created_at,
-    runs: r.groups.reduce((n, g) => n + g.run_ids.length, 0), patterns: r.patterns.length, groups,
+    runs: r.groups.reduce((n, g) => n + g.run_ids.length, 0), patterns: failures.length, groups, asks, proposals,
   };
 }
+
+// The owner's ask rows of a report (src/core/owner-asks.ts), by their codes: a type import only, so the route adds no runtime import.
+const isAskRow = (g: FailureGroup): g is AskRow => g.error_code === ("owner_ask" satisfies AskRow["error_code"]);
+const isProposalRow = (g: FailureGroup): g is ProposalRow => g.error_code === ("ask_proposal" satisfies ProposalRow["error_code"]);
 
 /** A group's draft: its cause and fix when drafted, else one note `{ status, reason }` (reason `withheld` for a withheld one); null with none. */
 async function improveDraft(g: FailureGroup, text: (v: string) => Promise<string>) {

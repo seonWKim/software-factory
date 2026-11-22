@@ -10,6 +10,7 @@ export { NO_SCORER, type Grade, type GradeSubject, type Scorer, improvePrompts, 
 import { cyrb53 } from "./hash.js";
 import { PUSHBACK, flakyTests, groupFailures, pushbacksIn, reviewable } from "./failure-groups.js";
 import { type MergeGit, hotspotBody, hotspotSince, hotspotsIn, isHotspot, ofProject } from "./hotspots.js";
+import { readAskRows } from "./owner-asks.js";
 import { AGENT_STALLED } from "./policy.js";
 import { parseJson } from "./scorer.js";
 import { PROTECTED_PATHS } from "./standing.js";
@@ -241,10 +242,8 @@ export function parseDraft(v: unknown): { cause: string; fix: string; touches: s
 
 /** What the draft step needs; without `llm` or `prompt` no model is asked and groups carry no draft. */
 export interface ImproveDeps {
-  store: Pick<
-    FactoryStore,
-    "listRunsFinishedBetween" | "recordImproveReport" | "getImproveReport" | "getWorkItem" | "listStateChangesSince" | "listVerdictsSince" | "listRuns" | "listClaimDecisionsSince" | "listMergeEvaluations"
-  >;
+  store: Pick<FactoryStore, "listRunsFinishedBetween" | "recordImproveReport" | "getImproveReport" | "getWorkItem" | "listStateChangesSince" | "listVerdictsSince" | "listRuns"
+    | "listClaimDecisionsSince" | "listMergeEvaluations" | "listWorkItemsWhere" | "listStateChanges">;
   storage: SharedStorage;
   scanner: EgressScanner;
   llm?: LLMProvider;
@@ -287,8 +286,9 @@ export async function runImprove(d: ImproveDeps, run: Run, item: Pick<WorkItem, 
       g.draft = await draft(d, llm, prompt, g, texts);
     }
   }
-  // The flaky tests merge checks named go with the patterns: listed for the owner, never drafted or filed; the hot files too, filed (fileReport).
-  const { report } = await d.store.recordImproveReport({ run_id: run.id, project: item.project, ...window, groups, patterns: [...patterns, ...flakyTests(runs), ...hot] });
+  // The flaky tests merge checks named go with the patterns: listed for the owner, never drafted or filed; the hot files too, filed (fileReport); then the owner's asks, listed only.
+  const asks = await readAskRows(d.store, item.project, window);
+  const { report } = await d.store.recordImproveReport({ run_id: run.id, project: item.project, ...window, groups, patterns: [...patterns, ...flakyTests(runs), ...hot, ...asks] });
   return report;
 }
 

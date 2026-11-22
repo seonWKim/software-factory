@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { type EfficiencyChart, type EfficiencyFigure, type EfficiencyItem, type EfficiencyTierMerges, type EfficiencyWeek, useEfficiency } from "../api/efficiency.js";
 import { Button } from "../components/ui/button.js";
 import { Card, CardSection } from "../components/ui/card.js";
@@ -17,7 +17,8 @@ import { itemPath } from "../pages.js";
 // totals, then the picked week's tokens and time per finished item (median and 90th percentile) with the change from
 // the week before, and its slowest and costliest items. Bars are plain elements on token colours, as in Spend; a
 // weekly bar is a Button that picks its week (kept in the browser only). Every number is also shown as text. Last, the
-// per-tier merge record and whether each tier meets the auto-merge rule (read-only: nothing merges on it yet).
+// per-tier merge record and whether each tier meets the auto-merge rule (read-only: nothing merges on it yet). The
+// picked week also shows what its finished items took from the owner: asks per item, the median wait and the revert rate.
 
 /** A change in whole percent, signed, with a true minus sign: "−18%", "+5%", "0%". */
 export const changeText = (n: number): string => `${n > 0 ? "+" : n < 0 ? "−" : ""}${Math.abs(n)}%`;
@@ -124,6 +125,59 @@ function ItemList({ label, items, figure, empty }: { label: string; items: Effic
   );
 }
 
+/** What a week's finished items took from the owner (GET /api/v1/efficiency `week_figures[].owner`). Null: no data. */
+interface OwnerFigures {
+  merged: number;
+  asks: number;
+  touches_per_merged: number | null;
+  wait_hours_median: number | null;
+  revert_rate: number | null;
+  reverted_or_fixed: number;
+}
+
+/** A share (0–1) as a plain-element bar on token colours, as in Spend; the text beside it carries the number. */
+function ShareBar({ share }: { share: number }) {
+  return (
+    <span aria-hidden className="mt-1 block h-2 w-full overflow-hidden rounded-control bg-surface-2">
+      <span className="block h-full bg-accent" style={{ width: `${Math.min(1, share) * 100}%` }} />
+    </span>
+  );
+}
+
+/** Human touches per merged item, median hours waiting on the owner and the revert/fix-forward rate of the picked week. */
+function OwnerSection({ owner, week }: { owner: OwnerFigures | undefined; week: string }) {
+  if (!owner || owner.merged === 0) return <EmptyState title={t("efficiency.noItems")} />;
+  const noData = <span className="text-text-2">{t("efficiency.noData")}</span>;
+  const percent = (n: number) => `${Math.round(n * 100)}%`;
+  const rows: { key: string; label: MessageKey; value: ReactNode; share?: number | null }[] = [
+    {
+      key: "touches", label: "efficiency.touches",
+      value: owner.touches_per_merged === null ? noData : t("efficiency.touchesValue", { value: owner.touches_per_merged.toFixed(2), asks: owner.asks, merged: owner.merged }),
+    },
+    { key: "wait", label: "efficiency.ownerWait", value: owner.wait_hours_median === null ? noData : t("efficiency.hours", { value: owner.wait_hours_median.toFixed(1) }) },
+    {
+      key: "revert", label: "efficiency.revertRate", share: owner.revert_rate,
+      value: owner.revert_rate === null ? noData : t("efficiency.revertValue", { value: percent(owner.revert_rate), count: owner.reverted_or_fixed, merged: owner.merged }),
+    },
+  ];
+  return (
+    <>
+      <p className="mb-2 text-sm text-pretty text-text-2">{t("efficiency.ownerNote", { week })}</p>
+      <ul className="space-y-3 text-sm">
+        {rows.map((r) => (
+          <li key={r.key} data-owner={r.key}>
+            <div className="flex items-baseline gap-3">
+              <span className="min-w-0 flex-1">{t(r.label, { week })}</span>
+              <span className="tabular-nums">{r.value}</span>
+            </div>
+            {r.share !== undefined && r.share !== null && <ShareBar share={r.share} />}
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
 const RULE_KEY: Record<EfficiencyTierMerges["rule"], MessageKey> = {
   met: "efficiency.ruleMet",
   not_met: "efficiency.ruleNotMet",
@@ -175,6 +229,9 @@ export function EfficiencyTab() {
             <CardSection title={t(week.current ? "efficiency.weekSoFar" : "efficiency.week", { week: week.start })}>
               <p className="mb-2 text-sm text-pretty text-text-2">{t("efficiency.pickWeek")}</p>
               <WeekFigures week={week} />
+            </CardSection>
+            <CardSection title={t("efficiency.owner")}>
+              <OwnerSection owner={(week as EfficiencyWeek & { owner?: OwnerFigures }).owner} week={week.start} />
             </CardSection>
             <CardSection title={t("efficiency.slowest")}>
               <ItemList label={t("efficiency.slowest")} items={week.slowest} figure={(i) => duration(i.total_ms)} empty={t("efficiency.noItems")} />
