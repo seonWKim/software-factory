@@ -257,7 +257,7 @@ describe("built-in companion rules", () => {
   });
 
   it("a test, a doc or a non-source file adds no test", () => {
-    for (const file of ["tests/hotspots.test.ts", "docs/setup.md", "schema/sqlite.sql", "src/types.d.ts", "src/index.ts", "web/src/views/data.tsx", "scripts/x.ts"]) {
+    for (const file of ["tests/hotspots.test.ts", "docs/setup.md", "schema/sqlite/bus.sql", "src/types.d.ts", "src/index.ts", "web/src/views/data.tsx", "scripts/x.ts"]) {
       expect(allowedAfter([file]).added.filter((a) => a.path.startsWith("tests/"))).toEqual([]);
     }
   });
@@ -429,9 +429,9 @@ describe("path_companions load check", () => {
     });
 
     // Decided 2026-11-16: the generated files a change implies (npm run schema:snapshot, npm run settings:catalog).
-    it("naming a migration or the SQLite schema adds schema/sqlite.sql", async () => {
-      expect(await allowedFor("src/controller/migrations/0042-example.ts")).toContain("schema/sqlite.sql");
-      expect(await allowedFor("src/impl/store/sqlite/schema.ts")).toContain("schema/sqlite.sql");
+    it("naming a migration or the SQLite schema adds schema/sqlite/", async () => {
+      expect(await allowedFor("src/controller/migrations/0042-example.ts")).toContain("schema/sqlite/");
+      expect(await allowedFor("src/impl/store/sqlite/schema.ts")).toContain("schema/sqlite/");
     });
 
     it.each([
@@ -475,7 +475,7 @@ describe("path_companions load check", () => {
 
     it("naming neither adds no generated file", async () => {
       const paths = await allowedFor("src/core/policy.ts");
-      expect(paths).not.toContain("schema/sqlite.sql");
+      expect(paths).not.toContain("schema/sqlite/");
       expect(paths).not.toContain("docs/settings.md");
     });
   });
