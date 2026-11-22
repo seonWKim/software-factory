@@ -294,8 +294,7 @@ export class RunResultsUnit {
         case "review": {
           // The worker withheld finding text its scan flagged (issue #222): only the rule names reached here.
           if (Array.isArray(data.egress_rules)) return this.leakBlock(it, run, data.egress_rules.map(String), { token_cost: tokens }, "review");
-          // The worker's cheap checks (issue #223): nothing to review, or the head the last verdict was for. An
-          // unchanged head keeps the item's state as it is: the last verdict was applied already, none is replayed.
+          // The worker's cheap checks (issue #223): nothing to review, or the head the last verdict was for (unchangedHead).
           if (data.no_agent === EMPTY_DIFF) return this.emptyDiff(it, run, tokens);
           if (data.no_agent === UNCHANGED_HEAD) return this.unchangedHead(it, run);
           const parsed = parseReview(data.review); // routes on `findings` only: confirmed ones; `unconfirmed` never sends the item back (design 04-agents)
@@ -319,27 +318,7 @@ export class RunResultsUnit {
           }
           // Any spec finding: the implementer cannot fix it inside the spec, so the spec is revised (issue #222).
           if (spec.length > 0) return this.specRevision(it, run, specFeedback(parsed.value), { tier, token_cost: tokens }, "review");
-          if (parsed.value.verdict === "bug") {
-            if (it.loop_count + 1 >= this.c.k.cfg.max_loops) {
-              const patch = { tier, token_cost: tokens, blocked_on: "human" as const, blocked_reason: "max_loops" };
-              await this.c.unit("outbox").comment(it, `max-loops:${run.id}`,
-                `Review found bugs ${it.loop_count + 1} times (limit ${this.c.k.cfg.max_loops}). A human needs to decide.\n\n${footerAfter(it, patch)}`);
-              return {
-                patch,
-                actor: SYSTEM,
-                reason: "max_loops",
-                ack_run: run.id,
-              };
-            }
-            const next = { ...it, loop_count: it.loop_count + 1 };
-            return {
-              patch: { tier, token_cost: tokens, stage: "RUNNING", loop_count: next.loop_count },
-              actor: SYSTEM,
-              reason: "review_bug",
-              ack_run: run.id,
-              enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
-            };
-          }
+          if (parsed.value.verdict === "bug") return this.c.unit("checks-gate").reviewBug(it, run, { tier, token_cost: tokens });
           return this.c.unit("checks-gate").checkGate(it, run, { tier, token_cost: tokens }, run.id);
         }
         case "resolve": {
@@ -670,15 +649,22 @@ export class RunResultsUnit {
   }
 
   /**
-   * A review that skipped its unchanged head (issue #223). Its last verdict was applied already, so pending or
-   * passed checks change nothing. Failed checks after a passing verdict loop as any failed checks do: otherwise
-   * nothing would look again, since only items blocked on CI are polled. A `bug` verdict stays as it was.
+   * A review that skipped its unchanged head (issue #223). After a passing verdict, pending or passed checks change
+   * nothing; failed checks loop as any failed checks do, since only items blocked on CI are polled. After a `bug`
+   * verdict on a factory branch (design 05-ci-gate, 2026-11-23): a note or spec newer than it queues a review at that
+   * head (`rereview`, the newest note in its input); nothing newer sends the item back as the verdict did (reviewBug).
    */
   async unchangedHead(it: WorkItem, run: Run): Promise<Decision> {
-    const ack: Decision = { patch: {}, actor: SYSTEM, reason: "review_unchanged_head", ack_run: run.id };
-    if (!(await this.c.unit("checks-gate").lastVerdictPassed(it.id, run.id))) return ack;
-    const checks = await this.c.unit("checks-gate").readChecks(it);
-    return checks.state === "failed" ? this.c.unit("checks-gate").checksFailed(it, run, checks.failed, {}, { ack_run: run.id }) : ack;
+    const gate = this.c.unit("checks-gate"), last = await gate.lastVerdict(it.id, run.id), ack: Decision = { patch: {}, actor: SYSTEM, reason: "review_unchanged_head", ack_run: run.id };
+    if (last?.verdict === "bug" && it.origin !== "adopted") {
+      const newer = await gate.newerThanVerdict(it, last.run), detail = { run_id: run.id, review_run_id: last.run.id, unchanged_head: true };
+      if (!newer) return gate.reviewBug(it, run, {}, detail);
+      const input = { ...(await gate.reviewInput(prNumber(it), it.id)), rereview: true as const, ...(newer.note ? { notes: newer.note } : {}) };
+      return { patch: {}, actor: SYSTEM, reason: "review_rerun", detail: { ...detail, newer: newer.what }, ack_run: run.id, enqueue: { kind: "review", idempotency_key: `${it.id}:review:rereview:${run.id}`, input } };
+    }
+    if (last?.verdict !== "pass") return ack;
+    const checks = await gate.readChecks(it);
+    return checks.state === "failed" ? gate.checksFailed(it, run, checks.failed, {}, { ack_run: run.id }) : ack;
   }
 
   /** The item's latest succeeded review run, the one the CI gate applies to. */
