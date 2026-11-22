@@ -44,14 +44,21 @@ export function Kbd({ children }: { children: ReactNode }) {
 }
 
 /**
- * A page's title (the one h1), an optional description under it and optional actions at the end, the primary
- * action last; the actions drop below the title when narrow.
+ * A page's title (the one h1) with an optional badge beside it (a count, such as "3 waiting"), an optional description
+ * under it and optional actions at the end, the primary action last; the actions drop below the title when narrow.
  */
-export function PageHeader({ title, description, actions }: { title: string; description?: ReactNode; actions?: ReactNode }) {
+export function PageHeader({ title, badge, description, actions }: { title: string; badge?: ReactNode; description?: ReactNode; actions?: ReactNode }) {
   return (
     <header className="mb-6 flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
       <div className="min-w-0">
-        <h1 className="text-balance text-xl font-semibold">{title}</h1>
+        {badge ? (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <h1 className="text-balance text-xl font-semibold">{title}</h1>
+            {badge}
+          </div>
+        ) : (
+          <h1 className="text-balance text-xl font-semibold">{title}</h1>
+        )}
         {description && <p className="mt-1 max-w-prose text-sm text-pretty text-text-2">{description}</p>}
       </div>
       {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}

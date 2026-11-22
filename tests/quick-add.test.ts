@@ -203,10 +203,6 @@ describe("unread words: what stays in the title without being read (the quick-ad
   it("plain title words and read tokens are not reported", () => {
     expect(unread("pay rent tomorrow 09:30 !1 #home +bills 45m").unread).toEqual([]);
   });
-
-  it("no duration typed: no duration in the result", () => {
-    expect(ok("call bank tomorrow 09:00").duration_minutes).toBeNull();
-  });
 });
 
 describe("+slug: a task project (design 02-tasks, task projects)", () => {

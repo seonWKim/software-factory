@@ -2,21 +2,19 @@
 // counts what each option would show. An unknown value is an error (the server answers 400).
 
 import type { RunKind, Stage, Tier } from "../core/types.js";
-import { LEVEL_LABELS, LEVELS, type Level, NEEDS_YOU } from "./priority.js";
+import { STATE_GROUPS, type StateGroup, filterShowsFinished, groupOf, inStateFilter } from "../shared/states.js";
+import { LEVELS, type Level } from "./priority.js";
 
 export const STAGES: readonly Stage[] = ["NEW", "READY", "RUNNING", "REVIEW", "CLOSED"];
 export const TIERS: readonly Tier[] = [1, 2, 3, 4, 5];
 export const RUN_KINDS: readonly RunKind[] = ["triage", "implement", "review", "update", "improve"];
 
 /**
- * `needs` ("Needs you") is every level that waits for a person (NEEDS_YOU); every other value is one level. The
- * `needs_you` level is no option of its own: it shares the group's label, and the group shows it.
+ * A state filter: one of the state table's five groups (`needs` is the Needs-you group), or one level. `closed` is
+ * every Finished level (src/shared/states.ts inStateFilter), as older links meant it.
  */
-export type StateFilter = "needs" | Exclude<Level, "needs_you">;
-export const STATE_OPTIONS: readonly { value: StateFilter; label: string }[] = [
-  { value: "needs", label: "Needs you" },
-  ...LEVELS.filter((l): l is Exclude<Level, "needs_you"> => l !== "needs_you").map((l) => ({ value: l, label: LEVEL_LABELS[l] })),
-];
+export type StateFilter = StateGroup | Level;
+const STATE_VALUES: readonly StateFilter[] = [...STATE_GROUPS, ...LEVELS];
 
 /** Longest search text kept; the rest is cut. */
 export const MAX_QUERY = 200;
@@ -63,7 +61,7 @@ function flag(raw: string | null, name: string): { ok: true; value: boolean } | 
 }
 
 export function parseFilters(params: URLSearchParams): ParseResult {
-  const state = pick(params.get("state"), STATE_OPTIONS.map((o) => o.value), "state");
+  const state = pick(params.get("state"), STATE_VALUES, "state");
   if (!state.ok) return state;
   const stage = pick(params.get("stage"), STAGES, "stage");
   if (!stage.ok) return stage;
@@ -88,9 +86,9 @@ export function isFiltered(f: Filters): boolean {
 }
 
 export function matches(r: FilterRow, f: Filters): boolean {
-  // CLOSED rows show only when asked for.
-  if (r.level === "closed" && !f.closed && f.state !== "closed" && f.stage !== "CLOSED") return false;
-  if (f.state === "needs" ? !NEEDS_YOU.includes(r.level) : f.state !== undefined && r.level !== f.state) return false;
+  // Finished (CLOSED) rows show only when asked for.
+  if (groupOf(r.level) === "finished" && !f.closed && !filterShowsFinished(f.state) && f.stage !== "CLOSED") return false;
+  if (f.state !== undefined && !inStateFilter(r.level, f.state)) return false;
   if (f.stage !== undefined && r.stage !== f.stage) return false;
   if (f.tier !== undefined && r.tier !== f.tier) return false;
   if (f.kind !== undefined && r.kind !== f.kind) return false;
@@ -123,7 +121,7 @@ export function facetCounts(rows: readonly FilterRow[], f: Filters): FacetCounts
     Object.fromEntries(values.map((v) => [key(v), count(with_(v))])) as Record<K, number>;
   return {
     allStates: count({ ...f, state: undefined }),
-    state: per(STATE_OPTIONS, (o) => o.value, (o) => ({ ...f, state: o.value })),
+    state: per(STATE_VALUES, (v) => v, (v) => ({ ...f, state: v })),
     allStages: count({ ...f, stage: undefined }),
     stage: per(STAGES, (s) => s, (s) => ({ ...f, stage: s })),
     allTiers: count({ ...f, tier: undefined }),

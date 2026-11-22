@@ -6,7 +6,7 @@
 import type { DesignKind, DesignLearning, DesignLearningStore, NewDesignLearning } from "../../../core/design-learnings.js";
 import type { Timestamp, WorkItemId } from "../../../core/types.js";
 import type { Row, SqlDriver } from "../../../state/index.js";
-import { SqlGoldenStore } from "./golden-fingerprints.js";
+import { SqlProposalStore } from "./improve-proposals.js";
 
 const COLUMNS = "project_key, work_item_id, capture_key, source, built, words, page, at, supersedes, created_at";
 
@@ -17,7 +17,7 @@ function seqOf(id: string): number | null {
 }
 
 /** DesignLearningStore over a SqlDriver; the created time is the store's injected Clock's. */
-export class SqlDesignLearningStore extends SqlGoldenStore implements DesignLearningStore {
+export class SqlDesignLearningStore extends SqlProposalStore implements DesignLearningStore {
   constructor(
     db: SqlDriver,
     private readonly learningStamp: () => Timestamp,

@@ -1,5 +1,5 @@
 // Golden sets per role (design §6 Measurement): known-bad and known-good factory PRs, replayed through the
-// runner with the role descriptor's prompt and tools and the review schema, scored as pass rate, catch rate and
+// runner with the role descriptor's prompt and tools and the role's output schema, scored as pass rate, catch rate and
 // false-alarm rate. Cases live in the role's folder (`src/worker/roles/<name>/golden/<case-id>/`, found by
 // goldenCasesByRole); results live under the state dir, never in the store. Nothing here writes to GitHub, builds a ToolBroker, or pushes. `compareCases` replays the
 // same cases twice through `runCases` (base prompt, head prompt) and applies GOLDEN_MARGIN; it runs locally
@@ -11,13 +11,13 @@ import { dirname, join } from "node:path";
 import type { LoadedConfig, Prompts } from "./core/config.js";
 import { DEFAULT_MODEL_TABLE, type ModelTable, isModelRunKind, modelClassFor } from "./core/model-choice.js";
 import type { ProjectRef } from "./core/project.js";
-import { REVIEW_SCHEMA, findingLine, parseReview } from "./core/outputs.js";
+import { REVIEW_CONFIRM_SCHEMA, REVIEW_SCHEMA, findingLine, parseReview, parseReviewConfirm } from "./core/outputs.js";
 import type { RunId, RunKind, StateChange, WorkItem, WorkItemId } from "./core/types.js";
 import { ROLES_DIR, goldenCasesByRole, loadRoles } from "./runtime/index.js";
 import { implementReplayRunner } from "./controller/golden-gate/implement-replay.js";
 import { ROLE_NAME, type RoleDescriptor } from "./shared/role.js";
 import { toolsNamed } from "./worker/index.js";
-import type { AgentRunner } from "./interfaces/agent-runner.js";
+import type { AgentRole, AgentRunner } from "./interfaces/agent-runner.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressChannel, EgressScanner } from "./interfaces/egress-scanner.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
@@ -469,11 +469,11 @@ async function runOne(deps: GoldenRunDeps, role: RoleDescriptor, system: string,
   let handle: SandboxHandle | null = null;
   try {
     handle = await deps.sandbox.create({ repo: repo.path, branch: null, base_ref: repo.base_branch });
-    const kind = role.name as RunKind;
+    const confirm = role.name === "review-confirm", kind = (confirm ? "review" : role.name) as RunKind; // review-confirm replays on the review's class (design 04-agents)
     const result = await deps.runner.run({
       run_id: `golden_${key}` as RunId,
       work_item_id: c.work_item_id as WorkItemId,
-      role: kind,
+      role: role.name as AgentRole,
       sandbox: handle,
       system_prompt: system,
       prompt: replayPrompt(c),
@@ -487,13 +487,13 @@ async function runOne(deps: GoldenRunDeps, role: RoleDescriptor, system: string,
       // match production; a role with no model_by entry replays on the standard class.
       model_class: isModelRunKind(kind) ? modelClassFor(deps.model_by ?? DEFAULT_MODEL_TABLE, kind, null, 0) : "standard",
       timeout_ms: deps.config.run_timeout_ms,
-      output_schema: REVIEW_SCHEMA,
+      output_schema: confirm ? REVIEW_CONFIRM_SCHEMA : REVIEW_SCHEMA,
       signal,
     });
     Object.assign(out, { input_tokens: result.usage.input_tokens, output_tokens: result.usage.output_tokens });
-    const review = result.status === "completed" ? parseReview(result.output) : null;
-    // Scored on the verdict alone: unverified checks never make a case flagged (issue #222).
-    if (review?.ok) Object.assign(out, { verdict: review.value.verdict, findings: review.value.findings.map(findingLine) });
+    const answer = result.status !== "completed" ? null : confirm ? parseReviewConfirm(result.output) : parseReview(result.output);
+    // Scored on the verdict alone: unverified checks never make a case flagged (issue #222); a confirmed finding flags a review-confirm case.
+    if (answer?.ok) Object.assign(out, "confirmed" in answer.value ? { verdict: answer.value.confirmed ? "bug" : "pass" } : { verdict: answer.value.verdict, findings: answer.value.findings.map(findingLine) });
   } catch {
     // errored, with whatever usage was read
   } finally {

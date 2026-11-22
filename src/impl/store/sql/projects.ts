@@ -185,7 +185,7 @@ async function listTaskProjects(db: SqlDriver, task_id: string): Promise<Project
 
 /**
  * ProjectStore over a SqlDriver: the methods above bound to the store's driver and `stamp`, the store's injected Clock's
- * time. SqlFactoryStore extends it, so the task projects (and the design learnings and golden fingerprints it extends) add no line to that file's budget.
+ * time. SqlFactoryStore extends it, so the task projects (and the design learnings, improve proposals and golden fingerprints it extends) add no line to that file's budget.
  */
 export class SqlProjectStore extends SqlDesignLearningStore implements ProjectStore {
   constructor(

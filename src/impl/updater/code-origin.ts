@@ -21,6 +21,9 @@ export interface CodeOriginOptions {
   log: Logger;
 }
 
+/** A command in a code checkout, never throwing on its exit code. */
+type Exec = (cmd: readonly string[]) => Promise<ExecResult>;
+
 export class CodeOrigin {
   /** When the last fetch was tried (ms), and origin's revision after the last one that succeeded. */
   private fetchedAt: number | null = null;
@@ -33,7 +36,7 @@ export class CodeOrigin {
     /** `git <args>` in the code checkout: its stdout, or a throw on a non-zero exit. */
     private readonly git: (args: string[]) => Promise<string>,
     /** A command in the code checkout, never throwing on its exit code. */
-    private readonly exec: (cmd: readonly string[]) => Promise<ExecResult>,
+    private readonly exec: Exec,
     /** The owner's Clock, in ms (the updater's; this class reads no clock of its own). */
     private readonly now: () => number,
   ) {}
@@ -78,10 +81,41 @@ export class CodeOrigin {
     if (rev === origin) return 0;
     const c = this.cache;
     if (c?.rev === rev && c.origin === origin) return c.count;
-    const r = await this.exec(["git", "rev-list", "--count", `${rev}..${origin}`]);
-    const n = Number.parseInt(r.stdout.trim(), 10);
-    const count = r.exit_code === 0 && Number.isInteger(n) ? n : null;
+    const count = await revListCount(this.exec, rev, origin);
     this.cache = { rev, origin, count };
     return count;
   }
+}
+
+/** `git rev-list --count <from>..<to>`: the commits in `to` that `from` lacks; null when git fails or says no number. */
+export async function revListCount(exec: Exec, from: string, to: string): Promise<number | null> {
+  const r = await exec(["git", "rev-list", "--count", `${from}..${to}`]);
+  const n = Number.parseInt(r.stdout.trim(), 10);
+  return r.exit_code === 0 && Number.isInteger(n) ? n : null;
+}
+
+/** The commit subjects an update note lists at most (design 09-dashboard-shell). */
+export const UPDATE_SUBJECTS = 20;
+
+/** What a factory update brought: its commit count (null: git could not say) and the newest subjects. */
+export interface UpdateChanges {
+  count: number | null;
+  subjects: string[];
+}
+
+/**
+ * The commits between the revision a new child replaced and its own (design 08-self-update, `previous_rev..rev`):
+ * the count and at most UPDATE_SUBJECTS subjects, newest first. The last pair is kept, so the dashboard's poll runs
+ * git once per update; a git failure gives no count and no subjects.
+ */
+export function updateChanges(exec: Exec): (from: string, to: string) => Promise<UpdateChanges> {
+  let last: { from: string; to: string; changes: UpdateChanges } | null = null;
+  return async (from, to) => {
+    if (last?.from === from && last.to === to) return last.changes;
+    const count = await revListCount(exec, from, to);
+    const log = count === null ? null : await exec(["git", "log", "--format=%s", `--max-count=${UPDATE_SUBJECTS}`, `${from}..${to}`]);
+    const subjects = log?.exit_code === 0 ? log.stdout.split("\n").filter((l) => l.trim() !== "") : [];
+    last = { from, to, changes: { count, subjects } };
+    return last.changes;
+  };
 }

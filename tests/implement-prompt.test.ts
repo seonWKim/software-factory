@@ -1,7 +1,9 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { renderRequest, renderWorkItem } from "../src/worker/support.js";
 import type { WorkItem } from "../src/core/types.js";
-import { alice, issueRef, pipeline, triageSpec } from "./helpers/fakes.js";
+import { alice, issueRef, triageSpec } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 
 // The implement prompt's "Original request" section (design 04-agents.md, Given values).
 
@@ -61,5 +63,16 @@ describe("the implement run's prompt", () => {
     expect(prompt).toContain("## Original request");
     expect(prompt).toMatch(/was not kept for this item/);
     expect((await f.runs(it, "implement")).every((r) => r.outcome?.status === "succeeded")).toBe(true);
+  });
+});
+
+describe("prompts/implement.md: a failing done check (design 04-pre-push-gates, RFC 0024 WP3 phase 2)", () => {
+  const text = readFileSync(new URL("../prompts/implement.md", import.meta.url), "utf8");
+
+  it("says the factory names the failing check and its done-when line, and that its output is what to fix", () => {
+    const rule = text.split("\n").find((l) => l.includes("done-when line a check")) ?? "";
+    expect(rule).toMatch(/names the failing command and the done-when line it checks/);
+    expect(rule).toMatch(/that output is what to fix/);
+    expect(rule).toMatch(/`manual` line is checked by a person and runs nothing/);
   });
 });

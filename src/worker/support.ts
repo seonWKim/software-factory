@@ -2,8 +2,8 @@ import type { ModelClass } from "../core/model-choice.js";
 import type { DiffStat } from "../core/diff-gate.js";
 import { MAX_COMMAND_PATHS, retryPathsReply } from "../core/commands.js";
 import { type ReviewOutput, builtDifferentlyOf, specFindings, unverifiedOf } from "../core/outputs.js";
-import { AGENT_STALLED, RATE_LIMITED } from "../core/policy.js";
-import { type LocalRoute, type PrText, TRUSTED_GIT_ENV, type WorkerDeps, hasTool, prTitle, routeFor, runPushIntents, threadDelivery } from "../core/worker-deps.js";
+import { AGENT_STALLED, RATE_LIMITED, SETUP_MISSING, classifyNetwork, isSetupMissing } from "../core/policy.js";
+import { type LocalRoute, type PrText, TRUSTED_GIT_ENV, type WorkerDeps, baseRefspec, claimableKinds, hasTool, prTitle, requeueForCredential, routeFor, runPushIntents, threadDelivery } from "../core/worker-deps.js";
 import { failingTests, stripAnsi } from "../core/output-summary.js";
 import { Bash, Edit, Glob, Grep, Read, TOOLS, type ToolSpec, Write } from "../core/tools/index.js";
 import type { Run, RunId, RunKind, RunResume, RunUsage, Timestamp, WipRef, WorkItem } from "../core/types.js";
@@ -11,7 +11,8 @@ import type { AgentRunResult } from "../interfaces/agent-runner.js";
 import type { SandboxHandle } from "../interfaces/sandbox.js";
 import { type DecisionAnswer, answerLines } from "../shared/command-notes.js";
 
-export { type LocalRoute, type PrText, TRUSTED_GIT_ENV, type WorkerDeps, hasTool, prTitle, routeFor, runPushIntents, threadDelivery };
+export { type LocalRoute, type PrText, TRUSTED_GIT_ENV, type WorkerDeps, baseRefspec, claimableKinds, hasTool, prTitle, requeueForCredential, routeFor, runPushIntents, threadDelivery };
+export { TRUSTED_GIT_KEYS, untrustedGitConfig } from "../shared/git-trust.js";
 
 /** At most one write of a run's last model output time per this many ms, and per a tenth of stall_ms (design 05-restarts). */
 export const OUTPUT_RECORD_MS = 30_000;
@@ -66,7 +67,6 @@ export const gitVerb = (args: readonly string[]): string => {
   return args[i] ?? "";
 };
 
-export const KINDS: readonly RunKind[] = ["triage", "implement", "review", "update", "resolve", "improve", "merge-check", "restart"];
 /** Files of a PR kept as its pr_files (design §5, 2026-11-03); past the size gate's file cap anyway. */
 export const MAX_PR_FILES = 500;
 /** The read role's tools (triage): only `read` capability, no write or exec tool. */
@@ -129,31 +129,30 @@ export function continues(wip: WipRef | null | undefined): wip is ContinueWip {
 /** The most paths one live-checkout report names; `count` gives the total. */
 export const LIVE_REPORT_PATHS = 20;
 
-export const TRUSTED_GIT_KEYS = new Set([
-  "core.repositoryformatversion", "core.filemode", "core.bare", "core.logallrefupdates", "core.ignorecase",
-  "core.precomposeunicode", "core.symlinks", "core.hookspath", "extensions.objectformat", "extensions.refstorage",
-  "remote.origin.url", "remote.origin.fetch", "user.name", "user.email",
-]);
-
-/**
- * The keys in a run's `.git/config` (`git config --name-only --list -z` output) that are not plain data a sandbox
- * or git itself writes there. Anything else may make git run a program (filters, textconv, fsmonitor, ssh,
- * credential helpers, includes, URL rewrites), so trusted git calls never read it (design §5).
- */
-export function untrustedGitConfig(names: string): string[] {
-  const keys = names.split("\0").filter(Boolean);
-  return [...new Set(keys.filter((k) => !TRUSTED_GIT_KEYS.has(k) && !/^branch\.[^\n]+\.(remote|merge)$/.test(k)))];
-}
-
 export class RunFailure extends Error {
   constructor(
     readonly code: string,
     detail: string,
     readonly infra = false,
-    readonly extra: { output_tail?: string; reset_at?: Timestamp | null; wip?: WipRef } = {},
+    readonly extra: {
+      output_tail?: string; reset_at?: Timestamp | null; wip?: WipRef;
+      /** The implement run's test selection before push (design §4, shadow mode), recorded on the failed outcome. */
+      test_selection?: object | undefined;
+    } = {},
   ) {
     super(detail);
   }
+}
+
+/**
+ * A thrown error as a failed outcome's fields: a RunFailure as it says, a missing model credential as `setup_missing`
+ * (not infra; the worker requeues an agent run, design §5 Restarts), anything else `exception` (infra). A DNS or connect
+ * error becomes network_unavailable.
+ */
+export function thrownFailure(err: unknown): { code: string; detail: string; infra: boolean; extra: RunFailure["extra"] } {
+  if (err instanceof RunFailure) return { ...classifyNetwork(err.code, err.message), infra: err.infra, extra: err.extra };
+  if (isSetupMissing(err)) return { code: SETUP_MISSING, detail: err.message, infra: false, extra: {} };
+  return { ...classifyNetwork("exception", err instanceof Error ? err.message : ""), infra: true, extra: {} };
 }
 
 /** The paused_by of a run the network pause put back in the queue: the system, not a person. */

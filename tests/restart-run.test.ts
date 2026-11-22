@@ -5,9 +5,11 @@ import type { WorkerDeps } from "../src/core/worker-deps.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { Worker } from "../src/worker/index.js";
-import { KINDS } from "../src/worker/support.js";
+import { WORKER_KINDS } from "../src/core/settings.js";
 import { loadRunKinds } from "../src/worker/run-kind.js";
-import { FakeBroker, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, config, prompts, silent } from "./helpers/fakes.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, prompts, silent } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
 // The restart run kind (design 04-gate-commands, restart): `repo.restart_command` on the host through the worker's
@@ -42,7 +44,7 @@ async function oneRestart(o: { repo?: Partial<FactoryConfig["repo"]>; exec?: Wor
 
 describe("the restart run", () => {
   it("is a run kind every worker claims, with its run file", async () => {
-    expect(KINDS).toContain("restart");
+    expect(WORKER_KINDS).toContain("restart");
     expect((await loadRunKinds()).get("restart")).toMatchObject({ name: "restart", folder: false });
   });
 

@@ -18,9 +18,10 @@ import { HealthPage, ItemPage, ItemsPage, RunnersPage } from "./views/pages.js";
 import { PluginsPage } from "./views/plugins.js";
 import { SettingsPage } from "./views/settings.js";
 import { ModeSwitch } from "./views/settings/general.js";
-import { RevisionBanner } from "./views/system-banner.js";
+import { FactoryRevision, RevisionBanner, StopAllAgents, UpdateNote } from "./views/system-banner.js";
 import { TranscriptView, transcriptRoute } from "./views/transcript.js";
 import { RulesPage } from "./views/rules.js";
+import { ProposalsPage } from "./views/proposals.js";
 import { CalendarPage } from "./views/calendar.js";
 import { TasksPage } from "./views/tasks.js";
 import { WorkersPage } from "./views/workers.js";
@@ -33,12 +34,13 @@ const VIEWS: Record<string, () => JSX.Element> = {
   workers: WorkersPage,
   health: HealthPage,
   rules: RulesPage,
+  proposals: ProposalsPage,
   settings: SettingsPage,
   data: DataPage,
   plugins: PluginsPage,
 };
 
-/** The app (design §9): sidebar, top bar (mode, update failed, search, refresh, theme) and the current page. */
+/** The app (design §9): sidebar, top bar (mode, running revision, update failed, search, refresh, theme), the update note and the current page. */
 export function App() {
   const overview = useQuery({
     queryKey: [API.overview],
@@ -100,9 +102,11 @@ export function App() {
           {/* Wraps instead of widening the page on a narrow screen. */}
           <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-2">
             <ModeSwitch floating />
+            <FactoryRevision factory={overview.data?.factory} />
             <span className="ml-auto shrink-0 text-sm whitespace-nowrap text-text-2" aria-live="polite">
               {overview.isError ? t("topbar.updateFailed") : null}
             </span>
+            <StopAllAgents />
             <Button variant="ghost" size="icon" aria-label={t("search.open")} className="shrink-0" onClick={() => setDialog("search")}>
               <Search aria-hidden className="size-4" />
             </Button>
@@ -112,6 +116,7 @@ export function App() {
             <ThemeControl choice={choice} onChoose={choose} />
           </header>
           <RevisionBanner server={overview.data?.server_rev} web={WEB_REV} />
+          <UpdateNote factory={overview.data?.factory} />
           <main className="min-w-0 p-4">
             {transcript ? (
               <TranscriptView key={`${transcript.itemId}/${transcript.runId}`} itemId={transcript.itemId} runId={transcript.runId} />

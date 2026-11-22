@@ -4,20 +4,23 @@
 import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { type SyncOutcome, syncCalendars } from "./calendar/index.js";
-import { type Loaded, Plugins, buildStatsStore, settingsBase } from "./compose.js";
+import type { Loaded } from "./load-config.js";
+import { Plugins } from "./plugin-set.js";
+import { settingsBase } from "./core/settings-base.js";
 import { runCanary } from "./canary.js";
+import { type Check, type CheckStatus, TOKEN_FAIL_DAYS, TOKEN_WARN_DAYS, checkStatus } from "./core/health-check.js";
 import { type LoadedConfig, readOnlyOverlaps } from "./core/config.js";
 import { describeSettings, resolveSettings, settingsFor } from "./core/settings.js";
 import { llmCheckFromPlugins } from "./llm-check.js";
 import { GitHubError } from "./impl/github/github-client.js";
 import { prFlagLabels, statusLabels } from "./impl/github/github-issue-source.js";
 import { baseEnv, runProcess } from "./impl/process/run-process.js";
+import { SANDBOX_LINES, type SandboxEnforcement, probeOsSandbox } from "./impl/runner/os-sandbox.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
 import type { GitHubApi } from "./interfaces/github-credentials.js";
-import { SqlFactoryStore } from "./impl/store/sql/sql-factory-store.js";
-import { storeSql } from "./impl/store/sql/store-sql.js";
+import { storeSql, storeSqlOrNull } from "./impl/store/sql/store-sql.js";
 import type { SecretName, SecretStore } from "./interfaces/secret-store.js";
-import type { ConnectContext } from "./plugin-api.js";
+import { type ConnectContext, selectedRunners } from "./plugin-api.js";
 import { REGISTRY, type SecretDeclaration, connectHooks, createPlugin, declaredSecrets, selectedSetups } from "./plugins.js";
 import type { Ask } from "./cli/handlers/setup/ask.js";
 import { storeRunAttemptChecks } from "./worker/migrations/run-attempt-status.js";
@@ -42,19 +45,7 @@ export function neededSecrets(
 
 // doctor
 
-/**
- * `warn`: not a doctor failure (hardening local use may skip). `token_days`: the token expiry check's whole days left. `fix`:
- * how to fix a FAIL whose `msg` is outside text as it came (an error, a version). `plain`: Health's sentence, no path (doctor
- * prints `msg`, Health shows it behind Details). `label`: a GitHub status label's name; Health folds those into one row.
- * `since` / `next`: ISO instants kept out of `msg` (a probe pause's start, next probe), shown locally. */
-export type Check = { ok: boolean; msg: string; warn?: boolean; token_days?: number; fix?: string; plain?: string; label?: string; since?: string; next?: string };
-
-/** A check's result in one word: what doctor prints and the status page shows. */
-export type CheckStatus = "ok" | "warn" | "fail";
-
-export function checkStatus(c: Check): CheckStatus {
-  return c.ok ? "ok" : c.warn ? "warn" : "fail";
-}
+export { type Check, type CheckStatus, TOKEN_FAIL_DAYS, TOKEN_WARN_DAYS, checkStatus } from "./core/health-check.js";
 
 const STATUS_WORD: Record<CheckStatus, string> = { ok: "ok  ", warn: "warn", fail: "FAIL" };
 const STATUS_MARK: Record<CheckStatus, string> = { ok: "✓", warn: "!", fail: "✗" };
@@ -80,12 +71,15 @@ export function checksExitCode(checks: readonly Check[]): number {
  * The health checks, the one implementation behind both `doctor` and the status page's Health panel.
  * Read-only: writes nothing to the store, makes no model call, and never puts a secret value in a message
  * itself. Messages may carry error text from GitHub, so a surface that shows them to anyone but the operator's terminal must
- * egress-scan them first (the status page does).
+ * egress-scan them first (the status page does). `opts.sandbox`: the OS sandbox probe (tests pass a fake); one warn per line it does not enforce.
  */
-export async function doctorChecks(loaded: Loaded, opts: { github?: boolean } = {}): Promise<Check[]> {
+export async function doctorChecks(loaded: Loaded, opts: { github?: boolean; sandbox?: () => Promise<SandboxEnforcement> } = {}): Promise<Check[]> {
   // Setup passes the person's GitHub answer, which a declined config diff leaves unwritten.
   const github = opts.github ?? loaded.config.local_only !== true;
   const checks: Check[] = [configFileCheck(loaded), ...settingsChecks(loaded), ...(await toolchainChecks(loaded.config))];
+  const box = await (opts.sandbox ?? (() => probeOsSandbox({ runners: selectedRunners(loaded.plugins) })))();
+  const on = (k: (typeof SANDBOX_LINES)[number]) => box[k].enforced;
+  checks.push(...SANDBOX_LINES.map((k) => ({ ok: on(k), warn: !on(k), msg: `sandbox ${k}: ${on(k) ? "OS-enforced" : "not OS-enforced, so auto mode is refused"} (${box[k].why})` })));
   const add = (ok: boolean, msg: string, warn = false, plain?: string) => checks.push({ ok, msg, warn, ...(plain !== undefined && { plain }) });
 
   try {
@@ -189,9 +183,6 @@ export async function toolchainChecks(config: Pick<LoadedConfig, "toolchain" | "
   return checks;
 }
 
-/** At or under this many days left a token is a FAIL; under TOKEN_WARN_DAYS a warn (design §9 Health). */
-export const TOKEN_FAIL_DAYS = 0;
-export const TOKEN_WARN_DAYS = 3;
 
 /**
  * The GitHub token's expiry line. An App sign-in (`grant` present) is always ok and makes no read: the factory mints
@@ -327,9 +318,12 @@ export async function statusLabelChecks(client: Pick<GitHubApi, "request">, repo
   return checks;
 }
 
-/** `llm`: one extra line that runs the LLM check (two real provider calls). Plain doctor calls no model. */
-export async function doctor(loaded: Loaded, opts: { llm?: boolean } = {}): Promise<number> {
-  const open = () => buildStatsStore(loaded).then((s) => ({ sql: s instanceof SqlFactoryStore ? s.db : null, close: () => s.close() }));
+/**
+ * `openStore`: the store the run-attempt checks read (the CLI passes compose's buildStatsStore, so this file does not
+ * load the composition root, RFC 0023). `llm`: one extra line that runs the LLM check (two real provider calls).
+ */
+export async function doctor(loaded: Loaded, openStore: (l: Loaded) => Promise<FactoryStore>, opts: { llm?: boolean } = {}): Promise<number> {
+  const open = () => openStore(loaded).then((s) => ({ sql: storeSqlOrNull(s), close: () => s.close() }));
   const checks = [...(await doctorChecks(loaded)), ...(await storeRunAttemptChecks(open))];
   if (opts.llm) {
     const r = await llmCheckFromPlugins(new Plugins(loaded), "cheap");

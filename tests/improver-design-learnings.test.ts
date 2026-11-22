@@ -13,7 +13,10 @@ import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm
 import type { Sandbox } from "../src/interfaces/sandbox.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { FakeAuth, FakeForge, FakeSource, MemoryStorage, alice, config, issueRef, silent } from "./helpers/fakes.js";
+import { alice, config, issueRef, silent } from "./helpers/fakes/config.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeAuth, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
 import { PROJECT_KEY, newStore, system, w1 } from "./helpers/store.js";
 
 const WRITER = "github:1" as UserId;

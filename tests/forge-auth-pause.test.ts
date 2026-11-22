@@ -4,7 +4,7 @@ import { GitHubForge } from "../src/impl/github/github-forge.js";
 import { forgeAuthRefused } from "../src/impl/github/pull-requests.js";
 import { GitHubError, type GitHubClient } from "../src/impl/github/github-client.js";
 import type { ToolResult } from "../src/interfaces/tool-broker.js";
-import { pipeline } from "./helpers/fakes.js";
+import { pipeline } from "./helpers/harness.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 
 // Design §5 Restarts: a 401 or 403 from the forge pauses implement-type claims (implement and update) for every

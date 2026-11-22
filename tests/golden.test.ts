@@ -37,23 +37,12 @@ import type { EgressChannel, EgressScanner, ScanResult } from "../src/interfaces
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { SecretStore } from "../src/interfaces/secret-store.js";
 import { newStore } from "./helpers/store.js";
-import {
-  FakeForge, FakeAuth,
-  FakeBroker,
-  PROJECT as PROJECT_REF,
-  FakeGitHubDiff,
-  FakeRunner,
-  FakeSandbox,
-  FakeSource,
-  MemoryStorage,
-  alice,
-  cleanScanner,
-  config,
-  issueRef,
-  prompts,
-  silent,
-  triageSpec,
-} from "./helpers/fakes.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { PROJECT as PROJECT_REF, alice, cleanScanner, config, issueRef, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
+import { FakeGitHubDiff } from "./helpers/fakes/github.js";
+import { FakeSource } from "./helpers/fakes/source.js";
 import { TokenCredentials } from "../src/impl/github/token-credentials.js";
 import { REPO } from "./architecture/lib.js";
 
@@ -380,8 +369,8 @@ describe("golden run", () => {
       expect(s.output_schema).toBe(REVIEW_SCHEMA);
       expect(s.tools.map((t) => t.name)).toEqual(reviewRole.tools);
       expect(s.tool_grants).toEqual([]);
-      // The review run's class from the default model_by table (design §4).
-      expect(s.model_class).toBe("standard");
+      // The review run's class from the default model_by table, tier-5 entry (design §4).
+      expect(s.model_class).toBe("strong");
       expect(s.prompt).toContain(`spec for ${id}`);
       expect(s.prompt).toContain(`## Diff\n\n\`\`\`diff\n${DIFF}// case ${id}\n\n\`\`\``);
       expect(s.deny_paths).toEqual(config.deny_paths);
@@ -400,7 +389,8 @@ describe("golden run", () => {
     const clock = new FakeClock();
     const source = new FakeSource();
     const runner = new FakeRunner({
-      triage: () => ({ output: triageSpec }),
+      // Tier 5, the entry the golden replay uses, so both review runs take the same class.
+      triage: () => ({ output: { ...triageSpec, tier: 5 } }),
       implement: () => ({ output: { summary: "s", next_steps: "n" } }),
       review: () => ({ output: REVIEW_PASS }),
     });
@@ -421,21 +411,21 @@ describe("golden run", () => {
     const review = runner.specs.find((s) => s.role === "review")!;
     expect(reviewRole.tools).toEqual(review.tools.map((t) => t.name));
     expect(review.output_schema).toBe(REVIEW_SCHEMA);
-    // Same model class as the golden replay (default table: standard).
+    // Same model class as the golden replay (default table, tier-5 entry: strong).
     const replay = byCase({ "1": { output: REVIEW_PASS } });
     const deps = runDeps(replay);
     await writeCase(deps.casesDir, "1", "should_pass");
     await runCases(deps, { role: "review" });
     expect(replay.specs[0]!.model_class).toBe(review.model_class);
-    expect(review.model_class).toBe("standard");
+    expect(review.model_class).toBe("strong");
   });
 
   it("uses the review class of the configured model_by table", async () => {
     const runner = byCase({ "1": { output: REVIEW_PASS } });
-    const deps = runDeps(runner, { model_by: parseModelBy({ ...DEFAULT_MODEL_BY, review: "strong" }) });
+    const deps = runDeps(runner, { model_by: parseModelBy({ ...DEFAULT_MODEL_BY, review: "cheap" }) });
     await writeCase(deps.casesDir, "1", "should_pass");
     await runCases(deps, { role: "review" });
-    expect(runner.specs[0]!.model_class).toBe("strong");
+    expect(runner.specs[0]!.model_class).toBe("cheap");
   });
 
   it("counts verdict bug as flagged and failed or invalid runs as errored, outside both rates", async () => {

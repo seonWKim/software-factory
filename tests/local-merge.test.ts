@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
 import type { UserId, WorkItem } from "../src/core/types.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { FakeAuth, FakeSource, cleanScanner, config, silent } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { cleanScanner, config, silent } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
 // The local merge's reply says how to run the result (design 04-gate-commands, restart): with `repo.restart_command`

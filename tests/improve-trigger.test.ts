@@ -7,7 +7,8 @@ import type { Run, RunId, RunKind, Timestamp, WorkItemId, WorkerId } from "../sr
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { issue, newStore, system } from "./helpers/store.js";
-import { FakeAuth, PROJECT, cleanScanner, config, silent } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { PROJECT, cleanScanner, config, silent } from "./helpers/fakes/config.js";
 
 const DAY = 86_400_000;
 

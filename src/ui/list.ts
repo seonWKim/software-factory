@@ -2,14 +2,18 @@
 // API (src/ui/api.ts): the items list and its facet counts read the same rows in the same order. Reads only.
 
 import { type ConflictCounts, conflictCounts } from "../core/resolve.js";
+import { prNumber } from "../core/change-ref.js";
+import { UNKNOWN_PROJECT_LABEL } from "../core/project.js";
 import type { Alert, FactoryStore } from "../interfaces/factory-store.js";
 import { MERGE_QUEUED, MERGE_REQUESTS_READ, mergeQueued, pendingApproval, pendingMerge } from "../core/commands.js";
 import { blockingRunKind } from "../core/policy.js";
 import { PERSON_PHASES, phaseOf } from "../core/phase.js";
-import type { ClaimDecision, Run, StateChange, WorkItem, WorkItemId } from "../core/types.js";
+import { type SettingsBase, resolveSettings } from "../core/settings.js";
+import type { ClaimDecision, Run, RunKind, StateChange, WorkItem, WorkItemId } from "../core/types.js";
 import { alarmText, alarmsFor, itemAlarms, openAlarms } from "./alarms.js";
 import { type FilterRow, type Filters, runKindOf, searchKeys } from "./filters.js";
-import { type Level, type Pending, type PriorityInput, levelOf, rank } from "./priority.js";
+import { filterShowsFinished, stateLabel } from "../shared/states.js";
+import { type Level, type Pending, type PriorityInput, closedLevel, levelOf, rank } from "./priority.js";
 import { heldFailureOf, needCtx } from "./need.js";
 import { type ClaimPauses, type HeldFailure, type Why, type WhyInput, deadlocked, heldBy, refsOf, whyWaiting, withAlarms } from "./why.js";
 import type { Withholder } from "./withhold.js";
@@ -28,6 +32,8 @@ export interface ListCtx {
 /** One ranked row of the list, with what the filters read. */
 export interface ListRow extends FilterRow {
   item: WorkItem;
+  /** The state table's label for the row's level: the words the pages show (the API's `state_label`). */
+  label: string;
   input: PriorityInput;
   runStatus: "queued" | "running" | null;
   /** The item's queued or running run, and a queued run's 1-based place in the queue. */
@@ -46,7 +52,7 @@ export interface ListRow extends FilterRow {
 }
 
 /** True when the filters may show closed items, so listRows reads them. */
-const showsClosed = (f: Filters) => f.closed || f.state === "closed" || f.stage === "CLOSED";
+const showsClosed = (f: Filters) => f.closed || filterShowsFinished(f.state) || f.stage === "CLOSED";
 
 /** Every listed item, ranked (closed items too when the filters may show them). */
 export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
@@ -87,6 +93,7 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
       item: it,
       input: r.input,
       level: r.level,
+      label: stateLabel(r.level),
       stage: it.stage,
       tier: it.tier,
       kind: runKindOf(it.blocked_reason, r.input.run?.kind ?? (r.input.pending?.command === "approve" ? r.input.pending.kind : null)),
@@ -188,6 +195,18 @@ async function itemMergePosition(store: FactoryStore, it: WorkItem): Promise<Map
 }
 
 /**
+ * A merged-without-review row's links (design 09-status-page), from its stored project key, label and ref, no forge
+ * call: `review_url` is `https://<label>/pull/<n>`, the rule of changeFields (src/impl/store/sql/change-fields.ts),
+ * and `checks_url` its `/checks` page, for a GitHub project whose label is stored and a numeric ref; else both null.
+ * `check_verdict` is null: the store keeps no verdict for an unreviewed merge (merge checks are stored per work item).
+ */
+export async function mergeLinks(project: string, label: string, change_ref: string, text: (v: string) => Promise<string | null>) {
+  const n = prNumber({ change_ref });
+  const pr = n !== null && project.startsWith("github:") && label !== UNKNOWN_PROJECT_LABEL ? `https://${label}/pull/${n}` : null;
+  return { review_url: pr && (await text(pr)), checks_url: pr && (await text(`${pr}/checks`)), check_verdict: null };
+}
+
+/**
  * The open and running counts every page shows (design 09-status-page), defined once: open is every item whose stage
  * is not CLOSED, running every run whose status is running. The overview (Activity) and the items list (Work) both
  * read them from here.
@@ -204,15 +223,16 @@ async function searchTitle(w: Withholder, it: WorkItem): Promise<string | null> 
 }
 
 /**
- * The closed items as the facet counts read them, when listRows left them out: so the Closed option counts the
+ * The closed items as the facet counts read them, when listRows left them out: so the Finished options count the
  * closed items that match the other filters, as every other option does. One store read (at most LIST_LIMIT
- * items), no per-item reads: a closed item's level is always `closed`, its kind comes from its blocked reason.
+ * items), no per-item reads: a closed item's level comes from its phase and close reason (closedLevel), its kind
+ * from its blocked reason.
  */
 export async function closedFacetRows(c: ListCtx, f: Filters): Promise<FilterRow[]> {
   if (showsClosed(f)) return [];
   const out: FilterRow[] = [];
   for (const it of await c.store.listWorkItemsWhere({ stage: "CLOSED", limit: LIST_LIMIT })) {
-    out.push({ level: "closed", stage: it.stage, tier: it.tier, kind: runKindOf(it.blocked_reason, null), dependents: 0, search: searchKeys(it.source.id, await searchTitle(c.w, it)) });
+    out.push({ level: closedLevel(it), stage: it.stage, tier: it.tier, kind: runKindOf(it.blocked_reason, null), dependents: 0, search: searchKeys(it.source.id, await searchTitle(c.w, it)) });
   }
   return out;
 }
@@ -269,12 +289,28 @@ export async function activeRuns(store: FactoryStore): Promise<{ active: Map<Wor
 /** The claim pauses in effect, as the claim reads them (four store reads). */
 export async function readClaimPauses(store: FactoryStore): Promise<ClaimPauses> {
   return {
+    worker_kinds: await workerKindsNow(store),
     rate_limit: await store.getClaimPause("rate_limit"),
     model_stall: await store.getClaimPause("model_stall"),
+    model_credential: await store.getClaimPause("model_credential"),
     forge_auth: await store.getClaimPause("forge_auth"),
     preflight_access: await store.getClaimPause("preflight_access"),
   };
 }
+
+/**
+ * The run kinds workers claim now: the `worker_kinds` override, else the default (the config file does not set it).
+ * A failed read says nothing (every kind), so the reason never claims a wait it could not check.
+ */
+async function workerKindsNow(store: FactoryStore): Promise<readonly RunKind[] | null> {
+  try {
+    return resolveSettings(NO_FILE, await store.listSettingOverrides()).values.worker_kinds;
+  } catch {
+    return null;
+  }
+}
+
+const NO_FILE: SettingsBase = { file: {}, layers: { defaults: {}, projects: {} } };
 
 /** The item's latest claim decision, read only while its active run is an implement run (only those get one). */
 export async function latestDecision(store: FactoryStore, id: WorkItemId, run: Run | null): Promise<ClaimDecision | null> {

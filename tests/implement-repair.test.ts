@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RunOutcome } from "../src/core/types.js";
 import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runner.js";
-import { pipeline } from "./helpers/fakes.js";
+import { pipeline } from "./helpers/harness.js";
 
 // Design §5 Restarts, the repair turn: an implement answer that fails the output schema gets one more turn in the
 // same session, asking only for the answer. Still invalid: the run fails with invalid_output, its commits kept on

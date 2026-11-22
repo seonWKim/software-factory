@@ -95,19 +95,21 @@ export function retryDelayMs(attempt: number, base_ms: number, max_ms: number): 
 
 /**
  * Why a run failed, for the retry budget (design §5 Restarts): a usage or rate limit is not an attempt, and
- * neither is a stall (the model printed nothing for `stall_ms`); a pre-push check whose failing test files
+ * neither is a stall (the model printed nothing for `stall_ms`) nor a missing model credential (`setup_missing`,
+ * which the worker requeues and never stores for an agent run); a pre-push check whose failing test files
  * also fail on the base branch (`checks_env`) spends neither budget and has its own cap, CHECKS_ENV_LIMIT per
  * item; infra failures (lease loss, timeout, exception) count toward `max_restart`; anything else is the
  * task's own failure and counts toward `max_attempts`. A run with no outcome (cancelled) is a task failure; a run
  * an accepted interactive takeover cancelled (`takenOver`) is left out of the step's counts by `retryOrBlock`.
  */
-export type FailureClass = "rate_limited" | "stalled" | "checks_env" | "infra" | "task";
+export type FailureClass = "rate_limited" | "stalled" | "checks_env" | "setup_missing" | "infra" | "task";
 
 export function failureClass(outcome: RunOutcome | null): FailureClass {
   if (outcome?.status !== "failed") return "task";
   if (outcome.error_code === RATE_LIMITED || outcome.error_code === GITHUB_RATE_LIMITED) return "rate_limited";
   if (outcome.error_code === AGENT_STALLED) return "stalled";
   if (outcome.error_code === CHECKS_ENV) return "checks_env";
+  if (outcome.error_code === SETUP_MISSING) return "setup_missing";
   return outcome.infra ? "infra" : "task";
 }
 
@@ -131,7 +133,7 @@ export function takenOver(run: Pick<Run, "status" | "outcome">): boolean {
  */
 export function retryClears(outcome: RunOutcome | null): boolean {
   const c = failureClass(outcome);
-  return c === "stalled" || c === "rate_limited" || c === "infra";
+  return c === "stalled" || c === "rate_limited" || c === "setup_missing" || c === "infra";
 }
 
 /**
@@ -257,6 +259,31 @@ export function probePauseOf(name: string): ProbePause | null {
     if (name === pause || name === rows.since || name === rows.answered) return pause as ProbePause;
   }
   return null;
+}
+
+/**
+ * The error code of a run whose agent runner found no model credential in the secret store (design §5 Restarts,
+ * setup state, 2026-11-21). Not a failure of the run, like NETWORK_UNAVAILABLE: the worker puts an agent run back in
+ * the queue with its attempt unchanged and starts the `model_credential` claim pause, so it is never retried and never
+ * counts toward max_attempts, max_restart, the repeated-failure rule or an alarm.
+ */
+export const SETUP_MISSING = "setup_missing";
+
+/**
+ * The claim pause of a missing model credential (design §5 Restarts): no agent run (MODEL_RUN_KINDS) is claimed while
+ * it is in effect. It has no end time: its row holds MODEL_CREDENTIAL_UNTIL until a worker whose check finds the
+ * credential ends it. Not resumable by a person (RESUMABLE_PAUSES leaves it out): adding the credential ends it.
+ */
+export const MODEL_CREDENTIAL = "model_credential" as const;
+export const MODEL_CREDENTIAL_UNTIL = "9999-12-31T23:59:59.999Z" as Timestamp;
+
+/**
+ * Whether `err` says no model credential is in the secret store: an Error whose `code` is SETUP_MISSING, as the
+ * claude-code runner throws it (an adapter, it tags the error rather than import this module). Its message names
+ * the secrets, never a value.
+ */
+export function isSetupMissing(err: unknown): err is Error {
+  return err instanceof Error && (err as { code?: unknown }).code === SETUP_MISSING;
 }
 
 /** The network probe's first wait and its longest one (design §5 Restarts): 30 s, backing off to 5 min. */

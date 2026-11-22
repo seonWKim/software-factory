@@ -46,6 +46,9 @@ describe("whyWaiting: every case", () => {
     ["running", input({ run: running }), "Running implement", "factory", []],
     ["rate limit", input({ run: queued("triage"), pauses: { rate_limit: UNTIL } }), `Paused by a usage or rate limit until ${LOCAL}`, "factory", []],
     ["model stall", input({ run: queued("review"), pauses: { model_stall: UNTIL } }), "Paused: the model is not answering; runs start again once a probe answers", "factory", []],
+    // The missing model credential's pause stops agent runs only: a queued update run still says it is queued.
+    ["no model credential", input({ run: queued("triage"), pauses: { model_credential: "9999-12-31T23:59:59.999Z" } }), "Waiting for a model credential", "human", []],
+    ["no model credential, not an agent run", input({ run: queued("update", null), pauses: { model_credential: "9999-12-31T23:59:59.999Z" } }), "Queued update", "factory", []],
     ["forge auth", input({ run: queued("implement"), pauses: { forge_auth: UNTIL } }), `Paused: the forge refused the factory's credentials, until ${LOCAL}`, "human", []],
     ["preflight access", input({ run: queued("update"), pauses: { preflight_access: UNTIL } }), `Paused: a push or PR access check failed, until ${LOCAL}`, "human", []],
     ["dependency, two", input({ run: queued(), item: { blocked_on: "dependency", blocked_reason: "waiting for #12 and #13 to merge" } }), "Waiting for #12 and #13 to merge", "other_item", [12, 13]],

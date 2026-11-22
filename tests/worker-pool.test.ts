@@ -2,7 +2,11 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { WORKER_INDEX_BASE_ENV, build, loadConfig, maxWorkers, workerCount, workerIndexBase } from "../src/compose.js";
+import { WORKER_INDEX_BASE_ENV } from "../src/interfaces/updater.js";
+import { build } from "../src/compose.js";
+import { loadConfig } from "../src/load-config.js";
+import { maxWorkers, workerCount } from "../src/core/settings.js";
+import { workerIndexBase } from "../src/config-values.js";
 import { CODE_VERSION_ENV } from "../src/interfaces/updater.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import type { Logger } from "../src/core/log.js";
@@ -17,8 +21,9 @@ import type { KeepAwake } from "../src/interfaces/keep-awake.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import { runDevChild } from "../src/supervisor.js";
 import { issue, newStore, system } from "./helpers/store.js";
-import {
-  FakeBroker, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, config, prompts, recordingLog, silent, triageSpec, waitFor, fakeRepoLookup } from "./helpers/fakes.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, prompts, recordingLog, silent, triageSpec, waitFor, fakeRepoLookup } from "./helpers/fakes/config.js";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -73,15 +78,16 @@ async function setup(opts: { workers: number; maxWorkers?: number; queued: numbe
 }
 
 describe("workers config", () => {
-  it("absent means 1; an integer of 1 or more is kept", () => {
+  it("absent means 1; an integer of 0 or more is kept", () => {
     expect(workerCount(undefined)).toBe(1);
+    expect(workerCount(0)).toBe(0);
     expect(workerCount(1)).toBe(1);
     expect(workerCount(3)).toBe(3);
   });
 
   it("any other value stops startup with a clear error", () => {
-    for (const bad of [0, -1, 1.5, "2", null, Number.NaN, Infinity, [2]]) {
-      expect(() => workerCount(bad)).toThrow("workers must be an integer of 1 or more");
+    for (const bad of [-1, 1.5, "2", null, Number.NaN, Infinity, [2]]) {
+      expect(() => workerCount(bad)).toThrow("workers must be an integer of 0 or more");
     }
   });
 
@@ -124,7 +130,8 @@ describe("workers config", () => {
     // undefined drops the key, whatever the real config sets.
     expect((await loadConfig(root({ workers: undefined }))).config.workers).toBe(1);
     expect((await loadConfig(root({ workers: 3 }))).config.workers).toBe(3);
-    await expect(loadConfig(root({ workers: 0 }))).rejects.toThrow("workers must be an integer of 1 or more");
+    expect((await loadConfig(root({ workers: 0, max_workers: 2 }))).config.workers).toBe(0);
+    await expect(loadConfig(root({ workers: -1 }))).rejects.toThrow("workers must be an integer of 0 or more");
   });
 
   it("build() numbers its workers from SF_WORKER_INDEX_BASE (set by the supervisor; unset: 0)", async () => {

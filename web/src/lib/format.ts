@@ -1,3 +1,4 @@
+import { stateLabel } from "../../../src/shared/states.js";
 import type { Why } from "../api.js";
 import { type MessageKey, en } from "../i18n/en.js";
 import { formatInteger, locale, t, withUnit } from "../i18n/index.js";
@@ -42,19 +43,8 @@ export function errorLabel(code: string): string {
   return code in TERM_KEYS || !(title in en) ? termLabel(code) : t(title as MessageKey);
 }
 
-const RUN_STATUS_KEYS: Readonly<Record<string, MessageKey>> = {
-  queued: "run.status.queued",
-  running: "run.status.running",
-  succeeded: "run.status.succeeded",
-  failed: "run.status.failed",
-  canceled: "run.status.canceled",
-};
-
-/** A run's status in one form each ("Succeeded", "Failed", "Running"); an unknown one as words. */
-export function runStatusLabel(status: string): string {
-  const key = RUN_STATUS_KEYS[status];
-  return key ? t(key) : termLabel(status);
-}
+/** A run's status in one form each ("Succeeded", "Failed", "Running"): its label in the one state table; an unknown one as words. */
+export const runStatusLabel = stateLabel;
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
@@ -63,6 +53,23 @@ export function localDateTime(at: string): string {
   const d = new Date(at);
   if (Number.isNaN(d.getTime())) return at;
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+/** An ISO time as the viewer's short local date ("Nov 18"); the text itself when it is not one. */
+export function localShortDate(at: string): string {
+  const d = new Date(at);
+  return Number.isNaN(d.getTime()) ? at : new Intl.DateTimeFormat(locale(), { month: "short", day: "numeric" }).format(d);
+}
+
+/** Whether `start` to `end` is one whole local day ending at local midnight of the day `made` falls on. */
+export function isPreviousLocalDay(start: string, end: string, made: string): boolean {
+  const s = new Date(start);
+  const e = new Date(end);
+  const m = new Date(made);
+  if ([s, e, m].some((d) => Number.isNaN(d.getTime()))) return false;
+  const nextDay = new Date(s.getFullYear(), s.getMonth(), s.getDate() + 1);
+  const madeDay = new Date(m.getFullYear(), m.getMonth(), m.getDate());
+  return s.getTime() === new Date(s.getFullYear(), s.getMonth(), s.getDate()).getTime() && e.getTime() === nextDay.getTime() && e.getTime() === madeDay.getTime();
 }
 
 /** A whole number grouped by thousands in the active locale ("4,844"). */
@@ -88,6 +95,11 @@ export function shortSource(id: string): string {
   if (i >= 0) return id.slice(i);
   const m = LOCAL_ID.exec(id);
   return m ? m[1]! + m[2]!.replaceAll("-phase-", "-p") : id;
+}
+
+/** A work item's short ID (design 09-dashboard-item): "c86970ff" for "wi_c86970ff…", the 8 hex characters after `wi_` that the CLI accepts; any other ID as it is. */
+export function shortItemId(id: string): string {
+  return /^wi_([0-9a-f]{8})/.exec(id)?.[1] ?? id;
 }
 
 /** 38521431 → "38.5M"; 29285 → "29.3k". */
@@ -125,19 +137,6 @@ export function isHttpUrl(url: string | null | undefined): url is string {
 }
 
 export const shortRev =(rev: string | null | undefined) => (rev ? rev.slice(0, 7) : t("format.unknown"));
-
-/** The status page's level names (src/ui/priority.ts LEVEL_LABELS), for the same words in both UIs. */
-export const LEVEL_LABELS: Record<string, string> = Object.fromEntries(
-  ["ready_to_merge", "needs_approval", "needs_you", "needs_triage", "stuck", "running", "queued", "blocked_by_task", "closed"].map((level) => [
-    level,
-    t(`level.${level}` as MessageKey),
-  ]),
-);
-
-/**
- * Levels that wait on the operator: the Floor lists them first. Never "Blocked by another task".
- */
-export const NEEDS_YOU_LEVELS = ["ready_to_merge", "needs_approval", "needs_you", "needs_triage", "stuck"] as const;
 
 /** "worker 3" for a worker id `<host>:<pid>:<slot>` (its slot number); "a worker" for any other id; "–" for none. */
 export function workerName(id: string | null | undefined): string {

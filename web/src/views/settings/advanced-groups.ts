@@ -22,7 +22,7 @@ export type AdvancedGroupId = (typeof ADVANCED_GROUPS)[number]["id"];
 export const GROUP_KEYS: Readonly<Record<AdvancedGroupId, readonly string[]>> = {
   limits: [
     // How much runs at once, and how far auto mode goes on its own.
-    "workers", "mode", "auto_merge_max_tier", "spend.daily_budget_usd", "spend.weekly_budget_usd", "hold_policy",
+    "workers", "worker_kinds", "mode", "auto_merge_max_tier", "spend.daily_budget_usd", "spend.weekly_budget_usd", "hold_policy",
     "phases_auto_approve", "standing_approvals.threshold",
     // The size and time limits of one run.
     "max_diff_lines", "max_diff_files", "run_timeout_ms", "stall_ms", "first_output_ms", "probe_interval_ms",
@@ -32,7 +32,7 @@ export const GROUP_KEYS: Readonly<Record<AdvancedGroupId, readonly string[]>> = 
   ],
   retries: ["max_attempts", "max_loops", "max_restart", "auth_pause_ms", "retry_base_ms", "retry_max_ms"],
   models: ["models", "model_by", "message_style"],
-  notices: ["notice_kinds", "quiet_hours", "notify_channels", "integrations", "calendar"],
+  notices: ["notice_kinds", "quiet_hours", "review_time", "notify_channels", "integrations", "calendar"],
   developers: ["lease_ms", "heartbeat_ms", "hotspot_weight", "mechanical_weight", "max_coordination_cost", "tick_ms", "poll_interval_ms"],
 };
 
@@ -53,6 +53,7 @@ const APPLIES_WORDS: Readonly<Record<string, MessageKey>> = {
   "the next model call": "settings.appliesNow",
   "the next tick": "settings.appliesMinute",
   "the worker pool's next tick": "settings.appliesMinute",
+  "the worker's next claim": "settings.appliesMinute",
   "the next tick (the controller's next sync)": "settings.appliesMinute",
   "the next tick, and the next Rules page request": "settings.appliesMinute",
   "the next alarm step (each poll)": "settings.appliesMinute",

@@ -4,7 +4,7 @@ import { DEFAULT_BATCHING, Outbound, recordAction } from "../../src/outbound/ind
 import { aggregate } from "../../src/outbound/aggregator/aggregator.js";
 import type { Delivery, DeliveryTarget } from "../../src/outbound/targets/target.js";
 import { tickAt } from "../../src/shared/ticks/tick-generator.js";
-import { cleanScanner, silent } from "../helpers/fakes.js";
+import { cleanScanner, silent } from "../helpers/fakes/config.js";
 import { BACKENDS, newStore } from "../helpers/store.js";
 
 // A flush sends at most 50 batches. Batches for a destination kind this process cannot write (no adapter here, or

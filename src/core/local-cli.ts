@@ -11,7 +11,7 @@ import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpretMes
 import { needsDueDate, parseQuickAdd, parseQuickEdit } from "./quick-add.js";
 import { type Project, projectSlug } from "./projects.js";
 import { ProjectRefused, type TaskEdit, type TaskFields, projectRefusal, taskLine } from "./tasks.js";
-import { NO_PROJECT_KEY, buildTask, createLocalItem, createProjectTask } from "./task-build.js";
+import { CREATE_HELP, LOCAL_ID, NO_PROJECT_KEY, buildTask, createLocalItem, createProjectTask, localItemOf, withDependsOn } from "./task-build.js";
 
 /**
  * The writer side of local intake (issue #200; design 05-sources.md, "CLI intake"). `factory task create`
@@ -19,8 +19,8 @@ import { NO_PROJECT_KEY, buildTask, createLocalItem, createProjectTask } from ".
  * to it, as `task build` links one (design 02-tasks); `task add` stores a plain task from quick-add words and `task
  * done` completes one and `task reopen` undoes that, `task edit`, `task delete` and `task sub` change, remove and nest one (design 02-tasks: no
  * work item, no triage); `project …` keeps the task projects and `task project` links a task to one, unlinks it or moves it
- * (design 02-tasks, task projects); `task list` and `task show` read the store; `approve`,
- * `retry`, `revise`, `reject`, `resolve` and `verdict` append one row to the CLI command log (`command_inbox`) and change no item
+ * (design 02-tasks, task projects); `task list` and `task show` read the store; `task paths` (as `/paths`), `approve`,
+ * `retry`, `revise`, `reject`, `resolve`, `hold` and `verdict` append one row to the CLI command log (`command_inbox`) and change no item
  * state, for an item of any source; `approve` first runs the controller's phase check (`approveRefusal`) and refuses
  * with its text before any write (issue #528), and `verdict` its parser and closed-item check (`verdictRefusal`,
  * issue #523). `confirm <proposal-id>` appends one `proposal_confirm` row for a stored proposal with a pending command
@@ -103,14 +103,13 @@ export const CONFIRM_WORD = "confirm";
 export const SENTENCE_APP_COMMAND = "sentence";
 export const CANCEL_APP_COMMAND = "proposal_cancel";
 
-const ITEM_COMMANDS = ["approve", "retry", "revise", "reject", "resolve", "verdict"] as const;
-
-/** `merge` is the local merge (src/core/local-merge.ts); the others are the comment commands of the same name. */
-export type ItemCommand = (typeof ITEM_COMMANDS)[number] | typeof MERGE_COMMAND;
+const ITEM_COMMANDS = ["approve", "retry", "revise", "reject", "resolve", "verdict", "hold"] as const;
+/** `merge` is the local merge (src/core/local-merge.ts); `paths` is `task paths`; the others are the comment commands of the same name. */
+export type ItemCommand = (typeof ITEM_COMMANDS)[number] | typeof MERGE_COMMAND | "paths";
 
 export type CliAction =
-  /** `project`: the `--project` task project's slug; left out, the work item only. */
-  | { action: "create"; title: string; bodyFile: string; project?: string }
+  /** `project`: the `--project` slug, left out for the work item only; `depends_on`: the `--depends-on` id (design 05-dependencies). */
+  | { action: "create"; title: string; bodyFile: string; project?: string; depends_on?: string }
   | { action: "add"; task: TaskFields }
   | { action: "done"; id: string }
   | { action: "reopen"; id: string }
@@ -188,25 +187,29 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
       const parsed = parseQuickAdd(words.join(" "));
       return parsed.ok ? { action: "sub", parent, task: parsed.task } : bad(`task sub: ${parsed.reason}`);
     }
+    if (sub === "paths") return rest.length > 1 ? { action: "command", command: "paths", id: rest[0] as WorkItemId, text: rest.slice(1).join(" ") } : bad("task paths needs a work item ID and at least one +<path>"); // stored as `/paths`
     if (sub === "delete") return rest.length === 1 && rest[0] ? { action: "delete", id: rest[0] } : bad("task delete needs one task ID");
     if (sub === "done") return rest.length === 1 && rest[0] ? { action: "done", id: rest[0] } : bad("task done needs one task ID");
     if (sub === "reopen") return rest.length === 1 && rest[0] ? { action: "reopen", id: rest[0] } : bad("task reopen needs one task ID");
     if (sub === "build") return rest.length === 1 && rest[0] ? { action: "build", id: rest[0] } : bad("task build needs one task ID");
     if (sub === "show") return rest.length === 1 && rest[0] ? { action: "show", id: rest[0] as WorkItemId } : bad("task show needs one work item ID");
     if (sub === "create") {
+      if (rest.includes("--help")) return bad(`task create: ${CREATE_HELP}`);
       const flags: Record<string, string> = {};
       for (let i = 0; i < rest.length; i += 2) {
         const k = rest[i]!;
         const v = rest[i + 1];
-        if (!["--title", "--body-file", "--project"].includes(k) || v === undefined || k in flags) return bad(`task create: unexpected ${JSON.stringify(k)}`);
+        if (!["--title", "--body-file", "--project", "--depends-on"].includes(k) || v === undefined || k in flags) return bad(`task create: unexpected ${JSON.stringify(k)}`);
         flags[k] = v;
       }
       const title = flags["--title"]?.trim();
       const bodyFile = flags["--body-file"];
       if (!title || !bodyFile) return bad("task create needs --title <t> and --body-file <f>");
-      if (flags["--project"] === undefined) return { action: "create", title, bodyFile };
-      const project = projectSlug(flags["--project"].replace(/^\+/, ""));
-      return project === null ? bad("task create: --project needs a project slug, e.g. home-repairs") : { action: "create", title, bodyFile, project };
+      const dependsOn = flags["--depends-on"]?.trim();
+      if (dependsOn !== undefined && !LOCAL_ID.test(dependsOn)) return bad("task create: --depends-on needs a work item (wi_…) or task (tk_…) ID");
+      const project = flags["--project"] === undefined ? undefined : projectSlug(flags["--project"].replace(/^\+/, ""));
+      if (project === null) return bad("task create: --project needs a project slug, e.g. home-repairs");
+      return { action: "create", title, bodyFile, ...(project !== undefined ? { project } : {}), ...(dependsOn !== undefined ? { depends_on: dependsOn } : {}) };
     }
     return bad(`unknown task command ${JSON.stringify(sub ?? "")}`);
   }
@@ -215,6 +218,7 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
     const [id, ...rest] = args;
     if (!id) return bad(`${word} needs a work item ID`);
     const text = rest.join(" ").trim();
+    if (word === "hold" && (rest.length !== 1 || !LOCAL_ID.test(rest[0]!))) return bad("hold needs a work item ID and the ID of the local item to wait for (wi_… or tk_…)");
     if (word === "verdict") {
       const v = parseVerdict(text);
       if (!v.ok) return bad(v.refuse.includes(VERDICT_USAGE) ? v.refuse : `${v.refuse}; the expected format is ${VERDICT_USAGE}`);
@@ -273,7 +277,7 @@ async function orRefused(fail: (line: string) => CliResult, run: () => Promise<C
 export interface LocalCliDeps {
   store: Pick<
     FactoryStore,
-    "createWorkItem" | "getWorkItem" | "listWorkItems" | "listPhases" | "listRuns" | "listItemMessages" | "appendCliCommand"
+    "createWorkItem" | "getWorkItem" | "findWorkItemIds" | "listWorkItems" | "listPhases" | "listRuns" | "listItemMessages" | "appendCliCommand"
     | "claimOwner" | "addTask" | "listTasks" | "completeTask" | "reopenTask" | "listCommandProposals"
     | "getTask" | "linkTask" | "updateTask" | "deleteTask" | "addSubTask"
     | "createProject" | "listProjects" | "renameProject" | "archiveProject" | "restoreProject" | "deleteProject" | "getProjectBySlug"
@@ -287,19 +291,25 @@ export interface LocalCliDeps {
   read: (path: string) => Promise<string>;
   /** A new random ID: a local item's source ID, a task's ID, a command's idempotency key. */
   newId: () => string;
-  /**
-   * The source type the command was typed in, when not the CLI (a chat command, design 05-sources): an item of that
-   * source already shows it in its thread, so its row is not mirrored there. Absent: the CLI.
-   */
+  /** The source type the command was typed in, when not the CLI (a chat, design 05-sources): its items' rows are not mirrored there. Absent: the CLI. */
   origin?: string;
   cli?: string; // the hints' command name (cliName); absent: DEFAULT_CLI_NAME, as chat callers leave it
-  /** factory.config.json's `ui` (validated at load): `task create` prints the item's loopback link on its port. Absent: no link (chat). */
-  ui?: { port?: number };
+  ui?: { port?: number }; // factory.config.json's `ui` (validated at load): `task create` prints the item's loopback link on its port; absent: no link (chat)
 }
 
-export interface CliResult {
-  code: number;
-  lines: string[];
+export interface CliResult { code: number; lines: string[] }
+
+/** A work item's short ID, as the dashboard shows it: the 8 hex characters after `wi_`; any other ID as it is. */
+export const shortItemId = (id: string): string => /^wi_([0-9a-f]{8})/.exec(id)?.[1] ?? id;
+/**
+ * The item a token names, for `task show`, every item command and `help` (design 05-sources, short IDs): the token, `wi_`
+ * optional, is a prefix of its ID; one with no hex after `wi_` reads nothing. None or several (listed) is a refusal.
+ */
+export async function resolveItem(store: Pick<FactoryStore, "findWorkItemIds" | "getWorkItem">, token: string): Promise<WorkItem | CliResult> {
+  const rest = token.replace(/^wi_/, "");
+  const ids = /[0-9a-f]/.test(rest) ? await store.findWorkItemIds(`wi_${rest}`) : [];
+  const item = ids.length === 1 ? await store.getWorkItem(ids[0]!) : null;
+  return item ?? { code: 1, lines: ids.length > 1 ? [`${token} names ${ids.length} work items; give more of its ID:`, ...ids.map((id) => `  ${id}\t${shortItemId(id)}`)] : [`no work item ${token}`] };
 }
 
 /** The most items, and the most open tasks, `task list` reads. */
@@ -309,16 +319,16 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
   const fail = (line: string): CliResult => ({ code: 1, lines: [line] });
   const user = d.identity.user;
   const cli = d.cli ?? DEFAULT_CLI_NAME;
-  // The new item's ID first (scripts read it), then its link and what happens next.
   const link = (id: WorkItemId) => (d.ui ? [`http://127.0.0.1:${d.ui.port ?? UI_PORT}/app/items/${id}`] : []);
-  const created = (id: WorkItemId, ...rest: string[]): CliResult => ({ code: 0, lines: [id, ...rest, ...link(id), CREATE_NEXT_STEP] });
+  const created = (id: WorkItemId, ...rest: string[]): CliResult => ({ code: 0, lines: [id, shortItemId(id), ...rest, ...link(id), CREATE_NEXT_STEP] }); // the ID first (scripts read it), then its short ID
   // The first identity to write becomes the local owner (issue #318); anonymous never does.
   const claim = async () => (user === ANONYMOUS_USER ? null : d.store.claimOwner(user));
   switch (a.action) {
     case "create": {
       const project = await d.project();
       if (project === null) return fail(NO_PROJECT_KEY);
-      const body = (await d.read(a.bodyFile)).trim();
+      if (a.depends_on !== undefined && (await localItemOf(d.store, a.depends_on)) === null) return fail(`--depends-on ${a.depends_on} names no local work item or built task, so nothing was created`);
+      const body = withDependsOn((await d.read(a.bodyFile)).trim(), a.depends_on === undefined ? [] : [a.depends_on]);
       if (a.project !== undefined) {
         const r = await createProjectTask(d.store, { task_id: `tk_${d.newId()}`, title: a.title, body, slug: a.project, project, user });
         if (!r.ok) return fail(r.reason);
@@ -389,7 +399,7 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       const items = (await d.store.listWorkItems(TASK_LIST_LIMIT)).filter((i) => i.source.type === "local");
       const tasks = await d.store.listTasks(TASK_LIST_LIMIT);
       const links = await d.store.listTaskProjectSlugs(tasks.map((t) => t.id));
-      const lines = items.length === 0 ? ["no local work items"] : items.map((i) => [i.id, i.title ?? "", i.stage, i.blocked_reason ?? "-"].join("\t"));
+      const lines = items.length === 0 ? ["no local work items"] : items.map((i) => [i.id, shortItemId(i.id), i.title ?? "", i.stage, i.blocked_reason ?? "-"].join("\t"));
       // Plain tasks in their own section after the work items (design 02-tasks), only when there are any.
       return { code: 0, lines: tasks.length === 0 ? lines : [...lines, "", "Tasks", ...tasks.map((t) => taskLine(t, links[t.id] ?? []))] };
     }
@@ -421,13 +431,13 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
     case "project":
       return runProject(d, a, fail, claim);
     case "show": {
-      const item = await d.store.getWorkItem(a.id);
-      if (!item) return fail(`no work item ${a.id}`);
+      const item = await resolveItem(d.store, a.id);
+      if ("lines" in item) return item;
       return { code: 0, lines: await showLines(d, item) };
     }
     case "command": {
-      const item = await d.store.getWorkItem(a.id);
-      if (!item) return fail(`no work item ${a.id}`);
+      const item = await resolveItem(d.store, a.id);
+      if ("lines" in item) return item;
       const name = a.command === MERGE_COMMAND ? `${cli} merge` : `/${a.command}`;
       // The controller's phase check, before any write: the same refusal it would post (issues #528, #523).
       const refused = a.command === "approve" ? approveRefusal(item) : a.command === "verdict" ? verdictRefusal(item) : null;
@@ -458,8 +468,8 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
     }
     case "help": {
       if (a.id === null) return { code: 0, lines: helpReply(null).split("\n") };
-      const item = await d.store.getWorkItem(a.id);
-      if (!item) return fail(`no work item ${a.id}`);
+      const item = await resolveItem(d.store, a.id);
+      if ("lines" in item) return item;
       return { code: 0, lines: helpReply(itemCommandState(item, await d.store.listRuns(item.id))).split("\n") };
     }
   }
@@ -506,18 +516,8 @@ async function runProject(
 
 async function showLines(d: LocalCliDeps, item: WorkItem): Promise<string[]> {
   const out: string[] = [
-    `${item.id}  ${item.title ?? ""}`,
-    "",
-    "State",
-    `  stage: ${item.stage}`,
-    `  blocked_on: ${item.blocked_on}`,
-    `  blocked_reason: ${item.blocked_reason ?? "-"}`,
-    `  close_reason: ${item.close_reason ?? "-"}`,
-    `  tier: ${item.tier ?? "-"}`,
-    `  change_ref: ${item.change_ref ?? "-"}`,
-    `  version: ${item.version}`,
-    "",
-    "Spec",
+    `${item.id}  ${item.title ?? ""}`, "", "State", `  stage: ${item.stage}`, `  blocked_on: ${item.blocked_on}`, `  blocked_reason: ${item.blocked_reason ?? "-"}`,
+    `  close_reason: ${item.close_reason ?? "-"}`, `  tier: ${item.tier ?? "-"}`, `  change_ref: ${item.change_ref ?? "-"}`, `  version: ${item.version}`, "", "Spec",
   ];
   if (item.done_criteria === null) out.push("  (no spec yet)", `  problem: ${item.problem}`);
   else {

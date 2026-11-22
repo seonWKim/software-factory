@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { DIFF_CHECK_MS } from "../src/worker/index.js";
 import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { Run } from "../src/core/types.js";
-import { alice, pipeline, waitFor } from "./helpers/fakes.js";
+import { alice, waitFor } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 
 // Design §5 Restarts: four implement failures are never retried automatically, since the same spec fails the
 // same way. Each blocks the item on a human with run_failed:implement:<code> and one comment; /retry runs it again.
