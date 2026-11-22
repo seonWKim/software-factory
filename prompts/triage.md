@@ -119,6 +119,9 @@ Produce:
   Split too, whatever the caps, when files_to_change claims more than about 15 files: two running items may
   not share a file, so a large plan holds back every other item. Make smaller items linked by Depends on:
   each phase waits for the one before it, and each claims only its own files in its allowed_paths.
+- goal_done_when: optional, and only with phases. A list of lines, one per check, saying what the whole split
+  must do once every phase has merged (the goal the phases add up to), in the order a reviewer should check
+  them. Leave it out, or empty, when you do not split: goal lines without phases are rejected.
 
 Output shape (values are placeholders; include `decisions` even when it is empty, leave `phases` out unless
 you split):

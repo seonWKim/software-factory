@@ -40,3 +40,37 @@ describe("the dependency proposal", () => {
     for (const a of ["no", "yesterday", "", null]) expect(answersYes(a), String(a)).toBe(false);
   });
 });
+
+// Goal lines of a split (design 04-split-specs, 2026-11-22): an optional goal_done_when list, read only on a split spec.
+describe("goal_done_when", () => {
+  const phase = (n: number) => ({ title: `Part ${n}`, problem: `Problem ${n}`, done_criteria: [`part ${n} works`], allowed_paths: [`src/p${n}/`] });
+  const split = { ...triageSpec, phases: [phase(1), phase(2)] };
+
+  it("a split keeps its goal lines in order", () => {
+    const p = parseTriage({ ...split, goal_done_when: ["the whole flow works", "the docs say so"] });
+    expect(p.ok && p.value.goal_done_when).toEqual(["the whole flow works", "the docs say so"]);
+  });
+
+  it("absent or empty is no goal, with or without phases", () => {
+    for (const spec of [split, { ...split, goal_done_when: [] }, triageSpec, { ...triageSpec, goal_done_when: [] }]) {
+      const p = parseTriage(spec);
+      expect(p.ok, JSON.stringify(spec)).toBe(true);
+      expect(p.ok && p.value).not.toHaveProperty("goal_done_when");
+    }
+  });
+
+  it("goal lines with no phases are an invalid answer", () => {
+    const p = parseTriage({ ...triageSpec, goal_done_when: ["the whole flow works"] });
+    expect(p.ok).toBe(false);
+    expect(!p.ok && p.error).toMatch(/^goal_done_when: /);
+  });
+
+  it("refuses a list that is not of non-empty strings, and tool-call markup", () => {
+    for (const goal of ["one line", [1], ["  "]]) {
+      const p = parseTriage({ ...split, goal_done_when: goal });
+      expect(!p.ok && p.error, JSON.stringify(goal)).toMatch(/^goal_done_when: /);
+    }
+    const p = parseTriage({ ...split, goal_done_when: ["<invoke name=\"x\">"] });
+    expect(!p.ok && p.error).toMatch(/^goal_done_when: tool-call markup/);
+  });
+});
