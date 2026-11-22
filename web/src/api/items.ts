@@ -124,6 +124,9 @@ export interface ItemRow {
    * `anchor`: the item page's anchor of the newest factory thread entry (`msg-<seq>`), null when it has none.
    */
   need?: { reason: string | null; anchor?: string | null };
+  /** An ask's rank reason ("Merge", "Blocks another item", "Waiting for you", "Held until 09:00") and whether it is held until `review_time`; absent on a row that asks nothing of a person. */
+  rank_reason?: string;
+  held?: boolean;
   /** A Needs-you row's buttons: the state-changing commands that apply now (not budget), each allowed or not for the viewer. */
   commands?: ItemCommand[];
   why?: Why;

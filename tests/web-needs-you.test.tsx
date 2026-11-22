@@ -285,4 +285,12 @@ describe("the Needs you count is its rows (design 09-status-page)", () => {
     expect([n.rows.length, n.count, n.badge]).toEqual([3, 3, 3]);
     expect(n.rows.find((r) => r.dataset.check === "worker_pause")!.querySelector("code")!.textContent).toBe("factory workers resume");
   });
+
+  it("draws a rank badge on an ask that has a rank reason and none on a row without one", async () => {
+    list = [{ ...MERGE, rank_reason: "Merge", held: false }, APPROVE];
+    mount();
+    const lists = await ready();
+    const rows = lists.flatMap(rowsOf);
+    expect(rows.map((r) => r.querySelector("[data-rank]")?.textContent ?? null)).toEqual(["Merge", null]);
+  });
 });
