@@ -96,7 +96,7 @@ export async function startFixture(extend = () => ({})) {
         calendar: await seedCalendar(store, clock),
       },
       storage,
-      commands: { actor: OWNER, source: "config", token: csrfToken, mergeAllowed: async () => true, localMerge: true },
+      commands: { actor: OWNER, source: "config", token: csrfToken, allowed: async () => ({ allow: true }), localMerge: true },
       ...(await extend({ store, csrfToken, owner: OWNER })),
     },
     0,
@@ -137,7 +137,14 @@ async function seed(store, storage) {
   await saveProject(store, REPO, PROJECT);
 
   // The item with everything: a long title and ID, failed runs with a transcript, a long thread, commands.
-  const busy = await make(store, `local-${"a1b2c3d4".repeat(6)}-settings-object-values`, LONG_TITLE);
+  // Its done_checks: one line per result kind the item page's Done when list draws; the results are in the newest implement run below.
+  const doneChecks = [
+    { line: `Passing: ${LONG_TITLE}`, command: "npm run typecheck" },
+    { line: `Failing: ${LONG_TITLE}`, command: "npm test" },
+    { line: `Manual: ${LONG_TITLE}`, manual: true, reason: `a person looks at the page in a narrow window ${LONG_WORD}` },
+    { line: `Not run: ${LONG_TITLE}`, test_file: `tests/${LONG_WORD}.test.ts` },
+  ];
+  const busy = await make(store, `local-${"a1b2c3d4".repeat(6)}-settings-object-values`, LONG_TITLE, { done_checks: doneChecks });
   const failure = {
     status: "failed",
     error_code: "checks_failed",
@@ -147,7 +154,15 @@ async function seed(store, storage) {
   };
   await runOnce(store, busy, "triage", "busy:t", { status: "succeeded", summary: "spec written", data: { tokens: 123_456 } });
   const failed = await runOnce(store, busy, "implement", "busy:i1", failure);
-  await runOnce(store, busy, "implement", "busy:i2", { ...failure, error_code: "agent_error", infra: true });
+  // The newest implement run's outcome carries each done-when line's result; the failing line shows this long tail.
+  const doneResults = [
+    { line: doneChecks[0].line, result: "pass", check: doneChecks[0].command },
+    { line: doneChecks[1].line, result: "fail", check: doneChecks[1].command },
+    { line: doneChecks[2].line, result: "manual", check: doneChecks[2].reason },
+    { line: doneChecks[3].line, result: "not_run", check: `npm test -- tests/${LONG_WORD}.test.ts` },
+  ];
+  const longTail = Array.from({ length: 40 }, (_, n) => `FAIL tests/${LONG_WORD}.test.ts > case ${n + 1}: expected 4310 to be 4311 at src/core/very/deep/module/path/file.ts:${n + 100}:45`).join("\n");
+  await runOnce(store, busy, "implement", "busy:i2", { ...failure, error_code: "agent_error", infra: true, output_tail: longTail, done_checks: doneResults });
   await storage.put(`transcripts/${busy.id}/${failed.id}.json`, readFileSync(new URL("../../tests/fixtures/transcripts/failed-run.jsonl", import.meta.url)));
   await patch(store, busy, { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "123456", tier: 3, token_cost: 987_654 });
   for (let i = 1; i <= 6; i++) {
@@ -157,6 +172,17 @@ async function seed(store, storage) {
     await store.appendCliCommand({ key: `responsive-${i}`, actor: OWNER, command: i % 3 ? "approve" : "resolve", args: { work_item_id: busy.id, note: `${LONG_WORD} ${i}` } });
     await store.recordAppCommandRequest({ key: `responsive-app-${i}`, actor: OWNER, command: "approve", args: { work_item_id: busy.id, note: `note ${i} ${LONG_WORD}` } });
   }
+
+  // A Merge that came back (merge_returned) with a long refusal naming the item's ID: the Needs you row keeps its title
+  // and shows the refusal on its own line below it, wrapped, with no raw ID (the 2026-11-22 screenshot).
+  const back = await make(store, `local-${"b4c7ba".repeat(6)}-merge-returned`, `Returned: ${LONG_TITLE}`);
+  await patch(store, back, { stage: "REVIEW", blocked_on: "ci", blocked_reason: "merge_queued", change_ref: "123457", tier: 2 });
+  const cur = await store.getWorkItem(back.id);
+  const refusal = `${back.id} could not merge: the head moved since the review passed (${"Supercalifragilistic".repeat(4)})`;
+  const r = await store.transition({ id: back.id, expected_version: cur.version, patch: { blocked_on: "human", blocked_reason: "merge_pending" }, actor: system, reason: "merge_returned", detail: { refusal } });
+  if (!r.ok) throw new Error(`fixture transition merge_returned failed: ${r.reason}`);
+  // Mergeable, so its Merge is on and the row reads why the last one came back.
+  await store.recordMergeCheck({ work_item_id: back.id, mergeable: true, conflicts: [], head_sha: "a".repeat(40), base_sha: "b".repeat(40) });
 
   // A phase tree: a parent with three phases, one waiting on the one before it.
   const parent = await make(store, `local-${"f00dfeed".repeat(5)}-split-parent`, `Split: ${LONG_TITLE}`);

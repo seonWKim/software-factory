@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { retryConfig, stallConfig } from "../src/compose.js";
+import { retryConfig, stallConfig } from "../src/config-values.js";
 import { coordinationConfig } from "../src/core/config.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
 import { SETTABLE_KEYS, type SettingsBase, intakeLabel } from "../src/core/settings.js";
@@ -12,7 +12,7 @@ import { HealthMonitor } from "../src/ui/health.js";
 import { SETTINGS_PATH, type UiSettings, newCsrfToken, writeSettings } from "../src/ui/settings-api.js";
 import { type UiDeps, type UiRequest, respond } from "../src/ui/server.js";
 import type { ConfigEditRequest, ConfigEditResult } from "../src/core/config-writer.js";
-import { PROJECT } from "./helpers/fakes.js";
+import { PROJECT } from "./helpers/fakes/config.js";
 import { BACKENDS, PROJECT_KEY, newStore } from "./helpers/store.js";
 
 /** The file: workers 5, heartbeat 60 s, lease 300 s, max_attempts 3, and o/r's block with max_diff_files 10. */
@@ -127,7 +127,7 @@ describe.each(BACKENDS)("factory settings: $name", ({ make }) => {
     const { store } = await make();
     const d = deps(store);
     const cases: [string, string, string][] = [
-      ["workers", "0", "workers must be an integer of 1 or more (got 0)"],
+      ["workers", "-1", "workers must be an integer of 0 or more (got -1)"],
       ["max_attempts", "x", "max_attempts must be a positive integer"],
       ["max_diff_lines", "1.5", "max_diff_lines must be a positive integer"],
       ["retry_base_ms", "-1", "retry_base_ms must be a positive integer"],

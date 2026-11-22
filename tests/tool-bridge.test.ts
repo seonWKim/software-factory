@@ -21,10 +21,10 @@ import { mcpHandler, mcpToolName, serveMcp, socketSender } from "../src/impl/run
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { ExecOptions, ExecResult, Sandbox } from "../src/interfaces/sandbox.js";
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
-import {
-  FakeAuth, FakeBroker, FakeNoteBroker, FakeSandbox, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, prompts, silent,
-  triageSpec,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker, FakeNoteBroker } from "./helpers/fakes/broker.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { ScriptedLLM, type ScriptStep, ScriptedRunner } from "./helpers/scripted-runner.js";
 import { newStore } from "./helpers/store.js";
 

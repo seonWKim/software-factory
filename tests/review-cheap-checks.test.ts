@@ -2,7 +2,9 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { WorkItem, WorkerId } from "../src/core/types.js";
 import { GitHubForge } from "../src/impl/github/github-forge.js";
-import { FakeGitHubClient, pipeline, runComments, waitFor } from "./helpers/fakes.js";
+import { FakeGitHubClient } from "./helpers/fakes/github.js";
+import { pipeline } from "./helpers/harness.js";
+import { runComments, waitFor } from "./helpers/fakes/config.js";
 
 // The review run's cheap checks before any agent call, and the CI results in the review prompt (issue #223).
 
@@ -241,9 +243,12 @@ describe("review prompt: CI results", () => {
       { name: "test-mysql", result: "pending" },
     ];
     await f.start();
-    expect(f.forge.checkResultCalls).toEqual([42]);
-    const review = (await f.runs("review"))[0]!;
-    expect(review.input?.ci_checks).toEqual(f.forge.checkList);
+    // As on GitHub, the failed `test` check fails the CI gate (prChecks sums the same checks up), so the item goes back
+    // to implement and is reviewed again: each review reads the checks once, when it is queued.
+    const reviews = await f.runs("review");
+    expect(reviews).toHaveLength(2);
+    expect(f.forge.checkResultCalls).toEqual([42, 42]);
+    expect(reviews[0]!.input?.ci_checks).toEqual(f.forge.checkList);
     const prompt = f.reviewSpecs()[0]!.prompt;
     const at = prompt.indexOf("## CI results");
     expect(at).toBeGreaterThan(-1);

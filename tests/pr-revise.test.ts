@@ -16,10 +16,12 @@ import type { ExternalIdentity } from "../src/interfaces/auth-provider.js";
 import type { ForgeEvent, PrLineComment } from "../src/interfaces/forge.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { Worker } from "../src/worker/index.js";
-import {
-  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSlackPollSource, FakeSource, MemoryStorage,
-  alice, cleanScanner, config, issueRef, mallory, pipeline, prompts, silent, triageSpec,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSlackPollSource, FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, mallory, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 import { BOT, CHANNEL, FakeSlackApi, FakeSocket, TEAM, eventEnvelope, mention, press } from "./helpers/slack.js";
 import { newStore } from "./helpers/store.js";
 

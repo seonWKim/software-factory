@@ -13,7 +13,7 @@ import { IMPROVE_RUN_PATH } from "../src/ui/improve-api.js";
 import type { UiPauses } from "../src/ui/pause-api.js";
 import { type PauseDeps, type UiRequest, respond } from "../src/ui/server.js";
 import { type UiSettings, newCsrfToken } from "../src/ui/settings-api.js";
-import { PROJECT } from "./helpers/fakes.js";
+import { PROJECT } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 const HOST = "127.0.0.1:4310";
@@ -144,11 +144,35 @@ describe("GET /api/v1/rules: improve (design 07-self-improvement, 2026-11-16)", 
     expect(report).toMatchObject({ window_start: "2026-03-03T08:00:00.000Z", window_end: "2026-03-04T08:00:00.000Z", runs: 6, patterns: 1 });
     expect(report.groups.map((x: { error_code: string }) => x.error_code)).toEqual(["checks_failed", "no_commits", "agent_timed_out"]);
     expect(report.groups[0]).toEqual({
-      error_code: "checks_failed", detail: "npm test exited #", runs: 2,
-      draft: { cause: "a flaky port", fix: "[withheld: github_token]", note: null }, filing: "filed: local:local-1",
+      error_code: "checks_failed", detail: "npm test exited #", runs: 2, hotspot: false,
+      draft: { cause: "a flaky port", fix: "[withheld: github_token]", note: null },
+      filing: { status: "filed", reason: null, ref: "local:local-1", runs: null },
     });
-    expect(report.groups[1]).toMatchObject({ draft: { cause: null, fix: null, note: "skipped (call_cap)" }, filing: "skipped (issue_cap)" });
+    expect(report.groups[1]).toMatchObject({
+      hotspot: false, draft: { cause: null, fix: null, note: { status: "skipped", reason: "call_cap" } },
+      filing: { status: "skipped", reason: "issue_cap", ref: null, runs: null },
+    });
     expect(report.groups[2]).toMatchObject({ draft: null, filing: null });
     expect(JSON.stringify(report)).not.toContain(SECRET);
+  });
+
+  it("a hot file carries hotspot; a commented filing its runs; a withheld draft and filing the reason withheld", async () => {
+    const { d, store, clock } = await setup();
+    const { run } = await enqueueImprove({ store, clock }, PROJECT.key, "daily");
+    const g = { detail: "src/a.ts", run_ids: ["r1", "r2"] as RunId[], work_item_ids: [run.work_item_id] };
+    const ref = { type: "local" as const, id: "local-2", link: "local:local-2" };
+    await store.recordImproveReport({
+      run_id: run.id, project: PROJECT.key, window_start: "2026-03-03T08:00:00.000Z" as Timestamp, window_end: "2026-03-04T08:00:00.000Z" as Timestamp,
+      groups: [
+        { ...g, error_code: "no_commits", draft: { status: "withheld", rules: ["github_token"], touches_prompts_or_gate: false, needs_person: false }, filing: { status: "commented", ref, run_ids: ["r1", "r2"] as RunId[] } },
+        { ...g, error_code: "agent_failed", filing: { status: "withheld", rules: ["github_token"] } },
+      ],
+      patterns: [{ ...g, error_code: "hotspot", filing: { status: "skipped", reason: "recently_closed" } }],
+    });
+    const { report } = await rules(d);
+    expect(report.groups.map((x: { hotspot: boolean }) => x.hotspot)).toEqual([false, false, true]);
+    expect(report.groups[0]).toMatchObject({ draft: { note: { status: "withheld", reason: "withheld" } }, filing: { status: "commented", reason: null, ref: "local:local-2", runs: 2 } });
+    expect(report.groups[1].filing).toEqual({ status: "withheld", reason: "withheld", ref: null, runs: null });
+    expect(report.groups[2].filing).toEqual({ status: "skipped", reason: "recently_closed", ref: null, runs: null });
   });
 });

@@ -150,6 +150,12 @@ export interface SupervisorStatus {
     | "migration_ready";
   /** The revision the child runs (null before the first start). */
   rev: string | null;
+  /**
+   * The revision the child on `rev` replaced when it started (design 08-self-update): the dashboard counts and lists
+   * the commits between the two. Null before any child replaced another (a crash restart of `rev` replaces none);
+   * absent on files from before it and from the `none` updater.
+   */
+  previous_rev?: string | null;
   /** The revision being built or started, when there is one. */
   target_rev: string | null;
   child_pid: number | null;

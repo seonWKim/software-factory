@@ -6,7 +6,9 @@ import type { GoogleClient } from "../src/calendar/plugins/google-calendar/defau
 import { googleCalendarConnect } from "../src/calendar/plugins/google-calendar/google-calendar-connect.js";
 import { CALENDAR_READONLY_SCOPE, EVENTS_API, GoogleCalendarSource, type HttpClient, TOKEN_URL } from "../src/calendar/plugins/google-calendar/google-calendar-source.js";
 import { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN } from "../src/calendar/plugins/google-calendar/google-calendar.plugin.js";
-import { type Loaded, buildStatsStore, loadConfig, settingsBase } from "../src/compose.js";
+import { type Loaded, loadConfig } from "../src/load-config.js";
+import { buildStatsStore } from "../src/compose.js";
+import { settingsBase } from "../src/core/settings-base.js";
 import type { LogFields, Logger } from "../src/core/log.js";
 import { resolveSettings } from "../src/core/settings.js";
 import type { UserId } from "../src/core/types.js";
@@ -15,6 +17,7 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import { storeSql } from "../src/impl/store/sql/store-sql.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { REGISTRY, type Registry, withPlugin } from "../src/plugins.js";
+import { connectCalendar } from "../src/setup.js";
 import { UiCalendar, uiCalendar } from "../src/ui/calendar-api.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import type { UiPauses } from "../src/ui/pause-api.js";
@@ -153,7 +156,7 @@ async function page(o: { secrets?: string; calendar?: string[]; as?: UserId; def
   const base = settingsBase(loaded);
   const settings: UiSettings = {
     base, repo: { owner: "o", name: "r" }, actor: OWNER, resolveProject: async () => null, csrfToken: newCsrfToken(),
-    calendar: uiCalendar(loaded, { store, actor: OWNER, clock, base }),
+    calendar: uiCalendar(loaded, { store, actor: OWNER, clock, base, connect: connectCalendar }),
   };
   const log = new MemLog();
   const pauses: UiPauses = { principal: async () => o.as ?? OWNER, authorize: async () => ({ allow: true }), csrfToken: settings.csrfToken, log };

@@ -4,9 +4,11 @@
 import { data } from "./en/data.js";
 import { health } from "./en/health.js";
 import { plugins } from "./en/plugins.js";
+import { proposals } from "./en/proposals.js";
 import { rules } from "./en/rules.js";
 import { settings } from "./en/settings.js";
 import { shell } from "./en/shell.js";
+import { system } from "./en/system.js";
 import { tasks } from "./en/tasks.js";
 import { work } from "./en/work.js";
 import { workers } from "./en/workers.js";
@@ -15,9 +17,11 @@ export const en = {
   ...data,
   ...health,
   ...plugins,
+  ...proposals,
   ...rules,
   ...settings,
   ...shell,
+  ...system,
   ...tasks,
   ...work,
   ...workers,

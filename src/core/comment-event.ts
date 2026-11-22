@@ -24,6 +24,8 @@ export function commentEvent(source: SourceRef, comment_id: string, who: Externa
       return { kind: "revise_requested", source, comment_id, requester: who, feedback: t };
     case "retry":
       return { kind: "retry_requested", source, comment_id, requester: who, ...(t ? { note: t } : {}) };
+    case "paths":
+      return { kind: "paths_requested", source, comment_id, requester: who, ...(t ? { note: t } : {}) };
     case "budget": {
       const amount = (t.split(/\r?\n/)[0] ?? "").trim();
       return { kind: "budget_continue", source, comment_id, approver: who, amount: amount === "" ? null : amount };

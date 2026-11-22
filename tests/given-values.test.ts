@@ -7,7 +7,11 @@ import type { WorkItem, WorkerId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { FakeAuth, FakeForge, FakeSource, alice, cleanScanner, config, issueRef, pipeline, silent, triageSpec } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, silent, triageSpec } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 import { newStore } from "./helpers/store.js";
 
 // Given values (design 04-agents.md): a request's exact values must reach the spec verbatim, else the spec waits.

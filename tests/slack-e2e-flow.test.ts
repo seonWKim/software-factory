@@ -14,7 +14,10 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { ACTION_MAKE_TASK } from "../src/impl/source/slack-format.js";
 import { SlackSource, slackSourceId } from "../src/impl/source/slack-source.js";
-import { FakeBroker, FakeForge, FakeRunner, FakeSandbox, MemoryStorage, alice, config, prompts, recordingLog, triageSpec, waitFor } from "./helpers/fakes.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { alice, config, prompts, recordingLog, triageSpec, waitFor } from "./helpers/fakes/config.js";
 import { BOT, CHANNEL, FakeSlackApi, FakeSocket, TEAM, eventEnvelope, mention, message, press } from "./helpers/slack.js";
 import { newStore } from "./helpers/store.js";
 

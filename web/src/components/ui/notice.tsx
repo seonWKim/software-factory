@@ -2,7 +2,7 @@ import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "../../lib/cn.js";
 
-// Message pieces: Notice, EmptyState, Kbd and PageHeader. Colours come from the pill tokens; the badge is badge.tsx.
+// Message pieces: Notice, EmptyState, Kbd, PageHeader and PageToolbar. Colours come from the pill tokens; the badge is badge.tsx.
 
 export type NoticeTone = "info" | "ok" | "warn" | "bad";
 
@@ -43,18 +43,42 @@ export function Kbd({ children }: { children: ReactNode }) {
   return <kbd className="rounded-control border border-border-strong bg-surface-2 px-1.5 py-0.5 font-sans text-xs text-text-1">{children}</kbd>;
 }
 
+/** The page's width (design-system/tokens.json `page`): `wide` (--page-wide) for lists and tables, `read` (--page-read) for forms and reading. */
+export type PageWidth = "wide" | "read";
+
 /**
- * A page's title (the one h1), an optional description under it and optional actions at the end, the primary
- * action last; the actions drop below the title when narrow.
+ * A page's title (the one h1) with an optional badge beside it (a count, such as "3 waiting"), an optional description
+ * under it and optional actions at the end, the primary action last; the actions drop below the title when narrow.
+ * `width` sets the page's width: `<main>` (App.tsx) reads `data-page-width` from it, so no page sets a max-w-* of its own.
  */
-export function PageHeader({ title, description, actions }: { title: string; description?: ReactNode; actions?: ReactNode }) {
+export function PageHeader({ title, badge, description, actions, width = "wide" }: { title: ReactNode; badge?: ReactNode; description?: ReactNode; actions?: ReactNode; width?: PageWidth }) {
   return (
-    <header className="mb-6 flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+    <header data-page-width={width} className="mb-6 flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
       <div className="min-w-0">
-        <h1 className="text-balance text-xl font-semibold">{title}</h1>
+        {badge ? (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <h1 className="text-balance text-xl font-semibold">{title}</h1>
+            {badge}
+          </div>
+        ) : (
+          <h1 className="text-balance text-xl font-semibold">{title}</h1>
+        )}
         {description && <p className="mt-1 max-w-prose text-sm text-pretty text-text-2">{description}</p>}
       </div>
       {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
     </header>
+  );
+}
+
+/**
+ * The page's controls, right under its PageHeader: `tabs` on the first row, then the search, view switch and filters
+ * (`children`) on the second, wrapping when narrow. No page puts these between its content blocks.
+ */
+export function PageToolbar({ tabs, children }: { tabs?: ReactNode; children?: ReactNode }) {
+  return (
+    <div data-page-toolbar className="mb-6 flex min-w-0 flex-col gap-3">
+      {tabs}
+      {children && <div className="flex min-w-0 flex-wrap items-center gap-2">{children}</div>}
+    </div>
   );
 }

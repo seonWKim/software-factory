@@ -8,6 +8,7 @@ import type { Run, WorkItem } from "../../../core/types.js";
 import type { SandboxHandle } from "../../../interfaces/sandbox.js";
 import type { ToolCallContext } from "../../../interfaces/tool-broker.js";
 import { NO_HOOKS, RunFailure, failingTestNames, gitIdentity, specQuery, tail } from "../../support.js";
+import { cachedInstall } from "../../install-cache.js";
 import { conflictAsk } from "../implement/conflict-ask.js";
 import type { Worker } from "../../runner.js";
 import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
@@ -154,8 +155,9 @@ async function mergeAndResolve(
     }
 
     const head = await commitResolution(w, handle, { tree, tipSha, baseSha, branch, message: `Merge ${baseRef} into ${branch}` }, identity);
-    // install_command first, then the check list (design §4).
-    const failed = await gates(w, handle, [repo.install_command, ...checkCommands(repo)], signal);
+    // install_command first (through the run-side install cache, design 05-sandbox), then the check list (design §4).
+    const installed = await cachedInstall(w, handle, async () => ({ failed: await gates(w, handle, [repo.install_command], signal) }));
+    const failed = installed?.failed ?? (await gates(w, handle, checkCommands(repo), signal));
     if (failed) {
       const ask = testPathsAsk(w, item, conflicts, failed);
       if (ask) return { needs_human: ask };

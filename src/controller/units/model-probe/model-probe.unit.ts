@@ -2,10 +2,10 @@
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
 import { STALL_DEFAULTS } from "../../../core/config.js";
-import { MODEL_STALL, NETWORK, NETWORK_SINCE, type ProbePause, networkProbeDelayMs } from "../../../core/policy.js";
-import { type Timestamp } from "../../../core/types.js";
+import { AGENT_STALLED, MODEL_STALL, NETWORK, NETWORK_SINCE, type ProbePause, networkProbeDelayMs, stallHold, stallIsGlobal } from "../../../core/policy.js";
+import type { Run, Timestamp, WorkItem } from "../../../core/types.js";
 import type { LLMProvider } from "../../../interfaces/llm-provider.js";
-import { iso } from "../support.js";
+import { type Decision, iso } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
@@ -46,6 +46,30 @@ export class ModelProbeUnit {
       // Info, not warn: the pause's start was the one warning; the host is the only detail.
       failed: (next, host) => this.c.k.d.log.info(`network still unreachable: runs stay paused, next probe at ${next}`, { host, resume_at: next }),
     });
+  }
+
+  /**
+   * The stall step (design 05-restarts, decision of 2026-11-20), on the decision that applies a stalled run. When no
+   * running run got model output within stall_ms of the stall (their last output times, read from the store), the
+   * model looks down: every claim pauses until a probe answers (`model_stall`, first probe after probe_interval_ms;
+   * `started` from the store's conditional write, so one controller logs it). Otherwise the model is fine: no pause,
+   * and only the run's item is held (`recurring_failure`) until probe_interval_ms after the stall, so its queued retry
+   * waits while other items are claimed. Any other run, or a decision that queues no retry, is returned as it is.
+   */
+  async stallScope(it: WorkItem, run: Run, d: Decision): Promise<Decision> {
+    if (run.outcome?.status !== "failed" || run.outcome.error_code !== AGENT_STALLED) return d;
+    const { store, clock, log } = this.c.k.d;
+    const probeMs = this.c.k.cfg.probe_interval_ms ?? STALL_DEFAULTS.probe_interval_ms;
+    const stalledAt = Date.parse(run.finished_at ?? clock.now().toISOString());
+    if (stallIsGlobal(await store.latestRunningOutput(), stalledAt, this.c.k.cfg.stall_ms ?? STALL_DEFAULTS.stall_ms)) {
+      const pause = await store.pauseClaims(iso(clock.now().getTime() + probeMs), MODEL_STALL);
+      if (pause.started) log.warn(`model not answering: all runs paused, first probe at ${pause.resume_at}`, { run_id: run.id, resume_at: pause.resume_at });
+      return d;
+    }
+    const hold = d?.enqueue ? stallHold({ ...it, ...d.patch }, d.detail, iso(stalledAt + probeMs)) : null;
+    if (!d || !hold) return d;
+    log.info("run stalled while other runs get model output: only its item is held", { run_id: run.id, work_item_id: it.id, held_until: hold.detail.held_until });
+    return { ...d, ...hold, patch: { ...d.patch, ...hold.patch } };
   }
 
   /** One probe pause's due probe; see probeStep. `probe` resolves null on a pass, else what failed. */

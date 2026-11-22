@@ -5,7 +5,8 @@
 // There it also runs `factory ui` as a child, swapped to the new folder on each new revision.
 
 import { type ChildProcess, fork } from "node:child_process";
-import { type Loaded, Plugins } from "./compose.js";
+import { type Loaded } from "./load-config.js";
+import { Plugins } from "./plugin-set.js";
 import { errorText, type Logger } from "./core/log.js";
 import type { Clock } from "./interfaces/clock.js";
 import {
@@ -22,6 +23,7 @@ import { ConsoleLogger } from "./impl/log/console-logger.js";
 import { runProcess } from "./impl/process/run-process.js";
 import { GitWorktreeUpdater } from "./impl/updater/git-worktree.js";
 import { createPlugin } from "./plugins.js";
+import { modelCredentialCheck } from "./compose.js";
 
 export { SUPERVISED_ENV } from "./interfaces/updater.js";
 
@@ -88,10 +90,20 @@ export function createUpdater(
 export async function runDev(loaded: Loaded, inPlace: (signal: AbortSignal) => Promise<void>): Promise<number> {
   const clock = await new Plugins(loaded).clock();
   const log = new ConsoleLogger(clock, "supervisor");
+  await warnMissingCredential(modelCredentialCheck(loaded, await new Plugins(loaded).secrets()), log);
   const updater = await createUpdater(loaded, { run: runProcess, launcher: new ForkLauncher(), clock, log });
   // Built versions also serve the status page, so it restarts on each new revision (design: Self-update).
   if (updater instanceof GitWorktreeUpdater) updater.serveUi();
   return supervise({ updater, clock, pollMs: loaded.config.poll_interval_ms, log, signals: process, inPlace });
+}
+
+/**
+ * `factory dev`'s one warning line at start when the model credential is missing (design §5 Restarts, setup state):
+ * doctor's line. The workers claim no agent run until it is added; nothing else stops.
+ */
+export async function warnMissingCredential(check: (() => Promise<string | null>) | null, log: Logger): Promise<void> {
+  const missing = check ? await check() : null;
+  if (missing) log.warn(missing);
 }
 
 // --- child side -----------------------------------------------------------------------------------------

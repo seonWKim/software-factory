@@ -32,7 +32,7 @@ export interface ModelTable {
 export const DEFAULT_MODEL_BY = {
   triage: "cheap",
   implement: { "1": "standard", "2": "standard", "3": "strong", "4": "strong", "5": "strong" },
-  review: "standard",
+  review: { "1": "standard", "2": "standard", "3": "strong", "4": "strong", "5": "strong" },
   resolve: { "1": "standard", "2": "standard", "3": "strong", "4": "strong", "5": "strong" },
   retry_up: true,
 } as const;

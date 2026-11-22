@@ -19,7 +19,7 @@ import { type SettingsDeps, parseSettingsArgs, runSettings } from "../src/settin
 import { ManualTickGenerator } from "../src/shared/ticks/plugins/manual/manual-tick-generator.js";
 import { RunPassports } from "../src/worker/passports/run-passports.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { PROJECT, config as fakeConfig } from "./helpers/fakes.js";
+import { PROJECT, config as fakeConfig } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 

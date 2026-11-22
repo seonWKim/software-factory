@@ -11,10 +11,11 @@ import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { ForgeEvent } from "../src/interfaces/forge.js";
 import type { SourceCloseReason, SourceEvent } from "../src/interfaces/source-adapter.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../src/interfaces/tool-broker.js";
-import {
-  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
-  alice, cleanScanner, config, issueRef, prompts, recordingLog, triageSpec, waitFor,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, prompts, recordingLog, triageSpec, waitFor } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 /** FakeAuth, except that subject "404" maps to no user. */

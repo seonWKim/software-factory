@@ -1,4 +1,4 @@
-import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE } from "./policy.js";
+import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, SESSION_RELEASED } from "./policy.js";
 import { PHASE_HOLD, PHASES_OPEN } from "./split.js";
 import { type BlockedOn, type CloseReason, RECURRING_FAILURE, type Stage, type WorkItem } from "./types.js";
 
@@ -27,6 +27,7 @@ export type ItemPhase =
   | "merge_pending"
   | "max_loops"
   | "merge_conflict"
+  | "session_released"
   | "dependency_hold"
   | "phase_hold"
   | "phases_open"
@@ -93,6 +94,8 @@ export const PHASE_RULES: readonly PhaseRule[] = [
   { stage: "REVIEW", on: "human", reason: "merge_pending", phase: "merge_pending" },
   { reason: "max_loops", phase: "max_loops" },
   { reason: "merge_conflict_pending", phase: "merge_conflict" },
+  // An interactive session ended without a PR (abandoned or its lease lost): `/retry` queues the implement run.
+  { stage: "RUNNING", on: "human", reason: SESSION_RELEASED, phase: "session_released" },
   // Waits on something other than a person.
   { on: "dependency", phase: "dependency_hold" },
   { on: "upstream", reason: PHASE_HOLD, phase: "phase_hold" },
@@ -138,7 +141,7 @@ export function phaseOf(it: PhaseInput): ItemPhase {
 export const PERSON_PHASES: ReadonlySet<ItemPhase> = new Set<ItemPhase>([
   "budget_checkpoint", "floor_tier", "rule_of_two", "agent_needs_human", "repeated_failure", "recurring_failure",
   "dependency_closed", "dependency_cycle", "too_large", "failed_implement", "failed_review", "failed_run",
-  "spec_pending", "max_revisions", "merge_pending", "max_loops", "merge_conflict", "budget_wait", "person_wait",
+  "spec_pending", "max_revisions", "merge_pending", "max_loops", "merge_conflict", "session_released", "budget_wait", "person_wait",
 ]);
 
 /** The phases of a failed run a person retries or rejects. */

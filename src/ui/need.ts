@@ -21,7 +21,7 @@ export interface Need {
   command: string | null;
 }
 
-/** What needOf reads: the store for a failed run's code, and the egress scan of free text. */
+/** What needOf reads: the store for a failed run's message, and the egress scan of free text. */
 export interface NeedCtx {
   store: Pick<FactoryStore, "listRuns">;
   /** The value through the Withholder (cut to `max`), as plain text. */
@@ -32,6 +32,9 @@ export interface NeedCtx {
 export function needCtx(store: NeedCtx["store"], w: Pick<Withholder, "plain">): NeedCtx {
   return { store, text: async (v, o) => (await w.plain(v, o)).text };
 }
+
+/** A failed item's reason when its latest failed run stored no message. */
+const NO_MESSAGE = "The last run failed with no message.";
 
 /** A ready-to-merge item's merge check: its state and how many files conflict. */
 export interface MergeCheckNeed {
@@ -66,9 +69,10 @@ export async function needOf(c: NeedCtx, it: WorkItem, check: MergeCheckNeed | n
     };
   }
   if (FAILED_PHASES.has(p)) {
-    const failed = reason.match(/^run_failed:[a-z]+:(.+)$/)?.[1] ?? (await latestErrorCode(c.store, it));
-    const code = await c.text(failed, { channel: "run_outcome", max: 80 });
-    return { reason: `failed: ${code}`, from_why: false, ...stored(it.failure_comment_url, "failure comment"), command: "/retry" };
+    // The first line of the latest failed run's stored message: what went wrong, not its code.
+    const line = lastFailure(await c.store.listRuns(it.id))?.detail?.split("\n").map((l) => l.trim()).find((l) => l !== "") ?? "";
+    const said = line === "" ? NO_MESSAGE : await c.text(line, { channel: "run_outcome", max: 80 });
+    return { reason: said, from_why: false, ...stored(it.failure_comment_url, "failure comment"), command: "/retry" };
   }
   if (p === "agent_needs_human") {
     const ask = await latestAsk(c.store, it);
@@ -87,11 +91,6 @@ function lastFailure(runs: readonly Run[]): HeldFailure["outcome"] | null {
   const failed = runs.filter((r) => r.outcome?.status === "failed");
   const last = failed.reduce<Run | null>((a, r) => (a === null || (r.finished_at ?? r.updated_at) >= (a.finished_at ?? a.updated_at) ? r : a), null);
   return last?.outcome?.status === "failed" ? last.outcome : null;
-}
-
-/** The error code of the item's latest failed run ("unknown" when it has none). */
-async function latestErrorCode(store: NeedCtx["store"], it: WorkItem): Promise<string> {
-  return lastFailure(await store.listRuns(it.id))?.error_code ?? "unknown";
 }
 
 /**

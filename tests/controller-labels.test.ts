@@ -3,7 +3,10 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { Logger } from "../src/core/log.js";
 import type { WorkItem } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { FakeAuth, FakeForge, FakeSource, alice, config, issueRef, labelTarget, recordingLog, silent, triageSpec, waitFor, cleanScanner } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource, labelTarget } from "./helpers/fakes/source.js";
+import { alice, config, issueRef, recordingLog, silent, triageSpec, waitFor, cleanScanner } from "./helpers/fakes/config.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 
 async function setup(log: Logger = silent) {

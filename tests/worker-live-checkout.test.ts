@@ -11,7 +11,9 @@ import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
-import { FakeBroker, FakeRunner, MemoryStorage, cleanScanner, config, prompts, recordingLog } from "./helpers/fakes.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeRunner, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, prompts, recordingLog } from "./helpers/fakes/config.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 // The owner's live checkout (repo.path) must not gain files from an agent run (design §5 Sandbox). Writes are

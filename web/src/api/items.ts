@@ -99,6 +99,13 @@ export function mergeInFlight(m: MergeReadiness | null | undefined): m is MergeR
 }
 
 /**
+ * The merge queue's refusal of a Merge for an item it already holds (`enter` in
+ * src/controller/units/merge-queue/merge-queue.unit.ts: "<id> is already in the merge queue (<state>)"): the merge is
+ * under way, so the page says Merging… instead of an error.
+ */
+export const alreadyQueued = (refusal: string | null | undefined): boolean => !!refusal && / is already in the merge queue \(/.test(refusal);
+
+/**
  * Why the item's last Merge did not land (design 09-dashboard-app): the refusal on its newest state change when that
  * change put it back at merge_pending (`merge_returned`: a conflict, a red check, the forge's refusal); else null.
  */
@@ -129,8 +136,10 @@ export interface ItemRow {
   id: string;
   source: SourceRef;
   title: string | null;
-  /** The item's phase on the pages: its level (src/ui/priority.ts levelOf over core/phase.ts phaseOf and its run). */
+  /** The item's state on the pages: its level (src/ui/priority.ts levelOf over core/phase.ts phaseOf and its run), a key of src/shared/states.ts. */
   item_phase: string;
+  /** The state table's label for `item_phase`, for API readers; the pages draw it with StatusBadge from `item_phase`. */
+  state_label?: string;
   /** Why it waits, as a reason code (the same as `why.reason_code`). */
   reason_code: string;
   stage: string;
@@ -158,6 +167,9 @@ export interface ItemRow {
    * `anchor`: the item page's anchor of the newest factory thread entry (`msg-<seq>`), null when it has none.
    */
   need?: { reason: string | null; anchor?: string | null };
+  /** An ask's rank reason ("Merge", "Blocks another item", "Waiting for you", "Held until 09:00") and whether it is held until `review_time`; absent on a row that asks nothing of a person. */
+  rank_reason?: string;
+  held?: boolean;
   /** A Needs-you row's buttons: the state-changing commands that apply now (not budget), each allowed or not for the viewer. */
   commands?: ItemCommand[];
   /** A ready-to-merge Needs-you row: the other ready items it shares changed files with (exact paths); empty for none. */
@@ -190,6 +202,14 @@ export interface PhaseRow {
   title: string | null;
   stage: string;
   source: SourceRef;
+}
+
+/** One done-when line on the item page: its check and the newest implement run's result; `output_tail` on a failed line only. */
+export interface ItemCheck {
+  line: string;
+  check: { kind: "command" | "test" | "manual"; text: string };
+  result: "pass" | "fail" | "manual" | "not_run";
+  output_tail: string | null;
 }
 
 export interface ItemDetail {
@@ -227,6 +247,12 @@ export interface ItemDetail {
     item_phase: string;
     reason_code: string;
     why?: Why;
+    /** The request's first paragraph; null without one. Withheld text is "[withheld: <rule>]". */
+    request?: string | null;
+    /** The approved spec, each text withheld on its own; null until the owner confirms it. */
+    spec?: { problem: string; desired_output: string | null; done_criteria: string[] } | null;
+    /** Each done-when line with its check and latest result; null (or absent) when the item has no checks. */
+    checks?: ItemCheck[] | null;
   };
   timeline: {
     version: number;

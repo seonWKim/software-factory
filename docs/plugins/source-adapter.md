@@ -89,7 +89,7 @@ Other sources may implement `setStatus` as a no-op.
 - Credentials (e.g. a Socket Mode app token) are read by the plugin from the `SecretStore` passed in its factory context, as `slack` does, never put in events or logs (`github-issues` gets only the shared GitHub client, never the credentials).
 - Register it with a `*.plugin.ts` descriptor beside it (kind `source`) and its section here, as for any plugin. Settings: `lease_ms` and `heartbeat_ms` (the listener lease reuses them), `retention.raw_records_days` (optional, default 7, an integer of 0 or more, 0 keeps them forever: inbox rows older than this that every reader has passed are deleted; changed 2026-11-16, design 08-retention). The old top-level `inbox_retention_days` is deprecated: still read when `retention.raw_records_days` is absent, with a warning.
 
-`fake-stream` (`FakeStreamSource`, source type `slack_thread`) is **test-only**: it lives in `tests/helpers/fakes.ts`, is added with `withPlugin` through `fakeStreamRegistry()` in tests only, and is not in `REGISTRY`, so config cannot select it.
+`fake-stream` (`FakeStreamSource`, source type `slack_thread`) is **test-only**: it lives in `tests/helpers/fakes/source.ts`, is added with `withPlugin` through `fakeStreamRegistry()` (`tests/helpers/harness.ts`) in tests only, and is not in `REGISTRY`, so config cannot select it.
 
 `fake-slack-poll` (`FakeSlackPollSource`, a poll source of type `slack_thread`) is **test-only** in the same way, through `fakeSlackPollRegistry()`; tests use it as the second source next to GitHub.
 

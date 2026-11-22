@@ -4,8 +4,10 @@
 // is found from its outcome, never from runTokenCount's 0, and leaves its item out of the token figures, counted
 // apart. Weeks are ISO weeks (Monday 00:00 UTC). Pure, apart from readEfficiency's store reads; no table of its own.
 
+import type { MergeEvaluation } from "./merge-evaluation.js";
+import { ownerAsks } from "./owner-asks.js";
 import { DAY_MS, SPEND_KINDS, dayStart, utcDay, weekStart } from "./spend.js";
-import { type Run, type Timestamp, type WorkItem, type WorkItemId, outcomeCost, runTokenCount } from "./types.js";
+import { type Run, type StateChange, type Timestamp, type WorkItem, type WorkItemId, outcomeCost, runTokenCount } from "./types.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 
 const HOUR_MS = 3_600_000;
@@ -20,13 +22,55 @@ export const EFFICIENCY_TOP = 5;
 export const EFFICIENCY_CLOSED_CAP = 10_000;
 
 /** The store reads efficiency needs: all existing read methods. */
-export type EfficiencyStore = Pick<FactoryStore, "listMergeEvaluations" | "getWorkItem" | "listRuns" | "listWorkItemsWhere">;
+export type EfficiencyStore = Pick<FactoryStore, "listMergeEvaluations" | "getWorkItem" | "listRuns" | "listWorkItemsWhere" | "listStateChanges">;
 
-/** A finished item: its merge time and every run it had. */
+/** A finished item: its merge time and every run it had; its state changes and whether its merge was reverted or fixed forward. */
 export interface FinishedItem {
   item: WorkItem;
   merged_at: Timestamp;
   runs: readonly Run[];
+  /** Absent: none read (no asks). */
+  changes?: readonly StateChange[];
+  /** Absent: false. */
+  reverted_or_fixed?: boolean;
+}
+
+/** A merged item as the owner figures read it: its state changes and whether its merge was reverted or fixed forward. */
+export interface MergedForOwner {
+  changes: readonly StateChange[];
+  reverted_or_fixed: boolean;
+}
+
+/**
+ * What merged items took from the owner (design 06-efficiency). Null is no data, never 0: touches and the wait need
+ * an ask on the merged items (asks are recorded from 2026-11-22, not backfilled), the rate needs a merge.
+ */
+export interface OwnerFigures {
+  merged: number;
+  /** Asks (entries into an owner state) on the merged items. */
+  asks: number;
+  /** asks ÷ merged. */
+  touches_per_merged: number | null;
+  /** The median wait of the answered asks, in hours. */
+  wait_hours_median: number | null;
+  /** Merges reverted or fixed forward ÷ merged. */
+  revert_rate: number | null;
+  reverted_or_fixed: number;
+}
+
+/** The owner figures of `merged` items. */
+export function ownerFigures(merged: readonly MergedForOwner[]): OwnerFigures {
+  const asks = ownerAsks(merged.flatMap((m) => m.changes));
+  const waits = asks.flatMap((a) => (a.wait_ms === null ? [] : [a.wait_ms / HOUR_MS]));
+  const bad = merged.filter((m) => m.reverted_or_fixed).length;
+  return {
+    merged: merged.length,
+    asks: asks.length,
+    touches_per_merged: asks.length === 0 ? null : asks.length / merged.length,
+    wait_hours_median: median(waits),
+    revert_rate: merged.length === 0 ? null : bad / merged.length,
+    reverted_or_fixed: bad,
+  };
 }
 
 /** One finished item's figures. Null: not known (a run without usage, or without a start or finish time). */
@@ -78,6 +122,8 @@ export interface EfficiencyWeek {
   total: Figure;
   agent: Figure;
   waiting: Figure;
+  /** What the week's finished items took from the owner. */
+  owner: OwnerFigures;
   /** By total time, longest first. */
   slowest: ItemFigures[];
   /** By known USD cost, highest first; items with no known cost are not listed. */
@@ -177,13 +223,15 @@ function chart(at: readonly number[], last: number, size: number, n: number): Ch
 export function summarizeEfficiency(finished: readonly FinishedItem[], closed: readonly WorkItem[], now: number): Efficiency {
   const thisWeek = weekStart(now);
   const mergedAt = finished.map((f) => Date.parse(f.merged_at)).filter((t) => t <= now);
-  const figures = finished.filter((f) => Date.parse(f.merged_at) <= now).map(itemFigures);
+  const merged = finished.filter((f) => Date.parse(f.merged_at) <= now);
+  const figures = merged.map(itemFigures);
 
   // One week more than shown, so the oldest week shown has a change too.
   const weeks: EfficiencyWeek[] = [];
   for (let i = EFFICIENCY_WEEKS; i >= 0; i--) {
     const start = thisWeek - i * WEEK_MS;
-    const items = figures.filter((f) => Date.parse(f.merged_at) >= start && Date.parse(f.merged_at) < start + WEEK_MS);
+    const inWeek = (f: { merged_at: Timestamp }) => Date.parse(f.merged_at) >= start && Date.parse(f.merged_at) < start + WEEK_MS;
+    const items = figures.filter(inWeek);
     const timed = items.filter((f) => f.agent_ms !== null);
     const untimed = items.length - timed.length;
     const time = (pick: (f: ItemFigures) => number | null): Figure => ({ ...figure(timed.map(pick)), not_counted: untimed });
@@ -196,6 +244,7 @@ export function summarizeEfficiency(finished: readonly FinishedItem[], closed: r
       total: time((f) => f.total_ms),
       agent: time((f) => f.agent_ms),
       waiting: time((f) => f.waiting_ms),
+      owner: ownerFigures(merged.filter(inWeek).map((f) => ({ changes: f.changes ?? [], reverted_or_fixed: f.reverted_or_fixed ?? false }))),
       slowest: [...items].sort((a, b) => b.total_ms - a.total_ms || byId(a, b)).slice(0, EFFICIENCY_TOP),
       costliest: items.filter((f) => f.cost_usd !== null).sort((a, b) => b.cost_usd! - a.cost_usd! || byId(a, b)).slice(0, EFFICIENCY_TOP),
     };
@@ -230,23 +279,23 @@ export function summarizeEfficiency(finished: readonly FinishedItem[], closed: r
 }
 
 /**
- * Efficiency as of `now`: one read of the merge evaluations of the weeks (and the week before them), one item and
- * one runs read per merged item, one read of the closed items. Adopted items (a person's PR) are left out.
+ * Efficiency as of `now`: one read of the merge evaluations of the weeks (and the week before them), one item, one
+ * runs and one state changes read per merged item, one read of the closed items. Adopted items (a person's PR) are left out.
  */
 export async function readEfficiency(store: EfficiencyStore, now: Date): Promise<Efficiency> {
   const ms = now.getTime();
   const since = weekStart(ms) - EFFICIENCY_WEEKS * WEEK_MS;
   // An item merged twice counts once, at its latest merge.
-  const latest = new Map<WorkItemId, Timestamp>();
+  const latest = new Map<WorkItemId, MergeEvaluation>();
   for (const e of await store.listMergeEvaluations(new Date(since).toISOString() as Timestamp)) {
     const seen = latest.get(e.work_item_id);
-    if (!seen || e.merged_at > seen) latest.set(e.work_item_id, e.merged_at);
+    if (!seen || e.merged_at > seen.merged_at) latest.set(e.work_item_id, e);
   }
   const finished: FinishedItem[] = [];
-  for (const [id, merged_at] of latest) {
+  for (const [id, e] of latest) {
     const item = await store.getWorkItem(id);
     if (!item || item.stage !== "CLOSED" || item.close_reason !== "completed" || item.origin !== "factory") continue;
-    finished.push({ item, merged_at, runs: await store.listRuns(id) });
+    finished.push({ item, merged_at: e.merged_at, runs: await store.listRuns(id), changes: await store.listStateChanges(id), reverted_or_fixed: e.reverted > 0 || e.fixed_forward > 0 });
   }
   const closed = await store.listWorkItemsWhere({
     stage: "CLOSED",

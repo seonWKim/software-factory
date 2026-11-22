@@ -62,6 +62,24 @@ export function splitError(est: SizeEstimate, phases: number, limits: SplitLimit
 }
 
 /**
+ * A split's goal lines (`goal_done_when`, design 04-split-specs 2026-11-22): what the whole split must do once its
+ * phases merged. Absent or empty is none; otherwise non-empty strings, and only on a spec with `phases` phases.
+ */
+export function parseGoalLines(v: unknown, phases: number): { ok: true; value: string[] | undefined } | { ok: false; error: string } {
+  if (v === undefined || (Array.isArray(v) && v.length === 0)) return { ok: true, value: undefined };
+  if (!Array.isArray(v) || !v.every((l) => typeof l === "string" && l.trim() !== "")) {
+    return { ok: false, error: "goal_done_when: must be a list of non-empty strings" };
+  }
+  if (phases === 0) return { ok: false, error: "goal_done_when: goal lines belong to a split; leave them out of a spec without phases" };
+  return { ok: true, value: v as string[] };
+}
+
+/** The split comment's lines listing the goal lines in order, after the phase list; none without any. */
+export function goalLinesText(goal: readonly string[] | undefined): string[] {
+  return goal && goal.length > 0 ? ["", "The whole split is done when:", ...goal.map((g) => `- ${g}`)] : [];
+}
+
+/**
  * The marker a phase's sub-issue body carries: unique per (parent item, phase number), so filing again finds
  * the issue already filed instead of filing a second one.
  */

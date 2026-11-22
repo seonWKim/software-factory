@@ -4,7 +4,7 @@ import { GitHubError } from "../src/impl/github/github-client.js";
 import { GitHubForge } from "../src/impl/github/github-forge.js";
 import type { PollContext } from "../src/impl/github/github-issue-source.js";
 import type { ForgeEvent } from "../src/interfaces/forge.js";
-import { issueRef, recordingLog } from "./helpers/fakes.js";
+import { issueRef, recordingLog } from "./helpers/fakes/config.js";
 import { RecordingGitHubClient as FakeClient, pollContext } from "./helpers/github.js";
 
 /** Stands in for the GitHub source's postComment and setStatus where PR comments and labels are not under test. */

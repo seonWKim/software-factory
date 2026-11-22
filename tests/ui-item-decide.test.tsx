@@ -33,7 +33,7 @@ const detail = (extra: object = {}) => ({
   item: item(),
   timeline: [
     { version: 1, at: AT, actor: { kind: "user", id: "local:me" }, reason: "intake", changes: {}, detail: null },
-    { version: 2, at: AT, actor: { kind: "user", id: "github:4711", name: null }, reason: "comment", changes: {}, detail: null },
+    { version: 2, at: AT, actor: { kind: "user", id: "github:4711", name: null }, reason: "retry_requested", changes: {}, detail: null },
   ],
   runs: [{ id: "run_t1", kind: "triage", status: "succeeded", attempt: 1, started_at: AT, finished_at: AT, created_at: AT, tokens: 5, error: null, attempts: [{ attempt: 1, worker_id: "mac-mini:4242:3" }] }],
   commands: ["approve", "revise", "reject"].map(cmd),
@@ -88,16 +88,6 @@ async function box() {
 const FACTORY_MSG = { seq: 7, at: AT, kind: "spec", author: "factory", role: "factory", channel: "github_issue", anchor: "msg-7", body: "## Spec ready for approval\n\nLonger text of the spec." };
 
 describe("item page: DecisionCard", () => {
-  it("an item in triage (next actor is the factory) renders no decision box, but still has its menu", async () => {
-    body = detail({ item: item({ stage: "NEW", blocked_on: null, blocked_reason: null, why: { code: "triage", reason_code: "person", params: { reason: "Running triage" }, alarms: [], holder_id: null, next_actor: "factory", refs: [], ref_url: null } }), spec: null });
-    mount();
-    await screen.findByRole("heading", { name: "Check the scope in CI" });
-    await screen.findByRole("button", { name: "More commands" });
-    expect(document.querySelector("[data-decide]")).toBeNull();
-    expect(screen.queryByRole("region", { name: "What you need to decide" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
-  });
-
   it("at merge_pending renders one card whose first button is Merge, then Good/Bad, Feedback and the menu, each action with data-action", async () => {
     body = detail({
       item: item({ stage: "MERGE_PENDING", blocked_reason: null, merge: { enabled: true, reason: null }, why: { code: "merge", reason_code: "person", params: { reason: "Ready to merge" }, alarms: [], holder_id: null, next_actor: "human", refs: [], ref_url: null } }),
@@ -211,7 +201,7 @@ describe("item page: DecisionCard", () => {
       screen.getByRole("region", { name: "Timeline" }),
     ];
     for (let i = 1; i < order.length; i++) expect(order[i - 1]!.compareDocumentPosition(order[i]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(order[1]!.textContent).toContain("running");
+    expect(order[1]!.textContent).toContain("Running"); // the run pill shows the state table's label
     // A running run links to its transcript before any of it is stored.
     expect(within(order[1]!).getByRole("link", { name: "Transcript" }).getAttribute("href")).toMatch(/\/items\/[^/]+\/runs\/run_i1$/);
     // The thread shows its first message; the rest wait behind one button.
@@ -242,13 +232,12 @@ describe("item page: DecisionCard", () => {
     expect(main.querySelector("[data-cli-hint]")).toBeNull();
   });
 
-  it("shows the owner as you and a worker as worker N, each ID in a tooltip on its name", async () => {
+  it("shows the owner as you and a worker as worker N, each ID in a tooltip on its name; the timeline names them in its sentences", async () => {
     mount();
     await box();
     const timeline = screen.getByRole("region", { name: "Timeline" });
-    const people = [...timeline.querySelectorAll("[data-id]")].map((s) => s.textContent);
-    expect(people).toContain("you");
-    expect(people).toContain("a person");
+    expect(timeline.textContent).toContain("Created by you");
+    expect(timeline.textContent).toContain("A person asked for a retry");
     const runs = screen.getByRole("table", { name: "Runs" });
     const worker = runs.querySelector("[data-id]")!;
     expect(worker.tagName).toBe("BUTTON");

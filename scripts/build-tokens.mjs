@@ -29,6 +29,7 @@ export function render() {
       ...decls(typeScale),
       ...scale("sp", tokens.space),
       ...scale("r", tokens.radius),
+      ...scale("page", tokens.page),
       ...shadows("light"),
     ]),
     block(".dark", [...colors("dark"), ...pills("dark"), ...shadows("dark")]),

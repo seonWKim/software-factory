@@ -14,7 +14,7 @@ export type ControllerEvent = SourceEvent | ForgeEvent;
  * typecheck, and a kind no unit accepts is a router startup problem (it would be dropped).
  */
 const KINDS = {
-  item_requested: true, spec_approved: true, spec_rejected: true, revise_requested: true, retry_requested: true,
+  item_requested: true, spec_approved: true, spec_rejected: true, revise_requested: true, retry_requested: true, paths_requested: true,
   help_requested: true, standing_requested: true, unknown_command: true, plain_comment: true, source_closed: true,
   budget_continue: true, resolve_requested: true, verdict_submitted: true, base_commit: true,
   change_merged: true, change_closed: true, change_open: true, change_unmergeable: true, pr_changes_requested: true,
