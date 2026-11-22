@@ -180,8 +180,10 @@ describe("Health page: the Checks card", () => {
 // title per group: its detail, else its draft cause, else "Repeated failure"); its code, detail and draft sit behind a Disclosure.
 describe("Health page: Improve tab", () => {
   const IMPROVE_TOKEN = "tok_improve";
+  // A two-day window, so the header reads "{start} to {end}" in every timezone: a one-day UTC window is the previous local
+  // day in UTC (CI) and reads "Yesterday (date)" there.
   const report: ImproveView["report"] = {
-    window_start: "2026-11-15T00:00:00.000Z", window_end: "2026-11-16T00:00:00.000Z", created_at: "2026-11-16T00:05:00.000Z", runs: 4, patterns: 1,
+    window_start: "2026-11-15T00:00:00.000Z", window_end: "2026-11-17T00:00:00.000Z", created_at: "2026-11-17T00:05:00.000Z", runs: 4, patterns: 1,
     groups: [
       { error_code: "checks_failed", detail: "npm test exited #", runs: 2, hotspot: false, draft: { cause: "a flaky port", fix: "pin the port", note: null }, filing: { status: "filed", reason: null, ref: "local:local-1", runs: null } },
       { error_code: "hotspot", detail: "web/src/i18n/en.ts", runs: 3, hotspot: true, draft: null, filing: { status: "skipped", reason: "recently_closed", ref: null, runs: null } },
