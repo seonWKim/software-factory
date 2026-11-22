@@ -40,8 +40,8 @@ describe("app shell", () => {
     expect(mark.querySelector("path")!.getAttribute("fill-rule")).toBe("evenodd");
     const ember = mark.querySelector("circle")!;
     expect(ember.getAttribute("class")).toBe("fill-ember");
-    expect([ember.getAttribute("cx"), ember.getAttribute("cy")]).toEqual(["800", "224"]);
-    expect(Number(ember.getAttribute("r"))).toBeCloseTo((2.5 * 1024) / 24, 1);
+    expect([ember.getAttribute("cx"), ember.getAttribute("cy")]).toEqual(["691.6", "332.4"]);
+    expect(Number(ember.getAttribute("r"))).toBeCloseTo((2 * 1024) / 24, 1);
   });
 
   it("polls every 3 s while visible and stops while the document is hidden", async () => {
