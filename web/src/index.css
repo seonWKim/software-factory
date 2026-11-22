@@ -66,6 +66,8 @@
   --text-lg--line-height: var(--lh-lg);
   --text-xl: var(--fs-xl);
   --text-xl--line-height: var(--lh-xl);
+  --container-page-wide: var(--page-wide);
+  --container-page-read: var(--page-read);
   --shadow-sm: var(--sh-sm);
   --shadow-lg: var(--sh-lg);
 }

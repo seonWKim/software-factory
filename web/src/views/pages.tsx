@@ -10,9 +10,9 @@ import { CopyText } from "../components/ui/copy.js";
 import { Input } from "../components/ui/input.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
 import { ErrorNote, Loading, Table, Td, Tr } from "../components/ui/parts.js";
-import { Notice, PageHeader, EmptyState } from "../components/ui/notice.js";
+import { Notice, PageHeader, PageToolbar, EmptyState } from "../components/ui/notice.js";
 import { ID_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
-import { FailuresSection } from "./failures.js";
+import { FailuresSection, FailuresWindowSwitch, useFailuresWindow } from "./failures.js";
 import { SpendSection } from "./spend.js";
 import { EfficiencyTab } from "./efficiency.js";
 import { Improve } from "./rules-improve.js";
@@ -27,7 +27,7 @@ import { duration, groupedInteger, isHttpUrl, isWorkerId, localClock, localDateT
 import { GROUP_LABELS, ITEM_STATES, STATE_GROUPS, type StateGroup, groupOf, groupStates, isGroup, stateLabel } from "../../../src/shared/states.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
-import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, When, byId, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
+import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, RawNames, When, byId, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
 import { ItemDecision } from "./decision-card.js";
 import { ItemAbout } from "./item-about.js";
 import { ResumeNow, type SupervisorActionName, SupervisorActions } from "./system-banner.js";
@@ -36,7 +36,7 @@ import { transcriptPath } from "./transcript.js";
 import { ItemsTree, type View, VIEW_KEY, useExpanded } from "./tree.js";
 import { type TreeFilter, buildTree, defaultExpanded, itemMatches, parentIds } from "./tree-model.js";
 import { Disclosure } from "../components/ui/disclosure.js";
-import { Card } from "../components/ui/card.js";
+import { Card, SUB_TITLE } from "../components/ui/card.js";
 import { Badge, StatusBadge } from "../components/ui/badge.js";
 import { Tooltip } from "../components/ui/menu.js";
 
@@ -293,7 +293,33 @@ export function ItemsPage() {
   return (
     <>
       <PageHeader title={t("page.work")} />
-      <div className="mb-2 flex flex-wrap items-center gap-2">
+      <PageToolbar
+        tabs={
+          <div className="flex min-w-0 flex-col gap-2">
+            <Tabs
+              label={t("items.filterByState")}
+              options={[
+                { id: ALL, label: t("items.filterCount", { label: t("items.all"), count: allCount }) },
+                ...STATE_GROUPS.filter(shows).map((g) => ({ id: g, label: t("items.filterCount", { label: GROUP_LABELS[g], count: counted(g) }) })),
+              ]}
+              value={group ?? ALL}
+              onChange={(id) => setState(id === ALL ? null : id)}
+            />
+            {group && (
+              <Tabs
+                label={t("items.filterGroup", { group: GROUP_LABELS[group] })}
+                options={[
+                  { id: group, label: t("items.filterCount", { label: t("items.all"), count: counted(group) }) },
+                  // `closed` is the Finished group's older link value (src/shared/states.ts inStateFilter): All shows those rows.
+                  ...groupStates(group).filter((s) => s !== "closed" && shows(s)).map((s) => ({ id: s, label: t("items.filterCount", { label: stateLabel(s), count: counted(s) }) })),
+                ]}
+                value={state ?? group}
+                onChange={setState}
+              />
+            )}
+          </div>
+        }
+      >
         <Input
           type="search"
           value={q}
@@ -310,7 +336,7 @@ export function ItemsPage() {
             <Button size="sm" onClick={() => setExpanded([])}>{t("items.collapseAll")}</Button>
           </ButtonRow>
         )}
-      </div>
+      </PageToolbar>
       {ids && (
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <Notice tone="info">{t("items.idsFilter", { count: ids.size })}</Notice>
@@ -318,29 +344,6 @@ export function ItemsPage() {
         </div>
       )}
       {rateLimit?.ends_at && <div className="mb-3"><Notice tone="warn">{t("items.rateLimit", { state: t("items.ratePaused", { time: rateLimit.ends_at }) })}</Notice></div>}
-      <Tabs
-        label={t("items.filterByState")}
-        className={group ? "mb-2" : "mb-3"}
-        options={[
-          { id: ALL, label: t("items.filterCount", { label: t("items.all"), count: allCount }) },
-          ...STATE_GROUPS.filter(shows).map((g) => ({ id: g, label: t("items.filterCount", { label: GROUP_LABELS[g], count: counted(g) }) })),
-        ]}
-        value={group ?? ALL}
-        onChange={(id) => setState(id === ALL ? null : id)}
-      />
-      {group && (
-        <Tabs
-          label={t("items.filterGroup", { group: GROUP_LABELS[group] })}
-          className="mb-3"
-          options={[
-            { id: group, label: t("items.filterCount", { label: t("items.all"), count: counted(group) }) },
-            // `closed` is the Finished group's older link value (src/shared/states.ts inStateFilter): All shows those rows.
-            ...groupStates(group).filter((s) => s !== "closed" && shows(s)).map((s) => ({ id: s, label: t("items.filterCount", { label: stateLabel(s), count: counted(s) }) })),
-          ]}
-          value={state ?? group}
-          onChange={setState}
-        />
-      )}
       {queuedView ? (
         <Card title={t("queue.title")} count={queue.data?.queue.length}>
           {queue.isError ? <ErrorNote error={queue.error} /> : !queue.data || !items.data ? <Loading rows={4} /> : <QueueTable queue={queue.data.queue} items={itemsById} now={now} />}
@@ -389,7 +392,7 @@ export function ItemPage({ id }: { id: string }) {
         <span className="text-text-3"> / </span>
         <Link href={itemPath(item.id)} aria-current="page" title={item.id} className={cn("inline-block max-w-[16ch] truncate align-bottom tabular-nums", ID_CLASS)}>{short}</Link>
       </nav>
-      <PageHeader title={item.title ?? short} actions={runs.some(isInteractiveRun) ? <InteractiveBadge /> : undefined} />
+      <PageHeader title={<span data-raw>{item.title ?? short}</span>} actions={runs.some(isInteractiveRun) ? <InteractiveBadge /> : undefined} />
       {item.parent_id && (
         <p data-testid="parent" className="mt-1 text-sm">
           {t("item.phase", { phase: item.phase ?? "?" })} <Link href={itemPath(item.parent_id)} className={LINK_CLASS}>{t("item.splitParent")}</Link>
@@ -545,7 +548,7 @@ function Phases({ phases }: { phases: readonly PhaseRow[] }) {
         {phases.map((p) => (
           <li key={p.id} data-phase={p.phase} className="flex min-w-0 items-baseline gap-2">
             <span className="shrink-0 text-text-3 tabular-nums">{p.phase}.</span>
-            <Link href={itemPath(p.id)} className={cn("min-w-0 break-words", LINK_CLASS)}>{p.title ?? p.source.id}</Link>
+            <Link href={itemPath(p.id)} data-raw className={cn("min-w-0 break-words", LINK_CLASS)}>{p.title ?? p.source.id}</Link>
             <Badge>{p.stage}</Badge>
           </li>
         ))}
@@ -662,7 +665,7 @@ function TimelineRow({ entry, now, viewer }: { entry: TimelineEntry; now: number
               <div data-spec className="mt-2 space-y-3 rounded-control border border-border p-3">
                 {spec.map(([f, c]) => (
                   <div key={f}>
-                    <h3 className="mb-1 text-xs font-semibold text-text-2">{SPEC_FIELDS[f]}</h3>
+                    <h3 className={cn("mb-1", SUB_TITLE)}>{SPEC_FIELDS[f]}</h3>
                     <Markdown text={specMarkdown(parseValue(c.to))} />
                   </div>
                 ))}
@@ -770,8 +773,9 @@ function CheckList({ checks }: { checks: Health["checks"] }) {
       {checks.map((c, i) => (
         <li key={i} className="flex items-baseline gap-2">
           <Badge level={HEALTH_TONE[c.status]}>{checkLabel(c.status)}</Badge>
+          {/* The sentence is plain words, any name it quotes as written in data-raw; the detail is behind RawDetails. */}
           <span className="min-w-0 text-pretty break-words">
-            {c.msg}
+            <RawNames text={c.msg} />
             {c.since !== undefined && <span className="text-text-2">{" · "}<When at={c.since} now={now} label="health.checkSince" /></span>}
             {c.next !== undefined && <span className="text-text-2">{" · "}<When at={c.next} now={now} label="health.checkNext" /></span>}
             {c.detail !== undefined && <RawDetails className="mt-1"><code className="font-mono text-xs whitespace-pre-wrap break-all">{c.detail}</code></RawDetails>}
@@ -865,6 +869,8 @@ export function HealthPage() {
   const viewer = useViewer();
   const held = (pauses.data?.pauses.length ?? 0) > 0;
   const [picked, pick] = useUrlParam("tab", (v) => ["checks", "pauses", "sleeps", "merges", "efficiency", "improve", "github"].includes(v));
+  // The Failures window (`?window=`): a page control in the toolbar's second row, read by FailuresSection below every tab.
+  const [failuresWindow, setFailuresWindow] = useFailuresWindow();
   if (health.isError) return <><PageHeader title={t("page.health")} /><ErrorNote error={health.error} /></>;
   if (!health.data) return <><PageHeader title={t("page.health")} /><Loading rows={6} /></>;
   const order = ["fail", "warn", "ok"];
@@ -892,8 +898,10 @@ export function HealthPage() {
   return (
     <>
       <PageHeader title={t("page.health")} />
+      <PageToolbar tabs={<Tabs label={t("health.tabs")} options={options} value={tab} onChange={pick} />}>
+        <FailuresWindowSwitch value={failuresWindow} onChange={setFailuresWindow} />
+      </PageToolbar>
       <CodeRevision factory={overview.data?.factory} />
-      <Tabs label={t("health.tabs")} options={options} value={tab} onChange={pick} />
       {tab === "checks" && (
         <Card title={checksTitle(checks.length, open.length, relativeTime(health.data.checked_at, now))}>
           <CheckList checks={open} />
@@ -927,7 +935,7 @@ export function HealthPage() {
                       <ul className="ml-4 list-disc">
                         {[...h.runs].map(([id, r]) => (
                           <li key={id}>
-                            <Link href={itemPath(r.work_item_id)} className={LINK_CLASS}>{r.work_item_id}</Link>: {runStatusLabel(r.status)}
+                            <Link href={itemPath(r.work_item_id)} data-raw className={LINK_CLASS}>{r.work_item_id}</Link>: {runStatusLabel(r.status)}
                           </li>
                         ))}
                       </ul>
@@ -965,7 +973,7 @@ export function HealthPage() {
       {tab === "improve" && improve && <Improve view={improve} />}
       {tab === "github" && budget && <GitHubBudgetTab budget={budget} tokenDays={overview.data?.github_token_days} />}
       <SpendSection />
-      <FailuresSection />
+      <FailuresSection win={failuresWindow} />
     </>
   );
 }
