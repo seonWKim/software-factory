@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { commandPhase, phaseLabel } from "../src/core/commands.js";
 import {
@@ -118,7 +118,11 @@ describe("mechanical paths (design §5, issue #297)", () => {
   const STEPS = { ...S, mechanical: [...S.mechanical, "db/steps/"] };
 
   it("a mechanical path is never a hotspot, even when hotspot_paths lists it, and weighs mechanical_weight", () => {
-    expect(S.hotspots).toContain("docs/design.md");
+    // docs/design.md is mechanical, so a hotspot entry for it would do nothing: neither the defaults nor the checked-in config list it.
+    expect(S.hotspots).not.toContain("docs/design.md");
+    const config = JSON.parse(readFileSync("factory.config.json", "utf8")) as { hotspot_paths?: string[] };
+    expect(config.hotspot_paths ?? []).not.toContain("docs/design.md");
+    expect(pathWeight("docs/design.md", none, { ...S, hotspots: [...S.hotspots, "docs/design.md"] }).hotspot).toBe(false);
     expect(pathWeight("docs/design.md", none, S)).toEqual({ path: "docs/design.md", weight: 0.25, conflicts: 0, hotspot: false, mechanical: true });
     // A file under a mechanical folder too; a folder that only holds mechanical files is not one.
     expect(pathWeight("db/steps/0025-x.sql", none, STEPS)).toMatchObject({ weight: 0.25, mechanical: true });
