@@ -53,6 +53,8 @@ for a new topic. "§5" means `05-*`.
 
 ## 7. Self-improvement
 - [07-self-improvement.md](design/07-self-improvement.md): how the factory changes its own behaviour.
+- [07-conflict-hotspots.md](design/07-conflict-hotspots.md): conflict hotspots: count, threshold, report row, filing.
+- [07-learned-rules.md](design/07-learned-rules.md): learned rules in prompts, Rules page verdicts, pack rules cap.
 - [07-improve-report.md](design/07-improve-report.md): improve report, Run now, retire suggestions.
 - [07-design-learnings.md](design/07-design-learnings.md): UI corrections.
 
