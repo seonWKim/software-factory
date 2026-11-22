@@ -116,8 +116,8 @@
     {
       "when": "src/core/types.ts",
       "with": ["src/worker/runs/"],
-      "also": ["src/worker/settings/worker-kinds.setting.ts", "docs/settings.md", "tests/worker-kinds.test.ts", "tests/settings-catalog.test.ts"],
-      "reason": "a new run kind joins the worker_kinds setting, its catalog page (npm run settings:catalog) and the two tests that pin the kinds"
+      "also": ["src/core/settings.ts", "src/worker/settings/worker-kinds.setting.ts", "docs/settings.md", "tests/settings-catalog.test.ts"],
+      "reason": "a new run kind must be in WORKER_KINDS (src/core/settings.ts) or the pool refuses to start; it also joins the worker_kinds setting, its catalog page (npm run settings:catalog) and the catalog test"
     },
     { "when": "src/controller/settings/", "also": ["docs/settings.md"], "reason": "a setting change regenerates docs/settings.md (npm run settings:catalog)" },
     { "when": "src/guards/settings/", "also": ["docs/settings.md"], "reason": "a setting change regenerates docs/settings.md (npm run settings:catalog)" },
