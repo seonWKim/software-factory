@@ -21,6 +21,7 @@ import { ModeSwitch } from "./views/settings/general.js";
 import { FactoryRevision, RevisionBanner, StopAllAgents, UpdateNote } from "./views/system-banner.js";
 import { TranscriptView, transcriptRoute } from "./views/transcript.js";
 import { RulesPage } from "./views/rules.js";
+import { ProposalsPage } from "./views/proposals.js";
 import { CalendarPage } from "./views/calendar.js";
 import { TasksPage } from "./views/tasks.js";
 import { WorkersPage } from "./views/workers.js";
@@ -33,6 +34,7 @@ const VIEWS: Record<string, () => JSX.Element> = {
   workers: WorkersPage,
   health: HealthPage,
   rules: RulesPage,
+  proposals: ProposalsPage,
   settings: SettingsPage,
   data: DataPage,
   plugins: PluginsPage,
@@ -97,11 +99,11 @@ export function App() {
           </div>
         </aside>
         <div data-scroll-root className="flex min-w-0 flex-1 flex-col overflow-y-auto">
-          {/* Wraps instead of widening the page on a narrow screen. */}
-          <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-2">
+          {/* One row at every width: the revision and the status text shrink, the controls do not wrap. */}
+          <header className="flex items-center gap-x-3 border-b border-border px-4 py-2">
             <ModeSwitch floating />
-            <FactoryRevision factory={overview.data?.factory} />
-            <span className="ml-auto shrink-0 text-sm whitespace-nowrap text-text-2" aria-live="polite">
+            <span className="min-w-0 overflow-hidden"><FactoryRevision factory={overview.data?.factory} /></span>
+            <span className="ml-auto min-w-0 truncate text-sm text-text-2" aria-live="polite">
               {overview.isError ? t("topbar.updateFailed") : null}
             </span>
             <StopAllAgents />
@@ -115,7 +117,7 @@ export function App() {
           </header>
           <RevisionBanner server={overview.data?.server_rev} web={WEB_REV} />
           <UpdateNote factory={overview.data?.factory} />
-          <main className="min-w-0 p-4">
+          <main className="w-full min-w-0 p-4 max-w-page-wide has-[[data-page-width=read]]:max-w-page-read">
             {transcript ? (
               <TranscriptView key={`${transcript.itemId}/${transcript.runId}`} itemId={transcript.itemId} runId={transcript.runId} />
             ) : route.itemId ? (

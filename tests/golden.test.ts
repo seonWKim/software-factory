@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { REVIEW_SCHEMA } from "../src/core/outputs.js";
+import { REVIEW_SCHEMA, TRIAGE_SCHEMA } from "../src/core/outputs.js";
 import type { Actor, UserId, WorkItem, WorkItemPatch, WorkerId } from "../src/core/types.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Worker } from "../src/worker/index.js";
@@ -13,6 +13,7 @@ import {
   type CaseResult,
   type GoldenRunDeps,
   GoldenError,
+  TRIAGE_PARTS,
   addCase,
   buildGoldenRunDeps,
   compareCases,
@@ -28,7 +29,9 @@ import { RoleCatalog, rolesShortOfGolden } from "../src/runtime/index.js";
 import { defineRole } from "../src/shared/role.js";
 import reviewRole from "../src/worker/roles/review.role.js";
 import implementRole from "../src/worker/roles/implement.role.js";
+import triageRole from "../src/worker/roles/triage.role.js";
 import { implementReplayRunner } from "../src/controller/golden-gate/implement-replay.js";
+import { triageReplayRunner } from "../src/controller/golden-gate/triage-replay.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubClient } from "../src/impl/github/github-client.js";
@@ -522,7 +525,7 @@ describe("golden run", () => {
   it("builds its parts without opening the store or building a broker", async () => {
     const opened: string[] = [];
     const sandbox = new FakeSandbox();
-    const runner = byCase({});
+    const runner = new FakeRunner({ ...byCase({}).script, triage: () => ({ output: triageSpec }) });
     const plugins = {
       clock: async () => new FakeClock(),
       secrets: async () => ({}) as SecretStore,
@@ -552,6 +555,14 @@ describe("golden run", () => {
     const review = { role: "review", work_item_id: "wi_x", prompt: "spec for 1", signal: new AbortController().signal } as unknown as AgentRunSpec;
     await parts.runner.run(review);
     expect(runner.specs).toEqual([review]);
+    // ...and for triage replays: a triage case's run gets its instruction.md and TRIAGE_SCHEMA, scored on its checks.
+    const triageCase = join(parts.rolesDir, "triage", "golden", "t1");
+    await mkdir(triageCase, { recursive: true });
+    await writeFile(join(triageCase, "instruction.md"), "intake t1");
+    await writeFile(join(triageCase, "case.json"), JSON.stringify({ expect: "should_pass", checks: [{ kind: "no_question" }] }));
+    const triaged = await parts.runner.run({ ...review, role: "triage", work_item_id: "golden_t1" } as AgentRunSpec);
+    expect(runner.specs[1]).toMatchObject({ prompt: "intake t1", output_schema: TRIAGE_SCHEMA });
+    expect(triaged.output).toMatchObject({ verdict: "pass" });
     expect(parts.sandbox).toBe(sandbox);
     expect(await parts.prompt("review.md")).toBe(prompts.review);
   });
@@ -735,5 +746,58 @@ describe("rates", () => {
     expect(text).toContain("catch_rate: 1/1 = 1.000");
     expect(text).toContain("false_alarm_rate: n/a (0/0)");
     expect(text).not.toContain("NaN");
+  });
+});
+
+describe("triage cases", () => {
+  const TRIAGE_ROLES = new RoleCatalog([
+    { file: "worker/roles/review.role.ts", descriptor: reviewRole },
+    { file: "worker/roles/triage.role.ts", descriptor: triageRole },
+  ]);
+  const QUESTION = { question: "Which store?", default: "sqlite", owner_only: false, reason: "the intake contradicts itself" };
+  /** A triage case with no environment/diff.patch: instruction.md and case.json only. */
+  async function writeTriageCase(rolesDir: string, id: string, checks: unknown[]) {
+    const dir = join(rolesDir, "triage", "golden", id);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "instruction.md"), `intake ${id}`);
+    await writeFile(join(dir, "case.json"), JSON.stringify({ id, work_item_id: `wi_${id}`, expect: "should_pass", checks }));
+  }
+  /** A fake triage agent: asks a question only on the intake of case "asks". */
+  const triageRunner = () => new FakeRunner({ triage: (spec: AgentRunSpec) => ({ output: { ...triageSpec, ...(spec.prompt === "intake asks" ? { decisions: [QUESTION] } : {}) } }) });
+
+  it("golden run role/triage replays cases with no diff.patch and prints pass_rate as numerator/denominator", async () => {
+    const fake = triageRunner();
+    const base = runDeps(fake, { roles: TRIAGE_ROLES });
+    const deps = { ...base, runner: triageReplayRunner(fake, base.rolesDir, TRIAGE_PARTS) };
+    await writeTriageCase(deps.rolesDir, "asks", [{ kind: "asks_question" }]);
+    await writeTriageCase(deps.rolesDir, "names", [{ kind: "names_paths", paths: [".github/workflows/scope.yml"] }]);
+    await writeTriageCase(deps.rolesDir, "splits", [{ kind: "no_question" }, { kind: "splits" }]);
+    await writeCase(deps.casesDir, "1", "should_flag");
+
+    const report = await runCases(deps, { role: parseRunArgs(["role/triage"]).role });
+    expect(report.cases.map((c) => [c.id, c.verdict, c.findings])).toEqual([["asks", "pass", []], ["names", "pass", []], ["splits", "bug", ["splits: the spec has no phases"]]]);
+    expect(fake.specs.map((s) => [s.prompt, s.output_schema])).toEqual([["intake asks", TRIAGE_SCHEMA], ["intake names", TRIAGE_SCHEMA], ["intake splits", TRIAGE_SCHEMA]]);
+    expect(formatReport(report)).toContain("pass_rate: 2/3 = 0.667");
+
+    // A review case in the same roles folder still reads its diff.
+    await runCases({ ...deps, clock: new FakeClock(new Date("2026-11-01T13:00:00.000Z")), runner: byCase({ "1": { output: REVIEW_BUG } }) }, { role: "review" });
+    await rm(join(deps.casesDir, "1", "environment"), { recursive: true });
+    await expect(runCases({ ...deps, clock: new FakeClock(new Date("2026-11-01T14:00:00.000Z")) }, { role: "review" })).rejects.toThrow(/diff\.patch/);
+  });
+
+  it("refuses a triage case with an unknown check kind before any agent runs, naming the case", async () => {
+    const fake = triageRunner();
+    const base = runDeps(fake, { roles: TRIAGE_ROLES });
+    await writeTriageCase(base.rolesDir, "bad", [{ kind: "guesses" }]);
+    await expect(runCases({ ...base, runner: triageReplayRunner(fake, base.rolesDir, TRIAGE_PARTS) }, { role: "triage" })).rejects.toThrow(/triage case bad: checks\[0\] has unknown kind/);
+    expect(fake.specs).toEqual([]);
+  });
+
+  it("scores an answer parseTriage refuses as errored", async () => {
+    const fake = new FakeRunner({ triage: () => ({ output: { problem: "only" } }) });
+    const base = runDeps(fake, { roles: TRIAGE_ROLES });
+    await writeTriageCase(base.rolesDir, "asks", [{ kind: "asks_question" }]);
+    const report = await runCases({ ...base, runner: triageReplayRunner(fake, base.rolesDir, TRIAGE_PARTS) }, { role: "triage" });
+    expect(report.cases.map((c) => c.verdict)).toEqual(["errored"]);
   });
 });

@@ -2,6 +2,8 @@
 // API (src/ui/api.ts): the items list and its facet counts read the same rows in the same order. Reads only.
 
 import { type ConflictCounts, conflictCounts } from "../core/resolve.js";
+import { prNumber } from "../core/change-ref.js";
+import { UNKNOWN_PROJECT_LABEL } from "../core/project.js";
 import type { Alert, FactoryStore } from "../interfaces/factory-store.js";
 import { MERGE_QUEUED, MERGE_REQUESTS_READ, mergeQueued, pendingApproval, pendingMerge } from "../core/commands.js";
 import { blockingRunKind } from "../core/policy.js";
@@ -190,6 +192,18 @@ async function itemMergePosition(store: FactoryStore, it: WorkItem): Promise<Map
   const waiting = await store.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", limit: LIST_LIMIT });
   const checking = await store.countWorkItemsWhere({ stage: "REVIEW", blocked_on: "ci", blocked_reason: MERGE_QUEUED });
   return mergePositions(store, waiting, checking);
+}
+
+/**
+ * A merged-without-review row's links (design 09-status-page), from its stored project key, label and ref, no forge
+ * call: `review_url` is `https://<label>/pull/<n>`, the rule of changeFields (src/impl/store/sql/change-fields.ts),
+ * and `checks_url` its `/checks` page, for a GitHub project whose label is stored and a numeric ref; else both null.
+ * `check_verdict` is null: the store keeps no verdict for an unreviewed merge (merge checks are stored per work item).
+ */
+export async function mergeLinks(project: string, label: string, change_ref: string, text: (v: string) => Promise<string | null>) {
+  const n = prNumber({ change_ref });
+  const pr = n !== null && project.startsWith("github:") && label !== UNKNOWN_PROJECT_LABEL ? `https://${label}/pull/${n}` : null;
+  return { review_url: pr && (await text(pr)), checks_url: pr && (await text(`${pr}/checks`)), check_verdict: null };
 }
 
 /**

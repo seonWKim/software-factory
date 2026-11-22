@@ -1,0 +1,6 @@
+{
+  "id": "2",
+  "work_item_id": "golden_review_confirm_2",
+  "expect": "should_pass",
+  "note": "A wrong finding: the diff handles the empty list it says is missed. The confirm run must not confirm it."
+}

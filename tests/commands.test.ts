@@ -172,6 +172,16 @@ describe("command table", () => {
     expect(f.at(-1)).toBe("No command changes this item's state now.");
   });
 
+  it("a failure footer names each command with its first sentence only and points to /help for the rest", () => {
+    const f = commandFooter(s("failed_implement")).split("\n");
+    const retry = f.find((l) => l.startsWith("- `/retry`"));
+    expect(retry).toBe("- `/retry`: Run the failed run again.");
+    expect(f.join("\n")).not.toContain("+paths");
+    expect(f.at(-1)).toBe(`- \`/help\`: ${commandSpec("help").description}.`);
+    // /help keeps every command's full text.
+    expect(helpReply(s("failed_implement"))).toContain(`: ${commandSpec("retry").description}.`);
+  });
+
   it("an unknown-command reply names the word, then the footer", () => {
     const r = unknownCommandReply("xyz", s("failed_run"));
     expect(r.split("\n")[0]).toBe('Unknown command "/xyz".');
@@ -321,7 +331,7 @@ describe("command table", () => {
     expect(hold.description).toMatch(/^Hold until <id> merges: writes a `Depends on: <id>` line/);
     const local = { phase: "agent_needs_human" as const, has_pr: false, local: true as const };
     expect(applies(hold, { ...local, asked_by: "implement" })).toBe(true);
-    expect(commandFooter({ ...local, asked_by: "implement" })).toContain(`- \`/hold <id>\`: ${hold.description}.`);
+    expect(commandFooter({ ...local, asked_by: "implement" })).toContain(`- \`/hold <id>\`: ${hold.description.split(". Refused")[0]}.\n`);
     // A resolve run that asked, any other phase, a GitHub item, or a local item's PR: not offered.
     expect(applies(hold, { ...local, asked_by: "resolve" })).toBe(false);
     for (const phase of COMMAND_PHASES.filter((p) => p !== "agent_needs_human")) expect(applies(hold, { phase, has_pr: false, local: true }), phase).toBe(false);

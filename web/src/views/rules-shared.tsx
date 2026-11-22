@@ -10,10 +10,8 @@ export const muted = "text-xs text-pretty break-keep text-text-2";
 
 /** A rule's state as a key of the one state table (src/shared/states.ts), whose label and tone its pill shows. */
 export const RULE_STATE: Readonly<Record<string, string>> = { open: "running", pending: "needs_approval", held: "held" };
-/** The page's list column: its two sections and Details. */
-export const PAGE_WIDTH = "max-w-5xl";
 /** The reading width of description prose (a group's line, How this works). */
-export const PROSE = "max-w-3xl";
+export const PROSE = "max-w-prose";
 /** A row's padding, reduced below `sm` so a phone keeps its width for text. */
 export const ROW_PAD = "max-sm:p-2";
 /** A KeyValue's labels above their values below `sm` (as `stacked`), two columns from `sm` up. */

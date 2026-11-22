@@ -96,7 +96,7 @@ export async function startFixture(extend = () => ({})) {
         calendar: await seedCalendar(store, clock),
       },
       storage,
-      commands: { actor: OWNER, source: "config", token: csrfToken, mergeAllowed: async () => true, localMerge: true },
+      commands: { actor: OWNER, source: "config", token: csrfToken, allowed: async () => ({ allow: true }), localMerge: true },
       ...(await extend({ store, csrfToken, owner: OWNER })),
     },
     0,
@@ -172,6 +172,17 @@ async function seed(store, storage) {
     await store.appendCliCommand({ key: `responsive-${i}`, actor: OWNER, command: i % 3 ? "approve" : "resolve", args: { work_item_id: busy.id, note: `${LONG_WORD} ${i}` } });
     await store.recordAppCommandRequest({ key: `responsive-app-${i}`, actor: OWNER, command: "approve", args: { work_item_id: busy.id, note: `note ${i} ${LONG_WORD}` } });
   }
+
+  // A Merge that came back (merge_returned) with a long refusal naming the item's ID: the Needs you row keeps its title
+  // and shows the refusal on its own line below it, wrapped, with no raw ID (the 2026-11-22 screenshot).
+  const back = await make(store, `local-${"b4c7ba".repeat(6)}-merge-returned`, `Returned: ${LONG_TITLE}`);
+  await patch(store, back, { stage: "REVIEW", blocked_on: "ci", blocked_reason: "merge_queued", change_ref: "123457", tier: 2 });
+  const cur = await store.getWorkItem(back.id);
+  const refusal = `${back.id} could not merge: the head moved since the review passed (${"Supercalifragilistic".repeat(4)})`;
+  const r = await store.transition({ id: back.id, expected_version: cur.version, patch: { blocked_on: "human", blocked_reason: "merge_pending" }, actor: system, reason: "merge_returned", detail: { refusal } });
+  if (!r.ok) throw new Error(`fixture transition merge_returned failed: ${r.reason}`);
+  // Mergeable, so its Merge is on and the row reads why the last one came back.
+  await store.recordMergeCheck({ work_item_id: back.id, mergeable: true, conflicts: [], head_sha: "a".repeat(40), base_sha: "b".repeat(40) });
 
   // A phase tree: a parent with three phases, one waiting on the one before it.
   const parent = await make(store, `local-${"f00dfeed".repeat(5)}-split-parent`, `Split: ${LONG_TITLE}`);

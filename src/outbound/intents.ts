@@ -16,15 +16,17 @@ import { DELIVERY_REQUESTED } from "./topics/deliveries-requests.topic.js";
  * branch's PR opened or updated), `merge` (a merge queue landing in the factory repo, M8), `push_base` (the local
  * base pushed to its remote after a merge) and `file_sub_issue` (one phase of a split filed under its parent, whose
  * delivered ref names the filed item), `file_fix_item` (one item filed to fix a red base, keyed on its sha, through the
- * source's `fileIssue`), `tacit_capture` (a pushback captured in the owner's ledger, issue #570) and
- * `notify` (an owner notice for a `notify_channels` adapter, design 12-notification-channels) retry until delivered.
+ * source's `fileIssue`), `tacit_capture` (a pushback captured in the owner's ledger, issue #570),
+ * `notify` (an owner notice for a `notify_channels` adapter, design 12-notification-channels) and `append_lines` (lines
+ * appended to one file on the local base in one commit, design 07-design-learnings) retry until delivered.
  */
 export type ActionKind =
-  | "status" | "seen" | "close" | "post" | "close_pr" | "merge_pr" | "push" | "pr" | "merge" | "push_base" | "file_sub_issue" | "file_fix_item" | "tacit_capture" | "notify";
+  | "status" | "seen" | "close" | "post" | "close_pr" | "merge_pr" | "push" | "pr" | "merge" | "push_base" | "file_sub_issue" | "file_fix_item" | "tacit_capture" | "notify"
+  | "append_lines";
 
 /** The actions whose failure retries their batch with backoff; the rest are best effort. */
 export const RETRIED_ACTIONS: readonly ActionKind[] = [
-  "close", "post", "close_pr", "merge_pr", "push", "pr", "merge", "push_base", "file_sub_issue", "file_fix_item", "tacit_capture", "notify",
+  "close", "post", "close_pr", "merge_pr", "push", "pr", "merge", "push_base", "file_sub_issue", "file_fix_item", "tacit_capture", "notify", "append_lines",
 ];
 
 

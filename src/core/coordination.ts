@@ -27,12 +27,14 @@ export const LEARNED_STEP = 0.5;
 export const LEARNED_CAP = 4.0;
 /** Default `hotspot_weight`. */
 export const DEFAULT_HOTSPOT_WEIGHT = 3.0;
-/** Default `hotspot_paths`: the files nearly every change touches, and that conflict when two do. */
+/**
+ * Default `hotspot_paths`: the files nearly every change touches, and that conflict when two do. A mechanical path
+ * (`docs/design.md`) is never a hotspot, so it is not listed here.
+ */
 export const DEFAULT_HOTSPOTS: readonly string[] = [
   "src/impl/store/sqlite/schema.ts",
   "src/controller/",
   "src/worker/",
-  "docs/design.md",
   "SET_UP.md",
 ];
 

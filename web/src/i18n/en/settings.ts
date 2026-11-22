@@ -241,6 +241,8 @@ export const settings = {
   "key.notice_kinds.help": "Which waits raise a notice on this computer.",
   "key.quiet_hours.label": "Quiet hours",
   "key.quiet_hours.help": "The hours in which notices are held.",
+  "key.review_time.label": "Review time",
+  "key.review_time.help": "Asks that are not merges and block no other task wait until this time. Leave empty to show them at once.",
   "key.notify_channels.label": "Notification channels",
   "key.notify_channels.help": "Where the factory sends its messages to you.",
   "key.integrations.label": "Integrations",

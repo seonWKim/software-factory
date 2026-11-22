@@ -23,7 +23,7 @@ export const tasksOf = (rows: readonly DayRow[]): TaskRow[] => rows.filter((x): 
 
 export type Nested = { row: TaskRow; sub: boolean };
 /** One group of the list: its heading and its rows, each sub-task right after its parent. */
-export interface TaskGroup { key: string; title: string; overdue: boolean; rows: Nested[] }
+export interface TaskGroup { key: string; title: string; /** The ISO date the heading names (a day or Today); null for Overdue, No date and Done. */ date: string | null; overdue: boolean; rows: Nested[] }
 
 /** Tasks per page of the list (design 02-tasks, one list). */
 export const PAGE_SIZE = 20;
@@ -53,11 +53,11 @@ export function groupsOf(v: TasksView): TaskGroup[] {
     else days.set(x.due_date, [...(days.get(x.due_date) ?? []), x]);
   }
   const groups = [
-    { key: "overdue", title: t("tasks.overdue"), overdue: true, tasks: overdue },
-    { key: "today", title: t("tasks.todayDay", { day: dayLabel(v.today_date) }), overdue: false, tasks: today },
-    ...[...days].sort(([a], [b]) => (a < b ? -1 : 1)).map(([date, tasks]) => ({ key: date, title: dayLabel(date), overdue: false, tasks })),
-    { key: "none", title: t("tasks.noDate"), overdue: false, tasks: noDate },
-    { key: "done", title: t("tasks.doneGroup"), overdue: false, tasks: done },
+    { key: "overdue", title: t("tasks.overdue"), date: null, overdue: true, tasks: overdue },
+    { key: "today", title: t("tasks.todayDay", { day: dayLabel(v.today_date) }), date: v.today_date, overdue: false, tasks: today },
+    ...[...days].sort(([a], [b]) => (a < b ? -1 : 1)).map(([date, tasks]) => ({ key: date, title: dayLabel(date), date, overdue: false, tasks })),
+    { key: "none", title: t("tasks.noDate"), date: null, overdue: false, tasks: noDate },
+    { key: "done", title: t("tasks.doneGroup"), date: null, overdue: false, tasks: done },
   ];
   const groupOf = new Map(groups.flatMap((g, i) => g.tasks.map((x) => [x.id, i] as const)));
   const home = (x: TaskRow, own: number) => (x.parent_task_id == null ? undefined : groupOf.get(x.parent_task_id)) ?? own;

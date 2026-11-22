@@ -238,4 +238,18 @@ describe("Needs you on the Tasks page", () => {
     await within(refused).findByText(NOT_LIVE);
     expect(within(refused).queryByRole("button")).toBeNull();
   });
+
+  it("shows each ask's rank reason, and the held ones with the review time they wait for", async () => {
+    const asks = [SPEC, row(31, "needs_approval", "Held spec", { blocked_on: "human", commands: ["approve"].map(cmd) })];
+    responses["/api/v1/items"] = { ...(responses["/api/v1/items"] as object), items: [{ ...asks[0], rank_reason: "Blocks another item", held: false }, { ...asks[1], rank_reason: "Held until 09:00", held: true }] };
+    mount();
+    const section = await screen.findByRole("region", { name: "Needs you" });
+    const reasons = await waitFor(() => {
+      const found = [...section.querySelectorAll("[data-rank]")].map((r) => r.textContent);
+      expect(found).toHaveLength(2);
+      return found;
+    });
+    expect(reasons).toEqual(["Blocks another item", "Held until 09:00"]);
+    expect(within(section).getByText("1 held until 09:00")).toBeTruthy();
+  });
 });

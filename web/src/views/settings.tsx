@@ -1,11 +1,12 @@
+import { useState } from "react";
 import { API, type SettingsView, useApi } from "../api.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { Tabs } from "../components/ui/tabs.js";
-import { PageHeader } from "../components/ui/notice.js";
+import { PageHeader, PageToolbar } from "../components/ui/notice.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { useUrlParam } from "../lib/url-param.js";
-import { AdvancedTab } from "./settings/advanced.js";
+import { AdvancedTab, SettingsSearch } from "./settings/advanced.js";
 import { GeneralTab } from "./settings/general.js";
 import { IntegrationsTab } from "./settings/integrations.js";
 
@@ -44,18 +45,20 @@ function useTabParam(): [SettingsTab, (tab: SettingsTab) => void] {
 export function SettingsPage() {
   const settings = useApi<SettingsView>(API.settings);
   const [tab, setTab] = useTabParam();
-  if (settings.isError) return <><PageHeader title={t("page.settings")} /><ErrorNote error={settings.error} /></>;
-  if (!settings.data) return <><PageHeader title={t("page.settings")} /><Loading rows={8} /></>;
+  // The Advanced tab's search, in the toolbar's second row while that tab is open.
+  const [query, setQuery] = useState("");
+  if (settings.isError) return <><PageHeader title={t("page.settings")} width="read" /><ErrorNote error={settings.error} /></>;
+  if (!settings.data) return <><PageHeader title={t("page.settings")} width="read" /><Loading rows={8} /></>;
   const v = settings.data;
   return (
     <>
-      <PageHeader title={t("page.settings")} />
-      <div className="flex flex-col gap-4">
-        <Tabs label={t("settings.tabs")} options={TABS.map((x) => ({ id: x.id, label: t(x.label) }))} value={tab} onChange={setTab} />
-        {tab === "general" && <GeneralTab view={v} />}
-        {tab === "integrations" && <IntegrationsTab view={v} />}
-        {tab === "advanced" && <div><AdvancedTab view={v} /></div>}
-      </div>
+      <PageHeader title={t("page.settings")} width="read" />
+      <PageToolbar tabs={<Tabs label={t("settings.tabs")} options={TABS.map((x) => ({ id: x.id, label: t(x.label) }))} value={tab} onChange={setTab} />}>
+        {tab === "advanced" && <SettingsSearch value={query} onChange={setQuery} />}
+      </PageToolbar>
+      {tab === "general" && <GeneralTab view={v} />}
+      {tab === "integrations" && <IntegrationsTab view={v} />}
+      {tab === "advanced" && <AdvancedTab view={v} query={query} />}
     </>
   );
 }

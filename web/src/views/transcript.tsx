@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { API, POLL_MS, type StepFilter, type TranscriptPage, type TranscriptStep, getJson } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
-import { PageHeader, EmptyState } from "../components/ui/notice.js";
+import { PageHeader, PageToolbar, EmptyState } from "../components/ui/notice.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { cn } from "../lib/cn.js";
@@ -149,8 +149,8 @@ function Outcome({ run, now }: { run: TranscriptPage["run"]; now: number }) {
       <p className="font-medium">
         {failed ? t("transcript.failed", { code: o.error_code ? errorLabel(o.error_code) : t("transcript.unknown") }) : o ? t("transcript.succeeded") : t("transcript.noOutcome", { status: runStatusLabel(run.status) })}
       </p>
-      {failed && o.detail && <p>{o.detail}</p>}
-      {!failed && o?.summary && <p>{o.summary}</p>}
+      {failed && o.detail && <p data-raw>{o.detail}</p>}
+      {!failed && o?.summary && <p data-raw>{o.summary}</p>}
       <p className="mt-1 text-xs opacity-80 tabular-nums">
         {t("transcript.runLine", { kind: runKindLabel(run.kind), attempt: run.attempt, worker: run.worker_id ?? "–" })}
         {run.started_at && <> · <When at={run.started_at} now={now} label="item.startedAgo" /></>}
@@ -219,36 +219,39 @@ export function TranscriptView({ itemId, runId }: { itemId: string; runId: strin
     <>
       <Back itemId={itemId} />
       <PageHeader title={t("transcript.title", { kind: runKindLabel(run.kind), attempt: run.attempt })} />
-      <Outcome run={run} now={now} />
-      <ButtonRow className="mt-6" role="group" aria-label={t("transcript.stepType")}>
-        {FILTERS.map((f) => (
-          <Button key={f.label} aria-pressed={filter === f.value} onClick={() => setFilter(f.value)}>
-            {t(f.label)}
-          </Button>
-        ))}
-        {run.status === "failed" && !tail && (
-          <Button variant="ghost" onClick={() => setTail(true)} className={cn("ml-auto", LINK_CLASS)}>{t("transcript.jumpTail")}</Button>
-        )}
-        {tail && (
-          <Button variant="ghost" onClick={() => setTail(false)} className={cn("ml-auto", LINK_CLASS)}>{t("transcript.fromStart")}</Button>
-        )}
-      </ButtonRow>
-      {first.parts.length > 1 && (
-        <ButtonRow className="mt-2" role="group" aria-label={t("transcript.agentStep")}>
-          {first.parts.map((p) => (
-            <Button key={p || "main"} aria-pressed={first.part === p} onClick={() => setPart(p)}>
-              {p || t("transcript.mainStep")}
+      {/* The step-type filter and the agent-step choice are page filters: the toolbar's second row, under the title. */}
+      <PageToolbar>
+        <ButtonRow role="group" aria-label={t("transcript.stepType")}>
+          {FILTERS.map((f) => (
+            <Button key={f.label} aria-pressed={filter === f.value} onClick={() => setFilter(f.value)}>
+              {t(f.label)}
             </Button>
           ))}
+          {run.status === "failed" && !tail && (
+            <Button variant="ghost" onClick={() => setTail(true)} className={cn("ml-auto", LINK_CLASS)}>{t("transcript.jumpTail")}</Button>
+          )}
+          {tail && (
+            <Button variant="ghost" onClick={() => setTail(false)} className={cn("ml-auto", LINK_CLASS)}>{t("transcript.fromStart")}</Button>
+          )}
         </ButtonRow>
-      )}
+        {first.parts.length > 1 && (
+          <ButtonRow role="group" aria-label={t("transcript.agentStep")}>
+            {first.parts.map((p) => (
+              <Button key={p || "main"} aria-pressed={first.part === p} onClick={() => setPart(p)}>
+                {p || t("transcript.mainStep")}
+              </Button>
+            ))}
+          </ButtonRow>
+        )}
+      </PageToolbar>
+      <Outcome run={run} now={now} />
       <Card title={t("transcript.steps")} count={steps.length}>
         {first.format === "plain" && <p className="mb-2 text-xs text-text-2">{t("transcript.plainFormat")}</p>}
         {tail && first.earlier && <p className="mb-2 text-xs text-text-2">{t("transcript.tailNote")}</p>}
         {steps.length === 0 && !hasNextPage ? (
           <EmptyState title={filter ? t("transcript.noneOfType") : live ? t("transcript.waiting") : t("transcript.noSteps")} />
         ) : (
-          <ol aria-label={t("transcript.stepsList")} className="min-w-0 space-y-2">
+          <ol data-raw aria-label={t("transcript.stepsList")} className="min-w-0 space-y-2">
             {steps.map((s) => <StepView key={s.id} step={s} />)}
           </ol>
         )}
