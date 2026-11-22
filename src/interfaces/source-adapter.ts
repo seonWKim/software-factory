@@ -72,7 +72,7 @@ export type SourceEvent =
   /**
    * `/paths +<path>...` (design 05-interactive-sessions): widens a running item's allowed paths. `note`: the trimmed
    * text after the command, the `+<path>` words on its first line and a note on the lines below; untrusted. The
-   * controller parses the paths (parsePathsCommand). Absent or empty: no paths, which the controller refuses.
+   * controller splits the paths with commandText (controller/units/commands/paths.ts), then parseCommandPaths. Absent or empty: no paths, which the controller refuses.
    */
   | { kind: "paths_requested"; source: SourceRef; comment_id: string; requester: ExternalIdentity; note?: string }
   /** `/help`: the controller replies once with every command, marking the ones that apply now. */
