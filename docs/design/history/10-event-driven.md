@@ -1,5 +1,9 @@
 ## History
 
+- **One generated `schema/sqlite.sql`** (decision changed 2026-11-22, issue #754). Before: the snapshot of a fresh
+  migration was a single file with every table and index, `schema/sqlite.sql`, and the path companions added it to
+  every item that touched a migration or `src/impl/store/sqlite/schema.ts`. Now it is one file per owner prefix
+  under `schema/sqlite/`.
 - **A run journaled by another code_version failed `not_resumable`** (decision changed 2026-11-21, issue #718;
   changes the 2026-11-09 "Resume across a deploy" rule under "Claims still go through the store's `claimRun`").
   Before: a run the store leased whose journal held a succeeded step from another `code_version` was refused by
