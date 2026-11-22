@@ -156,7 +156,7 @@ function SpendFrame({ children }: { children: ReactNode }) {
   );
 }
 
-/** Health's Spend section: cost and tokens per day and per task over the last 30 UTC days (GET /api/v1/spend). Its anchor is `#spend`. */
+/** Health's Spend tab: cost and tokens per day and per task over the last 30 UTC days (GET /api/v1/spend). */
 export function SpendSection() {
   const q = useApi<SpendView>(API.spend);
   // The day picked on the chart: it filters the tasks table only, and stays in the browser.
