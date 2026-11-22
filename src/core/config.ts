@@ -325,8 +325,7 @@ export interface LoadedConfig {
   /**
    * Coordination (design §5, 2026-11-03): `max_coordination_cost`, `hotspot_paths`, `hotspot_weight`,
    * `mechanical_paths` and `mechanical_weight` (issue #297), `hold_policy` and `hotspot_mode` (issue #314),
-   * `conflict_window_days` (design 05-dependencies) from
-   * factory.config.json, checked at load by
+   * `conflict_window_days` (design 05-dependencies) from factory.config.json, checked at load by
    * `coordinationConfig` and passed in by compose.ts. Absent: DEFAULT_COORDINATION.
    */
   coordination?: CoordinationSettings;
@@ -348,6 +347,7 @@ export interface LoadedConfig {
    * path. The agents may read them and never write them. Absent: no input folder, every run as before the key.
    */
   read_only_inputs?: readonly string[];
+  improver?: import("./proposals.js").ImproverConfig; // improver.max_proposals, .schedule, distill.min_cases (design 07, improverConfig); absent: IMPROVER_DEFAULTS
 }
 
 /**

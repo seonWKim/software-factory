@@ -21,6 +21,7 @@ import { ModeSwitch } from "./views/settings/general.js";
 import { FactoryRevision, RevisionBanner, StopAllAgents, UpdateNote } from "./views/system-banner.js";
 import { TranscriptView, transcriptRoute } from "./views/transcript.js";
 import { RulesPage } from "./views/rules.js";
+import { ProposalsPage } from "./views/proposals.js";
 import { CalendarPage } from "./views/calendar.js";
 import { TasksPage } from "./views/tasks.js";
 import { WorkersPage } from "./views/workers.js";
@@ -33,6 +34,7 @@ const VIEWS: Record<string, () => JSX.Element> = {
   workers: WorkersPage,
   health: HealthPage,
   rules: RulesPage,
+  proposals: ProposalsPage,
   settings: SettingsPage,
   data: DataPage,
   plugins: PluginsPage,

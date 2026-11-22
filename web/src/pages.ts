@@ -1,7 +1,7 @@
-import { CalendarCheck, CalendarDays, ChartGantt, Database, HeartPulse, ListTodo, Puzzle, ScrollText, Settings, Waypoints, type LucideIcon } from "lucide-react";
+import { CalendarCheck, CalendarDays, ChartGantt, Database, FileDiff, HeartPulse, ListTodo, Puzzle, ScrollText, Settings, Waypoints, type LucideIcon } from "lucide-react";
 import { REDIRECTS } from "./page-redirects.js";
 
-/** Where a page sits in the sidebar: the Tasks block, the System block (Work, Health, Workers), the bottom block (Rules, Plugins, Settings), or nowhere (a routable page with no sidebar link: Runners and Data, linked from Settings > Advanced). */
+/** Where a page sits in the sidebar: the Tasks block, the System block (Work, Health, Workers), the bottom block (Rules, Plugins, Settings), or nowhere (a routable page with no sidebar link: Runners and Data, linked from Settings > Advanced, and Proposals at /app/proposals). */
 export type PageGroup = "tasks" | "system" | "bottom" | "hidden";
 
 /** One routable page. `key` names it in the English catalog (`page.<key>`), which also names its heading. */
@@ -25,6 +25,7 @@ export const PAGES: readonly PageDef[] = [
   { path: "settings", label: "Settings", key: "settings", icon: Settings, group: "bottom" },
   { path: "runners", label: "Runners", key: "runners", icon: Waypoints, group: "hidden" },
   { path: "data", label: "Data", key: "data", icon: Database, group: "hidden" },
+  { path: "proposals", label: "Proposals", key: "proposals", icon: FileDiff, group: "hidden" },
 ];
 
 export const pagesIn = (group: PageGroup): readonly PageDef[] => PAGES.filter((p) => p.group === group);

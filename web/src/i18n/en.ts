@@ -4,6 +4,7 @@
 import { data } from "./en/data.js";
 import { health } from "./en/health.js";
 import { plugins } from "./en/plugins.js";
+import { proposals } from "./en/proposals.js";
 import { rules } from "./en/rules.js";
 import { settings } from "./en/settings.js";
 import { shell } from "./en/shell.js";
@@ -16,6 +17,7 @@ export const en = {
   ...data,
   ...health,
   ...plugins,
+  ...proposals,
   ...rules,
   ...settings,
   ...shell,
