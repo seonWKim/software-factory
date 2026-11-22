@@ -150,6 +150,21 @@ describe("mechanical paths (design §5, issue #297)", () => {
     expect(claimDecision(holds)).toBe("held");
   });
 
+  it("a queued run sharing only docs/design/ files with a running item is not held under the default settings", () => {
+    const docs = ["docs/design.md", "docs/design/09-dashboard-system.md", "docs/design/09-dashboard-item.md", "docs/design/09-dashboard-app.md", "docs/design/history/09-dashboard-app.md"];
+    const holds = holdsOn({ work_item_id: "wi_a", project: "p", files: docs }, [holder(docs)], none, S);
+    expect(claimDecision(holds)).toBe("free");
+  });
+
+  it("a run held by a shared hotspot is claimed once the hotspot is no longer listed, with the same stored state", () => {
+    const files = ["lib/hot.ts", "lib/a.ts"];
+    const me = { work_item_id: "wi_a", project: "p", files };
+    const running = [holder(["lib/hot.ts", "lib/b.ts"])];
+    // Same holders and learned weights in both calls: only the setting changes.
+    expect(claimDecision(holdsOn(me, running, none, { ...S, hotspots: ["lib/hot.ts"] }))).toBe("held");
+    expect(claimDecision(holdsOn(me, running, none, { ...S, hotspots: [] }))).toBe("free");
+  });
+
   it("the hold reason names each mechanical path with its weight", () => {
     const shared = [pathWeight("docs/design.md", none, S), pathWeight("src/controller/router/router.ts", none, S)];
     expect(holdReason({ holder_ref: "#92", shared, cost: 3.25, threshold: 2.5, fallback: false })).toBe(
