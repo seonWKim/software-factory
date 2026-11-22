@@ -102,6 +102,13 @@ function conflictFeedback(reason: string): string {
 function describeFailure(code: string): string {
   return FAILURES[code] ?? "the run failed";
 }
+/**
+ * The error code of a run-failed comment, under a Details fold (issue #758): the comment's sentence names the
+ * failure in words (`describeFailure`), and the code stays for whoever needs it, never in the sentence.
+ */
+function codeDetails(code: string): string[] {
+  return ["<details><summary>Details</summary>", "", `Error code: \`${code}\``, "", "</details>", ""];
+}
 function parseFloorHits(v: unknown): { path: string; tier: number }[] {
   if (!Array.isArray(v)) return [];
   const hits = v.filter(
@@ -829,9 +836,10 @@ export class RunResultsUnit {
     const counts = auto ? await this.conflictCountsOf(it, 1) : null;
     const body = (withDetail: boolean) => [
       auto
-        ? `The automatic resolve run failed (\`${code}\`): ${describeFailure(code)}.${withDetail && detail ? ` ${detail}` : ""} That was attempt ${auto.attempt} of ${AUTO_RESOLVE_LIMIT} for base \`${auto.base_sha.slice(0, 8)}\`, so the factory stopped.`
-        : `The resolve run failed (\`${code}\`): ${describeFailure(code)}.${withDetail && detail ? ` ${detail}` : ""}`,
+        ? `The automatic resolve run failed: ${describeFailure(code)}.${withDetail && detail ? ` ${detail}` : ""} That was attempt ${auto.attempt} of ${AUTO_RESOLVE_LIMIT} for base \`${auto.base_sha.slice(0, 8)}\`, so the factory stopped.`
+        : `The resolve run failed: ${describeFailure(code)}.${withDetail && detail ? ` ${detail}` : ""}`,
       "",
+      ...codeDetails(code),
       `Nothing was ${it.change_ref === null ? "committed" : "pushed"}; ${this.c.unit("local-merge").changeName(it)} is unchanged and still has the merge conflict.`,
       "Comment `/resolve [notes]` to try again, or resolve it by hand.",
       ...(counts ? ["", conflictCountsLine(counts)] : []),
@@ -871,8 +879,9 @@ export class RunResultsUnit {
     const body = (withDetail: boolean) => [
       "## Factory check: the same failure twice",
       "",
-      `The ${run.kind} run failed twice in a row the same way (\`${code}\`): ${describeFailure(code)}.${withDetail && line ? ` ${line}` : ""}`,
+      `The ${run.kind} run failed twice in a row the same way: ${describeFailure(code)}.${withDetail && line ? ` ${line}` : ""}`,
       "",
+      ...codeDetails(code),
       "The factory stopped retrying it, since a third run would most likely fail the same way. Fix the cause, then comment `/retry` to run it again with a fresh attempt budget, `/revise <feedback>` to get a new spec written, or `/reject <reason>` to close.",
       "",
       footerAfter(it, patch),
@@ -903,8 +912,9 @@ export class RunResultsUnit {
     const body = (withDetail: boolean, withTail: boolean) => [
       "## Factory check: the same infrastructure failure twice",
       "",
-      `The ${run.kind} run failed twice in a row the same way (\`${code}\`), each time within a minute of starting: ${describeFailure(code)}.${withDetail && text ? ` ${text}` : ""}`,
+      `The ${run.kind} run failed twice in a row the same way, each time within a minute of starting: ${describeFailure(code)}.${withDetail && text ? ` ${text}` : ""}`,
       "",
+      ...codeDetails(code),
       ...(withTail && tail
         ? ["<details><summary>Output tail of the last run</summary>", "", fenced(tail), "", "</details>", ""]
         : []),
@@ -981,8 +991,9 @@ export class RunResultsUnit {
         return [
           "## Factory size check: push blocked",
           "",
-          `The implement run's diff is too large to review (\`${DIFF_TOO_LARGE}\`), so nothing was pushed${withDetail && detail ? `: ${detail}` : ""}.`,
+          `The implement run's diff is too large to review, so nothing was pushed${withDetail && detail ? `: ${detail}` : ""}.`,
           "",
+          ...codeDetails(DIFF_TOO_LARGE),
           `Limits: \`max_diff_lines\` = ${max_diff_lines} (added plus deleted lines), \`max_diff_files\` = ${max_diff_files}.`,
           "",
           "Comment `/revise <feedback>` to get a new, smaller spec written with your feedback, or `/retry` to run the implementer again on the same spec; it must make a smaller change.",
@@ -994,8 +1005,9 @@ export class RunResultsUnit {
       return [
         "## Factory check: implement run stopped",
         "",
-        `The implement run failed (\`${code}\`): ${describeFailure(code)}.${withDetail && detail ? ` ${detail}` : ""} Nothing was pushed.`,
+        `The implement run failed: ${describeFailure(code)}.${withDetail && detail ? ` ${detail}` : ""} Nothing was pushed.`,
         "",
+        ...codeDetails(code),
         "The factory does not retry this automatically, since the same spec would most likely fail the same way. Comment `/revise <feedback>` to get a new spec written with your feedback, or `/retry` to run the implementer again on the same spec.",
         "",
         footerAfter(it, patch),
@@ -1024,8 +1036,9 @@ export class RunResultsUnit {
     const body = (withDetail: boolean) => [
       "## Factory check: the model provider needs setup",
       "",
-      `The ${run.kind} run failed (\`${PROVIDER_SETUP}\`): ${describeFailure(PROVIDER_SETUP)}.${withDetail && detail ? ` ${detail}` : ""}`,
+      `The ${run.kind} run failed: ${describeFailure(PROVIDER_SETUP)}.${withDetail && detail ? ` ${detail}` : ""}`,
       "",
+      ...codeDetails(PROVIDER_SETUP),
       "The factory does not retry this automatically, since waiting will not fix it. Check the provider account's quota or billing, the API key (`npm run setup`) and the model names in `factory.config.json`, then comment `/retry` to run it again.",
       "",
       footerAfter(it, patch),
@@ -1121,8 +1134,9 @@ export class RunResultsUnit {
     const body = [
       what,
       "",
-      `Last error: \`${code}\`: ${describeFailure(code)}.${out?.detail ? ` ${stripAnsi(out.detail)}` : ""}`,
+      `Last error: ${describeFailure(code)}.${out?.detail ? ` ${stripAnsi(out.detail)}` : ""}`,
       "",
+      ...codeDetails(code),
       ...(first ? ["First error line:", "", fenced(first), ""] : []),
       ...(tests.length ? ["Failing tests:", "", ...tests.map((t) => `- \`${t.replace(/`/g, "'")}\``), ""] : []),
       ...(tail

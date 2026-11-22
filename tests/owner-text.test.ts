@@ -84,7 +84,8 @@ RESPONSES[`/api/v1/items/${failed.id}`] = {
   thread: [
     {
       seq: 1, at: AT, kind: "run-failed", author: "factory", role: "factory", channel: "github_issue", anchor: "msg-1",
-      body: "## Factory check: the same failure twice\n\nThe triage run failed twice in a row the same way (`exception`): the worker hit an unexpected error.",
+      // The comment as run-results.unit.ts writes it: the failure in words, its code under Details.
+      body: "## Factory check: the same failure twice\n\nThe triage run failed twice in a row the same way: the worker hit an unexpected error.\n\n<details><summary>Details</summary>\n\nError code: `exception`\n\n</details>",
     },
   ],
 };
@@ -126,6 +127,12 @@ describe("owner text for a failed item (issue #758)", () => {
     // The thread names the message's kind in words.
     const thread = screen.getByRole("list", { name: "Thread" });
     expect(within(thread).getByText("Run failed")).toBeTruthy();
+    // The factory's run-failed comment names the failure in words; its error code is code under Details.
+    const body = thread.querySelector<HTMLElement>("[data-raw]")!;
+    body.querySelectorAll("[data-raw]").forEach((n) => n.removeAttribute("data-raw"));
+    expect(visibleText(body)).toContain("the worker hit an unexpected error");
+    expect(internalNames(visibleText(body))).toEqual([]);
+    expect([...body.querySelectorAll("details code")].map((c) => c.textContent)).toContain("exception");
     // The timeline's sentence for the repeated failure, its fields in code under Details.
     expect(screen.getByText("Failed twice the same way, so it needs you")).toBeTruthy();
     expect([...container.querySelectorAll("details code")].map((c) => c.textContent)).toContain("blocked_reason: – → repeated_failure");
