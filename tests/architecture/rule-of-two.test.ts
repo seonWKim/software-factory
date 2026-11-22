@@ -44,9 +44,13 @@ describe("rule-of-two", () => {
   });
 
   it("covers every agent run kind with the tools the worker gives it", () => {
-    expect(roles.all().map((r) => r.name)).toEqual([...MODEL_RUN_KINDS].sort());
+    // review-confirm is a step role inside the review run (design 04-agents), not a run kind of its own.
+    const steps = ["review-confirm"];
+    expect(roles.all().map((r) => r.name).filter((n) => !steps.includes(n))).toEqual([...MODEL_RUN_KINDS].sort());
+    for (const s of steps) expect(roles.get(s), s).not.toBeNull();
     const names = (t: readonly { name: string }[]) => t.map((x) => x.name);
-    for (const r of roles.all()) expect(r.tools, r.name).toEqual(names(r.name === "triage" ? READ_TOOLS : WRITE_TOOLS));
+    const readOnly = ["triage", ...steps];
+    for (const r of roles.all()) expect(r.tools, r.name).toEqual(names(readOnly.includes(r.name) ? READ_TOOLS : WRITE_TOOLS));
   });
 
   it("refuses an autonomous role with all three facts, a missing fact, and a role that approves what it proposes", () => {

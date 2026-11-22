@@ -1,11 +1,13 @@
 import { type MouseEvent, type ReactNode, type RefObject, useRef, useState } from "react";
 import { API, type CommandReply, type ItemCommand, type ItemDetail, type ThreadEntry, mergeReturned, showsMerge, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { CARD_TITLE, SUB_TITLE } from "../components/ui/card.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { OverflowMenu } from "../components/ui/menu.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { Textarea } from "../components/ui/textarea.js";
 import { t } from "../i18n/index.js";
+import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { PAGE_COMMANDS_PATH } from "../pages.js";
 import { OutcomeText, PendingProposals, SENTENCE } from "./command-box.js";
@@ -31,6 +33,9 @@ import { summaryOf, threadOrder } from "./thread.js";
 // sends that command through the item commands route; one the API marks not allowed is disabled with the controller's
 // reason under the row (in the menu, in its label). The command help (every command, how to type it) is behind ? and
 // ⌘K, never in the card.
+
+/** The sub-group heading type (SUB_TITLE) in the warn fill's own fg, which passes 4.5:1 there where text-2 does not. */
+const PANEL_SUB_TITLE = SUB_TITLE.replace(/text-text-\d/, "text-pill-warn-fg");
 
 /** The newest factory message's anchor, shown in the thread (which opens to it). */
 function showInThread(e: MouseEvent<HTMLAnchorElement>, anchor: string) {
@@ -154,11 +159,11 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
   return (
     <section aria-label={t("decide.title")} data-decide data-decision-card className="mt-3 space-y-3 rounded-card border border-pill-warn-fg bg-pill-warn-bg p-3 text-text-1">
       <div data-decision-question>
-        <h2 className="mb-1 text-balance text-sm font-semibold">{t("decide.title")}</h2>
+        <h2 className={cn("mb-1", CARD_TITLE)}>{t("decide.title")}</h2>
         {question}
       </div>
       <div data-decision-evidence className="space-y-2">
-        <h3 className="text-xs font-medium text-pill-warn-fg">{t("decide.evidence")}</h3>
+        <h3 className={PANEL_SUB_TITLE}>{t("decide.evidence")}</h3>
         <ThreadContext thread={data?.thread} />
         <InShort spec={data?.spec} />
         <AskedPaths paths={asked} />

@@ -15,6 +15,7 @@ import { When, useNow } from "./common.js";
 import { alarmAnchor } from "./settings/general.js";
 import { Outcome, useWrite } from "./settings-file-keys.js";
 import { ShowFailuresDialog, WhatFailedDialog } from "./alarm-dialogs.js";
+import { ModelCredentialDialog } from "./model-credential-dialog.js";
 
 /**
  * Shown while the app was built from another revision than the server it talks to runs (design §9): the tab
@@ -119,11 +120,12 @@ export function FactoryRevision({ factory }: { factory: FactoryState | null | un
 
 /**
  * One system action as a Needs-you row in the Check group (design 09-status-page): an open alarm (AlarmRow), a claim
- * pause (PauseCheckRow), else its sentence and the command that clears it.
+ * pause (PauseCheckRow), a missing model credential (ModelCredentialRow), else its sentence and the command that clears it.
  */
 export function CheckRow({ action }: { action: SystemAction }) {
   if (action.code === "alarm") return <AlarmRow action={action} />;
   if (action.code === "claim_pause" && action.pause) return <PauseCheckRow action={action} pause={action.pause} />;
+  if (action.code === "model_credential") return <ModelCredentialRow action={action} />;
   return (
     <ListRow
       data-check={action.code}
@@ -155,6 +157,23 @@ function PauseCheckRow({ action, pause }: { action: SystemAction; pause: string 
       {...(action.until !== null ? { details: <When at={action.until} now={now} label={label} /> } : {})}
     >
       <ResumeNow name={pause} token={token} />
+    </ListRow>
+  );
+}
+
+/**
+ * The missing model credential's Needs-you row (design 09-status-page): its sentence, no command, and Add model
+ * credential in its "⋯" menu, which opens the dialog; the row keeps its height.
+ */
+function ModelCredentialRow({ action }: { action: SystemAction }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <ListRow
+      data-check="model_credential"
+      title={<p title={action.text} className={cn(ROW_TITLE, "text-text-1")}>{action.text}</p>}
+      menu={<OverflowMenu label={t("commands.more")} items={[{ label: t("needs.addCredential"), action: "add_model_credential", onSelect: () => setOpen(true) }]} />}
+    >
+      {open && <ModelCredentialDialog onClose={() => setOpen(false)} />}
     </ListRow>
   );
 }
@@ -425,7 +444,7 @@ function AlarmMenuRow({ action, id, title, lead, dialog, output, children }: {
     <ListRow
       data-check="alarm"
       {...(id ? { id } : {})}
-      title={<p data-alarm-summary title={title} className={cn(ROW_TITLE, "text-text-1")}>{title}</p>}
+      title={<p data-alarm-summary data-raw title={title} className={cn(ROW_TITLE, "text-text-1")}>{title}</p>}
       {...(items.length > 0 ? { menu: <OverflowMenu label={t("commands.more")} items={items} /> } : {})}
     >
       {children}

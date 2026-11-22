@@ -10,7 +10,10 @@ import { HealthMonitor } from "../src/ui/health.js";
 import type { PauseDeps, UiPauses } from "../src/ui/pause-api.js";
 import { readRuleEntry, readRules } from "../src/ui/rules-api.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
-import { config, silent } from "./helpers/fakes/config.js";
+import { enqueueImprove, manualWindow } from "../src/core/improver.js";
+import { ASK_PROPOSAL, type AskRow, OWNER_ASK, type ProposalRow, proposalText } from "../src/core/owner-asks.js";
+import type { FactoryStore } from "../src/interfaces/factory-store.js";
+import { PROJECT, config, silent } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 const OWNER = "local:owner@example.com" as UserId;
@@ -71,5 +74,28 @@ describe("GET /api/v1/rules/entry: a prose change", () => {
     expect(JSON.stringify(v)).not.toContain(SECRET);
     expect(v.detail.change).toMatch(/^\[withheld: /);
     expect(v.detail).toMatchObject({ root_reason: "tests skipped", incidents: 1, evidence: [{ ref: "T-20261017-de7e" }] });
+  });
+});
+
+describe("GET /api/v1/rules: the improve report's owner asks (design 07-improve-report)", () => {
+  it("passes on the top ask reasons with the share approved unchanged, and each standing approval proposal as text", async () => {
+    const d = await deps([], async () => null);
+    const { run } = await enqueueImprove({ store: d.store as FactoryStore, clock: d.clock }, PROJECT.key, "manual");
+    const ask = (reason: string, asks: number, answered: number, approved_unchanged: number): AskRow =>
+      ({ error_code: OWNER_ASK, detail: reason, run_ids: [], work_item_ids: [], asks, answered, approved_unchanged });
+    const proposal: ProposalRow = { error_code: ASK_PROPOSAL, detail: "spec_pending", run_ids: [], work_item_ids: [], run_length: 10, text: proposalText({ reason: "spec_pending", run_length: 10 }) };
+    await (d.store as FactoryStore).recordImproveReport({
+      run_id: run!.id, project: PROJECT.key, ...manualWindow(d.clock.now()), groups: [],
+      patterns: [{ error_code: "lonely", detail: "x", run_ids: [], work_item_ids: [] }, ask("spec_pending", 4, 4, 3), ask(`run_failed ${SECRET}`, 2, 0, 0), proposal],
+    });
+    const v = (await readRules(d)).value as { improve: { report: Record<string, any> } };
+    const report = v.improve.report;
+    expect(report.patterns).toBe(1);
+    expect(report.asks).toEqual([
+      { reason: "spec_pending", asks: 4, answered: 4, share_unchanged: 0.75 },
+      { reason: expect.stringMatching(/^\[withheld: /), asks: 2, answered: 0, share_unchanged: null },
+    ]);
+    expect(report.proposals).toEqual([{ reason: "spec_pending", run_length: 10, text: expect.stringContaining("`/standing`") }]);
+    expect(await (d.store as FactoryStore).listStandingRules()).toEqual([]);
   });
 });
