@@ -1,5 +1,5 @@
 // Pure helpers that turn a command's or agent's raw output into what a person reads first (issue #229): no
-// terminal colour codes, the first error line, and the failing test names (with their first error line, for a CI log).
+// terminal colour codes, the first error line, the failing test names (with their first error line, for a CI log) and failed suites.
 
 // CSI sequences (colours, cursor moves) and OSC sequences (titles, links) a terminal would interpret.
 const ANSI = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g;

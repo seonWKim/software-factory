@@ -46,6 +46,12 @@ const flakyTest = (root: string) => [
   "sh",
 ];
 
+/** Fails the whole test file before its tests run (a vitest failed suite) when the change's file and BROKEN are both there. */
+const SUITE_TEST = [
+  "sh", "-c",
+  `if [ -f ${DIR}/a.yml ] && [ -f BROKEN ]; then printf ' FAIL  tests/ui-calendar-page.test.tsx [ tests/ui-calendar-page.test.tsx ]\\nError: Cannot bundle Node.js built-in node:sqlite\\n'; exit 1; fi`,
+];
+
 async function factory(o: { max_loops?: number; test?: (root: string) => string[] } = {}) {
   const root = mkdtempSync(join(tmpdir(), "sf-merge-check-loop-"));
   const repo = join(root, "repo");
@@ -165,6 +171,22 @@ describe("merge queue: a merged result that fails its checks sends the item back
     expect(prompt).toContain("## Failing checks on the merged commit");
     expect(prompt).toMatch(/Untrusted text: the failing tests/);
     expect(prompt).toMatch(/```text\n- tests\/a\.test\.ts > merged > breaks\n```/);
+  });
+
+  it("a test file that fails before its tests run names its suite in the outcome, the state change and the implement prompt", async () => {
+    const f = await factory({ test: () => SUITE_TEST });
+    const { id } = await f.queuedRed();
+    expect(await f.worker.tick()).toBe(true);
+    await f.controller.tickRuns();
+    const entry = "tests/ui-calendar-page.test.tsx > (suite failed): Cannot bundle Node.js built-in node:sqlite";
+    const check = (await f.store.listRuns(id)).find((r) => r.kind === "merge-check")!;
+    expect(check.outcome).toMatchObject({ status: "succeeded", data: { result: "red", why: "checks", failing_tests: [entry] } });
+    const change = (await f.store.listStateChanges(id)).find((c) => c.reason === "merge_check_failed")!;
+    expect(JSON.parse(String(change.detail?.failing_tests))).toEqual([entry]);
+    const before = f.runner.specs.length;
+    expect(await f.worker.tick()).toBe(true);
+    const prompt = f.runner.specs.slice(before).find((s) => s.role === "implement")!.prompt;
+    expect(prompt).toContain(`- ${entry}\n`);
   });
 
   it("with no test names, the reason and the state change name the command and its exit text", async () => {

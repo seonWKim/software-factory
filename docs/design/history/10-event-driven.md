@@ -1,5 +1,8 @@
 ## History
 
+- **`failing_tests` listed failed tests only** (decision changed 2026-11-23, wi_971653ce follow-up; changes "The merge
+  queue"). Before: a vitest file that failed before its tests ran (` FAIL  <file> [ <file> ]`) was not listed, so the
+  `merge_check_failed` detail held `failing_tests: []` and the implement prompt fell back to the command and its exit text.
 - **A run journaled by another code_version failed `not_resumable`** (decision changed 2026-11-21, issue #718;
   changes the 2026-11-09 "Resume across a deploy" rule under "Claims still go through the store's `claimRun`").
   Before: a run the store leased whose journal held a succeeded step from another `code_version` was refused by
