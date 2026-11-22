@@ -1,14 +1,14 @@
 /**
  * The one style of every link in the dashboard views (the sidebar navigation in App.tsx keeps its own): text-1, underlined
- * on hover. Accent is for the primary Button and the selected-tab underline only (docs/design/09-brand-and-tokens.md).
+ * at rest (colour alone fails 3:1 against the sentence around it). Accent is for the primary Button and the selected-tab underline only (docs/design/09-brand-and-tokens.md).
  * Every link is at least 24px tall, also inside running text (`inline-block min-h-6`, the responsive check's
  * small-target rule). A Button's `inline-flex` still wins over `inline-block`; a link that must be a block (a one-line
  * title cut with an ellipsis) takes BLOCK_LINK_CLASS instead, since `inline-block` would win over its `block`.
  */
-export const LINK_CLASS = "inline-block min-h-6 text-text-1 hover:underline";
+export const LINK_CLASS = "inline-block min-h-6 text-text-1 underline";
 
 /** LINK_CLASS for a link that is a block (a row or cell title, often `truncate`). */
-export const BLOCK_LINK_CLASS = "block min-h-6 text-text-1 hover:underline";
+export const BLOCK_LINK_CLASS = "block min-h-6 text-text-1 underline";
 
 /** An ID (an item or source ID, linked or not): text-3 in mono, underlined on hover when it is a link. */
 export const ID_CLASS = "inline-block min-h-6 font-mono text-text-3 hover:underline";
