@@ -24,6 +24,8 @@ A UI change keeps these as they are. The triage spec lists them for a change und
 
 ## Changelog
 
+- 2026-11-20: the page widths `page.wide` (77rem, 1232px, lists and tables) and `page.read` (60rem, 960px, forms and reading) in `tokens.json`, generated as `--page-wide` and `--page-read` and mapped to `max-w-page-wide` and `max-w-page-read`. `PageHeader` gains `width`; new `PageToolbar`; `CardSection` and every sub-group h3 use `SUB_TITLE` (`text-xs font-medium text-text-2`); a `Disclosure` trigger is at least 28px tall.
+- 2026-11-20: the `nav-active` colour (the `text` ink in both themes), drawn as a 2 px bar on the current sidebar link; contrast asserted at 3:1 against `sidebar`.
 - 2026-11-20: `components.md` opens with "Which component for what" (need, component, usage; Checkbox has no component yet, Switch until a follow-up issue adds it), and this file gains "Stays fixed". The triage and review prompts point to both.
 
 - 2026-11-19: `writing.md` gains "Plain words for everyone" (no code or machinery words on a page, values with meaning, local times, events as sentences, problems in three parts, short help, server text included) and a glossary.

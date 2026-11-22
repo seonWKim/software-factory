@@ -6,7 +6,7 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { NoneUpdater } from "../src/impl/updater/none.js";
 import { SUPERVISOR_REQUEST_FILE, SUPERVISOR_STATUS_FILE } from "../src/interfaces/updater.js";
 import { factoryRunning, supervisorLive, withDrain } from "../src/migrate-drain.js";
-import { waitFor } from "./helpers/fakes.js";
+import { waitFor } from "./helpers/fakes/config.js";
 
 function stateDir(status: Record<string, unknown> | null) {
   const dir = mkdtempSync(join(tmpdir(), "sf-drain-"));

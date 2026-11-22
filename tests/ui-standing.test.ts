@@ -85,7 +85,8 @@ describe("GET /api/v1/standing", () => {
     const v = await get(d);
     expect(v.csrf_token).toBe(pauses.csrfToken);
     const rule = v.rules.find((r: { rule: string }) => r.rule === "spec-t1");
-    expect(rule).toMatchObject({ gate: "spec", tier: 1, threshold: 10, enabled: false, set_by: null, created_at: null, last_used_at: null });
+    expect(rule).toMatchObject({ gate: "spec", tier: 1, threshold: 10, enabled: false, set_by: null, created_at: null, last_fired_at: null, recent: [] });
+    expect(rule).not.toHaveProperty("last_used_at");
     expect(v.proposals).toEqual([]);
   });
 
@@ -108,6 +109,40 @@ describe("GET /api/v1/standing", () => {
     clock.advance(1000);
     await real.putStandingRule({ gate: "spec", tier: 1, enabled: false, set_by: OWNER });
     expect(await ids()).not.toContain(proposal.id);
+  });
+
+  it("derives last fired and the 7-day items from the stored standing_approved changes, with no write", async () => {
+    const { d, clock, writes } = await setup();
+    const now = clock.now().getTime();
+    const at = (msAgo: number) => new Date(now - msAgo).toISOString();
+    const DAY = 24 * 60 * 60 * 1000;
+    const change = (work_item_id: string, msAgo: number, actor = "standing:spec-t1") => ({ work_item_id, at: at(msAgo), reason: "standing_approved", actor: { kind: "system", id: actor } });
+    const changes = [
+      change("wi_old", 8 * DAY), // outside the 7-day window: counts for last fired only if newest (it is not)
+      change("wi_a", 2 * DAY),
+      change("wi_a", 1 * DAY), // the same item twice: one item
+      change("wi_b", 3 * 60 * 1000), // the newest firing
+      change("wi_other", 1000, "standing:spec-t9"), // another rule's actor: not this rule's
+    ];
+    const asked: unknown[] = [];
+    const titles: Record<string, string> = { wi_a: "Fix the login", wi_b: `Ship ${SECRET}`, wi_old: "Old" };
+    const store = new Proxy(d.store, {
+      get(target, k, r) {
+        if (k === "listStateChangesSince") return async (q: { reasons: string[] }) => { asked.push(q); return changes.filter((c) => q.reasons.includes(c.reason)); };
+        if (k === "getWorkItem") return async (id: string) => (id in titles ? { id, title: titles[id] } : null);
+        const v = Reflect.get(target, k, r);
+        return typeof v === "function" ? v.bind(target) : v;
+      },
+    });
+    const v = await get({ ...d, store } as typeof d);
+    const rule = v.rules.find((r: { rule: string }) => r.rule === "spec-t1");
+    expect(asked).toEqual([{ reasons: ["standing_approved"], since: null }]);
+    expect(rule.last_fired_at).toBe(at(3 * 60 * 1000));
+    // Distinct items in the 7 days before now, newest first; each title through the Withholder.
+    expect(rule.recent.map((x: { id: string }) => x.id)).toEqual(["wi_b", "wi_a"]);
+    expect(rule.recent[1].title).toBe("Fix the login");
+    expect(JSON.stringify(rule.recent)).not.toContain(SECRET);
+    expect(writes()).toBe(0);
   });
 
   it("passes every text value through the Withholder", async () => {

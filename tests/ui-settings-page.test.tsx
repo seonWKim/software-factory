@@ -657,8 +657,9 @@ describe("Settings page: the typed form of the file-only keys (design 08-setting
     expect(keyOf(section, "plugins.runner").querySelector("details")!.textContent).not.toContain("guard");
     // The read-only keys' reason sits under the name as the description.
     expect(section.querySelector('tr[data-read-only="env"] p')!.textContent).toContain("locally or in the cloud");
-    // The sub-heading is drawn like the section title.
-    for (const name of ["Read-only keys", "Change on a local branch"]) expect(screen.getByRole("heading", { name }).className).toContain("text-balance text-base font-semibold");
+    // The section title is the Card's h2; the sub-group under it is an h3 in the one sub-group style.
+    expect(screen.getByRole("heading", { level: 2, name: "Change on a local branch" }).className).toContain("text-balance text-base font-semibold");
+    expect(screen.getByRole("heading", { level: 3, name: "Read-only keys" }).className).toContain("text-xs font-medium text-text-2");
   });
 
   it("Save sends edit-file through the writer, then shows the branch and a Merge button that merges the item locally", async () => {
@@ -757,8 +758,10 @@ describe("Settings page: the typed form of the file-only keys (design 08-setting
 });
 
 describe("Settings page: Mode lines, grouped Advanced keys and plain timing (design 09-dashboard-settings)", () => {
-  it("each settable key is in exactly one group, and the groups run Retries, Limits, Models, Notices, For developers", () => {
-    expect(ADVANCED_GROUPS.map((g) => en[g.title])).toEqual(["Retries", "Limits", "Models", "Notices", "For developers"]);
+  // Most important first (owner feedback 2026-11-20): Limits leads, and workers is its first key.
+  it("each settable key is in exactly one group, and the groups run Limits, Models, Retries, Notices, For developers", () => {
+    expect(ADVANCED_GROUPS.map((g) => en[g.title])).toEqual(["Limits", "Models", "Retries", "Notices", "For developers"]);
+    expect(GROUP_KEYS.limits[0]).toBe("workers");
     for (const key of SETTABLE_KEYS) {
       const groups = ADVANCED_GROUPS.filter((g) => GROUP_KEYS[g.id].includes(key)).map((g) => g.id);
       expect(groups, key).toHaveLength(1);
@@ -769,7 +772,7 @@ describe("Settings page: Mode lines, grouped Advanced keys and plain timing (des
 
   it("the Advanced tab draws a heading per group in order, and For developers collapsed after them", async () => {
     const table = await show();
-    expect([...table.querySelectorAll("tr[data-group]")].map((r) => r.textContent)).toEqual(["Retries", "Limits", "Models"]); // the fixture has no Notices key
+    expect([...table.querySelectorAll("tr[data-group]")].map((r) => r.textContent)).toEqual(["Limits", "Models", "Retries"]); // the fixture has no Notices key
     const dev = document.querySelector<HTMLDetailsElement>("details[data-group=developers]")!;
     expect(dev.querySelector("summary")!.textContent).toBe("For developers");
     expect(dev.open).toBe(false);
@@ -779,6 +782,40 @@ describe("Settings page: Mode lines, grouped Advanced keys and plain timing (des
     const order = [...table.querySelectorAll("tbody > tr")].map((r) => r.getAttribute("data-group") ?? r.getAttribute("data-key"));
     expect(order.indexOf("max_attempts")).toBe(order.indexOf("retries") + 1);
     expect(order.indexOf("model_by")).toBeGreaterThan(order.indexOf("models"));
+  });
+
+  it("orders the keys in a group by GROUP_KEYS, not by the server's order", async () => {
+    const table = await show();
+    const keys = [...table.querySelectorAll("tbody > tr[data-key]")].map((r) => r.getAttribute("data-key")!);
+    for (const g of ADVANCED_GROUPS) {
+      const listed = GROUP_KEYS[g.id].filter((k) => keys.includes(k));
+      expect(keys.filter((k) => GROUP_KEYS[g.id].includes(k)), g.id).toEqual(listed);
+    }
+  });
+
+  it("search keeps the keys whose name, label or help text matches, For developers too, and says when none matches", async () => {
+    const table = await show();
+    const search = screen.getByRole("searchbox", { name: "Search settings" });
+    // The search is a page filter: in the PageToolbar's second row, not inside the Settable keys card.
+    expect(search.closest("[data-page-toolbar]")).not.toBeNull();
+    expect(search.closest("section")).toBeNull();
+    fireEvent.change(search, { target: { value: "TICK_MS" } });
+    // The settable keys only: the file keys and PR-only tables below are not searched.
+    const shownKeys = () => [...(screen.queryByRole("table", { name: "Settable keys" })?.querySelectorAll("tr[data-key]") ?? []), ...document.querySelectorAll("details[data-group] tr[data-key]")].map((r) => r.getAttribute("data-key"));
+    // A developers key matched by its name shows in the table, and the collapsed For developers is gone.
+    expect(shownKeys()).toEqual(["tick_ms"]);
+    expect(document.querySelector("details[data-group=developers]")).toBeNull();
+    // A key matched by its label.
+    fireEvent.change(search, { target: { value: keyLabel("max_loops").toUpperCase() } });
+    expect(shownKeys()).toContain("max_loops");
+    fireEvent.change(search, { target: { value: "no such setting zz" } });
+    expect(shownKeys()).toEqual([]);
+    expect(document.querySelector("[data-no-match]")!.textContent).toBe("No setting matches \u201cno such setting zz\u201d.");
+    // Clearing it brings every key back, For developers collapsed again.
+    fireEvent.change(search, { target: { value: "" } });
+    expect(shownKeys().sort()).toEqual(view.keys.map((k) => k.key).sort());
+    expect(document.querySelector<HTMLDetailsElement>("details[data-group=developers]")!.open).toBe(false);
+    void table;
   });
 
   it("Details says when a change applies in one of three phrases", async () => {

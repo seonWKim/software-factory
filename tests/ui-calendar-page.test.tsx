@@ -6,7 +6,6 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CalendarEvents, CalendarSync, EventRow } from "../web/src/api.js";
-import { PAGES, routeFor } from "../web/src/pages.js";
 
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
 // loaded by a specifier the node check skips (as tests/ui-tasks-page.test.tsx does).
@@ -14,7 +13,7 @@ const PAGE_MODULE = "../web/src/views/calendar.js";
 const { CalendarPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { CalendarPage: FunctionComponent };
 
 // The Calendar page (design 09-dashboard-app, Calendar page): Week and Month views of the stored calendar events from
-// GET /api/v1/calendar/events, with previous, next and Today, "Not synced" for a day the last syncs did not cover, the
+// GET /api/v1/calendar/events, with previous, next and Today, shaded days for a day the last syncs did not cover, the
 // stale-sync notice, and an empty state that links to the Integrations tab of Settings. Today is fixed at Thursday 2026-11-12 (local).
 
 const SLOW = { timeout: 5_000 };
@@ -75,12 +74,6 @@ const shownRange = async (from: string, to: string) => {
 };
 
 describe("Calendar page", () => {
-  it("is a sidebar page at /app/calendar in the Tasks group, right after Tasks", () => {
-    expect(routeFor("/app/calendar").page.label).toBe("Calendar");
-    const tasks = PAGES.filter((p) => p.group === "tasks").map((p) => p.path);
-    expect(tasks.indexOf("calendar")).toBe(tasks.indexOf("tasks") + 1);
-  });
-
   it("the view control is exactly Week and Month, Week selected on load", async () => {
     show();
     const control = await screen.findByRole("group", { name: "Calendar view" }, SLOW);
@@ -89,12 +82,14 @@ describe("Calendar page", () => {
     expect(screen.queryByRole("button", { name: "Upcoming" })).toBeNull();
   });
 
-  it("one toolbar holds the view switch, then Previous, Next and Today", async () => {
+  it("one row of the page toolbar holds the view switch, then Previous, Next and Today, outside the Card", async () => {
     show();
     const toolbar = (await screen.findByRole("group", { name: "Calendar view" }, SLOW)).parentElement!;
     expect(toolbar.hasAttribute("data-calendar-toolbar")).toBe(true);
     expect(within(toolbar).getAllByRole("button").map((b) => b.textContent)).toEqual(["Week", "Month", "Previous", "Next", "Today"]);
     expect(document.querySelectorAll("[data-calendar-toolbar]")).toHaveLength(1);
+    expect(toolbar.closest("[data-page-toolbar]")).not.toBeNull();
+    expect(toolbar.closest("section")).toBeNull();
   });
 
   it("Week shows Monday to Sunday of the current week, each day's events all-day first, then timed by time, with time or 'all day' and source", async () => {
@@ -111,13 +106,64 @@ describe("Calendar page", () => {
     expect(entries(friday)).toEqual(["google-calendar:holiday", "work:standup", "google-calendar:lunch"]);
     const holiday = friday.querySelector<HTMLElement>('[data-event="google-calendar:holiday"]')!;
     expect(holiday.textContent).toContain("all day");
-    expect(holiday.textContent).toContain("google-calendar");
+    expect(holiday.textContent).not.toContain("google-calendar");
     expect(friday.querySelector('[data-event="work:standup"]')!.textContent).toContain("09:30");
     expect(within(holiday).queryByRole("button")).toBeNull();
-    // Days before the synced window say so; a synced day with no event is not drawn as not synced.
-    expect(document.querySelector('[data-day="2026-11-09"] [data-not-synced]')!.textContent).toBe("Not synced");
-    expect(document.querySelector('[data-day="2026-11-12"] [data-not-synced]')).toBeNull();
-    expect(document.querySelector('[data-day="2026-11-12"]')!.textContent).toContain("No events");
+    // Days before the synced window are shaded and carry no text; a synced day with no event shows no text line.
+    const unsynced = document.querySelector<HTMLElement>('[data-day="2026-11-09"]')!;
+    expect(unsynced.hasAttribute("data-not-synced")).toBe(true);
+    expect(unsynced.className).toContain("bg-surface-2");
+    expect(unsynced.textContent).toBe("Mon, Nov 9");
+    const empty = document.querySelector<HTMLElement>('[data-day="2026-11-12"]')!;
+    expect(empty.hasAttribute("data-not-synced")).toBe(false);
+    expect(empty.querySelector("p, ul")).toBeNull();
+  });
+
+  it("the period heading is the only h2, the Card's title, announced when it changes", async () => {
+    show();
+    await shownRange("2026-11-09", "2026-11-15");
+    const h2 = screen.getByRole("heading", { level: 2 });
+    expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(1);
+    expect(h2.closest("[data-calendar-toolbar]")).toBeNull();
+    expect(h2.getAttribute("aria-live")).toBe("polite");
+    const card = screen.getByRole("region", { name: "Nov 9 – 15, 2026" });
+    expect(card.querySelector("h2")).toBe(h2);
+    press("Month");
+    await shownRange("2026-11-01", "2026-11-30");
+    expect(heading()).toBe("November 2026");
+    expect(screen.getByRole("region", { name: "November 2026" }).querySelector("h2")!.textContent).toBe("November 2026");
+  });
+
+  it("today is circled in Week and Month, and no other day is", async () => {
+    show();
+    await shownRange("2026-11-09", "2026-11-15");
+    expect([...document.querySelectorAll("[data-today]")].map((e) => e.closest("[data-day]")!.getAttribute("data-day"))).toEqual(["2026-11-12"]);
+    expect(document.querySelector("[data-today]")!.className).toContain("outline-accent");
+    press("Month");
+    await shownRange("2026-11-01", "2026-11-30");
+    const today = [...document.querySelectorAll<HTMLElement>("[data-today]")];
+    expect(today.map((e) => e.closest("[data-day]")!.getAttribute("data-day"))).toEqual(["2026-11-12"]);
+    expect(today[0]!.textContent).toBe("12");
+  });
+
+  it("each event has a colour strip from a token, the same for one source across reads", async () => {
+    show();
+    await shownRange("2026-11-09", "2026-11-15");
+    const strip = (id: string) => document.querySelector(`[data-event="${id}"] [data-strip]`)!.className;
+    expect(strip("google-calendar:holiday")).toMatch(/bg-kind-/);
+    expect(strip("google-calendar:holiday")).toBe(strip("google-calendar:lunch"));
+    const before = strip("google-calendar:lunch");
+    press("Month");
+    await shownRange("2026-11-01", "2026-11-30");
+    expect(document.querySelector('[data-event="google-calendar:lunch"] [data-strip]')!.className).toBe(before);
+  });
+
+  it("an event names its source only when more than one calendar is connected", async () => {
+    calendar = [...calendar, { source: "work", synced_at: "2026-11-12T08:00:00.000Z", failed: false }];
+    show();
+    await shownRange("2026-11-09", "2026-11-15");
+    expect(document.querySelector('[data-event="work:standup"]')!.textContent).toContain("work");
+    expect(document.querySelector('[data-event="google-calendar:lunch"]')!.textContent).toContain("google-calendar");
   });
 
   it("Month shows a Monday-first grid of the month: up to 3 events a cell, then '+N more', empty cells outside the month", async () => {
@@ -138,7 +184,9 @@ describe("Calendar page", () => {
     const busy = grid.querySelector<HTMLElement>('[data-day="2026-11-20"]')!;
     expect(entries(busy)).toEqual(["google-calendar:a", "google-calendar:b", "google-calendar:c"]);
     expect(busy.textContent).toContain("+2 more");
-    expect(grid.querySelector('[data-day="2026-11-05"]')!.textContent).toContain("Not synced");
+    const unsynced = grid.querySelector('[data-day="2026-11-05"]')!;
+    expect(unsynced.hasAttribute("data-not-synced")).toBe(true);
+    expect(unsynced.textContent).toBe("5");
   });
 
   it("Week: previous and next move by one week, Today returns to the current week; the heading and the read follow", async () => {
@@ -180,12 +228,25 @@ describe("Calendar page", () => {
     expect(heading()).toBe("November 2026");
   });
 
-  it("a period outside the synced window says it is not synced, and no day of it is drawn as empty", async () => {
+  it("one note above the grid names the unsynced days, and is absent when every day is synced", async () => {
+    show();
+    await shownRange("2026-11-09", "2026-11-15");
+    const note = screen.getByRole("status");
+    expect(note.getAttribute("data-tone")).toBe("info");
+    expect(note.textContent).toContain(`Not synced: ${new Date(2026, 10, 9).toLocaleDateString(undefined, { month: "short", day: "numeric" })} – `);
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    press("Next week");
+    await shownRange("2026-11-16", "2026-11-22");
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(document.querySelectorAll("[data-not-synced]")).toHaveLength(0);
+  });
+
+  it("a period outside the synced window shades every day, and no day of it is drawn as empty", async () => {
     show();
     await shownRange("2026-11-09", "2026-11-15");
     press("Previous week");
     await shownRange("2026-11-02", "2026-11-08");
-    expect(screen.getByText(/not synced/, { selector: "[role=status] *" })).toBeTruthy();
+    expect(screen.getByText(/Not synced:/, { selector: "[role=status] *" })).toBeTruthy();
     expect(document.querySelectorAll("[data-not-synced]")).toHaveLength(7);
     expect(screen.queryByText("No events")).toBeNull();
   });

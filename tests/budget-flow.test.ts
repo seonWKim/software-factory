@@ -9,10 +9,11 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { AgentRunResult } from "../src/interfaces/agent-runner.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { newStore, PROJECT_KEY } from "./helpers/store.js";
-import {
-  FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeForge, FakeSource, MemoryStorage,
-  alice, cleanScanner, config as baseConfig, gates, issueRef, mallory, prompts, recordingLog, settingsWith, triageSpec,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config as baseConfig, gates, issueRef, mallory, prompts, recordingLog, settingsWith, triageSpec } from "./helpers/fakes/config.js";
 
 // Design §6: per-tier token budgets. At the budget the next implement or review run is held at a checkpoint.
 

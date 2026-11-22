@@ -14,7 +14,7 @@ import { REFUSED_ATTEMPTS } from "../src/outbound/outbound.js";
 import type { Delivery, DeliveryTarget } from "../src/outbound/targets/target.js";
 import type { Envelope } from "../src/shared/envelope.js";
 import { tickAt } from "../src/shared/ticks/tick-generator.js";
-import { cleanScanner, silent } from "./helpers/fakes.js";
+import { cleanScanner, silent } from "./helpers/fakes/config.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 type Deps = ConstructorParameters<typeof Outbound>[0];

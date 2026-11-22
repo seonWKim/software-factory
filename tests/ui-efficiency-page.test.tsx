@@ -5,11 +5,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { EfficiencyFigure, EfficiencyView, EfficiencyWeek } from "../web/src/api/efficiency.js";
+import type { EfficiencyFigure, EfficiencyTierMerges, EfficiencyView, EfficiencyWeek } from "../web/src/api/efficiency.js";
 
 // Health's Efficiency tab (design 06-efficiency): one Card with the finished-item charts and their totals, the picked
 // week's figures with the change from the week before ("−18%", "so far" for the running week), "no data" for a week
-// with none, the left-out and not-counted numbers, and the week's slowest and costliest items linking to their pages.
+// with none, the left-out and not-counted numbers, the week's slowest and costliest items linking to their pages, and
+// the per-tier merge record with the rule's result (an empty state with no merge).
 
 const PAGE_MODULE = "../web/src/views/pages.js";
 const { HealthPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { HealthPage: FunctionComponent };
@@ -26,6 +27,19 @@ const item = (id: string, title: string, total_ms: number, cost_usd: number) => 
   work_item_id: id, title, merged_at: "2026-11-19T00:00:00.000Z", total_ms, agent_ms: HOUR, waiting_ms: total_ms - HOUR, tokens: 1000, cost_usd, runs_without_usage: 0,
 });
 const bars = (n: number, step: number, counts: Record<number, number> = {}) => Array.from({ length: n }, (_, i) => ({ start: new Date(Date.parse("2026-09-28T00:00:00.000Z") + i * step).toISOString(), count: counts[i] ?? 0 }));
+
+const tierRow = (tier: number | null, over: Partial<EfficiencyTierMerges> = {}): EfficiencyTierMerges => ({
+  tier, merged: 0, reverted_or_fixed: 0, not_accept: 0, sample: 0, sample_bad: 0, sample_critical: 0, rule: "too_few", qualifies: false, ...over,
+});
+const tierRows: EfficiencyTierMerges[] = [
+  tierRow(1, { merged: 12, reverted_or_fixed: 1, not_accept: 2, sample: 50, sample_bad: 1, rule: "met", qualifies: true }),
+  tierRow(2, { merged: 7, reverted_or_fixed: 2, sample: 50, sample_bad: 2, sample_critical: 1, rule: "not_met" }),
+  tierRow(3, { merged: 3, sample: 30 }),
+  tierRow(4, { rule: "never" }),
+  tierRow(5, { rule: "never" }),
+  tierRow(null),
+];
+let merges: EfficiencyTierMerges[] = tierRows;
 
 const weeks = bars(8, 7 * 24 * HOUR, { 6: 2, 7: 1 });
 const view: EfficiencyView = {
@@ -48,11 +62,12 @@ const view: EfficiencyView = {
   ],
   left_out: { total: 3, cancelled: 1, rejected: 1, failed: 1 },
   runs_without_usage: 2,
+  merges: tierRows,
 };
 
 beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(async (url: string) => {
-    if (url === "/api/v1/efficiency") return json(200, view);
+    if (url === "/api/v1/efficiency") return json(200, { ...view, merges });
     if (url === "/api/v1/health") return json(200, { checked_at: view.as_of, checks: [] });
     if (url === "/api/v1/unreviewed-merges") return json(200, { merges: [] });
     if (url === "/api/v1/pauses") return json(200, { pauses: [], csrf_token: null });
@@ -62,6 +77,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  merges = tierRows;
   cleanup();
   vi.unstubAllGlobals();
 });
@@ -108,5 +124,27 @@ describe("Health page: Efficiency tab", () => {
     expect(card.textContent).toContain("no data");
     expect(card.textContent).toContain("No item finished this week.");
     expect(location.search).toBe("?tab=efficiency");
+  });
+
+  it("shows the per-tier merge record and whether each tier meets the rule, in a table under Merges by tier", async () => {
+    const card = await show();
+    const table = await within(card).findByRole("table", { name: "Merges by tier" }, SLOW);
+    const rows = within(table).getAllByRole("row").slice(1).map((r) => within(r).getAllByRole("cell").map((c) => c.textContent));
+    expect(rows).toEqual([
+      ["Tier 1", "12", "1", "2", "Met"],
+      ["Tier 2", "7", "2", "0", "Not met: 2 reverted or fixed forward, 1 critical"],
+      ["Tier 3", "3", "0", "0", "Too few merges: 30 of 50"],
+      ["Tier 4", "0", "0", "0", "Never"],
+      ["Tier 5", "0", "0", "0", "Never"],
+      ["Untiered", "0", "0", "0", "Too few merges: 0 of 50"],
+    ]);
+    expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["Tier", "Merges, 30 days", "Reverted or fixed forward", "Your verdicts other than accept", "Rule"]);
+  });
+
+  it("with no merge recorded, Merges by tier shows an empty state instead of the table", async () => {
+    merges = tierRows.map((r) => tierRow(r.tier, { rule: r.rule === "never" ? "never" : "too_few" }));
+    const card = await show();
+    expect(await within(card).findByText("No merge is recorded yet.", undefined, SLOW)).toBeTruthy();
+    expect(within(card).queryByRole("table", { name: "Merges by tier" })).toBeNull();
   });
 });

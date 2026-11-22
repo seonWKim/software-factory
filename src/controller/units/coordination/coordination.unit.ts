@@ -1,11 +1,12 @@
 // Dependencies between items: edges, holds, cycles and releases.
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
-import { DEPENDENCY_CLOSED } from "../../../core/commands.js";
+import { DEPENDENCY_CLOSED, LOCAL_ID, applies, commandSpec, dependsOnIds, localItemOf, phaseLabel, refusalText, wantedDependsOn, withDependsOn } from "../../../core/commands.js";
 import { type DependencyLink, type DependencyVerdict, dependencyReason, dependencyRef, dependencyVerdict, holdReason, isDependencySource } from "../../../core/coordination.js";
-import { runKey } from "../../../core/policy.js";
-import { type Actor, type DependencyState, type SourceType, type Timestamp, type WorkItem, type WorkItemId } from "../../../core/types.js";
-import type { FactoryStore } from "../../../interfaces/factory-store.js";
+import { AGENT_NEEDS_HUMAN, runKey } from "../../../core/policy.js";
+import { type Actor, type DependencyState, type SourceType, type Timestamp, type UserId, type WorkItem, type WorkItemId, type WorkItemPatch } from "../../../core/types.js";
+import { ownerAnswersFor, storedAnswers } from "../../../shared/command-notes.js";
+import type { UnitOperations } from "../../router/unit.js";
 import { SYSTEM, completed, footerAfter, iso } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
@@ -16,6 +17,10 @@ export const DEPENDENCY_STATE_TTL_MS = 10 * 60_000;
 const COORDINATION_BATCH = 50;
 /** blocked_reason prefix (with `blocked_on: human`) of a dependency cycle; DEPENDENCY_CLOSED is in commands.ts. */
 const DEPENDENCY_CYCLE = "dependency_cycle";
+/** State change reason of the `Depends on:` lines a coordination pass wrote into a local item's problem. */
+const DEPENDS_ON_WRITTEN = "depends_on_written";
+/** State change reason of a `/hold <id>`; its detail's `comment_id` is the command's key. */
+const HOLD_REQUESTED = "hold_requested";
 
 /** Dependencies between items: edges, holds, cycles and releases. */
 export class CoordinationUnit {
@@ -60,7 +65,118 @@ export class CoordinationUnit {
     const it = await this.c.k.d.store.getWorkItem(id);
     if (!it || it.stage !== "RUNNING" || it.change_ref !== null) return;
     if (it.blocked_on !== "none" && it.blocked_on !== "dependency") return;
-    await this.applyDependencies(it.id, await this.readDependencies(it, network ? "due" : "stored"));
+    const cur = network ? await this.writeDependsOn(it) : it;
+    await this.applyDependencies(cur.id, await this.readDependencies(cur, network ? "due" : "stored"));
+  }
+
+  /**
+   * A local item's `Depends on:` lines its problem lacks (design 05-dependencies, 2026-11-20): one for each item the
+   * owner answered yes to in triage's "Depends on wi_X? yes/no" on the approval that stored answers, and each line of
+   * the request as filed (`task create --depends-on`), which triage's spec replaced. Written in one transition, its
+   * links then marked stale, so this pass reads them. Only while its links are unread, or after an approval newer
+   * than their read; an item of another source, or with every line already: unchanged.
+   */
+  async writeDependsOn(it: WorkItem): Promise<WorkItem> {
+    if (it.source.type !== "local") return it;
+    // Only before its links are read, or after an approval since: an item whose links were read before this change is not backfilled.
+    const readAt = await this.c.k.d.store.dependencyLinksReadAt(it.id);
+    const changes = await this.c.k.d.store.listStateChanges(it.id);
+    if (readAt !== null && !changes.some((c) => Date.parse(c.at) > Date.parse(readAt) && storedAnswers(c.detail).length > 0)) return it;
+    const wanted = wantedDependsOn(it, await ownerAnswersFor(it, async (id) => (id === it.id ? changes : this.c.k.d.store.listStateChanges(id))));
+    if (withDependsOn(it.problem, wanted) === it.problem) return it;
+    await this.c.unit("transitions").decide(it.id, (cur) => {
+      const problem = withDependsOn(cur.problem, wanted);
+      if (problem === cur.problem) return null;
+      const added = wanted.filter((id) => !dependsOnIds(cur.problem).includes(id));
+      return { patch: { problem }, actor: SYSTEM, reason: DEPENDS_ON_WRITTEN, detail: { depends_on: added.join(",") } };
+    });
+    await this.c.k.d.store.markDependencyLinksStale(it.id);
+    return (await this.c.k.d.store.getWorkItem(it.id)) ?? it;
+  }
+
+  /**
+   * `/hold <id>` from the command inbox (`who`) or an app request (`app`, its user), which the commands unit hands
+   * over, as it has no comment event (design 05-dependencies, 2026-11-20): the owner check; nothing when this key was
+   * applied already (a row read again); the phase, a local item whose implement run asked for a human; one ID; then
+   * holdUntil. A refusal from the inbox is posted once in the item's thread, keyed on the row; an app request's is
+   * returned, and its caller posts it.
+   */
+  async holdCommand(
+    item: WorkItem, from: { who: Parameters<UnitOperations["auth"]["authorize"]>[0] } | { app: UserId }, key: string, text: string,
+  ): Promise<string | null> {
+    const auth = this.c.unit("auth");
+    const principal = "who" in from ? await auth.authorize(from.who, "approve_spec", item.id) : await auth.allowed({ user_id: from.app }, "approve_spec", item.id);
+    if (!("refuse" in principal) && (await this.c.k.d.store.listStateChanges(item.id)).some((c) => c.reason === HOLD_REQUESTED && c.detail?.comment_id === key)) return null;
+    const state = await this.c.unit("commands").stateOf(item);
+    const [id = "", ...more] = text.trim().split(/\s+/).filter((w) => w !== "");
+    const refusal = "refuse" in principal ? principal.refuse
+      : !applies(commandSpec("hold"), state) ? `the item is ${phaseLabel(state.phase)}; \`/hold <id>\` applies only to a local item whose implement run asked for a human`
+      : !LOCAL_ID.test(id) || more.length > 0 ? "`/hold` takes one ID, of the local item to wait for: `/hold wi_…` or `/hold tk_…`"
+      : await this.holdUntil(item, { kind: "user", id: principal.user_id }, id, key);
+    if (refusal !== null && "who" in from) {
+      this.c.k.d.log.info("command refused", { work_item_id: item.id, command: "hold", reason: refusal });
+      await this.c.unit("outbox").post(item, item.source, refusalText("/hold", refusal), `<!-- factory:refused:${key} -->`);
+    }
+    return refusal;
+  }
+
+  /**
+   * `/hold <id>` (design 05-dependencies, 2026-11-20) on a local item whose implement run asked for a human. Refused,
+   * naming why, for an ID that names no local item, the item itself, or an item already closed (merged, or closed
+   * without a merge, which would never release it). Else one transition with the human as actor: the
+   * `Depends on: <id>` line appended to the problem, `blocked_on: dependency` ("waiting for wi_X to merge") and a new
+   * implement run queued (restart_count + 1), which the claim holds until releaseDependents lifts the hold when
+   * wi_X merges. Its links are then read again, so the edge exists, and a cycle is refused as on any pass.
+   */
+  async holdUntil(it: WorkItem, actor: Extract<Actor, { kind: "user" }>, id: string, key: string): Promise<string | null> {
+    const dep = await localItemOf(this.c.k.d.store, id);
+    if (!dep) return `\`${id}\` names no local work item or built task`;
+    if (dep.id === it.id) return `\`${id}\` is this item itself, and an item cannot wait for itself`;
+    if (dep.stage === "CLOSED") {
+      return (await this.itemMerged(dep))
+        ? `${dep.id} is already merged, so there is nothing to wait for; reply \`/retry\` to run the implement again`
+        : `${dep.id} was closed without a merge, so it would never release this item`;
+    }
+    const reason = dependencyReason([dep.source.id], it.source.id, new Map([[dep.source.id, dep.id]]));
+    const refusal = await this.c.unit("transitions").decide(it.id, async (cur) => {
+      if (cur.stage !== "RUNNING" || cur.change_ref !== null || cur.blocked_on !== "human" || cur.blocked_reason !== AGENT_NEEDS_HUMAN) return null;
+      const next = { ...cur, restart_count: cur.restart_count + 1 };
+      const patch = {
+        problem: withDependsOn(cur.problem, [id]), blocked_on: "dependency" as const, blocked_reason: reason, restart_count: next.restart_count, failure_comment_url: null,
+      };
+      await this.waitComment(cur, `dependency-hold:${cur.id}:${key}`, reason, 1, patch);
+      return {
+        patch, actor, reason: HOLD_REQUESTED, detail: { depends_on: dep.id, comment_id: key },
+        enqueue: { kind: "implement" as const, idempotency_key: runKey(next, "implement") },
+      };
+    });
+    if (refusal !== null) return refusal;
+    await this.c.k.d.store.markDependencyLinksStale(it.id);
+    const now = await this.c.k.d.store.getWorkItem(it.id);
+    if (now) await this.applyDependencies(now.id, await this.readDependencies(now, "now"));
+    return null;
+  }
+
+  /**
+   * Whether an implement stop's `reason` names a local item `/hold` would accept (design 05-dependencies, 2026-11-20):
+   * a wi_ or tk_ id of another local item not closed yet. Only then does the stop's footer offer `/hold <id>`.
+   */
+  async namesUnmerged(it: WorkItem, reason: string): Promise<boolean> {
+    if (it.source.type !== "local") return false;
+    for (const [id] of reason.matchAll(/\b(?:wi|tk)_[\w-]+/g)) {
+      const dep = await localItemOf(this.c.k.d.store, id);
+      if (dep && dep.id !== it.id && dep.stage !== "CLOSED") return true;
+    }
+    return false;
+  }
+
+  /** The comment of a dependency hold: what the item waits for (`reason`, `count` items), and its footer after `patch`. */
+  private async waitComment(it: WorkItem, key: string, reason: string, count: number, patch: WorkItemPatch): Promise<void> {
+    await this.c.unit("outbox").comment(it, key, [
+      `The implement run waits: ${reason}. It starts on its own once ${count === 1 ? "it merges" : "they merge"}; \`/approve\` does not lift a dependency hold.`,
+      "",
+      footerAfter(it, patch),
+    ].join("\n"));
   }
 
   /**
@@ -121,7 +237,7 @@ export class CoordinationUnit {
    * issue's updated_at they were read at; else (no such source, or the source failed: logged, and the links
    * marked stale so a coordination pass reads them again once DEPENDENCY_STATE_TTL_MS has passed) the stored ones.
    */
-  async refreshEdges(it: WorkItem, read_at: Timestamp): Promise<Awaited<ReturnType<FactoryStore["listDependencyEdges"]>>> {
+  async refreshEdges(it: WorkItem, read_at: Timestamp) {
     const adapter = this.c.k.byType.get(it.source.type);
     if (!adapter || !isDependencySource(adapter)) return this.c.k.d.store.listDependencyEdges({ work_item_id: it.id });
     let links: DependencyLink[];
@@ -236,11 +352,7 @@ export class CoordinationUnit {
           const reason = dependencyReason(v.open, it.source.id, labels);
           if (it.blocked_on === "dependency" && it.blocked_reason === reason) return null;
           const patch = { blocked_on: "dependency" as const, blocked_reason: reason };
-          await this.c.unit("outbox").comment(it, `dependency-hold:${it.id}:${v.open.join(",")}`, [
-            `The implement run waits: ${reason}. It starts on its own once ${v.open.length === 1 ? "it merges" : "they merge"}; \`/approve\` does not lift a dependency hold.`,
-            "",
-            footerAfter(it, patch),
-          ].join("\n"));
+          await this.waitComment(it, `dependency-hold:${it.id}:${v.open.join(",")}`, reason, v.open.length, patch);
           return { patch, actor: SYSTEM, reason: "dependency_hold", detail: { depends_on: v.open.join(",") } };
         }
         case "closed": {

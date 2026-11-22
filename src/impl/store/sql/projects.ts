@@ -10,7 +10,7 @@ import {
 } from "../../../core/projects.js";
 import { ProjectRefused } from "../../../core/tasks.js";
 import type { Timestamp, UserId } from "../../../core/types.js";
-import { SqlGoldenStore } from "./golden-fingerprints.js";
+import { SqlDesignLearningStore } from "./design-learnings.js";
 import type { Row, SqlDriver, SqlExecutor } from "../../../state/index.js";
 
 const COLUMNS = "id, slug, name, created_by, created_at, archived_at, base_folder";
@@ -199,9 +199,9 @@ async function listTaskProjects(db: SqlDriver, task_id: string): Promise<Project
 
 /**
  * ProjectStore over a SqlDriver: the methods above bound to the store's driver and `stamp`, the store's injected Clock's
- * time. SqlFactoryStore extends it, so the task projects (and the golden fingerprints it extends) add no line to that file's budget.
+ * time. SqlFactoryStore extends it, so the task projects (and the design learnings, improve proposals and golden fingerprints it extends) add no line to that file's budget.
  */
-export class SqlProjectStore extends SqlGoldenStore implements ProjectStore {
+export class SqlProjectStore extends SqlDesignLearningStore implements ProjectStore {
   constructor(
     db: SqlDriver,
     private readonly stamp: () => Timestamp,

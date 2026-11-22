@@ -18,10 +18,10 @@ import { itemAlarms, openAlarms } from "./alarms.js";
 import { actorGrant, itemCommands, itemProposals, itemReplies, mergeReadiness, needsYouCommands, readSession, waitingSpec } from "./commands.js";
 import { type DataCtx, type DataResult, dataAutonomy, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
-import { LIST_LIMIT, activeRuns, closedFacetRows, itemCounts, itemState, latestDecision, holderTitles, listRows, readClaimPauses, readPhases, waitingOn, whyOf, withTitle } from "./list.js";
+import { LIST_LIMIT, activeRuns, closedFacetRows, itemCounts, itemState, latestDecision, holderTitles, listRows, mergeLinks, readClaimPauses, readPhases, waitingOn, whyOf, withTitle } from "./list.js";
 import { runTokens } from "./deps.js";
 import { heldFailureOf, needCtx, needOf } from "./need.js";
-import { NEEDS_YOU } from "./priority.js";
+import { WITH_NEED, askReason, holdingNow } from "./priority.js";
 import { type PauseDeps, readPauses } from "./pause-api.js";
 import { failures } from "./failures.js";
 import { spend } from "./spend.js";
@@ -32,6 +32,7 @@ import { readCapabilities } from "./capabilities-api.js";
 import { readStanding } from "./standing-api.js";
 import { inProject, projectFilterRefusal } from "./tasks-api.js";
 import { itemPrefix, runParts, transcript } from "./transcript.js";
+import { aboutFields } from "./item-checks.js";
 import { type SystemDeps, parseRevision, systemActions } from "./system-actions.js";
 import { needsYouCount } from "./needs-you.js";
 import { latestWhyAnchor, threadRows } from "./thread.js";
@@ -79,7 +80,7 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
     case "/health": return ok(await health(c));
     case "/failures":
       return failures({ store: d.store, text: (v) => c.text(v, "run_outcome").then((t) => t!), now: c.now }, url.searchParams);
-    case "/spend": return spend({ store: d.store, text: (v) => c.text(v).then((t) => t!), now: c.now }, url.searchParams);
+    case "/spend": return spend({ store: d.store, text: (v) => c.text(v).then((t) => t!), now: c.now, budgets: { daily_usd: (await effectiveGlobal(d, "spend.daily_budget_usd")).value, weekly_usd: (await effectiveGlobal(d, "spend.weekly_budget_usd")).value } }, url.searchParams);
     case "/efficiency": return efficiency({ store: d.store, text: (v) => c.text(v).then((t) => t!), now: c.now });
     case "/settings": return d.settings ? ok(await readSettings(d, d.settings)) : apiError(404, "Not found.");
     case "/settings/capabilities": return d.settings ? ok(await readCapabilities(d, d.settings)) : apiError(404, "Not found.");
@@ -217,21 +218,21 @@ class ApiCtx {
 
 }
 
-/**
- * /api/v1/health: the HealthMonitor's report (exactly what /api/health returns) plus `sleeps`, the newest host
- * sleeps (design §5 Host sleep, §9). The sleeps read is a report, never a gate: when it fails (e.g. a
- * database without step 0025) the list is empty and the checks still answer.
- */
+/** /api/v1/health: the HealthMonitor's report plus `sleeps` (design §5, §9). A report, never a gate: a failed read gives an empty list. */
 async function health(c: ApiCtx) {
   const report = await c.d.health.report(c.d.scanner);
   const rows = await c.d.store.listHostSleeps({ limit: HEALTH_SLEEPS }).catch((): HostSleep[] => []);
-  return { ...report, sleeps: await sleepRows(c, rows) };
+  return { ...report, sleeps: await sleepRows(c, rows, true) };
 }
 
-/** Host sleeps as the API returns them: ids, a timestamp and a number, never free text. */
-async function sleepRows(c: ApiCtx, rows: readonly HostSleep[]) {
+/** Host sleeps as the API returns them: ids, a timestamp and a number. `runs` adds the held run's item and status (null if the lookup fails). */
+async function sleepRows(c: ApiCtx, rows: readonly HostSleep[], runs = false) {
   const out = [];
-  for (const h of rows) out.push({ worker_id: (await c.text(h.worker_id))!, woke_at: h.woke_at, gap_ms: h.gap_ms, run_id: h.run_id });
+  for (const h of rows) {
+    const run = runs && h.run_id ? await c.d.store.getRun(h.run_id).catch(() => null) : null;
+    const held = runs ? { work_item_id: run ? await c.text(run.work_item_id) : null, run_status: run?.status ?? null } : {};
+    out.push({ worker_id: (await c.text(h.worker_id))!, woke_at: h.woke_at, gap_ms: h.gap_ms, run_id: h.run_id, ...held });
+  }
   return out;
 }
 
@@ -248,8 +249,8 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
   const workers = status && c.d.settings ? await effectiveGlobal(c.d, "workers") : status ? { value: status.workers, source: "file" as const } : null;
   const factory = status === undefined ? undefined : status === null ? null : {
     state: status.state,
-    rev: status.rev,
-    target_rev: status.target_rev,
+    rev: status.rev, previous_rev: status.previous_rev ?? null, target_rev: status.target_rev,
+    changes: status.changes ? { count: status.changes.count, subjects: await Promise.all(status.changes.subjects.map(async (v) => (await c.text(v))!)) } : null,
     child_pid: status.child_pid,
     since: status.since,
     workers: workers!.value,
@@ -268,7 +269,7 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
     plugins: c.d.plugins ?? { issues: null },
     ...(factory === undefined ? {} : { factory }),
     stages,
-    needs_you: await needsYouCount(s, system_actions), // the Needs-you rows: the waiting items, one per system action
+    needs_you: await needsYouCount(s, system_actions, holdingNow((await effectiveGlobal(c.d, "review_time")).value, c.now)), // the Needs-you rows not held: the waiting items, one per system action
     system_actions,
     /** Days left on the GitHub token from this process's last health run; "unknown" before one; null: no expiry check. */
     github_token_days: c.d.lastChecks?.tokenDays() ?? null,
@@ -304,9 +305,8 @@ async function unreviewedMerges(c: ApiCtx, params: URLSearchParams): Promise<Api
     const sha = await c.text(m.merge_sha);
     out.push({
       project: await c.text(label),
-      // The store keeps no link for an unreviewed merge yet (UnreviewedMerge carries only the ref): text only.
-      change_ref: m.change_ref,
-      change_url: null,
+      change_ref: m.change_ref, change_url: null, // no stored link (UnreviewedMerge carries only the ref): mergeLinks derives the PR's
+      ...(await mergeLinks(m.project, label, m.change_ref, (v) => c.text(v))),
       merge_sha: sha === m.merge_sha ? sha.slice(0, 7) : sha,
       merged_by: m.merger_id === null ? "unknown" : await c.text(m.merger_id),
       merged_by_name: m.merger_id === null ? null : await c.text(await displayName(c.d.displayNames, m.merger_id)),
@@ -326,7 +326,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
   const checks = new Map<string, MergeCheck>();
   for (const m of await c.d.store.listMergeChecks(shown.filter((r) => phaseOf(r.item) === "merge_pending").map((r) => r.item.id))) checks.set(m.work_item_id, m);
   const out = [];
-  const [allowed, commandGrant] = [actorGrant(c.d, "approve_merge"), actorGrant(c.d, "approve_spec")]; // each asked once per list
+  const [allowed, commandGrant, review_time] = [actorGrant(c.d, "approve_merge"), actorGrant(c.d, "approve_spec"), (await effectiveGlobal(c.d, "review_time")).value]; // each read once per list
   for (const r of shown) {
     const it = r.item;
     const decision = r.decision; // the current run's only: an earlier run's hold is stale
@@ -335,7 +335,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       id: it.id,
       source: { type: it.source.type, id: it.source.id, link: it.source.link },
       title: await c.text(it.title || null),
-      item_phase: r.level,
+      item_phase: r.level, state_label: r.label, // its words on the pages (src/shared/states.ts)
       reason_code: r.why.reason_code,
       stage: it.stage,
       tier: it.tier,
@@ -353,7 +353,8 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       conflicts: r.conflicts,
       merge_check,
       merge: await mergeReadiness(c.d, it, merge_check, allowed, r.pending),
-      ...(NEEDS_YOU.includes(r.level) ? { need: await c.need(it, merge_check), commands: await needsYouCommands(c.d, it, commandGrant, (v) => c.text(v)) } : {}),
+      ...askReason(r.input, r.level, review_time, holdingNow(review_time, c.now)), // rank_reason and held, on an ask only
+      ...(WITH_NEED.includes(r.level) ? { need: await c.need(it, merge_check), commands: await needsYouCommands(c.d, it, commandGrant, (v) => c.text(v)) } : {}),
       why: await c.why(r.why, it),
       parent_id: it.parent_id,
       phase: it.phase,
@@ -391,14 +392,7 @@ async function item(c: ApiCtx, id: WorkItemId) {
   const attemptsOf = new Map<string, RunAttempt[]>();
   for (const a of await s.listRunAttempts(id)) attemptsOf.set(a.run_id, [...(attemptsOf.get(a.run_id) ?? []), a]);
   // Which runs have a stored transcript: one listing of the item's prefix. A storage error only hides the links.
-  let stored: string[] = [];
-  if (c.d.storage) {
-    try {
-      stored = await c.d.storage.list(itemPrefix(id));
-    } catch {
-      stored = [];
-    }
-  }
+  const stored = c.d.storage ? await c.d.storage.list(itemPrefix(id)).catch((): string[] => []) : [];
   const merge_check = await mergeCheckRow(c, it, phaseOf(it) === "merge_pending" ? await s.getMergeCheck(id) : null);
   const st = await itemState({ store: s, w: c.w, now: c.now, lease_ms: c.d.lease_ms }, it, runs, changes); // as the list reads it
   const timeline = [];
@@ -452,6 +446,8 @@ async function item(c: ApiCtx, id: WorkItemId) {
       item_phase: st.level,
       reason_code: st.why.reason_code,
       why: await c.why(st.why, it),
+      // About (design 09-dashboard-item): the request, the approved spec and the done-when checks, each text withheld on its own.
+      ...(await aboutFields(it, runs, (v, ch) => c.text(v, ch))),
     },
     timeline,
     runs: runRows,

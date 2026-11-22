@@ -50,16 +50,24 @@ export class FsSharedStorage implements SharedStorage {
     }
   }
 
+  /**
+   * Every key that starts with `prefix`, sorted. Walks only the folder the prefix names (its part up to the last `/`),
+   * never the whole root: one item's transcripts cost one item's files, however many items the root holds.
+   */
   async list(prefix: string): Promise<string[]> {
+    const cut = prefix.lastIndexOf("/");
+    const dir = cut <= 0 ? this.root : resolve(this.root, prefix.slice(0, cut));
+    if (dir !== this.root && !dir.startsWith(this.root + sep)) return [];
     try {
-      const entries = await readdir(this.root, { recursive: true, withFileTypes: true });
+      const entries = await readdir(dir, { recursive: true, withFileTypes: true });
       return entries
         .filter((e) => e.isFile())
         .map((e) => relative(this.root, join(e.parentPath, e.name)).split(sep).join("/"))
         .filter((k) => k.startsWith(prefix))
         .sort();
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") return [];
       throw err;
     }
   }

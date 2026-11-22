@@ -4,8 +4,9 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { API, type ProjectChoice, type TaskRow, type TasksView, postTaskAction, useTasks } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { announceStatus } from "../components/ui/dialog.js";
-import { EmptyState, PageHeader } from "../components/ui/notice.js";
+import { EmptyState, PageHeader, PageToolbar } from "../components/ui/notice.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
+import { OverflowMenu } from "../components/ui/menu.js";
 import { Pagination } from "../components/ui/pagination.js";
 import { Tabs } from "../components/ui/tabs.js";
 import { useUrlParam } from "../lib/url-param.js";
@@ -13,7 +14,7 @@ import { t } from "../i18n/index.js";
 import { type QuickAddKey, isUndo } from "../keys.js";
 import { NeedsYou } from "./task-work.js";
 import { ProjectFiles } from "./project-files.js";
-import { AddProjectDialog } from "./tasks/dialogs.js";
+import { AddProjectDialog, DeleteProjectDialog } from "./tasks/dialogs.js";
 import { QuickAdd } from "./tasks/forms.js";
 import { PAGE_SIZE, groupsOf, hasTasks, pageOf } from "./tasks/groups.js";
 import { Group } from "./tasks/row.js";
@@ -40,11 +41,14 @@ import { Card } from "../components/ui/card.js";
 // load and set on change, so a filtered view can be shared and reloaded. Needs you
 // follows it too (GET /api/v1/items?project=<slug>): only the work items built from that project's tasks. Each open row's overflow
 // item Projects… opens the project dialog: a checkbox per active project adds or removes the task's link (POST
-// /api/v1/tasks/project) and New project creates one (POST /api/v1/projects) and puts the task in it.
+// /api/v1/tasks/project) and New project creates one (POST /api/v1/projects) and puts the task in it. A selected
+// project's "⋯" menu, after the tabs, holds Delete: the danger Dialog names the project and its task count (from the
+// loaded read) and says the tasks are kept; confirm posts POST /api/v1/projects/delete (`factory project delete`), the
+// tab goes at once and the filter falls back to All projects (design 09-dashboard-tasks).
 // On a project tab the row ends with Files (design 09-dashboard-tasks, the Files tab), a pressed-state Button in the row's
 // action slot kept in `?view=files` beside `?project=`: it shows that project's folder tree and editor (project-files.tsx)
-// in place of Quick add, Needs you and the list; pressing it again, or choosing any project tab, goes back to the tasks.
-// The page's order (design 09-dashboard-app): the project tabs, Quick add, Needs you, the list; the blocks
+// in place of Needs you, Quick add and the list; pressing it again, or choosing any project tab, goes back to the tasks.
+// The page's order (design 09-dashboard-app): the project tabs, Needs you, Merged without you, Worth sampling, Quick add, the list; the blocks
 // are spaced by one flex gap, the Section gap of design-system/patterns.md.
 
 /** The one paginated list; page 1 opens on the overdue and today groups. */
@@ -120,6 +124,7 @@ export function TasksPage() {
     setProject(slug);
   };
   const [adding, setAdding] = useState(false);
+  const [deleting, setDeleting] = useState<ProjectChoice | null>(null);
   const addButton = useRef<HTMLButtonElement>(null);
   const q = useTasks<TasksView & { add_key?: QuickAddKey }>(project);
   const v = q.data;
@@ -132,11 +137,14 @@ export function TasksPage() {
   // Kept from the last read, so the tabs keep their choices while a new filter loads.
   const known = useRef<readonly ProjectChoice[]>([]);
   if (v?.active_projects !== undefined) known.current = v.active_projects;
+  const selected = known.current.find((p) => p.slug === project) ?? null;
+  // The selected project's tasks, open or done, as the filtered read holds them: each task once.
+  const held = selected === null || !v ? 0 : new Set(v.projects.flatMap((g) => g.tasks.filter((x) => x.projects?.includes(selected.slug) ?? true).map((x) => x.id))).size;
   return (
     <>
     <PageHeader title={t("page.tasks")} />
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-col items-start gap-3">
+    <PageToolbar
+      tabs={
         <ProjectTabs
           projects={known.current}
           value={project}
@@ -146,6 +154,9 @@ export function TasksPage() {
               <Button ref={addButton} variant="ghost" size="icon" aria-label={t("tasks.addProject")} disabled={token === null} onClick={() => setAdding(true)}>
                 +
               </Button>
+              {selected !== null && token !== null && (
+                <OverflowMenu label={t("tasks.projectMore", { name: selected.name })} items={[{ label: t("tasks.delete"), danger: true, onSelect: () => setDeleting(selected) }]} />
+              )}
               {project !== null && (
                 <Button variant="ghost" size="sm" aria-pressed={files} className="ml-auto" onClick={() => setView(files ? null : "files")}>
                   {t("tasks.files")}
@@ -154,12 +165,28 @@ export function TasksPage() {
             </>
           }
         />
-        {adding && token !== null && <AddProjectDialog token={token} returnFocusTo={addButton} onCreated={chooseProject} onClose={() => setAdding(false)} />}
-      </div>
+      }
+    />
+    {adding && token !== null && <AddProjectDialog token={token} returnFocusTo={addButton} onCreated={chooseProject} onClose={() => setAdding(false)} />}
+    {deleting !== null && token !== null && (
+      <DeleteProjectDialog
+        project={deleting}
+        tasks={held}
+        token={token}
+        returnFocusTo={addButton}
+        onDeleted={() => {
+          known.current = known.current.filter((p) => p.slug !== deleting.slug);
+          if (project === deleting.slug) chooseProject(null);
+        }}
+        onClose={() => setDeleting(null)}
+      />
+    )}
+    <div className="flex flex-col gap-6">
       {files ? (
-        !v ? <Loading rows={3} /> : <ProjectFiles project={project} name={known.current.find((p) => p.slug === project)?.name ?? `+${project}`} token={v.csrf_token} canWrite={v.can_build} />
+        !v ? <Loading rows={3} /> : <ProjectFiles project={project} name={selected?.name ?? `+${project}`} token={v.csrf_token} canWrite={v.can_build} />
       ) : (
       <>
+      <NeedsYou project={project} linked={linked} />
       <div className="space-y-1">
         <QuickAdd token={v?.csrf_token ?? null} addKey={v?.add_key ?? "enter"} project={project} />
         {undo.error !== null && (
@@ -168,7 +195,6 @@ export function TasksPage() {
           </p>
         )}
       </div>
-      <NeedsYou project={project} linked={linked} />
       <div>
         <Card label={t("tasks.listLabel")}>
           <div className="space-y-3">

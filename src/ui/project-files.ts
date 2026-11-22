@@ -18,12 +18,25 @@ import { isProjectSlug, type Project } from "../core/projects.js";
 import { projectRefusal } from "../core/tasks.js";
 import type { ApiResult } from "./api.js";
 import type { UiDeps } from "./deps.js";
-import { OFF, fields, refused } from "./projects-api.js";
 
 export const PROJECT_FOLDER_PATH = "/api/v1/projects/folder";
 export const PROJECT_TREE_PATH = "/api/v1/projects/files/tree";
 export const PROJECT_FILE_READ_PATH = "/api/v1/projects/files/read";
 export const PROJECT_FILE_WRITE_PATH = "/api/v1/projects/files/write";
+
+// The project routes' shared answers, here so that projects-api.ts (a feature of this engine) imports them, not the reverse.
+export const OFF: ApiResult = { status: 503, value: { error: "Projects are off: this server is not on loopback, so it needs ui.user_id." } };
+export const refused = (status: 400 | 404 | 409 | 413, error: string, extra: Record<string, unknown> = {}): ApiResult => ({ status, value: { error, ...extra } });
+
+/** The body as an object with exactly `keys`, or why it is not one. */
+export function fields(body: unknown, keys: readonly string[]): { ok: true; b: Record<string, unknown> } | { ok: false; error: string } {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return { ok: false, error: "the body must be a JSON object" };
+  const b = body as Record<string, unknown>;
+  const extra = Object.keys(b).find((k) => !keys.includes(k));
+  if (extra !== undefined) return { ok: false, error: `unknown field "${extra}"` };
+  const missing = keys.find((k) => !(k in b));
+  return missing === undefined ? { ok: true, b } : { ok: false, error: `missing field "${missing}"` };
+}
 
 /** The largest file the editor edits (about 1 MB); a larger one opens read-only, its first MAX_EDIT_BYTES shown. */
 export const MAX_EDIT_BYTES = 1024 * 1024;

@@ -25,7 +25,10 @@ export async function onMergeTransition(tx: SqlExecutor, before: WorkItem, after
   if (merged && before.stage !== "CLOSED") await recordMergeEvaluation(tx, after, merged_by, at);
 }
 
-/** Every stored evaluation merged at or after `since` (null: all), oldest first, with what followed each merge. */
+/**
+ * Every stored evaluation merged at or after `since` (null: all), oldest first, with what followed each merge: its
+ * reverts and fix-forwards, its verdicts by kind, its explicit (`/verdict`) verdicts by kind and its critical ones.
+ */
 export async function listMergeEvaluations(db: SqlExecutor, since: Timestamp | null): Promise<MergeEvaluation[]> {
   const where = since === null ? "" : " WHERE e.merged_at >= ?";
   const params: SqlValue[] = since === null ? [] : [since];
@@ -43,20 +46,29 @@ export async function listMergeEvaluations(db: SqlExecutor, since: Timestamp | n
     params,
   );
   const verdicts = await db.all(
-    `SELECT work_item_id, verdict, COUNT(*) AS n FROM controller_verdicts WHERE work_item_id IN (${merged}) GROUP BY work_item_id, verdict`,
+    `SELECT work_item_id, verdict, severity, implicit, COUNT(*) AS n FROM controller_verdicts WHERE work_item_id IN (${merged})
+     GROUP BY work_item_id, verdict, severity, implicit`,
     params,
   );
   const count = (id: string, reason: string) => Number(changes.find((c) => c.work_item_id === id && c.reason === reason)?.n ?? 0);
   return rows.map((r) => {
     const id = String(r.work_item_id);
     const kinds = noVerdicts();
-    for (const v of verdicts) if (v.work_item_id === id) kinds[v.verdict as VerdictKind] = Number(v.n);
+    const explicit = noVerdicts();
+    let critical = 0;
+    for (const v of verdicts.filter((x) => x.work_item_id === id)) {
+      const kind = v.verdict as VerdictKind;
+      kinds[kind] += Number(v.n);
+      if (Number(v.implicit) === 1) continue;
+      explicit[kind] += Number(v.n);
+      if (v.severity === "critical") critical += Number(v.n);
+    }
     return {
       work_item_id: id as WorkItemId, project: String(r.project), merge_sha: String(r.merge_sha),
       tier: r.tier === null ? null : (Number(r.tier) as Tier), merged_by: String(r.merged_by),
       merged_at: String(r.merged_at) as Timestamp, token_cost: Number(r.token_cost),
       title: r.title == null ? null : String(r.title),
-      reverted: count(id, "reverted"), fixed_forward: count(id, "fixed_forward"), verdicts: kinds,
+      reverted: count(id, "reverted"), fixed_forward: count(id, "fixed_forward"), verdicts: kinds, explicit, critical,
     };
   });
 }

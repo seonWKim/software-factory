@@ -8,6 +8,6 @@ export {
 } from "./pool.js";
 export {
   DIFF_CHECK_MS, HOST_SLEEP_MS, NETWORK_PAUSED_BY, NO_COMMITS_DETAIL, READ_TOOLS, TRUSTED_GIT_ENV, WARM_FAILED, WRITE_TOOLS,
-  fenced, reviewComment, runCommits, testWorkerShare, toolsNamed, untrustedGitConfig,
+  failingTestNames, fenced, reviewComment, runCommits, testWorkerShare, toolsNamed, untrustedGitConfig,
   type LocalRoute, type WorkerDeps,
 } from "./support.js";

@@ -15,7 +15,8 @@ import {
   TOKEN_URL,
   calendarIds,
 } from "../../src/calendar/plugins/google-calendar/google-calendar-source.js";
-import { build, loadConfig } from "../../src/compose.js";
+import { build } from "../../src/compose.js";
+import { loadConfig } from "../../src/load-config.js";
 import { FakeClock } from "../../src/impl/clock/fake-clock.js";
 import type { Secret, SecretName, SecretStore } from "../../src/interfaces/secret-store.js";
 import { REGISTRY } from "../../src/plugins.js";
@@ -23,7 +24,9 @@ import type { SqlDriver } from "../../src/state/index.js";
 import { toolchainEnvKeyRefusal } from "../../src/core/tools/policy.js";
 import { buildAgentEnv } from "../../src/impl/runner/claude-code-runner.js";
 import { ControllerRole } from "../../src/runtime/roles/controller-role.js";
-import { FakeAuth, FakeSource, cleanScanner, config, fakeRepoLookup } from "../helpers/fakes.js";
+import { FakeAuth } from "../helpers/fakes/runner.js";
+import { FakeSource } from "../helpers/fakes/source.js";
+import { cleanScanner, config, fakeRepoLookup } from "../helpers/fakes/config.js";
 import { newStore } from "../helpers/store.js";
 
 // The google-calendar CalendarSource (docs/plugins/calendar-source.md). No test calls Google: every request goes to

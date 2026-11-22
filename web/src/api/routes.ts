@@ -36,6 +36,8 @@ export const API = {
   pauses: "/api/v1/pauses",
   resume: "/api/v1/pauses/resume",
   supervisor: "/api/v1/supervisor",
+  /** The Add model credential dialog: GET its secret names, POST the pasted values. */
+  modelCredential: "/api/v1/model-credential",
   migrate: "/api/v1/migrate",
   standing: "/api/v1/standing",
   rules: "/api/v1/rules",
@@ -48,6 +50,7 @@ export const API = {
   /** What quick add would store for these words, from the server's parser; writes nothing. */
   taskPreview: (words: string) => `/api/v1/tasks/preview?words=${encodeURIComponent(words)}`,
   projects: "/api/v1/projects",
+  projectDelete: "/api/v1/projects/delete",
   taskProject: "/api/v1/tasks/project",
   calendar: "/api/v1/calendar",
   calendarConnect: "/api/v1/calendar/connect",

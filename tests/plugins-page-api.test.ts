@@ -9,7 +9,9 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import packCommand from "../src/cli/handlers/pack/pack.command.js";
 import pluginsCommand from "../src/cli/handlers/plugins/plugins.command.js";
-import { Plugins, loadConfig, settingsBase } from "../src/compose.js";
+import { Plugins } from "../src/plugin-set.js";
+import { loadConfig } from "../src/load-config.js";
+import { settingsBase } from "../src/core/settings-base.js";
 import { OwnerAuth } from "../src/core/authorize.js";
 import type { SettingsBase } from "../src/core/settings.js";
 import type { UserId } from "../src/core/types.js";
@@ -27,7 +29,7 @@ import { type PluginRows, pluginLines, pluginRows } from "../src/ui/plugins-api.
 import { type ApiDeps, respond } from "../src/ui/server.js";
 import { type UiSettings, newCsrfToken, storeProjectResolver } from "../src/ui/settings-api.js";
 import { newStore } from "./helpers/store.js";
-import { silent } from "./helpers/fakes.js";
+import { silent } from "./helpers/fakes/config.js";
 
 const ME = "local:me@example.com" as UserId;
 // Built here so no secret-shaped literal sits in the repository.

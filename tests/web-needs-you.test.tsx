@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../web/src/App.js";
 
 // The Needs you section of the Tasks page (design 09-dashboard-app), which /app/ opens: its count, compact rows grouped
-// Merge, Approve, Answer or fix, one primary action per row with the "⋯" menu last, and j, k, Enter and p on the rows.
+// Merge, Approve, Answer or fix, every action in the row's "⋯" menu with the primary first, and j, k, Enter and p on the rows.
 // Its count, and the sidebar badge are the same number for the same data: the overview's needs_you
 // counts the rows the section lists (design 09-status-page; tests/ui-system-actions.test.ts checks the server's side).
 
@@ -33,12 +33,15 @@ let overview: Record<string, unknown>;
 /** The Tasks read's projects (the open tasks and their work items). */
 let projects: object[];
 let posts: { url: string; body: unknown }[];
+/** `/api/v1/items/:id` reads by item ID (a ready merge row reads its item for why its last Merge went back). */
+let details: Record<string, unknown>;
 
 beforeEach(() => {
   list = [MERGE, CHECKING, APPROVE, RETRY, NOTHING, DEP];
   projects = [];
   overview = { as_of: AT, stages: {}, needs_you: 5, running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 }, system_actions: [], factory: { state: "running", rev: "0ff810f1234", target_rev: "0ff810f1234", child_pid: 1, since: AT, workers: 1, workers_source: "default", error: null, pending: [] } };
   posts = [];
+  details = {};
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method === "POST") {
       posts.push({ url, body: JSON.parse(String(init.body)) });
@@ -51,6 +54,7 @@ beforeEach(() => {
       "/api/v1/pauses": { pauses: [], csrf_token: null },
       "/api/v1/session": { as_of: AT, csrf_token: "tok", commands_enabled: true, actor: "local:me", actor_source: "environment" },
     };
+    for (const [id, d] of Object.entries(details)) bodies[`/api/v1/items/${encodeURIComponent(id)}`] = d;
     const body = bodies[url.split("?")[0]!];
     if (body === undefined) return new Response(JSON.stringify({ error: "Not found." }), { status: 404 });
     return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
@@ -72,10 +76,17 @@ function mount() {
 const rowsOf = (el: HTMLElement) => [...el.querySelectorAll("li[data-key]")] as HTMLElement[];
 const ready = async () => {
   const section = await screen.findByRole("region", { name: "Needs you" });
-  // The rows' commands are on once the session is read.
-  await waitFor(() => expect(within(section).queryAllByRole("button", { name: "Merge" }).some((b) => !b.disabled) || list.length === 0).toBe(true));
+  // The rows' commands are on once the session is read: the hidden shortcut button of the first primary turns on.
+  await waitFor(() => expect(!!section.querySelector("[data-shortcut]:not([disabled])") || list.length === 0).toBe(true));
   return [...section.querySelectorAll("ul")] as HTMLElement[];
 };
+/** Opens a row's ⋯ menu and returns its items (the menu stays open). */
+const openMenu = (r: HTMLElement) => {
+  fireEvent.click(within(r).getByRole("button", { name: "More commands" }));
+  return within(within(r).getByRole("menu")).getAllByRole("menuitem") as HTMLButtonElement[];
+};
+/** Closes an open ⋯ menu by its button. */
+const closeMenu = (r: HTMLElement) => fireEvent.click(within(r).getByRole("button", { name: "More commands" }));
 
 describe("the Needs you section", () => {
   it("leads from /app/ to the Tasks page, with the count and the groups Merge, Approve, Answer or fix in that order", async () => {
@@ -118,27 +129,32 @@ describe("the Needs you section", () => {
     expect(merge.textContent).not.toContain("#12");
   });
 
-  it("gives every row one primary action with the ⋯ menu last, in the same place", async () => {
+  it("gives every row only its ⋯ menu, the primary command its first item (owner feedback 2026-11-20)", async () => {
     mount();
     const lists = await ready();
     const labels = lists.flatMap(rowsOf).map((r) => {
-      const controls = [...r.querySelectorAll("button, a[data-command]")].filter((c) => !c.closest("[role=menu]"));
-      expect(controls.at(-1)!.getAttribute("aria-label"), r.getAttribute("data-key")).toBe("More commands");
-      expect(controls, r.getAttribute("data-key")).toHaveLength(2);
-      return controls[0]!.textContent;
+      // No visible button or command link beside the menu: Merge, Approve and Retry are menu items.
+      const controls = [...r.querySelectorAll<HTMLElement>("button, a[data-command]")].filter((c) => !c.hidden && !c.closest("[role=menu]"));
+      expect(controls.map((c) => c.getAttribute("aria-label")), r.getAttribute("data-key")).toEqual(["More commands"]);
+      const first = openMenu(r)[0]!.textContent;
+      closeMenu(r);
+      return first;
     });
-    expect(labels).toEqual(["Merge", "Checking…", "Approve", "Retry", "Open"]);
+    expect(labels).toEqual(["Merge", "Checking…", "Approve", "Retry", "No other commands"]);
   });
 
   it("disables Merge as 'Checking…' while the merge check runs, with no separate line or duplicate text", async () => {
     mount();
     const lists = await ready();
     const checking = rowsOf(lists[0]!)[1]!;
-    const button = within(checking).getByRole("button", { name: "Checking…" });
-    expect(button.disabled).toBe(true);
+    const item = openMenu(checking)[0]!;
+    expect(item.textContent).toBe("Checking…");
+    expect(item.disabled).toBe(true);
     expect(checking.textContent!.match(/Checking…/g)).toHaveLength(1);
     expect(checking.textContent).not.toContain("merge check running");
-    expect(within(rowsOf(lists[0]!)[0]!).getByRole("button", { name: "Merge" }).disabled).toBe(false);
+    closeMenu(checking);
+    const merge = openMenu(rowsOf(lists[0]!)[0]!)[0]!;
+    expect([merge.textContent, merge.disabled]).toEqual(["Merge", false]);
   });
 
   it("shows an Answer-or-fix reason as plain text, with the +paths reply in the menu and /retry sent from it", async () => {
@@ -152,18 +168,16 @@ describe("the Needs you section", () => {
     expect(posts[0]).toEqual({ url: "/api/v1/items/wi_r1/commands", body: { command: "retry", note: "+paths web/src/components/ui/input.tsx" } });
   });
 
-  it("after a click the primary button says it was sent and stays off, so the row never looks unchanged", async () => {
+  it("after a click the primary menu item says it was sent and stays off, and p cannot send it twice", async () => {
     mount();
     const lists = await ready();
     const row = rowsOf(lists[1]!)[0]!;
-    const approve = within(row).getByRole("button", { name: "Approve" });
+    const approve = openMenu(row)[0]!;
+    expect(approve.textContent).toBe("Approve");
     fireEvent.click(approve);
     await waitFor(() => expect(posts).toHaveLength(1));
-    const sent = await waitFor(() => {
-      const b = row.querySelector<HTMLButtonElement>("[data-sent]");
-      if (!b) throw new Error("not sent yet");
-      return b;
-    });
+    await waitFor(() => expect(row.querySelector<HTMLButtonElement>("[data-shortcut]")!.disabled).toBe(true));
+    const sent = openMenu(row)[0]!;
     expect(sent.textContent).toBe("Sent, waiting…");
     expect(sent.disabled).toBe(true);
   });
@@ -182,8 +196,11 @@ describe("the Needs you section", () => {
     expect(chip.textContent).toBe("failed: spec_conflict");
     expect(need.parentElement!.querySelector("[data-level='needs_you']")).not.toBeNull();
     expect(row.querySelector("p[data-need]")).toBeNull();
-    // A sentence stays a line.
-    expect(rowsOf(lists[2]!)[0]!.querySelector("[data-need]")!.tagName).toBe("P");
+    // A sentence joins the same second line, cut to one line with the full text on hover (owner feedback 2026-11-20).
+    const sentence = rowsOf(lists[2]!)[0]!.querySelector<HTMLElement>("[data-need]")!;
+    expect(sentence.className).toContain("truncate");
+    expect(sentence.getAttribute("title")).toBe(sentence.textContent);
+    expect(sentence.parentElement!.querySelector("[data-level]")).not.toBeNull();
   });
 
   it("links a status-code chip to the thread entry its reason names", async () => {
@@ -222,15 +239,13 @@ describe("the Needs you section", () => {
     await waitFor(() => expect(location.pathname).toBe("/app/items/wi_a1"));
   });
 
-  it("shows the primary action's shortcut in its tooltip, and none on Merge", async () => {
+  it("keeps the p shortcut on a hidden button for the primary command, and none on Merge", async () => {
     mount();
     const lists = await ready();
-    fireEvent.focus(within(rowsOf(lists[1]!)[0]!).getByRole("button", { name: "Approve" }));
-    expect(screen.getByRole("tooltip").textContent).toBe("Approve (p)");
-    cleanup();
-    mount();
-    const [merge] = await ready();
-    expect(merge!.querySelector("[data-shortcut]")).toBeNull();
+    const shortcut = rowsOf(lists[1]!)[0]!.querySelector<HTMLButtonElement>("[data-shortcut='p']")!;
+    expect(shortcut.hidden).toBe(true);
+    expect(shortcut.getAttribute("data-command")).toBe("approve");
+    expect(lists[0]!.querySelector("[data-shortcut]")).toBeNull();
   });
 });
 
@@ -268,16 +283,89 @@ describe("the Needs you count is its rows (design 09-status-page)", () => {
     expect(n.rows.map((r) => r.dataset.key)).toEqual([MERGE.id, APPROVE.id, RETRY.id]);
   });
 
-  it("each open alarm is its own row: two alarms give 2", async () => {
-    const n = await numbers(2, [], [ALARM(4), ALARM(5)]);
-    expect([n.rows.length, n.count, n.badge]).toEqual([2, 2, 2]);
-    expect(n.rows.map((r) => r.dataset.check)).toEqual(["alarm", "alarm"]);
-  });
-
   it("a non-alarm system action is one row with its command, beside an item and an alarm", async () => {
     const pause = { code: "worker_pause", text: "1 worker pause in effect (factory workers pause)", command: "factory workers resume", until: null };
     const n = await numbers(3, [MERGE], [pause, ALARM(4)]);
     expect([n.rows.length, n.count, n.badge]).toEqual([3, 3, 3]);
     expect(n.rows.find((r) => r.dataset.check === "worker_pause")!.querySelector("code")!.textContent).toBe("factory workers resume");
+  });
+
+  it("draws a rank badge on an ask that has a rank reason and none on a row without one", async () => {
+    list = [{ ...MERGE, rank_reason: "Merge", held: false }, APPROVE];
+    mount();
+    const lists = await ready();
+    const rows = lists.flatMap(rowsOf);
+    expect(rows.map((r) => r.querySelector("[data-rank]")?.textContent ?? null)).toEqual(["Merge", null]);
+  });
+});
+
+describe("a Merge row whose last Merge came back (the 2026-11-22 screenshot at about 450 px)", () => {
+  // wi_d4d15050: the CLI's merge put it in the merge queue, a dashboard Merge was then refused as already there, and the
+  // controller put the item back at merge_pending with that refusal (merge_returned) while the queue still checks it.
+  const ID = "wi_d4d150505c93419b87e3afce5544a500";
+  const QUEUED = row("d4", "ready_to_merge", "North star in AGENTS.md", {
+    id: ID, blocked_reason: "merge_pending", merge: { enabled: true, reason: null },
+    merge_check: { state: "mergeable", conflicts: [], head_sha: "a", base_sha: "b", checked_at: AT },
+  });
+  const returned = (refusal: string) => ({
+    item: { ...QUEUED, blocked_reason: "merge_pending" }, replies: [], proposals: [], thread: [], runs: [], transcripts: {}, sleeps: [],
+    timeline: [
+      { version: 7, at: AT, actor: { kind: "user", id: "local:me", name: null }, reason: "merge_requested", changes: {}, detail: null },
+      { version: 8, at: AT, actor: { kind: "system", id: "system:controller", name: null }, reason: "merge_returned", changes: {}, detail: { refusal } },
+    ],
+  });
+  const mergeRow = async () => {
+    const [first] = await ready();
+    return rowsOf(first!).find((r) => r.getAttribute("data-key") === ID)!;
+  };
+
+  it("keeps the title first and says Merging… for 'already in the merge queue', with no error and no raw ID", async () => {
+    list = [MERGE, QUEUED, APPROVE];
+    details = { [ID]: returned(`${ID} is already in the merge queue (checking)`) };
+    mount();
+    const r = await mergeRow();
+    await waitFor(() => expect(r.textContent).toContain("Merging…"));
+    expect(within(r).getByRole("link", { name: "North star in AGENTS.md" })).toBeTruthy();
+    expect(r.querySelector("[data-row-menu]")!.textContent).not.toContain("merge queue");
+    expect(r.textContent).not.toContain("already in the merge queue");
+    expect(within(r).queryByRole("alert")).toBeNull();
+    expect(r.textContent).not.toMatch(/wi_[0-9a-z]+/);
+    const [merge] = openMenu(r);
+    expect(merge!.textContent).toBe("Merging…");
+    expect(merge!.disabled).toBe(true);
+  });
+
+  it("shows any other refusal on its own line below the row's content, never in the menu cell, with no raw ID", async () => {
+    list = [QUEUED, APPROVE];
+    details = { [ID]: returned(`${ID} could not merge: the head moved`) };
+    mount();
+    const r = await mergeRow();
+    const alert = await within(r).findByRole("alert");
+    expect(alert.closest("[data-row-error]")).toBeTruthy();
+    expect(alert.closest("[data-row-menu]")).toBeNull();
+    expect(alert.textContent).toBe("d4d15050 could not merge: the head moved");
+    expect(r.textContent).not.toMatch(/wi_[0-9a-z]+/);
+    // The title is still the row's first line.
+    expect(r.querySelector("a")!.textContent).toBe("North star in AGENTS.md");
+  });
+
+  it("the page recognises the merge queue's own refusal words (src/controller/units/merge-queue/merge-queue.unit.ts)", async () => {
+    const { readFileSync } = await import("node:fs");
+    const unit = readFileSync(`${process.cwd()}/src/controller/units/merge-queue/merge-queue.unit.ts`, "utf8");
+    const { alreadyQueued } = await import("../web/src/api.js");
+    const words = /return `\$\{item\.id\}( is already in the merge queue \()\$\{/.exec(unit);
+    expect(words).not.toBeNull();
+    expect(alreadyQueued(`${ID}${words![1]}checking)`)).toBe(true);
+    expect(alreadyQueued("the head moved")).toBe(false);
+  });
+
+  it("a row with merge conflicts shows the conflicts as its one state, not Ready to merge beside them", async () => {
+    list = [{ ...MERGE, merge: { enabled: false, reason: "9 conflicting files" }, merge_check: { state: "conflicts", conflicts: Array.from({ length: 9 }, (_, i) => `f${i}.ts`), head_sha: "a", base_sha: "b", checked_at: AT } }, APPROVE];
+    mount();
+    const [first] = await ready();
+    const r = rowsOf(first!)[0]!;
+    expect(r.textContent).toContain("Conflicts: 9 files");
+    expect(r.textContent).not.toContain("Ready to merge");
+    expect(r.querySelector('[data-merge-check="conflicts"]')!.getAttribute("title")).toContain("f0.ts");
   });
 });

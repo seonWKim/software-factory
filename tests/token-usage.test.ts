@@ -17,10 +17,11 @@ import type { ExecResult, Sandbox } from "../src/interfaces/sandbox.js";
 import { STORE_BRANCH, type ToolCallContext, type ToolResult } from "../src/interfaces/tool-broker.js";
 import { api } from "../src/ui/api.js";
 import { HealthMonitor } from "../src/ui/health.js";
-import {
-  FakeForge, FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
-  alice, cleanScanner, config as baseConfig, issueRef, prompts, silent, settingsWith, triageSpec,
-} from "./helpers/fakes.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config as baseConfig, issueRef, prompts, silent, settingsWith, triageSpec } from "./helpers/fakes/config.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 
 // Issue #136: every agent call's usage (input, output, cache read, cache write, cost, model) is recorded on

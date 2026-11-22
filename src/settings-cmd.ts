@@ -138,6 +138,12 @@ export interface SettingsDeps {
   scanner?: EgressScanner;
   /** The file-only key writer (compose.ts configWriter), the one the Settings write route runs too. Absent: edit-file is refused. */
   editFile?(r: ConfigEditRequest): Promise<ConfigEditResult>;
+  /**
+   * Whether reads, writes and network are OS-enforced for agent runs on this host (compose.ts sandboxEnforcement, the
+   * same probe as doctor's sandbox lines): asked when a set or reset would leave `mode` at `auto`, which is refused
+   * naming each one that is not (design 05-sandbox.md). Never asked for `manual`. Absent: no check.
+   */
+  sandbox?(): Promise<Readonly<Record<string, { enforced: boolean; why: string }>>>;
 }
 
 export interface SettingsResult {
@@ -257,6 +263,13 @@ async function change(deps: SettingsDeps, a: Extract<SettingsAction, { action: "
 
   const was = effectiveSetting(before, key, project);
   const now = effectiveSetting(after, key, project);
+  if (key === "mode" && now.value === "auto" && deps.sandbox) {
+    const off = Object.entries(await deps.sandbox()).filter(([, e]) => !e.enforced);
+    if (off.length > 0) {
+      const names = off.map(([k]) => k).join(", ");
+      return fail(`auto mode needs the OS sandbox, and on this host ${names} ${off.length === 1 ? "is" : "are"} not OS-enforced (${off.map(([k, e]) => `${k}: ${e.why}`).join("; ")}); mode stays ${fmt(was.raw)}. See factory doctor`);
+    }
+  }
   // Loosening a tighten-only key (a higher max_diff_lines, phases_auto_approve true) needs the same grant as mode;
   // tightening needs none (design 08-settings, 2026-11-09).
   if (!APPROVE_MERGE_KEYS.includes(key) && deps.mayApproveMerge) {

@@ -128,8 +128,8 @@ describe("item page: Runs section", () => {
     mount(`/app/items/${ITEM}`);
     const table = await screen.findByRole("table", { name: "Runs" });
     const head = within(table).getAllByRole("columnheader").map((h) => h.textContent);
-    for (const h of ["Kind", "Attempt", "Status", "Error", "Worker", "Started", "Took", "Tokens", "Transcript"]) expect(head).toContain(h);
-    expect(head.indexOf("Kind")).toBeLessThan(head.indexOf("Attempt"));
+    for (const h of ["Step", "Try", "Result", "Error", "Worker", "Started", "Took", "Tokens", "Transcript"]) expect(head).toContain(h);
+    expect(head.indexOf("Step")).toBeLessThan(head.indexOf("Try"));
     expect(head.indexOf("Worker")).toBeLessThan(head.indexOf("Tokens"));
     const failed = table.querySelector(`tr[data-run="${FAILED}"]`)!;
     expect(failed.textContent).toContain("Project checks failed");

@@ -8,8 +8,12 @@ import { DRAIN_MARGIN_MS, GitWorktreeUpdater } from "../src/impl/updater/git-wor
 import { NoneUpdater } from "../src/impl/updater/none.js";
 import type { ExecResult } from "../src/interfaces/sandbox.js";
 import { type ChildHandle, type ChildLauncher, type ChildSpec, type CommandRunner, WORKER_INDEX_BASE_ENV } from "../src/interfaces/updater.js";
-import { supervise } from "../src/supervisor.js";
-import { recordingLog, waitFor } from "./helpers/fakes.js";
+import { supervise, warnMissingCredential } from "../src/supervisor.js";
+import { modelCredentialCheck } from "../src/compose.js";
+import { EnvFileSecretStore } from "../src/impl/secrets/env-file-secret-store.js";
+import { declaredSecretNames, type Selection } from "../src/plugin-api.js";
+import { REGISTRY } from "../src/plugins.js";
+import { recordingLog, waitFor } from "./helpers/fakes/config.js";
 
 // The supervisor end to end, with fake git/npm (a linear history; every change touches src/) and a fake
 // launcher whose children answer a drain the way the test says.
@@ -494,5 +498,32 @@ describe("supervisor: in place (updater none)", () => {
     });
     await expect(running).rejects.toThrow("store unreachable");
     expect(s.read()).toMatchObject({ state: "stopped", child_pid: null });
+  });
+});
+
+describe("supervisor: the model credential line at start (design §5 Restarts, setup state)", () => {
+  const SELECTION = { runner: "claude-code" } as Selection;
+  const secretFile = (text: string) => {
+    const dir = mkdtempSync(join(tmpdir(), "sf-dev-credential-"));
+    writeFileSync(join(dir, ".env"), text, { mode: 0o600 });
+    return new EnvFileSecretStore(join(dir, ".env"), declaredSecretNames(REGISTRY, SELECTION));
+  };
+
+  // Bug: `factory dev` starts silently with no model credential, so the owner learns of it only from failing runs.
+  it("prints doctor's line once when the model credential is missing, and nothing once it is there", async () => {
+    const log = recordingLog();
+    await warnMissingCredential(modelCredentialCheck({ registry: REGISTRY, plugins: SELECTION }, secretFile("")), log);
+    expect(log.lines).toEqual([{ level: "warn", msg: "model credential missing: one of CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY (run: npm run setup)", fields: undefined }]);
+
+    const ok = recordingLog();
+    const token = ["sk", "ant", "api03", "y".repeat(24)].join("-");
+    await warnMissingCredential(modelCredentialCheck({ registry: REGISTRY, plugins: SELECTION }, secretFile(`ANTHROPIC_API_KEY=${token}\n`)), ok);
+    expect(ok.lines).toEqual([]);
+  });
+
+  // Bug: a runner that reads no model credential gets the warning (and the claim gate) anyway.
+  it("says nothing for a runner that declares no model credential", async () => {
+    const registry = { ...REGISTRY, runner: { ...REGISTRY.runner, secrets: { ...REGISTRY.runner.secrets, plain: [] } } } as typeof REGISTRY;
+    expect(modelCredentialCheck({ registry, plugins: { runner: "plain" } as Selection }, secretFile(""))).toBeNull();
   });
 });

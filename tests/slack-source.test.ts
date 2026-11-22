@@ -29,7 +29,9 @@ import { parseSettingsArgs, runSettings } from "../src/settings-cmd.js";
 import { META_STATUS, SlackSource, parseSlackSourceId, slackLink, slackSourceId } from "../src/impl/source/slack-source.js";
 import { NAMES_NO_ITEM } from "../src/impl/source/slack-notice-replies.js";
 import { UNLINKED } from "../src/impl/source/slack-commands.js";
-import { FakeForge, FakeSource, config, issueRef, recordingLog, silent, triageSpec, waitFor } from "./helpers/fakes.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { config, issueRef, recordingLog, triageSpec, waitFor } from "./helpers/fakes/config.js";
 import { BOT, CHANNEL, FakeSlackApi, FakeSocket, OTHER_CHANNEL, TEAM, eventEnvelope, mention, message, modalPress, press, submission } from "./helpers/slack.js";
 import { itemModal } from "../src/impl/source/slack-modals.js";
 import { PROJECT_KEY, issue, newStore, system, w1 } from "./helpers/store.js";
@@ -1264,8 +1266,10 @@ describe("slack source: commands with no slash after a mention (issue #541)", ()
     expect(b).toMatchObject({ stage: "NEW", spec_feedback: "narrower scope\nkeep the flag" });
   });
 
-  it("every table command (approve, retry, reject, resolve, merge) stores the same row bare as with its slash", async () => {
-    for (const [i, text] of ["approve, but fix the tests", "retry once more", "reject duplicate emails", "resolve keep ours", "merge"].entries()) {
+  // One test per command (2026-11-20): the five in one test took about 4 s alone, so a busy machine timed it out.
+  it.each(["approve, but fix the tests", "retry once more", "reject duplicate emails", "resolve keep ours", "merge"].map((text, i) => [text, i] as const))(
+    "the table command %s stores the same row bare as with its slash", async (text, i) => {
+    {
       const f = await setup();
       const slashed = await specPending(f, `18000000${71 + i}.000100`);
       const bare = await specPending(f, `18000000${71 + i}.000200`);

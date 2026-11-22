@@ -48,11 +48,11 @@ async function setup(project: string | null = PROJECT_KEY) {
 const create = ["create", "--title", "Design rules checked", "--body-file", "body.md"];
 
 describe("factory task create --project", () => {
-  it("without --project: the work item only, its ID, link and next step printed, no task", async () => {
+  it("without --project: the work item only, its ID, short ID, link and next step printed, no task", async () => {
     const s = await setup();
     const r = await s.cli(...create);
     expect(r.code).toBe(0);
-    expect(r.lines).toEqual([r.lines[0], `http://${HOST}/app/items/${r.lines[0]}`, "triage queued; you'll be asked to approve the spec"]);
+    expect(r.lines).toEqual([r.lines[0], r.lines[0]!.slice(3, 11), `http://${HOST}/app/items/${r.lines[0]}`, "triage queued; you'll be asked to approve the spec"]);
     const item = (await s.store.getWorkItem(r.lines[0] as WorkItemId))!;
     expect(item).toMatchObject({ title: "Design rules checked", problem: "Design rules checked\n\nthe body", source: { type: "local" } });
     expect(item.source.id).not.toContain("local-task-");
@@ -66,7 +66,7 @@ describe("factory task create --project", () => {
     const [task] = await s.store.listTasks(100);
     expect(task).toMatchObject({ title: "Design rules checked", created_by: USER, done_at: null });
     expect(r.lines).toEqual([
-      task!.work_item_id, `task ${task!.id} in +improve-factory`, `http://${HOST}/app/items/${task!.work_item_id}`, "triage queued; you'll be asked to approve the spec",
+      task!.work_item_id, task!.work_item_id!.slice(3, 11), `task ${task!.id} in +improve-factory`, `http://${HOST}/app/items/${task!.work_item_id}`, "triage queued; you'll be asked to approve the spec",
     ]);
     const item = (await s.store.getWorkItem(task!.work_item_id!))!;
     expect(item).toMatchObject({ stage: "NEW", title: "Design rules checked", problem: "Design rules checked\n\nthe body", project: PROJECT_KEY, requester_id: USER, source: { type: "local", id: `local-task-${task!.id}` } });
