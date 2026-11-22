@@ -1,5 +1,6 @@
 import { AGENT_STOP_CHECKS_DEFAULT, withoutUiCheck } from "../../../core/config.js";
 import { settingValues } from "../../../core/settings.js";
+import { sizeCaps } from "../../../core/size-cap.js";
 import type { ModelClass } from "../../../core/model-choice.js";
 import { type DiffStat, type FloorHit, diffStat, overSizeLimit, requiredTier, sizeDetail } from "../../../core/diff-gate.js";
 import { NumstatError, diffGates, scopeGate } from "../../../core/pre-push.js";
@@ -77,8 +78,7 @@ async function implement(
       const notes = [await w.approverNotes(item), decisionsSection(await w.d.store.listStateChanges(item.id), fenced)].filter(Boolean).join("\n\n");
       const feedback = await prFeedback(w, item, run);
       // The item's project's limits, as the size gate reads them (design §4, issue #217).
-      const { max_diff_lines, max_diff_files } = settingValues(item.project, w.cfg.settings, w.d.learned);
-      const limits = { max_diff_lines, max_diff_files };
+      const limits = itemCaps(w, item);
       const budget = renderBudget(limits);
       const prompt = plan?.session || kept
         ? [renderSessionResume(plan ? plan.state.head : continued?.head ?? null, plan ? null : "stopped"), budget].join("\n\n")
@@ -905,17 +905,21 @@ async function checksEnv(w: Worker, run: Run, item: WorkItem, failed: CheckResul
   });
 }
 
+/** The item's size caps: its one-time cap, else its project's settings (src/core/size-cap.ts). */
+function itemCaps(w: Worker, item: WorkItem): { max_diff_lines: number; max_diff_files: number } {
+  return sizeCaps(item, settingValues(item.project, w.cfg.settings, w.d.learned));
+}
+
 /**
  * The gate hooks for an implement agent step (design §4, issue #302): the values the worker's gates use, the
  * check list with the check env (no test database), and the Stop hook's cap with what earlier steps used.
  */
 function gateHooks(w: Worker, run: Run, item: WorkItem, start: string, baseSha: string): GateHooks {
-  const { max_diff_lines, max_diff_files } = settingValues(item.project, w.cfg.settings, w.d.learned);
   return {
     allowed_paths: [...item.allowed_paths],
     start_sha: start,
     base_sha: baseSha,
-    limits: { max_diff_lines, max_diff_files },
+    limits: itemCaps(w, item),
     check_commands: checkCommands(w.cfg.repo),
     check_env: { ...w.d.toolEnv, ...w.slotEnv() },
     stop_checks: w.cfg.agent_stop_checks ?? AGENT_STOP_CHECKS_DEFAULT,
@@ -961,12 +965,12 @@ async function prePushGates(
   conflicts: readonly string[] = [],
 ): Promise<{ floor: FloorHit[] | null; paths: string[] }> {
   await scopeGateStep(w, run, item, handle, baseSha, conflicts);
-  // The item's project's gate settings (design 2026-11-01), read only through settingValues. The gates themselves
-  // are src/core/pre-push.ts, shared with `session finish` (design §5, 2026-11-01).
+  // The item's project's gate settings (design 2026-11-01), read only through settingValues, with the item's size
+  // caps (itemCaps). The gates themselves are src/core/pre-push.ts, shared with `session finish` (design §5, 2026-11-01).
   const s = settingValues(item.project, w.cfg.settings, w.d.learned);
   let gates;
   try {
-    gates = await diffGates((args) => w.git(handle, args), baseSha, item, s);
+    gates = await diffGates((args) => w.git(handle, args), baseSha, item, { ...s, ...itemCaps(w, item) });
   } catch (err) {
     if (err instanceof NumstatError) throw new RunFailure("git_failed", err.message, true);
     throw err;

@@ -62,6 +62,25 @@ export function splitError(est: SizeEstimate, phases: number, limits: SplitLimit
 }
 
 /**
+ * Whether a triage answer waits at its own size checkpoint: over the threshold of either cap with no phases. It
+ * waits at the spec gate for a person, never approved without one (`phases_auto_approve` included).
+ */
+export function atSizeCheckpoint(spec: SizeEstimate & { phases?: readonly unknown[] }, limits: SplitLimits): boolean {
+  return (spec.phases?.length ?? 0) === 0 && needsSplit(spec, limits);
+}
+
+/** The size checkpoint's note above the spec's footer: the estimate, the threshold, and what the owner can reply. */
+export function sizeCheckpointNote(est: SizeEstimate, limits: SplitLimits): string {
+  const t = splitThresholds(limits);
+  return (
+    `This spec waits for \`/approve\` at the size checkpoint: its estimate (${est.estimated_lines} lines, ${est.estimated_files} files) ` +
+    `is over ${SPLIT_PERCENT}% of a cap (${t.lines} lines or ${t.files} files; \`max_diff_lines\` = ${limits.max_diff_lines}, ` +
+    `\`max_diff_files\` = ${limits.max_diff_files}) and it has no phases. Reply \`/approve\` to implement it as one change, ` +
+    `or \`/revise <feedback>\` to ask for ${MIN_PHASES} to ${MAX_PHASES} phases.`
+  );
+}
+
+/**
  * A split's goal lines (`goal_done_when`, design 04-split-specs 2026-11-22): what the whole split must do once its
  * phases merged. Absent or empty is none; otherwise non-empty strings, and only on a spec with `phases` phases.
  */

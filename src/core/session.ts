@@ -7,6 +7,7 @@ import { parseTriage } from "./outputs.js";
 import { IMPLEMENT_KINDS, INTERACTIVE, SESSION_ABANDONED, SESSION_RELEASED, branchFor, effectiveTier, floorTier } from "./policy.js";
 import { NumstatError, diffGates, scopeGate } from "./pre-push.js";
 import { type LearnedSettingsSource, settingValues } from "./settings.js";
+import { sizeCaps } from "./size-cap.js";
 import type { Run, RunId, SourceRef, SourceType, Timestamp, WorkItem, WorkItemId, WorkItemPatch } from "./types.js";
 import { type LocalRoute, TRUSTED_GIT_ENV, baseRefspec, hasTool, prTitle, routeFor, runPushIntents } from "./worker-deps.js";
 import type { AuthProvider, ExternalIdentity } from "../interfaces/auth-provider.js";
@@ -317,7 +318,8 @@ export class Sessions {
       if (commits === 0) reasons.push("no commits on the branch");
       const outside = await scopeGate(git, base, item.allowed_paths);
       if (outside.length > 0) reasons.push(`scope: files outside allowed_paths: ${outside.join(", ")}`);
-      const gates = await diffGates(git, base, item, settingValues(item.project, cfg.settings, this.d.learned));
+      const s = settingValues(item.project, cfg.settings, this.d.learned);
+      const gates = await diffGates(git, base, item, { ...s, ...sizeCaps(item, s) }); // the item's one-time cap, else the project's (src/core/size-cap.ts)
       paths = gates.paths;
       if (gates.size !== null) reasons.push(`size: ${gates.size}`);
       if (gates.floor) {

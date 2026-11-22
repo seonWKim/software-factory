@@ -1,10 +1,11 @@
 // Split specs: the approval that files one phase per sub-issue through outbound, phase holds and releases, closing a
 // finished split. Moved out of the legacy controller (RFC 0015 M5); its store I/O is still inline (unit-purity ratchet).
 
-import { type TriagePhase, parseTriage } from "../../../core/outputs.js";
+import { type TriageOutput, type TriagePhase, parseTriage } from "../../../core/outputs.js";
 import { runKey } from "../../../core/policy.js";
 import { specDecisionDetail } from "../../../core/standing.js";
-import { PHASE_HOLD, PHASES_OPEN, SPLIT_APPROVED, SPLIT_FILING, goalLinesText, parseSubIssues, phaseIssueBody, phaseLinkDetail, phaseMarker, phaseTitle } from "../../../core/split.js";
+import { sizeCaps } from "../../../core/size-cap.js";
+import { PHASE_HOLD, PHASES_OPEN, SPLIT_APPROVED, SPLIT_FILING, atSizeCheckpoint, goalLinesText, parseSubIssues, phaseIssueBody, phaseLinkDetail, phaseMarker, phaseTitle } from "../../../core/split.js";
 import { type Actor, type SourceRef, type StateChange, type StateChangeDetail, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { ActionRow } from "../../../outbound/index.js";
 import { type Decision, DELIVERY_FAILED, type Refusal, SYSTEM, completed, splitFiling, splitOpen, footerAfter } from "../support.js";
@@ -47,10 +48,12 @@ export class PhasesUnit {
 
   /**
    * phases_auto_approve: a phase of a split whose parent the owner approved (its phases are open) needs no
-   * `/approve` of its own. Off, not a phase, or a parent that is gone or no longer waiting on its phases: false.
+   * `/approve` of its own for `spec`. Off, not a phase, a parent that is gone or no longer waiting on its phases, a
+   * spec that is itself a split (its /approve files issues), or one at its own size checkpoint: false.
    */
-  async approvedByParent(it: WorkItem): Promise<boolean> {
+  async approvedByParent(it: WorkItem, spec: TriageOutput): Promise<boolean> {
     if (this.c.k.cfg.phases_auto_approve !== true || it.parent_id === null) return false;
+    if (spec.phases || atSizeCheckpoint(spec, sizeCaps(it, this.c.k.settings(it.project)))) return false;
     const parent = await this.c.k.d.store.getWorkItem(it.parent_id);
     return parent !== null && splitOpen(parent);
   }
@@ -62,12 +65,18 @@ export class PhasesUnit {
 
   /** The split of the latest succeeded triage run: its phases and the goal lines of the same run, or null for no split. */
   private async specSplit(it: WorkItem): Promise<{ phases: TriagePhase[]; goal: string[] | undefined } | null> {
+    const spec = await this.latestSpec(it);
+    return spec?.phases ? { phases: spec.phases, goal: spec.goal_done_when } : null;
+  }
+
+  /** The spec of the latest succeeded, applied triage run, or null when there is none or it does not parse. */
+  private async latestSpec(it: WorkItem): Promise<TriageOutput | null> {
     const run = (await this.c.k.d.store.listRuns(it.id))
       .filter((r) => r.kind === "triage" && r.outcome?.status === "succeeded" && r.acknowledged_at !== null)
       .at(-1);
     if (run?.outcome?.status !== "succeeded") return null;
     const parsed = parseTriage(run.outcome.data.spec);
-    return parsed.ok && parsed.value.phases ? { phases: parsed.value.phases, goal: parsed.value.goal_done_when } : null;
+    return parsed.ok ? parsed.value : null;
   }
 
   /**
@@ -298,9 +307,10 @@ export class PhasesUnit {
   /** phases_auto_approve on a phase spec already waiting at the gate: approved as the parent's /approve covers it. */
   async approvePhaseSpec(id: WorkItemId): Promise<void> {
     const it = await this.c.k.d.store.getWorkItem(id);
-    if (!it || !phaseSpecPending(it) || !(await this.approvedByParent(it))) return;
-    // A phase whose own triage proposed phases still waits for a human: that /approve files issues.
-    if (await this.specPhases(it)) return;
+    if (!it || !phaseSpecPending(it)) return;
+    // A phase whose own triage proposed phases, or whose spec is at its size checkpoint, still waits for a human.
+    const spec = await this.latestSpec(it);
+    if (!spec || !(await this.approvedByParent(it, spec))) return;
     await this.c.unit("transitions").decide(id, (cur) =>
       phaseSpecPending(cur)
         ? {

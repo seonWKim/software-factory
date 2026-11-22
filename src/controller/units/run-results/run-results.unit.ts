@@ -11,7 +11,8 @@ import { conflictCounts, conflictCountsLine } from "../../../core/resolve.js";
 import { autoApprovedFooter, droppedAnswers, droppedValues, heldNote, renderSpec } from "../../../core/spec-comment.js";
 import { STANDING_APPROVED, ruleId, specKind, standingActor } from "../../../core/standing.js";
 import { applyCompanions } from "../../../core/companions.js";
-import { suggestedSplit } from "../../../core/split.js";
+import { atSizeCheckpoint, sizeCheckpointNote, suggestedSplit } from "../../../core/split.js";
+import { sizeCaps } from "../../../core/size-cap.js";
 import { type Actor, type Run, type StateChangeDetail, type Tier, type WorkItem, type WorkItemId, runTokenCount } from "../../../core/types.js";
 import { failingTests, firstErrorLine, stripAnsi } from "../../../core/output-summary.js"; import { doneChecksDetail } from "../../../core/checks.js";
 import { PROVIDER_SETUP } from "../../../interfaces/agent-runner.js";
@@ -160,12 +161,13 @@ export class RunResultsUnit {
           // `apply` hands merge-check runs to the merge queue, and restart runs to the local-merge unit, before it reads any outcome.
           throw new Error(`${run.kind} run ${run.id} reached the run outcome path`);
         case "triage": {
-          // The item's size caps decide whether the estimate needs phases (src/core/split.ts).
-          const { max_diff_lines, max_diff_files, floors } = this.c.k.settings(it.project);
+          // The item's size caps (src/core/size-cap.ts) decide whether the estimate needs phases (src/core/split.ts).
+          const settings = this.c.k.settings(it.project), { floors } = settings, caps = sizeCaps(it, settings);
           // Path companions first (design 04-triage.md): on the raw answer, so a companion triage named only in
           // files_to_change is covered, and before the floor, which raises the tier or refuses a built-in rule's path.
           const { answer, added } = applyCompanions(data.spec, this.c.k.cfg.path_companions ?? [], floors);
-          const parsed = parseTriage(answer, { max_diff_lines, max_diff_files, check_commands: doneCheckCommands(this.c.k.cfg.repo) }); // done_checks required (design 04-triage)
+          // Without the caps: 1 phase or more than 4 is refused here, and an estimate over the threshold with no phases waits at its size checkpoint below.
+          const parsed = parseTriage(answer, { check_commands: doneCheckCommands(this.c.k.cfg.repo) }); // done_checks required (design 04-triage)
           if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
           const spec = parsed.value;
           const floor = floorTier(spec.allowed_paths, floors);
@@ -181,7 +183,7 @@ export class RunResultsUnit {
             tier,
             token_cost: tokens,
           };
-          const missing = droppedValues(spec, it.issue_text), answers = droppedAnswers(spec, await ownerAnswersFor(it, (id) => this.c.k.reader.listStateChanges(id))), held = missing.length + answers.length > 0, noFiles = changesNoFile(spec), waitsAnyway = held || noFiles; // dropped request values or owner answers, or no file changed here (design 04-spec-gate-commands): no approval without a person
+          const missing = droppedValues(spec, it.issue_text), answers = droppedAnswers(spec, await ownerAnswersFor(it, (id) => this.c.k.reader.listStateChanges(id))), held = missing.length + answers.length > 0, noFiles = changesNoFile(spec), oversize = atSizeCheckpoint(spec, caps), waitsAnyway = held || noFiles || oversize; // dropped request values or owner answers, no file changed here (design 04-spec-gate-commands), or over the split threshold with no phases (its size checkpoint): no approval without a person
           // Each approval below without a person's reply: the spec comment with its note, no answer block and `footer`, RUNNING, the implement run queued.
           const approved = async (note: readonly string[], how: { actor: Actor; reason: string; detail?: StateChangeDetail }, footer = footerAfter(it, { stage: "RUNNING" })): Promise<Decision> => {
             const patch = { ...fields, stage: "RUNNING" as const };
@@ -190,7 +192,7 @@ export class RunResultsUnit {
             return { patch: { ...patch, spec_comment_url: url }, ...how, ack_run: run.id, enqueue: { kind: "implement", idempotency_key: runKey({ ...it, ...fields }, "implement") } };
           };
           // A split spec always waits for a human: its /approve files issues on the source.
-          const byParent = !spec.phases && !noFiles && (await this.c.unit("phases").approvedByParent(it));
+          const byParent = !noFiles && (await this.c.unit("phases").approvedByParent(it, spec));
           if (byParent) {
             // phases_auto_approve: the owner's /approve of the split covers this phase's spec (design 2026-11-01), held values or answers too.
             const next = { ...it, ...fields };
@@ -257,7 +259,7 @@ export class RunResultsUnit {
             }, autoApprovedFooter(commandState({ ...it, stage: "RUNNING" }), tier, this.c.k.d.clock.now().toISOString()));
           }
           const patch = { ...fields, stage: "READY" as const, blocked_on: "human" as const, blocked_reason: "spec_pending" };
-          const waits = noFiles ? `This spec cannot be approved: ${NO_FILES_REFUSAL}.\n\n` : held ? heldNote(missing, answers) : auto ? `Auto mode is on, but this spec waits for \`/approve\`: ${refusal}.\n\n` : "";
+          const waits = noFiles ? `This spec cannot be approved: ${NO_FILES_REFUSAL}.\n\n` : oversize ? `${sizeCheckpointNote(spec, caps)}\n\n${held ? heldNote(missing, answers) : ""}` : held ? heldNote(missing, answers) : auto ? `Auto mode is on, but this spec waits for \`/approve\`: ${refusal}.\n\n` : "";
           const url = await this.c.unit("outbox").comment(it, `spec:${run.id}`, renderSpec(spec, tier, { floor, previous: it.tier, added }, // no `/approve` in a no-file spec's footer
             `${waits}${noFiles ? commandFooter(commandState({ ...it, ...patch }), ["approve"]) : footerAfter(it, patch)}`, { missing, answers }), "spec_comment_url");
           return {
@@ -977,7 +979,7 @@ export class RunResultsUnit {
     const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:implement:${code}` };
     const body = (withDetail: boolean) => {
       if (code === DIFF_TOO_LARGE) {
-        const { max_diff_lines, max_diff_files } = this.c.k.settings(it.project);
+        const { max_diff_lines, max_diff_files } = sizeCaps(it, this.c.k.settings(it.project));
         return [
           "## Factory size check: push blocked",
           "",
