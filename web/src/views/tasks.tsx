@@ -44,7 +44,7 @@ import { Card } from "../components/ui/card.js";
 // project's "⋯" menu, after the tabs, holds Delete: the danger Dialog names the project and its task count (from the
 // loaded read) and says the tasks are kept; confirm posts POST /api/v1/projects/delete (`factory project delete`), the
 // tab goes at once and the filter falls back to All projects (design 09-dashboard-tasks).
-// The page's order (design 09-dashboard-app): the project tabs, Quick add, Needs you, the list; the blocks
+// The page's order (design 09-dashboard-app): the project tabs, Needs you, Merged without you, Worth sampling, Quick add, the list; the blocks
 // are spaced by one flex gap, the Section gap of design-system/patterns.md.
 
 /** The one paginated list; page 1 opens on the overdue and today groups. */
@@ -165,6 +165,7 @@ export function TasksPage() {
           />
         )}
       </div>
+      <NeedsYou project={project} linked={linked} />
       <div className="space-y-1">
         <QuickAdd token={v?.csrf_token ?? null} addKey={v?.add_key ?? "enter"} project={project} />
         {undo.error !== null && (
@@ -173,7 +174,6 @@ export function TasksPage() {
           </p>
         )}
       </div>
-      <NeedsYou project={project} linked={linked} />
       <div>
         <Card label={t("tasks.listLabel")}>
           <div className="space-y-3">
