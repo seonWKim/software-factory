@@ -26,5 +26,11 @@ export interface Health {
 /** `/api/v1/unreviewed-merges`: PRs that merged with no work item, newest first. */
 export interface UnreviewedMerges {
   as_of: string;
-  merges: { project: string | null; change_ref: string; change_url: string | null; merge_sha: string | null; merged_by: string | null; recorded_at: string }[];
+  merges: { project: string | null; change_ref: string; change_url: string | null; merge_sha: string | null; merged_by: string | null; recorded_at: string;
+    /** The PR's page and its checks page (a GitHub project with a stored label); null: none. */
+    review_url?: string | null;
+    checks_url?: string | null;
+    /** The stored verdict ("failed", "reverted"); null: none stored. */
+    check_verdict?: string | null;
+  }[];
 }

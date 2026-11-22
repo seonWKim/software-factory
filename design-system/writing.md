@@ -8,7 +8,7 @@ The words on a dashboard page. Layout and components: `patterns.md`.
 - **The next step.** Every message that says something is wrong or waiting also says what to do: "Approve to merge", not "Waiting for a decision". A state with no next step says so ("Nothing to do").
 - **No raw IDs.** Never `wi_…` or a full ID in running text. Show the item's title, else its short number `#N`, else the 8-character local id. People and workers have names too: "you", "worker 2", "the factory". The full ID is in the tooltip of the name (`IdDetails`: hover or focus, click to copy), or in `CopyText`.
 - **Slash commands and CLI syntax are never the main text.** A box leads with a sentence and a button. The command, such as `factory approve 123`, is a secondary line ("From a terminal: …") with a copy button.
-- **Compact times.** "5m", "3h", "2d" (`ago` in `web/src/lib/format.ts`), never "5 minutes ago" or an ISO timestamp. The full time goes in a `title` or a `Tooltip`.
+- **Compact times.** Ages and durations are compact, "5m", "3h", "2d" (`ago` in `web/src/lib/format.ts`), never "5 minutes ago"; a time of day or a date follows "Times for people" (local, short form), and the full time stays in a `title` or a `Tooltip`.
 - **Short.** One idea per sentence. Say what the page shows, not how it works.
 
 ## Plain words for everyone

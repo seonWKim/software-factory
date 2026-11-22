@@ -156,7 +156,7 @@ describe("Tasks page", () => {
     const BUILD = "Build this sends a task to the factory.";
     const ev = (id: string): EventRow => ({ kind: "event", source: "google-calendar", id, title: `event ${id}`, all_day: true, time: null });
 
-    it("the page stacks the project tabs, Quick add, Needs you, then the list, with no mb-/mt- on Quick add or Needs you", async () => {
+    it("the page stacks the project tabs, Needs you, Quick add, then the list, with no mb-/mt- on Quick add or Needs you", async () => {
       s.items = [item("wi_x", { title: "Approve the spec", item_phase: "needs_approval" })];
       await show();
       const factory = await screen.findByRole("region", { name: "Needs you" }, SLOW);
@@ -165,7 +165,7 @@ describe("Tasks page", () => {
       const form = screen.getByLabelText("Add a task").closest("form")!;
       const view = screen.getByRole("region", { name: "Open tasks" });
       const follows = (a: Node, b: Node) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
-      expect(follows(picker, form) && follows(form, factory) && follows(factory, view)).toBe(true);
+      expect(follows(picker, factory) && follows(factory, form) && follows(form, view)).toBe(true);
       expect(form.className).not.toMatch(/\bm[bt]-/);
       expect(factory.parentElement!.className).not.toMatch(/\bm[bt]-/);
       // The count shows with a word or not at all: never a bare number.
