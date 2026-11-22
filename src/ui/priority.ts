@@ -1,7 +1,8 @@
 // Ranking for the status page (design §9). Pure: no store, no clock, no I/O. Every work item lands in exactly one
 // level, a work item state of the one state table (src/shared/states.ts), in its sort order; within a level, more
 // dependents first, then the oldest wait, then the higher tier. Badge texts are fixed words and numbers, never free
-// text from the store.
+// text from the store. An ask (an ASKS level) also gets its rank reason and whether it is held until `review_time`
+// (askReason).
 
 import { FAILED_PHASES, type ItemPhase, PERSON_PHASES, isClosedPhase, phaseOf } from "../core/phase.js";
 import type { BlockedOn, CloseReason, RunKind, Stage, Tier } from "../core/types.js";
@@ -19,6 +20,9 @@ export const NEEDS_YOU: readonly Level[] = groupStates("needs");
  * (Retry, Reject) in Problem, and a triage run's ask (its question and Answer) in Waiting.
  */
 export const WITH_NEED: readonly Level[] = [...NEEDS_YOU, "failed", "needs_triage"];
+
+/** The levels that ask a person something and carry a rank reason (askReason): the Needs-you group and a triage ask. */
+export const ASKS: readonly Level[] = [...NEEDS_YOU, "needs_triage"];
 
 /** A closed item's level: merged when it closed as completed (phase done), rejected when rejected, closed otherwise. */
 export function closedLevel(i: Pick<PriorityInput, "stage" | "blocked_on" | "blocked_reason" | "close_reason">): Level {
@@ -178,6 +182,27 @@ export function badgesOf(i: PriorityInput, level: Level, now: Date, lease_ms: nu
       break;
   }
   return i.dependents > 0 ? [main, `unblocks ${i.dependents}`] : [main];
+}
+
+/**
+ * Whether non-urgent asks are held at `now`: `review_time` (HH:MM, checked by settings.ts parseSettable) is set and the
+ * local time is before it. "" turns holding off.
+ */
+export function holdingNow(review_time: string, now: Date): boolean {
+  const [h, m] = review_time.split(":").map(Number);
+  return review_time !== "" && now.getHours() * 60 + now.getMinutes() < h! * 60 + m!;
+}
+
+/**
+ * Why an ask (an ASKS level) ranks where it does, in fixed words (design 09-status-page): a merge and an ask that
+ * blocks another item are urgent, shown and counted at once; any other ask is held while `holding` (holdingNow), and
+ * reads "Held until <review_time>". Null for a level that asks nothing of a person.
+ */
+export function askReason(i: PriorityInput, level: Level, review_time: string, holding: boolean): { rank_reason: string; held: boolean } | null {
+  if (!ASKS.includes(level)) return null;
+  if (level === "ready_to_merge") return { rank_reason: "Merge", held: false };
+  if (i.dependents > 0) return { rank_reason: "Blocks another item", held: false };
+  return holding ? { rank_reason: `Held until ${review_time}`, held: true } : { rank_reason: "Waiting for you", held: false };
 }
 
 /** Every item with its level and badges, in display order. Stable: equal items keep their input order. */
