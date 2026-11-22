@@ -5,7 +5,7 @@ import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
 import { MERGE_COMMAND } from "./local-merge.js";
 import { COMMAND_TABLE, SENTENCE_FORM, cliUsageOf, commandLine, topWords } from "./command-table.js";
-import { approveRefusal, helpReply, itemCommandState, latestSpec, refusalText } from "./commands.js";
+import { CLOSED_REFUSAL, approveRefusal, helpReply, itemCommandState, latestSpec, refusalText } from "./commands.js";
 import type { NoteAnswers } from "./request-transition.js";
 import { VERDICT_USAGE, parseVerdict, verdictRefusal } from "./verdict.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpretMessage, interpretReply, interpretTexts, isProposalId, openItems, typed } from "./interpret.js";
@@ -20,7 +20,7 @@ import { CREATE_HELP, LOCAL_ID, NO_PROJECT_KEY, buildTask, createLocalItem, crea
  * to it, as `task build` links one (design 02-tasks); `task add` stores a plain task from quick-add words and `task
  * done` completes one and `task reopen` undoes that, `task edit`, `task delete` and `task sub` change, remove and nest one (design 02-tasks: no
  * work item, no triage); `project …` keeps the task projects and `task project` links a task to one, unlinks it or moves it
- * (design 02-tasks, task projects); `task list` and `task show` read the store; `task paths` (as `/paths`), `approve`,
+ * (design 02-tasks, task projects); `task list` and `task show` read the store; `task paths` (as `/paths`), `task note` (as `/note`), `approve`,
  * `retry`, `revise`, `reject`, `resolve`, `hold` and `verdict` append one row to the CLI command log (`command_inbox`) and change no item
  * state, for an item of any source; `approve` first runs the controller's phase check (`approveRefusal`) and refuses
  * with its text before any write (issue #528), and `verdict` its parser and closed-item check (`verdictRefusal`,
@@ -105,8 +105,8 @@ export const SENTENCE_APP_COMMAND = "sentence";
 export const CANCEL_APP_COMMAND = "proposal_cancel";
 
 const ITEM_COMMANDS = ["approve", "retry", "revise", "reject", "resolve", "verdict", "hold"] as const;
-/** `merge` is the local merge (src/core/local-merge.ts); `paths` is `task paths`; the others are the comment commands of the same name. */
-export type ItemCommand = (typeof ITEM_COMMANDS)[number] | typeof MERGE_COMMAND | "paths";
+/** `merge` is the local merge (src/core/local-merge.ts); `paths` is `task paths`, `note` is `task note`; the others are the comment commands of the same name. */
+export type ItemCommand = (typeof ITEM_COMMANDS)[number] | typeof MERGE_COMMAND | "paths" | "note";
 
 export type CliAction =
   /** `project`: the `--project` slug, left out for the work item only; `depends_on`: the `--depends-on` id (design 05-dependencies). */
@@ -187,6 +187,7 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
       return parsed.ok ? { action: "sub", parent, task: parsed.task } : bad(`task sub: ${parsed.reason}`);
     }
     if (sub === "paths") return rest.length > 1 ? { action: "command", command: "paths", id: rest[0] as WorkItemId, text: rest.slice(1).join(" ") } : bad("task paths needs a work item ID and at least one +<path>"); // stored as `/paths`
+    if (sub === "note") return rest.length > 1 ? { action: "command", command: "note", id: rest[0] as WorkItemId, text: rest.slice(1).join(" ") } : bad("task note needs a work item ID and the note's text"); // stored as `/note`
     if (sub === "delete") return rest.length === 1 && rest[0] ? { action: "delete", id: rest[0] } : bad("task delete needs one task ID");
     if (sub === "done") return rest.length === 1 && rest[0] ? { action: "done", id: rest[0] } : bad("task done needs one task ID");
     if (sub === "reopen") return rest.length === 1 && rest[0] ? { action: "reopen", id: rest[0] } : bad("task reopen needs one task ID");
@@ -438,7 +439,7 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       if ("lines" in item) return item;
       const name = a.command === MERGE_COMMAND ? `${cli} merge` : `/${a.command}`;
       // The controller's phase check, before any write: the same refusal it would post (issues #528, #523).
-      const refused = a.command === "approve" ? approveRefusal(item) : a.command === "verdict" ? verdictRefusal(item) : null;
+      const refused = a.command === "approve" ? approveRefusal(item) : a.command === "verdict" ? verdictRefusal(item) : a.command === "note" && item.stage === "CLOSED" ? CLOSED_REFUSAL : null;
       if (refused !== null) return fail(refusalText(name, refused));
       // `approve`'s `N: <answer>` lines, read as the controller will (issue #526): a bad line stores nothing; each decision is printed.
       const ans = d.answers.split(a.text, a.command === "approve" ? latestSpec(await d.store.listRuns(item.id))?.decision_items ?? [] : []);
