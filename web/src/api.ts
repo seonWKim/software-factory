@@ -13,6 +13,8 @@ export * from "./api/system.js";
 export * from "./api/settings.js";
 export * from "./api/plugins.js";
 export * from "./api/rules.js";
+export * from "./api/proposals.js";
 export * from "./api/tasks.js";
 export * from "./api/calendar.js";
 export * from "./api/data.js";
+export * from "./api/model-credential.js";

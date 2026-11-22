@@ -52,6 +52,7 @@ Direction: `tighten-only` keys may only be tightened by a lower level (owner →
 | `repo` | runtime | review | global | free |  |  | The repository the factory works on, its base branch and its install and test commands. |
 | `retry_base_ms` | controller | runtime | global | free |  | `60000` | Wait before the first automatic retry; each next retry waits twice as long. |
 | `retry_max_ms` | controller | runtime | global | free |  | `1800000` | Longest wait between retries, and the pause after a rate limit with no reset time. |
+| `review_time` | controller | runtime | global | free |  | `"09:00"` | Local time, HH:MM, until which asks that are no merge and block nothing are held; empty is off. |
 | `run_timeout_ms` | worker | runtime | global | free |  | `2700000` | Longest an agent run may take before it is stopped. |
 | `secrets` | guards | review | global | tighten-only | guard |  | Which secret store tools read credentials from; agents never see them. |
 | `spend.daily_budget_usd` | controller | runtime | global | free |  |  | Dollars per UTC day; spend at 80% and 100% of it alerts once each in Needs you. None: no budget. |

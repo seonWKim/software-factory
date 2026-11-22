@@ -11,6 +11,7 @@ export { threadDelivery };
 import type { FactoryConfig, Prompts } from "./config.js";
 import { type LearnedSettingsSource, LiveSettings } from "./settings.js";
 import type { ModelNames, ModelTable } from "./model-choice.js";
+import type { GoldenEvidence } from "./proposals.js";
 import type { LogFields, Logger } from "./log.js";
 import type { Run, RunKind, SourceRef, WorkItem, WorkerId } from "./types.js";
 import type { AgentRunner } from "../interfaces/agent-runner.js";
@@ -130,6 +131,9 @@ export interface GuidanceSource {
   read(log: Logger): Promise<string>;
 }
 
+/** A golden replay of the review cases for one improve run: its ID names the results folder; `config` is the run's. */
+export type ReviewReplay = (prompt: string, at: { run_id: string; config: FactoryConfig; signal: AbortSignal }) => Promise<GoldenEvidence>;
+
 export interface WorkerDeps {
   /** G2 run passports (RFC 0015 §8, M9): minted at run start, checked by the broker. Compose always sets it. */
   passports?: RunPassportIssuer;
@@ -195,6 +199,12 @@ export interface WorkerDeps {
    * factory.config.json (design §4). Absent: the default table, and outcomes record the model name as null.
    */
   models?: { table: ModelTable; names?: ModelNames };
+  /**
+   * One golden replay of the review cases with `prompt` as the reviewer's system prompt, for the improve run's entity
+   * proposals (design 07-improve-report). Built in the composition root (src/golden-replay.ts), so the improve run kind
+   * imports neither golden.ts nor the runtime. Absent: the improve run proposes nothing.
+   */
+  reviewReplay?: ReviewReplay;
   /**
    * The live settings (design 2026-11-03): refreshed before each claim and each lease renewal. A run reads the
    * values it started with, so a diff, timeout or model change applies at the next run. Absent: `config` and

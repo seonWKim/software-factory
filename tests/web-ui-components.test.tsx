@@ -12,8 +12,9 @@ import { OverflowMenu, Tooltip } from "../web/src/components/ui/menu.js";
 import { Badge, StatusBadge, TONE_CLASS } from "../web/src/components/ui/badge.js";
 import { STATES } from "../src/shared/states.js";
 import { Card, CardSection } from "../web/src/components/ui/card.js";
+import { Disclosure } from "../web/src/components/ui/disclosure.js";
 import { ListRow, ROW_TITLE } from "../web/src/components/ui/list-row.js";
-import { EmptyState, Kbd, Notice, PageHeader } from "../web/src/components/ui/notice.js";
+import { EmptyState, Kbd, Notice, PageHeader, PageToolbar } from "../web/src/components/ui/notice.js";
 import { SM_PX } from "../web/src/components/ui/parts.js";
 import { Inbox } from "lucide-react";
 import { Radio } from "../web/src/components/ui/radio.js";
@@ -297,9 +298,9 @@ describe("status and message pieces", () => {
     expect(screen.getByRole("heading", { level: 2, name: "work_items" })).toBeTruthy();
   });
 
-  it("CardSection is an h3 in the section title's type inside a Card, not a region", () => {
+  it("CardSection is an h3 in the one sub-group type inside a Card, not a region", () => {
     render(<Card title="Spend"><CardSection title="Totals" count={2}>x</CardSection></Card>);
-    expect(screen.getByRole("heading", { level: 3, name: "Totals" }).className).toContain("text-balance text-base font-semibold");
+    expect(screen.getByRole("heading", { level: 3, name: "Totals" }).className).toContain("text-xs font-medium text-text-2");
     expect(screen.getAllByRole("region").map((r) => r.getAttribute("aria-label"))).toEqual(["Spend"]);
   });
 
@@ -343,6 +344,30 @@ describe("status and message pieces", () => {
     expect(screen.getByRole("button", { name: "New" })).toBeTruthy();
     rerender(<PageHeader title="Tasks" />);
     expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("a Disclosure's trigger is at least 28px tall", () => {
+    const { container } = render(<Disclosure summary="Details">Body</Disclosure>);
+    expect(container.querySelector("summary")!.className.split(" ")).toContain("min-h-7");
+  });
+
+  it("PageHeader marks the page wide by default and read when asked, for <main> to take its width from", () => {
+    const { container, rerender } = render(<PageHeader title="Tasks" />);
+    expect(container.querySelector("header")!.getAttribute("data-page-width")).toBe("wide");
+    rerender(<PageHeader title="Rules" width="read" />);
+    expect(container.querySelector("header")!.getAttribute("data-page-width")).toBe("read");
+  });
+
+  it("PageToolbar puts the tabs on the first row and the search, view and filters on the second", () => {
+    const { container, rerender } = render(<PageToolbar tabs={<div role="tablist" aria-label="Tabs" />}><input aria-label="Search" /><button>Board</button></PageToolbar>);
+    const bar = container.querySelector("[data-page-toolbar]")!;
+    const [first, second] = [...bar.children];
+    expect(first!.getAttribute("role")).toBe("tablist");
+    expect(second!.contains(screen.getByRole("textbox", { name: "Search" }))).toBe(true);
+    expect(second!.contains(screen.getByRole("button", { name: "Board" }))).toBe(true);
+    rerender(<PageToolbar><button>24 hours</button></PageToolbar>);
+    expect(bar.children).toHaveLength(1);
+    expect(bar.querySelector('[role="tablist"]')).toBeNull();
   });
 });
 

@@ -411,8 +411,9 @@ describe("Rules page", () => {
     // The page's own header is the one "Rules"; the page adds no second h1 and no step list.
     expect(h1s()).toEqual(["Rules"]);
     expect(document.querySelector("ol")).toBeNull();
-    // The empty state carries the action, and the page is capped at the list column, max-w-5xl.
-    expect(turnOn.closest("div.max-w-5xl")).not.toBeNull();
+    // The page asks for the read width through its PageHeader and sets no max-w-* column of its own.
+    expect(document.querySelector('header[data-page-width="read"]')).not.toBeNull();
+    expect(document.querySelector('[class*="max-w-5xl"]')).toBeNull();
   });
 
   it("the picker lists only the known homes, AGENTS_HOME first, and shows the check of the one chosen: the missing file, or both executable", async () => {
@@ -899,6 +900,9 @@ describe("Rules page", () => {
     expect(ids()).toEqual(["C-001", "C-002"]);
     expect(applied("C-001").querySelector("[data-seen]")!.textContent).toBe("Seen 2 times");
     const search = screen.getByRole("searchbox", { name: /search/i });
+    // The search is a page filter: in the PageToolbar under the title, not inside the In effect card.
+    expect(search.closest("[data-page-toolbar]")).not.toBeNull();
+    expect(search.closest("section")).toBeNull();
     for (const [term, want] of [["SUMMARY", ["C-001"]], ["c-002", ["C-002"]], ["keep every", ["C-002"]], ["cli", ["C-002"]], ["", ["C-001", "C-002"]], ["zzz", []]] as const) {
       fireEvent.change(search, { target: { value: term } });
       expect(ids()).toEqual(want);
