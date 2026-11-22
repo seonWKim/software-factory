@@ -311,8 +311,11 @@ function meaning(c: CommandSpec, s: CommandState | null): string {
   return [c.description, c.implementing_description, c.pr_description, c.local_description].filter((d) => d).join(". ");
 }
 
-/** One command as every list shows it: the issue footer and `/help`, Slack's help in an item's thread. */
+/** One command with its full description: Slack's help in an item's thread. */
 const line = (c: CommandSpec): string => `- \`${c.usage}\`: ${c.description}.`;
+
+/** One command as a footer shows it: its first sentence only; the footer's last line, `/help`, gives the rest. */
+const footerLine = (c: CommandSpec): string => `- \`${c.usage}\`: ${c.description.split(/\.\s+(?=[A-Z`])/)[0]}.`;
 
 const prLine = (c: CommandSpec): string => `- \`${c.usage}\`: ${c.pr_description ?? c.description}.`;
 
@@ -325,7 +328,7 @@ export function commandFooter(s: CommandState, except: readonly CommandName[] = 
   const cmds = commandsFor(s).filter((c) => !except.includes(c.name));
   const onPr = prCommandsFor(s);
   const out = onPr.length ? ["On the change, you can reply with:", ...onPr.map(prLine), ""] : [];
-  out.push("Commands you can reply with now:", ...cmds.map(line));
+  out.push("Commands you can reply with now:", ...cmds.map(footerLine));
   if (!cmds.some((c) => c.changes_state)) out.push("No command changes this item's state now.");
   return out.join("\n");
 }
@@ -488,7 +491,7 @@ export const CHAT_BOT = "@software-factory";
  * The chat `help` reply: only the commands the sender may run in that place. `may` says whether the sender's role
  * allows an action; `state` is the item's when asked in its thread, else null. Outside an item's thread: the
  * reads, the request that starts work, and `/link` (there a bare `link` would be a request). In an item's thread: the
- * reads, `merge` when it applies, and the item's commands that apply now, each line the issue footer's text for that
+ * reads, `merge` when it applies, and the item's commands that apply now, each with its full description for that
  * state (issue #528) shown without its `/` (chatForm, issue #541), as typed after the mention there. Writes refused in
  * chat (`edge`) are never listed.
  */
