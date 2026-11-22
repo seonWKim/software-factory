@@ -54,7 +54,7 @@ async function page(o: { as?: UserId; save?: (v: ReadonlyMap<SecretName, string>
   await store.pauseClaims(MODEL_CREDENTIAL_UNTIL, MODEL_CREDENTIAL);
   const saved = new Map<SecretName, string>(); // the fake secret store
   const settings: UiSettings = {
-    base: { settings: {}, projects: {} } as never, repo: { owner: "o", name: "r" }, actor: OWNER, resolveProject: async () => null, csrfToken: newCsrfToken(),
+    base: { file: {}, layers: { defaults: {}, projects: {} } }, repo: { owner: "o", name: "r" }, actor: OWNER, resolveProject: async () => null, csrfToken: newCsrfToken(),
     modelCredential: {
       secrets: [OAUTH, API_KEY],
       save: o.save ?? (async (values) => void values.forEach((v, k) => saved.set(k, v))),
