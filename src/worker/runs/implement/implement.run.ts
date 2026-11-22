@@ -10,7 +10,7 @@ import { mergeAppendedConflicts } from "../../../core/mechanical.js";
 import { type ConflictFile, renderResolvePrompt } from "../../../core/resolve.js";
 import { errorText } from "../../../core/log.js";
 import type { Run, RunResume, WipRef, WorkItem } from "../../../core/types.js";
-import type { AgentRunSpec, GateHooks, PackRefusal } from "../../../interfaces/agent-runner.js";
+import type { AgentRunSpec, GateHooks, PackRefusal, StopSelection } from "../../../interfaces/agent-runner.js";
 import type { SandboxHandle } from "../../../interfaces/sandbox.js";
 import { PREFLIGHT, type ToolCallContext } from "../../../interfaces/tool-broker.js";
 import { BUDGET_NEXT_STEPS, type ContinueWip, DIFF_CHECK_MS, type DiffBudget, type FixContext, LOOP_STARTS, MAX_CONFLICT_COMMITS, MAX_PR_FILES, NO_COMMITS_DETAIL, NO_HOOKS, PAUSE_NEXT_STEPS, type ResumePlan, RunFailure, RunPaused, STOPPED_CODES, STOPPED_NEXT_STEPS, WIP_TEXT_CHARS, baseRefspec, continues, failingTestNames, fenced, gitIdentity, hasTool, prTitle, renderBudget, renderContinueNewSession, renderMergeCheckFailure, renderNewSessionResume, renderRequest, renderSessionResume, renderWorkItem, runCommits, scopeReply, specQuery, tail } from "../../support.js";
@@ -90,6 +90,7 @@ async function implement(
           ].filter(Boolean).join("\n\n"),
           specQuery(item),
         );
+      const mode = (await PrePushSelection.open(w.d.store, w.cfg.repo, item.project, () => {})).mode; // the stored test selection mode, per step
       // The mid-run diff check: every DIFF_CHECK_MS on the clock while the agent step runs.
       const watch: DiffBudget = { limits, stop: new AbortController(), over: null };
       const stopWatch = new AbortController();
@@ -97,7 +98,7 @@ async function implement(
       // The spec of the step's turns, built per turn. writable_paths: none, as the run's git folder is inside its
       // workdir. Never the owner's checkout or its .git (architecture §5).
       const turn = () => ({ model_class: model, output_schema: IMPLEMENT_SCHEMA, writable_paths: [],
-        env_allowlist: gitIdentity(w.cfg.agent_git_identity), gate_hooks: gateHooks(w, run, item, start, baseSha) });
+        env_allowlist: gitIdentity(w.cfg.agent_git_identity), gate_hooks: gateHooks(w, run, item, start, baseSha, mode) });
       const result = await w.agent(run, item, handle, AbortSignal.any([signal, watch.stop.signal]), { prompt, ...turn() },
         plan ? `resumed-${ctx.lease_token}` : undefined, {
         pausable: true, resume: plan?.session ?? kept,
@@ -852,7 +853,7 @@ async function fixStep(
     output_schema: IMPLEMENT_SCHEMA,
     writable_paths: [s.gitDir],
     env_allowlist: gitIdentity(w.cfg.agent_git_identity),
-    gate_hooks: gateHooks(w, run, item, s.start, s.baseSha),
+    gate_hooks: gateHooks(w, run, item, s.start, s.baseSha, (await PrePushSelection.open(w.d.store, w.cfg.repo, item.project, () => {})).mode),
   }, "check" in failed ? `pack-${failed.check}` : "fix");
   const out = parseImplement(result.output);
   if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
@@ -906,20 +907,19 @@ async function checksEnv(w: Worker, run: Run, item: WorkItem, failed: CheckResul
 }
 
 /**
- * The gate hooks for an implement agent step (design §4, issue #302): the values the worker's gates use, the
- * check list with the check env (no test database), and the Stop hook's cap with what earlier steps used.
+ * The gate hooks for an implement agent step (design §4, issue #302): the values the worker's gates use, the check list
+ * with the check env (no test database), the Stop hook's cap with what earlier steps used, and the test selection.
  */
-function gateHooks(w: Worker, run: Run, item: WorkItem, start: string, baseSha: string): GateHooks {
+function gateHooks(w: Worker, run: Run, item: WorkItem, start: string, baseSha: string, mode: StopSelection["mode"]): GateHooks {
   const { max_diff_lines, max_diff_files } = settingValues(item.project, w.cfg.settings, w.d.learned);
   return {
-    allowed_paths: [...item.allowed_paths],
-    start_sha: start,
-    base_sha: baseSha,
+    allowed_paths: [...item.allowed_paths], start_sha: start, base_sha: baseSha,
     limits: { max_diff_lines, max_diff_files },
     check_commands: checkCommands(w.cfg.repo),
     check_env: { ...w.d.toolEnv, ...w.slotEnv() },
     stop_checks: w.cfg.agent_stop_checks ?? AGENT_STOP_CHECKS_DEFAULT,
     stop_blocks_used: w.scratch.get(run)?.stop_blocks ?? 0,
+    ...(w.cfg.repo.test_selection ? { selection: { mode, test_command: [...w.cfg.repo.test_command], test_selection: w.cfg.repo.test_selection } } : {}),
   };
 }
 

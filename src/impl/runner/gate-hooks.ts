@@ -5,13 +5,14 @@
 // which answers with the worker's own rules (isCovered, runCommits, diffStat and sizeDetail, runChecks) and the
 // egress scanner. Advisory only: a hook that crashes, times out or cannot reach the host allows, and the worker's
 // gates still decide. A Stop check that runs out its own limit (STOP_CHECK_MS) also allows, and the runner then fails
-// the run with `stop_check_timed_out`. The on_tool_call pack checks (issue #494) are the exception: they fail closed, so with any
+// the run with `stop_check_timed_out`. With `selection` the Stop check narrows the test command as the check before
+// push does (selectedChecks), and its selection lines go back on the result. The on_tool_call pack checks (issue #494) are the exception: they fail closed, so with any
 // enabled a PreToolUse that cannot get an answer refuses the edit. No secret value is written to the folder.
 
 import { appendFile, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import type { Socket } from "node:net";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { commandText, runChecks } from "../../core/checks.js";
+import { commandText, runChecks, selectedChecks } from "../../core/checks.js";
 import { diffStat, overSizeLimit, sizeDetail } from "../../core/diff-gate.js";
 import { isCovered } from "../../core/policy.js";
 import { NO_COMMITS_DETAIL, TRUSTED_GIT_ENV, fenced, runCommits } from "../../worker/index.js";
@@ -185,6 +186,8 @@ export interface RunningGateHooks {
   maxCheckMs: number;
   /** The Stop check that ran out its limit, if one did. */
   stopTimeout(): StopTimeout | null;
+  /** The test selection line each Stop check logged, in order. */
+  selections(): string[];
   /** Stops the host, aborts a check in progress and removes the hook folder and socket. */
   close(): Promise<void>;
 }
@@ -206,6 +209,8 @@ export interface GateAnswerer {
   checking(): boolean;
   /** The Stop check that ran out its limit, if one did; every later stop is allowed without a check. */
   stopTimeout(): StopTimeout | null;
+  /** The test selection line each Stop check logged (selectedChecks), in order. */
+  selections(): string[];
 }
 
 /**
@@ -221,6 +226,7 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
   const limitMs = o.stop_check_ms ?? STOP_CHECK_MS;
   let stopsOpen = 0;
   let timedOut: StopTimeout | null = null;
+  const selections: string[] = [];
   const blocksFile = join(o.dir, HOOK_BLOCKS);
 
   const git = async (args: string[], sig: AbortSignal): Promise<string> => {
@@ -264,12 +270,16 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
     if (overSizeLimit(stat, g.limits)) {
       return stopBlock("diff_too_large", `${sizeDetail(stat, g.limits)}, so the factory would fail the run with \`diff_too_large\`. Make the committed change smaller, then finish.`);
     }
-    at(commandText(g.check_commands[0] ?? []));
+    // The test command narrowed as the check before push narrows it (design §4); its log line goes back on the result.
+    const commands = g.selection
+      ? (await selectedChecks(g.selection, g.check_commands, (args) => git(args, sig), g.base_sha, (l) => selections.push(l), g.selection.mode)).commands
+      : g.check_commands;
+    at(commandText(commands[0] ?? []));
     const round = await runChecks({
-      sandbox: o.sandbox, handle: o.spec.sandbox, commands: g.check_commands, env: { ...g.check_env }, timeout_ms: limitMs, signal: sig, redact: [],
+      sandbox: o.sandbox, handle: o.spec.sandbox, commands, env: { ...g.check_env }, timeout_ms: limitMs, signal: sig, redact: [],
     });
     // Aborted: the check running is the failed one (it threw) or the one after the last that finished.
-    at(commandText(round.failed?.command ?? g.check_commands[round.results.length] ?? []));
+    at(commandText(round.failed?.command ?? commands[round.results.length] ?? []));
     if (!round.failed || sig.aborted) return null;
     const cmd = commandText(round.failed.command);
     return stopBlock(cmd, [
@@ -327,6 +337,7 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
     },
     checking: () => stopsOpen > 0,
     stopTimeout: () => timedOut,
+    selections: () => [...selections],
   };
 }
 
@@ -363,6 +374,7 @@ export async function startGateHooks(o: GateHooksOptions): Promise<RunningGateHo
     // Each block runs one check, and the stop that is allowed one more.
     maxCheckMs: (Math.max(0, g.stop_checks - g.stop_blocks_used) + 1) * stopMs,
     stopTimeout: answers.stopTimeout,
+    selections: answers.selections,
     close: async () => {
       deadline.stop();
       ctl.abort();

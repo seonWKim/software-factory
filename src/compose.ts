@@ -7,6 +7,7 @@ import { availableParallelism, hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { type FactoryConfig, cliUserConfig, toolGrantsConfig } from "./core/config.js";
 import type { ProjectRef } from "./core/project.js";
+import { scheduledAction } from "./core/controller-deps.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
 import { errorText, type Logger } from "./core/log.js";
 import type { CliEnvironment, CliIdentity } from "./core/local-cli.js";
@@ -238,6 +239,9 @@ export async function build(
   const bus = await createPlugin(registry, "bus", sel.bus, base);
   const ticks = await createPlugin(registry, "ticks", sel.ticks, base);
   const tacit = await LiveTacit.start(sel.tacit, (name) => createPlugin(registry, "tacit", name, base), new ConsoleLogger(clock, "tacit"));
+  // What a fired schedule occurrence runs (design 08-schedules): none unless `plugins.schedule_action` names one.
+  const schedule_action = sel.schedule_action === undefined ? undefined
+    : scheduledAction(store, await createPlugin(registry, "schedule_action", sel.schedule_action, base), new ConsoleLogger(clock, "schedule"));
   const calendars = new LiveCalendars(async (name) => createPlugin(registry, "calendar", name, { ...base, secrets: await new Plugins({ ...loaded, plugins: { ...sel, calendars: [name] } }).secrets(), clock }), new ConsoleLogger(clock, "calendar"));
   // The worker's ExecutionEngine (RFC 0015 §7): one per worker loop, built by the pool.
   const engines = await createPlugin(registry, "engine", sel.engine, { ...base, store });
@@ -274,6 +278,7 @@ export async function build(
     scanner,
     llm,
     calendar: calendars.feeds, // synced every 5 minutes (design 02-tasks); [] unless the `calendar` setting lists some
+    ...(schedule_action ? { schedule_action } : {}), // absent: the schedule unit claims nothing
     network_probe, bus, ticks, tacit, // tacit: the owner's ledger (#570), whose capture CLI outbound runs; no agent run gets it
     // Owner of a stream source's listener lease while this process holds it (docs/architecture.md, Intake).
     replica_id: `${hostname()}:${process.pid}`,
