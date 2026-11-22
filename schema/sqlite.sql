@@ -670,6 +670,17 @@ CREATE TABLE controller_standing_proposals (
     UNIQUE (gate, tier, run_length)
   );
 
+CREATE TABLE controller_standing_rule_changes (
+    seq           INTEGER PRIMARY KEY AUTOINCREMENT,
+    gate          TEXT NOT NULL,
+    tier          INTEGER NOT NULL,
+    action        TEXT NOT NULL,
+    before_value  TEXT,
+    after_value   TEXT,
+    actor         TEXT NOT NULL,
+    at            TEXT NOT NULL
+  );
+
 CREATE TABLE controller_standing_rules (
     gate        TEXT NOT NULL,
     tier        INTEGER NOT NULL,

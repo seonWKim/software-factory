@@ -5,7 +5,7 @@
 import { floorTier } from "./policy.js";
 import type { Floor } from "./settings.js";
 import type {
-  Actor, GateOutcome, SpecKind, StandingGate, StandingRule, StateChange, StateChangeDetail, Tier, WorkItem,
+  Actor, GateOutcome, SpecKind, StandingGate, StandingRule, StateChange, StateChangeDetail, Tier, Timestamp, UserId, WorkItem,
 } from "./types.js";
 import { SPLIT_APPROVED } from "./split.js";
 
@@ -238,4 +238,52 @@ export function protectedCategory(paths: readonly string[], floors: readonly Flo
     if (floorTier(paths, prefixes.map((prefix) => ({ prefix, tier: STANDING_TIER }))) !== null) return category;
   }
   return floorTier(paths, floors) !== null ? "floor_paths" : null;
+}
+
+/**
+ * Whether the rule would approve `it` if it were on now (the Rules page's preview): it waits at the spec gate
+ * (READY, on a human, `spec_pending`, so the spec-gate dial held it), at tier 1, its spec is not a split, is not
+ * held (dropped request values or owner answers, or no file changed), and its allowed paths touch no protected
+ * category. The same conditions the triage outcome checks before it asks the rule (run-results.unit.ts).
+ */
+export function ruleWouldApprove(
+  it: Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason" | "tier" | "allowed_paths">,
+  spec: { split: boolean; held: boolean },
+  floors: readonly Floor[],
+): boolean {
+  if (it.stage !== "READY" || it.blocked_on !== "human" || it.blocked_reason !== "spec_pending") return false;
+  if (it.tier !== STANDING_TIER || spec.split || spec.held) return false;
+  return protectedCategory(it.allowed_paths, floors) === null;
+}
+
+// Changes to a rule (design 05-standing-approvals, 2026-11-22): one record per change, with who made it.
+
+/** Turned on (`add`, creating the row if none), turned off (`pause`), the threshold changed (`edit`), the row deleted (`remove`). */
+export type StandingChangeAction = "add" | "pause" | "edit" | "remove";
+/** The rule row's state, or the threshold, before or after a change. */
+export type StandingChangeValue = { enabled: boolean } | { threshold: number };
+
+/** One change as written: `actor` is the user ID of who made it, never a display name. `before` null: no row; `after` null: removed. */
+export interface NewStandingRuleChange {
+  gate: StandingGate;
+  tier: Tier;
+  action: StandingChangeAction;
+  before: StandingChangeValue | null;
+  after: StandingChangeValue | null;
+  actor: UserId;
+}
+
+export interface StandingRuleChange extends NewStandingRuleChange {
+  seq: number;
+  at: Timestamp;
+}
+
+/** The change-record methods of the store, part of FactoryStore; `putStandingRule` writes its own record too. */
+export interface StandingChangeStore {
+  /** Deletes the rule row of (gate, tier) and records `remove` in one transaction; false, with nothing written, when there is no row. */
+  deleteStandingRule(input: { gate: StandingGate; tier: Tier; actor: UserId }): Promise<boolean>;
+  /** Records one change that is not a rule-row write (the threshold edit). */
+  recordStandingRuleChange(input: NewStandingRuleChange): Promise<StandingRuleChange>;
+  /** Every change, oldest first. */
+  listStandingRuleChanges(): Promise<StandingRuleChange[]>;
 }
