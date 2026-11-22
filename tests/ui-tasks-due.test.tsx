@@ -9,7 +9,8 @@ beforeEach(reset);
 afterEach(teardown);
 
 // The row's due text drops the date its heading names and is in the browser locale, never the ISO text.
-const dueOf = (id: string) => card(id).querySelector("[data-details]")!.textContent ?? "";
+// Spaces are made plain: some ICU versions (Node 22's) put a narrow no-break space before "AM".
+const dueOf = (id: string) => (card(id).querySelector("[data-details]")!.textContent ?? "").replace(/\s/g, " ");
 
 describe("Tasks page: due text", () => {
   it("shows only the time under a dated heading or Today, and nothing for a task with no time", async () => {
