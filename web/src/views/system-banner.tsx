@@ -105,8 +105,9 @@ export function UpdateNote({ factory }: { factory: FactoryState | null | undefin
 }
 
 /**
- * The running revision in the header (design 09-dashboard-shell): its short form, and "up to date" or "N behind" when the
- * status file says (a separate code checkout). Hidden without a factory status or a running revision.
+ * The running revision in the header (design 09-dashboard-shell): labelled "Factory version", its short form, and "up
+ * to date" or "N behind" when the status file says (a separate code checkout); the tooltip says what the hash is. The
+ * label shows from `sm` up, so the top bar stays on one row. Hidden without a factory status or a running revision.
  */
 export function FactoryRevision({ factory }: { factory: FactoryState | null | undefined }) {
   if (!factory?.rev) return null;
@@ -114,7 +115,10 @@ export function FactoryRevision({ factory }: { factory: FactoryState | null | un
   const behind = factory.behind ?? null;
   const text = behind === null ? rev : behind === 0 ? t("update.revCurrent", { rev }) : t("update.revBehind", { rev, count: behind });
   return (
-    <span data-testid="factory-rev" title={t("update.revLabel")} className="shrink-0 font-mono text-xs whitespace-nowrap text-text-2">{text}</span>
+    <span className="flex items-baseline gap-1.5 text-xs whitespace-nowrap text-text-2">
+      <span className="hidden sm:inline">{t("update.revLabel")}</span>
+      <span data-testid="factory-rev" title={t("update.revTooltip")} className="shrink-0 font-mono">{text}</span>
+    </span>
   );
 }
 
