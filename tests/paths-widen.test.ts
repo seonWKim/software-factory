@@ -20,6 +20,7 @@ import { FakeSource } from "./helpers/fakes/source.js";
 import { alice, cleanScanner, config, issueRef, mallory, silent } from "./helpers/fakes/config.js";
 import { pipeline } from "./helpers/harness.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 const paths = (it: WorkItem, n: string, note: string, requester = alice): SourceEvent =>
   ({ kind: "paths_requested", source: it.source, comment_id: n, requester, note });
@@ -159,7 +160,7 @@ describe("factory task paths", () => {
       store, sources: [new LocalSource(store)], auth: new OwnerAuth(store), clock, config, log: silent, scanner: cleanScanner, repeated_failure_rule: false,
     });
     let n = 0;
-    const deps = (user: UserId): LocalCliDeps => ({ store, identity: { user, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "body", newId: () => `id${++n}` });
+    const deps = (user: UserId): LocalCliDeps => ({ answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "body", newId: () => `id${++n}` });
     const id = (await runLocalCli(deps(ME), { action: "create", title: "t", bodyFile: "b" })).lines[0] as WorkItemId; // ME becomes the owner
     const cur = (await store.getWorkItem(id))!;
     const r = await store.transition({ id, expected_version: cur.version, actor: system, reason: "seed", patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null, allowed_paths: ["src/a/"], tier: 2 } });

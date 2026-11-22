@@ -19,7 +19,8 @@ function menuOf(row: HTMLElement): [string | null, string | null][] {
 // The last auto-mode stop (design 03-risk), shown beside the Mode toggle (with its link to the alarm and its button)
 // and on its alarm's Needs-you row (the Check group, design 09-dashboard-tasks): one sentence in local time, the
 // server's full text behind a Details toggle, and a "⋯" menu of Turn auto back on (the same settings write) and What
-// failed. A burst of agent-run failures stops nothing, so there is no stop: its alarm's row has Show failures.
+// failed. Turn auto back on opens the mode confirmation Dialog (design 09-dashboard-settings, 2026-11-22); only its
+// Confirm writes. A burst of agent-run failures stops nothing, so there is no stop: its alarm's row has Show failures.
 
 // tsconfig.test.json checks this file without JSX, so the views are built with createElement and their .tsx modules are
 // loaded by a specifier the node check skips (as in ui-settings-page.test.tsx).
@@ -94,14 +95,24 @@ async function modeSection(): Promise<HTMLElement> {
   return screen.findByRole("region", { name: "Mode" });
 }
 
-/** Clicks "Turn auto back on" in `within` and returns the write it posted. */
-async function turnAutoOn(scope: HTMLElement) {
-  const button = await within(scope).findByRole("button", { name: "Turn auto back on" });
-  await act(async () => fireEvent.click(button));
+/** The open mode confirmation Dialog. */
+const modeDialog = () => screen.getByRole("dialog", { name: "Turn on auto mode?" });
+
+/** Confirms the open mode Dialog and returns the one write it posted; nothing was posted before Confirm. */
+async function confirmAuto() {
+  expect(posts).toHaveLength(0);
+  await act(async () => fireEvent.click(within(modeDialog()).getByRole("button", { name: "Turn on auto" })));
   expect(posts).toHaveLength(1);
   expect(posts[0]!.url).toBe("/api/v1/settings");
   expect((posts[0]!.init.headers as Record<string, string>)["x-csrf-token"]).toBe(TOKEN);
   return JSON.parse(String(posts[0]!.init.body)) as unknown;
+}
+
+/** Clicks "Turn auto back on" in `scope`, which opens the Dialog, and confirms it; returns the write it posted. */
+async function turnAutoOn(scope: HTMLElement) {
+  const button = await within(scope).findByRole("button", { name: "Turn auto back on" });
+  await act(async () => fireEvent.click(button));
+  return confirmAuto();
 }
 
 /** The local-time sentence of an auto-stop row. */
@@ -117,8 +128,21 @@ describe("auto stop: red main", () => {
     const link = within(section).getByRole("link", { name: "See the alarm" });
     expect(link.getAttribute("href")).toBe("/app/#alarm-al_1");
     expect(note.closest("[data-auto-stop]")).not.toBeNull();
-    // One click, no confirmation: mode auto through the setting save path.
+    // The Dialog first; its Confirm writes mode auto once through the setting save path.
     expect(await turnAutoOn(section)).toEqual({ action: "set", key: "mode", value: '"auto"' });
+  });
+
+  it("Cancel and Escape on Turn auto back on's Dialog write nothing", async () => {
+    view = settingsView("manual", stop("red_main"));
+    const section = await modeSection();
+    const button = await within(section).findByRole("button", { name: "Turn auto back on" });
+    fireEvent.click(button);
+    fireEvent.click(within(modeDialog()).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(button);
+    fireEvent.keyDown(modeDialog(), { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(posts).toEqual([]);
   });
 
   it("its alarm's Needs-you row is the alarm's own target: one local-time sentence, no second line, and a menu of Turn auto back on then What failed", async () => {
@@ -150,7 +174,7 @@ describe("auto stop: red main", () => {
     expect(within(line).getByText(FULL)).not.toBeNull();
   });
 
-  it("Turn auto back on in the row's menu writes mode auto through the same settings write as the Settings note", async () => {
+  it("Turn auto back on in the row's menu opens the same Dialog; Confirm writes mode auto through the same settings write as the Settings note", async () => {
     view = settingsView("manual", stop("red_main"));
     mount(checks([alarm(stop("red_main"))]));
     const line = (await screen.findByText(sentence("tests failed on main after a merge"))).closest("li")!;
@@ -158,10 +182,7 @@ describe("auto stop: red main", () => {
     const item = within(line).getByRole("menuitem", { name: "Turn auto back on" });
     await vi.waitFor(() => expect(item.hasAttribute("disabled")).toBe(false));
     await act(async () => fireEvent.click(item));
-    expect(posts).toHaveLength(1);
-    expect(posts[0]!.url).toBe("/api/v1/settings");
-    expect((posts[0]!.init.headers as Record<string, string>)["x-csrf-token"]).toBe(TOKEN);
-    expect(JSON.parse(String(posts[0]!.init.body))).toEqual({ action: "set", key: "mode", value: '"auto"' });
+    expect(await confirmAuto()).toEqual({ action: "set", key: "mode", value: '"auto"' });
   });
 });
 
@@ -192,5 +213,34 @@ describe("auto stop: a burst of agent-run failures", () => {
     expect(line.querySelector("[data-alarm-summary]")!.textContent).toBe("Alarm: something");
     expect(menuOf(line)).toEqual([["Show failures", "show_failures"]]);
     expect(line.querySelector("details")).toBeNull();
+  });
+});
+
+describe("the Settings Mode switch asks first", () => {
+  it("flipping it opens the Dialog and sends nothing; Escape and Cancel write nothing; Confirm writes the mode once", async () => {
+    view = settingsView("manual", null);
+    const section = await modeSection();
+    const toggle = await within(section).findByRole("switch", { name: "Auto mode" });
+    fireEvent.click(toggle);
+    fireEvent.keyDown(modeDialog(), { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(toggle);
+    fireEvent.click(within(modeDialog()).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // The switch still shows the stored mode: nothing changed.
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(toggle);
+    expect(await confirmAuto()).toEqual({ action: "set", key: "mode", value: '"auto"' });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("from auto it asks to switch to manual, and Confirm writes manual", async () => {
+    view = settingsView("auto", null);
+    const section = await modeSection();
+    fireEvent.click(await within(section).findByRole("switch", { name: "Auto mode" }));
+    const dialog = screen.getByRole("dialog", { name: "Switch to manual mode?" });
+    expect(posts).toHaveLength(0);
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Switch to manual" })));
+    expect(posts.map((p) => JSON.parse(String(p.init.body)))).toEqual([{ action: "set", key: "mode", value: '"manual"' }]);
   });
 });

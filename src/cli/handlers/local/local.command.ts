@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { CLI_TOP_WORDS, HELP_WORD, cliName, cliUsageLines, parseLocalCliArgs, resolveItem, runLocalCli } from "../../../core/local-cli.js";
+import { answersDetail, splitAnswers } from "../../../shared/command-notes.js";
 import { storeProjectResolver } from "../../../ui/settings-api.js";
 import { defineCommand } from "../../command.js";
 import { lastRefusedLines, refusalHint } from "./refused.js";
@@ -37,6 +38,7 @@ export default defineCommand({
           newId: () => randomUUID(),
           cli,
           ui: loaded.file.ui ?? {},
+          answers: { split: splitAnswers, detail: answersDetail },
         },
         action,
       );

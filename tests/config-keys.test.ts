@@ -567,3 +567,32 @@ describe("golden (design 06-measurement, eval on change)", () => {
     expect(err.message).toContain('did you mean "replays"?');
   });
 });
+
+describe("repo.check_tz (design §4, the merge check's time zone)", () => {
+  const REPO = REAL.repo as Record<string, unknown>;
+  const withTz = (value: unknown) => ({ ...SQLITE, repo: { ...REPO, check_tz: value } });
+
+  it("absent: off, nothing set", async () => {
+    const { check_tz: _, ...repo } = REPO;
+    expect((await loadConfig(root({ ...SQLITE, repo }))).config.repo).not.toHaveProperty("check_tz");
+  });
+
+  it("an IANA zone name loads; the checked-in config sets UTC", async () => {
+    for (const zone of ["UTC", "Asia/Seoul", "America/New_York", "Etc/GMT+9"]) {
+      expect((await loadConfig(root(withTz(zone)))).config.repo.check_tz).toBe(zone);
+    }
+    expect(REPO.check_tz).toBe("UTC");
+  });
+
+  it("a value that is not a known IANA zone fails at startup, naming the key", async () => {
+    for (const value of ["Mars/Olympus", "", "+09:00", "-05:00", "utc ", 9, null, ["UTC"], { zone: "UTC" }]) {
+      const err = await loadError(withTz(value));
+      expect(err.message, JSON.stringify(value)).toContain("repo.check_tz must be an IANA time zone name");
+    }
+  });
+
+  it("check_tz is a known repo key", async () => {
+    const err = await loadError({ ...SQLITE, repo: { ...REPO, check_zt: "UTC" } });
+    expect(err.message).toMatch(/did you mean "check_tz"/);
+  });
+});

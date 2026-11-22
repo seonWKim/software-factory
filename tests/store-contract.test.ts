@@ -2106,6 +2106,8 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "controller_projects", "controller_task_projects", // task projects: 20261113T1300-controller-task-projects
       "controller_pause_history", // ended model-stall and network pauses (design 07-self-improvement): 20261118T1200-controller-pause-history
       "controller_design_learnings", // owner corrections to UI changes (design 07-design-learnings): 20261120T1201-controller-design-learnings
+      "controller_schedules", "controller_schedule_runs", // schedules (design 08-schedules): 20261122T1000-controller-schedules
+      "controller_standing_rule_changes", // one record per standing-rule change (design 05-standing-approvals): 20261122T1300-state-standing-rule-changes
       "ext_packs_approvals", // approvals of pack entries: src/state/migrations/20261111T1600-state-ext-packs-approvals
       "ext_packs_entries", // pack tool and MCP server entries: src/state/migrations/20261111T1201-state-ext-packs-entries
       "ext_skill_refs", // imported skill references (design 11-plugin-import): src/state/migrations/20261115T1200-state-ext-skill-refs
@@ -2113,6 +2115,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "runtime_config_file_changes", // file-only key edits (design 08-settings): src/state/migrations/20261113T1200-state-config-file-changes
       "calendar_events", // the calendar component: src/calendar/migrations/20261112T1700-calendar-events
       "calendar_sync_state",
+      "calendar_sync_requests", "calendar_synced_ranges", // on-demand sync: src/calendar/migrations/20261121T1001-calendar-sync-requests
       // The sql bus's own tables (RFC 0015 M3).
       "bus_scheduler",
       "bus_topics",

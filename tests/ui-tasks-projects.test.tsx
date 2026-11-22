@@ -47,7 +47,9 @@ describe("task projects (design 09-dashboard-app, project switcher and dialog)",
     expect(selectedProject()).toEqual(["Home"]);
     expect(new URLSearchParams(location.search).get("project")).toBe("home");
     expect(location.pathname).toBe("/app/tasks");
-    await waitFor(() => expect([...document.querySelectorAll<HTMLElement>("[data-task]")].map((e) => e.dataset.task)).toEqual(["tk_now", "tk_inbox", "tk_fixed"]), SLOW);
+    await waitFor(() => expect([...document.querySelectorAll<HTMLElement>("[data-task]")].map((e) => e.dataset.task)).toEqual(["tk_now", "tk_inbox"]), SLOW);
+    // The project's done task is in its Done group, closed until opened.
+    fireEvent.click(screen.getByText("1 done").closest("summary")!);
     expect(card("tk_fixed").hasAttribute("data-done")).toBe(true);
     fireEvent.click(projectTab("All projects"));
     expect(location.search).toBe("");
@@ -171,7 +173,7 @@ describe("task projects (design 09-dashboard-app, project switcher and dialog)",
     await show();
     expect(screen.queryByRole("button", { name: "More actions: Home" })).toBeNull();
     fireEvent.click(projectTab("Home"));
-    await waitFor(() => expect(document.querySelector('[data-task="tk_fixed"]')).not.toBeNull(), SLOW);
+    await waitFor(() => expect(document.querySelector('[data-task="tk_inbox"]')).not.toBeNull(), SLOW);
     fireEvent.click(screen.getByRole("button", { name: "More actions: Home" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
     const dialog = document.querySelector<HTMLElement>("[data-dialog]")!;

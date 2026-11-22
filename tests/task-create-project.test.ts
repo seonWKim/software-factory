@@ -8,6 +8,7 @@ import { type ApiDeps, type UiRequest, respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
 import { TASK_CREATE_PATH } from "../src/ui/tasks-api.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // Create under a project (design 02-tasks): `factory task create --title <t> --body-file <f> --project <slug>` and the
 // dashboard's POST /api/v1/tasks/create store a task in that project linked to a new local work item, as `task build`
@@ -23,7 +24,7 @@ async function setup(project: string | null = PROJECT_KEY) {
   const { store } = await newStore(clock);
   let n = 0;
   const d: LocalCliDeps = {
-    store, identity: { user: USER, from: "git user.email" }, project: async () => project, read: async () => "  the body  \n", newId: () => `id${++n}`, ui: {},
+    answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: USER, from: "git user.email" }, project: async () => project, read: async () => "  the body  \n", newId: () => `id${++n}`, ui: {},
   };
   const run = (word: string, ...args: string[]) => {
     const a = parseLocalCliArgs(word, args);
