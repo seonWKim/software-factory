@@ -248,7 +248,7 @@ describe("sidebar", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "Settings" })).toBeTruthy();
     const open = within(side).getByRole("link", { name: "Settings" });
     expect(open.getAttribute("aria-current")).toBe("page");
-    expect(open.className.split(" ")).toEqual(expect.arrayContaining(["bg-surface-2", "font-medium"]));
+    expect(open.className.split(" ")).toEqual(expect.arrayContaining(["bg-sidebar-active", "font-medium"]));
   });
 });
 

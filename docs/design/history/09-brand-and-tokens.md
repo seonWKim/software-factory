@@ -1,5 +1,6 @@
 # 09-brand-and-tokens
 
+- **The current sidebar link was filled with `surface-2`** (until 2026-11-22, the `sidebar-active` decision at the top). Before: the active link used `bg-surface-2`, `#F3F2EE` on the `#F3F1EC` sidebar in light (`#EEF2EF` on `#EDF1EE` in the Celadon palette), about 1.01:1, so only the bar and weight marked it there.
 - **No page-width tokens** (until 2026-11-20, the page widths decision at the top). Before: the token set had no width; Rules set `max-w-3xl` (768px) itself and the other pages were as wide as `<main>` (1217 to 1232px at 1280 by 800).
 - **Type sizes were Tailwind's defaults and had no Tailwind mapping; no shadow tokens** (until 2026-11-19, the type-step decision at the top). Before: `index.css` mapped no `--text-*`, so `text-xl` was Tailwind's 20 px and not the `xl` step (28 px), the token-mapping test skipped `--fs-*` and `--lh-*`, and shadows were Tailwind's defaults.
 - **Select was a native select** (until 2026-11-17, the Select decision at the top). Before: `Select` wrapped a native `<select>` (`appearance-none`, with its own chevron), so the browser drew the option list; on macOS it opened over the field and hid the label above the next field, and tests drove it with `fireEvent.change` and read its `options`.
