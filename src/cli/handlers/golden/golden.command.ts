@@ -2,7 +2,6 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { goldenConfig } from "../../../core/config.js";
 import { Plugins, resolveProject } from "../../../compose.js";
 import { addCase, buildGoldenRunDeps, compareCases, formatCompare, formatReport, parseAddArgs, parseCompareArgs, parseRunArgs, runCases } from "../../../golden.js";
 import { ROLES_DIR } from "../../../runtime/index.js";
@@ -32,7 +31,7 @@ export default defineCommand({
     const args = [...rest];
     const loaded = await ctx.load();
     const p = new Plugins(loaded);
-    const replays = goldenConfig(loaded.file)?.replays ?? 1; // golden.replays (default 1)
+    const replays = (loaded.file as { golden?: { replays?: number } } | null)?.golden?.replays ?? 1; // golden.replays (default 1; startup already refused a bad value)
     if (sub === "add") {
       const opts = parseAddArgs(args);
       await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });

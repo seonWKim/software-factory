@@ -81,9 +81,8 @@ export async function readPrRecord(
     outcome = revert ? (revert.reason as "reverted" | "fixed_forward") : "clean_merge";
   } else outcome = "held";
 
-  const sources = [human, outcome === "reverted" || outcome === "fixed_forward" ? revert : null].filter(
-    (c): c is StateChange => c !== null,
-  );
+  const rev = revert && (outcome === "reverted" || outcome === "fixed_forward") ? revert : null;
+  const sources = [human, rev].filter((c): c is StateChange => c !== null);
   return {
     item,
     record: {
@@ -91,10 +90,7 @@ export async function readPrRecord(
       work_item_id: item.id,
       outcome,
       human_verdict: human ? { reason: human.reason, actor_id: human.actor.id, record_id: human.id } : null,
-      revert_reason:
-        revert && (outcome === "reverted" || outcome === "fixed_forward")
-          ? { reason: revert.reason, record_id: revert.id, detail: revert.detail }
-          : null,
+      revert_reason: rev ? { reason: rev.reason, record_id: rev.id, detail: rev.detail } : null,
       source_record_ids: sources.map((c) => c.id),
     },
   };
@@ -108,16 +104,10 @@ export async function readPrRecord(
 export function decideExpect(outcome: PrOutcome, requested: Expect | undefined): Expect {
   if (outcome === "clean_merge") {
     if (requested === "should_pass") return "should_pass";
-    throw new GoldenError(
-      requested === "should_flag"
-        ? "a should_flag case cannot come from a clean merge"
-        : "a clean merge can only be a should_pass case, and only with an explicit --expect should_pass",
-    );
+    throw new GoldenError(requested === "should_flag" ? "a should_flag case cannot come from a clean merge" : "a clean merge can only be a should_pass case, and only with an explicit --expect should_pass");
   }
   if (requested === "should_pass") throw new GoldenError(`a should_pass case cannot come from a ${outcome} PR`);
-  if (requested === undefined && outcome === "held") {
-    throw new GoldenError("a held PR has no outcome yet; pass --expect should_flag to add it anyway");
-  }
+  if (requested === undefined && outcome === "held") throw new GoldenError("a held PR has no outcome yet; pass --expect should_flag to add it anyway");
   return "should_flag";
 }
 
@@ -205,21 +195,8 @@ export async function addCase(deps: AddDeps, opts: AddOptions): Promise<{ dir: s
   const expect = decideExpect(record.outcome, requested);
 
   const diff = await deps.github.pullDiff(pr);
-  const kase: GoldenCase = {
-    id,
-    pr_number: pr,
-    work_item_id: item.id,
-    expect,
-    outcome: record.outcome,
-    human_verdict: record.human_verdict,
-    revert_reason: record.revert_reason,
-    source_record_ids: record.source_record_ids,
-  };
-  const files: Record<string, string> = {
-    [CASE_DIFF]: diff,
-    [CASE_INSTRUCTION]: renderSpec(item),
-    "case.json": `${JSON.stringify(kase, null, 2)}\n`,
-  };
+  const kase: GoldenCase = { id, pr_number: pr, work_item_id: item.id, expect, outcome: record.outcome, human_verdict: record.human_verdict, revert_reason: record.revert_reason, source_record_ids: record.source_record_ids };
+  const files: Record<string, string> = { [CASE_DIFF]: diff, [CASE_INSTRUCTION]: renderSpec(item), "case.json": `${JSON.stringify(kase, null, 2)}\n` };
   await scanAll(deps.scanner, "commit", Object.values(files), rel);
 
   await mkdir(golden, { recursive: true });
@@ -249,23 +226,9 @@ function checkRole(name: string): string {
 /** The work item spec, in the same form the worker gives the reviewer (`renderWorkItem` with the spec). */
 export function renderSpec(item: WorkItem): string {
   return [
-    `# Work item ${item.id}`,
-    "",
-    `Source: ${item.source.link}`,
-    "",
-    "## Problem",
-    "",
-    item.problem,
-    "",
-    "## Done criteria",
-    ...(item.done_criteria ?? []).map((c) => `- ${c}`),
-    "",
-    `## Desired output\n\n${item.desired_output ?? ""}`,
-    "",
-    `## Scope\n\n${item.scope ?? ""}`,
-    "",
-    "## Allowed paths (do not change files outside these)",
-    ...item.allowed_paths.map((p) => `- ${p}`),
+    `# Work item ${item.id}`, "", `Source: ${item.source.link}`, "", "## Problem", "", item.problem, "", "## Done criteria", ...(item.done_criteria ?? []).map((c) => `- ${c}`), "",
+    `## Desired output\n\n${item.desired_output ?? ""}`, "", `## Scope\n\n${item.scope ?? ""}`, "",
+    "## Allowed paths (do not change files outside these)", ...item.allowed_paths.map((p) => `- ${p}`),
   ].join("\n");
 }
 
