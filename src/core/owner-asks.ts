@@ -1,10 +1,11 @@
 // Owner asks (design 06-efficiency, 07-improve-report): each entry into a `blocked_on: "human"` state is an ask. The
 // controller kernel writes its reason code and tier into that state change's `detail`; the owner's action and the
 // wait are read from the item's next state change. No table of its own: old rows (written before the detail) are not
-// asks and are never backfilled. Pure: no store, clock or model.
+// asks and are never backfilled. Pure, apart from readAskRows's store reads: no clock or model.
 
 import { SPEC_DECISIONS, specChanged } from "./standing.js";
-import type { BlockedOn, StateChange, StateChangeDetail, Tier, Timestamp, WorkItemId } from "./types.js";
+import type { FactoryStore } from "../interfaces/factory-store.js";
+import type { BlockedOn, FailureGroup, ImproveWindow, StateChange, StateChangeDetail, Tier, Timestamp, WorkItemId } from "./types.js";
 
 /** The detail keys an owner entry carries. */
 export const ASK_REASON = "ask_reason";
@@ -129,6 +130,51 @@ export function standingProposals(asks: readonly OwnerAsk[], threshold: number =
     .filter(([, n]) => n >= threshold)
     .map(([reason, run_length]) => ({ reason, run_length }))
     .sort((a, b) => (a.reason < b.reason ? -1 : 1));
+}
+
+/** The improve report's rows (design 07-improve-report), kept with its patterns: never drafted, filed or alerted. */
+export const OWNER_ASK = "owner_ask";
+export const ASK_PROPOSAL = "ask_proposal";
+/** One of the window's top ask reasons: `detail` is the reason code. */
+export type AskRow = FailureGroup & { error_code: typeof OWNER_ASK; asks: number; answered: number; approved_unchanged: number };
+/** A standing approval proposal: `detail` is the reason code, `text` what the report shows (proposalText). */
+export type ProposalRow = FailureGroup & { error_code: typeof ASK_PROPOSAL; run_length: number; text: string };
+
+/**
+ * The report rows of `asks`: the top reasons of the asks made inside `window`, then a proposal for each reason whose
+ * answers, up to the window's end, end in an unchanged run long enough. An answer after the window's end is not read.
+ */
+export function askRows(asks: readonly OwnerAsk[], window: ImproveWindow): FailureGroup[] {
+  const end = Date.parse(window.window_end);
+  const asOfEnd = asks
+    .filter((a) => Date.parse(a.at) < end)
+    .map((a) => (a.answered_at !== null && Date.parse(a.answered_at) > end ? { ...a, answered_at: null, action: null, wait_ms: null } : a));
+  const inWindow = asOfEnd.filter((a) => Date.parse(a.at) >= Date.parse(window.window_start));
+  const top = topAskReasons(inWindow).map((r): AskRow => ({
+    error_code: OWNER_ASK, detail: r.reason, run_ids: [], work_item_ids: r.work_item_ids, asks: r.asks, answered: r.answered, approved_unchanged: r.approved_unchanged,
+  }));
+  const proposals = standingProposals(asOfEnd).map((p): ProposalRow => ({
+    error_code: ASK_PROPOSAL, detail: p.reason, run_ids: [], work_item_ids: [], run_length: p.run_length, text: proposalText(p),
+  }));
+  return [...top, ...proposals];
+}
+
+/** How far back the improve report reads the project's asks for the proposal (design 07-improve-report). */
+export const ASK_LOOKBACK_MS = 30 * 86_400_000;
+/** The most items one read looks at for asks. */
+const ASK_ITEMS_CAP = 10_000;
+
+/**
+ * The improve report's ask rows of `project` for `window`: one read of the items updated in the ASK_LOOKBACK_MS
+ * before the window's end (an item that asked since was updated then), one state changes read per item of the project.
+ */
+export async function readAskRows(store: Pick<FactoryStore, "listWorkItemsWhere" | "listStateChanges">, project: string, window: ImproveWindow): Promise<FailureGroup[]> {
+  const since = new Date(Date.parse(window.window_end) - ASK_LOOKBACK_MS).toISOString() as Timestamp;
+  const changes: StateChange[] = [];
+  for (const it of await store.listWorkItemsWhere({ updated_since: since, limit: ASK_ITEMS_CAP })) {
+    if (it.project === project) changes.push(...(await store.listStateChanges(it.id)));
+  }
+  return askRows(ownerAsks(changes), window);
 }
 
 /** The proposal as the report shows it: text only, it creates no rule. */

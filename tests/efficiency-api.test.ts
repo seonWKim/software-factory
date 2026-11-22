@@ -80,7 +80,8 @@ function fakeStore() {
     },
     /** Marks the merge of item `id` reverted. */
     reverted(id: WorkItemId) {
-      merges.find((m) => m.work_item_id === id)!.reverted = 1;
+      const i = merges.findIndex((m) => m.work_item_id === id);
+      merges[i] = { ...merges[i]!, reverted: 1 };
     },
     closed(close_reason: WorkItem["close_reason"], closedAgo: number) {
       const id = `wi_${++n}` as WorkItemId;

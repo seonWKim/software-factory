@@ -66,7 +66,7 @@ describe("filed pattern: hold at the first matching run", () => {
     const r = await finish(store, clock);
     await controller(store, clock).tickAlarms();
     expect(await store.getWorkItem(r.work_item_id)).toMatchObject({ blocked_on: "human", blocked_reason: RECURRING_FAILURE });
-    expect(await holds(store, r.work_item_id)).toEqual([expect.objectContaining({ detail: { pattern_key: KEY } })]);
+    expect(await holds(store, r.work_item_id)).toEqual([expect.objectContaining({ detail: { pattern_key: KEY, ask_reason: "recurring_failure", ask_tier: null } })]);
   });
 
   it("a second hold step on the same runs changes nothing and writes no second state change", async () => {

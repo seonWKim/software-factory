@@ -6,13 +6,15 @@ import { errorText } from "../../core/log.js";
 import { askDetail } from "../../core/owner-asks.js";
 import { type SourceRef, type SourceType, type WorkItem } from "../../core/types.js";
 import type { Forge } from "../../interfaces/forge.js";
-import type { SourceAdapter } from "../../interfaces/source-adapter.js";
 import { type ControllerDeps, rateLimitWait } from "../../core/controller-deps.js";
 import type { ActionRow, NewAction } from "../../outbound/index.js";
 import type { Draft } from "../../shared/envelope.js";
 import { CODE_ROOT, type SqlDriver, forgetOnFailure } from "../../state/index.js";
 import { loadDescriptors } from "../../runtime/index.js";
 import { type SignalDescriptor, uniqueSignals } from "../signals/signal.js";
+
+/** A configured source, as the deps carry it. */
+type SourceAdapter = NonNullable<ControllerDeps["source"]>;
 
 /**
  * The sources a controller runs (design 2026-11-01): any number, no two of one type. PRs come from the forge,
