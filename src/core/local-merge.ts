@@ -10,6 +10,8 @@ import type { Sandbox } from "../interfaces/sandbox.js";
 
 // What follows a merge: the restart command and the merge reply's run hint (design 04-gate-commands, restart).
 export * from "./restart.js";
+// The auto merge step's tier rule and drop-back (design 03-risk), re-exported so the unit reads them through this module.
+export { droppedBack, tierRule } from "./stats.js";
 
 /**
  * The source type of items filed in the factory itself: the store holds their thread and state, so they need no
