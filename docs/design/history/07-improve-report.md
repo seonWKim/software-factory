@@ -1,5 +1,6 @@
 ## History
 
+- **Owner asks in the improve report** (decision changed 2026-11-22, wi_06476837). Before: the report held the failed runs (grouped), the owner's pushbacks, the flaky tests merge checks named and the hot files; nothing counted or ranked why items waited on the owner, and no standing approval was proposed from those waits.
 - **Flaky tests in the improve report** (decision changed 2026-11-17). Before: the report held only the failed runs (grouped by code and detail) and the owner's pushbacks; a merge check had no rerun, so a flaky test showed only as a red merge check and a loop, never as a flaky test.
 - **`/classic` kept its improve section and Run now beside the Rules page** (until 2026-11-16, the Rules-page-only decision at the top). Before: `/classic` still answered 200 with the improve report (`improveSection`) and the Health panel's Run now button (its own script, allowed by hash), so the draft and filing lines were built in both `src/ui/health.ts` and `src/ui/rules-api.ts`.
 - **The improve report and Run now only on the classic status page** (decision changed 2026-11-16, the Rules page decision at the top). Before: the latest report and the Run now button were rendered only by `/classic` (`improveSection` and the Health panel's Run now in `src/ui/health.ts`); the dashboard app showed neither.

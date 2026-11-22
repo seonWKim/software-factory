@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { API, type ItemRow, type Items, type Overview, type SystemAction, mergeInFlight, useApi, useItems } from "../api.js";
+import { useEffect, useMemo, useState } from "react";
+import { API, type ItemRow, type Items, type Overview, type SystemAction, type UnreviewedMerges, mergeInFlight, useApi, useItems } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { Dialog } from "../components/ui/dialog.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
@@ -20,6 +20,7 @@ import { Badge, StatusBadge } from "../components/ui/badge.js";
 import { ListRow, ROW_TITLE } from "../components/ui/list-row.js";
 import type { MenuItem } from "../components/ui/menu.js";
 import { cn } from "../lib/cn.js";
+import { lastLook, markLook } from "../lib/last-look.js";
 
 /**
  * A built task's work item state as one pill: the state table's label, except that a Merge under way says where it
@@ -112,6 +113,7 @@ function WorkRow({ it }: { it: ItemRow }) {
       details={
         <>
           <StatusBadge state={it.item_phase} />
+          {it.rank_reason !== undefined && <span data-rank><Badge level={it.held ? "held" : undefined}>{it.rank_reason}</Badge></span>}
           {it.merge_check && !checking && it.merge_check.state !== "mergeable" && <MergeCheckNote check={it.merge_check} />}
           {chip && (
             <span data-need title={reason}>
@@ -164,6 +166,69 @@ export function NeedsList({ items, checks = [] }: { items: readonly ItemRow[]; c
   );
 }
 
+/** The time of a held ask's "Held until HH:MM" rank reason; null when the ask is not held. */
+const heldTime = (it: ItemRow): string | null => (it.held ? /^Held until (.+)$/.exec(it.rank_reason ?? "")?.[1] ?? null : null);
+
+/** The merge's risk badge: its stored verdict (failed, reverted), else "Not reviewed". */
+function riskOf(verdict: string | null | undefined): { key: "tasks.riskFailed" | "tasks.riskReverted" | "tasks.riskUnreviewed"; level: string | undefined } {
+  if (verdict === "failed") return { key: "tasks.riskFailed", level: "failed" };
+  if (verdict === "reverted") return { key: "tasks.riskReverted", level: "failed" };
+  return { key: "tasks.riskUnreviewed", level: undefined };
+}
+
+type Merge = UnreviewedMerges["merges"][number];
+
+/** One merged PR as a row: its link, its checks and review links, its risk badge (`risk`) and who merged it. */
+function MergeRow({ m, risk }: { m: Merge; risk: boolean }) {
+  const label = t("tasks.mergeLink", { ref: m.change_ref });
+  const r = riskOf(m.check_verdict);
+  return (
+    <ListRow
+      data-key={m.change_ref}
+      title={m.review_url ? <a href={m.review_url} target="_blank" rel="noreferrer" className={cn(ROW_TITLE, LINK_CLASS)}>{label}</a> : <span className={ROW_TITLE}>{label}</span>}
+      details={
+        <>
+          {risk && <span data-risk><Badge level={r.level}>{t(r.key)}</Badge></span>}
+          {m.checks_url && <a href={m.checks_url} target="_blank" rel="noreferrer" className={LINK_CLASS}>{t("tasks.checksLink")}</a>}
+          {m.review_url && <a href={m.review_url} target="_blank" rel="noreferrer" className={LINK_CLASS}>{t("tasks.reviewLink")}</a>}
+          {m.project && <span>{m.project}</span>}
+        </>
+      }
+    />
+  );
+}
+
+const MergeList = ({ merges, title, risk }: { merges: readonly Merge[]; title: string; risk: boolean }) => (
+  <Card title={title} count={merges.length}>
+    <ul aria-label={title} className="divide-y divide-border rounded-control border border-border">
+      {merges.map((m) => <MergeRow key={`${m.project}:${m.change_ref}`} m={m} risk={risk} />)}
+    </ul>
+  </Card>
+);
+
+/**
+ * The merged-without-you and worth-sampling cards (design 09-dashboard-tasks): the PRs that merged with no work item.
+ * The first lists those since the owner's last look (this browser's local storage; a first visit the last 7 days); the
+ * second all of them, failed or reverted first, then newest first. A merge is urgent: no review time holds it.
+ * The last look is read once at mount and stored then, so these cards keep their rows while the page is open.
+ */
+function MergeCards() {
+  const merges = useApi<UnreviewedMerges>(API.unreviewedMerges, 30_000).data?.merges;
+  const [since] = useState(() => lastLook(Date.now()));
+  useEffect(() => markLook(Date.now()), []);
+  if (!merges || merges.length === 0) return null;
+  const fresh = merges.filter((m) => Date.parse(m.recorded_at) > since);
+  const bad = (m: Merge) => (m.check_verdict === "failed" || m.check_verdict === "reverted" ? 0 : 1);
+  // Array.sort is stable: the API's newest-first order holds within each verdict.
+  const sample = [...merges].sort((a, b) => bad(a) - bad(b));
+  return (
+    <>
+      {fresh.length > 0 && <MergeList merges={fresh} title={t("tasks.mergedWithoutYou")} risk={false} />}
+      <MergeList merges={sample} title={t("tasks.worthSampling")} risk />
+    </>
+  );
+}
+
 /**
  * The Tasks page's Needs you section (design 09-status-page): every open item that waits on the owner, also one shown
  * on an open task's row, and under All projects every system action in the Check group, with their count: the same
@@ -179,14 +244,18 @@ export function NeedsYou({ project, linked }: { project: string | null; linked: 
   const checks = project === null ? (overview.data?.system_actions ?? []) : [];
   const status = project === null && <FloorStatus />;
   if (items.isError) return <><ErrorNote error={items.error} />{status}</>;
-  const count = needs.length + checks.length;
+  const held = needs.filter((it) => it.held === true);
+  const count = needs.length - held.length + checks.length;
+  const until = held.map(heldTime).find((x) => x !== null);
   return (
     <>
-      {linked !== null && count > 0 && (
+      {linked !== null && needs.length + checks.length > 0 && (
         <Card title={t("page.needs")} count={count}>
+          {held.length > 0 && until && <p className="mb-3 text-sm text-text-2">{t("tasks.heldUntil", { count: held.length, time: until })}</p>}
           <NeedsList items={needs} checks={checks} />
         </Card>
       )}
+      {project === null && <MergeCards />}
       {status}
     </>
   );
