@@ -1241,9 +1241,8 @@ export class SqlFactoryStore extends SqlScheduleStore implements FactoryStore {
   setFiledPatternRef(id: FiledPatternId, report_id: ImproveReportId, ref: SourceRef): Promise<void> {
     return filed.setFiledPatternRef(this.db, id, report_id, ref);
   }
-  listFiledPatternsWithoutOutcome(project: string): Promise<FiledPattern[]> {
-    return filed.listFiledPatternsWithoutOutcome(this.db, project);
-  }
+  async listFiledPatternsWithin(within_ms: number) { const since = this.after(-within_ms); return { since, rows: await filed.listFiledPatternsSince(this.db, since) }; }
+  listFiledPatternsWithoutOutcome(project: string): Promise<FiledPattern[]> { return filed.listFiledPatternsWithoutOutcome(this.db, project); }
   setFiledPatternOutcome(id: FiledPatternId, outcome: NonNullable<FiledPattern["outcome"]>, at: Timestamp): Promise<boolean> {
     return filed.setFiledPatternOutcome(this.db, id, outcome, at);
   }
