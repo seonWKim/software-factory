@@ -16,11 +16,11 @@ Pick the component by the need, before drawing anything by hand. A UI spec names
 
 ## Card
 
-A block of a page (`card.tsx`): the `surface` background, a 1px `border`, the `card` radius, 24px padding (`p-6`; 16px below `sm`, so a 320px window keeps its content width) and `shadow-sm`. Optional h2 `title` in the section title role (`text-base font-semibold`, the exported `CARD_TITLE`), an optional `count` beside it and an optional `action` at the end of the title row. It is a region named by `label`, else by `title` (Data names its table Card "Table <name>" and titles it with the bare name); with neither it is a plain block. `id` gives it an anchor (`#spend`, `#failures`); `live` announces a title that changes (the calendar's period). Cards follow each other 24px apart. No variants or sizes.
+A block of a page (`card.tsx`): the `surface` background, a 1px `border`, the `card` radius, 24px padding (`p-6`; 16px below `sm`, so a 320px window keeps its content width) and `shadow-sm`. Optional h2 `title` in the section title role (`text-base font-semibold`, the exported `CARD_TITLE`): Card is the one owner of a page's h2, so every h2 on every page has this one size, an optional `count` beside it and an optional `action` at the end of the title row. It is a region named by `label`, else by `title` (Data names its table Card "Table <name>" and titles it with the bare name); with neither it is a plain block. `id` gives it an anchor (`#spend`, `#failures`); `live` announces a title that changes (the calendar's period). Cards follow each other 24px apart. No variants or sizes.
 
 ## CardSection
 
-A titled part inside a `Card`: an h3 in the same section title role, an optional `count` and `action`. Not a region of its own, so a page's list of regions stays its list of cards. Use it for a sub-heading in a card (Spend's Totals, the read-only file keys) instead of a raw heading.
+A titled part inside a `Card`: an h3 in the one sub-group style (`text-xs font-medium text-text-2`, the exported `SUB_TITLE`), an optional `count` and `action`. Every other h3 on a page (a calendar day, a group of task rows) uses `SUB_TITLE` too. Not a region of its own, so a page's list of regions stays its list of cards. Use it for a sub-heading in a card (Spend's Totals, the read-only file keys) instead of a raw heading.
 
 ## Table
 
@@ -64,7 +64,11 @@ The "Could not load" message in the `bad` tone, role alert.
 
 ## PageHeader
 
-The top of every page: the one h1 in the page title role (`text-xl font-semibold`), an optional `badge` beside it (a Badge with the page's count, such as the Rules page's waiting count; never an action), an optional description under it (`text-sm`, `text-2`) and optional actions at the end, the primary action last. 24px below it. States: with or without badge, with or without description, with or without actions; actions wrap below the title when narrow.
+The top of every page: the one h1 in the page title role (`text-xl font-semibold`), an optional `badge` beside it (a Badge with the page's count, such as the Rules page's waiting count; never an action), an optional description under it (`text-sm`, `text-2`) and optional actions at the end, the primary action last. 24px below it. `width` picks the page's width: `wide` (the default, `--page-wide`, 1232px) for lists and tables, `read` (`--page-read`, 960px) for forms and reading (Settings, Rules). It marks the header `data-page-width`, and `<main>` takes its `max-width` from it (`max-w-page-wide`, `has-[[data-page-width=read]]:max-w-page-read`); no page or page wrapper sets a `max-w-*` of its own (field, cell and prose widths stay). States: with or without badge, with or without description, with or without actions; actions wrap below the title when narrow.
+
+## PageToolbar
+
+The slot for a page's controls, right under its `PageHeader` (`notice.tsx`): `tabs` on the first row, then the search, view switch and filters (`children`) on the second, wrapping when narrow; 24px below it. Every page with tabs, a search, a view switch or filters puts them here, never between its content blocks or inside a Card (Health's Failures window, Workers' window, Calendar's view switch and period buttons, the Transcript's step filters, the Settings Advanced and Rules searches included). A page with none renders no toolbar. States: tabs only, controls only, both.
 
 ## Input
 
@@ -152,7 +156,7 @@ A readable name (`label`, e.g. "worker 3" or "you") as a plain button on the sha
 
 ## Disclosure
 
-A native `<details>` with a `<summary>`: one chevron marker (turned down when open), one label style (`text-xs text-text-2`, no box). Props: `summary` (the visible label), `children` (the body), `defaultOpen` (starts open; default closed), `lazy` (mount the body only while open, for a body that reads something on demand), `onToggle(open)`, and `className` (a margin only) and `data-*` passed to the `<details>`. `aria-expanded` is on the summary and follows the open state; click, Enter and Space toggle it. Use it only for long content (more than ~3 lines or a list): decision rule 2 in `patterns.md`, never a single value. Write no raw `<details>` in `web/src/views/`; Markdown folds through it too.
+A native `<details>` with a `<summary>` at least 28px tall (`min-h-7`, like a small Button): one chevron marker (turned down when open), one label style (`text-xs text-text-2`, no box). Props: `summary` (the visible label), `children` (the body), `defaultOpen` (starts open; default closed), `lazy` (mount the body only while open, for a body that reads something on demand), `onToggle(open)`, and `className` (a margin only) and `data-*` passed to the `<details>`. `aria-expanded` is on the summary and follows the open state; click, Enter and Space toggle it. Use it only for long content (more than ~3 lines or a list): decision rule 2 in `patterns.md`, never a single value. Write no raw `<details>` in `web/src/views/`; Markdown folds through it too.
 
 ## KeyValue
 

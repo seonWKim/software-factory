@@ -21,6 +21,7 @@ import { ModeSwitch } from "./views/settings/general.js";
 import { FactoryRevision, RevisionBanner, StopAllAgents, UpdateNote } from "./views/system-banner.js";
 import { TranscriptView, transcriptRoute } from "./views/transcript.js";
 import { RulesPage } from "./views/rules.js";
+import { ProposalsPage } from "./views/proposals.js";
 import { CalendarPage } from "./views/calendar.js";
 import { TasksPage } from "./views/tasks.js";
 import { WorkersPage } from "./views/workers.js";
@@ -33,6 +34,7 @@ const VIEWS: Record<string, () => JSX.Element> = {
   workers: WorkersPage,
   health: HealthPage,
   rules: RulesPage,
+  proposals: ProposalsPage,
   settings: SettingsPage,
   data: DataPage,
   plugins: PluginsPage,
@@ -115,7 +117,7 @@ export function App() {
           </header>
           <RevisionBanner server={overview.data?.server_rev} web={WEB_REV} />
           <UpdateNote factory={overview.data?.factory} />
-          <main className="min-w-0 p-4">
+          <main className="w-full min-w-0 p-4 max-w-page-wide has-[[data-page-width=read]]:max-w-page-read">
             {transcript ? (
               <TranscriptView key={`${transcript.itemId}/${transcript.runId}`} itemId={transcript.itemId} runId={transcript.runId} />
             ) : route.itemId ? (

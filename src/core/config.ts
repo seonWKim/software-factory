@@ -325,8 +325,7 @@ export interface LoadedConfig {
   /**
    * Coordination (design §5, 2026-11-03): `max_coordination_cost`, `hotspot_paths`, `hotspot_weight`,
    * `mechanical_paths` and `mechanical_weight` (issue #297), `hold_policy` and `hotspot_mode` (issue #314),
-   * `conflict_window_days` (design 05-dependencies) from
-   * factory.config.json, checked at load by
+   * `conflict_window_days` (design 05-dependencies) from factory.config.json, checked at load by
    * `coordinationConfig` and passed in by compose.ts. Absent: DEFAULT_COORDINATION.
    */
   coordination?: CoordinationSettings;
@@ -348,6 +347,7 @@ export interface LoadedConfig {
    * path. The agents may read them and never write them. Absent: no input folder, every run as before the key.
    */
   read_only_inputs?: readonly string[];
+  improver?: import("./proposals.js").ImproverConfig; // improver.max_proposals, .schedule, distill.min_cases (design 07, improverConfig); absent: IMPROVER_DEFAULTS
 }
 
 /**
@@ -585,8 +585,8 @@ export interface Prompts {
   triage: string;
   implement: string;
   review: string;
-  /** prompts/resolve.md. Absent when the file is missing; a resolve run then fails with `prompt_missing`. */
-  resolve?: string;
+  resolve?: string; // prompts/resolve.md; absent when the file is missing: a resolve run then fails with `prompt_missing`
+  "review-confirm"?: string; // prompts/review-confirm.md (design 04-agents); absent: each confirm step fails and its finding stays
   /** prompts/improve.md, the improve run's system prompt (design §7). Absent: the improve run asks no model. */
   improve?: string;
 }

@@ -172,7 +172,7 @@ export function Markdown({ text, renumberHeadings = false }: { text: string; ren
   let list = blocks(text);
   if (renumberHeadings) list = renumber(list, [...new Set(headingLevels(list))].sort((a, b) => a - b));
   return (
-    <div data-markdown className="space-y-3 text-sm leading-relaxed text-pretty break-words">
+    <div data-markdown data-raw className="space-y-3 text-sm leading-relaxed text-pretty break-words">
       {renderBlocks(list)}
     </div>
   );

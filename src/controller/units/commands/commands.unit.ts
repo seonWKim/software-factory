@@ -24,7 +24,7 @@ import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEv
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 import { answerPlain, appProposal, confirmProposal, storeProposals } from "./proposals.js";
-import { FEEDBACK_REQUIRED, applyQueued, feedbackScan, queueRevise, replyQueued } from "./queued-revise.js"; import { scanClean } from "./scan.js"; import { recheckRetry } from "./premise-recheck.js";
+import { FEEDBACK_REQUIRED, applyQueued, feedbackScan, queueRevise, replyQueued } from "./queued-revise.js"; import { scanClean } from "./scan.js"; import { recheckRetry } from "./premise-recheck.js"; import { commandText, pathsCommand } from "./paths.js";
 
 type AppSender = { user_id: UserId } | null;
 type ItemCommandEvent = Exclude<CommandEvent, { kind: "budget_continue" }>;
@@ -103,7 +103,7 @@ function appGateEvent(kind: Exclude<CommandEvent["kind"], "budget_continue">, it
     case "spec_approved": return { kind, ...at, approver: who, note };
     case "spec_rejected": return { kind, ...at, approver: who, reason: note };
     case "revise_requested": return { kind, ...at, requester: who, feedback: note, pr: null };
-    case "retry_requested": return { kind, ...at, requester: who, note };
+    case "retry_requested": case "paths_requested": return { kind, ...at, requester: who, note };
     case "resolve_requested": return { kind, ...at, requester: who, notes: note, pr: null };
   }
 }
@@ -239,7 +239,7 @@ export class CommandsUnit {
     const refusal = await this.applyCommand(item.id, e, { kind: "user", id: principal.user_id }, input.note, tag, input.paths);
     const said = refusal === null ? alreadyAllowed(item, e, input.paths) : null; if (said) await this.c.unit("outbox").post(item, said.target, said.body, said.marker); if (refusal === null) await this.c.k.guard("standing", () => this.c.unit("standing").afterSpecCommand(item.id, e, principal.user_id));
     if (refusal === null && e.kind === "spec_rejected") await this.c.unit("closes").afterReject(item.id);
-    if (refusal === null && (e.kind === "spec_rejected" || e.kind === "revise_requested")) await this.c.unit("outbox").captureTacit(item, e.comment_id, e.kind === "spec_rejected" ? e.reason : e.feedback);
+    if (refusal === null && (e.kind === "spec_rejected" || e.kind === "revise_requested")) { const words = e.kind === "spec_rejected" ? e.reason : e.feedback; await this.c.unit("outbox").captureTacit(item, e.comment_id, words); await this.c.unit("improve").captureCorrection(item, "pushback", e.comment_id, words); }
     if (refusal === null && e.kind === "revise_requested") await replyQueued(this.c, item, e.comment_id);
     return refusal;
   }
@@ -442,13 +442,12 @@ export class CommandsUnit {
   }
 
   /**
-   * The note and the `+paths` of an `/approve`, `/retry` or `/resolve` (design §4, issue #280); none for other
+   * The note and the `+paths` of an `/approve`, `/retry`, `/resolve` or `/paths` (design §4, issue #280); none for other
    * commands. The whole text is egress-scanned first (so a refusal never quotes a flagged path), then `+paths` is
    * split off and checked (unless `paths` is false: an app request's), the note what is left, capped. A finding or a bad path refuses it.
    */
   async commandInput(id: WorkItemId, e: CommandEvent, paths = true): Promise<{ note: string | null; paths: string[] } | Refusal> {
-    if (e.kind !== "spec_approved" && e.kind !== "retry_requested" && e.kind !== "resolve_requested") return { note: null, paths: [] };
-    const text = e.kind === "resolve_requested" ? e.notes : e.note;
+    const text = commandText(e); if (text === null) return { note: null, paths: [] }; if (typeof text === "object") return text; // paths.ts: `/paths +a` as `+paths a`
     return this.scanned(id, COMMAND[e.kind], await commandNote((t) => this.c.k.d.scanner.scan("comment", t), text, COMMAND[e.kind], paths));
   }
 
@@ -556,6 +555,7 @@ export class CommandsUnit {
     tag: StateChangeDetail | null = null,
     paths: readonly string[] = [],
   ): Promise<Decision | Refusal> {
+    if (e.kind === "paths_requested") return pathsCommand(e, it, actor, note, this.widen(it, paths));
     if (e.kind === "resolve_requested") {
       return resolveCommand(e, it, actor, (await this.askedBy(it)) === "resolve", await this.c.unit("local-merge").conflicting(it), note, this.widen(it, paths));
     }
@@ -727,7 +727,7 @@ export default controllerUnit({
     spec_rejected: (u, e) => u.handleCommand(e),
     revise_requested: (u, e) => u.handleCommand(e),
     retry_requested: (u, e) => u.handleCommand(e),
-    resolve_requested: (u, e) => u.handleCommand(e),
+    resolve_requested: (u, e) => u.handleCommand(e), paths_requested: (u, e) => u.handleCommand(e),
     budget_continue: (u, e) => u.handleCommand(e),
     help_requested: (u, e) => u.handleInfo(e),
     unknown_command: (u, e) => u.handleInfo(e),

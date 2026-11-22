@@ -3,6 +3,7 @@ import { type RulesView, type AppliedRule, useRuleEntry } from "../api.js";
 import { Dialog } from "../components/ui/dialog.js";
 import { Button } from "../components/ui/button.js";
 import { Badge } from "../components/ui/badge.js";
+import { SUB_TITLE } from "../components/ui/card.js";
 import { IdDetails } from "../components/ui/copy.js";
 import { Disclosure } from "../components/ui/disclosure.js";
 import { Input } from "../components/ui/input.js";
@@ -162,24 +163,31 @@ function AppliedClass({ rule, id, token, round, applied }: { rule: AppliedRule; 
 const matches = (r: AppliedRule, query: string): boolean =>
   [r.id, r.name, r.default, r.scope, r.raw].some((v) => v !== null && v.toLowerCase().includes(query));
 
+/** Whether the applied rules get the search and Suggest: some rule parsed with an ID. */
+export const hasAppliedTools = (applied: RulesView["applied"]): boolean => (applied?.rules ?? []).some((r) => r.raw === null && r.id !== null);
+
+/** The search over the applied rules: a page filter, so the Rules page renders it in its PageToolbar's second row. */
+export function AppliedSearch({ value, onChange }: { value: string; onChange: (query: string) => void }) {
+  return <Input type="search" aria-label={t("rules.appliedSearch")} placeholder={t("rules.appliedSearch")} className="w-full sm:max-w-sm" value={value} onChange={(e) => onChange(e.target.value)} />;
+}
+
 /**
- * The applied rules inside In effect: a search and Suggest above the promoted rules in the file's order, then the
- * encoded-elsewhere lines. Nothing when the file has none. `before` (the standing rules' rows) leads the same list.
+ * The applied rules inside In effect: Suggest above the promoted rules in the file's order (narrowed by `query`, the
+ * toolbar's search), then the encoded-elsewhere lines. Nothing when the file has none. `before` (the standing rules'
+ * rows) leads the same list.
  */
-export function Applied({ applied, token, before }: { applied: NonNullable<RulesView["applied"]>; token: string | null; before?: ReactNode }) {
+export function Applied({ applied, token, before, query }: { applied: NonNullable<RulesView["applied"]>; token: string | null; before?: ReactNode; query: string }) {
   const { rules, elsewhere } = applied;
   // Each Suggest press is a new round of reads; 0 until the first press.
   const [round, setRound] = useState(0);
-  const [query, setQuery] = useState("");
   if (rules.length === 0 && elsewhere.length === 0) return before ? <ul aria-label={t("rules.inEffect")} className={LIST}>{before}</ul> : null;
   const q = query.trim().toLowerCase();
   const shown = rules.filter((r) => matches(r, q));
-  const tools = rules.some((r) => r.raw === null && r.id !== null);
+  const tools = hasAppliedTools(applied);
   return (
     <div className="space-y-2">
       {tools && (
-        <div className="flex items-center gap-2">
-          <Input type="search" aria-label={t("rules.appliedSearch")} placeholder={t("rules.appliedSearch")} className="min-w-0 flex-1" value={query} onChange={(e) => setQuery(e.target.value)} />
+        <div className="flex justify-end">
           <Button onClick={() => setRound(round + 1)}>
             {t("rules.suggest")}
           </Button>
@@ -196,7 +204,7 @@ export function Applied({ applied, token, before }: { applied: NonNullable<Rules
       {rules.length > 0 && shown.length === 0 && <p className={muted}>{t("rules.appliedNone")}</p>}
       {elsewhere.length > 0 && (
         <div data-elsewhere className="space-y-1">
-          <h3 className="text-xs font-semibold text-text-2">{t("rules.elsewhere")}</h3>
+          <h3 className={SUB_TITLE}>{t("rules.elsewhere")}</h3>
           <Markdown text={elsewhere.join("\n")} />
         </div>
       )}
