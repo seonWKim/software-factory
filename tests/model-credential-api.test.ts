@@ -9,7 +9,7 @@ import { MODEL_CREDENTIAL, MODEL_CREDENTIAL_UNTIL } from "../src/core/policy.js"
 import type { UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
-import { type SecretName, secretName } from "../src/interfaces/secret-store.js";
+import { secretName } from "../src/interfaces/secret-store.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { MODEL_CREDENTIAL_PATH } from "../src/ui/model-credential.js";
 import type { UiPauses } from "../src/ui/pause-api.js";
@@ -47,12 +47,12 @@ class MemLog implements Logger {
 }
 
 /** The owner's page over a store with the model_credential pause in effect; `as` is who the page acts as. */
-async function page(o: { as?: UserId; save?: (v: ReadonlyMap<SecretName, string>) => Promise<void> } = {}) {
+async function page(o: { as?: UserId; save?: (v: ReadonlyMap<string, string>) => Promise<void> } = {}) {
   const clock = new FakeClock("2026-11-22T09:00:00.000Z");
   const { store } = await newStore(clock);
   await store.claimOwner(OWNER);
   await store.pauseClaims(MODEL_CREDENTIAL_UNTIL, MODEL_CREDENTIAL);
-  const saved = new Map<SecretName, string>(); // the fake secret store
+  const saved = new Map<string, string>(); // the fake secret store
   const settings: UiSettings = {
     base: { file: {}, layers: { defaults: {}, projects: {} } }, repo: { owner: "o", name: "r" }, actor: OWNER, resolveProject: async () => null, csrfToken: newCsrfToken(),
     modelCredential: {

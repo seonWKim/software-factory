@@ -152,6 +152,11 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
   item("revise", "<feedback>", "Store `/revise` for the item"),
   item("reject", "<reason>", "Store `/reject` for the item"),
   item("resolve", "[notes]", "Store `/resolve` for the item"),
+  {
+    name: "task paths", args: "<id> +<path>...", who: "approve_spec", group: "task",
+    does: "Store `/paths` for a running item: add those paths (at most 10, each with `+` before it) to its allowed paths, which never removes one",
+    prints: ITEM_PRINTS, chat: "/paths +<path>...", chat_args: "text", item: true, edge: false,
+  },
   item("hold", "<id>", "Store `/hold <id>` for the item: hold it until the local item `<id>` merges"),
   { ...item("verdict", "<accept|changes|reject> [<severity> <reason>]", "Store `/verdict` for the item: a verdict on its result, which changes no state"), chat_args: "comment" },
   {
@@ -244,11 +249,11 @@ export type ChatCommand =
   | { kind: "help" }
   | { kind: "command"; entry: TableCommand; args: string[]; text: string };
 
-/** The literal words a chat form starts with (before its first placeholder), lowercase, without the `/`. */
+/** The literal words a chat form starts with (before its first placeholder, `+<path>` too), lowercase, without the `/`. */
 function chatWords(c: TableCommand): string[] {
   const out: string[] = [];
   for (const w of c.chat.replace(/^\//, "").split(/\s+/)) {
-    if (/^[<[]/.test(w) || w.includes("|")) break;
+    if (/^[<[]/.test(w) || w.includes("|") || w.includes("<")) break;
     out.push(w.toLowerCase());
   }
   return out;

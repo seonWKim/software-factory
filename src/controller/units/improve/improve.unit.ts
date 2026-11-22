@@ -1,7 +1,7 @@
 // The daily improve run, the improve run a burst or an old failure triggers, and filing an improve run's report.
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
-import { FIX_SPEC_APPROVED, enqueueImprove, fileReport, markerKey, settleOutcomes, triggerImprove, utcDay } from "../../../core/improver.js";
+import { FIX_SPEC_APPROVED, type FilingDeps, enqueueImprove, fileProposals, fileReport, markerKey, settleOutcomes, triggerImprove, utcDay } from "../../../core/improver.js";
 import { type FiledPattern, type Run, type SourceRef, type WorkItem } from "../../../core/types.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
@@ -13,11 +13,22 @@ export class ImproveUnit {
   /** The UTC day whose improve run this process saw queued (design §7). A cache only: the run's key dedupes. */
   improveDay: string | null = null;
 
-  /** Each tick: the day's improve run, the trigger check, then the outcomes of filed patterns due one. */
+  /** Each tick: the day's improve run, the trigger check, the outcomes of filed patterns due one, then promoted proposals. */
   async improveStep(): Promise<void> {
     await this.dailyStep();
     await this.triggerStep();
     await this.outcomeStep();
+    await this.proposalStep();
+  }
+
+  /**
+   * Files one work item per entity proposal the owner promoted (design §7, #496), through the first source that can file,
+   * as improve patterns are: the diff as an unverified draft, never applied or merged. One caller takes each (a store claim).
+   */
+  private async proposalStep(): Promise<void> {
+    for (const p of await fileProposals({ store: this.c.k.d.store, file: this.filer() }, this.c.k.project())) {
+      this.c.k.d.log.info("proposal filed", { proposal_id: p.id, ref: p.filed_ref?.id });
+    }
   }
 
   /**
@@ -61,16 +72,21 @@ export class ImproveUnit {
   async fileImprove(run: Run): Promise<void> {
     const report = await this.c.k.d.store.getImproveReport(run.id);
     if (!report) return;
-    const filer = this.c.k.sources.find((s) => typeof s.fileIssue === "function");
     const done = await fileReport({
       store: this.c.k.d.store,
       scanner: this.c.k.d.scanner,
       clock: this.c.k.d.clock,
-      file: filer?.fileIssue ? (input) => filer.fileIssue!(input) : null,
+      file: this.filer(),
       comment: (ref, body, marker) => this.commentFiled(ref, body, marker),
     }, report);
     const count = (status: string) => done.groups.filter((g) => g.filing?.status === status).length;
     this.c.k.d.log.info("improve report filed", { report_id: report.id, filed: count("filed"), commented: count("commented"), skipped: count("skipped") });
+  }
+
+  /** The first source in `plugins.source` order that can file (`fileIssue`), bound; null when none can. */
+  private filer(): FilingDeps["file"] {
+    const filer = this.c.k.sources.find((s) => typeof s.fileIssue === "function");
+    return filer?.fileIssue ? (input) => filer.fileIssue!(input) : null;
   }
 
   /** A comment on a filed item: through its thread (and the outbox) when the store holds it, else to its source. */

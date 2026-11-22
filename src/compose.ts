@@ -62,6 +62,7 @@ import { PackGuidance } from "./impl/capability/project-guidance.js";
 import { LearnedRules, joinGuidance } from "./core/learned-rules.js";
 import { checkToolchainEnv, codeVersion, readRestarts, uiCommandsActor, uiUserId, workerIndexBase } from "./config-values.js";
 import { type Loaded, loadConfig, localProject, resolvedConfig } from "./load-config.js";
+import { reviewReplay } from "./golden-replay.js";
 
 export { CODE_ROOT_ENV, CONFIG_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 
@@ -312,6 +313,7 @@ export async function build(
     // Split over the runs running on this host at each claim as SF_TEST_WORKERS, so parallel test runs do not each take every CPU.
     cpus: availableParallelism(),
     models: { table: loaded.model_by, names: loaded.models },
+    reviewReplay: reviewReplay({ sandbox, runner, scanner, clock, models: { table: loaded.model_by } }), // the improve run's golden replay (design 07)
     awake, capability, guidance: joinGuidance([new PackGuidance(loaded.packs), new LearnedRules(tacit)]), // packs' rules, then promoted rules (design 07)
     settings, learned,
     engines,
@@ -369,7 +371,10 @@ export function modelCredentialDialog(loaded: Pick<Loaded, "registry" | "plugins
       const file = loaded.secretsFile;
       await mkdir(dirname(file), { recursive: true, mode: 0o700 });
       await writeFile(file, "", { flag: "a", mode: 0o600 });
-      for (const [n, v] of values) await setSecret(file, n, v);
+      for (const { name } of declared) {
+        const v = values.get(name);
+        if (v !== undefined) await setSecret(file, name, v);
+      }
     },
   };
 }

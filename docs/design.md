@@ -20,7 +20,7 @@ the topic file, never this index; add a line here only for a new topic file. "§
 - [04-agents.md](design/04-agents.md): agent roles, model class per run kind and tier, "In short".
 - [04-gate-commands.md](design/04-gate-commands.md): human commands, refusals, footers, verdict buttons.
 - [04-spec-gate-commands.md](design/04-spec-gate-commands.md): spec answers, `/revise`, `/resolve`, widening paths.
-- [04-chat-commands.md](design/04-chat-commands.md): plain-words commands: classifier, chat answers, proposals.
+- [04-chat-commands.md](design/04-chat-commands.md): plain-words classifier, chat answers, proposals.
 - [04-verdicts.md](design/04-verdicts.md): `/verdict` everywhere, implicit verdicts, pushback capture.
 - [04-closing-source-issue.md](design/04-closing-source-issue.md): closing the source issue stops item, runs, PR; `/reject`.
 - [04-pre-push-gates.md](design/04-pre-push-gates.md): scope, size and floor gates before a push.
@@ -32,7 +32,7 @@ the topic file, never this index; add a line here only for a new topic file. "§
 - [05-dependencies.md](design/05-dependencies.md): parallel workers, hold policy, cost threshold, hotspots.
 - [05-restarts.md](design/05-restarts.md): stalled runs, model probe, retries, backoff, human handoff.
 - [05-restart-asks.md](design/05-restart-asks.md): runs that ask for paths or a dependency.
-- [05-restart-pauses.md](design/05-restart-pauses.md): restart history, claim pauses, rate limits, `checks_env`, drains.
+- [05-restart-pauses.md](design/05-restart-pauses.md): claim pauses, rate limits, `checks_env`, drains.
 - [05-alarms.md](design/05-alarms.md): alarm step: repeated errors, zero-token runs.
 - [05-sandbox.md](design/05-sandbox.md): sandbox interface, one git folder per run, guarded tools.
 - [05-merge-conflict.md](design/05-merge-conflict.md): update runs on unmergeable PRs, `/resolve`.
@@ -41,7 +41,7 @@ the topic file, never this index; add a line here only for a new topic file. "§
 - [05-slack-intake.md](design/05-slack-intake.md): Slack presses, mentions, spec posts, replies, emoji.
 - [05-github-sync.md](design/05-github-sync.md): GitHub client, forge PRs, sync records, call budget.
 - [05-stream-intake.md](design/05-stream-intake.md): local and stream intake, many sources, adopted PRs.
-- [05-interactive-sessions.md](design/05-interactive-sessions.md): one's own LLM session as an `interactive` run.
+- [05-interactive-sessions.md](design/05-interactive-sessions.md): own LLM session as an `interactive` run.
 - [05-status-labels.md](design/05-status-labels.md): eight status labels, when the controller sets them.
 - [05-standing-approvals.md](design/05-standing-approvals.md): what spec decisions record, the run check.
 
@@ -80,6 +80,7 @@ the topic file, never this index; add a line here only for a new topic file. "§
 - [09-dashboard-tasks-calendar.md](design/09-dashboard-tasks-calendar.md): Calendar page.
 - [09-dashboard-tasks-projects.md](design/09-dashboard-tasks-projects.md): Project switcher.
 - [09-dashboard-rules.md](design/09-dashboard-rules.md): Rules: verdicts, Promote, Retire.
+- [09-dashboard-proposals.md](design/09-dashboard-proposals.md): Proposals page.
 - [09-dashboard-settings.md](design/09-dashboard-settings.md): Settings and Plugins.
 - [09-dashboard-system.md](design/09-dashboard-system.md): Work, Failures, Spend, Data.
 - [09-dashboard-workers.md](design/09-dashboard-workers.md): run timeline, dependency graph.
@@ -88,18 +89,18 @@ the topic file, never this index; add a line here only for a new topic file. "§
 - [09-status-banner.md](design/09-status-banner.md): supervisor banner.
 - [09-notifications.md](design/09-notifications.md): owner notices, kinds, quiet hours.
 - [09-desktop-app.md](design/09-desktop-app.md): macOS app.
-- [09-brand-and-tokens.md](design/09-brand-and-tokens.md): design tokens, the no-hex rule.
-- [09-dashboard-complexity.md](design/09-dashboard-complexity.md): audit of the dashboard's pages.
+- [09-brand-and-tokens.md](design/09-brand-and-tokens.md): design tokens, no-hex rule.
+- [09-dashboard-complexity.md](design/09-dashboard-complexity.md): dashboard page audit.
 
 ## 10. Event-driven factory
-- [10-event-driven.md](design/10-event-driven.md): RFC 0015: tables, migrations, journaled runs, merge queue.
+- [10-event-driven.md](design/10-event-driven.md): tables, migrations, journaled runs, merge queue.
 - [10-event-bus.md](design/10-event-bus.md): sql bus, consumer groups, dead letters, inbound, units.
-- [10-event-outbound.md](design/10-event-outbound.md): outbound deliveries and retry, run roles, hooks.
+- [10-event-outbound.md](design/10-event-outbound.md): outbound deliveries, retry, run roles, hooks.
 
 ## 11. Packs and signal ledger
-- [11-packs.md](design/11-packs.md): pack layers (base, org, project, learned) and the `packs` key.
-- [11-plugin-import.md](design/11-plugin-import.md): `factory plugins import` of skills and MCP servers.
+- [11-packs.md](design/11-packs.md): pack layers (base, org, project, learned), the `packs` key.
+- [11-plugin-import.md](design/11-plugin-import.md): `plugins import` of skills and MCP servers.
 - [11-signal-ledger.md](design/11-signal-ledger.md): `controller_signals` table, sources, tags, backfill.
 
 ## 12. Notification channels
-- [12-notification-channels.md](design/12-notification-channels.md): channel picker, outbox rows; design only.
+- [12-notification-channels.md](design/12-notification-channels.md): channel picker, outbox rows.

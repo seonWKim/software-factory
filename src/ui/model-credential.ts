@@ -10,7 +10,6 @@
 
 import { MODEL_CREDENTIAL } from "../core/policy.js";
 import { errorText } from "../core/log.js";
-import type { SecretName } from "../interfaces/secret-store.js";
 import { type ApiResult, apiError } from "./api.js";
 import type { PauseDeps } from "./pause-api.js";
 import { Withholder } from "./withhold.js";
@@ -22,9 +21,9 @@ const MAX_VALUE = 4096;
 /** The dialog's parts, as the UI composition gives them (compose.ts buildUiParts). */
 export interface UiModelCredential {
   /** The model credential's declared secret names, in declaration order: any one of them is enough. */
-  secrets: readonly SecretName[];
+  secrets: readonly string[];
   /** Writes each value under its name in the secret file; a refusal throws before any write. */
-  save(values: ReadonlyMap<SecretName, string>): Promise<void>;
+  save(values: ReadonlyMap<string, string>): Promise<void>;
 }
 
 declare module "./settings-api.js" {
@@ -67,14 +66,14 @@ export async function writeModelCredential(d: PauseDeps, owner: OwnerCheck | nul
 }
 
 /** `{ values: { NAME: value } }` with at least one declared name and only declared names; empty values are left out. */
-function parseBody(body: unknown, declared: readonly SecretName[]): { values: ReadonlyMap<SecretName, string> } | { error: string } {
+function parseBody(body: unknown, declared: readonly string[]): { values: ReadonlyMap<string, string> } | { error: string } {
   if (typeof body !== "object" || body === null || Array.isArray(body)) return { error: "the body must be a JSON object" };
   const b = body as Record<string, unknown>;
   const extra = Object.keys(b).find((k) => k !== "values");
   if (extra !== undefined) return { error: `unknown field "${extra}"` };
   const raw = b.values;
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { error: "values must be an object from secret name to value" };
-  const values = new Map<SecretName, string>();
+  const values = new Map<string, string>();
   for (const [k, v] of Object.entries(raw)) {
     const name = declared.find((n) => n === k);
     if (name === undefined) return { error: `"${k}" is not a model credential secret; the secrets are ${declared.join(", ")}` };

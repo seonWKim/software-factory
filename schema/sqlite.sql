@@ -480,6 +480,29 @@ CREATE TABLE controller_handoffs (
     UNIQUE (run_id, commit_sha)
   );
 
+CREATE TABLE controller_improve_proposals (
+    id                 TEXT PRIMARY KEY,
+    project            TEXT NOT NULL,
+    report_id          TEXT NOT NULL,
+    pattern_key        TEXT NOT NULL,
+    error_code         TEXT NOT NULL,
+    run_count          INTEGER NOT NULL,
+    file               TEXT NOT NULL,
+    state              TEXT NOT NULL,
+    reason             TEXT,
+    why                TEXT,
+    diff               TEXT,
+    evidence           TEXT,
+    rules              TEXT,
+    needs_human_merge  INTEGER NOT NULL,
+    decided_by         TEXT,
+    decided_at         TEXT,
+    filing_at          TEXT,
+    filed_ref          TEXT,
+    created_at         TEXT NOT NULL,
+    UNIQUE (report_id, pattern_key)
+  );
+
 CREATE TABLE controller_improve_reports (
     id              TEXT PRIMARY KEY,
     run_id          TEXT NOT NULL UNIQUE REFERENCES worker_runs(id),
@@ -1793,6 +1816,8 @@ CREATE INDEX controller_claim_decisions_work_item ON controller_claim_decisions 
 CREATE INDEX controller_dependency_edges_target ON controller_dependency_edges (depends_on);
 
 CREATE INDEX controller_handoffs_item ON controller_handoffs (work_item_id, at);
+
+CREATE INDEX controller_improve_proposals_project ON controller_improve_proposals (project, created_at);
 
 CREATE INDEX controller_improve_reports_project ON controller_improve_reports (project_key, created_at);
 
