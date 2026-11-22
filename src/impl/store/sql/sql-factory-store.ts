@@ -99,7 +99,7 @@ import type {
   WorkerProcess,
   WorkerProcessReport,
 } from "../../../interfaces/factory-store.js";
-import { CAPPED_KINDS, LINK_CODE_MAX_FAILURES, LINK_CODE_TTL_MS, SHORT_KINDS, TABLE_PAGE_DEFAULT, TABLE_PAGE_MAX } from "../../../interfaces/factory-store.js";
+import { EXTRA_SLOT_KINDS, LINK_CODE_MAX_FAILURES, LINK_CODE_TTL_MS, TABLE_PAGE_DEFAULT, TABLE_PAGE_MAX } from "../../../interfaces/factory-store.js";
 import { type ChildRestart, migrationPendingError } from "../../../interfaces/updater.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
 import type { Row, SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
@@ -555,20 +555,19 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
         return it !== null && sessionHold(it, sessions, await this.projectConflicts(tx, it.project, sc), sc) !== null;
       };
 
-      // Queued runs by kind rank (CLAIM_ORDER: merge check and resolve first, implement last), then created_at, then insertion
-      // order (design §5 Coordination). not_before: a retry waits out its backoff, whichever worker looks; a held item's (05-alarms) waits for its release.
-      const rank = CLAIM_ORDER.map((_, i) => `WHEN ? THEN ${i}`).join(" ");
+      // Queued runs in claim order (claimOrder, design §5 Coordination). not_before: a retry waits out its backoff, whichever worker looks; a held item's (05-alarms) waits for its release.
+      const order = claimOrder(seq);
       const queued = await tx.all(
         `SELECT r.id, r.kind, r.work_item_id FROM worker_runs r
          WHERE r.status = 'queued' AND r.kind IN (${placeholders(kinds.length)})
            AND (r.not_before IS NULL OR r.not_before <= ?) AND NOT EXISTS (SELECT 1 FROM controller_work_items w WHERE w.id = r.work_item_id AND w.blocked_reason = ?)
-         ORDER BY CASE r.kind ${rank} ELSE ${CLAIM_ORDER.length} END, r.created_at, r.${seq}`,
-        [...kinds, now, RECURRING_FAILURE, ...CLAIM_ORDER],
+         ORDER BY ${order.sql}`,
+        [...kinds, now, RECURRING_FAILURE, ...order.params],
       );
       // Coordination (design §5, 2026-11-03): read once, only when an implement run is a candidate.
       const settings = input.coordination ?? DEFAULT_COORDINATION;
       const coord = queued.some((q) => q.kind === "implement") ? await this.coordinationContext(tx, queued, busy, settings) : null;
-      const fits = input.workers ? await this.slotCheck(tx, input.workers) : () => true; // the cap: implement and resolve wait at `workers`, short runs get one slot beyond
+      const fits = input.workers ? await this.slotCheck(tx, input.workers) : () => true; // the cap: every kind waits at `workers`, a merge check gets one slot beyond
       for (const next of queued) {
         if (!fits(next.kind as RunKind) || reserved.has(next.work_item_id as string)) continue;
         // An implement-type run waits while its own item has one running, or while the forge refuses the
@@ -605,8 +604,21 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
   /** The slot cap (design §5): which kinds fit, by every process's running runs (not interactive) under the claim lock. */
   private async slotCheck(tx: SqlExecutor, { count }: NonNullable<ClaimInput["workers"]>): Promise<(kind: RunKind) => boolean> {
     const running = (await tx.all(`SELECT kind FROM worker_runs WHERE status = 'running' AND kind <> 'interactive'`, [])).map((r) => r.kind as RunKind);
-    const beyond = count > 0 && running.length === count && running.every((k) => CAPPED_KINDS.includes(k));
-    return (kind) => running.length < count || (beyond && SHORT_KINDS.includes(kind));
+    return (kind) => running.length < count || (count > 0 && running.length === count && EXTRA_SLOT_KINDS.includes(kind));
+  }
+
+  async listQueuedInClaimOrder(limit: number): Promise<Run[]> {
+    const order = claimOrder(this.db.dialect.seq);
+    return (await this.db.all(`SELECT r.* FROM worker_runs r WHERE r.status = 'queued' ORDER BY ${order.sql} LIMIT ?`, [...order.params, limit])).map(rowToRun);
+  }
+
+  async runNext(id: WorkItemId): Promise<Run[]> {
+    return this.db.transaction(async (tx) => {
+      await claimLock(tx); // one bump at a time, so each gets its own place
+      const [top] = await tx.all("SELECT MAX(run_next_seq) AS n FROM worker_runs"), mine = "work_item_id = ? AND status = 'queued' AND kind <> ?";
+      await tx.run(`UPDATE worker_runs SET run_next_seq = ? WHERE ${mine}`, [Number(top?.n ?? 0) + 1, id, INTERACTIVE]);
+      return (await tx.all(`SELECT * FROM worker_runs WHERE ${mine} ORDER BY created_at`, [id, INTERACTIVE])).map(rowToRun);
+    });
   }
 
   /**
@@ -2345,10 +2357,7 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
     return row ? { name: row.name as string, owner: row.owner as string, token: Number(row.token), expires_at: row.expires_at as Timestamp } : null;
   }
 
-  /**
-   * Whether `fence.token` is still the token of its sync lease. A takeover (token + 1) waits for the
-   * fenced write to commit, so no write lands after another replica took the lease.
-   */
+  /** Whether `fence.token` is still the token of its sync lease. A takeover (token + 1) waits for the fenced write to commit, so no write lands after another replica took the lease. */
   private async fenceHeld(tx: SqlExecutor, fence: SyncFence): Promise<boolean> {
     const [held] = await tx.all(`SELECT token FROM inbound_sync_leases WHERE name = ? AND token = ?`, [fence.name, fence.token]);
     return held !== undefined;
@@ -2536,10 +2545,7 @@ const OUTCOME: Partial<Record<CloseReason, BudgetOutcome>> = { completed: "merge
 
 /** The claim pause for a usage or rate limit on the agent harness: no claim of any kind. */
 const RATE_LIMIT_PAUSE: ClaimPauseName = "rate_limit";
-/**
- * The claim pause for a forge 401/403: no implement-type claim. A second row of the same table (migration 4,
- * both backends), so no schema change.
- */
+/** The claim pause for a forge 401/403: no implement-type claim. A second row of the same table (migration 4, both backends), so no schema change. */
 const FORGE_AUTH_PAUSE: ClaimPauseName = "forge_auth";
 /**
  * The claim pause for a push_access or pr_api preflight check that failed other than with a 401/403 (issue #216):
@@ -2691,9 +2697,14 @@ function rowToWorkerPause(r: Row): WorkerPause {
 
 /**
  * claimRun's kind rank (design §5 Coordination, 2026-11-18): a restart the owner asked for, then merge check, then resolve, to move changes to merge; then
- * review and triage; then the branch writers, implement last; improve after all. Within a kind, created_at, then insertion order.
+ * review and triage; then the branch writers, implement last; improve after all.
  */
 const CLAIM_ORDER: readonly RunKind[] = ["restart", "merge-check", "resolve", "review", "triage", "update", "implement"];
+/** claimRun's order over `worker_runs r` (design §5 Coordination, 2026-11-22): Run next first, the latest first; then CLAIM_ORDER; then created_at, then insertion order. */
+function claimOrder(seq: string): { sql: string; params: string[] } {
+  const rank = CLAIM_ORDER.map((_, i) => `WHEN ? THEN ${i}`).join(" ");
+  return { sql: `CASE WHEN r.run_next_seq IS NULL THEN 1 ELSE 0 END, r.run_next_seq DESC, CASE r.kind ${rank} ELSE ${CLAIM_ORDER.length} END, r.created_at, r.${seq}`, params: [...CLAIM_ORDER] };
+}
 
 /** Link codes are stored only as this hash (design 2026-11-01). */
 function hashCode(code: string): string {
@@ -2722,22 +2733,13 @@ function bodyHash(body: string): string {
 }
 
 function rowToLabelState(row: Row): LabelState {
-  return {
-    source_id: row.source_id as string,
-    target: row.target as LabelTarget,
-    status: (row.status as string | null) ?? null,
-    updated_at: row.updated_at as Timestamp,
-  };
+  return { source_id: row.source_id as string, target: row.target as LabelTarget, status: (row.status as string | null) ?? null, updated_at: row.updated_at as Timestamp };
 }
 
 function rowToMergeCheck(row: Row): MergeCheck {
   return {
-    work_item_id: row.work_item_id as WorkItemId,
-    mergeable: Number(row.mergeable) === 1,
-    conflicts: JSON.parse(row.conflicts as string) as string[],
-    head_sha: row.head_sha as string,
-    base_sha: row.base_sha as string,
-    checked_at: row.checked_at as Timestamp,
+    work_item_id: row.work_item_id as WorkItemId, mergeable: Number(row.mergeable) === 1, conflicts: JSON.parse(row.conflicts as string) as string[],
+    head_sha: row.head_sha as string, base_sha: row.base_sha as string, checked_at: row.checked_at as Timestamp,
   };
 }
 
@@ -2768,12 +2770,8 @@ function rowToImproveReport(row: Row): ImproveReport {
 
 function rowToStandingProposal(row: Row): StandingProposal {
   return {
-    id: row.id as StandingProposalId,
-    gate: row.gate as StandingGate,
-    tier: Number(row.tier) as Tier,
-    run_length: Number(row.run_length),
-    threshold: Number(row.threshold),
-    created_at: row.created_at as Timestamp,
+    id: row.id as StandingProposalId, gate: row.gate as StandingGate, tier: Number(row.tier) as Tier,
+    run_length: Number(row.run_length), threshold: Number(row.threshold), created_at: row.created_at as Timestamp,
   };
 }
 
@@ -2794,10 +2792,7 @@ function rowToWorkerProcess(row: Row): WorkerProcess {
 /** A table's order column is the first of these it has (design §9 Data page). */
 const TIME_COLUMNS = ["created_at", "at", "started_at", "updated_at", "woke_at"] as const;
 
-/**
- * A quoted identifier. Only names read from the database's catalog reach here; anything that is not a plain
- * name is refused, so no caller text is ever spliced into SQL.
- */
+/** A quoted identifier. Only names read from the database's catalog reach here; any other is refused, so no caller text is ever spliced into SQL. */
 function ident(name: string): string {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`not a plain identifier: ${JSON.stringify(name)}`);
   return `\`${name}\``;

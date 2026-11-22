@@ -6,7 +6,7 @@ import { Worker, type WorkerPlugins } from "./runner.js";
 import type { WorkerDeps } from "./support.js";
 import type { ExecutionEngines } from "./engine/index.js";
 import type { TickSource } from "../shared/ticks/tick-generator.js";
-import { CAPPED_KINDS, type FactoryStore } from "../interfaces/factory-store.js";
+import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { KeepAwake } from "../interfaces/keep-awake.js";
 
 export interface WorkerPoolDeps extends Omit<WorkerDeps, "id" | "index" | "active" | "hostRuns"> {
@@ -140,14 +140,13 @@ export class WorkerPool {
 
   /**
    * Whether slot `i` calls the claim now: below `workers` always; the slot above them only while `workers` of this
-   * pool's loops hold an implement or resolve run, the one case the store's slot cap (ClaimInput.workers) gives it a
-   * run. This only spares needless claims; the store's count of running runs decides.
+   * pool's loops hold a run of any kind (design §5, 2026-11-22), the one case the store's slot cap (ClaimInput.workers)
+   * gives it a run, a merge check only. This only spares needless claims; the store's count of running runs decides.
    */
   private claims(i: number): boolean {
     const workers = this.live.workers();
     if (i < workers) return true;
-    const long = this.workers.filter((w) => w.holding !== null && CAPPED_KINDS.includes(w.holding)).length;
-    return i < this.loops() && long >= workers;
+    return i < this.loops() && this.workers.filter((w) => w.holding !== null).length >= workers;
   }
 
   /**
