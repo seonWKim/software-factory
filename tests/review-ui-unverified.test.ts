@@ -20,6 +20,7 @@ import { Worker, reviewComment } from "../src/worker/index.js";
 import { FakeRunner, MemoryStorage } from "./helpers/fakes/runner.js";
 import { cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 import { seedMergeRecord } from "./helpers/merge-record.js";
 
 // A UI change the review could not check (design 04-agents, 2026-11-19): the reviewer sets `ui_unverified`, the
@@ -115,7 +116,7 @@ async function factory(answer: Record<string, unknown>) {
   };
   let n = 0;
   const cli = (a: CliAction) =>
-    runLocalCli({ store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
+    runLocalCli({ answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
   const setting = (key: string, value: unknown) => store.setSettingOverride({ key, project: "", value: JSON.stringify(value), actor: ME });
   /** Created and approved in manual mode, reviewed to merge_pending, then auto mode is turned on and the factory steps. */
   const reviewedInAutoMode = async () => {
