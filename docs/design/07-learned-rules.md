@@ -14,7 +14,5 @@
   - **Kept out of the doc index.** The `bm25` index skips every `learnings.md`, so a retired entry is never found there. Skills: an Agent Skills `skills/<name>/SKILL.md` is indexed with its frontmatter `name` and `description` as name and snippet, in the code root and in every pack layer's `skills/`.
   - **Solo and enterprise.** The same: each worker reads the layers of its own process's checkout (base) and its pack folders; nothing is stored or shared, no config key, no store state.
 
-## History
-
 - Replaced decisions of this topic: [history/07-learned-rules.md](history/07-learned-rules.md).
 - Other self-improvement decisions: [07-self-improvement.md](07-self-improvement.md).

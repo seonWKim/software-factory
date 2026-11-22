@@ -9,7 +9,5 @@
   - **Report.** Each hot file is one `hotspot` row in the report's patterns JSON: detail the file, `run_ids`, `held_item_ids`, `work_item_ids` every item named, optional `counted_at` (each run's finish and held item's decision time). Never drafted, never in `failure_groups`; no migration. The Rules page lists them.
   - **File.** `fileReport` files each row after the groups, same caps and `fileGroup`: pattern key the cyrb53 of `hotspot` plus the path, claimed in `controller_filed_patterns`. Title "Reduce conflicts on <file>"; the body (`hotspotBody`) lists the counts and each run and held item ID with its date, after the G5 `comment` scan. While open, a later report comments once with unlinked runs (the linked scan reads the 7-day window's reports); after it closes, refiled only after 30 days. A gate-list file is filed too (no draft, so never `needs_person`); its fix still needs a person's merge.
 
-## History
-
 - Replaced decisions of this topic: [history/07-conflict-hotspots.md](history/07-conflict-hotspots.md).
 - Other self-improvement decisions: [07-self-improvement.md](07-self-improvement.md).
