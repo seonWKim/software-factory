@@ -97,7 +97,7 @@ export async function doctorChecks(loaded: Loaded, opts: { github?: boolean; san
   const plugins = new Plugins(loaded);
   const secrets = await plugins.secrets();
   // One check per secret the selected plugins declare (or per group of alternatives).
-  checks.push(...(await secretChecks(neededSecrets(loaded, github), secrets)));
+  checks.push(...(await secretChecks(neededSecrets(loaded, github), secrets, SECRET_WORDS)));
   checks.push(anthropicKeyCheck(process.env.ANTHROPIC_API_KEY));
 
   const claude = await runProcess(["claude", "--version"], { cwd: loaded.root, env: baseEnv() }).catch(() => null);
@@ -226,12 +226,16 @@ export function settingsChecks(loaded: Pick<Loaded, "config">): Check[] {
   );
 }
 
+type GroupWords = Readonly<Record<string, (found: boolean) => Pick<Check, "plain" | "action">>>;
+/** The `oneOf` groups doctor gives Health words: the model credential (design 09-health, 2026-11-23). */
+export const SECRET_WORDS: GroupWords = { "model credential": credentialPlain };
+
 /**
  * One check per declared secret: present is ok, missing is a FAIL with a hint to run setup. Declarations
- * sharing a `oneOf` label make one check that passes when any of them is present; the model credential's carries
- * Health's plain sentence (and, missing, the Add model credential action). Never prints a value.
+ * sharing a `oneOf` label make one check that passes when any of them is present; `words` gives a group's Health fields
+ * (doctor passes the model credential's sentence and action). Never prints a value.
  */
-export async function secretChecks(declared: readonly SecretDeclaration[], secrets: SecretStore): Promise<Check[]> {
+export async function secretChecks(declared: readonly SecretDeclaration[], secrets: SecretStore, words: GroupWords = {}): Promise<Check[]> {
   const order: string[] = [];
   const singles = new Map<string, SecretDeclaration>();
   const groups = new Map<string, { names: SecretName[]; found: SecretName | null }>();
@@ -256,7 +260,7 @@ export async function secretChecks(declared: readonly SecretDeclaration[], secre
     if (key.startsWith("oneOf:")) {
       const label = key.slice("oneOf:".length);
       const g = groups.get(label)!;
-      const plain = label === "model credential" && credentialPlain(g.found !== null);
+      const plain = words[label]?.(g.found !== null);
       return g.found
         ? { ok: true, msg: `${label} present (${g.found})`, ...plain }
         : { ok: false, msg: `${label} missing: one of ${g.names.join(", ")} (run: npm run setup)`, ...plain };

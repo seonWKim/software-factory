@@ -16,7 +16,7 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { REGISTRY, type Registry, withPlugin } from "../src/plugins.js";
-import { type Check, checkLine, checkStatus, checksExitCode, doctor, doctorChecks, secretChecks } from "../src/setup.js";
+import { type Check, checkLine, checkStatus, checksExitCode, doctor, doctorChecks, SECRET_WORDS, secretChecks } from "../src/setup.js";
 import { sandboxChecks as linesToChecks } from "../src/core/health-check.js";
 import { MODEL_CREDENTIAL } from "../src/impl/claude/claude-shared.js";
 import { SANDBOX_LINES, type SandboxEnforcement } from "../src/impl/runner/os-sandbox.js";
@@ -235,9 +235,9 @@ const RAW = [/[A-Z]+_[A-Z_]+/, /npm run|apt install/, /https?:\/\//];
 
 describe("health: the model credential and sandbox checks in plain words", () => {
   it("doctor prints the same credential and sandbox lines as before", async () => {
-    const missing = await secretChecks(MODEL_CREDENTIAL, new MemorySecretStore());
+    const missing = await secretChecks(MODEL_CREDENTIAL, new MemorySecretStore(), SECRET_WORDS);
     expect(missing.map(checkLine)).toEqual(["FAIL  model credential missing: one of CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY (run: npm run setup)"]);
-    const present = await secretChecks(MODEL_CREDENTIAL, new MemorySecretStore({ ANTHROPIC_API_KEY: "k" }));
+    const present = await secretChecks(MODEL_CREDENTIAL, new MemorySecretStore({ ANTHROPIC_API_KEY: "k" }), SECRET_WORDS);
     expect(present.map(checkLine)).toEqual(["ok    model credential present (ANTHROPIC_API_KEY)"]);
     expect(sandboxChecks(box(false, OFF_WHY)).map(checkLine)).toEqual(["reads", "writes", "network"].map((k) => `warn  sandbox ${k}: not OS-enforced, so auto mode is refused (${OFF_WHY})`));
     expect(sandboxChecks(box(true, "probe ok")).map(checkLine)).toEqual(["reads", "writes", "network"].map((k) => `ok    sandbox ${k}: OS-enforced (probe ok)`));
@@ -245,8 +245,8 @@ describe("health: the model credential and sandbox checks in plain words", () =>
 
   it("each check has a plain sentence with no variable name, command or URL", async () => {
     const checks = [
-      ...(await secretChecks(MODEL_CREDENTIAL, new MemorySecretStore())),
-      ...(await secretChecks(MODEL_CREDENTIAL, new MemorySecretStore({ ANTHROPIC_API_KEY: "k" }))),
+      ...(await secretChecks(MODEL_CREDENTIAL, new MemorySecretStore(), SECRET_WORDS)),
+      ...(await secretChecks(MODEL_CREDENTIAL, new MemorySecretStore({ ANTHROPIC_API_KEY: "k" }), SECRET_WORDS)),
       ...sandboxChecks(box(false, OFF_WHY)),
       ...sandboxChecks(box(true, "probe ok")),
     ];
@@ -257,7 +257,7 @@ describe("health: the model credential and sandbox checks in plain words", () =>
   });
 
   it("reportRows: the three sandbox warnings of one cause are one row; the credential row offers the dialog, raw text behind Details", async () => {
-    const credential = await secretChecks(MODEL_CREDENTIAL, new MemorySecretStore());
+    const credential = await secretChecks(MODEL_CREDENTIAL, new MemorySecretStore(), SECRET_WORDS);
     const sandbox = sandboxChecks(box(false, OFF_WHY));
     const rows = reportRows([{ ok: true, msg: "first" }, ...credential, ...sandbox, { ok: true, msg: "last" }]);
     expect(rows).toEqual([
