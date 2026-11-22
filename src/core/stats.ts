@@ -142,7 +142,7 @@ const bad = (m: RuleMerge): boolean => m.reverted > 0 || m.fixed_forward > 0;
 /**
  * Pure, the one auto-merge rule (design 06-measurement): a tier qualifies when its last 50 merges (`last`, oldest
  * first; only the last 50 are read) hold at most 1 reverted or fixed-forward merge and no critical verdict. Fewer than
- * 50 merges never qualify; tiers 4 and 5 never do. Read-only: nothing reads it to merge yet.
+ * 50 merges never qualify; tiers 4 and 5 never do. Auto mode's merge reads it at each merge (autoMergeRefusal).
  */
 export function tierRule(tier: Tier | null, last: readonly RuleMerge[]): TierRuleResult {
   if (tier !== null && NEVER_QUALIFY.includes(tier)) return "never";
@@ -150,6 +150,19 @@ export function tierRule(tier: Tier | null, last: readonly RuleMerge[]): TierRul
   const sample = last.slice(-TIER_RULE_SAMPLE);
   const ok = sample.filter(bad).length <= TIER_RULE_MAX_BAD && sample.every((m) => m.critical === 0);
   return ok ? "met" : "not_met";
+}
+
+/** The drop-back reads each tier's last 20 merges. */
+export const DROP_BACK_SAMPLE = 20;
+/** Reverted or fixed-forward merges among those 20 that drop a tier back to a person's merge. */
+export const DROP_BACK_BAD = 2;
+
+/**
+ * Pure, the drop-back (design 03-risk): true when at least 2 of the tier's last 20 merges (`last`, oldest first; only
+ * the last 20 are read) were reverted or fixed forward. 1 does not drop it back.
+ */
+export function droppedBack(last: readonly RuleMerge[]): boolean {
+  return last.slice(-DROP_BACK_SAMPLE).filter(bad).length >= DROP_BACK_BAD;
 }
 
 export interface TierMergeRow {
