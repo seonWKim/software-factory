@@ -438,6 +438,23 @@ CREATE TABLE controller_dependency_edges (
     PRIMARY KEY (work_item_id, depends_on)
   );
 
+CREATE TABLE controller_design_learnings (
+    seq            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_key    TEXT NOT NULL,
+    work_item_id   TEXT NOT NULL,
+    capture_key    TEXT NOT NULL UNIQUE,
+    source         TEXT NOT NULL,
+    built          TEXT NOT NULL,
+    words          TEXT NOT NULL,
+    page           TEXT NOT NULL,
+    kind           TEXT,
+    at             TEXT NOT NULL,
+    supersedes     TEXT,
+    superseded_by  TEXT,
+    batch          TEXT,
+    created_at     TEXT NOT NULL
+  );
+
 CREATE TABLE controller_file_conflicts (
     project_key  TEXT NOT NULL,
     path         TEXT NOT NULL,
@@ -1814,6 +1831,8 @@ CREATE INDEX controller_budget_checkpoints_work_item ON controller_budget_checkp
 CREATE INDEX controller_claim_decisions_work_item ON controller_claim_decisions (work_item_id, at);
 
 CREATE INDEX controller_dependency_edges_target ON controller_dependency_edges (depends_on);
+
+CREATE INDEX controller_design_learnings_project ON controller_design_learnings (project_key, seq);
 
 CREATE INDEX controller_handoffs_item ON controller_handoffs (work_item_id, at);
 

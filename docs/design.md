@@ -1,8 +1,8 @@
 # Software factory: design index
 
-The living design. Read this index first, then open only the topic files your change touches. Each
-topic file states its current decision first; replaced decisions are in `history/<topic>.md`. A design change edits
-the topic file, never this index; add a line here only for a new topic file. "§5" means `05-*`.
+Read this index, then only the topics your change touches. A topic states its current decision
+first, replaced ones in `history/<topic>.md`. A design change edits the topic file; add a line here only
+for a new topic. "§5" means `05-*`.
 
 ## 1. Shape
 - [01-shape.md](design/01-shape.md): flow from intake to the human gate and post-merge.
@@ -54,6 +54,7 @@ the topic file, never this index; add a line here only for a new topic file. "§
 ## 7. Self-improvement
 - [07-self-improvement.md](design/07-self-improvement.md): how the factory changes its own behaviour.
 - [07-improve-report.md](design/07-improve-report.md): improve report, Run now, retire suggestions.
+- [07-design-learnings.md](design/07-design-learnings.md): UI corrections.
 
 ## 8. Operations
 - [08-plugins.md](design/08-plugins.md): named plugins and the registry, login plugin, secret names.

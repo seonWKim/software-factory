@@ -11,6 +11,7 @@ import { Radio } from "../components/ui/radio.js";
 import { type MenuItem, OverflowMenu } from "../components/ui/menu.js";
 import { Select } from "../components/ui/select.js";
 import { Textarea } from "../components/ui/textarea.js";
+import { SUB_TITLE } from "../components/ui/card.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { type Outcome, OutcomeText, PendingProposals } from "./command-box.js";
@@ -113,8 +114,8 @@ export function QueuedFeedbackList({ timeline }: { timeline: ItemDetail["timelin
   if (pending.length === 0) return null;
   return (
     <section aria-label={t("commands.feedback")} data-queued-feedback className="mt-3">
-      <h3 className="text-sm font-medium">
-        {t("commands.feedback")} <span className="text-xs font-normal text-text-2">({t("items.queued")})</span>
+      <h3 className={SUB_TITLE}>
+        {t("commands.feedback")} ({t("items.queued")})
       </h3>
       <ul className="mt-1 space-y-1">
         {pending.map((p) => (

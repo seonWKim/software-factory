@@ -6,7 +6,8 @@ import { Tooltip } from "./menu.js";
 // Raw IDs (design 09-dashboard-app, readable names): a page shows a name ("worker 3", "you", the item's title) and
 // keeps the full ID one step away, in a tooltip on its name or a copy element, never in running text.
 
-const SMALL = "rounded-control border border-border-strong px-1 text-xs font-sans text-text-2 hover:bg-surface-2";
+/** 28px tall, as every button on a page (scripts/responsive/rules.mjs `button-height`). */
+const SMALL = "inline-flex min-h-7 items-center rounded-control border border-border-strong px-2 text-xs font-sans text-text-2 hover:bg-surface-2";
 
 /** Copies `value` to the clipboard; `done` is true for 1.5 s after. With no clipboard it does nothing. */
 function useCopy(value: string) {
@@ -40,19 +41,19 @@ export function CopyButton({ value, what }: { value: string; what: string }) {
 /** A copy element: the shown text (`children`, else `value`) and a Copy button that copies `value`. */
 export function CopyText({ value, what, children }: { value: string; what: string; children?: ReactNode }) {
   return (
-    <span data-copy className="inline-flex max-w-full min-w-0 flex-wrap items-baseline">
+    <span data-copy className="inline-flex max-w-full min-w-0 flex-wrap items-center">
       <code className="min-w-0 font-mono text-xs break-words">{children ?? value}</code>
       <CopyButton value={value} what={what} />
     </span>
   );
 }
 
-/** A readable name: the full ID shows in a tooltip on hover and focus, and a click copies it ("Copied" in place of the name for a moment). */
-export function IdDetails({ label, id }: { label: string; id: string; what: string }) {
+/** A readable name: the full ID shows in a tooltip on hover and focus, and a click copies it ("Copied" in place of the name for a moment). `nowrap` keeps a short name (a worker, a person) on one line, so a narrow table cell does not make its button taller than 28px. */
+export function IdDetails({ label, id, nowrap }: { label: string; id: string; what: string; nowrap?: boolean }) {
   const { done, copy } = useCopy(id);
   return (
     <Tooltip text={id}>
-      <button type="button" data-id className="min-h-6 min-w-6 cursor-pointer text-left font-sans text-sm" onClick={copy}>
+      <button type="button" data-id className={cn("inline-flex min-h-7 cursor-pointer items-center text-left font-sans text-sm", nowrap && "whitespace-nowrap")} onClick={copy}>
         {done ? t("copy.done") : label}
       </button>
     </Tooltip>

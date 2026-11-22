@@ -14,12 +14,25 @@
 //                   text count too.
 //   unreachable     the page is taller than the viewport but html or body hides vertical overflow.
 //
+// The page template's structure (docs/design/09-dashboard-shell.md, design-system/patterns.md), one rule each:
+//
+//   one-h1          the page shows other than one h1.
+//   heading-size    an h1 or h2 is not the font size of the page's first one; responsive-check.mjs also compares each
+//                   page's sizes with the first page's at the same viewport and theme.
+//   page-width      <main>'s max-width is neither --page-wide nor --page-read (PageHeader's width prop picks one).
+//   button-height   a button is not 28px or 32px tall (a switch, a listbox option, a menu item and a chart's bar,
+//                   [data-chart-bar], whose height is the chart's, are not buttons).
+//   raw-name        visible text holds a snake_case name or a wi_ ID outside [data-raw] (code and pre count as raw).
+//
 // Elements that are not painted (display:none, visibility:hidden, opacity:0, zero size) and screen-reader-only
 // boxes (1px, clipped) are skipped.
 
-export const LIMITS = { letterWrapCh: 12, maxFixedShare: 0.4, minTarget: 24 };
+export const LIMITS = { letterWrapCh: 12, maxFixedShare: 0.4, buttonHeights: [28, 32], pageWidths: ["--page-wide", "--page-read"], minTarget: 24 };
 
-/** Runs in the page: the failures as { rule, selector, detail }; marks each failing element for the screenshot. */
+/**
+ * Runs in the page: `failures` as { rule, selector, detail }, each failing element marked for the screenshot, and
+ * `sizes`, the font size of the page's first h1 and h2 (null when it has none) for the comparison across pages.
+ */
 export function checkLayout(limits) {
   const W = document.documentElement.clientWidth;
   const H = window.innerHeight;
@@ -179,5 +192,46 @@ export function checkLayout(limits) {
       }
     }
   }
-  return out;
+
+  // one-h1, heading-size
+  const sizes = {};
+  for (const tag of ["h1", "h2"]) {
+    const shown = [...document.body.querySelectorAll(tag)].filter(painted);
+    if (tag === "h1" && shown.length !== 1) fail("one-h1", shown[1] ?? document.body, `${shown.length} visible h1 elements`);
+    sizes[tag] = shown.length > 0 ? style(shown[0]).fontSize : null;
+    for (const h of shown.slice(1)) {
+      if (style(h).fontSize !== sizes[tag]) fail("heading-size", h, `${tag} at ${style(h).fontSize}, the page's first ${tag} at ${sizes[tag]}`);
+    }
+  }
+
+  // page-width: each token resolved to px (a rem value at the root's font size).
+  const main = document.querySelector("main");
+  const rootPx = parseFloat(style(document.documentElement).fontSize);
+  const toPx = (v) => (v.trim().endsWith("rem") ? parseFloat(v) * rootPx : parseFloat(v));
+  const widths = limits.pageWidths.map((name) => toPx(style(document.documentElement).getPropertyValue(name)));
+  if (!main) fail("page-width", document.body, "no <main>");
+  else if (!widths.some((w) => Math.abs(toPx(style(main).maxWidth) - w) < 0.5)) {
+    fail("page-width", main, `max-width ${style(main).maxWidth}, not ${limits.pageWidths.map((n, i) => `${n} (${widths[i]}px)`).join(" or ")}`);
+  }
+
+  // button-height
+  for (const b of document.body.querySelectorAll("button:not([role=switch], [role=option], [role=menuitem], [data-chart-bar])")) {
+    if (!painted(b)) continue;
+    const h = Math.round(b.getBoundingClientRect().height);
+    if (!limits.buttonHeights.includes(h)) fail("button-height", b, `${h}px tall, not ${limits.buttonHeights.join(" or ")}px`);
+  }
+
+  // raw-name: one failure per element whose own text holds the name.
+  const raw = /\b(?:wi_[0-9a-z]+|[a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b/;
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  const named = new Set();
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    const el = n.parentElement;
+    if (!el || named.has(el) || el.closest("[data-raw], code, pre, script, style") || !painted(el)) continue;
+    const m = raw.exec(n.textContent);
+    if (!m) continue;
+    named.add(el);
+    fail("raw-name", el, `"${m[0].slice(0, 40)}" outside [data-raw]`);
+  }
+  return { failures: out, sizes };
 }

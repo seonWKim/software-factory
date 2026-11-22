@@ -117,7 +117,7 @@ export function App() {
           </header>
           <RevisionBanner server={overview.data?.server_rev} web={WEB_REV} />
           <UpdateNote factory={overview.data?.factory} />
-          <main className="min-w-0 p-4">
+          <main className="w-full min-w-0 p-4 max-w-page-wide has-[[data-page-width=read]]:max-w-page-read">
             {transcript ? (
               <TranscriptView key={`${transcript.itemId}/${transcript.runId}`} itemId={transcript.itemId} runId={transcript.runId} />
             ) : route.itemId ? (
