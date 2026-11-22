@@ -4,8 +4,7 @@
 import { type TriageOutput, type TriagePhase, parseTriage } from "../../../core/outputs.js";
 import { runKey } from "../../../core/policy.js";
 import { specDecisionDetail } from "../../../core/standing.js";
-import { sizeCaps } from "../../../core/size-cap.js";
-import { PHASE_HOLD, PHASES_OPEN, SPLIT_APPROVED, SPLIT_FILING, atSizeCheckpoint, goalLinesText, parseSubIssues, phaseIssueBody, phaseLinkDetail, phaseMarker, phaseTitle } from "../../../core/split.js";
+import { PHASE_HOLD, PHASES_OPEN, SPLIT_APPROVED, SPLIT_FILING, atSizeCheckpoint, goalLinesText, sizeCaps, parseSubIssues, phaseIssueBody, phaseLinkDetail, phaseMarker, phaseTitle } from "../../../core/split.js";
 import { type Actor, type SourceRef, type StateChange, type StateChangeDetail, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { ActionRow } from "../../../outbound/index.js";
 import { type Decision, DELIVERY_FAILED, type Refusal, SYSTEM, completed, splitFiling, splitOpen, footerAfter } from "../support.js";

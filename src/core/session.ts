@@ -319,7 +319,7 @@ export class Sessions {
       const outside = await scopeGate(git, base, item.allowed_paths);
       if (outside.length > 0) reasons.push(`scope: files outside allowed_paths: ${outside.join(", ")}`);
       const s = settingValues(item.project, cfg.settings, this.d.learned);
-      const gates = await diffGates(git, base, item, { ...s, ...sizeCaps(item, s) }); // the item's one-time cap, else the project's (src/core/size-cap.ts)
+      const gates = await diffGates(git, base, item, { ...s, ...sizeCaps(item, s) }); // with the item's size caps (src/core/size-cap.ts)
       paths = gates.paths;
       if (gates.size !== null) reasons.push(`size: ${gates.size}`);
       if (gates.floor) {

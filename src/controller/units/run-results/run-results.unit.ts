@@ -11,8 +11,7 @@ import { conflictCounts, conflictCountsLine } from "../../../core/resolve.js";
 import { autoApprovedFooter, droppedAnswers, droppedValues, heldNote, renderSpec } from "../../../core/spec-comment.js";
 import { STANDING_APPROVED, ruleId, specKind, standingActor } from "../../../core/standing.js";
 import { applyCompanions } from "../../../core/companions.js";
-import { atSizeCheckpoint, sizeCheckpointNote, suggestedSplit } from "../../../core/split.js";
-import { sizeCaps } from "../../../core/size-cap.js";
+import { atSizeCheckpoint, sizeCaps, sizeCheckpointNote, suggestedSplit } from "../../../core/split.js";
 import { type Actor, type Run, type StateChangeDetail, type Tier, type WorkItem, type WorkItemId, runTokenCount } from "../../../core/types.js";
 import { failingTests, firstErrorLine, stripAnsi } from "../../../core/output-summary.js"; import { doneChecksDetail } from "../../../core/checks.js";
 import { PROVIDER_SETUP } from "../../../interfaces/agent-runner.js";
@@ -166,8 +165,7 @@ export class RunResultsUnit {
           // Path companions first (design 04-triage.md): on the raw answer, so a companion triage named only in
           // files_to_change is covered, and before the floor, which raises the tier or refuses a built-in rule's path.
           const { answer, added } = applyCompanions(data.spec, this.c.k.cfg.path_companions ?? [], floors);
-          // Without the caps: 1 phase or more than 4 is refused here, and an estimate over the threshold with no phases waits at its size checkpoint below.
-          const parsed = parseTriage(answer, { check_commands: doneCheckCommands(this.c.k.cfg.repo) }); // done_checks required (design 04-triage)
+          const parsed = parseTriage(answer, { check_commands: doneCheckCommands(this.c.k.cfg.repo) }); // done_checks required (design 04-triage); no caps: 1 or over 4 phases is refused, an oversize estimate with none waits at its size checkpoint below
           if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
           const spec = parsed.value;
           const floor = floorTier(spec.allowed_paths, floors);

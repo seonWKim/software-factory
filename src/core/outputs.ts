@@ -3,7 +3,7 @@ import { isCovered } from "./policy.js";
 import { MAX_PHASES, MIN_PHASES, type SplitLimits, parseGoalLines, splitError } from "./split.js";
 import { DEPENDENCY_OPTIONS, proposedDependency } from "./task-build.js";
 import type { Tier } from "./types.js";
-export { doneCheckCommands } from "./done-checks.js"; // the triage branch's check_commands (src/core/done-checks.ts)
+export { doneCheckCommands } from "./done-checks.js"; export { sizeCaps } from "./size-cap.js"; // the triage branch's check_commands; an item's size caps for the implement run
 
 // Structured outputs of each agent role: JSON Schema for the harness + a validator for the control plane.
 // Agents can be wrong; nothing they return is trusted until it passes these.
@@ -488,8 +488,7 @@ export function parseTriage(v: unknown, limits?: Partial<SplitLimits> & { check_
   const goal = parseGoalLines(v.goal_done_when, phases.value?.length ?? 0);
   if (!goal.ok) return goal;
   if (limits?.max_diff_lines !== undefined && limits.max_diff_files !== undefined) {
-    const caps = { max_diff_lines: limits.max_diff_lines, max_diff_files: limits.max_diff_files };
-    const err = splitError({ estimated_lines, estimated_files }, phases.value?.length ?? 0, caps);
+    const err = splitError({ estimated_lines, estimated_files }, phases.value?.length ?? 0, { max_diff_lines: limits.max_diff_lines, max_diff_files: limits.max_diff_files });
     if (err) return { ok: false, error: err };
   }
   return {
