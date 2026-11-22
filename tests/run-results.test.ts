@@ -3,6 +3,7 @@ import { NO_FILES_REFUSAL } from "../src/core/commands.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import type { UserId, WorkerId } from "../src/core/types.js";
+import type { Sandbox } from "../src/interfaces/sandbox.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
@@ -16,14 +17,14 @@ import { newStore } from "./helpers/store.js";
 // The triage outcome in auto mode (design 03-risk, 04-spec-gate-commands 2026-11-20): auto mode approves a spec it may,
 // never one that changes no file in this repo, which waits at the spec gate with the comment a person gets.
 
-async function autoTriage(spec: Record<string, unknown>) {
+async function autoTriage(spec: Record<string, unknown>, sandbox?: Sandbox) {
   const cfg: FactoryConfig = { ...config, dials: { spec_gate_min_tier: 1, auto_merge_max_tier: 0 } };
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
   const settings = new LiveSettings({ config: cfg, base: baseFromConfig(cfg), source: store });
   await store.setSettingOverride({ key: "mode", project: "", value: JSON.stringify("auto"), actor: "local:me@example.com" as UserId });
-  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner, repeated_failure_rule: false, settings });
+  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner, repeated_failure_rule: false, settings, ...(sandbox && { sandbox }) });
   const runner = new FakeRunner({ triage: () => ({ output: spec }) });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker: new FakeBroker(), storage: new MemoryStorage(),
@@ -75,6 +76,41 @@ describe("the triage branch and done_checks", () => {
   it("refuses a command that is not one of the repo's check commands", async () => {
     const r = await autoTriage({ ...triageSpec, done_checks: [{ line: triageSpec.done_criteria[0], command: "rm -rf /" }] });
     expect(r.it).toMatchObject({ stage: "NEW", done_checks: null });
+  });
+});
+
+// Migration timestamps (design 04-triage): the triage branch moves a new migration whose timestamp the base branch
+// uses to the next free minute before parseTriage, so the stored spec and its comment show the new path.
+describe("the triage branch and taken migration timestamps", () => {
+  const mig = (stamp: string, component = "controller", slug = "new-thing") => `src/${component}/migrations/${stamp}-${component}-${slug}.migration.ts`;
+  const listed: { ref: string; path: string }[] = [];
+  const base = {
+    listLocalFiles: async (s: { ref: string; path: string }) => {
+      listed.push({ ref: s.ref, path: s.path });
+      return [mig("20261122T1200", "controller", "schedules"), mig("20261122T1201", "worker", "cancel-closed-item-runs"), "src/core/policy.ts"];
+    },
+  } as unknown as Sandbox;
+  const draft = (stamp: string) => ({
+    ...triageSpec,
+    allowed_paths: [mig(stamp), `tests/${stamp}-controller-new-thing.test.ts`],
+    files_to_change: [mig(stamp), `tests/${stamp}-controller-new-thing.test.ts`],
+    done_checks: [{ line: triageSpec.done_criteria[0], test_file: `tests/${stamp}-controller-new-thing.test.ts` }],
+  });
+
+  it("gives a spec draft naming a taken timestamp the next free one before it is shown", async () => {
+    const r = await autoTriage(draft("20261122T1200"), base);
+    expect(listed).toContainEqual({ ref: config.repo.base_branch, path: "src/" });
+    expect(r.it.allowed_paths).toEqual([mig("20261122T1202"), "tests/20261122T1202-controller-new-thing.test.ts"]);
+    expect(r.it.files_to_change).toEqual([mig("20261122T1202"), "tests/20261122T1202-controller-new-thing.test.ts"]);
+    const spec = r.source.comments.find((c) => c.marker.includes("spec:"))!.body;
+    expect(spec).toContain(mig("20261122T1202"));
+    expect(spec).not.toContain("20261122T1200-controller-new-thing");
+  });
+
+  it("leaves a spec whose migration timestamps are all free unchanged", async () => {
+    const r = await autoTriage(draft("20261123T0900"), base);
+    expect(r.it.allowed_paths).toEqual(draft("20261123T0900").allowed_paths);
+    expect(r.it.files_to_change).toEqual(draft("20261123T0900").files_to_change);
   });
 });
 
