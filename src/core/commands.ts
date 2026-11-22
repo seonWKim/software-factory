@@ -313,10 +313,8 @@ function meaning(c: CommandSpec, s: CommandState | null): string {
 
 /** One command with its full description: Slack's help in an item's thread. */
 const line = (c: CommandSpec): string => `- \`${c.usage}\`: ${c.description}.`;
-
 /** One command as a footer shows it: its first sentence only; the footer's last line, `/help`, gives the rest. */
 const footerLine = (c: CommandSpec): string => `- \`${c.usage}\`: ${c.description.split(/\.\s+(?=[A-Z`])/)[0]}.`;
-
 const prLine = (c: CommandSpec): string => `- \`${c.usage}\`: ${c.pr_description ?? c.description}.`;
 
 /**
