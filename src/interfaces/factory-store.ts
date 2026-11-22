@@ -20,6 +20,7 @@ import type { RunOutputStore } from "../core/stall.js";
 import type { SessionReservation, SessionReservationStore } from "../core/session.js";
 import type { ProposalStore } from "../core/proposals.js";
 import type { StandingChangeStore } from "../core/standing.js";
+import type { ScheduleStore } from "../core/schedule.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
@@ -61,8 +62,7 @@ export interface AdoptedPr {
 }
 
 /**
- * The head of an open PR as a poll saw it, against the item's last recorded head (design 2026-11-01).
- * Applies only while the item's last_head_sha still equals `expected_head`.
+ * The head of an open PR as a poll saw it, against the item's last recorded head (design 2026-11-01). Applies only while the item's last_head_sha still equals `expected_head`.
  */
 export interface RecordPrHeadInput {
   id: WorkItemId;
@@ -356,7 +356,7 @@ export interface NoticeMessageStore {
   getNoticeQuestion(id: string): Promise<NoticeQuestion | null>;
 }
 
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore {
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes
