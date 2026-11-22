@@ -115,8 +115,8 @@ export function pathCompanionProblems(raw: unknown): string[] {
     if (entry.with !== undefined && (!Array.isArray(entry.with) || entry.with.length === 0 || !entry.with.every(isRepoPath))) {
       problems.push(`${at}.with must be a non-empty list of repo-relative paths`);
     }
-    if (entry.reason !== undefined && (typeof entry.reason !== "string" || entry.reason.trim() === "" || entry.reason.includes("\n"))) {
-      problems.push(`${at}.reason must be a non-empty one-line string`);
+    if (entry.reason !== undefined && (typeof entry.reason !== "string" || entry.reason.trim() === "")) {
+      problems.push(`${at}.reason must be a non-empty string`);
     }
   });
   return problems;

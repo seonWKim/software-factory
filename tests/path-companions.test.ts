@@ -369,7 +369,6 @@ describe("path_companions load check", () => {
     ["an unknown key", [{ when: "a", also: ["b"], why: "x" }], /path_companions\[0\] has unknown key "why"/],
     ["an empty reason", [{ when: "a", also: ["b"], reason: " " }], /path_companions\[0\]\.reason/],
     ["a non-string reason", [{ when: "a", also: ["b"], reason: 3 }], /path_companions\[0\]\.reason/],
-    ["a two-line reason", [{ when: "a", also: ["b"], reason: "x\ny" }], /path_companions\[0\]\.reason/],
     ["an empty with", [{ when: "a", also: ["b"], with: [] }], /path_companions\[0\]\.with/],
     ["an absolute with", [{ when: "a", also: ["b"], with: ["/x"] }], /path_companions\[0\]\.with/],
   ])("rejects %s, naming the key and the entry index", (_, value, message) => {
