@@ -9,7 +9,9 @@ import { LocalSource } from "../src/impl/source/local-source.js";
 import type { AuthAction, Principal } from "../src/interfaces/auth-provider.js";
 import type { SourceEvent, VerdictEventTarget } from "../src/interfaces/source-adapter.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, mallory, silent } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, mallory, silent } from "./helpers/fakes/config.js";
 import { newStore, system, PROJECT_KEY } from "./helpers/store.js";
 import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 

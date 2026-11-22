@@ -5,7 +5,8 @@ import { defineHandler } from "../src/shared/handler.js";
 import { defineTopic } from "../src/shared/topic.js";
 import { forgetOnFailure } from "../src/state/index.js";
 import type { SqlDriver } from "../src/state/index.js";
-import { FakeAuth, cleanScanner, config, silent } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, silent } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 // The controller role's startup checks and caches (runtime review L2, L3).

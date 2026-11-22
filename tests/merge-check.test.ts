@@ -9,9 +9,11 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { build, loadConfig, localProject } from "../src/compose.js";
+import { build } from "../src/compose.js";
+import { loadConfig, localProject } from "../src/load-config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { SourceType, UserId, WorkerId, WorkItem, WorkItemId } from "../src/core/types.js";
+import { MODE_KEY, SELECTION_ACTOR, type SelectionRecord, cleanCursor } from "../src/core/test-selection.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import { type CliAction, runLocalCli } from "../src/core/local-cli.js";
 import { OwnerAuth } from "../src/core/authorize.js";
@@ -26,10 +28,11 @@ import type { Sandbox } from "../src/interfaces/sandbox.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import { autoResolveKey } from "../src/core/policy.js";
 import { NODE_PROBE, offNode, onNode } from "../src/worker/runs/merge-check/node-version.js";
-import {
-  FakeAuth, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, cleanScanner, config, fakeRepoLookup, pipeline, prompts, silent,
-  triageSpec,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, fakeRepoLookup, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 import { issue, newStore, system } from "./helpers/store.js";
 import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
@@ -668,8 +671,11 @@ describe("merge check run: one rerun of the failing test files (fake sandbox)", 
   const FAIL = " FAIL  tests/a.test.ts > suite > flaky\n FAIL  tests/b.test.ts > other > case\n";
   type Reply = { exit: number; out?: string } | "throw";
 
-  /** Each command's replies by its argv joined with spaces, one per call in order (then exit 0). */
-  async function rerunRun(replies: Record<string, Reply[]>, o: { ui?: true } = {}) {
+  /**
+   * Each command's replies by its argv joined with spaces, one per call in order (then exit 0). `selection`: the
+   * item's selection before push, recorded on an earlier finished run, with the project's mode set to `mode`.
+   */
+  async function rerunRun(replies: Record<string, Reply[]>, o: { ui?: true; selection?: SelectionRecord; mode?: "enforce" } = {}) {
     const repo = {
       ...config.repo, check_commands: [["npm", "test"], ["npm", "run", "lint"]],
       ...(o.ui ? { ui_check: { command: ["npm", "run", "check:responsive"], paths: ["web/"] } } : {}),
@@ -683,7 +689,17 @@ describe("merge check run: one rerun of the failing test files (fake sandbox)", 
       if (reply === "throw") throw new Error("spawn ENOENT");
       return reply === undefined ? r : { ...r, exit_code: reply.exit, stdout: reply.out ?? "" };
     };
-    const { item } = await f.store.createWorkItem(issue(7), system);
+    let { item } = await f.store.createWorkItem(issue(7), system);
+    if (o.selection) {
+      const queued = await f.store.transition({ id: item.id, expected_version: item.version, actor: system, reason: "test_setup", patch: {}, enqueue: { kind: "triage", idempotency_key: "t-1" } });
+      if (!queued.ok) throw new Error("setup");
+      item = queued.item;
+      const run = (await f.store.claimRun({ worker_id: "earlier" as WorkerId, kinds: ["triage"], lease_ms: 60_000 }))!;
+      await f.store.completeRun(run.id, run.lease!.token, { status: "succeeded", summary: "s", data: { test_selection: o.selection } });
+    }
+    if (o.mode) {
+      await f.store.setLearnedSetting({ project: item.project, key: MODE_KEY, expected: null, value: JSON.stringify(o.mode), evidence_run_ids: [], window_end: "2025-12-31T00:00:00.000Z" as never, actor: SELECTION_ACTOR });
+    }
     const moved = await f.store.transition({
       id: item.id, expected_version: item.version, actor: system, reason: "test_setup", patch: {},
       enqueue: { kind: "merge-check", idempotency_key: "mc-1", input: { merge_check: { base_ref: "main", branches: [`factory/${item.id}`] } } },
@@ -691,7 +707,7 @@ describe("merge check run: one rerun of the failing test files (fake sandbox)", 
     if (!moved.ok) throw new Error("setup");
     expect(await f.w1.tick()).toBe(true);
     const outcome = (await f.runs(moved.item, "merge-check"))[0]!.outcome;
-    return { commands: f.sandbox.commands, outcome, data: outcome?.status === "succeeded" ? outcome.data : {} };
+    return { commands: f.sandbox.commands, outcome, data: outcome?.status === "succeeded" ? outcome.data : {}, store: f.store, item };
   }
 
   it("a fail-then-pass test file is rerun alone, the list goes on, and the green result lists the flaky tests", async () => {
@@ -713,6 +729,25 @@ describe("merge check run: one rerun of the failing test files (fake sandbox)", 
     expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "red", why: "checks", command: "npm test", how: "exited 1" } });
     expect(r.data.failing_tests).toEqual(["tests/a.test.ts > suite > flaky", "tests/b.test.ts > other > case"]);
     expect(r.data).not.toHaveProperty("flaky_tests");
+  });
+
+  // Test selection's revert (design §4, shadow mode): the list above runs whole in every mode.
+  it("a failing file the item's enforced selection left out is a miss: named on the red result, and the mode goes back to shadow", async () => {
+    const failing = { "npm test": [{ exit: 1, out: FAIL }], "npm test -- tests/a.test.ts tests/b.test.ts": [{ exit: 1, out: FAIL }] };
+    const enforced: SelectionRecord = { mode: "enforce", full: false, files: ["tests/a.test.ts"], reason: "1 files" };
+    const r = await rerunRun(failing, { selection: enforced, mode: "enforce" });
+    expect(r.commands).toEqual(["npm ci", "npm test", "npm test -- tests/a.test.ts tests/b.test.ts"]);
+    expect(r.data).toMatchObject({ result: "red", why: "checks", selection_miss: ["tests/b.test.ts"] });
+    expect(await r.store.getLearnedSetting(r.item.project, MODE_KEY)).toMatchObject({ value: '"shadow"' });
+    expect((await r.store.listLearnedSettingChanges(10)).map((c) => [c.key, c.old_value, c.new_value, c.actor])).toEqual([
+      [MODE_KEY, '"enforce"', '"shadow"', SELECTION_ACTOR], [MODE_KEY, null, '"enforce"', SELECTION_ACTOR],
+    ]);
+    expect(await r.store.getCursor(cleanCursor(r.item.project))).toBeNull();
+
+    // A selection made in shadow mode ran the whole command before push: its files decide nothing at the merge check.
+    const shadow = await rerunRun(failing, { selection: { ...enforced, mode: "shadow" }, mode: "enforce" });
+    expect(shadow.data).not.toHaveProperty("selection_miss");
+    expect(await shadow.store.getLearnedSetting(shadow.item.project, MODE_KEY)).toMatchObject({ value: '"enforce"' });
   });
 
   it("a failure naming no test file is not rerun and stays red", async () => {

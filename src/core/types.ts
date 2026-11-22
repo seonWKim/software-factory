@@ -1,6 +1,7 @@
 // Domain types shared by every layer. No vendor types here.
 // Field names follow docs/design.md §2. IDs only, never display names.
 
+import type { DoneCheck } from "./done-checks.js";
 type Brand<T, B extends string> = T & { readonly __brand: B };
 
 export type WorkItemId = Brand<string, "WorkItemId">;
@@ -77,10 +78,7 @@ export interface WorkItem {
   fixes_pr: number | null;
   /** URL of the posted spec comment, set with READY + spec_pending. Null before it, and on older items. */
   spec_comment_url: string | null;
-  /**
-   * URL of the last failure comment, set by the transition that blocks on a failed run. Null when that
-   * comment was withheld by the egress scan or never posted, and on older items.
-   */
+  /** URL of the last failure comment, set by the transition that blocks on a failed run. Null when that comment was withheld by the egress scan or never posted, and on older items. */
   failure_comment_url: string | null;
   /**
    * The issue text as received at intake (title and body). Triage overwrites `problem` with the spec; a
@@ -114,6 +112,8 @@ export interface WorkItem {
    * for an item without a PR (design 2026-11-03). Null before triage, and on items from before it was stored.
    */
   files_to_change: string[] | null;
+  /** Triage's check per done-when line, in order (design 04-triage, 2026-11-22). Null before triage, and on items triaged before it was stored. */
+  done_checks: DoneCheck[] | null;
   /**
    * The files the item's PR changes, as its last implement run pushed them (design 2026-11-03). Null with no
    * PR, and on PRs opened before it was stored: the coordination cost then falls back to `allowed_paths`.
@@ -392,12 +392,12 @@ the push_access or pr_api preflight check failed another way (issue #216), so no
  * once it has passed (a probe is due); `getClaimPause("model_stall_since")` returns when the pause began (written
  * by the store when `pauseClaims(…, "model_stall")` starts one). `pauseClaims` returns `started` for it.
  * `network`: a git call, push, preflight or model request could not reach its host, so no claim of any kind until
- * a network probe passes. A probe pause like `model_stall`, with `network_since` and `network_answered`.
+ * a network probe passes. A probe pause like `model_stall`, with `network_since` and `network_answered`. `model_credential`: no model credential, so no agent run is claimed (policy MODEL_CREDENTIAL).
  */
 export type ClaimPauseName =
   | "rate_limit" | "forge_auth" | "preflight_access" | "github_rate_limit"
   | "model_stall" | "model_stall_since" | "model_answered"
-  | "network" | "network_since" | "network_answered";
+  | "network" | "network_since" | "network_answered" | "model_credential";
 export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 /**
@@ -424,7 +424,7 @@ export interface RunAttempt {
   /** The failed outcome's error code; `lease_expired` for a reaped claim; null otherwise. */
   error_code: string | null;
   /** failureClass() of a failed outcome; `infra` for a reaped claim; null for every other status. */
-  failure_class: "task" | "infra" | "rate_limited" | "stalled" | "checks_env" | null;
+  failure_class: "task" | "infra" | "rate_limited" | "stalled" | "checks_env" | "setup_missing" | null;
   /** outcomeTokens() of the outcome that closed it; 0 when it closed without an outcome. */
   tokens: number;
 }

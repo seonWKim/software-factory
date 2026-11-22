@@ -36,7 +36,7 @@ Four tones, each with `bg`, `fg` and `border`. Classes: `bg-pill-<tone>-bg text-
 | `bad` | #F8E8E8 / #482F33 | #B91C1C / #FBAAAA | stuck, failed, destructive |
 | `info` | #E8EDFB / #2C394B | #1D4ED8 / #60A5FA | running, a note |
 
-A work item's level maps to a tone in one place, `LEVEL_TONE` in `web/src/components/ui/badge.tsx`. `Badge` reads it; never write a second map.
+An item's, a run's or a worker's state maps to its label and tone in one place, the state table in `src/shared/states.ts`; `StatusBadge` and `Badge` in `web/src/components/ui/badge.tsx` read it, and `TONE_CLASS` there maps a tone to its tokens. Never write a second map.
 
 ## Type
 

@@ -16,8 +16,9 @@ interface DisclosureProps extends Omit<HTMLAttributes<HTMLDetailsElement>, "chil
 }
 
 /**
- * The one show/hide section (docs/design/09-dashboard-shell.md, design-system/components.md): a native `<details>` with a
- * `<summary>` that has one chevron marker (turned down when open) and one label style (`text-xs text-text-2`). Use it only
+ * The one show/hide section (docs/design/09-dashboard-components.md, design-system/components.md): a native `<details>` with a
+ * `<summary>` at least 28px tall (`min-h-7`) that has one chevron marker (turned down when open) and one label style
+ * (`text-xs text-text-2`). Use it only
  * for long content (decision rule 2 in design-system/patterns.md). The open state is kept in React so `aria-expanded`
  * on the summary and the `open` attribute always agree; Enter and Space toggle it from the keyboard. Extra props
  * (`data-*`, `className` for a margin) go to the `<details>`.
@@ -48,7 +49,7 @@ export function Disclosure({ summary, children, defaultOpen = false, lazy = fals
         onClick={onClick}
         onKeyDown={onKeyDown}
         onKeyUp={onKeyUp}
-        className={cn("flex w-fit cursor-pointer list-none items-center gap-1 text-xs text-pretty text-text-2 [&::-webkit-details-marker]:hidden", FOCUS)}
+        className={cn("flex min-h-7 w-fit cursor-pointer list-none items-center gap-1 text-xs text-pretty text-text-2 [&::-webkit-details-marker]:hidden", FOCUS)}
       >
         <ChevronRight aria-hidden className={cn("size-4 shrink-0 motion-safe:transition-transform", open && "rotate-90")} />
         {summary}

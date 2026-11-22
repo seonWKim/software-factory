@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import migration from "../src/controller/migrations/20261111T1610-controller-tasks.migration.js";
 import { type CliAction, type LocalCliDeps, parseLocalCliArgs, runLocalCli } from "../src/core/local-cli.js";
-import { type NewTask, type Task, localDate, taskViews } from "../src/core/tasks.js";
-import type { Timestamp, UserId } from "../src/core/types.js";
+import { type NewTask, localDate, taskViews } from "../src/core/tasks.js";
+import type { UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { MIGRATIONS_TABLE, type MigrationDb, type SqlDriver, tableExists } from "../src/state/index.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";

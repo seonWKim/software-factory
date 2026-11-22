@@ -10,6 +10,8 @@ import type { Sandbox } from "../interfaces/sandbox.js";
 
 // What follows a merge: the restart command and the merge reply's run hint (design 04-gate-commands, restart).
 export * from "./restart.js";
+// The auto merge step's tier rule and drop-back (design 03-risk), re-exported so the unit reads them through this module.
+export { droppedBack, tierRule } from "./stats.js";
 
 /**
  * The source type of items filed in the factory itself: the store holds their thread and state, so they need no
@@ -139,6 +141,14 @@ export function canReadLocal(sandbox: Sandbox | undefined): sandbox is LocalRead
 export function canMergeLocal(sandbox: Sandbox | undefined): sandbox is LocalMergeSandbox {
   const s = sandbox as Partial<LocalMergeSandbox> | undefined;
   return !!s && typeof s.mergeLocal === "function" && typeof s.localConflicts === "function";
+}
+
+/**
+ * Whether the sandbox can append to a file on the local base (design 07-design-learnings): it merges locally, reads
+ * local branches and files, and commits one file on a new local branch, with no checkout and no network call.
+ */
+export function canAppendLocal(sandbox: Sandbox | undefined): boolean {
+  return canMergeLocal(sandbox) && canReadLocal(sandbox) && typeof sandbox.readLocalFile === "function" && typeof sandbox.commitNewBranch === "function";
 }
 
 /**

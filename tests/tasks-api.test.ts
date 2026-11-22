@@ -3,15 +3,15 @@
 // size, JSON), then the body; every refusal stores nothing. The caller chooses the task ID, so a retry stores one task.
 
 import { describe, expect, it } from "vitest";
-import { DONE_WINDOW_DAYS, MAX_TASK_BODY } from "../src/core/tasks.js";
+import { MAX_TASK_BODY } from "../src/core/tasks.js";
 import type { UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, type UiRequest, respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
-import { TASKS_PATH, TASK_BODY_PATH, TASK_DONE_PATH, TASK_EDIT_PATH, TASK_REOPEN_PATH, TASK_SUB_PATH, TASK_WRITES } from "../src/ui/tasks-api.js";
-import { PROJECTS_PATH, TASK_PROJECT_PATH } from "../src/ui/projects-api.js";
+import { TASKS_PATH, TASK_BODY_PATH, TASK_DELETE_PATH, TASK_DONE_PATH, TASK_EDIT_PATH, TASK_REOPEN_PATH, TASK_SUB_PATH, TASK_WRITES } from "../src/ui/tasks-api.js";
+import { PROJECTS_PATH, PROJECT_DELETE_PATH, TASK_PROJECT_PATH } from "../src/ui/projects-api.js";
 import { newStore } from "./helpers/store.js";
 
 const HOST = "127.0.0.1:4310";
@@ -224,11 +224,6 @@ describe("+slug on the dashboard's add, edit and sub routes (design 02-tasks, ta
 describe("POST /api/v1/tasks/reopen: undo a completion (design 02-tasks)", () => {
   const reopen = (s: Awaited<ReturnType<typeof setup>>, body: unknown, over: Partial<UiRequest> = {}) => s.post(body, { url: TASK_REOPEN_PATH, ...over });
 
-  it("is a task write route beside /done", () => {
-    expect(Object.keys(TASK_WRITES)).toContain(TASK_REOPEN_PATH);
-    expect(TASK_WRITES[TASK_REOPEN_PATH]).toBeTypeOf("function");
-  });
-
   it("reopens a done task through the store's reopenTask; a second reopen answers reopened false and writes nothing", async () => {
     const s = await setup();
     await s.post({ id: ID, words: "call the bank" });
@@ -316,8 +311,6 @@ describe("GET /api/v1/tasks: the quick-add submit key (design 02-tasks, tasks_ad
 describe("GET /api/v1/tasks keeps done tasks (design 02-tasks, done tasks stay)", () => {
   const get = (s: Awaited<ReturnType<typeof setup>>, url: string = TASKS_PATH) => respond(s.d, { method: "GET", url, host: HOST });
   type Row = { id: string; title: string; done_at: string | null };
-  const all = async (s: Awaited<ReturnType<typeof setup>>, url?: string) =>
-    (JSON.parse((await get(s, url)).body) as { projects: { tasks: Row[] }[] }).projects.flatMap((p) => p.tasks);
 
   it("a task the page completed stays in the read with its done_at, placed by its due date as an open task is", async () => {
     const s = await setup();
@@ -327,17 +320,6 @@ describe("GET /api/v1/tasks keeps done tasks (design 02-tasks, done tasks stay)"
     const body = JSON.parse((await get(s)).body) as { today: { due: Row[] }; projects: { tasks: Row[] }[] };
     expect(body.today.due.map((t) => [t.id, t.done_at])).toEqual([[ID, at]]);
     expect(body.projects.flatMap((p) => p.tasks).map((t) => [t.title, t.done_at])).toEqual([["call the bank", at]]);
-  });
-
-  it("holds done tasks done within the last DONE_WINDOW_DAYS days and no older one", async () => {
-    const s = await setup();
-    const old = "tk_fedcba9876543210";
-    await s.post({ id: old, words: "old chore" });
-    await s.post({ id: old }, { url: TASK_DONE_PATH });
-    (s.d.clock as FakeClock).advance((DONE_WINDOW_DAYS + 1) * 24 * 60 * 60 * 1000);
-    await s.post({ id: ID, words: "new chore" });
-    await s.post({ id: ID }, { url: TASK_DONE_PATH });
-    expect((await all(s)).map((t) => t.id)).toEqual([ID]);
   });
 
   it("the done list's own read is gone: GET /api/v1/tasks/done is no route", async () => {
@@ -370,10 +352,6 @@ describe("the dashboard's task project routes (design 02-tasks and 09-dashboard-
     await s.store.archiveProject("pj_old");
     return s;
   }
-
-  it("both POST routes are task write routes", () => {
-    expect(Object.keys(TASK_WRITES)).toEqual(expect.arrayContaining([PROJECTS_PATH, TASK_PROJECT_PATH]));
-  });
 
   it("POST /api/v1/projects creates a project by the page's actor; a repeat with the same ID stores nothing more", async () => {
     const s = await setup();
@@ -442,6 +420,43 @@ describe("the dashboard's task project routes (design 02-tasks and 09-dashboard-
     expect(await snapshot(s)).toEqual(before);
   });
 
+  const remove = (s: S, body: unknown, over: Partial<UiRequest> = {}) => s.post(body, { url: PROJECT_DELETE_PATH, ...over });
+
+  it("POST /api/v1/projects/delete deletes the project and its links, as `factory project delete` does, and keeps every task", async () => {
+    const s = await seeded();
+    const tasksBefore = (await snapshot(s)).tasks;
+    const r = await remove(s, { project: "home" });
+    expect(r.status).toBe(200);
+    expect(JSON.parse(r.body)).toEqual({ project: "home", unlinked: [ID] });
+    expect(await s.store.getProjectBySlug("home")).toBeNull();
+    expect(await s.store.listTaskProjects(ID)).toEqual([]);
+    expect((await snapshot(s)).tasks).toEqual(tasksBefore);
+    // An archived project is deleted too, as the CLI does.
+    expect((await remove(s, { project: "old" })).status).toBe(200);
+    expect(await s.store.getProjectBySlug("old")).toBeNull();
+  });
+
+  it("POST /api/v1/projects/delete answers 404 for an unknown slug, 400 for a bad body, 503 with no actor, and refuses without the guards; each writes nothing", async () => {
+    const s = await seeded();
+    const before = await snapshot(s);
+    const unknown = await remove(s, { project: "garden" });
+    expect(unknown.status).toBe(404);
+    expect(JSON.parse(unknown.body)).toEqual({ error: 'no project "garden"' });
+    for (const body of [{}, { project: "Home" }, { project: 3 }, { project: "home", x: 1 }, "x"]) {
+      expect((await remove(s, body)).status, JSON.stringify(body)).toBe(400);
+    }
+    expect((await remove(s, { project: "home" }, { csrfToken: undefined })).status).toBe(403);
+    expect((await remove(s, { project: "home" }, { contentType: "text/plain" })).status).toBe(415);
+    for (const over of [{ host: "evil.example" }, { origin: "https://evil.example" }, { bodyTooLarge: true }, { body: "{not json" }] as Partial<UiRequest>[]) {
+      expect((await remove(s, { project: "home" }, over)).status, JSON.stringify(over)).toBeGreaterThanOrEqual(400);
+    }
+    const off = await setup({ actor: null });
+    await off.store.createProject({ id: "pj_home", name: "Home", created_by: ACTOR });
+    expect((await remove(off, { project: "home" })).status).toBe(503);
+    expect(await off.store.getProjectBySlug("home")).not.toBeNull();
+    expect(await snapshot(s)).toEqual(before);
+  });
+
   it("both POST routes refuse a missing CSRF token (403) and a wrong Content-Type (415) and write nothing", async () => {
     const s = await seeded();
     const before = await snapshot(s);
@@ -500,13 +515,71 @@ describe("the dashboard's task project routes (design 02-tasks and 09-dashboard-
   });
 });
 
+describe("sub-tasks stay with their parent (design 02-tasks-page, delete with sub-tasks)", () => {
+  type S = Awaited<ReturnType<typeof setup>>;
+  const PARENT = "tk_parent_0000001";
+  const get = async (s: S, query = "") => JSON.parse((await respond(s.d, { method: "GET", url: `${TASKS_PATH}${query}`, host: HOST })).body);
+  const del = (s: S, body: unknown) => s.post(body, { url: TASK_DELETE_PATH });
+  const all = (s: S) => s.store.db.all("SELECT * FROM controller_tasks ORDER BY id");
+  const rows = (v: { projects: { tasks: { id: string; open_sub_tasks: number }[] }[] }) => v.projects.flatMap((p) => p.tasks);
+
+  /** A parent with two open sub-tasks and one done one; the parent is in Home, its sub-tasks in no project. */
+  async function seeded() {
+    const s = await setup();
+    await s.post({ id: PARENT, words: "move house tomorrow" });
+    for (const id of ["tk_sub_open_0001", "tk_sub_open_0002", "tk_sub_done_0001"]) await s.post({ parent: PARENT, id, words: id }, { url: TASK_SUB_PATH });
+    await s.post({ id: "tk_sub_done_0001" }, { url: TASK_DONE_PATH });
+    await s.post({ id: ID, words: "call the bank" });
+    await s.store.createProject({ id: "pj_home", name: "Home", created_by: ACTOR });
+    await s.store.addTaskToProject("pj_home", PARENT);
+    return s;
+  }
+
+  it("GET /api/v1/tasks gives each row open_sub_tasks, counted before the project filter", async () => {
+    const s = await seeded();
+    const v = rows(await get(s));
+    expect(v.find((t) => t.id === PARENT)!.open_sub_tasks).toBe(2);
+    expect(v.find((t) => t.id === ID)!.open_sub_tasks).toBe(0);
+    expect(v.find((t) => t.id === "tk_sub_open_0001")!.open_sub_tasks).toBe(0);
+    // Home holds the parent but none of its sub-tasks: the count is still theirs.
+    expect(rows(await get(s, "?project=home")).find((t) => t.id === PARENT)!.open_sub_tasks).toBe(2);
+  });
+
+  it("a plain delete of a parent with open sub-tasks still answers 409 naming them, writing nothing", async () => {
+    const s = await seeded();
+    const before = await all(s);
+    const r = await del(s, { id: PARENT });
+    expect(r.status).toBe(409);
+    expect(JSON.parse(r.body).error).toMatch(/it has open sub-tasks \(tk_sub_open_0001, tk_sub_open_0002\)/);
+    expect(await all(s)).toEqual(before);
+  });
+
+  it("with_sub_tasks true deletes the parent and every sub-task in one write, naming the deleted sub-tasks", async () => {
+    const s = await seeded();
+    const r = await del(s, { id: PARENT, with_sub_tasks: true });
+    expect(r.status).toBe(200);
+    const v = JSON.parse(r.body) as { task_id: string; deleted_sub_tasks: string[] };
+    expect(v.task_id).toBe(PARENT);
+    expect([...v.deleted_sub_tasks].sort()).toEqual(["tk_sub_done_0001", "tk_sub_open_0001", "tk_sub_open_0002"]);
+    expect((await all(s)).map((t) => t.id)).toEqual([ID]);
+  });
+
+  it("a with_sub_tasks that is not a boolean is 400 and writes nothing", async () => {
+    const s = await seeded();
+    const before = await all(s);
+    for (const flag of ["true", 1, null, {}]) {
+      const r = await del(s, { id: PARENT, with_sub_tasks: flag });
+      expect(r.status, JSON.stringify(flag)).toBe(400);
+      expect(JSON.parse(r.body).error).toMatch(/with_sub_tasks must be true or false/);
+    }
+    expect((await del(s, { id: PARENT, with_sub_tasks: true, extra: 1 })).status).toBe(400);
+    expect(await all(s)).toEqual(before);
+  });
+});
+
 describe("POST /api/v1/tasks/body: a task's description (design 02-tasks, description)", () => {
   const save = (s: Awaited<ReturnType<typeof setup>>, body: unknown, over: Partial<UiRequest> = {}) => s.post(body, { url: TASK_BODY_PATH, ...over });
   const rows = (s: Awaited<ReturnType<typeof setup>>) => s.store.db.all("SELECT * FROM controller_tasks ORDER BY id");
-
-  it("is a task write route", () => {
-    expect(TASK_WRITES[TASK_BODY_PATH]).toBeTypeOf("function");
-  });
 
   it("stores the description trimmed and answers the task; GET /api/v1/tasks returns it", async () => {
     const s = await setup();

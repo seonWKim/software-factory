@@ -32,6 +32,7 @@ const TABLE: Row[] = [
   ["REVIEW", "human", "merge_pending", null, "merge_pending"],
   ["REVIEW", "human", "max_loops", null, "max_loops"],
   ["REVIEW", "human", "merge_conflict_pending", null, "merge_conflict"],
+  ["RUNNING", "human", "session_released", null, "session_released"],
   ["RUNNING", "dependency", "waiting for #12 to merge", null, "dependency_hold"],
   ["NEW", "upstream", "phase_hold", null, "phase_hold"],
   ["READY", "upstream", "phases_open", null, "phases_open"],
@@ -64,5 +65,6 @@ describe("phaseOf", () => {
   it("decides merge_pending and spec_pending by stage too", () => {
     expect(phaseOf({ stage: "RUNNING", blocked_on: "human", blocked_reason: "merge_pending", close_reason: null })).toBe("person_wait");
     expect(phaseOf({ stage: "REVIEW", blocked_on: "human", blocked_reason: "spec_pending", close_reason: null })).toBe("person_wait");
+    expect(phaseOf({ stage: "REVIEW", blocked_on: "human", blocked_reason: "session_released", close_reason: null })).toBe("person_wait");
   });
 });

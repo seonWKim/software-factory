@@ -5,7 +5,7 @@ import { type UiCommands, commandsPost, itemCommands, parseCommand } from "../sr
 import type { UiDeps } from "../src/ui/deps.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { cleanScanner } from "./helpers/fakes.js";
+import { cleanScanner } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
 // The `restart` item command (design 04-gate-commands, restart): who may ask, on which item, what the page and the

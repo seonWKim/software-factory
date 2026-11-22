@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { build, loadConfig, localProject, selectsGitHub } from "../src/compose.js";
+import { build } from "../src/compose.js";
+import { loadConfig, localProject, selectsGitHub } from "../src/load-config.js";
 import { readStoredProject } from "../src/core/project-labels.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalForge } from "../src/impl/forge/local-forge.js";
@@ -12,7 +13,7 @@ import { runProcess } from "../src/impl/process/run-process.js";
 import { REGISTRY, type Registry, withPlugin } from "../src/plugins.js";
 import type { Selection } from "../src/plugin-api.js";
 import type { ToolBroker } from "../src/interfaces/tool-broker.js";
-import { fakeGitHubAccess } from "./helpers/fakes.js";
+import { fakeGitHubAccess } from "./helpers/fakes/github.js";
 
 // Startup with no GitHub plugin selected (design 05-sources, Local startup): no GitHub credential is read, no
 // repository lookup is made, the broker is the local one, and nothing fetches origin.

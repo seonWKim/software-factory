@@ -7,7 +7,6 @@ import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
 import { LearnedRules } from "../src/core/learned-rules.js";
 import { LiveSettings, baseFromConfig, keyRefusal, parseSettable } from "../src/core/settings.js";
-import type { WorkerId } from "../src/core/types.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { TacitLedger } from "../src/interfaces/tacit-ledger.js";
@@ -19,9 +18,11 @@ import { WorkerPool } from "../src/worker/index.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type UiSettings, readSettings } from "../src/ui/settings-api.js";
 import { newStore } from "./helpers/store.js";
-import {
-  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, cleanScanner, config, prompts, silent,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { cleanScanner, config, prompts, silent } from "./helpers/fakes/config.js";
 
 /** A ledger that is on and lists one entry named after it. */
 const fakeLedger = (name: string): TacitLedger => ({

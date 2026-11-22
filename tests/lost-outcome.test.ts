@@ -4,7 +4,9 @@ import type { FactoryConfig } from "../src/core/config.js";
 import type { RunOutcome, WorkItem } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { FakeAuth, FakeSource, cleanScanner, config, silent } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { cleanScanner, config, silent } from "./helpers/fakes/config.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 
 // A failed run's outcome always lands, and an item whose failed run's outcome never landed is repaired

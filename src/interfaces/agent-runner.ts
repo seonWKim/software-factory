@@ -4,10 +4,16 @@ import type { SandboxHandle } from "./sandbox.js";
 
 // The tool-using loop. First impl: ClaudeCodeRunner (`claude -p` in the sandbox workdir).
 
+/**
+ * The role an agent step runs as: its run's kind, or `review-confirm`, the review run's confirm step per finding
+ * (design 04-agents), which runs inside a review run with its own role, prompt and tools.
+ */
+export type AgentRole = RunKind | "review-confirm";
+
 export interface AgentRunSpec {
   run_id: RunId;
   work_item_id: WorkItemId;
-  role: RunKind;
+  role: AgentRole;
   sandbox: SandboxHandle;
   system_prompt: string;
   prompt: string;
@@ -76,6 +82,19 @@ export interface AgentRunSpec {
   output_schema?: Record<string, unknown>;
   /** Abort when the worker loses its lease, or when `workers pause` stops the run (design §5 Pause). */
   signal: AbortSignal;
+  /**
+   * The live transcript (design 09-dashboard-item): a runner that streams its output calls this with the output so
+   * far, as text, each time it grows; the worker stores it, throttled and egress-scanned, while the run is running.
+   * Synchronous and cheap; it never throws. Absent, or a runner that does not stream: the transcript is stored
+   * only when the step ends.
+   */
+  live?: (output: string) => void;
+  /**
+   * Model output (design 05-restarts): a runner that watches its stream calls this each time the model prints (the
+   * events that restart its stall clock), so the worker can store when the run last got output. Synchronous and
+   * cheap; it never throws. Absent, or a runner that does not watch its stream: nothing is reported.
+   */
+  on_output?: () => void;
   /**
    * The agent session (design §5 Pause). Kept only for the roles in SESSION_ROLES and only when given: `id` names
    * a new session, or with `resume` the stored one this call continues. Absent, or another role: the runner
@@ -169,8 +188,8 @@ export interface GateBlock {
   attempt: number;
 }
 
-/** The roles whose agent sessions a runner keeps (design §5 Pause): triage and update never keep one. */
-export const SESSION_ROLES: readonly RunKind[] = ["implement", "review", "resolve"];
+/** The roles whose agent sessions a runner keeps (design §5 Pause): triage, update and review-confirm never keep one. */
+export const SESSION_ROLES: readonly AgentRole[] = ["implement", "review", "resolve"];
 
 export interface AgentRunResult {
   /**

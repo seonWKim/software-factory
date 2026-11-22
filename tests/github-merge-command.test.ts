@@ -4,7 +4,10 @@ import { githubCommand } from "../src/core/command-inbox.js";
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../src/interfaces/auth-provider.js";
 import { runLocalCli } from "../src/core/local-cli.js";
-import { FakeForge, FakeSandbox, FakeSlackPollSource, FakeSource, cleanScanner, config, issueRef, silent, slackRef } from "./helpers/fakes.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSandbox } from "./helpers/fakes/runner.js";
+import { FakeSlackPollSource, FakeSource } from "./helpers/fakes/source.js";
+import { cleanScanner, config, issueRef, silent, slackRef } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 

@@ -14,7 +14,8 @@ import type { Envelope } from "../src/shared/envelope.js";
 import { defineTopic } from "../src/shared/topic.js";
 import { RETENTION } from "../src/controller/units/retention/retention.unit.js";
 import { NOT_OWNER, OwnerAuth } from "../src/core/authorize.js";
-import { FakeAuth, cleanScanner, config, silent } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, silent } from "./helpers/fakes/config.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 
 // The daily retention pass (design 08-retention): the controller role's `retention` tick, under the store lease

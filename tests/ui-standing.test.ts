@@ -65,7 +65,11 @@ async function setup(opts: { user?: UserId | null; wired?: boolean } = {}) {
     health: new HealthMonitor(async () => [], clock),
     ...(opts.wired === false ? {} : { pauses }),
   };
-  const rows = async () => (await real.listTableRows({ table: "controller_standing_rules", limit: 200 }))!.rows;
+  // The rule rows and their change records: a refusal leaves both as they were.
+  const rows = async () => [
+    ...(await real.listTableRows({ table: "controller_standing_rules", limit: 200 }))!.rows,
+    ...(await real.listTableRows({ table: "controller_standing_rule_changes", limit: 200 }))!.rows,
+  ];
   return { d, real, clock, pauses, log, rows, writes: () => writes };
 }
 
@@ -85,8 +89,11 @@ describe("GET /api/v1/standing", () => {
     const v = await get(d);
     expect(v.csrf_token).toBe(pauses.csrfToken);
     const rule = v.rules.find((r: { rule: string }) => r.rule === "spec-t1");
-    expect(rule).toMatchObject({ gate: "spec", tier: 1, threshold: 10, enabled: false, set_by: null, created_at: null, last_used_at: null });
+    expect(rule).toMatchObject({ gate: "spec", tier: 1, threshold: 10, enabled: false, set_by: null, created_at: null, last_fired_at: null, recent: [] });
+    expect(rule).not.toHaveProperty("last_used_at");
     expect(v.proposals).toEqual([]);
+    // The preview of what the rule would approve now: nothing waits (tests/standing-changes.test.ts lists items).
+    expect(v.waiting).toEqual([]);
   });
 
   it("shows the stored rule and the effective threshold override", async () => {
@@ -108,6 +115,40 @@ describe("GET /api/v1/standing", () => {
     clock.advance(1000);
     await real.putStandingRule({ gate: "spec", tier: 1, enabled: false, set_by: OWNER });
     expect(await ids()).not.toContain(proposal.id);
+  });
+
+  it("derives last fired and the 7-day items from the stored standing_approved changes, with no write", async () => {
+    const { d, clock, writes } = await setup();
+    const now = clock.now().getTime();
+    const at = (msAgo: number) => new Date(now - msAgo).toISOString();
+    const DAY = 24 * 60 * 60 * 1000;
+    const change = (work_item_id: string, msAgo: number, actor = "standing:spec-t1") => ({ work_item_id, at: at(msAgo), reason: "standing_approved", actor: { kind: "system", id: actor } });
+    const changes = [
+      change("wi_old", 8 * DAY), // outside the 7-day window: counts for last fired only if newest (it is not)
+      change("wi_a", 2 * DAY),
+      change("wi_a", 1 * DAY), // the same item twice: one item
+      change("wi_b", 3 * 60 * 1000), // the newest firing
+      change("wi_other", 1000, "standing:spec-t9"), // another rule's actor: not this rule's
+    ];
+    const asked: unknown[] = [];
+    const titles: Record<string, string> = { wi_a: "Fix the login", wi_b: `Ship ${SECRET}`, wi_old: "Old" };
+    const store = new Proxy(d.store, {
+      get(target, k, r) {
+        if (k === "listStateChangesSince") return async (q: { reasons: string[] }) => { asked.push(q); return changes.filter((c) => q.reasons.includes(c.reason)); };
+        if (k === "getWorkItem") return async (id: string) => (id in titles ? { id, title: titles[id] } : null);
+        const v = Reflect.get(target, k, r);
+        return typeof v === "function" ? v.bind(target) : v;
+      },
+    });
+    const v = await get({ ...d, store } as typeof d);
+    const rule = v.rules.find((r: { rule: string }) => r.rule === "spec-t1");
+    expect(asked).toEqual([{ reasons: ["standing_approved"], since: null }]);
+    expect(rule.last_fired_at).toBe(at(3 * 60 * 1000));
+    // Distinct items in the 7 days before now, newest first; each title through the Withholder.
+    expect(rule.recent.map((x: { id: string }) => x.id)).toEqual(["wi_b", "wi_a"]);
+    expect(rule.recent[1].title).toBe("Fix the login");
+    expect(JSON.stringify(rule.recent)).not.toContain(SECRET);
+    expect(writes()).toBe(0);
   });
 
   it("passes every text value through the Withholder", async () => {
@@ -134,6 +175,8 @@ describe("POST /api/v1/standing", () => {
       { msg: "standing rule on", fields: { rule: "spec-t1", user_id: OWNER } },
       { msg: "standing rule off", fields: { rule: "spec-t1", user_id: OWNER } },
     ]);
+    // One change record per write, the same rows `/standing accept|decline` writes, with the user ID and no name.
+    expect((await real.listStandingRuleChanges()).map((c) => [c.action, c.actor])).toEqual([["add", OWNER], ["pause", OWNER]]);
   });
 
   it("off, then on: a fresh GET (the page's reload) shows the last write", async () => {
@@ -204,7 +247,7 @@ describe("POST /api/v1/standing", () => {
     const before = await rows();
     const r = await respond(d, post(pauses, { rule: "spec-t1", enabled: true }));
     expect(r.status).toBe(403);
-    expect(parse(r).error).toContain("approve_spec");
+    expect(parse(r).error).toContain("needs the approve_spec permission");
     expect(await rows()).toEqual(before);
     expect(writes()).toBe(0);
     expect(log.lines).toEqual([]);

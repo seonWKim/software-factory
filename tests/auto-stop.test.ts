@@ -7,10 +7,20 @@ import { type FunctionComponent, type ReactElement, createElement } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AutoStop, SettingRow, SettingsView, SystemAction } from "../web/src/api.js";
 
-// The last auto-mode stop (design 03-risk), shown beside the Mode toggle and on its alarm's Needs-you row (the Check
-// group, design 09-status-page): when and why, a link to its alarm, and one click back to auto through POST
-// /api/v1/settings, the row's primary action, with Failures as a link. A burst of agent-run failures stops nothing, so
-// there is no stop line: its alarm's row opens Failures.
+/** The items of a row's ⋯ menu as [label, data-action]; the menu is closed again after reading. */
+function menuOf(row: HTMLElement): [string | null, string | null][] {
+  const more = within(row).getByRole("button", { name: "More commands" });
+  fireEvent.click(more);
+  const items = within(row).getAllByRole("menuitem").map((m) => [m.textContent, m.getAttribute("data-action")] as [string | null, string | null]);
+  fireEvent.click(more);
+  return items;
+}
+
+// The last auto-mode stop (design 03-risk), shown beside the Mode toggle (with its link to the alarm and its button)
+// and on its alarm's Needs-you row (the Check group, design 09-dashboard-tasks): one sentence in local time, the
+// server's full text behind a Details toggle, and a "⋯" menu of Turn auto back on (the same settings write) and What
+// failed. Turn auto back on opens the mode confirmation Dialog (design 09-dashboard-settings, 2026-11-22); only its
+// Confirm writes. A burst of agent-run failures stops nothing, so there is no stop: its alarm's row has Show failures.
 
 // tsconfig.test.json checks this file without JSX, so the views are built with createElement and their .tsx modules are
 // loaded by a specifier the node check skips (as in ui-settings-page.test.tsx).
@@ -45,6 +55,8 @@ const settingsView = (mode: "auto" | "manual", auto_stop: AutoStop | null): Sett
 });
 const stop = (cause: string): AutoStop => ({ alert_id: "al_1", at: AT, cause });
 const time = new Date(AT).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+/** The server's full text of an auto-stop alarm (alarmText and its detail). */
+const FULL = "Alarm: back to manual: the checks failed on the base branch after a merge: `npm test` exited 1 on the new tip of `main`";
 const alarm = (auto_stop?: AutoStop): SystemAction => ({
   code: "alarm", text: "Alarm: something", command: "factory doctor", until: null, ...(auto_stop ? { auto_stop } : {}),
 });
@@ -83,15 +95,28 @@ async function modeSection(): Promise<HTMLElement> {
   return screen.findByRole("region", { name: "Mode" });
 }
 
-/** Clicks "Turn auto back on" in `within` and returns the write it posted. */
-async function turnAutoOn(scope: HTMLElement) {
-  const button = await within(scope).findByRole("button", { name: "Turn auto back on" });
-  await act(async () => fireEvent.click(button));
+/** The open mode confirmation Dialog. */
+const modeDialog = () => screen.getByRole("dialog", { name: "Turn on auto mode?" });
+
+/** Confirms the open mode Dialog and returns the one write it posted; nothing was posted before Confirm. */
+async function confirmAuto() {
+  expect(posts).toHaveLength(0);
+  await act(async () => fireEvent.click(within(modeDialog()).getByRole("button", { name: "Turn on auto" })));
   expect(posts).toHaveLength(1);
   expect(posts[0]!.url).toBe("/api/v1/settings");
   expect((posts[0]!.init.headers as Record<string, string>)["x-csrf-token"]).toBe(TOKEN);
   return JSON.parse(String(posts[0]!.init.body)) as unknown;
 }
+
+/** Clicks "Turn auto back on" in `scope`, which opens the Dialog, and confirms it; returns the write it posted. */
+async function turnAutoOn(scope: HTMLElement) {
+  const button = await within(scope).findByRole("button", { name: "Turn auto back on" });
+  await act(async () => fireEvent.click(button));
+  return confirmAuto();
+}
+
+/** The local-time sentence of an auto-stop row. */
+const sentence = (cause: string) => `Auto mode stopped at ${time}: ${cause}`;
 
 describe("auto stop: red main", () => {
   it("the Mode toggle shows manual, when and why auto stopped, a link to the alarm and Turn auto back on", async () => {
@@ -103,53 +128,119 @@ describe("auto stop: red main", () => {
     const link = within(section).getByRole("link", { name: "See the alarm" });
     expect(link.getAttribute("href")).toBe("/app/#alarm-al_1");
     expect(note.closest("[data-auto-stop]")).not.toBeNull();
-    // One click, no confirmation: mode auto through the setting save path.
+    // The Dialog first; its Confirm writes mode auto once through the setting save path.
     expect(await turnAutoOn(section)).toEqual({ action: "set", key: "mode", value: '"auto"' });
   });
 
-  it("its alarm's Needs-you row is the alarm's own target: Turn auto back on is its primary action, Failures a link", async () => {
+  it("Cancel and Escape on Turn auto back on's Dialog write nothing", async () => {
     view = settingsView("manual", stop("red_main"));
-    mount(checks([alarm(stop("red_main")), alarm()]));
-    const line = (await screen.findByText(`Back to manual at ${time}: the checks failed on the base branch after a merge`)).closest("li")!;
+    const section = await modeSection();
+    const button = await within(section).findByRole("button", { name: "Turn auto back on" });
+    fireEvent.click(button);
+    fireEvent.click(within(modeDialog()).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(button);
+    fireEvent.keyDown(modeDialog(), { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(posts).toEqual([]);
+  });
+
+  it("its alarm's Needs-you row is the alarm's own target: one local-time sentence, no second line, and a menu of Turn auto back on then What failed", async () => {
+    view = settingsView("manual", stop("red_main"));
+    mount(checks([{ ...alarm(stop("red_main")), text: FULL }]));
+    const line = (await screen.findByText(sentence("tests failed on main after a merge"))).closest("li")!;
     expect(line.id).toBe("alarm-al_1");
-    expect(within(line).getByRole("link", { name: "See the alarm" }).getAttribute("href")).toBe("/app/#alarm-al_1");
-    expect(within(line).getByRole("link", { name: "Failures" }).getAttribute("href")).toBe("/app/failures");
-    expect(within(line).queryByRole("link", { name: "Open on Failures" })).toBeNull();
-    // The other alarm is its own row, whose primary action opens Failures.
-    const other = document.querySelectorAll("li")[1]!;
-    expect(other.querySelector("[data-auto-stop]")).toBeNull();
-    expect(within(other).getByRole("link", { name: "Open on Failures" }).getAttribute("href")).toBe("/app/failures");
-    expect(await turnAutoOn(line)).toEqual({ action: "set", key: "mode", value: '"auto"' });
+    // The cause is said once: no stop line repeats it, and the row has no link, no inline button and no Failures control.
+    expect(line.textContent!.split("tests failed on main")).toHaveLength(2);
+    expect(line.textContent).not.toContain("Back to manual");
+    expect(line.querySelector("[data-auto-stop]")).toBeNull();
+    expect(within(line).queryByRole("link")).toBeNull();
+    expect(line.textContent).not.toMatch(/See the alarm|Open on Failures|Failures/);
+    expect(within(line).getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual(["More commands"]);
+    expect(line.querySelector("summary")!.textContent).toBe("Details");
+    await vi.waitFor(() => expect(menuOf(line)).toEqual([["Turn auto back on", "auto_on"], ["What failed", "what_failed"]]));
+  });
+
+  it("Details is closed at first and shows the server's full text once opened", async () => {
+    view = settingsView("manual", stop("red_main"));
+    mount(checks([{ ...alarm(stop("red_main")), text: FULL }]));
+    const line = (await screen.findByText(sentence("tests failed on main after a merge"))).closest("li")!;
+    const toggle = line.querySelector<HTMLElement>("[data-alarm-details] summary")!;
+    expect(toggle.textContent).toBe("Details");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(line.textContent).not.toContain(FULL);
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(within(line).getByText(FULL)).not.toBeNull();
+  });
+
+  it("Turn auto back on in the row's menu opens the same Dialog; Confirm writes mode auto through the same settings write as the Settings note", async () => {
+    view = settingsView("manual", stop("red_main"));
+    mount(checks([alarm(stop("red_main"))]));
+    const line = (await screen.findByText(sentence("tests failed on main after a merge"))).closest("li")!;
+    fireEvent.click(within(line).getByRole("button", { name: "More commands" }));
+    const item = within(line).getByRole("menuitem", { name: "Turn auto back on" });
+    await vi.waitFor(() => expect(item.hasAttribute("disabled")).toBe(false));
+    await act(async () => fireEvent.click(item));
+    expect(await confirmAuto()).toEqual({ action: "set", key: "mode", value: '"auto"' });
   });
 });
 
 describe("auto stop: budget checkpoint", () => {
   it("the Mode toggle and the alarm's Needs-you row both show the checkpoint and the time", async () => {
     view = settingsView("manual", stop("budget_checkpoint"));
-    const text = `Back to manual at ${time}: an item reached its budget checkpoint`;
     const section = await modeSection();
-    expect(await within(section).findByText(text)).not.toBeNull();
+    expect(await within(section).findByText(`Back to manual at ${time}: an item reached its budget checkpoint`)).not.toBeNull();
     cleanup();
     mount(checks([alarm(stop("budget_checkpoint"))]));
-    const line = (await screen.findByText(text)).closest("li")!;
-    expect(within(line).getByRole("link", { name: "See the alarm" })).not.toBeNull();
-    expect(await within(line).findByRole("button", { name: "Turn auto back on" })).not.toBeNull();
-    expect(document.querySelectorAll("li")).toHaveLength(1);
+    const line = (await screen.findByText(sentence("an item reached its budget checkpoint"))).closest("li")!;
+    expect(within(line).queryByRole("link")).toBeNull();
+    expect(menuOf(line).map(([label]) => label)).toEqual(["Turn auto back on", "What failed"]);
+    expect(document.querySelectorAll("li[data-check]")).toHaveLength(1);
   });
 });
 
 describe("auto stop: a burst of agent-run failures", () => {
-  it("leaves the mode auto with no stop line; its alarm's row opens Failures", async () => {
+  it("leaves the mode auto with no stop line; its repeated-error alarm's row shows the server's sentence and Show failures", async () => {
     view = settingsView("auto", null);
     const section = await modeSection();
     expect(section.textContent).toContain("auto");
     expect(section.querySelector("[data-auto-stop]")).toBeNull();
     expect(within(section).queryByRole("button", { name: "Turn auto back on" })).toBeNull();
     cleanup();
-    mount(checks([alarm()]));
+    mount(checks([{ ...alarm(), pattern: "repeated_error", error_code: "checks_failed" }]));
     const line = document.querySelector<HTMLElement>("li[data-check='alarm']")!;
-    expect(within(line).getByRole("link", { name: "Open on Failures" }).getAttribute("href")).toBe("/app/failures");
-    expect(line.querySelector("[data-auto-stop]")).toBeNull();
-    expect(within(line).queryByRole("button", { name: "Turn auto back on" })).toBeNull();
+    expect(line.querySelector("[data-alarm-summary]")!.textContent).toBe("Alarm: something");
+    expect(menuOf(line)).toEqual([["Show failures", "show_failures"]]);
+    expect(line.querySelector("details")).toBeNull();
+  });
+});
+
+describe("the Settings Mode switch asks first", () => {
+  it("flipping it opens the Dialog and sends nothing; Escape and Cancel write nothing; Confirm writes the mode once", async () => {
+    view = settingsView("manual", null);
+    const section = await modeSection();
+    const toggle = await within(section).findByRole("switch", { name: "Auto mode" });
+    fireEvent.click(toggle);
+    fireEvent.keyDown(modeDialog(), { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(toggle);
+    fireEvent.click(within(modeDialog()).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // The switch still shows the stored mode: nothing changed.
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(toggle);
+    expect(await confirmAuto()).toEqual({ action: "set", key: "mode", value: '"auto"' });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("from auto it asks to switch to manual, and Confirm writes manual", async () => {
+    view = settingsView("auto", null);
+    const section = await modeSection();
+    fireEvent.click(await within(section).findByRole("switch", { name: "Auto mode" }));
+    const dialog = screen.getByRole("dialog", { name: "Switch to manual mode?" });
+    expect(posts).toHaveLength(0);
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Switch to manual" })));
+    expect(posts.map((p) => JSON.parse(String(p.init.body)))).toEqual([{ action: "set", key: "mode", value: '"manual"' }]);
   });
 });

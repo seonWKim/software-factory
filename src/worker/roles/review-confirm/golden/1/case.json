@@ -1,0 +1,6 @@
+{
+  "id": "1",
+  "work_item_id": "golden_review_confirm_1",
+  "expect": "should_flag",
+  "note": "A real defect the diff shows: the loop skips the last item. The confirm run must confirm it."
+}

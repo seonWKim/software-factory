@@ -6,7 +6,9 @@ import type { RunKind, SourceRef, UserId, WorkItem, WorkItemId, WorkItemPatch, W
 import { OwnerAuth } from "../src/core/authorize.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { SqlDriver } from "../src/state/index.js";
-import { FakeForge, FakeSource, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 

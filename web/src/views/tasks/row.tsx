@@ -5,31 +5,33 @@ import { Button } from "../../components/ui/button.js";
 import { Checkbox } from "../../components/ui/checkbox.js";
 import { FOCUS } from "../../components/ui/control.js";
 import { announceStatus } from "../../components/ui/dialog.js";
-import { ID_CLASS, LINK_CLASS } from "../../components/ui/link-style.js";
-import { OverflowMenu } from "../../components/ui/menu.js";
+import { type MenuItem, OverflowMenu } from "../../components/ui/menu.js";
+import { ListRow, ROW_TITLE } from "../../components/ui/list-row.js";
 import type { MessageKey } from "../../i18n/en.js";
 import { t } from "../../i18n/index.js";
 import { cn } from "../../lib/cn.js";
 import { localDateTime } from "../../lib/format.js";
 import { Link } from "../../nav.js";
 import { itemPath } from "../../pages.js";
-import { WorkState } from "../task-work.js";
+import { TaskItemMenu, WorkState, useWorkItem, waitsOnOwner } from "../task-work.js";
 import { DeleteDialog, DescriptionDialog, ProjectsDialog } from "./dialogs.js";
 import { RowForm } from "./forms.js";
 import type { Nested } from "./groups.js";
-import { ALERT, Rows, idFor, muted, useTaskAction } from "./shared.js";
+import { ALERT, Rows, idFor, useTaskAction } from "./shared.js";
 import { Badge } from "../../components/ui/badge.js";
+import { SUB_TITLE } from "../../components/ui/card.js";
 
 /** A linked task's item's close reason, as the row says it in its details line, open or done (design 02-tasks). */
 const closedKey = (reason: NonNullable<TaskRow["close_reason"]>): MessageKey =>
   reason === "rejected" ? "tasks.closedRejected" : reason === "wont_do" ? "tasks.closedNotPlanned" : "tasks.closedOther";
 
-/** Build this: one POST; its refusal stays beside the button until the next try. */
-function BuildButton({ task, token }: { task: TaskRow; token: string }) {
+/** Build this, from the row's menu: one POST; its refusal shows on the row until the next try. */
+function useBuild(task: TaskRow, token: string | null) {
   const client = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const build = async () => {
+    if (token === null) return;
     setBusy(true);
     setError(null);
     try {
@@ -46,29 +48,26 @@ function BuildButton({ task, token }: { task: TaskRow; token: string }) {
       setBusy(false);
     }
   };
-  return (
-    <span className="flex flex-col items-start gap-1">
-      <Button variant="secondary" disabled={busy} aria-label={t("tasks.buildLabel", { title: task.title })} onClick={() => void build()}>
-        {t("tasks.build")}
-      </Button>
-      {error !== null && (
-        <span role="alert" className={ALERT}>
-          {error}
-        </span>
-      )}
-    </span>
-  );
+  return { build, busy, error };
 }
 
 /**
- * The title. On an open task the page can write, a button that opens the description dialog (a built task's item link
- * stays on its state and ID); else a link to the built task's item, or plain text when it is not built.
+ * The title. A built task's title links to its work item's page (owner feedback 2026-11-20), quiet like a Needs you
+ * row's title; its description dialog is in the row's menu. An open task that is not built opens the description
+ * dialog from its title; else plain text.
  */
 function Title({ task, className, onOpen }: { task: TaskRow; className: string; onOpen: (() => void) | null }) {
+  if (task.work_item_id !== null) {
+    return (
+      <Link href={itemPath(task.work_item_id)} data-row-title title={task.title} className={cn(className, "text-text-1 hover:underline")}>
+        {task.title}
+      </Link>
+    );
+  }
   if (onOpen !== null) {
     return (
       // The title stays the paragraph's text; the shared Button lies over it, so the row keeps its height.
-      <p className={cn(className, "relative hover:underline")}>
+      <p data-row-title title={task.title} className={cn(className, "relative hover:underline")}>
         {task.title}
         <Button
           variant="ghost"
@@ -80,12 +79,7 @@ function Title({ task, className, onOpen }: { task: TaskRow; className: string; 
       </p>
     );
   }
-  const title = <p className={className}>{task.title}</p>;
-  return task.work_item_id === null ? title : (
-    <Link href={itemPath(task.work_item_id)} className={cn("block", LINK_CLASS)}>
-      {title}
-    </Link>
-  );
+  return <p data-row-title title={task.title} className={className}>{task.title}</p>;
 }
 
 export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { task: TaskRow; overdue?: boolean; sub?: boolean }) {
@@ -125,13 +119,23 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
     }
   };
   const subAttempt = useRef<{ id: string; words: string } | null>(null);
-  const items = [
-    ...(parent === null ? [{ label: t("tasks.addSub"), onSelect: () => setMode("sub") }] : []),
-    { label: t("tasks.projectsItem"), onSelect: () => setMode("projects") },
-    { label: t("tasks.delete"), danger: true, onSelect: () => setMode("delete") },
-  ];
+  const builder = useBuild(task, token);
+  const it = useWorkItem(task.work_item_id);
+  // Every action is in the row's menu (owner feedback 2026-11-20): Build this and Reopen too, and a waiting work
+  // item's commands first (TaskItemMenu).
+  const items: MenuItem[] = done
+    ? [{ label: t("tasks.reopen"), disabled: action.busy, onSelect: () => void reopen() }]
+    : [
+        ...(task.work_item_id === null ? [{ label: t("tasks.build"), action: "build", disabled: builder.busy, onSelect: () => void builder.build() }] : []),
+        // A built task's title goes to its work item, so its description dialog opens from here.
+        ...(task.work_item_id !== null ? [{ label: t("tasks.description"), onSelect: () => setMode("description") }] : []),
+        ...(parent === null ? [{ label: t("tasks.addSub"), onSelect: () => setMode("sub") }] : []),
+        { label: t("tasks.projectsItem"), onSelect: () => setMode("projects") },
+        { label: t("tasks.delete"), danger: true, onSelect: () => setMode("delete") },
+      ];
+  const menuLabel = t("tasks.more", { title: task.title });
   return (
-    <li
+    <ListRow
       ref={row}
       tabIndex={token === null ? undefined : 0}
       onKeyDown={onKey}
@@ -140,35 +144,37 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
       data-overdue={overdue ? "" : undefined}
       data-done={done ? "" : undefined}
       data-sub={sub ? "" : undefined}
-      className={cn("flex flex-wrap items-start justify-between gap-x-3 gap-y-2 p-3", FOCUS, "focus-visible:-outline-offset-2", sub && "pl-10")}
-    >
-      {token !== null && !done && (
+      className={cn(FOCUS, "focus-visible:-outline-offset-2", sub && "pl-10")}
+      leading={token !== null && (done ? (
+        // A done row keeps the checkbox's space, so its title lines up with the open rows' titles.
+        <span data-checkbox-space aria-hidden className="min-h-8 min-w-8 shrink-0" />
+      ) : (
         <Checkbox
           checked={checked}
           aria-label={t("tasks.complete", { title: task.title })}
           disabled={action.busy}
           onChange={() => void complete()}
         />
+      ))}
+      title={mode === "edit" ? (
+        <RowForm
+          label={t("tasks.edit", { title: task.title })}
+          initial={task.title}
+          hint={t("tasks.editHint")}
+          busy={action.busy}
+          // The title as shown, unchanged: nothing to write.
+          onSave={async (words) => words === task.title || (await action.run("edit", { id: task.id, words }))}
+          onClose={close}
+        />
+      ) : (
+        <Title
+          task={task}
+          className={cn(ROW_TITLE, overdue && "font-medium text-pill-bad-fg", done && "text-text-2 line-through")}
+          onOpen={token !== null && !done ? () => setMode("description") : null}
+        />
       )}
-      <div className="min-w-0 flex-1 space-y-1">
-        {mode === "edit" ? (
-          <RowForm
-            label={t("tasks.edit", { title: task.title })}
-            initial={task.title}
-            hint={t("tasks.editHint")}
-            busy={action.busy}
-            // The title as shown, unchanged: nothing to write.
-            onSave={async (words) => words === task.title || (await action.run("edit", { id: task.id, words }))}
-            onClose={close}
-          />
-        ) : (
-          <Title
-            task={task}
-            className={cn("text-sm text-pretty break-words", overdue && "font-medium text-pill-bad-fg", done && "text-text-2 line-through")}
-            onOpen={token !== null && !done ? () => setMode("description") : null}
-          />
-        )}
-        <p className={cn(muted, "flex flex-wrap gap-x-3 gap-y-1")}>
+      details={
+        <>
           {overdue && <Badge level="stuck">{t("tasks.overdue")}</Badge>}
           {task.done_at != null && <span className="tabular-nums">{t("tasks.doneAt", { at: localDateTime(task.done_at) })}</span>}
           {task.close_reason != null && <span>{t(closedKey(task.close_reason))}</span>}
@@ -183,49 +189,42 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
             </span>
           ))}
           {task.recurrence !== null && <span>{t("tasks.every", { recurrence: task.recurrence })}</span>}
+          {task.work_item_id !== null && (
+            <span data-work className="-my-1 flex flex-wrap items-center gap-2">
+              <WorkState id={task.work_item_id} title={task.title} open={!done} />
+            </span>
+          )}
+        </>
+      }
+      menu={token !== null && (!done && waitsOnOwner(it) ? <TaskItemMenu it={it} extra={items} label={menuLabel} /> : <OverflowMenu label={menuLabel} items={items} />)}
+    >
+      {mode === "sub" && (
+        <RowForm
+          label={t("tasks.subLabel", { title: task.title })}
+          placeholder={t("tasks.subPlaceholder")}
+          busy={action.busy}
+          onSave={async (words) => {
+            const ok = await action.run("sub", { parent: task.id, id: idFor(subAttempt, words), words });
+            if (ok) subAttempt.current = null;
+            return ok;
+          }}
+          onClose={close}
+        />
+      )}
+      {builder.error !== null && (
+        <p role="alert" className={ALERT}>
+          {builder.error}
         </p>
-        {mode === "sub" && (
-          <RowForm
-            label={t("tasks.subLabel", { title: task.title })}
-            placeholder={t("tasks.subPlaceholder")}
-            busy={action.busy}
-            onSave={async (words) => {
-              const ok = await action.run("sub", { parent: task.id, id: idFor(subAttempt, words), words });
-              if (ok) subAttempt.current = null;
-              return ok;
-            }}
-            onClose={close}
-          />
-        )}
-        {action.error !== null && mode !== "delete" && mode !== "projects" && mode !== "description" && (
-          <p role="alert" className={ALERT}>
-            {action.error}
-          </p>
-        )}
-      </div>
-      <div className="flex items-start gap-2">
-        {task.work_item_id !== null ? (
-          <>
-            <WorkState id={task.work_item_id} title={task.title} open={!done} />
-            <Link href={itemPath(task.work_item_id)} className={cn(ID_CLASS, "text-xs break-all")}>
-              {task.work_item_id}
-            </Link>
-          </>
-        ) : (
-          token !== null && !done && <BuildButton task={task} token={token} />
-        )}
-        {token !== null && (done ? (
-          <Button variant="secondary" disabled={action.busy} aria-label={t("tasks.reopenLabel", { title: task.title })} onClick={() => void reopen()}>
-            {t("tasks.reopen")}
-          </Button>
-        ) : (
-          <OverflowMenu label={t("tasks.more", { title: task.title })} items={items} />
-        ))}
-      </div>
+      )}
+      {action.error !== null && mode !== "delete" && mode !== "projects" && mode !== "description" && (
+        <p role="alert" className={ALERT}>
+          {action.error}
+        </p>
+      )}
       {mode === "delete" && token !== null && <DeleteDialog task={task} token={token} returnFocusTo={row} onClose={close} />}
       {mode === "projects" && token !== null && <ProjectsDialog task={task} token={token} returnFocusTo={row} onClose={close} />}
       {mode === "description" && token !== null && <DescriptionDialog task={task} token={token} returnFocusTo={row} onClose={close} />}
-    </li>
+    </ListRow>
   );
 }
 
@@ -233,7 +232,7 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
 export function Group({ title, rows, overdue }: { title: string; rows: readonly Nested[]; overdue: boolean }) {
   return (
     <div className="space-y-1">
-      <h3 className={cn("text-xs font-medium", overdue ? "text-pill-bad-fg" : "text-text-2")}>{title}</h3>
+      <h3 className={SUB_TITLE}>{title}</h3>
       <ul aria-label={title} className="divide-y divide-border rounded-control border border-border">
         {rows.map(({ row, sub }) => (
           <TaskCard key={row.id} task={row} overdue={overdue} sub={sub} />

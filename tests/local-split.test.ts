@@ -8,7 +8,9 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { SubIssueInput } from "../src/interfaces/source-adapter.js";
-import { FakeAuth, FakeSlackPollSource, cleanScanner, config, silent, slackRef, triageSpec } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeSlackPollSource } from "./helpers/fakes/source.js";
+import { cleanScanner, config, silent, slackRef, triageSpec } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore, system, w1 } from "./helpers/store.js";
 import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 

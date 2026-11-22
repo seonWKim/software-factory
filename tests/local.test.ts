@@ -3,8 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadCommands } from "../src/cli/index.js";
-import { refusalHint } from "../src/cli/handlers/local/refused.js";
-import type { Loaded } from "../src/compose.js";
+import type { Loaded } from "../src/load-config.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
 import type { WorkItemId, WorkItemPatch } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
@@ -45,13 +44,6 @@ async function itemAtSpec(store: FactoryStore) {
   return r.item;
 }
 
-describe("the refusal hint", () => {
-  it("starts its command with the name it is given", () => {
-    expect(refusalHint("wi_1", "gb")).toContain("`gb task show wi_1`");
-    expect(refusalHint("wi_1", "factory")).toContain("`factory task show wi_1`");
-  });
-});
-
 describe("the local handler's hints", () => {
   it("with FACTORY_CLI_NAME=gb, the stored-command line and the refusal hint both say gb", async () => {
     vi.stubEnv("FACTORY_CLI_NAME", "gb");
@@ -71,7 +63,20 @@ describe("the local handler's hints", () => {
     expect(r.out).toEqual([expect.stringContaining(`see \`factory task show ${item.id}\``), expect.stringContaining(`\`factory task show ${item.id}\` lists the reason`)]);
   });
 
-  it("task create prints the ID, the link on ui.port, then the next step", async () => {
+  it("a short ID names the item: show ends with its refusal section, approve's hint names the full ID", async () => {
+    const { store } = await newStore();
+    const item = await itemAtSpec(store);
+    const short = item.id.slice(3, 11);
+    const shown = await command(store, "task", ["show", short]);
+    expect(shown.code).toBe(0);
+    expect(shown.out[0]).toContain(item.id);
+    expect(shown.out.slice(-2)).toEqual(["Last refused command", "  (none)"]);
+    const r = await command(store, "approve", [`wi_${short}`]);
+    expect(r.out).toEqual([expect.stringContaining(`see \`factory task show ${item.id}\``), expect.stringContaining(`\`factory task show ${item.id}\` lists the reason`)]);
+    expect((await store.listCliCommandsAfter(0, 10)).map((c) => c.args.item)).toEqual([item.id]);
+  });
+
+  it("task create prints the ID, the short ID, the link on ui.port, then the next step", async () => {
     const { store } = await newStore();
     await itemAtSpec(store);
     await saveProjectLabel(store, { key: PROJECT_KEY, label: "github.com/o/r" }); // the configured repo's project
@@ -79,7 +84,7 @@ describe("the local handler's hints", () => {
     writeFileSync(body, "the body\n");
     const r = await command(store, "task", ["create", "--title", "t", "--body-file", body], { port: 5123 });
     expect(r.code).toBe(0);
-    expect(r.out).toEqual([r.out[0], `http://127.0.0.1:5123/app/items/${r.out[0]}`, "triage queued; you'll be asked to approve the spec"]);
+    expect(r.out).toEqual([r.out[0], r.out[0]!.slice(3, 11), `http://127.0.0.1:5123/app/items/${r.out[0]}`, "triage queued; you'll be asked to approve the spec"]);
     expect(await store.getWorkItem(r.out[0] as WorkItemId)).not.toBeNull();
   });
 });

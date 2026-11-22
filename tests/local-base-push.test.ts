@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { localProject } from "../src/compose.js";
+import { localProject } from "../src/load-config.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import { gitHost } from "../src/runtime/host-id.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
@@ -23,7 +23,7 @@ import type { Sandbox } from "../src/interfaces/sandbox.js";
 import carry from "../src/outbound/migrations/20261109T1200-outbound-carry-base-pushes.migration.js";
 import { actionOf } from "../src/outbound/intents.js";
 import type { MigrationDb, SqlDriver } from "../src/state/index.js";
-import { cleanScanner, config, silent } from "./helpers/fakes.js";
+import { cleanScanner, config, silent } from "./helpers/fakes/config.js";
 import { newStore, system, w1 } from "./helpers/store.js";
 import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 

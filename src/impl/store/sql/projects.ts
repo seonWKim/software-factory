@@ -6,19 +6,20 @@
 import {
   type AddTaskToProjectResult, type ArchiveProjectResult, type CreateProjectResult, type DeleteProjectResult, type MoveTaskToProjectResult, type NewProject,
   type Project,
-  type ProjectStore, type RenameProjectResult, projectName,
+  type ProjectStore, type RenameProjectResult, type SetProjectFolderResult, projectName,
 } from "../../../core/projects.js";
 import { ProjectRefused } from "../../../core/tasks.js";
 import type { Timestamp, UserId } from "../../../core/types.js";
-import { SqlGoldenStore } from "./golden-fingerprints.js";
+import { SqlDesignLearningStore } from "./design-learnings.js";
 import type { Row, SqlDriver, SqlExecutor } from "../../../state/index.js";
 
-const COLUMNS = "id, slug, name, created_by, created_at, archived_at";
+const COLUMNS = "id, slug, name, created_by, created_at, archived_at, base_folder";
 
 function rowToProject(r: Row): Project {
   return {
     id: String(r.id), slug: String(r.slug), name: String(r.name), created_by: String(r.created_by) as UserId,
     created_at: String(r.created_at) as Timestamp, archived_at: r.archived_at == null ? null : (String(r.archived_at) as Timestamp),
+    base_folder: r.base_folder == null ? null : String(r.base_folder),
   };
 }
 
@@ -36,7 +37,7 @@ async function createProject(db: SqlDriver, p: NewProject, now: Timestamp): Prom
     if (!named.ok) return { ok: false, reason: "invalid_name", error: named.error } as const;
     const holder = await select(tx, "slug", named.slug);
     if (holder !== null) return { ok: false, reason: "slug_taken", project: holder } as const;
-    await tx.run(`INSERT INTO controller_projects (${COLUMNS}) VALUES (?, ?, ?, ?, ?, NULL)`, [p.id, named.slug, named.name, p.created_by, now]);
+    await tx.run(`INSERT INTO controller_projects (${COLUMNS}) VALUES (?, ?, ?, ?, ?, NULL, NULL)`, [p.id, named.slug, named.name, p.created_by, now]);
     return { ok: true, project: (await select(tx, "id", p.id))! } as const;
   });
 }
@@ -62,6 +63,19 @@ async function setArchived(db: SqlDriver, id: string, at: Timestamp | null): Pro
       ? await tx.run("UPDATE controller_projects SET archived_at = NULL WHERE id = ? AND archived_at IS NOT NULL", [id])
       : await tx.run("UPDATE controller_projects SET archived_at = ? WHERE id = ? AND archived_at IS NULL", [at, id]);
     return { ok: true, project: (await select(tx, "id", id))!, changed: changed === 1 } as const;
+  });
+}
+
+/** Sets the base folder, conditional on the project being active; an unknown or archived project writes nothing. */
+async function setProjectFolder(db: SqlDriver, id: string, folder: string): Promise<SetProjectFolderResult> {
+  return db.transaction(async (tx) => {
+    const project = await select(tx, "id", id);
+    if (project === null) return { ok: false, reason: "not_found" } as const;
+    if (project.archived_at !== null) return { ok: false, reason: "archived" } as const;
+    await tx.run("UPDATE controller_projects SET base_folder = ? WHERE id = ? AND archived_at IS NULL", [folder, id]);
+    const stored = (await select(tx, "id", id))!;
+    // Archived by another worker between the read and the update: the update matched no row.
+    return stored.archived_at === null ? { ok: true, project: stored } as const : { ok: false, reason: "archived" } as const;
   });
 }
 
@@ -185,9 +199,9 @@ async function listTaskProjects(db: SqlDriver, task_id: string): Promise<Project
 
 /**
  * ProjectStore over a SqlDriver: the methods above bound to the store's driver and `stamp`, the store's injected Clock's
- * time. SqlFactoryStore extends it, so the task projects (and the golden fingerprints it extends) add no line to that file's budget.
+ * time. SqlFactoryStore extends it, so the task projects (and the design learnings, improve proposals and golden fingerprints it extends) add no line to that file's budget.
  */
-export class SqlProjectStore extends SqlGoldenStore implements ProjectStore {
+export class SqlProjectStore extends SqlDesignLearningStore implements ProjectStore {
   constructor(
     db: SqlDriver,
     private readonly stamp: () => Timestamp,
@@ -202,6 +216,7 @@ export class SqlProjectStore extends SqlGoldenStore implements ProjectStore {
   renameProject(id: string, name: string) { return renameProject(this.db, id, name); }
   archiveProject(id: string) { return setArchived(this.db, id, this.stamp()); }
   restoreProject(id: string) { return setArchived(this.db, id, null); }
+  setProjectFolder(id: string, folder: string) { return setProjectFolder(this.db, id, folder); }
   deleteProject(id: string) { return deleteProject(this.db, id); }
   addTaskToProject(project_id: string, task_id: string) { return addTaskToProject(this.db, project_id, task_id, this.stamp()); }
   removeTaskFromProject(project_id: string, task_id: string) { return removeTaskFromProject(this.db, project_id, task_id); }

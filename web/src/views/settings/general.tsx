@@ -1,9 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { API, type AutoStop, type SettingRow, type SettingsView, useApi } from "../../api.js";
 import { Button } from "../../components/ui/button.js";
 import { Input } from "../../components/ui/input.js";
 import { LINK_CLASS } from "../../components/ui/link-style.js";
-import { Tooltip } from "../../components/ui/menu.js";
 import { Switch } from "../../components/ui/switch.js";
 import type { MessageKey } from "../../i18n/en.js";
 import { t } from "../../i18n/index.js";
@@ -11,6 +10,7 @@ import { Link } from "../../nav.js";
 import { BASE } from "../../pages.js";
 import { Outcome, useWrite } from "../settings-file-keys.js";
 import { Editor } from "./editor.js";
+import { ModeDialog } from "./mode-dialog.js";
 import { stringItems, stringOf } from "./values.js";
 import { Card } from "../../components/ui/card.js";
 
@@ -88,34 +88,11 @@ function NoticesSection({ view }: { view: SettingsView }) {
 }
 
 /** The configured project's mode (design 03-risk): its own value when it has one, else the global one. */
-function currentMode(v: SettingsView): { row: SettingRow; value: string; project?: string } | null {
+export function currentMode(v: SettingsView): { row: SettingRow; value: string; project?: string } | null {
   const row = v.keys.find((k) => k.key === "mode");
   if (!row) return null;
   const own = v.project === null ? undefined : row.projects.find((p) => p.project === v.project);
   return own ? { row, value: own.value, project: v.repo } : { row, value: row.value };
-}
-
-/**
- * The mode switch of the top bar and the Settings page (design 09): manual or auto for the configured project, written
- * through POST /api/v1/settings like any key, so it needs approve_merge and writes one audit row; a refusal shows beside it.
- */
-export function ModeSwitch({ floating = false }: { floating?: boolean }) {
-  const settings = useApi<SettingsView>(API.settings);
-  const v = settings.data;
-  const mode = v ? currentMode(v) : null;
-  if (!v || !mode) return <span className="text-sm text-text-2">{t("settings.modeLoading")}</span>;
-  return (
-    <Tooltip
-      placement="bottom"
-      align="start"
-      text={<>{v.auto_stop && <span className="mb-1 block">{autoStopText(v.auto_stop)}</span>}{t("settings.modeAutoHint")}</>}
-    >
-      <div data-testid="mode" className="flex items-center gap-2 text-sm whitespace-nowrap">
-        <span>{t("settings.mode")}</span>
-        <ModeControl view={v} floating={floating} />
-      </div>
-    </Tooltip>
-  );
 }
 
 /** Each auto-mode stop's cause (its alarm's error code, design 03-risk), as the Mode toggle and its alarm row name it. */
@@ -132,51 +109,65 @@ const clockTime = (at: string) => new Date(at).toLocaleTimeString([], { hour: "2
 export const alarmAnchor = (alertId: string) => `alarm-${alertId}`;
 
 /** "Back to manual at 11:52: <why>": the stop's time and cause. */
-const autoStopText = (stop: AutoStop) => {
+export const autoStopText = (stop: AutoStop) => {
   const cause = STOP_CAUSE[stop.cause];
   return t("settings.autoStopped", { time: clockTime(stop.at), reason: cause ? t(cause) : stop.cause });
 };
 
 /**
- * The auto-mode stop still in force (design 03-risk), beside the Mode toggle and on its alarm row in Needs you: when
- * and why, a link to its alarm, and "Turn auto back on", which writes mode auto at once (no confirmation) through
- * POST /api/v1/settings like the toggle. With no settings view yet (its read is loading) there is no button.
+ * The auto-mode stop still in force (design 03-risk), beside the Mode toggle: when and why, a link to its alarm, and
+ * "Turn auto back on", which opens ModeDialog; its Confirm writes mode auto once through POST /api/v1/settings like the
+ * toggle. With no settings view yet (its read is loading) there is no button.
  */
 export function AutoStopNote({ stop, view }: { stop: AutoStop; view: SettingsView | undefined }) {
   const { busy, error, write } = useWrite(view?.csrf_token ?? "");
+  const [confirming, setConfirming] = useState(false);
   const mode = view ? currentMode(view) : null;
   const target = mode?.project === undefined ? {} : { project: mode.project };
+  const turnOn = async () => {
+    if (await write({ action: "set", key: "mode", value: JSON.stringify("auto"), ...target })) setConfirming(false);
+  };
   return (
     <div data-auto-stop className="flex min-w-0 flex-col gap-1 text-sm">
       <span className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <span className="min-w-0 text-pretty break-words">{autoStopText(stop)}</span>
         <Link href={`${BASE}#${alarmAnchor(stop.alert_id)}`} className={LINK_CLASS}>{t("settings.autoStopAlarm")}</Link>
         {mode && (
-          <Button size="sm" disabled={busy} onClick={() => void write({ action: "set", key: "mode", value: JSON.stringify("auto"), ...target })}>
+          <Button size="sm" disabled={busy} onClick={() => setConfirming(true)}>
             {t("settings.autoStopTurnOn")}
           </Button>
         )}
       </span>
+      {confirming && <ModeDialog to="auto" busy={busy} error={error} onConfirm={() => void turnOn()} onClose={() => setConfirming(false)} />}
       <Outcome error={error} done={null} />
     </div>
   );
 }
 
-/** The mode's own control, without the top bar's "Mode" label. */
-function ModeControl({ view, floating = false }: { view: SettingsView; floating?: boolean }) {
+/** The mode's own control. */
+function ModeControl({ view }: { view: SettingsView }) {
   const mode = currentMode(view);
   if (!mode) return null;
-  return <Editor row={mode.row} label={t("settings.autoMode")} value={mode.value} token={view.csrf_token} floating={floating} {...(mode.project === undefined ? {} : { project: mode.project })} />;
+  return <Editor row={mode.row} label={t("settings.autoMode")} value={mode.value} token={view.csrf_token} {...(mode.project === undefined ? {} : { project: mode.project })} />;
 }
+
+/** The Mode section's anchor: the top bar's mode chip links to `settings#mode`. */
+export const MODE_ANCHOR = "mode";
 
 /** The mode and, next to it, the auto-merge tier (design 09): what decides whether the factory merges on its own. */
 function ModeSection({ view }: { view: SettingsView }) {
   const tier = view.keys.find((k) => k.key === "auto_merge_max_tier");
+  // Opened from the mode chip (`#mode`): the section scrolls into view once drawn.
+  useEffect(() => {
+    if (window.location.hash === `#${MODE_ANCHOR}`) document.getElementById(MODE_ANCHOR)?.scrollIntoView?.();
+  }, []);
   return (
-    <Card title={t("settings.mode")}>
-      <p className="mb-2 text-sm text-pretty text-text-2">
-        {t("settings.modeIntro")}
-      </p>
+    <Card id={MODE_ANCHOR} title={t("settings.mode")}>
+      <ul className="mb-2 space-y-1 text-sm text-pretty text-text-2">
+        {(["settings.modeLineManual", "settings.modeLineAuto", "settings.modeLineBack"] as const).map((line) => (
+          <li key={line}>{t(line)}</li>
+        ))}
+      </ul>
       {/* Each label sits above its control, so a refusal under one never squeezes the other's label. */}
       <div className="flex flex-wrap items-start gap-x-10 gap-y-4">
         <div className="flex max-w-md flex-col gap-1 text-sm">
@@ -188,6 +179,11 @@ function ModeSection({ view }: { view: SettingsView }) {
           <div className="flex max-w-md flex-col gap-1 text-sm">
             <span className="font-medium whitespace-nowrap">{t("settings.tierLabel")}</span>
             <Editor row={tier} label={t("settings.tier")} value={tier.value} token={view.csrf_token} />
+            <ul data-tier-levels className="mt-1 space-y-0.5 text-xs text-text-2">
+              {(["settings.tierLevel0", "settings.tierLevel1", "settings.tierLevel2", "settings.tierLevel3", "settings.tierAbove"] as const).map((line) => (
+                <li key={line}>{t(line)}</li>
+              ))}
+            </ul>
           </div>
         )}
       </div>

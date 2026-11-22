@@ -1,9 +1,11 @@
 import { useState } from "react";
-import type { SpecDecision, WaitingSpec } from "../api.js";
+import type { OptionChange, SpecDecision, WaitingSpec } from "../api.js";
 import type { RefObject } from "react";
 import { Dialog } from "../components/ui/dialog.js";
 import { Input } from "../components/ui/input.js";
+import { ValueBlock } from "../components/ui/key-value.js";
 import { Markdown } from "../components/ui/markdown.js";
+import { Notice } from "../components/ui/notice.js";
 import { Radio } from "../components/ui/radio.js";
 import { Textarea } from "../components/ui/textarea.js";
 import type { MessageKey } from "../i18n/en.js";
@@ -12,7 +14,8 @@ import { Card } from "../components/ui/card.js";
 
 // The item page's spec panel (design §9, issue #526): the waiting spec's In short above Commands, and its decisions
 // as questions to answer before `approve`. A decision with options is a radio group with the default selected and
-// a `write my own` choice with a text field; one with none is a text field prefilled with the default. The answers
+// a `write my own` choice with a text field; one with none is a text field prefilled with the default. A layout
+// decision's options are text sketches, each in a monospace ValueBlock so its boxes line up. The answers
 // go out with the approve as `N: <answer>` lines (the controller's parser, src/shared/command-notes.ts), and the
 // confirm step names what is approved and what happens next. Reject and revise open a dialog (issue #527, shared
 // by the Floor and the item page): reject asks why (a reason and a free text) and says what closes; revise takes one
@@ -31,19 +34,41 @@ export function initialChoices(decisions: readonly SpecDecision[]): DecisionChoi
     : { own: true, value: d.default ?? "" }));
 }
 
-/** One decision's answer as the confirm step names it, and whether it is the default. */
+/** One decision's answer as the confirm step names it, whether it is the default, and what its option changes (none: absent or null). */
 export interface ChosenAnswer {
   n: number;
   question: string;
   answer: string | null;
   isDefault: boolean;
+  change?: OptionChange | null;
 }
+
+/** The option change of `answer` on decision `d`, or null when it changes nothing. */
+const changeOf = (d: SpecDecision, answer: string | null): OptionChange | null => (d.option_changes ?? []).find((c) => c.option === answer) ?? null;
 
 export function chosenAnswers(decisions: readonly SpecDecision[], choices: readonly DecisionChoice[]): ChosenAnswer[] {
   return decisions.map((d, i) => {
     const answer = choices[i]?.value.trim() || null;
-    return { n: i + 1, question: d.question, answer, isDefault: answer !== null && answer === d.default };
+    return { n: i + 1, question: d.question, answer, isDefault: answer !== null && answer === d.default, change: changeOf(d, answer) };
   });
+}
+
+/**
+ * The paths a non-default answer's option needs that the item's allowed_paths do not cover (design
+ * 09-dashboard-item-commands, 2026-11-21): the approve dialog warns and keeps Approve off, as the server refuses it.
+ */
+export function uncoveredPaths(answers: readonly ChosenAnswer[]): string[] {
+  return [...new Set(answers.filter((a) => !a.isDefault).flatMap((a) => a.change?.uncovered_paths ?? []))];
+}
+
+/** An option's changes in one line: the paths it needs and the done-when lines it changes. */
+function ChangeLine({ change }: { change: OptionChange | null | undefined }) {
+  if (!change) return null;
+  const parts = [
+    ...(change.extra_paths.length ? [t("decisions.needsPaths", { paths: change.extra_paths.join(", ") })] : []),
+    ...(change.done_when.length ? [t("decisions.changesDone", { lines: change.done_when.join("; ") })] : []),
+  ];
+  return <span data-option-change className="block text-xs text-pretty break-words text-text-2">{parts.join(". ")}</span>;
 }
 
 /** The approve note: one `N: <answer>` line per answered decision, then the free note. */
@@ -95,7 +120,7 @@ export function DecisionsPanel({
         const c = choices[i] ?? { own: true, value: "" };
         const label = `${i + 1}. ${d.question}`;
         return (
-          <fieldset key={i} data-decision={i + 1} className="min-w-0 max-w-xl">
+          <fieldset key={i} data-decision={i + 1} data-layout={d.layout || undefined} className="min-w-0 max-w-xl">
             <legend className="text-sm font-medium text-pretty break-words">
               {label}
               {d.owner_only && <span className="ml-1 text-xs text-text-2">{t("decisions.ownerOnly")}</span>}
@@ -105,8 +130,9 @@ export function DecisionsPanel({
               <div role="radiogroup" aria-label={label} className="mt-1 space-y-1">
                 {d.options.map((o) => (
                   <Radio key={o} name={`decision-${i + 1}`} checked={!c.own && c.value === o} onChange={() => onChange(i, { own: false, value: o })}>
-                    {o}
+                    {d.layout ? <ValueBlock>{o}</ValueBlock> : o}
                     {o === d.default && <span className="text-xs text-text-2">{t("decisions.default")}</span>}
+                    <ChangeLine change={changeOf(d, o)} />
                   </Radio>
                 ))}
                 <Radio name={`decision-${i + 1}`} checked={c.own} onChange={() => onChange(i, { own: true, value: c.own ? c.value : "" })}>
@@ -145,12 +171,13 @@ export function ApproveDialog({
 }: CommandDialogProps & { phase: ApprovePhase; answers: readonly ChosenAnswer[]; note: string }) {
   const [note, setNote] = useState(initialNote);
   const p = PHASES[phase];
+  const uncovered = uncoveredPaths(answers);
   return (
     <Dialog
       title={title}
       consequence={<span data-confirm-next>{t("decisions.next", { next: t(p.next) })}</span>}
       confirmLabel={commandLabel("approve")}
-      confirmDisabled={busy}
+      confirmDisabled={busy || uncovered.length > 0}
       error={error}
       returnFocusTo={returnFocusTo}
       onConfirm={() => onSend(approveNote(answers, note))}
@@ -163,11 +190,19 @@ export function ApproveDialog({
             {answers.map((a) => (
               <li key={a.n} className="break-words">
                 {a.n}. {a.question} → {a.answer ?? t("decisions.noAnswer")} ({a.answer === null ? t("decisions.noDefault") : a.isDefault ? t("decisions.defaultTaken") : t("decisions.yourAnswer")})
+                <ChangeLine change={a.change} />
               </li>
             ))}
           </ul>
         )}
       </div>
+      {uncovered.length > 0 && (
+        <div data-option-paths-warning>
+          <Notice tone="warn" title={t("decisions.pathsWarnTitle")}>
+            {t("decisions.pathsWarn", { paths: uncovered.join(", "), reply: `/approve +paths ${uncovered.join(" ")}` })}
+          </Notice>
+        </div>
+      )}
       <Textarea aria-label={t("commands.note")} rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder={t("decisions.optionalComment")} className="w-full" />
     </Dialog>
   );

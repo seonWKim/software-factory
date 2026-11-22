@@ -1,6 +1,6 @@
 // The Tasks page: GET /api/v1/tasks (useTasks), GET /api/v1/tasks/preview (getTaskPreview), POST /api/v1/tasks (postTaskAdd), /api/v1/tasks/build (postTaskBuild),
 // the row actions under /api/v1/tasks (postTaskAction: edit, done, reopen, delete and sub), POST /api/v1/projects
-// (postProject), POST /api/v1/tasks/project (postTaskProject) and POST /api/v1/tasks/body (postTaskBody).
+// (postProject), POST /api/v1/projects/delete (postProjectDelete), POST /api/v1/tasks/project (postTaskProject) and POST /api/v1/tasks/body (postTaskBody).
 
 import { useQuery } from "@tanstack/react-query";
 import { t } from "../i18n/index.js";
@@ -26,6 +26,8 @@ export interface TaskRow {
   body?: string | null;
   /** The task this is a sub-task of (one level), or null. */
   parent_task_id?: string | null;
+  /** How many open sub-tasks it has, over every stored task (absent from an older server): the delete dialog reads it before it opens. */
+  open_sub_tasks?: number;
   /** The slugs of its active task projects (absent from an older server). */
   projects?: string[];
   /** When it was done (ISO time): a done task of the last 30 days stays in the views, struck through; null or absent: open. */
@@ -145,6 +147,12 @@ export async function postProject(token: string, id: string, name: string): Prom
   return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
+/** POST /api/v1/projects/delete: deletes the project by slug, as `factory project delete` does; its tasks stay. A refusal (404, …) comes back as `{ ok: false, error }`. */
+export async function postProjectDelete(token: string, project: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await postJson<{ error?: string }>(API.projectDelete, token, { project });
+  return r.ok ? { ok: true } : { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+}
+
 /** POST /api/v1/tasks/project: adds the task to the project (`add`) or removes it. A refusal comes back as `{ ok: false, error }`. */
 export async function postTaskProject(token: string, id: string, project: string, add: boolean): Promise<{ ok: true; changed: boolean } | { ok: false; error: string }> {
   const r = await postJson<{ changed?: boolean; error?: string }>(API.taskProject, token, { id, project, add });
@@ -158,11 +166,11 @@ export async function postTaskBody(token: string, id: string, body: string): Pro
 }
 
 /**
- * POST /api/v1/tasks/<action>: a row action (edit `{ id, words }`, done and delete `{ id }`, sub `{ parent, id, words }`),
- * or ⌘Z's undo of a completion (reopen `{ id }`).
+ * POST /api/v1/tasks/<action>: a row action (edit `{ id, words }`, done `{ id }`, delete `{ id }` or, with its open
+ * sub-tasks, `{ id, with_sub_tasks: true }`, sub `{ parent, id, words }`), or ⌘Z's undo of a completion (reopen `{ id }`).
  * A refusal (400, 404, 409, …) comes back as `{ ok: false, error }` with the server's reason.
  */
-export async function postTaskAction(token: string, action: TaskAction, body: Record<string, string>): Promise<{ ok: true } | { ok: false; error: string }> {
+export async function postTaskAction(token: string, action: TaskAction, body: Record<string, string | boolean>): Promise<{ ok: true } | { ok: false; error: string }> {
   const r = await postJson<{ error?: string }>(API.taskAction(action), token, body);
   return r.ok ? { ok: true } : { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }

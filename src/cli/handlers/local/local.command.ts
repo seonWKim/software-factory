@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { CLI_TOP_WORDS, HELP_WORD, cliName, cliUsageLines, parseLocalCliArgs, runLocalCli } from "../../../core/local-cli.js";
+import { CLI_TOP_WORDS, HELP_WORD, cliName, cliUsageLines, parseLocalCliArgs, resolveItem, runLocalCli } from "../../../core/local-cli.js";
 import { answersDetail, splitAnswers } from "../../../shared/command-notes.js";
 import { storeProjectResolver } from "../../../ui/settings-api.js";
 import { defineCommand } from "../../command.js";
@@ -42,9 +42,12 @@ export default defineCommand({
         },
         action,
       );
-      // A refused command's answer for the CLI sender (design 04-gate-commands, 2026-11-13).
-      if (r.code === 0 && action.action === "show") r.lines.push(...lastRefusedLines(await store.listItemMessages(action.id)));
-      if (r.code === 0 && action.action === "command") r.lines.push(refusalHint(action.id, cli));
+      // A refused command's answer for the CLI sender (design 04-gate-commands, 2026-11-13), under the item's full ID.
+      if (r.code === 0 && (action.action === "show" || action.action === "command")) {
+        const item = await resolveItem(store, action.id);
+        const id = "lines" in item ? action.id : item.id;
+        r.lines.push(...(action.action === "show" ? lastRefusedLines(await store.listItemMessages(id)) : [refusalHint(id, cli)]));
+      }
       for (const line of r.lines) (r.code === 0 ? console.log : console.error)(line);
       return r.code;
     });

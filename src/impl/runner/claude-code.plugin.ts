@@ -13,6 +13,8 @@ export default definePlugin({
       secrets: c.secrets,
       ...claudeDirs(c),
       models: c.loaded.file.models,
+      // The owner's live checkout: denied to agents but for the run's own folders (design 05-sandbox.md).
+      checkout: c.loaded.config.repo.path,
       // Granted broker tools (tool_grants) reach the agent only through this broker and scanner.
       ...(c.broker && c.scanner ? { tools: { broker: c.broker, scanner: c.scanner } } : {}),
     }),

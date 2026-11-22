@@ -9,9 +9,12 @@ import { ButtonRow } from "../web/src/components/ui/button-row.js";
 import { Field } from "../web/src/components/ui/field.js";
 import { Input } from "../web/src/components/ui/input.js";
 import { OverflowMenu, Tooltip } from "../web/src/components/ui/menu.js";
-import { Badge, LEVEL_TONE } from "../web/src/components/ui/badge.js";
+import { Badge, StatusBadge, TONE_CLASS } from "../web/src/components/ui/badge.js";
+import { STATES } from "../src/shared/states.js";
 import { Card, CardSection } from "../web/src/components/ui/card.js";
-import { EmptyState, Kbd, Notice, PageHeader } from "../web/src/components/ui/notice.js";
+import { Disclosure } from "../web/src/components/ui/disclosure.js";
+import { ListRow, ROW_TITLE } from "../web/src/components/ui/list-row.js";
+import { EmptyState, Kbd, Notice, PageHeader, PageToolbar } from "../web/src/components/ui/notice.js";
 import { SM_PX } from "../web/src/components/ui/parts.js";
 import { Inbox } from "lucide-react";
 import { Radio } from "../web/src/components/ui/radio.js";
@@ -237,11 +240,11 @@ describe("OverflowMenu and Tooltip", () => {
 });
 
 describe("status and message pieces", () => {
-  it("Badge is a pill with a dot that takes its tone from LEVEL_TONE; a level with no tone is neutral", () => {
-    for (const [level, tone] of Object.entries(LEVEL_TONE)) {
+  it("Badge is a pill with a dot that takes its tone from the state table; a level with no state is neutral", () => {
+    for (const [level, { tone }] of Object.entries(STATES)) {
       render(<Badge level={level}>b</Badge>);
       const badge = screen.getByText("b");
-      for (const c of tone.split(" ")) expect(badge.className).toContain(c);
+      for (const c of TONE_CLASS[tone].split(" ")) expect(badge.className).toContain(c);
       expect(badge.className).toContain("rounded-pill");
       expect(badge.getAttribute("data-level")).toBe(level);
       expect(badge.querySelector("[aria-hidden]")!.className).toContain("bg-current");
@@ -251,7 +254,22 @@ describe("status and message pieces", () => {
     expect(screen.getByText("x").className).toContain("bg-surface-2");
   });
 
-  it("no second colour map or badge: only badge.tsx holds the tones, and Section, StatusBadge and Empty are gone", () => {
+  it("StatusBadge shows a state's label in its tone with data-status; its own words when given", () => {
+    for (const [state, { label, tone }] of Object.entries(STATES)) {
+      render(<StatusBadge state={state} />);
+      const badge = screen.getByText(label);
+      expect(badge.getAttribute("data-status")).toBe(state);
+      for (const c of TONE_CLASS[tone].split(" ")) expect(badge.className).toContain(c);
+      cleanup();
+    }
+    render(<StatusBadge state="ready_to_merge">Merge queued (position 2)</StatusBadge>);
+    expect(screen.getByText("Merge queued (position 2)").getAttribute("data-status")).toBe("ready_to_merge");
+    cleanup();
+    render(<StatusBadge state="some_state" />);
+    expect(screen.getByText("some state").className).toContain("bg-surface-2");
+  });
+
+  it("no second colour map or badge: only badge.tsx holds the tones and StatusBadge, and Section and Empty are gone", () => {
     for (const f of readdirSync("web/src/components/ui").filter((n) => n.endsWith(".tsx") && n !== "badge.tsx")) {
       const src = readFileSync(`web/src/components/ui/${f}`, "utf8");
       expect(src, f).not.toContain("ready_to_merge");
@@ -280,9 +298,9 @@ describe("status and message pieces", () => {
     expect(screen.getByRole("heading", { level: 2, name: "work_items" })).toBeTruthy();
   });
 
-  it("CardSection is an h3 in the section title's type inside a Card, not a region", () => {
+  it("CardSection is an h3 in the one sub-group type inside a Card, not a region", () => {
     render(<Card title="Spend"><CardSection title="Totals" count={2}>x</CardSection></Card>);
-    expect(screen.getByRole("heading", { level: 3, name: "Totals" }).className).toContain("text-balance text-base font-semibold");
+    expect(screen.getByRole("heading", { level: 3, name: "Totals" }).className).toContain("text-xs font-medium text-text-2");
     expect(screen.getAllByRole("region").map((r) => r.getAttribute("aria-label"))).toEqual(["Spend"]);
   });
 
@@ -326,6 +344,30 @@ describe("status and message pieces", () => {
     expect(screen.getByRole("button", { name: "New" })).toBeTruthy();
     rerender(<PageHeader title="Tasks" />);
     expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("a Disclosure's trigger is at least 28px tall", () => {
+    const { container } = render(<Disclosure summary="Details">Body</Disclosure>);
+    expect(container.querySelector("summary")!.className.split(" ")).toContain("min-h-7");
+  });
+
+  it("PageHeader marks the page wide by default and read when asked, for <main> to take its width from", () => {
+    const { container, rerender } = render(<PageHeader title="Tasks" />);
+    expect(container.querySelector("header")!.getAttribute("data-page-width")).toBe("wide");
+    rerender(<PageHeader title="Rules" width="read" />);
+    expect(container.querySelector("header")!.getAttribute("data-page-width")).toBe("read");
+  });
+
+  it("PageToolbar puts the tabs on the first row and the search, view and filters on the second", () => {
+    const { container, rerender } = render(<PageToolbar tabs={<div role="tablist" aria-label="Tabs" />}><input aria-label="Search" /><button>Board</button></PageToolbar>);
+    const bar = container.querySelector("[data-page-toolbar]")!;
+    const [first, second] = [...bar.children];
+    expect(first!.getAttribute("role")).toBe("tablist");
+    expect(second!.contains(screen.getByRole("textbox", { name: "Search" }))).toBe(true);
+    expect(second!.contains(screen.getByRole("button", { name: "Board" }))).toBe(true);
+    rerender(<PageToolbar><button>24 hours</button></PageToolbar>);
+    expect(bar.children).toHaveLength(1);
+    expect(bar.querySelector('[role="tablist"]')).toBeNull();
   });
 });
 
@@ -380,5 +422,40 @@ describe("design-system/components.md", () => {
         expect(headings.has(m[1]), `${m[1]} (${f})`).toBe(true);
       }
     }
+  });
+});
+
+describe("ListRow", () => {
+  it("puts the leading control first, the title then the details in one column, and the ⋯ menu last, at the right of the title line", () => {
+    render(
+      <ul>
+        <ListRow
+          data-testid="row"
+          leading={<input type="checkbox" aria-label="pick" />}
+          title={<p className={ROW_TITLE} title="Full title">Full title</p>}
+          details={<span>2 items</span>}
+          menu={<OverflowMenu label="More: Full title" items={[{ label: "Retire", danger: true, onSelect: () => {} }]} />}
+        >
+          <p>extra</p>
+        </ListRow>
+      </ul>,
+    );
+    const row = screen.getByTestId("row");
+    expect(row.tagName).toBe("LI");
+    const parts = [...row.children];
+    expect(parts[0]!.tagName).toBe("INPUT");
+    expect(parts[1]!.textContent).toBe("Full title2 itemsextra");
+    expect(parts[1]!.querySelector("[data-details]")!.textContent).toBe("2 items");
+    expect(parts[2]!.matches("[data-row-menu]")).toBe(true);
+    expect(parts[2]!.querySelector("button")!.getAttribute("aria-label")).toBe("More: Full title");
+    // One line for the title: cut with an ellipsis, the full text in its title attribute.
+    expect(row.querySelector("p")!.className).toContain("truncate");
+  });
+
+  it("draws no details line and no menu box when it has none", () => {
+    render(<ul><ListRow data-testid="row" title={<p>Only a title</p>} /></ul>);
+    const row = screen.getByTestId("row");
+    expect(row.querySelector("[data-details]")).toBeNull();
+    expect(row.querySelector("[data-row-menu]")).toBeNull();
   });
 });

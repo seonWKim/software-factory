@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadCommands } from "../src/cli/index.js";
-import type { Loaded } from "../src/compose.js";
+import type { Loaded } from "../src/load-config.js";
 import type { LogFields, Logger } from "../src/core/log.js";
 import type { CliEnvironment } from "../src/core/local-cli.js";
 import type { Timestamp, UserId } from "../src/core/types.js";

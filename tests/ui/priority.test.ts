@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { LEVEL_LABELS, LEVELS, NEEDS_YOU, type PriorityInput, levelOf, rank } from "../../src/ui/priority.js";
+import { STATES } from "../../src/shared/states.js";
+import { LEVELS, NEEDS_YOU, type PriorityInput, WITH_NEED, askReason, holdingNow, levelOf, rank } from "../../src/ui/priority.js";
 
 const NOW = new Date("2026-11-01T12:00:00.000Z");
 const LEASE = 60_000;
@@ -29,6 +30,9 @@ const queued = { kind: "triage" as const, status: "queued" as const, heartbeat_a
 // Given in shuffled order; `expected` is the order and badges the ranking must produce.
 const seeds: Seed[] = [
   item("closed", { stage: "CLOSED", close_reason: "wont_do", since: at(999) }),
+  item("rejected", { stage: "CLOSED", close_reason: "rejected", since: at(999) }),
+  item("merged", { stage: "CLOSED", close_reason: "completed", since: at(999) }),
+  item("held", { run: { ...queued, kind: "implement" }, held: true, since: at(6) }),
   item("waiting", { stage: "READY", waiting_on: 2, since: at(50) }),
   item("queued", { stage: "NEW", run: queued, since: at(3) }),
   item("running", { run: running("implement", 0), since: at(4) }),
@@ -48,26 +52,53 @@ const expected: [string, string[]][] = [
   ["merge-new-unblocks", ["ready to merge", "unblocks 2"]], // more dependents beat an older wait
   ["merge-old", ["ready to merge"]],
   ["approval", ["needs approval"]],
-  ["human-old", ["failed"]], // oldest wait first
   ["human-new-tier3", ["too many loops"]], // same wait: higher tier first
   ["human-new-tier1", ["too many loops"]],
   ["budget", ["budget check"]],
   ["triage-ask", ["triage asks"]],
+  ["human-old", ["failed"]],
   ["stuck-lease", ["stuck 12 min"]], // minutes since the last heartbeat
   ["stuck-idle", ["stuck 5 min"]], // minutes since it started waiting
   ["running", ["running implement"]],
   ["queued", ["queued triage"]],
+  ["held", ["held by another task"]],
   ["waiting", ["waits on 2 issues"]],
+  ["merged", ["merged"]],
   ["closed", ["closed: wont do"]],
+  ["rejected", ["rejected"]],
 ];
 
 describe("ui priority", () => {
-  it("ranks every level in order with each tie-break, and the badge text for each", () => {
+  it("ranks every level in the state table's sort order with each tie-break, and the badge text for each", () => {
     const ranked = rank(seeds, NOW, LEASE);
     expect(ranked.map((r) => [r.input.name, r.badges])).toEqual(expected);
-    // Every level is covered, in order.
-    expect(new Set(ranked.map((r) => r.level))).toEqual(new Set(LEVELS));
-    expect([...new Set(ranked.map((r) => r.level))]).toEqual([...LEVELS]);
+    // The levels come in the table's sort order, and the levels this ranking gives are all here.
+    const sorts = ranked.map((r) => STATES[r.level].sort);
+    expect(sorts).toEqual([...sorts].sort((a, b) => a - b));
+    for (const l of ["ready_to_merge", "needs_approval", "needs_you", "needs_triage", "failed", "stuck", "running", "queued", "held", "blocked_by_task", "merged", "closed", "rejected"]) {
+      expect(ranked.map((r) => r.level)).toContain(l);
+    }
+  });
+
+  it("levels are the table's item states: no run or worker state", () => {
+    for (const l of ["draining", "succeeded", "cancelled"]) expect(LEVELS as readonly string[]).not.toContain(l);
+    expect(LEVELS.indexOf("failed")).toBeLessThan(LEVELS.indexOf("stuck"));
+    expect(LEVELS.indexOf("held")).toBeLessThan(LEVELS.indexOf("blocked_by_task"));
+  });
+
+  it("the Needs-you group is ready to merge, needs approval and needs you: never triage, failed or blocked", () => {
+    for (const l of ["ready_to_merge", "needs_approval", "needs_you"]) expect(NEEDS_YOU).toContain(l);
+    for (const l of ["needs_triage", "failed", "blocked_by_task", "held"]) expect(NEEDS_YOU as readonly string[]).not.toContain(l);
+    // A failed row keeps its need and its commands (Retry, Reject), and a triage ask its question.
+    for (const l of [...NEEDS_YOU, "failed", "needs_triage"]) expect(WITH_NEED).toContain(l);
+    for (const l of ["stuck", "running", "held", "blocked_by_task", "merged"]) expect(WITH_NEED as readonly string[]).not.toContain(l);
+  });
+
+  it("a closed item is merged when it closed as completed, rejected when rejected, closed otherwise", () => {
+    const closed = (close_reason: PriorityInput["close_reason"]) => levelOf(item("c", { stage: "CLOSED", close_reason }), NOW, LEASE);
+    expect(closed("completed")).toBe("merged");
+    expect(closed("rejected")).toBe("rejected");
+    for (const r of ["failed", "duplicate", "wont_do", null] as const) expect(closed(r)).toBe("closed");
   });
 
   it("is independent of input order", () => {
@@ -100,9 +131,9 @@ describe("ui priority", () => {
     });
   });
 
-  it("a coordination hold (a queued run held by an unapproved claim) is blocked by another task and names the holder", () => {
+  it("a coordination hold (a queued run held by an unapproved claim) is held and names the holder", () => {
     const h = item("h", { run: { ...queued, kind: "implement" }, held: true, waiting_on_number: 41 });
-    expect(levelOf(h, NOW, LEASE)).toBe("blocked_by_task");
+    expect(levelOf(h, NOW, LEASE)).toBe("held");
     expect(rank([h], NOW, LEASE)[0]!.badges).toEqual(["waits on #41"]);
     expect(rank([{ ...h, waiting_on_number: null }], NOW, LEASE)[0]!.badges).toEqual(["held by another task"]);
   });
@@ -137,11 +168,18 @@ describe("ui priority", () => {
     expect(NEEDS_YOU).toContain("ready_to_merge");
   });
 
-  it("every human block reason and the budget need you, with a fixed-word badge; a null reason too", () => {
+  it("a failed run's block is failed, in the Problem group, with the badge failed", () => {
+    for (const reason of ["run_failed:implement:timeout", "run_failed:review:x", "run_failed:triage:x", "run_failed:implement:diff_too_large", "repeated_failure"]) {
+      const f = item(reason, { blocked_on: "human", blocked_reason: reason });
+      expect(levelOf(f, NOW, LEASE)).toBe("failed");
+      expect(rank([f], NOW, LEASE)[0]!.badges).toEqual(["failed"]);
+    }
+  });
+
+  it("every other human block reason and the budget need you, with a fixed-word badge; a null reason too", () => {
     const reasons = [
       ["spec_pending", "needs approval"],
       ["max_revisions", "needs approval"],
-      ["run_failed:implement:timeout", "failed"],
       ["max_loops", "too many loops"],
       ["merge_conflict_pending", "merge conflict"],
       ["rule_of_two", "needs you"],
@@ -166,13 +204,9 @@ describe("ui priority", () => {
     expect(levelOf(item("a", { blocked_on: "human", blocked_reason: "x", run: queued }), NOW, LEASE)).toBe("needs_you");
   });
 
-  it("the old level ids needs_human and waiting_on_issue are gone", () => {
-    for (const old of ["needs_human", "waiting_on_issue"]) {
-      expect(LEVELS as readonly string[]).not.toContain(old);
-      expect(Object.keys(LEVEL_LABELS)).not.toContain(old);
-    }
-    expect(LEVEL_LABELS).toMatchObject({ needs_you: "Needs you", needs_triage: "Needs triage", blocked_by_task: "Blocked by another task" });
-    expect(NEEDS_YOU).not.toContain("blocked_by_task");
+  it("the old level ids needs_human and waiting_on_issue are gone, and the labels come from the state table", () => {
+    for (const old of ["needs_human", "waiting_on_issue"]) expect(LEVELS as readonly string[]).not.toContain(old);
+    expect(STATES).toMatchObject({ needs_you: { label: "Needs you" }, needs_triage: { label: "Needs triage" }, blocked_by_task: { label: "Blocked by another task" } });
   });
 
   it("an item waiting for CI is running with the badge waiting for CI, unless its running run is past its lease", () => {
@@ -190,6 +224,70 @@ describe("ui priority", () => {
     for (const g of [gap(new Date(NOW.getTime() - LEASE).toISOString()), gap(null)]) {
       expect(levelOf(g, NOW, LEASE)).toBe("stuck");
       expect(rank([g], NOW, LEASE)[0]!.badges).toEqual(["stuck 10 min"]);
+    }
+  });
+
+  it("a pending dashboard command is queued, never stuck or ready to merge: an Approve's run not queued yet, a Merge not handled yet", () => {
+    const approved = item("approved", { stage: "RUNNING", since: at(30), pending: { command: "approve", kind: "implement" } });
+    expect(levelOf({ ...approved, pending: null }, NOW, LEASE)).toBe("stuck"); // the same item without it: nothing moves it
+    expect(levelOf(approved, NOW, LEASE)).toBe("queued");
+    expect(rank([approved], NOW, LEASE)[0]!.badges).toEqual(["queued implement"]);
+    const merge = item("merge", { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pending: { command: "merge", position: 2 } });
+    expect(levelOf(merge, NOW, LEASE)).toBe("queued");
+    expect(rank([merge], NOW, LEASE)[0]!.badges).toEqual(["merge queued (position 2)"]);
+    expect(levelOf({ ...merge, pending: null }, NOW, LEASE)).toBe("ready_to_merge");
+    expect(levelOf({ ...merge, stage: "CLOSED", close_reason: "completed" }, NOW, LEASE)).toBe("merged");
+  });
+});
+
+describe("ui priority: rank reason and held asks (design 09-status-page)", () => {
+  // Local times: review_time is read on the machine's clock, not UTC.
+  const local = (h: number, m: number) => new Date(2026, 10, 2, h, m);
+  const WORDS = /^(Merge|Blocks another item|Held until \d\d:\d\d|Waiting for you)$/;
+
+  it("holds before review_time only, and never with review_time empty", () => {
+    expect(holdingNow("09:00", local(8, 59))).toBe(true);
+    expect(holdingNow("09:00", local(0, 0))).toBe(true);
+    expect(holdingNow("09:00", local(9, 0))).toBe(false);
+    expect(holdingNow("09:00", local(23, 30))).toBe(false);
+    for (const t of [local(0, 0), local(8, 0), local(23, 59)]) expect(holdingNow("", t)).toBe(false);
+  });
+
+  it("a merge and an ask that blocks another item are never held; any other ask reads Held until <review_time>", () => {
+    const merge = item("merge", { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
+    const blocks = item("blocks", { blocked_on: "human", blocked_reason: "max_loops", dependents: 1 });
+    const ask = item("ask", { blocked_on: "human", blocked_reason: "max_loops" });
+    const reason = (i: PriorityInput, holding: boolean) => askReason(i, levelOf(i, NOW, LEASE), "09:00", holding);
+    expect(reason(merge, true)).toEqual({ rank_reason: "Merge", held: false });
+    expect(reason(blocks, true)).toEqual({ rank_reason: "Blocks another item", held: false });
+    expect(reason(ask, true)).toEqual({ rank_reason: "Held until 09:00", held: true });
+    expect(reason(ask, false)).toEqual({ rank_reason: "Waiting for you", held: false });
+    // A level that asks nothing of a person has no rank reason.
+    expect(reason(item("running", { run: running("implement", 0) }), true)).toBeNull();
+  });
+
+  it("10 open asks: each one carries one of the fixed rank reason words", () => {
+    const asks = [
+      item("merge-1", { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" }),
+      item("merge-2", { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", dependents: 2 }),
+      item("approval", { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" }),
+      item("approval-blocks", { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", dependents: 1 }),
+      item("revisions", { stage: "READY", blocked_on: "human", blocked_reason: "max_revisions" }),
+      item("loops", { blocked_on: "human", blocked_reason: "max_loops" }),
+      item("conflict", { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict" }),
+      item("budget", { blocked_on: "budget", blocked_reason: "budget_checkpoint" }),
+      item("triage", { stage: "NEW", blocked_on: "human", blocked_reason: "agent_needs_human", asked_by: "triage" }),
+      item("ask", { blocked_on: "human", blocked_reason: "agent_needs_human", asked_by: "implement" }),
+    ];
+    for (const holding of [true, false]) {
+      const ranked = rank(asks, NOW, LEASE);
+      expect(ranked.map((r) => r.input.name).sort()).toEqual(asks.map((a) => a.name).sort());
+      const reasons = new Map(ranked.map((r) => [r.input.name, askReason(r.input, r.level, "09:00", holding)]));
+      for (const [name, r] of reasons) expect(r?.rank_reason, name).toMatch(WORDS);
+      expect(reasons.get("merge-1")!.rank_reason).toBe("Merge");
+      expect(reasons.get("merge-2")!.rank_reason).toBe("Merge");
+      expect(reasons.get("approval-blocks")!.rank_reason).toBe("Blocks another item");
+      expect(reasons.get("loops")!).toEqual(holding ? { rank_reason: "Held until 09:00", held: true } : { rank_reason: "Waiting for you", held: false });
     }
   });
 });

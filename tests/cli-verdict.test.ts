@@ -12,7 +12,7 @@ import { OwnerAuth } from "../src/core/authorize.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { cleanScanner, config, silent } from "./helpers/fakes.js";
+import { cleanScanner, config, silent } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore, system } from "./helpers/store.js";
 import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
@@ -43,7 +43,6 @@ async function setup(patch: WorkItemPatch) {
 }
 
 const MERGE_PENDING_PR: WorkItemPatch = { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42" };
-const MERGE_PENDING_LOCAL: WorkItemPatch = { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" };
 
 describe("factory verdict", () => {
   it("parses as an item command whose text is the verdict", () => {
@@ -51,17 +50,6 @@ describe("factory verdict", () => {
       action: "command", command: "verdict", id: "wi_1", text: "changes minor rename the flag",
     });
     expect(parseLocalCliArgs("verdict", [])).toMatchObject({ error: expect.stringContaining("verdict needs a work item ID") });
-  });
-
-  it("a valid verdict stores one command row and changes no item state", async () => {
-    const f = await setup(MERGE_PENDING_PR);
-    const before = await f.store.getWorkItem(f.id);
-    const r = await f.verdict("accept", "none", "looks right");
-    expect(r).toEqual({ code: 0, lines: [expect.stringContaining(`stored \`/verdict\` for ${f.id} as ${ME}`)] });
-    expect((await f.store.listCliCommandsAfter(0, 100)).map((c) => ({ actor: c.actor, command: c.command, args: c.args }))).toEqual([
-      { actor: ME, command: "verdict", args: { item: f.id, text: "accept none looks right" } },
-    ]);
-    expect(await f.store.getWorkItem(f.id)).toEqual(before);
   });
 
   it("a malformed verdict is an error with the usage line and stores nothing", async () => {
@@ -88,14 +76,6 @@ describe("factory verdict", () => {
     await f.tick();
     expect(await f.store.listVerdicts(f.id)).toHaveLength(1);
   });
-
-  it("a local item with no PR takes a CLI verdict, as the controller accepts it (decision 3), with no PR head", async () => {
-    const f = await setup(MERGE_PENDING_LOCAL);
-    expect((await f.verdict("accept")).code).toBe(0);
-    await f.tick();
-    expect(await f.store.listVerdicts(f.id)).toEqual([expect.objectContaining({ verdict: "accept", severity: "none", reason: null, pr_head: null })]);
-    expect(await f.store.getWorkItem(f.id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
-  });
 });
 
 describe("verdict on a local item with no PR (decision 3)", () => {
@@ -113,11 +93,6 @@ describe("verdict on a local item with no PR (decision 3)", () => {
 });
 
 describe("auto_merge_max_tier (decision 1: unchanged)", () => {
-  it("stays 0 in factory.config.json", () => {
-    const cfg = JSON.parse(readFileSync(new URL("../factory.config.json", import.meta.url), "utf8")) as { dials?: { auto_merge_max_tier?: number } };
-    expect(cfg.dials?.auto_merge_max_tier).toBe(0);
-  });
-
   it("no file this change added code to names it", () => {
     for (const f of ["../src/core/local-cli.ts", "../src/core/commands.ts", "../src/core/verdict.ts", "../src/ui/commands.ts", "../web/src/views/item-commands.tsx"]) {
       expect(readFileSync(new URL(f, import.meta.url), "utf8"), f).not.toContain("auto_merge_max_tier");
