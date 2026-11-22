@@ -24,6 +24,7 @@ A UI change keeps these as they are. The triage spec lists them for a change und
 
 ## Changelog
 
+- 2026-11-22: the `sidebar-active` colour (light `#DEDCD6`, dark `#2C2C30`), the fill of the current sidebar link in place of `surface-2`; asserted at 1.1:1 or more against `sidebar` in both themes.
 - 2026-11-20: the `nav-active` colour (the `text` ink in both themes), drawn as a 2 px bar on the current sidebar link; contrast asserted at 3:1 against `sidebar`.
 - 2026-11-20: `components.md` opens with "Which component for what" (need, component, usage; Checkbox has no component yet, Switch until a follow-up issue adds it), and this file gains "Stays fixed". The triage and review prompts point to both.
 

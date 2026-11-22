@@ -227,6 +227,13 @@ describe("contrast", () => {
     });
   }
 
+  for (const [theme, selector] of [["light", ":root"], ["dark", "\\.dark"]] as const) {
+    it(`the current-page fill (sidebar-active) is at least 1.1:1 from the sidebar in ${theme}`, () => {
+      const t = (name: string) => new RegExp(`--${name}: (#[0-9A-Fa-f]{6});`).exec(theme === "light" ? block(":root") : block(selector) + block(":root"))![1]!;
+      expect(ratio(t("sidebar-active"), t("sidebar")), `${theme} sidebar-active on sidebar`).toBeGreaterThanOrEqual(1.1);
+    });
+  }
+
   it("the type scale has a size and a line height per step", () => {
     for (const step of ["xs", "sm", "base", "lg", "xl"]) {
       expect(css).toMatch(new RegExp(`--fs-${step}: [\\d.]+rem;`));
