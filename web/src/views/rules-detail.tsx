@@ -1,6 +1,7 @@
 import { type ReactNode, useState } from "react";
 import { type AppliedRule, type RuleDetail, type RuleEvidence, type RuleRow, useRuleEntry } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { SUB_TITLE } from "../components/ui/card.js";
 import { IdDetails } from "../components/ui/copy.js";
 import { Markdown } from "../components/ui/markdown.js";
 import { Loading } from "../components/ui/parts.js";
@@ -25,7 +26,7 @@ function DetailPart({ label, part, children }: { label: MessageKey; part: string
   if (lines.length === 0) return null;
   return (
     <div data-detail-part={part} className="space-y-1">
-      <h3 className="text-xs font-semibold text-text-2">{t(label)}</h3>
+      <h3 className={SUB_TITLE}>{t(label)}</h3>
       {lines}
     </div>
   );

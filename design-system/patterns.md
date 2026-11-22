@@ -7,8 +7,11 @@ These are rules for new and changed pages. Existing pages move onto them in foll
 ## Page layout
 
 - One `PageHeader` at the top: the page title, an optional count, the page's one primary action at the end. Each page renders its own `PageHeader` (on the item and transcript pages with the item's or run's title); the app shell draws no title, so every page has exactly one h1.
-- Below it, `Card` blocks, each with an h2 (a sub-heading inside a card is a `CardSection`, never a raw heading). One column of content at `sm` and below; the page never scrolls sideways.
-- A page with views (tabs, Day / Upcoming) puts its view switcher in the row under the page title, before the content; a page filter that is a few named choices (the projects on Tasks) is a `Tabs` row directly under the title, above the view switcher; never between blocks of content or below them.
+- One of two page widths, chosen by `PageHeader`'s `width`: `wide` (`--page-wide`, 1232px, the default) for lists and tables, `read` (`--page-read`, 960px) for forms and reading (Settings, Rules). `<main>` takes its `max-width` from it; no page or page wrapper sets a `max-w-*` of its own. Field, table-cell and prose widths (`max-w-md`, `max-w-[75ch]`) stay.
+- Right under the header, one `PageToolbar` when the page has tabs, a search, a view switch or filters: the tabs on its first row, the search, view switch and filters on its second. Never between blocks of content, inside a Card or below them, even when it narrows one list (Health's Failures window, Workers' window, Calendar's switch and period buttons, the Transcript's step filters, Settings Advanced's and Rules' searches).
+- Below it, `Card` blocks, each with an h2 in the one section title size (`CARD_TITLE`); Card is the only place a page's h2 comes from. A sub-group inside a card (a `CardSection`, a calendar day, a group of task rows) is an h3 in the one sub-group style (`SUB_TITLE`, `text-xs font-medium text-text-2`), never a raw heading class. One column of content at `sm` and below; the page never scrolls sideways.
+- Every button on a page is 28px (`sm`, the segments, a Disclosure's trigger) or 32px (`md`, `icon`, tabs, a Select) tall.
+- Text a page shows as stored or as written (a title, a body, a check's message, an error detail, a stored code, a transcript, a Data table) sits inside `[data-raw]`; outside it a page shows no snake_case name and no `wi_` ID.
 - Blocks of one page are stacked in one flex column with a `gap-6` (the Card gap), not with `mb-*` or `mt-*` on each block.
 - Spacing comes from the scale in `foundations.md` (gap and padding classes), never a pixel value.
 - Colours are token classes. No hex colour, no Tailwind palette class (`tests/design-system.test.ts`).
@@ -19,7 +22,7 @@ These are rules for new and changed pages. Existing pages move onto them in foll
 - Then its state as a `Badge`, then the facts that decide what to do next, then the time (`writing.md`, compact times).
 - A table of rows uses `DataTable`: a table at `sm` and up, one card per row below it.
 - The row opens the item page. Row actions sit at the end of the row.
-- **C-050** (2026-11-15). An action's error shows on its own line below the row's content, full width, or in the shared `Notice` or toast; never in the actions column. The title keeps its space and truncates only at the row's real width; the status badge and the actions never overlap, at every `check:responsive` size. The Tasks page's Factory work row follows it (`SendErrors` on a `basis-full` line); the Needs you table moves onto it in a follow-up.
+- **C-050** (2026-11-15). An action's error shows on its own line below the row's content, full width, or in the shared `Notice` or toast; never in the actions column. The title keeps its space and truncates only at the row's real width; the status badge and the actions never overlap, at every `check:responsive` size. The Tasks page's Factory work row follows it (`SendErrors` on a `basis-full` line); so do the Needs you rows, a merge's refusal included (2026-11-22).
 
 ## Actions
 
@@ -80,5 +83,7 @@ Six short rules from the owner's review of 2026-11-15. Each can be checked on a 
    - Bad: an item that waits on an agent still shows a "What you need to decide" box, with buttons that do nothing yet.
 
 ## History
+
+- **A page's views and filters went "in the row under the page title"** (until 2026-11-20, the page template decision in docs/design/09-dashboard-shell.md). Before: each page placed its tabs, search and switches itself (Work's search above its state tabs, Calendar's switch in a column of its own, Health's failure window in the middle of the page), pages set their own widths (Rules `max-w-3xl`) and sub-group h3s had three styles.
 
 - **A list row's failed send showed in its actions column** (until 2026-11-15, replaced by C-050). Before: the row's error text sat in the actions cell beside the primary button, so a long error shrank the title ("Tas…" in Factory work) and pushed the button onto the status badge.

@@ -63,6 +63,39 @@ describe("design tokens", () => {
     expect(ui("card.tsx")).toMatch(/CARD_TITLE = "[^"]*\btext-base font-semibold"/);
   });
 
+  it("tokens.json holds the two page widths, tokens.css declares them and index.css maps them to max-w-page-*", () => {
+    const json = JSON.parse(readFileSync(join(ROOT, "design-system", "tokens.json"), "utf8")) as { page: Record<string, string> };
+    expect(json.page).toEqual({ wide: "77rem", read: "60rem" });
+    expect(readFileSync(join(WEB_SRC, "tokens.css"), "utf8")).toMatch(/:root \{[^}]*--page-wide: 77rem;[^}]*--page-read: 60rem;/);
+    const css = readFileSync(join(WEB_SRC, "index.css"), "utf8");
+    expect(css).toContain("--container-page-wide: var(--page-wide);");
+    expect(css).toContain("--container-page-read: var(--page-read);");
+  });
+
+  it("main takes its width from PageHeader's width prop, and no page sets its own page width", () => {
+    const app = readFileSync(join(WEB_SRC, "App.tsx"), "utf8");
+    expect(app).toMatch(/<main className="[^"]*\bmax-w-page-wide has-\[\[data-page-width=read\]\]:max-w-page-read\b/);
+    const header = readFileSync(join(WEB_SRC, "components", "ui", "notice.tsx"), "utf8");
+    expect(header).toMatch(/width = "wide"/);
+    expect(header).toMatch(/data-page-width=\{width\}/);
+    // A page-level width: max-w-2xl and up, a screen width or a page token. Field widths (max-w-md, max-w-xl, max-w-[75ch]) stay.
+    const page = /(?<![\w-])max-w-(?:[2-7]xl|screen|page-|\(--page)/;
+    const hits = files(join(WEB_SRC, "views")).filter((f) => /\.tsx?$/.test(f) && page.test(readFileSync(f, "utf8")));
+    expect(hits).toEqual([]);
+    expect(page.test('className="max-w-3xl space-y-4"')).toBe(true);
+    expect(page.test('className="max-w-md max-w-xl max-w-[75ch]"')).toBe(false);
+  });
+
+  it("every h2 in the views is in Card's title type and every h3 in the one sub-group type", () => {
+    const card = readFileSync(join(WEB_SRC, "components", "ui", "card.tsx"), "utf8");
+    expect(card).toMatch(/SUB_TITLE = "text-xs font-medium text-text-2"/);
+    expect(card).toMatch(/<Heading[^>]*className=\{Heading === "h2" \? CARD_TITLE : SUB_TITLE\}/);
+    const bad = files(join(WEB_SRC, "views"))
+      .filter((f) => f.endsWith(".tsx"))
+      .flatMap((f) => [...readFileSync(f, "utf8").matchAll(/<(h2|h3)\b[^>]*>/g)].filter((m) => !m[0].includes(m[1] === "h2" ? "CARD_TITLE" : "SUB_TITLE")).map((m) => `${f}: ${m[0]}`));
+    expect(bad).toEqual([]);
+  });
+
   it("no file under web/src except tokens.css holds a hex colour", () => {
     // Six or eight digits always; three or four only with a letter a-f, so "#192" is not flagged.
     const hex = /#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|(?=[0-9]*[a-fA-F])[0-9a-fA-F]{3,4})\b/;
@@ -259,13 +292,13 @@ describe("the Gongbang mark in the dashboard", () => {
     expect(hex.toUpperCase()).toBe(tokens.colors.dark!.ember!.toUpperCase());
     expect(svg).not.toContain("data-min-px");
     const css = readFileSync(join(WEB_SRC, "tokens.css"), "utf8");
-    expect(css).toMatch(/:root \{[^}]*--ember: #FB923C;/);
-    expect(css).toMatch(/\.dark \{[^}]*--ember: #FB923C;/);
+    expect(css).toMatch(/:root \{[^}]*--ember: #F2A55F;/);
+    expect(css).toMatch(/\.dark \{[^}]*--ember: #F2A55F;/);
     expect(readFileSync(join(WEB_SRC, "index.css"), "utf8")).toContain("--color-ember: var(--ember);");
     expect(readFileSync(join(WEB_SRC, "components", "ui", "brand.tsx"), "utf8")).toContain("fill-ember");
   });
 
-  it("the sidebar mark draws icon.svg's square and 공", () => {
+  it("the sidebar mark draws icon.svg's square and glyph", () => {
     // Read as text: this suite is type-checked without JSX.
     const brand = readFileSync(join(WEB_SRC, "components", "ui", "brand.tsx"), "utf8");
     const square = /MARK_SQUARE = \{ x: (\d+), y: (\d+), size: (\d+), rx: (\d+) \}/.exec(brand)!;

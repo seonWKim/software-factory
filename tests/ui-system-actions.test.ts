@@ -165,12 +165,13 @@ describe("system actions: claim and worker pauses", () => {
   });
 
   // Bug: the missing model credential shows twice (its own row and a claim_pause row whose Resume now cannot end
-  // it), or its row does not say how to fix it.
-  it("a missing model credential is one row with the fix in its title and no Resume now; it goes once the pause ends", async () => {
+  // it), or its row does not say how to fix it, or its text names a command the dashboard bans.
+  it("a missing model credential is one row with the fix in its title, no command in it, and no Resume now; it goes once the pause ends", async () => {
     const { overview, store } = await setup();
     await store.pauseClaims("9999-12-31T23:59:59.999Z" as Timestamp, "model_credential");
     const o = await overview();
-    expect(o.system_actions).toEqual([{ code: "model_credential", text: "Add a model credential: run `npm run setup`", command: "npm run setup", until: null }]);
+    expect(o.system_actions).toEqual([{ code: "model_credential", text: "Add a model credential", command: "Add model credential, or npm run setup", until: null }]);
+    expect(o.system_actions[0]!.text).not.toMatch(/npm|`|run /);
     expect(o.needs_you).toBe(1);
     await store.endClaimPause("model_credential");
     expect(codes(await overview())).toEqual([]);

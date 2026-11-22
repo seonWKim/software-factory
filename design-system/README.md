@@ -9,7 +9,7 @@ The dashboard's design source. Decisions: `docs/design/09-brand-and-tokens.md`.
 - `patterns.md` states how a page is laid out: rows, actions, confirmations, states, forms and keyboard.
 - `writing.md` states the rules for the words on a page and for `t()`.
 - `dx.md` lists the build steps, each check with its test and npm script, and the PR checklist for UI changes.
-- `icon.svg` is the master mark of Gongbang.
+- `icon.svg` is the master mark of Gongbang: a white open loop round a plain file on a dark square, ending in the ember dot. It has no letters.
 - Every page is a `PageHeader` (page title `text-xl` semibold) over `Card` blocks (section title `text-base` semibold), with `Badge` for states and `EmptyState` for empty lists (`components.md`).
 - `tests/design-system.test.ts` checks the generated file matches, that every text colour and every Badge tone meets WCAG AA (4.5:1) in both themes, and that no raw form element appears in `web/src/` outside `components/ui/`.
 
@@ -17,13 +17,15 @@ The dashboard's design source. Decisions: `docs/design/09-brand-and-tokens.md`.
 
 A UI change keeps these as they are. The triage spec lists them for a change under `web/`, and the review checks the diff against them.
 
-- brand colour
+- celadon glaze palette
 - the one primary action per view
 - page header and Card structure
 - no raw IDs on a page
 
 ## Changelog
 
+- 2026-11-22: the palette is Celadon glaze (owner decision): a grey-green accent (`#2C6A5C` light, `#8CCDBB` dark) and the ember `#F2A55F`, with new `bg`, `surface`, `surface-2`, `sidebar`, `nav-active`, `border`, `border-strong`, `text`, `text-2`, `text-3` and `on-solid` values. The mark is an open loop round a plain file, ending in the ember, on a `#1A1F1D` square (was the 공 letter); the ember's smallest radius is 2 px. Token names and where the accent is used do not change. In Stays fixed, "brand colour" becomes "celadon glaze palette".
+- 2026-11-20: the page widths `page.wide` (77rem, 1232px, lists and tables) and `page.read` (60rem, 960px, forms and reading) in `tokens.json`, generated as `--page-wide` and `--page-read` and mapped to `max-w-page-wide` and `max-w-page-read`. `PageHeader` gains `width`; new `PageToolbar`; `CardSection` and every sub-group h3 use `SUB_TITLE` (`text-xs font-medium text-text-2`); a `Disclosure` trigger is at least 28px tall.
 - 2026-11-20: the `nav-active` colour (the `text` ink in both themes), drawn as a 2 px bar on the current sidebar link; contrast asserted at 3:1 against `sidebar`.
 - 2026-11-20: `components.md` opens with "Which component for what" (need, component, usage; Checkbox has no component yet, Switch until a follow-up issue adds it), and this file gains "Stays fixed". The triage and review prompts point to both.
 

@@ -200,7 +200,8 @@ describe("Spend page: the daily chart", () => {
     show(SpendSection);
     fireEvent.mouseEnter(await bar("2026-11-07"));
     const tip = screen.getByRole("tooltip");
-    expect(tip.className).toContain("bottom-full"); // above the bar
+    expect(tip.className).toContain("top-0"); // beside the bar, so the chart's scroller does not clip it
+    expect(tip.className).toMatch(/\b(left|right)-full\b/);
     expect(tip.textContent).toContain("2026-11-07");
     expect(tip.textContent).toContain("$568.79");
     expect(tip.textContent).toContain("14 runs");

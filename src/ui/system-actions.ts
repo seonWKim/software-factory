@@ -17,8 +17,11 @@ import type { ResumablePause } from "../resume-cmd.js";
 import { RESUME_IN_NEEDS_YOU, activePauses } from "./pause-api.js";
 import { MODEL_CREDENTIAL } from "../core/policy.js";
 
-/** The missing model credential's Needs-you row (design §9): the fix in its title; it ends once a worker finds the credential. */
-export const MODEL_CREDENTIAL_TITLE = "Add a model credential: run `npm run setup`";
+/**
+ * The missing model credential's Needs-you row (design §9): the fix in its title, no command; its action opens the Add
+ * model credential dialog (model-credential.ts). It ends once the dialog saves one, or a worker finds one.
+ */
+export const MODEL_CREDENTIAL_TITLE = "Add a model credential";
 
 export type SystemActionCode = "migration_pending" | "token_expiring" | "model_credential" | "claim_pause" | "worker_pause" | "alarm" | "revision_mismatch";
 
@@ -158,8 +161,9 @@ export async function systemActions(x: SystemInput): Promise<SystemAction[]> {
     add("token_expiring", days <= 0 ? "The GitHub token has expired or expires today" : `The GitHub token expires in ${days} day${days === 1 ? "" : "s"}`, "npm run setup -- --rotate-github");
   }
 
-  // One row for the missing model credential: it is no resumable pause, so the claim_pause rows below never list it.
-  if ((await x.store.getClaimPause(MODEL_CREDENTIAL)) !== null) add("model_credential", MODEL_CREDENTIAL_TITLE, "npm run setup");
+  // One row for the missing model credential: it is no resumable pause, so the claim_pause rows below never list it. The
+  // dashboard action first (the row's dialog), the CLI command as the fallback; the row draws the dialog, never this command.
+  if ((await x.store.getClaimPause(MODEL_CREDENTIAL)) !== null) add("model_credential", MODEL_CREDENTIAL_TITLE, "Add model credential, or npm run setup");
 
   for (const p of await activePauses(x)) {
     // The plain name; the row shows `until` (model_stall's next probe) as a relative time; the owner pause has none, and

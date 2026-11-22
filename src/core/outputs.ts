@@ -1,6 +1,6 @@
 import { DONE_CHECKS_SCHEMA, type DoneCheck, parseDoneChecks } from "./done-checks.js";
 import { isCovered } from "./policy.js";
-import { MAX_PHASES, MIN_PHASES, type SplitLimits, splitError } from "./split.js";
+import { MAX_PHASES, MIN_PHASES, type SplitLimits, parseGoalLines, splitError } from "./split.js";
 import { DEPENDENCY_OPTIONS, proposedDependency } from "./task-build.js";
 import type { Tier } from "./types.js";
 export { doneCheckCommands } from "./done-checks.js"; // the triage branch's check_commands (src/core/done-checks.ts)
@@ -38,6 +38,7 @@ export interface TriageOutput {
   estimated_files: number;
   /** A split into 2 to 4 ordered phases, each mergeable on its own: required over the split threshold (src/core/split.ts), else absent. */
   phases?: TriagePhase[];
+  goal_done_when?: string[]; // a split's goal lines, in order (design 04-split-specs, 2026-11-22); only with phases
 }
 
 /**
@@ -115,14 +116,8 @@ export const SPEC_CONFLICT = "spec_conflict";
 /** The longest `spec_conflict` reason the validator accepts: what a failed run's detail keeps. */
 export const SPEC_CONFLICT_MAX_CHARS = 500;
 
-/**
- * One reviewer finding (issue #222): `code` is a defect the implementer can fix inside the spec; `spec` is one
- * that needs the spec changed (a needed file outside the allowed paths, a criterion against a repo rule).
- */
-export interface ReviewFinding {
-  kind: "code" | "spec";
-  text: string;
-}
+/** One reviewer finding (issue #222): `code`, a defect fixable inside the spec; `spec`, one that needs the spec changed (a file outside the allowed paths, a criterion against a repo rule). */
+export type ReviewFinding = { kind: "code" | "spec"; text: string };
 
 export interface ReviewOutput {
   verdict: "pass" | "bug";
@@ -134,6 +129,7 @@ export interface ReviewOutput {
   ui_unverified?: boolean;
   /** Done-when lines built differently, each with its reason from the work item (design 04-agents). Left out when empty. */
   built_differently?: BuiltDifferently[];
+  unconfirmed?: ReviewFinding[]; // findings their confirm run did not confirm (design 04-agents): stored, never routed; left out when empty
   summary: string;
   needs_human?: NeedsHuman;
 }
@@ -147,6 +143,7 @@ export const builtDifferentlyOf = (r: Pick<ReviewOutput, "built_differently">): 
 /** The review's unverified checks; [] when it has none. */
 export const unverifiedOf = (r: Pick<ReviewOutput, "unverified">): string[] => r.unverified ?? [];
 
+export const BUILT_DIFFERENTLY_FINDING = "built differently from the spec with no reason in the work item: "; // the factory's own code finding for such a line
 /** The findings that need the spec changed. */
 export const specFindings = (r: Pick<ReviewOutput, "findings">): ReviewFinding[] => r.findings.filter((f) => f.kind === "spec");
 
@@ -208,11 +205,8 @@ export const TRIAGE_SCHEMA = {
     tier_reason: { type: "string" },
     estimated_lines: count,
     estimated_files: count,
-    phases: {
-      type: "array",
-      maxItems: MAX_PHASES,
-      items: closed({ title: { type: "string" }, problem: { type: "string" }, done_criteria: { ...strings, minItems: 1 }, allowed_paths: { ...strings, minItems: 1 } }),
-    },
+    phases: { type: "array", maxItems: MAX_PHASES, items: closed({ title: { type: "string" }, problem: { type: "string" }, done_criteria: { ...strings, minItems: 1 }, allowed_paths: { ...strings, minItems: 1 } }) },
+    goal_done_when: { ...strings, description: "Only with phases: what the whole split must do once every phase merged, one line each." },
   },
 };
 
@@ -282,24 +276,20 @@ export const REVIEW_SCHEMA = {
   properties: {
     verdict: { enum: ["pass", "bug"] },
     tier: tierSchema,
-    findings: {
-      type: "array",
-      items: closed({ kind: { enum: ["code", "spec"], description: "code: fixable inside the spec. spec: needs the spec changed." }, text: { type: "string" } }),
-    },
+    findings: { type: "array", items: closed({ kind: { enum: ["code", "spec"], description: "code: fixable inside the spec. spec: needs the spec changed." }, text: { type: "string" } }) },
     unverified: { ...strings, description: "Checks you could not run or confirm. Never makes the verdict bug." },
     ui_unverified: { type: "boolean", description: "True only when a change to UI paths could not have its build, type-check or screenshots run." },
-    built_differently: {
-      type: "array",
-      description: "Done-when lines the diff builds differently. Empty or absent when every line is built as written.",
-      items: closed({
-        line: { type: "string", description: "The done-when line." },
-        reason: { type: "string", description: "The reason, taken only from the work item (its decisions or owner notes). Empty when it gives none: that is a code finding and the verdict bug." },
-      }),
-    },
+    built_differently: { type: "array", description: "Done-when lines the diff builds differently. Empty or absent when every line is built as written.", items: closed({
+      line: { type: "string", description: "The done-when line." },
+      reason: { type: "string", description: "The reason, taken only from the work item (its decisions or owner notes). Empty when it gives none: that is a code finding and the verdict bug." },
+    }) },
     summary: { type: "string" },
     needs_human: NEEDS_HUMAN_SCHEMA,
   },
 };
+
+export type ReviewConfirmOutput = { confirmed: boolean; reason: string }; // a confirm run's answer (design 04-agents): does the finding hold in the diff, and why
+export const REVIEW_CONFIRM_SCHEMA = closed({ confirmed: { type: "boolean" }, reason: { type: "string" } });
 
 type Validation<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -477,7 +467,7 @@ export function parseTriage(v: unknown, limits?: SplitLimits & { check_commands?
   // Bare tool-call markup (issue #446) is refused, never repaired: the run is retried like any invalid output.
   const markup = markupError({
     in_short, problem, desired_output, tier_reason, ...(lists ? { in_scope: scoped.in_scope, out_of_scope: scoped.out_of_scope } : { scope: scoped.scope }),
-    done_criteria, applied_defaults, done_checks: (checks.value ?? []).flatMap((c) => ("reason" in c ? [c.reason] : [])),
+    done_criteria, applied_defaults, goal_done_when: isStrs(v.goal_done_when) ? v.goal_done_when : undefined, done_checks: (checks.value ?? []).flatMap((c) => ("reason" in c ? [c.reason] : [])),
     decisions: [...decisions, ...decision_items.flatMap((d) => [d.reason ?? "", ...(d.options ?? []), ...(d.option_changes ?? []).flatMap((c) => c.done_when)])],
   });
   if (markup) return { ok: false, error: markup };
@@ -495,6 +485,8 @@ export function parseTriage(v: unknown, limits?: SplitLimits & { check_commands?
   if (!isCount(estimated_lines) || !isCount(estimated_files)) return { ok: false, error: "estimated_lines/estimated_files" };
   const phases = parsePhases(v.phases);
   if (!phases.ok) return phases;
+  const goal = parseGoalLines(v.goal_done_when, phases.value?.length ?? 0);
+  if (!goal.ok) return goal;
   if (limits) {
     const err = splitError({ estimated_lines, estimated_files }, phases.value?.length ?? 0, limits);
     if (err) return { ok: false, error: err };
@@ -503,7 +495,8 @@ export function parseTriage(v: unknown, limits?: SplitLimits & { check_commands?
     ok: true,
     value: {
       in_short, problem, done_criteria, desired_output, ...scoped, allowed_paths, files_to_change, tier, tier_reason, estimated_lines,
-      estimated_files, decisions, decision_items, applied_defaults, ...(phases.value ? { phases: phases.value } : {}), ...(checks.value ? { done_checks: checks.value } : {}),
+      estimated_files, decisions, decision_items, applied_defaults, ...(phases.value ? { phases: phases.value } : {}), ...(goal.value ? { goal_done_when: goal.value } : {}),
+      ...(checks.value ? { done_checks: checks.value } : {}),
     },
   };
 }
@@ -566,6 +559,7 @@ export function parseImplement(v: unknown): Validation<ImplementOutput> {
   return { ok: true, value: { summary: v.summary, next_steps: v.next_steps, ...lists } };
 }
 
+const findingOf = (f: unknown): ReviewFinding | null => (isObj(f) && (f.kind === "code" || f.kind === "spec") && isStr(f.text) ? { kind: f.kind, text: f.text } : null);
 export function parseReview(v: unknown): Validation<ReviewOutput> {
   if (!isObj(v)) return { ok: false, error: "not an object" };
   const { verdict, tier, findings, summary } = v;
@@ -574,10 +568,12 @@ export function parseReview(v: unknown): Validation<ReviewOutput> {
   const parsed: ReviewFinding[] = [];
   for (const [i, f] of findings.entries()) {
     // An older review's finding is a plain string: a code finding (issue #222).
-    if (isStr(f)) parsed.push({ kind: "code", text: f });
-    else if (isObj(f) && (f.kind === "code" || f.kind === "spec") && isStr(f.text)) parsed.push({ kind: f.kind, text: f.text });
-    else return { ok: false, error: `findings[${i}]: an object with kind "code" or "spec" and a text` };
+    const p = isStr(f) ? { kind: "code" as const, text: f } : findingOf(f);
+    if (!p) return { ok: false, error: `findings[${i}]: an object with kind "code" or "spec" and a text` };
+    parsed.push(p);
   }
+  const unconfirmed = Array.isArray(v.unconfirmed) ? v.unconfirmed.map(findingOf) : v.unconfirmed === undefined ? [] : [null]; // set by the worker's confirm runs
+  if (unconfirmed.includes(null)) return { ok: false, error: "unconfirmed" };
   const unverified = v.unverified ?? [];
   if (!isStrs(unverified)) return { ok: false, error: "unverified" };
   if (v.ui_unverified !== undefined && typeof v.ui_unverified !== "boolean") return { ok: false, error: "ui_unverified" };
@@ -585,15 +581,19 @@ export function parseReview(v: unknown): Validation<ReviewOutput> {
   if (!Array.isArray(differently) || !differently.every((d) => isObj(d) && isStr(d.line) && isStr(d.reason))) return { ok: false, error: "built_differently" };
   const lines = (differently as BuiltDifferently[]).map((d) => ({ line: d.line.trim(), reason: d.reason.trim() })).filter((d) => d.line);
   // A line built differently with no reason in the work item is a defect (design 04-agents): a code finding.
-  for (const d of lines) if (!d.reason) parsed.push({ kind: "code", text: `built differently from the spec with no reason in the work item: ${d.line}` });
+  for (const d of lines) if (!d.reason) parsed.push({ kind: "code", text: `${BUILT_DIFFERENTLY_FINDING}${d.line}` });
   const built = lines.filter((d) => d.reason);
   const ask = parseNeedsHuman(v.needs_human);
   if (!ask.ok) return ask;
-  return {
-    ok: true,
-    value: {
-      verdict: parsed.length > findings.length ? "bug" : verdict, tier, findings: parsed, summary, ...(unverified.length > 0 ? { unverified } : {}),
-      ...(v.ui_unverified === true ? { ui_unverified: true } : {}), ...(built.length > 0 ? { built_differently: built } : {}), ...(ask.value ? { needs_human: ask.value } : {}),
-    },
-  };
+  return { ok: true, value: {
+    verdict: parsed.length > findings.length ? "bug" : verdict, tier, findings: parsed, summary, ...(unverified.length > 0 ? { unverified } : {}),
+    ...(v.ui_unverified === true ? { ui_unverified: true } : {}), ...(built.length > 0 ? { built_differently: built } : {}),
+    ...(unconfirmed.length > 0 ? { unconfirmed: unconfirmed as ReviewFinding[] } : {}), ...(ask.value ? { needs_human: ask.value } : {}),
+  } };
+}
+
+/** A confirm run's answer: `confirmed` a boolean and `reason` a string, else no valid answer (its finding stays). */
+export function parseReviewConfirm(v: unknown): Validation<ReviewConfirmOutput> {
+  if (!isObj(v) || typeof v.confirmed !== "boolean" || !isStr(v.reason)) return { ok: false, error: isObj(v) ? "confirmed/reason" : noAnswerError(v) };
+  return { ok: true, value: { confirmed: v.confirmed, reason: v.reason.trim() } };
 }

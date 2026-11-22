@@ -1,21 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
-import { API, type ItemRow, type Items, type Overview, type SystemAction, type UnreviewedMerges, mergeInFlight, useApi, useItems } from "../api.js";
+import { API, type ItemRow, type Items, type Overview, type SystemAction, type UnreviewedMerges, mergeCheckLabel, mergeInFlight, useApi, useItems } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { Dialog } from "../components/ui/dialog.js";
-import { LINK_CLASS } from "../components/ui/link-style.js";
+import { BLOCK_LINK_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import { ErrorNote } from "../components/ui/parts.js";
 import type { MessageKey } from "../i18n/en.js";
 import { shortSource, whyText } from "../lib/format.js";
 import { t } from "../i18n/index.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
-import { type NeedGroup, MergeCheckNote, allowEntries, needGroup, needsYou } from "./common.js";
+import { type NeedGroup, allowEntries, needGroup, needsYou } from "./common.js";
 import { ItemDecision } from "./decision-card.js";
 import { useCommandSend } from "./command-send.js";
-import { NeedActions, SendErrors } from "./item-commands.js";
+import { NeedActions, sendErrorTexts, useMergeReply } from "./item-commands.js";
 import { FloorStatus } from "./pages.js";
 import { CheckRow } from "./system-banner.js";
-import { Card } from "../components/ui/card.js";
+import { OutcomeText } from "./command-box.js";
+import { Card, SUB_TITLE } from "../components/ui/card.js";
 import { Badge, StatusBadge } from "../components/ui/badge.js";
 import { ListRow, ROW_TITLE } from "../components/ui/list-row.js";
 import type { MenuItem } from "../components/ui/menu.js";
@@ -88,14 +89,17 @@ export function WorkState({ id, title, open: taskOpen }: { id: string; title: st
 const GROUPS: readonly [NeedGroup, MessageKey][] = [["merge", "needs.groupMerge"], ["approve", "needs.groupApprove"], ["answer", "needs.groupAnswer"]];
 
 /**
- * One compact Needs you row: the item (and its PR), its state as one badge, a merge check only when it is not
- * "mergeable", the reason only for an Answer-or-fix item (Merge and Approve say it with the badge; it links to the item's latest
- * thread entry when the need names one), on the shared ListRow; every action is in its "⋯" menu, the primary first.
- * A failed send's error takes its own line below the row's content, never the menu cell (design-system/patterns.md C-050).
+ * One compact Needs you row: the item (and its PR), its state as one badge (a merge check's conflicts are that state:
+ * "Conflicts: N files", the files on hover, not "Ready to merge" beside them), the reason only for an Answer-or-fix
+ * item (Merge and Approve say it with the badge; it links to the item's latest thread entry when the need names one),
+ * on the shared ListRow; every action is in its "⋯" menu, the primary first. A failed send's error and a merge's
+ * refusal take their own line below the row's content, never the menu cell (design-system/patterns.md C-050).
  */
 function WorkRow({ it }: { it: ItemRow }) {
   const cmd = useCommandSend(it.id);
-  const checking = it.merge_check?.state === "checking";
+  const merge = useMergeReply(it.id, needGroup(it), it.merge, cmd);
+  const errors = [...new Set([...sendErrorTexts(cmd.local), ...(merge.outcome?.tone === "error" ? [merge.outcome.text] : [])])];
+  const conflicts = it.merge_check?.state === "conflicts" ? it.merge_check : null;
   const reason = needReason(it);
   const chip = CODE_REASON.test(reason);
   const toNeed = it.need?.anchor ? `${itemPath(it.id)}#${it.need.anchor}` : null;
@@ -104,7 +108,7 @@ function WorkRow({ it }: { it: ItemRow }) {
       data-key={it.id}
       title={
         <span className="flex min-w-0 items-baseline gap-2">
-          <Link href={itemPath(it.id)} title={it.title ?? undefined} className={cn(ROW_TITLE, "text-text-1 hover:underline")}>
+          <Link href={itemPath(it.id)} title={it.title ?? undefined} data-raw className={cn(ROW_TITLE, "leading-6 text-text-1 hover:underline")}>
             {it.title ?? shortSource(it.source.id)}
           </Link>
           {it.change_ref !== null && <span className="shrink-0 text-xs text-text-2 tabular-nums">#{it.change_ref}</span>}
@@ -112,9 +116,14 @@ function WorkRow({ it }: { it: ItemRow }) {
       }
       details={
         <>
-          <StatusBadge state={it.item_phase} />
+          {conflicts ? (
+            <span data-merge-check="conflicts" title={conflicts.conflicts.join("\n")}>
+              <Badge level="failed">{mergeCheckLabel(conflicts)}</Badge>
+            </span>
+          ) : (
+            <StatusBadge state={it.item_phase} />
+          )}
           {it.rank_reason !== undefined && <span data-rank><Badge level={it.held ? "held" : undefined}>{it.rank_reason}</Badge></span>}
-          {it.merge_check && !checking && it.merge_check.state !== "mergeable" && <MergeCheckNote check={it.merge_check} />}
           {chip && (
             <span data-need title={reason}>
               {toNeed ? (
@@ -127,17 +136,18 @@ function WorkRow({ it }: { it: ItemRow }) {
             </span>
           )}
           {reason !== "" && !chip && (
-            <span data-need title={reason} className="min-w-0 flex-1 basis-40 truncate">
-              {toNeed ? <Link href={toNeed} className={LINK_CLASS}>{reason}</Link> : reason}
+            // Below sm the reason wraps onto as many lines as it needs; from sm up it is one line cut with an ellipsis.
+            <span data-need title={reason} className="min-w-0 flex-1 basis-40 break-words sm:truncate">
+              {toNeed ? <Link href={toNeed} className={cn("sm:truncate", BLOCK_LINK_CLASS)}>{reason}</Link> : reason}
             </span>
           )}
         </>
       }
       menu={<RowActions it={it} cmd={cmd} inlineErrors={false} />}
     >
-      {Object.values(cmd.local).some((l) => "error" in l) && (
-        <div data-row-error className="flex flex-col gap-1">
-          <SendErrors local={cmd.local} />
+      {errors.length > 0 && (
+        <div data-row-error className="flex min-w-0 flex-col gap-1">
+          {errors.map((text) => <OutcomeText key={text} outcome={{ tone: "error", text }} />)}
         </div>
       )}
     </ListRow>
@@ -156,7 +166,7 @@ export function NeedsList({ items, checks = [] }: { items: readonly ItemRow[]; c
     <div className="space-y-3">
       {groups.map((g) => (
         <div key={g.title} className="space-y-1">
-          <h3 className="text-xs font-medium text-text-2">{g.title}</h3>
+          <h3 className={SUB_TITLE}>{g.title}</h3>
           <ul aria-label={g.title} className="divide-y divide-border rounded-control border border-border">
             {g.rows}
           </ul>
@@ -185,7 +195,7 @@ function MergeRow({ m, risk }: { m: Merge; risk: boolean }) {
   return (
     <ListRow
       data-key={m.change_ref}
-      title={m.review_url ? <a href={m.review_url} target="_blank" rel="noreferrer" className={cn(ROW_TITLE, LINK_CLASS)}>{label}</a> : <span className={ROW_TITLE}>{label}</span>}
+      title={m.review_url ? <a href={m.review_url} target="_blank" rel="noreferrer" className={cn(ROW_TITLE, "leading-6", BLOCK_LINK_CLASS)}>{label}</a> : <span className={ROW_TITLE}>{label}</span>}
       details={
         <>
           {risk && <span data-risk><Badge level={r.level}>{t(r.key)}</Badge></span>}

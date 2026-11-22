@@ -17,6 +17,7 @@ export const shell = {
   "page.failures": "Failures",
   "page.spend": "Spend",
   "page.rules": "Rules",
+  "page.proposals": "Proposals",
   "page.settings": "Settings",
   "page.data": "Data",
   "page.plugins": "Plugins",
