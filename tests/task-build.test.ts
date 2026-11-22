@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import migration from "../src/controller/migrations/20261112T1500-controller-tasks-work-item.migration.js";
 import { type CliAction, type LocalCliDeps, parseLocalCliArgs, runLocalCli } from "../src/core/local-cli.js";
+import { buildTask, dependsOnIds, dependsOnLine, localItemOf, withDependsOn } from "../src/core/task-build.js";
 import type { UserId, WorkItemId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -10,6 +11,7 @@ import { type ApiDeps, type UiRequest, respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
 import { TASKS_PATH, TASK_BUILD_PATH } from "../src/ui/tasks-api.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // Build this (design 02-tasks, issue #607): `factory task build <task_id>` and the Tasks page's button send an open
 // task to intake as one local work item and store its ID on the task. A second build makes no second item and writes
@@ -22,7 +24,7 @@ async function setup(project: string | null = PROJECT_KEY) {
   const { store } = await newStore(clock);
   let n = 0;
   const d: LocalCliDeps = {
-    store, identity: { user: USER, from: "git user.email" }, project: async () => project, read: async () => "", newId: () => `id${++n}`,
+    answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: USER, from: "git user.email" }, project: async () => project, read: async () => "", newId: () => `id${++n}`,
   };
   const cli = (...args: string[]) => {
     const a = parseLocalCliArgs("task", args);
@@ -236,6 +238,30 @@ describe("migration: controller_tasks.work_item_id", () => {
   });
 });
 
+describe("the Depends on line (design 05-dependencies, 2026-11-20)", () => {
+  it("is `Depends on: <id>`; withDependsOn appends each missing id once after a blank line and leaves a named one alone", () => {
+    expect(dependsOnLine("wi_a")).toBe("Depends on: wi_a");
+    expect(withDependsOn("the body", ["wi_a", "tk_b", "wi_a"])).toBe("the body\n\nDepends on: wi_a\nDepends on: tk_b");
+    expect(withDependsOn("the body\n- depends on wi_a", ["wi_a"])).toBe("the body\n- depends on wi_a");
+    expect(withDependsOn("", ["wi_a"])).toBe("Depends on: wi_a");
+    expect(dependsOnIds("x\nDepends on: wi_a, tk_b\nnot wi_c\ndepends on wi_a")).toEqual(["wi_a", "tk_b"]);
+  });
+
+  it("localItemOf resolves a wi_ id and a built task's tk_ id to the local item; anything else to null", async () => {
+    const { store, cli } = await setup();
+    const id = (await cli("create", "--title", "First", "--body-file", "b")).lines[0] as WorkItemId;
+    expect((await localItemOf(store, id))?.id).toBe(id);
+    await store.addTask({ id: "tk_one", title: "one", list: null, priority: null, due: null, due_time: null, recurrence: null, created_by: USER });
+    expect(await localItemOf(store, "tk_one")).toBeNull();
+    const built = await buildTask(store, "tk_one", PROJECT_KEY, USER);
+    if (!built.ok) throw new Error(built.reason);
+    expect((await localItemOf(store, "tk_one"))?.id).toBe(built.item.id);
+    for (const none of ["wi_missing", "tk_missing", "#12", ""]) expect(await localItemOf(store, none), none).toBeNull();
+    const { item: gh } = await store.createWorkItem({ source: { type: "github", id: "o/r#1", link: "x" }, requester_id: USER, project: PROJECT_KEY, problem: "p", resources: [] }, { kind: "system", id: "t" });
+    expect(await localItemOf(store, gh.id)).toBeNull();
+  });
+});
+
 describe("a task's description in its build (design 02-tasks, description)", () => {
   const problem = async (s: Awaited<ReturnType<typeof setup>>, id: string) =>
     (await s.store.getWorkItem((await s.store.getTask(id))!.work_item_id!))!.problem;
@@ -269,7 +295,7 @@ describe("a task's description in its build (design 02-tasks, description)", () 
   it("task create --project stores its body on the task and builds from it", async () => {
     const s = await setup();
     const d: LocalCliDeps = {
-      store: s.store, identity: { user: USER, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "  call first  \n", newId: () => "x1",
+      answers: { split: splitAnswers, detail: answersDetail }, store: s.store, identity: { user: USER, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "  call first  \n", newId: () => "x1",
     };
     const run = (word: string, ...args: string[]) => {
       const a = parseLocalCliArgs(word, args);

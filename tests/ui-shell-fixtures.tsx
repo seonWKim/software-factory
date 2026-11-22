@@ -115,7 +115,7 @@ export function installShellFixtures() {
 }
 
 /** Waits for the overview: the sidebar Tasks entry shows the waiting count as its badge. */
-export const waitBadge = () => screen.findByRole("link", { name: "Tasks" }).then((a) => vi.waitFor(() => expect(a.textContent).toBe("Tasks4")));
+export const waitBadge = () => screen.findByRole("link", { name: "Tasks, 4 need you" }).then((a) => expect(a.textContent).toBe("Tasks4"));
 
 export function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { localProject } from "../src/compose.js";
+import { localProject } from "../src/load-config.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { type CliAction, runLocalCli } from "../src/core/local-cli.js";
@@ -15,7 +15,7 @@ import type { ChildRestart } from "../src/interfaces/updater.js";
 import { utcMinute } from "../src/core/spec-comment.js";
 import { footerCommands } from "../src/impl/source/slack-format.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
-import { RECURRING_FAILURE, type UserId, type WorkerId, type WorkItemId } from "../src/core/types.js";
+import { RECURRING_FAILURE, type Tier, type UserId, type WorkerId, type WorkItemId } from "../src/core/types.js";
 import { Worker } from "../src/worker/index.js";
 import { OwnerAuth } from "../src/core/authorize.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
@@ -25,12 +25,16 @@ import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import type { Sandbox } from "../src/interfaces/sandbox.js";
 import { parseModeArgs, runSettings } from "../src/settings-cmd.js";
-import { FakeRunner, MemoryStorage, cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes.js";
+import { FakeRunner, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { issue, newStore, system } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
+import { seedMergeRecord } from "./helpers/merge-record.js";
 
 // Auto mode (design 03-risk, issue #444): a local factory over a real git repo, as in local-merge-flow.test.ts, with the
 // live settings read from the store each tick. The mode is flipped after the controller is built, so every test also
-// shows a running controller reading the new mode at its next tick, with no restart.
+// shows a running controller reading the new mode at its next tick, with no restart. Each factory starts with a met
+// merge record for the review's tier (50 clean merges), so the tier rule lets its change merge unless a test says otherwise.
 
 const ME = "local:me@example.com" as UserId;
 const DEV = "local:dev@example.com" as UserId;
@@ -62,6 +66,8 @@ interface Opts {
   restarts?: () => Promise<readonly ChildRestart[]>;
   /** `repo.ui_check`: run at merge on a change to its paths, and on the new base tip after an automatic merge. */
   ui_check?: FactoryConfig["repo"]["ui_check"];
+  /** The review tier's merge record seeded before the change (seedMergeRecord); default 50 clean merges, a met rule. */
+  record?: { merges?: number; bad?: number };
 }
 
 async function autoFactory(opts: Opts = {}) {
@@ -83,6 +89,7 @@ async function autoFactory(opts: Opts = {}) {
   };
   const clock = new FakeClock();
   const { store } = await newStore(clock);
+  await seedMergeRecord(store, clock, { tier: (opts.reviewTier ?? 2) as Tier, ...opts.record });
   const auth = new OwnerAuth(store);
   const sandbox = new NoOpSandbox(join(root, "wt"), undefined, undefined, { local: true });
   const settings = new LiveSettings({ config: cfg, base: baseFromConfig(cfg), source: store });
@@ -111,7 +118,7 @@ async function autoFactory(opts: Opts = {}) {
   };
   let n = 0;
   const cli = (user: UserId, a: CliAction) =>
-    runLocalCli({ store, identity: { user, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
+    runLocalCli({ answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
   const create = async () => (await cli(ME, { action: "create", title: "A change", bodyFile: "b.md" })).lines[0] as WorkItemId;
   /** An item the improve run files for a recurring failure (design §7), through the local source as the improver. */
   const fileAsImprover = async () => {
@@ -269,6 +276,37 @@ describe("auto mode: merges", { timeout: 60_000 }, () => {
     expect((await f.modeRows()).map((r) => r.new_value)).toEqual(['"auto"']);
   });
 
+  it("the drop-back: a holding tier still merges with 1 reverted merge among its last 20", async () => {
+    const f = await autoFactory({ record: { merges: 51, bad: 1 } });
+    await f.setting("auto_merge_max_tier", 3);
+    await f.mode("auto");
+    const id = await f.create();
+    await f.step();
+    await f.approveRun(id);
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
+    expect(await f.messages(id, "<!-- factory:auto-merge-held:")).toEqual([]);
+  });
+
+  it("the drop-back: after 2 reverted merges among its last 20 the tier waits for a person, and the stored setting is unchanged", async () => {
+    const f = await autoFactory({ record: { merges: 52, bad: 2 } });
+    await f.setting("auto_merge_max_tier", 3);
+    await f.mode("auto");
+    const settingRows = async () => (await f.store.listSettingChanges(50)).filter((c) => c.key === "auto_merge_max_tier");
+    const before = await settingRows();
+    const mainBefore = git(f.repo, "rev-parse", "main");
+    const id = await f.create();
+    await f.step();
+    await f.approveRun(id);
+    await f.step();
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+    expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
+    const held = await f.messages(id, "<!-- factory:auto-merge-held:");
+    expect(held).toHaveLength(1);
+    expect(held[0]).toContain("tier 2 dropped back: 2 or more of its last 20 merges were reverted or fixed forward");
+    expect(await settingRows()).toEqual(before);
+    expect((await f.store.listSettingOverrides()).find((o) => o.key === "auto_merge_max_tier")).toMatchObject({ value: "3" });
+  });
+
   it("with auto_merge_max_tier at its default 0, a reviewed change waits for a person, and the reply says why", async () => {
     const f = await autoFactory();
     await f.mode("auto");
@@ -376,11 +414,15 @@ describe("auto mode: stop conditions", { timeout: 60_000 }, () => {
     await stopped(f, "red_main");
     // The stop is in force: its time and cause reach the Mode toggle and the system banner.
     const [alert] = (await f.store.listAlerts({ limit: 10 })).filter((a) => a.pattern === "auto_stopped");
-    expect(await lastAutoStop(f.store)).toEqual({ alert_id: alert!.id, at: alert!.created_at, cause: "red_main" });
+    // The failing command printed nothing: no test names and no tail to keep.
+    expect(await lastAutoStop(f.store)).toEqual({ alert_id: alert!.id, at: alert!.created_at, cause: "red_main", failing_tests: [], output_tail: null });
     const actions = await systemActions({ store: f.store, factory: null, deps: {}, now: f.clock.now(), dashboardRev: null });
     const line = actions.find((a) => a.auto_stop)!;
     expect(line.auto_stop).toMatchObject({ alert_id: alert!.id, cause: "red_main" });
-    expect(line.text).toContain(`Alarm: back to manual at ${utcMinute(alert!.created_at)}: the checks failed on the base branch after a merge`);
+    expect(line.text).toContain("Alarm: back to manual: the checks failed on the base branch after a merge");
+    // The time is a field (`auto_stop.at`), never inside the sentence.
+    expect(line.text).not.toMatch(/\d{4}-\d{2}-\d{2}|UTC/);
+    expect(line.auto_stop!.at).toBe(alert!.created_at);
     // Manual again: the next spec waits.
     const next = await f.create();
     await f.step();
@@ -389,7 +431,7 @@ describe("auto mode: stop conditions", { timeout: 60_000 }, () => {
 
   it("red main from the UI check: after an auto merge it runs on the new base tip; a failure raises one red_main alert on that tip, files its fix item and stops auto mode", async () => {
     // The change touches no UI path, so its merge check runs no UI check; the base tip's check after the merge does.
-    const f = await autoFactory({ ui_check: { command: ["sh", "-c", "echo layout broken; exit 1"], paths: ["web/"] } });
+    const f = await autoFactory({ ui_check: { command: ["sh", "-c", "echo 'FAIL  tests/layout.test.ts > fits'; echo layout broken; exit 1"], paths: ["web/"] } });
     await f.setting("auto_merge_max_tier", 3);
     await f.mode("auto");
     const first = await f.create();
@@ -400,9 +442,33 @@ describe("auto mode: stop conditions", { timeout: 60_000 }, () => {
     const tip = git(f.repo, "rev-parse", "main");
     const red = (await f.store.listAlerts({ limit: 10 })).filter((a) => a.pattern === "red_main");
     expect(red.map((a) => a.pattern_key)).toEqual([`red_main:${tip}`]);
-    expect(red[0]!.detail).toContain("`sh -c echo layout broken; exit 1` exited 1 on the new tip of `main`");
+    // The alert's detail keeps the sentence, the failing tests by name and the output tail (no new column).
+    expect(JSON.parse(red[0]!.detail!)).toEqual({
+      text: "`sh -c echo 'FAIL  tests/layout.test.ts > fits'; echo layout broken; exit 1` exited 1 on the new tip of `main`",
+      failing_tests: ["tests/layout.test.ts > fits"],
+      output_tail: "FAIL  tests/layout.test.ts > fits\nlayout broken\n",
+    });
+    // The overview's red_main alarm and the stop carry them to What failed.
+    const actions = await systemActions({ store: f.store, factory: null, deps: {}, now: f.clock.now(), dashboardRev: null });
+    expect(actions.find((a) => a.pattern === "red_main")).toMatchObject({ failing_tests: ["tests/layout.test.ts > fits"], output_tail: "FAIL  tests/layout.test.ts > fits\nlayout broken\n" });
+    expect((await lastAutoStop(f.store))).toMatchObject({ cause: "red_main", failing_tests: ["tests/layout.test.ts > fits"] });
     const fixes = await f.store.db.all("SELECT intent_key FROM outbound_actions WHERE action = 'file_fix_item'");
     expect(fixes.map((r) => r.intent_key)).toEqual([`file_fix_item:red_main:${tip}`]);
+  });
+
+  it("red main from the UI check with a tail the egress scan flags: the tail is stored as null and the test names are kept", async () => {
+    // The key is put together by the shell, so only the output holds it, not the command in the sentence.
+    const print = "printf 'FAIL  tests/layout.test.ts > fits\\nAKIA%s\\n' ABCDEFGHIJKLMNOP; exit 1";
+    const f = await autoFactory({ ui_check: { command: ["sh", "-c", print], paths: ["web/"] } });
+    await f.setting("auto_merge_max_tier", 3);
+    await f.mode("auto");
+    const first = await f.create();
+    await f.step();
+    await f.approveRun(first);
+    await stopped(f, "red_main");
+    const [red] = (await f.store.listAlerts({ limit: 10 })).filter((a) => a.pattern === "red_main");
+    expect(JSON.parse(red!.detail!)).toMatchObject({ failing_tests: ["tests/layout.test.ts > fits"], output_tail: null });
+    expect(red!.detail).not.toContain("AKIA" + "ABCDEFGHIJKLMNOP");
   });
 
   it("red main at the merge check in auto mode: the change stays queued, one red_main alert is stored and auto mode stops", async () => {

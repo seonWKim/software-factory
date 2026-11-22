@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { type Loaded, loadConfig, localProject } from "../src/compose.js";
+import { type Loaded, loadConfig, localProject } from "../src/load-config.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import { setConfigKey } from "../src/core/config-text.js";
 import { type ConfigWriterDeps, FILE_ONLY_KEYS, editConfigFile } from "../src/core/config-writer.js";
@@ -20,8 +20,10 @@ import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Worker } from "../src/worker/index.js";
-import { FakeRunner, MemoryStorage, cleanScanner, config, prompts, silent } from "./helpers/fakes.js";
+import { FakeRunner, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, prompts, silent } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // The file-only key writer (design 08-settings): one key of factory.config.json, one commit on a new local branch
 // factory/<id> made without a checkout, one local item waiting for the owner's merge, one audit row. Everything runs
@@ -260,7 +262,7 @@ describe("factory merge lands a filed config edit", { timeout: 60_000 }, () => {
     // The owner claims the factory first, as any local CLI command does.
     let n = 0;
     const cli = (a: Parameters<typeof runLocalCli>[1]) =>
-      runLocalCli({ store, identity: { user: ME, from: "git user.email" }, project: async () => PROJECT.key, read: async () => "", newId: () => `id${++n}` }, a);
+      runLocalCli({ answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: ME, from: "git user.email" }, project: async () => PROJECT.key, read: async () => "", newId: () => `id${++n}` }, a);
     await store.claimOwner(ME);
 
     const mainBefore = git(r.repo, "rev-parse", "main");

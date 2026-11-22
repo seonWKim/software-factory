@@ -8,9 +8,11 @@ import { GitHubForge } from "../src/impl/github/github-forge.js";
 import type { BaseChecks, PrChecks } from "../src/interfaces/forge.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Worker } from "../src/worker/index.js";
-import {
-  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, config, issueRef, prompts, silent, triageSpec,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, config, issueRef, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { RecordingGitHubClient } from "./helpers/github.js";
 import { newStore } from "./helpers/store.js";
 
@@ -32,14 +34,17 @@ class RerunForge extends BaseForge {
   rerunError: Error | null = null;
   logReads: string[] = [];
   log: string | Error = "";
+  /** Per-commit logs, read before `log`. */
+  logs: Record<string, string | Error> = {};
   async rerunFailedJobs(head_sha: string): Promise<void> {
     if (this.rerunError) throw this.rerunError;
     this.reruns.push(head_sha);
   }
   async failedJobLog(head_sha: string): Promise<string> {
     this.logReads.push(head_sha);
-    if (this.log instanceof Error) throw this.log;
-    return this.log;
+    const log = this.logs[head_sha] ?? this.log;
+    if (log instanceof Error) throw log;
+    return log;
   }
 }
 
@@ -408,5 +413,92 @@ describe("CI gate: a failed head's jobs are rerun once (design 05-ci-gate, Rerun
     await f.controller.tickChecks();
     expect(await f.item(it0.id)).toMatchObject({ stage: "RUNNING", loop_count: 1 });
     expect((await f.implementRuns(it0.id)).find((r) => r.status === "queued")!.input?.ci_failing_tests).toBeUndefined();
+  });
+});
+
+describe("CI gate: red main decided per failing test (design 05-ci-gate, Red main)", () => {
+  const MAIN_TEST = "tests/ui-health-page.test.tsx > health page > renders";
+  const OWN_TEST = "tests/own.test.ts > own > breaks";
+  const logOf = (...tests: string[]) => tests.map((t) => ` FAIL  ${t}\nAssertionError: expected 1 to be 2`).join("\n");
+  /** A PR at head h1 failing `test`, on a base b1 whose `test` fails with MAIN_TEST. */
+  const redMain = async (prTests: string[], n: number) => {
+    const f = await factory([failed("test")], { rerun: true, head: "h1" });
+    const g = f.forge as RerunForge;
+    g.base = redBase("test");
+    g.logs = { h1: logOf(...prTests), b1: logOf(MAIN_TEST) };
+    const it0 = await f.toReview(n);
+    return { f, g, it0 };
+  };
+  const comments = async (f: Awaited<ReturnType<typeof factory>>, id: string, key: string) =>
+    (await f.store.listItemMessages(id as never)).filter((m) => m.marker.includes(`factory:${key}:`));
+
+  it("a PR whose only failing test also fails on main stays blocked on main, with no implement run queued", async () => {
+    const { f, g, it0 } = await redMain([MAIN_TEST], 40);
+    expect(it0).toMatchObject({ stage: "REVIEW", blocked_on: "ci", blocked_reason: "main is red: test", loop_count: 0 });
+    expect(g.logReads).toContain("h1");
+    expect(g.logReads).toContain("b1");
+    expect(g.reruns).toEqual([]);
+    expect((await f.implementRuns(it0.id)).filter((r) => r.status === "queued")).toEqual([]);
+    f.forge.checkResults = [failed("test")];
+    await f.controller.tickChecks();
+    expect(await f.item(it0.id)).toMatchObject({ blocked_reason: "main is red: test", version: it0.version });
+    expect((await f.implementRuns(it0.id)).filter((r) => r.status === "queued")).toEqual([]);
+  });
+
+  it("after main goes green its checks re-run, and a pass moves it to merge", async () => {
+    const { f, g, it0 } = await redMain([MAIN_TEST], 41);
+    g.base = { state: "passed", head_sha: "b2" };
+    f.forge.checkResults = [failed("test")];
+    await f.controller.tickChecks();
+    expect(await f.item(it0.id)).toMatchObject({ blocked_on: "ci", blocked_reason: "checks_rerun", loop_count: 0 });
+    expect(g.reruns).toEqual(["h1"]);
+    f.forge.checkResults = [{ state: "passed" }];
+    await f.controller.tickChecks();
+    expect(await f.item(it0.id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", loop_count: 0 });
+    expect(await f.implementRuns(it0.id)).toHaveLength(1);
+  });
+
+  it("one main-red failure and one of its own: sent back naming only its own failure", async () => {
+    const { f, it0 } = await redMain([MAIN_TEST, OWN_TEST], 42);
+    expect(it0).toMatchObject({ blocked_reason: "checks_rerun" });
+    f.forge.checkResults = [failed("test")];
+    await f.controller.tickChecks();
+    expect(await f.item(it0.id)).toMatchObject({ stage: "RUNNING", loop_count: 1 });
+    const text = (await f.implementRuns(it0.id)).find((r) => r.status === "queued")!.input!.ci_failing_tests!;
+    expect(text).toContain(`FAIL ${OWN_TEST}`);
+    expect(text).not.toContain(MAIN_TEST);
+    const [comment] = await comments(f, it0.id, "checks-failed");
+    expect(comment!.body).toContain(OWN_TEST);
+    expect(comment!.body).not.toContain(MAIN_TEST);
+  });
+
+  it.each([
+    ["the PR log cannot be read", (g: RerunForge) => { g.logs.h1 = new Error("403"); }],
+    ["the PR log names no test", (g: RerunForge) => { g.logs.h1 = "lint failed"; }],
+    ["the base log cannot be read", (g: RerunForge) => { g.logs.b1 = new Error("403"); }],
+    ["the base log names no test", (g: RerunForge) => { g.logs.b1 = "no tests here"; }],
+  ])("when %s, the check names decide as before", async (_name, set) => {
+    const f = await factory([failed("test")], { rerun: true, head: "h1" });
+    const g = f.forge as RerunForge;
+    g.base = redBase("test");
+    g.logs = { h1: logOf(OWN_TEST), b1: logOf(MAIN_TEST) };
+    set(g);
+    const it0 = await f.toReview(43);
+    expect(it0).toMatchObject({ blocked_on: "ci", blocked_reason: "main is red: test", loop_count: 0 });
+    expect(g.reruns).toEqual([]);
+  });
+
+  it("one checks step reads main's failed job log at most once", async () => {
+    const f = await factory([failed("test"), failed("test"), failed("test")], { rerun: true, head: "h1" });
+    const g = f.forge as RerunForge;
+    g.base = redBase("test");
+    g.logs = { h1: logOf(MAIN_TEST), b1: logOf(MAIN_TEST) };
+    const ids = [(await f.toReview(44)).id, (await f.toReview(45)).id, (await f.toReview(46)).id];
+    for (const id of ids) expect(await f.item(id)).toMatchObject({ blocked_reason: "main is red: test" });
+    g.logReads = [];
+    f.forge.checkResults = [failed("test"), failed("test"), failed("test")];
+    await f.controller.tickChecks();
+    expect(g.logReads.filter((s) => s === "b1")).toEqual(["b1"]);
+    expect(g.logReads.filter((s) => s === "h1").length).toBeGreaterThan(1);
   });
 });

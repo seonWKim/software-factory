@@ -2,10 +2,11 @@
 // Dashboard shell tests: one queued count, app pages, unreviewed merges, system actions and revisions. Shared setup is in ui-shell-fixtures.tsx.
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { localDateTime } from "../web/src/lib/format.js";
 import { redirectFor } from "../web/src/pages.js";
 import { ItemsTable } from "../web/src/views/common.js";
-import { API } from "../web/src/api.js";
-import { RevisionBanner } from "../web/src/views/system-banner.js";
+import { API, POLL_MS } from "../web/src/api.js";
+import { RevisionBanner, SEEN_REV_KEY } from "../web/src/views/system-banner.js";
 import { VIEW_KEY } from "../web/src/views/tree.js";
 import { AT, overview, row, items, runs, queue, RESPONSES, state, installShellFixtures, waitBadge, mount } from "./ui-shell-fixtures.js";
 
@@ -16,7 +17,10 @@ describe("one queued count", () => {
     history.replaceState(null, "", "/app/items");
     mount();
     const filters = await screen.findByRole("tablist", { name: "Filter by state" });
-    expect(await within(filters).findByRole("tab", { name: `Queued ${queue.queue.length}` })).toBeTruthy();
+    // Queued is a state of the Active group: its tab is in the second row once Active is chosen.
+    fireEvent.click(await within(filters).findByRole("tab", { name: /^Active/ }));
+    const states = await screen.findByRole("tablist", { name: "Filter Active by state" });
+    expect(await within(states).findByRole("tab", { name: `Queued ${queue.queue.length}` })).toBeTruthy();
     expect(queue.queue.length).toBe(overview.queued);
   });
 
@@ -25,7 +29,9 @@ describe("one queued count", () => {
     mount();
     await vi.waitFor(() => expect(location.pathname + location.search).toBe("/app/items?state=queued"));
     const filters = screen.getByRole("tablist", { name: "Filter by state" });
-    expect(within(filters).getByRole("tab", { name: /^Queued/ }).getAttribute("aria-selected")).toBe("true");
+    expect(within(filters).getByRole("tab", { name: /^Active/ }).getAttribute("aria-selected")).toBe("true");
+    const states = screen.getByRole("tablist", { name: "Filter Active by state" });
+    expect(within(states).getByRole("tab", { name: /^Queued/ }).getAttribute("aria-selected")).toBe("true");
     expect(await screen.findByRole("table", { name: "Queued runs" })).toBeTruthy();
   });
 
@@ -78,21 +84,12 @@ describe("app pages", () => {
     expect(within(running).getByText("Being built")).toBeTruthy();
   });
 
-  it("the sidebar's Tasks group links the Tasks page, the System group shows its links, and there is no Users", () => {
-    mount();
-    const tasks = screen.getByRole("navigation", { name: "Tasks" });
-    expect([...tasks.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual(["/app/tasks", "/app/calendar"]);
-    const system = screen.getByRole("navigation", { name: "System" });
-    expect(within(system).getByRole("link", { name: "Health" })).toBeTruthy();
-    expect(screen.queryByRole("link", { name: "Users" })).toBeNull();
-  });
-
-  it("the sidebar has exactly seven links; Activity, Failures, Spend, Runners and Data are not among them", () => {
+  it("the sidebar links Workers after Health; Activity, Failures, Spend, Runners and Data are not among them", () => {
     mount();
     const side = screen.getByRole("complementary", { name: "Sidebar" });
     const links = [...side.querySelectorAll("a")].filter((a) => a.getAttribute("href")?.startsWith("/app/") && a.getAttribute("href") !== "/app/");
-    expect(links.map((a) => [a.getAttribute("aria-label"), a.getAttribute("href")])).toEqual([
-      ["Tasks", "/app/tasks"], ["Calendar", "/app/calendar"], ["Work", "/app/items"], ["Health", "/app/health"],
+    expect(links.map((a) => [a.textContent, a.getAttribute("href")])).toEqual([
+      ["Tasks", "/app/tasks"], ["Calendar", "/app/calendar"], ["Work", "/app/items"], ["Health", "/app/health"], ["Workers", "/app/workers"],
       ["Rules", "/app/rules"], ["Plugins", "/app/plugins"], ["Settings", "/app/settings"],
     ]);
     for (const gone of ["Activity", "Failures", "Spend", "Runners", "Data"]) expect(within(side).queryByRole("link", { name: gone })).toBeNull();
@@ -118,24 +115,26 @@ describe("app pages", () => {
     }
   });
 
-  it("old paths redirect: /app/workers to Runners; /app/users is no longer an old path", async () => {
+  it("/app/workers opens the Workers page with no redirect; /app/users is no longer an old path", async () => {
     history.replaceState(null, "", "/app/workers");
     mount();
-    expect(await screen.findByRole("heading", { level: 1, name: "Runners" })).toBeTruthy();
-    await vi.waitFor(() => expect(location.pathname).toBe("/app/runners"));
+    expect(await screen.findByRole("heading", { level: 1, name: "Workers" })).toBeTruthy();
+    expect(location.pathname).toBe("/app/workers");
+    expect(redirectFor("/app/workers")).toBeNull();
     expect(redirectFor("/app/users")).toBeNull();
   });
 
-  it("/app/spend, /app/failures and /app/activity redirect, keeping the query; /app/queue and /app/workers still do", async () => {
-    expect(redirectFor("/app/spend")).toBe("/app/health#spend");
-    expect(redirectFor("/app/failures")).toBe("/app/health#failures");
-    expect(redirectFor("/app/failures", "?window=7d")).toBe("/app/health?window=7d#failures");
+  it("/app/spend, /app/failures and /app/runners redirect to their Health tab, keeping the query; /app/activity and /app/queue still do", async () => {
+    expect(redirectFor("/app/spend")).toBe("/app/health?tab=spend");
+    expect(redirectFor("/app/failures")).toBe("/app/health?tab=failures");
+    expect(redirectFor("/app/failures", "?window=7d")).toBe("/app/health?tab=failures&window=7d");
+    expect(redirectFor("/app/runners")).toBe("/app/health?tab=runners");
     expect(redirectFor("/app/activity")).toBe("/app/items");
-    expect(redirectFor("/app/workers")).toBe("/app/runners");
     expect(redirectFor("/app/queue")).toBe("/app/items?state=queued");
     for (const [from, to] of [
-      ["/app/spend", "/app/health#spend"],
-      ["/app/failures?window=7d", "/app/health?window=7d#failures"],
+      ["/app/spend", "/app/health?tab=spend"],
+      ["/app/failures?window=7d", "/app/health?tab=failures&window=7d"],
+      ["/app/runners", "/app/health?tab=runners"],
       ["/app/activity", "/app/items"],
     ] as const) {
       history.replaceState(null, "", from);
@@ -145,11 +144,20 @@ describe("app pages", () => {
     }
   });
 
-  it("Health has Spend and Failures sections as level-2 headings under its one h1; Work holds the Activity content", async () => {
+  it("Health draws Spend and Failures only in their tabs, as level-2 headings under its one h1; Work holds the Activity content", async () => {
     history.replaceState(null, "", "/app/health");
     mount();
+    await screen.findByText("push access denied");
+    // The Checks tab: neither section draws below the tabs, and the Failures window switch is not shown.
+    expect(screen.queryByRole("heading", { level: 2, name: "Spend" })).toBeNull();
+    expect(screen.queryByRole("heading", { level: 2, name: "Failures" })).toBeNull();
+    expect(document.querySelector("[data-failures-window]")).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Spend" }));
     expect(await screen.findByRole("heading", { level: 2, name: "Spend" })).toBeTruthy();
-    expect(screen.getByRole("heading", { level: 2, name: "Failures" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { level: 2, name: "Failures" })).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Failures" }));
+    expect(await screen.findByRole("heading", { level: 2, name: "Failures" })).toBeTruthy();
+    expect(document.querySelector("[data-failures-window]")).not.toBeNull();
     expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
     cleanup();
     history.replaceState(null, "", "/app/items");
@@ -159,7 +167,7 @@ describe("app pages", () => {
   });
 
   it("every sidebar page has exactly one h1, its menu name, from its own PageHeader", async () => {
-    const names: Record<string, string> = { "": "Tasks", tasks: "Tasks", calendar: "Calendar", items: "Work", runners: "Runners", health: "Health", rules: "Rules", data: "Data", settings: "Settings" };
+    const names: Record<string, string> = { "": "Tasks", tasks: "Tasks", calendar: "Calendar", items: "Work", health: "Health", rules: "Rules", data: "Data", settings: "Settings" };
     for (const [path, name] of Object.entries(names)) {
       history.replaceState(null, "", `/app/${path}`);
       mount();
@@ -169,26 +177,27 @@ describe("app pages", () => {
     }
   });
 
+  it("Tasks and Work each say in their header what they are for", async () => {
+    for (const [path, name, text] of [["tasks", "Tasks", "Tasks = what I plan and what needs me"], ["items", "Work", "Work = what the factory is doing"]] as const) {
+      history.replaceState(null, "", `/app/${path}`);
+      mount();
+      const h1 = await screen.findByRole("heading", { level: 1, name });
+      expect(h1.closest("header")!.textContent).toContain(text);
+      cleanup();
+    }
+  });
+
   it("every page's h1 is in the page title type, and every h2 is the title of a Card (Health's Spend and Failures too)", async () => {
-    const names: Record<string, string> = { tasks: "Tasks", calendar: "Calendar", items: "Work", runners: "Runners", health: "Health", rules: "Rules", plugins: "Plugins", data: "Data", settings: "Settings" };
+    const names: Record<string, string> = { tasks: "Tasks", calendar: "Calendar", items: "Work", "health?tab=runners": "Health", "health?tab=failures": "Health", rules: "Rules", plugins: "Plugins", data: "Data", settings: "Settings" };
     const outside = () => screen.queryAllByRole("heading", { level: 2 }).filter((h) => !h.closest("section.rounded-card.bg-surface.shadow-sm")).map((h) => h.textContent);
     for (const [path, name] of Object.entries(names)) {
       history.replaceState(null, "", `/app/${path}`);
       mount();
       expect((await screen.findByRole("heading", { level: 1, name })).className).toContain("text-xl font-semibold");
-      if (path === "health") await screen.findByRole("heading", { level: 2, name: "Failures" });
+      if (path === "health?tab=failures") await screen.findByRole("heading", { level: 2, name: "Failures" });
+      if (path === "health?tab=runners") await screen.findByRole("heading", { level: 2, name: "Worker processes" });
       if (path === "items") await screen.findByRole("table", { name: "Running now" });
       expect(outside(), path).toEqual([]);
-      cleanup();
-    }
-  });
-
-  it("each page's heading matches its menu name", async () => {
-    const names: Record<string, string> = { items: "Work", runners: "Runners", health: "Health", data: "Data", settings: "Settings" };
-    for (const [path, name] of Object.entries(names)) {
-      history.replaceState(null, "", `/app/${path}`);
-      mount();
-      expect(screen.getByRole("heading", { level: 1, name })).toBeTruthy();
       cleanup();
     }
   });
@@ -197,9 +206,11 @@ describe("app pages", () => {
     mount();
     fireEvent.click(await screen.findByText("Spec waiting"));
     expect(location.pathname).toBe("/app/items/wi_1");
-    expect(await screen.findByText("git_failed")).toBeTruthy();
-    expect(screen.getByText(": git merge: boom", { exact: false })).toBeTruthy();
-    expect(screen.getByText("intake")).toBeTruthy();
+    const runs = await screen.findByRole("table", { name: "Runs" });
+    // One error line in words; the code and the full text sit behind Details.
+    expect(within(runs).getByText("A git command failed")).toBeTruthy();
+    expect(runs.querySelector("[data-raw]")?.textContent).toContain("git merge: boom");
+    expect(screen.getByText("Created by a person")).toBeTruthy();
     // The breadcrumb back to the list (the sidebar's entry is the current page).
     fireEvent.click(screen.getByRole("link", { name: "Work", current: false }));
     expect(location.pathname).toBe("/app/items");
@@ -220,13 +231,13 @@ describe("app pages", () => {
     mount();
     await screen.findByText("push access denied");
     const tabs = screen.getAllByRole("tab");
-    expect(tabs.map((x) => x.textContent!.replace(/\s*\(.*$/, ""))).toEqual(["Checks", "Host sleeps", "Merged without review", "Efficiency"]);
+    expect(tabs.map((x) => x.textContent!.replace(/\s*\(.*$/, ""))).toEqual(["Checks", "Spend", "Failures", "Runners", "Host sleeps", "Merged without review", "Efficiency"]);
     expect(tabs[0]!.getAttribute("aria-selected")).toBe("true");
     expect(tabs[0]!.textContent).toContain("(2)");
     expect(tabs[0]!.textContent).toContain("failing");
-    expect(tabs[1]!.textContent).toContain("(0)");
+    expect(tabs[4]!.textContent).toContain("(0)");
     const length = history.length;
-    fireEvent.click(tabs[1]!);
+    fireEvent.click(tabs[4]!);
     expect(location.search).toBe("?tab=sleeps");
     expect(history.length).toBe(length);
     expect(screen.getByText("No host sleep recorded.")).toBeTruthy();
@@ -311,28 +322,6 @@ describe("system actions, revisions and the tab title (issue #311)", () => {
     }
   });
 
-  it("the Tasks page lists each system action with its command as a row in the Needs you section's Check group", async () => {
-    const actions = [
-      { code: "migration_pending", text: "Schema at version 3 of 8", command: "Migrate now, or factory migrate", until: null, work_item_id: null },
-      { code: "claim_pause", text: "Claim pause rate_limit in effect, until 2026-11-07T01:00:00.000Z", command: "factory resume rate_limit", until: "2026-11-07T01:00:00.000Z", work_item_id: null },
-    ];
-    (overview as Record<string, unknown>).system_actions = actions;
-    try {
-      mount();
-      const list = await screen.findByRole("list", { name: "Check" });
-      const rows = [...list.querySelectorAll("li")];
-      expect(rows.map((r) => r.getAttribute("data-check"))).toEqual(["migration_pending", "claim_pause"]);
-      expect(rows[0]!.textContent).toContain("Schema at version 3 of 8");
-      expect(rows[0]!.querySelector("code")!.textContent).toBe("Migrate now, or factory migrate");
-      expect(rows[1]!.querySelector("code")!.textContent).toBe("factory resume rate_limit");
-      // The rows are inside the Needs you section, not lines after it.
-      expect(screen.getByRole("region", { name: "Needs you" }).contains(list)).toBe(true);
-      expect(screen.queryByRole("list", { name: "System actions" })).toBeNull();
-    } finally {
-      delete (overview as Record<string, unknown>).system_actions;
-    }
-  });
-
   it("Health folds ok rows behind their count; warn and fail rows stay visible", async () => {
     const checks = [
       ...Array.from({ length: 22 }, (_, i) => ({ status: "ok", msg: `fine ${i}` })),
@@ -354,5 +343,127 @@ describe("system actions, revisions and the tab title (issue #311)", () => {
       RESPONSES["/api/v1/health"] = saved;
     }
   });
+
+  it("Health shows a stall check's since and next probe as relative times with the local time on hover, never ISO", async () => {
+    const since = "2026-11-19T16:11:54.203Z";
+    const next = "2026-11-19T16:21:54.203Z";
+    const saved = RESPONSES["/api/v1/health"];
+    RESPONSES["/api/v1/health"] = { checked_at: AT, checks: [{ status: "fail", msg: "agents paused: model not answering", since, next }] };
+    try {
+      history.replaceState(null, "", "/app/health");
+      mount();
+      const row = (await screen.findByText(/agents paused: model not answering/)).closest("li")!;
+      const times = [...row.querySelectorAll("time")];
+      expect(times.map((t) => t.getAttribute("datetime"))).toEqual([since, next]);
+      expect(times.map((t) => t.getAttribute("title"))).toEqual([localDateTime(since), localDateTime(next)]);
+      expect(times[0]!.textContent).toMatch(/^started /);
+      expect(times[1]!.textContent).toMatch(/^next probe /);
+      expect(row.textContent).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}|UTC/);
+    } finally {
+      RESPONSES["/api/v1/health"] = saved;
+    }
+  });
 });
 
+
+// ---- The factory update note and the header revision (design 09-dashboard-shell) ----
+
+describe("factory update note and header revision", () => {
+  const OLD = "c0147aa0000";
+  const NEW = "3dc0029bbbb";
+  const UPDATED = {
+    ...overview.factory, state: "running", rev: NEW, previous_rev: OLD, behind: 0,
+    changes: { count: 12, subjects: ["Tell the open tab when the factory updated", "Fix the header size"] },
+  };
+  /** Runs `body` with the overview's factory object set to `factory`, then puts the fixture's back. */
+  async function withFactory(factory: unknown, body: () => Promise<void>) {
+    const saved = overview.factory;
+    (overview as Record<string, unknown>).factory = factory;
+    try {
+      await body();
+    } finally {
+      (overview as Record<string, unknown>).factory = saved;
+    }
+  }
+  const poll = () => act(async () => void (await vi.advanceTimersByTimeAsync(POLL_MS + 10)));
+
+  it("a first visit (no stored revision) shows no note and stores the running one", async () => {
+    await withFactory(UPDATED, async () => {
+      mount();
+      await waitBadge();
+      await vi.waitFor(() => expect(localStorage.getItem(SEEN_REV_KEY)).toBe(NEW));
+      expect(screen.queryByTestId("update-note")).toBeNull();
+    });
+  });
+
+  it("a revision change seen while the tab is open shows one note with the count and the change list", async () => {
+    await withFactory({ ...UPDATED, rev: OLD, previous_rev: null, changes: null }, async () => {
+      mount();
+      await waitBadge();
+      await vi.waitFor(() => expect(localStorage.getItem(SEEN_REV_KEY)).toBe(OLD));
+      expect(screen.queryByTestId("update-note")).toBeNull();
+      (overview as Record<string, unknown>).factory = UPDATED;
+      await poll();
+      const note = await screen.findByTestId("update-note");
+      expect(note.querySelector("[data-update-text]")!.textContent).toBe("Updated to 3dc0029: 12 changes");
+      expect(screen.getAllByTestId("update-note")).toHaveLength(1);
+      fireEvent.click(within(note).getByText("Changes"));
+      const subjects = [...note.querySelectorAll("li")].map((li) => li.textContent);
+      expect(subjects).toEqual(UPDATED.changes.subjects);
+      await poll(); // a poll for the same revision keeps the one note
+      expect(screen.getAllByTestId("update-note")).toHaveLength(1);
+    });
+  });
+
+  it("Dismiss hides the note for that revision: not back on a poll or a reload", async () => {
+    localStorage.setItem(SEEN_REV_KEY, OLD); // a stored earlier revision: the note shows on load
+    await withFactory(UPDATED, async () => {
+      mount();
+      const note = await screen.findByTestId("update-note");
+      fireEvent.click(within(note).getByRole("button", { name: "Dismiss" }));
+      expect(screen.queryByTestId("update-note")).toBeNull();
+      await poll();
+      expect(screen.queryByTestId("update-note")).toBeNull();
+      cleanup();
+      mount();
+      await waitBadge();
+      await poll();
+      expect(screen.queryByTestId("update-note")).toBeNull();
+    });
+  });
+
+  it("a git failure (no count) names the revision without a count and lists nothing", async () => {
+    localStorage.setItem(SEEN_REV_KEY, OLD);
+    await withFactory({ ...UPDATED, changes: { count: null, subjects: [] } }, async () => {
+      mount();
+      const note = await screen.findByTestId("update-note");
+      expect(note.querySelector("[data-update-text]")!.textContent).toBe("Updated to 3dc0029");
+      expect(within(note).queryByText("Changes")).toBeNull();
+    });
+  });
+
+  it("the header shows the running short revision and its state; only the revision without behind; nothing without a factory", async () => {
+    await withFactory(UPDATED, async () => {
+      mount();
+      await vi.waitFor(() => expect(screen.getByTestId("factory-rev").textContent).toBe("3dc0029 · up to date"));
+    });
+    cleanup();
+    await withFactory({ ...UPDATED, behind: 3 }, async () => {
+      mount();
+      await vi.waitFor(() => expect(screen.getByTestId("factory-rev").textContent).toBe("3dc0029 · 3 behind"));
+    });
+    cleanup();
+    const { behind: _, ...selfHosting } = UPDATED;
+    await withFactory(selfHosting, async () => {
+      mount();
+      await vi.waitFor(() => expect(screen.getByTestId("factory-rev").textContent).toBe("3dc0029"));
+    });
+    cleanup();
+    await withFactory(null, async () => {
+      mount();
+      await waitBadge();
+      expect(screen.queryByTestId("factory-rev")).toBeNull();
+      expect(screen.queryByTestId("update-note")).toBeNull();
+    });
+  });
+});

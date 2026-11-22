@@ -8,6 +8,7 @@ import { type ApiDeps, type UiRequest, respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
 import { TASK_CREATE_PATH } from "../src/ui/tasks-api.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // Create under a project (design 02-tasks): `factory task create --title <t> --body-file <f> --project <slug>` and the
 // dashboard's POST /api/v1/tasks/create store a task in that project linked to a new local work item, as `task build`
@@ -23,7 +24,7 @@ async function setup(project: string | null = PROJECT_KEY) {
   const { store } = await newStore(clock);
   let n = 0;
   const d: LocalCliDeps = {
-    store, identity: { user: USER, from: "git user.email" }, project: async () => project, read: async () => "  the body  \n", newId: () => `id${++n}`, ui: {},
+    answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: USER, from: "git user.email" }, project: async () => project, read: async () => "  the body  \n", newId: () => `id${++n}`, ui: {},
   };
   const run = (word: string, ...args: string[]) => {
     const a = parseLocalCliArgs(word, args);
@@ -48,11 +49,11 @@ async function setup(project: string | null = PROJECT_KEY) {
 const create = ["create", "--title", "Design rules checked", "--body-file", "body.md"];
 
 describe("factory task create --project", () => {
-  it("without --project: the work item only, its ID, link and next step printed, no task", async () => {
+  it("without --project: the work item only, its ID, short ID, link and next step printed, no task", async () => {
     const s = await setup();
     const r = await s.cli(...create);
     expect(r.code).toBe(0);
-    expect(r.lines).toEqual([r.lines[0], `http://${HOST}/app/items/${r.lines[0]}`, "triage queued; you'll be asked to approve the spec"]);
+    expect(r.lines).toEqual([r.lines[0], r.lines[0]!.slice(3, 11), `http://${HOST}/app/items/${r.lines[0]}`, "triage queued; you'll be asked to approve the spec"]);
     const item = (await s.store.getWorkItem(r.lines[0] as WorkItemId))!;
     expect(item).toMatchObject({ title: "Design rules checked", problem: "Design rules checked\n\nthe body", source: { type: "local" } });
     expect(item.source.id).not.toContain("local-task-");
@@ -66,7 +67,7 @@ describe("factory task create --project", () => {
     const [task] = await s.store.listTasks(100);
     expect(task).toMatchObject({ title: "Design rules checked", created_by: USER, done_at: null });
     expect(r.lines).toEqual([
-      task!.work_item_id, `task ${task!.id} in +improve-factory`, `http://${HOST}/app/items/${task!.work_item_id}`, "triage queued; you'll be asked to approve the spec",
+      task!.work_item_id, task!.work_item_id!.slice(3, 11), `task ${task!.id} in +improve-factory`, `http://${HOST}/app/items/${task!.work_item_id}`, "triage queued; you'll be asked to approve the spec",
     ]);
     const item = (await s.store.getWorkItem(task!.work_item_id!))!;
     expect(item).toMatchObject({ stage: "NEW", title: "Design rules checked", problem: "Design rules checked\n\nthe body", project: PROJECT_KEY, requester_id: USER, source: { type: "local", id: `local-task-${task!.id}` } });

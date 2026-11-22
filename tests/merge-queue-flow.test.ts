@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { localProject } from "../src/compose.js";
+import { localProject } from "../src/load-config.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import { type CliAction, runLocalCli } from "../src/core/local-cli.js";
 import type { UserId, WorkerId, WorkItemId } from "../src/core/types.js";
@@ -18,8 +18,10 @@ import { defineHook } from "../src/shared/hook.js";
 import type { SqlDriver } from "../src/state/index.js";
 import { MergeQueueStore } from "../src/controller/actors/merge-queue/merge-queue.store.js";
 import { Worker } from "../src/worker/index.js";
-import { FakeRunner, MemoryStorage, cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes.js";
+import { FakeRunner, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { BACKENDS } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // The merge queue (RFC 0015 M8), end to end over a real git repo: a change whose merged result is red never lands.
 // Two local changes each pass their own checks (a.yml alone, b.yml alone), but together they break the test command
@@ -93,7 +95,7 @@ async function factory(backend: (typeof BACKENDS)[number], o: Options = {}) {
   };
   let n = 0;
   const cli = (a: CliAction) =>
-    runLocalCli({ store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
+    runLocalCli({ answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
   const toMergePending = async (title: string) => {
     const id = (await cli({ action: "create", title, bodyFile: "body.md" })).lines[0] as WorkItemId;
     await step();

@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { localProject } from "../src/compose.js";
+import { localProject } from "../src/load-config.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { runLocalCli } from "../src/core/local-cli.js";
@@ -11,8 +11,9 @@ import type { UserId, WorkItemId } from "../src/core/types.js";
 import { OwnerAuth } from "../src/core/authorize.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
-import { cleanScanner, config, silent } from "./helpers/fakes.js";
+import { cleanScanner, config, silent } from "./helpers/fakes/config.js";
 import { BACKENDS, system, w1 } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // The local merge on a shared store (design 05-sources, Local items; enterprise): two controllers, standing in for
 // two replicas, apply `factory merge` to the same local change at once, then its green merge check. The base branch moves by one conditional
@@ -41,7 +42,7 @@ describe.each(BACKENDS)("local merge on a shared store: $name", ({ make }) => {
       repo: { ...config.repo, path: repo, install_command: ["sh", "-c", "exit 0"], test_command: ["sh", "-c", "exit 0"] },
     };
     const created = await runLocalCli(
-      { store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "b", newId: () => "id1" },
+      { answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "b", newId: () => "id1" },
       { action: "create", title: "t", bodyFile: "b" },
     );
     const id = created.lines[0] as WorkItemId;

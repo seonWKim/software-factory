@@ -47,7 +47,9 @@ describe("task projects (design 09-dashboard-app, project switcher and dialog)",
     expect(selectedProject()).toEqual(["Home"]);
     expect(new URLSearchParams(location.search).get("project")).toBe("home");
     expect(location.pathname).toBe("/app/tasks");
-    await waitFor(() => expect([...document.querySelectorAll<HTMLElement>("[data-task]")].map((e) => e.dataset.task)).toEqual(["tk_now", "tk_inbox", "tk_fixed"]), SLOW);
+    await waitFor(() => expect([...document.querySelectorAll<HTMLElement>("[data-task]")].map((e) => e.dataset.task)).toEqual(["tk_now", "tk_inbox"]), SLOW);
+    // The project's done task is in its Done group, closed until opened.
+    fireEvent.click(screen.getByText("1 done").closest("summary")!);
     expect(card("tk_fixed").hasAttribute("data-done")).toBe(true);
     fireEvent.click(projectTab("All projects"));
     expect(location.search).toBe("");
@@ -165,11 +167,57 @@ describe("task projects (design 09-dashboard-app, project switcher and dialog)",
     expect(document.querySelector("[data-dialog]")).toBeNull();
     expect(s.posts).toHaveLength(2);
   });
-
-  it("a done row has no Projects… item", async () => {
-    s.current = view({ projects: [{ list: null, tasks: [row("tk_old", { done_at: "2026-11-11T10:00:00.000Z" })] }] });
+  it("a selected project's ⋯ menu holds Delete; its dialog names the project and its task count and says the tasks are kept", async () => {
+    s.current = view({ active_projects: PROJECTS });
+    s.filtered = { home: homeOnly() };
     await show();
-    expect(within(card("tk_old")).queryByRole("button", { name: /More actions/ })).toBeNull();
-    expect(screen.queryByRole("menuitem", { name: "Projects…" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "More actions: Home" })).toBeNull();
+    fireEvent.click(projectTab("Home"));
+    await waitFor(() => expect(document.querySelector('[data-task="tk_inbox"]')).not.toBeNull(), SLOW);
+    fireEvent.click(screen.getByRole("button", { name: "More actions: Home" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+    const dialog = document.querySelector<HTMLElement>("[data-dialog]")!;
+    expect(dialog.textContent).toContain("Delete Home?");
+    // Three tasks, open and done, each once (tk_now is in two groups of the read).
+    expect(dialog.querySelector("[data-project-tasks]")!.getAttribute("data-project-tasks")).toBe("3");
+    expect(dialog.textContent).toContain("It holds 3 tasks. The tasks are kept: they only leave the project.");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(document.querySelector("[data-dialog]")).toBeNull();
+    expect(s.posts).toEqual([]);
+  });
+
+  it("confirming Delete posts the slug, drops the tab without a reload and falls back to All projects; a refusal stays in the dialog", async () => {
+    s.current = view({ active_projects: PROJECTS });
+    s.filtered = { home: homeOnly() };
+    history.replaceState(null, "", "/app/tasks?project=home");
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(createElement(QueryClientProvider, { client }, createElement(TasksPage)));
+    await waitFor(() => expect(document.querySelector('[data-task="tk_now"]')).not.toBeNull(), SLOW);
+    const open = () => {
+      fireEvent.click(screen.getByRole("button", { name: "More actions: Home" }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+      return document.querySelector<HTMLElement>("[data-dialog]")!;
+    };
+    s.answer = { status: 404, body: { error: 'no project "home"' } };
+    let dialog = open();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    expect((await within(dialog).findByRole("alert", {}, SLOW)).textContent).toBe('no project "home"');
+    expect(selectedProject()).toEqual(["Home"]);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    s.answer = { status: 200, body: { project: "home", unlinked: ["tk_inbox", "tk_now"] } };
+    s.current = view({ active_projects: [PROJECTS[1]!] });
+    dialog = open();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(document.querySelector("[data-dialog]")).toBeNull(), SLOW);
+    const sent = s.posts.filter((p) => p.url === "/api/v1/projects/delete");
+    expect(sent.map((p) => JSON.parse(String(p.init.body)))).toEqual([{ project: "home" }, { project: "home" }]);
+    expect((sent[1]!.init.headers as Record<string, string>)["x-csrf-token"]).toBe(TOKEN);
+    expect(selectedProject()).toEqual(["All projects"]);
+    expect(location.search).toBe("");
+    // The tab goes as the dialog closes, before the All projects read answers.
+    expect(screen.getAllByRole("tab").map((b) => b.textContent)).toEqual(["All projects", "Garden"]);
+    expect(screen.queryByRole("button", { name: "More actions: Home" })).toBeNull();
+    await screen.findByRole("list", { name: "Overdue" }, SLOW);
+    expect(screen.getAllByRole("tab").map((b) => b.textContent)).toEqual(["All projects", "Garden"]);
   });
 });

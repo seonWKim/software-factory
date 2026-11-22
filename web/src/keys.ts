@@ -8,14 +8,14 @@ import { BASE } from "./pages.js";
 /** One shortcut for the help list: the keys as typed, and the catalog key of what they do. */
 export interface Shortcut {
   keys: string;
-  what: "keys.search" | "keys.help" | "keys.goWork" | "keys.goActivity" | "keys.next" | "keys.prev" | "keys.open" | "keys.primary" | "keys.addTask" | "keys.editTask" | "keys.deleteTask" | "keys.undoDone";
+  what: "keys.search" | "keys.help" | "keys.goWork" | "keys.next" | "keys.prev" | "keys.open" | "keys.primary" | "keys.addTask" | "keys.editTask" | "keys.deleteTask" | "keys.undoDone";
 }
 
 export const SHORTCUTS: readonly Shortcut[] = [
   { keys: "⌘K", what: "keys.search" },
   { keys: "?", what: "keys.help" },
   { keys: "g w", what: "keys.goWork" },
-  { keys: "g a", what: "keys.goActivity" },
+  { keys: "g a", what: "keys.goWork" },
   { keys: "j", what: "keys.next" },
   { keys: "k", what: "keys.prev" },
   { keys: "Enter", what: "keys.open" },

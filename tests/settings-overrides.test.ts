@@ -12,7 +12,7 @@ import {
 } from "../src/core/settings.js";
 import { parseModelBy } from "../src/core/model-choice.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
-import { config, recordingLog } from "./helpers/fakes.js";
+import { config, recordingLog } from "./helpers/fakes/config.js";
 
 const row = (key: string, value: unknown, project = "") => ({ key, project, value: JSON.stringify(value) });
 

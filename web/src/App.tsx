@@ -11,32 +11,35 @@ import { Link, NavProvider, useLocationPath } from "./nav.js";
 import { BASE, pagesIn, redirectFor, routeFor } from "./pages.js";
 import { HelpDialog, SearchDialog } from "./search.js";
 import { SideLinks, pageLabel } from "./shell/sidebar.js";
+import { ModeChip } from "./shell/mode-chip.js";
 import { ThemeControl } from "./shell/top-bar.js";
 import { type ThemeChoice, applyChoice, saveChoice, storedChoice } from "./theme.js";
 import { DataPage } from "./views/data.js";
-import { HealthPage, ItemPage, ItemsPage, RunnersPage } from "./views/pages.js";
+import { HealthPage, ItemPage, ItemsPage } from "./views/pages.js";
 import { PluginsPage } from "./views/plugins.js";
 import { SettingsPage } from "./views/settings.js";
-import { ModeSwitch } from "./views/settings/general.js";
-import { RevisionBanner } from "./views/system-banner.js";
+import { FactoryRevision, RevisionBanner, StopAllAgents, UpdateNote } from "./views/system-banner.js";
 import { TranscriptView, transcriptRoute } from "./views/transcript.js";
 import { RulesPage } from "./views/rules.js";
+import { ProposalsPage } from "./views/proposals.js";
 import { CalendarPage } from "./views/calendar.js";
 import { TasksPage } from "./views/tasks.js";
+import { WorkersPage } from "./views/workers.js";
 
 const VIEWS: Record<string, () => JSX.Element> = {
   items: ItemsPage,
   tasks: TasksPage,
   calendar: CalendarPage,
-  runners: RunnersPage,
+  workers: WorkersPage,
   health: HealthPage,
   rules: RulesPage,
+  proposals: ProposalsPage,
   settings: SettingsPage,
   data: DataPage,
   plugins: PluginsPage,
 };
 
-/** The app (design §9): sidebar, top bar (mode, update failed, search, refresh, theme) and the current page. */
+/** The app (design §9): sidebar, top bar (mode chip, running revision, update failed, search, refresh, theme), the update note and the current page. */
 export function App() {
   const overview = useQuery({
     queryKey: [API.overview],
@@ -54,7 +57,7 @@ export function App() {
   const [dialog, setDialog] = useState<"search" | "help" | null>(null);
   useShortcuts({ navigate, openSearch: () => setDialog("search"), openHelp: () => setDialog("help"), path });
   const route = routeFor(path);
-  // An old page path (/app/workers) swaps itself for its new one in the address bar, keeping its query.
+  // An old page path (/app/queue) swaps itself for its new one in the address bar, keeping its query.
   const moved = redirectFor(path, location.search);
   useEffect(() => {
     if (moved) navigate(moved, true);
@@ -81,7 +84,7 @@ export function App() {
         {/* Scrolls by itself when it is taller than the window. */}
         <aside
           aria-label={t("nav.sidebar")}
-          className="flex w-44 shrink-0 flex-col overflow-y-auto border-r border-border bg-(--sidebar) p-3 max-sm:w-14"
+          className="flex w-44 shrink-0 flex-col overflow-y-auto border-r border-border bg-(--sidebar) p-3 max-lg:w-14"
         >
           <Brand />
           <SideLinks label={t("nav.tasks")} pages={pagesIn("tasks")} current={current} badges={{ tasks: needs }} />
@@ -95,12 +98,14 @@ export function App() {
           </div>
         </aside>
         <div data-scroll-root className="flex min-w-0 flex-1 flex-col overflow-y-auto">
-          {/* Wraps instead of widening the page on a narrow screen. */}
-          <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-2">
-            <ModeSwitch floating />
-            <span className="ml-auto shrink-0 text-sm whitespace-nowrap text-text-2" aria-live="polite">
+          {/* One row at every width: the revision and the status text shrink, the controls do not wrap. */}
+          <header className="flex items-center gap-x-3 border-b border-border px-4 py-2">
+            <ModeChip />
+            <span className="min-w-0 overflow-hidden"><FactoryRevision factory={overview.data?.factory} /></span>
+            <span className="ml-auto min-w-0 truncate text-sm text-text-2" aria-live="polite">
               {overview.isError ? t("topbar.updateFailed") : null}
             </span>
+            <StopAllAgents />
             <Button variant="ghost" size="icon" aria-label={t("search.open")} className="shrink-0" onClick={() => setDialog("search")}>
               <Search aria-hidden className="size-4" />
             </Button>
@@ -110,7 +115,8 @@ export function App() {
             <ThemeControl choice={choice} onChoose={choose} />
           </header>
           <RevisionBanner server={overview.data?.server_rev} web={WEB_REV} />
-          <main className="min-w-0 p-4">
+          <UpdateNote factory={overview.data?.factory} />
+          <main className="w-full min-w-0 p-4 max-w-page-wide has-[[data-page-width=read]]:max-w-page-read">
             {transcript ? (
               <TranscriptView key={`${transcript.itemId}/${transcript.runId}`} itemId={transcript.itemId} runId={transcript.runId} />
             ) : route.itemId ? (

@@ -5,7 +5,12 @@
     "owner": "seonWKim", "name": "software-factory", "path": ".", "base_branch": "main",
     "install_command": ["npm", "ci"], "test_command": ["npm", "test"],
     "check_commands": [["npm", "run", "typecheck"], ["npm", "test"]],
-    "ui_check": { "command": ["npm", "run", "-s", "check:responsive"], "paths": ["web/", "src/ui/"] }
+    "ui_check": { "command": ["npm", "run", "-s", "check:responsive"], "paths": ["web/", "src/ui/"] },
+    "check_tz": "UTC",
+    "test_selection": {
+      "hubs": ["src/compose.ts", "src/config-keys.ts", "src/core/config.ts", "src/ui/api.ts", "src/plugins.ts", "src/plugin-api.ts", "src/interfaces/factory-store.ts"],
+      "always": ["tests/architecture/", "tests/boundaries.test.ts", "tests/plugins.test.ts", "tests/check-commands.test.ts", "tests/docs-index.test.ts", "tests/docs-size.test.ts", "tests/worker/run-kind-problems.test.ts", "tests/plugin-discovery.test.ts"]
+    }
   },
   "toolchain": {
     "warm_command": ["sh", "-c", "npm ci && if [ -f node_modules/electron/install.js ]; then node node_modules/electron/install.js; fi"]
@@ -57,7 +62,7 @@
   "model_by": {
     "triage": "cheap",
     "implement": { "1": "standard", "2": "standard", "3": "strong", "4": "strong", "5": "strong" },
-    "review": "standard",
+    "review": { "1": "standard", "2": "standard", "3": "strong", "4": "strong", "5": "strong" },
     "resolve": { "1": "standard", "2": "standard", "3": "strong", "4": "strong", "5": "strong" },
     "retry_up": true
   },
@@ -79,32 +84,55 @@
   "agent_stop_checks": 3,
   "max_coordination_cost": 2.5,
   "hotspot_weight": 3.0,
-  "hotspot_paths": ["src/impl/store/sqlite/schema.ts", "docs/design.md", "SET_UP.md"],
+  "hotspot_paths": ["src/impl/store/sqlite/schema.ts", "SET_UP.md"],
   "mechanical_weight": 0.25,
   "mechanical_paths": ["docs/design/", "docs/design.md", "docs/plugins.md", "docs/plugins/"],
   "path_companions": [
-    { "when": "docs/design.md", "also": ["docs/design/"] },
-    { "when": "docs/plugins.md", "also": ["docs/plugins/"] },
+    { "when": "docs/design.md", "also": ["docs/design/"], "reason": "a design decision lives in a topic file beside the index" },
+    { "when": "docs/plugins.md", "also": ["docs/plugins/"], "reason": "a plugin page lives in a topic file beside the index" },
     {
       "when": "src/interfaces/factory-store.ts",
-      "also": ["src/impl/store/sql/sql-factory-store.ts", "src/impl/store/sqlite/schema.ts", "tests/store-contract.test.ts"]
+      "also": ["src/impl/store/sql/sql-factory-store.ts", "src/impl/store/sqlite/schema.ts", "tests/store-contract.test.ts"],
+      "reason": "a store interface change needs the SQL store, the schema and the contract test"
     },
-    { "when": "src/config-keys.ts", "also": ["tests/config-keys.test.ts"] },
-    { "when": "docs/design/", "also": ["docs/design.md"] },
-    { "when": "src/controller/migrations/", "also": ["schema/sqlite.sql"] },
-    { "when": "src/impl/store/sqlite/schema.ts", "also": ["schema/sqlite.sql"] },
-    { "when": "src/controller/settings/", "also": ["docs/settings.md"] },
-    { "when": "src/guards/settings/", "also": ["docs/settings.md"] },
-    { "when": "src/inbound/settings/", "also": ["docs/settings.md"] },
-    { "when": "src/outbound/settings/", "also": ["docs/settings.md"] },
-    { "when": "src/runtime/settings/", "also": ["docs/settings.md"] },
-    { "when": "src/state/settings/", "also": ["docs/settings.md"] },
-    { "when": "src/worker/settings/", "also": ["docs/settings.md"] }
+    { "when": "src/config-keys.ts", "also": ["tests/config-keys.test.ts"], "reason": "a config key change needs its key test" },
+    { "when": "docs/design/", "also": ["docs/design.md"], "reason": "a new design topic file needs its index line" },
+    { "when": "src/controller/migrations/", "also": ["schema/sqlite/"], "reason": "a migration regenerates schema/sqlite/ (npm run schema:snapshot)" },
+    { "when": "src/impl/store/sqlite/schema.ts", "also": ["schema/sqlite/"], "reason": "a schema change regenerates schema/sqlite/ (npm run schema:snapshot)" },
+    {
+      "when": "src/controller/migrations/",
+      "also": ["src/controller/table-docs.ts"],
+      "reason": "a new controller table needs its line in src/controller/table-docs.ts (tests/data-table-docs.test.ts)"
+    },
+    {
+      "when": "src/impl/store/sqlite/schema.ts",
+      "also": ["src/controller/table-docs.ts"],
+      "reason": "a new table in the SQLite schema is a controller table and needs its line in src/controller/table-docs.ts (tests/data-table-docs.test.ts)"
+    },
+    {
+      "when": "src/impl/store/sql/sql-factory-store.ts",
+      "also": ["src/impl/store/sql/"],
+      "reason": "the SQL store is at its line budget (tests/architecture), so new store code goes in a new file under src/impl/store/sql/"
+    },
+    {
+      "when": "src/core/types.ts",
+      "with": ["src/worker/runs/"],
+      "also": ["src/core/settings.ts", "src/worker/settings/worker-kinds.setting.ts", "docs/settings.md", "tests/settings-catalog.test.ts", "tests/worker-kinds.test.ts", "tests/architecture/rule-of-two.test.ts"],
+      "reason": "a new run kind must be in WORKER_KINDS (src/core/settings.ts) or the pool refuses to start; it also joins the worker_kinds setting, its catalog page (npm run settings:catalog) and the catalog test; tests/worker-kinds.test.ts and tests/architecture/rule-of-two.test.ts pin the exact kind and role lists, so a new kind or role is added on purpose and reviewed (the rule-of-two test is a gate path)"
+    },
+    { "when": "src/controller/settings/", "also": ["docs/settings.md"], "reason": "a setting change regenerates docs/settings.md (npm run settings:catalog)" },
+    { "when": "src/guards/settings/", "also": ["docs/settings.md"], "reason": "a setting change regenerates docs/settings.md (npm run settings:catalog)" },
+    { "when": "src/inbound/settings/", "also": ["docs/settings.md"], "reason": "a setting change regenerates docs/settings.md (npm run settings:catalog)" },
+    { "when": "src/outbound/settings/", "also": ["docs/settings.md"], "reason": "a setting change regenerates docs/settings.md (npm run settings:catalog)" },
+    { "when": "src/runtime/settings/", "also": ["docs/settings.md"], "reason": "a setting change regenerates docs/settings.md (npm run settings:catalog)" },
+    { "when": "src/state/settings/", "also": ["docs/settings.md"], "reason": "a setting change regenerates docs/settings.md (npm run settings:catalog)" },
+    { "when": "src/worker/settings/", "also": ["docs/settings.md"], "reason": "a setting change regenerates docs/settings.md (npm run settings:catalog)" }
   ],
   "state_dir": ".factory",
   "worktrees_dir": ".worktrees",
   "ui": { "port": 4310 },
   "stats": { "weights": { "none": 0, "minor": 1, "major": 3, "critical": 10 }, "min_sample": 10 },
   "agent_git_identity": { "name": "software-factory implementer", "email": "software-factory@users.noreply.github.com" },
+  "improver": { "schedule": "daily" },
   "slack": { "channels": ["C0CDEHN4HM5"] }
 }

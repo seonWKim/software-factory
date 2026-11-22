@@ -4,7 +4,7 @@
 // and worker ids pass the Withholder with the run-outcome channel, as on the item route. At most FAILURES_CAP
 // runs (the newest) are read per window, and the answer says when it left some out.
 
-import { AGENT_STALLED, FORGE_AUTH, PREFLIGHT_ACCESS, RATE_LIMITED, SESSION_ABANDONED, SESSION_LOST } from "../core/policy.js";
+import { AGENT_STALLED, FORGE_AUTH, PREFLIGHT_ACCESS, RATE_LIMITED, SESSION_ABANDONED, SESSION_LOST, SETUP_MISSING } from "../core/policy.js";
 import type { Run, RunId, WorkItemId } from "../core/types.js";
 import { PROVIDER_SETUP } from "../interfaces/agent-runner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
@@ -24,6 +24,7 @@ export const FAILURE_DESCRIPTIONS: Readonly<Record<string, string>> = {
   [FORGE_AUTH]: "The forge refused the credentials. Claims pause until it is resumed.",
   [PREFLIGHT_ACCESS]: "The push or pull-request access check failed before the run started.",
   [PROVIDER_SETUP]: "The model provider is not set up (missing or refused credentials). It is not retried.",
+  [SETUP_MISSING]: "No model credential is in the secret file. Agent runs wait until one is added with npm run setup.",
   [SESSION_ABANDONED]: "The person abandoned the interactive session.",
   [SESSION_LOST]: "The interactive session's lease expired.",
   lease_lost: "The run no longer held its lease, so its worker stopped.",

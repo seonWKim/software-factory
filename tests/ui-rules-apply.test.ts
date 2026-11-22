@@ -5,8 +5,8 @@
 // applies: on confirm it replaces the proposal's current lines (from `evolve show`) with its proposed lines in its
 // target file, only when they occur there exactly once, then runs `evolve verdict <id> promote --reason <r>
 // --applied-to <target>`. A failed apply (a refusal, a non-zero exit, the timeout) leaves the file as it was and shows
-// the CLI's error in the dialog. A proposal with no Now and Proposed lines (2026-11-20) changes no file: the verdict
-// runs with --applied-to its target, then the route stores one task to build it. The Rules page here talks to the real route (`respond`) over a stubbed fetch, and the
+// the CLI's error in the dialog. A proposal whose change is prose (`evolve show`'s JSON) records the verdict as applied
+// to its target and writes no file, then the route stores one task to build it (2026-11-20). The Rules page here talks to the real route (`respond`) over a stubbed fetch, and the
 // route to a temp agents home whose stub evolve takes only the real forms: no real home, no network.
 
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -28,7 +28,7 @@ const { FakeClock } = await import("../src/impl/clock/fake-clock.js");
 const { PatternEgressScanner } = await import("../src/impl/egress/pattern-egress-scanner.js");
 const { AgentsHomeTacitLedger } = await import("../src/impl/tacit/agents-home-tacit-ledger.js");
 const { HealthMonitor } = await import("../src/ui/health.js");
-const { config, silent } = await import("./helpers/fakes.js");
+const { config, silent } = await import("./helpers/fakes/config.js");
 const { newStore } = await import("./helpers/store.js");
 const dom = await builtinEnvironments.jsdom.setup(globalThis, {});
 const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
@@ -135,12 +135,17 @@ async function show(d: PauseDeps) {
 }
 
 const card = () => document.querySelector<HTMLElement>('[data-rule="P-0007"]')!;
+/** Picks a verdict from a card's ⋯ menu. */
+const choose = (el: HTMLElement, label: string) => {
+  fireEvent.click(within(el).getByRole("button", { name: /^Decide:/ }));
+  fireEvent.click(within(el).getByRole("menuitem", { name: label }));
+};
 const dialog = () => document.querySelector<HTMLDialogElement>("dialog[data-dialog]");
 
 /** Opens Promote on P-0007, waits for its lines and gives the reason; returns the confirm button. */
 async function openPromote(): Promise<HTMLButtonElement> {
   await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
-  fireEvent.click(within(card()).getByRole("button", { name: "Promote" }));
+  choose(card(), "Promote");
   await waitFor(() => expect(dialog()!.querySelector('[data-change="proposed"]')).not.toBeNull(), SLOW);
   fireEvent.change(within(dialog()!).getByRole("textbox", { name: "Reason" }), { target: { value: "clearer review" } });
   return within(dialog()!).getByRole("button", { name: "Send promote" }) as HTMLButtonElement;
@@ -206,24 +211,29 @@ describe("Rules page: promote of a proposal applies it", () => {
     expect(s.verdicts()).toEqual([]);
   }, 30_000);
 
-  it("a proposal with no proposed line is built: the dialog says so, the verdict runs once with --applied-to, no file changes, one task is stored", async () => {
-    writeFileSync(join(s.root, "show"), `# P-0007 Split the review prompt\ndescription: Split the prompt into two files.\ntarget: ${TARGET}\ncurrent: Review the change.\n`);
+  it("a proposal whose change is prose (evolve show's JSON): Send is on with a reason, the verdict is recorded with --applied-to its target, no file is written, and one task is stored to build it", async () => {
+    writeFileSync(join(s.root, "show"), `${JSON.stringify({
+      id: "P-0007", ts: "2026-10-17T21:04:11+09:00", by: "evolve", kind: "edit-asset", target: TARGET, title: "Split the review prompt",
+      rationale: "Reviews skip the tests.", change: "Ask the reviewer to run the changed tests.", evidence: ["T-20261017-de7e"], state: "open", verdicts: [],
+    })}\n`);
     const d = await deps();
     await show(d);
     await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
-    fireEvent.click(within(card()).getByRole("button", { name: "Promote" }));
-    await waitFor(() => expect(dialog()!.querySelector("[data-dialog-consequence]")!.textContent).toBe("Promoting records the verdict and creates a task to build it."), SLOW);
-    expect(dialog()!.textContent).not.toContain("Promote is off");
-    fireEvent.change(within(dialog()!).getByRole("textbox", { name: "Reason" }), { target: { value: "build it" } });
-    const send = within(dialog()!).getByRole("button", { name: "Send promote" }) as HTMLButtonElement;
-    expect(send.disabled).toBe(false);
-    fireEvent.click(send);
+    choose(card(), "Promote");
+    await waitFor(() => expect(dialog()!.querySelector("[data-detail-change]")!.textContent).toBe("Ask the reviewer to run the changed tests."), SLOW);
+    expect(dialog()!.querySelector("[data-dialog-consequence]")!.textContent).not.toMatch(/by hand|Now and Proposed/);
+    expect(dialog()!.querySelector("[data-dialog-consequence]")!.textContent).toContain("creates a task to build it");
+    expect(within(dialog()!).queryByRole("alert")).toBeNull();
+    fireEvent.change(within(dialog()!).getByRole("textbox", { name: "Reason" }), { target: { value: "applied it" } });
+    const confirm = within(dialog()!).getByRole("button", { name: "Send promote" }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(false);
+    fireEvent.click(confirm);
     await waitFor(() => expect(dialog()).toBeNull(), SLOW);
-    expect(posts).toEqual([{ id: "P-0007", verdict: "promote", reason: "build it" }]);
-    expect(s.target()).toBe(BEFORE);
+    expect(posts).toEqual([{ id: "P-0007", verdict: "promote", reason: "applied it" }]);
     expect(s.verdicts()).toEqual([`verdict promote ${TARGET}`]);
+    expect(s.target()).toBe(BEFORE);
     expect(await d.store.getTask("tk_p-0007")).toMatchObject({
-      title: "Split the review prompt", body: `Rationale: not given\nChange: Split the prompt into two files.\nTarget: ${TARGET}\nEvidence: none\nProposal: P-0007`,
+      body: `Rationale: Reviews skip the tests.\nChange: Ask the reviewer to run the changed tests.\nTarget: ${TARGET}\nEvidence: T-20261017-de7e\nProposal: P-0007`,
     });
   }, 30_000);
 

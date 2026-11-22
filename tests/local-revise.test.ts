@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { localProject } from "../src/compose.js";
+import { localProject } from "../src/load-config.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import { type CliAction, runLocalCli } from "../src/core/local-cli.js";
 import { REVISE_APPLIED, REVISE_QUEUED_PATH } from "../src/controller/units/commands/queued-revise.js";
@@ -16,8 +16,10 @@ import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Worker } from "../src/worker/index.js";
-import { FakeRunner, MemoryStorage, cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes.js";
+import { FakeRunner, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // `/revise <feedback>` on a local item waiting for its merge (issue #563): no PR, so the feedback goes to one
 // implement run on the item's local branch, a review follows, and the item waits for its merge again.
@@ -76,7 +78,7 @@ async function localFactory(cfgPatch: Partial<FactoryConfig> = {}) {
   };
   let n = 0;
   const cli = (a: CliAction) =>
-    runLocalCli({ store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
+    runLocalCli({ answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
   const revise = (id: WorkItemId, text: string) => cli({ action: "command", command: "revise", id, text });
   const messages = async (id: WorkItemId, prefix: string) =>
     (await store.listItemMessages(id)).filter((m) => m.marker.startsWith(prefix)).map((m) => m.body);

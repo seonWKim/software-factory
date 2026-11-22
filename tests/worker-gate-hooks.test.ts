@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { AGENT_STOP_CHECKS_DEFAULT } from "../src/core/config.js";
+import { MODE_KEY, SELECTION_ACTOR, cleanCursor } from "../src/core/test-selection.js";
 import type { AgentRunResult, AgentRunSpec, GateBlock } from "../src/interfaces/agent-runner.js";
 import type { WorkerId } from "../src/core/types.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
@@ -7,7 +8,9 @@ import { storeSql } from "../src/impl/store/sql/store-sql.js";
 import { PackCheckRunner, type PackCheckSpec } from "../src/runtime/hooks/pack-checks.js";
 import { SqlHookAudit } from "../src/runtime/index.js";
 import { HOOK_REFUSED, Worker } from "../src/worker/runner.js";
-import { MemoryStorage, PROJECT, cleanScanner, config, pipeline, prompts } from "./helpers/fakes.js";
+import { MemoryStorage } from "./helpers/fakes/runner.js";
+import { PROJECT, cleanScanner, config, prompts } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 
 // The gate hooks (design §4 Pre-push gates, issue #302): the worker gives the implement run's main and fix steps
 // the values its own gates use, logs one line per block, and its gates still decide.
@@ -100,6 +103,53 @@ describe("worker: gate hooks in the run spec", () => {
     const reviews = f.runner.specs.filter((s) => s.role === "review");
     expect(reviews.length).toBeGreaterThan(0);
     for (const s of reviews) expect(s.gate_hooks).toBeUndefined();
+  });
+});
+
+// The Stop check's test selection (design §4): the stored mode per step, with repo.test_command and repo.test_selection.
+describe("worker: test selection in the gate hooks", () => {
+  const test_selection = { hubs: ["src/hub.ts"], always: ["tests/always.test.ts"] };
+  const selecting = () => pipeline({ config: { repo: { ...config.repo, check_commands: CHECKS, test_selection } } });
+
+  it("with no stored mode the main and fix steps get the selection in shadow mode", async () => {
+    const f = await selecting();
+    f.sandbox.exits["npm test"] = 1;
+    await f.submit();
+    await f.step();
+    const [main, fix] = implementSpecs(f);
+    expect(fix!.prompt).toContain("## Checks failed before push");
+    for (const s of [main, fix]) expect(s!.gate_hooks!.selection).toEqual({ mode: "shadow", test_command: ["npm", "test"], test_selection });
+  });
+
+  it("the stored enforce mode reaches the gate hooks", async () => {
+    const f = await selecting();
+    await f.store.setLearnedSetting({
+      project: PROJECT.key, key: MODE_KEY, expected: null, value: '"enforce"', evidence_run_ids: [], window_end: f.clock.now().toISOString() as never, actor: SELECTION_ACTOR,
+    });
+    await f.submit();
+    await f.step();
+    expect(implementSpecs(f)[0]!.gate_hooks!.selection?.mode).toBe("enforce");
+  });
+
+  it("without repo.test_selection the gate hooks carry no selection", async () => {
+    const f = await pipeline({ config: { repo: { ...config.repo, check_commands: CHECKS } } });
+    await f.submit();
+    await f.step();
+    expect("selection" in implementSpecs(f)[0]!.gate_hooks!).toBe(false);
+  });
+
+  it("logs each Stop check's selection line with the run ID and step, and counts none toward the mode switch", async () => {
+    const lines = ["test selection (shadow): full: hub file src/hub.ts changed", "test selection (shadow): 2 files, 1 reaching the 1 changed source and test files, plus 1 always-run: tests/a.test.ts tests/always.test.ts"];
+    let calls = 0;
+    const f = await selecting();
+    f.runner.script.implement = () => (calls++ === 0 ? { ...DONE, stop_selections: lines } : DONE);
+    const item = await f.submit();
+    await f.step();
+    const [run] = await f.runs(item, "implement");
+    const logged = f.log.lines.filter((l) => lines.includes(l.msg));
+    expect(logged.map((l) => [l.msg, l.fields])).toEqual(lines.map((l) => [l, { run_id: run!.id, step: "" }]));
+    // Only the check before push counts: one clean run, not one per Stop check.
+    expect(await f.store.getCursor(cleanCursor(item.project))).toBe("1");
   });
 });
 

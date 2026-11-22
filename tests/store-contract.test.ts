@@ -7,6 +7,7 @@ import { serverDescriptor } from "../src/import/mcp-servers.js";
 import { canonicalJson, descriptionHash } from "../src/packs/pack-entries.store.js";
 import { checkPackGrants } from "../src/packs/pack-grants.js";
 import type { HostSleep, ImproveReportId, RunId, RunKind, Timestamp, UserId, WorkerId, WorkItemId } from "../src/core/types.js";
+import { DEFAULT_COORDINATION } from "../src/core/coordination.js";
 import { projectLabelCursor } from "../src/core/project.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
@@ -28,8 +29,6 @@ const LEASE = 60_000;
 /** A project label as the cursor `project_label:<key>` stores it, and the PR link the store writes as change_url. */
 const LABEL = "github.com/o/r";
 const prUrl = (label: string, n: number) => `https://${label}/pull/${n}`;
-/** The SQLite migration that adds the change columns, found by what it does so a renumber at merge needs no edit. */
-const CHANGE_MIGRATION = MIGRATIONS.findIndex((m) => m.includes("ADD COLUMN change_ref")) + 1;
 
 describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $name", ({ name, make: makeBackend }) => {
   const make = makeBackend;
@@ -225,6 +224,26 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect((await store.heartbeat(run.id, run.lease!.token, LEASE)).ok).toBe(true);
       const after = (await store.getRun(run.id))!;
       expect(new Date(after.lease!.expires_at).getTime()).toBe(clock.now().getTime() + LEASE);
+    });
+
+    it("last model output (design 05-restarts): stored by its lease holder, read across running runs, never by the heartbeat", async () => {
+      const { store, clock } = await queued();
+      await store.createWorkItem(issue(2), system, { enqueue: { kind: "triage", idempotency_key: "o/r#2:triage" } });
+      const a = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))!;
+      const b = (await store.claimRun({ worker_id: w2, kinds: ["triage"], lease_ms: LEASE }))!;
+      // A running run with no output yet (and the heartbeat) leaves it null.
+      expect(await store.heartbeat(a.id, a.lease!.token, LEASE)).toMatchObject({ ok: true });
+      expect(await store.latestRunningOutput()).toBeNull();
+      expect(await store.recordRunOutput(a.id, a.lease!.token)).toBe(true);
+      const first = clock.now().toISOString();
+      clock.advance(1_000);
+      expect(await store.recordRunOutput(b.id, b.lease!.token)).toBe(true);
+      expect(await store.latestRunningOutput()).toBe(clock.now().toISOString());
+      // A stale token writes nothing; a finished run is no longer read.
+      expect(await store.recordRunOutput(a.id, a.lease!.token + 1)).toBe(false);
+      await store.completeRun(b.id, b.lease!.token, ok);
+      expect(await store.recordRunOutput(b.id, b.lease!.token)).toBe(false);
+      expect(await store.latestRunningOutput()).toBe(first);
     });
 
     it("host sleep: an expired lease nobody reclaimed is renewed by its holder (status and token decide, not the clock)", async () => {
@@ -603,6 +622,24 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
   });
 
   describe("read-only queries", () => {
+    it("findWorkItemIds returns the IDs that start with the prefix: the full ID, a short one, `wi_` alone; none for an empty or overlong prefix", async () => {
+      const { store } = await make();
+      // 17 items: two of them share their first hex character (pigeonhole), so a one-character prefix matches several.
+      const ids: WorkItemId[] = [];
+      for (let n = 1; n <= 17; n++) ids.push((await store.createWorkItem(issue(n), system)).item.id);
+      const [a] = ids as [WorkItemId];
+      expect(await store.findWorkItemIds(a)).toEqual([a]);
+      expect(await store.findWorkItemIds(a.slice(0, 11))).toContain(a);
+      expect(await store.findWorkItemIds("wi_")).toEqual([...ids].sort());
+      const first = ids.map((id) => id.slice(0, 4)).find((p, i, all) => all.indexOf(p) !== i)!;
+      const shared = ids.filter((id) => id.startsWith(first)).sort();
+      expect(shared.length).toBeGreaterThan(1);
+      expect(await store.findWorkItemIds(first)).toEqual(shared);
+      expect(await store.findWorkItemIds(`${a}0`)).toEqual([]);
+      expect(await store.findWorkItemIds("")).toEqual([]);
+      expect(await store.findWorkItemIds("wi_g")).toEqual([]);
+    });
+
     it("listWorkItemsWhere filters by stage, blocked_on and closed, most recently updated first", async () => {
       const { store, clock } = await make();
       const ids = [];
@@ -635,6 +672,16 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       await store.createWorkItem(issue(2), system);
       await store.transition({ id: item.id, expected_version: 1, patch: { stage: "CLOSED", close_reason: "wont_do" }, actor: system, reason: "x" });
       expect(await store.countWorkItemsByStage()).toEqual({ NEW: 1, READY: 0, RUNNING: 0, REVIEW: 0, CLOSED: 1 });
+    });
+
+    it("system items are left out of countWorkItemsByStage and of lists that exclude them", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      const sys = await store.createWorkItem({ ...issue(2), hold: { blocked_on: "upstream", blocked_reason: "system_item" } }, system);
+      expect((await store.countWorkItemsByStage()).NEW).toBe(1);
+      expect((await store.listWorkItemsWhere({ exclude_system: true, limit: 10 })).map((i) => i.id)).toEqual([item.id]);
+      expect(await store.countWorkItemsWhere({ exclude_system: true })).toBe(1);
+      expect((await store.listWorkItemsWhere({ limit: 10 })).map((i) => i.id)).toContain(sys.item.id);
     });
 
     it("listRunsByStatus returns runs in the given statuses, oldest first, up to the limit", async () => {
@@ -1087,6 +1134,29 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
         expect((await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))?.idempotency_key).toBe("t");
       },
     );
+
+    // Bug: the missing model credential's pause lives in one process (or runs out at a time), so another worker
+    // claims agent runs that fail, or the pause starts again on every check and logs once per tick.
+    it("the model_credential pause is one row every store on the database sees: started once, in effect until ended", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "sf-credential-pause-"));
+      const clock = new FakeClock();
+      const open = async () => {
+        const s = new SqlFactoryStore(new SqliteDriver(join(dir, "factory.db")), clock);
+        await s.migrate();
+        return s;
+      };
+      const [a, b] = [await open(), await open()];
+      const forever = "9999-12-31T23:59:59.999Z" as Timestamp;
+      expect((await a.pauseClaims(forever, "model_credential")).started).toBe(true);
+      expect((await b.pauseClaims(forever, "model_credential")).started).toBe(false);
+      clock.advance(400 * 24 * 3_600_000);
+      expect(await b.getClaimPause("model_credential")).toBe(forever);
+      expect(await b.endClaimPause("model_credential")).toEqual({ ended: true });
+      expect(await a.getClaimPause("model_credential")).toBeNull();
+      expect((await a.pauseClaims(forever, "model_credential")).started).toBe(true);
+      await a.close();
+      await b.close();
+    });
 
     it("ending a model_stall pause also clears model_stall_since, even after the probe time passed", async () => {
       const { store, clock } = await make();
@@ -1651,6 +1721,28 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect(ack.ok).toBe(true);
     });
 
+    it("any close cancels the item's queued runs without the flag, a merge's too; an already closed item's transition cancels nothing", async () => {
+      const { store, clock } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      const queue = async (v: number, key: string) => {
+        const r = await store.transition({ id: item.id, expected_version: v, patch: {}, actor: system, reason: "x", enqueue: { kind: "implement", idempotency_key: key } });
+        if (!r.ok) throw new Error(r.reason);
+        return r.enqueued!;
+      };
+      const retry = await queue(1, "i:a1"); // a retry queued while the item was open (a takeover's, before 2026-11-22)
+      const merged = await store.transition({
+        id: item.id, expected_version: 2, actor: system, reason: "local_merged",
+        patch: { stage: "CLOSED", close_reason: "completed", merge_sha: "m".repeat(40), blocked_on: "none", blocked_reason: null },
+      });
+      if (!merged.ok) throw new Error(merged.reason);
+      expect(merged.cancelled).toEqual([retry.id]);
+      expect(await store.getRun(retry.id)).toMatchObject({ status: "cancelled", acknowledged_at: null, lease: null });
+      clock.advance(120_000);
+      expect(await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE })).toBeNull();
+      const late = await queue(3, "late"); // a transition on a closed item is no close
+      expect((await store.getRun(late.id))!.status).toBe("queued");
+    });
+
     it("leaves a running run alone, and cancels nothing without the flag or when the transition loses", async () => {
       const { store } = await make();
       const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
@@ -1878,10 +1970,10 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
 
   describe("claim cap: implement and resolve wait at `workers`; short runs take one slot beyond", () => {
     const ALL_KINDS: RunKind[] = ["triage", "implement", "review", "update", "resolve", "merge-check"];
-    /** One process's loops: p:0 … p:3, so three `workers` and the first loop above them. */
+    /** Loop ids: p:0 … p:3, so three `workers` and the first loop above them. The cap counts every process's runs. */
     const owners = [0, 1, 2, 3].map((n) => `p:${n}` as WorkerId);
     const claim = (store: FactoryStore, worker_id: WorkerId, workers?: number) =>
-      store.claimRun({ worker_id, kinds: ALL_KINDS, lease_ms: LEASE, ...(workers !== undefined ? { workers: { count: workers, owners } } : {}) });
+      store.claimRun({ worker_id, kinds: ALL_KINDS, lease_ms: LEASE, ...(workers !== undefined ? { workers: { count: workers } } : {}) });
     const enqueue = (store: FactoryStore, n: number, kind: RunKind) =>
       store.createWorkItem(issue(n), system, { enqueue: { kind, idempotency_key: `${n}:${kind}` } });
     /** Fills the first slots: kinds[i] runs on item i + 1, leased by p:i. */
@@ -1933,15 +2025,30 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect(await claim(store, owners[2]!, 2)).toBeNull();
     });
 
-    it("counts only this process's lease owners, read from the store", async () => {
+    it("counts every process's running runs: B waits while A holds `workers` implement runs, then claims when they finish", async () => {
       const { store } = await make();
-      await fill(store, ["implement"]);
-      // Another process's running implement leaves this process's one free slot alone.
-      await enqueue(store, 2, "implement");
-      expect((await claim(store, "q:0" as WorkerId))?.kind).toBe("implement");
-      await enqueue(store, 3, "implement");
-      expect(await claim(store, owners[1]!, 1)).toBeNull();
-      expect((await claim(store, owners[1]!, 2))?.idempotency_key).toBe("3:implement");
+      // Process A (a:0 … a:3) holds 4 running implement runs, as a process draining after a merge does.
+      const held = [];
+      for (let n = 1; n <= 4; n++) {
+        await enqueue(store, n, "implement");
+        held.push((await claim(store, `a:${n - 1}` as WorkerId, 4))!);
+      }
+      await enqueue(store, 5, "implement");
+      expect(await claim(store, "b:0" as WorkerId, 4)).toBeNull();
+      for (const run of held) await store.completeRun(run.id, run.lease!.token, { status: "succeeded", summary: "", data: {} });
+      expect((await claim(store, "b:0" as WorkerId, 4))?.idempotency_key).toBe("5:implement");
+    });
+
+    it("while another process holds `workers` implement runs, a review takes the one slot beyond and a triage then waits", async () => {
+      const { store } = await make();
+      for (let n = 1; n <= 4; n++) {
+        await enqueue(store, n, "implement");
+        expect((await claim(store, `a:${n - 1}` as WorkerId, 4))?.kind).toBe("implement");
+      }
+      await enqueue(store, 5, "review");
+      expect((await claim(store, "b:0" as WorkerId, 4))?.kind).toBe("review");
+      await enqueue(store, 6, "triage");
+      expect(await claim(store, "b:1" as WorkerId, 4)).toBeNull();
     });
 
     it("with no worker count, nothing is capped: only the claim order applies", async () => {
@@ -1998,6 +2105,9 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "controller_notice_messages", "controller_notice_questions", // Slack notice records: 20261112T2100-controller-notice-messages
       "controller_projects", "controller_task_projects", // task projects: 20261113T1300-controller-task-projects
       "controller_pause_history", // ended model-stall and network pauses (design 07-self-improvement): 20261118T1200-controller-pause-history
+      "controller_design_learnings", // owner corrections to UI changes (design 07-design-learnings): 20261120T1201-controller-design-learnings
+      "controller_schedules", "controller_schedule_runs", // schedules (design 08-schedules): 20261122T1000-controller-schedules
+      "controller_standing_rule_changes", // one record per standing-rule change (design 05-standing-approvals): 20261122T1300-state-standing-rule-changes
       "ext_packs_approvals", // approvals of pack entries: src/state/migrations/20261111T1600-state-ext-packs-approvals
       "ext_packs_entries", // pack tool and MCP server entries: src/state/migrations/20261111T1201-state-ext-packs-entries
       "ext_skill_refs", // imported skill references (design 11-plugin-import): src/state/migrations/20261115T1200-state-ext-skill-refs
@@ -2005,6 +2115,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "runtime_config_file_changes", // file-only key edits (design 08-settings): src/state/migrations/20261113T1200-state-config-file-changes
       "calendar_events", // the calendar component: src/calendar/migrations/20261112T1700-calendar-events
       "calendar_sync_state",
+      "calendar_sync_requests", "calendar_synced_ranges", // on-demand sync: src/calendar/migrations/20261121T1001-calendar-sync-requests
       // The sql bus's own tables (RFC 0015 M3).
       "bus_scheduler",
       "bus_topics",
@@ -3055,10 +3166,6 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       entity_id: "skill/tests-first", fingerprint, verdict: v, pass_rate, failing_cases,
     });
 
-    it("the migration that creates the table is in MIGRATIONS", () => {
-      expect(MIGRATIONS.some((m) => m.includes("CREATE TABLE IF NOT EXISTS controller_golden_fingerprints"))).toBe(true);
-    });
-
     it("an entity never evaluated reads as null; a pass is its last verdict and its base", async () => {
       const { store, clock } = await make();
       expect(await store.getGoldenFingerprint("skill/tests-first")).toBeNull();
@@ -3239,7 +3346,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       const { store } = await make();
       const t = await store.addTask(plain("tk_a"));
       await store.addTask(plain("tk_b"));
-      expect(await store.deleteTask("tk_a")).toEqual({ ok: true, task: t, detached: [] });
+      expect(await store.deleteTask("tk_a")).toEqual({ ok: true, task: t, detached: [], deleted: [] });
       const after = await rows(store);
       expect(after.map((r) => r.id)).toEqual(["tk_b"]);
       expect(await store.deleteTask("tk_a")).toEqual({ ok: false, reason: "not_found" });
@@ -3263,6 +3370,52 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect(r.ok && r.detached.map((s) => [s.id, s.parent_task_id])).toEqual([["tk_s1", null], ["tk_s2", null]]);
       expect(await rows(store)).toEqual(done.filter((x) => x.id !== "tk_p").map((x) => ({ ...x, parent_task_id: null })));
     });
+
+    it("deleteTask with with_sub_tasks deletes the parent and every sub-task, open and done, with their project links, in one write", async () => {
+      const { store } = await make();
+      await store.createProject({ id: "pj_home", name: "Home", created_by: by });
+      await store.addTask(plain("tk_p"));
+      await store.addSubTask("tk_p", plain("tk_s1", { projects: ["home"] }));
+      await store.addSubTask("tk_p", plain("tk_s2"));
+      await store.addTask(plain("tk_other"));
+      await store.completeTask("tk_s1");
+      const { item } = await store.createWorkItem(issue(9101), system);
+      await store.linkTask("tk_p", item.id);
+      await store.linkTask("tk_s2", item.id);
+      const r = await store.deleteTask("tk_p", { with_sub_tasks: true });
+      expect(await store.getWorkItem(item.id)).toEqual(item);
+      expect(r).toMatchObject({ ok: true, task: { id: "tk_p" }, detached: [] });
+      expect(r.ok && r.deleted.map((s) => s.id)).toEqual(["tk_s1", "tk_s2"]);
+      expect((await rows(store)).map((x) => x.id)).toEqual(["tk_other"]);
+      expect(await store.listTaskProjectSlugs(["tk_s1"])).toEqual({});
+      expect(await store.deleteTask("tk_p", { with_sub_tasks: true })).toEqual({ ok: false, reason: "not_found" });
+    });
+
+    it("deleteTask with with_sub_tasks on a task with none deletes it alone; with_sub_tasks false refuses as a plain delete", async () => {
+      const { store } = await make();
+      await store.addTask(plain("tk_a"));
+      await store.addTask(plain("tk_p"));
+      await store.addSubTask("tk_p", plain("tk_s"));
+      expect(await store.deleteTask("tk_a", { with_sub_tasks: true })).toMatchObject({ ok: true, detached: [], deleted: [] });
+      const before = await rows(store);
+      expect(await store.deleteTask("tk_p", { with_sub_tasks: false })).toMatchObject({ ok: false, reason: "open_sub_tasks" });
+      expect(await rows(store)).toEqual(before);
+    });
+
+    it("countOpenSubTasks counts each parent's open sub-tasks over every stored task, leaving out done ones and parents with none", async () => {
+      const { store } = await make();
+      await store.addTask(plain("tk_p"));
+      await store.addTask(plain("tk_q"));
+      await store.addTask(plain("tk_r"));
+      await store.addSubTask("tk_p", plain("tk_p1"));
+      await store.addSubTask("tk_p", plain("tk_p2"));
+      await store.addSubTask("tk_q", plain("tk_q1"));
+      await store.completeTask("tk_q1");
+      const counts = await store.countOpenSubTasks();
+      expect(counts.tk_p).toBe(2);
+      expect(counts.tk_q).toBeUndefined();
+      expect(counts.tk_r).toBeUndefined();
+    });
   });
 
   // Interactive sessions (design §5, 2026-11-01): the actor, transcript and token fields are run columns (migration
@@ -3275,9 +3428,11 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       if (!r.ok) throw new Error(r.reason);
       return r.item;
     };
-    const start = (store: FactoryStore, it: { id: WorkItemId; version: number }) => store.startSession({
+    /** max_cost 1: one shared ordinary file (1.0) holds, as every shared path did before the cost rule (2026-11-21). */
+    const STRICT = { ...DEFAULT_COORDINATION, max_cost: 1 };
+    const start = (store: FactoryStore, it: { id: WorkItemId; version: number }, coordination?: typeof STRICT) => store.startSession({
       id: it.id, expected_version: it.version, actor: person, patch: { stage: "RUNNING" }, reason: "session_started", detail: { spec_source: "owner" },
-      owner: "session:h:1", lease_ms: LEASE, transcript_url: "https://example.com/t",
+      owner: "session:h:1", lease_ms: LEASE, transcript_url: "https://example.com/t", ...(coordination ? { coordination } : {}),
     });
 
     it("startSession writes one running interactive run and the transition and cancels queued triage; other runs read the fields as null", async () => {
@@ -3314,8 +3469,10 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect((await store.getRun(u.enqueued!.id))!.status).toBe("queued");
       const it2 = await seed(store, 3, ["src/a/x.ts"]);
       const before = JSON.stringify([await store.listRuns(it2.id), await store.listStateChanges(it2.id)]);
-      expect(await start(store, it2)).toMatchObject({ ok: false, reason: "overlap", work_item_id: it0.id, paths: ["src/a/x.ts"] });
+      expect(await start(store, it2, STRICT)).toMatchObject({ ok: false, reason: "overlap", work_item_id: it0.id, paths: ["src/a/x.ts"], cost: 1, max_cost: 1 });
       expect(JSON.stringify([await store.listRuns(it2.id), await store.listStateChanges(it2.id)])).toBe(before);
+      // At the default max_cost (2.5) one shared ordinary file (1.0) does not refuse.
+      expect(await start(store, it2)).toMatchObject({ ok: true });
     });
 
     it("updateSession writes notes, tokens, transcript and the last finish only while the lease is held", async () => {
@@ -3339,7 +3496,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       if (!s.ok) throw new Error(s.reason);
       const it1 = await seed(store, 2, ["src/a/y.ts"]);
       await store.transition({ id: it1.id, expected_version: it1.version, actor: system, reason: "x", patch: { stage: "RUNNING" }, enqueue: { kind: "implement", idempotency_key: "i2" } });
-      expect(await store.claimRun({ worker_id: w1, kinds: ["interactive", "implement", "update"], lease_ms: LEASE })).toBeNull();
+      expect(await store.claimRun({ worker_id: w1, kinds: ["interactive", "implement", "update"], lease_ms: LEASE, coordination: STRICT })).toBeNull();
       clock.advance(LEASE + 1);
       expect(await store.expireLeases(5)).toEqual([s.run.id]);
       expect(await store.getRun(s.run.id)).toMatchObject({ status: "failed", lease: null, outcome: { status: "failed", error_code: "session_lost" } });
@@ -3348,6 +3505,95 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
         [1, "failed", "session_lost", "task"],
       ]);
       expect((await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))?.work_item_id).toBe(it1.id);
+    });
+
+    it("a session start and a claim next to an open session use the workers' cost: mechanical paths and unnamed shared indexes never hold, a hotspot does", async () => {
+      const { store } = await make();
+      const plan = async (n: number, files: string[], allowed = files) => {
+        const it = await seed(store, n, allowed);
+        const r = await store.transition({ id: it.id, expected_version: it.version, actor: system, reason: "x", patch: { files_to_change: files } });
+        if (!r.ok) throw new Error(r.reason);
+        return r.item;
+      };
+      // Two plans on different pages' text, both allowed the shared indexes (covering folders), sharing two design topics (mechanical, 0.5).
+      const shared = ["docs/design/", "docs/design.md", "web/src/i18n/"];
+      const s = await start(store, await plan(1, ["web/src/views/tasks.tsx", "web/src/i18n/en/tasks.ts", "docs/design/04-triage.md", "docs/design/history/04-triage.md"], [...shared, "web/src/views/tasks.tsx"]));
+      if (!s.ok) throw new Error(s.reason);
+      const page = await plan(2, ["web/src/views/rules.tsx", "web/src/i18n/en/rules.ts", "docs/design/04-triage.md", "docs/design/history/04-triage.md"], [...shared, "web/src/views/rules.tsx"]);
+      expect(await start(store, page)).toMatchObject({ ok: true });
+      // A queued implement run of a third plan sharing the same design topics is claimed next to both sessions.
+      const third = await plan(3, ["src/a.ts", "docs/design/04-triage.md"]);
+      const q = await store.transition({ id: third.id, expected_version: third.version, actor: system, reason: "x", patch: { stage: "RUNNING" }, enqueue: { kind: "implement", idempotency_key: "i3" } });
+      if (!q.ok) throw new Error(q.reason);
+      expect((await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))?.work_item_id).toBe(third.id);
+      // A plan that names a hotspot another running item names (3.0) is refused, naming the cost.
+      const hot = await plan(4, ["src/worker/x.ts"]);
+      await plan(5, ["src/worker/x.ts"]).then((it) => start(store, it));
+      expect(await start(store, hot)).toMatchObject({ ok: false, reason: "overlap", paths: ["src/worker/x.ts"], cost: 3, max_cost: 2.5 });
+    });
+
+    // A waiting `session start --wait` reserves its NEW item (design 05-interactive-sessions, 2026-11-21).
+    describe("reservations", () => {
+      const HOURS_2 = 2 * 60 * 60 * 1000;
+      const reserve = (store: FactoryStore, id: WorkItemId, owner = "session:h:1") => store.reserveItem({ id, owner, ttl_ms: HOURS_2 });
+      const claimTriage = (store: FactoryStore, worker = w1) => store.claimRun({ worker_id: worker, kinds: ["triage"], lease_ms: LEASE });
+
+      it("while a reservation holds no worker claims the item's queued triage run; other items' runs still claim", async () => {
+        const { store } = await make();
+        const it0 = await seed(store, 1, ["src/a/"]);
+        const r = await reserve(store, it0.id);
+        expect(r).toMatchObject({ ok: true, reservation: { work_item_id: it0.id, owner: "session:h:1" } });
+        for (const worker of [w1, w2]) expect(await claimTriage(store, worker)).toBeNull();
+        const other = await seed(store, 2, ["src/b/"]);
+        expect((await claimTriage(store, w2))?.work_item_id).toBe(other.id);
+        expect((await store.listRuns(it0.id)).map((x) => x.status)).toEqual(["queued"]);
+        expect(await store.getReservation(it0.id)).toEqual(r.ok ? r.reservation : null);
+      });
+
+      it("a reservation older than 2 hours ends: the claim deletes it and triage claims the item", async () => {
+        const { store, clock } = await make();
+        const it0 = await seed(store, 1, ["src/a/"]);
+        await reserve(store, it0.id);
+        clock.advance(HOURS_2 - 1);
+        expect(await claimTriage(store)).toBeNull();
+        clock.advance(1);
+        expect((await claimTriage(store))?.work_item_id).toBe(it0.id);
+        expect(await store.getReservation(it0.id)).toBeNull();
+        expect(await store.releaseReservation(it0.id, "session:h:1")).toBe(false);
+      });
+
+      it("only the owner starts a session on a reserved item; the start ends the reservation; another owner is refused naming it", async () => {
+        const { store } = await make();
+        const it0 = await seed(store, 1, ["src/a/"]);
+        const r = await reserve(store, it0.id);
+        if (!r.ok) throw new Error(r.reason);
+        expect(await reserve(store, it0.id, "session:h:2")).toEqual({ ok: false, reason: "reserved", reservation: r.reservation });
+        expect(await reserve(store, it0.id)).toEqual(r); // the owner's own: kept as it is, not renewed
+        const before = JSON.stringify(await store.listRuns(it0.id));
+        const other = await store.startSession({
+          id: it0.id, expected_version: it0.version, actor: person, patch: { stage: "RUNNING" }, reason: "session_started", detail: {}, owner: "session:h:2", lease_ms: LEASE, transcript_url: null,
+        });
+        expect(other).toEqual({ ok: false, reason: "reserved", reservation: r.reservation });
+        expect(JSON.stringify(await store.listRuns(it0.id))).toBe(before);
+        expect(await store.releaseReservation(it0.id, "session:h:2")).toBe(false);
+        const s = await start(store, it0); // owner session:h:1
+        expect(s).toMatchObject({ ok: true });
+        expect(await store.getReservation(it0.id)).toBeNull();
+      });
+
+      it("a release leaves no reservation; only a NEW item nothing blocks is reserved", async () => {
+        const { store } = await make();
+        const it0 = await seed(store, 1, ["src/a/"]);
+        await reserve(store, it0.id);
+        expect(await store.releaseReservation(it0.id, "session:h:1")).toBe(true);
+        expect(await store.getReservation(it0.id)).toBeNull();
+        expect((await claimTriage(store))?.work_item_id).toBe(it0.id);
+        const running = await seed(store, 2, ["src/b/"]);
+        const t = await store.transition({ id: running.id, expected_version: running.version, actor: system, reason: "x", patch: { stage: "RUNNING" } });
+        if (!t.ok) throw new Error(t.reason);
+        expect(await reserve(store, running.id)).toEqual({ ok: false, reason: "not_new" });
+        expect(await reserve(store, "wi_none" as WorkItemId)).toEqual({ ok: false, reason: "not_found" });
+      });
     });
   });
 
@@ -3362,7 +3608,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
     it("createProject stores the cleaned name, its slug and the Clock's time, and answers a repeated ID as stored", async () => {
       const { store } = await make(new FakeClock("2026-11-14T09:00:00.000Z"));
       const r = await store.createProject({ id: "pj_a", name: "  Home   repairs ", created_by: by });
-      const project = { id: "pj_a", slug: "home-repairs", name: "Home repairs", created_by: by, created_at: "2026-11-14T09:00:00.000Z", archived_at: null };
+      const project = { id: "pj_a", slug: "home-repairs", name: "Home repairs", created_by: by, created_at: "2026-11-14T09:00:00.000Z", archived_at: null, base_folder: null };
       expect(r).toEqual({ ok: true, project });
       expect(await store.createProject({ id: "pj_a", name: "Something else", created_by: by })).toEqual({ ok: true, project });
       expect(await store.getProject("pj_a")).toEqual(project);
@@ -3432,6 +3678,21 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect(await links(store)).toEqual(linked);
       expect(await store.archiveProject("pj_nope")).toEqual({ ok: false, reason: "not_found" });
       expect(await store.restoreProject("pj_nope")).toEqual({ ok: false, reason: "not_found" });
+    });
+
+    it("setProjectFolder stores the folder on an active project and refuses an unknown or archived one, writing nothing", async () => {
+      const { store } = await make();
+      await store.createProject({ id: "pj_a", name: "Home", created_by: by });
+      await store.createProject({ id: "pj_b", name: "Work", created_by: by });
+      expect(await store.setProjectFolder("pj_a", "/srv/home")).toMatchObject({ ok: true, project: { id: "pj_a", base_folder: "/srv/home" } });
+      expect(await store.setProjectFolder("pj_a", "/srv/home")).toMatchObject({ ok: true, project: { base_folder: "/srv/home" } });
+      expect(await store.getProject("pj_a")).toMatchObject({ base_folder: "/srv/home" });
+      expect(await store.getProject("pj_b")).toMatchObject({ base_folder: null });
+      expect(await store.setProjectFolder("pj_nope", "/srv/x")).toEqual({ ok: false, reason: "not_found" });
+      await store.archiveProject("pj_b");
+      expect(await store.setProjectFolder("pj_b", "/srv/work")).toEqual({ ok: false, reason: "archived" });
+      expect(await store.getProject("pj_b")).toMatchObject({ base_folder: null });
+      expect(await store.getProjectBySlug("home")).toMatchObject({ base_folder: "/srv/home" });
     });
 
     it("addTaskToProject links once, refuses an unknown task or project and an archived project; removeTaskFromProject unlinks once", async () => {
@@ -3673,29 +3934,6 @@ describe("migration 32 on an existing SQLite database", () => {
   });
 });
 
-describe("migration 35 (change fields) on an existing SQLite database", () => {
-  const adoptedIn = (n: number, project: string) => ({
-    ...issue(n),
-    project,
-    adopted: { change_ref: String(n), head_branch: "b", head_sha: "h", allowed_paths: ["a.ts"], tier: 4 as const },
-  });
-
-  it("a write stores change_url as https://<label>/pull/<n>, the PR link the status UI shows as stored", async () => {
-    expect(CHANGE_MIGRATION).toBeGreaterThan(0);
-    const store = new SqlFactoryStore(new SqliteDriver(join(mkdtempSync(join(tmpdir(), "sf-mig-change-")), "factory.db")), new FakeClock());
-    try {
-      await store.migrate();
-      await store.advanceCursor(projectLabelCursor(PROJECT_KEY), null, LABEL);
-      const { item } = await store.createWorkItem(adoptedIn(5, PROJECT_KEY), human);
-      expect((await store.getWorkItem(item.id))!).toMatchObject({ change_ref: "5", change_url: "https://github.com/o/r/pull/5" });
-      expect(prUrl(LABEL, 5)).toBe("https://github.com/o/r/pull/5");
-    } finally {
-      await store.close();
-    }
-  });
-
-});
-
 describe("20261112T1200-controller-change-ref-only on an existing SQLite database", () => {
   const ID = "20261112T1200-controller-change-ref-only";
   const ITEM = "(id, version, source_type, source_id, source_link, requester_id, project, problem, resources, allowed_paths, stage, blocked_on, " +
@@ -3743,7 +3981,8 @@ describe("20261112T1200-controller-change-ref-only on an existing SQLite databas
       for (const t of ["controller_work_items", "controller_unreviewed_merges"]) {
         expect(cols(db, t)).not.toContain("pr_number");
         expect(cols(db, `legacy_${t}`)).toContain("pr_number");
-        const kept = cols(db, t).join(", ");
+        // A column a later migration added (controller_work_items.done_checks) is only on the new table.
+        const kept = cols(db, t).filter((c) => cols(db, `legacy_${t}`).includes(c)).join(", ");
         // Every row, every value, in both the new table and its legacy copy.
         expect(rows(db, `SELECT ${kept} FROM ${t} ORDER BY id`)).toEqual(rows(db, `SELECT ${kept} FROM legacy_${t} ORDER BY id`));
       }

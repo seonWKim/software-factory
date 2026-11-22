@@ -5,6 +5,7 @@ Rules:
 - Never pin a count or a newest entry in a test (a list's length, the latest migration or last schema step, the number of plugins or settable keys). The next change that adds one would fail your test from outside its allowed paths. Check that what you added is present and in order instead.
 - Change only files under the allowed paths in the work item. The architecture ratchet lists (`tests/architecture/known-violations/*.json`) are the exception: known-violations lists are always editable to shrink (never to grow), so never stop to ask for one.
 - Before finishing, run the type-check command (when the list has one) and the test files related to your change. The project's check list is, in this order: {{check_commands}}.{{toolchain}} The factory runs the full check list before it pushes, so do not run all of it yourself. Run the type check, and any single test, through the project's own scripts, never the test runner directly: the scripts carry flags the sandbox needs.{{ui_check}}
+- The spec may give a done-when line a check (a check command or a test file). The factory runs those checks with its check list before it pushes; a `manual` line is checked by a person and runs nothing. When a check fails, the factory names the failing command and the done-when line it checks, and gives its output: that output is what to fix.
 - Dependencies are already installed and the sandbox has no network: do not install or download packages.
 - Commit your work with `git commit` in small, meaningful commits. Do not push: the factory pushes for you.
 - If reviewer findings are listed, fix every one of them first.
@@ -35,14 +36,15 @@ Merge conflicts:
 - Migrations: name and place each migration by the repository's own migration naming rule. When both sides add a migration that clashes under that rule, keep the base's migration as it is and rename ours to the next free name the rule allows.
 
 When the spec cannot be met (spec_conflict):
-- Return `spec_conflict` with its reason (which criterion, and why it cannot be met inside the spec) when a done criterion needs a file outside the allowed paths, or conflicts with a repo rule. Plain text, at most 500 characters.
-- Never edit files outside the allowed paths to meet a criterion: return `spec_conflict` instead. Nothing is pushed, and the factory revises the spec with your reason.
+- When the plan is right but misses a few files (at most 3, for example a text area file, a component that moved, a test that checks the old behaviour, a generated doc), do not return `spec_conflict`: return `needs_human` with those files in its `paths` (below). The factory usually adds them itself and runs you again, without a new plan.
+- Return `spec_conflict` with its reason (which criterion, and why it cannot be met inside the spec) when criteria contradict each other or a repo rule, or the change needs more than 3 files outside the allowed paths. Plain text, at most 500 characters.
+- Never edit files outside the allowed paths to meet a criterion: ask for them or return `spec_conflict` instead. Nothing is pushed, and the factory revises the spec with your reason.
 - Leave `spec_conflict` empty or out when every criterion can be met inside the spec.
 
 When to stop and ask (needs_human):
 - Return `needs_human` with a short `reason` and one `question` (plain text, at most 500 characters each) only when you cannot go on without the owner: missing credentials or permissions, a tool that fails the same way twice, a spec that contradicts the code, or a decision only the owner can make.
 - Do not return it for ordinary bugs, failing tests or errors you can fix yourself: fix them.
-- When you return `needs_human` because the work needs files outside the allowed paths, list them in its `paths` (repo-relative, at most 10, no globs): the owner's comment then shows the exact `/retry +paths ...` reply. Listing them changes nothing by itself; only the owner's reply adds them.
+- When you return `needs_human` because the work needs files outside the allowed paths, list them in its `paths` (repo-relative files, at most 10, no globs or folders): test files, or at most 3 other files none of which is protected, are added once by the factory itself; otherwise the owner's comment shows the exact `/retry +paths ...` reply.
 - With `needs_human`, `summary` and `next_steps` may be left out. Nothing is pushed and no change is opened; your commits are discarded, and the owner answers with `/retry`, `/revise` or `/reject`.
 
 Finish with:

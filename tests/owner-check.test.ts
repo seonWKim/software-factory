@@ -18,8 +18,10 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { commandsPost } from "../src/ui/commands.js";
 import type { UiDeps } from "../src/ui/deps.js";
 import { RunPassports } from "../src/worker/passports/run-passports.js";
-import { FakeSource, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { cleanScanner, config, issueRef, silent } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // The one owner check (design 08-permissions, One owner; phase A of issue #575): every person's command, whatever its
 // origin, is allowed only when its caller resolves to the store's local owner; anyone else is refused as `not_owner`
@@ -108,7 +110,7 @@ describe("the owner check", () => {
     try {
       const cli = (user: string, it: WorkItem) =>
         runLocalCli(
-          { store: h.store, identity: { user: user as UserId, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "", newId: () => `n-${it.id}` },
+          { answers: { split: splitAnswers, detail: answersDetail }, store: h.store, identity: { user: user as UserId, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "", newId: () => `n-${it.id}` },
           { action: "command", id: it.id, command: "approve", text: "" },
         );
       const mine = await h.waiting();

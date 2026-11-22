@@ -11,8 +11,10 @@ import { NO_COMMITS_DETAIL } from "../src/worker/index.js";
 import type { RunKind } from "../src/core/types.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { ClaudeCodeRunner, buildClaudeArgs } from "../src/impl/runner/claude-code-runner.js";
-import { GATE_HOOKS_DIR, HOOK_SCRIPT, HOOK_SPEC, PATH_REFUSAL, editCovered, gateAnswerer, hookScript, specFile } from "../src/impl/runner/gate-hooks.js";
-import type { AgentRunResult, AgentRunSpec, GateHooks } from "../src/interfaces/agent-runner.js";
+import {
+  GATE_HOOKS_DIR, HOOK_SCRIPT, HOOK_SPEC, PATH_REFUSAL, STOP_CHECK_MS, STOP_CHECK_TIMED_OUT, STOP_HOOK_SLACK_MS, editCovered, gateAnswerer, hookScript, runDeadline, specFile,
+} from "../src/impl/runner/gate-hooks.js";
+import type { AgentRunResult, AgentRunSpec, GateHooks, StopSelection } from "../src/interfaces/agent-runner.js";
 import type { ExecOptions, ExecResult, Sandbox, SandboxHandle } from "../src/interfaces/sandbox.js";
 import type { SecretName, SecretStore } from "../src/interfaces/secret-store.js";
 import { PackCheckRunner } from "../src/runtime/hooks/pack-checks.js";
@@ -102,10 +104,16 @@ class GateSandbox implements Sandbox {
   /** `git rev-list` output by argument line; default: none. */
   revLists: Record<string, string> = {};
   numstat = "";
+  /** What test selection reads: the changed files, the tracked files and `git grep`'s import lines (each `path\0line`). */
+  changed: string[] = [];
+  tracked: string[] = [];
+  imports: string[] = [];
   /** Check commands by argv joined with spaces: exit code, output and how long it takes. Default: pass at once. */
   checks: Record<string, { exit: number; out: string; ms?: number }> = {};
   /** Every non-claude command, in order. */
   commands: string[] = [];
+  /** The commands stopped by their abort signal: the real sandboxes kill the whole process group then. */
+  killed: string[] = [];
   gitThrows = false;
   agent: (a: Agent) => Promise<void> = async () => {};
   claudeArgs: string[] = [];
@@ -122,7 +130,14 @@ class GateSandbox implements Sandbox {
       this.claudeArgs = [...cmd];
       const settings = JSON.parse(cmd[cmd.indexOf("--settings") + 1]!) as { hooks?: Hooks };
       const hooks = settings.hooks;
-      await this.agent({
+      // The real sandboxes kill the CLI on its signal or its timeout; the fake agent is left behind.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const ended = new Promise<ExecResult>((resolve) => {
+        const killed = (timed_out: boolean): ExecResult => ({ exit_code: null, signal: "SIGTERM", stdout: "", stderr: "", timed_out });
+        o.signal?.addEventListener("abort", () => resolve(killed(false)), { once: true });
+        if (o.timeout_ms) timer = setTimeout(() => resolve(killed(true)), o.timeout_ms);
+      });
+      const agent = this.agent({
         args: cmd,
         hooks,
         workdir: h.workdir,
@@ -144,8 +159,12 @@ class GateSandbox implements Sandbox {
           const reply = r.out ? (JSON.parse(r.out) as { decision?: string; reason?: string }) : {};
           return reply.decision === "block" ? reply.reason ?? "blocked" : null;
         },
-      });
-      return res(0, RESULT);
+      }).then(() => res(0, RESULT));
+      try {
+        return await Promise.race([agent, ended]);
+      } finally {
+        clearTimeout(timer);
+      }
     }
     const line = cmd.join(" ");
     this.commands.push(line);
@@ -154,11 +173,23 @@ class GateSandbox implements Sandbox {
       const args = cmd.slice(1).join(" ");
       if (args.startsWith("rev-list")) return res(0, this.revLists[args] ?? "");
       if (args.startsWith("diff --numstat")) return res(0, this.numstat);
+      if (args.startsWith("diff --name-only")) return res(0, this.changed.map((p) => `${p}\0`).join(""));
+      if (args.startsWith("ls-files")) return res(0, this.tracked.map((p) => `${p}\0`).join(""));
+      if (args.startsWith("grep")) return res(this.imports.length > 0 ? 0 : 1, this.imports.join("\n"));
       return res(0, "");
     }
     if (o.signal?.aborted) return res(1);
     const c = this.checks[line] ?? { exit: 0, out: "" };
-    if (c.ms) await new Promise((r) => setTimeout(r, c.ms));
+    if (c.ms) {
+      const aborted = await new Promise<boolean>((r) => {
+        const t = setTimeout(() => r(false), c.ms);
+        o.signal?.addEventListener("abort", () => (clearTimeout(t), r(true)), { once: true });
+      });
+      if (aborted) {
+        this.killed.push(line);
+        return { exit_code: null, signal: "SIGTERM", stdout: "", stderr: "", timed_out: false };
+      }
+    }
     return res(c.exit, c.out);
   }
 }
@@ -174,7 +205,7 @@ const GATES: GateHooks = {
   stop_blocks_used: 0,
 };
 
-function setup(role: RunKind = "implement", gates: GateHooks | null = GATES) {
+function setup(role: RunKind = "implement", gates: GateHooks | null = GATES, stopCheckMs?: number) {
   const root = mkdtempSync(join(tmpdir(), "sf-gates-"));
   const workdir = join(root, "work");
   mkdirSync(workdir);
@@ -190,6 +221,7 @@ function setup(role: RunKind = "implement", gates: GateHooks | null = GATES) {
     homesDir: join(root, "homes"),
     models: { cheap: "c", standard: "s", strong: "x" },
     claudeBin: BIN,
+    ...(stopCheckMs === undefined ? {} : { stopCheckMs }),
     tools: { broker: { listTools: () => [], call: async () => ({ ok: true, content: null }) } as never, scanner },
   });
   const spec: AgentRunSpec = {
@@ -214,11 +246,11 @@ function setup(role: RunKind = "implement", gates: GateHooks | null = GATES) {
 }
 
 /** Runs the fake agent in `mode`: through the runner and its hooks, or straight against the answerer. */
-async function drive(f: ReturnType<typeof setup>, mode: Mode): Promise<Pick<AgentRunResult, "status" | "gate_blocks">> {
+async function drive(f: ReturnType<typeof setup>, mode: Mode): Promise<Pick<AgentRunResult, "status" | "gate_blocks" | "stop_selections">> {
   if (mode === "hooks") return f.runner.run(f.spec);
   const dir = join(f.configDir, GATE_HOOKS_DIR, f.spec.run_id);
   mkdirSync(dir, { recursive: true });
-  const answers = await gateAnswerer({ dir, spec: { ...f.spec, gate_hooks: f.spec.gate_hooks! }, sandbox: f.sandbox, scanner }, f.spec.signal);
+  const answers = await gateAnswerer({ dir, spec: { ...f.spec, gate_hooks: f.spec.gate_hooks! }, sandbox: f.sandbox, scanner, after }, f.spec.signal);
   const ask = async (req: unknown) => {
     const a = await answers.answer(req);
     if (a) await answers.sent(a);
@@ -238,8 +270,9 @@ async function drive(f: ReturnType<typeof setup>, mode: Mode): Promise<Pick<Agen
     stop: async () => ((await ask({ event: "stop" })) as { reason?: string } | undefined)?.reason ?? null,
   });
   const blocks = await answers.blocks();
+  const selections = answers.selections();
   rmSync(dir, { recursive: true, force: true });
-  return { status: "completed", ...(blocks.length > 0 ? { gate_blocks: blocks } : {}) };
+  return { status: "completed", ...(blocks.length > 0 ? { gate_blocks: blocks } : {}), ...(selections.length > 0 ? { stop_selections: selections } : {}) };
 }
 
 /** An agent that stops until it is allowed to, at most `max` times, and keeps every block reason. */
@@ -402,6 +435,78 @@ for (const mode of MODES) describe(`gate hooks: Stop (${mode})`, () => {
   });
 });
 
+// The Stop check's test selection (design §4): the check before push's own rule (selectedChecks) narrows the test
+// command in enforce mode; shadow runs it whole; without a selection the check list runs as it is.
+for (const mode of MODES) describe(`gate hooks: Stop test selection (${mode})`, () => {
+  const selection = (m: StopSelection["mode"]): StopSelection => ({
+    mode: m, test_command: ["npm", "test"], test_selection: { hubs: ["src/hub.ts"], always: ["tests/always.test.ts"] },
+  });
+  /** A one-file change to src/a.ts, which tests/a.test.ts imports. */
+  const oneFile = (f: ReturnType<typeof setup>) => {
+    f.sandbox.changed = ["src/a.ts"];
+    f.sandbox.tracked = ["src/a.ts", "src/hub.ts", "tests/a.test.ts", "tests/b.test.ts", "tests/always.test.ts"];
+    f.sandbox.imports = ['tests/a.test.ts\0import { a } from "../src/a.js";', 'tests/b.test.ts\0import { h } from "../src/hub.js";'];
+  };
+  const npm = (f: ReturnType<typeof setup>) => f.sandbox.commands.filter((c) => c.startsWith("npm"));
+
+  it("in enforce mode a one-file change runs only the selected test files, and the result names the selection", async () => {
+    const f = setup("implement", { ...GATES, selection: selection("enforce") });
+    oneFile(f);
+    const reasons: string[] = [];
+    f.sandbox.agent = stopper(reasons);
+    const result = await drive(f, mode);
+    expect(reasons).toEqual([]);
+    expect(npm(f)).toEqual(["npm run typecheck", "npm test -- tests/a.test.ts tests/always.test.ts"]);
+    expect(result.stop_selections).toEqual([
+      "test selection (enforce): 2 files, 1 reaching the 1 changed source and test files, plus 1 always-run: tests/a.test.ts tests/always.test.ts",
+    ]);
+  });
+
+  it("a failing selected test command is the block's check, named as it ran", async () => {
+    const f = setup("implement", { ...GATES, selection: selection("enforce") });
+    oneFile(f);
+    f.sandbox.checks["npm test -- tests/a.test.ts tests/always.test.ts"] = { exit: 1, out: "FAIL tests/a.test.ts" };
+    const reasons: string[] = [];
+    f.sandbox.agent = async (a) => void reasons.push((await a.stop())!);
+    const result = await drive(f, mode);
+    expect(reasons[0]).toContain("`npm test -- tests/a.test.ts tests/always.test.ts` failed (exited 1)");
+    expect(result.gate_blocks).toEqual([{ hook: "stop", check: "npm test -- tests/a.test.ts tests/always.test.ts", attempt: 1 }]);
+  });
+
+  for (const [file, why] of [["src/hub.ts", "full: hub file src/hub.ts changed"], ["package.json", "full: package file package.json changed"]] as const) {
+    it(`a change to ${file} runs the full test command, with the reason`, async () => {
+      const f = setup("implement", { ...GATES, selection: selection("enforce") });
+      oneFile(f);
+      f.sandbox.changed = ["src/a.ts", file];
+      f.sandbox.agent = stopper([]);
+      const result = await drive(f, mode);
+      expect(npm(f)).toEqual(["npm run typecheck", "npm test"]);
+      expect(result.stop_selections).toEqual([`test selection (enforce): ${why}`]);
+    });
+  }
+
+  it("in shadow mode the test command runs whole, and the selection is named as shadow", async () => {
+    const f = setup("implement", { ...GATES, selection: selection("shadow") });
+    oneFile(f);
+    f.sandbox.agent = stopper([]);
+    const result = await drive(f, mode);
+    expect(npm(f)).toEqual(["npm run typecheck", "npm test"]);
+    expect(result.stop_selections).toEqual([
+      "test selection (shadow): 2 files, 1 reaching the 1 changed source and test files, plus 1 always-run: tests/a.test.ts tests/always.test.ts",
+    ]);
+  });
+
+  it("with no selection the check list runs as it is and nothing is named; selection reads no git", async () => {
+    const f = setup();
+    oneFile(f);
+    f.sandbox.agent = stopper([]);
+    const result = await drive(f, mode);
+    expect(npm(f)).toEqual(["npm run typecheck", "npm test"]);
+    expect(result.stop_selections).toBeUndefined();
+    expect(f.sandbox.commands.filter((c) => c.startsWith("git diff --name-only") || c.startsWith("git ls-files") || c.startsWith("git grep"))).toEqual([]);
+  });
+});
+
 describe.runIf(canListen)("gate hooks: Stop and the stall clock", () => {
   it("a Stop check that runs longer than stall_ms is not a stall: the run completes", async () => {
     const f = setup();
@@ -415,6 +520,126 @@ describe.runIf(canListen)("gate hooks: Stop and the stall clock", () => {
     expect(result.status).toBe("completed");
   });
 });
+
+// The Stop check's own time limit (design §4, issue #717): separate from the run's timeout_ms, which it does not use up.
+describe("gate hooks: the Stop check's time limit", () => {
+  it.runIf(canListen)("the Stop hook's timeout comes from the Stop check's limit, not the run's timeout_ms", async () => {
+    const timeouts: number[] = [];
+    for (const [stopCheckMs, timeout_ms] of [[undefined, 60_000], [undefined, 7_200_000], [4_000, 60_000]] as const) {
+      const f = setup("implement", GATES, stopCheckMs);
+      f.spec = { ...f.spec, timeout_ms };
+      const settings = await hookSettings(f);
+      timeouts.push(settings.Stop![0]!.hooks[0]!.timeout);
+    }
+    const limit = Math.ceil((STOP_CHECK_MS + STOP_HOOK_SLACK_MS) / 1000);
+    expect(timeouts).toEqual([limit, limit, Math.ceil((4_000 + STOP_HOOK_SLACK_MS) / 1000)]);
+  });
+
+  it("a check within its limit passes as before, with nothing killed", async () => {
+    const f = setup("implement", GATES, 3_000);
+    f.sandbox.checks["npm test"] = { exit: 0, out: "", ms: 200 };
+    const answers = await answerer(f, 3_000);
+    expect(await answers.answer({ event: "stop" })).toBeNull();
+    expect(answers.stopTimeout()).toBeNull();
+    expect(f.sandbox.killed).toEqual([]);
+  });
+
+  it("a check over its limit is killed, the stop allowed and the timeout kept naming the check; no later stop runs a check", async () => {
+    const f = setup("implement", GATES, 300);
+    f.sandbox.checks["npm test"] = { exit: 0, out: "", ms: 60_000 };
+    const answers = await answerer(f, 300);
+    expect(await answers.answer({ event: "stop" })).toBeNull();
+    expect(f.sandbox.killed).toEqual(["npm test"]);
+    expect(answers.stopTimeout()).toEqual({ check: "npm test", ms: 300 });
+    const before = f.sandbox.commands.length;
+    expect(await answers.answer({ event: "stop" })).toBeNull();
+    expect(f.sandbox.commands.length).toBe(before);
+  });
+
+  it.runIf(canListen)("a run whose Stop check runs out fails naming the check, not as timed out; it waited for the check", async () => {
+    const f = setup("implement", GATES, 800);
+    f.sandbox.checks["npm test"] = { exit: 0, out: "", ms: 60_000 };
+    const reasons: string[] = [];
+    f.sandbox.agent = stopper(reasons);
+    const result = await f.runner.run(f.spec);
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain(`${STOP_CHECK_TIMED_OUT}: `);
+    expect(result.error).toContain("`npm test`");
+    expect(result.error).toContain("800 ms");
+    expect(f.sandbox.killed).toEqual(["npm test"]);
+  });
+
+  it.runIf(canListen)("the Stop check's time does not count against the run's timeout_ms", async () => {
+    const f = setup("implement", GATES, 20_000);
+    f.spec = { ...f.spec, timeout_ms: 1_500, stall_ms: 60_000, first_output_ms: 60_000 };
+    f.sandbox.checks["npm test"] = { exit: 0, out: "", ms: 3_000 };
+    const reasons: string[] = [];
+    f.sandbox.agent = stopper(reasons);
+    const result = await f.runner.run(f.spec);
+    expect(reasons).toEqual([]);
+    expect(result.status).toBe("completed");
+    expect(f.sandbox.killed).toEqual([]);
+  });
+
+  it("an agent over the run's timeout_ms is still timed out", async () => {
+    const f = setup("implement", GATES, 20_000);
+    f.spec = { ...f.spec, timeout_ms: 300, stall_ms: 60_000, first_output_ms: 60_000 };
+    f.sandbox.agent = () => new Promise((r) => setTimeout(r, 3_000));
+    const result = await f.runner.run(f.spec);
+    expect(result.status).toBe("timed_out");
+    expect(result.error).toBeUndefined();
+  });
+});
+
+describe("the run deadline", () => {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  it("ends the run at timeout_ms with no Stop check", async () => {
+    const d = runDeadline(150, () => false, after);
+    await sleep(400);
+    expect(d.signal.aborted).toBe(true);
+  });
+
+  it("does not count the time a Stop check runs", async () => {
+    const start = Date.now();
+    // A Stop check that runs from the start for 600 ms.
+    const d = runDeadline(150, () => Date.now() - start < 600, after);
+    await sleep(500);
+    expect(d.signal.aborted).toBe(false);
+    await sleep(600);
+    expect(d.signal.aborted).toBe(true);
+    d.stop();
+  });
+
+  it("stops without firing", async () => {
+    const d = runDeadline(100, () => false, after);
+    d.stop();
+    await sleep(250);
+    expect(d.signal.aborted).toBe(false);
+  });
+});
+
+/** A real timer for the hooks, as the runner gives them. */
+function after(ms: number, fn: () => void): () => void {
+  const t = setTimeout(fn, ms);
+  return () => clearTimeout(t);
+}
+
+/** The answerer the hook host uses, with the Stop check's limit, in a fresh hook folder. */
+async function answerer(f: ReturnType<typeof setup>, stopCheckMs: number) {
+  const dir = join(f.configDir, GATE_HOOKS_DIR, f.spec.run_id);
+  mkdirSync(dir, { recursive: true });
+  return gateAnswerer({ dir, spec: { ...f.spec, gate_hooks: f.spec.gate_hooks! }, sandbox: f.sandbox, scanner, after, stop_check_ms: stopCheckMs }, f.spec.signal);
+}
+
+/** The hook settings the runner passes, read from the fake claude's --settings (no hook is run). */
+async function hookSettings(f: ReturnType<typeof setup>): Promise<Hooks> {
+  let hooks: Hooks | undefined;
+  f.sandbox.agent = async (a) => void (hooks = a.hooks);
+  await f.runner.run(f.spec);
+  if (!hooks) throw new Error("no hooks in --settings");
+  return hooks;
+}
 
 for (const mode of MODES) describe(`gate hooks: failures never block (${mode})`, () => {
   it("a host that cannot run its checks allows the stop, and the run completes", async () => {

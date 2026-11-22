@@ -5,7 +5,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { API } from "../web/src/api.js";
 import { QueueTable, RunningTable } from "../web/src/views/common.js";
-import { RunnersPage } from "../web/src/views/pages.js";
+import { ActivityPage, RunnersTab } from "../web/src/views/pages.js";
 
 const AT = "2026-11-07T00:00:00.000Z";
 const NOW = Date.parse(AT);
@@ -58,13 +58,24 @@ describe("Running now and Queue rows", () => {
   });
 });
 
-describe("Runners Running now count", () => {
-  it("counts the rows whose status is running", () => {
+describe("Running now on one page only", () => {
+  const seeded = () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
     client.setQueryData([API.runs], { runs: [run(1), run(2), run(3, "succeeded")] });
     client.setQueryData([API.items], { items: [item(1, "One"), item(2, "Two")] });
-    render(<QueryClientProvider client={client}><RunnersPage /></QueryClientProvider>);
+    client.setQueryData([`${API.items}?closed=1`], { items: [item(1, "One"), item(2, "Two")] });
+    return client;
+  };
+
+  it("Work's Activity section draws the Running now table with the running rows", () => {
+    render(<QueryClientProvider client={seeded()}><ActivityPage /></QueryClientProvider>);
     const section = screen.getByRole("region", { name: "Running now" });
-    expect(within(section).getByRole("heading", { name: "Running now" }).parentElement.textContent).toBe("Running now2");
+    expect(section.querySelectorAll("tbody tr")).toHaveLength(2);
+  });
+
+  it("Health's Runners tab draws no Running now, with the same runs loaded", () => {
+    render(<QueryClientProvider client={seeded()}><RunnersTab /></QueryClientProvider>);
+    expect(screen.queryByRole("region", { name: "Running now" })).toBeNull();
+    expect(screen.getByRole("region", { name: "Worker processes" })).toBeTruthy();
   });
 });

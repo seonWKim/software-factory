@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import migration from "../src/controller/migrations/20261111T1610-controller-tasks.migration.js";
 import { type CliAction, type LocalCliDeps, parseLocalCliArgs, runLocalCli } from "../src/core/local-cli.js";
-import { type NewTask, type Task, localDate, taskViews } from "../src/core/tasks.js";
-import type { Timestamp, UserId } from "../src/core/types.js";
+import { type NewTask, localDate, taskViews } from "../src/core/tasks.js";
+import type { UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { MIGRATIONS_TABLE, type MigrationDb, type SqlDriver, tableExists } from "../src/state/index.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // Plain tasks (design 02-tasks, issue #606): stored in controller_tasks, never a work item; quick-add on the CLI;
 // conditional, idempotent writes; one next occurrence per recurring completion.
@@ -17,7 +18,7 @@ async function setup(clock = new FakeClock("2026-11-11T12:00:00.000Z")) {
   const { store } = await newStore(clock);
   let n = 0;
   const d: LocalCliDeps = {
-    store, identity: { user: USER, from: "git user.email" }, project: async () => null, read: async () => "", newId: () => `id${++n}`,
+    answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: USER, from: "git user.email" }, project: async () => null, read: async () => "", newId: () => `id${++n}`,
   };
   /** As typed: `factory task <args...>`. */
   const cli = (...args: string[]) => {

@@ -7,6 +7,11 @@
 // Content-Type, CSRF token, body size, JSON) run in server.ts; then the owner check (the store's owner only);
 // every refusal comes before the flow runs.
 //
+// POST /api/v1/calendar/sync {from, to} (design 02-tasks-calendar, 2026-11-22), the Calendar page's Sync, passes the
+// same guards and owner check, then the range check (the read's rangeError), and stores a request to sync every
+// source for those local days, which the controller's calendar unit runs on its next poll. While a request for the
+// range waits, it is answered again and no row is written.
+//
 // GET also says, per plugin, whether this build carries the default sign-in a plain connect takes (`default_client`,
 // from the hook's `hasDefault`), so the page offers no Connect that can only fail.
 //
@@ -20,8 +25,9 @@
 // its result. A sign-in's state is held in this process only, because its listener lives here; a restart drops it and
 // the owner connects again. No secret value is returned, logged or stored: errors name steps, never values.
 
-import { type SyncOutcome, readSyncStates } from "../calendar/index.js";
-import type { Loaded } from "../compose.js";
+import { type SyncOutcome, rangeError, readSyncStates, requestCalendarSync } from "../calendar/index.js";
+import type { Loaded } from "../load-config.js";
+import type { connectCalendar } from "../setup.js";
 import { errorText } from "../core/log.js";
 import { type SettingsBase, resolveSettings } from "../core/settings.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
@@ -35,6 +41,7 @@ import { Withholder } from "./withhold.js";
 export const CALENDAR_PATH = "/api/v1/calendar";
 export const CALENDAR_CONNECT_PATH = "/api/v1/calendar/connect";
 export const CALENDAR_DISCONNECT_PATH = "/api/v1/calendar/disconnect";
+export const CALENDAR_SYNC_PATH = "/api/v1/calendar/sync";
 /** The longest value a connect takes for one asked secret. */
 const MAX_VALUE = 4096;
 /** What a hidden question gets when the request lacks its value: the run stops before any write uses it. */
@@ -136,9 +143,13 @@ export class UiCalendar {
 
 /**
  * The UI process's Calendar section (compose.ts buildUiParts): the calendar plugins with a connect hook, and the one
- * connect flow the CLI runs (src/setup.ts connectCalendar, loaded when a connect runs), writing as the Settings writer.
+ * connect flow the CLI runs (`connect`: src/setup.ts connectCalendar, which the composition root passes in so this
+ * route never imports setup.ts or the root; RFC 0023 §5 step 2), writing as the Settings writer.
  */
-export function uiCalendar(loaded: Loaded, o: { store: FactoryStore; actor: string; clock: ConnectContext["clock"]; base: SettingsBase }): UiCalendar {
+export function uiCalendar(
+  loaded: Loaded,
+  o: { store: FactoryStore; actor: string; clock: ConnectContext["clock"]; base: SettingsBase; connect: typeof connectCalendar },
+): UiCalendar {
   return new UiCalendar({
     plugins: connectHooks(loaded.registry)
       .filter((h) => h.kind === "calendar")
@@ -149,7 +160,7 @@ export function uiCalendar(loaded: Loaded, o: { store: FactoryStore; actor: stri
       })),
     listed: async () => resolveSettings(o.base, await o.store.listSettingOverrides()).values.calendar,
     run: async (name, disconnect, io) =>
-      (await import("../setup.js")).connectCalendar({
+      o.connect({
         loaded, store: o.store, actor: o.actor, clock: o.clock, name, disconnect, beforeWrite: io.beforeWrite, ownClient: io.ownClient,
         io: { ask: { hidden: io.hidden, yesNo: async (_q, dflt) => dflt }, print: () => undefined, openBrowser: io.openBrowser },
       }),
@@ -255,4 +266,20 @@ function parseBody(body: unknown, disconnect: boolean): { plugin: string; ownCli
     values.set(k, v.trim());
   }
   return { plugin: b.plugin, ownClient, values };
+}
+
+/** POST /api/v1/calendar/sync, after server.ts's guards: 403 for a non-owner, 400 for a bad body or range, else 202 with the request. */
+export async function writeCalendarSync(d: PauseDeps, body: unknown): Promise<ApiResult> {
+  const who = d.pauses ? await ownerOf(d, d.pauses, "syncs the calendars") : { error: "The page has no owner check: calendar sync is off." };
+  if ("error" in who) return apiError(403, (await new Withholder(d.scanner).plain(who.error)).text);
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return apiError(400, "the body must be a JSON object");
+  const b = body as Record<string, unknown>;
+  const extra = Object.keys(b).find((k) => k !== "from" && k !== "to");
+  if (extra !== undefined) return apiError(400, `unknown field "${extra}"`);
+  const text = (v: unknown) => (typeof v === "string" ? v : null);
+  const [from, to] = [text(b.from), text(b.to)];
+  const error = rangeError(from, to);
+  if (error !== null) return apiError(400, error);
+  const { request, created } = await requestCalendarSync(storeSql(d.store), { from: from!, to: to!, by: who.user, nowMs: d.clock.now().getTime() });
+  return { status: 202, value: { id: request.id, from: request.from, to: request.to, state: "pending", created } };
 }

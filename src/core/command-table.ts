@@ -63,8 +63,9 @@ const item = (name: CommandName, args: string, does: string): TableCommand => ({
 
 export const COMMAND_TABLE: readonly TableCommand[] = [
   {
-    name: "task create", args: "--title <t> --body-file <f>", who: "submit_work", group: "task",
-    does: "Create a work item from a title and a body; in chat, a mention with any other words, outside an item's thread, is the request",
+    name: "task create", args: "--title <t> --body-file <f> [--depends-on <id>]", who: "submit_work", group: "task",
+    does: "Create a work item from a title and a body; `--depends-on <id>` writes a `Depends on: <id>` line, so its implement run waits until that local item merges " +
+      "(an ID that names no local item is refused); in chat, a mention with any other words, outside an item's thread, is the request",
     prints: "the new work item's ID", chat: "<request in plain words>", chat_args: "request", item: false, edge: false,
   },
   {
@@ -151,6 +152,17 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
   item("revise", "<feedback>", "Store `/revise` for the item"),
   item("reject", "<reason>", "Store `/reject` for the item"),
   item("resolve", "[notes]", "Store `/resolve` for the item"),
+  {
+    name: "task paths", args: "<id> +<path>...", who: "approve_spec", group: "task",
+    does: "Store `/paths` for a running item: add those paths (at most 10, each with `+` before it) to its allowed paths, which never removes one",
+    prints: ITEM_PRINTS, chat: "/paths +<path>...", chat_args: "text", item: true, edge: false,
+  },
+  {
+    name: "task note", args: "<id> <text>", who: "approve_spec", group: "task",
+    does: "Store `/note` for an open item: a note for its reviewer and implementer, such as the reason a done-when line is built differently, which changes no stage",
+    prints: ITEM_PRINTS, chat: "/note <text>", chat_args: "text", item: true, edge: false,
+  },
+  item("hold", "<id>", "Store `/hold <id>` for the item: hold it until the local item `<id>` merges"),
   { ...item("verdict", "<accept|changes|reject> [<severity> <reason>]", "Store `/verdict` for the item: a verdict on its result, which changes no state"), chat_args: "comment" },
   {
     name: "merge", args: "<id>", who: "approve_merge", group: "item",
@@ -242,11 +254,11 @@ export type ChatCommand =
   | { kind: "help" }
   | { kind: "command"; entry: TableCommand; args: string[]; text: string };
 
-/** The literal words a chat form starts with (before its first placeholder), lowercase, without the `/`. */
+/** The literal words a chat form starts with (before its first placeholder, `+<path>` too), lowercase, without the `/`. */
 function chatWords(c: TableCommand): string[] {
   const out: string[] = [];
   for (const w of c.chat.replace(/^\//, "").split(/\s+/)) {
-    if (/^[<[]/.test(w) || w.includes("|")) break;
+    if (/^[<[]/.test(w) || w.includes("|") || w.includes("<")) break;
     out.push(w.toLowerCase());
   }
   return out;

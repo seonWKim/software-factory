@@ -3,7 +3,8 @@
 // entry that names the UI check, so the item is not marked incomplete; every other entry stays.
 
 import { describe, expect, it } from "vitest";
-import { config, pipeline } from "./helpers/fakes.js";
+import { config } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 
 const ui_check = { command: ["npm", "run", "check:responsive"], paths: ["web/", "src/ui/"] };
 const UI_ONLY = ["`npm run check:responsive` could not run in the sandbox (Chrome cannot start)", "Check:Responsive not verified"];

@@ -1,9 +1,9 @@
 import { errorText } from "../core/log.js";
-import { LiveSettings } from "../core/settings.js";
+import { LiveSettings, WORKER_KINDS } from "../core/settings.js";
 import type { Timestamp, UserId, WorkerId } from "../core/types.js";
 import { loadRunKinds, runKindProblems } from "./run-kind.js";
 import { Worker, type WorkerPlugins } from "./runner.js";
-import { KINDS, type WorkerDeps } from "./support.js";
+import type { WorkerDeps } from "./support.js";
 import type { ExecutionEngines } from "./engine/index.js";
 import type { TickSource } from "../shared/ticks/tick-generator.js";
 import { CAPPED_KINDS, type FactoryStore } from "../interfaces/factory-store.js";
@@ -86,13 +86,12 @@ export class WorkerPool {
     const settings = this.live;
     const size = d.config.max_workers ?? d.config.workers;
     this.slotAwake = Array.from({ length: size }, () => new SlotAwake(awake));
-    const peers = Array.from({ length: size }, (_, i) => `${id_prefix}:${index_base + i}` as WorkerId);
-    this.workers = peers.map((id, i) => {
+    const ids = Array.from({ length: size }, (_, i) => `${id_prefix}:${index_base + i}` as WorkerId);
+    this.workers = ids.map((id, i) => {
       const index = index_base + i;
       const slotAwake = this.slotAwake[i]!;
       return new Worker({ ...shared, settings, id, index, awake: slotAwake, active: () => this.claims(i), hostRuns: () => this.hostRuns() }, {
         ...(engines ? { engines } : {}), ...(ticks ? { ticks } : {}), ...(pack_checks ? { pack_checks } : {}), ...(imported_mcp_refusals ? { imported_mcp_refusals } : {}),
-        peers,
       });
     });
     // id_prefix is `<host>:<pid>`.
@@ -130,9 +129,13 @@ export class WorkerPool {
     return Math.min(this.live.workers(), this.workers.length);
   }
 
-  /** Loops that run now: the `workers` slots and the first slot above them, when the slot count has one (design §5, 2026-11-18). */
+  /**
+   * Loops that run now: the `workers` slots and the first slot above them, when the slot count has one (design §5, 2026-11-18).
+   * None at `workers` 0 (design 05-restart-pauses, 2026-11-21): every loop stops claiming and finishes its current run.
+   */
   loops(): number {
-    return Math.min(this.live.workers() + 1, this.workers.length);
+    const workers = this.live.workers();
+    return workers === 0 ? 0 : Math.min(workers + 1, this.workers.length);
   }
 
   /**
@@ -152,7 +155,7 @@ export class WorkerPool {
    * last in-flight run is done.
    */
   async run(signal: AbortSignal): Promise<void> {
-    const problems = runKindProblems(KINDS, await loadRunKinds());
+    const problems = runKindProblems(WORKER_KINDS, await loadRunKinds());
     if (problems.length > 0) throw new Error(`run kinds are broken: ${problems.join("; ")}`);
     const slots = new Map<number, Slot>();
     const all = new Set<Promise<void>>();

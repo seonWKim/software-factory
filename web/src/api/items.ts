@@ -50,16 +50,24 @@ export function showsMerge(m: MergeReadiness | null | undefined): m is MergeRead
 }
 
 /**
- * The `merge` reasons of an item whose Merge was pressed (src/core/request-transition.ts ROW_LABELS): its request
- * waits for the controller or the forge merges a PR ("Merging…"), the merge queue checks a local item's merged
- * result ("Checking…"). The button shows the reason.
+ * The `merge` reasons of an item whose Merge was pressed (src/core/request-transition.ts ROW_LABELS and
+ * mergeQueuedLabel): the request path's answer ("Merging…"), its request stored and not handled yet ("Merge queued
+ * (position N)"), the merge queue checking the merged result ("Checking build"). Merge is hidden for each: the button
+ * reads the reason, disabled, and the Work row says it as the item's state.
  */
-const IN_FLIGHT = ["Checking…", "Merging…"];
+const IN_FLIGHT = /^(?:Merging…|Checking build|Merge queued \(position \d+\))$/;
 
 /** Whether the item's Merge was pressed and its merge is under way: the button reads its reason, disabled. */
-export function mergeInFlight(m: MergeReadiness | null | undefined): boolean {
-  return !!m && !m.enabled && IN_FLIGHT.includes(m.reason ?? "");
+export function mergeInFlight(m: MergeReadiness | null | undefined): m is MergeReadiness & { reason: string } {
+  return !!m && !m.enabled && IN_FLIGHT.test(m.reason ?? "");
 }
+
+/**
+ * The merge queue's refusal of a Merge for an item it already holds (`enter` in
+ * src/controller/units/merge-queue/merge-queue.unit.ts: "<id> is already in the merge queue (<state>)"): the merge is
+ * under way, so the page says Merging… instead of an error.
+ */
+export const alreadyQueued = (refusal: string | null | undefined): boolean => !!refusal && / is already in the merge queue \(/.test(refusal);
 
 /**
  * Why the item's last Merge did not land (design 09-dashboard-app): the refusal on its newest state change when that
@@ -92,8 +100,10 @@ export interface ItemRow {
   id: string;
   source: SourceRef;
   title: string | null;
-  /** The item's phase on the pages: its level (src/ui/priority.ts levelOf over core/phase.ts phaseOf and its run). */
+  /** The item's state on the pages: its level (src/ui/priority.ts levelOf over core/phase.ts phaseOf and its run), a key of src/shared/states.ts. */
   item_phase: string;
+  /** The state table's label for `item_phase`, for API readers; the pages draw it with StatusBadge from `item_phase`. */
+  state_label?: string;
   /** Why it waits, as a reason code (the same as `why.reason_code`). */
   reason_code: string;
   stage: string;
@@ -121,6 +131,9 @@ export interface ItemRow {
    * `anchor`: the item page's anchor of the newest factory thread entry (`msg-<seq>`), null when it has none.
    */
   need?: { reason: string | null; anchor?: string | null };
+  /** An ask's rank reason ("Merge", "Blocks another item", "Waiting for you", "Held until 09:00") and whether it is held until `review_time`; absent on a row that asks nothing of a person. */
+  rank_reason?: string;
+  held?: boolean;
   /** A Needs-you row's buttons: the state-changing commands that apply now (not budget), each allowed or not for the viewer. */
   commands?: ItemCommand[];
   why?: Why;
@@ -151,6 +164,14 @@ export interface PhaseRow {
   title: string | null;
   stage: string;
   source: SourceRef;
+}
+
+/** One done-when line on the item page: its check and the newest implement run's result; `output_tail` on a failed line only. */
+export interface ItemCheck {
+  line: string;
+  check: { kind: "command" | "test" | "manual"; text: string };
+  result: "pass" | "fail" | "manual" | "not_run";
+  output_tail: string | null;
 }
 
 export interface ItemDetail {
@@ -186,6 +207,12 @@ export interface ItemDetail {
     item_phase: string;
     reason_code: string;
     why?: Why;
+    /** The request's first paragraph; null without one. Withheld text is "[withheld: <rule>]". */
+    request?: string | null;
+    /** The approved spec, each text withheld on its own; null until the owner confirms it. */
+    spec?: { problem: string; desired_output: string | null; done_criteria: string[] } | null;
+    /** Each done-when line with its check and latest result; null (or absent) when the item has no checks. */
+    checks?: ItemCheck[] | null;
   };
   timeline: {
     version: number;

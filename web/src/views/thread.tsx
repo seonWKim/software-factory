@@ -13,7 +13,8 @@ import { EmptyState } from "../components/ui/notice.js";
 // The item page's thread (design §9, issue #286; newest first since 2026-11-13): every entry of the item API's
 // `thread`, newest first by time (the store's seq breaks a tie), each with its author ID, channel and time, its body
 // as markdown, and its anchor (`msg-<seq>`) as the element id, so a Needs-you row can link to the factory's latest
-// "why". The owner's own entries (role owner: a command with its text, a verdict, a message from a source) are right
+// "why". The body is text as stored (`data-raw`: the forge comment the factory wrote, or a person's text); the kind and
+// channel above it are in words. The owner's own entries (role owner: a command with its text, a verdict, a message from a source) are right
 // aligned and tinted, with the author's stored ID. A factory message longer than its one-line summary (its first
 // heading, else its first sentence) starts as that line with its body behind Show more, unless it is the newest
 // entry, the newest factory message (what a Needs-you reason names, its anchor), asks the owner for something (kind spec or
@@ -26,8 +27,47 @@ import { EmptyState } from "../components/ui/notice.js";
 /** The kinds of factory message that ask the owner for something: they always start expanded. */
 const ASKS: readonly string[] = ["spec", "coordination-hold"];
 
-/** The channel's label: `cli` and `app` (a command's origin) in words, any other value (a source type) as stored. */
-const CHANNELS: Record<string, MessageKey> = { cli: "thread.channel.cli", app: "thread.channel.app" };
+/** A command's origin (`cli`, `app`) or the item's source type (a thread's channel) in words. */
+const CHANNELS: Record<string, MessageKey> = {
+  cli: "thread.channel.cli", app: "thread.channel.app", github_issue: "thread.channel.github", slack_thread: "thread.channel.slack",
+};
+
+/** An entry's kind in words: a factory message's marker kind (src/ui/thread.ts kindOf), a verdict, a comment or message from a source. */
+const KINDS: Record<string, MessageKey> = {
+  "spec": "thread.kind.spec",
+  "coordination-hold": "thread.kind.coordination-hold",
+  "dependency-closed": "thread.kind.dependency-closed",
+  "dependency-cycle": "thread.kind.dependency-cycle",
+  "eval-regression": "thread.kind.eval-regression",
+  "floor": "thread.kind.floor",
+  "forge-auth": "thread.kind.forge-auth",
+  "leak-blocked": "thread.kind.leak-blocked",
+  "max-loops": "thread.kind.max-loops",
+  "max-revisions": "thread.kind.max-revisions",
+  "needs-human": "thread.kind.needs-human",
+  "preflight-access": "thread.kind.preflight-access",
+  "rejected": "thread.kind.rejected",
+  "run-failed": "thread.kind.run-failed",
+  "split": "thread.kind.split",
+  "split-done": "thread.kind.split-done",
+  "split-failed": "thread.kind.split-failed",
+  "split-queued": "thread.kind.split-queued",
+  "standing-proposal": "thread.kind.standing-proposal",
+  "verdict": "thread.kind.verdict",
+  "comment": "thread.kind.comment",
+  "message": "thread.kind.message",
+  "factory": "thread.kind.factory",
+};
+
+/**
+ * A stored name in words from `words`: a plain word with none (an owner command's name, a source type like `local`)
+ * as it is, any other code (snake_case or kebab-case) as `other`, never as the code.
+ */
+function inWords(value: string, words: Record<string, MessageKey>, other: MessageKey): string {
+  const key = words[value];
+  if (key) return t(key);
+  return /^[a-z]+$/.test(value) ? value : t(other);
+}
 
 /** The entries newest first: by time, then by seq. */
 export function threadOrder(entries: readonly ThreadEntry[]): ThreadEntry[] {
@@ -78,15 +118,15 @@ function Message({ m, now, open: initial }: { m: ThreadEntry; now: number; open:
           {owner ? t("thread.you") : m.author}
         </span>
         {owner && <span data-author-id className="font-mono">{m.author}</span>}
-        <span data-channel>{t("thread.channel", { channel: CHANNELS[m.channel] ? t(CHANNELS[m.channel]!) : m.channel })}</span>
-        <Badge>{m.kind}</Badge>
+        <span data-channel>{t("thread.channel", { channel: inWords(m.channel, CHANNELS, "thread.channel.other") })}</span>
+        <Badge>{inWords(m.kind, KINDS, m.role === "owner" ? "thread.kind.message" : "thread.kind.factory")}</Badge>
         <span className="ml-auto tabular-nums"><When at={m.at} now={now} /></span>
       </p>
       {folded ? (
-        <p data-summary className="min-w-0 truncate px-3 py-2 text-sm sm:px-4">{summary}</p>
+        <p data-summary data-raw className="min-w-0 truncate px-3 py-2 text-sm sm:px-4">{summary}</p>
       ) : m.body !== "" && (
-        <div className="max-w-[75ch] min-w-0 px-3 py-3 sm:px-4">
-          <Markdown text={m.body} />
+        <div data-raw className="max-w-[75ch] min-w-0 px-3 py-3 sm:px-4">
+          <Markdown text={m.body} renumberHeadings />
         </div>
       )}
       {long && (

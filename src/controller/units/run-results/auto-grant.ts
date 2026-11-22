@@ -1,5 +1,5 @@
 // An implement run's needs_human ask the controller answers itself, once per item (design 05-restarts): test paths
-// only (decided 2026-11-15), the owner's `/retry +paths` applied by the controller; or paths already allowed only
+// only (decided 2026-11-15) or a few ordinary files (2026-11-19, src/core/auto-grant.ts fewOrdinaryPaths), the owner's `/retry +paths` applied by the controller; or paths already allowed only
 // (decided 2026-11-16: a ratchet list or a path under allowed_paths), a plain retry that says they are allowed.
 // Kept out of run-results.unit.ts, which may not grow (file budget); the path check (src/core/auto-grant.ts) is
 // reached through the live settings, so no new legacy import.
@@ -43,7 +43,7 @@ export async function autoGrant(c: Ctx, stopped: Stop[0], run: Stop[1], ask: Ask
   if (grants.length >= MAX_AUTO_GRANTS) return undefined;
   const covered = ask.named.length > 0 && ask.asked.length === 0;
   if (covered ? !switchedOn(c, stopped.project) : !ask.reply || !c.k.live.autoGrantable(stopped.project, ask.asked)) return undefined;
-  const t = covered ? coveredTexts(ask.named) : testTexts(ask.asked, ask.reply!);
+  const t = covered ? coveredTexts(ask.named) : testTexts(ask.asked, ask.reply!, c.k.live.testPathsOnly(ask.asked));
   const d = retry(stopped, SYSTEM, "implement", t.note, covered ? null : c.unit("commands").widen(stopped, ask.asked));
   if (!d || "refuse" in d) return undefined;
   const body = [...t.body, "", footerAfter(stopped, d.patch)].join("\n");
@@ -55,19 +55,23 @@ export async function autoGrant(c: Ctx, stopped: Stop[0], run: Stop[1], ask: Ask
 
 const ONCE = "This happens once per item: a later ask waits for you.";
 
-/** The retry note, the comment lines and the log line of a test-path grant. */
-function testTexts(asked: readonly string[], reply: string) {
+/**
+ * The retry note, the comment lines and the log line of a grant: test paths only (`tests`), or a few ordinary files
+ * (fewOrdinaryPaths, since 2026-11-19), which saves a trip back to triage for a plan that missed a file.
+ */
+function testTexts(asked: readonly string[], reply: string, tests: boolean) {
+  const why = tests ? "the ask named test paths only" : "the ask named a few ordinary files";
   return {
-    note: `${asked.join(", ")} granted automatically because the ask named test paths only (auto_grant_test_paths)`,
-    log: "test paths granted automatically because the ask named test paths only",
+    note: `${asked.join(", ")} granted automatically because ${why} (auto_grant_test_paths)`,
+    log: `${tests ? "test paths" : "files"} granted automatically because ${why}`,
     body: [
-      "## Factory: test paths granted automatically",
+      `## Factory: ${tests ? "test paths" : "files"} granted automatically`,
       "",
-      "The implement run stopped and asked for paths outside the allowed paths. Every path it named is a test file and none is on the gate list, so the factory applied this itself:",
+      `The implement run stopped and asked for paths outside the allowed paths. ${tests ? "Every path it named is a test file" : "It named a few files"} and none is on the gate list, so the factory applied this itself:`,
       "",
       "```", reply, "```",
       "",
-      `Granted automatically because the ask named test paths only (\`auto_grant_test_paths\`): ${asked.map((p) => `\`${p}\``).join(", ")}. The implementer runs again; the review checks that the test edits only follow the change. ${ONCE}`,
+      `Granted automatically because ${why} (\`auto_grant_test_paths\`): ${asked.map((p) => `\`${p}\``).join(", ")}. The implementer runs again; the review checks that the edits there only follow the change. ${ONCE}`,
     ],
   };
 }

@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type Loaded, Plugins, build, loadConfig } from "../src/compose.js";
+import { type Loaded, loadConfig } from "../src/load-config.js";
+import { Plugins } from "../src/plugin-set.js";
+import { build } from "../src/compose.js";
 import type { WorkerDeps } from "../src/worker/index.js";
 import { CaffeinateKeepAwake } from "../src/impl/awake/caffeinate-keep-awake.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
@@ -57,7 +59,9 @@ import {
   selectedSources,
   withPlugin,
 } from "../src/plugins.js";
-import { FakeSlackPollSource, fakeSlackPollRegistry, fakeRepoLookup } from "./helpers/fakes.js";
+import { FakeSlackPollSource } from "./helpers/fakes/source.js";
+import { fakeSlackPollRegistry } from "./helpers/harness.js";
+import { fakeRepoLookup } from "./helpers/fakes/config.js";
 import { TokenCredentials } from "../src/impl/github/token-credentials.js";
 
 const REPO_ROOT = join(import.meta.dirname, "..");
@@ -92,6 +96,8 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
   tacit: { none: NoTacitLedger },
   // Optional, selected as a list by the top-level `calendar` key, default []: no provider (google-calendar) is a default.
   calendar: {},
+  // Optional with no default (design 08-schedules): leaving plugins.schedule_action out selects no action.
+  schedule_action: {},
 };
 
 /** Every descriptor file under src/impl with what it exports, loaded the way the registry loads them. */
@@ -201,6 +207,11 @@ describe("plugin registry: defaults", () => {
     for (const kind of PLUGIN_KINDS) {
       // The calendar list defaults to [] (no source), so nothing is built for it.
       if (kind === "calendar") continue;
+      // No schedule action is a default: none is selected, so nothing is built for it.
+      if (kind === "schedule_action") {
+        expect(loaded.plugins.schedule_action).toBeUndefined();
+        continue;
+      }
       const name = loaded.plugins[kind];
       if (name === undefined) throw new Error(`${kind} has no default`);
       const x = await createPlugin(loaded.registry, kind, name, ctx as never);

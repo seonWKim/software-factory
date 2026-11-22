@@ -25,6 +25,8 @@ const CHECKS_RERUN = "checks_rerun";
 /** Failing tests, and characters, of a failed job's log kept for the implement run's input. */
 const MAX_FAILING_TESTS = 10;
 const MAX_FAILING_CHARS = 4000;
+/** Failing tests read from each log for the red-main comparison (design 05-ci-gate, Red main). */
+const MAX_COMPARED_TESTS = 200;
 /** blocked_reason prefix (with `blocked_on: ci`) of a PR whose every failed check fails on the base too; the first name follows. */
 const MAIN_RED = "main is red: ";
 /** Items waiting on checks looked at per tick. */
@@ -54,6 +56,8 @@ export class ChecksGateUnit {
    * share one read); dropped when the step ends. Null outside a step, where each decision reads once.
    */
   private stepBase: Promise<BaseChecks | null> | null = null;
+  /** The base head's failed job log read during one checks step, shared like stepBase; dropped when the step ends. */
+  private stepBaseLog: Promise<string | null> | null = null;
   private inStep = false;
 
   /**
@@ -112,7 +116,9 @@ export class ChecksGateUnit {
    * Failed checks after `review` (design §5 CI gate). An adopted PR blocks on its author. A factory PR whose stored
    * merge check conflicts for the reviewed head gets one update run first (keyed as from the merge check, no loop
    * counted), and the item waits in REVIEW on `checks_failed_update`. When every failed check also fails on the base
-   * branch, the item waits in REVIEW on `main is red: <first name>` (no run, no loop); the checks step reads it again.
+   * branch, and every failing test the PR head's failed job log names also fails in the base head's log (when both
+   * logs name tests), the item waits in REVIEW on `main is red: <first name>` (no run, no loop); the checks step reads
+   * it again. Tests failing on both are main's: the sent-back comment and `ci_failing_tests` name only the others.
    * A first failure on the reviewed head reruns its failed jobs once and waits in REVIEW on `checks_rerun` (no run, no
    * loop); back to implement after that rerun, the run's input carries the failing tests of the failed job's log. A
    * review that skipped an unchanged head blocks on a human with `unchanged_head` (no run, no loop). Otherwise
@@ -151,7 +157,11 @@ export class ChecksGateUnit {
         enqueue: { kind: "update", idempotency_key: update },
       };
     }
-    if (await this.baseRed(it, failed)) {
+    const head = typeof data.head_sha === "string" ? data.head_sha : "";
+    let prLog: Promise<string | null> | null = null;
+    const readPrLog = () => (prLog ??= this.readLog(it, head));
+    const red = await this.redMain(it, failed, readPrLog);
+    if (red.main) {
       const blocked_reason = `${MAIN_RED}${names[0]}`;
       // Still red on a later step: nothing changes (a review being applied is still acked).
       if (!ack.ack_run && it.blocked_on === "ci" && it.blocked_reason === blocked_reason) return null;
@@ -160,7 +170,6 @@ export class ChecksGateUnit {
         `PR #${it.change_ref} passed review but its checks failed${list}, and the same checks fail on \`${base}\`. The factory starts no loop: it waits, and goes on by itself once \`${base}\` is green again.`);
       return { patch: { ...fields, blocked_on: "ci", blocked_reason }, actor: SYSTEM, reason: "main_red", detail, ...ack };
     }
-    const head = typeof data.head_sha === "string" ? data.head_sha : "";
     const rerun = await this.rerunOnce(it, head);
     if (rerun === "rerun") {
       await this.checksComment(it, `checks-rerun:${reviewRunId}`, names, (list) =>
@@ -187,9 +196,12 @@ export class ChecksGateUnit {
       return { patch, actor: SYSTEM, reason: "max_loops", detail, ...ack };
     }
     const next = { ...it, loop_count: loop };
-    const tests = rerun === "reran" ? await this.failingTests(it, head) : null;
-    await this.checksComment(it, `checks-failed:${reviewRunId}`, names, (list) =>
-      `PR #${it.change_ref} passed review but its checks failed${list}. The factory sent it back to the implementer (loop ${loop} of ${this.c.k.cfg.max_loops}).`);
+    const log = rerun === "reran" ? await readPrLog() : null;
+    const tests = log === null ? null : await this.failingTests(log, red.excused);
+    const own = red.own?.length ? red.own.slice(0, MAX_CHECK_NAMES).map((n) => n.slice(0, MAX_CHECK_NAME_CHARS)) : null;
+    const what = own ? `tests failed that pass on \`${this.c.k.cfg.repo.base_branch}\`` : "its checks failed";
+    await this.checksComment(it, `checks-failed:${reviewRunId}`, own ?? names, (list) =>
+      `PR #${it.change_ref} passed review but ${what}${list}. The factory sent it back to the implementer (loop ${loop} of ${this.c.k.cfg.max_loops}).`);
     return {
       patch: { ...fields, stage: "RUNNING", blocked_on: "none", blocked_reason: null, loop_count: loop },
       actor: SYSTEM,
@@ -222,23 +234,28 @@ export class ChecksGateUnit {
   }
 
   /**
-   * The failing tests in the failed job's log of `head`, for the implement run's input: each vitest `FAIL` line with
-   * its first error line, at most MAX_FAILING_TESTS tests and MAX_FAILING_CHARS characters, whole tests only. Forge
-   * text (G5): every test name and message the egress scan flags is redacted before the cut. Null when the forge has
-   * no log read, the read throws (logged; e.g. a token without the Actions read permission), or the log names no
-   * failing test.
+   * The failed job's log of commit `sha`; null when the forge has no log read, there is no sha, or the read throws
+   * (logged; e.g. a token without the Actions read permission).
    */
-  private async failingTests(it: WorkItem, head: string): Promise<string | null> {
+  private async readLog(it: WorkItem, sha: string): Promise<string | null> {
     const forge = this.c.k.reader.forge;
-    if (!forge?.failedJobLog) return null;
-    let log: string;
+    if (!forge?.failedJobLog || sha === "") return null;
     try {
-      log = await forge.failedJobLog(head);
+      return await forge.failedJobLog(sha);
     } catch (err) {
-      this.c.k.d.log.warn("reading the failed CI job's log failed", { work_item_id: it.id, head_sha: head, error: errorText(err) });
+      this.c.k.d.log.warn("reading the failed CI job's log failed", { work_item_id: it.id, head_sha: sha, error: errorText(err) });
       return null;
     }
-    const tests = failingTestDetails(log, MAX_FAILING_TESTS);
+  }
+
+  /**
+   * The failing tests in a PR head's failed job `log`, for the implement run's input: each vitest `FAIL` line with
+   * its first error line, those in `excused` (failing on the base too) left out, at most MAX_FAILING_TESTS tests and
+   * MAX_FAILING_CHARS characters, whole tests only. Forge text (G5): every test name and message the egress scan flags
+   * is redacted before the cut. Null when the log names no failing test of the item's own.
+   */
+  private async failingTests(log: string, excused: ReadonlySet<string>): Promise<string | null> {
+    const tests = failingTestDetails(log, MAX_COMPARED_TESTS).filter((t) => !excused.has(t.test)).slice(0, MAX_FAILING_TESTS);
     const flagged: string[] = [];
     for (const text of tests.flatMap((t) => (t.message ? [t.test, t.message] : [t.test]))) {
       if (!(await this.c.k.reader.scan("tool_result", text)).clean) flagged.push(text);
@@ -269,13 +286,33 @@ export class ChecksGateUnit {
   }
 
   /**
-   * Whether every one of the PR's `failed` checks also fails on the base branch (design 05-ci-gate, Red main). A
-   * base that is not read (no forge read for it, pending, or an error, logged) is not red: the normal path.
+   * Red main (design 05-ci-gate): whether the PR's failure is the base branch's. A base that is not read (no forge
+   * read for it, pending, or an error, logged) is not red: the normal path. Every one of the PR's `failed` checks must
+   * also fail on the base. Then the failing tests are compared: those in the PR head's failed job log (`prLog`) that
+   * also fail in the base head's log are `excused`; any other (`own`) counts against the item. When either log is not
+   * read or names no test, the check names alone decide (`own` null).
    */
-  async baseRed(it: WorkItem, failed: readonly string[]): Promise<boolean> {
-    if (failed.length === 0) return false;
+  private async redMain(
+    it: WorkItem,
+    failed: readonly string[],
+    prLog: () => Promise<string | null>,
+  ): Promise<{ main: boolean; own: string[] | null; excused: ReadonlySet<string> }> {
+    const none = { own: null, excused: new Set<string>() };
+    if (failed.length === 0) return { main: false, ...none };
     const base = await this.readBase(it);
-    return base?.state === "failed" && failed.every((n) => base.failed.includes(n));
+    if (base?.state !== "failed" || !failed.every((n) => base.failed.includes(n))) return { main: false, ...none };
+    const prTests = testNames(await prLog());
+    if (prTests.length === 0) return { main: true, ...none };
+    const baseTests = new Set(testNames(await this.readBaseLog(it, base.head_sha ?? "")));
+    if (baseTests.size === 0) return { main: true, ...none };
+    const own = prTests.filter((t) => !baseTests.has(t));
+    return { main: own.length === 0, own, excused: new Set(prTests.filter((t) => baseTests.has(t))) };
+  }
+
+  /** The base head's failed job log: once per checks step (shared), else once per call. */
+  private readBaseLog(it: WorkItem, sha: string): Promise<string | null> {
+    if (!this.inStep) return this.readLog(it, sha);
+    return (this.stepBaseLog ??= this.readLog(it, sha));
   }
 
   /** The base checks: once per checks step (shared), else once per call; null when the forge has no such read or it failed. */
@@ -355,6 +392,7 @@ export class ChecksGateUnit {
     } finally {
       this.inStep = false;
       this.stepBase = null;
+      this.stepBaseLog = null;
     }
   }
 
@@ -386,6 +424,11 @@ export class ChecksGateUnit {
     if (it.stage !== "REVIEW" || it.blocked_on !== "none" || it.blocked_reason !== null) return false;
     return !(await this.c.k.reader.listRuns(it.id)).some((r) => r.status === "queued" || r.status === "running" || r.acknowledged_at === null);
   }
+}
+
+/** The failing tests a failed job's log names; none for no log. */
+function testNames(log: string | null): string[] {
+  return log === null ? [] : failingTestDetails(log, MAX_COMPARED_TESTS).map((t) => t.test);
 }
 
 declare module "../../router/unit.js" {

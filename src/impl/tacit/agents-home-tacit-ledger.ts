@@ -8,31 +8,38 @@
 // rules file, then `tacit verdict <id> retire` runs (the file is put back if it fails), then `sync-agents`. A promote of
 // a proposal applies it (2026-11-18; evolve has no apply subcommand): the proposal's current lines, read from `evolve
 // show`, are replaced with its proposed lines in its target file only when they occur there exactly once, then
-// `evolve verdict <id> promote --reason <r> --applied-to <target>` runs (the file is put back if it fails). A proposal
-// with no current and proposed lines (a change to build, 2026-11-20) changes no file: only that verdict runs, and the
-// Rules page creates the task. Factory processes only: an agent run never gets it.
+// `evolve verdict <id> promote --reason <r> --applied-to <target>` runs (the file is put back if it fails); a proposal
+// whose change is prose (`evolve show`'s JSON, 2026-11-22) runs only that verdict and writes no file (the Rules page
+// then creates a task to build it, 2026-11-20). Factory
+// processes only: an agent run never gets it. An edit of an applied class (2026-11-22) rewrites its block's heading,
+// default and exception lines in the rules file and runs `sync-agents`, with no verdict. The Pushbacks list reads
+// `tacit show --active --unclustered` and Dismiss runs `tacit status <T-id> noise`: both forms are assumed until the
+// owner confirms them (docs/plugins/tacit-ledger.md).
 
 import { accessSync, constants, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, sep } from "node:path";
 import {
   type TacitApplied, type TacitDecision, type TacitDraft, type TacitEntryDetail, type TacitLedger, type TacitPendingEntry, type TacitPromotion,
-  type TacitPushback, type TacitRetired, type TacitRule, TacitRefusal, TacitSyncFailed, hasLines, tacitIdKind,
+  type TacitOpenPushback, type TacitPushback, type TacitRetired, type TacitRule, TacitRefusal, TacitSyncFailed, isProse, tacitIdKind,
 } from "../../interfaces/tacit-ledger.js";
 import { SystemClock } from "../clock/system-clock.js";
 import { baseEnv, runProcess } from "../process/run-process.js";
 import {
-  ENCODED_ELSEWHERE_HEADING, hasEncodedElsewhere, hasRuleHeading, parseDraft, parseApplied, parsePending, parseRules, parseShow, withRuleBlock,
-  withoutRuleBlock,
+  ENCODED_ELSEWHERE_HEADING, hasEncodedElsewhere, hasRuleHeading, parseDraft, parseApplied, parsePending, parsePushbacks, parseRules, parseShow,
+  withEditedBlock, withRuleBlock, withoutRuleBlock,
 } from "./ledger-text.js";
 import { NoTacitLedger } from "./no-tacit-ledger.js";
 
-/** The owner's rules file, relative to the home: the one file the factory writes there (promote and retire), and the verdict's `--encoded-to`. */
+/** The owner's rules file, relative to the home: the one file the factory writes there (promote, edit and retire), and the verdict's `--encoded-to`. */
 export const RULES_FILE = "private/tacit/rules.md";
 /** The ledger's own records, one JSON object per line; only read. */
 const LEDGER_FILE = "private/tacit/ledger.jsonl";
 /** The view `evolve pending` reads, rebuilt by the daily brief: a verdict newer than it is not in the view yet. */
 const CANDIDATES_FILE = "private/tacit/rule-candidates.md";
+
+/** The status `tacit status` records for a dismissed pushback. */
+const NOISE = "noise";
 
 /** How long one CLI call may take before it is stopped and counted as a failure. */
 export const TACIT_CLI_TIMEOUT_MS = 30_000;
@@ -140,11 +147,12 @@ export class AgentsHomeTacitLedger implements TacitLedger {
 
   /**
    * Promote of a proposal. Checks first, with nothing written and no verdict sent on a refusal: `evolve show <id>`
-   * reads and gives a target, a relative path with no `..` segment. With no current and proposed lines (hasLines
-   * false) no file is touched: `evolve verdict <id> promote --reason <r> --applied-to <target>` runs alone (the change
-   * is built from a task). With both, the target's resolved path is a file inside the resolved home and the current
-   * lines occur there exactly once; then they are replaced with the proposed lines and the same verdict runs; a failure
-   * (a non-zero exit or the timeout) puts the file back byte for byte and throws the CLI's error.
+   * reads and gives a target, a relative path with no `..` segment. A proposal with neither current nor proposed lines
+   * (its change is prose; the Rules page creates a task to build it) then runs only `evolve verdict <id> promote
+   * --reason <r> --applied-to <target>`, writing no file and not checking that the target exists. Otherwise it must give
+   * both; the target's resolved path is a file inside the resolved home; the current lines occur there exactly once. Then they are replaced with the proposed
+   * lines and the same verdict runs; a failure (a non-zero exit or the timeout) puts the file back byte for byte and
+   * throws the CLI's error.
    */
   private async apply(id: string, reason: string): Promise<void> {
     let shown: string;
@@ -154,23 +162,24 @@ export class AgentsHomeTacitLedger implements TacitLedger {
       throw new TacitRefusal(`the lines of ${id} could not be read: ${err instanceof Error ? err.message : String(err)}`);
     }
     const d = parseShow(id, shown);
+    const verdict = ["verdict", id, "promote", "--reason", reason, "--applied-to"];
     if (d?.target === undefined) throw new TacitRefusal(`${id} (evolve show) has no target line: nothing written`);
-    const target = d.target;
-    const pathError = relativePathError(target);
-    if (pathError !== null) throw new TacitRefusal(`the target of ${id}, ${target}, ${pathError}: nothing written`);
-    const verdict = ["verdict", id, "promote", "--reason", reason, "--applied-to", target];
-    if (!hasLines(d)) {
-      await this.run("evolve", verdict);
+    const pathError = relativePathError(d.target);
+    if (pathError !== null) throw new TacitRefusal(`the target of ${id}, ${d.target}, ${pathError}: nothing written`);
+    if (isProse(d)) {
+      await this.run("evolve", [...verdict, d.target]);
       return;
     }
-    const { current, proposed } = d as Required<Pick<TacitEntryDetail, "current" | "proposed">>;
+    const part = (["current", "proposed"] as const).find((k) => d[k] === undefined);
+    if (part !== undefined) throw new TacitRefusal(`${id} (evolve show) has no ${part} line: nothing written`);
+    const { target, current, proposed } = d as Required<Pick<TacitEntryDetail, "target" | "current" | "proposed">>;
     const file = this.homeFile(target);
     const before = readFileSync(file);
     const text = before.toString("utf8");
     const found = text.split(current).length - 1;
     if (found !== 1) throw new TacitRefusal(`the current lines of ${id} occur ${found} times in ${target}, not once: nothing written`);
     const at = text.indexOf(current);
-    await this.writeThen(file, before, text.slice(0, at) + proposed + text.slice(at + current.length), "evolve", verdict);
+    await this.writeThen(file, before, text.slice(0, at) + proposed + text.slice(at + current.length), "evolve", [...verdict, target]);
   }
 
   /**
@@ -223,11 +232,54 @@ export class AgentsHomeTacitLedger implements TacitLedger {
    */
   private async rewrite(file: string, before: Buffer, after: string, args: readonly string[]): Promise<void> {
     await this.writeThen(file, before, after, "tacit", args);
+    await this.syncAgents();
+  }
+
+  /** `<home>/bin/sync-agents`: a failure throws `TacitSyncFailed` (what was written stays). */
+  private async syncAgents(): Promise<void> {
     try {
       await this.run("sync-agents", []);
     } catch (err) {
       throw new TacitSyncFailed(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  /**
+   * Edit of an applied class: no verdict, only its block. Checks first, with nothing written and no CLI run on a
+   * refusal: the ID is a class, the rules file's resolved path lies inside the resolved home, `bin/sync-agents` is
+   * executable and the file has a `## <id>` block. Then the block's heading, default and exception lines are rewritten
+   * (`withEditedBlock`; a failed write puts the file back byte for byte) and `sync-agents` runs (a failure keeps the
+   * new text).
+   */
+  async edit(id: string, rule: TacitPromotion): Promise<void> {
+    if (tacitIdKind(id) !== "class") throw new TacitRefusal(`only a class (C-) is edited, not "${id}": nothing written`);
+    const file = this.homeFile(RULES_FILE);
+    if (!this.runnable("bin/sync-agents")) throw new TacitRefusal("bin/sync-agents is missing or not executable in the agents home: nothing written");
+    const before = readFileSync(file);
+    const after = withEditedBlock(before.toString("utf8"), id, rule);
+    if (after === null) throw new TacitRefusal(`${id} has no block in ${RULES_FILE}: nothing written`);
+    try {
+      writeFileSync(file, after);
+    } catch (err) {
+      try {
+        writeFileSync(file, before);
+      } catch {
+        // The first write failed before it changed the file, or this one fails too: the first error says why.
+      }
+      throw err;
+    }
+    await this.syncAgents();
+  }
+
+  /** `tacit show --active --unclustered`: the active pushbacks in no class yet (`parsePushbacks`; the form is assumed). */
+  async pushbacks(): Promise<readonly TacitOpenPushback[]> {
+    return parsePushbacks(await this.run("tacit", ["show", "--active", "--unclustered"]));
+  }
+
+  /** `tacit status <T-id> noise`: records the pushback as noise (the form is assumed). Any other ID throws first. */
+  async dismiss(id: string): Promise<void> {
+    if (!/^T-[0-9A-Za-z_-]+$/.test(id)) throw new TacitRefusal(`only a pushback (T-) is dismissed, not "${id}"`);
+    await this.run("tacit", ["status", id, NOISE]);
   }
 
   /** `<home>/<path>` resolved, refused when it is missing or resolves outside the resolved home. */

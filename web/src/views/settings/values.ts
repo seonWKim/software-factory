@@ -72,3 +72,31 @@ export const SHORT_OBJECT = 3;
 
 /** An object's one-line summary: its top-level keys. */
 export const summaryOf = (obj: Record<string, unknown>, key: MessageKey = "settings.keysSummary") => t(key, { count: Object.keys(obj).length, keys: Object.keys(obj).join(", ") });
+
+/** "3rd": the attempt number as a word, its suffix from the catalog. */
+function ordinal(n: number): string {
+  const teen = n % 100 >= 11 && n % 100 <= 13;
+  const key = teen ? "settings.ordinalTh" : n % 10 === 1 ? "settings.ordinalSt" : n % 10 === 2 ? "settings.ordinalNd" : n % 10 === 3 ? "settings.ordinalRd" : "settings.ordinalTh";
+  return t(key, { n });
+}
+
+/**
+ * model_by as one plain line: the planning class, the building class of the first try and the class building moves to
+ * (and from which try); null when the value has no planning class or no building classes to read.
+ */
+export function modelSummary(text: string): string | null {
+  const by = asObject(text);
+  const planning = by?.triage;
+  const tries = asObject(JSON.stringify(by?.implement ?? null));
+  if (typeof planning !== "string" || tries === null) return null;
+  const steps = Object.entries(tries)
+    .map(([n, cls]) => [Number(n), cls] as const)
+    .filter((e): e is readonly [number, string] => Number.isInteger(e[0]) && typeof e[1] === "string")
+    .sort((a, b) => a[0] - b[0]);
+  const first = steps[0]?.[1];
+  if (first === undefined) return null;
+  const later = steps.find(([, cls]) => cls !== first);
+  return later === undefined
+    ? t("settings.modelSummaryFlat", { planning, first })
+    : t("settings.modelSummary", { planning, first, later: later[1], nth: ordinal(later[0]) });
+}

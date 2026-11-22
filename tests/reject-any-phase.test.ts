@@ -6,8 +6,11 @@ import type { RunKind, SourceRef, UserId, WorkItem, WorkItemId, WorkItemPatch, W
 import { OwnerAuth } from "../src/core/authorize.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { SqlDriver } from "../src/state/index.js";
-import { FakeForge, FakeSource, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // `/reject <reason>` closes an open item at any phase (design 04-gate-commands, 2026-11-13): implementing, held by
 // coordination cost, held for the previous phase of a split, in review and at the merge wait. Each closes as `rejected`
@@ -153,7 +156,7 @@ describe("/reject refused when the change is merged or in the merge queue", () =
   it("a refused CLI reject: the command is stored, and `factory task show` lists it with its reason under Last refused command", async () => {
     const h = await harness();
     const it1 = await queued(h, 2);
-    const cli = { store: h.store, identity: { user: ME, from: "cli_user" as const }, project: async () => PROJECT_KEY, read: async () => "", newId: () => "r1" };
+    const cli = { answers: { split: splitAnswers, detail: answersDetail }, store: h.store, identity: { user: ME, from: "cli_user" as const }, project: async () => PROJECT_KEY, read: async () => "", newId: () => "r1" };
     expect((await runLocalCli(cli, { action: "command", command: "reject", id: it1.id as WorkItemId, text: "no" })).code).toBe(0);
     expect(lastRefusedLines(await h.store.listItemMessages(it1.id))).toEqual(["", "Last refused command", "  (none)"]);
     await h.controller.tickCommands();

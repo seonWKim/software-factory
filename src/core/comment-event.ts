@@ -8,7 +8,8 @@ import type { SourceEvent } from "../interfaces/source-adapter.js";
  * parser (src/core/commands.ts): a command, an unknown command word, or a plain comment (`/link` included).
  * The one copy (issue #282): the command inbox reader (src/core/command-inbox.ts, local CLI and app commands) and
  * the Slack source use it, so their event kinds cannot drift from the issue source's.
- * `resolve` gets `pr: null` and `revise` no `pr`; `verdict` targets the item itself.
+ * `resolve` gets `pr: null` and `revise` no `pr`; `verdict` targets the item itself. `note` maps to no event: the controller
+ * reads it from its command inbox row, as it reads `hold`.
  */
 export function commentEvent(source: SourceRef, comment_id: string, who: ExternalIdentity, body: string): SourceEvent | null {
   const parsed = parseComment(body);
@@ -24,6 +25,8 @@ export function commentEvent(source: SourceRef, comment_id: string, who: Externa
       return { kind: "revise_requested", source, comment_id, requester: who, feedback: t };
     case "retry":
       return { kind: "retry_requested", source, comment_id, requester: who, ...(t ? { note: t } : {}) };
+    case "paths":
+      return { kind: "paths_requested", source, comment_id, requester: who, ...(t ? { note: t } : {}) };
     case "budget": {
       const amount = (t.split(/\r?\n/)[0] ?? "").trim();
       return { kind: "budget_continue", source, comment_id, approver: who, amount: amount === "" ? null : amount };
@@ -34,6 +37,8 @@ export function commentEvent(source: SourceRef, comment_id: string, who: Externa
       return { kind: "help_requested", source, comment_id, requester: who };
     case "verdict":
       return { kind: "verdict_submitted", target: { kind: "issue", source }, comment_id, approver: who, args: t };
+    case "note":
+      return null; // no event kind: the commands unit stores it from its command row (src/controller/units/commands/note.ts)
     case "standing":
       return { kind: "standing_requested", source, comment_id, requester: who, args: t };
     default:

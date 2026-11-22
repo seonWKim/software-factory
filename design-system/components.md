@@ -8,18 +8,19 @@ Pick the component by the need, before drawing anything by hand. A UI spec names
 
 | Need | Component | Usage |
 |---|---|---|
-| a state | `Badge` | A short state as a pill, tone from its level; never a hand-made chip or a bordered Button. |
+| a state | `StatusBadge` for an item, run or worker state, else `Badge` | `StatusBadge` shows the state table's label and tone (`src/shared/states.ts`) with `data-status`; `Badge` any other short status as a pill, tone from a state table key; never a hand-made chip or a bordered Button. |
 | an on/off choice in a list | Checkbox (none yet: `Switch` until it exists) | One box per row that turns that row's choice on or off. No Checkbox exists yet; a follow-up issue adds it. Until then use `Switch`, never a Button drawn as a box. |
 | a row's extra actions | `OverflowMenu` | The row's secondary actions behind one "more" button at its end, so the row stays one line. |
+| a row in a bordered list | `ListRow` | Leading control, one-line title with ellipsis, details line, every action in its ⋯ menu. |
 | input inside a list row | `Dialog` | A field a row action needs opens in a Dialog; the row's height never changes. |
 
 ## Card
 
-A block of a page (`card.tsx`): the `surface` background, a 1px `border`, the `card` radius, 24px padding (`p-6`; 16px below `sm`, so a 320px window keeps its content width) and `shadow-sm`. Optional h2 `title` in the section title role (`text-base font-semibold`, the exported `CARD_TITLE`), an optional `count` beside it and an optional `action` at the end of the title row. It is a region named by `label`, else by `title` (Data names its table Card "Table <name>" and titles it with the bare name); with neither it is a plain block. `id` gives it an anchor (`#spend`, `#failures`); `live` announces a title that changes (the calendar's period). Cards follow each other 24px apart. No variants or sizes.
+A block of a page (`card.tsx`): the `surface` background, a 1px `border`, the `card` radius, 24px padding (`p-6`; 16px below `sm`, so a 320px window keeps its content width) and `shadow-sm`. Optional h2 `title` in the section title role (`text-base font-semibold`, the exported `CARD_TITLE`): Card is the one owner of a page's h2, so every h2 on every page has this one size, an optional `count` beside it and an optional `action` at the end of the title row. It is a region named by `label`, else by `title` (Data names its table Card "Table <name>" and titles it with the bare name); with neither it is a plain block. `id` gives it an anchor (`#spend`, `#failures`); `live` announces a title that changes (the calendar's period). Cards follow each other 24px apart. No variants or sizes.
 
 ## CardSection
 
-A titled part inside a `Card`: an h3 in the same section title role, an optional `count` and `action`. Not a region of its own, so a page's list of regions stays its list of cards. Use it for a sub-heading in a card (Spend's Totals, the read-only file keys) instead of a raw heading.
+A titled part inside a `Card`: an h3 in the one sub-group style (`text-xs font-medium text-text-2`, the exported `SUB_TITLE`), an optional `count` and `action`. Every other h3 on a page (a calendar day, a group of task rows) uses `SUB_TITLE` too. Not a region of its own, so a page's list of regions stays its list of cards. Use it for a sub-heading in a card (Spend's Totals, the read-only file keys) instead of a raw heading.
 
 ## Table
 
@@ -39,7 +40,11 @@ A `Table` built from `columns` and `rows`, on `Table`, `Tr` and `Td`. A column i
 
 ## Badge
 
-The one badge (`badge.tsx`): a short state as a pill with a dot, `text-xs` medium, tone from `LEVEL_TONE` (the pill tokens: `ok`, `warn`, `bad`, `info`); an unknown or missing level is neutral (`surface-2` with `text`). Carries `data-level`. Variants: one per level in `LEVEL_TONE`, and neutral. One size. `tests/design-system.test.ts` checks every tone it draws at 4.5:1 in both themes.
+The one pill (`badge.tsx`): a short text as a pill with a dot, `text-xs` medium, in the tone of `level`, a key of the one state table (`src/shared/states.ts`); `TONE_CLASS` maps each tone to the pill tokens (`ok`, `warn`, `bad`, `info`) or neutral (`surface-2` with `text`), and an unknown or missing level is neutral. Carries `data-level`. For any pill that is not an item, run or worker state (plugins, settings, calendar, a task's overdue, a transcript, a thread). One size. `tests/design-system.test.ts` checks every tone it draws at 4.5:1 in both themes.
+
+## StatusBadge
+
+An item's, a run's or a worker's state (`badge.tsx`): `state` is a key of the state table, and the pill shows its label in its tone, or `children` when the words say more (where a Merge is). Carries `data-status` set to the state key. Every item, run and worker state pill is a `StatusBadge`; no view maps a state to a label or a tone itself.
 
 ## Notice
 
@@ -59,7 +64,11 @@ The "Could not load" message in the `bad` tone, role alert.
 
 ## PageHeader
 
-The top of every page: the one h1 in the page title role (`text-xl font-semibold`), an optional description under it (`text-sm`, `text-2`) and optional actions at the end, the primary action last. 24px below it. States: with or without description, with or without actions; actions wrap below the title when narrow.
+The top of every page: the one h1 in the page title role (`text-xl font-semibold`), an optional `badge` beside it (a Badge with the page's count, such as the Rules page's waiting count; never an action), an optional description under it (`text-sm`, `text-2`) and optional actions at the end, the primary action last. 24px below it. `width` picks the page's width: `wide` (the default, `--page-wide`, 1232px) for lists and tables, `read` (`--page-read`, 960px) for forms and reading (Settings, Rules). It marks the header `data-page-width`, and `<main>` takes its `max-width` from it (`max-w-page-wide`, `has-[[data-page-width=read]]:max-w-page-read`); no page or page wrapper sets a `max-w-*` of its own (field, cell and prose widths stay). States: with or without badge, with or without description, with or without actions; actions wrap below the title when narrow.
+
+## PageToolbar
+
+The slot for a page's controls, right under its `PageHeader` (`notice.tsx`): `tabs` on the first row, then the search, view switch and filters (`children`) on the second, wrapping when narrow; 24px below it. Every page with tabs, a search, a view switch or filters puts them here, never between its content blocks or inside a Card (Health's Failures window, Workers' window, Calendar's view switch and period buttons, the Transcript's step filters, the Settings Advanced and Rules searches included). A page with none renders no toolbar. States: tabs only, controls only, both.
 
 ## Input
 
@@ -87,7 +96,11 @@ A 16 px radio circle drawn from the tokens with its label (the radio's accessibl
 
 ## OverflowMenu
 
-A "more" button (a `ghost` Button at size `icon`) that opens a menu of actions: items `{ label, onSelect, danger?, disabled? }`. States: closed, open; item default, `danger` (bad text), `disabled`. Esc, a click outside or choosing an item closes it.
+A "more" button (a `ghost` Button at size `icon`) that opens a menu of actions: items `{ label, onSelect, danger?, disabled? }`. States: closed, open; item default, `danger` (bad text), `disabled`. Esc, a click outside or choosing an item closes it. The list ends at the button's right edge; when that would put its left part past the left edge of the page content (`main`, else the viewport), so the sidebar would cover its labels, it starts at the button's left edge instead (a measured check when it opens, no positioning library).
+
+## ListRow
+
+One row of a bordered list (`list-row.tsx`; the Tasks page's Needs you, date groups and Done all use it): an optional `leading` control (a task's Checkbox), the `title` on one full-width line cut with an ellipsis (the exported `ROW_TITLE` classes; the element carries the full text in `title`), a `details` line under it in `text-xs text-2` (state Badges, dates, projects, a reason), any `children` below (a form, an error), and the `menu` at the right: one `OverflowMenu` holding every action of the row, the primary first. No buttons beside the title and no raw IDs. 12px padding, 12px gaps; it never wraps the menu under the title. No variants or sizes.
 
 ## Kbd
 
@@ -95,7 +108,7 @@ A keyboard key as text, such as Esc. No variants or sizes.
 
 ## Tooltip
 
-A short hint on hover and keyboard focus, hidden by Esc or leaving. Variants (`placement`): `top` (default), `bottom`. States: hidden, shown.
+A short hint on hover and keyboard focus, hidden by Esc or leaving. Variants (`placement`): `top` (default), `bottom`, `beside` (level with the trigger's top, right of it for `align` `start`, left for `end`; for a trigger inside a scroller). States: hidden, shown.
 
 ## Button
 
@@ -107,7 +120,7 @@ A native `input type=checkbox` drawn from the tokens: a 16 px box (`size-4`) ins
 
 ## Switch
 
-A `role=switch` button with `aria-checked`, 20 by 36 px; the thumb moves by a class. Controlled by `checked` and `onCheckedChange`. One size. States: on (`text-1` track), off (`border-strong` track), focus-visible, `disabled`.
+A `role=switch` button with `aria-checked`, 24 px high (the smallest target) around a drawn 20 by 36 px track; the thumb moves by a class. Controlled by `checked` and `onCheckedChange`. One size. States: on (`text-1` track), off (`border-strong` track), focus-visible, `disabled`.
 
 ## SegmentedControl
 
@@ -115,7 +128,7 @@ One choice among a few views (`role=group` with an `aria-label`): a 32 px box wi
 
 ## Link and ID
 
-`web/src/components/ui/link-style.ts` holds both. `LINK_CLASS` (`text-text-1 hover:underline`) is every link in the views, item titles included; the sidebar keeps its own. `ID_CLASS` (`font-mono text-text-3 hover:underline`) is an item or source ID, linked or not (Tasks row ID, source ID links, the item page header ID). Accent is never a text colour: only the primary Button and the selected-tab underline use it, and `tests/ui-link-style.test.tsx` fails on `text-accent` anywhere under `web/src`.
+`web/src/components/ui/link-style.ts` holds both. `LINK_CLASS` (`text-text-1 underline`) is every link in the views, item titles included, underlined at rest so a link in a sentence is told apart by more than colour (buttons that use the class are underlined too); the sidebar keeps its own. `ID_CLASS` (`font-mono text-text-3 hover:underline`) is an item or source ID, linked or not (source ID links, the item page header ID). Accent is never a text colour: only the primary Button and the selected-tab underline use it, and `tests/ui-link-style.test.tsx` fails on `text-accent` anywhere under `web/src`.
 
 ## Tabs
 
@@ -143,7 +156,7 @@ A readable name (`label`, e.g. "worker 3" or "you") as a plain button on the sha
 
 ## Disclosure
 
-A native `<details>` with a `<summary>`: one chevron marker (turned down when open), one label style (`text-xs text-text-2`, no box). Props: `summary` (the visible label), `children` (the body), `defaultOpen` (starts open; default closed), `lazy` (mount the body only while open, for a body that reads something on demand), `onToggle(open)`, and `className` (a margin only) and `data-*` passed to the `<details>`. `aria-expanded` is on the summary and follows the open state; click, Enter and Space toggle it. Use it only for long content (more than ~3 lines or a list): decision rule 2 in `patterns.md`, never a single value. Write no raw `<details>` in `web/src/views/`; Markdown folds through it too.
+A native `<details>` with a `<summary>` at least 28px tall (`min-h-7`, like a small Button): one chevron marker (turned down when open), one label style (`text-xs text-text-2`, no box). Props: `summary` (the visible label), `children` (the body), `defaultOpen` (starts open; default closed), `lazy` (mount the body only while open, for a body that reads something on demand), `onToggle(open)`, and `className` (a margin only) and `data-*` passed to the `<details>`. `aria-expanded` is on the summary and follows the open state; click, Enter and Space toggle it. Use it only for long content (more than ~3 lines or a list): decision rule 2 in `patterns.md`, never a single value. Write no raw `<details>` in `web/src/views/`; Markdown folds through it too.
 
 ## KeyValue
 

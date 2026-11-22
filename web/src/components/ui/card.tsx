@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { cn } from "../../lib/cn.js";
 
 // A page block: the surface, a 1px border, the card radius, 24px of padding (16px below `sm`) and shadow-sm, with an
 // optional title, count and action. design-system/components.md "Card".
@@ -6,12 +7,15 @@ import type { ReactNode } from "react";
 /** The section title's type role (tokens.json `type-roles.section-title`): Card's title and a CardSection's. */
 export const CARD_TITLE = "text-balance text-base font-semibold";
 
+/** A sub-group's heading (an h3): a CardSection's title, and every other h3 on a page (a day, a group of rows). */
+export const SUB_TITLE = "text-xs font-medium text-text-2";
+
 /** The title row: the heading, the count beside it, the action at the end. Nothing when there is none of them. */
 function TitleRow({ as: Heading, title, count, action, live }: { as: "h2" | "h3"; title?: string | undefined; count?: number | undefined; action?: ReactNode; live?: boolean | undefined }) {
   if (title === undefined && count === undefined && !action) return null;
   return (
-    <div className="mb-4 flex flex-wrap items-baseline gap-x-2 gap-y-2">
-      {title !== undefined && <Heading aria-live={live ? "polite" : undefined} className={CARD_TITLE}>{title}</Heading>}
+    <div className={cn("flex flex-wrap items-baseline gap-x-2 gap-y-2", Heading === "h2" ? "mb-4" : "mb-2")}>
+      {title !== undefined && <Heading aria-live={live ? "polite" : undefined} className={Heading === "h2" ? CARD_TITLE : SUB_TITLE}>{title}</Heading>}
       {count !== undefined && <span className="text-sm text-text-3 tabular-nums">{count}</span>}
       {action && <div className="ml-auto">{action}</div>}
     </div>
@@ -35,7 +39,7 @@ export function Card({ title, label, count, action, id, live, children }: { titl
   );
 }
 
-/** A titled part inside a Card (an h3 in the section title's type), with an optional count and action. Not a region of its own. */
+/** A titled part inside a Card (an h3 in the sub-group type, SUB_TITLE), with an optional count and action. Not a region of its own. */
 export function CardSection({ title, count, action, children }: { title: string; count?: number | undefined; action?: ReactNode; children: ReactNode }) {
   return (
     <div className="mt-6 min-w-0 first:mt-0">

@@ -13,7 +13,8 @@
 //
 // Optional kinds (Forge, issue #172) have no default plugin: "none" selects nothing. Leaving `plugins.forge` out
 // lets src/compose.ts derive it from the sources (withForgeDefault, issue #273). CalendarSource is optional too, and
-// selected as a list by its own top-level `calendar` key (default [], design 02-tasks).
+// selected as a list by its own top-level `calendar` key (default [], design 02-tasks). ScheduleAction is optional
+// (design 08-schedules): leaving `plugins.schedule_action` out selects none, and no fired occurrence is claimed.
 
 import { pathToFileURL } from "node:url";
 import { ConfigKeyError, suggestion } from "./config-keys.js";
@@ -90,6 +91,7 @@ const KINDS: { readonly [K in PluginKind]: KindInfo } = {
   engine: { interface: "ExecutionEngine", configKey: "plugins.engine", guard: false, optional: false },
   tacit: { interface: "TacitLedger", configKey: "plugins.tacit", guard: false, optional: false, integration: true },
   calendar: { interface: "CalendarSource", configKey: "calendar", guard: false, optional: true },
+  schedule_action: { interface: "ScheduleAction", configKey: "plugins.schedule_action", guard: false, optional: true },
 };
 
 export const PLUGIN_KINDS = Object.keys(KINDS) as PluginKind[];

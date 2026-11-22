@@ -6,9 +6,9 @@
 
 import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
 import {
-  APPROVED_RUN_QUEUED, APP_REQUEST, CHECKPOINT_REFUSAL, CLOSED_REFUSAL, HOLD_PATHS, appliesLocally, appliesOnPr, approveCheck, approvesHold, awaitingSpec, commandFooter, commandNote, commandPhase, commandSpec,
+  APPROVED_RUN_QUEUED, APP_REQUEST, CHECKPOINT_REFUSAL, CLOSED_REFUSAL, HOLD_PATHS, RECHECK_PATHS_REFUSAL, appliesLocally, noFilesRefusal, appliesOnPr, approveCheck, approvesHold, awaitingSpec, commandFooter, commandNote, commandPhase, commandSpec,
   commandState, failedRunKind, floorCommand, floorTierNeeded, helpReply, parseLink, phaseLabel, refusalText, ruleOfTwoCommand, scanNote, specDecision,
-  specNotWaiting, unknownCommandReply, withTag, localMergeRefusal, mergeReturned, prMergeRefusal, queuedRun, awaitingMerge,
+  specNotWaiting, unknownCommandReply, withTag, localMergeRefusal, mergeReturned, prMergeRefusal, queuedRun, awaitingMerge, mergeCheckAgain, mergeCheckRetryRefusal, mergeCheckStopped,
 } from "../../../core/commands.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
 import { commandEvent, syncedCommand } from "../../../core/command-inbox.js";
@@ -24,7 +24,7 @@ import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEv
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 import { answerPlain, appProposal, confirmProposal, storeProposals } from "./proposals.js";
-import { FEEDBACK_REQUIRED, applyQueued, feedbackScan, queueRevise, replyQueued } from "./queued-revise.js"; import { scanClean } from "./scan.js";
+import { FEEDBACK_REQUIRED, applyQueued, feedbackScan, queueRevise, replyQueued } from "./queued-revise.js"; import { scanClean } from "./scan.js"; import { recheckRetry } from "./premise-recheck.js"; import { commandText, pathsCommand } from "./paths.js"; import { noteCommand, noteOnSource } from "./note.js";
 
 type AppSender = { user_id: UserId } | null;
 type ItemCommandEvent = Exclude<CommandEvent, { kind: "budget_continue" }>;
@@ -103,7 +103,7 @@ function appGateEvent(kind: Exclude<CommandEvent["kind"], "budget_continue">, it
     case "spec_approved": return { kind, ...at, approver: who, note };
     case "spec_rejected": return { kind, ...at, approver: who, reason: note };
     case "revise_requested": return { kind, ...at, requester: who, feedback: note, pr: null };
-    case "retry_requested": return { kind, ...at, requester: who, note };
+    case "retry_requested": case "paths_requested": return { kind, ...at, requester: who, note };
     case "resolve_requested": return { kind, ...at, requester: who, notes: note, pr: null };
   }
 }
@@ -115,13 +115,12 @@ export class CommandsUnit {
   /**
    * The merge gate (core request-transition, design 04-gate-commands), the one copy the dashboard's request path and
    * the controller's merges share: whether an item waits for its merge (merge_pending, or merge_queued once its Merge
-   * was pressed), and why the local merge or a PR's merge does not apply to it. For the local-merge, merge-queue and
-   * pr-events units, which reach the gate's checks through this unit.
+   * was pressed), and why the local merge or a PR's merge does not apply to it (`held`: parked, resolve-held, or a
+   * failed merge check's max_loops, `stopped`, which `again` sends to merge_pending). For the local-merge, merge-queue and pr-events units.
    */
-  readonly merge = { waits: awaitingMerge,
-    localRefusal: (it: WorkItem, canMerge: boolean) => localMergeRefusal(it, canMerge, PR_NAME),
-    prRefusal: (it: WorkItem, forge: boolean) => prMergeRefusal(it, forge, PR_NAME),
-  };
+  readonly merge = { waits: awaitingMerge, stopped: mergeCheckStopped, again: mergeCheckAgain,
+    localRefusal: (it: WorkItem, canMerge: boolean, held = false) => localMergeRefusal(it, canMerge, PR_NAME, held),
+    prRefusal: (it: WorkItem, forge: boolean) => prMergeRefusal(it, forge, PR_NAME) };
 
   /**
    * A merge refused or failed after its Merge was pressed (a conflict, a red check, a hook veto): a local item at
@@ -170,20 +169,20 @@ export class CommandsUnit {
       const e = synced.event, who = { provider: "github" as const, subject: c.actor.slice("github:".length) };
       if (!this.c.k.hasAdapter(synced.source.type)) return;
       if (c.command === MERGE_COMMAND) await this.c.k.guard("event:merge", () => this.c.unit("pr-events").mergeComment(c.key, who, synced.source, c.args.pr));
+      else if (c.command === "note") await this.c.k.guard("event:note", () => noteOnSource(this.c, synced.source, who, c.key.slice("github:".length), String(c.args.text ?? ""), { say: refusalText, closed: CLOSED_REFUSAL }));
       else if (e) await this.c.k.guard(`event:${e.kind}`, () => this.c.dispatch(e));
       return;
     }
-    const id = c.args.item;
-    if (typeof id !== "string" || id === "") return;
-    const item = await this.c.k.reader.getWorkItem(id as WorkItemId);
+    const id = c.args.item; if (typeof id !== "string" || id === "") return;
     // Any source's item (design 05-sources, CLI intake): identity provider `local`, judged by the local auth plugin; never waits on its source.
-    if (!item) return;
-    // A proposal's confirm press (proposals.ts) and `factory merge <id>` skip the comment mapping.
+    const item = await this.c.k.reader.getWorkItem(id as WorkItemId); if (!item) return;
+    // A proposal's confirm press (proposals.ts), `factory merge <id>`, `/hold <id>` (the coordination unit's) and `/note` (note.ts) skip the comment mapping.
     if (c.command === CONFIRM_COMMAND) return confirmProposal(this.c, c, item, { event: (r, s) => proposalEvent(r, s, localIdentity(c.actor)), say: refusalText });
     if (c.command === MERGE_COMMAND && item.source.type === LOCAL_SOURCE) return void (await this.c.unit("local-merge").mergeLocal(item.id, localIdentity(c.actor), c.key));
     if (c.command === MERGE_COMMAND) return this.c.unit("pr-events").mergeCommand(item, localIdentity(c.actor), c.key, item.source);
-    const e = commandEvent(c, item.source);
-    if (e) await this.c.dispatch(e);
+    if (c.command === "hold") return void (await this.c.unit("coordination").holdCommand(item, { who: localIdentity(c.actor) }, c.key, String(c.args.text ?? "")));
+    if (c.command === "note") return noteCommand(this.c, item, localIdentity(c.actor), c.key, String(c.args.text ?? ""), { say: refusalText, closed: CLOSED_REFUSAL });
+    const e = commandEvent(c, item.source); if (e) await this.c.dispatch(e);
   }
 
   /**
@@ -239,7 +238,7 @@ export class CommandsUnit {
     const refusal = await this.applyCommand(item.id, e, { kind: "user", id: principal.user_id }, input.note, tag, input.paths);
     const said = refusal === null ? alreadyAllowed(item, e, input.paths) : null; if (said) await this.c.unit("outbox").post(item, said.target, said.body, said.marker); if (refusal === null) await this.c.k.guard("standing", () => this.c.unit("standing").afterSpecCommand(item.id, e, principal.user_id));
     if (refusal === null && e.kind === "spec_rejected") await this.c.unit("closes").afterReject(item.id);
-    if (refusal === null && (e.kind === "spec_rejected" || e.kind === "revise_requested")) await this.c.unit("outbox").captureTacit(item, e.comment_id, e.kind === "spec_rejected" ? e.reason : e.feedback);
+    if (refusal === null && (e.kind === "spec_rejected" || e.kind === "revise_requested")) { const words = e.kind === "spec_rejected" ? e.reason : e.feedback; await this.c.unit("outbox").captureTacit(item, e.comment_id, words); await this.c.unit("improve").captureCorrection(item, "pushback", e.comment_id, words); }
     if (refusal === null && e.kind === "revise_requested") await replyQueued(this.c, item, e.comment_id);
     return refusal;
   }
@@ -442,13 +441,12 @@ export class CommandsUnit {
   }
 
   /**
-   * The note and the `+paths` of an `/approve`, `/retry` or `/resolve` (design §4, issue #280); none for other
+   * The note and the `+paths` of an `/approve`, `/retry`, `/resolve` or `/paths` (design §4, issue #280); none for other
    * commands. The whole text is egress-scanned first (so a refusal never quotes a flagged path), then `+paths` is
    * split off and checked (unless `paths` is false: an app request's), the note what is left, capped. A finding or a bad path refuses it.
    */
   async commandInput(id: WorkItemId, e: CommandEvent, paths = true): Promise<{ note: string | null; paths: string[] } | Refusal> {
-    if (e.kind !== "spec_approved" && e.kind !== "retry_requested" && e.kind !== "resolve_requested") return { note: null, paths: [] };
-    const text = e.kind === "resolve_requested" ? e.notes : e.note;
+    const text = commandText(e); if (text === null) return { note: null, paths: [] }; if (typeof text === "object") return text; // paths.ts: `/paths +a` as `+paths a`
     return this.scanned(id, COMMAND[e.kind], await commandNote((t) => this.c.k.d.scanner.scan("comment", t), text, COMMAND[e.kind], paths));
   }
 
@@ -497,11 +495,11 @@ export class CommandsUnit {
     await answerPlain(this.c, item, e, async () => commandFooter(await this.stateOf(item)));
   }
 
-  /** The dashboard's Confirm all, Cancel or sentence (proposals.ts appProposal), and `restart` (the local-merge unit's, from the page or `factory restart`); undefined for any other app command. */
+  /** The dashboard's Confirm all, Cancel or sentence (proposals.ts appProposal), `hold` (the coordination unit's) and `restart` (the local-merge unit's, from the page or `factory restart`); undefined for any other app command. */
   appProposal(r: AppCommandRequest, item: WorkItem, key: string): Promise<string | null> | undefined {
-    const kind = r.command === CONFIRM_COMMAND ? "confirm" : r.command === CANCEL_APP_COMMAND ? "cancel" : r.command === SENTENCE_APP_COMMAND ? "sentence" : null;
-    const who = localIdentity(r.actor);
+    if (r.command === "hold") return this.c.unit("coordination").holdCommand(item, { app: r.actor }, key, typeof r.args.note === "string" ? r.args.note : "");
     if (r.command === RESTART_COMMAND) return this.c.unit("local-merge").restart(item, r.actor, key, { [APP_REQUEST]: r.seq });
+    const who = localIdentity(r.actor), kind = r.command === CONFIRM_COMMAND ? "confirm" : r.command === CANCEL_APP_COMMAND ? "cancel" : r.command === SENTENCE_APP_COMMAND ? "sentence" : null;
     return kind ? appProposal(this.c, r, item, key, kind, { who, event: (row, s) => proposalEvent(row, s, who), say: refusalText, footer: async () => commandFooter(await this.stateOf(item)) }) : undefined;
   }
 
@@ -556,6 +554,7 @@ export class CommandsUnit {
     tag: StateChangeDetail | null = null,
     paths: readonly string[] = [],
   ): Promise<Decision | Refusal> {
+    if (e.kind === "paths_requested") return pathsCommand(e, it, actor, note, this.widen(it, paths));
     if (e.kind === "resolve_requested") {
       return resolveCommand(e, it, actor, (await this.askedBy(it)) === "resolve", await this.c.unit("local-merge").conflicting(it), note, this.widen(it, paths));
     }
@@ -564,9 +563,9 @@ export class CommandsUnit {
     if (e.kind === "revise_requested" && (e.pr || asFeedback)) {
       return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, change_ref: e.pr?.change_ref ?? it.change_ref, key: { comment_id: e.comment_id } });
     }
-    // `/approve` (design §4): the approve gate every source shares (core request-transition), a split's filing claimed here.
+    // `/approve` (design §4): the approve gate every source shares (core request-transition), a split's filing claimed here; a spec that changes no file in this repo is refused first (design 04-spec-gate-commands).
     if (e.kind === "spec_approved") {
-      const a = await approveCheck(this.c.k.reader, it, { actor, note, paths, comment_id: e.comment_id, tag, widen: (p) => this.widen(it, p), answers: NOTE_ANSWERS });
+      const noFiles = noFilesRefusal(it, await this.c.k.reader.listRuns(it.id)), a = noFiles ? { refuse: noFiles } : await approveCheck(this.c.k.reader, it, { actor, note, paths, comment_id: e.comment_id, tag, widen: (p) => this.widen(it, p), answers: NOTE_ANSWERS });
       return a && "split" in a ? this.c.unit("phases").approveSplit(it, a.split, actor, a.note, e.comment_id, a.tag) : a;
     }
     if (it.stage === "CLOSED") return e.kind === "spec_rejected" && it.merge_sha ? this.reject(e, it, actor) : { refuse: CLOSED_REFUSAL };
@@ -574,7 +573,8 @@ export class CommandsUnit {
     if (it.blocked_reason === FLOOR_TIER) return floorCommand(e.kind, it, actor, await floorTierNeeded(this.c.k.reader, it), note, this.widen(it, paths));
     if (it.blocked_reason === RULE_OF_TWO) return ruleOfTwoCommand(e.kind, it, actor, note, paths, await this.c.k.reader.listStateChanges(it.id));
     if (e.kind === "spec_rejected") return this.reject(e, it, actor);
-    if (e.kind === "retry_requested") return commandPhase(it) === "phase_hold" ? this.c.unit("phases").retryPhase(it, actor, note, paths) : retry(it, actor, await this.retryKind(it), note, paths.length > 0 ? this.widen(it, paths) : null);
+    if (e.kind === "retry_requested" && mergeCheckStopped(it, await this.c.k.reader.listStateChanges(it.id))) return { refuse: mergeCheckRetryRefusal(it.id) };
+    if (e.kind === "retry_requested") return commandPhase(it) === "phase_hold" ? this.c.unit("phases").retryPhase(it, actor, note, paths) : recheckRetry(it, note, paths, retry(it, actor, await this.retryKind(it), note, paths.length > 0 ? this.widen(it, paths) : null), (await this.c.k.reader.listStateChanges(it.id)).at(-1), this.c.k.d.clock.now(), RECHECK_PATHS_REFUSAL); // a day old: re-check the premise first
     const phase = commandPhase(it);
     // At the review loop limit too: a human chose to go back through triage or to close (design §4).
     const afterFailure = phase === "too_large" || phase === "failed_implement" || phase === "agent_needs_human" || phase === "repeated_failure" ||
@@ -627,7 +627,7 @@ export class CommandsUnit {
     const refuse = await this.c.unit("closes").rejectRefusal(it);
     if (refuse !== null) return { refuse };
     const patch = { stage: "CLOSED", close_reason: "rejected", blocked_on: "upstream", blocked_reason: SOURCE_CLOSE_PENDING, spec_feedback: e.reason.trim() || null } as const;
-    return { patch, actor, reason: "spec_rejected", cancel_queued_runs: true, cancel_running_runs: true };
+    return { patch, actor, reason: "spec_rejected", cancel_running_runs: true };
   }
 
   /**
@@ -707,9 +707,9 @@ export class CommandsUnit {
     return (await this.blockedBy(it)) ?? failedRunKind(it);
   }
 
-  /** The command state of `it`, with the kind of run that asked at agent_needs_human. */
+  /** The command state of `it`, with the kind of run that asked at agent_needs_human and whether a failed merge check stopped it at max_loops. */
   async stateOf(it: WorkItem) {
-    return commandState(it, await this.askedBy(it));
+    return commandState(it, await this.askedBy(it), it.blocked_reason === "max_loops" && mergeCheckStopped(it, await this.c.k.reader.listStateChanges(it.id)));
   }
 }
 
@@ -727,7 +727,7 @@ export default controllerUnit({
     spec_rejected: (u, e) => u.handleCommand(e),
     revise_requested: (u, e) => u.handleCommand(e),
     retry_requested: (u, e) => u.handleCommand(e),
-    resolve_requested: (u, e) => u.handleCommand(e),
+    resolve_requested: (u, e) => u.handleCommand(e), paths_requested: (u, e) => u.handleCommand(e),
     budget_continue: (u, e) => u.handleCommand(e),
     help_requested: (u, e) => u.handleInfo(e),
     unknown_command: (u, e) => u.handleInfo(e),

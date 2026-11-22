@@ -18,7 +18,7 @@
 
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
-import type { Loaded } from "../compose.js";
+import type { Loaded } from "../load-config.js";
 import { checkConfigKeys, configFailLines } from "../config-keys.js";
 import { type LearnedSetting, learnedFromRows } from "../core/learned-settings.js";
 import { type ProjectRef, rekeyProjectSettings } from "../core/project.js";
@@ -67,6 +67,8 @@ export interface UiSettings {
   csrfToken: string;
   /** The `approve_merge` check for `mode`, `auto_merge_max_tier` and a loosening change (SettingsDeps.mayApproveMerge). Absent: no check. */
   mayApproveMerge?: () => Promise<string | null>;
+  /** The OS sandbox check before `mode` becomes auto (SettingsDeps.sandbox, compose.ts sandboxEnforcement). Absent: no check. */
+  sandbox?: NonNullable<SettingsDeps["sandbox"]>;
   /** Each integration interface (src/plugins.ts INTEGRATION_KINDS) and the plugin factory.config.json selects for it. Absent: none listed. */
   integrations?: readonly { kind: string; interface: string; configured: string }[];
   /**
@@ -488,6 +490,7 @@ export async function writeSettings(d: PauseDeps, s: UiSettings, body: unknown):
     // The same scanner the page's reads withhold through: a flagged message_style is refused, as on the CLI.
     scanner: d.scanner,
     ...(s.mayApproveMerge ? { mayApproveMerge: s.mayApproveMerge } : {}),
+    ...(s.sandbox ? { sandbox: s.sandbox } : {}),
     ...(editFile
       ? {
           editFile: async (req: ConfigEditRequest) => {

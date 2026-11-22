@@ -10,9 +10,14 @@ force.
 
 - **Every table carries its owner's prefix** (since 2026-11-08): `bus_`, `inbound_`, `controller_`, `worker_`,
   `outbound_`, `identity_`/`authz_`, `runtime_`, `ui_`, `ext_<name>_`. A component's code names only its own
-  tables (`tests/architecture/table-ownership.test.ts`). The generated `schema/sqlite.sql` is
-  the full table list; `npm run schema:snapshot` rewrites it, and
-  `tests/architecture/schema-snapshot.test.ts` fails when it is stale.
+  tables (`tests/architecture/table-ownership.test.ts`).
+- **The generated table list is one file per owner prefix under `schema/sqlite/`** (decision changed 2026-11-22,
+  issue #754; replaces "one generated `schema/sqlite.sql`", see History). Each prefix that has tables gets
+  `schema/sqlite/<prefix>.sql` (`bus.sql`, `controller.sql`, `authz.sql`, ...) with every table and index of that
+  owner; tables with no prefix are in `unprefixed.sql`. `npm run schema:snapshot` rewrites the files and removes any
+  it no longer produces; `tests/architecture/schema-snapshot.test.ts` fails when one is stale, missing or extra.
+  Reason: the one file was a path companion of every migration, so items for different owners held each other on
+  it (5 held items in a week, no conflict runs). One file per table (about 104) would pass the file cap.
 - **Schema changes are timestamped migrations** (since 2026-11-08): `<yyyymmddThhmm>-<component>-<slug>.migration.ts`
   in the owning component's `migrations/` folder, found by discovery, recorded in `runtime_schema_migrations`.
   They run after the frozen numbered baseline (the list in `src/impl/store/sqlite/schema.ts`), which gets no
@@ -82,9 +87,15 @@ force.
   - Claims still go through the store's `claimRun` (coordination, claim pauses, one branch writer per item): the
     runner hands the leased run to the engine (`adopt`, which stamps `code_version` and `deadline_at`), and the
     engine renews the lease on each heartbeat with the live `lease_ms` and aborts the run when it is lost. A run
-    with a succeeded step journaled by another `code_version` fails `not_resumable` (infra) and its retry is a new
-    run; failed or running rows hold only a partial, so a paused or requeued run whose steps all failed survives a
-    deploy with its WIP (decision changed 2026-11-09, worker review finding 4; see History). Each process
+    leased with a succeeded step journaled by another `code_version` (that `resumes` does not accept) is requeued
+    to run from the start: `adopt` answers `foreign_journal` and leaves the run and its journal as they are, and
+    the runner ends it as `code_version_restart` (infra), so the controller's retry is a new run with a new journal
+    that counts as an infra restart (05-restarts). It no longer fails `not_resumable`, and a lease lost before
+    `adopt` holds the run fails `lease_lost` (decision changed 2026-11-21, issue #718; replaces "fails
+    `not_resumable`", see History). The finished step's result is not reused. The engine's own `claim` still
+    leaves such a run for a worker on its revision. Failed or running rows hold only a partial, so a paused or
+    requeued run whose steps all failed keeps its journal and survives a deploy with its WIP (decision changed
+    2026-11-09, worker review finding 4; see History). Each process
     stamps the revision its supervisor built it from (`SF_CODE_VERSION`, 08-self-update), or `dev` unsupervised.
   - Named timeouts per run kind (`timeouts` in the kind file): `start_to_close` one hour per step by default; the
     implement kind's `run-agent` step gets two hours (7,200,000 ms), above twice `run_timeout_ms`, since it holds
@@ -124,11 +135,13 @@ force.
   and checked by the ToolBroker on every call. The controller decides a command under its passport (Identity checks
   it, the origin's auth plugin decides the role) and auto mode under its service passport; every decision is
   written to `authz_audit`.
-- **The merge queue** (decision changed 2026-11-16, a merged result that fails its checks is sent back to implement;
-  before that 2026-11-09, the landing is an outbound delivery; see History). A red check for failing checks names
+- **The merge queue** (decision changed 2026-11-23, a failed suite counts in `failing_tests`; before that 2026-11-16, a
+  merged result that fails its checks is sent back to implement; before that 2026-11-09, the landing is an outbound
+  delivery; see History). A red check for failing checks names
   what broke and sends the item back: the `merge-check` run's red result (`why: checks`) holds the failing command,
-  its exit text, the failing tests by name (`failing_tests`, `file > name`, at most 10, parsed as the implement run's
-  `checks_failed` does) and the output tail (`output_tail`, at most 2000 characters, through the egress scan first; a
+  its exit text, the failing tests by name (`failing_tests`, `file > name`, and each failed suite, a file vitest fails
+  before its tests run, as `file > (suite failed): <first error line>`, in output order, at most 10 in total, parsed
+  as the implement run's `checks_failed` does; the rerun's file list still reads failed tests only) and the output tail (`output_tail`, at most 2000 characters, through the egress scan first; a
   flagged tail is withheld whole as null, the names are kept). The queue removes the entry with a reason naming the
   failing tests (with none, the command and its exit text) and sends the item back to an implement run as a loop
   (`merge_check_failed`: stage RUNNING, loop_count + 1, one implement run keyed by the new loop), whose prompt lists

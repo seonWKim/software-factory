@@ -6,8 +6,8 @@
 // `applied` (the Applied group) is the promoted rules file read through `TacitLedger.applied` only: its blocks and its
 // encoded-elsewhere lines, null with the ledger off; `retired` the classes the ledger's retire verdicts name
 // (`TacitLedger.retired`), with reason and date.
-// GET /api/v1/rules/entry?id= reads one entry's detail on demand (a description, what it would change, why, where it
-// applies, and each incident's ID, date, proposal, quote and root reason as `evidence`) through
+// GET /api/v1/rules/entry?id= reads one entry's detail on demand (a description, what it would change, a proposal's
+// prose `change`, why, where it applies, and each incident's ID, date, proposal, quote and root reason as `evidence`) through
 // `TacitLedger.show` only; for an applied class it adds `retire`, the reasons it looks ready to retire
 // (src/core/rule-retirement.ts: the rules file, the detail's incident count, the other applied rules and this repo's
 // paths; no model call). The page's Suggest button reads it once per applied rule; it writes nothing. Every ledger text
@@ -15,8 +15,8 @@
 // the owner's reason, and for promote of a class their wording, default and exception, which the plugin encodes in the
 // owner's rules file before the verdict (a retire removes the class's block instead); promote of a proposal takes no
 // field beyond the reason: the plugin applies the proposal's current → proposed lines (as `show` gives them) to its
-// target file, then sends the verdict, all through `TacitLedger.verdict`. A proposal with no such lines (a change to
-// build, 2026-11-20) has only its verdict recorded, and then one plain task is stored to build it (`tk_` + the
+// target file, then sends the verdict (a prose change: the verdict only, applied to its target), all through
+// `TacitLedger.verdict`. After a prose change's verdict one plain task is stored to build it (2026-11-20: `tk_` + the
 // proposal ID in lower case, its title, and a body with the rationale, change, target, evidence IDs and proposal ID):
 // the store's one write from this page. A retry finds that task, or the ledger's promote verdict, and sends nothing
 // twice. GET lists each proposal's task ID once it exists (`task`), and the entry read gives `cited`, the newest
@@ -40,26 +40,29 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { RULE_VERDICTS, type RuleVerdict } from "../core/learned-rules.js";
-import { MAX_TASK_BODY, taskBody } from "../core/tasks.js";
 import { isHotspot } from "../core/hotspots.js";
 import { errorText } from "../core/log.js";
 import { type RetireRule, retireSuggestions } from "../core/rule-retirement.js";
 import { LiveSettings } from "../core/settings.js";
 import { type AgentsHomeCheck, checkAgentsHome } from "../impl/tacit/agents-home-tacit-ledger.js";
 import { LiveTacit } from "../runtime/live-tacit.js";
+import type { AskRow, ProposalRow } from "../core/owner-asks.js";
 import type { FailureGroup, ImproveReport, UserId } from "../core/types.js";
 import {
-  type TacitEntryDetail, type TacitEvidence, type TacitLedger, type TacitPendingEntry, type TacitPromotion, TacitRefusal, TacitSyncFailed, hasLines,
+  type TacitEntryDetail, type TacitEvidence, type TacitLedger, type TacitPendingEntry, type TacitPromotion, TacitRefusal, TacitSyncFailed,
   proposalTaskId, tacitIdKind,
 } from "../interfaces/tacit-ledger.js";
 import type { ApiResult } from "./api.js";
 import { runNowButton } from "./improve-api.js";
 import type { PauseDeps, UiPauses } from "./pause-api.js";
+import { type VerdictBody, promoteProposal, sendVerdict } from "./rules-promote.js";
 import { Withholder } from "./withhold.js";
 
 export const RULES_PATH = "/api/v1/rules";
 export const RULE_VERDICT_PATH = "/api/v1/rules/verdict";
 export const RULE_ENTRY_PATH = "/api/v1/rules/entry";
+export const RULE_EDIT_PATH = "/api/v1/rules/edit";
+export const PUSHBACK_DISMISS_PATH = "/api/v1/rules/pushbacks/dismiss";
 
 /** The longest reason and rule text (each of wording, default and exception) a verdict takes. */
 export const MAX_REASON = 1000;
@@ -90,14 +93,26 @@ export async function uiTacit(
   build: (name: string) => Promise<TacitLedger>,
   o: Omit<LiveOpts, "integrations" | "config"> & { config: Omit<LiveOpts["config"], "project"> },
 ): Promise<UiTacit> {
-  // The holder delegates no `show`, `retired` or `decided`: the page reads them from the plugin the holder last built (a failed build keeps them).
+  // The holder delegates no `show`, `retired`, `decided`, `edit`, `pushbacks` or `dismiss`: the page reaches them on the
+  // plugin the holder last built (a failed build keeps it). `pushbacks` is there only while that plugin has it, so a
+  // plugin without it shows no Pushbacks list.
   let inUse: TacitLedger | undefined;
   const live = await LiveTacit.start(configured, async (n) => (inUse = await build(n)), o.log);
-  const ledger = Object.assign(live, {
+  const missing = (what: string) => new TacitRefusal(`this rules plugin cannot ${what}`);
+  const ledger: typeof live & TacitLedger = Object.assign(live, {
     show: async (id: string) => (await inUse?.show?.(id)) ?? null,
     retired: async () => (await inUse?.retired?.()) ?? [],
     decided: async (ids: readonly string[]) => (await inUse?.decided?.(ids)) ?? {},
+    edit: async (id: string, rule: TacitPromotion) => {
+      if (!inUse?.edit) throw missing("edit a rule");
+      await inUse.edit(id, rule);
+    },
+    dismiss: async (id: string) => {
+      if (!inUse?.dismiss) throw missing("dismiss a pushback");
+      await inUse.dismiss(id);
+    },
   });
+  Object.defineProperty(ledger, "pushbacks", { get: () => inUse?.pushbacks?.bind(inUse) });
   const settings = new LiveSettings({ ...o, config: { ...o.config, project: { key: "", label: "" } }, integrations: [ledger] });
   return { ledger, settings, home: () => checkAgentsHome(process.env) };
 }
@@ -128,7 +143,7 @@ export async function readRules(d: PauseDeps): Promise<ApiResult> {
     return "error" in who ? await text(who.error) : null;
   };
   if (!tacit?.enabled) {
-    if (!d.tacit) return { status: 200, value: { enabled: false, entries: [], applied: null, retired: null, error: null, csrf_token: null, judge: null, home: null, turn_on: null, improve } };
+    if (!d.tacit) return { status: 200, value: { enabled: false, entries: [], applied: null, retired: null, pushbacks: null, error: null, csrf_token: null, judge: null, home: null, turn_on: null, improve } };
     const judge = await judgeOf("turns the ledger on");
     const home = d.tacit.home();
     // The whole entry with `tacit` set to the plugin name: other integrations keep theirs, and no path goes in.
@@ -137,7 +152,7 @@ export async function readRules(d: PauseDeps): Promise<ApiResult> {
     return {
       status: 200,
       value: {
-        enabled: false, entries: [], applied: null, retired: null, error: null, csrf_token: judge === null ? d.pauses!.csrfToken : null, judge,
+        enabled: false, entries: [], applied: null, retired: null, pushbacks: null, error: null, csrf_token: judge === null ? d.pauses!.csrfToken : null, judge,
         home: { path: await text(home.path), missing: home.missing, homes }, turn_on: turnOn, improve,
       },
     };
@@ -151,12 +166,17 @@ export async function readRules(d: PauseDeps): Promise<ApiResult> {
     error = `The ledger could not be read: ${errorText(err)}`;
   }
   const shown = [];
+  const excerpts: Record<string, Excerpt> = {};
   for (const e of entries) {
     const proposal = { ...(e.kind !== undefined ? { kind: await text(e.kind) } : {}), ...(e.target !== undefined ? { target: await text(e.target) } : {}) };
     const draft = e.draft === undefined ? null : {
       default: await text(e.draft.default), exception: await text(e.draft.exception),
       incidents: await Promise.all(e.draft.incidents.map(text)), scope: await text(e.draft.scope),
     };
+    if ((e.judged ?? null) === null && tacitIdKind(e.id) === "proposal") {
+      const x = await excerptOf(tacit, e.id, text);
+      if (x !== null) excerpts[await text(e.id)] = x;
+    }
     shown.push({
       id: await text(e.id), title: await text(e.title), state: e.state, ...proposal, judged: e.judged ?? null, draft,
       draft_error: e.draft_error === undefined ? null : await text(e.draft_error), task: await taskOf(d, e.id),
@@ -165,7 +185,7 @@ export async function readRules(d: PauseDeps): Promise<ApiResult> {
   return {
     status: 200,
     value: {
-      enabled: true, entries: shown, applied: await readApplied(tacit, text), retired: await readRetired(tacit, text),
+      enabled: true, entries: shown, excerpts, applied: await readApplied(tacit, text), retired: await readRetired(tacit, text), pushbacks: await readPushbacks(tacit, text),
       error: error === null ? null : await text(error), csrf_token: d.pauses?.csrfToken ?? null, judge, home: null, turn_on: null, improve,
     },
   };
@@ -175,6 +195,44 @@ export async function readRules(d: PauseDeps): Promise<ApiResult> {
 async function taskOf(d: PauseDeps, id: string): Promise<string | null> {
   const task = tacitIdKind(id) === "proposal" ? proposalTaskId(id) : null;
   return task !== null && (await d.store.getTask(task)) !== null ? task : null;
+}
+
+/** The most lines and characters of each side a proposal's row shows before it is opened. */
+const EXCERPT_LINES = 3;
+const EXCERPT_CHARS = 200;
+
+/** A waiting proposal's before and after lines for its row; a side the ledger does not give is absent. */
+export type Excerpt = { before?: string; after?: string };
+
+/** The first changed lines of one side: what stays after the lines both sides share at the start and the end, cut to the row's limits. */
+function changedLines(own: string[], other: string[]): string {
+  let start = 0;
+  while (start < own.length && start < other.length && own[start] === other[start]) start++;
+  let end = 0;
+  while (end < own.length - start && end < other.length - start && own[own.length - 1 - end] === other[other.length - 1 - end]) end++;
+  return own.slice(start, own.length - end).slice(0, EXCERPT_LINES).join("\n").slice(0, EXCERPT_CHARS);
+}
+
+/**
+ * The excerpt of proposal `id` from `TacitLedger.show` (its current and proposed lines), each side through `text`;
+ * null when the ledger gives neither side, has no `show` or fails: the row then shows no excerpt line.
+ */
+async function excerptOf(tacit: TacitLedger, id: string, text: (v: string) => Promise<string>): Promise<Excerpt | null> {
+  let detail: TacitEntryDetail | null = null;
+  try {
+    detail = (await tacit.show?.(id)) ?? null;
+  } catch {
+    return null;
+  }
+  const lines = (v: string | undefined) => (v === undefined || v.trim() === "" ? null : v.split("\n"));
+  const before = lines(detail?.current);
+  const after = lines(detail?.proposed);
+  const out: Excerpt = {};
+  const b = before === null ? "" : changedLines(before, after ?? []);
+  const a = after === null ? "" : changedLines(after, before ?? []);
+  if (b.trim() !== "") out.before = await text(b);
+  if (a.trim() !== "") out.after = await text(a);
+  return out.before === undefined && out.after === undefined ? null : out;
 }
 
 /**
@@ -187,47 +245,57 @@ async function readImprove(d: PauseDeps, text: (v: string) => Promise<string>) {
   return { report: report === null ? null : await improveReport(report, text), run_now: button !== null, csrf_token: button?.csrfToken ?? null };
 }
 
-/** The report's window, counts and one row per failure group (draft and filing), each text through `text`. */
+/**
+ * The report's window, counts and one row per failure group (draft and filing); its top ask reasons (count and the
+ * share of the answered ones approved unchanged, null with none answered) and its standing approval proposals as
+ * text (design 07-improve-report). Each text through `text`.
+ */
 async function improveReport(r: ImproveReport, text: (v: string) => Promise<string>) {
   const opt = async (v: string | null) => (v === null || v === "" ? null : await text(v));
   const groups = [];
   // The hot files (`hotspot` rows of the patterns) show with the groups: their file, runs and filing.
   for (const g of [...r.groups, ...r.patterns.filter(isHotspot)]) {
     groups.push({
-      error_code: await text(g.error_code), detail: await opt(g.detail), runs: g.run_ids.length,
-      draft: await improveDraft(g, text), filing: await opt(filingText(g)),
+      error_code: await text(g.error_code), detail: await opt(g.detail), runs: g.run_ids.length, hotspot: isHotspot(g),
+      draft: await improveDraft(g, text), filing: await improveFiling(g, text),
     });
   }
+  const asks = [];
+  for (const a of r.patterns.filter(isAskRow)) {
+    asks.push({ reason: await text(a.detail), asks: a.asks, answered: a.answered, share_unchanged: a.answered === 0 ? null : a.approved_unchanged / a.answered });
+  }
+  const proposals = [];
+  for (const p of r.patterns.filter(isProposalRow)) proposals.push({ reason: await text(p.detail), run_length: p.run_length, text: await text(p.text) });
+  const failures = r.patterns.filter((g) => !isAskRow(g) && !isProposalRow(g));
   return {
     window_start: r.window_start, window_end: r.window_end, created_at: r.created_at,
-    runs: r.groups.reduce((n, g) => n + g.run_ids.length, 0), patterns: r.patterns.length, groups,
+    runs: r.groups.reduce((n, g) => n + g.run_ids.length, 0), patterns: failures.length, groups, asks, proposals,
   };
 }
 
-/** A group's draft: its cause and fix when drafted, else one note (withheld, failed or skipped); null with none. */
+// The owner's ask rows of a report (src/core/owner-asks.ts), by their codes: a type import only, so the route adds no runtime import.
+const isAskRow = (g: FailureGroup): g is AskRow => g.error_code === ("owner_ask" satisfies AskRow["error_code"]);
+const isProposalRow = (g: FailureGroup): g is ProposalRow => g.error_code === ("ask_proposal" satisfies ProposalRow["error_code"]);
+
+/** A group's draft: its cause and fix when drafted, else one note `{ status, reason }` (reason `withheld` for a withheld one); null with none. */
 async function improveDraft(g: FailureGroup, text: (v: string) => Promise<string>) {
   const d = g.draft;
   if (!d) return null;
   if (d.status === "drafted") return { cause: await text(d.cause), fix: await text(d.fix), note: null };
-  return { cause: null, fix: null, note: await text(d.status === "withheld" ? `withheld (${d.rules.join(", ")})` : `${d.status} (${d.reason})`) };
+  return { cause: null, fix: null, note: { status: d.status, reason: d.status === "withheld" ? "withheld" : await text(d.reason) } };
 }
 
-/** A group's filing as one line; null when not filed yet. */
-function filingText(g: FailureGroup): string | null {
+/**
+ * A group's filing as `{ status, reason, ref, runs }`, null when not filed yet: `reason` the stored code of a skipped or
+ * failed filing (`withheld` for a withheld one), else null; `ref` the item's link or ID; `runs` the new runs a comment named.
+ */
+async function improveFiling(g: FailureGroup, text: (v: string) => Promise<string>) {
   const f = g.filing;
   if (!f) return null;
-  switch (f.status) {
-    case "filed":
-    case "linked":
-      return `${f.status}: ${f.ref.link || f.ref.id}`;
-    case "commented":
-      return `commented on ${f.ref.link || f.ref.id}: ${f.run_ids.length} new runs`;
-    case "withheld":
-      return `withheld (${f.rules.join(", ")})`;
-    case "skipped":
-    case "failed":
-      return `${f.status} (${f.reason})`;
-  }
+  const ref = "ref" in f ? await text(f.ref.link || f.ref.id) : null;
+  const runs = f.status === "commented" ? f.run_ids.length : null;
+  const reason = f.status === "skipped" || f.status === "failed" ? await text(f.reason) : f.status === "withheld" ? "withheld" : null;
+  return { status: f.status, reason, ref, runs };
 }
 
 /** The retired classes, newest first, each text through the Withholder; a failed read gives none. */
@@ -237,6 +305,21 @@ async function readRetired(tacit: TacitLedger, text: (v: string) => Promise<stri
     return await Promise.all(retired.map(async (r) => ({ id: await text(r.id), reason: await text(r.reason), date: r.date })));
   } catch {
     return [];
+  }
+}
+
+/**
+ * The active unclustered pushbacks, each text through the Withholder: `{ rows, error }`, `error` a failed read (no
+ * rows then); null when the ledger has no `pushbacks`, so the page shows no Pushbacks list.
+ */
+async function readPushbacks(tacit: TacitLedger, text: (v: string) => Promise<string>) {
+  const list = tacit.pushbacks;
+  if (list === undefined) return null;
+  try {
+    const rows = await list.call(tacit);
+    return { rows: await Promise.all(rows.map(async (r) => ({ id: await text(r.id), pushback: await text(r.pushback), date: r.date ?? null }))), error: null };
+  } catch (err) {
+    return { rows: [], error: await text(`The pushbacks could not be read: ${errorText(err)}`) };
   }
 }
 
@@ -316,7 +399,7 @@ export async function readRuleEntry(d: PauseDeps, rawId: string | null): Promise
   const reasons = retire === null ? null : await Promise.all(retire.map(text));
   if (detail === null) return { status: 200, value: { id: await text(id), detail: null, error: error === null ? null : await text(error), retire: reasons } };
   const shown: Record<string, unknown> = { id: await text(detail.id) };
-  for (const key of ["description", "default", "exceptions", "kind", "target", "current", "proposed", "root_reason", "scope"] as const) {
+  for (const key of ["description", "default", "exceptions", "kind", "target", "current", "proposed", "change", "root_reason", "scope"] as const) {
     const v = detail[key];
     if (v !== undefined) shown[key] = await text(v);
   }
@@ -339,17 +422,14 @@ async function citedVerdicts(tacit: TacitLedger, detail: TacitEntryDetail, text:
   return out;
 }
 
-type VerdictBody = { id: string; verdict: RuleVerdict; reason: string; rule?: TacitPromotion };
 
 /** The rule's fields a promote of a class takes, each required there and refused anywhere else. */
 const RULE_FIELDS = ["text", "default", "exception"] as const;
 
 /** The POST body as a verdict, or why it is not one. */
 function parseVerdict(body: unknown): VerdictBody | string {
-  if (typeof body !== "object" || body === null || Array.isArray(body)) return "the body must be a JSON object";
-  const b = body as Record<string, unknown>;
-  const extra = Object.keys(b).find((k) => !["id", "verdict", "reason", ...RULE_FIELDS].includes(k));
-  if (extra) return `unknown field "${extra}"`;
+  const b = bodyOf(body, ["id", "verdict", "reason", ...RULE_FIELDS]);
+  if (typeof b === "string") return b;
   if (typeof b.id !== "string" || b.id.trim() === "") return "id must be a non-empty string";
   if (!RULE_VERDICTS.includes(b.verdict as RuleVerdict)) return `verdict must be one of ${RULE_VERDICTS.join(", ")}`;
   if (typeof b.reason !== "string" || b.reason.trim() === "" || b.reason.length > MAX_REASON) return `reason must be 1 to ${MAX_REASON} characters`;
@@ -362,10 +442,23 @@ function parseVerdict(body: unknown): VerdictBody | string {
     const given = RULE_FIELDS.find((k) => b[k] !== undefined);
     return given ? `only promote of a class (C-) takes a ${given}` : v;
   }
+  const rule = ruleOf(b);
+  return typeof rule === "string" ? rule : { ...v, rule };
+}
+
+/** The rule's three fields of a body (promote of a class, or an edit), each 1 to MAX_RULE_TEXT characters, or why not. */
+function ruleOf(b: Record<string, unknown>): TacitPromotion | string {
   const bad = RULE_FIELDS.find((k) => typeof b[k] !== "string" || b[k].trim() === "" || b[k].length > MAX_RULE_TEXT);
   if (bad) return `${bad} must be 1 to ${MAX_RULE_TEXT} characters`;
   const field = (k: (typeof RULE_FIELDS)[number]) => (b[k] as string).trim();
-  return { ...v, rule: { wording: field("text"), default: field("default"), exception: field("exception") } };
+  return { wording: field("text"), default: field("default"), exception: field("exception") };
+}
+
+/** A POST body as an object with only `keys`, or why it is not one. */
+function bodyOf(body: unknown, keys: readonly string[]): Record<string, unknown> | string {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return "the body must be a JSON object";
+  const extra = Object.keys(body).find((k) => !keys.includes(k));
+  return extra ? `unknown field "${extra}"` : (body as Record<string, unknown>);
 }
 
 /**
@@ -392,79 +485,71 @@ export async function writeRuleVerdict(d: PauseDeps, p: UiPauses, body: unknown)
   return { status: 200, value: { id: v.id, verdict: v.verdict } };
 }
 
-/** `TacitLedger.verdict`; null when it was recorded, else the refusal or failure as the route answers it. */
-async function sendVerdict(tacit: TacitLedger, v: VerdictBody): Promise<ApiResult | null> {
-  try {
-    await tacit.verdict(v.id, v.verdict, v.reason, v.rule);
-    return null;
-  } catch (err) {
-    if (err instanceof TacitRefusal) return { status: 409, value: { error: `The ${v.verdict} was refused: ${errorText(err)}` } };
-    if (err instanceof TacitSyncFailed) return { status: 502, value: { error: `The verdict was recorded, but sync-agents failed: ${errorText(err)}` } };
-    return { status: 502, value: { error: `The ledger refused the verdict: ${errorText(err)}` } };
-  }
+/**
+ * The ledger for a rules write, with the owner check, or the answer that refuses it: 409 with no ledger or one without
+ * the method `has` names, 403 for anyone but the owner. Every refusal comes before the ledger's CLI runs.
+ */
+async function ownerLedger(d: PauseDeps, p: UiPauses, has: "edit" | "dismiss", does: string): Promise<{ tacit: TacitLedger; user: UserId } | ApiResult> {
+  await d.tacit?.settings.refresh();
+  const tacit = d.tacit?.ledger;
+  if (!tacit?.enabled) return { status: 409, value: { error: "No tacit ledger is on: turn it on from the Rules page." } };
+  if (tacit[has] === undefined) return { status: 409, value: { error: `This rules plugin cannot ${has === "edit" ? "edit a rule" : "dismiss a pushback"}.` } };
+  const who = await ownerOf(d, p, does);
+  if ("error" in who) return { status: 403, value: { error: who.error } };
+  return { tacit, user: who.user };
 }
 
 /**
- * Promote of a proposal. Its task stored already (a retry): nothing is sent or written. Else its detail is read: no
- * detail or no target is refused before any verdict runs. With Now and Proposed lines the plugin applies them and
- * sends the verdict, as before. With none (a change to build) the verdict is sent unless the ledger's newest verdict on
- * it is a promote already (a retry after a lost response), and then one plain task is stored: `tk_` + the ID in lower
- * case, the proposal's title, and a body with the rationale, change, target, evidence IDs and proposal ID. A refused
- * or failed verdict stores no task.
+ * POST /api/v1/rules/edit with `{ id, text, default, exception }`, after the request guards: 400 for an ID that is not
+ * a class or a bad field (each 1 to 2000 characters), 409 with no ledger or when the plugin refuses with nothing
+ * written (no block for the ID, a failed check), 403 for anyone but the owner, 502 when the write failed (the file put
+ * back) or the rule was saved but sync-agents failed; else 200. No verdict is sent and no reason taken.
  */
-async function promoteProposal(d: PauseDeps, p: UiPauses, tacit: TacitLedger, v: VerdictBody, user: UserId): Promise<ApiResult> {
-  const taskId = proposalTaskId(v.id)!;
-  const done = { status: 200, value: { id: v.id, verdict: v.verdict, task_id: taskId } };
-  if ((await d.store.getTask(taskId)) !== null) return done;
-  let detail: TacitEntryDetail | null;
+export async function writeRuleEdit(d: PauseDeps, p: UiPauses, body: unknown): Promise<ApiResult> {
+  const b = bodyOf(body, ["id", ...RULE_FIELDS]);
+  if (typeof b === "string") return { status: 400, value: { error: b } };
+  const id = typeof b.id === "string" ? b.id.trim() : "";
+  if (tacitIdKind(id) !== "class") return { status: 400, value: { error: "id must be a class (C-) ID" } };
+  const rule = ruleOf(b);
+  if (typeof rule === "string") return { status: 400, value: { error: rule } };
+  const own = await ownerLedger(d, p, "edit", "edits rules");
+  if (!("tacit" in own)) return own;
   try {
-    detail = (await tacit.show?.(v.id)) ?? null;
+    await own.tacit.edit!(id, rule);
   } catch (err) {
-    return { status: 409, value: { error: `The promote was refused: the detail of ${v.id} could not be read: ${errorText(err)}` } };
+    if (err instanceof TacitRefusal) return { status: 409, value: { error: `The edit was refused: ${errorText(err)}` } };
+    if (err instanceof TacitSyncFailed) return { status: 502, value: { error: `The rule was saved, but sync-agents failed: ${errorText(err)}` } };
+    return { status: 502, value: { error: `The rule could not be saved: ${errorText(err)}` } };
   }
-  if (detail?.target === undefined) return { status: 409, value: { error: `The promote was refused: ${v.id} has no target: nothing written` } };
-  if (hasLines(detail)) {
-    const failed = await sendVerdict(tacit, v);
-    if (failed !== null) return failed;
-    p.log.info("rule verdict sent", { id: v.id, verdict: v.verdict, actor: user, edited: false });
-    return { status: 200, value: { id: v.id, verdict: v.verdict } };
-  }
-  // The title is read before the verdict: a judged proposal may leave the pending list.
-  const listedTitle = await proposalTitle(tacit, v.id, detail);
-  const recorded = (await tacit.decided?.([v.id]))?.[v.id] === "promote";
-  if (!recorded) {
-    const failed = await sendVerdict(tacit, v);
-    if (failed !== null) return failed;
-  }
-  const w = new Withholder(d.scanner);
-  const text = async (s: string) => (await w.plain(s)).text;
-  const title = await text(listedTitle);
-  const body = taskBody((await buildBody(v.id, detail, text)).slice(0, MAX_TASK_BODY));
-  await d.store.addTask({
-    id: taskId, title, list: null, priority: null, due: null, due_time: null, recurrence: null, created_by: user, body: body.ok ? body.body : null,
-  });
-  p.log.info("rule verdict sent", { id: v.id, verdict: v.verdict, actor: user, edited: false, task: taskId, resent: !recorded });
-  return done;
+  p.log.info("rule edited", { id, actor: own.user });
+  return { status: 200, value: { id } };
 }
 
-/** The proposal's title as `pending` lists it; its description, else its ID, when it is not listed (or the read fails). */
-async function proposalTitle(tacit: TacitLedger, id: string, detail: TacitEntryDetail): Promise<string> {
+/**
+ * POST /api/v1/rules/pushbacks/dismiss with `{ id }` (a `T-` ID), after the request guards: 400 for any other body,
+ * 409 with no ledger or one that cannot dismiss, 403 for anyone but the owner, 502 when the ledger's CLI fails; else
+ * 200. The ledger records the pushback as noise.
+ */
+export async function writePushbackDismiss(d: PauseDeps, p: UiPauses, body: unknown): Promise<ApiResult> {
+  const b = bodyOf(body, ["id"]);
+  if (typeof b === "string") return { status: 400, value: { error: b } };
+  const id = typeof b.id === "string" ? b.id.trim() : "";
+  if (!/^T-[0-9A-Za-z_-]+$/.test(id)) return { status: 400, value: { error: "id must be a pushback (T-) ID" } };
+  const own = await ownerLedger(d, p, "dismiss", "dismisses pushbacks");
+  if (!("tacit" in own)) return own;
   try {
-    const listed = (await tacit.pending()).find((e) => e.id === id);
-    if (listed !== undefined) return listed.title;
-  } catch {
-    // The description stands in for a title the ledger could not list.
+    await own.tacit.dismiss!(id);
+  } catch (err) {
+    if (err instanceof TacitRefusal) return { status: 409, value: { error: `The dismiss was refused: ${errorText(err)}` } };
+    return { status: 502, value: { error: `The pushback could not be dismissed: ${errorText(err)}` } };
   }
-  return detail.description ?? id;
+  p.log.info("pushback dismissed", { id, actor: own.user });
+  return { status: 200, value: { id } };
 }
 
-/** The task body of a proposal to build, each value through `text`: rationale (root reason), change (description), target, evidence IDs and ID. */
-async function buildBody(id: string, d: TacitEntryDetail, text: (v: string) => Promise<string>): Promise<string> {
-  const evidence = [...new Set((d.evidence ?? []).flatMap((e) => (e.ref === undefined ? [] : [e.ref])))];
-  const rationale = d.root_reason ?? d.evidence?.find((e) => e.root_reason !== undefined)?.root_reason;
-  const fields: [string, string][] = [
-    ["Rationale", rationale ?? "not given"], ["Change", d.description ?? "not given"], ["Target", d.target ?? "not given"],
-    ["Evidence", evidence.length === 0 ? "none" : evidence.join(", ")], ["Proposal", id],
-  ];
-  return (await Promise.all(fields.map(async ([label, value]) => `${label}: ${await text(value)}`))).join("\n");
-}
+/** The Rules page's write routes by path (server.ts): each behind the write guards, then its own owner check. */
+export const RULE_WRITES: Readonly<Record<string, (d: PauseDeps, p: UiPauses, body: unknown) => Promise<ApiResult>>> = {
+  [RULE_VERDICT_PATH]: writeRuleVerdict,
+  [RULE_EDIT_PATH]: writeRuleEdit,
+  [PUSHBACK_DISMISS_PATH]: writePushbackDismiss,
+};

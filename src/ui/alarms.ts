@@ -6,9 +6,9 @@
 import { ALERT_DEDUPE_MS, RESTART_WINDOW_MS } from "../core/alarms.js";
 import { MODEL_RUN_KINDS } from "../core/model-choice.js";
 import { AUTO_ACTOR } from "../core/policy.js";
-import { utcMinute } from "../core/spec-comment.js";
 import { type Run, type WorkItem, runTokenCount } from "../core/types.js";
 import type { Alert, FactoryStore } from "../interfaces/factory-store.js";
+import { failureWords } from "./why.js";
 
 /** Most alerts one view reads: far more than the patterns that can alert within one dedupe window. */
 const ALERTS_READ = 100;
@@ -31,12 +31,12 @@ export function alarmUntil(a: Alert): string {
   return new Date(Date.parse(a.created_at) + ALERT_DEDUPE_MS).toISOString();
 }
 
-/** The alarm in one plain sentence, without its detail (the why-it-waits sentence names it this way). */
+/** The alarm in one plain sentence, without its detail or any time (the why-it-waits sentence names it this way; the page shows `auto_stop.at`). */
 export function alarmText(a: Alert): string {
-  if (a.pattern === "repeated_error") return `Alarm: ${a.error_code} failed ${a.count} runs on several items`;
+  if (a.pattern === "repeated_error") return `Alarm: ${a.count} runs on several items failed the same way (${clause(failureWords(a.error_code))})`;
   if (a.pattern === "zero_tokens") return `Alarm: ${a.count} agent runs in a row used no tokens`;
-  if (a.pattern === "auto_stopped") return `Alarm: back to manual at ${utcMinute(a.created_at)}: ${AUTO_STOP_TEXT[a.error_code] ?? a.error_code}`;
-  if (a.pattern === "dead_letter") return `Alarm: a message on ${deadLetterTopic(a)} was dead-lettered (${DEAD_LETTER_TEXT[a.error_code] ?? a.error_code})`;
+  if (a.pattern === "auto_stopped") return `Alarm: back to manual: ${AUTO_STOP_TEXT[a.error_code] ?? "a check the factory has no plain words for yet"}`;
+  if (a.pattern === "dead_letter") return `Alarm: a message on ${deadLetterTopic(a)} was dead-lettered (${DEAD_LETTER_TEXT[a.error_code] ?? "for a reason the factory has no plain words for yet"})`;
   if (a.pattern === "spend_budget") return `Alarm: spending passed ${spendOf(a).pct}% of the ${spendOf(a).period} budget`;
   if (a.pattern === "red_main") return `Alarm: the base branch fails its checks on its own at \`${redMainSha(a).slice(0, 12)}\`; merge-queue changes wait until it moves`;
   return `Alarm: the factory restarted ${a.count} times in ${RESTART_WINDOW_MS / 60_000} minutes`;
@@ -52,6 +52,47 @@ const AUTO_STOP_TEXT: Readonly<Record<string, string>> = {
 /** The newest mode changes read to find the last one; far more than the mode changes between two stops. */
 const MODE_CHANGES_READ = 200;
 
+/** What a failed check printed, as the red-main check keeps it: the failing tests by name, and the output tail (null: none kept). */
+export interface CheckOutput {
+  failing_tests: string[];
+  output_tail: string | null;
+}
+
+/**
+ * A red_main alert's detail read back (design 03-risk): the red-main check stores JSON `{ text, failing_tests,
+ * output_tail }`; an older alert, or one raised from the merge check, stores the text alone and has no output.
+ */
+export function redMainDetail(a: Alert): { text: string | null; output: CheckOutput | null } {
+  if (a.detail === null || !a.detail.startsWith("{")) return { text: a.detail, output: null };
+  try {
+    const d = JSON.parse(a.detail) as Record<string, unknown>;
+    const failing_tests = Array.isArray(d.failing_tests) ? d.failing_tests.filter((t): t is string => typeof t === "string") : [];
+    const output_tail = typeof d.output_tail === "string" && d.output_tail !== "" ? d.output_tail : null;
+    return { text: typeof d.text === "string" ? d.text : null, output: { failing_tests, output_tail } };
+  } catch {
+    return { text: a.detail, output: null };
+  }
+}
+
+/** A plain-words sentence as a clause inside another: lower case first letter, no closing period. */
+const clause = (sentence: string) => sentence.charAt(0).toLowerCase() + sentence.slice(1).replace(/\.$/, "");
+
+/**
+ * A zero-token alert's detail (core/alarms.ts zeroTokens: "the last failed with <code>" or "the last succeeded")
+ * in plain words: how the last run ended, its error in words (failureWords), never the code.
+ */
+function zeroTokensDetail(detail: string): string {
+  const failed = /^the last failed with (.+)$/.exec(detail);
+  if (failed) return `the last one failed (${clause(failureWords(failed[1]!))})`;
+  return detail === "the last succeeded" ? "the last one succeeded" : detail;
+}
+
+/** An alarm's sentence with its detail, as Needs you and the alarms API show it. */
+export function alarmFullText(a: Alert): string {
+  const detail = a.pattern === "red_main" ? redMainDetail(a).text : a.pattern === "zero_tokens" && a.detail !== null ? zeroTokensDetail(a.detail) : a.detail;
+  return detail === null ? alarmText(a) : `${alarmText(a)}: ${detail}`;
+}
+
 /** The last auto-mode stop while it is still in force, as the Mode toggle and the system banner show it. */
 export interface AutoStopNote {
   /** The `auto_stopped` alert: the toggle and the banner link to it. */
@@ -60,17 +101,27 @@ export interface AutoStopNote {
   at: string;
   /** Its cause, the alert's error code: `red_main`, `budget_checkpoint` or `failure_alert`. */
   cause: string;
+  /** A red_main cause: what the red-main check printed, from the newest red_main alert (empty when it kept none). */
+  failing_tests?: string[];
+  output_tail?: string | null;
 }
 
 /**
  * The last auto-mode stop (design 03-risk), or null when none is in force: the newest `mode` change was not the
- * stop's (`system:auto` setting manual), so the owner set the mode since. Store reads only.
+ * stop's (`system:auto` setting manual), so the owner set the mode since. A red_main stop carries the output of the
+ * newest red_main alert raised up to the stop. Store reads only.
  */
 export async function lastAutoStop(store: Pick<FactoryStore, "listAlerts" | "listSettingChanges">): Promise<AutoStopNote | null> {
   const last = (await store.listSettingChanges(MODE_CHANGES_READ)).find((c) => c.key === "mode");
   if (!last || last.actor !== AUTO_ACTOR) return null;
-  const a = (await store.listAlerts({ limit: ALERTS_READ })).find((x) => x.pattern === "auto_stopped");
-  return a ? { alert_id: a.id, at: a.created_at, cause: a.error_code } : null;
+  const alerts = await store.listAlerts({ limit: ALERTS_READ });
+  const a = alerts.find((x) => x.pattern === "auto_stopped");
+  if (!a) return null;
+  const note = { alert_id: a.id, at: a.created_at, cause: a.error_code };
+  if (a.error_code !== "red_main") return note;
+  const red = alerts.find((x) => x.pattern === "red_main" && x.created_at <= a.created_at);
+  const output = red ? redMainDetail(red).output : null;
+  return { ...note, failing_tests: output?.failing_tests ?? [], output_tail: output?.output_tail ?? null };
 }
 
 /** Why the bus dead-lettered a message (its dead letter's error code, RFC 0015 §5.4). */
