@@ -784,10 +784,10 @@ export class Worker {
     if (meter) addUsage(meter, result.usage);
     await this.reportLiveCheckout(run, handle, liveBefore, step);
     // One line per time a gate hook sent the agent back (design §4, issue #302); the worker's gates still decide.
-    for (const b of result.gate_blocks ?? []) {
-      if (b.hook === "stop" && s) s.stop_blocks = (s.stop_blocks ?? 0) + 1;
-      this.d.log.info("gate hook sent the agent back", { run_id: run.id, step: step ?? "", hook: b.hook, check: b.check.slice(0, 200), attempt: b.attempt });
-    }
+    if (s) s.stop_blocks = (s.stop_blocks ?? 0) + (result.gate_blocks ?? []).filter((b) => b.hook === "stop").length;
+    for (const b of result.gate_blocks ?? []) this.d.log.info("gate hook sent the agent back", { run_id: run.id, step: step ?? "", hook: b.hook, check: b.check.slice(0, 200), attempt: b.attempt });
+    // The test selection each Stop check made (design §4), as the check before push logs its own: counted nowhere.
+    for (const line of result.stop_selections ?? []) this.d.log.info(line, { run_id: run.id, step: step ?? "" });
 
     // G5 before the transcript is stored anywhere; a fail rule (also one a partial write found) fails the run with egress_blocked.
     await live.finish(result.transcript);

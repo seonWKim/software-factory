@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { renderRequest, renderWorkItem } from "../src/worker/support.js";
+import { failingTestNames, renderMergeCheckFailure, renderRequest, renderWorkItem } from "../src/worker/support.js";
 import type { WorkItem } from "../src/core/types.js";
 import { alice, issueRef, triageSpec } from "./helpers/fakes/config.js";
 import { pipeline } from "./helpers/harness.js";
@@ -25,6 +25,16 @@ describe("renderRequest", () => {
     expect(out.startsWith("## Original request\n")).toBe(true);
     expect(out).toMatch(/was not kept for this item/);
     expect(out).not.toContain("```");
+  });
+});
+
+describe("renderMergeCheckFailure: a failed suite", () => {
+  it("lists a failed suite's entry in the failing-checks section", () => {
+    const out = " FAIL  tests/ui-calendar-page.test.tsx [ tests/ui-calendar-page.test.tsx ]\nError: Cannot bundle Node.js built-in node:sqlite\n";
+    const text = renderMergeCheckFailure({ command: "npm test", how: "exited 1", failing_tests: JSON.stringify(failingTestNames(out)) });
+    expect(text).toContain("## Failing checks on the merged commit");
+    expect(text).toMatch(/```text\n- tests\/ui-calendar-page\.test\.tsx > \(suite failed\): Cannot bundle Node\.js built-in node:sqlite\n```/);
+    expect(text).not.toContain("npm test exited 1");
   });
 });
 

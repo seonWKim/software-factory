@@ -24,7 +24,7 @@ import { autoApprovedFooter, renderSpec, utcMinute } from "../src/core/spec-comm
 import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, respond } from "../src/ui/server.js";
 import { plainRefusal } from "../web/src/api.js";
-import { storedAnswers } from "../src/shared/command-notes.js";
+import { answersDetail, splitAnswers, storedAnswers } from "../src/shared/command-notes.js";
 import { parseSettingsArgs, runSettings } from "../src/settings-cmd.js";
 import { META_STATUS, SlackSource, parseSlackSourceId, slackLink, slackSourceId } from "../src/impl/source/slack-source.js";
 import { NAMES_NO_ITEM } from "../src/impl/source/slack-notice-replies.js";
@@ -996,7 +996,7 @@ describe("slack source: factory commands (issue #498)", () => {
   const block = (lines: readonly string[]) => `\`\`\`\n${escapeSlack(lines.join("\n"))}\n\`\`\``;
   /** What the CLI prints for `a` on the same store, as `who`. */
   const cli = (f: F, a: Parameters<typeof runLocalCli>[1], who = "github:1") =>
-    runLocalCli({ store: f.store, identity: { user: who as UserId, from: "cli_user" }, project: async () => null, read: async () => "", newId: () => "x" }, a);
+    runLocalCli({ answers: { split: splitAnswers, detail: answersDetail }, store: f.store, identity: { user: who as UserId, from: "cli_user" }, project: async () => null, read: async () => "", newId: () => "x" }, a);
 
   it("`list` in a channel and `show <id>` in a thread reply with the text `task list` and `task show` print", async () => {
     const f = await setup();
@@ -1205,7 +1205,7 @@ describe("slack source: one help and refusal text (issue #528)", () => {
     await deliver(f, eventEnvelope(mention("1800000063.000200", "/approve", { thread_ts: "1800000063.000100" })));
     await f.controller.tickIntake();
     await f.controller.tickCommands();
-    const typed = await runLocalCli({ store: f.store, identity: { user: "github:1" as UserId, from: "cli_user" }, project: async () => null, read: async () => "", newId: () => "x" }, {
+    const typed = await runLocalCli({ answers: { split: splitAnswers, detail: answersDetail }, store: f.store, identity: { user: "github:1" as UserId, from: "cli_user" }, project: async () => null, read: async () => "", newId: () => "x" }, {
       action: "command", command: "approve", id: cli.id, text: "",
     });
     const stored = (await dashboard(f, "github:1", app.id)).replies[0]!.refusal!;

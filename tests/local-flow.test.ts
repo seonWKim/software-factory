@@ -23,6 +23,7 @@ import { FakeForge } from "./helpers/fakes/forge.js";
 import { FakeSource } from "./helpers/fakes/source.js";
 import { alice, cleanScanner, config, issueRef, mallory, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // A local task end to end (issue #200): filed and approved from the CLI, read by the `local` source, applied by
 // the controller, built, reviewed, merged. Every command, local or a GitHub comment, takes the one owner check
@@ -75,7 +76,7 @@ async function factory(opts: { sync?: boolean } = {}) {
   let n = 0;
   const cli = (user: UserId, a: CliAction) => {
     const d: LocalCliDeps = {
-      store, identity: { user, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "the body", newId: () => `id${++n}`,
+      answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "the body", newId: () => `id${++n}`,
     };
     return runLocalCli(d, a);
   };
@@ -167,7 +168,7 @@ async function gitFactory(o: { github: boolean }) {
   };
   let n = 0;
   const cli = (user: UserId, a: CliAction) =>
-    runLocalCli({ store, identity: { user, from: "git user.email" }, project: async () => cfg.project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
+    runLocalCli({ answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user, from: "git user.email" }, project: async () => cfg.project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
   const toMergePending = async () => {
     const id = (await cli(ME, { action: "create", title: "Add a scope check", bodyFile: "body.md" })).lines[0] as WorkItemId;
     await step();

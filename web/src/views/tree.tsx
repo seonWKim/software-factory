@@ -44,7 +44,7 @@ function Row({ node, now, byNumber, byId }: { node: TreeNode; now: number; byNum
   const badge = <StatusBadge state={it.item_phase} />;
   return (
     <div className={cn("flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-1 py-1", node.context && "text-text-2")}>
-      <Link href={itemPath(it.id)} data-raw className={cn("min-w-0 truncate font-medium", LINK_CLASS)}>{it.title ?? shortItemId(it.id)}</Link>
+      <Link href={itemPath(it.id)} data-raw data-row-title className={cn("min-w-0 truncate font-medium", LINK_CLASS)}>{it.title ?? shortItemId(it.id)}</Link>
       {waits ? (
         <Link href={itemPath(waits.id)} data-waits-for title={t("tree.waitsFor", { title: waits.title ?? shortItemId(waits.id) })} className={cn("rounded-pill", FOCUS)}>
           {badge}

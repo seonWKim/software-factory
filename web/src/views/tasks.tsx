@@ -20,13 +20,14 @@ import { PAGE_SIZE, groupsOf, hasTasks, pageOf } from "./tasks/groups.js";
 import { Group } from "./tasks/row.js";
 import { ALERT, Rows, muted } from "./tasks/shared.js";
 import { Card } from "../components/ui/card.js";
+import { Disclosure } from "../components/ui/disclosure.js";
 
 // The Tasks page (design 02-tasks and 09-dashboard-app, issue #607): the owner's plain tasks, read through GET
 // /api/v1/tasks, as one list with no view tabs (design 02-tasks, one list): every task in the groups overdue (in red),
 // today, each later day by date, and no date, in that order, 20 rows to a page (the shared Pagination, paged here from the one
 // read). Page 1 holds the overdue and today groups, so the list opens on today.
-// A done task of the last 30 days (design 02-tasks, done tasks stay) keeps its place: its title struck through and muted,
-// its done time, its linked item's close reason when the item closed without a merge, and only Reopen (the same route as ⌘Z); no checkbox, edit, sub-task, projects, delete or Build this.
+// A done task of the last 30 days (design 02-tasks, done tasks stay) sits in the Done group below the list, closed on load
+// (design 02-tasks-page, 2026-11-22): its title struck through and muted, its done time, its linked item's close reason when the item closed without a merge, and only Reopen (the same route as ⌘Z); no checkbox, edit, sub-task, projects, delete or Build this.
 // The server places overdue and today and orders each day; the page only compares ISO date text. Calendar events are not shown here: the Calendar page (views/
 // calendar.tsx) lists them, with the stale-sync notice. Build this sends a task to intake once (POST /api/v1/tasks/build); a
 // built task links to its work item instead. One list of cards at every width, so no table turns into cards.
@@ -51,10 +52,15 @@ import { Card } from "../components/ui/card.js";
 // The page's order (design 09-dashboard-app): the project tabs, Needs you, Merged without you, Worth sampling, Quick add, the list; the blocks
 // are spaced by one flex gap, the Section gap of design-system/patterns.md.
 
-/** The one paginated list; page 1 opens on the overdue and today groups. */
+/**
+ * The one paginated list of open tasks; page 1 opens on the overdue and today groups. The Done group sits below it,
+ * closed on load: its rows (and their Reopen) are drawn only once it is opened (design 02-tasks-page, 2026-11-22).
+ */
 function OpenTasks({ v }: { v: TasksView }) {
   const [wanted, setPage] = useState(1);
-  const groups = groupsOf(v);
+  const all = groupsOf(v);
+  const groups = all.filter((g) => g.key !== "done");
+  const done = all.find((g) => g.key === "done");
   const total = groups.reduce((n, g) => n + g.rows.length, 0);
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   // A reload can leave fewer pages than the one on view.
@@ -64,6 +70,13 @@ function OpenTasks({ v }: { v: TasksView }) {
       {total === 0 && <EmptyState icon={CalendarCheck} title={t("tasks.emptyAll")} />}
       {pageOf(groups, page).map((g) => <Group key={g.key} title={g.title} rows={g.rows} overdue={g.overdue} />)}
       <Pagination page={page} pages={pages} onChange={setPage} />
+      {done && (
+        <Disclosure lazy data-done-group summary={t("tasks.doneCount", { count: done.rows.length })}>
+          <div className="mt-2">
+            <Group title={done.title} rows={done.rows} overdue={false} />
+          </div>
+        </Disclosure>
+      )}
     </div>
   );
 }
@@ -142,7 +155,7 @@ export function TasksPage() {
   const held = selected === null || !v ? 0 : new Set(v.projects.flatMap((g) => g.tasks.filter((x) => x.projects?.includes(selected.slug) ?? true).map((x) => x.id))).size;
   return (
     <>
-    <PageHeader title={t("page.tasks")} />
+    <PageHeader title={t("page.tasks")} description={t("tasks.pageDescription")} />
     <PageToolbar
       tabs={
         <ProjectTabs

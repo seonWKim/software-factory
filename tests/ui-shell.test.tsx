@@ -318,7 +318,7 @@ describe("top bar", () => {
     await vi.waitFor(() => expect(icon().classList.contains("animate-spin")).toBe(true));
   });
 
-  it("the mode switch tooltip says what auto does, on hover and on focus, and keeps an auto stop's reason above it", async () => {
+  it("the mode chip tooltip says what auto does, on hover and on focus, and keeps an auto stop's reason above it", async () => {
     const AUTO = "Auto approves specs below tier 4 and merges reviewed local changes up to the auto-merge tier. Tier 4 and the gate list wait for a person.";
     const row = { key: "mode", description: "", kind: "mode", value: "manual", source: "default", file_value: null, default_value: "manual", applies_at: "", project_settable: false, projects: [] };
     const view = { as_of: AT, csrf_token: "c", repo: "o/r", project: null, project_keys: [], keys: [row], pr_only: [], ignored: [], history: [] };
@@ -339,6 +339,28 @@ describe("top bar", () => {
       const text = screen.getByRole("tooltip").textContent!;
       expect(text.startsWith("Back to manual at")).toBe(true);
       expect(text.endsWith(AUTO)).toBe(true);
+    } finally {
+      delete (RESPONSES as Record<string, unknown>)["/api/v1/settings"];
+    }
+  });
+
+  it("the top bar shows the mode as a chip, not a switch: Auto with the merge tier or Manual, a link to Settings' Mode section that writes nothing", async () => {
+    const key = (k: string, value: string) => ({ key: k, description: "", kind: k === "mode" ? "mode" : "number", value, source: "default", file_value: null, default_value: value, applies_at: "", project_settable: false, projects: [] });
+    const view = (mode: string) => ({ as_of: AT, csrf_token: "c", repo: "o/r", project: null, project_keys: [], keys: [key("mode", JSON.stringify(mode)), key("auto_merge_max_tier", "2")], pr_only: [], ignored: [], history: [] });
+    try {
+      (RESPONSES as Record<string, unknown>)["/api/v1/settings"] = view("auto");
+      mount();
+      const chip = await screen.findByTestId("mode");
+      expect(chip.textContent).toBe("Auto · merges ≤ tier 2");
+      expect(chip.getAttribute("href")).toBe("/app/settings#mode");
+      expect(within(document.querySelector("header")!).queryByRole("switch")).toBeNull();
+      fireEvent.click(chip);
+      expect(location.pathname + location.hash).toBe("/app/settings#mode");
+      expect(state.posts).toEqual([]);
+      cleanup();
+      (RESPONSES as Record<string, unknown>)["/api/v1/settings"] = view("manual");
+      mount();
+      expect((await screen.findByTestId("mode")).textContent).toBe("Manual");
     } finally {
       delete (RESPONSES as Record<string, unknown>)["/api/v1/settings"];
     }
