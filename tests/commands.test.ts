@@ -14,7 +14,7 @@ import { runLocalCli } from "../src/core/local-cli.js";
 import { githubCommand } from "../src/core/command-inbox.js";
 import type { AuthProvider } from "../src/interfaces/auth-provider.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
-import { storedAnswers } from "../src/shared/command-notes.js";
+import { answersDetail, splitAnswers, storedAnswers } from "../src/shared/command-notes.js";
 import { retry } from "../src/controller/units/support.js";
 import { FakeAuth } from "./helpers/fakes/runner.js";
 import { FakeSlackPollSource, FakeSource } from "./helpers/fakes/source.js";
@@ -690,7 +690,7 @@ describe("answers to the spec's decisions on /approve (issue #526)", () => {
     await h.controller.handleEvent({ kind: "spec_approved", source: byComment.source, comment_id: "c1", approver: alice, note: NOTE });
     await h.controller.handleEvent({ kind: "spec_approved", source: bySlack.source, comment_id: "s2", approver: { provider: "slack", subject: "U2", login: "u" }, note: NOTE });
     await h.store.recordAppCommandRequest({ key: "k3", actor: ME, command: "approve", args: { work_item_id: byApp.id, note: NOTE } });
-    const cli = { store: h.store, identity: { user: ME, from: "git user.email" as const }, project: async () => PROJECT_KEY, read: async () => "", newId: () => "x" };
+    const cli = { answers: { split: splitAnswers, detail: answersDetail }, store: h.store, identity: { user: ME, from: "git user.email" as const }, project: async () => PROJECT_KEY, read: async () => "", newId: () => "x" };
     expect((await runLocalCli(cli, { action: "command", command: "approve", id: byCli.id, text: NOTE })).code).toBe(0);
     await h.controller.tickCommands();
 
@@ -802,7 +802,7 @@ describe("answers to the spec's decisions on /approve (issue #526)", () => {
         await h.controller.handleEvent({ kind: "spec_approved", source: byComment.source, comment_id: "w1", approver: alice, note: "1: Only warn" });
         await h.controller.handleEvent({ kind: "spec_approved", source: bySlack.source, comment_id: "w2", approver: { provider: "slack", subject: "U2", login: "u" }, note: "1: Only warn" });
       }
-      const cli = { store: h.store, identity: { user: ME, from: "git user.email" as const }, project: async () => PROJECT_KEY, read: async () => "", newId: () => "x" };
+      const cli = { answers: { split: splitAnswers, detail: answersDetail }, store: h.store, identity: { user: ME, from: "git user.email" as const }, project: async () => PROJECT_KEY, read: async () => "", newId: () => "x" };
       expect((await runLocalCli(cli, { action: "command", command: "approve", id: byCli.id, text: "1: Only warn" })).code).toBe(0);
       await h.store.recordAppCommandRequest({ key: "k73", actor: ME, command: "approve", args: { work_item_id: byApp.id, note: "1: Only warn" } });
       await h.controller.tickCommands();
@@ -907,7 +907,7 @@ describe("one refusal and help text on every surface (issue #528)", () => {
       await controller.tickCommands();
       return source.comments.find((c) => c.source.id === it.source.id && c.marker.startsWith(`<!-- factory:${kind}:`) && c.marker.includes(String(id)))?.body;
     };
-    const cli = { store, identity: { user: ME, from: "cli_user" as const }, project: async () => PROJECT_KEY, read: async () => "", newId: () => `n${++comments}` };
+    const cli = { answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: ME, from: "cli_user" as const }, project: async () => PROJECT_KEY, read: async () => "", newId: () => `n${++comments}` };
     return { store, itemIn, comment, cli };
   }
 

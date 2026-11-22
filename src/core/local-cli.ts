@@ -5,7 +5,8 @@ import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
 import { MERGE_COMMAND } from "./local-merge.js";
 import { COMMAND_TABLE, SENTENCE_FORM, cliUsageOf, commandLine, topWords } from "./command-table.js";
-import { approveRefusal, helpReply, itemCommandState, refusalText } from "./commands.js";
+import { approveRefusal, helpReply, itemCommandState, latestSpec, refusalText } from "./commands.js";
+import type { NoteAnswers } from "./request-transition.js";
 import { VERDICT_USAGE, parseVerdict, verdictRefusal } from "./verdict.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpretMessage, interpretReply, interpretTexts, isProposalId, openItems, typed } from "./interpret.js";
 import { needsDueDate, parseQuickAdd, parseQuickEdit } from "./quick-add.js";
@@ -166,9 +167,7 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
       const [to, from] = [slugOf("+"), slugOf("-")];
       if (id && links.length === 2 && from !== null && to !== null && from !== to) return { action: "task_move", id, from, to };
       const slug = links.length === 1 ? to ?? from : null;
-      if (!id || slug === null) {
-        return bad("task project needs a task ID and +<slug> to add it to a project, -<slug> to take it out, or -<from> +<to> to move it");
-      }
+      if (!id || slug === null) return bad("task project needs a task ID and +<slug> to add it to a project, -<slug> to take it out, or -<from> +<to> to move it");
       return { action: "task_project", id, slug, add: links[0]!.startsWith("+") };
     }
     if (sub === "add") {
@@ -229,9 +228,7 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
     if (args.length > 1) return bad("help takes at most one work item ID");
     return { action: "help", id: (args[0] as WorkItemId | undefined) ?? null };
   }
-  if (word === CONFIRM_WORD) {
-    return args.length === 1 && isProposalId(args[0]!) ? { action: "confirm", proposal: args[0]! } : bad("confirm needs one proposal ID, as `factory \"<words>\"` printed it");
-  }
+  if (word === CONFIRM_WORD) return args.length === 1 && isProposalId(args[0]!) ? { action: "confirm", proposal: args[0]! } : bad("confirm needs one proposal ID, as `factory \"<words>\"` printed it");
   if (word === MERGE_COMMAND) {
     const [id, ...rest] = args;
     if (!id || rest.length > 0) return bad("merge needs one work item ID");
@@ -295,6 +292,7 @@ export interface LocalCliDeps {
   origin?: string;
   cli?: string; // the hints' command name (cliName); absent: DEFAULT_CLI_NAME, as chat callers leave it
   ui?: { port?: number }; // factory.config.json's `ui` (validated at load): `task create` prints the item's loopback link on its port; absent: no link (chat)
+  answers: NoteAnswers<{ question: string; answer: string | null; accepted_default: boolean }>; // splitAnswers, answersDetail (src/shared/command-notes.ts)
 }
 
 export interface CliResult { code: number; lines: string[] }
@@ -442,6 +440,9 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       // The controller's phase check, before any write: the same refusal it would post (issues #528, #523).
       const refused = a.command === "approve" ? approveRefusal(item) : a.command === "verdict" ? verdictRefusal(item) : null;
       if (refused !== null) return fail(refusalText(name, refused));
+      // `approve`'s `N: <answer>` lines, read as the controller will (issue #526): a bad line stores nothing; each decision is printed.
+      const ans = d.answers.split(a.text, a.command === "approve" ? latestSpec(await d.store.listRuns(item.id))?.decision_items ?? [] : []);
+      if ("refuse" in ans) return fail(ans.refuse);
       await claim();
       const args: Record<string, unknown> = { item: item.id, ...(a.text !== "" ? { text: a.text } : {}) };
       // An item of a sync source gets the command mirrored on its issue later; a local item has no other surface, and
@@ -449,15 +450,14 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       // its own (design 04-gate-commands), so neither is mirrored.
       const mirror = a.command !== "verdict" && a.command !== MERGE_COMMAND && item.source.type !== "local" && item.source.type !== d.origin;
       const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: a.command, args, ...(mirror ? { mirror } : {}) });
-      return { code: 0, lines: [`stored \`${name}\` for ${item.id} as ${user} (command ${command.seq}); the controller applies it on its next poll, see \`${cli} task show ${item.id}\``] };
+      const decisions = "answers" in d.answers.detail(ans.answers) ? ans.answers.map((x, i) => `${i + 1}. ${x.question} → ${x.answer === null ? "(no answer and no default)" : `${x.answer} (${x.accepted_default ? "default taken" : "your answer"})`}`) : [];
+      return { code: 0, lines: [`stored \`${name}\` for ${item.id} as ${user} (command ${command.seq}); the controller applies it on its next poll, see \`${cli} task show ${item.id}\``, ...decisions] };
     }
     case "confirm": {
       const rows = await d.store.listCommandProposals(a.proposal);
       if (rows.length === 0) return fail(`no proposal ${a.proposal}`);
       const pending = rows.filter((r) => r.status === "pending");
-      if (pending.length === 0) {
-        return { code: 0, lines: [`nothing was applied: every command of ${a.proposal} was already applied or answered`, ...rows.map((r) => `  ${r.work_item_id}\t/${r.command}${r.args ? ` ${r.args}` : ""}\t${r.status}`)] };
-      }
+      if (pending.length === 0) return { code: 0, lines: [`nothing was applied: every command of ${a.proposal} was already applied or answered`, ...rows.map((r) => `  ${r.work_item_id}\t/${r.command}${r.args ? ` ${r.args}` : ""}\t${r.status}`)] };
       await claim();
       // The controller's confirm path (src/controller/units/commands/proposals.ts) claims and applies each pending row,
       // and answers a refusal in the thread of the first pending command's item.
@@ -559,9 +559,7 @@ export interface SentenceDeps {
 /** The words of `factory <words...>` as one sentence, or why they are none: a sentence has at least two words. */
 export function parseSentence(args: readonly string[], cli = DEFAULT_CLI_NAME): { text: string } | { error: string } {
   const text = args.join(" ").replace(/\s+/g, " ").trim();
-  if (text.split(" ").length < 2) {
-    return { error: `unknown command ${JSON.stringify(text)}; a command in your own words takes at least two words: ${cli} ${SENTENCE_FORM}` };
-  }
+  if (text.split(" ").length < 2) return { error: `unknown command ${JSON.stringify(text)}; a command in your own words takes at least two words: ${cli} ${SENTENCE_FORM}` };
   if (text.length > INTERPRET_MAX_CHARS) return { error: `a command in your own words is at most ${INTERPRET_MAX_CHARS} characters` };
   return { text };
 }

@@ -19,6 +19,7 @@ import { Worker } from "../src/worker/index.js";
 import { FakeRunner, MemoryStorage } from "./helpers/fakes/runner.js";
 import { cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // A failed merge check sends the item back (design 10-event-driven, Merge queue): a local change passes its own checks,
 // but its merged result fails them (the base moved meanwhile). The merge-check run's red result names the failing
@@ -92,7 +93,7 @@ async function factory(o: { max_loops?: number; test?: (root: string) => string[
   };
   let n = 0;
   const cli = (a: CliAction) =>
-    runLocalCli({ store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
+    runLocalCli({ answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
 
   /** An item at merge_pending whose merged result fails the checks (BROKEN landed on main meanwhile), in the queue with its check queued. */
   const queuedRed = async () => {
