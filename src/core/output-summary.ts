@@ -45,6 +45,51 @@ export function failingTests(text: string, max = 5): string[] {
   return names;
 }
 
+/** The file a vitest `FAIL  <file> [ <file> ]` line names: a suite that failed before its tests ran; null for any other line. */
+function failedSuite(line: string): string | null {
+  const m = /^\s*FAIL\s+(\S+\.test\.tsx?)\s+\[\s*\S+\s*\]\s*$/.exec(line);
+  return m ? m[1]! : null;
+}
+
+/** `line`, trimmed, without a plain `Error: ` prefix, at most MESSAGE_CHARS characters. */
+function messageOf(line: string): string {
+  const t = line.trim().replace(/^Error:\s*/, "");
+  return t.length > MESSAGE_CHARS ? `${t.slice(0, MESSAGE_CHARS - 1)}…` : t;
+}
+
+/**
+ * The tests and suites a vitest run reports as failed, in output order, each once, at most `max` in total: a failed
+ * test as `<file> > <name>`, a failed suite (a file that failed before its tests ran) as `<file> > (suite failed)`,
+ * followed by `: <first error line>` when a line under it names an error before the next `FAIL` line or `⎯` separator.
+ */
+export function failingTestsAndSuites(text: string, max: number): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  let open: number | null = null;
+  for (const line of stripAnsi(text).split("\n")) {
+    const test = failName(line);
+    const suite = test === null ? failedSuite(line) : null;
+    if (test !== null || suite !== null) {
+      open = null;
+      const key = test ?? `${suite} > (suite failed)`;
+      if (seen.has(key)) continue;
+      if (out.length === max) break;
+      seen.add(key);
+      out.push(key);
+      if (suite !== null) open = out.length - 1;
+      continue;
+    }
+    if (open === null) continue;
+    const t = line.trim();
+    if (t.startsWith("⎯")) open = null;
+    else if (ASSERTION_LINE.test(t)) {
+      out[open] = `${out[open]}: ${messageOf(t)}`;
+      open = null;
+    }
+  }
+  return out;
+}
+
 /** A failing test and the first error line under its `FAIL` line (null when it has none). */
 export interface FailingTest {
   test: string;
