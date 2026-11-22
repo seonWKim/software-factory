@@ -221,6 +221,26 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
   });
 
+  it("factory merge is refused at max_loops from implement loops (no merge check), and nothing moves", async () => {
+    const f = await localFactory();
+    const id = await f.toMergePending();
+    const it0 = (await f.store.getWorkItem(id))!;
+    // A feedback round at the loop limit: its max_loops change carries no merge queue entry.
+    const stopped = await f.store.transition({
+      id, expected_version: it0.version, actor: { kind: "system", id: "system:controller" }, reason: "max_loops",
+      patch: { blocked_on: "human", blocked_reason: "max_loops" }, detail: { comment_id: "c1" },
+    });
+    expect(stopped.ok).toBe(true);
+    const mainBefore = git(f.repo, "rev-parse", "main");
+    await f.cli(ME, { action: "command", command: "merge", id, text: "" });
+    await f.step();
+    expect((await f.messages(id, "<!-- factory:refused:")).at(-1)).toContain("is not waiting for a merge (REVIEW, max_loops)");
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "max_loops" });
+    expect((await f.store.listStateChanges(id)).some((c) => c.reason === "merge_check_again")).toBe(false);
+    expect((await f.store.listRuns(id)).some((r) => r.kind === "merge-check")).toBe(false);
+    expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
+  });
+
   it("factory merge on a conflict names the files and starts the automatic resolve: local base merged into the local branch, gates run, committed, nothing pushed, reviewed, merge_pending", async () => {
     const f = await localFactory();
     const id = await f.toMergePending();
