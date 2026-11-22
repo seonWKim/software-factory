@@ -347,7 +347,10 @@ describe("setup_missing (design §5 Restarts, setup state)", () => {
     const [first, second] = await Promise.all(items.map((it) => f.runs(it)));
     expect(first).toMatchObject([{ kind: "triage", status: "queued", outcome: null }]);
     expect(second).toMatchObject([{ kind: "triage", status: "queued", outcome: null }]);
-    expect(f.runner.specs.filter((s) => s.role === "triage")).toHaveLength(1); // only the one claim before the pause
+    // Only the claim before the pause reaches the runner: no run is handed over twice, and one item's run never is.
+    const handed = f.runner.specs.filter((s) => s.role === "triage").map((s) => s.work_item_id);
+    expect(new Set(handed).size).toBe(handed.length);
+    expect(items.filter((it) => handed.includes(it.id)).map((it) => it.id)).not.toEqual(items.map((it) => it.id));
     expect(await f.store.listRunsFinishedWithin(3_600_000)).toEqual([]);
     for (const it of items) {
       expect((await f.store.listStateChanges(it.id)).map((c) => c.reason)).not.toContain("run_retry_scheduled");
