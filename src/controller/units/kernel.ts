@@ -3,6 +3,7 @@
 import { LiveSettings, type ProjectSettings, modeOf, settingValues } from "../../core/settings.js";
 import { LOCAL_SOURCE, threadDelivery } from "../../core/local-merge.js";
 import { errorText } from "../../core/log.js";
+import { askDetail } from "../../core/owner-asks.js";
 import { type SourceRef, type SourceType, type WorkItem } from "../../core/types.js";
 import type { Forge } from "../../interfaces/forge.js";
 import type { SourceAdapter } from "../../interfaces/source-adapter.js";
@@ -256,7 +257,17 @@ export class Kernel {
     await this.commit({ writes: before });
     const store = this.d.store;
     const write = { transition: store.transition, budget_checkpoint: store.openBudgetCheckpoint, budget_answer: store.answerBudgetCheckpoint, claim_approval: store.approveClaimHold, verdict: store.recordVerdict }[w.kind];
-    return (write as (input: W["input"]) => Promise<ItemCommitted<W>>).call(store, w.input);
+    return (write as (input: W["input"]) => Promise<ItemCommitted<W>>).call(store, await this.withAsk(w.input));
+  }
+
+  /**
+   * An entry into an owner state (`blocked_on: "human"`) as an ask (design 06-efficiency): its state change's detail
+   * gets the reason code and the item's tier after the patch (read only when the patch sets none). Other writes pass as they are.
+   */
+  private async withAsk<I extends ItemWrite["input"]>(input: I): Promise<I> {
+    if (!("patch" in input) || input.patch.blocked_on !== "human") return input;
+    const tier = input.patch.tier !== undefined ? input.patch.tier : ((await this.d.store.getWorkItem(input.id))?.tier ?? null);
+    return { ...input, detail: { ...input.detail, ...askDetail(input.patch, tier) } };
   }
 
   /** `/link <code>`: the code's one conditional redeem (used once, counted on a failure), committed here. */
