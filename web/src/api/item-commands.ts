@@ -121,11 +121,12 @@ export interface CommandReply {
 }
 
 /**
- * A refusal as the page shows it (issue #528): plain text, the controller's backticks dropped. The stored text keeps
- * them, as GitHub, Slack and the CLI show it.
+ * A refusal as the page shows it (issue #528): plain text, the controller's backticks dropped, and each item ID as
+ * its 8-character short ID (design-system/writing.md: no raw IDs). The stored text keeps them, as GitHub, Slack and
+ * the CLI show it.
  */
 export function plainRefusal(text: string): string {
-  return text.replace(/`/g, "");
+  return text.replace(/`/g, "").replace(/\bwi_([0-9a-z]{8})[0-9a-z]*\b/g, "$1");
 }
 
 /**
