@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { REPO, TABLE_PREFIXES, codeOnly, componentOf, ratchet, read, sourceFiles } from "./lib.js";
@@ -9,14 +9,24 @@ import { REPO, TABLE_PREFIXES, codeOnly, componentOf, ratchet, read, sourceFiles
 
 const PREFIXES = Object.keys(TABLE_PREFIXES);
 
+const SNAPSHOT = join(REPO, "schema", "sqlite");
+
+/** Every table of the per-owner snapshot files under schema/sqlite/, with the file it is in. */
+function snapshotTables(): { table: string; file: string }[] {
+  return readdirSync(SNAPSHOT).filter((f) => f.endsWith(".sql")).sort().flatMap((f) => {
+    const sql = readFileSync(join(SNAPSHOT, f), "utf8");
+    return [...sql.matchAll(/^CREATE TABLE (\w+)/gm)].map((m) => ({ table: m[1]!, file: `schema/sqlite/${f}` }));
+  });
+}
+
 function tables(): string[] {
-  const sql = readFileSync(join(REPO, "schema", "sqlite.sql"), "utf8");
-  return [...sql.matchAll(/^CREATE TABLE (\w+)/gm)].map((m) => m[1]!);
+  return snapshotTables().map((t) => t.table);
 }
 
 describe("table-ownership", () => {
   it("every table has its owner's prefix (ratchet)", () => {
-    ratchet("table-ownership", tables().filter((t) => !PREFIXES.some((p) => t.startsWith(p))).map((t) => `unprefixed|schema/sqlite.sql|${t}`));
+    const unprefixed = snapshotTables().filter(({ table }) => !PREFIXES.some((p) => table.startsWith(p)));
+    ratchet("table-ownership", unprefixed.map(({ table, file }) => `unprefixed|${file}|${table}`));
   });
 
   it("component code names only its own tables (hard rule)", () => {

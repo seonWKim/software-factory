@@ -96,8 +96,8 @@
     },
     { "when": "src/config-keys.ts", "also": ["tests/config-keys.test.ts"], "reason": "a config key change needs its key test" },
     { "when": "docs/design/", "also": ["docs/design.md"], "reason": "a new design topic file needs its index line" },
-    { "when": "src/controller/migrations/", "also": ["schema/sqlite.sql"], "reason": "a migration regenerates schema/sqlite.sql (npm run schema:snapshot)" },
-    { "when": "src/impl/store/sqlite/schema.ts", "also": ["schema/sqlite.sql"], "reason": "a schema change regenerates schema/sqlite.sql (npm run schema:snapshot)" },
+    { "when": "src/controller/migrations/", "also": ["schema/sqlite/"], "reason": "a migration regenerates schema/sqlite/ (npm run schema:snapshot)" },
+    { "when": "src/impl/store/sqlite/schema.ts", "also": ["schema/sqlite/"], "reason": "a schema change regenerates schema/sqlite/ (npm run schema:snapshot)" },
     {
       "when": "src/controller/migrations/",
       "also": ["src/controller/table-docs.ts"],

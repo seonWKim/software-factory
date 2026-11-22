@@ -250,10 +250,14 @@ describe("the Workers page", () => {
 
   it("draws a bar per started run coloured by kind and styled by status, and says how many runs it left out", async () => {
     await mountWorkers();
-    expect(bar("r_run").className).toContain("bg-kind-implement");
-    expect(bar("r_run").className).toContain("animate-pulse");
-    expect(bar("r_fail").className).toContain("bg-kind-review");
-    expect(bar("r_fail").className).toContain("border-failed");
+    // The drawn bar is the link's sibling; the link is its 24px hit area.
+    const drawn = (id: string) => bar(id).parentElement!.querySelector("[data-bar]")!;
+    expect(drawn("r_run").className).toContain("bg-kind-implement");
+    expect(drawn("r_run").className).toContain("animate-pulse");
+    expect(drawn("r_fail").className).toContain("bg-kind-review");
+    expect(drawn("r_fail").className).toContain("border-failed");
+    expect(bar("r_run").className).toContain("min-h-6");
+    expect(bar("r_run").className).toContain("min-w-6");
     expect(bar("r_nostart")).toBeNull();
     expect(bar("r_q")).toBeNull();
     expect(document.querySelector("[data-left-out]")!.textContent).toBe("Left out (no start time): 1");
