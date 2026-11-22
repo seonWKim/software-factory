@@ -3,8 +3,8 @@
 // item out of the token figures, counted apart, never added as 0; median and nearest-rank 90th percentile.
 
 import { describe, expect, it } from "vitest";
-import { type FinishedItem, change, itemFigures, median, p90, runHasUsage, summarizeEfficiency } from "../src/core/efficiency.js";
-import type { CloseReason, Run, RunKind, RunOutcome, Timestamp, WorkItem, WorkItemId } from "../src/core/types.js";
+import { type FinishedItem, change, itemFigures, median, ownerFigures, p90, runHasUsage, summarizeEfficiency } from "../src/core/efficiency.js";
+import type { CloseReason, Run, RunKind, RunOutcome, StateChange, Timestamp, WorkItem, WorkItemId } from "../src/core/types.js";
 
 const NOW = Date.parse("2026-11-20T12:30:00.000Z"); // a Friday; its ISO week starts 2026-11-16
 const HOUR = 3_600_000;
@@ -96,5 +96,19 @@ describe("efficiency counting rules", () => {
     expect(empty).toMatchObject({ current: false, finished: 0 });
     expect(empty.tokens.median).toBeNull();
     expect(empty.total.p90).toBeNull();
+  });
+
+  it("owner figures: asks per merged item, the median wait in hours and the revert rate; no asks give no data, never 0", () => {
+    const sc = (version: number, at: number, reason: string, detail: StateChange["detail"] = null) =>
+      ({ work_item_id: "a" as WorkItemId, version, at: iso(at), reason, changes: {}, detail }) as StateChange;
+    const asked = [sc(2, NOW - 5 * HOUR, "spec_pending", { ask_reason: "spec_pending", ask_tier: 1 }), sc(3, NOW - 4 * HOUR, "spec_approved")];
+    expect(ownerFigures([{ changes: asked, reverted_or_fixed: false }, { changes: [], reverted_or_fixed: true }])).toEqual({
+      merged: 2, asks: 1, touches_per_merged: 0.5, wait_hours_median: 1, revert_rate: 0.5, reverted_or_fixed: 1,
+    });
+    expect(ownerFigures([{ changes: [sc(2, NOW, "triaged")], reverted_or_fixed: false }])).toMatchObject({ asks: 0, touches_per_merged: null, wait_hours_median: null, revert_rate: 0 });
+    expect(ownerFigures([])).toMatchObject({ touches_per_merged: null, wait_hours_median: null, revert_rate: null });
+    const e = summarizeEfficiency([{ ...finished("a", NOW - 10 * HOUR, NOW - HOUR, []), changes: asked }], [], NOW);
+    expect(e.week_figures.at(-1)!.owner).toMatchObject({ merged: 1, asks: 1, touches_per_merged: 1, wait_hours_median: 1 });
+    expect(e.week_figures.at(-2)!.owner).toMatchObject({ merged: 0, touches_per_merged: null, wait_hours_median: null, revert_rate: null });
   });
 });

@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import { type MergeEvaluation, type MergeWindow, noVerdicts } from "../src/core/merge-evaluation.js";
-import type { Run, RunOutcome, Tier, Timestamp, WorkItem, WorkItemId } from "../src/core/types.js";
+import type { Run, RunOutcome, StateChange, StateChangeId, Tier, Timestamp, WorkItem, WorkItemId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -32,6 +32,7 @@ function fakeStore() {
   const items = new Map<WorkItemId, WorkItem>();
   const runs: Run[] = [];
   const merges: MergeEvaluation[] = [];
+  const changes: StateChange[] = [];
   let n = 0;
   const reads = {
     async listMergeEvaluations(w: MergeWindow) {
@@ -40,6 +41,7 @@ function fakeStore() {
     },
     async getWorkItem(id: WorkItemId) { return items.get(id) ?? null; },
     async listRuns(id: WorkItemId) { return runs.filter((r) => r.work_item_id === id); },
+    async listStateChanges(id: WorkItemId) { return changes.filter((c) => c.work_item_id === id); },
     async listWorkItemsWhere(f: { stage?: string; updated_since?: Timestamp }) {
       return [...items.values()].filter((i) => (!f.stage || i.stage === f.stage) && (!f.updated_since || i.updated_at >= f.updated_since));
     },
@@ -66,6 +68,19 @@ function fakeStore() {
     merged(tier: Tier | null, mergedAgo: number, over: Partial<MergeEvaluation> = {}) {
       merges.push(evaluation(`wi_${++n}` as WorkItemId, tier, ago(mergedAgo), over));
       merges.sort((a, b) => a.merged_at.localeCompare(b.merged_at));
+    },
+    /** An ask of `reason` on item `id`, `askedAgo` ago, answered `after` later by a state change of `answer` (null: unanswered). */
+    asked(id: WorkItemId, reason: string, askedAgo: number, answer: { reason: string; after: number } | null) {
+      const at = ago(askedAgo);
+      const row = (version: number, ms: number, r: string, detail: StateChange["detail"]) =>
+        ({ id: `sc_${++n}` as StateChangeId, work_item_id: id, version, at: iso(ms), actor: { kind: "system", id: "system:test" }, reason: r, changes: {}, detail }) as StateChange;
+      const version = changes.filter((c) => c.work_item_id === id).length + 2;
+      changes.push(row(version, at, reason, { ask_reason: reason, ask_tier: 2 }));
+      if (answer) changes.push(row(version + 1, at + answer.after, answer.reason, null));
+    },
+    /** Marks the merge of item `id` reverted. */
+    reverted(id: WorkItemId) {
+      merges.find((m) => m.work_item_id === id)!.reverted = 1;
     },
     closed(close_reason: WorkItem["close_reason"], closedAgo: number) {
       const id = `wi_${++n}` as WorkItemId;
@@ -150,6 +165,21 @@ describe("GET /api/v1/efficiency", () => {
     expect(cur.slowest.map((i: any) => i.title)).toEqual(["[withheld: github_token]", "Fast"]);
     expect(cur.costliest.map((i: any) => i.title)).toEqual(["Fast", "[withheld: github_token]"]);
     expect(JSON.stringify(body)).not.toContain(SECRET);
+  });
+
+  it("gives each week's human touches per merged item, median hours waiting on the owner and revert rate; a week with no asks has no data", async () => {
+    const f = fakeStore();
+    const a = f.finished("A", HOUR, DAY, [[1, 10, 1]]);
+    const b = f.finished("B", 2 * HOUR, DAY, [[1, 10, 1]]);
+    f.asked(a, "spec_pending", DAY - HOUR, { reason: "spec_approved", after: 2 * HOUR });
+    f.asked(a, "run_failed", 10 * HOUR, { reason: "retry_requested", after: 4 * HOUR });
+    f.asked(b, "max_loops", 8 * HOUR, null);
+    f.reverted(b);
+    f.finished("L", WEEK, DAY, [[1, 10, 1]]); // last week: merged, no ask
+    const { body } = await get(deps(f.store));
+    const [last, cur] = body.week_figures.slice(-2);
+    expect(cur.owner).toEqual({ merged: 2, asks: 3, touches_per_merged: 1.5, wait_hours_median: 3, revert_rate: 0.5, reverted_or_fixed: 1 });
+    expect(last.owner).toMatchObject({ merged: 1, asks: 0, touches_per_merged: null, wait_hours_median: null, revert_rate: 0 });
   });
 
   it("carries the per-tier merge record and rule result, tiers 1 to 5 then untiered, the same as factory stats", async () => {
