@@ -56,7 +56,7 @@ const showsClosed = (f: Filters) => f.closed || filterShowsFinished(f.state) || 
 
 /** Every listed item, ranked (closed items too when the filters may show them). */
 export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
-  const items = await c.store.listWorkItemsWhere({ exclude_closed: !showsClosed(f), limit: LIST_LIMIT });
+  const items = await c.store.listWorkItemsWhere({ exclude_closed: !showsClosed(f), exclude_system: true, limit: LIST_LIMIT });
   const { active, position } = await activeRuns(c.store);
   const pauses = await readClaimPauses(c.store);
   const open = await openAlarms(c.store, c.now);
@@ -231,7 +231,7 @@ async function searchTitle(w: Withholder, it: WorkItem): Promise<string | null> 
 export async function closedFacetRows(c: ListCtx, f: Filters): Promise<FilterRow[]> {
   if (showsClosed(f)) return [];
   const out: FilterRow[] = [];
-  for (const it of await c.store.listWorkItemsWhere({ stage: "CLOSED", limit: LIST_LIMIT })) {
+  for (const it of await c.store.listWorkItemsWhere({ stage: "CLOSED", exclude_system: true, limit: LIST_LIMIT })) {
     out.push({ level: closedLevel(it), stage: it.stage, tier: it.tier, kind: runKindOf(it.blocked_reason, null), dependents: 0, search: searchKeys(it.source.id, await searchTitle(c.w, it)) });
   }
   return out;
