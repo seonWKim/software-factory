@@ -63,6 +63,13 @@ export function mergeInFlight(m: MergeReadiness | null | undefined): m is MergeR
 }
 
 /**
+ * The merge queue's refusal of a Merge for an item it already holds (`enter` in
+ * src/controller/units/merge-queue/merge-queue.unit.ts: "<id> is already in the merge queue (<state>)"): the merge is
+ * under way, so the page says Merging… instead of an error.
+ */
+export const alreadyQueued = (refusal: string | null | undefined): boolean => !!refusal && / is already in the merge queue \(/.test(refusal);
+
+/**
  * Why the item's last Merge did not land (design 09-dashboard-app): the refusal on its newest state change when that
  * change put it back at merge_pending (`merge_returned`: a conflict, a red check, the forge's refusal); else null.
  */

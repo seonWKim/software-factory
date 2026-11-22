@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, type RefObject, useId, useRef, useState } from "react";
 import {
   API, type CommandReply, type ItemCommand, type ItemDetail, type MergeReadiness, POLL_MS, getJson,
-  mergeInFlight, mergeReturned, plainRefusal, showsMerge, useApi,
+  alreadyQueued, mergeInFlight, mergeReturned, plainRefusal, showsMerge, useApi,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
@@ -291,7 +291,7 @@ export interface NeedActionsProps {
   cmd: ReturnType<typeof useCommandSend>;
   /** Overflow entries from the Why text (`Allow x and retry`): each sends `retry` with `note`. */
   allow: readonly { label: string; note: string }[];
-  /** False: the row shows the failed sends itself (SendErrors on its own line, design-system C-050), not this cell. */
+  /** False: the row shows the failed sends and a merge error itself (on its own line, design-system C-050), not this cell. */
   inlineErrors?: boolean;
   /** The row's own actions after the item's commands (a task row's Add sub-task, Projects, Delete): one menu per row. */
   extra?: readonly MenuItem[] | undefined;
@@ -299,10 +299,46 @@ export interface NeedActionsProps {
   label?: string | undefined;
 }
 
-/** The errors of a row's failed sends and refused transitions, one alert each (NeedActions' `cmd.local`). */
+/**
+ * The texts of a row's failed sends and refused transitions (NeedActions' `cmd.local`). A Merge the merge queue
+ * refused as already there is no error: the row says Merging… (useMergeReply).
+ */
+export const sendErrorTexts = (local: Record<string, LocalSend>): string[] =>
+  Object.values(local).flatMap((l) => ("error" in l ? [l.error] : l.refusal && !alreadyQueued(l.refusal) ? [plainRefusal(l.refusal)] : []));
+
+/** The errors of a row's failed sends and refused transitions, one alert each. */
 export function SendErrors({ local }: { local: Record<string, LocalSend> }) {
-  const failed = Object.values(local).flatMap((l) => ("error" in l ? [l.error] : l.refusal ? [plainRefusal(l.refusal)] : []));
-  return failed.map((text) => <OutcomeText key={text} outcome={{ tone: "error", text }} />);
+  return sendErrorTexts(local).map((text) => <OutcomeText key={text} outcome={{ tone: "error", text }} />);
+}
+
+/**
+ * A Merge row's merge state (design 09-dashboard-item-commands): `outcome`, the reply to the Merge this row sent, else
+ * why the item's last Merge went back (mergeReturned); `queued` while the server says the merge is under way; and
+ * `merging` from the click until the reply and while it is under way, also when the merge queue refused the Merge as
+ * already there (alreadyQueued): the merge is running, so that refusal is no outcome. NeedActions and the Needs you row,
+ * which shows an error on its own line (C-050), read it from the same item query.
+ */
+export function useMergeReply(id: string, group: NeedActionsProps["group"], merge: MergeReadiness | undefined, cmd: ReturnType<typeof useCommandSend>) {
+  const { busy, local } = cmd;
+  // A merge this row sent: its replies from the item's own query (the item page's key), read only until the reply.
+  const mergeSent = group === "merge" && !!local.merge && "seq" in local.merge;
+  const mergeOutcome = (replies: readonly CommandReply[] = []) => commandOutcome(replies, "merge", local.merge);
+  // Read while the row's Merge is sent or under way, and on a ready row for why its last Merge went back (mergeReturned).
+  const detail = useQuery({
+    queryKey: [API.item(id)],
+    queryFn: () => getJson<ItemDetail>(API.item(id)),
+    enabled: mergeSent || (group === "merge" && merge?.enabled === true),
+    refetchInterval: (q) => (awaitsReply(mergeOutcome(q.state.data?.replies)) || mergeInFlight(q.state.data?.item.merge) || alreadyQueued(mergeReturned(q.state.data)) ? POLL_MS : false),
+  });
+  const queued = group === "merge" && mergeInFlight(merge);
+  const reply = mergeSent ? mergeOutcome(detail.data?.replies) : null;
+  const returned = group === "merge" && merge?.enabled ? mergeReturned(detail.data) : null;
+  const latest: Outcome = returned && reply?.tone !== "error" ? { tone: "error", text: plainRefusal(returned) } : reply;
+  const requeued = group === "merge" && latest?.tone === "error" && alreadyQueued(latest.text);
+  const outcome: Outcome = requeued ? null : latest;
+  // Merging… from the click until the controller's reply (handled or refused) arrives, then the merge's progress.
+  const merging = group === "merge" && (busy || awaitsReply(outcome) || queued || requeued);
+  return { outcome, queued, merging };
 }
 
 /**
@@ -323,22 +359,7 @@ export function NeedActions({ id, title, commands, pr, group, merge, checking, c
   const primary = group === "merge" ? undefined : primaryOf(commands);
   const others = commands.filter((c) => c !== primary);
   const off = !on || busy;
-  // A merge this row sent: its replies from the item's own query (the item page's key), read only until the reply.
-  const mergeSent = group === "merge" && !!local.merge && "seq" in local.merge;
-  const mergeOutcome = (replies: readonly CommandReply[] = []) => commandOutcome(replies, "merge", local.merge);
-  // Read while the row's Merge is sent or under way, and on a ready row for why its last Merge went back (mergeReturned).
-  const detail = useQuery({
-    queryKey: [API.item(id)],
-    queryFn: () => getJson<ItemDetail>(API.item(id)),
-    enabled: mergeSent || (group === "merge" && merge?.enabled === true),
-    refetchInterval: (q) => (awaitsReply(mergeOutcome(q.state.data?.replies)) || mergeInFlight(q.state.data?.item.merge) ? POLL_MS : false),
-  });
-  const queued = group === "merge" && mergeInFlight(merge);
-  const reply = mergeSent ? mergeOutcome(detail.data?.replies) : null;
-  const returned = group === "merge" && merge?.enabled ? mergeReturned(detail.data) : null;
-  const outcome: Outcome = returned && reply?.tone !== "error" ? { tone: "error", text: plainRefusal(returned) } : reply;
-  // Merging… from the click until the controller's reply (handled or refused) arrives, then the merge's progress.
-  const merging = group === "merge" && (busy || awaitsReply(outcome) || queued);
+  const { outcome, queued, merging } = useMergeReply(id, group, merge, cmd);
   const send = async (command: string, note: string) => {
     if (!(await post(command, note))) return;
     announceStatus(t("commands.commandSent", { command }));
@@ -377,7 +398,8 @@ export function NeedActions({ id, title, commands, pr, group, merge, checking, c
         <Button hidden data-shortcut={PRIMARY_KEY} data-command={primary.name} disabled={off || sent !== null || !primary.allowed} onClick={sendPrimary} />
       )}
       {group === "merge" && merging && !queued && <OutcomeText outcome={{ tone: "status", text: t("commands.merging") }} />}
-      {group === "merge" && !awaitsReply(outcome) && !queued && <OutcomeText outcome={outcome} />}
+      {/* With inlineErrors false a merge error is the row's, on its own line (C-050): never in this cell. */}
+      {group === "merge" && !awaitsReply(outcome) && !queued && (inlineErrors || outcome?.tone !== "error") && <OutcomeText outcome={outcome} />}
       <OverflowMenu label={label ?? t("commands.more")} items={items.length > 0 ? items : [{ label: t("needs.noMore"), disabled: true, onSelect: () => undefined }]} />
       {/* The menu closes on a send, so the row itself says what happened: the applied label, else "Sent, waiting…". */}
       {applied.map((text) => (

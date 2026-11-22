@@ -33,12 +33,15 @@ let overview: Record<string, unknown>;
 /** The Tasks read's projects (the open tasks and their work items). */
 let projects: object[];
 let posts: { url: string; body: unknown }[];
+/** `/api/v1/items/:id` reads by item ID (a ready merge row reads its item for why its last Merge went back). */
+let details: Record<string, unknown>;
 
 beforeEach(() => {
   list = [MERGE, CHECKING, APPROVE, RETRY, NOTHING, DEP];
   projects = [];
   overview = { as_of: AT, stages: {}, needs_you: 5, running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 }, system_actions: [], factory: { state: "running", rev: "0ff810f1234", target_rev: "0ff810f1234", child_pid: 1, since: AT, workers: 1, workers_source: "default", error: null, pending: [] } };
   posts = [];
+  details = {};
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method === "POST") {
       posts.push({ url, body: JSON.parse(String(init.body)) });
@@ -51,6 +54,7 @@ beforeEach(() => {
       "/api/v1/pauses": { pauses: [], csrf_token: null },
       "/api/v1/session": { as_of: AT, csrf_token: "tok", commands_enabled: true, actor: "local:me", actor_source: "environment" },
     };
+    for (const [id, d] of Object.entries(details)) bodies[`/api/v1/items/${encodeURIComponent(id)}`] = d;
     const body = bodies[url.split("?")[0]!];
     if (body === undefined) return new Response(JSON.stringify({ error: "Not found." }), { status: 404 });
     return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
@@ -292,5 +296,76 @@ describe("the Needs you count is its rows (design 09-status-page)", () => {
     const lists = await ready();
     const rows = lists.flatMap(rowsOf);
     expect(rows.map((r) => r.querySelector("[data-rank]")?.textContent ?? null)).toEqual(["Merge", null]);
+  });
+});
+
+describe("a Merge row whose last Merge came back (the 2026-11-22 screenshot at about 450 px)", () => {
+  // wi_d4d15050: the CLI's merge put it in the merge queue, a dashboard Merge was then refused as already there, and the
+  // controller put the item back at merge_pending with that refusal (merge_returned) while the queue still checks it.
+  const ID = "wi_d4d150505c93419b87e3afce5544a500";
+  const QUEUED = row("d4", "ready_to_merge", "North star in AGENTS.md", {
+    id: ID, blocked_reason: "merge_pending", merge: { enabled: true, reason: null },
+    merge_check: { state: "mergeable", conflicts: [], head_sha: "a", base_sha: "b", checked_at: AT },
+  });
+  const returned = (refusal: string) => ({
+    item: { ...QUEUED, blocked_reason: "merge_pending" }, replies: [], proposals: [], thread: [], runs: [], transcripts: {}, sleeps: [],
+    timeline: [
+      { version: 7, at: AT, actor: { kind: "user", id: "local:me", name: null }, reason: "merge_requested", changes: {}, detail: null },
+      { version: 8, at: AT, actor: { kind: "system", id: "system:controller", name: null }, reason: "merge_returned", changes: {}, detail: { refusal } },
+    ],
+  });
+  const mergeRow = async () => {
+    const [first] = await ready();
+    return rowsOf(first!).find((r) => r.getAttribute("data-key") === ID)!;
+  };
+
+  it("keeps the title first and says Merging… for 'already in the merge queue', with no error and no raw ID", async () => {
+    list = [MERGE, QUEUED, APPROVE];
+    details = { [ID]: returned(`${ID} is already in the merge queue (checking)`) };
+    mount();
+    const r = await mergeRow();
+    await waitFor(() => expect(r.textContent).toContain("Merging…"));
+    expect(within(r).getByRole("link", { name: "North star in AGENTS.md" })).toBeTruthy();
+    expect(r.querySelector("[data-row-menu]")!.textContent).not.toContain("merge queue");
+    expect(r.textContent).not.toContain("already in the merge queue");
+    expect(within(r).queryByRole("alert")).toBeNull();
+    expect(r.textContent).not.toMatch(/wi_[0-9a-z]+/);
+    const [merge] = openMenu(r);
+    expect(merge!.textContent).toBe("Merging…");
+    expect(merge!.disabled).toBe(true);
+  });
+
+  it("shows any other refusal on its own line below the row's content, never in the menu cell, with no raw ID", async () => {
+    list = [QUEUED, APPROVE];
+    details = { [ID]: returned(`${ID} could not merge: the head moved`) };
+    mount();
+    const r = await mergeRow();
+    const alert = await within(r).findByRole("alert");
+    expect(alert.closest("[data-row-error]")).toBeTruthy();
+    expect(alert.closest("[data-row-menu]")).toBeNull();
+    expect(alert.textContent).toBe("d4d15050 could not merge: the head moved");
+    expect(r.textContent).not.toMatch(/wi_[0-9a-z]+/);
+    // The title is still the row's first line.
+    expect(r.querySelector("a")!.textContent).toBe("North star in AGENTS.md");
+  });
+
+  it("the page recognises the merge queue's own refusal words (src/controller/units/merge-queue/merge-queue.unit.ts)", async () => {
+    const { readFileSync } = await import("node:fs");
+    const unit = readFileSync(`${process.cwd()}/src/controller/units/merge-queue/merge-queue.unit.ts`, "utf8");
+    const { alreadyQueued } = await import("../web/src/api.js");
+    const words = /return `\$\{item\.id\}( is already in the merge queue \()\$\{/.exec(unit);
+    expect(words).not.toBeNull();
+    expect(alreadyQueued(`${ID}${words![1]}checking)`)).toBe(true);
+    expect(alreadyQueued("the head moved")).toBe(false);
+  });
+
+  it("a row with merge conflicts shows the conflicts as its one state, not Ready to merge beside them", async () => {
+    list = [{ ...MERGE, merge: { enabled: false, reason: "9 conflicting files" }, merge_check: { state: "conflicts", conflicts: Array.from({ length: 9 }, (_, i) => `f${i}.ts`), head_sha: "a", base_sha: "b", checked_at: AT } }, APPROVE];
+    mount();
+    const [first] = await ready();
+    const r = rowsOf(first!)[0]!;
+    expect(r.textContent).toContain("Conflicts: 9 files");
+    expect(r.textContent).not.toContain("Ready to merge");
+    expect(r.querySelector('[data-merge-check="conflicts"]')!.getAttribute("title")).toContain("f0.ts");
   });
 });
