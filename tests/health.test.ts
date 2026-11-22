@@ -16,7 +16,11 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { REGISTRY, type Registry, withPlugin } from "../src/plugins.js";
-import { type Check, checkLine, checkStatus, checksExitCode, doctor, doctorChecks } from "../src/setup.js";
+import { type Check, checkLine, checkStatus, checksExitCode, doctor, doctorChecks, secretChecks } from "../src/setup.js";
+import { sandboxChecks as linesToChecks } from "../src/core/health-check.js";
+import { MODEL_CREDENTIAL } from "../src/impl/claude/claude-shared.js";
+import { SANDBOX_LINES, type SandboxEnforcement } from "../src/impl/runner/os-sandbox.js";
+import { MemorySecretStore } from "./helpers/fakes/secrets.js";
 import { buildStatsStore } from "../src/compose.js";
 import { HEALTH_MIN_INTERVAL_MS, HealthMonitor, reportRows } from "../src/ui/health.js";
 import { type UiDeps, type UiResponse, respond } from "../src/ui/server.js";
@@ -218,6 +222,58 @@ describe("health: one implementation behind doctor and the page", () => {
     const { port } = await uiFor({ ...loaded, registry, plugins: { ...loaded.plugins, llm: "counting" } });
     await get(port, "/api/health");
     expect(calls).toBe(0);
+  });
+});
+
+// The model credential and sandbox checks in plain words (design 09-health, 2026-11-23): a sentence with no variable name,
+// command or URL, the raw doctor line behind Details; the sandbox lines of one cause are one row; doctor's lines are unchanged.
+const OFF_WHY = "Claude Code's sandbox is off on this host: sandbox is enabled but dependencies are missing: bubblewrap (bwrap) not installed, socat not installed · install missing tools (e.g. apt install bubblewrap socat) or see https://code.claude.com/docs/en/sandboxing";
+const box = (enforced: boolean, why: string): SandboxEnforcement => ({ reads: { enforced, why }, writes: { enforced, why }, network: { enforced, why } });
+/** doctorChecks' sandbox lines for a probe result. */
+const sandboxChecks = (b: SandboxEnforcement) => linesToChecks(SANDBOX_LINES.map((line) => ({ line, ...b[line] })));
+const RAW = [/[A-Z]+_[A-Z_]+/, /npm run|apt install/, /https?:\/\//];
+
+describe("health: the model credential and sandbox checks in plain words", () => {
+  it("doctor prints the same credential and sandbox lines as before", async () => {
+    const missing = await secretChecks(MODEL_CREDENTIAL, new MemorySecretStore());
+    expect(missing.map(checkLine)).toEqual(["FAIL  model credential missing: one of CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY (run: npm run setup)"]);
+    const present = await secretChecks(MODEL_CREDENTIAL, new MemorySecretStore({ ANTHROPIC_API_KEY: "k" }));
+    expect(present.map(checkLine)).toEqual(["ok    model credential present (ANTHROPIC_API_KEY)"]);
+    expect(sandboxChecks(box(false, OFF_WHY)).map(checkLine)).toEqual(["reads", "writes", "network"].map((k) => `warn  sandbox ${k}: not OS-enforced, so auto mode is refused (${OFF_WHY})`));
+    expect(sandboxChecks(box(true, "probe ok")).map(checkLine)).toEqual(["reads", "writes", "network"].map((k) => `ok    sandbox ${k}: OS-enforced (probe ok)`));
+  });
+
+  it("each check has a plain sentence with no variable name, command or URL", async () => {
+    const checks = [
+      ...(await secretChecks(MODEL_CREDENTIAL, new MemorySecretStore())),
+      ...(await secretChecks(MODEL_CREDENTIAL, new MemorySecretStore({ ANTHROPIC_API_KEY: "k" }))),
+      ...sandboxChecks(box(false, OFF_WHY)),
+      ...sandboxChecks(box(true, "probe ok")),
+    ];
+    for (const c of checks) {
+      expect(c.plain).toBeTruthy();
+      for (const re of RAW) expect(c.plain).not.toMatch(re);
+    }
+  });
+
+  it("reportRows: the three sandbox warnings of one cause are one row; the credential row offers the dialog, raw text behind Details", async () => {
+    const credential = await secretChecks(MODEL_CREDENTIAL, new MemorySecretStore());
+    const sandbox = sandboxChecks(box(false, OFF_WHY));
+    const rows = reportRows([{ ok: true, msg: "first" }, ...credential, ...sandbox, { ok: true, msg: "last" }]);
+    expect(rows).toEqual([
+      { status: "ok", msg: "first" },
+      { status: "fail", msg: expect.any(String), detail: credential[0]!.msg, action: "add_model_credential" },
+      { status: "warn", msg: "Auto mode is off: this computer has no OS sandbox. Details: how to install it", detail: sandbox.map((c) => c.msg).join("\n") },
+      { status: "ok", msg: "last" },
+    ]);
+    for (const r of rows) for (const re of RAW) expect(r.msg).not.toMatch(re);
+  });
+
+  it("reportRows: sandbox lines of different causes stay apart, one row per cause", () => {
+    const mixed: SandboxEnforcement = { reads: { enforced: true, why: "a" }, writes: { enforced: false, why: "b" }, network: { enforced: false, why: "b" } };
+    const rows = reportRows(sandboxChecks(mixed));
+    expect(rows.map((r) => r.status)).toEqual(["ok", "warn"]);
+    expect(rows[1]!.detail!.split("\n")).toEqual(["sandbox writes: not OS-enforced, so auto mode is refused (b)", "sandbox network: not OS-enforced, so auto mode is refused (b)"]);
   });
 });
 

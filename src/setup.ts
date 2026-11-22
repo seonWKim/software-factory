@@ -46,6 +46,7 @@ export function neededSecrets(
 // doctor
 
 export { type Check, type CheckStatus, TOKEN_FAIL_DAYS, TOKEN_WARN_DAYS, checkStatus } from "./core/health-check.js";
+import { credentialPlain, sandboxChecks } from "./core/health-check.js";
 
 const STATUS_WORD: Record<CheckStatus, string> = { ok: "ok  ", warn: "warn", fail: "FAIL" };
 const STATUS_MARK: Record<CheckStatus, string> = { ok: "✓", warn: "!", fail: "✗" };
@@ -78,8 +79,7 @@ export async function doctorChecks(loaded: Loaded, opts: { github?: boolean; san
   const github = opts.github ?? loaded.config.local_only !== true;
   const checks: Check[] = [configFileCheck(loaded), ...settingsChecks(loaded), ...(await toolchainChecks(loaded.config))];
   const box = await (opts.sandbox ?? (() => probeOsSandbox({ runners: selectedRunners(loaded.plugins) })))();
-  const on = (k: (typeof SANDBOX_LINES)[number]) => box[k].enforced;
-  checks.push(...SANDBOX_LINES.map((k) => ({ ok: on(k), warn: !on(k), msg: `sandbox ${k}: ${on(k) ? "OS-enforced" : "not OS-enforced, so auto mode is refused"} (${box[k].why})` })));
+  checks.push(...sandboxChecks(SANDBOX_LINES.map((line) => ({ line, ...box[line] }))));
   const add = (ok: boolean, msg: string, warn = false, plain?: string) => checks.push({ ok, msg, warn, ...(plain !== undefined && { plain }) });
 
   try {
@@ -228,7 +228,8 @@ export function settingsChecks(loaded: Pick<Loaded, "config">): Check[] {
 
 /**
  * One check per declared secret: present is ok, missing is a FAIL with a hint to run setup. Declarations
- * sharing a `oneOf` label make one check that passes when any of them is present. Never prints a value.
+ * sharing a `oneOf` label make one check that passes when any of them is present; the model credential's carries
+ * Health's plain sentence (and, missing, the Add model credential action). Never prints a value.
  */
 export async function secretChecks(declared: readonly SecretDeclaration[], secrets: SecretStore): Promise<Check[]> {
   const order: string[] = [];
@@ -255,9 +256,10 @@ export async function secretChecks(declared: readonly SecretDeclaration[], secre
     if (key.startsWith("oneOf:")) {
       const label = key.slice("oneOf:".length);
       const g = groups.get(label)!;
+      const plain = label === "model credential" && credentialPlain(g.found !== null);
       return g.found
-        ? { ok: true, msg: `${label} present (${g.found})` }
-        : { ok: false, msg: `${label} missing: one of ${g.names.join(", ")} (run: npm run setup)` };
+        ? { ok: true, msg: `${label} present (${g.found})`, ...plain }
+        : { ok: false, msg: `${label} missing: one of ${g.names.join(", ")} (run: npm run setup)`, ...plain };
     }
     const d = singles.get(key)!;
     return present.has(d.name)
