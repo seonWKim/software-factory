@@ -4,15 +4,23 @@
 // path limit never stops the implementer halfway.
 
 import { isGatePath } from "./improver.js";
+import { MAX_APPLIED_DEFAULTS } from "./outputs.js";
 import { floorTier, isCovered } from "./policy.js";
 import type { Floor } from "./settings.js";
 
-/** One `path_companions` entry of factory.config.json: when `files_to_change` names `when`, also allow `also`. */
+/**
+ * One `path_companions` entry of factory.config.json: when `files_to_change` names `when` (and each `with` path),
+ * also allow `also`; `reason` says why in the spec's applied defaults.
+ */
 export interface PathCompanion {
   /** A repo-relative path; one ending in `/` names a folder. */
   when: string;
   /** Repo-relative paths added to `allowed_paths`, at least one; a path ending in `/` names a folder. */
   also: string[];
+  /** More paths `files_to_change` must also name for the entry to apply, matched like `when`. Absent: `when` alone. */
+  with?: string[];
+  /** Why the change needs `also`; the spec notes "Added by companion rule: <reason>" under its applied defaults. */
+  reason?: string;
 }
 
 /** A path the companion step added to `allowed_paths`, and the path that caused it. */
@@ -22,7 +30,10 @@ export interface AddedPath {
 }
 
 /** The keys a `path_companions` entry may have. */
-export const PATH_COMPANION_KEYS = ["when", "also"] as const;
+export const PATH_COMPANION_KEYS = ["when", "also", "with", "reason"] as const;
+
+/** The applied-defaults line of a companion entry with a reason (decided 2026-11-22). */
+export const companionNote = (reason: string): string => `Added by companion rule: ${reason}`;
 
 /**
  * The doc indexes and their topic folders. An answer that names an index in `files_to_change` or
@@ -62,7 +73,7 @@ const COMPANION_RULES: readonly ((file: string) => string[])[] = [
     return m && m[1] !== "index" ? [`tests/${m[1]}.test.${m[2]}`] : [];
   },
   (file) => {
-    const owner = /^src\/([^/]+)\/migrations\/[^/]+\.ts$/.exec(file)?.[1];
+    const owner = /^src\/([^/]+)\/migrations\/(?:[^/]+\.ts)?$/.exec(file)?.[1];
     return owner === undefined ? [] : [`src/${owner}/table-docs.ts`];
   },
 ];
@@ -101,6 +112,12 @@ export function pathCompanionProblems(raw: unknown): string[] {
     if (!Array.isArray(entry.also) || entry.also.length === 0 || !entry.also.every(isRepoPath)) {
       problems.push(`${at}.also must be a non-empty list of repo-relative paths`);
     }
+    if (entry.with !== undefined && (!Array.isArray(entry.with) || entry.with.length === 0 || !entry.with.every(isRepoPath))) {
+      problems.push(`${at}.with must be a non-empty list of repo-relative paths`);
+    }
+    if (entry.reason !== undefined && (typeof entry.reason !== "string" || entry.reason.trim() === "")) {
+      problems.push(`${at}.reason must be a non-empty string`);
+    }
   });
   return problems;
 }
@@ -110,7 +127,9 @@ export function pathCompanionsConfig(raw: unknown): PathCompanion[] {
   const problems = pathCompanionProblems(raw);
   if (problems.length > 0) throw new Error(problems.join("\n"));
   const list = isObj(raw) && Array.isArray(raw.path_companions) ? (raw.path_companions as PathCompanion[]) : [];
-  return list.map((c) => ({ when: c.when, also: [...c.also] }));
+  return list.map((c) => ({
+    when: c.when, also: [...c.also], ...(c.with ? { with: [...c.with] } : {}), ...(c.reason ? { reason: c.reason.trim() } : {}),
+  }));
 }
 
 /** True when a `when` path matches a named path: equal, under a `when` folder, or a `when` under a named folder. */
@@ -123,7 +142,10 @@ export function whenMatches(when: string, path: string): boolean {
  * `allowed_paths` unless an allowed path already covers it: config entries whose `when` matches a
  * `files_to_change` path, the doc index folders (INDEX_FOLDERS) when an index is named in either list, and the
  * built-in rules' paths for each `files_to_change` path, except a gate path or one under `floors` (the project's
- * tier floors, required so no caller skips the refusal).
+ * tier floors, required so no caller skips the refusal). A config entry with a `reason` that added a path also adds
+ * its note (`companionNote`) to the answer's `applied_defaults`, once per reason; notes that would pass
+ * MAX_APPLIED_DEFAULTS share one line, and none is added when even that does not fit (the Files section still names
+ * the paths). The controller runs it on every triage answer, so a `/revise` (a new triage run) gets it too.
  * Phases' own `allowed_paths` are left alone: each phase's own triage applies the rule. An answer whose lists
  * are not string lists is returned as is, for parseTriage to reject. Never mutates `answer`.
  */
@@ -132,14 +154,18 @@ export function applyCompanions(answer: unknown, companions: readonly PathCompan
   const files = answer.files_to_change;
   const allowed = [...answer.allowed_paths];
   const added: AddedPath[] = [];
-  const add = (path: string, because: string) => {
-    if (isCovered(path, allowed)) return;
+  const add = (path: string, because: string): boolean => {
+    if (isCovered(path, allowed)) return false;
     allowed.push(path);
     added.push({ path, because });
+    return true;
   };
+  const reasons: string[] = [];
+  const named = (when: string) => files.some((f) => whenMatches(when, f));
   for (const c of companions) {
-    const hit = files.find((f) => whenMatches(c.when, f));
-    if (hit !== undefined) for (const p of c.also) add(p, c.when);
+    if (!named(c.when) || !(c.with ?? []).every(named)) continue;
+    const any = c.also.map((p) => add(p, c.when)).some(Boolean);
+    if (any && c.reason && !reasons.includes(c.reason)) reasons.push(c.reason);
   }
   for (const c of INDEX_FOLDERS) {
     if (files.includes(c.when) || answer.allowed_paths.includes(c.when)) for (const p of c.also) add(p, c.when);
@@ -148,5 +174,14 @@ export function applyCompanions(answer: unknown, companions: readonly PathCompan
     for (const rule of COMPANION_RULES) for (const p of rule(f)) if (!refusedCompanion(p, floors)) add(p, f);
   }
   if (added.length === 0) return { answer, added };
-  return { answer: { ...answer, allowed_paths: allowed }, added };
+  const notes = withNotes(answer.applied_defaults, reasons);
+  return { answer: { ...answer, allowed_paths: allowed, ...(notes ? { applied_defaults: notes } : {}) }, added };
+}
+
+/** `applied_defaults` with one note per reason, or one shared note when they would pass the limit; null: unchanged. */
+function withNotes(defaults: unknown, reasons: readonly string[]): string[] | null {
+  if (reasons.length === 0 || (defaults !== undefined && !isStrs(defaults))) return null;
+  const was = defaults ?? [];
+  const notes = was.length + reasons.length <= MAX_APPLIED_DEFAULTS ? reasons.map(companionNote) : [companionNote(reasons.join("; "))];
+  return was.length + notes.length <= MAX_APPLIED_DEFAULTS ? [...was, ...notes] : null;
 }
