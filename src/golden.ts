@@ -11,10 +11,12 @@ import { dirname, join } from "node:path";
 import type { LoadedConfig, Prompts } from "./core/config.js";
 import { DEFAULT_MODEL_TABLE, type ModelTable, isModelRunKind, modelClassFor } from "./core/model-choice.js";
 import type { ProjectRef } from "./core/project.js";
-import { REVIEW_CONFIRM_SCHEMA, REVIEW_SCHEMA, findingLine, parseReview, parseReviewConfirm } from "./core/outputs.js";
+import { REVIEW_CONFIRM_SCHEMA, REVIEW_SCHEMA, TRIAGE_SCHEMA, findingLine, parseReview, parseReviewConfirm, parseTriage } from "./core/outputs.js";
+import { isCovered } from "./core/policy.js";
 import type { RunId, RunKind, StateChange, WorkItem, WorkItemId } from "./core/types.js";
 import { ROLES_DIR, goldenCasesByRole, loadRoles } from "./runtime/index.js";
 import { implementReplayRunner } from "./controller/golden-gate/implement-replay.js";
+import { loadTriageCases, triageReplayRunner } from "./controller/golden-gate/triage-replay.js";
 import { ROLE_NAME, type RoleDescriptor } from "./shared/role.js";
 import { toolsNamed } from "./worker/index.js";
 import type { AgentRole, AgentRunner } from "./interfaces/agent-runner.js";
@@ -312,13 +314,15 @@ export async function buildGoldenRunDeps(
   const clock = await p.clock();
   const secrets = await p.secrets();
   const scanner = await p.scanner(secrets);
-  const sandbox = await p.sandbox(), runner = implementReplayRunner(await p.runner(sandbox, secrets), sandbox, join(loaded.root, ROLES_DIR));
+  const rolesDir = join(loaded.root, ROLES_DIR), sandbox = await p.sandbox(), runner = triageReplayRunner(implementReplayRunner(await p.runner(sandbox, secrets), sandbox, rolesDir), rolesDir, TRIAGE_PARTS);
   // The loaded prompts carry their placeholders filled; a prompt file outside them is read as it is.
   const loadedPrompts: Record<string, string | undefined> = { ...loaded.prompts };
   const prompt = async (file: string) => loadedPrompts[file.replace(/\.md$/, "")] ?? readFile(join(loaded.root, "prompts", file), "utf8");
   const resultsDir = join(loaded.stateDir, "golden", "results");
-  return { rolesDir: join(loaded.root, ROLES_DIR), roles: await loadRoles(), prompt, resultsDir, sandbox, runner, scanner, clock, config: loaded.config, ...(loaded.model_by ? { model_by: loaded.model_by } : {}) };
+  return { rolesDir, roles: await loadRoles(), prompt, resultsDir, sandbox, runner, scanner, clock, config: loaded.config, ...(loaded.model_by ? { model_by: loaded.model_by } : {}) };
 }
+
+export const TRIAGE_PARTS = { schema: TRIAGE_SCHEMA, parse: (v: unknown) => parseTriage(v), covered: isCovered }; // a triage replay's schema, parser, path check
 
 export type Verdict = "bug" | "pass" | "errored";
 
@@ -416,13 +420,11 @@ export function formatReport(report: GoldenReport): string {
 }
 
 interface LoadedCase {
-  id: string;
-  expect: Expect;
+  id: string; expect: Expect;
   /** The prompt files the case replays (`case.json` `prompts`, else the role's prompt). */
   prompts: string[];
-  work_item_id: string;
-  diff: string;
-  spec: string;
+  work_item_id: string; spec: string;
+  diff: string | null; // null for a triage case: it replays its instruction.md alone
 }
 
 /** The role's descriptor, refusing a role with none or with no prompt (it calls no model, so nothing to replay). */
@@ -433,12 +435,10 @@ function roleFor(deps: Pick<GoldenRunDeps, "roles">, name: string): RoleDescript
   return role as RoleDescriptor & { prompt: string };
 }
 
-/**
- * The role's cases (goldenCasesByRole), sorted by id; with `only`, just the cases tagged with one of those
- * prompts. A malformed case fails the whole run before any agent runs.
- */
+/** The role's cases (goldenCasesByRole), sorted by id; with `only`, just the cases tagged with one of those prompts. A malformed case fails the whole run before any agent runs. */
 async function loadCases(rolesDir: string, role: RoleDescriptor & { prompt: string }, only?: readonly string[], ids?: readonly string[]): Promise<LoadedCase[]> {
   const out: LoadedCase[] = [];
+  if (role.name === "triage") loadTriageCases(rolesDir); // a triage case with bad `checks` is malformed too
   for (const id of (goldenCasesByRole(rolesDir).get(role.name) ?? []).filter((i) => !ids || ids.includes(i))) {
     const dir = join(rolesDir, role.name, "golden", id);
     const meta = JSON.parse(await readFile(join(dir, "case.json"), "utf8")) as { expect?: string; work_item_id?: string; prompts?: unknown };
@@ -446,13 +446,13 @@ async function loadCases(rolesDir: string, role: RoleDescriptor & { prompt: stri
     const prompts = casePrompts(meta.prompts, id) ?? [role.prompt];
     if (only && !prompts.some((p) => only.includes(p))) continue;
     const work_item_id = typeof meta.work_item_id === "string" ? meta.work_item_id : `golden_${id}`;
-    out.push({ id, expect, prompts, work_item_id, diff: await readFile(join(dir, CASE_DIFF), "utf8"), spec: await readFile(join(dir, CASE_INSTRUCTION), "utf8") });
+    out.push({ id, expect, prompts, work_item_id, diff: role.name === "triage" ? null : await readFile(join(dir, CASE_DIFF), "utf8"), spec: await readFile(join(dir, CASE_INSTRUCTION), "utf8") });
   }
   return out;
 }
 
-/** The replay prompt: the stored spec plus the stored diff, in the worker's review layout. */
-export const replayPrompt = (c: Pick<LoadedCase, "spec" | "diff">) => `${c.spec}\n\n## Diff\n\n\`\`\`diff\n${c.diff}\n\`\`\``;
+/** The replay prompt: the stored spec plus the stored diff, in the worker's review layout; the spec alone with no diff. */
+export const replayPrompt = (c: Pick<LoadedCase, "spec" | "diff">) => (c.diff === null ? c.spec : `${c.spec}\n\n## Diff\n\n\`\`\`diff\n${c.diff}\n\`\`\``);
 
 /** Replays every case of `role` (with `ids`, only those) `replays` times each (default once), then writes the results file. Each replay gets its own detached sandbox (`branch: null`), destroyed after. No doc index: a replay does not depend on the docs. */
 export async function runCases(deps: GoldenRunDeps, opts: { role: string; prompts?: readonly string[]; ids?: readonly string[]; replays?: number }): Promise<GoldenReport> {
