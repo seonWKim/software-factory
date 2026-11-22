@@ -248,7 +248,7 @@ export class SqlFactoryStore extends SqlScheduleStore implements FactoryStore {
 
   async countWorkItemsByStage(): Promise<Record<Stage, number>> {
     const counts: Record<Stage, number> = { NEW: 0, READY: 0, RUNNING: 0, REVIEW: 0, CLOSED: 0 };
-    const rows = await this.db.all("SELECT stage, COUNT(*) AS n FROM controller_work_items GROUP BY stage");
+    const rows = await this.db.all("SELECT stage, COUNT(*) AS n FROM controller_work_items WHERE blocked_reason IS NULL OR blocked_reason <> 'system_item' GROUP BY stage");
     for (const r of rows) counts[r.stage as Stage] = Number(r.n);
     return counts;
   }
@@ -2653,9 +2653,8 @@ function whereOf(filter: Omit<WorkItemFilter, "limit">): { where: string; params
   if (filter.stage !== undefined) {
     where.push("stage = ?");
     params.push(filter.stage);
-  } else if (filter.exclude_closed) {
-    where.push("stage <> 'CLOSED'");
-  }
+  } else if (filter.exclude_closed) where.push("stage <> 'CLOSED'");
+  if (filter.exclude_system) where.push("(blocked_reason IS NULL OR blocked_reason <> 'system_item')");
   if (filter.blocked_on !== undefined) {
     where.push("blocked_on = ?");
     params.push(filter.blocked_on);
