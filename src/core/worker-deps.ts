@@ -4,13 +4,15 @@
 // worker as those waits move onto its ticks and the session's pushes and PR writes go to outbound (RFC 0015 M6/M7).
 
 import { LOCAL_SOURCE, threadDelivery } from "./local-merge.js";
+import { MODEL_CREDENTIAL, MODEL_CREDENTIAL_UNTIL, SETUP_MISSING } from "./policy.js";
+import { isModelRunKind } from "./model-choice.js";
 
 export { threadDelivery };
 import type { FactoryConfig, Prompts } from "./config.js";
 import { type LearnedSettingsSource, LiveSettings } from "./settings.js";
 import type { ModelNames, ModelTable } from "./model-choice.js";
-import type { Logger } from "./log.js";
-import type { SourceRef, WorkItem, WorkerId } from "./types.js";
+import type { LogFields, Logger } from "./log.js";
+import type { Run, RunKind, SourceRef, WorkItem, WorkerId } from "./types.js";
 import type { AgentRunner } from "../interfaces/agent-runner.js";
 import type { CapabilitySearch } from "../interfaces/capability-search.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -26,6 +28,17 @@ import type { RunPassportIssuer, ToolBroker } from "../interfaces/tool-broker.js
 export interface LocalRoute {
   broker: ToolBroker;
   sandbox: Sandbox;
+}
+
+/**
+ * The refspec that copies the base branch from the factory repo into a run folder's `origin/<base>`: the factory
+ * repo's `origin/<base>`, or its local `refs/heads/<base>` for a local item (`local`, from routeFor) or when no forge
+ * plugin is selected (`local_only`). One rule for both readers: the implement run fetches with it (through
+ * worker/support.ts) and `session finish`'s gate base does too.
+ */
+export function baseRefspec(cfg: Pick<FactoryConfig, "repo" | "local_only">, local: boolean): string {
+  const base = cfg.repo.base_branch;
+  return `+${cfg.local_only || local ? `refs/heads/${base}` : `refs/remotes/origin/${base}`}:refs/remotes/origin/${base}`;
 }
 
 /**
@@ -139,6 +152,13 @@ export interface WorkerDeps {
    * improve run asks no model and its groups carry no draft. Compose always passes the `plugins.llm` chain.
    */
   llm?: LLMProvider;
+  /**
+   * Whether the secret store holds the model credential the agent runner reads (design §5 Restarts, setup state):
+   * presence only, never the value. Asked before each claim; false: no agent run is claimed and the store-wide
+   * `model_credential` claim pause is set, true: it is ended. Compose sets it when every selected runner reads one;
+   * absent: the runner needs none, and the tick ends a pause left in effect.
+   */
+  modelCredential?: () => Promise<boolean>;
   clock: Clock;
   config: FactoryConfig;
   prompts: Prompts;
@@ -206,9 +226,47 @@ export interface WorkerDeps {
    */
   prRef?: (pr: number) => SourceRef;
   /**
+   * `<state_dir>/run-deps` (compose): the run-side install cache a run folder's `repo.install_command` step clones
+   * node_modules from (src/worker/install-cache.ts, design 05-sandbox.md). Absent: every such step runs the install command.
+   */
+  install_cache?: string;
+  /**
    * Runs `cmd` on the host, outside any sandbox, with no shell (compose: runProcess): the restart run's
    * `repo.restart_command` in the repo's base checkout (design 04-gate-commands, restart). It rejects when the
    * command cannot start. Absent: a restart run fails with `no_host_exec`.
    */
   host_exec?: (cmd: readonly string[], opts: { cwd: string; env: Readonly<Record<string, string>>; timeout_ms: number; signal: AbortSignal }) => Promise<ExecResult>;
+}
+
+/** The paused_by of an agent run requeued because its runner found no model credential (design §5 Restarts, setup state). */
+export const SETUP_MISSING_PAUSED_BY = "system:setup_missing";
+const CREDENTIAL_MISSING_LOG = "model credential missing: no agent run starts until one is added (run: npm run setup)";
+
+/**
+ * The run kinds a worker's tick may claim (design §5 Restarts, setup state). With no model credential: none that runs
+ * an agent (MODEL_RUN_KINDS), and the store-wide `model_credential` claim pause is set, logged once by the worker whose
+ * write started it. With one, or with no check (the runner reads none): every kind, and a pause in effect is ended.
+ */
+export async function claimableKinds(d: Pick<WorkerDeps, "id" | "store" | "log" | "modelCredential">, kinds: readonly RunKind[]): Promise<RunKind[]> {
+  if (d.modelCredential && !(await d.modelCredential())) {
+    if ((await d.store.pauseClaims(MODEL_CREDENTIAL_UNTIL, MODEL_CREDENTIAL)).started) d.log.warn(CREDENTIAL_MISSING_LOG, { worker_id: d.id });
+    return kinds.filter((k) => !isModelRunKind(k));
+  }
+  if ((await d.store.getClaimPause(MODEL_CREDENTIAL)) !== null && (await d.store.endClaimPause(MODEL_CREDENTIAL)).ended) {
+    d.log.info("model credential found: agent runs start again", { worker_id: d.id });
+  }
+  return [...kinds];
+}
+
+/**
+ * An agent run whose runner found no model credential after its claim (a race with the check above): starts the
+ * `model_credential` pause and puts the run back in the queue with its attempt unchanged, as the network pause does.
+ * No outcome is stored, so it is never retried and never counts toward a limit or an alarm. Only with a check wired
+ * (`modelCredential`), which then holds the run until the credential exists; without one the failure is stored.
+ */
+export async function requeueForCredential(d: Pick<WorkerDeps, "store" | "log">, run: Run, token: number, log: LogFields): Promise<void> {
+  if ((await d.store.pauseClaims(MODEL_CREDENTIAL_UNTIL, MODEL_CREDENTIAL)).started) d.log.warn(CREDENTIAL_MISSING_LOG, log);
+  const r = await d.store.pauseRun(run.id, token, { paused_by: SETUP_MISSING_PAUSED_BY, session_id: null, resume: null });
+  if (r.ok) d.log.info("run requeued: model credential missing", { ...log, error_code: SETUP_MISSING });
+  else d.log.warn("lease lost before the run was requeued; nothing stored", log);
 }

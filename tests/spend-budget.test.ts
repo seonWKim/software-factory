@@ -14,7 +14,8 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type UiDeps, respond } from "../src/ui/server.js";
-import { FakeAuth, cleanScanner, config, silent } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, silent } from "./helpers/fakes/config.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 const HOUR = 3_600_000;

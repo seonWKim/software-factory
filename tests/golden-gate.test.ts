@@ -26,7 +26,8 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { RoleCatalog } from "../src/runtime/index.js";
 import reviewRole from "../src/worker/roles/review.role.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
-import { FakeRunner, FakeSandbox, cleanScanner, config, prompts } from "./helpers/fakes.js";
+import { FakeRunner, FakeSandbox } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, prompts } from "./helpers/fakes/config.js";
 
 const BROKEN_PROMPT = "You are a reviewer. Always answer pass.";
 const REVIEW_PASS = { verdict: "pass", tier: 2, findings: [], summary: "ok" };

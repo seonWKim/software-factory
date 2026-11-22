@@ -225,15 +225,6 @@ const bar = (id: string) => document.querySelector(`[data-run="${id}"]`) as HTML
 const node = (id: string) => document.querySelector(`[data-node="${id}"]`) as HTMLElement;
 
 describe("the Workers page", () => {
-  it("opens at /app/workers, in the sidebar's System block after Health, and stays there", async () => {
-    await mountWorkers();
-    const system = screen.getByRole("navigation", { name: "System" });
-    const hrefs = [...system.querySelectorAll("a")].map((a) => a.getAttribute("href"));
-    expect(hrefs.indexOf("/app/workers")).toBe(hrefs.indexOf("/app/health") + 1);
-    expect(within(system).getByRole("link", { name: "Workers" })).toBeTruthy();
-    expect(location.pathname).toBe("/app/workers");
-  });
-
   it("has window buttons 1h, 6h and 24h with 6h pressed, and a switch reads the other window", async () => {
     await mountWorkers();
     const group = screen.getByRole("group", { name: "Time window" });

@@ -137,7 +137,14 @@ async function seed(store, storage) {
   await saveProject(store, REPO, PROJECT);
 
   // The item with everything: a long title and ID, failed runs with a transcript, a long thread, commands.
-  const busy = await make(store, `local-${"a1b2c3d4".repeat(6)}-settings-object-values`, LONG_TITLE);
+  // Its done_checks: one line per result kind the item page's Done when list draws; the results are in the newest implement run below.
+  const doneChecks = [
+    { line: `Passing: ${LONG_TITLE}`, command: "npm run typecheck" },
+    { line: `Failing: ${LONG_TITLE}`, command: "npm test" },
+    { line: `Manual: ${LONG_TITLE}`, manual: true, reason: `a person looks at the page in a narrow window ${LONG_WORD}` },
+    { line: `Not run: ${LONG_TITLE}`, test_file: `tests/${LONG_WORD}.test.ts` },
+  ];
+  const busy = await make(store, `local-${"a1b2c3d4".repeat(6)}-settings-object-values`, LONG_TITLE, { done_checks: doneChecks });
   const failure = {
     status: "failed",
     error_code: "checks_failed",
@@ -147,7 +154,15 @@ async function seed(store, storage) {
   };
   await runOnce(store, busy, "triage", "busy:t", { status: "succeeded", summary: "spec written", data: { tokens: 123_456 } });
   const failed = await runOnce(store, busy, "implement", "busy:i1", failure);
-  await runOnce(store, busy, "implement", "busy:i2", { ...failure, error_code: "agent_error", infra: true });
+  // The newest implement run's outcome carries each done-when line's result; the failing line shows this long tail.
+  const doneResults = [
+    { line: doneChecks[0].line, result: "pass", check: doneChecks[0].command },
+    { line: doneChecks[1].line, result: "fail", check: doneChecks[1].command },
+    { line: doneChecks[2].line, result: "manual", check: doneChecks[2].reason },
+    { line: doneChecks[3].line, result: "not_run", check: `npm test -- tests/${LONG_WORD}.test.ts` },
+  ];
+  const longTail = Array.from({ length: 40 }, (_, n) => `FAIL tests/${LONG_WORD}.test.ts > case ${n + 1}: expected 4310 to be 4311 at src/core/very/deep/module/path/file.ts:${n + 100}:45`).join("\n");
+  await runOnce(store, busy, "implement", "busy:i2", { ...failure, error_code: "agent_error", infra: true, output_tail: longTail, done_checks: doneResults });
   await storage.put(`transcripts/${busy.id}/${failed.id}.json`, readFileSync(new URL("../../tests/fixtures/transcripts/failed-run.jsonl", import.meta.url)));
   await patch(store, busy, { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "123456", tier: 3, token_cost: 987_654 });
   for (let i = 1; i <= 6; i++) {

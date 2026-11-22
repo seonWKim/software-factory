@@ -6,13 +6,14 @@ import { Button } from "../components/ui/button.js";
 import { announceStatus } from "../components/ui/dialog.js";
 import { EmptyState, PageHeader } from "../components/ui/notice.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
+import { OverflowMenu } from "../components/ui/menu.js";
 import { Pagination } from "../components/ui/pagination.js";
 import { Tabs } from "../components/ui/tabs.js";
 import { useUrlParam } from "../lib/url-param.js";
 import { t } from "../i18n/index.js";
 import { type QuickAddKey, isUndo } from "../keys.js";
 import { NeedsYou } from "./task-work.js";
-import { AddProjectDialog } from "./tasks/dialogs.js";
+import { AddProjectDialog, DeleteProjectDialog } from "./tasks/dialogs.js";
 import { QuickAdd } from "./tasks/forms.js";
 import { PAGE_SIZE, groupsOf, hasTasks, pageOf } from "./tasks/groups.js";
 import { Group } from "./tasks/row.js";
@@ -39,7 +40,10 @@ import { Card } from "../components/ui/card.js";
 // load and set on change, so a filtered view can be shared and reloaded. Needs you
 // follows it too (GET /api/v1/items?project=<slug>): only the work items built from that project's tasks. Each open row's overflow
 // item Projects… opens the project dialog: a checkbox per active project adds or removes the task's link (POST
-// /api/v1/tasks/project) and New project creates one (POST /api/v1/projects) and puts the task in it.
+// /api/v1/tasks/project) and New project creates one (POST /api/v1/projects) and puts the task in it. A selected
+// project's "⋯" menu, after the tabs, holds Delete: the danger Dialog names the project and its task count (from the
+// loaded read) and says the tasks are kept; confirm posts POST /api/v1/projects/delete (`factory project delete`), the
+// tab goes at once and the filter falls back to All projects (design 09-dashboard-tasks).
 // The page's order (design 09-dashboard-app): the project tabs, Quick add, Needs you, the list; the blocks
 // are spaced by one flex gap, the Section gap of design-system/patterns.md.
 
@@ -110,6 +114,7 @@ function ProjectTabs({ projects, value, onChange, action }: { projects: readonly
 export function TasksPage() {
   const [project, setProject] = useProjectParam();
   const [adding, setAdding] = useState(false);
+  const [deleting, setDeleting] = useState<ProjectChoice | null>(null);
   const addButton = useRef<HTMLButtonElement>(null);
   const q = useTasks<TasksView & { add_key?: QuickAddKey }>(project);
   const v = q.data;
@@ -122,6 +127,9 @@ export function TasksPage() {
   // Kept from the last read, so the tabs keep their choices while a new filter loads.
   const known = useRef<readonly ProjectChoice[]>([]);
   if (v?.active_projects !== undefined) known.current = v.active_projects;
+  const selected = known.current.find((p) => p.slug === project) ?? null;
+  // The selected project's tasks, open or done, as the filtered read holds them: each task once.
+  const held = selected === null || !v ? 0 : new Set(v.projects.flatMap((g) => g.tasks.filter((x) => x.projects?.includes(selected.slug) ?? true).map((x) => x.id))).size;
   return (
     <>
     <PageHeader title={t("page.tasks")} />
@@ -132,12 +140,30 @@ export function TasksPage() {
           value={project}
           onChange={setProject}
           action={
-            <Button ref={addButton} variant="ghost" size="icon" aria-label={t("tasks.addProject")} disabled={token === null} onClick={() => setAdding(true)}>
-              +
-            </Button>
+            <>
+              <Button ref={addButton} variant="ghost" size="icon" aria-label={t("tasks.addProject")} disabled={token === null} onClick={() => setAdding(true)}>
+                +
+              </Button>
+              {selected !== null && token !== null && (
+                <OverflowMenu label={t("tasks.projectMore", { name: selected.name })} items={[{ label: t("tasks.delete"), danger: true, onSelect: () => setDeleting(selected) }]} />
+              )}
+            </>
           }
         />
         {adding && token !== null && <AddProjectDialog token={token} returnFocusTo={addButton} onCreated={setProject} onClose={() => setAdding(false)} />}
+        {deleting !== null && token !== null && (
+          <DeleteProjectDialog
+            project={deleting}
+            tasks={held}
+            token={token}
+            returnFocusTo={addButton}
+            onDeleted={() => {
+              known.current = known.current.filter((p) => p.slug !== deleting.slug);
+              if (project === deleting.slug) setProject(null);
+            }}
+            onClose={() => setDeleting(null)}
+          />
+        )}
       </div>
       <div className="space-y-1">
         <QuickAdd token={v?.csrf_token ?? null} addKey={v?.add_key ?? "enter"} project={project} />

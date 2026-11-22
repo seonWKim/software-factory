@@ -8,7 +8,9 @@ import type { AgentRunResult, AgentRunSpec, AgentRunner } from "../src/interface
 import type { EgressChannel, EgressScanner } from "../src/interfaces/egress-scanner.js";
 import type { ExecResult, Sandbox } from "../src/interfaces/sandbox.js";
 import { LIVE_WRITE_MS, LiveTranscript } from "../src/worker/live-transcript.js";
-import { MemoryStorage, pipeline, recordingLog } from "./helpers/fakes.js";
+import { MemoryStorage } from "./helpers/fakes/runner.js";
+import { pipeline } from "./helpers/harness.js";
+import { recordingLog } from "./helpers/fakes/config.js";
 
 // The live transcript (design 09-dashboard-item): while an agent step runs, the worker stores its output so far,
 // at most once per 5 s and only when it grew, each write egress-scanned on `log` first. A pattern hit alone skips

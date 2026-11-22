@@ -1,9 +1,8 @@
 import { ListTodo } from "lucide-react";
-import { useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import {
   API, type FactoryState, type GitHubBudget, type Health, type HostSleepRow, type ItemDetail, type ItemRow, type Items, type Overview, type PauseRow, type PhaseRow, type PausesView, type QueueRow, type RunRow,
-  type UnreviewedMerges, type WorkerProcess, type WorkersView, postResume, useApi,
+  type RulesView, type UnreviewedMerges, type WorkerProcess, type WorkersView, useApi,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
@@ -16,6 +15,7 @@ import { ID_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import { FailuresSection } from "./failures.js";
 import { SpendSection } from "./spend.js";
 import { EfficiencyTab } from "./efficiency.js";
+import { Improve } from "./rules-improve.js";
 import { Markdown } from "../components/ui/markdown.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { Tabs } from "../components/ui/tabs.js";
@@ -23,18 +23,21 @@ import { cn } from "../lib/cn.js";
 import { useUrlParam } from "../lib/url-param.js";
 import { type MessageKey, en } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { LEVEL_LABELS, duration, groupedInteger, isHttpUrl, isWorkerId, localClock, localDateTime, relativeTime, termLabel, shortRev, shortSource, tokens, workerName } from "../lib/format.js";
+import { duration, groupedInteger, isHttpUrl, isWorkerId, localClock, localDateTime, relativeTime, runStatusLabel, termLabel, shortItemId, shortRev, tokens, workerName } from "../lib/format.js";
+import { GROUP_LABELS, ITEM_STATES, STATE_GROUPS, type StateGroup, groupOf, groupStates, isGroup, stateLabel } from "../../../src/shared/states.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
 import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, When, byId, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
 import { ItemDecision } from "./decision-card.js";
-import { type SupervisorActionName, SupervisorActions } from "./system-banner.js";
+import { ItemAbout } from "./item-about.js";
+import { ResumeNow, type SupervisorActionName, SupervisorActions } from "./system-banner.js";
 import { Thread } from "./thread.js";
 import { transcriptPath } from "./transcript.js";
-import { HELD, ItemsTree, type TreeFilter, type View, VIEW_KEY, buildTree, defaultExpanded, itemMatches, parentIds, useExpanded } from "./tree.js";
+import { ItemsTree, type View, VIEW_KEY, useExpanded } from "./tree.js";
+import { type TreeFilter, buildTree, defaultExpanded, itemMatches, parentIds } from "./tree-model.js";
 import { Disclosure } from "../components/ui/disclosure.js";
 import { Card } from "../components/ui/card.js";
-import { Badge } from "../components/ui/badge.js";
+import { Badge, StatusBadge } from "../components/ui/badge.js";
 import { Tooltip } from "../components/ui/menu.js";
 
 /** A host sleep's gap in whole minutes, at least 1 (only gaps over 60 s are recorded). */
@@ -43,39 +46,21 @@ const sleptMinutes = (gap_ms: number): number => Math.max(1, Math.round(gap_ms /
 /** "host slept N min" for a host sleep's gap, on the item timeline. */
 export const sleptText = (gap_ms: number): string => t("host.slept", { min: sleptMinutes(gap_ms) });
 
-/** One active claim pause for the banner: what it stops, when it began (model stall) and when it ends or is checked next. */
-function pauseLine(p: PauseRow, now: number): string {
-  const what = pauseLabel(p.name);
-  if (p.name !== "model_stall") return t("pause.line", { what, end: p.ends_at });
-  const due = Date.parse(p.ends_at) <= now;
-  const vars = { what, end: p.ends_at, since: p.since ?? "" };
-  if (p.since) return t(due ? "pause.stallSinceDue" : "pause.stallSinceAt", vars);
-  return t(due ? "pause.stallDue" : "pause.stallAt", vars);
-}
-
 /** What the factory process is doing, in words: `text` is the status page's sentence. */
 interface FactoryView {
   tone: "ok" | "warn" | "bad";
   text: string;
-  /** The raw names of the pauses the text says in words: shown behind Details. */
-  raw?: readonly string[];
-  /** Paused, stopped or failing: the states that get a page Notice. */
+  /** Stopped or failing: the states that get a page Notice. */
   notice: boolean;
 }
 
-/** A factory sentence, with the raw names of its pauses behind Details. */
-function FactoryText({ view }: { view: FactoryView }) {
-  return <>{view.text}{view.raw && view.raw.length > 0 && <RawDetails className="mt-1"><code className="font-mono">{view.raw.join(", ")}</code></RawDetails>}</>;
-}
-
-function factoryView(factory: FactoryState | null, now: number, pauses: readonly PauseRow[]): FactoryView {
+function factoryView(factory: FactoryState | null, now: number): FactoryView {
   if (factory === null || factory.state === "stopped") return { tone: "bad", text: t("factory.stopped"), notice: true };
   const rev = shortRev(factory.rev);
   const target = shortRev(factory.target_rev);
   const updating = (text: string): FactoryView => ({ tone: "warn", text, notice: false });
   switch (factory.state) {
     case "running":
-      if (pauses.length > 0) return { tone: "warn", text: pauses.map((p) => pauseLine(p, now)).join(" "), raw: pauses.map((p) => p.name), notice: true };
       return { tone: "ok", text: t("factory.running", { rev, time: relativeTime(factory.since, now) }), notice: false };
     case "building":
       return updating(t("factory.building", { target, rev }));
@@ -99,14 +84,14 @@ function factoryView(factory: FactoryState | null, now: number, pauses: readonly
 }
 
 /** The Runners page's supervisor banner: what the factory process is doing (the status page's words). */
-export function FactoryBanner({ factory, now, pauses = [] }: { factory: FactoryState | null | undefined; now: number; pauses?: readonly PauseRow[] | undefined }) {
+export function FactoryBanner({ factory, now }: { factory: FactoryState | null | undefined; now: number }) {
   if (factory === undefined) return null;
-  const v = factoryView(factory, now, pauses);
+  const v = factoryView(factory, now);
   // Migrate now while an update waits for its migration; otherwise Start or Restart now (design 08-self-update).
   const actions: SupervisorActionName[] = factory?.state === "migration_pending" ? ["migrate"] : ["start", "restart"];
   return (
     <div data-testid="factory-banner" className="space-y-2">
-      <Notice tone={v.tone}><FactoryText view={v} /></Notice>
+      <Notice tone={v.tone}>{v.text}</Notice>
       <SupervisorActions actions={actions} />
     </div>
   );
@@ -134,44 +119,27 @@ const PAUSE_LABELS: Record<string, MessageKey> = {
   forge_auth: "pause.forge_auth",
   preflight_access: "pause.preflight_access",
   model_stall: "pause.model_stall",
+  owner: "stop.stopped",
 };
 const pauseLabel = (name: string): string => {
   const key = PAUSE_LABELS[name];
   return key ? t(key) : name;
 };
 
-/** One pause with its "Resume now" button; the endpoint's refusal shows next to the button. */
+/** One pause with its "Resume now" button (ResumeNow, shared with the Tasks pause row); a refusal shows next to the button. */
 function PauseItem({ pause, token, now }: { pause: PauseRow; token: string | null; now: number }) {
-  const client = useQueryClient();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const resume = async () => {
-    if (token === null) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const r = await postResume(token, pause.name);
-      if (!r.ok) setError(r.error);
-      else await client.invalidateQueries({ queryKey: [API.pauses] });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
+  // The owner pause (Stop all agents) has no end, only when it began.
+  const at = pause.ends_at ?? pause.since ?? null;
   return (
     <li data-pause={pause.name} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
       <span className="min-w-0 text-pretty text-text-1">{pauseLabel(pause.name)}</span>
-      <span className="min-w-0 tabular-nums break-words text-text-2" title={localDateTime(pause.ends_at)}>
-        {t(pause.name === "model_stall" ? "pause.nextProbe" : "pause.ends", { time: pause.ends_at })}
-        {Date.parse(pause.ends_at) > now ? ` (${relativeTime(pause.ends_at, now)})` : ""}
-      </span>
-      {token !== null && (
-        <Button variant="secondary" disabled={busy} onClick={() => void resume()}>
-          {t("pause.resume")}
-        </Button>
+      {at !== null && (
+        <span className="min-w-0 tabular-nums break-words text-text-2" title={localDateTime(at)}>
+          {pause.ends_at === null ? relativeTime(at, now) : t(pause.name === "model_stall" ? "pause.nextProbe" : "pause.ends", { time: at })}
+          {pause.ends_at !== null && Date.parse(at) > now ? ` (${relativeTime(at, now)})` : ""}
+        </span>
       )}
-      {error && <span role="alert" className="text-xs text-pretty break-words text-pill-bad-fg">{error}</span>}
+      <ResumeNow name={pause.name} token={token} />
     </li>
   );
 }
@@ -185,34 +153,16 @@ function PauseList({ view, now }: { view: PausesView; now: number }) {
   );
 }
 
-/** Every claim pause in effect, each with "Resume now". Hidden while there is none. */
-export function ClaimPauses({ now }: { now: number }) {
-  const q = useApi<PausesView>(API.pauses);
-  if (q.isError) return <ErrorNote error={q.error} />;
-  if (!q.data || q.data.pauses.length === 0) return null;
-  return (
-    <Card title={t("pause.title")} count={q.data.pauses.length}>
-      <PauseList view={q.data} now={now} />
-    </Card>
-  );
-}
-
 /**
- * The factory's notes on the Tasks page under All projects: a Notice only when the factory is paused, stopped or
- * failing, and the claim pauses. The system actions are Needs-you rows (the Check group), not notes here.
+ * The factory's note on the Tasks page under All projects: a Notice only when the factory is stopped or failing. A
+ * claim pause is its own Needs-you row in the Check group (design 09-dashboard-tasks), so this note never names one.
  */
 export function FloorStatus() {
   const now = useNow();
   const overview = useApi<Overview>(API.overview);
-  const pauses = useApi<PausesView>(API.pauses);
   const o = overview.data;
-  const view = o?.factory === undefined ? null : factoryView(o.factory, now, pauses.data?.pauses ?? []);
-  return (
-    <>
-      {view?.notice && <Notice tone={view.tone === "bad" ? "bad" : "warn"}><FactoryText view={view} /></Notice>}
-      <ClaimPauses now={now} />
-    </>
-  );
+  const view = o?.factory === undefined ? null : factoryView(o.factory, now);
+  return view?.notice ? <Notice tone={view.tone === "bad" ? "bad" : "warn"}>{view.text}</Notice> : null;
 }
 
 /** Work's Activity section, below its list: what runs now, the unreviewed-merges line, then the numbers of the last 24 hours. */
@@ -258,14 +208,18 @@ export function ActivityPage() {
   );
 }
 
-const STATE_FILTERS = ["needs", "ready_to_merge", "needs_approval", "needs_triage", "stuck", "running", "queued", "blocked_by_task", "closed"] as const;
-const FILTER_LABELS: Record<string, string> = { ...LEVEL_LABELS, needs: t("page.needs"), held: t("items.held") };
-
-/** The Work filter named by the `state` query parameter (the Queue page's old address leads here); an unknown value is no filter. */
+/**
+ * The Work filter named by the `state` query parameter (the Queue page's old address leads here): a group or one item
+ * state; `closed`, from older links, is the Finished group. An unknown value is no filter.
+ */
 function initialState(): string | null {
   const s = new URLSearchParams(location.search).get("state");
-  return s !== null && (s === HELD || (STATE_FILTERS as readonly string[]).includes(s)) ? s : null;
+  if (s === "closed") return "finished";
+  return s !== null && (isGroup(s) || (ITEM_STATES as readonly string[]).includes(s)) ? s : null;
 }
+
+/** The selected filter's group: the group itself, or the group a state is in; null for All. */
+const groupOfFilter = (state: string | null): StateGroup | null => (state === null ? null : isGroup(state) ? state : (groupOf(state) ?? null));
 
 const ALL = "all";
 const VIEW_OPTIONS: { id: View; label: string }[] = [{ id: "tree", label: t("items.tree") }, { id: "list", label: t("items.list") }];
@@ -302,7 +256,6 @@ export function ItemsPage() {
   const queuedView = state === "queued";
   const setView = (v: View) => {
     setViewState(v);
-    if (v === "list" && state === HELD) setState(null);
     try {
       localStorage.setItem(VIEW_KEY, v);
     } catch {
@@ -332,6 +285,9 @@ export function ItemsPage() {
   // Running, with no search and no named items, is the server's count of runs whose status is running, as Activity's Running now.
   const narrowed = !!q.trim() || ids !== null;
   const counted = (s: string) => (s === "queued" ? (queue.data?.queue.length ?? "…") : s === "running" && !narrowed && items.data ? items.data.counts.running : local ?rows.filter((r) => itemMatches(r, { state: s, q, showClosed, ids })).length : (items.data?.facets.state[s] ?? 0));
+  const group = groupOfFilter(state);
+  // A group or state tab with no rows is hidden, unless it is the one selected.
+  const shows = (s: string) => s === state || s === group || counted(s) !== 0;
   // All, with no search, no named items and closed items hidden, is the server's open count (stage not CLOSED), as Activity's Open items.
   const allCount = !narrowed && !showClosed && items.data ? items.data.counts.open : local ? rows.filter((r) => itemMatches(r, { state: null, q, showClosed, ids })).length : (items.data?.facets.allStates ?? "");
   return (
@@ -361,17 +317,30 @@ export function ItemsPage() {
           <Button size="sm" onClick={() => setIds(null)}>{t("items.idsClear")}</Button>
         </div>
       )}
-      {rateLimit && <div className="mb-3"><Notice tone="warn">{t("items.rateLimit", { state: t("items.ratePaused", { time: rateLimit.ends_at }) })}</Notice></div>}
+      {rateLimit?.ends_at && <div className="mb-3"><Notice tone="warn">{t("items.rateLimit", { state: t("items.ratePaused", { time: rateLimit.ends_at }) })}</Notice></div>}
       <Tabs
         label={t("items.filterByState")}
-        className="mb-3"
-        options={[null, ...(tree ? [HELD] : []), ...STATE_FILTERS].map((s) => ({
-          id: s ?? ALL,
-          label: t("items.filterCount", { label: s === null ? t("items.all") : FILTER_LABELS[s]!, count: s === null ? allCount : counted(s) }),
-        }))}
-        value={state ?? ALL}
+        className={group ? "mb-2" : "mb-3"}
+        options={[
+          { id: ALL, label: t("items.filterCount", { label: t("items.all"), count: allCount }) },
+          ...STATE_GROUPS.filter(shows).map((g) => ({ id: g, label: t("items.filterCount", { label: GROUP_LABELS[g], count: counted(g) }) })),
+        ]}
+        value={group ?? ALL}
         onChange={(id) => setState(id === ALL ? null : id)}
       />
+      {group && (
+        <Tabs
+          label={t("items.filterGroup", { group: GROUP_LABELS[group] })}
+          className="mb-3"
+          options={[
+            { id: group, label: t("items.filterCount", { label: t("items.all"), count: counted(group) }) },
+            // `closed` is the Finished group's older link value (src/shared/states.ts inStateFilter): All shows those rows.
+            ...groupStates(group).filter((s) => s !== "closed" && shows(s)).map((s) => ({ id: s, label: t("items.filterCount", { label: stateLabel(s), count: counted(s) }) })),
+          ]}
+          value={state ?? group}
+          onChange={setState}
+        />
+      )}
       {queuedView ? (
         <Card title={t("queue.title")} count={queue.data?.queue.length}>
           {queue.isError ? <ErrorNote error={queue.error} /> : !queue.data || !items.data ? <Loading rows={4} /> : <QueueTable queue={queue.data.queue} items={itemsById} now={now} />}
@@ -411,14 +380,14 @@ export function ItemPage({ id }: { id: string }) {
   ];
   entries.reverse().sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
   const transcripts = q.data.transcripts ?? {};
-  const short = shortSource(item.source.id);
+  const short = shortItemId(item.id);
   const level = item.item_phase;
   return (
     <>
       <nav aria-label={t("item.breadcrumb")} className="mb-1 text-sm">
         <Link href={`${BASE}items`} className={LINK_CLASS}>{t("page.work")}</Link>
         <span className="text-text-3"> / </span>
-        <Link href={itemPath(item.id)} aria-current="page" title={item.source.id} className={cn("inline-block max-w-[16ch] truncate align-bottom tabular-nums", ID_CLASS)}>{short}</Link>
+        <Link href={itemPath(item.id)} aria-current="page" title={item.id} className={cn("inline-block max-w-[16ch] truncate align-bottom tabular-nums", ID_CLASS)}>{short}</Link>
       </nav>
       <PageHeader title={item.title ?? short} actions={runs.some(isInteractiveRun) ? <InteractiveBadge /> : undefined} />
       {item.parent_id && (
@@ -426,6 +395,7 @@ export function ItemPage({ id }: { id: string }) {
           {t("item.phase", { phase: item.phase ?? "?" })} <Link href={itemPath(item.parent_id)} className={LINK_CLASS}>{t("item.splitParent")}</Link>
         </p>
       )}
+      <ItemAbout item={item} />
       <ItemDecision
         id={item.id}
         commands={q.data.commands ?? []}
@@ -438,7 +408,7 @@ export function ItemPage({ id }: { id: string }) {
       />
       <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
         {([
-          [t("col.state"), <Badge level={level}>{LEVEL_LABELS[level] ?? level}{item.close_reason ? ` (${termLabel(item.close_reason)})` : ""}</Badge>],
+          [t("col.state"), <StatusBadge state={level}>{stateLabel(level)}{level === "closed" && item.close_reason ? ` (${termLabel(item.close_reason)})` : ""}</StatusBadge>],
           [t("item.source"), isHttpUrl(item.source.link) ? <SourceLink source={item.source} className="inline-block align-bottom" /> : short],
           [t("item.tier"), item.tier ?? "–"],
           [t("col.pr"), item.change_ref === null ? "–" : <UrlOrText url={item.change_url} text={`#${item.change_ref}`} />],
@@ -498,7 +468,7 @@ export function ItemPage({ id }: { id: string }) {
                   )}
                 </Td>
                 <Td className="tabular-nums">{tries.length > 1 ? t("item.foldedTries", { count: tries.length }) : t("item.tryNumber", { number: Math.max(1, r.attempt) })}</Td>
-                <Td><Badge level={r.status === "running" ? "running" : r.status === "failed" ? "stuck" : undefined}>{runResultLabel(r.status)}</Badge></Td>
+                <Td><StatusBadge state={r.status}>{runResultLabel(r.status)}</StatusBadge></Td>
                 <Td className="max-w-md min-w-40 text-xs break-words text-text-1">
                   {r.error ? (
                     <>
@@ -556,7 +526,7 @@ function CurrentRun({ runs, itemId, now }: { runs: ItemDetail["runs"]; itemId: s
     <Card title={t("item.currentRun")}>
       <p data-current-run={run.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
         <span className="font-medium">{runKindLabel(run.kind)}</span>
-        <Badge level={run.status === "running" ? "running" : undefined}>{run.status}</Badge>
+        <StatusBadge state={run.status} />
         <span className="tabular-nums">{t("item.attempt", { attempt: run.attempt })}</span>
         <WorkerName id={run.attempts?.at(-1)?.worker_id} />
         {run.started_at && <span className="text-text-2 tabular-nums"><When at={run.started_at} now={now} label="item.startedAgo" /></span>}
@@ -721,7 +691,7 @@ function ProcessRow({ p, local, items, now }: { p: WorkerProcess; local: boolean
           </span>
         </Tooltip>
         <span className="tabular-nums text-text-2"><When at={p.started_at} now={now} label="runners.started" /></span>
-        {draining && <Badge level="needs_approval">{t("runners.draining")}</Badge>}
+        {draining && <StatusBadge state="draining">{t("runners.draining")}</StatusBadge>}
       </div>
       {p.runs.length > 0 && (
         <ul aria-label={t("runners.runsOf", { host: p.host, pid: p.pid })} className="mt-1 space-y-0.5 text-xs">
@@ -791,7 +761,9 @@ export function RunnersPage() {
 
 const HEALTH_TONE: Record<string, string> = { ok: "running", warn: "needs_approval", fail: "stuck" };
 
+/** A check's row: its sentence, then its times (a probe pause's start and next probe) relative, the local time on hover. */
 function CheckList({ checks }: { checks: Health["checks"] }) {
+  const now = useNow();
   if (checks.length === 0) return null;
   return (
     <ul className="space-y-1 text-sm">
@@ -800,6 +772,8 @@ function CheckList({ checks }: { checks: Health["checks"] }) {
           <Badge level={HEALTH_TONE[c.status]}>{checkLabel(c.status)}</Badge>
           <span className="min-w-0 text-pretty break-words">
             {c.msg}
+            {c.since !== undefined && <span className="text-text-2">{" · "}<When at={c.since} now={now} label="health.checkSince" /></span>}
+            {c.next !== undefined && <span className="text-text-2">{" · "}<When at={c.next} now={now} label="health.checkNext" /></span>}
             {c.detail !== undefined && <RawDetails className="mt-1"><code className="font-mono text-xs whitespace-pre-wrap break-all">{c.detail}</code></RawDetails>}
           </span>
         </li>
@@ -808,7 +782,9 @@ function CheckList({ checks }: { checks: Health["checks"] }) {
   );
 }
 
-type HealthTab = "checks" | "pauses" | "sleeps" | "merges" | "efficiency" | "github";
+type HealthTab = "checks" | "pauses" | "sleeps" | "merges" | "efficiency" | "improve" | "github";
+
+
 
 /**
  * The GitHub budget tab (design 09-health, 2026-11-20): what the controller stored after its last poll, so no GitHub
@@ -840,6 +816,8 @@ interface SleepGroup {
   woke_at: string;
   gap_ms: number;
   workers: Set<string>;
+  /** The runs the sleep held, once each (by run id), with their item and current status. */
+  runs: Map<string, { work_item_id: string; status: string }>;
   /** The API entries behind the row, for its Details. */
   raw: HostSleepRow[];
 }
@@ -853,9 +831,10 @@ function groupSleeps(sleeps: readonly HostSleepRow[]): SleepGroup[] {
   for (const h of sleeps) {
     const minute = Math.floor(Date.parse(h.woke_at) / 60_000);
     const key = Number.isNaN(minute) ? h.woke_at : String(minute);
-    const g = groups.get(key) ?? { woke_at: h.woke_at, gap_ms: 0, workers: new Set<string>(), raw: [] };
+    const g: SleepGroup = groups.get(key) ?? { woke_at: h.woke_at, gap_ms: 0, workers: new Set<string>(), runs: new Map(), raw: [] };
     g.gap_ms = Math.max(g.gap_ms, h.gap_ms);
     g.workers.add(h.worker_id);
+    if (h.run_id && h.work_item_id && h.run_status) g.runs.set(h.run_id, { work_item_id: h.work_item_id, status: h.run_status });
     g.raw.push(h);
     groups.set(key, g);
   }
@@ -882,9 +861,10 @@ export function HealthPage() {
   const merges = useApi<UnreviewedMerges>(API.unreviewedMerges, 30_000);
   const pauses = useApi<PausesView>(API.pauses);
   const overview = useApi<Overview>(API.overview);
+  const rules = useApi<RulesView>(API.rules);
   const viewer = useViewer();
   const held = (pauses.data?.pauses.length ?? 0) > 0;
-  const [picked, pick] = useUrlParam("tab", (v) => ["checks", "pauses", "sleeps", "merges", "efficiency", "github"].includes(v));
+  const [picked, pick] = useUrlParam("tab", (v) => ["checks", "pauses", "sleeps", "merges", "efficiency", "improve", "github"].includes(v));
   if (health.isError) return <><PageHeader title={t("page.health")} /><ErrorNote error={health.error} /></>;
   if (!health.data) return <><PageHeader title={t("page.health")} /><Loading rows={6} /></>;
   const order = ["fail", "warn", "ok"];
@@ -896,12 +876,15 @@ export function HealthPage() {
   const failing = checks.some((c) => c.status === "fail");
   const mergeList = merges.data?.merges;
   const budget = overview.data?.github_budget ?? null;
+  // The improve report (design 09-dashboard-system, 2026-11-21): from the rules read's `improve`; no tab without one.
+  const improve = rules.data?.improve ?? null;
   const options: { id: HealthTab; label: string }[] = [
     { id: "checks", label: `${t("health.tabChecks")} (${checks.length})${failing ? ` ${t("health.failMark")}` : ""}` },
     ...(held ? [{ id: "pauses" as const, label: `${t("pause.title")} (${pauses.data!.pauses.length})` }] : []),
     { id: "sleeps", label: `${t("health.sleeps")} (${sleeps.length})` },
     { id: "merges", label: `${t("health.merges")}${mergeList ? ` (${mergeList.length})` : ""}` },
     { id: "efficiency", label: t("efficiency.title") },
+    ...(improve ? [{ id: "improve" as const, label: t("health.tabImprove") }] : []),
     // Only while a GitHub budget is stored (GitHub selected and polled).
     ...(budget ? [{ id: "github" as const, label: t("health.githubBudget") }] : []),
   ];
@@ -938,6 +921,19 @@ export function HealthPage() {
                     <span className="font-medium tabular-nums">{sleepText(h)}</span>
                     <span className="tabular-nums text-text-2"><When at={h.woke_at} now={now} /></span>
                   </span>
+                  {h.runs.size > 0 && (
+                    <div className="mt-1 text-xs text-text-2" data-testid="host-sleep-runs">
+                      <span>{t("health.sleepRuns")}</span>
+                      <ul className="ml-4 list-disc">
+                        {[...h.runs].map(([id, r]) => (
+                          <li key={id}>
+                            <Link href={itemPath(r.work_item_id)} className={LINK_CLASS}>{r.work_item_id}</Link>: {runStatusLabel(r.status)}
+                          </li>
+                        ))}
+                      </ul>
+                      <p>{t("health.sleepHint")} <Link href={`${BASE}settings?tab=advanced`} className={LINK_CLASS}>{t("health.sleepHintLink")}</Link></p>
+                    </div>
+                  )}
                   <RawDetails className="mt-1"><code className="font-mono text-xs whitespace-pre-wrap break-all">{h.raw.map((r) => `${r.woke_at} ${r.worker_id} gap_ms=${r.gap_ms}`).join("\n")}</code></RawDetails>
                 </li>
               ))}
@@ -966,6 +962,7 @@ export function HealthPage() {
         </div>
       )}
       {tab === "efficiency" && <EfficiencyTab />}
+      {tab === "improve" && improve && <Improve view={improve} />}
       {tab === "github" && budget && <GitHubBudgetTab budget={budget} tokenDays={overview.data?.github_token_days} />}
       <SpendSection />
       <FailuresSection />

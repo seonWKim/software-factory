@@ -2,15 +2,20 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { SessionParts } from "../src/compose.js";
+import type { Loaded, SessionParts } from "../src/compose.js";
 import { StoredLearnedSettings } from "../src/core/learned-settings.js";
 import { settingValues } from "../src/core/settings.js";
 import { splitThresholds } from "../src/core/split.js";
-import type { Timestamp } from "../src/core/types.js";
+import type { Timestamp, UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
-import { SESSION_USAGE, runSession, sessionDeps } from "../src/session-cmd.js";
-import { FakeAuth, FakeBroker, FakeSandbox, PROJECT, cleanScanner, config } from "./helpers/fakes.js";
+import type { KeepAwake } from "../src/interfaces/keep-awake.js";
+import { REGISTRY, withPlugin } from "../src/plugins.js";
+import { SESSION_USAGE, type SessionWho, runSession, sessionAwake, sessionDeps } from "../src/session-cmd.js";
+import { FakeAuth, FakeSandbox } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { PROJECT, cleanScanner, config, waitFor } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 // A session built through sessionDeps reads the learned layer (design 08-settings) as a run does.
@@ -37,9 +42,12 @@ async function parts(store: FactoryStore, clock: FakeClock): Promise<{ parts: Se
   };
 }
 
+/** No cli_user, git and the OS name nobody, the GitHub source off. */
+const NOBODY: SessionWho = { cliUser: null, env: { gitEmail: null, osUser: null }, githubSource: false };
+
 async function start(p: SessionParts): Promise<string[]> {
   const lines: string[] = [];
-  const d = { ...sessionDeps(p, mkdtempSync(join(tmpdir(), "session-cmd-")), new AbortController().signal), readSpec: async () => JSON.stringify(SPEC), print: (l: string) => lines.push(l) };
+  const d = { ...sessionDeps(p, mkdtempSync(join(tmpdir(), "session-cmd-")), new AbortController().signal, { ...NOBODY, cliUser: "github:1" as UserId }, new NoKeepAwake()), readSpec: async () => JSON.stringify(SPEC), print: (l: string) => lines.push(l) };
   await runSession(d, { cmd: "start", target: "7", spec: "spec.json" });
   return lines;
 }
@@ -70,7 +78,7 @@ describe("factory session through sessionDeps", () => {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
     const { parts: p } = await parts(store, clock);
-    const deps = sessionDeps(p, mkdtempSync(join(tmpdir(), "session-cmd-")), new AbortController().signal);
+    const deps = sessionDeps(p, mkdtempSync(join(tmpdir(), "session-cmd-")), new AbortController().signal, NOBODY, new NoKeepAwake());
     // Without it, Sessions.forgeForLocal refuses every local item (a local item is committed only through the local broker).
     expect((deps.sessions as unknown as { d: { local?: unknown } }).d.local).toBe(p.local);
   });
@@ -80,5 +88,139 @@ describe("factory session through sessionDeps", () => {
     expect(command.names).toEqual(["interactive", "session"]);
     expect(SESSION_USAGE).toMatch(/^factory interactive start/);
     expect(SESSION_USAGE).toContain("an interactive task");
+  });
+});
+
+/** A start through sessionDeps whose Sessions only records the person; `users` are the GitHub accounts by login. */
+async function startAs(who: SessionWho, as?: string, users: Record<string, number> = {}) {
+  const { parts: p } = await parts((await newStore(new FakeClock())).store, new FakeClock());
+  const requests: string[] = [];
+  const github = {
+    request: async <T>(_m: string, path: string): Promise<T> => {
+      requests.push(path);
+      const login = path.replace(/^\/users\//, "");
+      return login in users ? ({ id: users[login] } as T) : Promise.reject(new Error("network_unavailable"));
+    },
+  } as unknown as SessionParts["github"];
+  const persons: unknown[] = [];
+  const lines: string[] = [];
+  const d = {
+    ...sessionDeps({ ...p, github }, mkdtempSync(join(tmpdir(), "session-cmd-")), new AbortController().signal, who, new NoKeepAwake()),
+    sessions: { start: async (o: { person: unknown }) => (persons.push(o.person), { ok: true, lines: [] }) } as never, print: (l: string) => lines.push(l),
+  };
+  const code = await runSession(d, { cmd: "start", target: "7", ...(as === undefined ? {} : { as }) });
+  return { code, person: persons[0], requests, text: lines.join("\n") };
+}
+
+describe("the person a session start acts as", () => {
+  const env = { gitEmail: "Me@Example.com", osUser: "me" };
+
+  it("with no --as and the GitHub source off, starts as the CLI identity with no GitHub request", async () => {
+    expect(await startAs({ ...NOBODY, env })).toEqual({ code: 0, person: { provider: "local", subject: "me@example.com" }, requests: [], text: "" });
+  });
+
+  it("with no --as and the GitHub source on, still makes no GitHub request: a github: cli_user is that account", async () => {
+    const r = await startAs({ cliUser: "github:42" as UserId, env, githubSource: true });
+    expect([r.code, r.person, r.requests]).toEqual([0, { provider: "github", subject: "42" }, []]);
+  });
+
+  it("takes cli_user, else git user.email, else the OS user, else anonymous", async () => {
+    expect((await startAs({ ...NOBODY, cliUser: "local:boss" as UserId, env })).person).toEqual({ provider: "local", subject: "boss" });
+    expect((await startAs({ ...NOBODY, env })).person).toEqual({ provider: "local", subject: "me@example.com" });
+    expect((await startAs({ ...NOBODY, env: { gitEmail: null, osUser: "me" } })).person).toEqual({ provider: "local", subject: "me" });
+    expect((await startAs(NOBODY)).person).toEqual({ provider: "local", subject: "anonymous" });
+  });
+
+  it("with --as and the GitHub source on, looks the login up and uses its numeric id; an unknown login is refused with the fix", async () => {
+    const found = await startAs({ ...NOBODY, env, githubSource: true }, "alice", { alice: 7 });
+    expect([found.code, found.person, found.requests]).toEqual([0, { provider: "github", subject: "7", login: "alice" }, ["/users/alice"]]);
+    const missing = await startAs({ ...NOBODY, env, githubSource: true }, "nobody");
+    expect([missing.code, missing.person, missing.requests]).toEqual([1, undefined, ["/users/nobody"]]);
+    expect(missing.text).toMatch(/^refused: .*"nobody".*check the login, or start without --as/);
+  });
+
+  it("with --as and the GitHub source off, is refused naming the fix, with no GitHub request", async () => {
+    const r = await startAs({ ...NOBODY, env }, "alice", { alice: 7 });
+    expect([r.code, r.person, r.requests]).toEqual([1, undefined, []]);
+    expect(r.text).toMatch(/^refused: .*turn it on .*github-issues.*plugins\.source.*or start without --as/);
+  });
+
+  it("the usage names the CLI identity and what --as needs", () => {
+    expect(SESSION_USAGE).toContain("you act as the CLI identity");
+    expect(SESSION_USAGE).toContain("--as <login>");
+  });
+});
+
+/** A KeepAwake that counts its calls, and throws on each when `fail` is set; `held` is whether a hold is open. */
+class CountingAwake implements KeepAwake {
+  holds = 0;
+  releases = 0;
+  constructor(private readonly fail = false) {}
+  get held(): boolean { return this.holds > this.releases; }
+  async hold(): Promise<void> {
+    this.holds++;
+    if (this.fail) throw new Error("no power assertion");
+  }
+  async release(): Promise<void> {
+    this.releases++;
+    if (this.fail) throw new Error("no power assertion");
+  }
+}
+
+/** A start through sessionDeps whose Sessions starts at once and keeps the lease until `stop` aborts. */
+async function keptAwake(awake: CountingAwake, started = true) {
+  const { parts: p } = await parts((await newStore(new FakeClock())).store, new FakeClock());
+  const stop = new AbortController();
+  const warnings: string[] = [];
+  let heldWhileBeating: boolean | null = null;
+  const file = { work_item_id: "wi_a1" };
+  const sessions = {
+    start: async () => (started ? { ok: true, lines: [], file } : { ok: false, lines: ["refused"] }),
+    heartbeat: (_f: unknown, signal: AbortSignal) => new Promise<"stopped">((resolve) => {
+      heldWhileBeating = awake.held;
+      signal.addEventListener("abort", () => resolve("stopped"));
+    }),
+  } as never;
+  const d = {
+    ...sessionDeps(p, mkdtempSync(join(tmpdir(), "session-cmd-")), stop.signal, NOBODY, awake),
+    sessions, print: () => {}, log: { info() {}, error() {}, warn: (m: string) => warnings.push(m) },
+  };
+  const run = runSession(d, { cmd: "start", target: "7" });
+  return { run, stop, warnings, heldWhileBeating: () => heldWhileBeating };
+}
+
+describe("an interactive task keeps the machine awake while it holds the lease", () => {
+  it("holds keep-awake once the task starts, until its heartbeat stops, then releases it", async () => {
+    const awake = new CountingAwake();
+    const s = await keptAwake(awake);
+    await waitFor(async () => s.heldWhileBeating() !== null, "the heartbeat");
+    expect([s.heldWhileBeating(), awake.holds, awake.releases]).toEqual([true, 1, 0]);
+    s.stop.abort();
+    expect(await s.run).toBe(0);
+    expect([awake.holds, awake.releases, awake.held, s.warnings]).toEqual([1, 1, false, []]);
+  });
+
+  it("a refused start never holds keep-awake", async () => {
+    const awake = new CountingAwake();
+    const s = await keptAwake(awake, false);
+    expect(await s.run).toBe(1);
+    expect([awake.holds, awake.releases]).toEqual([0, 0]);
+  });
+
+  it("a hold or release that throws is logged as a warning and the session goes on", async () => {
+    const awake = new CountingAwake(true);
+    const s = await keptAwake(awake);
+    await waitFor(async () => s.heldWhileBeating() !== null, "the heartbeat");
+    s.stop.abort();
+    expect(await s.run).toBe(0);
+    expect([awake.holds, awake.releases]).toEqual([1, 1]);
+    expect(s.warnings).toEqual(["keep-awake hold failed", "keep-awake release failed"]);
+  });
+
+  it("builds the keep-awake plugin selected in plugins.awake, as the worker does", async () => {
+    const awake = new CountingAwake();
+    const registry = withPlugin(REGISTRY, "awake", "counting", () => awake);
+    const loaded = { registry, plugins: { awake: "counting" }, config: { repo: { owner: "o", name: "r" } } } as unknown as Loaded;
+    expect(await sessionAwake(loaded, new FakeClock())).toBe(awake);
   });
 });

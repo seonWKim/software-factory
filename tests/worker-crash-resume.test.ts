@@ -12,7 +12,11 @@ import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { STORE_BRANCH, type ToolBroker, type ToolCallContext, type ToolDescriptor, type ToolResult } from "../src/interfaces/tool-broker.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Worker } from "../src/worker/index.js";
-import { FakeForge, FAKE_GITHUB_TOOLS, FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FAKE_GITHUB_TOOLS } from "./helpers/fakes/broker.js";
+import { FakeAuth, FakeRunner, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes/config.js";
 import { BACKENDS, PROJECT_KEY } from "./helpers/store.js";
 
 // RFC 0015 M6: a run killed mid-implement is taken over by another worker, which resumes after the run's last
@@ -65,7 +69,7 @@ class Broker implements ToolBroker {
 }
 
 const spec = {
-  in_short: "AS-IS: a.\nTO-BE: b.", problem: "Change a", done_criteria: ["a changes"], desired_output: "a", scope: "src only",
+  in_short: "AS-IS: a.\nTO-BE: b.", problem: "Change a", done_criteria: ["a changes"], done_checks: [{ line: "a changes", test_file: "tests/a.test.ts" }], desired_output: "a", scope: "src only",
   allowed_paths: ["src/"], files_to_change: ["src/a.txt"], tier: 2, tier_reason: "small", estimated_lines: 10, estimated_files: 1,
 };
 

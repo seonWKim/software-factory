@@ -9,7 +9,9 @@ import { Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { issue, newStore, system } from "./helpers/store.js";
-import { FakeBroker, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 
 /** The checked-in prompts/improve.md: its draft part and its scorer section. */
 const IMPROVE_MD = readFileSync(join(import.meta.dirname, "..", "prompts", "improve.md"), "utf8");

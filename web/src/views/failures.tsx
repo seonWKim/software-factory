@@ -34,8 +34,17 @@ function copyOf(code: string): { title: string; meaning: string; next: string } 
 /** The Work page narrowed to the items a group hit. */
 const workPath = (group: FailureGroup): string => `${BASE}items?ids=${[...new Set(group.runs.map((r) => r.work_item_id))].map(encodeURIComponent).join(",")}`;
 
-/** One error code: plain title, meaning and next step, its count, last seen and items affected; expanded, the runs behind it. */
-function Group({ group, now, titles }: { group: FailureGroup; now: number; titles: ReadonlyMap<string, string> }) {
+/** Each work item's title by ID, from the items list, for the runs a failure group names; an item it lacks keeps its ID. */
+export function useItemTitles(): ReadonlyMap<string, string> {
+  const items = useApi<Items>(API.items);
+  return useMemo(() => new Map((items.data?.items ?? []).flatMap((i) => (i.title ? [[i.id, i.title] as const] : []))), [items.data]);
+}
+
+/**
+ * One error code as a list item: plain title, meaning and next step, its count, last seen and items affected; expanded,
+ * the runs behind it. Health's Failures section and an alarm's Show failures dialog (alarm-dialogs.tsx) draw it.
+ */
+export function FailureGroupView({ group, now, titles }: { group: FailureGroup; now: number; titles: ReadonlyMap<string, string> }) {
   const [open, setOpen] = useState(false);
   const copy = copyOf(group.code);
   const columns: Column<FailureRun>[] = [
@@ -80,9 +89,7 @@ export function FailuresSection() {
   const now = useNow();
   const [win, setWin] = useState<Window>(initialWindow);
   const q = useApi<Failures>(API.failures(win));
-  // Items show by title; an item the list does not hold keeps its ID.
-  const items = useApi<Items>(API.items);
-  const titles = useMemo(() => new Map((items.data?.items ?? []).flatMap((i) => (i.title ? [[i.id, i.title] as const] : []))), [items.data]);
+  const titles = useItemTitles();
   return (
     <Card id="failures" title={t("page.failures")}>
       <SegmentedControl label={t("failures.window")} options={WINDOWS.map((w) => ({ id: w, label: t(WINDOW_LABELS[w]) }))} value={win} onChange={setWin} className="mb-6" />
@@ -97,7 +104,7 @@ export function FailuresSection() {
               </p>
             )}
             <ul aria-label={t("failures.groups")} className="space-y-2">
-              {q.data.groups.map((g) => <Group key={g.code} group={g} now={now} titles={titles} />)}
+              {q.data.groups.map((g) => <FailureGroupView key={g.code} group={g} now={now} titles={titles} />)}
             </ul>
           </>
         )}

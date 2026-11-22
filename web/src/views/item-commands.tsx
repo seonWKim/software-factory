@@ -1,23 +1,21 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, type RefObject, useId, useRef, useState } from "react";
 import {
-  API, type CommandReply, type ItemCommand, type ItemDetail, type ItemRow, type MergeReadiness, POLL_MS, type RequestState, type Session, getJson,
-  mergeInFlight, mergeReturned, plainRefusal, postCommand, showsMerge, useApi,
+  API, type CommandReply, type ItemCommand, type ItemDetail, type MergeReadiness, POLL_MS, getJson,
+  mergeInFlight, mergeReturned, plainRefusal, showsMerge, useApi,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
-import { FOCUS } from "../components/ui/control.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
 import { Radio } from "../components/ui/radio.js";
-import { type MenuItem, OverflowMenu, Tooltip } from "../components/ui/menu.js";
+import { type MenuItem, OverflowMenu } from "../components/ui/menu.js";
 import { Select } from "../components/ui/select.js";
 import { Textarea } from "../components/ui/textarea.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { cn } from "../lib/cn.js";
-import { Link } from "../nav.js";
-import { itemPath } from "../pages.js";
 import { type Outcome, OutcomeText, PendingProposals } from "./command-box.js";
+import { type LocalSend, awaitsReply, commandOutcome, useCommandSend } from "./command-send.js";
+import { RestartButton } from "./merge-button.js";
 import { RejectDialog, ReviseDialog, commandLabel, type CommandDialogProps } from "./item-decisions.js";
 
 // Item commands (design §9, issues #228, #526; design 09-dashboard-item-commands): the sends, outcomes and dialogs
@@ -43,6 +41,8 @@ export type FormName = "reject" | "revise" | "verdict";
  * reason that accepts Approve or Answer never shows Retry first.
  */
 const PRIMARY = ["approve", "resolve", "retry"];
+/** The main action of an item that stopped the same way three times (`repeated_stop`), in this order, before PRIMARY. */
+const AFTER_REPEATS = ["revise", "reject"];
 
 /** The verdicts a person gives, as `/verdict` takes them, with their button labels. */
 const VERDICTS = [["accept", "commands.accept"], ["changes", "commands.changes"], ["reject", "commands.reject"]] as const satisfies readonly (readonly [string, MessageKey])[];
@@ -128,13 +128,6 @@ export function QueuedFeedbackList({ timeline }: { timeline: ItemDetail["timelin
 }
 
 /**
- * What this page did with a command since it loaded: the request it sent (with the row's `label` when the server
- * applied it at once, or the `refusal` it answered with), or the error its send got.
- */
-export type LocalSend = { seq: number; label?: string | null; refusal?: string | null } | { error: string };
-
-
-/**
  * Command `c` as an entry of a "…" menu: its label (with the controller's reason when the viewer may not send it, then
  * disabled), its `data-action`, and `onSelect`. `off`: commands are off or a send is under way.
  */
@@ -145,74 +138,6 @@ export function menuEntry(c: ItemCommand, off: boolean, onSelect: () => void): M
     action: c.name,
     onSelect,
   };
-}
-
-/** The text beside a button the viewer's grants do not allow: the controller's reason, in plain words. */
-export function notAllowed(c: ItemCommand): Outcome {
-  return { tone: "status", text: plainRefusal(c.reason ?? "not allowed") };
-}
-
-/**
- * The outcome of the item's latest request for `command`: its refusal, "sent" while not handled, else "Done".
- * A send from this page wins until a reply as new as it arrives; a failed send shows its error.
- */
-export function commandOutcome(replies: readonly CommandReply[], command: string, local?: LocalSend): Outcome {
-  if (local && "error" in local) return { tone: "error", text: local.error };
-  if (local?.refusal) return { tone: "error", text: plainRefusal(local.refusal) };
-  const latest = replies.filter((r) => r.command === command).reduce<CommandReply | null>((a, r) => (a && a.seq > r.seq ? a : r), null);
-  // Applied at once: its label until a newer request's reply, or a refusal of this one, arrives.
-  if (local?.label && (!latest || latest.seq <= local.seq) && !latest?.refusal) return { tone: "status", text: local.label };
-  if (local && (!latest || latest.seq < local.seq)) return { tone: "status", text: t("commands.sent") };
-  if (!latest) return null;
-  if (latest.refusal) return { tone: "error", text: plainRefusal(latest.refusal) };
-  return { tone: "status", text: latest.handled_at === null ? t("commands.sent") : t("commands.done") };
-}
-
-/** Whether `outcome` is the "sent" state: a request queued, its reply not here yet. */
-export const awaitsReply = (outcome: Outcome): boolean => outcome?.tone === "status" && outcome.text === t("commands.sent");
-
-/** The fields of the item's row and page that a request's state changes; a Merge under way also turns its button. */
-function statePatch(s: RequestState): Partial<ItemRow> {
-  const fields = { stage: s.stage, blocked_on: s.blocked_on, blocked_reason: s.blocked_reason };
-  const merge = { enabled: false, reason: s.label };
-  return mergeInFlight(merge) ? { ...fields, merge } : fields;
-}
-
-/**
- * Sending app commands for item `id`: `send` posts one with the session's token, keeps what this page did with each
- * command (`local`), merges the item's new state from the response (Approve, Merge) into the item and list queries at
- * once, then re-reads them, so the controller's reply shows. `on`: commands are on for this page's session.
- */
-export function useCommandSend(id: string) {
-  const client = useQueryClient();
-  const session = useApi<Session>(API.session, false);
-  const [busy, setBusy] = useState(false);
-  const [local, setLocal] = useState<Record<string, LocalSend>>({});
-  const token = session.data?.csrf_token;
-  const send = async (command: string, note: string, proposal?: string): Promise<boolean> => {
-    if (!token) return false;
-    setBusy(true);
-    // A proposal's Confirm all or Cancel is kept under the proposal's ID, every other send under its command.
-    const key = proposal ?? command;
-    try {
-      const r = await postCommand(token, id, command, note, proposal);
-      setLocal((m) => ({ ...m, [key]: r.ok ? { seq: r.seq, label: r.state?.label ?? null, refusal: r.refusal ?? null } : { error: r.error } }));
-      if (r.ok && r.state) {
-        const patch = statePatch(r.state);
-        client.setQueryData<ItemDetail>([API.item(id)], (old) => (old ? { ...old, item: { ...old.item, ...patch } } : old));
-        client.setQueriesData<{ items?: ItemRow[] }>({ predicate: (q) => String(q.queryKey[0]).startsWith(API.items) }, (old) =>
-          Array.isArray(old?.items) ? { ...old, items: old.items.map((row) => (row.id === id ? { ...row, ...patch } : row)) } : old);
-      }
-      if (r.ok) await Promise.all([client.invalidateQueries({ queryKey: [API.item(id)] }), client.invalidateQueries({ queryKey: [API.items] })]);
-      return r.ok;
-    } catch (err) {
-      setLocal((m) => ({ ...m, [key]: { error: err instanceof Error ? err.message : String(err) } }));
-      return false;
-    } finally {
-      setBusy(false);
-    }
-  };
-  return { session, on: !!token && session.data?.commands_enabled === true, busy, local, send };
 }
 
 /** A command row with a permission ask's paths (the item API's `paths`, src/ui/commands.ts ItemCommandRow). */
@@ -227,12 +152,16 @@ export function withPaths(c: ItemCommand, note: string): string {
 }
 
 /**
- * The command the state asks for, of those the viewer may send: the one that allows a permission ask's paths, else
- * the first of approve, resolve and retry (PRIMARY order, not the API's), so Retry only when neither other applies.
+ * The command the state asks for, of those the viewer may send: the one that allows a permission ask's paths; else,
+ * on an item that stopped the same way three times (`repeated_stop`), Revise, then Reject; else the first of approve,
+ * resolve and retry (PRIMARY order, not the API's), so Retry only when neither other applies.
  */
 export function primaryOf(commands: readonly ItemCommand[]): ItemCommand | undefined {
-  const rank = (c: ItemCommand) => PRIMARY.indexOf(c.name) - (pathsOf(c).length > 0 ? PRIMARY.length : 0);
-  return commands.filter((c) => PRIMARY.includes(c.name) && c.allowed).sort((a, b) => rank(a) - rank(b))[0];
+  const allowed = commands.filter((c) => c.allowed);
+  const first = (names: readonly string[], cs: readonly ItemCommand[]) => cs.filter((c) => names.includes(c.name)).sort((a, b) => names.indexOf(a.name) - names.indexOf(b.name))[0];
+  return first(PRIMARY, allowed.filter((c) => pathsOf(c).length > 0))
+    ?? first(AFTER_REPEATS, allowed.filter((c) => c.repeated_stop))
+    ?? first(PRIMARY, allowed);
 }
 
 /**
@@ -288,66 +217,6 @@ export function CommandDialog({ command, title, pr, ...props }: Omit<CommandDial
 }
 
 /**
- * The Merge button (design §9), on the item page and in Needs you: sends `merge` with no note (a local item's local
- * merge, as `factory merge`; any other item's PR merged on the forge at the head the review passed), then re-reads
- * the item and the list, so the controller's reply shows. Disabled with the item API's reason beside it; else the
- * latest merge reply (a refusal: the head moved, a conflict, a failing check, no approve_merge), or `returned`, why
- * the last Merge went back to merge_pending. Once pressed the button reads the merge's progress: "Merging…" while
- * the request waits for the controller or the forge merges, "Checking…" while the merge queue checks a local item's
- * merged result.
- */
-export function MergeButton({ id, source, merge, replies = [], returned = null }: {
-  id: string; source: string | undefined; merge: MergeReadiness; replies?: readonly CommandReply[]; returned?: string | null;
-}) {
-  const { on, busy, local, send: post } = useCommandSend(id);
-  const send = () => post("merge", "");
-  const queued = mergeInFlight(merge);
-  const reply = commandOutcome(replies, "merge", local.merge);
-  const back: Outcome = returned && reply?.tone !== "error" ? { tone: "error", text: plainRefusal(returned) } : null;
-  const outcome: Outcome = queued ? null : merge.enabled ? (back ?? reply) : { tone: "status", text: merge.reason ?? "" };
-  // Merging… from the click until the controller's reply (handled or refused) arrives.
-  const merging = merge.enabled && (busy || awaitsReply(outcome));
-  return (
-    <span data-merge={merge.enabled ? "enabled" : "disabled"} className="inline-flex flex-wrap items-center gap-2">
-      <Button
-        variant="primary"
-        data-action="merge"
-        disabled={!merge.enabled || !on || merging}
-        title={source === "local"
-          ? t("commands.mergeLocal")
-          : t("commands.mergePr")}
-        onClick={() => void send()}
-      >
-        {queued ? merge.reason : merging ? t("commands.merging") : t("commands.merge")}
-      </Button>
-      <OutcomeText outcome={outcome} />
-    </span>
-  );
-}
-
-/**
- * The Restart app button (design 09-dashboard-item-commands), on a merged item's page when `repo.restart_command` is
- * set: sends `restart` with no note. "Restarting…" from the click until the controller's reply, then "Restart queued"
- * (the run's result is posted in the thread) or the refusal; disabled with the controller's reason when the viewer
- * may not send it.
- */
-export function RestartButton({ command, on, busy, replies, local, send }: {
-  command: ItemCommand; on: boolean; busy: boolean; replies: readonly CommandReply[]; local: LocalSend | undefined; send: () => void;
-}) {
-  const reply = command.allowed ? commandOutcome(replies, "restart", local) : notAllowed(command);
-  const waiting = command.allowed && (busy || awaitsReply(reply));
-  const outcome: Outcome = waiting ? null : reply?.tone === "status" && reply.text === t("commands.done") ? { tone: "status", text: t("commands.restartQueued") } : reply;
-  return (
-    <span data-command="restart" className="mt-2 inline-flex flex-wrap items-center gap-2">
-      <Button variant="secondary" data-action="restart" disabled={!on || !command.allowed || waiting} title={t("commands.restartTitle")} onClick={send}>
-        {waiting ? t("commands.restarting") : t("commands.restart")}
-      </Button>
-      <OutcomeText outcome={outcome} />
-    </span>
-  );
-}
-
-/**
  * The verdict dialog, on the Floor and the item page: an Accept, Changes or Reject choice, a severity and a reason,
  * sent as `<kind> <severity> <reason>` (verdictNote). Changes and Reject need a reason; Accept sends without one.
  */
@@ -398,7 +267,11 @@ const PRIMARY_LABEL: Record<string, MessageKey> = { approve: "needs.actApprove",
 /** The label of a primary that allows a permission ask's paths (it sends them as `+paths`). */
 const ALLOW_LABEL: Record<string, MessageKey> = { approve: "needs.actAllowApprove", retry: "needs.actAllowRetry", resolve: "needs.actAllowAnswer" };
 /** The primary button's label for `c`: what it does, naming the permission it gives when it carries paths. */
-export const primaryLabel = (c: ItemCommand): string => t((pathsOf(c).length > 0 ? ALLOW_LABEL : PRIMARY_LABEL)[c.name]!);
+export const primaryLabel = (c: ItemCommand): string => {
+  const key = (pathsOf(c).length > 0 ? ALLOW_LABEL : PRIMARY_LABEL)[c.name];
+  // Revise or Reject after a repeated stop (primaryOf): the command's own name.
+  return key ? t(key) : commandLabel(c.name);
+};
 /** The key that presses a row's primary button when the row is selected (never Merge). */
 export const PRIMARY_KEY = "p";
 
@@ -412,7 +285,6 @@ export interface NeedActionsProps {
   /** "merge": the primary button is Merge (disabled with the reason, or "Checking…" while the merge check runs). */
   group: "merge" | "approve" | "answer";
   merge?: MergeReadiness | undefined;
-  source: string;
   checking: boolean;
   /** The row's command sender, shared with its Why text. */
   cmd: ReturnType<typeof useCommandSend>;
@@ -420,6 +292,10 @@ export interface NeedActionsProps {
   allow: readonly { label: string; note: string }[];
   /** False: the row shows the failed sends itself (SendErrors on its own line, design-system C-050), not this cell. */
   inlineErrors?: boolean;
+  /** The row's own actions after the item's commands (a task row's Add sub-task, Projects, Delete): one menu per row. */
+  extra?: readonly MenuItem[] | undefined;
+  /** The menu button's accessible name; default "More actions". */
+  label?: string | undefined;
 }
 
 /** The errors of a row's failed sends and refused transitions, one alert each (NeedActions' `cmd.local`). */
@@ -437,7 +313,7 @@ export function SendErrors({ local }: { local: Record<string, LocalSend> }) {
  * a failed send shows its error in the cell (or, with `inlineErrors` false, where the row puts SendErrors), a sent
  * one in a short status message that outlives the row.
  */
-export function NeedActions({ id, title, commands, pr, group, merge, source, checking, cmd, allow, inlineErrors = true }: NeedActionsProps) {
+export function NeedActions({ id, title, commands, pr, group, merge, checking, cmd, allow, inlineErrors = true, extra = [], label }: NeedActionsProps) {
   const { on, busy, local, send: post } = cmd;
   const [open, setOpen] = useState<FormName | null>(null);
   const wrap = useRef<HTMLSpanElement>(null);
@@ -468,7 +344,7 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
     setOpen(null);
   };
   const canRetry = commands.some((c) => c.name === "retry" && c.allowed);
-  const items = [
+  const rest = [
     ...others.map((c) => menuEntry(c, off, () => (DIALOGS.includes(c.name) ? setOpen(c.name as FormName) : void send(c.name, withPaths(c, ""))))),
     ...allow.map((a) => ({ label: a.label, disabled: off || !canRetry, onSelect: () => void send("retry", a.note) })),
   ];
@@ -478,36 +354,35 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
   // list's next read moves the row on, so a click never looks like nothing happened.
   const sentLocal = primary ? local[primary.name] : undefined;
   const sent = sentLocal !== undefined && "seq" in sentLocal && !sentLocal.refusal ? sentLocal : null;
+  // Revise or Reject as the main action (a repeated stop, primaryOf) opens its dialog, as its menu entry does.
+  const sendPrimary = () => {
+    if (!primary) return;
+    if (DIALOGS.includes(primary.name)) setOpen(primary.name as FormName);
+    else void send(primary.name, withPaths(primary, ""));
+  };
+  // A disabled Merge says why in its label ("Merge: 1 conflicting file"), as a disabled command's menu entry does.
+  const mergeLabel = checking ? t("needs.checking") : queued ? (merge?.reason ?? t("commands.merging")) : merging ? t("commands.merging")
+    : merge && !merge.enabled && merge.reason ? `${t("commands.merge")}: ${merge.reason}` : t("commands.merge");
+  const head: MenuItem[] = group === "merge"
+    ? [{ label: mergeLabel, action: "merge", disabled: off || checking || merging || !merge?.enabled, onSelect: () => void send("merge", "") }]
+    : primary
+      ? [{ label: sent ? (sent.label ?? t("commands.sentWaiting")) : primaryLabel(primary), action: primary.name, disabled: off || sent !== null || !primary.allowed, onSelect: sendPrimary }]
+      : [];
+  const items = [...head, ...rest, ...extra];
   return (
     <span ref={wrap} data-need-commands className="inline-flex flex-wrap items-center justify-end gap-2">
-      {group === "merge" ? (
-        <span data-command="merge" className="inline-flex items-center gap-2">
-          <Tooltip text={merge && !merge.enabled && merge.reason ? merge.reason : source === "local" ? t("commands.mergeLocal") : t("commands.mergePr")}>
-            <Button variant="secondary" data-action="merge" disabled={off || checking || merging || !merge?.enabled} onClick={() => void send("merge", "")}>
-              {checking ? t("needs.checking") : queued ? merge?.reason : merging ? t("commands.merging") : t("commands.merge")}
-            </Button>
-          </Tooltip>
-          {!awaitsReply(outcome) && !queued && <OutcomeText outcome={outcome} />}
-        </span>
-      ) : primary ? (
-        <span data-command={primary.name} className="inline-flex">
-          <Tooltip text={pathsOf(primary).length > 0
-            ? t("needs.allowPaths", { paths: pathsOf(primary).join(", "), key: PRIMARY_KEY })
-            : t("needs.withKey", { label: primaryLabel(primary), key: PRIMARY_KEY })}>
-            <Button variant="secondary" data-shortcut={PRIMARY_KEY} data-action={primary.name} data-sent={sent ? "" : undefined} disabled={off || sent !== null} onClick={() => void send(primary.name, withPaths(primary, ""))}>
-              {sent ? (sent.label ?? t("commands.sentWaiting")) : primaryLabel(primary)}
-            </Button>
-          </Tooltip>
-        </span>
-      ) : (
-        <Link href={itemPath(id)} data-command="open" data-action="open" className={cn("inline-flex min-h-8 items-center rounded-control border border-border-strong bg-surface px-3 text-sm font-medium text-text-1 hover:bg-surface-2", FOCUS)}>
-          {t("needs.actOpen")}
-        </Link>
+      {/* Every action is in the menu (owner feedback 2026-11-20); this hidden button only carries the row's "p" shortcut. */}
+      {primary && group !== "merge" && (
+        <Button hidden data-shortcut={PRIMARY_KEY} data-command={primary.name} disabled={off || sent !== null || !primary.allowed} onClick={sendPrimary} />
       )}
-      <OverflowMenu label={t("commands.more")} items={items.length > 0 ? items : [{ label: t("needs.noMore"), disabled: true, onSelect: () => undefined }]} />
-      {applied.filter((text) => text !== sent?.label).map((text) => (
+      {group === "merge" && merging && !queued && <OutcomeText outcome={{ tone: "status", text: t("commands.merging") }} />}
+      {group === "merge" && !awaitsReply(outcome) && !queued && <OutcomeText outcome={outcome} />}
+      <OverflowMenu label={label ?? t("commands.more")} items={items.length > 0 ? items : [{ label: t("needs.noMore"), disabled: true, onSelect: () => undefined }]} />
+      {/* The menu closes on a send, so the row itself says what happened: the applied label, else "Sent, waiting…". */}
+      {applied.map((text) => (
         <OutcomeText key={text} outcome={{ tone: "status", text }} />
       ))}
+      {sent !== null && !sent.label && <OutcomeText outcome={{ tone: "status", text: t("commands.sentWaiting") }} />}
       {inlineErrors && <SendErrors local={local} />}
       {open !== null && (
         <CommandDialog

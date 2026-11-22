@@ -16,7 +16,10 @@ import type { AuthProvider } from "../src/interfaces/auth-provider.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { storedAnswers } from "../src/shared/command-notes.js";
 import { retry } from "../src/controller/units/support.js";
-import { FakeAuth, FakeSlackPollSource, FakeSource, alice, cleanScanner, config, issueRef, pipeline, silent, slackRef, triageSpec } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeSlackPollSource, FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, silent, slackRef, triageSpec } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 import { newStore, PROJECT_KEY, system, w1 } from "./helpers/store.js";
 
 describe("parseComment", () => {
@@ -312,6 +315,22 @@ describe("command table", () => {
     expect(commandTableMarkdown()).toContain("; on a local item with no PR: waiting for a human merge; on its PR: ");
   });
 
+  it("/hold <id> applies only to a local item with no PR whose implement run asked for a human; its help text is the hold reply option", () => {
+    const hold = commandSpec("hold");
+    expect(hold.usage).toBe("/hold <id>");
+    expect(hold.description).toMatch(/^Hold until <id> merges: writes a `Depends on: <id>` line/);
+    const local = { phase: "agent_needs_human" as const, has_pr: false, local: true as const };
+    expect(applies(hold, { ...local, asked_by: "implement" })).toBe(true);
+    expect(commandFooter({ ...local, asked_by: "implement" })).toContain(`- \`/hold <id>\`: ${hold.description}.`);
+    // A resolve run that asked, any other phase, a GitHub item, or a local item's PR: not offered.
+    expect(applies(hold, { ...local, asked_by: "resolve" })).toBe(false);
+    for (const phase of COMMAND_PHASES.filter((p) => p !== "agent_needs_human")) expect(applies(hold, { phase, has_pr: false, local: true }), phase).toBe(false);
+    expect(applies(hold, { phase: "agent_needs_human", has_pr: false, asked_by: "implement" })).toBe(false);
+    expect(applies(hold, { ...local, has_pr: true, asked_by: "implement" })).toBe(false);
+    expect(commandTableMarkdown()).toContain(`| \`/hold <id>\` | ${hold.description} | on a local item with no PR: blocked: the agent asked for a human |`);
+    expect(helpReply({ ...local, asked_by: "implement" })).toContain("`/hold <id>` **(now)**: Hold until <id> merges");
+  });
+
   it("/help names the state by its label, not its phase id", () => {
     expect(helpReply(s("spec_pending"))).toContain("(spec waiting for approval)");
     expect(helpReply(s("spec_pending"))).not.toContain("spec_pending");
@@ -333,6 +352,17 @@ describe("command table", () => {
     const row = commandTableMarkdown().split("\n").find((l) => l.startsWith("| `/retry` |"))!;
     expect(row).toContain("held: waiting for the previous phase of its split");
     expect(commandsFor(s("other_blocked")).map((c) => c.name)).not.toContain("retry");
+  });
+
+  it("an item released by its interactive session is its own phase, where /retry applies and /revise and /approve do not", () => {
+    expect(commandPhase({ stage: "RUNNING", blocked_on: "human", blocked_reason: "session_released", change_ref: null })).toBe("session_released");
+    expect(phaseLabel("session_released")).toBe("released: its session ended without a PR");
+    expect(commandsFor(s("session_released")).map((c) => c.name)).toContain("retry");
+    for (const name of ["revise", "approve"] as const) expect(applies(commandSpec(name), s("session_released"))).toBe(false);
+    expect(helpReply(s("session_released"))).toContain("(released: its session ended without a PR)");
+    expect(helpReply(s("session_released"))).toContain("`/retry` **(now)**");
+    const row = commandTableMarkdown().split("\n").find((l) => l.startsWith("| `/retry` |"))!;
+    expect(row).toContain("released: its session ended without a PR");
   });
 
   it("SET_UP.md has the command table from code", () => {
@@ -395,6 +425,7 @@ describe("footers match what the controller accepts", () => {
     merge_pending: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" },
     max_loops: { stage: "REVIEW", blocked_on: "human", blocked_reason: "max_loops" },
     merge_conflict: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending" },
+    session_released: { stage: "RUNNING", blocked_on: "human", blocked_reason: "session_released" },
     other_blocked: { stage: "RUNNING", blocked_on: "ci", blocked_reason: "something" },
     merged: { stage: "CLOSED", close_reason: "completed", merge_sha: "m1" },
     closed: { stage: "CLOSED", close_reason: "rejected" },
@@ -740,6 +771,67 @@ describe("answers to the spec's decisions on /approve (issue #526)", () => {
       "`/approve` was not applied: only the owner may send this command (`not_a_collaborator`).",
       "`/revise` was not applied: only the owner may send this command (`not_a_collaborator`).",
     ]);
+  });
+
+  describe("an option that needs a path outside the allowed paths (design 04-spec-gate-commands, 2026-11-21)", () => {
+    const WIDE = [{
+      ...DECISIONS[0]!,
+      option_changes: [{ option: "Only warn", extra_paths: ["docs/ci.md"], done_when: ["CI warns when files outside allowed_paths change"] }],
+    }];
+    const REPLY = "`/approve +paths docs/ci.md`";
+    const implementRuns = async (h: Awaited<ReturnType<typeof harness>>, id: WorkItemId) => (await h.store.listRuns(id)).filter((r) => r.kind === "implement");
+
+    it("is refused from a comment, Slack, the CLI and the dashboard with one reply naming the path and the +paths reply; nothing is queued or widened", async () => {
+      const h = await harness();
+      const byComment = await h.triaged(issueRef(70), WIDE);
+      const bySlack = await h.triaged(slackRef(71), WIDE);
+      const byCli = await h.triaged(issueRef(72), WIDE);
+      const byApp = await h.triaged(issueRef(73), WIDE);
+      // Each delivered twice (a second poll): still one reply.
+      for (const _ of [1, 2]) {
+        await h.controller.handleEvent({ kind: "spec_approved", source: byComment.source, comment_id: "w1", approver: alice, note: "1: Only warn" });
+        await h.controller.handleEvent({ kind: "spec_approved", source: bySlack.source, comment_id: "w2", approver: { provider: "slack", subject: "U2", login: "u" }, note: "1: Only warn" });
+      }
+      const cli = { store: h.store, identity: { user: ME, from: "git user.email" as const }, project: async () => PROJECT_KEY, read: async () => "", newId: () => "x" };
+      expect((await runLocalCli(cli, { action: "command", command: "approve", id: byCli.id, text: "1: Only warn" })).code).toBe(0);
+      await h.store.recordAppCommandRequest({ key: "k73", actor: ME, command: "approve", args: { work_item_id: byApp.id, note: "1: Only warn" } });
+      await h.controller.tickCommands();
+
+      for (const [name, it, marker] of [["comment", byComment, "w1"], ["slack", bySlack, "w2"]] as const) {
+        const replies = (await h.store.listItemMessages(it.id)).filter((m) => m.marker === `<!-- factory:refused:${marker} -->`);
+        expect(replies, name).toHaveLength(1);
+        expect(replies[0]!.body, name).toContain("`docs/ci.md`");
+        expect(replies[0]!.body, name).toContain(REPLY);
+      }
+      const app = (await h.store.listAppCommandRequestsForItem(byApp.id, 5)).at(-1)!;
+      expect(app.refusal).toContain(REPLY);
+      for (const [name, it] of [["comment", byComment], ["slack", bySlack], ["cli", byCli], ["app", byApp]] as const) {
+        const now = (await h.store.getWorkItem(it.id))!;
+        expect(now, name).toMatchObject({ stage: "READY", blocked_reason: "spec_pending", allowed_paths: it.allowed_paths });
+        expect(await h.approval(it.id), name).toBeUndefined();
+        expect(await implementRuns(h, it.id), name).toEqual([]);
+      }
+    });
+
+    it("an approval whose +paths covers the option's path starts the implement run with the widened allowed_paths", async () => {
+      const h = await harness();
+      const it = await h.triaged(issueRef(80), WIDE);
+      await h.comment(it, "/approve +paths docs/ci.md\n1: Only warn");
+      const now = (await h.store.getWorkItem(it.id))!;
+      expect(now).toMatchObject({ stage: "RUNNING", blocked_on: "none" });
+      expect(now.allowed_paths).toEqual([...it.allowed_paths, "docs/ci.md"]);
+      expect(await implementRuns(h, it.id)).toHaveLength(1);
+      expect(storedAnswers((await h.approval(it.id))!.detail)[0]).toEqual({ question: DECISIONS[0]!.question, answer: "Only warn", accepted_default: false });
+    });
+
+    it("the default option needs no extra path: an approval with it starts the run with allowed_paths as they were", async () => {
+      const h = await harness();
+      const it = await h.triaged(issueRef(90), WIDE);
+      await h.controller.handleEvent({ kind: "spec_approved", source: it.source, comment_id: "d9", approver: alice, note: "1: Fail the job" });
+      const now = (await h.store.getWorkItem(it.id))!;
+      expect(now).toMatchObject({ stage: "RUNNING", allowed_paths: it.allowed_paths });
+      expect(await implementRuns(h, it.id)).toHaveLength(1);
+    });
   });
 });
 

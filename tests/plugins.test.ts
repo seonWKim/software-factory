@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type Loaded, Plugins, build, loadConfig } from "../src/compose.js";
+import { type Loaded, loadConfig } from "../src/load-config.js";
+import { Plugins } from "../src/plugin-set.js";
+import { build } from "../src/compose.js";
 import type { WorkerDeps } from "../src/worker/index.js";
 import { CaffeinateKeepAwake } from "../src/impl/awake/caffeinate-keep-awake.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
@@ -57,7 +59,9 @@ import {
   selectedSources,
   withPlugin,
 } from "../src/plugins.js";
-import { FakeSlackPollSource, fakeSlackPollRegistry, fakeRepoLookup } from "./helpers/fakes.js";
+import { FakeSlackPollSource } from "./helpers/fakes/source.js";
+import { fakeSlackPollRegistry } from "./helpers/harness.js";
+import { fakeRepoLookup } from "./helpers/fakes/config.js";
 import { TokenCredentials } from "../src/impl/github/token-credentials.js";
 
 const REPO_ROOT = join(import.meta.dirname, "..");

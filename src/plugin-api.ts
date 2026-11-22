@@ -5,7 +5,7 @@
 // await), so a descriptor that imported src/plugins.ts back would wait on itself. Descriptors import this
 // module only.
 
-import type { Loaded } from "./compose.js";
+import type { Loaded } from "./load-config.js";
 import type { Logger } from "./core/log.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
 import type { CalendarSource } from "./interfaces/calendar-source.js";

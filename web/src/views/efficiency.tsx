@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { type EfficiencyChart, type EfficiencyFigure, type EfficiencyItem, type EfficiencyWeek, useEfficiency } from "../api/efficiency.js";
+import { type EfficiencyChart, type EfficiencyFigure, type EfficiencyItem, type EfficiencyTierMerges, type EfficiencyWeek, useEfficiency } from "../api/efficiency.js";
 import { Button } from "../components/ui/button.js";
 import { Card, CardSection } from "../components/ui/card.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
@@ -16,7 +16,8 @@ import { itemPath } from "../pages.js";
 // Health's Efficiency tab (design 06-efficiency): finished items per hour, day and week as small bar charts with their
 // totals, then the picked week's tokens and time per finished item (median and 90th percentile) with the change from
 // the week before, and its slowest and costliest items. Bars are plain elements on token colours, as in Spend; a
-// weekly bar is a Button that picks its week (kept in the browser only). Every number is also shown as text.
+// weekly bar is a Button that picks its week (kept in the browser only). Every number is also shown as text. Last, the
+// per-tier merge record and whether each tier meets the auto-merge rule (read-only: nothing merges on it yet).
 
 /** A change in whole percent, signed, with a true minus sign: "−18%", "+5%", "0%". */
 export const changeText = (n: number): string => `${n > 0 ? "+" : n < 0 ? "−" : ""}${Math.abs(n)}%`;
@@ -123,6 +124,31 @@ function ItemList({ label, items, figure, empty }: { label: string; items: Effic
   );
 }
 
+const RULE_KEY: Record<EfficiencyTierMerges["rule"], MessageKey> = {
+  met: "efficiency.ruleMet",
+  not_met: "efficiency.ruleNotMet",
+  too_few: "efficiency.ruleTooFew",
+  never: "efficiency.ruleNever",
+};
+
+/** Tiers 1–5 and untiered: merges in the last 30 days, reverted or fixed forward, verdicts other than accept, the rule. */
+function TierMerges({ rows }: { rows: EfficiencyTierMerges[] }) {
+  if (rows.every((r) => r.sample === 0)) return <EmptyState title={t("efficiency.noMerges")} />;
+  const columns: Column<EfficiencyTierMerges>[] = [
+    { key: "tier", header: t("efficiency.tier"), render: (r) => (r.tier === null ? t("efficiency.untiered") : t("efficiency.tierN", { tier: r.tier })) },
+    { key: "merged", header: t("efficiency.merged30d"), numeric: true },
+    { key: "reverted_or_fixed", header: t("efficiency.revertedOrFixed"), numeric: true },
+    { key: "not_accept", header: t("efficiency.notAccept"), numeric: true },
+    { key: "rule", header: t("efficiency.rule"), render: (r) => <span data-rule={r.rule}>{t(RULE_KEY[r.rule], { count: r.sample, bad: r.sample_bad, critical: r.sample_critical })}</span> },
+  ];
+  return (
+    <>
+      <p className="mb-2 text-sm text-pretty text-text-2">{t("efficiency.mergesNote")}</p>
+      <DataTable label={t("efficiency.merges")} columns={columns} rows={rows} rowKey={(r) => String(r.tier)} empty={t("efficiency.noMerges")} />
+    </>
+  );
+}
+
 /** The Efficiency tab: one Card. */
 export function EfficiencyTab() {
   const q = useEfficiency();
@@ -155,6 +181,9 @@ export function EfficiencyTab() {
             </CardSection>
             <CardSection title={t("efficiency.costliest")}>
               <ItemList label={t("efficiency.costliest")} items={week.costliest} figure={(i) => (i.cost_usd === null ? "" : usd(i.cost_usd))} empty={t("efficiency.noCost")} />
+            </CardSection>
+            <CardSection title={t("efficiency.merges")}>
+              <TierMerges rows={v.merges} />
             </CardSection>
           </>
         );

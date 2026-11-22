@@ -2,8 +2,9 @@ import { COMMAND_TABLE, type CommandWho, cliHelpLine } from "./command-table.js"
 import { LOCAL_SOURCE } from "./local-merge.js";
 import { type TriageOutput, parseTriage } from "./outputs.js";
 import { type ItemPhase, isClosedPhase, phaseOf } from "./phase.js";
-import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind } from "./policy.js";
+import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, SESSION_RELEASED, blockingRunKind } from "./policy.js";
 import type { Run, RunKind, WorkItem } from "./types.js";
+import { awaitingSpec } from "./request-transition.js";
 export * from "./request-transition.js"; // the approve and merge gates' shared checks (design 04-gate-commands)
 
 /**
@@ -37,6 +38,7 @@ export type CommandPhase =
   | "merge_pending"
   | "max_loops"
   | "merge_conflict"
+  | "session_released"
   | "other_blocked"
   /** CLOSED with its PR merged: only a `/verdict` still applies (design §4). */
   | "merged"
@@ -44,7 +46,7 @@ export type CommandPhase =
 
 export const COMMAND_PHASES: readonly CommandPhase[] = [
   "triaging", "spec_pending", "budget_checkpoint", "max_revisions", "implementing", "dependency_hold", "dependency_closed", "phase_hold", "floor_tier", "rule_of_two", "too_large",
-  "failed_implement", "failed_review", "failed_run", "agent_needs_human", "repeated_failure", "recurring_failure", "reviewing", "merge_pending", "max_loops", "merge_conflict", "other_blocked", "merged", "closed",
+  "failed_implement", "failed_review", "failed_run", "agent_needs_human", "repeated_failure", "recurring_failure", "reviewing", "merge_pending", "max_loops", "merge_conflict", "session_released", "other_blocked", "merged", "closed",
 ];
 
 const OPEN_PHASES = COMMAND_PHASES.filter((p) => p !== "closed" && p !== "merged");
@@ -64,7 +66,7 @@ export interface CommandState {
   asked_by?: RunKind;
 }
 
-export type CommandName = "approve" | "reject" | "revise" | "retry" | "resolve" | "budget" | "verdict" | "standing" | "link" | "help";
+export type CommandName = "approve" | "reject" | "revise" | "retry" | "resolve" | "hold" | "budget" | "verdict" | "standing" | "link" | "help";
 
 export interface CommandSpec {
   name: CommandName;
@@ -140,9 +142,9 @@ export const COMMANDS: readonly CommandSpec[] = [
       "`/retry +paths <path>...` (at most 10, notes on the lines below) after a failed implement or resolve run also adds those paths to the allowed paths; a resolve run gets the notes without the `+paths` line. " +
       "At a dependency closed without a merge, it reads the dependencies again and starts the implement run if none is still closed. " +
       "At the review loop limit, it starts an implement run with the loop count reset; `+paths` applies there too. " +
-      "On an item held for a recurring failure, it lifts the hold so the item's queued runs start. On a held phase of a split, it releases the phase into triage once the previous phase closed without a merge",
+      "On an item held for a recurring failure, it lifts the hold so the item's queued runs start. On a held phase of a split, it releases the phase into triage once the previous phase closed without a merge. After an interactive session ended without a PR, it queues the implement run (which a new `interactive start` can take over); `+paths` applies there too",
     // At a dependency closed unmerged it reads the dependencies again (design §5); at a phase hold it releases the phase unless the previous one is open (design 04-split-specs).
-    phases: ["failed_run", "failed_review", "too_large", "failed_implement", "agent_needs_human", "repeated_failure", "dependency_closed", "max_loops", "recurring_failure", "phase_hold"],
+    phases: ["failed_run", "failed_review", "too_large", "failed_implement", "agent_needs_human", "repeated_failure", "dependency_closed", "max_loops", "recurring_failure", "phase_hold", "session_released"],
     needs_pr: false,
     changes_state: true,
   },
@@ -158,6 +160,8 @@ export const COMMANDS: readonly CommandSpec[] = [
     needs_pr: false,
     changes_state: true,
   },
+  { name: "hold", usage: "/hold <id>", phases: [], local_phases: ["agent_needs_human"], asked_by: ["implement"], needs_pr: false, changes_state: true, // a local implement stop (design 05-dependencies)
+    description: "Hold until <id> merges: writes a `Depends on: <id>` line in the item's problem and queues the implement run, which waits for <id> (a local wi_… item, or a built task tk_…) to merge and then starts on its own. Refused for an ID that names no local item, the item itself, or an item already merged" },
   {
     name: "budget",
     usage: "/budget [tokens]",
@@ -212,6 +216,7 @@ export function commandSpec(name: CommandName): CommandSpec {
 
 /** blocked_reason prefix (with `blocked_on: human`) of an item whose dependency closed without a merge (design §5). */
 export { DEPENDENCY_CLOSED } from "./phase.js";
+export { LOCAL_ID, dependsOnIds, localItemOf, wantedDependsOn, withDependsOn } from "./task-build.js"; // for `/hold` and the coordination unit
 
 /** Block reasons whose step `/retry` reads from the stage (or, for the agent blocks, from the item's runs first). */
 const STAGE_RETRY_REASONS: readonly (string | null)[] = ["max_attempts", "max_restart", AGENT_NEEDS_HUMAN, REPEATED_FAILURE];
@@ -222,6 +227,7 @@ const STAGE_RETRY_REASONS: readonly (string | null)[] = ["max_attempts", "max_re
  * first (`blockingRunKind`), since a resolve block has an implement block's stage.
  */
 export function failedRunKind(it: WorkItem): RunKind | undefined {
+  if (it.blocked_reason === SESSION_RELEASED) return it.stage === "RUNNING" ? "implement" : undefined; // the run a released session replaced
   const kind = it.blocked_reason?.match(/^run_failed:(triage|implement|review|update):/)?.[1] as RunKind | undefined;
   if (kind) return kind;
   if (!STAGE_RETRY_REASONS.includes(it.blocked_reason)) return undefined;
@@ -237,7 +243,7 @@ type ItemState = Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason" | "cha
 const SAME: ReadonlySet<ItemPhase> = new Set<Extract<ItemPhase, CommandPhase>>([
   "budget_checkpoint", "floor_tier", "rule_of_two", "agent_needs_human", "repeated_failure", "recurring_failure", "dependency_closed", "too_large",
   "failed_implement", "failed_review", "failed_run", "spec_pending", "max_revisions", "merge_pending", "max_loops", "merge_conflict", "dependency_hold",
-  "phase_hold", "triaging", "implementing", "reviewing",
+  "phase_hold", "session_released", "triaging", "implementing", "reviewing",
 ]);
 const isCommandPhase = (p: ItemPhase): p is Extract<ItemPhase, CommandPhase> => SAME.has(p);
 
@@ -266,9 +272,8 @@ export function itemCommandState(it: ItemState, runs: readonly Run[]): CommandSt
 export const appliesLocally = (c: CommandSpec, s: CommandState): boolean => s.local === true && !s.has_pr && (c.local_phases?.includes(s.phase) ?? false);
 
 export function applies(c: CommandSpec, s: CommandState): boolean {
-  if (appliesLocally(c, s)) return true;
-  if (!c.phases.includes(s.phase) || (c.needs_pr && !s.has_pr && !s.local)) return false;
-  return s.phase !== "agent_needs_human" || !c.asked_by || (s.asked_by !== undefined && c.asked_by.includes(s.asked_by));
+  const asked = s.phase !== "agent_needs_human" || !c.asked_by || (s.asked_by !== undefined && c.asked_by.includes(s.asked_by));
+  return asked && (appliesLocally(c, s) || (c.phases.includes(s.phase) && (!c.needs_pr || s.has_pr || s.local === true)));
 }
 
 /** Whether `c` is accepted as a comment on the item's PR with its PR meaning (`pr_phases`); needs a PR. */
@@ -353,15 +358,13 @@ export function helpReply(s: CommandState | null): string {
 }
 
 const PHASE_LABELS: Record<CommandPhase, string> = {
-  triaging: "triaging", spec_pending: "spec waiting for approval", budget_checkpoint: "paused at a budget checkpoint",
-  max_revisions: "spec at the revision limit", implementing: "implementing", dependency_hold: "waiting for a dependency to merge",
-  dependency_closed: "blocked: a dependency was closed without a merge", floor_tier: "blocked by the floor check",
-  rule_of_two: "waiting for a person to approve its run (Rule of Two)", too_large: "blocked: the change was too large",
-  failed_implement: "blocked by a failed implement run", failed_review: "blocked by a failed review run", failed_run: "blocked by a failed run",
-  agent_needs_human: "blocked: the agent asked for a human", repeated_failure: "blocked: a run failed the same way twice",
-  recurring_failure: "held: its run failed like a known recurring failure", reviewing: "in review", merge_pending: "waiting for a human merge",
-  max_loops: "review loop limit reached", merge_conflict: "PR has a merge conflict", other_blocked: "blocked for another reason", merged: "merged",
-  closed: "closed", phase_hold: "held: waiting for the previous phase of its split",
+  triaging: "triaging", spec_pending: "spec waiting for approval", budget_checkpoint: "paused at a budget checkpoint", max_revisions: "spec at the revision limit", implementing: "implementing",
+  dependency_hold: "waiting for a dependency to merge", dependency_closed: "blocked: a dependency was closed without a merge", floor_tier: "blocked by the floor check",
+  rule_of_two: "waiting for a person to approve its run (Rule of Two)", too_large: "blocked: the change was too large", failed_implement: "blocked by a failed implement run",
+  failed_review: "blocked by a failed review run", failed_run: "blocked by a failed run", agent_needs_human: "blocked: the agent asked for a human",
+  repeated_failure: "blocked: a run failed the same way twice", recurring_failure: "held: its run failed like a known recurring failure", reviewing: "in review", merge_pending: "waiting for a human merge",
+  max_loops: "review loop limit reached", merge_conflict: "PR has a merge conflict", session_released: "released: its session ended without a PR", other_blocked: "blocked for another reason",
+  merged: "merged", closed: "closed", phase_hold: "held: waiting for the previous phase of its split",
 };
 
 /** The phase in the words the owner sees: `/help`, the command table and every refusal use it, never a stage name. */
@@ -379,7 +382,8 @@ function whenText(c: CommandSpec): string {
         ? "any open or merged item"
         : c.phases.map((p) => PHASE_LABELS[p]).join(", ");
   const on = (label: string, ps?: readonly CommandPhase[]) => (ps?.length ? `; ${label}: ${ps.map((p) => PHASE_LABELS[p]).join(", ")}` : "");
-  return (c.needs_pr ? `${where}, once it has a PR (a local item needs none)` : where) + on("on a local item with no PR", c.local_phases) + on("on its PR", c.pr_phases);
+  // A command that applies only to a local item (`phases` empty) starts with its local phases.
+  return ((c.needs_pr ? `${where}, once it has a PR (a local item needs none)` : where) + on("on a local item with no PR", c.local_phases) + on("on its PR", c.pr_phases)).replace(/^; /, "");
 }
 
 /** The command table in SET_UP.md, generated from COMMANDS; a test keeps the two equal. */
@@ -555,6 +559,15 @@ export function dependencyHoldRefusal(held: string | null): string {
 export function specNotWaiting(phase: CommandPhase): string {
   return `the spec is not waiting for approval (the item is ${phaseLabel(phase)})`;
 }
+
+/** The reason for `/approve` on a spec that changes no file in this repo (design 04-spec-gate-commands, 2026-11-20); the spec comment says it too. */
+export const NO_FILES_REFUSAL = "the spec changes no file in this repo (its files_to_change is empty), so there is nothing to implement; reply `/revise <feedback>` for a spec that changes a file here, or `/reject <reason>` to close";
+/** Whether `spec` changes no file in this repo: one spec (not a split) whose files_to_change is empty. */
+export const changesNoFile = (spec: TriageOutput | null): boolean => spec !== null && !spec.phases && spec.files_to_change.length === 0;
+/** NO_FILES_REFUSAL when `it` waits at the spec gate on a spec that changes no file, else null. The caller passes the runs. */
+export const noFilesRefusal = (it: WorkItem, runs: readonly Run[]): string | null => (awaitingSpec(it) && changesNoFile(latestSpec(runs)) ? NO_FILES_REFUSAL : null);
+/** The reason for `/retry +paths` on an item whose `/retry` re-checks its premise first (design 04-spec-gate-commands, 2026-11-20). */
+export const RECHECK_PATHS_REFUSAL = "the item's last change is more than a day old, so `/retry` re-checks its premise with a new triage run first, and `+paths` does not apply to that; reply `/retry` without `+paths`, then `/approve +paths <path>...` on the new spec";
 
 /**
  * Why `/approve` cannot apply to `it` whatever its runs say, in the controller's words; null when the controller may

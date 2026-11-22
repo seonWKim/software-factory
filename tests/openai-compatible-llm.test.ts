@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Plugins, loadConfig } from "../src/compose.js";
+import { Plugins } from "../src/plugin-set.js";
+import { loadConfig } from "../src/load-config.js";
 import { FallbackLLM } from "../src/core/fallback-llm.js";
 import { OpenAICompatibleLLMProvider } from "../src/impl/llm/openai-compatible-llm-provider.js";
 import openaiCompatible from "../src/impl/llm/openai-compatible.plugin.js";
@@ -12,6 +13,7 @@ import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-s
 import { llmCheckFromPlugins } from "../src/llm-check.js";
 import { REGISTRY } from "../src/plugins.js";
 import { doctor } from "../src/setup.js";
+import { buildStatsStore } from "../src/compose.js";
 import { type FakeOpenAIServer, type ScriptedResponse, completion, startFakeOpenAIServer } from "./helpers/fake-openai-server.js";
 
 const KEY = "sk-openai-compatible-test-key-0123456789";
@@ -220,7 +222,7 @@ describe("openai-compatible selected in config", () => {
   it("plain doctor makes zero HTTP requests to the endpoint", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     const s = await serve({ status: 200, body: completion() });
-    await doctor(await loadConfig(root({ baseUrl: s.baseUrl })));
+    await doctor(await loadConfig(root({ baseUrl: s.baseUrl })), buildStatsStore);
     expect(s.requests).toHaveLength(0);
   });
 
@@ -228,7 +230,7 @@ describe("openai-compatible selected in config", () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const s = await serve({ status: 200, body: completion({ text: "ok" }) }, { status: 200, body: completion({ text: '{"ok":true,"n":5}' }) });
     const loaded = await loadConfig(root({ baseUrl: s.baseUrl }));
-    await doctor(loaded, { llm: true });
+    await doctor(loaded, buildStatsStore, { llm: true });
     expect(s.requests).toHaveLength(2);
     expect(JSON.parse(s.requests[0]!.body).response_format).toBeUndefined();
     expect(JSON.parse(s.requests[1]!.body).response_format.type).toBe("json_schema");

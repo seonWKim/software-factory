@@ -1,10 +1,11 @@
 // Standing approvals on the dashboard (design 05-standing-approvals and §9, issue #300). GET /api/v1/standing lists
-// each rule (gate, tier, the effective `standing_approvals.threshold`, enabled, who set it, created, last used) and
+// each rule (gate, tier, the effective `standing_approvals.threshold`, enabled, who set it, created, when it last fired
+// and the items it approved in the last 7 days, from stored state changes) and
 // the pending proposals; POST /api/v1/standing turns a rule on or off, as `/standing accept|decline` does. The
 // request guards (Host, Origin, Content-Type, CSRF token) run in server.ts before writeStanding is reached; then the
 // owner check, the pause route's own (`approve_spec` on the configured project). Only then is the store written.
 
-import { SPEC_GATE, STANDING_TIER, findRule, parseRuleId, ruleId } from "../core/standing.js";
+import { SPEC_GATE, STANDING_APPROVED, STANDING_TIER, findRule, parseRuleId, ruleId, standingActor } from "../core/standing.js";
 import type { StandingProposal, StandingRule } from "../core/types.js";
 import type { ApiResult } from "./api.js";
 import type { PauseDeps, UiPauses } from "./pause-api.js";
@@ -24,15 +25,30 @@ function pending(p: StandingProposal, rule: StandingRule | undefined): boolean {
   return !rule || (!rule.enabled && rule.updated_at < p.created_at);
 }
 
-/** GET /api/v1/standing. Every text value leaves through the Withholder. */
+/** The window of a rule's "items in the last 7 days". */
+const RECENT_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * GET /api/v1/standing. Every text value leaves through the Withholder. A rule's firings are read from the stored
+ * `standing_approved` state changes (actor `standing:<rule>`), never written here: `last_fired_at` is the newest, and
+ * `recent` the distinct items it approved in the 7 days before now, newest first, each `{ id, title }`.
+ */
 export async function readStanding(d: PauseDeps) {
   const w = new Withholder(d.scanner);
   const text = async (v: string) => (await w.plain(v)).text;
   const threshold = (await effectiveGlobal(d, "standing_approvals.threshold")).value;
   const stored = await d.store.listStandingRules();
+  const fired = await d.store.listStateChangesSince({ reasons: [STANDING_APPROVED], since: null });
+  const since = d.clock.now().getTime() - RECENT_MS;
   const rules = [];
   for (const { gate, tier } of RULES) {
     const r = findRule(stored, gate, tier);
+    const mine = fired.filter((c) => c.actor.id === standingActor(gate, tier).id).sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+    const recent = [];
+    for (const id of new Set(mine.filter((c) => Date.parse(c.at) >= since).map((c) => c.work_item_id))) {
+      const item = await d.store.getWorkItem(id);
+      recent.push({ id: await text(id), title: await text(item?.title ?? id) });
+    }
     rules.push({
       rule: await text(ruleId(gate, tier)),
       gate: await text(gate),
@@ -42,8 +58,8 @@ export async function readStanding(d: PauseDeps) {
       set_by: r ? await text(r.set_by) : null,
       created_at: r?.created_at ?? null,
       updated_at: r?.updated_at ?? null,
-      /** Not recorded yet (issue #300 decision 1): the page shows "not recorded". */
-      last_used_at: null,
+      last_fired_at: mine[0]?.at ?? null,
+      recent,
     });
   }
   const proposals = [];

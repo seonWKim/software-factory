@@ -2,8 +2,8 @@
 // Moved out of the legacy controller (RFC 0015 M5); it reads through the kernel's reader and writes through the kernel.
 
 import { prNumber } from "../../../core/change-ref.js";
-import { commandFooter, commandState, retryPathsReply, withholdReplyLines } from "../../../core/commands.js";
-import { type NeedsHuman, type ReviewOutput, SPEC_CONFLICT, type TriageOutput, findingLine, parseNeedsHuman, parseReview, parseTriage, specFindings } from "../../../core/outputs.js";
+import { NO_FILES_REFUSAL, changesNoFile, commandFooter, commandState, retryPathsReply, withholdReplyLines } from "../../../core/commands.js";
+import { type NeedsHuman, type ReviewOutput, SPEC_CONFLICT, type TriageOutput, doneCheckCommands, findingLine, parseNeedsHuman, parseReview, parseTriage, specFindings } from "../../../core/outputs.js";
 import { AGENT_NEEDS_HUMAN, AUTO_ACTOR, AUTO_RESOLVE_LIMIT, autoApproveRefusal, REPEATED_FAILURE, type FailureClass, failureLine, repeatsFastInfraFailure, repeatsLastFailure, preflightCheck, PREFLIGHT_ACCESS, autoResolveAttempts, autoResolveKey, effectiveTier, failureClass, floorTier, isCovered, needsSpecApproval, nextAutoResolveAttempt, parseAutoResolveKey, retryDelayMs, retryKey, retryNotBefore, GITHUB_RATE_LIMITED, runKey, sameStep, takenOver, FORGE_AUTH, NO_AUTO_RETRY, CHECKS_ENV, CHECKS_ENV_LIMIT, SESSION_RELEASED } from "../../../core/policy.js";
 import { FIX_SPEC_APPROVED, gatePathTouched } from "../../../core/improver.js"; import { autoApprovalDetail, ownerAnswersFor } from "../../../shared/command-notes.js";
 import { dependencyStop } from "./dependency-stop.js"; import { autoGrant } from "./auto-grant.js";
@@ -13,7 +13,7 @@ import { STANDING_APPROVED, ruleId, specKind, standingActor } from "../../../cor
 import { applyCompanions } from "../../../core/companions.js";
 import { suggestedSplit } from "../../../core/split.js";
 import { type Actor, type Run, type StateChangeDetail, type Tier, type WorkItem, type WorkItemId, runTokenCount } from "../../../core/types.js";
-import { failingTests, firstErrorLine, stripAnsi } from "../../../core/output-summary.js";
+import { failingTests, firstErrorLine, stripAnsi } from "../../../core/output-summary.js"; import { doneChecksDetail } from "../../../core/checks.js";
 import { PROVIDER_SETUP } from "../../../interfaces/agent-runner.js";
 import type { ActionRow } from "../../../outbound/index.js";
 import { AUTO, DELIVERY_FAILED, type Decision, SYSTEM, UNCHANGED_HEAD, MAX_FEEDBACK_CHARS, FLOOR_TIER, CONFLICT_PENDING, quote, footerAfter, fenced, iso, updatingForChecks } from "../support.js";
@@ -144,7 +144,7 @@ export class RunResultsUnit {
       if (run.kind === "improve") return ack(run.outcome?.status === "succeeded" ? "improve_done" : "improve_failed");
       // The run's full token count (design §6 Measurement); old succeeded rows keep the data.tokens they stored.
       const tokens = it.token_cost + runTokenCount(run);
-      if (!run.outcome || run.outcome.status !== "succeeded") return this.applyFailedRun(it, run);
+      if (!run.outcome || run.outcome.status !== "succeeded") return this.c.unit("model-probe").stallScope(it, run, await this.applyFailedRun(it, run));
       if (!this.c.unit("transitions").expects(it, run.kind)) return ack("run_ignored");
       const data = run.outcome.data;
       // The agent asked for a human (decided 2026-11-07): a finished run with data, never retried on its own.
@@ -165,7 +165,7 @@ export class RunResultsUnit {
           // Path companions first (design 04-triage.md): on the raw answer, so a companion triage named only in
           // files_to_change is covered, and before the floor, which raises the tier or refuses a built-in rule's path.
           const { answer, added } = applyCompanions(data.spec, this.c.k.cfg.path_companions ?? [], floors);
-          const parsed = parseTriage(answer, { max_diff_lines, max_diff_files });
+          const parsed = parseTriage(answer, { max_diff_lines, max_diff_files, check_commands: doneCheckCommands(this.c.k.cfg.repo) }); // done_checks required (design 04-triage)
           if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
           const spec = parsed.value;
           const floor = floorTier(spec.allowed_paths, floors);
@@ -176,12 +176,12 @@ export class RunResultsUnit {
             desired_output: spec.desired_output,
             scope: spec.scope,
             allowed_paths: spec.allowed_paths,
-            // The coordination cost's input until the PR exists (design §5, 2026-11-03).
-            files_to_change: spec.files_to_change,
+            files_to_change: spec.files_to_change, // the coordination cost's input until the PR exists (design §5, 2026-11-03)
+            done_checks: spec.done_checks ?? null,
             tier,
             token_cost: tokens,
           };
-          const missing = droppedValues(spec, it.issue_text), answers = droppedAnswers(spec, await ownerAnswersFor(it, (id) => this.c.k.reader.listStateChanges(id))), held = missing.length + answers.length > 0; // dropped request values or owner answers: no approval without /approve below
+          const missing = droppedValues(spec, it.issue_text), answers = droppedAnswers(spec, await ownerAnswersFor(it, (id) => this.c.k.reader.listStateChanges(id))), held = missing.length + answers.length > 0, noFiles = changesNoFile(spec), waitsAnyway = held || noFiles; // dropped request values or owner answers, or no file changed here (design 04-spec-gate-commands): no approval without a person
           // Each approval below without a person's reply: the spec comment with its note, no answer block and `footer`, RUNNING, the implement run queued.
           const approved = async (note: readonly string[], how: { actor: Actor; reason: string; detail?: StateChangeDetail }, footer = footerAfter(it, { stage: "RUNNING" })): Promise<Decision> => {
             const patch = { ...fields, stage: "RUNNING" as const };
@@ -190,7 +190,7 @@ export class RunResultsUnit {
             return { patch: { ...patch, spec_comment_url: url }, ...how, ack_run: run.id, enqueue: { kind: "implement", idempotency_key: runKey({ ...it, ...fields }, "implement") } };
           };
           // A split spec always waits for a human: its /approve files issues on the source.
-          const byParent = !spec.phases && (await this.c.unit("phases").approvedByParent(it));
+          const byParent = !spec.phases && !noFiles && (await this.c.unit("phases").approvedByParent(it));
           if (byParent) {
             // phases_auto_approve: the owner's /approve of the split covers this phase's spec (design 2026-11-01), held values or answers too.
             const next = { ...it, ...fields };
@@ -210,7 +210,7 @@ export class RunResultsUnit {
               enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
             };
           }
-          if (!held && !spec.phases && !needsSpecApproval(tier, this.c.k.cfg.dials)) {
+          if (!waitsAnyway && !spec.phases && !needsSpecApproval(tier, this.c.k.cfg.dials)) {
             const next = { ...it, ...fields };
             return {
               patch: { ...fields, stage: "RUNNING" },
@@ -221,7 +221,7 @@ export class RunResultsUnit {
             };
           }
           // The factory's fix for a recurring failure runs without a person (design §7); a gate-path change still waits for a person's merge.
-          const fix = spec.phases || held ? null : await this.c.unit("improve").fixPattern(it);
+          const fix = spec.phases || waitsAnyway ? null : await this.c.unit("improve").fixPattern(it);
           if (fix) {
             const gate = gatePathTouched(spec.allowed_paths);
             return approved([
@@ -230,7 +230,7 @@ export class RunResultsUnit {
             ], { actor: SYSTEM, reason: FIX_SPEC_APPROVED, detail: { pattern_key: fix.pattern_key } });
           }
           // A standing rule approves a tier 1 spec that would wait here, never one that touches protected paths.
-          const rule = spec.phases || held ? null : await this.c.unit("standing").standingRule(it, tier, spec.allowed_paths);
+          const rule = spec.phases || waitsAnyway ? null : await this.c.unit("standing").standingRule(it, tier, spec.allowed_paths);
           if (rule) {
             const id = ruleId(rule.gate, rule.tier);
             return approved([
@@ -243,7 +243,7 @@ export class RunResultsUnit {
             });
           }
           // Auto mode (design 03-risk): a spec it may approve starts with each decision's default; any other waits.
-          const auto = spec.phases || held ? null : await this.c.unit("local-merge").autoMode(it.project);
+          const auto = spec.phases || waitsAnyway ? null : await this.c.unit("local-merge").autoMode(it.project);
           // Auto mode approves under the controller's service passport (RFC 0015 §8).
           const refusal = auto
             ? autoApproveRefusal({ tier, decisions: spec.decision_items ?? [], gate_path: gatePathTouched(spec.allowed_paths) })
@@ -257,9 +257,9 @@ export class RunResultsUnit {
             }, autoApprovedFooter(commandState({ ...it, stage: "RUNNING" }), tier, this.c.k.d.clock.now().toISOString()));
           }
           const patch = { ...fields, stage: "READY" as const, blocked_on: "human" as const, blocked_reason: "spec_pending" };
-          const waits = held ? heldNote(missing, answers) : auto ? `Auto mode is on, but this spec waits for \`/approve\`: ${refusal}.\n\n` : "";
-          const url = await this.c.unit("outbox").comment(it, `spec:${run.id}`,
-            renderSpec(spec, tier, { floor, previous: it.tier, added }, `${waits}${footerAfter(it, patch)}`, { missing, answers }), "spec_comment_url");
+          const waits = noFiles ? `This spec cannot be approved: ${NO_FILES_REFUSAL}.\n\n` : held ? heldNote(missing, answers) : auto ? `Auto mode is on, but this spec waits for \`/approve\`: ${refusal}.\n\n` : "";
+          const url = await this.c.unit("outbox").comment(it, `spec:${run.id}`, renderSpec(spec, tier, { floor, previous: it.tier, added }, // no `/approve` in a no-file spec's footer
+            `${waits}${noFiles ? commandFooter(commandState({ ...it, ...patch }), ["approve"]) : footerAfter(it, patch)}`, { missing, answers }), "spec_comment_url");
           return {
             patch: { ...patch, spec_comment_url: url },
             actor: SYSTEM,
@@ -273,7 +273,7 @@ export class RunResultsUnit {
           // The run stored its push and PR as intents (RFC 0015 M7): the item waits for outbound, and `prDelivered`
           // applies the PR number and queues the review once the PR delivery completes. One delivered before this
           // result is applied (outbound ran first) is applied here, so the wait never misses it.
-          if (data.pr_pending === true) return this.prPending(it, run, data, { token_cost: tokens, ...(files ? { pr_files: files } : {}) }, "implemented");
+          if (data.pr_pending === true) return this.prPending(it, run, data, { token_cost: tokens, ...(files ? { pr_files: files } : {}) }, "implemented", doneChecksDetail(data));
           // No PR (the local broker, design 05-sources): the item reviews and merges as its local branch.
           const pr = data.pr_number === null || data.pr_number === undefined ? null : Number(data.pr_number);
           return this.c.unit("commands").applyQueued(it, {
@@ -286,7 +286,7 @@ export class RunResultsUnit {
               ...(it.blocked_on === "dependency" ? { blocked_on: "none" as const, blocked_reason: null } : {}),
             },
             actor: SYSTEM,
-            reason: "implemented",
+            reason: "implemented", ...(doneChecksDetail(data) ? { detail: doneChecksDetail(data)! } : {}), // each done-when line's result (design 04-pre-push-gates)
             ack_run: run.id,
             enqueue: { kind: "review", idempotency_key: runKey(it, "review"), input: await this.c.unit("checks-gate").reviewInput(pr, it.id) },
           });
@@ -530,7 +530,7 @@ export class RunResultsUnit {
     };
   }
 
-  /** A failed or cancelled run's decision, before its usage is added (`apply` does that). */
+  /** A failed or cancelled run's decision, before its usage is added (`apply` does that). A takeover's run: no retry (05-restarts). */
   async applyFailedRun(it: WorkItem, run: Run): Promise<Decision> {
     // One owner comment per forge-auth pause, from the run that started it (marker-keyed on the pause end).
     if (run.outcome?.status === "failed" && run.outcome.error_code === FORGE_AUTH && run.outcome.pause_started) {
@@ -540,7 +540,7 @@ export class RunResultsUnit {
     if (run.outcome?.status === "failed" && run.outcome.error_code === PREFLIGHT_ACCESS && run.outcome.pause_started) {
       await this.preflightAccessComment(it, run);
     }
-    if (!this.c.unit("transitions").expects(it, run.kind)) return { patch: {}, actor: SYSTEM, reason: "run_ignored", ack_run: run.id };
+    if (takenOver(run) || !this.c.unit("transitions").expects(it, run.kind)) return { patch: {}, actor: SYSTEM, reason: "run_ignored", ack_run: run.id };
     const code = failedCode(run);
     if (run.kind === "resolve") return this.resolveFailed(it, run, code);
     if (run.kind === "interactive") return sessionReleased(it, run, code);
@@ -707,7 +707,7 @@ export class RunResultsUnit {
     const infra = count("infra");
     const failedAt = Date.parse(run.finished_at ?? this.c.k.d.clock.now().toISOString());
     const restart = cls === "infra" ? { restart_count: it.restart_count + 1 } : {};
-    const detail = { run_id: run.id, error_code: code, failure: cls, task_failures: task, infra_failures: infra };
+    const detail = { run_id: run.id, error_code: code, failure: cls, task_failures: task, infra_failures: infra, ...doneChecksDetail(run.outcome) };
 
     if (cls === "checks_env") {
       const env = (await this.c.k.reader.listRuns(it.id)).filter(
@@ -721,8 +721,8 @@ export class RunResultsUnit {
       }
     }
     const limit = task >= max_attempts ? "max_attempts" : infra >= max_restart ? "max_restart" : null;
-    // Neither a rate limit, a stall, a checks_env run nor a taken-over run is an attempt: they never reach a limit (design §5 Restarts).
-    if (cls !== "rate_limited" && cls !== "stalled" && cls !== "checks_env" && !takenOver(run) && limit) {
+    // Neither a rate limit, a stall, a checks_env run nor a missing model credential is an attempt: they never reach a limit (design §5 Restarts).
+    if (cls !== "rate_limited" && cls !== "stalled" && cls !== "checks_env" && cls !== "setup_missing" && limit) {
       const patch = { ...restart, blocked_on: "human" as const, blocked_reason: limit };
       const url = await this.lastAttemptComment(it, run, code, limit, limit === "max_attempts" ? task : infra, footerAfter(it, patch));
       return {
@@ -932,7 +932,7 @@ export class RunResultsUnit {
   async needsHuman(it: WorkItem, run: Run, ask: NeedsHuman, tokens: number): Promise<Decision> {
     const waits = await dependencyStop(this.c, it, run, ask, tokens); if (waits) return waits;
     const patch = { blocked_on: "human" as const, blocked_reason: AGENT_NEEDS_HUMAN };
-    const footer = commandFooter(commandState({ ...it, ...patch }, run.kind));
+    const footer = commandFooter(commandState({ ...it, ...patch }, run.kind), run.kind === "implement" && (await this.c.unit("coordination").namesUnmerged(it, ask.reason)) ? [] : ["hold"]);
     const answer = run.kind === "resolve"
       ? "Reply `/resolve <your answer>` to run the resolve again with your answer as its notes, or `/retry` to run it again as it is."
       : `Fix what it needs, then reply \`/retry\` to run the ${run.kind} again, \`/revise <feedback>\` to get a new spec written with your answer, or \`/reject <reason>\` to close.`;

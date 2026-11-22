@@ -734,7 +734,7 @@ CREATE TABLE "controller_work_items" (
     pr_files                 TEXT,
     edges_source_updated_at  TEXT,
     change_ref               TEXT,
-    change_url               TEXT,
+    change_url               TEXT, done_checks TEXT,
     UNIQUE (source_type, source_id)
   );
 
@@ -1714,7 +1714,7 @@ CREATE TABLE worker_runs (
     acknowledged_at   TEXT,
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL
-  , started_at TEXT, finished_at TEXT, not_before TEXT, input TEXT, paused_at TEXT, paused_by TEXT, session_id TEXT, pause_state TEXT, actor_id TEXT, transcript_url TEXT, session_tokens INTEGER, code_version TEXT, deadline_at TEXT);
+  , started_at TEXT, finished_at TEXT, not_before TEXT, input TEXT, paused_at TEXT, paused_by TEXT, session_id TEXT, pause_state TEXT, actor_id TEXT, transcript_url TEXT, session_tokens INTEGER, code_version TEXT, deadline_at TEXT, last_output_at TEXT);
 
 CREATE INDEX alerts_created ON "legacy_alerts" (created_at);
 

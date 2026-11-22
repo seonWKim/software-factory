@@ -212,11 +212,18 @@ describe("contrast", () => {
       for (const fg of ["accent", "running", "done", "failed"]) pairs.push([fg, "bg"]);
       // A pill's text on its own fill, and on a card or the page (an inline error or warning line).
       for (const s of ["ok", "warn", "bad", "info"]) for (const bg of [`pill-${s}-bg`, "surface", "bg"]) pairs.push([`pill-${s}-fg`, bg]);
-      // Every tone Badge draws (LEVEL_TONE and the neutral fallback): its text token on its fill token.
+      // Every tone Badge and StatusBadge draw (TONE_CLASS, the neutral one included): its text token on its fill token.
       for (const [bg, fg] of badgeTones()) pairs.push([fg, bg]);
       // Text on a filled accent or failed background (a primary button, a destructive confirm).
       for (const bg of ["accent", "failed"]) pairs.push(["on-solid", bg]);
       for (const [fg, bg] of pairs) expect(ratio(t(fg), t(bg)), `${theme} ${fg} on ${bg}`).toBeGreaterThanOrEqual(4.5);
+    });
+  }
+
+  for (const [theme, selector] of [["light", ":root"], ["dark", "\\.dark"]] as const) {
+    it(`the current-page bar (nav-active) meets 3:1 on the sidebar in ${theme}`, () => {
+      const t = (name: string) => new RegExp(`--${name}: (#[0-9A-Fa-f]{6});`).exec(theme === "light" ? block(":root") : block(selector) + block(":root"))![1]!;
+      expect(ratio(t("nav-active"), t("sidebar")), `${theme} nav-active on sidebar`).toBeGreaterThanOrEqual(3);
     });
   }
 
