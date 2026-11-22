@@ -300,7 +300,7 @@ export class RunResultsUnit {
           if (data.no_agent === UNCHANGED_HEAD) return this.unchangedHead(it, run);
           const parsed = parseReview(data.review); // routes on `findings` only: confirmed ones; `unconfirmed` never sends the item back (design 04-agents)
           if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
-          const tier = effectiveTier(parsed.value.tier, floorTier(it.allowed_paths, this.c.k.settings(it.project).floors), it.tier);
+          const tier = effectiveTier(parsed.value.tier, floorTier(it.allowed_paths, this.c.k.settings(it.project).floors), it.tier); await this.c.unit("improve").captureReview(it, run, parsed.value.findings);
           if (parsed.value.verdict === "bug" && it.origin === "adopted") {
             // A person's branch: the review comment is on the PR, and the author fixes it. No implement run.
             return {

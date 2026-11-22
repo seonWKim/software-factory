@@ -2,6 +2,12 @@
 
 A software factory for one owner: a set of agents that takes work items (GitHub issues, Slack threads) through triage → implement → review → human gate. Built by hand to a minimal version, then built further by itself.
 
+## North star
+
+The best self-evolving software factory for one person.
+
+Weigh every change against it: does it make the factory better at building software for its one owner, or better at improving itself? When two choices are otherwise equal, pick the one that serves this.
+
 ## Where things are
 
 | File | What |
@@ -45,7 +51,7 @@ A software factory for one owner: a set of agents that takes work items (GitHub 
 
 ## UI changes
 
-A change to the dashboard (`web/`) reads `design-system/components.md`, `design-system/patterns.md` and `design-system/writing.md` (also for text the server writes for a page), composes from `web/src/components/ui/`, and follows `design-system/dx.md` for its build steps, checks and PR checklist.
+A change to the dashboard (`web/`) reads `design-system/components.md`, `design-system/patterns.md`, `design-system/writing.md` (also for text the server writes for a page) and the last 40 active lines of `design-system/learnings.md` (the owner's past corrections; skip a line a later `supersedes` line names), composes from `web/src/components/ui/`, and follows `design-system/dx.md` for its build steps, checks and PR checklist.
 
 A UI change edits only the page file it touches (`docs/design/09-dashboard-<page>.md`, with its `docs/design/history/` file). The sidebar and top bar are in `docs/design/09-dashboard-shell.md`, the shared components in `docs/design/09-dashboard-components.md`. `docs/design/09-dashboard-app.md` is an index; add no decision to it.
 

@@ -1,5 +1,6 @@
 import {
-  type Grade, type GradeSubject, IMPROVER_DEFAULTS, type ImproveDeps, improvePrompts, learnFromReport, proposeChanges, proposesIn, runImprove, scoreRun, scorerFor,
+  type Grade, type GradeSubject, IMPROVER_DEFAULTS, type ImproveDeps, improvePrompts, learnDesign, learnFromReport, proposeChanges, proposesIn, runImprove, scoreRun,
+  scorerFor,
 } from "../../../core/improver.js";
 import type { Run, WorkItem } from "../../../core/types.js";
 import { factoryGit } from "../../../impl/broker/trusted-git.js";
@@ -12,6 +13,8 @@ import { DEFAULT_TIMEOUTS, defineRunKind } from "../../run-kind.js";
  * counts toward the run's. Stores one report; the outcome names it. Then, only in the daily run and only from the
  * stored report, the learner may write one tighter max_diff_lines for the project (design 08-settings), and, as
  * `improver.schedule` allows, the entity proposals are drafted and replayed through the golden set (core/proposals.ts).
+ * Last, with a model, the project's design learnings are tagged and counted; the outcome lists the proposals due
+ * (design 07-design-learnings).
  */
 async function improve(w: Worker, run: Run, item: WorkItem, signal: AbortSignal): Promise<Record<string, unknown>> {
   const metered = meteredLlm(w, run);
@@ -31,9 +34,11 @@ async function improve(w: Worker, run: Run, item: WorkItem, signal: AbortSignal)
   const proposals = metered && replay && proposesIn(cfg.schedule, run)
     ? await proposeChanges({ store: w.d.store, scanner: w.d.scanner, llm: metered, file_text: w.d.prompts.review, replay: (prompt) => replay(prompt, { run_id: run.id, config: w.cfg, signal }), config: cfg, signal }, report)
     : [];
+  const design = metered ? await learnDesign({ store: w.d.store, llm: metered, signal }, item.project) : null;
   return {
     report_id: report.id, groups: report.groups.length, patterns: report.patterns.length, proposals: proposals.map((p) => p.id),
     ...(learned ? { learned: { key: learned.key, old_value: learned.old_value, new_value: learned.new_value } } : {}),
+    ...(design ? { design } : {}),
   };
 }
 

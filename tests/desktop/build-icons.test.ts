@@ -43,15 +43,17 @@ function png(file: string) {
 const at = (p: ReturnType<typeof png>, size: number, x: number, y: number) => p.pixel(Math.floor((x * size) / 1024), Math.floor((y * size) / 1024));
 
 const temp = () => mkdtempSync(join(tmpdir(), "sf-icons-"));
-const SQUARE = [0x1c, 0x1c, 0x1e, 255];
+const SQUARE = [0x1a, 0x1f, 0x1d, 255];
 const WHITE = [255, 255, 255, 255];
 
 describe("design-system/icon.svg", () => {
-  it("is a white 공 drawn as outlines on a rounded #1C1C1E square, with an ember dot at every size", () => {
+  it("is a white open loop round a file, drawn as outlines on a rounded #1A1F1D square, with an ember dot at every size", () => {
     const text = readFileSync(SVG, "utf8");
-    expect(text).toMatch(/<rect id="square"[^>]* rx="\d+"[^>]* fill="#1C1C1E"/);
+    expect(text).toMatch(/<rect id="square"[^>]* rx="\d+"[^>]* fill="#1A1F1D"/);
     expect(text).toMatch(/<path id="glyph"[^>]* fill="#FFFFFF"/);
-    expect(text).toMatch(/<circle id="ember" data-small-r="2\.5" cx="800" cy="224" r="44" fill="#FB923C"/);
+    // Two contours: the loop and the file.
+    expect(/<path id="glyph"[^>]* d="([^"]+)"/.exec(text)![1]!.match(/Z/g)).toHaveLength(2);
+    expect(text).toMatch(/<circle id="ember" data-small-r="2" cx="691\.6" cy="332\.4" r="72" fill="#F2A55F"/);
     expect(text).not.toContain("data-min-px");
     expect(text).not.toMatch(/<text|font-family|<use|<image/);
   });
@@ -97,22 +99,28 @@ describe("build-icons", () => {
     expect(png(join(out, icons.pngName(1024))).width).toBe(1024);
   });
 
-  it("draws the square, the white 공 and transparent corners", () => {
+  it("draws the square, the white loop, the file in the middle, the gap between the loop's ends and transparent corners", () => {
     const out = temp();
     icons.buildIcons(out, { platform: "linux", log: () => {} });
     for (const size of [16, 32, 64, 128, 256, 512, 1024]) {
       const p = png(join(out, icons.pngName(size)));
       expect(p.pixel(0, 0)[3], `${size} corner`).toBe(0);
-      if (size >= 64) expect(at(p, size, 512, 533), `${size} bar of ㅗ`).toEqual(WHITE);
-      if (size >= 32) expect(at(p, size, 512, 724), `${size} hole of ㅇ`).toEqual(SQUARE);
+      expect(at(p, size, 160, 512), `${size} square`).toEqual(SQUARE);
+      expect(at(p, size, 500, 512), `${size} file`).toEqual(WHITE);
+      expect(at(p, size, 512, 680), `${size} between the file and the loop`).toEqual(SQUARE);
+      if (size >= 32) {
+        for (const [x, y] of [[258, 512], [512, 258], [766, 512], [512, 766]] as const) expect(at(p, size, x, y), `${size} loop at ${x}, ${y}`).toEqual(WHITE);
+      }
+      // On the loop's ring, either side of the ember: square, so the loop is open (below 128 px the ember covers it).
+      if (size >= 128) for (const [x, y] of [[627, 286], [738, 397]] as const) expect(at(p, size, x, y), `${size} gap at ${x}, ${y}`).toEqual(SQUARE);
     }
   });
 
-  it("draws the ember dot #FB923C at its centre at 16, 32, 64 and 1024 px", () => {
+  it("draws the ember dot #F2A55F at its centre at 16, 32, 64 and 1024 px", () => {
     const out = temp();
     icons.buildIcons(out, { platform: "linux", log: () => {} });
     for (const size of [16, 32, 64, 1024]) {
-      expect(at(png(join(out, icons.pngName(size))), size, 800, 224), `${size} ember`).toEqual([0xfb, 0x92, 0x3c, 255]);
+      expect(at(png(join(out, icons.pngName(size))), size, 691.6, 332.4), `${size} ember`).toEqual([0xf2, 0xa5, 0x5f, 255]);
     }
   });
 
