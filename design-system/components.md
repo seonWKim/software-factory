@@ -124,7 +124,7 @@ One choice among a few views (`role=group` with an `aria-label`): a 32 px box wi
 
 ## Link and ID
 
-`web/src/components/ui/link-style.ts` holds both. `LINK_CLASS` (`text-text-1 hover:underline`) is every link in the views, item titles included; the sidebar keeps its own. `ID_CLASS` (`font-mono text-text-3 hover:underline`) is an item or source ID, linked or not (source ID links, the item page header ID). Accent is never a text colour: only the primary Button and the selected-tab underline use it, and `tests/ui-link-style.test.tsx` fails on `text-accent` anywhere under `web/src`.
+`web/src/components/ui/link-style.ts` holds both. `LINK_CLASS` (`text-text-1 underline`) is every link in the views, item titles included, underlined at rest so a link in a sentence is told apart by more than colour (buttons that use the class are underlined too); the sidebar keeps its own. `ID_CLASS` (`font-mono text-text-3 hover:underline`) is an item or source ID, linked or not (source ID links, the item page header ID). Accent is never a text colour: only the primary Button and the selected-tab underline use it, and `tests/ui-link-style.test.tsx` fails on `text-accent` anywhere under `web/src`.
 
 ## Tabs
 
