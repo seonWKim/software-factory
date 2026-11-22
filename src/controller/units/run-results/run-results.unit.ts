@@ -298,7 +298,7 @@ export class RunResultsUnit {
           // unchanged head keeps the item's state as it is: the last verdict was applied already, none is replayed.
           if (data.no_agent === EMPTY_DIFF) return this.emptyDiff(it, run, tokens);
           if (data.no_agent === UNCHANGED_HEAD) return this.unchangedHead(it, run);
-          const parsed = parseReview(data.review);
+          const parsed = parseReview(data.review); // routes on `findings` only: confirmed ones; `unconfirmed` never sends the item back (design 04-agents)
           if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
           const tier = effectiveTier(parsed.value.tier, floorTier(it.allowed_paths, this.c.k.settings(it.project).floors), it.tier);
           if (parsed.value.verdict === "bug" && it.origin === "adopted") {

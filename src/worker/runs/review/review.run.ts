@@ -1,6 +1,9 @@
 import { prNumber } from "../../../core/change-ref.js";
 import type { ModelClass } from "../../../core/model-choice.js";
-import { REVIEW_SCHEMA, builtDifferentlyOf, parseReview, unverifiedOf } from "../../../core/outputs.js";
+import {
+  BUILT_DIFFERENTLY_FINDING, REVIEW_CONFIRM_SCHEMA, REVIEW_SCHEMA, type ReviewFinding, type ReviewOutput, builtDifferentlyOf, findingLine, parseReview,
+  parseReviewConfirm, unverifiedOf,
+} from "../../../core/outputs.js";
 import { branchFor } from "../../../core/policy.js";
 import type { Run, WorkItem } from "../../../core/types.js";
 import type { SandboxHandle } from "../../../interfaces/sandbox.js";
@@ -68,18 +71,63 @@ async function review(
   // The reviewer asked for a human: no review comment on the PR; the controller blocks the item.
   if (review.value.needs_human) return { needs_human: review.value.needs_human };
 
-  const v = review.value;
-  // Finding, unverified and built-differently text is scanned before it is posted or stored (issue #222): a flagged
-  // text keeps only the rule names, and the controller blocks the item on a human.
-  const built = builtDifferentlyOf(v).flatMap((d) => [d.line, d.reason]);
-  const scan = await w.d.scanner.scan("comment", [...v.findings.map((f) => f.text), ...unverifiedOf(v), ...built].join("\n"));
+  // Finding, unverified and built-differently text is scanned before it is sent to a confirm run, posted or stored
+  // (issue #222): a flagged text keeps only the rule names, and the controller blocks the item on a human.
+  const built = builtDifferentlyOf(review.value).flatMap((d) => [d.line, d.reason]);
+  const scan = await w.d.scanner.scan("comment", [...review.value.findings.map((f) => f.text), ...unverifiedOf(review.value), ...built].join("\n"));
   if (!scan.clean) return { egress_rules: [...new Set(scan.findings.map((f) => f.rule))] };
+  // One confirm run per reviewer finding (design 04-agents), each a journaled step of this run, so none is a review
+  // loop. The factory's own built-differently findings get none. An unconfirmed finding moves to `unconfirmed`.
+  const confirmed: (boolean | null)[] = [];
+  for (const [i, f] of review.value.findings.filter((x) => !isBuiltDifferentlyFinding(x)).entries()) {
+    confirmed.push((await step(`confirm-finding-${i}`, async () => ({ confirmed: await confirm(w, run, item, handle, signal, model, f, diff, i) }))).confirmed);
+  }
+  const v = withConfirmations(review.value, confirmed);
   // A thread entry once per marker; outbound posts it on the PR (RFC 0015 M7).
   await step("post-review", async () => {
     await w.comment(item, { pr: prNumber(item), body: reviewComment(v), marker: `<!-- factory:review:${run.id} -->` });
     return true;
   });
   return { review: v, head_sha };
+}
+
+/** Whether `f` is the factory's own built-differently finding (parseReview adds it): it gets no confirm run and stays. */
+const isBuiltDifferentlyFinding = (f: ReviewFinding): boolean => f.kind === "code" && f.text.startsWith(BUILT_DIFFERENTLY_FINDING);
+
+/**
+ * The review after its confirm runs (design 04-agents): `confirmed[i]` answers the i-th of `r.findings` that is not a
+ * built-differently finding; false moves it to `unconfirmed`, true or null (the run failed or gave no valid answer)
+ * keeps it. With no finding left the verdict is "pass".
+ */
+function withConfirmations(r: ReviewOutput, confirmed: readonly (boolean | null)[]): ReviewOutput {
+  const findings: ReviewFinding[] = [], unconfirmed: ReviewFinding[] = [];
+  let i = 0;
+  for (const f of r.findings) (isBuiltDifferentlyFinding(f) || confirmed[i++] !== false ? findings : unconfirmed).push(f);
+  const { unconfirmed: _fromAgent, ...rest } = r;
+  return { ...rest, verdict: findings.length === 0 ? "pass" : r.verdict, findings, ...(unconfirmed.length > 0 ? { unconfirmed } : {}) };
+}
+
+/**
+ * One finding's confirm run (role review-confirm): a fresh context holding only the finding and the diff, on the
+ * review's model class. True or false is its answer; null when it failed or gave no valid answer, which keeps the
+ * finding. A lost lease still ends the review.
+ */
+async function confirm(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, signal: AbortSignal, model: ModelClass, f: ReviewFinding, diff: string, i: number): Promise<boolean | null> {
+  try {
+    const result = await w.agent(run, item, handle, signal, {
+      role: "review-confirm",
+      prompt: `## Finding\n\n${findingLine(f)}\n\n## Diff\n\n\`\`\`diff\n${diff}\n\`\`\``,
+      model_class: model,
+      output_schema: REVIEW_CONFIRM_SCHEMA,
+    }, `confirm-${i}`);
+    const parsed = parseReviewConfirm(result.output);
+    if (parsed.ok) return parsed.value.confirmed;
+    w.d.log.warn("review confirm run gave no valid answer; the finding stays", { run_id: run.id, finding: i, error: parsed.error });
+  } catch (err) {
+    if (signal.aborted || (err instanceof RunFailure && err.code === "lease_lost")) throw err;
+    w.d.log.warn("review confirm run failed; the finding stays", { run_id: run.id, finding: i, error: err instanceof RunFailure ? err.code : "exception" });
+  }
+  return null;
 }
 
 export default defineRunKind({
