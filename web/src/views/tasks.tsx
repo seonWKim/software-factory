@@ -58,7 +58,7 @@ function OpenTasks({ v }: { v: TasksView }) {
   return (
     <div className="space-y-3">
       {total === 0 && <EmptyState icon={CalendarCheck} title={t("tasks.emptyAll")} />}
-      {pageOf(groups, page).map((g) => <Group key={g.key} title={g.title} rows={g.rows} overdue={g.overdue} />)}
+      {pageOf(groups, page).map((g) => <Group key={g.key} title={g.title} rows={g.rows} overdue={g.overdue} date={g.date} />)}
       <Pagination page={page} pages={pages} onChange={setPage} />
     </div>
   );
