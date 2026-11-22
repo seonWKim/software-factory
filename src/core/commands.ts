@@ -66,7 +66,7 @@ export interface CommandState {
   asked_by?: RunKind;
 }
 
-export type CommandName = "approve" | "reject" | "revise" | "retry" | "resolve" | "hold" | "budget" | "verdict" | "standing" | "link" | "help";
+export type CommandName = "approve" | "reject" | "revise" | "retry" | "resolve" | "paths" | "hold" | "budget" | "verdict" | "standing" | "link" | "help";
 
 export interface CommandSpec {
   name: CommandName;
@@ -160,6 +160,8 @@ export const COMMANDS: readonly CommandSpec[] = [
     needs_pr: false,
     changes_state: true,
   },
+  { name: "paths", usage: "/paths +<path>...", phases: ["implementing", "failed_implement", "too_large", "session_released"], needs_pr: false, changes_state: true, // any RUNNING item: the controller checks the stage (design 05-interactive-sessions)
+    description: "Add paths to the allowed paths of an item being implemented, in place: an interactive session's finish checks the new list, and a worker implement run takes it at its next attempt. At most 10, each with `+` before it, notes on the lines below. It never removes a path" },
   { name: "hold", usage: "/hold <id>", phases: [], local_phases: ["agent_needs_human"], asked_by: ["implement"], needs_pr: false, changes_state: true, // a local implement stop (design 05-dependencies)
     description: "Hold until <id> merges: writes a `Depends on: <id>` line in the item's problem and queues the implement run, which waits for <id> (a local wi_… item, or a built task tk_…) to merge and then starts on its own. Refused for an ID that names no local item, the item itself, or an item already merged" },
   {
@@ -209,10 +211,7 @@ export const COMMANDS: readonly CommandSpec[] = [
 ];
 
 const BY_NAME = new Map(COMMANDS.map((c) => [c.name, c]));
-
-export function commandSpec(name: CommandName): CommandSpec {
-  return BY_NAME.get(name)!;
-}
+export const commandSpec = (name: CommandName): CommandSpec => BY_NAME.get(name)!;
 
 /** blocked_reason prefix (with `blocked_on: human`) of an item whose dependency closed without a merge (design §5). */
 export { DEPENDENCY_CLOSED } from "./phase.js";
@@ -300,7 +299,7 @@ const FACTORY_COMMANDS: readonly CommandName[] = ["standing"];
 
 /** The commands that apply in `s`, in table order, each with the description it has there; `/help` always last. */
 export function commandsFor(s: CommandState): CommandSpec[] {
-  const shown = (c: CommandSpec) => c.name !== "help" && !ACCOUNT_COMMANDS.includes(c.name) && !FACTORY_COMMANDS.includes(c.name);
+  const shown = (c: CommandSpec) => c.name !== "help" && c.name !== "paths" && !ACCOUNT_COMMANDS.includes(c.name) && !FACTORY_COMMANDS.includes(c.name); // `/paths`: in `/help`, no footer or page button yet
   const own = (c: CommandSpec) => appliesLocally(c, s) || (s.phase === "implementing" && c.implementing_description);
   return COMMANDS.filter((c) => shown(c) && applies(c, s)).map((c) => (own(c) ? { ...c, description: meaning(c, s) } : c)).concat(commandSpec("help"));
 }
@@ -468,9 +467,9 @@ export function retryPathsReply(paths: readonly string[], command = "/retry"): s
   return `${command} +paths ${unique.join(" ")}`;
 }
 
-/** An agent's text without its own `/retry +`, `/approve +` or `/resolve +` lines: only the controller's reply is shown. */
+/** An agent's text without its own `/retry +`, `/approve +`, `/resolve +` or `/paths +` lines: only the controller's reply is shown. */
 export const withholdReplyLines = (text: string): string =>
-  text.split(/\r?\n/).filter((l) => !/\/(?:retry|approve|resolve)\s+\+/i.test(l)).join("\n").trim() || "(withheld: a reply command the agent wrote)";
+  text.split(/\r?\n/).filter((l) => !/\/(?:retry|approve|resolve|paths)\s+\+/i.test(l)).join("\n").trim() || "(withheld: a reply command the agent wrote)";
 
 /**
  * `/link <code>` (design 2026-11-01): the code, or "" when the line has none. Null for any other comment. The

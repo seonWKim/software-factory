@@ -8,9 +8,9 @@ import type { TransitionInput } from "../../interfaces/factory-store.js";
 import type { SourceEvent } from "../../interfaces/source-adapter.js";
 
 // The split, delivery and gate states the approve gate checks live in core, shared with the dashboard's request path.
-export { DELIVERY_FAILED, FLOOR_TIER, RULE_OF_TWO, awaitingMerge, splitFiling, splitOpen } from "../../core/commands.js";
+export { DELIVERY_FAILED, FLOOR_TIER, RULE_OF_TWO, awaitingMerge, commandPhase, phaseLabel, splitFiling, splitOpen } from "../../core/commands.js";
 // Types the controller files outside units/ take from here (the golden gate), so they import no legacy module themselves.
-export type { Run, RunId, RunInput, Tier, WorkItem, WorkItemId } from "../../core/types.js";
+export type { Actor, Run, RunId, RunInput, Tier, WorkItem, WorkItemId } from "../../core/types.js";
 export { branchFor, runKey } from "../../core/policy.js";
 export type { FactoryStore, GoldenFingerprint } from "../../interfaces/factory-store.js";
 
@@ -22,12 +22,13 @@ export type Refusal = { refuse: string };
 /** What a `+paths` adds to a transition (issue #280): the widened allowed_paths and a raised tier, and the added paths. */
 export type Widening = { patch: Pick<WorkItemPatch, "allowed_paths" | "tier">; detail: StateChangeDetail };
 export const NO_WIDENING: Widening = { patch: {}, detail: {} };
-export type CommandEvent = Extract<SourceEvent, { kind: "spec_approved" | "spec_rejected" | "revise_requested" | "retry_requested" | "budget_continue" | "resolve_requested" }>;
+export type CommandEvent = Extract<SourceEvent, { kind: "spec_approved" | "spec_rejected" | "revise_requested" | "retry_requested" | "budget_continue" | "resolve_requested" | "paths_requested" }>;
 export const COMMAND: Record<CommandEvent["kind"], string> = {
   spec_approved: "/approve",
   spec_rejected: "/reject",
   revise_requested: "/revise",
   retry_requested: "/retry",
+  paths_requested: "/paths",
   resolve_requested: "/resolve",
   budget_continue: "/budget",
 };
