@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { API, type ItemRow, type Items, type Overview, type SystemAction, type UnreviewedMerges, mergeInFlight, useApi, useItems } from "../api.js";
+import { API, type ItemRow, type Items, type Overview, type SystemAction, type UnreviewedMerges, mergeCheckLabel, mergeInFlight, useApi, useItems } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { Dialog } from "../components/ui/dialog.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
@@ -9,12 +9,13 @@ import { shortSource, whyText } from "../lib/format.js";
 import { t } from "../i18n/index.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
-import { type NeedGroup, MergeCheckNote, allowEntries, needGroup, needsYou } from "./common.js";
+import { type NeedGroup, allowEntries, needGroup, needsYou } from "./common.js";
 import { ItemDecision } from "./decision-card.js";
 import { useCommandSend } from "./command-send.js";
-import { NeedActions, SendErrors } from "./item-commands.js";
+import { NeedActions, sendErrorTexts, useMergeReply } from "./item-commands.js";
 import { FloorStatus } from "./pages.js";
 import { CheckRow } from "./system-banner.js";
+import { OutcomeText } from "./command-box.js";
 import { Card, SUB_TITLE } from "../components/ui/card.js";
 import { Badge, StatusBadge } from "../components/ui/badge.js";
 import { ListRow, ROW_TITLE } from "../components/ui/list-row.js";
@@ -88,14 +89,17 @@ export function WorkState({ id, title, open: taskOpen }: { id: string; title: st
 const GROUPS: readonly [NeedGroup, MessageKey][] = [["merge", "needs.groupMerge"], ["approve", "needs.groupApprove"], ["answer", "needs.groupAnswer"]];
 
 /**
- * One compact Needs you row: the item (and its PR), its state as one badge, a merge check only when it is not
- * "mergeable", the reason only for an Answer-or-fix item (Merge and Approve say it with the badge; it links to the item's latest
- * thread entry when the need names one), on the shared ListRow; every action is in its "⋯" menu, the primary first.
- * A failed send's error takes its own line below the row's content, never the menu cell (design-system/patterns.md C-050).
+ * One compact Needs you row: the item (and its PR), its state as one badge (a merge check's conflicts are that state:
+ * "Conflicts: N files", the files on hover, not "Ready to merge" beside them), the reason only for an Answer-or-fix
+ * item (Merge and Approve say it with the badge; it links to the item's latest thread entry when the need names one),
+ * on the shared ListRow; every action is in its "⋯" menu, the primary first. A failed send's error and a merge's
+ * refusal take their own line below the row's content, never the menu cell (design-system/patterns.md C-050).
  */
 function WorkRow({ it }: { it: ItemRow }) {
   const cmd = useCommandSend(it.id);
-  const checking = it.merge_check?.state === "checking";
+  const merge = useMergeReply(it.id, needGroup(it), it.merge, cmd);
+  const errors = [...new Set([...sendErrorTexts(cmd.local), ...(merge.outcome?.tone === "error" ? [merge.outcome.text] : [])])];
+  const conflicts = it.merge_check?.state === "conflicts" ? it.merge_check : null;
   const reason = needReason(it);
   const chip = CODE_REASON.test(reason);
   const toNeed = it.need?.anchor ? `${itemPath(it.id)}#${it.need.anchor}` : null;
@@ -112,9 +116,14 @@ function WorkRow({ it }: { it: ItemRow }) {
       }
       details={
         <>
-          <StatusBadge state={it.item_phase} />
+          {conflicts ? (
+            <span data-merge-check="conflicts" title={conflicts.conflicts.join("\n")}>
+              <Badge level="failed">{mergeCheckLabel(conflicts)}</Badge>
+            </span>
+          ) : (
+            <StatusBadge state={it.item_phase} />
+          )}
           {it.rank_reason !== undefined && <span data-rank><Badge level={it.held ? "held" : undefined}>{it.rank_reason}</Badge></span>}
-          {it.merge_check && !checking && it.merge_check.state !== "mergeable" && <MergeCheckNote check={it.merge_check} />}
           {chip && (
             <span data-need title={reason}>
               {toNeed ? (
@@ -135,9 +144,9 @@ function WorkRow({ it }: { it: ItemRow }) {
       }
       menu={<RowActions it={it} cmd={cmd} inlineErrors={false} />}
     >
-      {Object.values(cmd.local).some((l) => "error" in l) && (
-        <div data-row-error className="flex flex-col gap-1">
-          <SendErrors local={cmd.local} />
+      {errors.length > 0 && (
+        <div data-row-error className="flex min-w-0 flex-col gap-1">
+          {errors.map((text) => <OutcomeText key={text} outcome={{ tone: "error", text }} />)}
         </div>
       )}
     </ListRow>

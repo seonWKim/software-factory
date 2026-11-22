@@ -22,7 +22,7 @@ These are rules for new and changed pages. Existing pages move onto them in foll
 - Then its state as a `Badge`, then the facts that decide what to do next, then the time (`writing.md`, compact times).
 - A table of rows uses `DataTable`: a table at `sm` and up, one card per row below it.
 - The row opens the item page. Row actions sit at the end of the row.
-- **C-050** (2026-11-15). An action's error shows on its own line below the row's content, full width, or in the shared `Notice` or toast; never in the actions column. The title keeps its space and truncates only at the row's real width; the status badge and the actions never overlap, at every `check:responsive` size. The Tasks page's Factory work row follows it (`SendErrors` on a `basis-full` line); the Needs you table moves onto it in a follow-up.
+- **C-050** (2026-11-15). An action's error shows on its own line below the row's content, full width, or in the shared `Notice` or toast; never in the actions column. The title keeps its space and truncates only at the row's real width; the status badge and the actions never overlap, at every `check:responsive` size. The Tasks page's Factory work row follows it (`SendErrors` on a `basis-full` line); so do the Needs you rows, a merge's refusal included (2026-11-22).
 
 ## Actions
 
