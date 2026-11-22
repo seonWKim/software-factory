@@ -45,6 +45,7 @@ export const shell = {
   "keys.primary": "Run the selected row's main action (not Merge)",
   "topbar.updateFailed": "update failed",
   "topbar.refresh": "Refresh",
+  "topbar.more": "More",
   "topbar.theme": "Theme",
   "topbar.themeSystem": "System",
   "topbar.themeLight": "Light",

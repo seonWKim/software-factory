@@ -1,9 +1,10 @@
 import { useIsFetching, useQuery, useQueryClient } from "@tanstack/react-query";
-import { RefreshCw, Search } from "lucide-react";
+import { MoreHorizontal, RefreshCw, Search } from "lucide-react";
 import { type JSX, useEffect, useState } from "react";
 import { API, type Overview, POLL_MS, WEB_REV, getJson } from "./api.js";
 import { Brand } from "./components/ui/brand.js";
 import { Button } from "./components/ui/button.js";
+import { OverflowMenu } from "./components/ui/menu.js";
 import { t } from "./i18n/index.js";
 import { cn } from "./lib/cn.js";
 import { useShortcuts } from "./keys.js";
@@ -25,6 +26,19 @@ import { ProposalsPage } from "./views/proposals.js";
 import { CalendarPage } from "./views/calendar.js";
 import { TasksPage } from "./views/tasks.js";
 import { WorkersPage } from "./views/workers.js";
+
+/** Below Tailwind's `sm` (640px). */
+const SM_PX = 640;
+
+function useBelowSm(): boolean {
+  const [below, setBelow] = useState(() => innerWidth < SM_PX);
+  useEffect(() => {
+    const onResize = () => setBelow(innerWidth < SM_PX);
+    addEventListener("resize", onResize);
+    return () => removeEventListener("resize", onResize);
+  }, []);
+  return below;
+}
 
 const VIEWS: Record<string, () => JSX.Element> = {
   items: ItemsPage,
@@ -55,6 +69,7 @@ export function App() {
   // System listens for the system colour scheme; the cleanup removes that listener when the choice changes.
   useEffect(() => applyChoice(choice), [choice]);
   const [path, navigate] = useLocationPath();
+  const narrow = useBelowSm();
   const [dialog, setDialog] = useState<"search" | "help" | null>(null);
   useShortcuts({ navigate, openSearch: () => setDialog("search"), openHelp: () => setDialog("help"), path });
   const route = routeFor(path);
@@ -107,12 +122,25 @@ export function App() {
               {overview.isError ? t("topbar.updateFailed") : null}
             </span>
             <StopAllAgents />
-            <Button variant="ghost" size="icon" aria-label={t("search.open")} className="shrink-0" onClick={() => setDialog("search")}>
-              <Search aria-hidden className="size-4" />
-            </Button>
-            <Button variant="ghost" size="icon" aria-label={t("topbar.refresh")} className="shrink-0" onClick={() => void client.invalidateQueries()}>
-              <RefreshCw aria-hidden className={cn("size-4", fetching > 0 && "animate-spin motion-reduce:animate-none")} />
-            </Button>
+            {narrow ? (
+              <OverflowMenu
+                label={t("topbar.more")}
+                icon={<MoreHorizontal aria-hidden className="size-4" />}
+                items={[
+                  { label: t("search.open"), action: "search", onSelect: () => setDialog("search") },
+                  { label: t("topbar.refresh"), action: "refresh", onSelect: () => void client.invalidateQueries() },
+                ]}
+              />
+            ) : (
+              <>
+                <Button variant="ghost" size="icon" aria-label={t("search.open")} className="shrink-0" onClick={() => setDialog("search")}>
+                  <Search aria-hidden className="size-4" />
+                </Button>
+                <Button variant="ghost" size="icon" aria-label={t("topbar.refresh")} className="shrink-0" onClick={() => void client.invalidateQueries()}>
+                  <RefreshCw aria-hidden className={cn("size-4", fetching > 0 && "animate-spin motion-reduce:animate-none")} />
+                </Button>
+              </>
+            )}
             <ThemeControl choice={choice} onChoose={choose} />
           </header>
           <RevisionBanner server={overview.data?.server_rev} web={WEB_REV} />

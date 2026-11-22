@@ -1,5 +1,7 @@
 ## History
 
+- **Every top bar control kept its size at every width** (decision changed 2026-11-23, issue #788, the below-`sm` top bar decision at the top of 09-dashboard-shell.md). Before: the Mode switch, Stop all agents, Search, Refresh and Theme controls were all `shrink-0`, so at 390px Refresh and Theme sat past the right edge and the content column scrolled 99px sideways.
+
 - **Each page set its own layout** (decision changed 2026-11-20, the page template decision at the top of 09-dashboard-shell.md). Before: Rules capped itself at `max-w-3xl` (768px) while the other pages filled `<main>`; a `CardSection` h3 was in the section title's type and other h3s used `text-xs`/`text-sm` with `font-medium` or `font-semibold`; the decision box's h2 was `text-sm`; tabs, search and switches sat where each page put them; a Disclosure's trigger was 16px tall; `data-raw` marked only the Details toggles; the responsive check had no structure rules. Workers' window switch was its timeline Card's action, the Transcript's step-type and agent-step filters sat between its Outcome and Steps blocks, the Settings Advanced search sat inside the Settable keys Card and Rules' applied-rules search inside In effect, beside Suggest.
 - **Sidebar links carried an `aria-label`** (decision changed 2026-11-21, the sidebar link naming decision of 09-dashboard-shell.md). Before: each link set `aria-label` to the page name, which replaced its content, so the Needs-you count was never announced and axe reported `label-content-name-mismatch` on every page.
 

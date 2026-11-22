@@ -1,7 +1,8 @@
 // The layout rules `npm run check:responsive` applies to each page, viewport and theme. `checkLayout` runs inside
 // the page (serialized with toString), so it uses only browser APIs. Each rule is one question with one answer:
 //
-//   page-scroll     the page scrolls sideways: documentElement.scrollWidth > the viewport width.
+//   page-scroll     the page scrolls sideways: documentElement.scrollWidth > the viewport width, or the
+//                   [data-scroll-root] content column's scrollWidth > its clientWidth.
 //   offscreen       a visible element, or its own text, ends past the viewport's right edge, and no ancestor of it
 //                   clips or scrolls sideways (an overflow-x:auto table wrapper is fine; the wrapper itself is checked
 //                   too). Only the outermost such element of a chain is reported.
@@ -106,6 +107,9 @@ export function checkLayout(limits) {
   // page-scroll
   const sw = document.documentElement.scrollWidth;
   if (sw > W + 1) fail("page-scroll", document.documentElement, `scrollWidth ${sw}px > viewport ${W}px`);
+  // The app scrolls inside its content column, so the document can fit while the column scrolls sideways.
+  const root = document.querySelector("[data-scroll-root]");
+  if (root && root.scrollWidth > root.clientWidth + 1) fail("page-scroll", root, `scroll root scrollWidth ${root.scrollWidth}px > clientWidth ${root.clientWidth}px`);
 
   // unreachable
   const sh = document.documentElement.scrollHeight;
