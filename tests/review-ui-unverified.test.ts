@@ -20,6 +20,7 @@ import { Worker, reviewComment } from "../src/worker/index.js";
 import { FakeRunner, MemoryStorage } from "./helpers/fakes/runner.js";
 import { cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
+import { seedMergeRecord } from "./helpers/merge-record.js";
 
 // A UI change the review could not check (design 04-agents, 2026-11-19): the reviewer sets `ui_unverified`, the
 // review header reads "needs a human look", and auto mode never merges it; it waits for a person's merge. A review
@@ -84,6 +85,7 @@ async function factory(answer: Record<string, unknown>) {
   const cfg: FactoryConfig = { ...config, project, local_only: true, repo: { ...config.repo, path: repo, install_command: OK, test_command: OK } };
   const clock = new FakeClock();
   const { store } = await newStore(clock);
+  await seedMergeRecord(store, clock, { tier: 2 }); // a met record for the review's tier: only the flag holds the merge
   const sandbox = new NoOpSandbox(join(root, "wt"), undefined, undefined, { local: true });
   const settings = new LiveSettings({ config: cfg, base: baseFromConfig(cfg), source: store });
   const controller = new ControllerRole({

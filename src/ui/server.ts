@@ -10,7 +10,7 @@
 // projects-api.ts's /api/v1/tasks/project, /api/v1/projects and /api/v1/projects/delete, its project dialog and menu) and the project file routes (design 02-tasks,
 // project files; project-files.ts PROJECT_FILE_ROUTES: POST /api/v1/projects/folder, /api/v1/projects/files/tree, /read and /write,
 // the Files tab; its reads are POSTs too, so they pass every guard) and the
-// calendar routes (design 08-settings; calendar-api.ts: POST /api/v1/calendar/connect and /disconnect) and the Data page's Ask
+// calendar routes (design 08-settings; calendar-api.ts: POST /api/v1/calendar/connect, /disconnect and /sync) and the Data page's Ask
 // (design 09-dashboard-app; data-ask.ts: POST /api/v1/data/ask) and the Plugins page's import (design 11-plugin-import;
 // plugins-import-api.ts: POST /api/v1/plugins/import) and Migrate now, Start and Restart now (design 08-self-update; migrate-api.ts:
 // POST /api/v1/migrate and POST /api/v1/supervisor) and the Proposals page's verdict (design 09-dashboard-proposals; improve-api.ts: POST /api/v1/proposals/verdict)
@@ -47,7 +47,7 @@ import { NOTICES_PATH, readNotices } from "./notices-api.js";
 import { Activity } from "./background-refresh.js";
 import { PLUGINS_PATH, readPlugins, startPluginsSnapshot } from "./plugins-api.js";
 import { PLUGINS_IMPORT_PATH, readPluginsImport, writePluginsImport } from "./plugins-import-api.js";
-import { CALENDAR_CONNECT_PATH, CALENDAR_DISCONNECT_PATH, CALENDAR_PATH, readCalendarStatus, writeCalendar } from "./calendar-api.js";
+import { CALENDAR_CONNECT_PATH, CALENDAR_DISCONNECT_PATH, CALENDAR_PATH, CALENDAR_SYNC_PATH, readCalendarStatus, writeCalendar, writeCalendarSync } from "./calendar-api.js";
 import { CALENDAR_EVENTS_PATH, readCalendarEvents } from "./calendar-events-api.js";
 import { DATA_ASK_PATH, askData } from "./data-ask.js";
 import { MODEL_CREDENTIAL_PATH, readModelCredential, writeModelCredential } from "./model-credential.js";
@@ -145,7 +145,7 @@ type WriteRoute = "settings" | "resume" | "stop" | "standing" | "improve" | "pac
  * The write route a request is for: POST to exactly /api/v1/settings when settings are wired, to exactly
  * /api/v1/pauses/resume, /api/v1/agents/stop, /api/v1/standing, /api/v1/plugins/import or /api/v1/proposals/verdict when the pause routes (their factory user) are, or to exactly /api/v1/improve/run when both the pause routes and
  * settings (its project) are, or to exactly one of the task routes (TASK_WRITES) when the commands route (its actor and token) is, or
- * to exactly /api/v1/calendar/connect or /disconnect when the settings carry the Calendar section, or to exactly /api/v1/model-credential
+ * to exactly /api/v1/calendar/connect, /disconnect or /sync when the settings carry the Calendar section, or to exactly /api/v1/model-credential
  * when they carry the Add model credential dialog, or to exactly /api/v1/data/ask when they carry
  * the Ask, or to exactly /api/v1/migrate or /api/v1/supervisor when both the pause routes and Migrate now's parts are (a query string
  * is ignored). Null for every other request.
@@ -164,7 +164,7 @@ function writeRoute(d: ServerDeps, req: UiRequest): WriteRoute | null {
   if (path === PROPOSAL_VERDICT_PATH && d.pauses !== undefined) return "proposals";
   if (Object.hasOwn(TASK_WRITES, path) && d.commands !== undefined) return "tasks";
   if (Object.hasOwn(PROJECT_FILE_ROUTES, path) && d.commands !== undefined) return "files";
-  if ((path === CALENDAR_CONNECT_PATH || path === CALENDAR_DISCONNECT_PATH) && d.settings?.calendar !== undefined) return "calendar";
+  if ((path === CALENDAR_CONNECT_PATH || path === CALENDAR_DISCONNECT_PATH || path === CALENDAR_SYNC_PATH) && d.settings?.calendar !== undefined) return "calendar";
   if (path === MODEL_CREDENTIAL_PATH && d.settings?.modelCredential !== undefined) return "model_credential";
   if (path === DATA_ASK_PATH && d.settings?.ask !== undefined) return "ask";
   if (path === MIGRATE_PATH && d.pauses !== undefined && d.migrate !== undefined) return "migrate";
@@ -219,7 +219,7 @@ async function writePost(d: ServerDeps, req: UiRequest, route: WriteRoute): Prom
     : route === "proposals" ? await writeProposalVerdict(d, d.pauses!, body)
     : route === "tasks" ? await TASK_WRITES[pathOf(req.url)]!(d, body)
     : route === "files" ? await PROJECT_FILE_ROUTES[pathOf(req.url)]!.run(d, body)
-    : route === "calendar" ? await writeCalendar(d, pathOf(req.url), body)
+    : route === "calendar" ? (pathOf(req.url) === CALENDAR_SYNC_PATH ? await writeCalendarSync(d, body) : await writeCalendar(d, pathOf(req.url), body))
     : route === "model_credential" ? await writeModelCredential(d, d.pauses ? (does) => ownerOf(d, d.pauses!, does) : null, body)
     : route === "ask" ? await askData(d, d.settings!.ask!, body)
     : route === "migrate" ? await postMigrate(d.migrate!, d.pauses!, body)

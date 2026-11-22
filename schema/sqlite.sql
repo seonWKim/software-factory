@@ -358,12 +358,32 @@ CREATE TABLE calendar_events (
     PRIMARY KEY (source, event_id)
   );
 
+CREATE TABLE calendar_sync_requests (
+    id            TEXT PRIMARY KEY,
+    from_date     TEXT NOT NULL,
+    to_date       TEXT NOT NULL,
+    pending_key   TEXT,
+    requested_by  TEXT NOT NULL,
+    requested_at  TEXT NOT NULL,
+    claimed_at    TEXT,
+    done_at       TEXT,
+    results       TEXT
+  );
+
 CREATE TABLE calendar_sync_state (
     source        TEXT PRIMARY KEY,
     next_sync_at  TEXT NOT NULL,
     synced_at     TEXT,
     error         TEXT,
     error_at      TEXT
+  );
+
+CREATE TABLE calendar_synced_ranges (
+    source     TEXT NOT NULL,
+    from_at    TEXT NOT NULL,
+    to_at      TEXT NOT NULL,
+    synced_at  TEXT NOT NULL,
+    PRIMARY KEY (source, from_at, to_at)
   );
 
 CREATE TABLE controller_alert_patterns (
@@ -648,6 +668,26 @@ CREATE TABLE controller_projects (
     archived_at  TEXT
   , base_folder TEXT);
 
+CREATE TABLE controller_schedule_runs (
+    schedule_id    TEXT NOT NULL,
+    occurrence_at  TEXT NOT NULL,
+    outcome        TEXT NOT NULL,
+    recorded_at    TEXT NOT NULL,
+    PRIMARY KEY (schedule_id, occurrence_at)
+  );
+
+CREATE TABLE controller_schedules (
+    id             TEXT PRIMARY KEY,
+    title          TEXT NOT NULL,
+    cadence_kind   TEXT NOT NULL,
+    cadence_spec   TEXT NOT NULL,
+    zone           TEXT NOT NULL,
+    created_by     TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    next_due_at    TEXT,
+    running_since  TEXT
+  );
+
 CREATE TABLE controller_signals (
     id            TEXT PRIMARY KEY,
     source        TEXT NOT NULL,
@@ -668,6 +708,17 @@ CREATE TABLE controller_standing_proposals (
     threshold   INTEGER NOT NULL,
     created_at  TEXT NOT NULL,
     UNIQUE (gate, tier, run_length)
+  );
+
+CREATE TABLE controller_standing_rule_changes (
+    seq           INTEGER PRIMARY KEY AUTOINCREMENT,
+    gate          TEXT NOT NULL,
+    tier          INTEGER NOT NULL,
+    action        TEXT NOT NULL,
+    before_value  TEXT,
+    after_value   TEXT,
+    actor         TEXT NOT NULL,
+    at            TEXT NOT NULL
   );
 
 CREATE TABLE controller_standing_rules (
@@ -1818,6 +1869,8 @@ CREATE INDEX bus_system_alerts_retries_due ON bus_system_alerts_retries (next_at
 
 CREATE INDEX calendar_events_starts ON calendar_events (starts_at);
 
+CREATE UNIQUE INDEX calendar_sync_requests_pending ON calendar_sync_requests (pending_key);
+
 CREATE INDEX child_restarts_at ON "legacy_child_restarts" (at);
 
 CREATE INDEX claim_decisions_work_item ON "legacy_claim_decisions" (work_item_id, at);
@@ -1855,6 +1908,8 @@ CREATE INDEX controller_notices_undelivered ON controller_notices (delivered_at,
 CREATE INDEX controller_outbox_pending ON controller_outbox (published_at, seq);
 
 CREATE INDEX controller_pause_history_ended ON controller_pause_history (ended_at);
+
+CREATE INDEX controller_schedules_due ON controller_schedules (next_due_at);
 
 CREATE INDEX controller_signals_item ON controller_signals (work_item_id, at);
 
