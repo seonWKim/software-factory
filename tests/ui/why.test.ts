@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type WhyInput, deadlocked, refsOf, whyWaiting } from "../../src/ui/why.js";
+import { UNKNOWN_FAILURE, type WhyInput, deadlocked, refsOf, whyWaiting } from "../../src/ui/why.js";
 import { localDateTime, whyText } from "../../web/src/lib/format.js";
 
 // The server sends a reason code with its values; the web app words it (en.ts, one text per reason code). `said`
@@ -38,7 +38,18 @@ describe("whyWaiting: every case", () => {
     ["dependency cycle", input({ item: { blocked_on: "human", blocked_reason: "dependency_cycle: #5 → #6 → #5" } }), "Its dependencies form a cycle (#5 → #6 → #5): a person removes one link", "human", [5, 6]],
     ["max loops", input({ item: { blocked_on: "human", blocked_reason: "max_loops" } }), "Too many review loops: a person decides what happens next", "human", []],
     ["merge conflict", input({ item: { blocked_on: "human", blocked_reason: "merge_conflict_pending" } }), "A merge conflict needs a person", "human", []],
-    ["failed run", input({ item: { blocked_on: "human", blocked_reason: "run_failed:implement:diff_too_large" } }), "The run failed (run_failed:implement:diff_too_large): a person decides what happens next", "human", []],
+    ["failed run", input({ item: { blocked_on: "human", blocked_reason: "run_failed:implement:diff_too_large" } }), "Building failed. The change is larger than the diff budget allows. Decide what happens next", "human", []],
+    ["failed triage", input({ item: { stage: "NEW", blocked_on: "human", blocked_reason: "run_failed:triage:exception" } }), "Triage failed. The worker hit an unexpected error. Decide what happens next", "human", []],
+    ["failed run, unknown code", input({ item: { stage: "REVIEW", blocked_on: "human", blocked_reason: "run_failed:review:odd_code" } }), `Review failed. ${UNKNOWN_FAILURE} Decide what happens next`, "human", []],
+    ["failed run of another kind", input({ item: { stage: "REVIEW", blocked_on: "human", blocked_reason: "run_failed:merge-check:exception" } }), "A step failed. The worker hit an unexpected error. Decide what happens next", "human", []],
+    ["out of tries", input({ item: { stage: "REVIEW", blocked_on: "human", blocked_reason: "max_attempts" } }), "Review failed. It failed on every try it was allowed. Decide what happens next", "human", []],
+    ["too many restarts", input({ item: { stage: "NEW", blocked_on: "human", blocked_reason: "max_restart" } }), "Triage failed. The factory restarted it too many times. Decide what happens next", "human", []],
+    ["repeated failure, triage", input({ item: { stage: "NEW", blocked_on: "human", blocked_reason: "repeated_failure" } }), "Triage failed twice the same way. Decide what happens next", "human", []],
+    ["repeated failure, building", input({ item: { stage: "RUNNING", blocked_on: "human", blocked_reason: "repeated_failure" } }), "Building failed twice the same way. Decide what happens next", "human", []],
+    ["repeated failure in review", input({ item: { stage: "REVIEW", blocked_on: "human", blocked_reason: "repeated_failure" } }), "A step failed twice the same way. Decide what happens next", "human", []],
+    ["agent asked", input({ item: { blocked_on: "human", blocked_reason: "agent_needs_human" } }), "The agent asked a question: a person answers it", "human", []],
+    ["rule of two", input({ item: { blocked_on: "human", blocked_reason: "rule_of_two" } }), "Held by the Rule of Two: a person approves the run before it starts", "human", []],
+    ["unknown hold code", input({ item: { blocked_on: "human", blocked_reason: "something_new" } }), "Waiting for a person to decide what happens next", "human", []],
     ["other human", input({ item: { blocked_on: "human", blocked_reason: "needs a decision on #7" } }), "Waiting for a person: needs a decision on #7", "human", [7]],
     ["human, no stored reason", input({ item: { stage: "REVIEW", blocked_on: "human", blocked_reason: null } }), "Waiting for a person: the item is in review; next, a person retries, resolves or rejects it", "human", []],
     ["deadlock", input({ run: running, decision: { run_id: "run_r", decision: "deadlock", holder_ref: "#92", holder_kind: "waiting", approved_by: null, holder_title: "Other item" } }), `Running at the same time as "Other item", which changes some of the same files. If they clash, you'll be asked when it merges.`, "factory", []],
@@ -147,8 +158,10 @@ describe("whyWaiting: a recurring-failure hold names its last failed run", () =>
     expect(whyText(w)).not.toMatch(/likely enough/);
   });
 
-  it("a code with no description is named as is", () => {
-    expect(said(input({ item: hold, failure: failure("odd_code", "") }))).toContain("odd_code");
+  it("a code with no description reads as a generic sentence, never as the code", () => {
+    const text = said(input({ item: hold, failure: failure("odd_code", "") }));
+    expect(text).toContain(UNKNOWN_FAILURE.replace(/\.$/, ""));
+    expect(text).not.toContain("odd_code");
   });
 
   it("no failed run: still a sentence, never empty or a raw code, naming no failure", () => {

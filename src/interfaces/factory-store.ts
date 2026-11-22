@@ -265,7 +265,7 @@ export type BudgetCheckpointResult =
 export interface WorkItemFilter {
   stage?: Stage | undefined;
   blocked_on?: BlockedOn | undefined; blocked_reason?: string | undefined;
-  exclude_closed?: boolean | undefined; // Leave out CLOSED items. Ignored when `stage` is given.
+  exclude_closed?: boolean | undefined; exclude_system?: boolean | undefined; // Leave out CLOSED items (ignored when `stage` is given) / system items (blocked_reason system_item).
   /** Only items updated at or after this time (with `stage: "CLOSED"`, the closes since then: owner notices). */
   updated_since?: Timestamp | undefined;
   limit: number;
@@ -393,7 +393,7 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   listWorkItemsWhere(filter: WorkItemFilter): Promise<WorkItem[]>;
   /** Number of items matching `filter`, with no limit. Read-only. */
   countWorkItemsWhere(filter: Omit<WorkItemFilter, "limit">): Promise<number>;
-  /** Number of work items in each stage. Every stage is present, 0 when it has none. Read-only. */
+  /** Number of work items in each stage, system items (blocked_reason system_item) left out. Every stage is present, 0 when it has none. Read-only. */
   countWorkItemsByStage(): Promise<Record<Stage, number>>;
   /**
    * The only way to change a work item: conditional update + state_changes row (+ optional ack/enqueue).

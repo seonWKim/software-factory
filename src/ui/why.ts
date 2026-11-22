@@ -9,9 +9,9 @@
 // (`worker_kinds`: it waits for a session), a retry's not_before, the queue position, and last nothing (no run moves it). An open alarm that affects the item is named after the
 // reason (withAlarms), whichever rule gave it.
 
-import { DEPENDENCY_CLOSED, DEPENDENCY_CYCLE, type ItemPhase, PERSON_PHASES, isClosedPhase, phaseOf } from "../core/phase.js";
+import { DEPENDENCY_CLOSED, DEPENDENCY_CYCLE, FAILED_PHASES, type ItemPhase, PERSON_PHASES, isClosedPhase, phaseOf } from "../core/phase.js";
 import { isModelRunKind } from "../core/model-choice.js";
-import { failureClass, IMPLEMENT_KINDS, retryClears } from "../core/policy.js";
+import { failureClass, IMPLEMENT_KINDS, REPEATED_FAILURE, retryClears } from "../core/policy.js";
 import type { BlockedOn, ClaimDecision, CloseReason, RunKind, RunOutcome, Stage } from "../core/types.js";
 import { FAILURE_DESCRIPTIONS } from "./failures.js";
 
@@ -37,7 +37,11 @@ export type ReasonCode =
   | "closed" | "closed_as"
   | "budget" | "merge_pending" | "spec_pending" | "max_revisions" | "dependency_closed" | "dependency_cycle" | "max_loops" | "merge_conflict"
   | "recurring_none" | "recurring_stalled" | "recurring_rate_limited" | "recurring_infra" | "recurring_own"
-  | "run_failed" | "person_idle" | "person"
+  | "failed_triage" | "failed_implement" | "failed_review" | "failed_update" | "failed_step"
+  | "repeated_triage" | "repeated_implement" | "repeated_step"
+  | "agent_needs_human" | "floor_tier" | "rule_of_two" | "session_released" | "changes_requested" | "empty_diff"
+  | "delivery_failed" | "checks_failed" | "checks_failed_update" | "eval_regression"
+  | "person_idle" | "person_code" | "person"
   | "deadlock" | "deadlock_unknown" | "running"
   | "paused_rate_limit" | "paused_model_stall" | "paused_model_credential" | "paused_forge_auth" | "paused_preflight"
   | "dependency" | "dependency_unknown"
@@ -140,13 +144,21 @@ const RECURRING: Partial<Record<ReturnType<typeof failureClass>, ReasonCode>> = 
   infra: "recurring_infra",
 };
 
+/** What an owner reads for an error code the factory has no plain words for: never the code itself. */
+export const UNKNOWN_FAILURE = "It failed with an error the factory has no plain words for yet.";
+
+/** An error code in plain words, one sentence (FAILURE_DESCRIPTIONS); any other code gets UNKNOWN_FAILURE, never the code. */
+export function failureWords(code: string): string {
+  return FAILURE_DESCRIPTIONS[code] ?? UNKNOWN_FAILURE;
+}
+
 /**
- * A recurring-failure hold (design 05-alarms): the last failed run's failure in plain words (FAILURE_DESCRIPTIONS,
- * else its code) and whether a plain retry is likely enough. With no failed run it names no failure.
+ * A recurring-failure hold (design 05-alarms): the last failed run's failure in plain words (failureWords) and
+ * whether a plain retry is likely enough. With no failed run it names no failure.
  */
 function recurring(f: HeldFailure | null): Why {
   if (f === null) return why("human", "recurring_none", "human");
-  const said = FAILURE_DESCRIPTIONS[f.outcome.error_code]?.replace(/\.$/, "") ?? f.code;
+  const said = failureWords(f.outcome.error_code).replace(/\.$/, "");
   const code = retryClears(f.outcome) ? (RECURRING[failureClass(f.outcome)] ?? "recurring_own") : "recurring_own";
   return why("human", code, "human", { failure: f.detail ? `${said} (${f.detail})` : said });
 }
@@ -160,23 +172,63 @@ const PERSON: Partial<Record<ItemPhase, ReasonCode>> = {
   max_revisions: "max_revisions",
   max_loops: "max_loops",
   merge_conflict: "merge_conflict",
-  too_large: "run_failed",
-  failed_implement: "run_failed",
-  failed_review: "run_failed",
-  failed_run: "run_failed",
-  repeated_failure: "run_failed",
 };
+
+/** The step a failed run's reason names (`run_failed:<kind>:<code>`), by its kind; any other kind is "a step". */
+const FAILED_STEP: Partial<Record<RunKind, ReasonCode>> = {
+  triage: "failed_triage",
+  implement: "failed_implement",
+  review: "failed_review",
+  update: "failed_update",
+};
+/** A repeated failure's step: the stage says it only in NEW and RUNNING (in REVIEW it may be a review, update or resolve run). */
+const REPEATED_STEP: Partial<Record<Stage, ReasonCode>> = { NEW: "repeated_triage", RUNNING: "repeated_implement" };
+/** The run that failed when the reason names no kind (`max_attempts`, `max_restart`): the stage says (phase.ts STAGE_FAILURES). */
+const STAGE_KIND: Partial<Record<Stage, RunKind>> = { NEW: "triage", RUNNING: "implement", REVIEW: "review" };
+/** A failed run's stored reason that names no error code, in plain words. */
+const STAGE_FAILURE: Readonly<Record<string, string>> = {
+  max_attempts: "It failed on every try it was allowed.",
+  max_restart: "The factory restarted it too many times.",
+};
+/** A failed run's stored reason: `run_failed:<kind>:<code>`. */
+const RUN_FAILED = /^run_failed:([^:]+):(.*)$/;
+
+/**
+ * A failed run's hold in words: which step failed, from its reason's kind or the item's stage, and its failure in
+ * plain words (failureWords), never the code. A repeated failure says the step failed twice the same way.
+ */
+function failedRun(i: WhyInput["item"]): Why {
+  const r = i.blocked_reason ?? "";
+  if (r === REPEATED_FAILURE) return why("human", REPEATED_STEP[i.stage] ?? "repeated_step", "human");
+  const m = RUN_FAILED.exec(r);
+  const kind = m ? (m[1] as RunKind) : STAGE_KIND[i.stage];
+  const failure = m ? failureWords(m[2]!) : (STAGE_FAILURE[r] ?? UNKNOWN_FAILURE);
+  return why("human", (kind && FAILED_STEP[kind]) ?? "failed_step", "human", { failure });
+}
+
+/** The stored hold reasons of a person's wait with a sentence of their own (`why.reason.<code>`). */
+const PERSON_REASONS: ReadonlySet<string> = new Set<ReasonCode>([
+  "agent_needs_human", "floor_tier", "rule_of_two", "session_released", "changes_requested", "empty_diff", "delivery_failed",
+  "checks_failed", "checks_failed_update", "eval_regression",
+]);
+
+/** A stored reason that is a code (no spaces), not a sentence a person or the factory wrote. */
+const CODE = /^[a-z0-9_:.-]+$/;
 
 function human(i: WhyInput["item"], p: ItemPhase, failure: HeldFailure | null): Why {
   const r = i.blocked_reason ?? "";
   if (p === "dependency_closed") return why("human", "dependency_closed", "human", { ref: r.slice(DEPENDENCY_CLOSED.length + 1) });
   if (p === "dependency_cycle") return why("human", "dependency_cycle", "human", { cycle: r.slice(DEPENDENCY_CYCLE.length + 1).trim() });
   if (p === "recurring_failure") return recurring(failure);
+  // A failed run of a kind with no phase of its own (resolve, merge-check) waits as person_wait: the same words.
+  if (FAILED_PHASES.has(p) || RUN_FAILED.test(r)) return failedRun(i);
   const code = PERSON[p];
-  if (code === "run_failed") return why("human", code, "human", { reason: r });
   if (code) return why("human", code, "human");
   // No stored reason: the item's state and what moves it next, never an empty or "no reason" text.
   if (!r) return why("human", "person_idle", "human", { stage: i.stage });
+  if (PERSON_REASONS.has(r)) return why("human", r as ReasonCode, "human");
+  // Any other code reads as a generic wait, never as the code; a written sentence is said as it is.
+  if (CODE.test(r)) return why("human", "person_code", "human");
   return why("human", "person", "human", { reason: r });
 }
 

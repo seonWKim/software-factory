@@ -17,7 +17,8 @@ export default defineCommand({
                finding; a clean merge needs --expect should_pass
   golden run role/<name>
                replays the role's golden cases with its prompt (no push, no GitHub writes), prints per case
-               and in total: tokens, wall time, pass_rate, catch_rate and false_alarm_rate, and writes
+               and in total: tokens, wall time, pass_rate, catch_rate and false_alarm_rate (with golden.replays of 2 or more,
+               also pass_k and the unstable cases), and writes
                <state_dir>/golden/results/<timestamp>.json.
                With the noop sandbox the agent runs as the host user: test environment only (design §5)
   golden compare --base <file> [--agent reviewer] [--since <ref> | --all]
@@ -30,6 +31,7 @@ export default defineCommand({
     const args = [...rest];
     const loaded = await ctx.load();
     const p = new Plugins(loaded);
+    const replays = (loaded.file as { golden?: { replays?: number } } | null)?.golden?.replays ?? 1; // golden.replays (default 1; startup already refused a bad value)
     if (sub === "add") {
       const opts = parseAddArgs(args);
       await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
@@ -57,7 +59,7 @@ export default defineCommand({
     }
     if (sub === "run") {
       const opts = parseRunArgs(args);
-      const report = await runCases(await buildGoldenRunDeps(p, loaded), opts);
+      const report = await runCases(await buildGoldenRunDeps(p, loaded), { ...opts, replays });
       console.log(formatReport(report));
       return 0;
     }
@@ -65,7 +67,7 @@ export default defineCommand({
       const opts = parseCompareArgs(args);
       const basePrompt = await readFile(opts.base, "utf8");
       const changed = opts.all ? null : await changedPaths(loaded.root, opts.since ?? loaded.config.repo.base_branch);
-      const report = await compareCases(await buildGoldenRunDeps(p, loaded), { role: opts.role, basePrompt, changed });
+      const report = await compareCases(await buildGoldenRunDeps(p, loaded), { role: opts.role, basePrompt, changed, replays });
       console.log(formatCompare(report));
       return report.outcome === "fail" ? 1 : 0;
     }

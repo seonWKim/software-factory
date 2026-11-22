@@ -29,7 +29,7 @@ export function ModeChip() {
   const label = !auto ? t("topbar.modeManual") : tier === null ? t("topbar.modeAuto") : t("topbar.modeAutoTier", { tier });
   return (
     <Tooltip placement="bottom" align="start" text={<>{v.auto_stop && <span className="mb-1 block">{autoStopText(v.auto_stop)}</span>}{t("settings.modeAutoHint")}</>}>
-      <Link data-testid="mode" href={`${BASE}settings#${MODE_ANCHOR}`} aria-label={t("topbar.modeLink", { mode: label })} className={cn("inline-flex shrink-0 rounded-pill", FOCUS)}>
+      <Link data-testid="mode" href={`${BASE}settings#${MODE_ANCHOR}`} aria-label={t("topbar.modeLink", { mode: label })} className={cn("inline-flex min-h-6 shrink-0 items-center rounded-pill", FOCUS)}>
         <Badge level={auto ? "running" : undefined}>{label}</Badge>
       </Link>
     </Tooltip>
