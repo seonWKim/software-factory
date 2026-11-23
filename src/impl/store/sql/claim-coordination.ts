@@ -7,6 +7,13 @@ import type { Hold, Holder } from "../../../core/coordination.js";
 import type { ClaimDecision, RunId, Timestamp, WorkItem } from "../../../core/types.js";
 import type { Row, SqlExecutor, SqlValue } from "../../../state/index.js";
 import { placeholders } from "./retention.js";
+import { rowToClaimDecision } from "./rows.js";
+
+/**
+ * The stored decision of a queued run whose named holder closed while it was `held` (design 05-dependencies,
+ * 2026-11-23): no store reader returns it, and the next claim keeps its `held_since` as the hold's start.
+ */
+export const RELEASED = "released";
 
 /** What claimRun reads once for the coordination check (design §5, 2026-11-03). */
 export interface CoordContext {
@@ -15,6 +22,8 @@ export interface CoordContext {
   /** Recorded conflicts per project, then per path. */
   conflicts: Map<string, Map<string, number>>;
   decisions: Map<string, ClaimDecision>;
+  /** Per queued run whose `held` decision was released when its holder closed: when its hold began. */
+  released: Map<string, Timestamp>;
   /** Held by a dependency: an edge not yet merged, or `blocked_on: dependency`. */
   depHeld: (id: string) => boolean;
   /** Per item: when its first implement run was queued and started. */
@@ -23,6 +32,27 @@ export interface CoordContext {
   order: Map<string, number>;
   /** Per queued item: whether its run is held (stored, or decided earlier in this claim). */
   held: Map<string, boolean>;
+}
+
+/** The stored decisions of queued runs `runIds`, and apart the hold start of each one `released`. */
+export async function claimDecisionsOf(tx: SqlExecutor, runIds: readonly string[]): Promise<Pick<CoordContext, "decisions" | "released">> {
+  const decisions: CoordContext["decisions"] = new Map();
+  const released: CoordContext["released"] = new Map();
+  for (const r of await tx.all(`SELECT * FROM controller_claim_decisions WHERE run_id IN (${placeholders(runIds.length)})`, [...runIds])) {
+    if (r.decision === RELEASED) released.set(r.run_id as string, r.held_since as Timestamp);
+    else decisions.set(r.run_id as string, rowToClaimDecision(r));
+  }
+  return { decisions, released };
+}
+
+/**
+ * Closed item `id` holds nothing from this commit on (design §5, 2026-11-07): the queued runs' decisions that name it
+ * go, except an approval. A `held` one is kept `released` with its `held_since` (oldest held first, 2026-11-23).
+ */
+export async function releaseHolder(tx: SqlExecutor, id: string): Promise<void> {
+  const naming = `holder_work_item_id = ? AND approved_by IS NULL AND run_id IN (SELECT id FROM worker_runs WHERE status = 'queued')`;
+  await tx.run(`UPDATE controller_claim_decisions SET decision = '${RELEASED}', held_since = COALESCE(held_since, at) WHERE decision = 'held' AND ${naming}`, [id]);
+  await tx.run(`DELETE FROM controller_claim_decisions WHERE decision <> '${RELEASED}' AND ${naming}`, [id]);
 }
 
 /** Per item of `ids`: when its first implement run was queued and when one first started (null: none yet). */

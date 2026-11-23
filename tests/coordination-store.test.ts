@@ -551,6 +551,30 @@ describe.each(BACKENDS)("coordination in the store: $name", ({ make }) => {
       await store.transition({ id: old, expected_version: ov.version, actor: system, reason: "x", patch: { pr_files: ["lib/other.ts"] } });
       expect(await claim(store)).toMatchObject({ work_item_id: a });
     });
+
+    it("when the named blocker merges, an item that started after the hold began still does not hold it", async () => {
+      const { store, clock, a, b } = await heldBehindB();
+      const d = await item(store, clock, 3, { files_to_change: ["SET_UP.md"] });
+      expect(await approved(store, d)).toMatchObject({ work_item_id: d });
+      await finish(store, b);
+      await merge(store, b);
+      expect(await store.listClaimDecisions(a)).toEqual([]); // no reader sees a decision naming the merged item
+      expect(await claim(store)).toMatchObject({ work_item_id: a });
+    });
+
+    it("when the named blocker merges, a re-hold keeps the hold's start, so the limit counts from the first hold", async () => {
+      const { store, clock, a, b } = await heldBehindB();
+      const start = (await store.listClaimDecisions(a))[0]!.held_since;
+      const old = await item(store, clock, 3, { stage: "REVIEW", change_ref: "94", pr_files: [WORKER] }, []);
+      await finish(store, b);
+      await merge(store, b);
+      clock.advance(60_000);
+      expect(await claim(store, w2)).toBeNull(); // the default hold_policy: run_after_minutes, 120
+      expect(await store.listClaimDecisions(a)).toMatchObject([{ decision: "held", holder_work_item_id: old, held_since: start }]);
+      clock.advance(110 * 60_000);
+      expect(await claim(store, w2)).toMatchObject({ work_item_id: a });
+      expect(await store.listClaimDecisions(a)).toMatchObject([{ decision: "timed_out", held_since: start }]);
+    });
   });
 
   describe("dependencies", () => {

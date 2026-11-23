@@ -119,7 +119,7 @@ import * as proposals from "./command-proposals.js";
 import * as tasks from "./tasks.js";
 import { SqlSkillEvalStore } from "./skill-evals.js";
 import { claimLock, endReservations, liveReservations, reservationOf } from "./reservations.js";
-import { type CoordContext, claimOrder, implementTimes, writeClaimDecision } from "./claim-coordination.js";
+import { type CoordContext, claimDecisionsOf, claimOrder, implementTimes, RELEASED, releaseHolder, writeClaimDecision } from "./claim-coordination.js";
 import * as notices from "./notices.js";
 import * as noticeMessages from "./notice-messages.js";
 import * as posted from "./posted-comments.js";
@@ -300,15 +300,11 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
       await tx.run("UPDATE controller_budget_checkpoints SET outcome = ? WHERE work_item_id = ? AND outcome IS NULL", [outcome, input.id]);
     }
     await evaluations.onMergeTransition(tx, current, item, input.actor.id, now); // a merge stores its evaluation once (design §6)
-    // A closed item (its PR merged or closed: the merge path's transition) holds nothing from this commit on, so the queued runs' decisions that name
-    // it go too; the next claim records what holds them now (design §5). An approval stays: it is the human's, for that run. Only a completed close completes linked tasks (design 02-tasks).
+    // A closed item (its PR merged or closed: the merge path's transition) holds nothing from this commit on (releaseHolder); the next claim records
+    // what holds the runs it held (design §5). Only a completed close completes linked tasks (design 02-tasks).
     if (current.stage !== "CLOSED" && item.stage === "CLOSED") {
       if (item.close_reason === "completed") await tasks.completeLinkedTasks(this.db, tx, input.id, now);
-      await tx.run(
-        `DELETE FROM controller_claim_decisions WHERE holder_work_item_id = ? AND approved_by IS NULL
-           AND run_id IN (SELECT id FROM worker_runs WHERE status = 'queued')`,
-        [input.id],
-      );
+      await releaseHolder(tx, input.id);
     }
     return { ok: true, item, state_change, enqueued, cancelled };
   }
@@ -639,10 +635,7 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
     }
     const conflicts = await this.conflictsByProject(tx, [...new Set([...items.values()].map((it) => it.project))], conflictWindowStart(this.clock.now(), s));
     const runIds = runs.map((q) => q.id as string);
-    const decisions = new Map<string, ClaimDecision>();
-    for (const r of await tx.all(`SELECT * FROM controller_claim_decisions WHERE run_id IN (${placeholders(runIds.length)})`, runIds)) {
-      decisions.set(r.run_id as string, rowToClaimDecision(r));
-    }
+    const { decisions, released } = await claimDecisionsOf(tx, runIds);
     const depHeld = (id: string) => unmet.has(id) || items.get(id)?.blocked_on === "dependency";
     const times = await implementTimes(tx, [...items.keys()]);
     // Holders: running items, open PRs, then other claimable queued implement runs of items with no PR.
@@ -666,7 +659,7 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
       const it = items.get(id);
       if (it && it.change_ref === null && !busy.has(id) && !depHeld(id)) holders.push(holderOf(it, "waiting"));
     }
-    return { items, holders, conflicts, decisions, depHeld, times, ...claimOrder(runs, decisions) };
+    return { items, holders, conflicts, decisions, released, depHeld, times, ...claimOrder(runs, decisions) };
   }
 
   /**
@@ -685,8 +678,10 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
     if (!it || it.change_ref !== null) return true;
     const existing = c.decisions.get(runId) ?? null;
     const now = this.now();
-    const wasHeld = existing?.decision === "held";
-    const since = wasHeld ? (existing.held_since ?? existing.at) : now;
+    // A hold goes on across its named holder closing (`released`): the start stays, and so does the order rule.
+    const heldSince = existing?.decision === "held" ? (existing.held_since ?? existing.at) : (c.released.get(runId) ?? null);
+    const wasHeld = heldSince !== null;
+    const since = heldSince ?? now;
     const queued = c.times.get(itemId)?.queued ?? now;
     const mine = c.order.get(itemId) ?? Infinity;
     // Holders named relative to this item, so one of the same repository is "#N". On a first hold every running
@@ -1347,7 +1342,9 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
   listClaimDecisions(id: WorkItemId): Promise<ClaimDecision[]> { return this.claimDecisionsWhere("work_item_id = ?", [id]); }
   listClaimDecisionsSince(since: Timestamp): Promise<ClaimDecision[]> { return this.claimDecisionsWhere("at >= ?", [since]); }
   private async claimDecisionsWhere(where: string, args: readonly string[]): Promise<ClaimDecision[]> {
-    return (await this.db.all(`SELECT * FROM controller_claim_decisions WHERE ${where} ORDER BY at, ${this.db.dialect.seq}`, [...args])).map(rowToClaimDecision);
+    return (await this.db.all(
+      `SELECT * FROM controller_claim_decisions WHERE decision <> '${RELEASED}' AND (${where}) ORDER BY at, ${this.db.dialect.seq}`, [...args],
+    )).map(rowToClaimDecision);
   }
 
   async listLatestClaimDecisions(ids: readonly WorkItemId[]): Promise<Map<WorkItemId, ClaimDecision>> {
