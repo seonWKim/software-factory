@@ -19,7 +19,10 @@ import reviewRole from "../src/worker/roles/review.role.js";
 import { FakeRunner, FakeSandbox } from "./helpers/fakes/runner.js";
 import { cleanScanner, config, prompts } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
-import { type SkillEvalWiring, runFigures, runSkillEvalFor } from "../src/skill-evals.js";
+import { type SkillEvalWiring, improveWiring, runFigures, runSkillEvalFor, scratchRunFor, skillImproveWiring } from "../src/skill-evals.js";
+import { SKILL_IMPROVE_DEFAULTS } from "../src/core/skill-improve-config.js";
+import type { Loaded } from "../src/load-config.js";
+import { readFile } from "node:fs/promises";
 
 vi.mock("../src/runtime/skill-evals/replay.js", async (load) => {
   const m = await load<typeof import("../src/runtime/skill-evals/replay.js")>();
@@ -317,5 +320,43 @@ describe("the eval wiring (runSkillEvalFor)", () => {
   it("figures: one replay per case, a null pass rate with no replays, the judge on judgeClass of the replay's class", () => {
     expect(runFigures("standard", [])).toEqual({ model_class: "standard", judge_model_class: "strong", replays: 0, pass_rate: null, errored: 0 });
     expect(runFigures("strong", [{ verdict: "pass" }, { verdict: "errored" }])).toEqual({ model_class: "strong", judge_model_class: "standard", replays: 2, pass_rate: 0.5, errored: 1 });
+  });
+
+  it("a scratch run replays each case with the draft as the skill's system prompt, judges it with skill-judge.md and stores it; SKILL.md is unchanged", async () => {
+    const store = await suiteWith({ c1: { input: "good", expected: ["a"] }, c2: { input: "bad", expected: ["a"] } });
+    const llm = new FakeLLM((req) => (req.messages[0]!.content.includes("did good") ? yesNo("yes") : yesNo("no")));
+    const { d, folder, runner } = await wiring(store, llm);
+
+    const run = await scratchRunFor(d, { skill_ref: "skills/tests-first", system_prompt: "DRAFT TEXT", run_id: "scratch1", skill_version: "draft:d1", model_class: "standard", created_by: OWNER }, signal());
+
+    expect(run).toMatchObject({ id: "scratch1", skill_version: "draft:d1", model_class: "standard", replays: 2, pass_rate: 0.5 });
+    expect(runner.specs.map((s) => s.system_prompt)).toEqual(["DRAFT TEXT", "DRAFT TEXT"]);
+    expect(llm.requests.map((r) => r.system)).toEqual([JUDGE_PROMPT, JUDGE_PROMPT]);
+    expect(await readFile(join(folder, "SKILL.md"), "utf8")).toBe("Write the test first.");
+    expect(await scratchRunFor(d, { skill_ref: "skills/none", system_prompt: "x", run_id: "s2", skill_version: "draft:d2", model_class: "standard", created_by: OWNER }, signal())).toBeNull();
+  });
+
+  it("the improve wiring reads, versions and writes SKILL.md in the skill folder and re-runs the suite as it is now", async () => {
+    const store = await suiteWith({ c1: { input: "good", expected: ["a"] } });
+    const { d, folder, runner } = await wiring(store, new FakeLLM(() => yesNo("yes")));
+    const w = improveWiring(d, SKILL_IMPROVE_DEFAULTS, [join(tmp, "skills")], async () => "PROMPT");
+
+    expect(w.folderOf("skills/tests-first")).toBe(folder);
+    expect(w.folderOf("skills/../../x")).toBe(join(tmp, "..", "x"));
+    expect(w.skill_folders).toEqual([join(tmp, "skills")]);
+    expect(await w.readSkill(folder)).toBe("Write the test first.");
+    expect(await w.version(folder)).toBe(await skillVersion(folder));
+    await w.writeSkill(folder, "NEW TEXT");
+    expect(await readFile(join(folder, "SKILL.md"), "utf8")).toBe("NEW TEXT");
+    expect(await w.rerun({ skill_ref: "skills/tests-first", model_class: "standard", created_by: OWNER }, signal())).toMatchObject({ id: "run1", pass_rate: 1 });
+    expect(runner.specs[0]).toMatchObject({ system_prompt: "NEW TEXT" });
+    expect(await w.readSkill(join(tmp, "nowhere"))).toBeNull();
+  });
+
+  it("with capabilities.skill_folders absent or empty there is no skill improvement wiring, and nothing is built", async () => {
+    const { store } = await newStore();
+    const plugins = { sandbox: new FakeSandbox(), runner: new FakeRunner({}), llm: new FakeLLM(() => yesNo("yes")), scanner: cleanScanner };
+    expect(skillImproveWiring(store, { file: {} } as unknown as Loaded, plugins)).toBeUndefined();
+    expect(skillImproveWiring(store, { file: { capabilities: { skill_folders: [] } } } as unknown as Loaded, plugins)).toBeUndefined();
   });
 });

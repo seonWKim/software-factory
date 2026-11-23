@@ -12,6 +12,7 @@ import type { FactoryConfig, Prompts } from "./config.js";
 import { type LearnedSettingsSource, LiveSettings } from "./settings.js";
 import type { ModelNames, ModelTable } from "./model-choice.js";
 import type { GoldenEvidence } from "./proposals.js";
+import type { SkillImproveWiring } from "./skill-improve.js";
 import type { LogFields, Logger } from "./log.js";
 import type { Run, RunKind, SourceRef, WorkItem, WorkerId } from "./types.js";
 import type { AgentRunner } from "../interfaces/agent-runner.js";
@@ -205,6 +206,12 @@ export interface WorkerDeps {
    * imports neither golden.ts nor the runtime. Absent: the improve run proposes nothing.
    */
   reviewReplay?: ReviewReplay;
+  /**
+   * The improve run's skill improvement (design 07-self-improvement): the skill_improve keys, the skill folders, the
+   * scratch run and SKILL.md I/O, built in the composition root (src/skill-evals.ts). Absent (capabilities.skill_folders
+   * not set): the improve run drafts no skill and asks no question.
+   */
+  skillImprove?: SkillImproveWiring | undefined;
   /**
    * The live settings (design 2026-11-03): refreshed before each claim and each lease renewal. A run reads the
    * values it started with, so a diff, timeout or model change applies at the next run. Absent: `config` and
