@@ -9,13 +9,14 @@ import { t } from "./i18n/index.js";
 import { cn } from "./lib/cn.js";
 import { useShortcuts } from "./keys.js";
 import { Link, NavProvider, useLocationPath } from "./nav.js";
-import { BASE, pagesIn, redirectFor, routeFor } from "./pages.js";
+import { BASE, evalsRoute, pagesIn, redirectFor, routeFor } from "./pages.js";
 import { HelpDialog, SearchDialog } from "./search.js";
 import { ShortcutsLink, SideLinks, pageLabel } from "./shell/sidebar.js";
 import { ModeChip } from "./shell/mode-chip.js";
 import { ThemeControl } from "./shell/top-bar.js";
 import { type ThemeChoice, applyChoice, saveChoice, storedChoice } from "./theme.js";
 import { DataPage } from "./views/data.js";
+import { EvalsPage, skillName } from "./views/evals.js";
 import { HealthPage, ItemPage, ItemsPage } from "./views/pages.js";
 import { PluginsPage } from "./views/plugins.js";
 import { SettingsPage } from "./views/settings.js";
@@ -65,7 +66,9 @@ export function App() {
   }, [moved]);
   // A run's transcript (items/<id>/runs/<run>), under Work like an item page.
   const transcript = transcriptRoute(path);
-  const current = transcript ? routeFor(`${BASE}items`).page : route.page;
+  // An evals page (evals/<skill>) has no sidebar link: Data, also hidden, is its current page, so no link is marked.
+  const evalsSkill = evalsRoute(path);
+  const current = transcript ? routeFor(`${BASE}items`).page : evalsSkill ? routeFor(`${BASE}data`).page : route.page;
   const choose = (next: ThemeChoice) => {
     saveChoice(next);
     setChoice(next);
@@ -75,8 +78,8 @@ export function App() {
   useEffect(() => {
     // The Needs you count leads the tab title, so a background tab shows it: "(4) Needs you · Gongbang".
     const count = needs ? `(${needs}) ` : "";
-    document.title = `${count}${transcript ? t("app.runTranscript") : route.itemId ? t("app.workItem") : pageLabel(route.page)} · ${t("app.name")}`;
-  }, [route.page, route.itemId, transcript, needs]);
+    document.title = `${count}${transcript ? t("app.runTranscript") : evalsSkill ? skillName(evalsSkill) : route.itemId ? t("app.workItem") : pageLabel(route.page)} · ${t("app.name")}`;
+  }, [route.page, route.itemId, transcript, evalsSkill, needs]);
 
   return (
     <NavProvider value={navigate}>
@@ -125,6 +128,8 @@ export function App() {
           <main className="w-full min-w-0 p-4 max-w-page-wide has-[[data-page-width=read]]:max-w-page-read">
             {transcript ? (
               <TranscriptView key={`${transcript.itemId}/${transcript.runId}`} itemId={transcript.itemId} runId={transcript.runId} />
+            ) : evalsSkill ? (
+              <EvalsPage key={evalsSkill} skill={evalsSkill} />
             ) : route.itemId ? (
               <ItemPage key={route.itemId} id={route.itemId} />
             ) : moved ? null : (
