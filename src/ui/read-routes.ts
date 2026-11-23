@@ -4,7 +4,8 @@
 // page; plugins-api.ts), /api/v1/plugins/import (it reads the user's own Claude Code and Codex configs, so it also
 // needs the CSRF token; plugins-import-api.ts), /api/v1/calendar (calendar-api.ts), /api/v1/model-credential (the
 // dialog's secret names; model-credential.ts), /api/v1/supervisor (what Migrate now, Start and Restart now may do;
-// migrate-api.ts) and /api/v1/calendar/events (the Calendar page's range read; calendar-events-api.ts); every other
+// migrate-api.ts), /api/v1/calendar/events (the Calendar page's range read; calendar-events-api.ts) and /api/v1/screenshot
+// (one stored image of an item's screenshot run; item-screenshots.ts); every other
 // path is api.ts's. They are served here beside api.ts so it stays within its size budget. A new read route adds one
 // entry to READ_ROUTES, not a line in server.ts.
 
@@ -21,6 +22,7 @@ import { CALENDAR_PATH, readCalendarStatus } from "./calendar-api.js";
 import { CALENDAR_EVENTS_PATH, readCalendarEvents } from "./calendar-events-api.js";
 import { MODEL_CREDENTIAL_PATH, readModelCredential } from "./model-credential.js";
 import { SUPERVISOR_PATH, readSupervisor } from "./migrate-api.js";
+import { SCREENSHOT_PATH, readScreenshot } from "./item-screenshots.js";
 import type { ServerDeps, UiRequest } from "./server.js";
 
 /** One GET (or HEAD) route under /api/v1: its path and its read. */
@@ -50,6 +52,7 @@ const READ_ROUTES: readonly ReadRoute[] = [
   // Unwired, the supervisor path falls through to api.ts's 404.
   { path: SUPERVISOR_PATH, run: (d, u) => (d.migrate !== undefined && d.pauses !== undefined ? readSupervisor(d.migrate, d.pauses) : api(d, u)) },
   { path: CALENDAR_EVENTS_PATH, run: (d, u) => readCalendarEvents(d, u.searchParams.get("from"), u.searchParams.get("to")) },
+  { path: SCREENSHOT_PATH, run: (d, u) => readScreenshot(d, u.searchParams) },
 ];
 
 /** Answers one GET (or HEAD) under /api/v1 on its parsed URL. */

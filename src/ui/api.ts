@@ -32,7 +32,7 @@ import { readCapabilities } from "./capabilities-api.js";
 import { readStanding } from "./standing-api.js";
 import { inProject, projectFilterRefusal } from "./tasks-api.js";
 import { itemPrefix, runParts, transcript } from "./transcript.js";
-import { aboutFields } from "./item-checks.js";
+import { aboutFields } from "./item-checks.js"; import { screenshotFields } from "./item-screenshots.js";
 import { type SystemDeps, parseRevision, systemActions } from "./system-actions.js";
 import { needsYouCount } from "./needs-you.js";
 import { latestWhyAnchor, threadRows } from "./thread.js";
@@ -386,8 +386,7 @@ async function item(c: ApiCtx, id: WorkItemId) {
   const s = c.d.store;
   const it = await s.getWorkItem(id);
   if (!it) return null;
-  const changes = await s.listStateChanges(id);
-  const runs = await s.listRuns(id);
+  const changes = await s.listStateChanges(id), runs = await s.listRuns(id);
   // One record per claim (design §6), listed under its run in attempt order.
   const attemptsOf = new Map<string, RunAttempt[]>();
   for (const a of await s.listRunAttempts(id)) attemptsOf.set(a.run_id, [...(attemptsOf.get(a.run_id) ?? []), a]);
@@ -462,6 +461,7 @@ async function item(c: ApiCtx, id: WorkItemId) {
     thread: await threadRows(s, it.id, it.source.type, async (v) => (await c.text(v))!, changes),
     commands: await itemCommands(it, runs, await actorGrant(c.d, "approve_spec")(), (v) => c.text(v)), spec: await waitingSpec(it, runs, (v) => c.text(v)), // the viewer's (#453)
     replies: await itemReplies(c.d, it.id, (v) => c.text(v)), proposals: await itemProposals(c.d, it.id, (v) => c.text(v)), // pending, from the thread's markers
+    ...(await screenshotFields(runs, (v, ch) => c.text(v, ch))), // the Changes tab (design 04-screenshots)
   };
 }
 

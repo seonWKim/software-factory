@@ -5,7 +5,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
 import { WORKER_KINDS } from "../src/core/settings.js";
 import type { Run, RunOutcome, UserId, WorkItem, WorkItemPatch, WorkerId } from "../src/core/types.js";
+import type { NewRun } from "../src/interfaces/factory-store.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
+import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
+import { HealthMonitor } from "../src/ui/health.js";
+import { SCREENSHOT_PATH } from "../src/ui/item-screenshots.js";
+import type { UiDeps } from "../src/ui/server.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { CAPTURE_ENV, captureEnv, chromeBrowser } from "../src/shared/chrome-browser.js";
 import {
@@ -19,6 +24,7 @@ import { cleanScanner, config, prompts, silent } from "./helpers/fakes/config.js
 import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
 import { FakeSource } from "./helpers/fakes/source.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
+import { SECRET, get, json, make } from "./ui-api-fixtures.js";
 
 // Screenshots of changed pages before merge (design 04-screenshots): a passing review of a change under a
 // `repo.ui_check` path queues one screenshot run; it captures the fixture dashboard's pages at 390px and 1280px in
@@ -336,5 +342,63 @@ describe("the screenshot run and its review", () => {
     expect(followUp?.input?.screenshots).toEqual({ captures: [], reason: "the screenshot run failed (lease_lost)" });
     // Not retried: the one screenshot run.
     expect(await h.runs(it1, "screenshot")).toHaveLength(1);
+  });
+});
+
+describe("the item API", () => {
+  async function seeded() {
+    const { store, clock } = await newStore();
+    const storage = new MemoryStorage();
+    const d: UiDeps = { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: 60_000, health: new HealthMonitor(async () => [], clock), storage };
+    const it1 = await make(store, 1, "A UI change");
+    /** One run of `kind`, finished with the outcome `outcome` builds from its id. */
+    const finish = async (kind: Run["kind"], key: string, input: NewRun["input"], outcome: (r: Run) => RunOutcome) => {
+      await store.enqueueRun({ work_item_id: it1.id, kind, idempotency_key: key, input });
+      const r = (await store.claimRun({ worker_id: "w9" as WorkerId, kinds: [kind], lease_ms: 60_000 }))!;
+      await store.completeRun(r.id, r.lease!.token, outcome(r));
+      clock.advance(1_000);
+      return r;
+    };
+    /** A screenshot run that stored `items` at 390px in `theme`, with `reason`. */
+    const shot = (n: number, theme: "light" | "dark", reason: string | null = null) => finish("screenshot", `s${n}`, null, (r) => ({
+      status: "succeeded", summary: "", data: { captures: [{ page: "items", width: 390, theme, key: screenshotKey(it1.id, r.id, "items", 390, theme) }], reason },
+    }));
+    return { store, storage, d, it1, finish, shot };
+  }
+  const itemPath = (id: string) => `/api/v1/items/${encodeURIComponent(id)}`;
+
+  it("returns the newest screenshot run's list and the screenshot review's findings, each text through the Withholder", async () => {
+    const { d, it1, finish, shot } = await seeded();
+    await shot(1, "dark");
+    const newest = await shot(2, "light", "the capture of items at 1280px, light failed: boom");
+    await finish("review", "r1", { screenshot_review: true, screenshot_run_id: newest.id }, () => ({
+      status: "succeeded", summary: "",
+      data: { screenshot_review: { findings: [{ kind: "code", text: `breaks decision rule 2 (${SECRET})` }, { kind: "code", text: "breaks decision rule 1 on items at 390px" }], unverified: ["screenshots not captured: boom"], summary: "two rules" } },
+    }));
+    type Body = { screenshots: { run_id: string; captures: { page: string; width: number; theme: string }[]; reason: string }; screenshot_review: { findings: { kind: string; text: string }[]; unverified: string[] } };
+    const body = await json<Body>(d, itemPath(it1.id));
+    expect(body.screenshots.run_id).toBe(newest.id);
+    expect(body.screenshots.captures.map((c) => `${c.page}-${c.width}-${c.theme}`)).toEqual(["items-390-light"]);
+    expect(body.screenshots.reason).toBe("the capture of items at 1280px, light failed: boom");
+    expect(body.screenshot_review.findings).toEqual([{ kind: "code", text: expect.stringMatching(/^\[withheld: /) }, { kind: "code", text: "breaks decision rule 1 on items at 390px" }]);
+    expect(body.screenshot_review.unverified).toEqual(["screenshots not captured: boom"]);
+    expect(JSON.stringify(body)).not.toContain(SECRET);
+  });
+
+  it("an item with no screenshot run has screenshots and screenshot_review null", async () => {
+    const { d, it1 } = await seeded();
+    expect(await json(d, itemPath(it1.id))).toMatchObject({ screenshots: null, screenshot_review: null });
+  });
+
+  it("serves an image its run lists, as a PNG data URL, and nothing else", async () => {
+    const { storage, d, it1, shot } = await seeded();
+    const run = await shot(1, "dark");
+    await storage.put(screenshotKey(it1.id, run.id, "items", 390, "dark"), PNG);
+    await storage.put(screenshotKey(it1.id, run.id, "items", 390, "light"), PNG);
+    const q = (theme: string, runId = run.id) => `${SCREENSHOT_PATH}?item=${encodeURIComponent(it1.id)}&run=${runId}&page=items&width=390&theme=${theme}`;
+    expect(await json(d, q("dark"))).toEqual({ data_url: `data:image/png;base64,${Buffer.from(PNG).toString("base64")}` });
+    // Stored, but not in the run's outcome; or another run: 404.
+    expect((await get(d, q("light"))).status).toBe(404);
+    expect((await get(d, q("dark", "run_other"))).status).toBe(404);
   });
 });
