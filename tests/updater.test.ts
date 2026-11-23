@@ -1441,9 +1441,14 @@ describe("updater: git-worktree cleanup", () => {
     await b.updater.poll();
     expect(a.world.versions()).toContain("c1");
     a.launcher.children[0]!.exit(0);
-    await settle();
-    await b.updater.poll();
-    expect(a.world.versions()).toEqual(["c2", "c3"]);
+    // The sweep's fs calls finish on the thread pool, not the immediate queue: poll until the outcome holds.
+    await vi.waitFor(
+      async () => {
+        await b.updater.poll();
+        expect(a.world.versions()).toEqual(["c2", "c3"]);
+      },
+      { timeout: 5000, interval: 20 },
+    );
   });
 
   it("removal through a real git repository: git worktree list has no entry, and the linked install survives", async () => {
