@@ -212,7 +212,7 @@ const BY_NAME = new Map(COMMANDS.map((c) => [c.name, c]));
 export const commandSpec = (name: CommandName): CommandSpec => BY_NAME.get(name)!;
 
 /** blocked_reason prefix (with `blocked_on: human`) of an item whose dependency closed without a merge (design §5). */
-export { DEPENDENCY_CLOSED } from "./phase.js";
+export { DEPENDENCY_CLOSED } from "./phase.js"; export { LOCAL_SOURCE, MERGE_COMMAND, RESTART_COMMAND } from "./local-merge.js"; // for the commands unit
 export { LOCAL_ID, dependsOnIds, localItemOf, wantedDependsOn, withDependsOn } from "./task-build.js"; // for `/hold` and the coordination unit
 export { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity } from "./local-cli.js"; export { specKind } from "./standing.js"; // for the commands unit
 

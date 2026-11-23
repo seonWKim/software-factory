@@ -1,6 +1,7 @@
-import { type RefObject, useId, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useId, useRef, useState } from "react";
 import { postJson } from "../api/client.js";
 import { Button } from "../components/ui/button.js";
+import { ButtonRow } from "../components/ui/button-row.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
@@ -43,23 +44,26 @@ export async function attachBody(id: string, choice: { kind: "image"; file: File
 type Open = "context" | "attach" | null;
 
 /**
- * The item's Add context and Attach buttons (a New or in-triage item, where `/revise` applies), and the modal each
- * opens. `send` is the item's command sender (`revise` with the text); `token` the page's CSRF token for Attach.
+ * The item's Add context and Attach buttons (a New or in-triage item, where `/revise` applies) in one ButtonRow with
+ * `children` (the item's "…" menu), and the modal each opens. `send` is the item's command sender (`revise` with the text); `token` the page's CSRF token for Attach.
  */
-export function AddContextActions({ id, title, token, off, error, send }: {
-  id: string; title: string; token: string | undefined; off: boolean; error: string | null; send: (text: string) => Promise<boolean>;
+export function AddContextActions({ id, title, token, off, error, send, children }: {
+  id: string; title: string; token: string | undefined; off: boolean; error: string | null; send: (text: string) => Promise<boolean>; children?: ReactNode;
 }) {
   const [open, setOpen] = useState<Open>(null);
   const back = useRef<HTMLDivElement>(null);
   const focus = { get current() { return back.current?.querySelector<HTMLElement>(`[data-action=${open === "attach" ? "attach" : "add-context"}]`) ?? null; } } as RefObject<HTMLElement | null>;
   return (
-    <div ref={back} data-add-context className="mt-2 flex flex-wrap gap-2">
-      <Button data-action="add-context" data-item={id} disabled={off} onClick={() => setOpen("context")}>
-        {t("attach.addContext")}
-      </Button>
-      <Button data-action="attach" data-item={id} disabled={off || !token} onClick={() => setOpen("attach")}>
-        {t("attach.attach")}
-      </Button>
+    <div ref={back} data-add-context className="mt-2">
+      <ButtonRow>
+        <Button data-action="add-context" data-item={id} disabled={off} onClick={() => setOpen("context")}>
+          {t("attach.addContext")}
+        </Button>
+        <Button data-action="attach" data-item={id} disabled={off || !token} onClick={() => setOpen("attach")}>
+          {t("attach.attach")}
+        </Button>
+        {children}
+      </ButtonRow>
       {open === "context" && (
         <ContextDialog title={`${t("attach.addContext")} ${title}`} busy={off} error={error} returnFocusTo={focus}
           onSend={(text) => void send(text).then((ok) => ok && (announceStatus(t("attach.contextSent")), setOpen(null)))} onClose={() => setOpen(null)} />

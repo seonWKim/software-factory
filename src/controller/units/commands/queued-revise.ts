@@ -6,6 +6,7 @@
 
 import { type CommandEvent, type Decision, type Refusal, MAX_FEEDBACK_CHARS, SYSTEM, footerAfter } from "../support.js";
 import type { Ctx } from "../context.js";
+import { AT_TRIAGE } from "../../../core/commands.js";
 
 type ReviseEvent = Extract<CommandEvent, { kind: "revise_requested" }>;
 type WorkItem = Parameters<typeof footerAfter>[0];
@@ -21,8 +22,6 @@ export const REVISE_QUEUED_PATH = "queued: applies when this run ends";
 /** The refusal of a `/revise` with no feedback after it. */
 export const FEEDBACK_REQUIRED = "it needs feedback after the command, e.g. `/revise keep the existing CLI flag`";
 
-/** The `at` detail of added context (a `/revise` on a New or in-triage item); core/attachments.ts addedContext reads the same word. */
-export const AT_TRIAGE = "triage";
 /** The path an added context took, as its reply names it. */
 export const CONTEXT_QUEUED_PATH = "queued: one more triage run reads it when the current one ends";
 

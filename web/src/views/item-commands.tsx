@@ -204,13 +204,17 @@ export function ItemCommands({ id, commands, reason = null }: { id: string; comm
   const restart = commands.find((c) => c.name === "restart");
   // Add context and Attach: a New or in-triage item where the viewer may send `/revise` (design 02-attachments).
   const context = detail?.stage === "NEW" ? commands.find((c) => c.name === "revise" && c.allowed) : undefined;
+  // The "…" menu: in the Add context row when that row shows (one decision, one action row), else on its own.
+  const menu = menuItems.length > 0 ? <span data-item-menu className="flex"><OverflowMenu label={t("commands.more")} items={menuItems} /></span> : null;
   return (
     <div ref={wrap} className="mt-2">
       {reason}
       <QueuedFeedbackList timeline={data?.timeline} />
       {context && (
         <AddContextActions id={id} title={detail?.title ?? id} token={session.data?.csrf_token} off={!enabled || busy}
-          error={local.revise && "error" in local.revise ? local.revise.error : null} send={(text) => post("revise", text)} />
+          error={local.revise && "error" in local.revise ? local.revise.error : null} send={(text) => post("revise", text)}>
+          {menu}
+        </AddContextActions>
       )}
       {restart && <RestartButton id={id} command={restart} on={enabled} busy={busy} replies={data?.replies ?? []} local={local.restart} send={() => void post("restart", "")} />}
       {commands.length === 0 && !showsMerge(detail?.merge) && (
@@ -218,7 +222,7 @@ export function ItemCommands({ id, commands, reason = null }: { id: string; comm
           {t("commands.none")}
         </p>
       )}
-      {menuItems.length > 0 && <div data-item-menu className="mt-2 flex"><OverflowMenu label={t("commands.more")} items={menuItems} /></div>}
+      {menu && !context && <div className="mt-2 flex">{menu}</div>}
       <PendingProposals proposals={data?.proposals ?? []} enabled={enabled} busy={busy} outcomes={(proposal) => commandOutcome([], proposal, local[proposal])} send={post} />
       {open !== null && (
         <CommandDialog
