@@ -181,13 +181,14 @@ describe("Calendar page", () => {
   it("each event has a colour strip from a token, the same for one source across reads", async () => {
     show();
     await shownRange("2026-11-09", "2026-11-15");
-    const strip = (id: string) => document.querySelector(`[data-event="${id}"] [data-strip]`)!.className;
+    // The strip's colour class (the month's strip adds layout classes of its own at phone width).
+    const strip = (id: string) => document.querySelector(`[data-event="${id}"] [data-strip]`)!.className.match(/bg-kind-[a-z-]+/)?.[0];
     expect(strip("google-calendar:holiday")).toMatch(/bg-kind-/);
     expect(strip("google-calendar:holiday")).toBe(strip("google-calendar:lunch"));
     const before = strip("google-calendar:lunch");
     press("Month");
     await shownRange("2026-11-01", "2026-11-30");
-    expect(document.querySelector('[data-event="google-calendar:lunch"] [data-strip]')!.className).toBe(before);
+    expect(strip("google-calendar:lunch")).toBe(before);
   });
 
   it("an event names its source only when more than one calendar is connected", async () => {
