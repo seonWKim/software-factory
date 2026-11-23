@@ -160,6 +160,11 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
     does: "Store `/paths` for a running item: add those paths (at most 10, each with `+` before it) to its allowed paths, which never removes one",
     prints: ITEM_PRINTS, chat: "/paths +<path>...", chat_args: "text", item: true, edge: false,
   },
+  {
+    name: "task note", args: "<id> <text>", who: "approve_spec", group: "task",
+    does: "Store `/note` for an open item: a note for its reviewer and implementer, such as the reason a done-when line is built differently, which changes no stage",
+    prints: ITEM_PRINTS, chat: "/note <text>", chat_args: "text", item: true, edge: false,
+  },
   item("hold", "<id>", "Store `/hold <id>` for the item: hold it until the local item `<id>` merges"),
   { ...item("verdict", "<accept|changes|reject> [<severity> <reason>]", "Store `/verdict` for the item: a verdict on its result, which changes no state"), chat_args: "comment" },
   {

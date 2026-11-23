@@ -1,0 +1,31 @@
+# ScheduleAction
+
+What it does: runs a fired schedule occurrence (design [08-schedules.md](../design/08-schedules.md)). A schedule is a stored record with a cadence; the controller's `schedule` unit claims each due occurrence once, on the controller's tick and at the tick's time, and hands each fired one to the selected action.
+
+The interface (`src/interfaces/schedule-action.ts`) has one call, `run(schedule, occurrence_at)`: the schedule record and the slot the occurrence was due for (not the time it was claimed). It must be safe to run twice for the same occurrence: a crash after the claim and before the run ended may hand it over again. A throw is logged as `schedule action failed`, and the schedule's run still ends, so its next occurrence fires.
+
+**Config.** The key is `plugins.schedule_action`, one ScheduleAction plugin name:
+
+```jsonc
+"plugins": { "schedule_action": "routed" }   // run each fired occurrence by its schedule's action kind
+```
+
+**No default.** The kind is optional and no plugin is its default: a descriptor with a `default` field fails startup. With `plugins.schedule_action` left out (or `"none"`), no action is selected, and the `schedule` unit claims nothing: a due occurrence stays unclaimed, with no run row, until an action is selected. With no schedules stored, a tick changes nothing and the factory starts as before. A name no plugin has fails startup with an error that names `ScheduleAction`, `plugins.schedule_action` and the available names.
+
+**Context** (decision changed 2026-11-23; current; replaces "a plugin's context is the base context", see History). Compose builds the selected plugin once, through the registry, after the project key is resolved, and binds it to the store's claim pass (`scheduledAction`, `src/core/controller-deps.ts`). Its context is the base context plus the store, the agent runner and the sandbox, the egress scanner, the worker's read-only tools (`READ_TOOLS`: Read, Glob, Grep), the project key its items go into, and `routes`: one function per action kind, from the schedule unit's action folders (`src/controller/units/schedule/plugins/build/`, `agent/`, `feedback/`). Those folders import nothing outside the controller (their ports are types in `plugins/ports.ts`), so compose, not the descriptor, hands them over.
+
+Plugins:
+
+- `routed`: (`src/impl/schedule-action/`) runs the route of the schedule's `action.kind`, with ports over the store, the runner and the scanner. A schedule with no action is refused (a logged failure). Secrets: none of its own; an agent call uses the selected runner's.
+  - **build**: files one local work item per occurrence, with its triage run queued. Its source ID is `schedule-<schedule id>-<slot>` (the slot without `-`, `:` and milliseconds), so running the same occurrence again files nothing. Settings: `title` (else the schedule's title), `body`. No model call; tokens 0.
+  - **agent**: runs the schedule's `prompt` once in a fresh detached checkout, with exactly Read, Glob and Grep (each checked to be capability `read` before the agent starts; anything else refuses the run), `deny_paths` as configured, no writable or readable path beyond the checkout, no broker tool and an empty env. The answer (the structured output as JSON, else the transcript), egress-scanned and cut to 20000 characters, goes on the run row's `output`, and what the call used on `tokens` and `cost_usd`.
+  - **feedback**: the same agent call, asked for tasks with evidence (path, line, quote) against a JSON schema. It files at most 3 evidence-backed tasks (a `max_tasks` setting can lower it) as local work items, `schedule-<id>-<slot>-<n>`, and records the rest on the run's `output` as JSON: `filed` (ID, title, whether this run created it) and `unfiled` (title and `over_cap`, `no_evidence`, `no_title` or `withheld`). No browser tool: it reads code only.
+  - **Token cap.** Not the plugin's: the claim pass holds an agent or feedback occurrence whose schedule's runs used its cap (200000 tokens by default) at a `checkpoint`, so it never reaches the plugin; the common `/approve` and `/reject` answer it (design 08-schedules).
+
+**Adding an action kind.** Add a folder under `src/controller/units/schedule/plugins/` exporting a `ScheduleActionRoute`, its kind to `ScheduleActionKind` (`src/core/schedule.ts`) and `ScheduleActionRoutes`, and its route to compose's `routes`. **Adding a plugin.** Put a `<name>.plugin.ts` descriptor beside the implementation (`export default definePlugin({ kind: "schedule_action", name: "<name>", create: (c) => ... })`, `src/plugin-api.ts`); the registry discovers it with no loader change. Do not mark it `default`.
+
+**Switch back:** remove `schedule_action` from `plugins`; due occurrences are then left unclaimed.
+
+## History
+
+- **A plugin's context was the base context, and no plugin existed** (decision 2026-11-23, wi_9a35f49052e147d9bd48df8ecb40eb94; replaced 2026-11-23, wi_af086ea57ce54b0b8f9297f88bfaa146). Before: "A plugin's context is the base context." and "Plugins: none yet. No ScheduleAction plugin exists: the owner has not named the action a schedule runs." Now the `routed` plugin runs the build, agent and feedback actions with the store, the runner, the scanner, the read-only tools and the routes in its context.

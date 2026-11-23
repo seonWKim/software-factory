@@ -1,5 +1,7 @@
 ## History
 
+- **No judge on a goal split** (2026-11-22 to 2026-11-23). Before: the goal-lines decision ended "Not built yet: a judge that checks the lines once the phases merged (later phases of the same plan)"; a goal split's lines were stored and listed but nothing read them, so `closeSplitIfDone` closed it as completed once its last recorded phase closed completed with a merge sha, and each held phase started once the phase before it closed completed. Replaced 2026-11-23 by the judge run after each merged goal phase (see the topic file's first decision).
+
 - **A split parent closes once every recorded phase is closed** (2026-11-18). Before: `closeSplitIfDone` closed a `phases_open` parent only when every recorded phase was `CLOSED` / `completed`, always as completed with no merge sha; a phase closed any other way (rejected, won't do) kept the parent open with no end, so its dependents never started (wi_34339813, #317).
 
 - **`/retry` releases a held phase** (2026-11-12). Before: a held phase fell under the generic "other blocked" command phase, so `/retry` did nothing on it, and a phase whose previous phase closed without a merge (rejected as superseded by other work) stayed held forever and had to be refiled by hand (#598, phase 3 of #569 after #595 was rejected).

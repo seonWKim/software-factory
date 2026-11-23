@@ -38,6 +38,10 @@ One cell of a `Tr`; in a card it wraps and drops width classes. Data attributes 
 
 A `Table` built from `columns` and `rows`, on `Table`, `Tr` and `Td`. A column is `{ key, header, render?, numeric?, className? }` (`className` is added to the column's cells). With `dataKey` each row carries `data-key` set to its `rowKey`, for links and tests that find a row by it. States: number columns right-aligned in `tabular-nums` (header too); a column empty in every row left out; cards below `SM_PX`; no rows shows `empty`.
 
+## Chart
+
+A small bar chart from plain elements on token colours (`chart.tsx`), as Efficiency's mini charts: `points` (`key`, `value`, `caption`, `text`) and a `label` naming its list. One bar (`bg-accent`, `rounded-t-control`) per point in a 96 px high row, its height `value` over `max` (default: the largest value; a rate passes `max={1}`); the first and last `caption` sit under it in `text-xs text-text-2`. Every point is also text: its `text` is in the bar's `title` and in a screen-reader line, so the chart is a list of sentences too. Not interactive; use a Button bar (Efficiency) when a bar must pick something. One size. States: with points, no points (draws nothing: the page shows an `EmptyState`).
+
 ## Badge
 
 The one pill (`badge.tsx`): a short text as a pill with a dot, `text-xs` medium, in the tone of `level`, a key of the one state table (`src/shared/states.ts`); `TONE_CLASS` maps each tone to the pill tokens (`ok`, `warn`, `bad`, `info`) or neutral (`surface-2` with `text`), and an unknown or missing level is neutral. Carries `data-level`. For any pill that is not an item, run or worker state (plugins, settings, calendar, a task's overdue, a transcript, a thread). One size. `tests/design-system.test.ts` checks every tone it draws at 4.5:1 in both themes.
@@ -108,7 +112,7 @@ A keyboard key as text, such as Esc. No variants or sizes.
 
 ## Tooltip
 
-A short hint on hover and keyboard focus, hidden by Esc or leaving. Variants (`placement`): `top` (default), `bottom`. States: hidden, shown.
+A short hint on hover and keyboard focus, hidden by Esc or leaving. Variants (`placement`): `top` (default), `bottom`, `beside` (level with the trigger's top, right of it for `align` `start`, left for `end`; for a trigger inside a scroller). States: hidden, shown.
 
 ## Button
 
@@ -120,7 +124,7 @@ A native `input type=checkbox` drawn from the tokens: a 16 px box (`size-4`) ins
 
 ## Switch
 
-A `role=switch` button with `aria-checked`, 20 by 36 px; the thumb moves by a class. Controlled by `checked` and `onCheckedChange`. One size. States: on (`text-1` track), off (`border-strong` track), focus-visible, `disabled`.
+A `role=switch` button with `aria-checked`, 24 px high (the smallest target) around a drawn 20 by 36 px track; the thumb moves by a class. Controlled by `checked` and `onCheckedChange`. One size. States: on (`text-1` track), off (`border-strong` track), focus-visible, `disabled`.
 
 ## SegmentedControl
 
@@ -128,7 +132,7 @@ One choice among a few views (`role=group` with an `aria-label`): a 32 px box wi
 
 ## Link and ID
 
-`web/src/components/ui/link-style.ts` holds both. `LINK_CLASS` (`text-text-1 hover:underline`) is every link in the views, item titles included; the sidebar keeps its own. `ID_CLASS` (`font-mono text-text-3 hover:underline`) is an item or source ID, linked or not (source ID links, the item page header ID). Accent is never a text colour: only the primary Button and the selected-tab underline use it, and `tests/ui-link-style.test.tsx` fails on `text-accent` anywhere under `web/src`.
+`web/src/components/ui/link-style.ts` holds both. `LINK_CLASS` (`text-text-1 underline`) is every link in the views, item titles included, underlined at rest so a link in a sentence is told apart by more than colour (buttons that use the class are underlined too); the sidebar keeps its own. `ID_CLASS` (`font-mono text-text-3 hover:underline`) is an item or source ID, linked or not (source ID links, the item page header ID). Accent is never a text colour: only the primary Button and the selected-tab underline use it, and `tests/ui-link-style.test.tsx` fails on `text-accent` anywhere under `web/src`.
 
 ## Tabs
 

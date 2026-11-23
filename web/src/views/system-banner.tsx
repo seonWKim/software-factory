@@ -1,4 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
+import { OctagonX } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { API, type AutoStop, type FactoryState, type MigrateDryRun, type PausesView, type SettingsView, type SupervisorView, type SystemAction, postMigrate, postResume, postSupervisor, useApi } from "../api.js";
 import { postJson } from "../api/client.js";
@@ -11,6 +12,7 @@ import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { ListRow, ROW_TITLE } from "../components/ui/list-row.js";
 import { type MenuItem, OverflowMenu } from "../components/ui/menu.js";
+import { useWide } from "../components/ui/parts.js";
 import { When, useNow } from "./common.js";
 import { alarmAnchor } from "./settings/general.js";
 import { Outcome, useWrite } from "./settings-file-keys.js";
@@ -92,7 +94,7 @@ export function UpdateNote({ factory }: { factory: FactoryState | null | undefin
           {count === null ? t("update.noteNoCount", { rev: short }) : count === 1 ? t("update.noteOne", { rev: short }) : t("update.note", { rev: short, count })}
         </p>
         {subjects.length > 0 && (
-          <Disclosure summary={t("update.changes")}>
+          <Disclosure summaryTone="text-pill-info-fg" summary={t("update.changes")}>
             <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs wrap-anywhere">
               {subjects.map((s, i) => <li key={i}>{s}</li>)}
             </ul>
@@ -106,8 +108,9 @@ export function UpdateNote({ factory }: { factory: FactoryState | null | undefin
 }
 
 /**
- * The running revision in the header (design 09-dashboard-shell): its short form, and "up to date" or "N behind" when the
- * status file says (a separate code checkout). Hidden without a factory status or a running revision.
+ * The running revision in the header (design 09-dashboard-shell): labelled "Factory version", its short form, and "up
+ * to date" or "N behind" when the status file says (a separate code checkout); the tooltip says what the hash is. The
+ * label shows from `sm` up, so the top bar stays on one row. Hidden without a factory status or a running revision.
  */
 export function FactoryRevision({ factory }: { factory: FactoryState | null | undefined }) {
   if (!factory?.rev) return null;
@@ -115,7 +118,10 @@ export function FactoryRevision({ factory }: { factory: FactoryState | null | un
   const behind = factory.behind ?? null;
   const text = behind === null ? rev : behind === 0 ? t("update.revCurrent", { rev }) : t("update.revBehind", { rev, count: behind });
   return (
-    <span data-testid="factory-rev" title={t("update.revLabel")} className="shrink-0 font-mono text-xs whitespace-nowrap text-text-2">{text}</span>
+    <span className="flex items-baseline gap-1.5 text-xs whitespace-nowrap text-text-2">
+      <span className="hidden sm:inline">{t("update.revLabel")}</span>
+      <span data-testid="factory-rev" title={t("update.revTooltip")} className="shrink-0 font-mono">{text}</span>
+    </span>
   );
 }
 
@@ -199,7 +205,7 @@ function OwnerPauseRow({ action, since, token }: { action: SystemAction; since: 
 const STOP_PATH = "/api/v1/agents/stop";
 
 /**
- * Stop all agents in the top bar (design 09-dashboard-shell): a secondary button that opens a confirm dialog, which posts
+ * Stop all agents in the top bar (design 09-dashboard-shell): a secondary button (icon-only below `sm`, its name as `aria-label`) that opens a confirm dialog, which posts
  * the stop and then reloads the pauses and the overview, so Needs you shows the stop with Resume now. Hidden while the
  * agents are stopped (Resume now is the way back) and while the server has no pause routes.
  */
@@ -209,6 +215,7 @@ export function StopAllAgents() {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const wide = useWide();
   const token = view?.csrf_token ?? null;
   if (token === null || view?.pauses.some((p) => p.name === OWNER_PAUSE)) return null;
   const close = () => {
@@ -232,7 +239,13 @@ export function StopAllAgents() {
   };
   return (
     <>
-      <Button data-testid="stop-all-agents" variant="secondary" className="shrink-0" onClick={() => setOpen(true)}>{t("stop.button")}</Button>
+      {wide ? (
+        <Button data-testid="stop-all-agents" variant="secondary" className="shrink-0" onClick={() => setOpen(true)}>{t("stop.button")}</Button>
+      ) : (
+        <Button data-testid="stop-all-agents" variant="secondary" size="icon" aria-label={t("stop.button")} onClick={() => setOpen(true)}>
+          <OctagonX aria-hidden className="size-4" />
+        </Button>
+      )}
       {open && (
         <Dialog title={t("stop.title")} consequence={t("stop.consequence")} confirmLabel={t("stop.button")} confirmDisabled={busy} error={error}
           onConfirm={() => void confirm()} onClose={close} />

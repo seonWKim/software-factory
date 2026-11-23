@@ -2,8 +2,8 @@
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
 import { STALL_DEFAULTS } from "../../../core/config.js";
-import { AGENT_STALLED, MODEL_STALL, NETWORK, NETWORK_SINCE, type ProbePause, networkProbeDelayMs, stallHold, stallIsGlobal } from "../../../core/policy.js";
-import type { Run, Timestamp, WorkItem } from "../../../core/types.js";
+import { AGENT_STALLED, MODEL_STALL, NETWORK, NETWORK_SINCE, type ProbePause, networkProbeDelayMs, stallIsGlobal } from "../../../core/policy.js";
+import type { Run, Timestamp } from "../../../core/types.js";
 import type { LLMProvider } from "../../../interfaces/llm-provider.js";
 import { type Decision, iso } from "../support.js";
 import type { Ctx } from "../context.js";
@@ -27,8 +27,6 @@ export class ModelProbeUnit {
     await this.probePause(MODEL_STALL, {
       delayMs: async () => this.c.k.cfg.probe_interval_ms ?? STALL_DEFAULTS.probe_interval_ms,
       probe: llm ? async () => ((await this.probe(llm)) ? null : "no answer") : null,
-      // The model answered, so a stall pattern is its items', not the model's: they are held (design 05-restarts).
-      ...(llm ? { onPass: () => this.c.unit("alarms").holdStalled() } : {}),
       passed: llm ? "model answered the probe: runs resume" : "no LLM provider to probe: the stall pause ends",
       failed: (next) => this.c.k.d.log.warn(`model not answering the probe: runs stay paused, next probe at ${next}`, { resume_at: next }),
     });
@@ -49,14 +47,13 @@ export class ModelProbeUnit {
   }
 
   /**
-   * The stall step (design 05-restarts, decision of 2026-11-20), on the decision that applies a stalled run. When no
-   * running run got model output within stall_ms of the stall (their last output times, read from the store), the
-   * model looks down: every claim pauses until a probe answers (`model_stall`, first probe after probe_interval_ms;
-   * `started` from the store's conditional write, so one controller logs it). Otherwise the model is fine: no pause,
-   * and only the run's item is held (`recurring_failure`) until probe_interval_ms after the stall, so its queued retry
-   * waits while other items are claimed. Any other run, or a decision that queues no retry, is returned as it is.
+   * The stall step (design 05-restarts, decisions of 2026-11-20 and 2026-11-23), on the decision that applies a
+   * stalled run, which it returns as it is. When no running run got model output within stall_ms of the stall (their
+   * last output times, read from the store), the model looks down: every claim pauses until a probe answers
+   * (`model_stall`, first probe after probe_interval_ms; `started` from the store's conditional write, so one
+   * controller logs it). Otherwise the model is fine: no pause, and the retry waits only for its backoff.
    */
-  async stallScope(it: WorkItem, run: Run, d: Decision): Promise<Decision> {
+  async stallScope(run: Run, d: Decision): Promise<Decision> {
     if (run.outcome?.status !== "failed" || run.outcome.error_code !== AGENT_STALLED) return d;
     const { store, clock, log } = this.c.k.d;
     const probeMs = this.c.k.cfg.probe_interval_ms ?? STALL_DEFAULTS.probe_interval_ms;
@@ -64,12 +61,8 @@ export class ModelProbeUnit {
     if (stallIsGlobal(await store.latestRunningOutput(), stalledAt, this.c.k.cfg.stall_ms ?? STALL_DEFAULTS.stall_ms)) {
       const pause = await store.pauseClaims(iso(clock.now().getTime() + probeMs), MODEL_STALL);
       if (pause.started) log.warn(`model not answering: all runs paused, first probe at ${pause.resume_at}`, { run_id: run.id, resume_at: pause.resume_at });
-      return d;
     }
-    const hold = d?.enqueue ? stallHold({ ...it, ...d.patch }, d.detail, iso(stalledAt + probeMs)) : null;
-    if (!d || !hold) return d;
-    log.info("run stalled while other runs get model output: only its item is held", { run_id: run.id, work_item_id: it.id, held_until: hold.detail.held_until });
-    return { ...d, ...hold, patch: { ...d.patch, ...hold.patch } };
+    return d;
   }
 
   /** One probe pause's due probe; see probeStep. `probe` resolves null on a pass, else what failed. */
@@ -78,8 +71,6 @@ export class ModelProbeUnit {
     p: {
       delayMs: (now: number) => Promise<number>;
       probe: (() => Promise<string | null>) | null;
-      /** After a pass, before the pause ends: what the pass changes besides ending it. */
-      onPass?: () => Promise<void>;
       passed: string;
       failed: (next: Timestamp, why: string) => void;
     },
@@ -91,7 +82,6 @@ export class ModelProbeUnit {
     if (!(await this.c.k.d.store.claimProbe(name, due, next))) return;
     const failure = p.probe ? await p.probe() : null;
     if (failure === null) {
-      if (p.onPass) await p.onPass();
       if ((await this.c.k.d.store.endClaimPause(name)).ended) this.c.k.d.log.info(p.passed, {});
       return;
     }

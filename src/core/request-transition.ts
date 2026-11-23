@@ -18,6 +18,7 @@ import {
 import { LOCAL_SOURCE } from "./local-merge.js";
 import { effectiveTier, isCovered, runKey } from "./policy.js";
 import { MERGE_CONFLICT_PENDING } from "./resolve.js";
+import { SCHEDULE_CHECKPOINT, SCHEDULE_CHECKPOINT_APPROVED } from "./schedule.js";
 import { PHASES_OPEN, SPLIT_FILING } from "./split.js";
 import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "./standing.js";
 import { type SpecDecision, type TriagePhase, optionChange } from "./outputs.js";
@@ -187,13 +188,18 @@ export async function floorTierNeeded(r: ItemReads, it: WorkItem): Promise<numbe
 
 /**
  * `/approve` on a spec (design §4), the same checks in the same order for every source: a closed item, a budget
- * checkpoint, the floor block and the Rule of Two (their own approvals), a split being filed (the approval that
- * claimed it is answered: null), a dependency hold, a spec not waiting, `+paths` on a split, the decision answers;
+ * checkpoint, a schedule's checkpoint (closed as completed), the floor block and the Rule of Two (their own
+ * approvals), a split being filed (the approval that claimed it is answered: null), a dependency hold, a spec not
+ * waiting, `+paths` on a split, the decision answers;
  * then the transition: a split's filing (`split`, the controller's), else RUNNING with one implement run.
  */
 export async function approveCheck<A extends GateAnswer>(r: ItemReads, it: WorkItem, a: ApproveArgs<A>): Promise<ApproveChecked> {
   if (it.stage === "CLOSED") return { refuse: CLOSED_REFUSAL };
   if (it.blocked_reason === BUDGET_CHECKPOINT) return { refuse: CHECKPOINT_REFUSAL };
+  // A schedule's token-cap checkpoint (design 08-schedules): closed as completed; the schedule's next pass raises the cap and runs the held occurrence.
+  if (it.blocked_reason === SCHEDULE_CHECKPOINT) {
+    return { patch: { stage: "CLOSED", close_reason: "completed", blocked_on: "none", blocked_reason: null }, actor: a.actor, reason: SCHEDULE_CHECKPOINT_APPROVED, ...(a.note ? { detail: { note: a.note } } : {}) };
+  }
   if (it.blocked_reason === FLOOR_TIER) return floorCommand("spec_approved", it, a.actor, await floorTierNeeded(r, it), a.note, a.widen(a.paths));
   if (it.blocked_reason === RULE_OF_TWO) return ruleOfTwoCommand("spec_approved", it, a.actor, a.note, a.paths, await r.listStateChanges(it.id));
   if (splitFiling(it) || splitOpen(it) || splitFilingFailed(it)) {
@@ -352,6 +358,38 @@ export function resolveHeld(it: Pick<WorkItem, "stage" | "blocked_on" | "blocked
   return last?.kind === "resolve";
 }
 
+/** The reason of the owner's `factory merge` on an item a failed merge check stopped at max_loops: max_loops → merge_pending. */
+export const MERGE_CHECK_AGAIN = "merge_check_again";
+
+/**
+ * Stopped at `max_loops` by a failed merge check (design 04-spec-gate-commands, 2026-11-23): a local item with no PR,
+ * blocked on a human with max_loops, whose latest max_loops state change carries the merge queue's `entry_id`. A
+ * max_loops from implement loops (a review or feedback round) carries none.
+ */
+export function mergeCheckStopped(it: Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason" | "change_ref">, changes: readonly Pick<StateChange, "reason" | "detail">[]): boolean {
+  if (it.stage !== "REVIEW" || it.blocked_on !== "human" || it.blocked_reason !== "max_loops" || it.change_ref !== null) return false;
+  return typeof changes.filter((c) => c.reason === "max_loops").at(-1)?.detail?.entry_id === "string";
+}
+
+/**
+ * The owner's `factory merge` on an item mergeCheckStopped: one state change back to merge_pending under
+ * MERGE_CHECK_AGAIN, the owner as actor, so the change enters the merge queue for one more check. The loop count is
+ * not checked; a failed check stops it at max_loops again. Null when the item no longer is there.
+ */
+export function mergeCheckAgain(it: WorkItem, changes: readonly StateChange[], actor: Actor): Transition | null {
+  if (!mergeCheckStopped(it, changes)) return null;
+  return { patch: { blocked_on: "human", blocked_reason: "merge_pending" }, actor, reason: MERGE_CHECK_AGAIN, detail: { loop_count: it.loop_count } };
+}
+
+/** `/help`'s line for `factory merge <id>` on an item mergeCheckStopped (src/core/commands.ts helpReply). */
+export const MERGE_CHECK_HELP_LINE = "- `factory merge <id>` **(now)**: The owner checks the merged result once more and it merges when the check passes; the loop count does not block it, and a failed check stops it here again.";
+
+/** The reason for `/retry` on an item mergeCheckStopped: no run failed, and `factory merge` is a choice. */
+export function mergeCheckRetryRefusal(id: string): string {
+  return "the item reached the review loop limit because its merged result failed the merge check, so there is no failed run to retry; " +
+    `run \`factory merge ${id}\` to check the merged result once more, \`/revise <feedback>\` for a new spec, or \`/reject <reason>\` to close`;
+}
+
 /** Which merge an item takes (design 05-sources): a local item with no PR the local merge, any other its PR's merge. */
 export function mergeRoute(it: Pick<WorkItem, "source" | "change_ref">): "local" | "pr" {
   return it.source.type === LOCAL_SOURCE && it.change_ref === null ? "local" : "pr";
@@ -364,7 +402,9 @@ export type ChangeName = (change_ref: string) => string;
  * Why the local merge does not apply to `it` (`canMerge`: a sandbox that merges locally), or null. A local item parked
  * on its merge conflict passes too (design §5 Merge conflict, 2026-11-20): the controller probes its branch as it is,
  * so a branch fixed by hand goes to a fresh review and one that still conflicts is refused with its files. `held`: it
- * is held after its resolve failed (resolveHeld), which passes like a parked one (2026-11-21).
+ * is held after its resolve failed (resolveHeld), which passes like a parked one (2026-11-21), or a failed merge check
+ * stopped it at max_loops (mergeCheckStopped, design 04-spec-gate-commands 2026-11-23), which the owner's merge
+ * sends to one more check. A max_loops from implement loops is refused.
  */
 export function localMergeRefusal(it: WorkItem, canMerge: boolean, name: ChangeName, held = false): string | null {
   if (!(awaitingMerge(it) || conflictParked(it) || held) || it.change_ref !== null) {
@@ -388,13 +428,15 @@ export function prMergeRefusal(it: WorkItem, forge: boolean, name: ChangeName): 
 }
 
 /**
- * The controller's entry of a dashboard Merge (request `seq`) into the local merge queue: merge_pending →
- * merge_queued, tagged with the request, before its merge runs. Null when the item does not wait at merge_pending
- * (queued already, or moved on), or takes its PR's merge: the forge merges it in one call, with no queue to wait in.
+ * A local merge's entry into the merge queue: merge_pending → merge_queued, tagged with `detail`, before its first
+ * check runs. The dashboard's Merge passes its request seq (`app_request`) before its merge runs; the queue, for
+ * `factory merge`, `/merge` and auto mode, passes the merge key when it creates the entry. Null when the item does
+ * not wait at merge_pending (queued already, or moved on), or takes its PR's merge: the forge merges it in one call,
+ * with no queue to wait in.
  */
-export function mergeEntered(it: WorkItem, actor: Actor, seq: number): Transition | null {
+export function mergeEntered(it: WorkItem, actor: Actor, detail: StateChangeDetail): Transition | null {
   if (!awaitingMerge(it) || mergeQueued(it) || mergeRoute(it) !== "local") return null;
-  return { patch: { blocked_on: "ci", blocked_reason: MERGE_QUEUED }, actor, reason: MERGE_REQUESTED, detail: { [APP_REQUEST]: seq } };
+  return { patch: { blocked_on: "ci", blocked_reason: MERGE_QUEUED }, actor, reason: MERGE_REQUESTED, detail };
 }
 
 /** Whether a dashboard Merge for the item, other than request `seq`, is stored and not handled yet: the item reads "Merging…". */

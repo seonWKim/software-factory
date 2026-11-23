@@ -96,6 +96,8 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
   tacit: { none: NoTacitLedger },
   // Optional, selected as a list by the top-level `calendar` key, default []: no provider (google-calendar) is a default.
   calendar: {},
+  // Optional with no default (design 08-schedules): leaving plugins.schedule_action out selects no action.
+  schedule_action: {},
 };
 
 /** Every descriptor file under src/impl with what it exports, loaded the way the registry loads them. */
@@ -205,6 +207,11 @@ describe("plugin registry: defaults", () => {
     for (const kind of PLUGIN_KINDS) {
       // The calendar list defaults to [] (no source), so nothing is built for it.
       if (kind === "calendar") continue;
+      // No schedule action is a default: none is selected, so nothing is built for it.
+      if (kind === "schedule_action") {
+        expect(loaded.plugins.schedule_action).toBeUndefined();
+        continue;
+      }
       const name = loaded.plugins[kind];
       if (name === undefined) throw new Error(`${kind} has no default`);
       const x = await createPlugin(loaded.registry, kind, name, ctx as never);

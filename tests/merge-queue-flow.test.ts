@@ -146,6 +146,11 @@ async function mergeActions(f: Factory) {
   return (await db.all("SELECT delivered_at FROM outbound_actions WHERE action = 'merge' ORDER BY seq")).map((r) => ({ delivered: r.delivered_at !== null }));
 }
 
+/** The refusals the item went back to merge_pending with (`merge_returned`), oldest first. */
+async function returns(f: Factory, id: WorkItemId) {
+  return (await f.store.listStateChanges(id)).filter((c) => c.reason === "merge_returned").map((c) => c.detail?.refusal);
+}
+
 /** The merge-check runs of the items, in order, with what each merged and how it came back. */
 async function checks(f: Awaited<ReturnType<typeof factory>>, ...ids: WorkItemId[]) {
   const runs = (await Promise.all(ids.map((id) => f.store.listRuns(id)))).flat().filter((r) => r.kind === "merge-check");
@@ -188,6 +193,42 @@ for (const backend of BACKENDS) {
       await f.step();
       expect(git(f.repo, "rev-parse", "main")).toBe(main);
     });
+    it("factory merge moves the item to merge_queued before its first check; a second merge from the CLI or the dashboard changes nothing", async () => {
+      const f = await factory(backend, { test: ["sh", "-c", "exit 0"] });
+      const a = await f.toMergePending("Add a");
+      const b = await f.toMergePending("Add b");
+      await f.cli({ action: "command", command: "merge", id: a, text: "" });
+      await f.cli({ action: "command", command: "merge", id: b, text: "" });
+      await f.controller.tickCommands();
+      const queue = await f.controller.unit("merge-queue");
+      // a is checking, b queued behind it: neither shows as merge_pending.
+      expect([...(await queue.entries(a)), ...(await queue.entries(b))].map((e) => e.state)).toEqual(["checking", "queued"]);
+      for (const id of [a, b]) expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_on: "ci", blocked_reason: "merge_queued" });
+      // The move came first, by the approver with the merge key, then the check was queued.
+      const reasons = (await f.store.listStateChanges(a)).map((c) => c.reason);
+      expect(reasons.indexOf("merge_requested")).toBeGreaterThan(-1);
+      expect(reasons.indexOf("merge_requested")).toBeLessThan(reasons.indexOf("merge_check_queued"));
+      const entered = (await f.store.listStateChanges(a)).find((c) => c.reason === "merge_requested")!;
+      expect(entered).toMatchObject({ actor: { kind: "user", id: ME }, detail: { merge_key: expect.any(String) } });
+
+      // A second merge while queued: the CLI again, then the dashboard's Merge.
+      const before = (await f.store.getWorkItem(a))!;
+      const messages = (await f.store.listItemMessages(a)).length;
+      await f.cli({ action: "command", command: "merge", id: a, text: "" });
+      await f.controller.tickCommands();
+      await f.store.recordAppCommandRequest({ key: "app:second", actor: ME, command: "merge", args: { work_item_id: a } });
+      await f.controller.tickCommands();
+      expect(await returns(f, a)).toEqual([]);
+      expect(await f.store.getWorkItem(a)).toMatchObject({ version: before.version, blocked_on: "ci", blocked_reason: "merge_queued" });
+      expect((await f.store.listItemMessages(a)).length).toBe(messages);
+      expect((await queue.entries(a)).map((e) => e.state)).toEqual(["checking"]);
+
+      // The first merge runs on and lands both.
+      await f.step();
+      for (const id of [a, b]) expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
+      expect(await returns(f, a)).toEqual([]);
+    });
+
     it("at depth 2 checks both at once, b on the base plus a, and both land, b on the commit a landed as", async () => {
       const f = await factory(backend, { depth: 2, test: ["sh", "-c", "exit 0"] });
       const a = await f.toMergePending("Add a");
@@ -237,7 +278,8 @@ for (const backend of BACKENDS) {
       while (await f.worker.tick()) await f.controller.tickRuns();
       expect(await checks(f, a)).toEqual([{ branches: 1, result: "green" }]);
       expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
-      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
+      expect(await returns(f, a)).toEqual([expect.stringContaining("did not finish in time")]);
     });
 
     it("an enabled before_merge hook that vetoes keeps the base where it was; a disabled one never runs", async () => {
@@ -260,7 +302,8 @@ for (const backend of BACKENDS) {
       await f.step();
       expect(seen).toEqual([a]);
       expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
-      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", merge_sha: null });
+      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", merge_sha: null });
+      expect(await returns(f, a)).toEqual([expect.stringContaining("hook freeze: the base is frozen")]);
       const queue = await f.controller.unit("merge-queue");
       expect((await queue.entries(a)).map((e) => e.state)).toEqual(["removed"]);
       const refused = (await f.store.listItemMessages(a)).filter((m) => m.marker.startsWith("<!-- factory:refused:")).map((m) => m.body);
@@ -278,7 +321,7 @@ for (const backend of BACKENDS) {
       // The base holds the change, the item is not closed yet, and the queue still holds the landing.
       const queue = await f.controller.unit("merge-queue");
       expect((await queue.entries(a)).map((e) => e.state)).toEqual(["merging"]);
-      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "REVIEW", blocked_on: "ci", blocked_reason: "merge_queued" });
       expect((await queueRow(f)).state).toBe("merging");
 
       // Past the lease the landing is taken over: it finds its merge delivered and applies it, with no second merge.
@@ -377,7 +420,7 @@ for (const backend of BACKENDS) {
       git(f.repo, "worktree", "remove", wt);
       await f.controller.tickRuns();
       expect(git(f.repo, "ls-tree", "-r", "--name-only", "main").split("\n")).not.toContain("c.yml");
-      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "REVIEW", blocked_on: "ci", blocked_reason: "merge_queued" });
 
       // Checked again with the late commit, then it lands.
       await f.step();
@@ -427,7 +470,7 @@ for (const backend of BACKENDS) {
       expect(git(f.repo, "rev-list", "--parents", "-n", "1", merged).split(" ")[1]).toBe(mainBefore);
       const queue = await f.controller.unit("merge-queue");
       expect((await queue.entries(a)).map((e) => e.state)).toEqual(["merging"]);
-      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "REVIEW", blocked_on: "ci", blocked_reason: "merge_queued" });
 
       // The landing is taken over past its lease: it finds its keyed request and requests nothing again.
       f.clock.advance(f.cfg.lease_ms);
@@ -479,7 +522,8 @@ for (const backend of BACKENDS) {
       expect(git(f.repo, "rev-parse", "main")).toBe(mainA);
       expect((await queue.entries(b)).map((e) => [e.state, e.reason])).toEqual([["removed", "the factory repo has no branch to merge"]]);
       expect((await queueRow(f)).state).toBe("idle");
-      expect(await f.store.getWorkItem(b)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", merge_sha: null });
+      expect(await f.store.getWorkItem(b)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", merge_sha: null });
+      expect(await returns(f, b)).toEqual([expect.stringContaining("the factory repo has no branch to merge")]);
       const refused = (await f.store.listItemMessages(b)).filter((m) => m.marker.startsWith("<!-- factory:refused:")).map((m) => m.body);
       expect(refused).toEqual([expect.stringContaining("the factory repo has no branch to merge")]);
     });
@@ -491,10 +535,13 @@ for (const backend of BACKENDS) {
       // Entered by auto mode; the project is in manual mode by the time it lands.
       const queue = await f.controller.unit("merge-queue");
       expect(await queue.enter((await f.store.getWorkItem(a))!, "system:auto", "auto-merge:test", {})).toBeNull();
+      expect(await f.store.getWorkItem(a)).toMatchObject({ blocked_on: "ci", blocked_reason: "merge_queued" });
+      expect((await f.store.listStateChanges(a)).find((c) => c.reason === "merge_requested")).toMatchObject({ actor: { kind: "system", id: "system:auto" }, detail: { merge_key: "auto-merge:test" } });
       await f.step();
       expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
       expect((await queue.entries(a)).map((e) => [e.state, e.reason?.split(",")[0]])).toEqual([["removed", "auto mode is off now; a person merges it: `factory merge` (approver role)"]]);
-      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
+      expect(await returns(f, a)).toEqual([expect.stringContaining("auto mode is off now")]);
     });
   });
 }

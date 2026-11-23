@@ -1,7 +1,7 @@
 // The alarm patterns across items and the restart list.
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
-import { HELD_ITEMS, type HeldPattern, RESTART_WINDOW_MS, alarmStep, heldKey, holdPatch, recurringStalls, releasePatch, stallHeldUntil, stallRelease, stopsAuto } from "../../../core/alarms.js";
+import { HELD_ITEMS, type HeldPattern, RESTART_WINDOW_MS, alarmStep, heldKey, holdPatch, releasePatch, stopsAuto } from "../../../core/alarms.js";
 import { ALARM_DEFAULTS, STALL_DEFAULTS } from "../../../core/config.js";
 import { SYSTEM } from "../support.js";
 import type { Ctx } from "../context.js";
@@ -64,31 +64,14 @@ export class AlarmsUnit {
   }
 
   /**
-   * Once the model answered its stall probe (design 05-restarts): the recurring stall patterns of the last hour hold
-   * their items, so the next stall of one of them pauses no other item's claims.
-   */
-  async holdStalled(): Promise<void> {
-    const d = this.c.k.d;
-    for (const p of await recurringStalls({ store: d.store, project: this.c.k.project(), clock: d.clock })) await this.holdItems(p);
-  }
-
-  /**
-   * Releases held items whose pattern's fix item merged (closed with a merge sha), and stall holds whose time has
-   * passed (design 05-restarts): `blocked_on: none`, so their queued runs are claimed again for a retry. Reads the held
-   * items (`HELD_ITEMS`) and their hold's pattern key or end; safe to run twice.
+   * Releases held items whose pattern's fix item merged (closed with a merge sha): `blocked_on: none`, so their queued
+   * runs are claimed again for a retry. Reads the held items (`HELD_ITEMS`) and their hold's pattern key; a hold with
+   * none (a stall streak, design 05-restarts) waits for `/retry`. Safe to run twice.
    */
   async releaseStep(): Promise<void> {
     const store = this.c.k.d.store;
     for (const it of await store.listWorkItemsWhere({ ...HELD_ITEMS, limit: 500 })) {
       const changes = () => this.c.k.reader.listStateChanges(it.id);
-      const until = await stallHeldUntil(it, changes);
-      if (until !== null) {
-        // Only while the item is still held by that same hold.
-        if (until <= this.c.k.d.clock.now().toISOString()) {
-          await this.c.unit("transitions").decide(it.id, async (cur) => ((await stallHeldUntil(cur, changes)) === until ? { ...stallRelease(until), actor: SYSTEM } : null));
-        }
-        continue;
-      }
       const key = await heldKey(it, changes);
       if (key === null) continue;
       const ref = (await store.getFiledPattern(it.project, key))?.filed_ref;

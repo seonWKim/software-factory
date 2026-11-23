@@ -21,6 +21,7 @@ import type { SessionReservation, SessionReservationStore } from "../core/sessio
 import type { ProposalStore } from "../core/proposals.js";
 import type { StandingChangeStore } from "../core/standing.js";
 import type { ScheduleStore } from "../core/schedule.js";
+import type { SkillEvalStore } from "./skill-eval-store.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
@@ -82,7 +83,6 @@ export type RecordPrHeadResult =
   | { ok: false; reason: "not_found" }
   /** last_head_sha is no longer `expected_head` (another poll or a factory push recorded first). Nothing written. */
   | { ok: false; reason: "head_moved"; current: WorkItem };
-
 export interface NewUnreviewedMerge {
   project: string;
   /** The PR number as text; the store mirrors it into its legacy PR column. */
@@ -131,8 +131,8 @@ export interface NewImproveReport extends ImproveWindow {
 /** A `model_stall` or `network` claim pause (design §7): the improver files no run that failed inside one. `ended_at` null: still in effect. */
 export type PauseInterval = { name: "model_stall" | "network"; started_at: Timestamp; ended_at: Timestamp | null };
 
-/** A filed pattern as claimed; the store adds `id` and `created_at`, and `filed_ref` starts null. */
-export type NewFiledPattern = Omit<FiledPattern, "id" | "created_at" | "filed_ref" | "outcome" | "outcome_at">;
+/** A filed pattern as claimed; the store adds `id` and `created_at`, and `filed_ref` starts null. `evidence` absent: stored null. */
+export type NewFiledPattern = Omit<FiledPattern, "id" | "created_at" | "filed_ref" | "outcome" | "outcome_at" | "evidence"> & { evidence?: number | null };
 
 /** A standing-approval rule as written; the store adds the timestamps. */
 export type NewStandingRule = Pick<StandingRule, "gate" | "tier" | "enabled" | "set_by">;
@@ -172,18 +172,16 @@ export interface TransitionInput {
 /** How a base push finished: `pushed` (the remote base contains the merge) or `conflict` (it moved and does not merge). */
 export type BasePushOutcome = "pushed" | "conflict";
 
-/** A local merge's base push (RFC 0015 M8: outbound's `push_base` action), as the status page shows it. */
+/** A local merge's base push (RFC 0015 M8: outbound's `push_base` action), as the status page shows it. `attempts`: failed tries so
+ * far (an outage, a rate limit, a base that moved under the push), its batch's; `outcome`: null while pending; `pushed_sha`: the
+ * remote base after a `pushed` outcome. */
 export interface BasePush {
-  base_ref: string;
-  merge_sha: string;
-  /** Failed tries so far (an outage, a rate limit, a base that moved under the push): its batch's. */
-  attempts: number;
-  /** Null while pending. */
-  outcome: BasePushOutcome | null;
-  /** The remote base after a `pushed` outcome. */
-  pushed_sha: string | null;
-  last_error: string | null;
+  base_ref: string; merge_sha: string; attempts: number; outcome: BasePushOutcome | null; pushed_sha: string | null; last_error: string | null;
 }
+
+/** One base's local merges not on the remote (design 05-sources, Local items): `waiting` counts its push_base actions after
+ * the newest pushed one (at least 1); `conflicts`: the files of its newest delivered push when a conflict, else null. */
+export interface BasePushBacklog { base_ref: string; waiting: number; conflicts: string[] | null }
 
 export type TransitionResult =
   /** `cancelled`: the runs `cancel_queued_runs` and `cancel_running_runs` cancelled (empty without them). */
@@ -265,7 +263,7 @@ export type BudgetCheckpointResult =
 export interface WorkItemFilter {
   stage?: Stage | undefined;
   blocked_on?: BlockedOn | undefined; blocked_reason?: string | undefined;
-  exclude_closed?: boolean | undefined; // Leave out CLOSED items. Ignored when `stage` is given.
+  exclude_closed?: boolean | undefined; exclude_system?: boolean | undefined; // Leave out CLOSED items (ignored when `stage` is given) / system items (blocked_reason system_item).
   /** Only items updated at or after this time (with `stage: "CLOSED"`, the closes since then: owner notices). */
   updated_since?: Timestamp | undefined;
   limit: number;
@@ -358,7 +356,7 @@ export interface NoticeMessageStore {
   getNoticeQuestion(id: string): Promise<NoticeQuestion | null>;
 }
 
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore {
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore, SkillEvalStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes
@@ -395,7 +393,7 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   listWorkItemsWhere(filter: WorkItemFilter): Promise<WorkItem[]>;
   /** Number of items matching `filter`, with no limit. Read-only. */
   countWorkItemsWhere(filter: Omit<WorkItemFilter, "limit">): Promise<number>;
-  /** Number of work items in each stage. Every stage is present, 0 when it has none. Read-only. */
+  /** Number of work items in each stage, system items (blocked_reason system_item) left out. Every stage is present, 0 when it has none. Read-only. */
   countWorkItemsByStage(): Promise<Record<Stage, number>>;
   /**
    * The only way to change a work item: conditional update + state_changes row (+ optional ack/enqueue).
@@ -600,8 +598,8 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   getOpenWorkItemByTitle(project: string, title: string): Promise<WorkItem | null>;
   /** Sets the item of the row `id` while `report_id` still holds it; a row another report claimed is left alone. */
   setFiledPatternRef(id: FiledPatternId, report_id: ImproveReportId, ref: SourceRef): Promise<void>;
-  /** The filed patterns of `project` that have an item and no outcome yet, oldest first. Read-only. */
-  listFiledPatternsWithoutOutcome(project: string): Promise<FiledPattern[]>;
+  listFiledPatternsWithin(within_ms: number): Promise<{ since: Timestamp; rows: FiledPattern[] }>; // every project's rows with an item claimed at or after `since` (store clock's now − within_ms), oldest first
+  listFiledPatternsWithoutOutcome(project: string): Promise<FiledPattern[]>; // `project`'s filed patterns with an item and no outcome yet, oldest first. Read-only.
   /** Sets the outcome of row `id` only while it has none: true when this call wrote it, false when one was there. */
   setFiledPatternOutcome(id: FiledPatternId, outcome: NonNullable<FiledPattern["outcome"]>, at: Timestamp): Promise<boolean>;
 
@@ -965,6 +963,8 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
    * delivered merge stored), delivered or not; null when its merge stored none. Read-only.
    */
   getBasePush(work_item_id: WorkItemId): Promise<BasePush | null>;
+  /** Each base with local merges not pushed (BasePushBacklog), from the push_base actions after the newest pushed one. Read-only. */
+  listBasePushBacklogs(): Promise<BasePushBacklog[]>;
 
   // App command requests (issue #245): commands sent from the factory's own app, applied by the controller tick
   // through the same path as a comment command. Created by the status page's POST /api/v1/items/:id/commands (#227).

@@ -6,6 +6,7 @@ import {
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
+import { copyToClipboard } from "../components/ui/copy.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
 import { Radio } from "../components/ui/radio.js";
@@ -131,15 +132,33 @@ export function QueuedFeedbackList({ timeline }: { timeline: ItemDetail["timelin
 }
 
 /**
- * Command `c` as an entry of a "…" menu: its label (with the controller's reason when the viewer may not send it, then
- * disabled), its `data-action`, and `onSelect`. `off`: commands are off or a send is under way.
+ * Item `id`'s command `c` as an entry of a "…" menu: its label (with the controller's reason when the viewer may not
+ * send it, then disabled), its `data-action` and `data-item`, and `onSelect`. `off`: commands are off or a send is under way.
  */
-export function menuEntry(c: ItemCommand, off: boolean, onSelect: () => void): MenuItem {
+export function menuEntry(id: string, c: ItemCommand, off: boolean, onSelect: () => void): MenuItem {
   return {
     label: c.allowed ? commandLabel(c.name) : `${commandLabel(c.name)}: ${plainRefusal(c.reason ?? "not allowed")}`,
     disabled: off || !c.allowed,
     action: c.name,
+    item: id,
     onSelect,
+  };
+}
+
+/** The actions that are `factory task <verb>` commands (src/core/command-table.ts); every other action is `factory <verb>`. */
+const TASK_VERBS = ["build", "done", "reopen"];
+
+/** Action `action` on `id` as typed in a terminal: `factory approve wi_1`, `factory task reopen tk_1`. */
+export const cliCommand = (action: string, id: string): string => `factory ${TASK_VERBS.includes(action) ? "task " : ""}${action} ${id}`;
+
+/**
+ * A row's "Copy as CLI command" menu entry (design 09-dashboard-shell): copies `cliCommand(action, id)`, the row's
+ * main action as a terminal runs it, and says so.
+ */
+export function copyCliEntry(action: string, id: string): MenuItem {
+  return {
+    label: t("commands.copyCli"),
+    onSelect: () => void copyToClipboard(cliCommand(action, id)).then((ok) => ok && announceStatus(t("commands.copiedCli", { command: cliCommand(action, id) }))),
   };
 }
 
@@ -181,14 +200,14 @@ export function ItemCommands({ id, commands, reason = null }: { id: string; comm
   const data = useApi<ItemDetail>(API.item(id)).data;
   const detail = data?.item;
   // Verdict and Reject: in the "…" menu, one the viewer may not send disabled with its reason.
-  const menuItems = commands.filter((c) => MENU.includes(c.name)).map((c) => menuEntry(c, !enabled || busy, () => setOpen(c.name as FormName)));
+  const menuItems = commands.filter((c) => MENU.includes(c.name)).map((c) => menuEntry(id, c, !enabled || busy, () => setOpen(c.name as FormName)));
   const restart = commands.find((c) => c.name === "restart");
   const queued = data?.runs.some((r) => r.status === "queued") ?? false;
   return (
     <div ref={wrap} className="mt-2">
       {reason}
       <QueuedFeedbackList timeline={data?.timeline} />
-      {restart && <RestartButton command={restart} on={enabled} busy={busy} replies={data?.replies ?? []} local={local.restart} send={() => void post("restart", "")} />}
+      {restart && <RestartButton id={id} command={restart} on={enabled} busy={busy} replies={data?.replies ?? []} local={local.restart} send={() => void post("restart", "")} />}
       {commands.length === 0 && !queued && !showsMerge(detail?.merge) && (
         <p data-commands-none className="mt-2 text-sm text-pretty text-text-2">
           {t("commands.none")}
@@ -196,7 +215,7 @@ export function ItemCommands({ id, commands, reason = null }: { id: string; comm
       )}
       {(queued || menuItems.length > 0) && (
         <ButtonRow data-item-menu className="mt-2">
-          {queued && <RunNextButton on={enabled} busy={busy} replies={data?.replies ?? []} local={local["run-next"]} send={() => void post("run-next", "")} />}
+          {queued && <RunNextButton id={id} on={enabled} busy={busy} replies={data?.replies ?? []} local={local["run-next"]} send={() => void post("run-next", "")} />}
           {menuItems.length > 0 && <OverflowMenu label={t("commands.more")} items={menuItems} />}
         </ButtonRow>
       )}
@@ -222,13 +241,13 @@ export function ItemCommands({ id, commands, reason = null }: { id: string; comm
  * `run-next` with no note; "Moving…" until the controller's reply, then "Moved to the front of the queue" (its reply in
  * the thread gives the position) or the refusal. The controller checks the owner and starts nothing that is held.
  */
-function RunNextButton({ on, busy, replies, local, send }: { on: boolean; busy: boolean; replies: readonly CommandReply[]; local: LocalSend | undefined; send: () => void }) {
+function RunNextButton({ id, on, busy, replies, local, send }: { id: string; on: boolean; busy: boolean; replies: readonly CommandReply[]; local: LocalSend | undefined; send: () => void }) {
   const reply = commandOutcome(replies, "run-next", local);
   const waiting = busy || awaitsReply(reply);
   const outcome: Outcome = waiting ? null : reply?.tone === "status" && reply.text === t("commands.done") ? { tone: "status", text: t("commands.runNextDone") } : reply;
   return (
-    <span data-command="run-next" className="inline-flex flex-wrap items-center gap-2">
-      <Button variant="secondary" data-action="run-next" disabled={!on || waiting} title={t("commands.runNextTitle")} onClick={send}>
+    <span className="inline-flex flex-wrap items-center gap-2">
+      <Button variant="secondary" data-action="run-next" data-item={id} disabled={!on || waiting} title={t("commands.runNextTitle")} onClick={send}>
         {waiting ? t("commands.runNextMoving") : t("commands.runNext")}
       </Button>
       <OutcomeText outcome={outcome} />
@@ -394,8 +413,8 @@ export function NeedActions({ id, title, commands, pr, group, merge, checking, c
   };
   const canRetry = commands.some((c) => c.name === "retry" && c.allowed);
   const rest = [
-    ...others.map((c) => menuEntry(c, off, () => (DIALOGS.includes(c.name) ? setOpen(c.name as FormName) : void send(c.name, withPaths(c, ""))))),
-    ...allow.map((a) => ({ label: a.label, disabled: off || !canRetry, onSelect: () => void send("retry", a.note) })),
+    ...others.map((c) => menuEntry(id, c, off, () => (DIALOGS.includes(c.name) ? setOpen(c.name as FormName) : void send(c.name, withPaths(c, ""))))),
+    ...allow.map((a) => ({ label: a.label, action: "retry", item: id, disabled: off || !canRetry, onSelect: () => void send("retry", a.note) })),
   ];
   // Applied at once (Approve): the row's label, e.g. "Approved", until the list's next read moves the row on.
   const applied = Object.entries(local).flatMap(([k, l]) => (k !== "merge" && "seq" in l && l.label && !l.refusal ? [l.label] : []));
@@ -413,16 +432,18 @@ export function NeedActions({ id, title, commands, pr, group, merge, checking, c
   const mergeLabel = checking ? t("needs.checking") : queued ? (merge?.reason ?? t("commands.merging")) : merging ? t("commands.merging")
     : merge && !merge.enabled && merge.reason ? `${t("commands.merge")}: ${merge.reason}` : t("commands.merge");
   const head: MenuItem[] = group === "merge"
-    ? [{ label: mergeLabel, action: "merge", disabled: off || checking || merging || !merge?.enabled, onSelect: () => void send("merge", "") }]
+    ? [{ label: mergeLabel, action: "merge", item: id, disabled: off || checking || merging || !merge?.enabled, onSelect: () => void send("merge", "") }]
     : primary
-      ? [{ label: sent ? (sent.label ?? t("commands.sentWaiting")) : primaryLabel(primary), action: primary.name, disabled: off || sent !== null || !primary.allowed, onSelect: sendPrimary }]
+      ? [{ label: sent ? (sent.label ?? t("commands.sentWaiting")) : primaryLabel(primary), action: primary.name, item: id, shortcut: PRIMARY_KEY, disabled: off || sent !== null || !primary.allowed, onSelect: sendPrimary }]
       : [];
-  const items = [...head, ...rest, ...extra];
+  // Copy as CLI command: the row's main action (its first command entry), as a terminal runs it; before the row's own.
+  const main = [...head, ...rest].find((e) => e.action !== undefined);
+  const items = [...head, ...rest, ...(main?.action ? [copyCliEntry(main.action, id)] : []), ...extra];
   return (
     <span ref={wrap} data-need-commands className="inline-flex flex-wrap items-center justify-end gap-2">
       {/* Every action is in the menu (owner feedback 2026-11-20); this hidden button only carries the row's "p" shortcut. */}
       {primary && group !== "merge" && (
-        <Button hidden data-shortcut={PRIMARY_KEY} data-command={primary.name} disabled={off || sent !== null || !primary.allowed} onClick={sendPrimary} />
+        <Button hidden data-shortcut={PRIMARY_KEY} data-action={primary.name} data-item={id} disabled={off || sent !== null || !primary.allowed} onClick={sendPrimary} />
       )}
       {group === "merge" && merging && !queued && <OutcomeText outcome={{ tone: "status", text: t("commands.merging") }} />}
       {/* With inlineErrors false a merge error is the row's, on its own line (C-050): never in this cell. */}

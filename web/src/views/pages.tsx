@@ -1,7 +1,7 @@
 import { ListTodo } from "lucide-react";
 import { useMemo, useState } from "react";
 import {
-  API, type FactoryState, type GitHubBudget, type Health, type HostSleepRow, type ItemDetail, type ItemRow, type Items, type Overview, type PauseRow, type PhaseRow, type PausesView, type QueueRow, type RunRow,
+  API, type FactoryState, type GitHubBudget, type Health, type HealthCheck, type HostSleepRow, type ItemDetail, type ItemRow, type Items, type Overview, type PauseRow, type PhaseRow, type PausesView, type QueueRow, type RunRow,
   type RulesView, type UnreviewedMerges, type WorkerProcess, type WorkersView, useApi,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
@@ -30,6 +30,7 @@ import { BASE, itemPath } from "../pages.js";
 import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, RawNames, When, byId, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
 import { ItemDecision } from "./decision-card.js";
 import { ItemAbout } from "./item-about.js";
+import { AddModelCredential } from "./model-credential-dialog.js";
 import { ResumeNow, type SupervisorActionName, SupervisorActions } from "./system-banner.js";
 import { Thread } from "./thread.js";
 import { transcriptPath } from "./transcript.js";
@@ -197,7 +198,7 @@ export function ActivityPage() {
               <div key={k} className="rounded-control border border-border px-3 py-2">
                 <dt className="text-xs text-text-2">{k}</dt>
                 <dd className="text-lg font-semibold tabular-nums">
-                  {href ? <Link href={href} className={LINK_CLASS}>{v}</Link> : v}
+                  {href ? <Link href={href} className={cn("min-w-6", LINK_CLASS)}>{v}</Link> : v}
                 </dd>
               </div>
             ))}
@@ -252,6 +253,7 @@ export function ItemsPage() {
   const [q, setQ] = useState("");
   const [ids, setIds] = useState<ReadonlySet<string> | null>(initialIds);
   const [showClosed, setShowClosed] = useState(false);
+  const [showSystem, setShowSystem] = useState(false);
   const tree = view === "tree";
   const queuedView = state === "queued";
   const setView = (v: View) => {
@@ -269,6 +271,7 @@ export function ItemsPage() {
     if (state) params.set("state", state);
     if (q.trim()) params.set("q", q.trim());
   }
+  if (showSystem) params.set("system", "1");
   const query = params.toString();
   const items = useApi<Items>(query ? `${API.items}?${query}` : API.items);
   const overview = useApi<Overview>(API.overview);
@@ -276,20 +279,20 @@ export function ItemsPage() {
   const queue = useQueuedRuns();
   const rateLimit = pauses.data?.pauses.find((x) => x.name === "rate_limit");
   const rows = items.data?.items ?? [];
-  const filter: TreeFilter = { state, q, showClosed, ids };
-  const nodes = useMemo(() => buildTree(rows, filter), [items.data, state, q, showClosed, ids]);
+  const filter: TreeFilter = { state, q, showClosed, showSystem, ids };
+  const nodes = useMemo(() => buildTree(rows, filter), [items.data, state, q, showClosed, showSystem, ids]);
   const [expanded, setExpanded] = useExpanded(defaultExpanded(nodes));
   const itemsById = useMemo(() => byId(items.data?.items), [items.data]);
   // The tree, and a list narrowed to named items, read every row and filter in the page.
   const local = tree || ids !== null;
   // Running, with no search and no named items, is the server's count of runs whose status is running, as Activity's Running now.
   const narrowed = !!q.trim() || ids !== null;
-  const counted = (s: string) => (s === "queued" ? (queue.data?.queue.length ?? "…") : s === "running" && !narrowed && items.data ? items.data.counts.running : local ?rows.filter((r) => itemMatches(r, { state: s, q, showClosed, ids })).length : (items.data?.facets.state[s] ?? 0));
+  const counted = (s: string) => (s === "queued" ? (queue.data?.queue.length ?? "…") : s === "running" && !narrowed && items.data ? items.data.counts.running : local ?rows.filter((r) => itemMatches(r, { state: s, q, showClosed, showSystem, ids })).length : (items.data?.facets.state[s] ?? 0));
   const group = groupOfFilter(state);
   // A group or state tab with no rows is hidden, unless it is the one selected.
   const shows = (s: string) => s === state || s === group || counted(s) !== 0;
   // All, with no search, no named items and closed items hidden, is the server's open count (stage not CLOSED), as Activity's Open items.
-  const allCount = !narrowed && !showClosed && items.data ? items.data.counts.open : local ? rows.filter((r) => itemMatches(r, { state: null, q, showClosed, ids })).length : (items.data?.facets.allStates ?? "");
+  const allCount = !narrowed && !showClosed && items.data ? items.data.counts.open : local ? rows.filter((r) => itemMatches(r, { state: null, q, showClosed, showSystem, ids })).length : (items.data?.facets.allStates ?? "");
   return (
     <>
       <PageHeader title={t("page.work")} description={t("work.pageDescription")} />
@@ -329,13 +332,12 @@ export function ItemsPage() {
           className="w-full max-w-sm"
         />
         <SegmentedControl label={t("items.view")} options={VIEW_OPTIONS} value={view} onChange={setView} />
-        {tree && (
-          <ButtonRow>
-            <Button size="sm" aria-pressed={showClosed} onClick={() => setShowClosed(!showClosed)}>{t("items.showClosed")}</Button>
-            <Button size="sm" onClick={() => setExpanded(parentIds(nodes))}>{t("items.expandAll")}</Button>
-            <Button size="sm" onClick={() => setExpanded([])}>{t("items.collapseAll")}</Button>
-          </ButtonRow>
-        )}
+        <ButtonRow>
+          {tree && <Button size="sm" aria-pressed={showClosed} onClick={() => setShowClosed(!showClosed)}>{t("items.showClosed")}</Button>}
+          <Button size="sm" aria-pressed={showSystem} onClick={() => setShowSystem(!showSystem)}>{t("items.showSystem")}</Button>
+          {tree && <Button size="sm" onClick={() => setExpanded(parentIds(nodes))}>{t("items.expandAll")}</Button>}
+          {tree && <Button size="sm" onClick={() => setExpanded([])}>{t("items.collapseAll")}</Button>}
+        </ButtonRow>
       </PageToolbar>
       {ids && (
         <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -350,7 +352,9 @@ export function ItemsPage() {
         </Card>
       ) : (
         <Card>
-          {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading rows={6} /> : tree ? (
+          {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading rows={6} /> : rows.length === 0 && !state && !q.trim() && !ids ? (
+            <EmptyState icon={ListTodo} title={t("items.emptyTitle")} description={t("items.emptyBody")} action={<Link href={`${BASE}tasks`} className={LINK_CLASS}>{t("items.emptyAction")}</Link>} />
+          ) : tree ? (
             nodes.length === 0 ? <EmptyState icon={ListTodo} title={t("items.noMatch")} /> : (
               <ItemsTree nodes={nodes} rows={rows} now={now} expanded={expanded} onExpanded={setExpanded} />
             )
@@ -462,10 +466,10 @@ export function ItemPage({ id }: { id: string }) {
               <Tr key={r.id} data-run={r.id}>
                 <Td className="min-w-40">
                   {runKindLabel(r.kind)}{" "}
-                  {tries.length === 1 ? <code className="font-mono text-xs break-all text-text-2">{r.id}</code> : (
+                  {tries.length === 1 ? <code className="font-mono text-xs break-all text-text-2" title={r.id}>{shortRunId(r.id)}</code> : (
                     <RawDetails className="mt-1">
                       <ul aria-label={t("item.runIds")} className="mt-1 font-mono text-xs break-all">
-                        {tries.map((x) => <li key={x.id}>{x.id}</li>)}
+                        {tries.map((x) => <li key={x.id}><code>{x.id}</code></li>)}
                       </ul>
                     </RawDetails>
                   )}
@@ -477,6 +481,7 @@ export function ItemPage({ id }: { id: string }) {
                     <>
                       <span className="font-medium">{errorSentence(r.error.code)}</span>
                       <RawDetails>
+                        <p>{t("item.runId")} <code className="font-mono break-all">{r.id}</code></p>
                         {r.error.code && <code className="font-mono">{r.error.code}</code>}
                         {r.error.detail && <p className="mt-1 whitespace-pre-wrap">{r.error.detail}</p>}
                       </RawDetails>
@@ -603,6 +608,12 @@ function specMarkdown(v: unknown): string {
   return shortValue(v);
 }
 
+/**
+ * A run's short ID for the Runs table: "f726027e" for "run_f726027e…", the first 8 of its 32 hex characters; any other
+ * ID as it is. The full ID is the tooltip, and under the error's Details.
+ */
+const shortRunId = (id: string): string => /^run_([0-9a-f]{8})[0-9a-f]{24}$/.exec(id)?.[1] ?? id;
+
 /** The runs, newest first, with consecutive cancelled tries of one step folded into one row (its newest try, and every folded try). */
 function foldRuns(runs: ItemDetail["runs"]): { run: ItemDetail["runs"][number]; tries: ItemDetail["runs"] }[] {
   const rows: { run: ItemDetail["runs"][number]; tries: ItemDetail["runs"] }[] = [];
@@ -651,9 +662,9 @@ function TimelineRow({ entry, now, viewer }: { entry: TimelineEntry; now: number
         <span className="font-medium">{timelineSentence(entry, viewer)}</span>
         <RawDetails className="mt-1">
           <ul className="mt-1 font-mono text-xs break-all">
-            {entry.reason && <li>{entry.reason}</li>}
-            <li>{entry.actor.id}</li>
-            {short.map(([f, c]) => <li key={f}>{`${f}: ${shortValue(parseValue(c.from))} → ${shortValue(parseValue(c.to))}`}</li>)}
+            {entry.reason && <li><code>{entry.reason}</code></li>}
+            <li><code>{entry.actor.id}</code></li>
+            {short.map(([f, c]) => <li key={f}><code>{`${f}: ${shortValue(parseValue(c.from))} → ${shortValue(parseValue(c.to))}`}</code></li>)}
           </ul>
         </RawDetails>
         {spec.length > 0 && (
@@ -757,8 +768,11 @@ export function RunnersTab() {
 
 const HEALTH_TONE: Record<string, string> = { ok: "running", warn: "needs_approval", fail: "stuck" };
 
-/** A check's row: its sentence, then its times (a probe pause's start and next probe) relative, the local time on hover. */
-function CheckList({ checks }: { checks: Health["checks"] }) {
+/**
+ * A check's row: its sentence, then its times (a probe pause's start and next probe) relative, the local time on hover,
+ * then the action the server offers on it (the model credential's opens the Add model credential dialog).
+ */
+function CheckList({ checks }: { checks: HealthCheck[] }) {
   const now = useNow();
   if (checks.length === 0) return null;
   return (
@@ -771,6 +785,7 @@ function CheckList({ checks }: { checks: Health["checks"] }) {
             <RawNames text={c.msg} />
             {c.since !== undefined && <span className="text-text-2">{" · "}<When at={c.since} now={now} label="health.checkSince" /></span>}
             {c.next !== undefined && <span className="text-text-2">{" · "}<When at={c.next} now={now} label="health.checkNext" /></span>}
+            {c.action === "add_model_credential" && <span className="ml-2 inline-block align-baseline"><AddModelCredential /></span>}
             {c.detail !== undefined && <RawDetails className="mt-1"><code className="font-mono text-xs whitespace-pre-wrap break-all">{c.detail}</code></RawDetails>}
           </span>
         </li>

@@ -140,7 +140,7 @@ describe("item page: DecisionCard", () => {
     expect((within(decide).getByRole("radio", { name: "Fail the job(default)" }) as HTMLInputElement).checked).toBe(true);
     expect((within(decide).getByRole("textbox", { name: "Answer 2" }) as HTMLInputElement).value).toBe("scope");
     // Approve and Revise, then Reject in the "…" menu; approve, the one the state asks for, is first and the one primary button.
-    const buttons = [...actions.querySelectorAll<HTMLButtonElement>("[data-command] > button")];
+    const buttons = [...actions.querySelectorAll<HTMLButtonElement>(":scope > span > button[data-action]")];
     expect(buttons.map((b) => [b.textContent, b.dataset.action])).toEqual([["Approve", "approve"], ["Revise", "revise"]]);
     expect(buttons[0]!.className).toContain("bg-accent");
     expect(buttons[1]!.className).not.toContain("bg-accent");

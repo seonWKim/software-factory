@@ -8,6 +8,7 @@ import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { ALERT_DEDUPE_MS } from "../src/core/alarms.js";
+import { UNKNOWN_FAILURE } from "../src/ui/why.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, type UiDeps } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
@@ -426,7 +427,7 @@ describe("ui api: items for the tree (issue #295)", () => {
 });
 
 describe("ui api: open alarms in Needs you and the why sentence (design 09-status-page)", () => {
-  const ALARM = "Alarm: checks_failed failed 4 runs on several items";
+  const ALARM = `Alarm: 4 runs on several items failed the same way (${UNKNOWN_FAILURE.charAt(0).toLowerCase()}${UNKNOWN_FAILURE.slice(1, -1)})`;
   type WhyBody = Why;
   type Action = { code: string; text: string; command: string; until: string | null; work_item_id: string | null };
 
@@ -476,12 +477,12 @@ describe("ui api: open alarms in Needs you and the why sentence (design 09-statu
 
   it("the affected item's why names the alarm on Items and the item page; other items' do not; resolved, it is gone", async () => {
     const { d, clock, hit, other } = await alarmed();
-    expect(await whyRow(d, hit.id)).toBe(`The run failed (run_failed:implement:checks_failed): a person decides what happens next. ${ALARM}`);
+    expect(await whyRow(d, hit.id)).toBe(`Building failed. ${UNKNOWN_FAILURE} Decide what happens next. ${ALARM}`);
     expect(await whyItem(d, hit.id)).toBe(await whyRow(d, hit.id));
     expect(await whyRow(d, other.id)).not.toContain("Alarm");
     expect(await whyItem(d, other.id)).not.toContain("Alarm");
     clock.advance(ALERT_DEDUPE_MS);
-    expect(await whyRow(d, hit.id)).toBe("The run failed (run_failed:implement:checks_failed): a person decides what happens next");
+    expect(await whyRow(d, hit.id)).toBe(`Building failed. ${UNKNOWN_FAILURE} Decide what happens next`);
     expect(await whyItem(d, hit.id)).not.toContain("Alarm");
   });
 

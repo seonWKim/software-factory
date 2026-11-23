@@ -631,7 +631,8 @@ describe("CountedKeepAwake", () => {
 
 describe("loggingPassOvers", () => {
   it("logs one `run passed over` line naming the holder when a slot's claim newly passes a run over; the store answers the rest", async () => {
-    const { store } = await newStore();
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
     const ids = [];
     for (const n of [1, 2]) {
       const { item } = await store.createWorkItem(issue(n), system);
@@ -643,6 +644,7 @@ describe("loggingPassOvers", () => {
     const slots = loggingPassOvers(store, log);
     const claim = () => slots.claimRun({ worker_id: "h:1:0" as WorkerId, kinds: ["implement"], lease_ms: 60_000 });
     expect((await claim())?.work_item_id).toBe(ids[0]);
+    clock.advance(1_000); // the hold starts after #1 started, so #1 stays ahead of it (oldest held first)
     expect(await claim()).toBeNull();
     expect(await claim()).toBeNull();
     const passed = log.lines.filter((l) => l.msg === "run passed over");
