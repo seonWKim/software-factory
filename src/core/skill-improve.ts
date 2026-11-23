@@ -25,6 +25,8 @@ export const scratchVersion = (draft_id: string) => `draft:${draft_id}`;
 const DAY_MS = 86_400_000;
 const DRAFT_TIMEOUT_MS = 120_000;
 const DRAFT_MAX_TOKENS = 16_000;
+/** Pass rates are fractions: a change of exactly a margin is within it (the golden compare's epsilon). */
+const past = (change: number, margin: number) => change > margin + 1e-9;
 
 /** What the composition root builds (src/skill-evals.ts skillImproveWiring); absent: capabilities.skill_folders is not set. */
 export interface SkillImproveWiring {
@@ -85,9 +87,9 @@ export function skillTrigger(runs: readonly SkillEvalRun[], c: SkillImproveConfi
   const m = measured(runs);
   const [newest, before] = m;
   if (!newest || newest.pass_rate! >= c.skill_improve_target) return null;
-  if (before && before.pass_rate! - newest.pass_rate! > c.skill_improve_drop_margin) return "drop";
+  if (before && past(before.pass_rate! - newest.pass_rate!, c.skill_improve_drop_margin)) return "drop";
   const oldest = m[c.skill_improve_stall_runs - 1];
-  return oldest && newest.pass_rate! - oldest.pass_rate! <= c.skill_improve_noise ? "stall" : null;
+  return oldest && !past(newest.pass_rate! - oldest.pass_rate!, c.skill_improve_noise) ? "stall" : null;
 }
 
 /** Whether `folder` is inside (or is) one of the skill folders. */
@@ -152,7 +154,7 @@ async function draftSkill(d: SkillImproveDeps, project: string, skill_ref: strin
   if (!baseline) return store("tried", call.tokens, { ...drafted, reason: "no_baseline" });
   const gain = scratch.pass_rate - baseline.pass_rate!;
   const scores = { ...drafted, baseline_run: { id: baseline.id, pass_rate: baseline.pass_rate }, gain };
-  return gain > c.skill_improve_noise ? store("proposed", call.tokens, scores) : store("tried", call.tokens, { ...scores, reason: "no_gain" });
+  return past(gain, c.skill_improve_noise) ? store("proposed", call.tokens, scores) : store("tried", call.tokens, { ...scores, reason: "no_gain" });
 }
 
 /** The model class of the newest measured run (the scratch run and its baseline use it); `standard` when it names none. */

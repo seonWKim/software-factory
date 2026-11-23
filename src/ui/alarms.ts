@@ -39,7 +39,7 @@ export function alarmText(a: Alert): string {
   if (a.pattern === "dead_letter") return `Alarm: a message on ${deadLetterTopic(a)} was dead-lettered (${DEAD_LETTER_TEXT[a.error_code] ?? "for a reason the factory has no plain words for yet"})`;
   if (a.pattern === "spend_budget") return `Alarm: spending passed ${spendOf(a).pct}% of the ${spendOf(a).period} budget`;
   if (a.pattern === "red_main") return `Alarm: the base branch fails its checks on its own at \`${redMainSha(a).slice(0, 12)}\`; merge-queue changes wait until it moves`;
-  if (a.pattern === "skill_draft_limit") return `Alarm: skill drafts reached ${a.error_code} (${a.count}); approve or reject the proposed change`;
+  if (a.pattern === "skill_draft_limit") return `Alarm: a skill draft limit was reached (${a.error_code} is ${a.count})`;
   return `Alarm: the factory restarted ${a.count} times in ${RESTART_WINDOW_MS / 60_000} minutes`;
 }
 
