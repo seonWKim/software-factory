@@ -24,12 +24,13 @@ for a new topic. "§5" means `05-*`.
 - [04-agents.md](design/04-agents.md): agent roles, model class per run kind and tier.
 - [04-gate-commands.md](design/04-gate-commands.md): human commands, refusals, footers.
 - [04-spec-gate-commands.md](design/04-spec-gate-commands.md): spec answers, `/revise`, `/resolve`.
-- [04-chat-commands.md](design/04-chat-commands.md): plain-words classifier, chat answers, proposals.
-- [04-verdicts.md](design/04-verdicts.md): `/verdict` everywhere, implicit verdicts, pushback capture.
-- [04-closing-source-issue.md](design/04-closing-source-issue.md): a source issue close stops item, runs, PR.
+- [04-chat-commands.md](design/04-chat-commands.md): classifier, chat answers, proposals.
+- [04-verdicts.md](design/04-verdicts.md): `/verdict`, implicit verdicts, pushbacks.
+- [04-closing-source-issue.md](design/04-closing-source-issue.md): source close stops item, runs, PR.
 - [04-pre-push-gates.md](design/04-pre-push-gates.md): scope, size and floor gates before a push.
 - [04-triage.md](design/04-triage.md): path companions, allowed paths, topic folders.
 - [04-split-specs.md](design/04-split-specs.md): size estimates, phases, phase hold.
+- [04-screenshots.md](design/04-screenshots.md): UI screenshots before merge.
 
 ## 5. Coordination
 - [05-coordination.md](design/05-coordination.md): claim order, leases, fencing.
@@ -40,17 +41,17 @@ for a new topic. "§5" means `05-*`.
 - [05-alarms.md](design/05-alarms.md): alarm step: repeated errors, zero-token runs.
 - [05-sandbox.md](design/05-sandbox.md): sandbox interface, one git folder per run, guarded tools.
 - [05-merge-conflict.md](design/05-merge-conflict.md): update runs on unmergeable PRs, `/resolve`.
-- [05-ci-gate.md](design/05-ci-gate.md): CI workflow and the controller's check gate before a merge.
+- [05-ci-gate.md](design/05-ci-gate.md): CI workflow, check gate before merge.
 - [05-sources.md](design/05-sources.md): local items and startup, thread and outbox, CLI intake.
 - [05-slack-intake.md](design/05-slack-intake.md): Slack presses, mentions, replies, emoji.
 - [05-github-sync.md](design/05-github-sync.md): GitHub client, forge PRs, call budget.
 - [05-stream-intake.md](design/05-stream-intake.md): stream intake, many sources, adopted PRs.
 - [05-interactive-sessions.md](design/05-interactive-sessions.md): own LLM session as a run.
 - [05-status-labels.md](design/05-status-labels.md): the eight status labels.
-- [05-standing-approvals.md](design/05-standing-approvals.md): what spec decisions record, the run check.
+- [05-standing-approvals.md](design/05-standing-approvals.md): spec decision records, run check.
 
 ## 6. Measurement
-- [06-measurement.md](design/06-measurement.md): feedback rate, reverts, `factory stats`, golden set.
+- [06-measurement.md](design/06-measurement.md): feedback rate, reverts, stats, golden set.
 - [06-token-budget.md](design/06-token-budget.md): per-tier token checkpoints.
 - [06-spend.md](design/06-spend.md): spend per day, week and item, and dollar budgets.
 - [06-efficiency.md](design/06-efficiency.md): items, tokens and time per period.
