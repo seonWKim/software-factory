@@ -12,9 +12,10 @@ import type { RunKind } from "../src/core/types.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { ClaudeCodeRunner, buildClaudeArgs } from "../src/impl/runner/claude-code-runner.js";
 import {
-  GATE_HOOKS_DIR, HOOK_SCRIPT, HOOK_SPEC, PATH_REFUSAL, STOP_CHECK_MS, STOP_CHECK_TIMED_OUT, STOP_HOOK_SLACK_MS, editCovered, gateAnswerer, hookScript, runDeadline, specFile,
+  GATE_HOOKS_DIR, HOOK_SCRIPT, HOOK_SPEC, PATH_REFUSAL, STOP_CHECK_MS, STOP_HOOK_SLACK_MS, editCovered, gateAnswerer, hookScript, runDeadline, specFile,
 } from "../src/impl/runner/gate-hooks.js";
-import type { AgentRunResult, AgentRunSpec, GateHooks, StopSelection } from "../src/interfaces/agent-runner.js";
+import { type AgentRunResult, type AgentRunSpec, type GateHooks, STOP_CHECK_TIMED_OUT, type StopSelection } from "../src/interfaces/agent-runner.js";
+import { SETTABLE_DEFAULTS } from "../src/core/settings.js";
 import type { ExecOptions, ExecResult, Sandbox, SandboxHandle } from "../src/interfaces/sandbox.js";
 import type { SecretName, SecretStore } from "../src/interfaces/secret-store.js";
 import { PackCheckRunner } from "../src/runtime/hooks/pack-checks.js";
@@ -221,7 +222,6 @@ function setup(role: RunKind = "implement", gates: GateHooks | null = GATES, sto
     homesDir: join(root, "homes"),
     models: { cheap: "c", standard: "s", strong: "x" },
     claudeBin: BIN,
-    ...(stopCheckMs === undefined ? {} : { stopCheckMs }),
     tools: { broker: { listTools: () => [], call: async () => ({ ok: true, content: null }) } as never, scanner },
   });
   const spec: AgentRunSpec = {
@@ -241,6 +241,7 @@ function setup(role: RunKind = "implement", gates: GateHooks | null = GATES, sto
     timeout_ms: 60_000,
     signal: new AbortController().signal,
     ...(gates ? { gate_hooks: gates } : {}),
+    ...(stopCheckMs === undefined ? {} : { stop_check_ms: stopCheckMs }),
   };
   return { root, workdir, configDir, sandbox, runner, spec };
 }
@@ -535,6 +536,23 @@ describe("gate hooks: the Stop check's time limit", () => {
     expect(timeouts).toEqual([limit, limit, Math.ceil((4_000 + STOP_HOOK_SLACK_MS) / 1000)]);
   });
 
+  it.runIf(canListen)("a spec with no stop_check_ms gets 40 minutes, the agent_stop_check_ms default", async () => {
+    expect(STOP_CHECK_MS).toBe(2_400_000);
+    expect(STOP_CHECK_MS).toBe(SETTABLE_DEFAULTS.agent_stop_check_ms);
+    const settings = await hookSettings(setup("implement", GATES));
+    expect(settings.Stop![0]!.hooks[0]!.timeout).toBe(2_400 + STOP_HOOK_SLACK_MS / 1000);
+  });
+
+  it.runIf(canListen)("the same runner uses each run's own stop_check_ms: a value set between runs applies to the next one", async () => {
+    const f = setup("implement", GATES);
+    const timeouts: number[] = [];
+    for (const stop_check_ms of [600_000, 3_600_000]) {
+      f.spec = { ...f.spec, stop_check_ms };
+      timeouts.push((await hookSettings(f)).Stop![0]!.hooks[0]!.timeout);
+    }
+    expect(timeouts).toEqual([600 + STOP_HOOK_SLACK_MS / 1000, 3_600 + STOP_HOOK_SLACK_MS / 1000]);
+  });
+
   it("a check within its limit passes as before, with nothing killed", async () => {
     const f = setup("implement", GATES, 3_000);
     f.sandbox.checks["npm test"] = { exit: 0, out: "", ms: 200 };
@@ -629,7 +647,7 @@ function after(ms: number, fn: () => void): () => void {
 async function answerer(f: ReturnType<typeof setup>, stopCheckMs: number) {
   const dir = join(f.configDir, GATE_HOOKS_DIR, f.spec.run_id);
   mkdirSync(dir, { recursive: true });
-  return gateAnswerer({ dir, spec: { ...f.spec, gate_hooks: f.spec.gate_hooks! }, sandbox: f.sandbox, scanner, after, stop_check_ms: stopCheckMs }, f.spec.signal);
+  return gateAnswerer({ dir, spec: { ...f.spec, stop_check_ms: stopCheckMs, gate_hooks: f.spec.gate_hooks! }, sandbox: f.sandbox, scanner, after }, f.spec.signal);
 }
 
 /** The hook settings the runner passes, read from the fake claude's --settings (no hook is run). */

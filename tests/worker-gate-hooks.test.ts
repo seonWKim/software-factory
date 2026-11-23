@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { AGENT_STOP_CHECKS_DEFAULT } from "../src/core/config.js";
 import { MODE_KEY, SELECTION_ACTOR, cleanCursor } from "../src/core/test-selection.js";
-import type { AgentRunResult, AgentRunSpec, GateBlock } from "../src/interfaces/agent-runner.js";
-import type { WorkerId } from "../src/core/types.js";
+import { type AgentRunResult, type AgentRunSpec, type GateBlock, STOP_CHECK_TIMED_OUT } from "../src/interfaces/agent-runner.js";
+import type { Run, Timestamp, WorkerId } from "../src/core/types.js";
+import { LiveSettings, SETTABLE_DEFAULTS, baseFromConfig } from "../src/core/settings.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { storeSql } from "../src/impl/store/sql/store-sql.js";
 import { PackCheckRunner, type PackCheckSpec } from "../src/runtime/hooks/pack-checks.js";
@@ -177,6 +178,88 @@ describe("worker: gate hook blocks", () => {
     await f.step();
     const [run] = await f.runs(item, "implement");
     expect(run!.outcome).toMatchObject({ status: "failed", error_code: "no_commits", detail: "the implementer made no commits" });
+  });
+});
+
+// The Stop check's limit (design §4): the live `agent_stop_check_ms`, read for each run; its timeout detail says how
+// long recent merge-check runs took.
+describe("worker: the Stop check's limit", () => {
+  /** A worker that reads the store's setting overrides, as the composed worker does. */
+  function liveWorker(f: Awaited<ReturnType<typeof pipeline>>) {
+    const settings = new LiveSettings({ config: f.config, base: baseFromConfig(f.config), source: f.store });
+    const w = new Worker({
+      id: "lw" as WorkerId, store: f.store, sandbox: f.sandbox, runner: f.runner, broker: f.broker, storage: new MemoryStorage(),
+      clock: f.clock, config: f.config, prompts, log: f.log, scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(),
+      prRef: (pr) => f.forge.prRef(pr), settings,
+    });
+    return async () => {
+      while (await w.tick()) await f.controller.tickRuns();
+      await f.controller.tickRuns();
+    };
+  }
+  const setLimit = (f: Awaited<ReturnType<typeof pipeline>>, ms: number) =>
+    f.store.setSettingOverride({ key: "agent_stop_check_ms", project: "", value: JSON.stringify(ms), actor: "local:owner" });
+
+  it("unset: every implement step gets the 40-minute default", async () => {
+    const f = await pipeline();
+    const step = liveWorker(f);
+    await f.submit();
+    await step();
+    expect(SETTABLE_DEFAULTS.agent_stop_check_ms).toBe(2_400_000);
+    expect(implementSpecs(f).map((s) => s.stop_check_ms)).toEqual([2_400_000]);
+  });
+
+  it("a value set while the worker runs applies to the next run, with no restart", async () => {
+    const f = await pipeline();
+    const step = liveWorker(f);
+    await setLimit(f, 1_200_000);
+    await f.submit();
+    await step();
+    await setLimit(f, 3_600_000);
+    await f.submit();
+    await step();
+    expect(implementSpecs(f).map((s) => s.stop_check_ms)).toEqual([1_200_000, 3_600_000]);
+  });
+
+  const TIMED_OUT = `${STOP_CHECK_TIMED_OUT}: the gate Stop check \`npm test\` ran past its 2400000 ms limit; it was stopped and its process group killed`;
+  /** A finished run of `kind` that took `minutes`, ending `endedMinAgo` minutes before the fake clock's now. */
+  const finished = (f: Awaited<ReturnType<typeof pipeline>>, kind: Run["kind"], minutes: number, endedMinAgo: number, status: Run["status"] = "succeeded"): Run => {
+    const end = f.clock.now().getTime() - endedMinAgo * 60_000;
+    return { kind, status, started_at: new Date(end - minutes * 60_000).toISOString() as Timestamp, finished_at: new Date(end).toISOString() as Timestamp } as Run;
+  };
+
+  it("a stop_check_timed_out failure names the check and the limit, and how long recent merge-check runs took, newest first", async () => {
+    const f = await pipeline({ implement: () => ({ status: "failed", output: null, error: TIMED_OUT }) });
+    const windows: number[] = [];
+    const own = f.store.listRunsFinishedWithin.bind(f.store);
+    f.store.listRunsFinishedWithin = async (ms) => {
+      windows.push(ms);
+      // Newest first, as the store returns them: a failed merge-check and an implement run are not counted.
+      return [finished(f, "merge-check", 21, 5), finished(f, "merge-check", 2, 30, "failed"), finished(f, "implement", 40, 60), finished(f, "merge-check", 27, 90), ...(await own(ms))];
+    };
+    const item = await f.submit();
+    await f.step();
+    const [run] = await f.runs(item, "implement");
+    expect(run!.outcome).toMatchObject({ status: "failed", error_code: "agent_failed" });
+    const detail = (run!.outcome as { detail: string }).detail;
+    expect(detail).toContain("`npm test`");
+    expect(detail).toContain("2400000 ms limit");
+    expect(detail).toContain("recent merge-check runs took 21 min, 27 min (newest first)");
+    expect(windows).toEqual([86_400_000]);
+  });
+
+  it("with no merge-check run in the last day the detail says so; any other failure detail is left as the runner gave it", async () => {
+    const f = await pipeline({ implement: () => ({ status: "failed", output: null, error: TIMED_OUT }) });
+    const item = await f.submit();
+    await f.step();
+    const [run] = await f.runs(item, "implement");
+    expect((run!.outcome as { detail: string }).detail).toBe(`${TIMED_OUT}; no merge-check run finished in the last 24 hours`);
+
+    const g = await pipeline({ implement: () => ({ status: "failed", output: null, error: "the harness crashed" }) });
+    const other = await g.submit();
+    await g.step();
+    const [failed] = await g.runs(other, "implement");
+    expect((failed!.outcome as { detail: string }).detail).toBe("the harness crashed");
   });
 });
 

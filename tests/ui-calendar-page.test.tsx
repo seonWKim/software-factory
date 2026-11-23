@@ -12,7 +12,8 @@ import type { CalendarEvents, CalendarSync, EventRow } from "../web/src/api.js";
 const PAGE_MODULE = "../web/src/views/calendar.js";
 const { CalendarPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { CalendarPage: FunctionComponent };
 
-// The Calendar page (design 09-dashboard-app, Calendar page): Week and Month views of the stored calendar events from
+// The Calendar page over a faked read (its tests over the real server read and store are in
+// tests/calendar-events-api.test.ts) (design 09-dashboard-app, Calendar page): Week and Month views of the stored calendar events from
 // GET /api/v1/calendar/events, with previous, next and Today, shaded days for a day the last syncs did not cover, the
 // stale-sync notice, an empty state that links to the Integrations tab of Settings, and Sync (toolbar) and Sync these
 // days (the not-synced note), which post the days shown to POST /api/v1/calendar/sync. Today is fixed at Thursday 2026-11-12 (local).

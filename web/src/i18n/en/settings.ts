@@ -204,6 +204,8 @@ export const settings = {
   "key.max_diff_files.help": "The most files a change may touch before it is stopped.",
   "key.run_timeout_ms.label": "Run time limit",
   "key.run_timeout_ms.help": "How long one run may take before it is stopped.",
+  "key.agent_stop_check_ms.label": "Stop check time limit",
+  "key.agent_stop_check_ms.help": "How long the checks may run when an agent finishes before they are stopped.",
   "key.first_output_ms.label": "First output limit",
   "key.first_output_ms.help": "How long a run may stay silent at its start before it is stopped.",
   "key.models.label": "Models per class",

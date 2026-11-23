@@ -374,7 +374,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
         [{ status: "failed" as const, error_code: "agent_error", detail: "", infra: false, usage }, "task", 20],
         [{ status: "failed" as const, error_code: "push_failed", detail: "", infra: true }, "infra", 0],
         [{ status: "failed" as const, error_code: "rate_limited", detail: "", infra: true, usage }, "rate_limited", 20],
-        [{ status: "failed" as const, error_code: "agent_stalled", detail: "", infra: true }, "stalled", 0],
+        [{ status: "failed" as const, error_code: "agent_stalled", detail: "", infra: false }, "infra", 0],
       ] as const;
       // One store for every case (a fresh database per case is slow): one item each, claimed in turn.
       const { store } = await make();
@@ -2100,6 +2100,10 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "controller_merge_queues", // RFC 0015 M8: src/controller/migrations/20261109T0300-controller-merge-queue
       "controller_merge_queue_entries",
       "controller_signals", // the signal ledger: src/controller/migrations/20261111T1210-controller-signals
+      "controller_skill_eval_suites", // skill evals: the *-controller-skill-evals migration
+      "controller_skill_eval_cases",
+      "controller_skill_eval_runs",
+      "controller_skill_eval_replays",
       "controller_tasks", // plain tasks: src/controller/migrations/20261111T1610-controller-tasks
       "controller_notices", // owner notices: src/controller/migrations/20261112T0900-controller-notices
       "controller_notice_messages", "controller_notice_questions", // Slack notice records: 20261112T2100-controller-notice-messages
