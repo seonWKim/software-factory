@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /// <reference lib="dom" />
 /// <reference lib="dom.iterable" />
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ItemRow } from "../web/src/api.js";
 import { SLOW, TOKEN, card, json, chooseMenu, item, menuItems, reset, row, s, show, teardown, view } from "./ui-tasks-fixtures.js";
@@ -284,6 +284,30 @@ describe("Needs you", () => {
     expect([...sample.querySelectorAll("[data-risk]")].map((r) => r.textContent)).toEqual(["Checks failed", "Reverted", "Not reviewed"]);
     // The look was stored: this visit's time replaces the old one.
     expect(Number(kept.get("factory.needs-you.last-look"))).toBeGreaterThan(Date.parse("2026-11-12T00:00:00.000Z"));
+  });
+
+  it("a merge row's primary text is its PR title linked to the PR, '#N' secondary; the repository shows only when merges span repositories", async () => {
+    storage();
+    withMerges([merge("436", "2026-11-12T00:00:00.000Z", { title: "Seed golden cases: 5 clean merges" }), merge("162", "2026-11-11T00:00:00.000Z")]);
+    await show();
+    const sample = await screen.findByRole("region", { name: "Worth sampling" }, SLOW);
+    const rows = [...sample.querySelectorAll<HTMLElement>("li[data-key]")];
+    const first = rows[0]!.querySelector("a")!;
+    expect([first.textContent, first.getAttribute("href")]).toEqual(["Seed golden cases: 5 clean merges", "https://github.com/o/r/pull/436"]);
+    expect(rows[0]!.querySelector("[data-ref]")!.textContent).toBe("#436");
+    expect([...rows[0]!.querySelectorAll("[data-details] > *")].map((e) => e.textContent)).toEqual(["#436", "Not reviewed", "Checks", "Review"]);
+    // A row recorded before titles were kept reads "PR #162", with no second number.
+    expect(rows[1]!.querySelector("a")!.textContent).toBe("PR #162");
+    expect(rows[1]!.querySelector("[data-ref]")).toBeNull();
+    // One repository: it is named nowhere.
+    expect(sample.textContent).not.toContain("o/r");
+    expect(sample.querySelectorAll("h3")).toHaveLength(0);
+    cleanup();
+    withMerges([merge("5", "2026-11-12T00:00:00.000Z", { title: "A" }), merge("6", "2026-11-11T00:00:00.000Z", { project: "o/other", title: "B" })]);
+    await show();
+    const both = await screen.findByRole("region", { name: "Worth sampling" }, SLOW);
+    expect([...both.querySelectorAll("h3")].map((h) => h.textContent)).toEqual(["o/r", "o/other"]);
+    expect(within(both).getByRole("list", { name: "Worth sampling: o/other" }).textContent).toContain("B");
   });
 
   it("a first visit counts the last 7 days of merges", async () => {

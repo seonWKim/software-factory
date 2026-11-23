@@ -97,6 +97,7 @@ export const tasks = {
   "tasks.mergedWithoutYou": "Merged without you",
   "tasks.worthSampling": "Worth sampling",
   "tasks.mergeLink": "PR #{ref}",
+  "tasks.mergeRef": "#{ref}",
   "tasks.reviewLink": "Review",
   "tasks.checksLink": "Checks",
   "tasks.riskFailed": "Checks failed",

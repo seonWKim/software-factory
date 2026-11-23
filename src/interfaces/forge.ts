@@ -16,9 +16,9 @@ export type ForgeEvent =
   /**
    * Every merged or closed PR is reported, not only factory ones (design 2026-11-01), so a merge with no item is
    * recorded as an unreviewed merge. `fork`: present and true when the head is in another repository; such a PR is
-   * never a factory or adopted PR.
+   * never a factory or adopted PR. `title`: the PR's title, when the forge's read gave one.
    */
-  | { kind: "change_merged"; change_ref: string; head_branch: string; merge_sha: string; merger: ExternalIdentity | null; fork?: true }
+  | { kind: "change_merged"; change_ref: string; head_branch: string; merge_sha: string; merger: ExternalIdentity | null; title?: string; fork?: true }
   | { kind: "change_closed"; change_ref: string; head_branch: string; fork?: true }
   /**
    * An open PR against the base branch, from this repository (no forks), delivered on every poll while it is
