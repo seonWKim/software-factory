@@ -4,7 +4,8 @@
 // - READY/RUNNING/REVIEW → NEW: a spec revision sends the item back to triage.
 // - READY → REVIEW (max_loops) and REVIEW/RUNNING → READY (max_revisions): both wait on a person. RUNNING → READY is
 //   an implement run's spec_conflict at the revision limit (added 2026-11-11: without it that outcome never landed).
-// CLOSED is final: a reopened source makes a new item.
+// - CLOSED → RUNNING/REVIEW: only the red-main revert of an automatic merge (design 03-risk, 2026-11-23) reopens the
+//   item it reverted, at implement or, at max_loops, waiting on a person. Any other reopened source makes a new item.
 
 import { defineActor } from "../../router/actor.js";
 
@@ -14,7 +15,7 @@ export default defineActor<WorkItemStage>({
   name: "WorkItem",
   states: ["NEW", "READY", "RUNNING", "REVIEW", "CLOSED"],
   initial: ["NEW", "REVIEW"],
-  terminal: ["CLOSED"],
+  terminal: [],
   transitions: [
     ["NEW", "READY"],
     ["NEW", "RUNNING"],
@@ -32,5 +33,7 @@ export default defineActor<WorkItemStage>({
     ["REVIEW", "READY"],
     ["REVIEW", "NEW"],
     ["REVIEW", "CLOSED"],
+    ["CLOSED", "RUNNING"],
+    ["CLOSED", "REVIEW"],
   ],
 });
