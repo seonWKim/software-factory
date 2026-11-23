@@ -126,6 +126,12 @@ describe("triage re-prompt on a done-check test file the base lacks", () => {
     expect(uncovered.calls[1]!.prompt).toContain("allowed_paths does not cover them: tests/new/a.test.ts");
   });
 
+  it("checks nothing when the base lists no tests/ file (a fixture run folder, a repo with no tests yet)", async () => {
+    const { result, calls } = await run([naming("tests/first.test.ts")], []);
+    expect(((await result) as { spec: { done_checks: unknown[] } }).spec.done_checks).toEqual([{ line: LINE, test_file: "tests/first.test.ts" }]);
+    expect(calls).toHaveLength(1);
+  });
+
   it("makes one call and keeps the spec as it is when every done-check file exists", async () => {
     const { result, calls } = await run([clean], BASE);
     const out = (await result) as { spec: Record<string, unknown> };

@@ -20,7 +20,8 @@ const RETRY = {
 
 /**
  * The base's files under tests/, from the run folder's index; null when git cannot list them or lists none (then nothing
- * is checked: with no test file on the base there is nothing to compare a name with, as for a fake folder).
+ * is checked: with no test file on the base there is nothing to compare a name with, as for a fake folder). Checking an
+ * empty listing too would refuse the shared test spec's check file in every fixture repo that has no tests/ folder.
  */
 async function testFiles(w: Worker, handle: SandboxHandle): Promise<string[] | null> {
   try {
