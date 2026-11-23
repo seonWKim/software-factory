@@ -1,5 +1,6 @@
 ## History
 
+- **Suites and cases from the CLI** (decision changed 2026-11-23, local-task-tk_a5eb7be8-4fe7-4e9a-992e-1d620810bf73 phase 1). Before: the skill-evals decision said "Out of scope: creating suites or cases"; the store had create calls only, and no command or store method updated or deleted a suite or a case.
 - **Per-merge evaluation** (decision changed 2026-11-11, issue #512). Before: the store kept merges (`merge_sha`), revert and fix-forward rows, verdicts and token cost apart, and nothing combined them into one result per merge. Stats over the revert and fix-forward rows were "not built yet".
 - **Autonomy** (new decision, 2026-11-11, issue #522). Before: the stored push, merge and revert verdicts were only counted together as `implicit`, so neither `factory stats` nor the Data page could say how many merged items needed a person's push.
 - **Implicit verdicts in the numbers** (decision changed 2026-11-08, issue #316). Before: stats counted explicit `/verdict` verdicts only, and nothing else wrote one.

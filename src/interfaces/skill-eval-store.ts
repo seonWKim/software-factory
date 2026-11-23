@@ -72,6 +72,18 @@ export interface SkillEvalStore {
   /** Idempotent on the id. */
   addSkillEvalCase(c: Omit<SkillEvalCase, "created_at">): Promise<SkillEvalCase>;
   listSkillEvalCases(suite_id: string): Promise<SkillEvalCase[]>;
+  /** Sets a suite's title; null when the suite is unknown. */
+  updateSkillEvalSuiteTitle(id: string, title: string): Promise<SkillEvalSuite | null>;
+  /**
+   * Deletes the suite and its cases in one transaction. Refuses (`running`, nothing deleted) while one of the suite's
+   * runs is running, checked inside that transaction. Its runs and replays stay in the store, unlisted.
+   */
+  deleteSkillEvalSuite(id: string): Promise<"deleted" | "running" | "unknown">;
+  getSkillEvalCase(id: string): Promise<SkillEvalCase | null>;
+  /** Sets a case's input and expected; null when the case is unknown. */
+  updateSkillEvalCase(id: string, c: Pick<SkillEvalCase, "input" | "expected">): Promise<SkillEvalCase | null>;
+  /** False when the case is unknown. */
+  deleteSkillEvalCase(id: string): Promise<boolean>;
   /** Idempotent on the id: starts the run as `running`, with its skill version (absent: null). */
   startSkillEvalRun(r: Pick<SkillEvalRun, "id" | "suite_id" | "created_by"> & { skill_version?: string | null }): Promise<SkillEvalRun>;
   /** Sets the final status once; false when the run is unknown or already finished. */
