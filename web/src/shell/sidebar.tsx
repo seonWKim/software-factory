@@ -1,5 +1,6 @@
 import { type MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
+import { Button } from "../components/ui/button.js";
 import { FOCUS } from "../components/ui/control.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
@@ -40,17 +41,18 @@ export function SideLinks({ label, pages, current, badges = {} }: { label: strin
  */
 export function ShortcutsLink({ onOpen }: { onOpen: () => void }) {
   return (
-    <button
-      type="button"
+    <Button
+      variant="ghost"
+      size="sm"
       aria-label={t("keys.footerLink")}
       aria-haspopup="dialog"
       aria-keyshortcuts="?"
       title={t("keys.footerLink")}
       onClick={onOpen}
-      className={cn(LINK_ROW, "min-h-6 w-full rounded-control text-xs text-text-2 hover:bg-surface-2 hover:text-text-1")}
+      className="w-full text-text-2 enabled:hover:text-text-1"
     >
       <span className="max-lg:hidden">{t("keys.footerLink")}</span>
       <span aria-hidden className="lg:hidden">?</span>
-    </button>
+    </Button>
   );
 }
