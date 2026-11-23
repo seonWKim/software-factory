@@ -9,9 +9,13 @@ import type { DependencyKind, DependencyState, SharedPath, SourceRef, Timestamp,
  *   cost against any holder is at or above `max_cost` is held. Holders: items with an implement run in progress,
  *   items with an open PR, and other queued implement runs.
  * - Deadlock rule: a run held only by other queued runs (no running item, no open PR) is claimed when its turn
- *   comes, so the oldest of a group that holds each other goes first. A queued run never holds on its own: it
- *   cannot make progress before it is claimed, so only a running item or an open PR keeps a run queued.
- * - Hold policy (issue #314): a `held` run then waits, starts after `minutes`, or starts at once (`holdOutcome`).
+ *   comes, so the oldest of a group that holds each other goes first. A queued run that is not held never holds
+ *   on its own: it cannot make progress before it is claimed.
+ * - Oldest held first (decided 2026-11-23): a queued run that is itself held holds every newer run it overlaps, and
+ *   a running item or open PR holds a run already held only when it was ahead of it (`aheadOf`). So when a blocker
+ *   merges, the oldest held run starts and newer overlapping runs wait for it.
+ * - Hold policy (issue #314): a `held` run then waits, starts after `minutes` (default 120), or starts at once
+ *   (`holdOutcome`).
  * - Dependencies: an item waits for every item it depends on to merge. A cycle is refused.
  */
 
@@ -53,14 +57,15 @@ export const DEFAULT_MECHANICAL: readonly string[] = [
 export const DEFAULT_MECHANICAL_WEIGHT = 0.25;
 
 /**
- * `hold_policy` (design §5, issue #314): what a cost hold does. `hold` keeps the run queued until `/approve` (the
- * default); `run_after_minutes` claims it once it has been held `minutes`; `run` claims it at once. Settable live.
+ * `hold_policy` (design §5, issue #314): what a cost hold does. `hold` keeps the run queued until `/approve`;
+ * `run_after_minutes` (the default, 120 minutes since 2026-11-23) claims it once it has been held `minutes`; `run`
+ * claims it at once. Settable live.
  */
 export type HoldPolicy = { mode: "hold" } | { mode: "run_after_minutes"; minutes: number } | { mode: "run" };
 export const HOLD_POLICY_MODES = ["hold", "run_after_minutes", "run"] as const;
 /** `minutes` of `run_after_minutes` when the value gives none. */
-export const DEFAULT_HOLD_MINUTES = 20;
-export const DEFAULT_HOLD_POLICY: HoldPolicy = { mode: "hold" };
+export const DEFAULT_HOLD_MINUTES = 120;
+export const DEFAULT_HOLD_POLICY: HoldPolicy = { mode: "run_after_minutes", minutes: DEFAULT_HOLD_MINUTES };
 /** `hotspot_mode`: `policy` (default) lets a hotspot hold follow `hold_policy`; `hold` always keeps it held. */
 export const HOTSPOT_MODES = ["policy", "hold"] as const;
 export type HotspotMode = (typeof HOTSPOT_MODES)[number];
@@ -193,6 +198,26 @@ export interface Holder {
   files: readonly string[];
   /** `files` are allowed_paths, because the holder's open PR has no stored file list. */
   fallback: boolean;
+  /**
+   * Running and PR holders: when the item's first implement run was queued and when it started. Null or absent:
+   * none recorded, so it counts as ahead of any hold (`aheadOf`).
+   */
+  queued?: Timestamp | null;
+  started?: Timestamp | null;
+  /** Waiting holders: its run is held and comes before the candidate in the claim order, so it holds it (rule 2). */
+  held?: boolean;
+}
+
+/**
+ * Whether running or PR holder `h` may hold a run held since `holdStart` that was queued at `queued` (design
+ * 05-dependencies, decided 2026-11-23): only when its implement run started before the hold began, or was queued
+ * before the held run (it was ahead in the claim order, so the held run waits for it). A holder with no recorded
+ * implement run counts as started before any hold. Waiting holders always pass: the claim order rules them.
+ */
+export function aheadOf(h: Holder, holdStart: Timestamp, queued: Timestamp): boolean {
+  if (h.kind === "waiting" || !h.started) return true;
+  const before = (t: Timestamp | null | undefined, ref: Timestamp) => !!t && Date.parse(t) < Date.parse(ref);
+  return before(h.started, holdStart) || before(h.queued, queued);
 }
 
 export interface Hold {
@@ -203,7 +228,7 @@ export interface Hold {
 
 /**
  * Every holder whose cost against the candidate is at or above `max_cost`: running and PR holders first, then
- * waiting ones, each group highest cost first. So the first hold is the one that decides (claimDecision) and the
+ * held waiting ones, then the other waiting ones, each group highest cost first. So the first hold is the one that decides (claimDecision) and the
  * one the stored decision names: a run held by an open PR names the PR, even when a queued run shares more files.
  * Only holders of the same project and another item count.
  */
@@ -219,7 +244,7 @@ export function holdsOn(
     const { shared, cost } = coordinationCost(candidate.files, h.files, conflicts, s);
     if (shared.length > 0 && cost >= s.max_cost) holds.push({ holder: h, shared, cost });
   }
-  const rank = (h: Hold) => (h.holder.kind === "waiting" ? 1 : 0);
+  const rank = (h: Hold) => (h.holder.kind !== "waiting" ? 0 : h.holder.held ? 1 : 2);
   return holds.sort((x, y) => rank(x) - rank(y) || y.cost - x.cost);
 }
 
@@ -246,11 +271,12 @@ export function sessionHold(
 
 /**
  * What a claim does with a queued implement run, given its holds: `free` (nothing holds it), `deadlock` (held
- * only by other waiting runs: claimed, the claim takes runs oldest first) or `held` (it stays queued).
+ * only by other waiting runs that are not held themselves: claimed, the claim takes runs oldest first) or `held`
+ * (it stays queued: a running item, an open PR, or an older held run holds it).
  */
 export function claimDecision(holds: readonly Hold[]): "free" | "deadlock" | "held" {
   if (holds.length === 0) return "free";
-  return holds.every((h) => h.holder.kind === "waiting") ? "deadlock" : "held";
+  return holds.every((h) => h.holder.kind === "waiting" && !h.holder.held) ? "deadlock" : "held";
 }
 
 /**

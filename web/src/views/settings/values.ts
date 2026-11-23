@@ -21,13 +21,13 @@ export function stringItems(text: string): string[] {
   }
 }
 
-/** hold_policy (design 03-risk): the server's modes, the select's choices, and the minutes `run_after_minutes` takes (default 20). */
+/** hold_policy (design 03-risk): the server's modes, the select's choices, and the minutes `run_after_minutes` takes (default 120). */
 export const HOLD_CHOICES = ["hold", "start", "wait"] as const;
 export type HoldChoice = (typeof HOLD_CHOICES)[number];
 export type HoldMode = "hold" | "run" | "run_after_minutes";
 export const HOLD_MODES: Record<HoldChoice, HoldMode> = { hold: "hold", start: "run", wait: "run_after_minutes" };
 export const HOLD_CHOICE: Record<HoldMode, HoldChoice> = { hold: "hold", run: "start", run_after_minutes: "wait" };
-const DEFAULT_HOLD_MINUTES = "20";
+const DEFAULT_HOLD_MINUTES = "120";
 export interface HoldDraft {
   mode: HoldMode;
   minutes: string;
