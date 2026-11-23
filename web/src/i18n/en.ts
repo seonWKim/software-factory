@@ -8,6 +8,7 @@ import { proposals } from "./en/proposals.js";
 import { rules } from "./en/rules.js";
 import { settings } from "./en/settings.js";
 import { shell } from "./en/shell.js";
+import { standing } from "./en/standing.js";
 import { system } from "./en/system.js";
 import { tasks } from "./en/tasks.js";
 import { work } from "./en/work.js";
@@ -21,6 +22,7 @@ export const en = {
   ...rules,
   ...settings,
   ...shell,
+  ...standing,
   ...system,
   ...tasks,
   ...work,
