@@ -273,6 +273,13 @@ describe("auto mode: merges", { timeout: 60_000 }, () => {
     expect(git(f.repo, "rev-parse", "main")).not.toBe(mainBefore);
     const merged = (await f.changes(id)).find((c) => c.reason === "local_merged")!;
     expect(merged.actor).toEqual(AUTO);
+    // Through merge_queued, as a person's merge: moved by system:auto with its merge key before the check.
+    const reasons = (await f.changes(id)).map((c) => c.reason);
+    expect(reasons.indexOf("merge_requested")).toBeGreaterThan(-1);
+    expect(reasons.indexOf("merge_requested")).toBeLessThan(reasons.indexOf("merge_check_queued"));
+    expect((await f.changes(id)).find((c) => c.reason === "merge_requested")).toMatchObject({
+      actor: AUTO, changes: { blocked_reason: { from: "merge_pending", to: "merge_queued" } }, detail: { merge_key: expect.stringMatching(/^auto-merge:/) },
+    });
     expect(merged.detail).toMatchObject({ mode_change: flip!.seq });
     expect((await f.messages(id, "<!-- factory:local-merged:")).join("")).toContain("in auto mode");
     // The red-main check passed: still auto, no alert.
@@ -487,8 +494,15 @@ describe("auto mode: stop conditions", { timeout: 60_000 }, () => {
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", loop_count: 0, merge_sha: null });
     expect(git(f.repo, "rev-parse", "main")).toBe(main);
     expect((await (await f.controller.unit("merge-queue")).entries(id)).map((e) => e.state)).toEqual(["queued"]);
+    expect(await f.store.getWorkItem(id)).toMatchObject({ blocked_on: "ci", blocked_reason: "merge_queued" });
     expect((await f.store.listAlerts({ limit: 10 })).filter((a) => a.pattern === "red_main").map((a) => a.pattern_key)).toEqual([`red_main:${main}`]);
     await stopped(f, "red_main");
+    // A later auto pass on the queued item records nothing new.
+    await f.mode("auto");
+    const before = (await f.changes(id)).length;
+    await (await f.controller.unit("local-merge")).autoMergeStep();
+    expect((await f.changes(id)).length).toBe(before);
+    expect(await f.store.getWorkItem(id)).toMatchObject({ blocked_on: "ci", blocked_reason: "merge_queued" });
   });
 
   it("a burst of agent-run failures leaves the mode auto: the alarm is open and the failing item is held", async () => {
