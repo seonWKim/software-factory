@@ -95,6 +95,7 @@ import { SqlAttachmentStore } from "./attachments.js";
 import { claimLock, endReservations, liveReservations, reservationOf } from "./reservations.js";
 import { type CoordContext, claimDecisionsOf, claimOrder, claimOrderSql, implementTimes, releaseHolder, writeClaimDecision } from "./claim-coordination.js";
 import * as notices from "./notices.js";
+import * as alerts from "./alerts.js";
 import * as noticeMessages from "./notice-messages.js";
 import * as basePush from "./base-push.js";
 import * as posted from "./posted-comments.js";
@@ -1427,7 +1428,6 @@ export class SqlFactoryStore extends SqlAttachmentStore implements FactoryStore 
   listLabelStates(source_ids: readonly string[]) { return sync.listLabelStates(this.db, source_ids); }
 
   // Their reads for reactions (issue #524), and the row mapper, live in posted-comments.ts.
-
   listPostedCommentsById(comment_id: string): Promise<PostedComment[]> {
     return posted.listPostedCommentsById(this.db, comment_id);
   }
@@ -1437,14 +1437,16 @@ export class SqlFactoryStore extends SqlAttachmentStore implements FactoryStore 
     return posted.listPostedComments(this.db, source_prefix, this.after(-within_ms));
   }
 
-  // Worker processes, host sleeps, alerts and restart history: worker-health.ts
+  // Worker processes, host sleeps and restart history: worker-health.ts; alerts (design 05-alarms): alerts.ts
   reportWorkerProcess(r: WorkerProcessReport) { return health.reportWorkerProcess(this.db, this.time, r); }
   listWorkerProcesses(max_age_ms: number) { return health.listWorkerProcesses(this.db, this.time, max_age_ms); }
   removeWorkerProcess(process_id: string) { return health.removeWorkerProcess(this.db, process_id); }
   recordHostSleep(sleep: HostSleep) { return health.recordHostSleep(this.db, sleep); }
   listHostSleeps(opts: { limit: number; work_item_id?: WorkItemId }) { return health.listHostSleeps(this.db, opts); }
-  recordAlert(input: NewAlert, dedupe_ms: number) { return health.recordAlert(this.db, this.time, input, dedupe_ms); }
-  listAlerts(opts: { limit: number }) { return health.listAlerts(this.db, opts); }
+  recordAlert(input: NewAlert, dedupe_ms: number) { return alerts.recordAlert(this.db, this.now(), input, this.after(-dedupe_ms)); }
+  listAlerts(opts: { limit: number }) { return alerts.listAlerts(this.db, opts.limit); }
+  dismissAlert(alert_id: string, actor: UserId) { return alerts.dismissAlert(this.db, this.now(), alert_id, actor); }
+  listAlertDismissals(since: Timestamp) { return alerts.listAlertDismissals(this.db, since); }
   recordChildRestart(restart: ChildRestart) { return health.recordChildRestart(this.db, restart); }
   listChildRestartsWithin(window_ms: number) { return health.listChildRestartsWithin(this.db, this.time, window_ms); }
 
@@ -1470,7 +1472,6 @@ export class SqlFactoryStore extends SqlAttachmentStore implements FactoryStore 
   listItemCommands(id: WorkItemId, limit: number) { return local.listItemCommands(this.db, id, limit); }
 
   // The base push (design 05-sources, Local items; RFC 0015 M8): base-push.ts
-
   getBasePush(work_item_id: WorkItemId) { return basePush.getBasePush(this.db, work_item_id); }
   listBasePushBacklogs() { return basePush.listBasePushBacklogs(this.db); }
   // Raw table reads (design §9 Data page, issue #239). Names come only from the catalog (tables.ts). The Ask's query is the driver's (SQLite only).
@@ -1479,7 +1480,6 @@ export class SqlFactoryStore extends SqlAttachmentStore implements FactoryStore 
   listTableRows(input: TablePageInput) { return tables.listTableRows(this.db, input); }
 
   // Internals
-
   private async selectSyncLease(q: SqlExecutor, name: string): Promise<SyncLease | null> {
     const [row] = await q.all("SELECT * FROM inbound_sync_leases WHERE name = ?", [name]);
     return row ? { name: row.name as string, owner: row.owner as string, token: Number(row.token), expires_at: row.expires_at as Timestamp } : null;
