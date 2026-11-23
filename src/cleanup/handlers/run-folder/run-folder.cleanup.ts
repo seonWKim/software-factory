@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { folderSize } from "../../folder-size.js";
 import { type Resource, defineCleanupHandler } from "../../handler.js";
 import { folderUnsafe } from "../../removal-safety.js";
-import { RUN_FOLDER } from "../../run-folder-name.js";
+import { RUN_FOLDER } from "../../../setup-paths.js";
 
 const KIND = "run-folder";
 

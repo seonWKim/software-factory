@@ -5,7 +5,7 @@
 
 import { join, sep } from "node:path";
 import { type Resource, defineCleanupHandler } from "../../handler.js";
-import { RUN_FOLDER } from "../../run-folder-name.js";
+import { RUN_FOLDER } from "../../../setup-paths.js";
 
 const KIND = "process";
 
