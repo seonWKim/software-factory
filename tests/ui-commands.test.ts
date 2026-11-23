@@ -407,7 +407,7 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
   const names = (l: Listed) => l.commands.map((c) => c.name);
 
   const STAGES: [string, WorkItemPatch, string[]][] = [
-    ["NEW (triaging)", {}, ["reject"]],
+    ["NEW (triaging)", {}, ["reject", "revise"]], // revise adds context while triaging (design 02-attachments)
     ["READY at the spec gate", SPEC_PENDING, ["approve", "reject", "revise"]],
     ["READY at the revision limit", { stage: "READY", blocked_on: "human", blocked_reason: "max_revisions" }, ["approve", "reject"]],
     ["RUNNING (implementing)", IMPLEMENTING, ["reject", "revise"]],
@@ -1067,5 +1067,54 @@ describe("the Merge button's Merging… state (item page; on a Needs-you row, th
     rtl.render(wrap(client, createElement(Row)));
     await rtl.waitFor(() => expect(rtl.screen.getByText("the merged commit conflicts in src/a.ts")).toBeTruthy());
     expect(firstItem().textContent).toBe("Merge");
+  });
+});
+
+describe("the item page's Attach: POST /api/v1/attachments (design 02-attachments)", () => {
+  const HOST = "127.0.0.1:4310";
+  const TOKEN = newCsrfToken();
+  const OWNER = "local:me@example.com" as UserId;
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7]);
+  const SPEC_GATE: WorkItemPatch = { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" };
+
+  async function setup(allow = true) {
+    const h = await harness();
+    const d: ApiDeps = {
+      store: h.store, scanner: cleanScanner, clock: h.clock, lease_ms: 60_000, health: new HealthMonitor(async () => [], h.clock),
+      commands: { actor: OWNER, source: "environment", token: TOKEN, allowed: async () => (allow ? { allow: true } : { allow: false, reason: "only the owner may do that" }) },
+    };
+    const post = async (body: unknown) => {
+      const r = await respond(d, { method: "POST", url: "/api/v1/attachments", host: HOST, origin: `http://${HOST}`, contentType: "application/json", csrfToken: TOKEN, body: JSON.stringify(body) });
+      return { status: r.status, value: JSON.parse(r.body) as { error?: string; attachment?: Record<string, unknown> } };
+    };
+    return { h, post };
+  }
+
+  it("stores an image and a link on a New item, as `factory attach` does; the reply holds no image bytes", async () => {
+    const { h, post } = await setup();
+    const it = await h.itemIn({}, 1);
+    const image = await post({ id: it.id, kind: "image", name: "shot.png", size: PNG.length, data: PNG.toString("base64") });
+    expect(image).toMatchObject({ status: 200, value: { attachment: { kind: "image", media_type: "image/png", name: "shot.png", size_bytes: PNG.length, created_by: OWNER } } });
+    expect(image.value.attachment).not.toHaveProperty("data");
+    expect((await post({ id: it.id, kind: "link", url: "https://example.com/v", label: "video" })).status).toBe(200);
+    const rows = await h.store.listAttachments(it.id);
+    expect(rows.map((a) => [a.kind, a.name ?? a.url]).sort()).toEqual([["image", "shot.png"], ["link", "https://example.com/v"]]);
+    expect(Buffer.from(rows.find((a) => a.kind === "image")!.data!, "base64")).toEqual(PNG);
+  });
+
+  it("gives the CLI's refusals and stores nothing: another type, over 5 MB, another scheme, another stage, no owner", async () => {
+    const { h, post } = await setup();
+    const it = await h.itemIn({}, 1);
+    const refusal = async (body: Record<string, unknown>) => (await post({ id: it.id, ...body })).value.error;
+    expect(await refusal({ kind: "image", name: "a.txt", data: Buffer.from("hello").toString("base64") })).toContain("only a png, jpeg, gif or webp image");
+    expect(await refusal({ kind: "image", name: "big.png", size: 5 * 1024 * 1024 + 1, data: PNG.toString("base64") })).toContain("the largest taken is 5 MB");
+    expect(await refusal({ kind: "link", url: "ftp://example.com" })).toBe("nothing was attached: only an http or https URL can be attached");
+    const later = await h.itemIn(SPEC_GATE, 2);
+    expect((await post({ id: later.id, kind: "link", url: "https://example.com" })).value.error).toBe(
+      "nothing was attached: attachments are taken only while the item is New or in triage, and it is spec waiting for approval");
+    const other = await setup(false);
+    const its = await other.h.itemIn({}, 3);
+    expect(await other.post({ id: its.id, kind: "link", url: "https://example.com" })).toEqual({ status: 403, value: { error: "nothing was attached: only the owner may do that" } });
+    expect([...(await h.store.listAttachments(it.id)), ...(await h.store.listAttachments(later.id)), ...(await other.h.store.listAttachments(its.id))]).toEqual([]);
   });
 });

@@ -186,3 +186,12 @@ describe("chat help", () => {
     expect(chatHelpReply(reader, at("spec_pending"))).toContain("`list`");
   });
 });
+
+describe("/revise adds context on a New or in-triage item (design 02-attachments)", () => {
+  it("its table row says so, and SET_UP.md's CLI list has the row as the table has it", () => {
+    const revise = COMMAND_TABLE.find((c) => c.name === "revise")!;
+    expect(revise.does).toMatch(/^Store `\/revise` for the item; on a New or in-triage item it adds context, queued for one re-triage/);
+    const setup = readFileSync(new URL("../SET_UP.md", import.meta.url), "utf8");
+    expect(setup).toContain(`- \`factory revise <id> <feedback>\`: ${revise.does}.`);
+  });
+});

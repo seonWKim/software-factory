@@ -7,7 +7,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ClaimDecision, Timestamp, WorkItemId, WorkerId } from "../src/core/types.js";
+import type { ClaimDecision, Timestamp, UserId, WorkItemId, WorkerId } from "../src/core/types.js";
+import { reconcileSourceId } from "../src/core/local-merge.js";
 import type { FactoryStore, SchemaVersion } from "../src/interfaces/factory-store.js";
 import { ALERT_DEDUPE_MS } from "../src/core/alarms.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -21,7 +22,7 @@ import { LastChecks, REVISION_STAMP, olderThanFactory, parseRevision, serverRevi
 import { recordAction } from "../src/outbound/intents.js";
 import type { SqlDriver } from "../src/state/index.js";
 import { buildRevision } from "../web/vite.config.js";
-import { issue, newStore, system } from "./helpers/store.js";
+import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
 const REV_A = "a".repeat(40);
 const REV_B = "b".repeat(40);
@@ -268,9 +269,9 @@ describe("system actions: the auto-stop alarm", () => {
   });
 });
 
-describe("system actions: a local base that can't reach origin (design 05-sources, Local items)", () => {
+describe("system actions: a local base whose reconcile with origin failed (design 05-sources, Base reconcile)", () => {
   /** One local merge's base push of `base`, as a delivered merge stores it; `delivered` is its outcome once pushed. */
-  async function push(store: FactoryStore, clock: FakeClock, n: number, base: string, delivered?: { pushed: string } | { conflicts: string[] }) {
+  async function push(store: FactoryStore, clock: FakeClock, n: number, base: string, delivered?: { pushed: string } | { conflicts: string[]; remote?: string }) {
     const db = (store as unknown as { db: SqlDriver }).db;
     const { item } = await store.createWorkItem(issue(n), system);
     const key = `push_base:${item.id}:${n}`;
@@ -278,38 +279,47 @@ describe("system actions: a local base that can't reach origin (design 05-source
     await recordAction(db, { action: "push_base", target: { type: "git", id: `local:${base}:push`, link: "" }, work_item_id: item.id, key, args: { base_ref: base, merge_sha: String(n), message: "m" } }, now);
     if (delivered) await db.run("UPDATE outbound_actions SET delivered_at = ?, delivered_ref = ? WHERE intent_key = ?", [now, JSON.stringify(delivered), key]);
   }
+  /** The reconcile item of `base` at origin's `remote`, moved to `patch`. */
+  async function reconcile(store: FactoryStore, base: string, remote: string, patch: Parameters<FactoryStore["transition"]>[0]["patch"]) {
+    const { item } = await store.createWorkItem({ source: { type: "local", id: reconcileSourceId(base, remote), link: "" }, requester_id: system.id as UserId, project: PROJECT_KEY, problem: "p", resources: [] }, system);
+    await store.transition({ id: item.id, expected_version: item.version, patch, actor: system, reason: "seed" });
+    return item.id;
+  }
   const conflictRows = (o: Overview) => o.system_actions.filter((a) => a.code === "base_push_conflict");
+  const R = "c".repeat(40);
 
-  it("a conflicting push is one row naming the files and the local merges waiting; a second one updates it; a push that lands removes it", async () => {
+  it("no row while the reconcile runs or before it is filed; one row once it waits on a person; a push that lands removes it", async () => {
     const { overview, store, clock } = await setup();
     await push(store, clock, 1, "main");
-    // Pending only: nothing for a person yet.
     expect(conflictRows(await overview())).toEqual([]);
 
-    await push(store, clock, 2, "main", { conflicts: ["a.txt", "src/c.txt"] });
-    let rows = conflictRows(await overview());
+    await push(store, clock, 2, "main", { conflicts: ["a.txt", "src/c.txt"], remote: R });
+    // The reconcile does it by itself: nothing asks the owner.
+    expect(conflictRows(await overview())).toEqual([]);
+    const id = await reconcile(store, "main", R, { stage: "RUNNING" });
+    expect(conflictRows(await overview())).toEqual([]);
+
+    const item = (await store.getWorkItem(id))!;
+    await store.transition({ id, expected_version: item.version, patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending" }, actor: system, reason: "resolve_failed" });
+    const rows = conflictRows(await overview());
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.text).toBe("Local main can't reach origin");
+    expect(rows[0]!.text).toBe("The reconcile of local main with origin failed");
     expect(rows[0]!.command).toContain("a.txt, src/c.txt");
     expect(rows[0]!.command).toContain("2 local merges waiting");
+    expect(rows[0]!.command).toContain(id);
 
-    await push(store, clock, 3, "main", { conflicts: ["b.txt"] });
-    rows = conflictRows(await overview());
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.command).toContain("b.txt");
-    expect(rows[0]!.command).not.toContain("a.txt");
-    expect(rows[0]!.command).toContain("3 local merges waiting");
-
-    await push(store, clock, 4, "main", { pushed: "p" });
+    await push(store, clock, 3, "main", { pushed: "p" });
     expect(conflictRows(await overview())).toEqual([]);
   });
 
-  it("another base's row names that base", async () => {
+  it("a failed reconcile of another base names that base, and asks nothing for this one", async () => {
     const { overview, store, clock } = await setup();
-    await push(store, clock, 1, "trunk", { conflicts: ["x.txt"] });
-    const [row] = conflictRows(await overview());
-    expect(row!.text).toBe("Local trunk can't reach origin");
-    expect(row!.command).toContain("1 local merge waiting");
+    await push(store, clock, 1, "trunk", { conflicts: ["x.txt"], remote: R });
+    await push(store, clock, 2, "main", { conflicts: ["y.txt"], remote: R });
+    await reconcile(store, "trunk", R, { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
+    const rows = conflictRows(await overview());
+    expect(rows.map((r) => r.text)).toEqual(["The reconcile of local trunk with origin failed"]);
+    expect(rows[0]!.command).toContain("1 local merge waiting");
   });
 });
 

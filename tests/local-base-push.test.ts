@@ -246,10 +246,10 @@ describe("base push: queued by the merge's delivery, made by outbound's local ta
     expect(await basePush(f)).toMatchObject([{ delivered: true, outcome: { pushed: SHA("c") } }]);
   });
 
-  it("a remote base conflict is delivered as a conflict; the item stays closed and gets no message (Needs you shows it)", async () => {
+  it("a remote base conflict is delivered as a conflict with origin's sha; the item stays closed and gets no message (its reconcile item takes it)", async () => {
     const g = fakeForge();
     const f = await setup({ forge: g.forge });
-    f.sandbox.sync = () => ({ synced: false, conflicts: ["a.txt", "src/c.txt"] });
+    f.sandbox.sync = () => ({ synced: false, conflicts: ["a.txt", "src/c.txt"], remote: SHA("c") });
     await merge(f);
     const closed = (await f.store.getWorkItem(f.id))!;
     await f.controller.tickOutbox();
@@ -258,7 +258,7 @@ describe("base push: queued by the merge's delivery, made by outbound's local ta
 
     expect(g.pushes).toEqual([]);
     expect(f.sandbox.syncs).toHaveLength(1);
-    expect(await basePush(f)).toMatchObject([{ delivered: true, outcome: { conflicts: ["a.txt", "src/c.txt"] } }]);
+    expect(await basePush(f)).toMatchObject([{ delivered: true, outcome: { conflicts: ["a.txt", "src/c.txt"], remote: SHA("c") } }]);
     expect(await f.store.getWorkItem(f.id)).toEqual(closed);
     const messages = await f.store.listItemMessages(f.id);
     expect(messages.filter((m) => m.marker.startsWith("<!-- factory:base-push-conflict:"))).toEqual([]);
@@ -361,8 +361,9 @@ describe.each(["github", "local"])("base push with the %s forge: fetch, merge a 
   it("a remote base that does not merge cleanly moves nothing and names the files", async () => {
     const r = remoteSetup();
     r.push("local.txt", "their version");
+    const theirs = git(r.origin, "rev-parse", "main");
     const s = await r.sandbox.syncBase(r.spec);
-    expect(s).toEqual({ synced: false, conflicts: ["local.txt"] });
+    expect(s).toEqual({ synced: false, conflicts: ["local.txt"], remote: theirs });
     expect(git(r.repo, "rev-parse", "main")).toBe(r.merge_sha);
   });
 });

@@ -20,6 +20,7 @@ import { servePluginsStored } from "./plugins-api.js";
 import { APP_HOME, STYLE_HASH, errorPage } from "./html.js";
 import { POST_ONLY, commandsWrite, pathOf, post, writeRoute } from "./write-routes.js";
 import { MAX_FILE_BODY, PROJECT_FILE_ROUTES, PROJECT_FILE_WRITE_PATH } from "./project-files.js";
+import { ATTACH_PATH, MAX_ATTACH_BODY } from "./attachments-api.js";
 import { readApi } from "./read-routes.js";
 
 export type { UiDeps } from "./deps.js";
@@ -52,7 +53,7 @@ export interface UiRequest {
   /** x-csrf-token: read for the write routes and for GET /api/v1/plugins/import. */
   csrfToken?: string | undefined;
   body?: string | undefined;
-  /** The body was longer than the route's limit (MAX_BODY, MAX_COMMAND_BODY for commands, MAX_FILE_BODY for a file save) and was not read. */
+  /** The body was longer than the route's limit (MAX_BODY, MAX_COMMAND_BODY for commands, MAX_FILE_BODY for a file save, MAX_ATTACH_BODY for an attachment) and was not read. */
   bodyTooLarge?: boolean;
 }
 
@@ -158,7 +159,7 @@ export async function startUi(d: ServerDeps, port: number): Promise<UiServer> {
     const path = pathOf(base.url);
     // A project file read is a POST behind the write guards, but writes nothing: no snapshot refresh after it.
     const refreshes = PROJECT_FILE_ROUTES[path]?.write ?? true;
-    const max = commandsWrite(base) !== null ? MAX_COMMAND_BODY : path === PROJECT_FILE_WRITE_PATH ? MAX_FILE_BODY : MAX_BODY;
+    const max = commandsWrite(base) !== null ? MAX_COMMAND_BODY : path === PROJECT_FILE_WRITE_PATH ? MAX_FILE_BODY : path === ATTACH_PATH ? MAX_ATTACH_BODY : MAX_BODY;
     (write
       ? readBody(req, max).then((b) =>
           respond(d, {

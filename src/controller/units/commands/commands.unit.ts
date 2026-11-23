@@ -8,12 +8,10 @@ import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
 import {
   APPROVED_RUN_QUEUED, APP_REQUEST, CHECKPOINT_REFUSAL, CLOSED_REFUSAL, HOLD_PATHS, RECHECK_PATHS_REFUSAL, appliesLocally, noFilesRefusal, appliesOnPr, approveCheck, approvesHold, awaitingSpec, commandFooter, commandNote, commandPhase, commandSpec,
   commandState, failedRunKind, floorCommand, floorTierNeeded, helpReply, parseLink, phaseLabel, refusalText, ruleOfTwoCommand, scanNote, specDecision,
-  specNotWaiting, unknownCommandReply, withTag, localMergeRefusal, mergeReturned, prMergeRefusal, queuedRun, awaitingMerge, mergeCheckAgain, mergeCheckRetryRefusal, mergeCheckStopped,
+  specNotWaiting, unknownCommandReply, withTag, CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity, specKind, localMergeRefusal, mergeReturned, prMergeRefusal, queuedRun, awaitingMerge, mergeCheckAgain, mergeCheckRetryRefusal, mergeCheckStopped, LOCAL_SOURCE, MERGE_COMMAND, RESTART_COMMAND,
 } from "../../../core/commands.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
 import { commandEvent, syncedCommand } from "../../../core/command-inbox.js";
-import { LOCAL_SOURCE, MERGE_COMMAND, RESTART_COMMAND } from "../../../core/local-merge.js";
-import { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity } from "../../../core/local-cli.js"; import { specKind } from "../../../core/standing.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpretMessage, interpretReply, interpretTexts, openItems, proposalEvent } from "../../../core/interpret.js";
 import { type Actor, type RunKind, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { AppCommandRequest, CliCommand, FactoryStore, RedeemLinkResult } from "../../../interfaces/factory-store.js";
@@ -243,8 +241,8 @@ export class CommandsUnit {
     return refusal;
   }
 
-  /** applyQueued (queued-revise.ts) at a run end that would queue review; the revise run's key starts with the next loop's `runKey`. */
-  applyQueued = (it: WorkItem, d: NonNullable<Decision>) => applyQueued(this.c, it, d, runKey({ ...it, loop_count: it.loop_count + 1 }, "implement"));
+  /** applyQueued (queued-revise.ts) at a run end that would queue review (or a triage run's end); the run's key starts with the next loop's `runKey` (the triage key). */
+  applyQueued = (it: WorkItem, d: NonNullable<Decision>) => applyQueued(this.c, it, d, it.stage === "NEW" ? runKey(it, "triage") : runKey({ ...it, loop_count: it.loop_count + 1 }, "implement"));
 
   /**
    * The work item of a PR: a factory PR's from its head branch, any other PR's adopted item by number; null
@@ -581,7 +579,7 @@ export class CommandsUnit {
     const afterFailure = phase === "too_large" || phase === "failed_implement" || phase === "agent_needs_human" || phase === "repeated_failure" || phase === "max_loops" ||
       (e.kind === "revise_requested" && it.stage === "REVIEW" && it.origin !== "adopted" && (await this.c.unit("checks-gate").lastVerdict(it.id))?.verdict === "bug");
     if (afterFailure && e.kind === "revise_requested") return this.reviseAfterFailure(e, it, actor);
-    if (e.kind === "revise_requested" && phase === "implementing" && it.stage === "RUNNING") return queueRevise(this.c, e, it, actor);
+    if (e.kind === "revise_requested" && ((phase === "implementing" && it.stage === "RUNNING") || phase === "triaging")) return queueRevise(this.c, e, it, actor); // added context on a New item (design 02-attachments)
     if (!awaitingSpec(it)) {
       const onPr = e.kind === "revise_requested" && it.change_ref !== null && commandSpec("revise").pr_phases?.includes(phase)
         ? `; to send feedback to the implementer, reply \`/revise <feedback>\` on PR #${it.change_ref}` : "";

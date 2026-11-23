@@ -3,10 +3,9 @@ import { LOCAL_SOURCE } from "./local-merge.js";
 import { type TriageOutput, parseTriage } from "./outputs.js";
 import { type ItemPhase, isClosedPhase, phaseOf } from "./phase.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, SESSION_RELEASED, blockingRunKind } from "./policy.js";
-import { SCHEDULE_CHECKPOINT } from "./schedule.js";
-import type { Run, RunKind, WorkItem } from "./types.js";
+import { SCHEDULE_CHECKPOINT } from "./schedule.js"; import type { Run, RunKind, WorkItem } from "./types.js";
 import { MERGE_CHECK_HELP_LINE, awaitingSpec } from "./request-transition.js";
-export * from "./request-transition.js"; // the approve and merge gates' shared checks (design 04-gate-commands)
+export * from "./request-transition.js"; export { AT_TRIAGE, type Attachment, addedContext, attachmentLine } from "./attachments.js"; // the gates' shared checks (design 04-gate-commands); added context and attachments, for triage (02-attachments)
 
 /**
  * The human commands on a work item (design §4): one table of names, usage, descriptions and the states
@@ -91,8 +90,8 @@ export interface CommandSpec {
   /** Phases where it also applies to a local item with no PR, with the meaning in `local_description` (issue #563). */
   local_phases?: readonly CommandPhase[];
   local_description?: string;
-  /** What it means in the `implementing` phase, when that differs (`/revise` queued, design 04-gate-commands). */
-  implementing_description?: string;
+  /** What it means in the `implementing` or the `triaging` phase, when that differs (`/revise` queued, design 04-gate-commands; added context, 02-attachments). */
+  implementing_description?: string; triaging_description?: string;
   /** At `agent_needs_human`, it applies only when the run that asked was one of these kinds. Absent: any kind. */
   asked_by?: readonly RunKind[];
 }
@@ -125,9 +124,10 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: "revise",
     usage: "/revise <feedback>",
     description: "Get a new spec written with your feedback",
-    // While implementing it is queued, not sent into the running session (design 04-gate-commands).
+    // While implementing or triaging it is queued, not sent into the running session (design 04-gate-commands, 02-attachments).
     implementing_description: "While implementing: queue your feedback for one more implement run on the item's branch when the run ends, before review",
-    phases: ["spec_pending", "implementing", "too_large", "failed_implement", "agent_needs_human", "repeated_failure", "max_loops"],
+    triaging_description: "On a New or in-triage item: add context (the dashboard's Add context), queued, so one more triage run reads the filed text and your text when the current one ends",
+    phases: ["triaging", "spec_pending", "implementing", "too_large", "failed_implement", "agent_needs_human", "repeated_failure", "max_loops"],
     needs_pr: false,
     changes_state: true,
     pr_phases: ["merge_pending", "failed_review"],
@@ -211,8 +211,9 @@ const BY_NAME = new Map(COMMANDS.map((c) => [c.name, c]));
 export const commandSpec = (name: CommandName): CommandSpec => BY_NAME.get(name)!;
 
 /** blocked_reason prefix (with `blocked_on: human`) of an item whose dependency closed without a merge (design §5). */
-export { DEPENDENCY_CLOSED } from "./phase.js";
+export { DEPENDENCY_CLOSED } from "./phase.js"; export { LOCAL_SOURCE, MERGE_COMMAND, RESTART_COMMAND } from "./local-merge.js"; // for the commands unit
 export { LOCAL_ID, dependsOnIds, localItemOf, wantedDependsOn, withDependsOn } from "./task-build.js"; // for `/hold` and the coordination unit
+export { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity } from "./local-cli.js"; export { specKind } from "./standing.js"; // for the commands unit
 
 /** Block reasons whose step `/retry` reads from the stage (or, for the agent blocks, from the item's runs first). */
 const STAGE_RETRY_REASONS: readonly (string | null)[] = ["max_attempts", "max_restart", AGENT_NEEDS_HUMAN, REPEATED_FAILURE];
@@ -297,7 +298,7 @@ const FACTORY_COMMANDS: readonly CommandName[] = ["standing"];
 /** The commands that apply in `s`, in table order, each with the description it has there; `/help` always last. */
 export function commandsFor(s: CommandState): CommandSpec[] {
   const shown = (c: CommandSpec) => c.name !== "help" && c.name !== "paths" && c.name !== "note" && !ACCOUNT_COMMANDS.includes(c.name) && !FACTORY_COMMANDS.includes(c.name); // `/paths`, `/note`: in `/help`, no footer or page button yet
-  const own = (c: CommandSpec) => appliesLocally(c, s) || (s.phase === "implementing" && c.implementing_description);
+  const own = (c: CommandSpec) => appliesLocally(c, s) || (s.phase === "implementing" && c.implementing_description) || (s.phase === "triaging" && c.triaging_description);
   return COMMANDS.filter((c) => shown(c) && applies(c, s)).map((c) => (own(c) ? { ...c, description: meaning(c, s) } : c)).concat(commandSpec("help"));
 }
 
@@ -305,7 +306,8 @@ export function commandsFor(s: CommandState): CommandSpec[] {
 function meaning(c: CommandSpec, s: CommandState | null): string {
   if (s !== null && appliesLocally(c, s) && c.local_description) return c.local_description;
   if (s?.phase === "implementing" && c.implementing_description) return c.implementing_description;
-  return [c.description, c.implementing_description, c.pr_description, c.local_description].filter((d) => d).join(". ");
+  if (s?.phase === "triaging" && c.triaging_description) return c.triaging_description;
+  return [c.description, c.implementing_description, c.pr_description, c.local_description, c.triaging_description].filter((d) => d).join(". ");
 }
 
 /** One command with its full description: Slack's help in an item's thread. */

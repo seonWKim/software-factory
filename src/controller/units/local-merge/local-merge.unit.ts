@@ -7,7 +7,8 @@ import { ALERT_DEDUPE_MS } from "../../../core/alarms.js";
 import { modeOf } from "../../../core/settings.js";
 import { AUTO_ACTOR, autoMergeRefusal, branchFor } from "../../../core/policy.js";
 import {
-  LOCAL_SOURCE, MERGE_COMMAND, RESTART_DONE, RESTART_REQUESTED, RUN_HINT_ENTRIES, canAppendLocal, canMergeLocal, canReadLocal, canSyncBase, droppedBack, restartRefusal, restartReply, restartRunKey, runHint, tierRule,
+  LOCAL_SOURCE, MERGE_COMMAND, RESTART_DONE, RESTART_REQUESTED, RUN_HINT_ENTRIES, canAppendLocal, canMergeLocal, canReadLocal, canSyncBase, droppedBack, reconcileOf,
+  reconcileSourceId, restartRefusal, restartReply, restartRunKey, runHint, tierRule,
 } from "../../../core/local-merge.js";
 import { gatePathTouched } from "../../../core/improver.js";
 import { lastPrNotes } from "../../../core/pr-body.js";
@@ -181,7 +182,7 @@ export class LocalMergeUnit {
         ...entry, base_ref: repo.base_branch, branch,
         // No base known (an entry ahead landed without telling it): any base is moved, and it is checked again.
         expected_base: base_sha ?? "", expected_head: head_sha,
-        message: `Merge ${branch} into ${repo.base_branch}\n\nWork item ${item.id}, merged by ${by} ${by === AUTO_ACTOR ? "in auto mode" : "with `factory merge`"}.`,
+        message: `Merge ${branch} into ${repo.base_branch}\n\nWork item ${item.id}, merged by ${by} ${by === AUTO_ACTOR ? "in auto mode" : by === SYSTEM.id ? "as a base reconcile" : "with `factory merge`"}.`,
       },
     } }] });
     return "requested";
@@ -207,7 +208,7 @@ export class LocalMergeUnit {
         args: { base_ref: repo.base_branch, merge_sha: r.sha, message: `Merge origin/${repo.base_branch} into ${repo.base_branch}\n\nBefore the base push of work item ${id}.` },
       } }] });
     }
-    const actor: Actor = auto ? AUTO : { kind: "user", id: by as UserId };
+    const actor: Actor = auto ? AUTO : by === SYSTEM.id ? SYSTEM : { kind: "user", id: by as UserId };
     const stale = r.not_updated.join(", ");
     const waits = this.c.unit("commands").merge.waits;
     await this.c.unit("transitions").decide(item.id, (it) => (waits(it) && it.change_ref === null
@@ -403,15 +404,32 @@ export class LocalMergeUnit {
    * remote base, merged it into the local base when it moved, and pushed, conditionally on the remote base it read.
    * A failure (an outage, a rate limit, a base that moved again) is a delivery failure outbound retries with its
    * batch's backoff. A remote base that does not merge cleanly is a delivered conflict: the item stays closed (the
-   * merge happened, only its push waits for a person), and Needs you shows it from the stored push
-   * (`listBasePushBacklogs`), so nothing is posted. Never changes an item.
+   * merge happened, only its push waits), and with a forge that pushes the base one reconcile item is filed, keyed on
+   * origin's sha (design 05-sources, Base reconcile; intake's fileReconcile). Never changes the pushed item.
    */
   async basePushDelivered(row: ActionRow): Promise<void> {
     const r = basePushOutcome(row);
     if (r === null || !row.work_item_id) return;
     const base = String(row.args.base_ref);
-    if ("pushed" in r) this.c.k.d.log.info("base pushed", { work_item_id: row.work_item_id, base_ref: base, sha: r.pushed });
-    else this.c.k.d.log.warn("base push conflict", { work_item_id: row.work_item_id, base_ref: base, conflicts: r.conflicts.length });
+    if ("pushed" in r) return this.c.k.d.log.info("base pushed", { work_item_id: row.work_item_id, base_ref: base, sha: r.pushed });
+    this.c.k.d.log.warn("base push conflict", { work_item_id: row.work_item_id, base_ref: base, conflicts: r.conflicts.length });
+    if (r.remote !== undefined && this.pushesBase()) await this.c.unit("intake").fileReconcile(base, r.remote, r.conflicts, reconcileSourceId(base, r.remote));
+  }
+
+  /** The base and origin sha a reconcile item merges, or null for any other item (design 05-sources, Base reconcile). */
+  reconcileOf(it: WorkItem): { base_ref: string; remote: string } | null {
+    return reconcileOf(it);
+  }
+
+  /**
+   * A reconcile item whose resolve run passed waits at merge_pending (run-results): it enters the merge queue with no
+   * person (`system:controller`), keyed on that run, so local main moves only through its merge check and a red result
+   * moves nothing. A replay finds the same entry; a removed one is not entered again, and Needs you asks the owner.
+   */
+  async reconciled(id: WorkItemId, run_id: string): Promise<void> {
+    const it = await this.c.k.reader.getWorkItem(id);
+    if (!it || reconcileOf(it) === null || !awaitingMerge(it) || it.change_ref !== null) return;
+    await this.c.unit("merge-queue").enter(it, SYSTEM.id, `reconcile:${id}:${run_id}`, { reconcile_run: run_id });
   }
 
   /**
