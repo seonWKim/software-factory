@@ -8,6 +8,8 @@ import { CHILD_ERROR_MESSAGE } from "./interfaces/updater.js";
 import { CODE_ROOT_ENV, Plugins, cliConfig, loadConfig, ownerRefusal } from "./compose.js";
 import { defineCommand, loadCommands, resolveCommand } from "./cli/index.js";
 import { SENTENCE_FORM } from "./core/command-table.js";
+import { createPlugin } from "./plugins.js";
+import { importSkillEvalCases } from "./runtime/skill-evals/import.js";
 import { cliName, parseSentence, runSentence } from "./core/local-cli.js";
 import { compareSkillEvalRuns, skillEvalGrid } from "./core/skill-eval-compare.js";
 import { skillEvalAuthoring, skillEvalRun, skillEvalTry } from "./skill-evals.js";
@@ -62,7 +64,15 @@ async function main(argv: readonly string[]): Promise<number> {
   const load = () => loadConfig(process.cwd(), { codeRoot: process.env[CODE_ROOT_ENV], configFile });
   // The root wiring a command needs reaches its handler here, through the call (the handler imports no root module).
   const skillEvalReads = { grid: skillEvalGrid, compare: compareSkillEvalRuns };
-  return found.command.run(found.args, { name: found.name, load, usage, runSkillEval: skillEvalRun, trySkillEvalCase: skillEvalTry, authoring: skillEvalAuthoring, skillEvalReads });
+  // `eval import`: the selected (or --source) SkillEvalSource and the configured egress scanner (design 06-measurement).
+  const importCases: typeof skillEvalAuthoring.importCases = async (store, r) => {
+    const loaded = await load();
+    const p = new Plugins(loaded);
+    const open = (name: string) => createPlugin(loaded.registry, "eval_source", name, p.base);
+    return importSkillEvalCases({ store, selected: loaded.plugins.eval_source, registered: Object.keys(loaded.registry.eval_source.plugins), open, scanner: async () => p.scanner(await p.secrets()) }, r);
+  };
+  const authoring = { ...skillEvalAuthoring, importCases };
+  return found.command.run(found.args, { name: found.name, load, usage, runSkillEval: skillEvalRun, trySkillEvalCase: skillEvalTry, authoring, skillEvalReads });
 }
 
 main(process.argv.slice(2)).then(
