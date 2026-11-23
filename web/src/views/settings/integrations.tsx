@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { API, type RulesView, type SettingsView, useApi } from "../../api.js";
 import { Dialog } from "../../components/ui/dialog.js";
 import { Notice } from "../../components/ui/notice.js";
 import { Loading } from "../../components/ui/parts.js";
+import { Tooltip } from "../../components/ui/menu.js";
 import { Switch } from "../../components/ui/switch.js";
 import { t } from "../../i18n/index.js";
 import { Outcome, useWrite } from "../settings-file-keys.js";
@@ -62,6 +63,34 @@ function EvalSourceDialog({ name, busy, error, onTurnOn, onClose }: { name: stri
   );
 }
 
+/** A small padlock; the row text carries the meaning. */
+function Lock() {
+  return (
+    <svg aria-hidden data-testid="integration-lock" focusable="false" viewBox="0 0 16 16" className="size-3.5 shrink-0 text-text-3" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <rect x="3.5" y="7" width="9" height="6.5" rx="1.5" />
+      <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" />
+    </svg>
+  );
+}
+
+/**
+ * An integration's switch. One set in the config file is read-only (same colour as any on switch), with a lock, and a
+ * tooltip and description that say where to change it (`plugins.<kind>`).
+ */
+function IntegrationSwitch({ kind, name, on, readOnly, busy, onChange }: { kind: string; name: string; on: boolean; readOnly: boolean; busy: boolean; onChange: () => void }) {
+  const descId = useId();
+  const sw = <Switch aria-label={t("settings.integrationLabel", { name })} checked={on} readOnly={readOnly} disabled={busy} onCheckedChange={onChange} aria-describedby={readOnly ? descId : undefined} />;
+  if (!readOnly) return sw;
+  const hint = t("settings.integrationConfigKey", { kind });
+  return (
+    <Tooltip text={hint} placement="bottom" align="start" className="items-center gap-1">
+      {sw}
+      <Lock />
+      <span id={descId} className="sr-only">{hint}</span>
+    </Tooltip>
+  );
+}
+
 /**
  * Each integration's state; the Switch turns an `integrations` entry off at once, the tacit ledger on through its
  * dialog, and the eval source on through its own (the entry's `eval_source` set to agents-home).
@@ -86,7 +115,7 @@ function IntegrationsSection({ view }: { view: SettingsView }) {
           const on = i.plugin !== "none";
           return (
             <li key={i.kind} data-integration={i.kind} className={cn(SETTINGS_ROW, "flex flex-wrap items-center gap-2")}>
-              <Switch aria-label={t("settings.integrationLabel", { name: i.interface })} checked={on} disabled={busy || (on && i.source !== "setting")} onCheckedChange={() => (on ? back(i.kind) : setTurningOn({ kind: i.kind, name: i.interface }))} />
+              <IntegrationSwitch kind={i.kind} name={i.interface} on={on} readOnly={on && i.source !== "setting"} busy={busy} onChange={() => (on ? back(i.kind) : setTurningOn({ kind: i.kind, name: i.interface }))} />
               <span className="font-medium">{i.interface}</span>
               <Badge level={on ? "needs_approval" : undefined}>{on ? i.plugin : t("settings.integrationOff")}</Badge>
               <span className="text-xs text-pretty text-text-2">{i.source === "setting" ? t("settings.integrationFromDashboard") : t("settings.integrationFromConfig")}</span>

@@ -7,20 +7,25 @@ import { cn } from "../../lib/cn.js";
 export interface SwitchProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "onChange" | "role"> {
   checked: boolean;
   onCheckedChange(next: boolean): void;
+  /** Shows the value but ignores clicks: keeps the on or off colour and the focus, sets `aria-readonly`. */
+  readOnly?: boolean;
 }
 
-export function Switch({ checked, onCheckedChange, className, disabled, ...props }: SwitchProps) {
+export function Switch({ checked, onCheckedChange, className, disabled, readOnly, ...props }: SwitchProps) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-readonly={readOnly || undefined}
       disabled={disabled}
-      onClick={() => onCheckedChange(!checked)}
+      onClick={() => !readOnly && onCheckedChange(!checked)}
       className={cn(
         // The button is 24px tall (the small-target rule); the drawn track inside it stays 20 by 36px.
         "inline-flex h-6 w-9 shrink-0 items-center rounded-pill",
-        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus disabled:opacity-50",
+        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus",
+        // Faded only while busy: a read-only switch keeps its on or off colour.
+        (!readOnly || disabled) && "disabled:opacity-50",
         className,
       )}
       {...props}
