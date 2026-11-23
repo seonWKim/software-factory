@@ -1,10 +1,11 @@
 import { useIsFetching, useQuery, useQueryClient } from "@tanstack/react-query";
-import { RefreshCw, Search } from "lucide-react";
+import { MoreHorizontal, RefreshCw, Search } from "lucide-react";
 import { type JSX, useEffect, useState } from "react";
 import { API, type Overview, POLL_MS, WEB_REV, getJson } from "./api.js";
 import { Brand } from "./components/ui/brand.js";
 import { Button } from "./components/ui/button.js";
-import { Tooltip } from "./components/ui/menu.js";
+import { OverflowMenu, Tooltip } from "./components/ui/menu.js";
+import { useWide } from "./components/ui/parts.js";
 import { t } from "./i18n/index.js";
 import { cn } from "./lib/cn.js";
 import { useShortcuts } from "./keys.js";
@@ -55,6 +56,7 @@ export function App() {
   // System listens for the system colour scheme; the cleanup removes that listener when the choice changes.
   useEffect(() => applyChoice(choice), [choice]);
   const [path, navigate] = useLocationPath();
+  const narrow = !useWide();
   const [dialog, setDialog] = useState<"search" | "help" | null>(null);
   useShortcuts({ navigate, openSearch: () => setDialog("search"), openHelp: () => setDialog("help"), path });
   const route = routeFor(path);
@@ -101,23 +103,37 @@ export function App() {
             </div>
           </div>
         </aside>
-        <div data-scroll-root className="flex min-w-0 flex-1 flex-col overflow-y-auto">
+        {/* A word longer than its line breaks (overflow-wrap is inherited), so no page's text widens the column. */}
+        <div data-scroll-root className="flex min-w-0 flex-1 flex-col overflow-y-auto wrap-break-word">
           {/* One row at every width: the revision and the status text shrink, the controls do not wrap. */}
-          <header className="flex items-center gap-x-3 border-b border-border px-4 py-2">
+          <header className="flex items-center gap-x-3 border-b border-border px-4 py-2 max-sm:gap-x-2">
             <ModeChip />
             <span className="min-w-0 overflow-hidden"><FactoryRevision factory={overview.data?.factory} /></span>
             <span className="ml-auto min-w-0 truncate text-sm text-text-2" aria-live="polite">
               {overview.isError ? t("topbar.updateFailed") : null}
             </span>
             <StopAllAgents />
-            <Tooltip text={t("search.open")} shortcut="⌘K" placement="bottom" align="end" className="shrink-0">
-              <Button variant="ghost" size="icon" aria-label={t("search.open")} aria-keyshortcuts="Meta+K" onClick={() => setDialog("search")}>
-                <Search aria-hidden className="size-4" />
-              </Button>
-            </Tooltip>
-            <Button variant="ghost" size="icon" aria-label={t("topbar.refresh")} className="shrink-0" onClick={() => void client.invalidateQueries()}>
-              <RefreshCw aria-hidden className={cn("size-4", fetching > 0 && "animate-spin motion-reduce:animate-none")} />
-            </Button>
+            {narrow ? (
+              <OverflowMenu
+                label={t("topbar.more")}
+                icon={<MoreHorizontal aria-hidden className="size-4" />}
+                items={[
+                  { label: t("search.open"), action: "search", onSelect: () => setDialog("search") },
+                  { label: t("topbar.refresh"), action: "refresh", onSelect: () => void client.invalidateQueries() },
+                ]}
+              />
+            ) : (
+              <>
+                <Tooltip text={t("search.open")} shortcut="⌘K" placement="bottom" align="end" className="shrink-0">
+                  <Button variant="ghost" size="icon" aria-label={t("search.open")} aria-keyshortcuts="Meta+K" onClick={() => setDialog("search")}>
+                    <Search aria-hidden className="size-4" />
+                  </Button>
+                </Tooltip>
+                <Button variant="ghost" size="icon" aria-label={t("topbar.refresh")} className="shrink-0" onClick={() => void client.invalidateQueries()}>
+                  <RefreshCw aria-hidden className={cn("size-4", fetching > 0 && "animate-spin motion-reduce:animate-none")} />
+                </Button>
+              </>
+            )}
             <ThemeControl choice={choice} onChoose={choose} />
           </header>
           <RevisionBanner server={overview.data?.server_rev} web={WEB_REV} />

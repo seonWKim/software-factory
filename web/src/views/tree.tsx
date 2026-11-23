@@ -63,7 +63,7 @@ function Row({ node, now, byNumber, byId }: { node: TreeNode; now: number; byNum
         it.change_url ? <a href={it.change_url} target="_blank" rel="noreferrer" className={cn("text-xs tabular-nums", LINK_CLASS)}>{t("tree.pr", { ref: it.change_ref })}</a> : <span className="text-xs tabular-nums">{t("tree.pr", { ref: it.change_ref })}</span>
       )}
       <span className="text-xs whitespace-nowrap tabular-nums text-text-2"><When at={it.updated_at} now={now} /></span>
-      <span className="flex basis-full flex-wrap gap-x-2 text-xs text-text-2 sm:basis-auto sm:text-sm">
+      <span className="flex min-w-0 basis-full flex-wrap gap-x-2 *:min-w-0 text-xs wrap-anywhere text-text-2 sm:basis-auto sm:text-sm">
         {it.why && <WhyText why={it.why} />}
         {run?.worker_id && <WorkerName id={run.worker_id} />}
       </span>
