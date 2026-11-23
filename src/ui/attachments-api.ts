@@ -1,7 +1,8 @@
 // POST /api/v1/attachments (design 02-attachments, design 09-dashboard-item): the item page's Attach dialog, one image
 // (`{ id, kind: "image", name, data, size }`, base64; a file over 5 MB sends its first bytes and its size) or one link
-// (`{ id, kind: "link", url, label }`) on a New or in-triage item, stored through core/attachments.ts `attach`, the same path and refusals as `factory attach`. The page's
-// commands actor (UiCommands) is the one who attaches, under the owner check the item commands use. The request guards
+// (`{ id, kind: "link", url, label }`) on a New or in-triage item, stored through core/attachments.ts `attach`, the
+// same path and refusals as `factory attach`. The page's commands actor (UiCommands) is the one who attaches, under
+// the owner check the item commands use. The request guards
 // (Host, Origin, Content-Type, CSRF token, the larger body limit MAX_ATTACH_BODY, JSON) run before this is reached;
 // every refusal comes before the store write. The route table (write-routes.ts, the composition root) hands it
 // `attach`, so this route imports no core module.
