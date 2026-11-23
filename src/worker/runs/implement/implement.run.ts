@@ -298,15 +298,23 @@ async function failedChecks(w: Worker, item: WorkItem, run: Run): Promise<string
   ].join("\n");
 }
 
-/** Reviewer findings and handoffs from earlier loops, for a resumed or re-looped implementer. */
+/**
+ * Reviewer findings and handoffs from earlier loops, for a resumed or re-looped implementer. The findings are the
+ * latest review with a verdict (a review that skipped an unchanged head has none); when this loop started from such a
+ * skip (`review_bug` with `unchanged_head`), it says the previous attempt pushed no commit.
+ */
 async function previousContext(w: Worker, item: WorkItem, run: Run): Promise<string> {
   const runs = await w.d.store.listRuns(item.id);
-  const lastReview = runs.filter((r) => r.kind === "review" && r.outcome?.status === "succeeded").at(-1);
+  const lastReview = runs.filter((r) => r.kind === "review" && r.outcome?.status === "succeeded" && r.outcome.data.review != null).at(-1);
   const parts: string[] = [];
   if (lastReview?.outcome?.status === "succeeded") {
     const v = parseReview(lastReview.outcome.data.review);
     if (v.ok && v.value.verdict === "bug") {
+      const loop = (await w.d.store.listStateChanges(item.id)).filter((c) => LOOP_STARTS.includes(c.reason)).at(-1);
       parts.push("## Reviewer findings to fix", "", v.value.summary, ...v.value.findings.map((f) => `- ${findingLine(f)}`));
+      if (loop?.reason === "review_bug" && loop.detail?.unchanged_head === true) {
+        parts.push("", "The previous attempt pushed no commit: the head is the one these findings are for. Make a change that fixes them and commit it.");
+      }
     }
   }
   const checks = await failedChecks(w, item, run);
