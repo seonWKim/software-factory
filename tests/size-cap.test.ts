@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { SIZE_CAP_APPROVED, overCapApproval, sizeCaps, storedProjectCaps, storedSizeCapApproval } from "../src/core/size-cap.js";
+import { OVER_CAP_NO_SIZE, SIZE_CAP_APPROVED, overCapApproval, overCapNoteRequired, sizeCaps, storedProjectCaps, storedSizeCapApproval } from "../src/core/size-cap.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 import { TOO_LARGE, atSizeCheckpoint, overCap, proposedCap, sizeCheckpointNote, suggestedSplit } from "../src/core/split.js";
 import { sizeDetail } from "../src/core/diff-gate.js";
 import type { Run } from "../src/core/types.js";
-import { OVER_CAP_NO_SIZE, overCapNoteRequired } from "../src/shared/command-notes.js";
 
 const project = { max_diff_lines: 1500, max_diff_files: 40 };
 

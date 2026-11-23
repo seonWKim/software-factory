@@ -24,7 +24,7 @@ afterEach(() => {
 async function command(store: FactoryStore, word: string, args: string[], ui: Record<string, unknown> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "sf-local-"));
   const loaded = {
-    root: dir, stateDir: dir, file: { ui }, config: { repo: { owner: "o", name: "r" }, local_only: true }, registry: REGISTRY, plugins: { clock: "system" },
+    root: dir, stateDir: dir, file: { ui }, config: { repo: { owner: "o", name: "r" }, local_only: true, settings: { defaults: {}, projects: {} } }, registry: REGISTRY, plugins: { clock: "system" },
   } as unknown as Loaded;
   const kept = new Proxy(store, { get: (t, k) => (k === "close" ? async () => {} : Reflect.get(t, k, t)) });
   const out: string[] = [];

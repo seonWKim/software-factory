@@ -149,26 +149,3 @@ export function answerLines(answers: readonly DecisionAnswer[]): string {
     return `${i + 1}. ${a.question}\n   Answer: ${a.answer ?? "(none)"} (${how})`;
   }).join("\n");
 }
-
-/** The caps an over-cap approval's refusal names: the size, the caps in force and the proposed one-time cap. */
-export interface OverCapSizes {
-  readonly sizes: { readonly lines: number; readonly files: number };
-  readonly caps: { readonly max_diff_lines: number; readonly max_diff_files: number };
-  readonly one_time_cap: { readonly max_diff_lines: number; readonly max_diff_files: number };
-}
-
-/**
- * The one refusal of an over-cap `/approve` with no note (design 04-split-specs, 2026-11-24), the same from every
- * source: the size, the caps and the proposed one-time cap, and the reply that approves it. Nothing is stored.
- */
-export function overCapNoteRequired(o: OverCapSizes): string {
-  return (
-    `${o.sizes.lines} lines in ${o.sizes.files} files is over the cap (\`max_diff_lines\` = ${o.caps.max_diff_lines}, ` +
-    `\`max_diff_files\` = ${o.caps.max_diff_files}), so approving it needs a note saying why; reply \`/approve <why>\` to approve ` +
-    `a one-time cap of ${o.one_time_cap.max_diff_lines} lines and ${o.one_time_cap.max_diff_files} files, so nothing was stored`
-  );
-}
-
-/** The refusal of an `/approve` at `too_large` whose blocked run recorded no diff size, so no one-time cap can be proposed. */
-export const OVER_CAP_NO_SIZE =
-  "the blocked implement run recorded no diff size, so no one-time cap can be proposed; reply `/retry` to run it again on the same caps or `/revise <feedback>` for a smaller spec, so nothing was stored";
