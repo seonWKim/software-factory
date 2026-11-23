@@ -32,6 +32,48 @@ const prUrl = (label: string, n: number) => `https://${label}/pull/${n}`;
 
 describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $name", ({ name, make: makeBackend }) => {
   const make = makeBackend;
+  describe("schedules: updateSchedule (design 08-schedules)", () => {
+    const DAILY = { id: "sch_1", title: "Daily", cadence: { kind: "daily" as const, spec: "09:00" }, zone: "UTC", created_by: "local:owner" as UserId };
+    const DUE = "2026-11-23T09:00:00.000Z" as Timestamp;
+    const added = async () => {
+      const { store, clock } = await make(new FakeClock("2026-11-22T12:00:00.000Z"));
+      await store.addSchedule({ ...DAILY, created_at: "2026-11-22T12:00:00.000Z" as Timestamp, next_due_at: DUE });
+      return { store, clock };
+    };
+    const one = async (store: FactoryStore) => (await store.listSchedules())[0]!;
+
+    it("sets only the patch's fields, only while next_due_at is still the value read (IS NULL when null)", async () => {
+      const { store } = await added();
+      const before = await one(store);
+      expect(await store.updateSchedule("sch_1", "2026-11-24T09:00:00.000Z" as Timestamp, { title: "Lost" })).toBe(false);
+      expect(await store.updateSchedule("sch_1", null, { title: "Lost" })).toBe(false);
+      expect(await store.updateSchedule("nope", DUE, { title: "Lost" })).toBe(false);
+      expect(await one(store)).toEqual(before);
+      expect(await store.updateSchedule("sch_1", DUE, { title: "Nightly", skip_when_busy: true, token_cap: 50, action: { kind: "agent", settings: { prompt: "p" } } })).toBe(true);
+      expect(await one(store)).toEqual({ ...before, title: "Nightly", skip_when_busy: true, token_cap: 50, action: { kind: "agent", settings: { prompt: "p" } } });
+      expect(await store.updateSchedule("sch_1", DUE, { next_due_at: null })).toBe(true);
+      expect(await store.updateSchedule("sch_1", DUE, { next_due_at: null })).toBe(false);
+      expect(await store.updateSchedule("sch_1", null, { cadence: { kind: "interval", spec: "60" }, zone: "Asia/Seoul", action: null })).toBe(true);
+      expect(await one(store)).toMatchObject({ next_due_at: null, cadence: { kind: "interval", spec: "60" }, zone: "Asia/Seoul", action: null, title: "Nightly" });
+    });
+
+    it("a pause made between a claim's read and its write makes that claim fire nothing", async () => {
+      const { store, clock } = await added();
+      clock.set(new Date("2026-11-23T10:00:00.000Z"));
+      const [due] = await store.listDueSchedules(clock.now().toISOString() as Timestamp);
+      expect(due?.next_due_at).toBe(DUE);
+      expect(await store.updateSchedule("sch_1", due!.next_due_at, { next_due_at: null })).toBe(true); // the pause
+      expect(await store.claimScheduleOccurrence({ schedule_id: "sch_1", occurrence_at: DUE, next_due_at: "2026-11-24T09:00:00.000Z" as Timestamp, outcome: "fired" })).toBeNull();
+      expect(await one(store)).toMatchObject({ next_due_at: null, running_since: null });
+      expect(await store.listScheduleRuns("sch_1")).toEqual([]);
+    });
+
+    it("scheduleNow is the store's Clock's time", async () => {
+      const { store, clock } = await added();
+      expect(store.scheduleNow()).toBe(clock.now().toISOString());
+    });
+  });
+
   describe("work items", () => {
     it("intake is idempotent on (source.type, source.id) and enqueues once", async () => {
       const { store } = await make();

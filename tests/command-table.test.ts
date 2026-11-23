@@ -9,9 +9,13 @@ import { CLI_TOP_WORDS, parseLocalCliArgs, parseSentence } from "../src/core/loc
 import { SETTINGS_TOP_WORDS, parseModeArgs, parseSettingsArgs } from "../src/settings-cmd.js";
 import { APP_COMMANDS } from "../src/ui/commands.js";
 
+/** The flags a `schedule add` or `schedule edit` chat form's `<flags>` stands for. */
+const SCHEDULE_FLAGS = "--title Feedback --cadence daily --spec 09:00 --zone Asia/Seoul --action build";
+
 /** A form with each placeholder filled: `<id>` an ID, a choice (`a|b` or `<a|b>`) its first option, `[...]` dropped. */
 function example(form: string): string {
-  const fill: Record<string, string> = { "<id>": "wi_1", "<user_id>": "local:dev@example.com", "<key>": "max_loops", "<value>": "3" };
+  const flags = form.startsWith("schedule add") ? `--id sch_1 ${SCHEDULE_FLAGS}` : SCHEDULE_FLAGS;
+  const fill: Record<string, string> = { "<id>": "wi_1", "<user_id>": "local:dev@example.com", "<key>": "max_loops", "<value>": "3", "<flags>": flags };
   return form
     .replace(/\[[^\]]*\]/g, "")
     .split(/\s+/)
@@ -94,6 +98,25 @@ describe("the command table", () => {
     expect(parseLocalCliArgs(...Object.values(chatCliArgv(move, null)) as [string, string[]])).toEqual({ action: "task_move", id: "tk_1", from: "home", to: "work" });
   });
 
+  it("the seven schedule commands are in the table, in order, the owner's, each with a chat form the CLI parses back", () => {
+    const names = ["list", "add", "edit", "pause", "resume", "run", "runs"].map((v) => `schedule ${v}`);
+    const at = names.map((n) => COMMAND_TABLE.findIndex((c) => c.name === n));
+    expect(at.every((i) => i >= 0)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+    for (const n of names) expect(COMMAND_TABLE[at[names.indexOf(n)]!], n).toMatchObject({ who: "owner", group: "schedule", item: false, edge: false });
+    expect(CLI_TOP_WORDS).toContain("schedule");
+    expect(parseChatCommand("schedule list")).toMatchObject({ kind: "command", entry: { name: "schedule list" } });
+    expect(parseChatCommand("schedule list now")).toBeNull();
+    const pause = parseChatCommand("schedule pause sch_1");
+    if (pause?.kind !== "command") throw new Error("schedule pause");
+    expect(parseLocalCliArgs(...Object.values(chatCliArgv(pause, null)) as [string, string[]])).toEqual({ action: "schedule", command: { verb: "pause", id: "sch_1", fields: {} } });
+    const edit = parseChatCommand("schedule edit sch_1 --title Nightly --skip-when-busy on");
+    if (edit?.kind !== "command") throw new Error("schedule edit");
+    expect(parseLocalCliArgs(...Object.values(chatCliArgv(edit, null)) as [string, string[]])).toEqual({
+      action: "schedule", command: { verb: "edit", id: "sch_1", fields: { title: "Nightly", skip_when_busy: true } },
+    });
+  });
+
   it("every item command is a command the dashboard may send", () => {
     for (const c of COMMAND_TABLE.filter((x) => x.item)) expect(APP_COMMANDS, c.name).toContain(c.name);
   });
@@ -171,6 +194,11 @@ describe("chat help", () => {
     for (const f of ["`list`", "`show <id>`", "`settings list`", "`<request in plain words>`", "`help`"]) expect(r).toContain(f);
     for (const f of ["approve", "`merge`", "settings set", "users", "`mode"]) expect(r).not.toContain(f);
     expect(r).toContain("e.g. `@software-factory help`");
+  });
+
+  it("leaves the schedule commands out, as the reply's first Slack section is full; SET_UP.md lists their chat forms", () => {
+    expect(chatHelpReply(all, null)).not.toContain("schedule");
+    expect(chatHelpReply(all, at("spec_pending"))).not.toContain("schedule");
   });
 
   it("in an item's thread: the item commands that apply in its state, for the owner", () => {
