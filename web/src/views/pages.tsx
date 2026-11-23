@@ -412,6 +412,7 @@ export function ItemPage({ id }: { id: string }) {
         </p>
       )}
       <PageToolbar tabs={<Tabs label={t("changes.tabs")} options={tabs} value={tab} onChange={(v) => pick(v === "overview" ? null : v)} />} />
+      <ItemAbout item={item} />
       <ItemDecision
         id={item.id}
         commands={q.data.commands ?? []}
@@ -424,7 +425,6 @@ export function ItemPage({ id }: { id: string }) {
       />
       {tab === "changes" ? <ItemChanges itemId={item.id} screenshots={q.data.screenshots ?? null} review={q.data.screenshot_review ?? null} /> : (
         <>
-        <ItemAbout item={item} />
         <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
           {([
             [t("col.state"), <StatusBadge state={level}>{stateLabel(level)}{level === "closed" && item.close_reason ? ` (${termLabel(item.close_reason)})` : ""}</StatusBadge>],
