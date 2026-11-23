@@ -78,6 +78,7 @@ export default defineCommand({
         // Migrate now, Start and Restart now (POST /api/v1/migrate and /api/v1/supervisor): the supervisor's request file,
         // behind the resume route's owner check.
         migrate: parts.migrate,
+        ...(parts.changes && { changes: parts.changes }),
       },
       uiPort(loaded.file.ui),
     );
