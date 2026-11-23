@@ -1,5 +1,6 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { closestTestFile, doneCheckCommands } from "../src/core/done-checks.js";
+import { checkFileRefusal, closestTestFile, doneCheckCommands } from "../src/core/done-checks.js";
 import { TRIAGE_SCHEMA, parseTriage } from "../src/core/outputs.js";
 import { renderSpec } from "../src/core/spec-comment.js";
 import { unsupportedKeyword } from "../src/impl/runner/output-schema.js";
@@ -39,6 +40,8 @@ describe("parseTriage and done_checks", () => {
       { line: LINES[2], manual: false, reason: "r" },
       { line: LINES[2], command: "npm test", note: "x" },
       { line: LINES[2], test_file: 3 },
+      { line: LINES[2], test_file: "tests/x.test.ts", new: false },
+      { line: LINES[2], command: "npm test", new: true },
     ];
     for (const entry of bad) expect(error(strict(answer([...ALL_FORMS.slice(0, 2), entry])))).toMatch(/^done_checks\[2\]/);
   });
@@ -57,6 +60,13 @@ describe("parseTriage and done_checks", () => {
     for (const test_file of ["src/a.test.ts", "/tests/a.test.ts", "tests/../src/a.ts", "tests/", "tests"]) {
       expect(error(strict(answer([{ line: LINES[0], test_file }, ...ALL_FORMS.slice(1)])))).toBe("done_checks[0].test_file: must be a repo-relative path under tests/");
     }
+  });
+
+  it("accepts a test file marked new: true and keeps the mark (design 04-triage)", () => {
+    const marked = { line: LINES[0], test_file: "tests/brand-new.test.ts", new: true };
+    const r = strict(answer([marked, ...ALL_FORMS.slice(1)]));
+    expect(r.ok && r.value.done_checks?.[0]).toEqual(marked);
+    expect(error(strict(answer([{ ...marked, test_file: "src/a.ts" }, ...ALL_FORMS.slice(1)])))).toBe("done_checks[0].test_file: must be a repo-relative path under tests/");
   });
 
   it("refuses an answer with no done_checks when the repo's commands are given (strict, decision 1)", () => {
@@ -98,6 +108,11 @@ describe("the spec comment's Done when", () => {
     expect(text).toContain("- CI runs the gate (check: `npm test`)");
   });
 
+  it("marks a test file the change creates as a new file", () => {
+    const r = strict(answer([{ line: LINES[0], test_file: "tests/x.test.ts", new: true }, ...ALL_FORMS.slice(1)]));
+    expect(r.ok ? renderSpec(r.value, 2) : "").toContain("- The gate refuses an outside path (check: `tests/x.test.ts`, new file)");
+  });
+
   it("shows the lines as before for a spec without done_checks", () => {
     const r = parseTriage(answer());
     expect(r.ok ? renderSpec(r.value, 2) : "").toContain("- CI runs the gate\n");
@@ -122,5 +137,34 @@ describe("closestTestFile", () => {
   it("is null when no file shares a word with the missing name", () => {
     expect(closestTestFile("tests/zzz.test.ts", FILES)).toBeNull();
     expect(closestTestFile("tests/zzz.test.ts", [])).toBeNull();
+  });
+});
+
+// Done-check test files exist on the base or are marked new (design 04-triage, 2026-11-24).
+describe("checkFileRefusal", () => {
+  const FILES = ["tests/scope-gate.test.ts", "tests/data-table-docs.test.ts"];
+  const spec = (done_checks: unknown[], allowed_paths = ["src/", "tests/new/"]) => ({ done_checks: done_checks as never, allowed_paths });
+
+  it("is null when every done-check test file exists, or is marked new and covered by allowed_paths", () => {
+    expect(checkFileRefusal(spec(ALL_FORMS), FILES)).toBeNull();
+    expect(checkFileRefusal(spec([{ line: "a", test_file: "tests/new/a.test.ts", new: true }]), FILES)).toBeNull();
+    expect(checkFileRefusal({ allowed_paths: [] }, FILES)).toBeNull();
+    expect(checkFileRefusal("not an answer", FILES)).toBeNull();
+  });
+
+  it("names each missing, unmarked file, even one with a close existing file", () => {
+    const err = checkFileRefusal(spec([{ line: "a", test_file: "tests/table-docs.test.ts" }, { line: "b", test_file: "tests/zzz.test.ts" }]), FILES);
+    expect(err).toBe("done_checks: these test files do not exist on the base and are not marked new: true: tests/table-docs.test.ts, tests/zzz.test.ts");
+  });
+
+  it("names a marked file allowed_paths does not cover", () => {
+    const err = checkFileRefusal(spec([{ line: "a", test_file: "tests/elsewhere.test.ts", new: true }]), FILES);
+    expect(err).toBe("done_checks: these test files are marked new: true but allowed_paths does not cover them: tests/elsewhere.test.ts");
+  });
+
+  it("prompts/triage.md asks triage to mark each test file it adds with new: true and list it in allowed_paths", () => {
+    const prompt = readFileSync(new URL("../prompts/triage.md", import.meta.url), "utf8");
+    expect(prompt).toContain('mark each test file you add to done_checks that the\n    change creates with `"new": true`');
+    expect(prompt).toContain("and list it in\n    allowed_paths");
   });
 });

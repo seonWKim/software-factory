@@ -143,7 +143,8 @@ async function setup(o: { done_checks: DoneCheck[]; implement: AgentStep; fix?: 
 }
 
 const changeA: AgentStep = (wd) => commitFile(wd, "src/a.txt", "a changed\n", "change a");
-const testFile = (line: string, test_file = NEW_TEST): DoneCheck => ({ line, test_file });
+/** A test file check; one the base lacks is marked new, as triage must (design 04-triage). */
+const testFile = (line: string, test_file = NEW_TEST, isNew = test_file === NEW_TEST): DoneCheck => ({ line, test_file, ...(isNew ? { new: true as const } : {}) });
 const manual = (line: string): DoneCheck => ({ line, manual: true, reason: "a person looks at the page" });
 
 describe("implement run: the item's done checks run before push", { timeout: 60_000 }, () => {
@@ -206,21 +207,20 @@ describe("implement run: the item's done checks run before push", { timeout: 60_
   });
 });
 
-// A test file check on a file that does not exist (design 04-pre-push-gates, 2026-11-24): triage swaps an unknown name for
-// the closest existing test file; a missing file the run did not create fails with "does not exist", not its exit code.
+// A test file check on a file that does not exist (design 04-triage and 04-pre-push-gates, 2026-11-24): triage sends a
+// missing, unmarked name back once and never swaps it; a missing file the run did not create fails with "does not exist".
 describe("a done check on a missing test file", { timeout: 60_000 }, () => {
-  it("triage replaces an unknown test file name by the closest existing one and names the swap in a decision", async () => {
+  it("triage sends a missing, unmarked test file back once, never swapped for a close one, and fails when it is still named", async () => {
     const f = await setup({ done_checks: [testFile(LINES[0]!, "tests/table-docs.test.ts"), manual(LINES[1]!), manual(LINES[2]!)], implement: changeA });
-    const [first] = await f.implementRuns();
-    expect(f.item.done_checks?.[0]).toEqual({ line: LINES[0], test_file: "tests/data-table-docs.test.ts" });
     const triage = (await f.store.listRuns(f.item.id)).find((r) => r.kind === "triage");
-    const spec = (triage!.outcome as unknown as { data: { spec: { decision_items: { text: string }[] } } }).data.spec;
-    expect(spec.decision_items.map((d) => d.text)).toEqual([expect.stringContaining("`tests/table-docs.test.ts`, which does not exist; it now names `tests/data-table-docs.test.ts`")]);
-    expect(first!.outcome).toMatchObject({ status: "succeeded" });
+    expect(triage!.outcome).toMatchObject({ status: "failed", error_code: "invalid_output" });
+    expect((triage!.outcome as unknown as { detail: string }).detail).toContain("not marked new: true: tests/table-docs.test.ts");
+    expect(f.item.done_checks).toBeNull();
+    expect(await f.implementRuns()).toEqual([]);
   });
 
   it("a missing file the run did not create fails with its own outcome, and the fix step names no file when none is close", async () => {
-    const f = await setup({ done_checks: [testFile(LINES[0]!, "tests/zzz.test.ts"), manual(LINES[1]!), manual(LINES[2]!)], implement: changeA });
+    const f = await setup({ done_checks: [testFile(LINES[0]!, "tests/zzz.test.ts", true), manual(LINES[1]!), manual(LINES[2]!)], implement: changeA });
     const [first] = await f.implementRuns();
     expect(first!.outcome).toMatchObject({ status: "failed", error_code: "checks_failed" });
     const detail = (first!.outcome as unknown as { detail: string }).detail;

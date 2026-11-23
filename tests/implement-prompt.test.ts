@@ -39,10 +39,10 @@ describe("renderMergeCheckFailure: a failed suite", () => {
 });
 
 describe("the implement run's prompt", () => {
-  async function implemented(withText: boolean) {
+  async function implemented(withText: boolean, o: Record<string, unknown> = {}) {
     const f = await pipeline();
     // A spec that keeps the request's value, so it is approved automatically and implemented.
-    f.runner.script.triage = () => ({ output: { ...triageSpec, problem: REQUEST } });
+    f.runner.script.triage = () => ({ output: { ...triageSpec, problem: REQUEST, ...o } });
     f.source.queue.push({ kind: "item_requested", source: issueRef(1), requester: alice, title: "Accent", body: REQUEST });
     await f.controller.tickIntake();
     const it = (await f.store.getWorkItemBySource("github_issue", issueRef(1).id))!;
@@ -65,6 +65,20 @@ describe("the implement run's prompt", () => {
     expect(prompt).toContain(spec);
     expect(prompt).toContain(renderRequest(it));
     expect(prompt.indexOf("## Original request")).toBeGreaterThan(prompt.indexOf("## Allowed paths"));
+  });
+
+  it("has a New check files section listing each file marked new, its done-when line, and that the run creates it", async () => {
+    const line = triageSpec.done_criteria[0]!;
+    const { prompt } = await implemented(true, { done_checks: [{ line, test_file: "tests/brand-new.test.ts", new: true }], allowed_paths: [".github/workflows/", "tests/brand-new.test.ts"] });
+    const section = prompt.slice(prompt.indexOf("## New check files"));
+    expect(prompt).toContain("## New check files");
+    expect(section).toMatch(/must create each one/);
+    expect(section).toContain(`- \`tests/brand-new.test.ts\`: checks "${line}"`);
+  });
+
+  it("has no New check files section when no done-check file is marked new", async () => {
+    const { prompt } = await implemented(true);
+    expect(prompt).not.toContain("## New check files");
   });
 
   it("states the fallback for an item with no kept request text, and the run does not fail", async () => {

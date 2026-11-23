@@ -71,7 +71,7 @@ async function implement(
         ? [renderSessionResume(plan ? plan.state.head : continued?.head ?? null, plan ? null : "stopped"), budget].join("\n\n")
         : await w.withIndex(
           [
-            renderWorkItem(item, { includeSpec: true }), renderRequest(item), budget, notes, feedback, previous,
+            renderWorkItem(item, { includeSpec: true }), newCheckFiles(item), renderRequest(item), budget, notes, feedback, previous,
             plan ? renderNewSessionResume(restored ? plan.state.head : null) : "",
             continued ? renderContinueNewSession(continued.head) : "",
           ].filter(Boolean).join("\n\n"),
@@ -252,6 +252,16 @@ async function implement(
  * input does not) reads it from the loop's state change. Labelled untrusted and fenced so it cannot close its
  * block, as the approver's note is. None: empty, so the section is absent.
  */
+/**
+ * The prompt's "New check files" section (design 04-triage): each done-check test file the spec marks new, its done-when
+ * line, and that the run creates it. Empty when there is none (an item triaged before the mark has none).
+ */
+function newCheckFiles(item: WorkItem): string {
+  const files = (item.done_checks ?? []).flatMap((c) => ("test_file" in c && c.new ? [`- \`${c.test_file}\`: checks "${c.line}"`] : []));
+  if (files.length === 0) return "";
+  return ["## New check files", "", "These test files do not exist on the base. The run must create each one: it is the check of its done-when line.", "", ...files].join("\n");
+}
+
 async function prFeedback(w: Worker, item: WorkItem, run: Run): Promise<string> {
   let text = run.input?.notes?.trim() ?? "";
   if (!text) {

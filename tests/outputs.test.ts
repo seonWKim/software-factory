@@ -76,7 +76,8 @@ describe("goal_done_when", () => {
 });
 
 // Triage checks the spec's test file names against the repo's files (design 04-pre-push-gates, 2026-11-24): an unknown
-// one is replaced by the closest existing test file, named in a decision; with none close it stays, a file the run creates.
+// allowed_paths or files_to_change name is replaced by the closest existing test file, named in a decision; with none
+// close it stays, a file the run creates. A done-check test file is never swapped (design 04-triage, 2026-11-24).
 describe("checkTestFiles", () => {
   const FILES = ["tests/data-table-docs.test.ts", "tests/outputs.test.ts"];
   const LINE = "tests/table-docs.test.ts shows the table docs";
@@ -86,13 +87,19 @@ describe("checkTestFiles", () => {
     allowed_paths: ["src/", "tests/table-docs.test.ts", "tests/outputs.test.ts", "tests/new/"], files_to_change: ["src/", "tests/table-docs.test.ts"], ...o,
   });
 
-  it("replaces a missing test file everywhere it is named by the closest existing one, and names the swap in a decision", () => {
-    const p = parseTriage(checkTestFiles(spec(), FILES));
+  it("never swaps a missing done-check test file, unmarked or marked new, for a close existing one, nor where else it is named", () => {
+    const unmarked = spec();
+    expect(checkTestFiles(unmarked, FILES)).toEqual({ answer: unmarked, refusal: expect.stringContaining("not marked new: true: tests/table-docs.test.ts") });
+    const marked = spec({ done_checks: [{ line: LINE, test_file: "tests/table-docs.test.ts", new: true }, unmarked.done_checks[1]] });
+    expect(checkTestFiles(marked, FILES)).toEqual({ answer: marked, refusal: null });
+  });
+
+  it("replaces a missing allowed_paths test file that no done check names everywhere it is named, and names the swap in a decision", () => {
+    const line = "tests/table-docs.test.ts is updated";
+    const p = parseTriage(checkTestFiles(spec({ done_criteria: [line, "the docs say so"], done_checks: undefined }), FILES).answer);
     expect(p.ok).toBe(true);
     if (!p.ok) return;
-    const swapped = "tests/data-table-docs.test.ts shows the table docs";
-    expect(p.value.done_criteria[0]).toBe(swapped);
-    expect(p.value.done_checks?.[0]).toEqual({ line: swapped, test_file: "tests/data-table-docs.test.ts" });
+    expect(p.value.done_criteria[0]).toBe("tests/data-table-docs.test.ts is updated");
     expect(p.value.allowed_paths).toEqual(["src/", "tests/data-table-docs.test.ts", "tests/outputs.test.ts", "tests/new/"]);
     expect(p.value.files_to_change).toEqual(["src/", "tests/data-table-docs.test.ts"]);
     expect(p.value.decision_items).toEqual([expect.objectContaining({ owner_only: false, default: "keep the swap" })]);
@@ -101,18 +108,18 @@ describe("checkTestFiles", () => {
 
   it("checks an exact tests/ file in allowed_paths or files_to_change too, keeping the decisions triage wrote first", () => {
     const own = { question: "Which colour?", reason: "it shows", options: [], default: "red", owner_only: false };
-    const p = parseTriage(checkTestFiles(spec({ done_checks: undefined, decisions: [own], allowed_paths: ["src/", "tests/outputs-triage.test.ts"], files_to_change: ["tests/outputs-triage.test.ts"] }), FILES));
+    const p = parseTriage(checkTestFiles(spec({ done_checks: undefined, decisions: [own], allowed_paths: ["src/", "tests/outputs-triage.test.ts"], files_to_change: ["tests/outputs-triage.test.ts"] }), FILES).answer);
     expect(p.ok && p.value.allowed_paths).toEqual(["src/", "tests/outputs.test.ts"]);
     expect(p.ok && p.value.decision_items?.map((d) => d.text)).toEqual(["Which colour?", expect.stringContaining("it now names `tests/outputs.test.ts`")]);
   });
 
   it("keeps a missing name no file is close to, with no decision: a file the run creates", () => {
     const v = spec({ done_checks: undefined, allowed_paths: ["tests/zzz.test.ts"], files_to_change: ["tests/zzz.test.ts"] });
-    expect(checkTestFiles(v, FILES)).toBe(v);
+    expect(checkTestFiles(v, FILES)).toEqual({ answer: v, refusal: null });
   });
 
   it("leaves an answer whose test files all exist, and folders, as they are", () => {
     const v = spec({ done_checks: undefined, allowed_paths: ["tests/", "tests/outputs.test.ts", "tests/new/"], files_to_change: ["tests/outputs.test.ts"] });
-    expect(checkTestFiles(v, FILES)).toBe(v);
+    expect(checkTestFiles(v, FILES)).toEqual({ answer: v, refusal: null });
   });
 });
