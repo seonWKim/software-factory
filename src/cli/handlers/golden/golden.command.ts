@@ -3,21 +3,26 @@ import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { Plugins, resolveProject } from "../../../compose.js";
-import { addCase, buildGoldenRunDeps, compareCases, formatCompare, formatReport, parseAddArgs, parseCompareArgs, parseRunArgs, runCases } from "../../../golden.js";
+import { addCase, buildGoldenRunDeps, compareCases, formatCompare, formatReport, genTriageDrafts, parseAddArgs, parseCompareArgs, parseGenArgs, parseRunArgs, renderSpec, runCases } from "../../../golden.js";
 import { ROLES_DIR } from "../../../runtime/index.js";
 import { storeProjectResolver } from "../../../ui/settings-api.js";
 import { defineCommand } from "../../command.js";
 
-/** `golden add` reads the store and GitHub (read-only); `golden run` and `golden compare` open neither. */
+/** `golden add` reads the store and GitHub (read-only); `golden gen` reads the store and calls the model; `golden run` and `golden compare` open neither. */
 export default defineCommand({
   names: ["golden"],
   usage: `  golden add <pr> [--role <name>] [--expect should_flag|should_pass] [--force]
                writes src/worker/roles/<name>/golden/<pr>/ (instruction.md, environment/diff.patch, case.json;
                no --role: review) from a factory PR's record; egress-scanned first, nothing written on a
                finding; a clean merge needs --expect should_pass
+  golden gen role/triage --from <closed item id> [--force]
+               drafts six triage cases (one model call per persona) from a CLOSED item's spec into
+               <state_dir>/golden/drafts/triage/<item id>/<persona>/ (instruction.md, case.json); all six are
+               egress-scanned first, nothing written on a finding; move the kept ones into the role's golden/
   golden run role/<name>
                replays the role's golden cases with its prompt (no push, no GitHub writes), prints per case
-               and in total: tokens, wall time, pass_rate, catch_rate and false_alarm_rate, and writes
+               and in total: tokens, wall time, pass_rate, catch_rate and false_alarm_rate (with golden.replays of 2 or more,
+               also pass_k and the unstable cases), and writes
                <state_dir>/golden/results/<timestamp>.json.
                With the noop sandbox the agent runs as the host user: test environment only (design §5)
   golden compare --base <file> [--agent reviewer] [--since <ref> | --all]
@@ -30,6 +35,7 @@ export default defineCommand({
     const args = [...rest];
     const loaded = await ctx.load();
     const p = new Plugins(loaded);
+    const replays = (loaded.file as { golden?: { replays?: number } } | null)?.golden?.replays ?? 1; // golden.replays (default 1; startup already refused a bad value)
     if (sub === "add") {
       const opts = parseAddArgs(args);
       await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
@@ -55,9 +61,33 @@ export default defineCommand({
         await store.close();
       }
     }
+    if (sub === "gen") {
+      const opts = parseGenArgs(args);
+      const secrets = await p.secrets();
+      const store = await p.store(secrets, await p.clock());
+      try {
+        await store.migrate();
+        const r = await genTriageDrafts(
+          {
+            item: async (id) => {
+              const item = await store.getWorkItem(id as Parameters<typeof store.getWorkItem>[0]);
+              return item && { stage: item.stage, spec: renderSpec(item) };
+            },
+            llm: await p.llm(secrets),
+            scanner: await p.scanner(secrets),
+            draftsDir: join(loaded.stateDir, "golden", "drafts", "triage"),
+          },
+          opts,
+        );
+        console.log(`wrote ${r.drafts.length} drafts to ${r.dir} (${r.drafts.map((d) => d.persona).join(", ")})`);
+        return 0;
+      } finally {
+        await store.close();
+      }
+    }
     if (sub === "run") {
       const opts = parseRunArgs(args);
-      const report = await runCases(await buildGoldenRunDeps(p, loaded), opts);
+      const report = await runCases(await buildGoldenRunDeps(p, loaded), { ...opts, replays });
       console.log(formatReport(report));
       return 0;
     }
@@ -65,7 +95,7 @@ export default defineCommand({
       const opts = parseCompareArgs(args);
       const basePrompt = await readFile(opts.base, "utf8");
       const changed = opts.all ? null : await changedPaths(loaded.root, opts.since ?? loaded.config.repo.base_branch);
-      const report = await compareCases(await buildGoldenRunDeps(p, loaded), { role: opts.role, basePrompt, changed });
+      const report = await compareCases(await buildGoldenRunDeps(p, loaded), { role: opts.role, basePrompt, changed, replays });
       console.log(formatCompare(report));
       return report.outcome === "fail" ? 1 : 0;
     }

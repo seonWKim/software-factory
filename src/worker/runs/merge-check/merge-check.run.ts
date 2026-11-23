@@ -12,6 +12,8 @@
 // failure always keeps an output tail: with no output, its reason (a command that could not run, its exit).
 // A failing test file the item's selection before push skipped in enforce mode is a test selection miss (design §4):
 // the red result names it (`selection_miss`) and the project's selection goes back to shadow mode.
+// With `repo.check_tz` (design §4), every command here (install, checks, UI check, base UI rerun) runs with TZ set to
+// that zone, so a test that passes only in the machine's zone fails before merge; absent, no TZ is set.
 // Install and checks run on the project's Node major (.nvmrc, else package.json engines; node-version.ts); a project
 // whose Node is not installed fails the run with checks_env rather than checking on another Node.
 
@@ -32,6 +34,9 @@ export interface MergeCheckTools {
 
 type CheckRound = Awaited<ReturnType<Worker["runCheckList"]>>;
 type Failed = { command: readonly string[]; how: string; tail: string };
+
+/** The env every merge-check command runs with: TZ from `repo.check_tz`, else nothing added. */
+const checkEnv = (w: Worker): Record<string, string> => (w.cfg.repo.check_tz ? { TZ: w.cfg.repo.check_tz } : {});
 
 /** What the merge queue put in the run's input: the base, and the branches to merge onto it in order (this one last). */
 function inputOf(run: RunCall["run"]): { base_ref: string; branches: string[] } {
@@ -78,7 +83,7 @@ async function mergeCheck(w: Worker, c: RunCall): Promise<Record<string, unknown
     w.d.log.info(`merge check runs on ${nodeUsed}`, { run_id: run.id, node_bin: node.bin ?? "worker" });
     const red = async (failed: Failed, ui = false) => ({ result: "red", why: "checks", ...(await failure(w, failed, ui)), base_sha, merged_sha, node: nodeUsed });
     const runOn = async (commands: string[][]) => {
-      const r = await w.runCheckList(run, handle, signal, { commands: commands.map((c) => onNode(node, c)) });
+      const r = await w.runCheckList(run, handle, signal, { commands: commands.map((c) => onNode(node, c)), env: checkEnv(w) });
       return { ...r, failed: r.failed && { ...r.failed, command: offNode(r.failed.command) } };
     };
     const install = await cachedInstall(w, handle, () => runOn([[...w.cfg.repo.install_command]]));
@@ -110,7 +115,7 @@ async function baseUiCheck(w: Worker, { run, item, signal }: RunCall, base_ref: 
   });
   try {
     await w.git(handle, [...NO_HOOKS, "checkout", "--quiet", "--detach", base_sha]);
-    const runOn = async (commands: string[][]) => (await w.runCheckList(run, handle, signal, { commands: commands.map((cmd) => onNode(node, cmd)) })).failed;
+    const runOn = async (commands: string[][]) => (await w.runCheckList(run, handle, signal, { commands: commands.map((cmd) => onNode(node, cmd)), env: checkEnv(w) })).failed;
     const failed = (await cachedInstall(w, handle, async () => ({ failed: await runOn([[...w.cfg.repo.install_command]]) })))?.failed ?? (await runOn(uiCheck));
     return failed && { ...failed, command: offNode(failed.command) };
   } finally {

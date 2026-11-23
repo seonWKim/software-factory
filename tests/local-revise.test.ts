@@ -19,6 +19,7 @@ import { Worker } from "../src/worker/index.js";
 import { FakeRunner, MemoryStorage } from "./helpers/fakes/runner.js";
 import { cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // `/revise <feedback>` on a local item waiting for its merge (issue #563): no PR, so the feedback goes to one
 // implement run on the item's local branch, a review follows, and the item waits for its merge again.
@@ -77,7 +78,7 @@ async function localFactory(cfgPatch: Partial<FactoryConfig> = {}) {
   };
   let n = 0;
   const cli = (a: CliAction) =>
-    runLocalCli({ store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
+    runLocalCli({ answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
   const revise = (id: WorkItemId, text: string) => cli({ action: "command", command: "revise", id, text });
   const messages = async (id: WorkItemId, prefix: string) =>
     (await store.listItemMessages(id)).filter((m) => m.marker.startsWith(prefix)).map((m) => m.body);
@@ -196,6 +197,44 @@ describe("revise on a local item at the merge wait (issue #563)", { timeout: 60_
     expect(refused).toHaveLength(1);
     expect(refused[0]).toContain("the spec is not waiting for approval (the item is blocked by a failed review run)");
     expect(refused[0]).not.toContain("PR #");
+  });
+
+  it("in REVIEW after a bug verdict: the spec goes back to triage with the feedback", async () => {
+    const f = await localFactory();
+    f.runner.script.review = () => ({ output: { verdict: "bug", tier: 2, findings: [{ kind: "code", text: "off by one" }], summary: "found one" } });
+    const id = (await f.cli({ action: "create", title: "Add a", bodyFile: "body.md" })).lines[0] as WorkItemId;
+    await f.step();
+    await f.cli({ action: "command", command: "approve", id, text: "" });
+    await f.step();
+    await f.step();
+    // In REVIEW, blocked on nothing, as an item left after an unchanged head before this change was.
+    const stuck = await f.put(id, { stage: "REVIEW", blocked_on: "none", blocked_reason: null });
+    await f.revise(id, "name the reasons in the PR body");
+    await f.controller.tickIntake();
+
+    expect(await f.messages(id, "<!-- factory:refused:")).toEqual([]);
+    expect(await f.store.getWorkItem(id)).toMatchObject({
+      stage: "NEW", blocked_on: "none", blocked_reason: null, revision_count: stuck.revision_count + 1, restart_count: stuck.restart_count + 1,
+      spec_feedback: "name the reasons in the PR body",
+    });
+    const change = (await f.store.listStateChanges(id)).at(-1)!;
+    expect(change).toMatchObject({ reason: "spec_revision_requested", actor: { kind: "user", id: ME } });
+    const triage = (await f.store.listRuns(id)).filter((r) => r.kind === "triage" && r.status === "queued");
+    expect(triage).toHaveLength(1);
+    expect(triage[0]!.idempotency_key).toMatch(new RegExp(`^${id}:triage:.*:v${stuck.revision_count + 1}$`));
+  });
+
+  it("in REVIEW after a passing verdict: /revise is still refused", async () => {
+    const f = await localFactory();
+    const id = await f.toMergePending();
+    const reviewing = await f.put(id, { blocked_on: "none", blocked_reason: null });
+    await f.revise(id, "fix it");
+    await f.controller.tickIntake();
+
+    expect(await f.store.getWorkItem(id)).toEqual(reviewing);
+    const refused = await f.messages(id, "<!-- factory:refused:");
+    expect(refused).toHaveLength(1);
+    expect(refused[0]).toContain("the spec is not waiting for approval");
   });
 
   it("while implementing: the /revise is queued, then applied as one more implement run on the local branch before review", async () => {

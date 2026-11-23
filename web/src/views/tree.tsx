@@ -44,7 +44,7 @@ function Row({ node, now, byNumber, byId }: { node: TreeNode; now: number; byNum
   const badge = <StatusBadge state={it.item_phase} />;
   return (
     <div className={cn("flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-1 py-1", node.context && "text-text-2")}>
-      <Link href={itemPath(it.id)} data-raw className={cn("min-w-0 truncate font-medium", LINK_CLASS)}>{it.title ?? shortItemId(it.id)}</Link>
+      <Link href={itemPath(it.id)} data-raw data-row-title className={cn("min-w-0 truncate font-medium", LINK_CLASS)}>{it.title ?? shortItemId(it.id)}</Link>
       {waits ? (
         <Link href={itemPath(waits.id)} data-waits-for title={t("tree.waitsFor", { title: waits.title ?? shortItemId(waits.id) })} className={cn("rounded-pill", FOCUS)}>
           {badge}
@@ -83,11 +83,11 @@ function NodeItem(props: { node: TreeNode; now: number; byNumber: ReadonlyMap<nu
         {({ hasChildItems, isExpanded, level }) => (
           <div className={cn("flex items-start gap-1 border-b border-border pr-1", indentFor(level))}>
             {hasChildItems ? (
-              <Button slot="chevron" className="inline-flex h-7 w-5 shrink-0 items-center justify-center text-text-2" aria-label={isExpanded ? t("tree.collapse") : t("tree.expand")}>
+              <Button slot="chevron" className="inline-flex h-7 w-6 shrink-0 items-center justify-center text-text-2" aria-label={isExpanded ? t("tree.collapse") : t("tree.expand")}>
                 {isExpanded ? "▾" : "▸"}
               </Button>
             ) : (
-              <span className="w-5 shrink-0" aria-hidden />
+              <span className="w-6 shrink-0" aria-hidden />
             )}
             <Row {...props} />
           </div>

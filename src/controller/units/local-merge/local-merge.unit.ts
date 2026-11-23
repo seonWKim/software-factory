@@ -8,7 +8,7 @@ import { ALERT_DEDUPE_MS } from "../../../core/alarms.js";
 import { modeOf } from "../../../core/settings.js";
 import { AUTO_ACTOR, autoMergeRefusal, branchFor } from "../../../core/policy.js";
 import {
-  LOCAL_SOURCE, MERGE_COMMAND, RESTART_DONE, RESTART_REQUESTED, RUN_HINT_ENTRIES, canAppendLocal, canMergeLocal, canReadLocal, canSyncBase, restartRefusal, restartReply, restartRunKey, runHint,
+  LOCAL_SOURCE, MERGE_COMMAND, RESTART_DONE, RESTART_REQUESTED, RUN_HINT_ENTRIES, canAppendLocal, canMergeLocal, canReadLocal, canSyncBase, droppedBack, restartRefusal, restartReply, restartRunKey, runHint, tierRule,
 } from "../../../core/local-merge.js";
 import { gatePathTouched } from "../../../core/improver.js";
 import { lastPrNotes } from "../../../core/pr-body.js";
@@ -17,7 +17,7 @@ import type { ExternalIdentity } from "../../../interfaces/auth-provider.js";
 import { LOCAL_GIT_HOST, basePushOutcome, basePushTarget, gitTarget, type ActionRow } from "../../../outbound/index.js";
 import { failingTestNames } from "../../../worker/index.js";
 import { AUTO, CONFLICT_PENDING, SYSTEM, awaitingMerge } from "../support.js";
-import type { ControllerWrite } from "../kernel.js";
+import type { ControllerReader, ControllerWrite } from "../kernel.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
@@ -85,7 +85,7 @@ export class LocalMergeUnit {
    * Authorized by the local auth plugin for `approve_merge`, the approver role. Refused, with a reply, for an item not waiting
    * for a merge, and at once for a branch that conflicts with the local base, which starts its automatic resolve. Otherwise the change enters the merge
    * queue (RFC 0015 M8, the merge-queue unit): a merge-check run checks its merged result, and only a green one
-   * lands (`requestMerge`, an outbound delivery); a red one is removed and the reply says why, and the item stays in merge_pending. A checkout of
+   * lands (`requestMerge`, an outbound delivery); the item waits at merge_queued while its entry is live; a red one is removed, the item goes back to merge_pending and the reply says why. A second merge of a queued change (`already`) changes nothing: no return, no post. A checkout of
    * the base is fast-forwarded when clean and left as it was otherwise (the close's detail and the reply say so).
    * `who` AUTO_MERGE is auto mode's merge (autoMergeStep, design 03-risk): no person to authorize, actor
    * `system:auto`, and the state change names the mode change it ran under. Safe to run twice: the same `key` is
@@ -106,10 +106,10 @@ export class LocalMergeUnit {
         : await this.c.unit("auth").authorize(who, "approve_merge", item.id);
     // The merge gate (core request-transition, through the commands unit): waiting for its merge, no PR, a sandbox that merges.
     const sandbox = this.c.k.d.sandbox;
-    // An item held after its resolve failed is parked on that conflict: the gate checks it as parked.
+    // Held after its resolve failed: parked. `again`: a failed merge check's max_loops (2026-11-23), back to merge_pending for one more check.
     const parked = conflictParked(item) || (item.blocked_reason === RECURRING_FAILURE && resolveHeld(item, await this.c.k.reader.listRuns(item.id)));
-    const asGated = parked ? { ...item, blocked_reason: CONFLICT_PENDING } : item;
-    const gate = "refuse" in principal ? null : this.c.unit("commands").merge.localRefusal(asGated, canMergeLocal(sandbox));
+    const again = !auto && !parked && this.c.unit("commands").merge.stopped(item, await this.c.k.reader.listStateChanges(item.id));
+    const gate = "refuse" in principal ? null : this.c.unit("commands").merge.localRefusal(item, canMergeLocal(sandbox), parked || again);
     let refusal: string;
     if ("refuse" in principal) refusal = principal.refuse;
     // The gate refuses when the sandbox cannot merge; its check again here only narrows the sandbox's type.
@@ -126,9 +126,10 @@ export class LocalMergeUnit {
         refusal = r;
       } else {
         // Ready and approved: the change enters the merge queue, which checks its merged result before it lands.
+        if (again) await this.c.unit("transitions").decide(item.id, async (it) => this.c.unit("commands").merge.again(it, await this.c.k.reader.listStateChanges(it.id), { kind: "user", id: principal.user_id as UserId }));
         const r = await this.c.unit("merge-queue").enter(item, auto ? AUTO_ACTOR : principal.user_id, key, detail);
-        if (r === null) return null;
-        refusal = r;
+        if (r === null || "already" in r) return null;
+        refusal = r.refusal;
       }
     }
     await this.refused(item.id, auto ? AUTO_ACTOR : "", key, refusal);
@@ -387,11 +388,11 @@ export class LocalMergeUnit {
   }
 
   /**
-   * A refusal posted on the item: why the merge did not apply, keyed by `key`. An item whose Merge was pressed on the
-   * dashboard (merge_queued) goes back to merge_pending with it first, so its row shows why at once.
+   * A refusal posted on the item: why the merge did not apply, keyed by `key`. An item at merge_queued goes back to
+   * merge_pending with it first (MergeQueueUnit.returned), so its row shows why at once.
    */
   async refused(id: WorkItemId, by: string, key: string, refusal: string): Promise<void> {
-    await this.c.unit("commands").mergeReturned(id, refusal);
+    await this.c.unit("merge-queue").returned(id, refusal);
     const item = await this.c.k.reader.getWorkItem(id);
     if (!item) return;
     this.c.k.d.log.info("command refused", { work_item_id: id, command: MERGE_COMMAND, reason: refusal.split("\n")[0]!.slice(0, 300) });
@@ -408,27 +409,16 @@ export class LocalMergeUnit {
    * A delivered base push (design 05-sources, Local items; RFC 0015 M8): outbound's `local` target fetched the
    * remote base, merged it into the local base when it moved, and pushed, conditionally on the remote base it read.
    * A failure (an outage, a rate limit, a base that moved again) is a delivery failure outbound retries with its
-   * batch's backoff. A remote base that does not merge cleanly posts one message on the item, which stays closed:
-   * the merge happened, only its push waits for a person. Never changes an item.
+   * batch's backoff. A remote base that does not merge cleanly is a delivered conflict: the item stays closed (the
+   * merge happened, only its push waits for a person), and Needs you shows it from the stored push
+   * (`listBasePushBacklogs`), so nothing is posted. Never changes an item.
    */
   async basePushDelivered(row: ActionRow): Promise<void> {
     const r = basePushOutcome(row);
     if (r === null || !row.work_item_id) return;
     const base = String(row.args.base_ref);
-    if ("pushed" in r) {
-      this.c.k.d.log.info("base pushed", { work_item_id: row.work_item_id, base_ref: base, sha: r.pushed });
-      return;
-    }
-    const item = await this.c.k.reader.getWorkItem(row.work_item_id as WorkItemId);
-    if (!item) return;
-    const body = [
-      `The local \`${base}\` (with this item's merge \`${String(row.args.merge_sha).slice(0, 12)}\`) was not pushed: \`origin/${base}\` moved and does not merge cleanly into it. Conflicting files:`,
-      "",
-      ...r.conflicts.map((f) => `- \`${f}\``),
-      "",
-      `The item stays closed. In the factory repo, merge \`origin/${base}\` into \`${base}\`, commit the resolution and push \`${base}\` by hand.`,
-    ].join("\n");
-    await this.c.unit("outbox").post(item, item.source, body, `<!-- factory:base-push-conflict:${row.seq} -->`);
+    if ("pushed" in r) this.c.k.d.log.info("base pushed", { work_item_id: row.work_item_id, base_ref: base, sha: r.pushed });
+    else this.c.k.d.log.warn("base push conflict", { work_item_id: row.work_item_id, base_ref: base, conflicts: r.conflicts.length });
   }
 
   /**
@@ -436,12 +426,13 @@ export class LocalMergeUnit {
    * through mergeLocal (actor `system:auto`, the mode change on its state change) when autoMergeRefusal allows it:
    * the change enters the merge queue, so a failing check or a conflict on its merged result moves nothing. One try per
    * passed review: a refusal is posted once under a key of that review run, and the item stays in merge_pending for a person.
-   * A sync source's item is never merged here (no forge merge to call); it waits as in manual mode, with no post.
+   * A sync source's item waits as in manual mode, with no post (no forge merge to call). Merge records: one store read per step.
    */
   async autoMergeStep(): Promise<void> {
     const r = this.c.k.live.resolved();
     if (r.global.mode.value !== "auto" && !Object.values(r.projects).some((p) => p.mode?.value === "auto")) return;
     const waiting = await this.c.k.reader.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "human", limit: AUTO_MERGE_BATCH });
+    let merges: Awaited<ReturnType<ControllerReader["listMergeEvaluations"]>> | null = null;
     for (const it of waiting) {
       if (!awaitingMerge(it) || it.source.type !== LOCAL_SOURCE || it.change_ref !== null) continue;
       const auto = await this.autoMode(it.project);
@@ -451,12 +442,12 @@ export class LocalMergeUnit {
       const key = `auto-merge:${it.id}:${review?.id ?? `v${it.version}`}`;
       if ((await this.c.k.reader.listItemMessages(it.id)).some((m) => m.marker.endsWith(`:${key} -->`))) continue;
       const missing = lastPrNotes(await this.c.k.reader.listRuns(it.id))?.missing ?? [];
+      const tier = it.tier ?? 5;
+      const record = (merges ??= await this.c.k.reader.listMergeEvaluations(null)).filter((m) => m.tier === tier);
       const refusal = autoMergeRefusal({
-        tier: it.tier ?? 5,
-        max_tier: this.c.k.live.values().auto_merge_max_tier,
-        incomplete: missing.length > 0,
-        gate_path: gatePathTouched([...it.allowed_paths, ...(it.pr_files ?? [])]),
-        local: true,
+        tier, max_tier: this.c.k.live.values().auto_merge_max_tier, incomplete: missing.length > 0,
+        gate_path: gatePathTouched([...it.allowed_paths, ...(it.pr_files ?? [])]), local: true,
+        rule: tierRule(tier, record), dropped_back: droppedBack(record),
       });
       if (refusal === null) {
         await this.c.k.guard("auto merge", async () => void (await this.mergeLocal(it.id, AUTO_MERGE, key, { mode_change: auto.seq })));

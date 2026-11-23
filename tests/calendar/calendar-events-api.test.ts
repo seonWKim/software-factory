@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { CALENDAR_SYNC_MS } from "../../src/calendar/index.js";
+import { CALENDAR_SYNC_MS, MAX_SPAN_DAYS, requestCalendarSync } from "../../src/calendar/index.js";
 import { syncWindow } from "../../src/calendar/calendar-sync.js";
 import { FakeClock } from "../../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../../src/impl/egress/pattern-egress-scanner.js";
 import type { CalendarSource } from "../../src/interfaces/calendar-source.js";
 import { ControllerRole } from "../../src/runtime/roles/controller-role.js";
 import type { SqlDriver } from "../../src/state/index.js";
-import { CALENDAR_EVENTS_PATH, MAX_SPAN_DAYS } from "../../src/ui/calendar-events-api.js";
+import { CALENDAR_EVENTS_PATH } from "../../src/ui/calendar-events-api.js";
+import { resolveSettings } from "../../src/core/settings.js";
+import type { FactoryStore } from "../../src/interfaces/factory-store.js";
+import { UiCalendar } from "../../src/ui/calendar-api.js";
 import { HealthMonitor } from "../../src/ui/health.js";
+import type { UiSettings } from "../../src/ui/settings-api.js";
 import { type ApiDeps, respond } from "../../src/ui/server.js";
 import { FakeAuth } from "../helpers/fakes/runner.js";
 import { FakeSource } from "../helpers/fakes/source.js";
@@ -16,27 +20,41 @@ import { newStore } from "../helpers/store.js";
 import { FakeCalendarSource, calendarEvent } from "./fakes.js";
 
 // GET /api/v1/calendar/events (design 09-dashboard-app, Calendar page): the stored events of each local day from
-// `from` through `to`, a synced flag per day from each source's last successful sync window, and the sources' sync
-// state. Every time is built in the process's own time zone, so the tests hold in any zone. Fake sources only.
+// `from` through `to`, a synced flag per day from each source's last scheduled sync window and its on-demand ones, and
+// the sync state of each connected source (the live `calendar` setting). Every time is built in the process's own time
+// zone, so the tests hold in any zone. Fake sources only.
 
 /** A local wall-clock instant on 2026-<month>-<day>, as ISO. */
 const at = (month: number, day: number, h = 0, m = 0) => new Date(2026, month - 1, day, h, m).toISOString();
 const NOW = new Date(2026, 10, 12, 9, 0);
 
-async function harness(calendar: { name: string; source: CalendarSource }[]) {
+/** The Settings routes with only the Calendar section, whose `listed` resolves the live setting as compose.ts uiCalendar does. */
+function liveCalendar(store: FactoryStore): UiSettings {
+  const base = { file: {}, layers: { defaults: {}, projects: {} } };
+  const listed = async () => resolveSettings(base, await store.listSettingOverrides()).values.calendar;
+  return { calendar: new UiCalendar({ plugins: [], listed, run: async () => ({ sync: null }) }) } as unknown as UiSettings;
+}
+
+/**
+ * `connected`: the live `calendar` setting, stored as an override as Settings' connect writes it, and read back by the
+ * Calendar section's `listed` (calendar-api.ts UiCalendar), as on Settings → Integrations; default every source.
+ */
+async function harness(calendar: { name: string; source: CalendarSource }[], connected = calendar.map((c) => c.name)) {
   const clock = new FakeClock(NOW);
   const { store } = await newStore(clock);
+  const connect = (names: string[]) => store.setSettingOverride({ key: "calendar", project: "", value: JSON.stringify(names), actor: "owner@example.com" });
+  await connect(connected);
   const db = (store as unknown as { db: SqlDriver }).db;
   const role = new ControllerRole({ store, sources: [new FakeSource()], auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner, calendar });
   const sync = async () => (await role.unit("calendar")).calendarStep();
   const d: ApiDeps = {
-    store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: 300_000, health: new HealthMonitor(async () => [], clock),
+    store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: 300_000, health: new HealthMonitor(async () => [], clock), settings: liveCalendar(store),
   };
   const get = async (query: string) => {
     const r = await respond(d, { method: "GET", url: `${CALENDAR_EVENTS_PATH}${query}`, host: "127.0.0.1:4310" });
     return { status: r.status, body: JSON.parse(r.body) as Record<string, unknown> };
   };
-  return { clock, db, sync, get };
+  return { clock, db, sync, get, connect };
 }
 
 interface Day {
@@ -102,6 +120,21 @@ describe("GET /api/v1/calendar/events", () => {
     expect(days.filter((d) => d.synced).map((d) => d.date)).toEqual(days.map((d) => d.date).filter((d) => d >= "2026-11-12" && d <= "2026-12-11"));
   });
 
+  it("a day an on-demand sync read for every source counts as synced too, and sync_pending names a waiting request for the range", async () => {
+    const work = new FakeCalendarSource(events);
+    const { db, sync, get } = await harness([{ name: "work", source: work }]);
+    await sync();
+    expect((await get("?from=2026-11-02&to=2026-11-08")).body).toMatchObject({ sync_pending: false });
+    await requestCalendarSync(db, { from: "2026-11-02", to: "2026-11-04", by: "local:owner", nowMs: NOW.getTime() });
+    expect((await get("?from=2026-11-02&to=2026-11-04")).body).toMatchObject({ sync_pending: true });
+    // Only a request for exactly the range read is pending for it.
+    expect((await get("?from=2026-11-02&to=2026-11-08")).body).toMatchObject({ sync_pending: false });
+    await sync();
+    const days = (await get("?from=2026-11-01&to=2026-11-12")).body.days as Day[];
+    expect(days.filter((d) => d.synced).map((d) => d.date)).toEqual(["2026-11-02", "2026-11-03", "2026-11-04", "2026-11-12"]);
+    expect((await get("?from=2026-11-02&to=2026-11-04")).body).toMatchObject({ sync_pending: false });
+  });
+
   it("a source never synced makes every day not synced", async () => {
     const broken = new FakeCalendarSource();
     broken.failWith = "down";
@@ -148,5 +181,33 @@ describe("GET /api/v1/calendar/events", () => {
     expect(work.windows).toHaveLength(1);
     expect(writes).toEqual([]);
     expect(await tables()).toBe(before);
+  });
+
+  it("lists a connected source that has no sync row yet with synced_at null, so its days are not synced", async () => {
+    const { db, get } = await harness([], ["google-calendar"]);
+    expect(await db.all("SELECT * FROM calendar_sync_state")).toEqual([]);
+    const r = await get("?from=2026-11-12&to=2026-11-13");
+    expect(r.body.calendar).toEqual([{ source: "google-calendar", synced_at: null, failed: false }]);
+    expect((r.body.days as Day[]).map((d) => d.synced)).toEqual([false, false]);
+  });
+
+  it("leaves out a disconnected source with old sync rows, and its stored events", async () => {
+    const { sync, get, connect } = await harness([{ name: "work", source: new FakeCalendarSource(events) }, { name: "home", source: new FakeCalendarSource([calendarEvent("gym", { starts_at: at(11, 13, 7), ends_at: at(11, 13, 8) })]) }]);
+    await sync();
+    const before = await get("?from=2026-11-13&to=2026-11-13");
+    expect((before.body.days as Day[])[0]!.events.map((e) => e.source)).toContain("home");
+    await connect(["work"]);
+    const r = await get("?from=2026-11-13&to=2026-11-13");
+    expect(r.body.calendar).toEqual([{ source: "work", synced_at: NOW.toISOString(), failed: false }]);
+    expect(r.body.days).toMatchObject([{ date: "2026-11-13", synced: true, events: [{ id: "holiday" }, { id: "standup" }, { id: "lunch" }] }]);
+    expect((r.body.days as Day[])[0]!.events.map((e) => e.source)).not.toContain("home");
+  });
+
+  it("with no source connected, stored events and sync rows are not shown", async () => {
+    const { sync, get, connect } = await harness([{ name: "work", source: new FakeCalendarSource(events) }]);
+    await sync();
+    await connect([]);
+    const r = await get("?from=2026-11-13&to=2026-11-13");
+    expect(r.body).toMatchObject({ calendar: [], days: [{ date: "2026-11-13", synced: false, events: [] }] });
   });
 });

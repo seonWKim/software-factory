@@ -155,6 +155,8 @@ describe("Needs you", () => {
     s.current = view({ projects: [{ list: null, tasks: [{ ...row("tk_built", { work_item_id: "wi_1" }), done_at: "2026-11-12T08:00:00.000Z" }, row("tk_inbox")] }] });
     await show();
     expect(within(await section()).getByText("Ship it")).toBeTruthy();
+    // The done row is in the Done group, closed until opened.
+    fireEvent.click(screen.getByText("1 done").closest("summary")!);
     expect(await within(card("tk_built")).findByRole("button", { name: "Work item state: tk_built" }, SLOW)).toBeTruthy();
     expect(within(card("tk_built")).queryByRole("link", { name: "Open" })).toBeNull();
     expect(within(card("tk_built")).queryByRole("button", { name: "Approve" })).toBeNull();

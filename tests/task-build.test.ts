@@ -11,6 +11,7 @@ import { type ApiDeps, type UiRequest, respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
 import { TASKS_PATH, TASK_BUILD_PATH } from "../src/ui/tasks-api.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // Build this (design 02-tasks, issue #607): `factory task build <task_id>` and the Tasks page's button send an open
 // task to intake as one local work item and store its ID on the task. A second build makes no second item and writes
@@ -23,7 +24,7 @@ async function setup(project: string | null = PROJECT_KEY) {
   const { store } = await newStore(clock);
   let n = 0;
   const d: LocalCliDeps = {
-    store, identity: { user: USER, from: "git user.email" }, project: async () => project, read: async () => "", newId: () => `id${++n}`,
+    answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: USER, from: "git user.email" }, project: async () => project, read: async () => "", newId: () => `id${++n}`,
   };
   const cli = (...args: string[]) => {
     const a = parseLocalCliArgs("task", args);
@@ -294,7 +295,7 @@ describe("a task's description in its build (design 02-tasks, description)", () 
   it("task create --project stores its body on the task and builds from it", async () => {
     const s = await setup();
     const d: LocalCliDeps = {
-      store: s.store, identity: { user: USER, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "  call first  \n", newId: () => "x1",
+      answers: { split: splitAnswers, detail: answersDetail }, store: s.store, identity: { user: USER, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "  call first  \n", newId: () => "x1",
     };
     const run = (word: string, ...args: string[]) => {
       const a = parseLocalCliArgs(word, args);

@@ -257,7 +257,7 @@ describe("built-in companion rules", () => {
   });
 
   it("a test, a doc or a non-source file adds no test", () => {
-    for (const file of ["tests/hotspots.test.ts", "docs/setup.md", "schema/sqlite.sql", "src/types.d.ts", "src/index.ts", "web/src/views/data.tsx", "scripts/x.ts"]) {
+    for (const file of ["tests/hotspots.test.ts", "docs/setup.md", "schema/sqlite/bus.sql", "src/types.d.ts", "src/index.ts", "web/src/views/data.tsx", "scripts/x.ts"]) {
       expect(allowedAfter([file]).added.filter((a) => a.path.startsWith("tests/"))).toEqual([]);
     }
   });
@@ -429,9 +429,9 @@ describe("path_companions load check", () => {
     });
 
     // Decided 2026-11-16: the generated files a change implies (npm run schema:snapshot, npm run settings:catalog).
-    it("naming a migration or the SQLite schema adds schema/sqlite.sql", async () => {
-      expect(await allowedFor("src/controller/migrations/0042-example.ts")).toContain("schema/sqlite.sql");
-      expect(await allowedFor("src/impl/store/sqlite/schema.ts")).toContain("schema/sqlite.sql");
+    it("naming a migration or the SQLite schema adds schema/sqlite/", async () => {
+      expect(await allowedFor("src/controller/migrations/0042-example.ts")).toContain("schema/sqlite/");
+      expect(await allowedFor("src/impl/store/sqlite/schema.ts")).toContain("schema/sqlite/");
     });
 
     it.each([
@@ -457,10 +457,17 @@ describe("path_companions load check", () => {
       expect(await allowedFor("src/impl/store/sql/sql-factory-store.ts")).toContain("src/impl/store/sql/");
     });
 
-    const KIND_FILES = ["src/worker/settings/worker-kinds.setting.ts", "docs/settings.md", "tests/worker-kinds.test.ts", "tests/settings-catalog.test.ts"];
-    it("a new run kind (the RunKind union and a run folder) adds the worker_kinds setting, its catalog page and both tests", async () => {
+    const KIND_FILES = [
+      "src/core/settings.ts",
+      "src/worker/settings/worker-kinds.setting.ts",
+      "docs/settings.md",
+      "tests/settings-catalog.test.ts",
+      "tests/worker-kinds.test.ts",
+      "tests/architecture/rule-of-two.test.ts",
+    ];
+    it("a new run kind (the RunKind union and a run folder) adds WORKER_KINDS, the worker_kinds setting, its catalog page, the catalog test and the two tests that pin the kind and role lists", async () => {
       const loaded = await loadConfig(root(SQLITE));
-      const files = ["src/core/types.ts", "src/worker/runs/screenshot/screenshot.run.ts"];
+      const files = ["src/core/types.ts", "src/worker/runs/judge/judge.run.ts"];
       const a = applyCompanions(answer({ allowed_paths: files, files_to_change: files }), loaded.config.path_companions ?? [], []).answer as { allowed_paths: string[]; applied_defaults: string[] };
       expect(a.allowed_paths).toEqual(expect.arrayContaining(KIND_FILES));
       expect(a.applied_defaults.some((d) => d.startsWith("Added by companion rule: a new run kind"))).toBe(true);
@@ -475,7 +482,7 @@ describe("path_companions load check", () => {
 
     it("naming neither adds no generated file", async () => {
       const paths = await allowedFor("src/core/policy.ts");
-      expect(paths).not.toContain("schema/sqlite.sql");
+      expect(paths).not.toContain("schema/sqlite/");
       expect(paths).not.toContain("docs/settings.md");
     });
   });

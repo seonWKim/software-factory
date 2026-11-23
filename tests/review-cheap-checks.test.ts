@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import type { WorkItem, WorkerId } from "../src/core/types.js";
+import type { UserId, WorkItem, WorkerId } from "../src/core/types.js";
 import { GitHubForge } from "../src/impl/github/github-forge.js";
 import { FakeGitHubClient } from "./helpers/fakes/github.js";
 import { pipeline } from "./helpers/harness.js";
@@ -139,15 +139,89 @@ describe("review cheap checks: unchanged head", () => {
     expect(f.reviewSpecs()).toHaveLength(3);
   });
 
-  it("an unchanged head after a bug verdict runs no agent and leaves the item where it is", async () => {
+  it("an unchanged head after a bug verdict with nothing new sends the item back to implement with the findings, up to max_loops", async () => {
     const f = await factory([bug()]);
-    // The fake implementer moves no head, so the review after the loop sees the head the bug verdict was for.
+    // The fake implementer moves no head, so each review after a loop sees the head the bug verdict was for.
     await f.start();
     expect(f.reviewSpecs()).toHaveLength(1);
     expect((await f.reviewComments())).toHaveLength(1);
     const reviews = await f.runs("review");
-    expect(reviews.map((r) => r.outcome?.status === "succeeded" && r.outcome.data.no_agent)).toEqual([undefined, "unchanged_head"]);
-    expect(await f.item()).toMatchObject({ stage: "REVIEW", loop_count: 1, blocked_on: "none" });
+    expect(reviews[0]!.outcome).toMatchObject({ status: "succeeded", data: { head_sha: "h1" } });
+    expect(reviews.slice(1).length).toBeGreaterThan(0);
+    expect(reviews.slice(1).every((r) => r.outcome?.status === "succeeded" && r.outcome.data.no_agent === "unchanged_head")).toBe(true);
+
+    // The first skip went back to implement as a fresh bug verdict does: RUNNING, loop_count + 1, an implement run queued.
+    const changes = await f.store.listStateChanges((await f.item()).id);
+    const back = changes.find((c) => c.reason === "review_bug" && c.detail?.unchanged_head === true)!;
+    expect(back.detail).toMatchObject({ run_id: reviews[1]!.id, review_run_id: reviews[0]!.id });
+    expect(back.changes).toMatchObject({ stage: { from: "REVIEW", to: "RUNNING" }, loop_count: { from: 1, to: 2 } });
+    const impls = await f.runs("implement");
+    expect(impls.map((r) => r.idempotency_key)).toContain(`${(await f.item()).id}:implement:l2:r0`);
+    // The implementer of that loop got the bug verdict's findings, and was told it pushed no commit.
+    const prompt = f.runner.specs.filter((s) => s.role === "implement").at(-1)!.prompt;
+    expect(prompt).toContain("## Reviewer findings to fix");
+    expect(prompt).toContain("off by one");
+    expect(prompt).toContain("The previous attempt pushed no commit");
+
+    // At max_loops it blocks on a human with the comment a fresh bug verdict posts; nothing is left queued.
+    const item = await f.item();
+    expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "max_loops", loop_count: f.config.max_loops - 1 });
+    const limit = await f.messages("factory:max-loops:");
+    expect(limit).toHaveLength(1);
+    expect(limit[0]!.body).toContain(`Review found bugs ${f.config.max_loops} times (limit ${f.config.max_loops}). A human needs to decide.`);
+    expect((await f.runs()).filter((r) => r.status === "queued" || r.status === "running")).toEqual([]);
+    expect(f.reviewSpecs()).toHaveLength(1);
+  });
+
+  /** A bug verdict looped to max_loops at an unchanged head, then `change` (a note or spec) and a review at that head. */
+  const afterBug = async (change: { reason: string; patch?: Record<string, unknown>; detail?: Record<string, string> }) => {
+    const f = await factory([bug(), pass()]);
+    await f.start();
+    expect((await f.item()).blocked_reason).toBe("max_loops");
+    f.clock.advance(60_000);
+    const cur = await f.item();
+    const r = await f.store.transition({
+      id: cur.id, expected_version: cur.version, patch: { blocked_on: "none", blocked_reason: null, ...change.patch },
+      actor: { kind: "user", id: "github:1" as UserId }, reason: change.reason, ...(change.detail ? { detail: change.detail } : {}),
+      enqueue: { kind: "review", idempotency_key: "after-change" },
+    });
+    expect(r.ok).toBe(true);
+    await f.step();
+    return f;
+  };
+
+  it("a /retry note after a bug verdict, then an unchanged head: a review runs at that head, its input carrying the note", async () => {
+    const f = await afterBug({ reason: "retry_requested", detail: { note: "the missing reasons are in the PR body now" } });
+    const skipped = (await f.runs("review")).find((r) => r.idempotency_key === "after-change")!;
+    expect(skipped.outcome).toMatchObject({ status: "succeeded", data: { no_agent: "unchanged_head" } });
+    const rerun = (await f.runs("review")).find((r) => r.input?.rereview === true)!;
+    expect(rerun.idempotency_key).toBe(`${(await f.item()).id}:review:rereview:${skipped.id}`);
+    expect(rerun.input).toMatchObject({ rereview: true, notes: "the missing reasons are in the PR body now" });
+    expect(rerun.outcome).toMatchObject({ status: "succeeded", data: { head_sha: "h1" } });
+    expect(f.reviewSpecs()).toHaveLength(2);
+    expect(f.reviewSpecs()[1]!.prompt).toContain("the missing reasons are in the PR body now");
+    const changes = await f.store.listStateChanges((await f.item()).id);
+    expect(changes.find((c) => c.reason === "review_unchanged_head" && c.detail?.rerun)!.detail).toMatchObject({ newer: "note", run_id: skipped.id, unchanged_head: true });
+    expect(await f.item()).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
+  });
+
+  it("a new spec after a bug verdict, then an unchanged head: a review runs at that head", async () => {
+    const f = await afterBug({ reason: "triaged", patch: { problem: "the revised spec" } });
+    const rerun = (await f.runs("review")).find((r) => r.input?.rereview === true)!;
+    expect(rerun).toBeDefined();
+    expect(rerun.input?.notes).toBeUndefined();
+    expect(f.reviewSpecs()).toHaveLength(2);
+    expect(f.reviewSpecs()[1]!.prompt).toContain("the revised spec");
+    const changes = await f.store.listStateChanges((await f.item()).id);
+    expect(changes.find((c) => c.reason === "review_unchanged_head" && c.detail?.rerun)!.detail).toMatchObject({ newer: "spec" });
+  });
+
+  it("with nothing newer than the bug verdict, a review requeued at that head blocks at max_loops again and reruns nothing", async () => {
+    const f = await afterBug({ reason: "test_requeue" });
+    expect((await f.runs("review")).some((r) => r.input?.rereview === true)).toBe(false);
+    expect(f.reviewSpecs()).toHaveLength(1);
+    const skipped = (await f.runs("review")).find((r) => r.idempotency_key === "after-change")!;
+    expect((await f.store.listStateChanges((await f.item()).id)).find((c) => c.detail?.run_id === skipped.id)).toMatchObject({ reason: "max_loops" });
   });
 
   it("a failed review does not count: the retry at the same head calls the agent", async () => {

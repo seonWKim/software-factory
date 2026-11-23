@@ -14,6 +14,7 @@ import { LocalSource } from "../src/impl/source/local-source.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { cleanScanner, config, silent } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore, system } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 const ME = "local:me@example.com" as UserId;
 
@@ -26,7 +27,7 @@ async function setup(patch: WorkItemPatch) {
     repeated_failure_rule: false,
   });
   let n = 0;
-  const d: LocalCliDeps = { store, identity: { user: ME, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "b", newId: () => `id${++n}` };
+  const d: LocalCliDeps = { answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: ME, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "b", newId: () => `id${++n}` };
   const run = (a: CliAction) => runLocalCli(d, a);
   const id = (await run({ action: "create", title: "t", bodyFile: "b" })).lines[0] as WorkItemId;
   const it = (await store.getWorkItem(id))!;

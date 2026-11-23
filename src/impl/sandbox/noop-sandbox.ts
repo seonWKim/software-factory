@@ -245,6 +245,16 @@ export class NoOpSandbox implements Sandbox {
     return r.exit_code === 0 ? { commit, text: r.stdout } : null;
   }
 
+  /** The file paths under the folder `path` in the local branch `ref`, from objects only; null when the branch is missing. */
+  async listLocalFiles(spec: { repo: string; ref: string; path: string }): Promise<string[] | null> {
+    safeRef(spec.ref);
+    safePath(spec.path);
+    const commit = await this.localCommit(spec.repo, spec.ref);
+    if (commit === null) return null;
+    const out = (await this.git(spec.repo, ["ls-tree", "-r", "--name-only", "-z", "--full-tree", commit, "--", spec.path])).stdout;
+    return out.split("\0").filter((p) => p !== "");
+  }
+
   /**
    * The trusted base (no fetch) and, given a head, `git diff --numstat <base>...<head>` and one file's patch: reads of
    * objects only. No rename detection, external diff or textconv, so a repo's own config runs nothing here.

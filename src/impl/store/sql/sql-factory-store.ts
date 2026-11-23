@@ -75,8 +75,6 @@ import type {
   RecordPrHeadResult,
   RecordVerdictInput,
   ThreadDelivery,
-  BasePush,
-  BasePushOutcome,
   ThreadLinkField,
   RecordVerdictResult,
   OwnerDecision,
@@ -116,19 +114,21 @@ import * as signals from "./signals.js";
 import * as evaluations from "./merge-evaluations.js";
 import * as proposals from "./command-proposals.js";
 import * as tasks from "./tasks.js";
-import { SqlRunOutputStore } from "./run-output.js";
+import { SqlSkillEvalStore } from "./skill-evals.js";
 import { claimLock, endReservations, liveReservations, reservationOf } from "./reservations.js";
 import * as notices from "./notices.js";
 import * as noticeMessages from "./notice-messages.js";
+import * as basePush from "./base-push.js";
 import * as posted from "./posted-comments.js";
 import * as verdicts from "./verdicts.js";
+import * as standing from "./standing-rules.js";
 
 /**
  * FactoryStore over a SqlDriver (SQLite; `db` is public for components owning tables). Every write is one driver transaction. Correctness
  * never depends on the row locks alone: every state change is also a conditional UPDATE (version,
- * status, lease token), and uniqueness is enforced by keys, with a duplicate treated as "already there". Task projects: SqlProjectStore, through SqlRunOutputStore.
+ * status, lease token), and uniqueness is enforced by keys, with a duplicate treated as "already there". Task projects: SqlProjectStore, schedules: SqlScheduleStore (schedules.ts), skill evals: SqlSkillEvalStore (skill-evals.ts).
  */
-export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
+export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
   constructor(db: SqlDriver, private readonly clock: Clock) {
     super(db, () => clock.now().toISOString() as Timestamp);
   }
@@ -247,7 +247,7 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
 
   async countWorkItemsByStage(): Promise<Record<Stage, number>> {
     const counts: Record<Stage, number> = { NEW: 0, READY: 0, RUNNING: 0, REVIEW: 0, CLOSED: 0 };
-    const rows = await this.db.all("SELECT stage, COUNT(*) AS n FROM controller_work_items GROUP BY stage");
+    const rows = await this.db.all("SELECT stage, COUNT(*) AS n FROM controller_work_items WHERE blocked_reason IS NULL OR blocked_reason <> 'system_item' GROUP BY stage");
     for (const r of rows) counts[r.stage as Stage] = Number(r.n);
     return counts;
   }
@@ -1240,37 +1240,18 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
   setFiledPatternRef(id: FiledPatternId, report_id: ImproveReportId, ref: SourceRef): Promise<void> {
     return filed.setFiledPatternRef(this.db, id, report_id, ref);
   }
-  listFiledPatternsWithoutOutcome(project: string): Promise<FiledPattern[]> {
-    return filed.listFiledPatternsWithoutOutcome(this.db, project);
-  }
+  async listFiledPatternsWithin(within_ms: number) { const since = this.after(-within_ms); return { since, rows: await filed.listFiledPatternsSince(this.db, since) }; }
+  listFiledPatternsWithoutOutcome(project: string): Promise<FiledPattern[]> { return filed.listFiledPatternsWithoutOutcome(this.db, project); }
   setFiledPatternOutcome(id: FiledPatternId, outcome: NonNullable<FiledPattern["outcome"]>, at: Timestamp): Promise<boolean> {
     return filed.setFiledPatternOutcome(this.db, id, outcome, at);
   }
 
-  // Standing approvals (design 05-standing-approvals)
-
-  async putStandingRule(input: NewStandingRule): Promise<StandingRule> {
-    return this.db.transaction(async (tx) => {
-      const now = this.now();
-      const enabled = input.enabled ? 1 : 0;
-      const inserted = await this.insertOnce(
-        tx,
-        "INSERT INTO controller_standing_rules (gate, tier, enabled, set_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-        [input.gate, input.tier, enabled, input.set_by, now, now],
-      );
-      if (!inserted) {
-        await tx.run("UPDATE controller_standing_rules SET enabled = ?, set_by = ?, updated_at = ? WHERE gate = ? AND tier = ?", [
-          enabled, input.set_by, now, input.gate, input.tier,
-        ]);
-      }
-      const [row] = await tx.all("SELECT * FROM controller_standing_rules WHERE gate = ? AND tier = ?", [input.gate, input.tier]);
-      return rowToStandingRule(row!);
-    });
-  }
-
-  async listStandingRules(): Promise<StandingRule[]> {
-    return (await this.db.all("SELECT * FROM controller_standing_rules ORDER BY gate, tier")).map(rowToStandingRule);
-  }
+  // Standing approvals (design 05-standing-approvals); rules and their change records: standing-rules.ts
+  putStandingRule(input: NewStandingRule): Promise<StandingRule> { return standing.putStandingRule(this.db, this.now(), input); }
+  listStandingRules(): Promise<StandingRule[]> { return standing.listStandingRules(this.db); }
+  deleteStandingRule(input: Parameters<FactoryStore["deleteStandingRule"]>[0]) { return standing.deleteStandingRule(this.db, this.now(), input); }
+  recordStandingRuleChange(input: Parameters<FactoryStore["recordStandingRuleChange"]>[0]) { return standing.recordStandingRuleChange(this.db, this.now(), input); }
+  listStandingRuleChanges() { return standing.listStandingRuleChanges(this.db); }
 
   async recordStandingProposal(input: NewStandingProposal): Promise<{ proposal: StandingProposal; created: boolean }> {
     const proposal: StandingProposal = { ...input, id: newId("sp") as StandingProposalId, created_at: this.now() };
@@ -2149,24 +2130,10 @@ export class SqlFactoryStore extends SqlRunOutputStore implements FactoryStore {
     return this.failQueued(QUEUES.outbox, seq, token, error, retry_in_ms);
   }
 
-  // The base push (design 05-sources, Local items; RFC 0015 M8): outbound's `push_base` action, its tries its batch's.
+  // The base push (design 05-sources, Local items; RFC 0015 M8): base-push.ts
 
-  async getBasePush(work_item_id: WorkItemId): Promise<BasePush | null> {
-    const [row] = await this.db.all(
-      "SELECT seq, args, delivered_ref FROM outbound_actions WHERE action = 'push_base' AND work_item_id = ? ORDER BY seq DESC LIMIT 1", [work_item_id],
-    );
-    if (!row) return null;
-    const [batch] = await this.db.all(
-      "SELECT b.attempts, b.last_error FROM outbound_batch_intents i JOIN outbound_batches b ON b.id = i.batch_id WHERE i.intent_id = ?", [`act_${Number(row.seq)}`],
-    );
-    const args = JSON.parse(String(row.args)) as { base_ref: string; merge_sha: string };
-    const done = row.delivered_ref === null ? null : (JSON.parse(String(row.delivered_ref)) as { pushed?: string; conflicts?: string[] });
-    return {
-      base_ref: args.base_ref, merge_sha: args.merge_sha,
-      attempts: Number(batch?.attempts ?? 0), last_error: (batch?.last_error as string | null | undefined) ?? null,
-      outcome: done === null ? null : done.pushed !== undefined ? "pushed" : "conflict", pushed_sha: done?.pushed ?? null,
-    };
-  }
+  getBasePush(work_item_id: WorkItemId) { return basePush.getBasePush(this.db, work_item_id); }
+  listBasePushBacklogs() { return basePush.listBasePushBacklogs(this.db); }
 
   /** Claims row `seq` of a queue for `lease_ms`: only an unfinished row with no live claim (and, with `fence`, a held lease). */
   private async claimQueued(q: Queue, seq: number, lease_ms: number, fence?: SyncFence): Promise<number | null> {
@@ -2669,9 +2636,8 @@ function whereOf(filter: Omit<WorkItemFilter, "limit">): { where: string; params
   if (filter.stage !== undefined) {
     where.push("stage = ?");
     params.push(filter.stage);
-  } else if (filter.exclude_closed) {
-    where.push("stage <> 'CLOSED'");
-  }
+  } else if (filter.exclude_closed) where.push("stage <> 'CLOSED'");
+  if (filter.exclude_system) where.push("(blocked_reason IS NULL OR blocked_reason <> 'system_item')");
   if (filter.blocked_on !== undefined) {
     where.push("blocked_on = ?");
     params.push(filter.blocked_on);
@@ -2779,17 +2745,6 @@ function rowToImproveReport(row: Row): ImproveReport {
     groups: JSON.parse(row.failure_groups as string) as ImproveReport["groups"],
     patterns: JSON.parse(row.patterns as string) as ImproveReport["patterns"],
     created_at: row.created_at as Timestamp,
-  };
-}
-
-function rowToStandingRule(row: Row): StandingRule {
-  return {
-    gate: row.gate as StandingGate,
-    tier: Number(row.tier) as Tier,
-    enabled: Number(row.enabled) === 1,
-    set_by: row.set_by as UserId,
-    created_at: row.created_at as Timestamp,
-    updated_at: row.updated_at as Timestamp,
   };
 }
 

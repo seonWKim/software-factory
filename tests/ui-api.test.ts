@@ -96,6 +96,18 @@ describe("ui api: items", () => {
     expect(list.items.filter((i) => !["merged", "closed", "rejected"].includes(i.item_phase))).toHaveLength(open);
   });
 
+  it("system items are left out of the list, its facet counts and Open items", async () => {
+    const { d, store } = await seeded();
+    const before = await json<{ counts: { open: number }; total: number; facets: { allStates: number } }>(d, "/api/v1/items");
+    const sys = await store.createWorkItem({ ...issue(9001), hold: { blocked_on: "upstream", blocked_reason: "system_item" } }, system);
+    const after = await json<{ counts: { open: number }; total: number; facets: { allStates: number }; items: { id: string }[] }>(d, "/api/v1/items");
+    expect(after.items.map((i) => i.id)).not.toContain(sys.item.id);
+    expect(after.total).toBe(before.total);
+    expect(after.facets.allStates).toBe(before.facets.allStates);
+    expect(after.counts.open).toBe(before.counts.open);
+    expect((await json<{ open: number }>(d, "/api/v1/overview")).open).toBe(before.counts.open);
+  });
+
   it("the default list has every open item ranked, and the filters narrow it", async () => {
     const { d, items } = await seeded();
     const all = await json<{ items: { id: string; item_phase: string; reason_code: string; stage: string; run_status: string | null }[] }>(d, "/api/v1/items");

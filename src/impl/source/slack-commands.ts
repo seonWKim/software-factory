@@ -4,6 +4,7 @@ import { CONFIRM_COMMAND, isProposalId } from "../../core/interpret.js";
 import { type LocalCliDeps, parseLocalCliArgs, runLocalCli } from "../../core/local-cli.js";
 import type { UserId, WorkItem } from "../../core/types.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
+import { answersDetail, splitAnswers } from "../../shared/command-notes.js";
 import { ACTION_PROPOSAL, ACTION_PROPOSAL_ALL, ACTION_PROPOSAL_CANCEL } from "./slack-format.js";
 
 // Factory commands typed in Slack (issue #498; docs/plugins/source-adapter.md, `slack`): the command table's chat
@@ -93,6 +94,7 @@ export async function runChatCommand(d: ChatDeps, cmd: ChatCommand, ctx: ChatCon
       read: () => Promise.reject(new Error("chat commands read no files")),
       newId: () => ctx.id,
       origin: ctx.origin,
+      answers: { split: splitAnswers, detail: answersDetail },
     },
     action,
   );

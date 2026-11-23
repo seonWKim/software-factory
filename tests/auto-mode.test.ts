@@ -15,7 +15,7 @@ import type { ChildRestart } from "../src/interfaces/updater.js";
 import { utcMinute } from "../src/core/spec-comment.js";
 import { footerCommands } from "../src/impl/source/slack-format.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
-import { RECURRING_FAILURE, type UserId, type WorkerId, type WorkItemId } from "../src/core/types.js";
+import { RECURRING_FAILURE, type Tier, type UserId, type WorkerId, type WorkItemId } from "../src/core/types.js";
 import { Worker } from "../src/worker/index.js";
 import { OwnerAuth } from "../src/core/authorize.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
@@ -28,10 +28,13 @@ import { parseModeArgs, runSettings } from "../src/settings-cmd.js";
 import { FakeRunner, MemoryStorage } from "./helpers/fakes/runner.js";
 import { cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { issue, newStore, system } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
+import { seedMergeRecord } from "./helpers/merge-record.js";
 
 // Auto mode (design 03-risk, issue #444): a local factory over a real git repo, as in local-merge-flow.test.ts, with the
 // live settings read from the store each tick. The mode is flipped after the controller is built, so every test also
-// shows a running controller reading the new mode at its next tick, with no restart.
+// shows a running controller reading the new mode at its next tick, with no restart. Each factory starts with a met
+// merge record for the review's tier (50 clean merges), so the tier rule lets its change merge unless a test says otherwise.
 
 const ME = "local:me@example.com" as UserId;
 const DEV = "local:dev@example.com" as UserId;
@@ -63,6 +66,8 @@ interface Opts {
   restarts?: () => Promise<readonly ChildRestart[]>;
   /** `repo.ui_check`: run at merge on a change to its paths, and on the new base tip after an automatic merge. */
   ui_check?: FactoryConfig["repo"]["ui_check"];
+  /** The review tier's merge record seeded before the change (seedMergeRecord); default 50 clean merges, a met rule. */
+  record?: { merges?: number; bad?: number };
 }
 
 async function autoFactory(opts: Opts = {}) {
@@ -84,6 +89,7 @@ async function autoFactory(opts: Opts = {}) {
   };
   const clock = new FakeClock();
   const { store } = await newStore(clock);
+  await seedMergeRecord(store, clock, { tier: (opts.reviewTier ?? 2) as Tier, ...opts.record });
   const auth = new OwnerAuth(store);
   const sandbox = new NoOpSandbox(join(root, "wt"), undefined, undefined, { local: true });
   const settings = new LiveSettings({ config: cfg, base: baseFromConfig(cfg), source: store });
@@ -112,7 +118,7 @@ async function autoFactory(opts: Opts = {}) {
   };
   let n = 0;
   const cli = (user: UserId, a: CliAction) =>
-    runLocalCli({ store, identity: { user, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
+    runLocalCli({ answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
   const create = async () => (await cli(ME, { action: "create", title: "A change", bodyFile: "b.md" })).lines[0] as WorkItemId;
   /** An item the improve run files for a recurring failure (design §7), through the local source as the improver. */
   const fileAsImprover = async () => {
@@ -263,11 +269,49 @@ describe("auto mode: merges", { timeout: 60_000 }, () => {
     expect(git(f.repo, "rev-parse", "main")).not.toBe(mainBefore);
     const merged = (await f.changes(id)).find((c) => c.reason === "local_merged")!;
     expect(merged.actor).toEqual(AUTO);
+    // Through merge_queued, as a person's merge: moved by system:auto with its merge key before the check.
+    const reasons = (await f.changes(id)).map((c) => c.reason);
+    expect(reasons.indexOf("merge_requested")).toBeGreaterThan(-1);
+    expect(reasons.indexOf("merge_requested")).toBeLessThan(reasons.indexOf("merge_check_queued"));
+    expect((await f.changes(id)).find((c) => c.reason === "merge_requested")).toMatchObject({
+      actor: AUTO, changes: { blocked_reason: { from: "merge_pending", to: "merge_queued" } }, detail: { merge_key: expect.stringMatching(/^auto-merge:/) },
+    });
     expect(merged.detail).toMatchObject({ mode_change: flip!.seq });
     expect((await f.messages(id, "<!-- factory:local-merged:")).join("")).toContain("in auto mode");
     // The red-main check passed: still auto, no alert.
     expect(await f.store.listAlerts({ limit: 10 })).toEqual([]);
     expect((await f.modeRows()).map((r) => r.new_value)).toEqual(['"auto"']);
+  });
+
+  it("the drop-back: a holding tier still merges with 1 reverted merge among its last 20", async () => {
+    const f = await autoFactory({ record: { merges: 51, bad: 1 } });
+    await f.setting("auto_merge_max_tier", 3);
+    await f.mode("auto");
+    const id = await f.create();
+    await f.step();
+    await f.approveRun(id);
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
+    expect(await f.messages(id, "<!-- factory:auto-merge-held:")).toEqual([]);
+  });
+
+  it("the drop-back: after 2 reverted merges among its last 20 the tier waits for a person, and the stored setting is unchanged", async () => {
+    const f = await autoFactory({ record: { merges: 52, bad: 2 } });
+    await f.setting("auto_merge_max_tier", 3);
+    await f.mode("auto");
+    const settingRows = async () => (await f.store.listSettingChanges(50)).filter((c) => c.key === "auto_merge_max_tier");
+    const before = await settingRows();
+    const mainBefore = git(f.repo, "rev-parse", "main");
+    const id = await f.create();
+    await f.step();
+    await f.approveRun(id);
+    await f.step();
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+    expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
+    const held = await f.messages(id, "<!-- factory:auto-merge-held:");
+    expect(held).toHaveLength(1);
+    expect(held[0]).toContain("tier 2 dropped back: 2 or more of its last 20 merges were reverted or fixed forward");
+    expect(await settingRows()).toEqual(before);
+    expect((await f.store.listSettingOverrides()).find((o) => o.key === "auto_merge_max_tier")).toMatchObject({ value: "3" });
   });
 
   it("with auto_merge_max_tier at its default 0, a reviewed change waits for a person, and the reply says why", async () => {
@@ -445,8 +489,15 @@ describe("auto mode: stop conditions", { timeout: 60_000 }, () => {
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", loop_count: 0, merge_sha: null });
     expect(git(f.repo, "rev-parse", "main")).toBe(main);
     expect((await (await f.controller.unit("merge-queue")).entries(id)).map((e) => e.state)).toEqual(["queued"]);
+    expect(await f.store.getWorkItem(id)).toMatchObject({ blocked_on: "ci", blocked_reason: "merge_queued" });
     expect((await f.store.listAlerts({ limit: 10 })).filter((a) => a.pattern === "red_main").map((a) => a.pattern_key)).toEqual([`red_main:${main}`]);
     await stopped(f, "red_main");
+    // A later auto pass on the queued item records nothing new.
+    await f.mode("auto");
+    const before = (await f.changes(id)).length;
+    await (await f.controller.unit("local-merge")).autoMergeStep();
+    expect((await f.changes(id)).length).toBe(before);
+    expect(await f.store.getWorkItem(id)).toMatchObject({ blocked_on: "ci", blocked_reason: "merge_queued" });
   });
 
   it("a burst of agent-run failures leaves the mode auto: the alarm is open and the failing item is held", async () => {

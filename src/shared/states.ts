@@ -19,7 +19,8 @@ export const GROUP_LABELS: Readonly<Record<StateGroup, string>> = {
 
 export interface StateInfo {
   label: string;
-  group: StateGroup;
+  /** The Work filter group; absent for a state no filter lists (`system`). */
+  group?: StateGroup;
   tone: Tone;
   /** Display order: rows and tabs sort by it, lowest first. */
   sort: number;
@@ -44,6 +45,8 @@ export const STATES = {
   rejected: { label: "Rejected", group: "finished", tone: "neutral", sort: 14, action: "Open" },
   succeeded: { label: "Succeeded", group: "finished", tone: "ok", sort: 15, action: "Open" },
   cancelled: { label: "Cancelled", group: "finished", tone: "neutral", sort: 16, action: "Open" },
+  // The self-improvement run's system item (blocked_reason system_item): in no group, tab or Work filter, left out of lists and counts.
+  system: { label: "System", tone: "neutral", sort: 17, action: "Open" },
 } as const satisfies Record<string, StateInfo>;
 
 export type StateKey = keyof typeof STATES;
@@ -67,10 +70,10 @@ export const stateLabel = (key: string | null | undefined): string => (!key ? ""
 /** The state's tone; an unknown or missing key is neutral. */
 export const stateTone = (key: string | null | undefined): Tone => (key && isState(key) ? STATES[key].tone : "neutral");
 
-export const groupOf = (key: string): StateGroup | undefined => (isState(key) ? STATES[key].group : undefined);
+export const groupOf = (key: string): StateGroup | undefined => (isState(key) ? (STATES[key] as StateInfo).group : undefined);
 
 /** A group's item states in sort order. */
-export const groupStates = (group: StateGroup): ItemState[] => ITEM_STATES.filter((k) => STATES[k].group === group);
+export const groupStates = (group: StateGroup): ItemState[] => ITEM_STATES.filter((k) => (STATES[k] as StateInfo).group === group);
 
 /**
  * Whether a state passes a Work state filter: a group (`needs`, `active`, `waiting`, `problem`, `finished`) holds its

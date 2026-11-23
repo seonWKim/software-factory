@@ -77,6 +77,12 @@ export interface Sandbox {
    */
   readLocalFile?(spec: { repo: string; ref: string; path: string }): Promise<{ commit: string; text: string } | null>;
   /**
+   * Trusted, from objects only (no checkout, no fetch): every file path under the folder `path` (ending in `/`) in
+   * the factory repo's local branch `ref`, repo-relative; null when the branch is missing. Absent: triage's
+   * migration timestamp check is off (triage, src/core/migration-stamps.ts).
+   */
+  listLocalFiles?(spec: { repo: string; ref: string; path: string }): Promise<string[] | null>;
+  /**
    * Trusted, from objects only (no checkout, no fetch, no ref written): the factory repo's trusted base (`origin/<base_ref>`,
    * or the local branch when nothing fetches origin) with its committer time, and, given `head_sha`, what that head changes
    * against it as `git diff <base>...<head>` lists it: each file with its added and removed line counts, and, given `path`

@@ -311,7 +311,6 @@ export function AdvancedTab({ view: v, query }: { view: SettingsView; query: str
     <>
       <p className="mb-4 text-sm text-text-2">
         {t("settings.devTools")}{" "}
-        <Link href={`${BASE}runners`} className={LINK_CLASS}>{t("page.runners")}</Link>{" · "}
         <Link href={`${BASE}data`} className={LINK_CLASS}>{t("page.data")}</Link>
       </p>
       <Card title={t("settings.settableKeys")} count={v.keys.length}>

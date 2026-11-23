@@ -11,6 +11,7 @@ const schedule = (await import(pathToFileURL(join(import.meta.dirname, "..", "sc
   countBrowserCalls(streamJson: string): number;
   describeRun(run: unknown): string;
   revisionLine(rev: string | null, revTime: number | null, mainTime: number | null): string;
+  withSandbox<T>(start: () => Promise<{ url: string; stop(): Promise<void> }>, run: (url: string) => Promise<T>): Promise<T>;
 };
 
 const KST = "Asia/Seoul";
@@ -81,5 +82,44 @@ describe("idle agents: project factory revision", () => {
   it("reports a missing supervisor.json or an unknown rev as unknown", () => {
     expect(schedule.revisionLine(null, null, main)).toContain("unknown");
     expect(schedule.revisionLine("abcdef", null, main)).toContain("unknown");
+  });
+});
+
+describe("idle agents: a feedback run starts and stops its own sandbox", () => {
+  /** A fake sandbox that records start, the URL the run got, and stop, in order. */
+  function fakeSandbox() {
+    const events: string[] = [];
+    const start = async () => {
+      events.push("start");
+      return { url: "http://127.0.0.1:50123", stop: async () => void events.push("stop") };
+    };
+    return { events, start };
+  }
+
+  it("starts the sandbox, passes its URL to the agent, and stops it after the agent finishes", async () => {
+    const { events, start } = fakeSandbox();
+    const result = await schedule.withSandbox(start, async (url) => {
+      events.push(`run ${url}`);
+      return { seconds: 1 };
+    });
+    expect(result).toEqual({ seconds: 1 });
+    expect(events).toEqual(["start", "run http://127.0.0.1:50123", "stop"]);
+  });
+
+  it("stops the sandbox when the agent run fails, and passes the failure on", async () => {
+    const { events, start } = fakeSandbox();
+    await expect(schedule.withSandbox(start, async (url) => {
+      events.push(`run ${url}`);
+      throw new Error("claude exited 1");
+    })).rejects.toThrow("claude exited 1");
+    expect(events).toEqual(["start", "run http://127.0.0.1:50123", "stop"]);
+  });
+
+  it("runs no agent and stops nothing when the sandbox does not start", async () => {
+    const events: string[] = [];
+    await expect(schedule.withSandbox(async () => {
+      throw new Error("the sandbox did not start within 60 s");
+    }, async () => void events.push("run"))).rejects.toThrow("did not start");
+    expect(events).toEqual([]);
   });
 });

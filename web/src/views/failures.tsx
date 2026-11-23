@@ -20,7 +20,7 @@ export type FailuresWindow = (typeof WINDOWS)[number];
 const WINDOW_LABELS = { "24h": "failures.window24h", "7d": "failures.window7d" } as const satisfies Record<FailuresWindow, MessageKey>;
 
 /**
- * The Failures window, kept in the `window` query parameter so a link (`/app/failures?window=7d`) selects it; 24h
+ * The Failures window, kept in the `window` query parameter so a link (`/app/health?tab=failures&window=7d`) selects it; 24h
  * otherwise. Health holds it and passes it to its toolbar's switch and to FailuresSection.
  */
 export function useFailuresWindow(): [FailuresWindow, (w: FailuresWindow) => void] {
@@ -103,7 +103,7 @@ export function FailureGroupView({ group, now, titles }: { group: FailureGroup; 
 
 /**
  * Health's Failures section: failed runs grouped by error code, for the last 24 hours or 7 days (design §9, issue #312).
- * Its anchor is `#failures`. `win` comes from Health's toolbar switch; without it the section reads the link's window.
+ * Health's Failures tab. `win` comes from Health's toolbar switch; without it the section reads the link's window.
  */
 export function FailuresSection({ win }: { win?: FailuresWindow }) {
   const now = useNow();
