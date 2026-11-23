@@ -1,5 +1,5 @@
 // Design 05-interactive-sessions (2026-11-21): `worker_kinds`, the run kinds a worker claims, read live at each
-// claim. Default: all eight, as the fixed list was. Left out of it, a queued implement or resolve run stays queued
+// claim. Default: every claimable kind, as the fixed list was. Left out of it, a queued implement or resolve run stays queued
 // for an interactive session, while reviews and merge checks keep flowing; the item says it waits for a session.
 
 import { describe, expect, it, vi } from "vitest";
@@ -56,9 +56,9 @@ const setKinds = (store: FactoryStore, kinds: readonly string[]) =>
   store.setSettingOverride({ key: "worker_kinds", project: "", value: JSON.stringify(kinds), actor: "local:owner" });
 
 describe("the worker's claim reads worker_kinds", () => {
-  it("default: a worker claims every one of the kinds, as with the fixed list", async () => {
+  it("default: a worker claims every claimable kind, as with the fixed list", async () => {
     const { store } = await newStore();
-    expect(WORKER_KINDS).toEqual(expect.arrayContaining(["implement", "improve", "merge-check", "resolve", "restart", "review", "triage", "update", "screenshot"]));
+    expect(WORKER_KINDS).toEqual(expect.arrayContaining(["implement", "improve", "merge-check", "resolve", "restart", "review", "triage", "update", "screenshot", "judge"]));
     await enqueue(store, WORKER_KINDS);
     const { w, claimed } = await worker(store);
     await drain(w);

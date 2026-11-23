@@ -23,6 +23,8 @@ import type { SecretName, SecretStore } from "./interfaces/secret-store.js";
 // Re-exported so a component's plugin declares its secret names without importing a legacy folder (RFC 0015 §9).
 export { secretName } from "./interfaces/secret-store.js";
 import type { ScheduleAction } from "./interfaces/schedule-action.js";
+import type { ScheduleActionRoutes } from "./controller/units/schedule/plugins/ports.js";
+import type { ToolSpec } from "./core/tools/types.js";
 import type { SharedStorage } from "./interfaces/shared-storage.js";
 import type { SourceAdapter } from "./interfaces/source-adapter.js";
 import type { TacitLedger } from "./interfaces/tacit-ledger.js";
@@ -121,8 +123,12 @@ export interface Contexts {
   tacit: BaseContext;
   /** `secrets`: what a provider reads its credentials from. `clock`: "now", for the provider's own window. */
   calendar: BaseContext & { secrets: SecretStore; clock: Clock };
-  /** Built for the controller only, when `plugins.schedule_action` names it. */
-  schedule_action: BaseContext;
+  /**
+   * Built for the controller only, when `plugins.schedule_action` names it: the store, the runner and sandbox an
+   * agent action runs in, the scanner (G5 on all it stores or files), the read-only tools an agent gets, the project
+   * key its items go into, and one route per action kind (src/controller/units/schedule/plugins/).
+   */
+  schedule_action: BaseContext & { store: FactoryStore; runner: AgentRunner; sandbox: Sandbox; scanner: EgressScanner; tools: readonly ToolSpec[]; project: string; routes: ScheduleActionRoutes };
 }
 
 /** What a plugin's setup hook gets: the forge client (no credentials), and where to print its progress lines. */

@@ -7,7 +7,7 @@ import { LEVELS, type Level } from "./priority.js";
 
 export const STAGES: readonly Stage[] = ["NEW", "READY", "RUNNING", "REVIEW", "CLOSED"];
 export const TIERS: readonly Tier[] = [1, 2, 3, 4, 5];
-export const RUN_KINDS: readonly RunKind[] = ["triage", "implement", "review", "update", "improve"];
+export const RUN_KINDS: readonly RunKind[] = ["triage", "implement", "review", "update", "improve", "judge"];
 
 /**
  * A state filter: one of the state table's five groups (`needs` is the Needs-you group), or one level. `closed` is

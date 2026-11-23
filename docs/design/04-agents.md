@@ -8,6 +8,7 @@
 | Reviewer | pass 1: work item + diff + CI results + `worked_on` (no transcript); pass 2: intent, how_to_test | verdict (tests run only to confirm a finding), cumulative mistakes, tier recheck | standard at tier 1–2, strong at tier 3–5 |
 | Screenshot reviewer (a review run after the screenshot run) | the stored screenshots + `design-system/patterns.md` | findings and unverified lines in one comment; no state change | the review's class (`model_by.review`) |
 | Review confirm (inside the review run) | one review finding + the diff, nothing else | `confirmed` and a `reason` | the review's class (`model_by.review`) |
+| Judge (goal splits, `judge` run) | the closed goal phase (title, problem, done criteria), its merge sha, the goal lines and the recorded phases' titles; read-only tools | a verdict (`next`, `fix`, `done`, `ask`) and a reason; a `fix` names the phase to add | strong (pinned by the runner, not in `model_by`) |
 | Resolver (`/resolve`) | conflicting files + work item + notes | the merge resolution | standard at tier 1–2, strong at tier 3–5 |
 
 The model column is the shipped `model_by` table (below); a retry after a review loop, or a triage retry after an `agent_failed` attempt, goes one class up.

@@ -67,17 +67,22 @@ function Title({ task, className, onOpen }: { task: TaskRow; className: string; 
   }
   if (onOpen !== null) {
     return (
-      // The title stays the paragraph's text; the shared Button lies over it, so the row keeps its height.
-      <p data-row-title title={task.title} className={cn(className, "relative hover:underline")}>
-        {task.title}
+      // The title stays the paragraph's text; the shared Button lies over it, so the row keeps its height. The Button
+      // is a fixed 28px tall, centred on the title line whatever its line height (responsive rules small-target,
+      // button-height); it sits beside the paragraph, whose truncate would clip it. The wrapper is the row title, so the
+      // Button stays inside it.
+      <div data-row-title className="group relative">
+        <p title={task.title} className={cn(className, "group-hover:underline")}>
+          {task.title}
+        </p>
         <Button
           variant="ghost"
           aria-haspopup="dialog"
           aria-label={t("tasks.descriptionLabel", { title: task.title })}
-          className="absolute inset-0 min-h-0! px-0! enabled:hover:bg-transparent!"
+          className="absolute inset-x-0 top-1/2 h-7 min-h-0! -translate-y-1/2 px-0! enabled:hover:bg-transparent!"
           onClick={onOpen}
         />
-      </p>
+      </div>
     );
   }
   return <p data-row-title title={task.title} className={className}>{task.title}</p>;

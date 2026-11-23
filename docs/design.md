@@ -26,23 +26,23 @@ for a new topic. "§5" means `05-*`.
 - [04-spec-gate-commands.md](design/04-spec-gate-commands.md): spec answers, `/revise`, `/resolve`.
 - [04-chat-commands.md](design/04-chat-commands.md): classifier, chat answers, proposals.
 - [04-verdicts.md](design/04-verdicts.md): `/verdict`, implicit verdicts, pushbacks.
-- [04-closing-source-issue.md](design/04-closing-source-issue.md): source close stops item, runs, PR.
-- [04-pre-push-gates.md](design/04-pre-push-gates.md): scope, size and floor gates before a push.
+- [04-closing-source-issue.md](design/04-closing-source-issue.md): closing the source issue.
+- [04-pre-push-gates.md](design/04-pre-push-gates.md): scope, size, floor gates before push.
 - [04-triage.md](design/04-triage.md): path companions, allowed paths, topic folders.
 - [04-split-specs.md](design/04-split-specs.md): size estimates, phases, phase hold.
-- [04-screenshots.md](design/04-screenshots.md): UI screenshots before merge.
+- [04-screenshots.md](design/04-screenshots.md): UI screenshots.
 
 ## 5. Coordination
 - [05-coordination.md](design/05-coordination.md): claim order, leases, fencing.
-- [05-dependencies.md](design/05-dependencies.md): parallel workers, hold policy, cost threshold.
+- [05-dependencies.md](design/05-dependencies.md): parallel workers, hold policy, cost cap.
 - [05-restarts.md](design/05-restarts.md): stalled runs, retries, backoff, handoff.
 - [05-restart-asks.md](design/05-restart-asks.md): runs that ask for paths or a dependency.
 - [05-restart-pauses.md](design/05-restart-pauses.md): claim pauses, rate limits, drains.
-- [05-alarms.md](design/05-alarms.md): alarm step: repeated errors, zero-token runs.
-- [05-sandbox.md](design/05-sandbox.md): sandbox interface, one git folder per run, guarded tools.
-- [05-merge-conflict.md](design/05-merge-conflict.md): update runs on unmergeable PRs, `/resolve`.
+- [05-alarms.md](design/05-alarms.md): repeated errors, zero-token runs.
+- [05-sandbox.md](design/05-sandbox.md): sandbox interface, run folders, tools.
+- [05-merge-conflict.md](design/05-merge-conflict.md): unmergeable PR updates, `/resolve`.
 - [05-ci-gate.md](design/05-ci-gate.md): CI workflow, check gate before merge.
-- [05-sources.md](design/05-sources.md): local items and startup, thread and outbox, CLI intake.
+- [05-sources.md](design/05-sources.md): local items, startup, thread, outbox, CLI intake.
 - [05-slack-intake.md](design/05-slack-intake.md): Slack presses, mentions, replies, emoji.
 - [05-github-sync.md](design/05-github-sync.md): GitHub client, forge PRs, call budget.
 - [05-stream-intake.md](design/05-stream-intake.md): stream intake, many sources, adopted PRs.
@@ -95,6 +95,7 @@ for a new topic. "§5" means `05-*`.
 - [09-dashboard-settings.md](design/09-dashboard-settings.md): Settings and Plugins.
 - [09-dashboard-system.md](design/09-dashboard-system.md): Work, Failures, Spend, Data.
 - [09-dashboard-workers.md](design/09-dashboard-workers.md): run timeline, dependency graph.
+- [09-dashboard-evals.md](design/09-dashboard-evals.md): a skill's evals page.
 - [09-dashboard-item.md](design/09-dashboard-item.md): item page, thread, transcripts.
 - [09-dashboard-item-commands.md](design/09-dashboard-item-commands.md): item commands, Merge button.
 - [09-status-banner.md](design/09-status-banner.md): supervisor banner.

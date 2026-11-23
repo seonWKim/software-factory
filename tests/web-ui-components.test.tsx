@@ -12,6 +12,7 @@ import { OverflowMenu, Tooltip } from "../web/src/components/ui/menu.js";
 import { Badge, StatusBadge, TONE_CLASS } from "../web/src/components/ui/badge.js";
 import { STATES } from "../src/shared/states.js";
 import { Card, CardSection } from "../web/src/components/ui/card.js";
+import { Chart } from "../web/src/components/ui/chart.js";
 import { Disclosure } from "../web/src/components/ui/disclosure.js";
 import { ListRow, ROW_TITLE } from "../web/src/components/ui/list-row.js";
 import { EmptyState, Kbd, Notice, PageHeader, PageToolbar } from "../web/src/components/ui/notice.js";
@@ -410,6 +411,31 @@ describe("DataTable", () => {
     setWidth(SM_PX);
     render(<DataTable label="T" columns={columns} rows={[]} rowKey={(r) => r.name} empty="None" />);
     expect(screen.getByText("None")).toBeTruthy();
+  });
+});
+
+describe("Chart", () => {
+  const pts = [
+    { key: "a", value: 0.5, caption: "Nov 1", text: "Nov 1: 50%" },
+    { key: "b", value: 1, caption: "Nov 9", text: "Nov 9: 100%" },
+  ];
+
+  it("draws one bar per point, each also as text, with the first and last captions", () => {
+    const { container } = render(<Chart label="Pass rate" points={pts} max={1} />);
+    const list = screen.getByRole("list", { name: "Pass rate" });
+    expect(list.querySelectorAll("li")).toHaveLength(pts.length);
+    expect(list.textContent).toBe("Nov 1: 50%Nov 9: 100%");
+    const bars = [...list.querySelectorAll("li > span[aria-hidden]")].map((b) => b.style.height);
+    expect(bars).toEqual(["50%", "100%"]);
+    expect(container.textContent).toContain("Nov 1");
+    expect(container.textContent).toContain("Nov 9");
+  });
+
+  it("scales to the largest value without max, and draws nothing without points", () => {
+    const { container } = render(<Chart label="Pass rate" points={[{ ...pts[0], value: 2 }, { ...pts[1], value: 4 }]} />);
+    expect([...container.querySelectorAll("li > span[aria-hidden]")].map((b) => b.style.height)).toEqual(["50%", "100%"]);
+    cleanup();
+    expect(render(<Chart label="Pass rate" points={[]} />).container.innerHTML).toBe("");
   });
 });
 
