@@ -173,7 +173,7 @@ function ReadingOrder({ entry, d, cited, applied }: { entry: DetailEntry; d: Rul
 /** The detail, read once when the card opens; "could not be read" when the ledger gave none or failed. */
 export function EntryDetail({ entry, applied }: { entry: DetailEntry; applied: AppliedRule[] }) {
   const q = useRuleEntry(entry.id, true);
-  if (q.isPending) return <Loading rows={2} />;
+  if (q.isPending) return <Loading rows={2} label="loading.ruleDetail" onRetry={() => void q.refetch()} />;
   const d = q.data?.detail ?? null;
   if (d !== null) return <ReadingOrder entry={entry} d={d} cited={q.data?.cited ?? {}} applied={applied} />;
   return (

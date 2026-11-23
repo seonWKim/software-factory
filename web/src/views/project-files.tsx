@@ -119,6 +119,8 @@ function Editor({ project, token, path, canWrite }: { project: string; token: st
   const [text, setText] = useState("");
   const [state, setState] = useState<SaveState>("idle");
   const [error, setError] = useState<string | null>(null);
+  // A Retry of the placeholder reads the file again.
+  const [reads, setReads] = useState(0);
   const latest = useRef("");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saving = useRef(false);
@@ -174,7 +176,7 @@ function Editor({ project, token, path, canWrite }: { project: string; token: st
         void saveRef.current();
       }
     };
-  }, [project, token, path]);
+  }, [project, token, path, reads]);
 
   const change = (value: string) => {
     setText(value);
@@ -183,7 +185,7 @@ function Editor({ project, token, path, canWrite }: { project: string; token: st
     timer.current = setTimeout(() => void saveRef.current(), SAVE_DELAY_MS);
   };
 
-  if (file === null) return error === null ? <Loading rows={4} /> : <p role="alert" className={ALERT}>{error}</p>;
+  if (file === null) return error === null ? <Loading rows={4} label="loading.file" onRetry={() => setReads((n) => n + 1)} /> : <p role="alert" className={ALERT}>{error}</p>;
   const id = `project-file-${path}`;
   return (
     <div className="flex min-w-0 flex-col gap-2">
@@ -286,7 +288,7 @@ export function ProjectFiles({ project, name, token, canWrite }: { project: stri
   const body =
     token === null ? <p className={muted}>{t("tasks.filesOff")}</p>
     : error !== null ? <p role="alert" className={ALERT}>{error}</p>
-    : root === null ? <Loading rows={3} />
+    : root === null ? <Loading rows={3} label="loading.projectFiles" onRetry={() => setReads((n) => n + 1)} />
     : root.folder === null ? <EmptyState icon={FolderOpen} title={t("tasks.noFolder")} description={t("tasks.noFolderHint")} action={setFolder} />
     : (
       <div className="flex min-w-0 flex-col gap-4 md:flex-row">

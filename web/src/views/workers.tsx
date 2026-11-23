@@ -275,10 +275,10 @@ export function WorkersPage() {
         <SegmentedControl label={t("workers.window")} options={WORKER_WINDOWS.map((w) => ({ id: w, label: w }))} value={win} onChange={setWin} />
       </PageToolbar>
       <Card title={t("workers.timeline.title")}>
-        {runs.data ? <Timeline data={runs.data} windowMs={WINDOW_MS[win]} highlight={highlight} /> : runs.isError ? <ErrorNote error={runs.error} /> : <Loading />}
+        {runs.data ? <Timeline data={runs.data} windowMs={WINDOW_MS[win]} highlight={highlight} /> : runs.isError ? <ErrorNote error={runs.error} /> : <Loading label="loading.timeline" onRetry={() => void runs.refetch()} />}
       </Card>
       <Card title={t("workers.graph.title")}>
-        {graph.data ? <DependencyGraph data={graph.data} highlight={highlight} onHighlight={setHighlight} /> : graph.isError ? <ErrorNote error={graph.error} /> : <Loading />}
+        {graph.data ? <DependencyGraph data={graph.data} highlight={highlight} onHighlight={setHighlight} /> : graph.isError ? <ErrorNote error={graph.error} /> : <Loading label="loading.graph" onRetry={() => void graph.refetch()} />}
       </Card>
     </div>
   );

@@ -1,7 +1,7 @@
 import { CalendarCheck } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { API, type ProjectChoice, type TaskRow, type TasksView, postTaskAction, useTasks } from "../api.js";
+import { API, type ItemRow, type ProjectChoice, type TaskRow, type TasksView, postTaskAction, useItems, useTasks } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { announceStatus } from "../components/ui/dialog.js";
 import { EmptyState, PageHeader, PageToolbar } from "../components/ui/notice.js";
@@ -13,6 +13,11 @@ import { useUrlParam } from "../lib/url-param.js";
 import { t } from "../i18n/index.js";
 import { type QuickAddKey, isUndo } from "../keys.js";
 import { NeedsYou } from "./task-work.js";
+import { needGroup, needsYou } from "./common.js";
+import { Link } from "../nav.js";
+import { itemPath } from "../pages.js";
+import { LINK_CLASS } from "../components/ui/link-style.js";
+import { shortSource } from "../lib/format.js";
 import { ProjectFiles } from "./project-files.js";
 import { AddProjectDialog, DeleteProjectDialog } from "./tasks/dialogs.js";
 import { QuickAdd } from "./tasks/forms.js";
@@ -118,6 +123,33 @@ function useUndoDone(token: string | null) {
   return { error, completed: (task: TaskRow) => void done.current.push(task) };
 }
 
+/** An item's name in a sentence: its title, else its short source number. */
+const itemName = (it: Pick<ItemRow, "title" | "source">): string => it.title ?? shortSource(it.source.id);
+
+/**
+ * Needs you's overlap note (design 09-dashboard-tasks): each ready-to-merge row whose stored changed files share an exact
+ * path with another ready-to-merge item (the items API's `overlaps`) names the first shared path and the other item. Read
+ * from the same items read as Needs you, so it follows the project tabs; nothing when no ready item overlaps.
+ */
+function OverlapNotes({ project, linked }: { project: string | null; linked: ReadonlySet<string> | null }) {
+  const rows = needsYou(useItems(project).data?.items ?? []).filter((it) => needGroup(it) === "merge" && (it.overlaps?.length ?? 0) > 0);
+  if (linked === null || rows.length === 0) return null;
+  return (
+    <Card title={t("tasks.overlaps")}>
+      <ul aria-label={t("tasks.overlaps")} className="space-y-1 text-sm">
+        {rows.flatMap((it) => it.overlaps!.map((o) => {
+          const vars = { item: itemName(it), other: o.title ?? shortSource(o.source_id), path: o.paths[0] ?? "", count: o.paths.length };
+          return (
+            <li key={`${it.id}:${o.id}`} data-overlap={it.id} className="text-pretty break-words">
+              <Link href={itemPath(it.id)} className={LINK_CLASS}>{t(o.paths.length > 1 ? "tasks.overlapMore" : "tasks.overlap", vars)}</Link>
+            </li>
+          );
+        }))}
+      </ul>
+    </Card>
+  );
+}
+
 /** The project tab's choice (the `project` query parameter): null for All projects. */
 const useProjectParam = (): [string | null, (slug: string | null) => void] => useUrlParam("project");
 
@@ -196,10 +228,13 @@ export function TasksPage() {
     )}
     <div className="flex flex-col gap-6">
       {files ? (
-        !v ? <Loading rows={3} /> : <ProjectFiles project={project} name={selected?.name ?? `+${project}`} token={v.csrf_token} canWrite={v.can_build} />
+        !v ? <Loading rows={3} label="loading.tasks" onRetry={() => void q.refetch()} /> : <ProjectFiles project={project} name={selected?.name ?? `+${project}`} token={v.csrf_token} canWrite={v.can_build} />
       ) : (
       <>
-      <NeedsYou project={project} linked={linked} />
+      <div>
+        <NeedsYou project={project} linked={linked} />
+        <OverlapNotes project={project} linked={linked} />
+      </div>
       <div className="space-y-1">
         <QuickAdd token={v?.csrf_token ?? null} addKey={v?.add_key ?? "enter"} project={project} />
         {undo.error !== null && (
@@ -211,7 +246,7 @@ export function TasksPage() {
       <div>
         <Card label={t("tasks.listLabel")}>
           <div className="space-y-3">
-            {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <Rows.Provider value={{ token, titles, projects: known.current, completed: undo.completed }}>
+            {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} label="loading.tasks" onRetry={() => void q.refetch()} /> : <Rows.Provider value={{ token, titles, projects: known.current, completed: undo.completed }}>
                 <OpenTasks key={project ?? ""} v={v} />
               </Rows.Provider>}
             {v?.can_build && hasTasks(v) && <p className={muted}>{t("tasks.buildNote")}</p>}

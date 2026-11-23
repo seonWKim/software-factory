@@ -1,4 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
+import { OctagonX } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { API, type AutoStop, type FactoryState, type MigrateDryRun, type PausesView, type SettingsView, type SupervisorView, type SystemAction, postMigrate, postResume, postSupervisor, useApi } from "../api.js";
 import { postJson } from "../api/client.js";
@@ -11,6 +12,7 @@ import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { ListRow, ROW_TITLE } from "../components/ui/list-row.js";
 import { type MenuItem, OverflowMenu } from "../components/ui/menu.js";
+import { useWide } from "../components/ui/parts.js";
 import { When, useNow } from "./common.js";
 import { alarmAnchor } from "./settings/general.js";
 import { Outcome, useWrite } from "./settings-file-keys.js";
@@ -203,7 +205,7 @@ function OwnerPauseRow({ action, since, token }: { action: SystemAction; since: 
 const STOP_PATH = "/api/v1/agents/stop";
 
 /**
- * Stop all agents in the top bar (design 09-dashboard-shell): a secondary button that opens a confirm dialog, which posts
+ * Stop all agents in the top bar (design 09-dashboard-shell): a secondary button (icon-only below `sm`, its name as `aria-label`) that opens a confirm dialog, which posts
  * the stop and then reloads the pauses and the overview, so Needs you shows the stop with Resume now. Hidden while the
  * agents are stopped (Resume now is the way back) and while the server has no pause routes.
  */
@@ -213,6 +215,7 @@ export function StopAllAgents() {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const wide = useWide();
   const token = view?.csrf_token ?? null;
   if (token === null || view?.pauses.some((p) => p.name === OWNER_PAUSE)) return null;
   const close = () => {
@@ -236,7 +239,13 @@ export function StopAllAgents() {
   };
   return (
     <>
-      <Button data-testid="stop-all-agents" variant="secondary" className="shrink-0" onClick={() => setOpen(true)}>{t("stop.button")}</Button>
+      {wide ? (
+        <Button data-testid="stop-all-agents" variant="secondary" className="shrink-0" onClick={() => setOpen(true)}>{t("stop.button")}</Button>
+      ) : (
+        <Button data-testid="stop-all-agents" variant="secondary" size="icon" aria-label={t("stop.button")} onClick={() => setOpen(true)}>
+          <OctagonX aria-hidden className="size-4" />
+        </Button>
+      )}
       {open && (
         <Dialog title={t("stop.title")} consequence={t("stop.consequence")} confirmLabel={t("stop.button")} confirmDisabled={busy} error={error}
           onConfirm={() => void confirm()} onClose={close} />

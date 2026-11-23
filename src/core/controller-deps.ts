@@ -5,8 +5,9 @@
 import type { FactoryConfig } from "./config.js";
 import type { TickLease } from "./lease.js";
 import { type Logger, errorText } from "./log.js";
-import { type ScheduleRun, type ScheduleStore, runDueSchedules } from "./schedule.js";
+import { type CheckpointStore, type Schedule, type ScheduleRun, checkpointAnswer, runDueSchedules } from "./schedule.js";
 import type { LearnedSettingsSource, LiveSettings } from "./settings.js";
+import type { Timestamp } from "./types.js";
 import type { AuthAction, AuthDecision, AuthProvider } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
@@ -168,28 +169,42 @@ export interface ScheduledAction {
 }
 
 /**
- * Binds `action` to `store`'s claims (design 08-schedules, phase 2): each pass claims the schedules due at the time
- * it is given (runDueSchedules, no clock read), runs the action once per fired occurrence in claim order, then ends
- * the run, whether the action returned or threw (a throw is logged), so a failed action never leaves the schedule
- * refusing its next occurrences. Safe on several replicas and safe to run twice: a lost or repeated claim fires nothing.
+ * Binds `action` to `store`'s claims (design 08-schedules): each pass claims the schedules due at the time it is
+ * given (runDueSchedules, no clock read), runs the action once per fired occurrence in claim order, then ends the
+ * run, whether the action returned or threw (a throw is logged), so a failed action never leaves the schedule
+ * refusing its next occurrences. Then each occurrence held at a checkpoint gets its answer from its item in
+ * `project` (filed on the first pass that sees it): approved, the cap is raised and it runs as above; rejected, its
+ * row ends `rejected`. Safe on several replicas and safe to run twice: a lost or repeated claim fires nothing.
  */
-export function scheduledAction(store: ScheduleStore, action: ScheduleAction, log: Logger): ScheduledAction {
+export function scheduledAction(store: CheckpointStore, action: ScheduleAction, log: Logger, project: string): ScheduledAction {
+  const runOnce = async (schedule: Schedule, run: ScheduleRun, running_since: Timestamp | null) => {
+    try {
+      await action.run(schedule, run.occurrence_at);
+    } catch (err) {
+      log.warn("schedule action failed", { schedule_id: run.schedule_id, occurrence_at: run.occurrence_at, error: errorText(err) });
+    } finally {
+      if (running_since !== null) await store.endScheduleRun(schedule.id, running_since);
+    }
+  };
   return {
     async fireDue(now) {
       const { fired } = await runDueSchedules(store, now);
-      if (fired.length === 0) return fired;
+      const held = await store.listHeldScheduleRuns();
+      if (fired.length === 0 && held.length === 0) return fired;
       // The claim set `running_since`; the stored row carries it, and endScheduleRun clears it only while it still holds.
       const byId = new Map((await store.listSchedules()).map((s) => [s.id, s]));
       for (const run of fired) {
         const schedule = byId.get(run.schedule_id);
+        if (schedule) await runOnce(schedule, run, schedule.running_since);
+      }
+      for (const run of held) {
+        const schedule = byId.get(run.schedule_id);
         if (!schedule) continue;
-        try {
-          await action.run(schedule, run.occurrence_at);
-        } catch (err) {
-          log.warn("schedule action failed", { schedule_id: run.schedule_id, occurrence_at: run.occurrence_at, error: errorText(err) });
-        } finally {
-          if (schedule.running_since !== null) await store.endScheduleRun(schedule.id, schedule.running_since);
-        }
+        const a = await checkpointAnswer(store, project, schedule, run);
+        if (a.answer === "rejected") await store.rejectHeldScheduleRun(schedule.id, run.occurrence_at);
+        if (a.answer !== "approved") continue;
+        const since = await store.resumeHeldScheduleRun(schedule.id, run.occurrence_at, a.token_cap);
+        if (since !== null) await runOnce({ ...schedule, token_cap: a.token_cap, running_since: since }, run, since);
       }
       return fired;
     },

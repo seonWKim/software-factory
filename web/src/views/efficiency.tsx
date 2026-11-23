@@ -210,7 +210,7 @@ export function EfficiencyTab() {
   const v = q.data;
   return (
     <Card id="efficiency" title={t("efficiency.title")}>
-      {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={4} /> : (() => {
+      {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={4} label="loading.efficiency" onRetry={() => void q.refetch()} /> : (() => {
         const weeks = v.week_figures;
         const week = weeks.find((w) => `${w.start}T00:00:00.000Z` === picked) ?? weeks.at(-1)!;
         const weekStart = `${week.start}T00:00:00.000Z`;

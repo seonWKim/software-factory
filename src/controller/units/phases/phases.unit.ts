@@ -1,15 +1,16 @@
 // Split specs: the approval that files one phase per sub-issue through outbound, phase holds and releases, closing a
 // finished split. Moved out of the legacy controller (RFC 0015 M5); its store I/O is still inline (unit-purity ratchet).
 
-import { type TriagePhase, parseJudge, parseTriage } from "../../../core/outputs.js";
+import { type TriageOutput, type TriagePhase, parseJudge, parseTriage } from "../../../core/outputs.js";
 import { failureClass, runKey, sameStep, takenOver } from "../../../core/policy.js";
 import { specDecisionDetail } from "../../../core/standing.js";
-import { PHASE_HOLD, PHASES_OPEN, SPLIT_APPROVED, SPLIT_FILING, goalLinesText, parseSubIssues, phaseIssueBody, phaseLinkDetail, phaseMarker, phaseTitle } from "../../../core/split.js";
+import { PHASE_HOLD, PHASES_OPEN, SPLIT_APPROVED, SPLIT_FILING, atSizeCheckpoint, goalLinesText, sizeCaps, parseSubIssues, phaseIssueBody, phaseLinkDetail, phaseMarker, phaseTitle } from "../../../core/split.js";
 import { type Actor, type Run, type SourceRef, type StateChange, type StateChangeDetail, type WorkItem, type WorkItemId, runTokenCount } from "../../../core/types.js";
 import type { ActionRow } from "../../../outbound/index.js";
 import { type Decision, DELIVERY_FAILED, type Refusal, SYSTEM, completed, splitFiling, splitOpen, footerAfter } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
+import { FIX_PHASE_CAP, GOAL_LIMIT, GOAL_PHASE_ADDED, GOAL_QUESTION, JUDGE_FAILED, JUDGE_QUEUED, JUDGE_SKIPPED, JUDGE_VERDICT, fixPhases, goalLines, judgeKey, judgeable, jsonStrings } from "./goal.js";
 
 /** Held phases and open split parents looked at per intake tick (design 2026-11-01). */
 const PHASE_BATCH = 50;
@@ -41,51 +42,18 @@ function phaseBody(it: WorkItem, f: PhaseFiling): string {
   return phaseIssueBody({ parent: it.source, phase: f.phase, index: f.index, total: f.total, depends_on: f.prev });
 }
 
-/** State change reason on a goal split's parent when its judge run for a phase was queued; detail: the phase and its merge sha. */
-const JUDGE_QUEUED = "judge_queued";
-/** State change reason on the parent applying a judge's verdict: detail `phase`, `verdict`, `reason`, `applied` (and a fix's fields). */
-const JUDGE_VERDICT = "judge_verdict";
-/** State change reason on the parent when its judge run found no prompts/judge.md: the phase counts as unjudged, as with no goal. */
-const JUDGE_SKIPPED = "judge_skipped";
-/** State change reason on the parent when its judge run reached a retry limit: the goal stops as a goal question. */
-const JUDGE_FAILED = "judge_failed";
-/** blocked_reason (with `blocked_on: human`) of a goal split whose judge answered ask, or next on its last phase, or failed. */
-const GOAL_QUESTION = "goal_question";
-/** blocked_reason (with `blocked_on: human`) of a goal split whose judge proposed a fix with the fix cap reached. */
-const GOAL_LIMIT = "goal_limit";
-/** State change reason on the parent recording a fix phase: detail the judged `phase`, the verdict, `added_phase`, `sub_issue`. */
-const GOAL_PHASE_ADDED = "goal_phase_added";
-/** Fix phases a goal files before the owner decides on the next one (design 04-split-specs, decision 3). */
-const FIX_PHASE_CAP = 2;
-/** The judge run's key for phase `phase` of goal split `parent`: one per phase (design 04-split-specs). */
-const judgeKey = (parent: WorkItemId, phase: number): string => `judge:${parent}:${phase}`;
-
-/** A detail field holding a JSON array of strings, or null. */
-function jsonStrings(v: unknown): string[] | null {
-  try {
-    const x: unknown = typeof v === "string" ? JSON.parse(v) : null;
-    return Array.isArray(x) && x.every((l) => typeof l === "string") ? x : null;
-  } catch {
-    return null;
-  }
-}
-/** The goal lines a split_approved detail stores (`goal_done_when`, a JSON array), or null for a split without a goal. */
-const goalLines = (d: StateChangeDetail | null | undefined): string[] | null => (jsonStrings(d?.goal_done_when)?.length ? jsonStrings(d?.goal_done_when) : null);
 /** The fix a judge verdict's detail stores (`fix_*`), checked as parseJudge checks a fix (its reason a placeholder); null for none. */
 function storedFix(d: StateChangeDetail): TriagePhase | null {
-  const r = parseJudge({ verdict: "fix", reason: "stored", fix: { title: d.fix_title, problem: d.fix_problem, done_criteria: jsonStrings(d.fix_done_criteria), allowed_paths: jsonStrings(d.fix_allowed_paths) } });
+  // parseJudge needs a non-empty reason; this one is a placeholder, never a state change's reason.
+  const placeholder = "stored";
+  const r = parseJudge({ verdict: "fix", reason: placeholder, fix: { title: d.fix_title, problem: d.fix_problem, done_criteria: jsonStrings(d.fix_done_criteria), allowed_paths: jsonStrings(d.fix_allowed_paths) } });
   return r.ok ? (r.value.fix ?? null) : null;
 }
-/** The goal_phase_added changes among `changes`: one per fix phase filed. */
-const fixPhases = (changes: readonly StateChange[]): StateChange[] => changes.filter((c) => c.reason === GOAL_PHASE_ADDED && typeof c.detail?.sub_issue === "string");
 /** The source ids of a split's recorded phases in order: its last split_approved's `sub_issues`, then each goal_phase_added's after it. */
 function recordedIds(changes: readonly StateChange[]): string[] | null {
   const at = changes.findLastIndex((c) => c.reason === SPLIT_APPROVED), ids = parseSubIssues(changes[at]?.detail);
   return ids && [...ids, ...fixPhases(changes.slice(at + 1)).map((c) => String(c.detail?.sub_issue))];
 }
-
-/** A goal phase the judge reads: closed completed with a merge sha. */
-const judgeable = (p: WorkItem): p is WorkItem & { phase: number; merge_sha: string } => completed(p) && p.phase !== null && typeof p.merge_sha === "string" && p.merge_sha !== "";
 
 /** Split specs: the approval that files one phase per sub-issue, phase holds and releases, closing a finished split. */
 export class PhasesUnit {
@@ -93,10 +61,12 @@ export class PhasesUnit {
 
   /**
    * phases_auto_approve: a phase of a split whose parent the owner approved (its phases are open) needs no
-   * `/approve` of its own. Off, not a phase, or a parent that is gone or no longer waiting on its phases: false.
+   * `/approve` of its own for `spec`. Off, not a phase, a parent that is gone or no longer waiting on its phases, a
+   * spec that is itself a split (its /approve files issues), or one at its own size checkpoint: false.
    */
-  async approvedByParent(it: WorkItem): Promise<boolean> {
+  async approvedByParent(it: WorkItem, spec: TriageOutput): Promise<boolean> {
     if (this.c.k.cfg.phases_auto_approve !== true || it.parent_id === null) return false;
+    if (spec.phases || atSizeCheckpoint(spec, sizeCaps(it, this.c.k.settings(it.project)))) return false;
     const parent = await this.c.k.d.store.getWorkItem(it.parent_id);
     return parent !== null && splitOpen(parent);
   }
@@ -108,12 +78,18 @@ export class PhasesUnit {
 
   /** The split of the latest succeeded triage run: its phases and the goal lines of the same run, or null for no split. */
   private async specSplit(it: WorkItem): Promise<{ phases: TriagePhase[]; goal: string[] | undefined } | null> {
+    const spec = await this.latestSpec(it);
+    return spec?.phases ? { phases: spec.phases, goal: spec.goal_done_when } : null;
+  }
+
+  /** The spec of the latest succeeded, applied triage run, or null when there is none or it does not parse. */
+  private async latestSpec(it: WorkItem): Promise<TriageOutput | null> {
     const run = (await this.c.k.d.store.listRuns(it.id))
       .filter((r) => r.kind === "triage" && r.outcome?.status === "succeeded" && r.acknowledged_at !== null)
       .at(-1);
     if (run?.outcome?.status !== "succeeded") return null;
     const parsed = parseTriage(run.outcome.data.spec);
-    return parsed.ok && parsed.value.phases ? { phases: parsed.value.phases, goal: parsed.value.goal_done_when } : null;
+    return parsed.ok ? parsed.value : null;
   }
 
   /**
@@ -326,9 +302,10 @@ export class PhasesUnit {
   /** phases_auto_approve on a phase spec already waiting at the gate: approved as the parent's /approve covers it. */
   async approvePhaseSpec(id: WorkItemId): Promise<void> {
     const it = await this.c.k.d.store.getWorkItem(id);
-    if (!it || !phaseSpecPending(it) || !(await this.approvedByParent(it))) return;
-    // A phase whose own triage proposed phases still waits for a human: that /approve files issues.
-    if (await this.specPhases(it)) return;
+    if (!it || !phaseSpecPending(it)) return;
+    // A phase whose own triage proposed phases, or whose spec is at its size checkpoint, still waits for a human.
+    const spec = await this.latestSpec(it);
+    if (!spec || !(await this.approvedByParent(it, spec))) return;
     await this.c.unit("transitions").decide(id, (cur) => phaseSpecPending(cur) ? {
       patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null }, actor: SYSTEM, reason: "phase_spec_auto_approved",
       detail: { parent_work_item_id: cur.parent_id! }, enqueue: { kind: "implement", idempotency_key: runKey(cur, "implement") },
