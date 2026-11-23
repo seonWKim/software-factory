@@ -1,8 +1,9 @@
 import type { StatsConfig } from "./config.js";
 import { type OwnerFigures, ownerFigures } from "./efficiency.js";
+import { isHotspot } from "./hotspots.js";
 import type { MergeEvaluation } from "./merge-evaluation.js";
 import { DAY_MS } from "./spend.js";
-import type { Stage, Tier, VerdictSeverity, WorkItemId, WorkItemOrigin } from "./types.js";
+import type { SourceRef, Stage, Tier, VerdictSeverity, WorkItemId, WorkItemOrigin } from "./types.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 
 // Per-tier human-correction numbers and the per-tier merge record for `factory stats` (design §6 Measurement).
@@ -80,6 +81,46 @@ export interface StatsReport {
   owner?: OwnerFigures;
   /** Finished `interactive` runs (design §5, 2026-11-01), any item, and their reported tokens. Counts only, no ids. */
   interactive?: { runs: number; tokens: number };
+  /** What the factory filed on itself in the last 30 days, per kind (design 07-self-improvement). Absent in reports built before it existed. */
+  filings?: FilingKindRow[];
+}
+
+/** The kinds of item the factory files on itself: a hot file, a recurring failure pattern, a promoted entity proposal. */
+export const FILING_KINDS = ["hotspot", "failure_pattern", "proposal"] as const;
+export type FilingKind = (typeof FILING_KINDS)[number];
+
+/** One kind's filings in the window: items filed, and of those, closed as completed (`done`) or as rejected. */
+export interface FilingKindRow {
+  kind: FilingKind;
+  filed: number;
+  done: number;
+  rejected: number;
+}
+
+/** The window of the filings block: the last 30 days. */
+export const FILING_WINDOW_DAYS = 30;
+
+/**
+ * The filings block: the filed patterns of every project claimed in the last 30 days (a hot file's row is `hotspot`, any
+ * other `failure_pattern`; a refiled pattern counts only its latest filing, the one its row holds) and the promoted
+ * proposals with a filed item decided in the window (from `since`, the store clock's). Each filed item's `close_reason` is read now: one item read per filing.
+ */
+export async function collectFilings(store: Pick<FactoryStore, "listFiledPatternsWithin" | "listProposals" | "getWorkItemBySource">): Promise<FilingKindRow[]> {
+  const { since, rows: patterns } = await store.listFiledPatternsWithin(FILING_WINDOW_DAYS * DAY_MS);
+  const filed: { kind: FilingKind; ref: SourceRef }[] = [];
+  for (const p of patterns) if (p.filed_ref) filed.push({ kind: isHotspot(p) ? "hotspot" : "failure_pattern", ref: p.filed_ref });
+  for (const p of await store.listProposals({ state: "promoted" })) {
+    if (p.filed_ref && (p.decided_at ?? p.created_at) >= since) filed.push({ kind: "proposal", ref: p.filed_ref });
+  }
+  const rows = new Map(FILING_KINDS.map((kind) => [kind, { kind, filed: 0, done: 0, rejected: 0 }]));
+  for (const f of filed) {
+    const row = rows.get(f.kind)!, item = await store.getWorkItemBySource(f.ref.type, f.ref.id);
+    row.filed++;
+    if (item?.stage !== "CLOSED") continue;
+    if (item.close_reason === "completed") row.done++;
+    if (item.close_reason === "rejected") row.rejected++;
+  }
+  return [...rows.values()];
 }
 
 export const STATS_TIERS: readonly (Tier | null)[] = [1, 2, 3, 4, 5, null];
@@ -230,7 +271,7 @@ export async function collectAutonomy(store: Pick<FactoryStore, "listStatsRecord
 
 /** Reads through read-only store methods; the narrow type keeps every write method out of reach. */
 export async function collectStats(
-  store: Pick<FactoryStore, "listStatsRecords" | "listRunsByKind" | "listMergeEvaluations" | "listStateChanges">,
+  store: Pick<FactoryStore, "listStatsRecords" | "listRunsByKind" | "listMergeEvaluations" | "listStateChanges" | "listFiledPatternsWithin" | "listProposals" | "getWorkItemBySource">,
   config: StatsConfig,
 ): Promise<StatsReport> {
   const records = await store.listStatsRecords([STATS_REASONS.reject, STATS_REASONS.retry]);
@@ -239,7 +280,8 @@ export async function collectStats(
   const autonomy = await collectAutonomy(store);
   const merges = await collectTierMerges(store);
   const owner = await collectOwnerFigures(store);
-  return { config, tiers: aggregateStats(records, config), adopted: aggregateAdopted(records, config), autonomy, merges, owner, interactive };
+  const filings = await collectFilings(store);
+  return { config, tiers: aggregateStats(records, config), adopted: aggregateAdopted(records, config), autonomy, merges, owner, interactive, filings };
 }
 
 /** The one Autonomy line of `factory stats`. */
@@ -294,6 +336,18 @@ function formatTierMerges(rows: readonly TierMergeRow[]): string[] {
   ];
 }
 
+const KIND_LABEL: Record<FilingKind, string> = { hotspot: "hotspot", failure_pattern: "failure pattern", proposal: "proposal" };
+
+/** The filings table of `factory stats`: one row per kind, then what it counts. */
+function formatFilings(rows: readonly FilingKindRow[]): string[] {
+  return [
+    "",
+    ...columns(["filed_by_factory", "filed", "done", "rejected"], rows.map((r) => [KIND_LABEL[r.kind], String(r.filed), String(r.done), String(r.rejected)])),
+    "",
+    `filed: items the factory filed on itself in the last ${FILING_WINDOW_DAYS} days (a refiled pattern counts its latest filing); done and rejected: those closed as completed or rejected.`,
+  ];
+}
+
 /** The text table for `factory stats`. */
 export function formatStatsText(report: StatsReport): string {
   const header = ["tier", "items", "explicit", "implicit", "feedback", "rate", "/reject", "/retry", "token_cost"];
@@ -325,6 +379,7 @@ export function formatStatsText(report: StatsReport): string {
     ...(report.interactive ? [`interactive sessions: ${report.interactive.runs} finished, ${report.interactive.tokens} tokens reported (factory session).`] : []),
     ...(report.merges ? formatTierMerges(report.merges) : []),
     ...(report.owner ? formatOwner(report.owner) : []),
+    ...(report.filings ? formatFilings(report.filings) : []),
   ].join("\n");
 }
 
