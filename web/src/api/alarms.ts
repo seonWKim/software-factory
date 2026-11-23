@@ -5,7 +5,7 @@ import { t } from "../i18n/index.js";
 import { postJson } from "./client.js";
 
 /** POST /api/v1/alarms/dismiss with `{ alert_id }`: hides that alarm until its pattern alerts again. */
-export const ALARM_DISMISS_PATH = "/api/v1/alarms/dismiss";
+const ALARM_DISMISS_PATH = "/api/v1/alarms/dismiss";
 
 /** Dismisses one alarm. A refusal (403, 404, …) comes back as `{ ok: false, error }`. */
 export async function postDismissAlarm(token: string, alertId: string): Promise<{ ok: true; dismissed: boolean } | { ok: false; error: string }> {
