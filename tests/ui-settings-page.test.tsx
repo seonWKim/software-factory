@@ -43,7 +43,7 @@ const view: SettingsView = {
     row("workers", { value: "5", max: 8, capped_at: null, applies_at: "the worker pool's next tick" }),
     row("models", { kind: "models", value: '{"cheap":"haiku","standard":"sonnet","strong":"opus"}', source: "default", file_value: null, applies_at: "the next run that starts" }),
     row("model_by", { kind: "json", value: MODEL_BY, file_value: MODEL_BY, default_value: MODEL_BY, applies_at: "the next run that starts" }),
-    row("hold_policy", { kind: "json", value: '{"mode":"hold"}', source: "default", file_value: null, default_value: '{"mode":"hold"}', applies_at: "the next claim" }),
+    row("hold_policy", { kind: "json", value: '{"mode":"hold"}', source: "override", file_value: null, default_value: '{"mode":"run_after_minutes","minutes":120}', applies_at: "the next claim" }),
     row("message_style", { kind: "text", value: '"Short."', file_value: '"Short."', default_value: '""' }),
     row("phases_auto_approve", { kind: "boolean", value: "false", source: "default", file_value: null, applies_at: "the next phase spec triage writes" }),
     row("auto_grant_test_paths", { kind: "boolean", value: "true", default_value: "true", file_value: null, source: "default" }),
@@ -360,7 +360,7 @@ describe("Settings page", () => {
     // A short object is listed in full, with no summary; its default too.
     const hold = rowOf(table, "hold_policy");
     expect(hold.querySelectorAll("summary")).toHaveLength(1); // its Details only
-    expect(fileValue(hold).textContent).toBe("default: modehold");
+    expect(fileValue(hold).textContent).toBe("default: moderun_after_minutesminutes120");
   });
 
   it("shows a millisecond key's File value like its Value (30m), and an empty File value or default as empty", async () => {
@@ -396,7 +396,7 @@ describe("Settings page", () => {
     expect(table).toBeTruthy();
   });
 
-  it("hold_policy is a select (hold, start, wait) with the server mode's meaning in each label; wait adds minutes, starting at 20", async () => {
+  it("hold_policy is a select (hold, start, wait) with the server mode's meaning in each label; wait adds minutes, starting at 120", async () => {
     const table = await show();
     const hold = rowOf(table, "hold_policy");
     const select = within(hold).getByRole("combobox", { name: `${keyLabel("hold_policy")}` });
@@ -413,10 +413,10 @@ describe("Settings page", () => {
     fireEvent.click(within(hold).getByRole("button", { name: `Save ${keyLabel("hold_policy")}` }));
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(JSON.parse(posts[0]!.init.body as string)).toEqual({ action: "set", key: "hold_policy", value: '{"mode":"run"}' });
-    // wait shows minutes at 20 and writes run_after_minutes with them.
+    // wait shows minutes at 120 (the default hold limit) and writes run_after_minutes with them.
     pick(select, "wait");
     const minutes = within(hold).getByLabelText(`${keyLabel("hold_policy")} minutes`) as HTMLInputElement;
-    expect(minutes.value).toBe("20");
+    expect(minutes.value).toBe("120");
     fireEvent.change(minutes, { target: { value: "5" } });
     fireEvent.click(within(hold).getByRole("button", { name: `Save ${keyLabel("hold_policy")}` }));
     await waitFor(() => expect(posts).toHaveLength(2));

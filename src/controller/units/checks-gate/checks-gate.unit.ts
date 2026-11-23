@@ -4,7 +4,7 @@
 import { prNumber } from "../../../core/change-ref.js";
 import { redact } from "../../../core/checks.js";
 import { errorText } from "../../../core/log.js";
-import { parseReview } from "../../../core/outputs.js";
+import { type ReviewOutput, parseReview } from "../../../core/outputs.js";
 import { failingTestDetails } from "../../../core/output-summary.js";
 import { lastPrNotes } from "../../../core/pr-body.js";
 import type { BaseChecks, PrChecks } from "../../../interfaces/forge.js";
@@ -29,6 +29,10 @@ const MAX_FAILING_CHARS = 4000;
 const MAX_COMPARED_TESTS = 200;
 /** blocked_reason prefix (with `blocked_on: ci`) of a PR whose every failed check fails on the base too; the first name follows. */
 const MAIN_RED = "main is red: ";
+/** The state changes whose `note` the review's "Notes from the approver" reads (the worker's approverNotes; `owner_note`: commands/note.ts). */
+const NOTE_REASONS = ["spec_approved", "floor_tier_approved", "rule_of_two_approved", "retry_requested", "owner_note"];
+/** The item fields that hold the spec the review reads; a state change that changes one wrote a new spec. */
+const SPEC_FIELDS = ["problem", "done_criteria", "allowed_paths"] as const;
 /** Items waiting on checks looked at per tick. */
 const CHECKS_BATCH = 50;
 /** Check names kept per decision and per review input, and characters per name. */
@@ -329,12 +333,54 @@ export class ChecksGateUnit {
 
   /** Whether the item's latest review with a verdict, other than run `self`, passed. */
   async lastVerdictPassed(id: WorkItemId, self: RunId): Promise<boolean> {
+    return (await this.lastVerdict(id, self))?.verdict === "pass";
+  }
+
+  /** The item's latest review with a verdict, other than run `self`, and that verdict; null when none parses. */
+  async lastVerdict(id: WorkItemId, self: RunId | null = null): Promise<{ run: Run; verdict: ReviewOutput["verdict"] } | null> {
     const last = (await this.c.k.reader.listRuns(id))
       .filter((r) => r.kind === "review" && r.id !== self && r.outcome?.status === "succeeded" && r.outcome.data.review != null)
       .at(-1);
-    if (last?.outcome?.status !== "succeeded") return false;
+    if (last?.outcome?.status !== "succeeded") return null;
     const parsed = parseReview(last.outcome.data.review);
-    return parsed.ok && parsed.value.verdict === "pass";
+    return parsed.ok ? { run: last, verdict: parsed.value.verdict } : null;
+  }
+
+  /**
+   * What the review reads that changed after `verdict` started (design 05-ci-gate, 2026-11-23): an approver note (an
+   * approval's, a `/retry` note or an owner `/note`, as the worker's "Notes from the approver" reads them) or a new
+   * spec (problem, done criteria or allowed paths). The newest note's text, or null for a spec; null when nothing is newer.
+   */
+  async newerThanVerdict(it: WorkItem, verdict: Run): Promise<{ what: "note" | "spec"; note: string | null } | null> {
+    const since = verdict.started_at ?? verdict.created_at;
+    const later = (await this.c.k.reader.listStateChanges(it.id)).filter((c) => c.at > since);
+    const note = later.filter((c) => NOTE_REASONS.includes(c.reason) && typeof c.detail?.note === "string" && c.detail.note.trim() !== "").at(-1);
+    if (note) return { what: "note", note: String(note.detail!.note) };
+    return later.some((c) => SPEC_FIELDS.some((f) => f in c.changes)) ? { what: "spec", note: null } : null;
+  }
+
+  /**
+   * A review's `bug` verdict on a factory branch (design 05-ci-gate): back to implement with its findings
+   * (loop_count + 1), or at `max_loops` a block on a human with one comment keyed on `run`. A fresh verdict and an
+   * unchanged head after one (run-results' unchangedHead) both send the item back here; `detail` says which.
+   */
+  async reviewBug(it: WorkItem, run: Run, fields: { tier?: Tier; token_cost?: number }, detail?: NonNullable<Decision>["detail"]): Promise<Decision> {
+    const loop = it.loop_count + 1;
+    const extra = detail ? { detail } : {};
+    if (loop >= this.c.k.cfg.max_loops) {
+      const patch = { ...fields, blocked_on: "human" as const, blocked_reason: "max_loops" };
+      await this.c.unit("outbox").comment(it, `max-loops:${run.id}`,
+        `Review found bugs ${loop} times (limit ${this.c.k.cfg.max_loops}). A human needs to decide.\n\n${footerAfter(it, patch)}`);
+      return { patch, actor: SYSTEM, reason: "max_loops", ...extra, ack_run: run.id };
+    }
+    return {
+      patch: { ...fields, stage: "RUNNING", blocked_on: "none", blocked_reason: null, loop_count: loop },
+      actor: SYSTEM,
+      reason: "review_bug",
+      ...extra,
+      ack_run: run.id,
+      enqueue: { kind: "implement", idempotency_key: runKey({ ...it, loop_count: loop }, "implement") },
+    };
   }
 
   /** The PR's checks, from the forge whatever source the item came from; no forge counts as passed, a forge error as pending (logged). */
