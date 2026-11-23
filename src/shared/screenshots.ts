@@ -62,8 +62,8 @@ export function touchesUi(files: readonly string[] | null | undefined, paths: re
 }
 
 /** The placeholders in a page path the capture script fills with its fixture's item and run IDs. */
-export const FIXTURE_ITEM = ":item";
-export const FIXTURE_RUN = ":run";
+const FIXTURE_ITEM = ":item";
+const FIXTURE_RUN = ":run";
 
 /**
  * The pages a screenshot run captures: every sidebar page `web/src/pages.ts` lists (as check:responsive reads it), then
@@ -76,7 +76,7 @@ export function capturePages(pagesTs: string): ScreenshotPage[] {
 }
 
 /** One shot: a page at a size and theme. */
-export interface Shot {
+interface Shot {
   readonly page: ScreenshotPage;
   readonly width: number;
   readonly height: number;
