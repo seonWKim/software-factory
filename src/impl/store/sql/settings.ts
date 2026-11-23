@@ -1,11 +1,12 @@
-// Settings SQL kept out of sql-factory-store.ts so that file stays within its line budget: the overrides' row
-// mappers, and the learned settings' reads and writes (design 08-settings, issue #497). Each learned write and its
+// Settings SQL kept out of sql-factory-store.ts so that file stays within its line budget: the runtime overrides
+// (design 2026-11-03), and the learned settings' reads and writes (design 08-settings, issue #497). Each write and its
 // audit row commit in one transaction.
 
 import type { LearnedSetting, LearnedSettingChange, SetLearnedSettingInput } from "../../../core/learned-settings.js";
 import type { RunId, Timestamp } from "../../../core/types.js";
-import type { ResetSettingInput, SettingChange, SettingOverride } from "../../../interfaces/factory-store.js";
+import type { ResetSettingInput, SetSettingInput, SettingChange, SettingOverride } from "../../../interfaces/factory-store.js";
 import type { Row, SqlDriver, SqlExecutor } from "../../../state/index.js";
+import type { StoreTime } from "./store-steps.js";
 
 export async function getLearnedSetting(db: SqlDriver, project: string, key: string): Promise<LearnedSetting | null> {
   const [row] = await db.all("SELECT * FROM runtime_learned_settings WHERE project_key = ? AND setting_key = ?", [project, key]);
@@ -80,7 +81,60 @@ async function lastChange(tx: SqlExecutor, project: string, key: string): Promis
   return rowToChange(row!);
 }
 
-export function rowToOverride(row: Row): SettingOverride {
+export async function listSettingOverrides(db: SqlDriver): Promise<SettingOverride[]> {
+  const rows = await db.all("SELECT * FROM runtime_settings_overrides ORDER BY setting_key, project_key");
+  return rows.map(rowToOverride);
+}
+
+export async function setSettingOverride(db: SqlDriver, time: StoreTime, input: SetSettingInput): Promise<SettingChange> {
+  const at = time.now();
+  return db.transaction(async (tx) => {
+    const old = await selectOverride(tx, input.key, input.project);
+    if (old) {
+      await tx.run("UPDATE runtime_settings_overrides SET value_json = ?, set_by = ?, set_at = ? WHERE setting_key = ? AND project_key = ?", [
+        input.value, input.actor, at, input.key, input.project,
+      ]);
+    } else {
+      await tx.run("INSERT INTO runtime_settings_overrides (setting_key, project_key, value_json, set_by, set_at) VALUES (?, ?, ?, ?, ?)", [
+        input.key, input.project, input.value, input.actor, at,
+      ]);
+    }
+    return insertSettingChange(tx, input.key, input.project, old?.value ?? null, input.value, input.actor, at);
+  });
+}
+
+export async function resetSettingOverride(db: SqlDriver, time: StoreTime, input: ResetSettingInput): Promise<SettingChange | null> {
+  const at = time.now();
+  return db.transaction(async (tx) => {
+    const old = await selectOverride(tx, input.key, input.project);
+    if (!old) return null;
+    const n = await tx.run("DELETE FROM runtime_settings_overrides WHERE setting_key = ? AND project_key = ?", [input.key, input.project]);
+    if (n === 0) return null;
+    return insertSettingChange(tx, input.key, input.project, old.value, null, input.actor, at);
+  });
+}
+
+export async function listSettingChanges(db: SqlDriver, limit: number): Promise<SettingChange[]> {
+  const rows = await db.all(`SELECT * FROM runtime_settings_changes ORDER BY seq DESC LIMIT ${Math.max(0, Math.floor(limit))}`);
+  return rows.map(rowToSettingChange);
+}
+
+async function selectOverride(tx: SqlExecutor, key: string, project: string): Promise<SettingOverride | null> {
+  const [row] = await tx.all(`SELECT * FROM runtime_settings_overrides WHERE setting_key = ? AND project_key = ?`, [key, project]);
+  return row ? rowToOverride(row) : null;
+}
+
+async function insertSettingChange(
+  tx: SqlExecutor, key: string, project: string, old_value: string | null, new_value: string | null, actor: string, at: Timestamp,
+): Promise<SettingChange> {
+  await tx.run("INSERT INTO runtime_settings_changes (setting_key, project_key, old_value, new_value, actor, at) VALUES (?, ?, ?, ?, ?, ?)", [
+    key, project, old_value, new_value, actor, at,
+  ]);
+  const [row] = await tx.all("SELECT * FROM runtime_settings_changes WHERE setting_key = ? AND project_key = ? ORDER BY seq DESC LIMIT 1", [key, project]);
+  return rowToSettingChange(row!);
+}
+
+function rowToOverride(row: Row): SettingOverride {
   return {
     key: String(row.setting_key),
     project: String(row.project_key),
@@ -90,7 +144,7 @@ export function rowToOverride(row: Row): SettingOverride {
   };
 }
 
-export function rowToSettingChange(row: Row): SettingChange {
+function rowToSettingChange(row: Row): SettingChange {
   return {
     seq: Number(row.seq),
     key: String(row.setting_key),
