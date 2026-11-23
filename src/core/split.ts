@@ -1,5 +1,6 @@
 import type { TriagePhase } from "./outputs.js";
 import type { SourceRef, StateChangeDetail, WorkItemId } from "./types.js";
+export { sizeCaps } from "./size-cap.js"; // an item's size caps, for the size readers that import the split rule
 
 // Split specs (design 2026-11-01): when triage estimates a change near the size caps, it proposes 2 to 4
 // ordered phases. On /approve the factory files one sub-issue per phase; each later phase is held until the
@@ -58,6 +59,25 @@ export function splitError(est: SizeEstimate, phases: number, limits: SplitLimit
   return (
     `the estimate (${est.estimated_lines} lines, ${est.estimated_files} files) is over ${SPLIT_PERCENT}% of a cap ` +
     `(${t.lines} lines or ${t.files} files), so it needs ${MIN_PHASES} to ${MAX_PHASES} phases; it has ${phases}`
+  );
+}
+
+/**
+ * Whether a triage answer waits at its own size checkpoint: over the threshold of either cap with no phases. It
+ * waits at the spec gate for a person, never approved without one (`phases_auto_approve` included).
+ */
+export function atSizeCheckpoint(spec: SizeEstimate & { phases?: readonly unknown[] }, limits: SplitLimits): boolean {
+  return (spec.phases?.length ?? 0) === 0 && needsSplit(spec, limits);
+}
+
+/** The size checkpoint's note above the spec's footer: the estimate, the threshold, and what the owner can reply. */
+export function sizeCheckpointNote(est: SizeEstimate, limits: SplitLimits): string {
+  const t = splitThresholds(limits);
+  return (
+    `This spec waits for \`/approve\` at the size checkpoint: its estimate (${est.estimated_lines} lines, ${est.estimated_files} files) ` +
+    `is over ${SPLIT_PERCENT}% of a cap (${t.lines} lines or ${t.files} files; \`max_diff_lines\` = ${limits.max_diff_lines}, ` +
+    `\`max_diff_files\` = ${limits.max_diff_files}) and it has no phases. Reply \`/approve\` to implement it as one change, ` +
+    `or \`/revise <feedback>\` to ask for ${MIN_PHASES} to ${MAX_PHASES} phases.`
   );
 }
 
