@@ -18,6 +18,7 @@ import {
 import { LOCAL_SOURCE } from "./local-merge.js";
 import { effectiveTier, isCovered, runKey } from "./policy.js";
 import { MERGE_CONFLICT_PENDING } from "./resolve.js";
+import { SCHEDULE_CHECKPOINT, SCHEDULE_CHECKPOINT_APPROVED } from "./schedule.js";
 import { PHASES_OPEN, SPLIT_FILING } from "./split.js";
 import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "./standing.js";
 import { type SpecDecision, type TriagePhase, optionChange } from "./outputs.js";
@@ -187,13 +188,18 @@ export async function floorTierNeeded(r: ItemReads, it: WorkItem): Promise<numbe
 
 /**
  * `/approve` on a spec (design §4), the same checks in the same order for every source: a closed item, a budget
- * checkpoint, the floor block and the Rule of Two (their own approvals), a split being filed (the approval that
- * claimed it is answered: null), a dependency hold, a spec not waiting, `+paths` on a split, the decision answers;
+ * checkpoint, a schedule's checkpoint (closed as completed), the floor block and the Rule of Two (their own
+ * approvals), a split being filed (the approval that claimed it is answered: null), a dependency hold, a spec not
+ * waiting, `+paths` on a split, the decision answers;
  * then the transition: a split's filing (`split`, the controller's), else RUNNING with one implement run.
  */
 export async function approveCheck<A extends GateAnswer>(r: ItemReads, it: WorkItem, a: ApproveArgs<A>): Promise<ApproveChecked> {
   if (it.stage === "CLOSED") return { refuse: CLOSED_REFUSAL };
   if (it.blocked_reason === BUDGET_CHECKPOINT) return { refuse: CHECKPOINT_REFUSAL };
+  // A schedule's token-cap checkpoint (design 08-schedules): closed as completed; the schedule's next pass raises the cap and runs the held occurrence.
+  if (it.blocked_reason === SCHEDULE_CHECKPOINT) {
+    return { patch: { stage: "CLOSED", close_reason: "completed", blocked_on: "none", blocked_reason: null }, actor: a.actor, reason: SCHEDULE_CHECKPOINT_APPROVED, ...(a.note ? { detail: { note: a.note } } : {}) };
+  }
   if (it.blocked_reason === FLOOR_TIER) return floorCommand("spec_approved", it, a.actor, await floorTierNeeded(r, it), a.note, a.widen(a.paths));
   if (it.blocked_reason === RULE_OF_TWO) return ruleOfTwoCommand("spec_approved", it, a.actor, a.note, a.paths, await r.listStateChanges(it.id));
   if (splitFiling(it) || splitOpen(it) || splitFilingFailed(it)) {
