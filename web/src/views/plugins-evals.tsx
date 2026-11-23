@@ -59,9 +59,8 @@ function useEvalWrite(path: string, token: string | null) {
 type Write = ReturnType<typeof useEvalWrite>;
 
 /** Add or rename the test set: one name field. */
-function SuiteDialog({ path, write, title, initial, onClose }: { path: string; write: Write; title?: string; initial: string; onClose: () => void }) {
+function SuiteDialog({ path, write, initial, adding, onClose }: { path: string; write: Write; initial: string; adding: boolean; onClose: () => void }) {
   const [name, setName] = useState(initial);
-  const adding = title === undefined;
   const confirm = async () => {
     const body: EvalWrite = adding ? { op: "suite.add", skill: path, title: name.trim() } : { op: "suite.rename", skill: path, title: name.trim() };
     if ((await write.send(body)) !== null) onClose();
@@ -84,7 +83,7 @@ function SuiteDialog({ path, write, title, initial, onClose }: { path: string; w
 }
 
 /** Delete the test set or one case: says how many past runs keep their history (the skill's runs read). */
-function DeleteDialog({ path, suiteId, write, body, title, onClose }: { path: string; suiteId: string; write: Write; body: EvalWrite; title: MessageKey; onClose: () => void }) {
+function DeleteDialog({ path, suiteId, write, body, heading, onClose }: { path: string; suiteId: string; write: Write; body: EvalWrite; heading: MessageKey; onClose: () => void }) {
   const runs = useEvalRuns(path);
   const kept = runs.data?.runs.filter((r) => r.suite_id === undefined || r.suite_id === suiteId).length;
   const confirm = async () => {
@@ -92,7 +91,7 @@ function DeleteDialog({ path, suiteId, write, body, title, onClose }: { path: st
   };
   return (
     <Dialog
-      title={t(title)}
+      title={t(heading)}
       consequence={kept === undefined ? t("evals.runsCounting") : t("evals.runsKept", { n: kept })}
       confirmLabel={t("evals.delete")}
       confirmDisabled={write.busy}
@@ -269,10 +268,10 @@ export function EvalsCard({ path, onClose }: { path: string; onClose: () => void
         </>
       )}
       {off && q.data && <div className="mt-4"><Notice tone="info">{t("evals.cannotWrite")}</Notice></div>}
-      {open?.kind === "suite.add" && <SuiteDialog path={path} write={write} initial={name} onClose={close} />}
-      {open?.kind === "suite.rename" && suite && <SuiteDialog path={path} write={write} title={suite.title} initial={suite.title} onClose={close} />}
-      {open?.kind === "suite.delete" && suite && <DeleteDialog path={path} suiteId={suite.id} write={write} body={{ op: "suite.delete", skill: path }} title="evals.deleteSuiteTitle" onClose={close} />}
-      {open?.kind === "case.delete" && suite && <DeleteDialog path={path} suiteId={suite.id} write={write} body={{ op: "case.delete", case: open.of.id }} title="evals.deleteCaseTitle" onClose={close} />}
+      {open?.kind === "suite.add" && <SuiteDialog path={path} write={write} initial={name} adding onClose={close} />}
+      {open?.kind === "suite.rename" && suite && <SuiteDialog path={path} write={write} initial={suite.title} adding={false} onClose={close} />}
+      {open?.kind === "suite.delete" && suite && <DeleteDialog path={path} suiteId={suite.id} write={write} body={{ op: "suite.delete", skill: path }} heading="evals.deleteSuiteTitle" onClose={close} />}
+      {open?.kind === "case.delete" && suite && <DeleteDialog path={path} suiteId={suite.id} write={write} body={{ op: "case.delete", case: open.of.id }} heading="evals.deleteCaseTitle" onClose={close} />}
       {open?.kind === "case.add" && <CaseDialog path={path} write={write} onClose={close} />}
       {open?.kind === "case.edit" && <CaseDialog path={path} write={write} edit={open.of} onClose={close} />}
       {open?.kind === "case.try" && <TryDialog write={write} of={open.of} onClose={close} />}
