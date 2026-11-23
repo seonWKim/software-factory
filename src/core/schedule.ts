@@ -11,7 +11,7 @@
 
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { overBudget } from "./budget.js";
-import { type Cadence, cadenceProblem, nextDue } from "./schedule-cadence.js";
+import { type Cadence, type CadenceKind, cadenceProblem, nextDue } from "./schedule-cadence.js";
 import type { Actor, Timestamp, UserId, WorkItem } from "./types.js";
 
 /** What a claim made of a due occurrence: fired to run, refused (still running), skipped (busy) or held at a checkpoint (over its token cap). */
@@ -128,10 +128,23 @@ export interface ScheduleStore {
   resumeHeldScheduleRun(schedule_id: string, occurrence_at: Timestamp, token_cap: number): Promise<Timestamp | null>;
   /** Moves the held run to `rejected` only while it is still held; false when it was not. */
   rejectHeldScheduleRun(schedule_id: string, occurrence_at: Timestamp): Promise<boolean>;
+  /**
+   * One UPDATE: sets only the patch's fields, only while `next_due_at` is still `read` (IS NULL when null), so an edit,
+   * pause, resume or run loses to a claim or another write made since its read. False when no row changed.
+   */
+  updateSchedule(id: string, read: Timestamp | null, patch: SchedulePatch): Promise<boolean>;
+  /** The store's Clock's time: the `now` the CLI's schedule writes decide at (the CLI has no Clock of its own). */
+  scheduleNow(): Timestamp;
 }
+
+/** The fields an edit, pause, resume or run may change. */
+export type SchedulePatch = Partial<Pick<Schedule, "title" | "cadence" | "zone" | "next_due_at" | "skip_when_busy" | "action" | "token_cap">>;
 
 export type AddScheduleInput = Pick<Schedule, "id" | "title" | "cadence" | "zone" | "created_by"> &
   { skip_when_busy?: boolean; action?: ScheduleActionSpec | null; token_cap?: number | null };
+
+/** A write's result: the schedule as stored, or why nothing was stored. */
+export type ScheduleResult = { ok: true; schedule: Schedule } | { ok: false; problem: string };
 
 /** Why `action` and `token_cap` cannot be stored, or null. */
 function actionProblem(action: ScheduleActionSpec | null | undefined, cap: number | null | undefined): string | null {
@@ -142,7 +155,7 @@ function actionProblem(action: ScheduleActionSpec | null | undefined, cap: numbe
 }
 
 /** Stores a new schedule, first due at its cadence's next slot after `now`; refused with the cadence's or the action's problem. */
-export async function addSchedule(store: ScheduleStore, input: AddScheduleInput, now: Date): Promise<{ ok: true; schedule: Schedule } | { ok: false; problem: string }> {
+export async function addSchedule(store: Pick<ScheduleStore, "addSchedule">, input: AddScheduleInput, now: Date): Promise<ScheduleResult> {
   const problem = cadenceProblem(input.cadence, input.zone) ?? actionProblem(input.action, input.token_cap);
   if (problem) return { ok: false, problem };
   const first = nextDue(input.cadence, input.zone, now, now);
@@ -237,4 +250,208 @@ async function fileCheckpoint(store: CheckpointStore, project: string, s: Schedu
     { source, title, requester_id: s.created_by, project, problem, resources: [], hold: { blocked_on: "upstream", blocked_reason: SCHEDULE_CHECKPOINT } }, SCHEDULER,
   );
   return item;
+}
+
+// Managing schedules (design 08-schedules): `factory schedule …` and the /api/v1/schedules routes call the same
+// functions. Each write reads the schedule, decides, then writes once through `updateSchedule`, conditional on the
+// `next_due_at` it read: a claim or another write since then makes it change nothing. Pause clears `next_due_at`, so
+// a paused schedule is never listed due and its slots never fire; resume sets the first slot after now; run sets now,
+// so the next tick claims it once.
+
+/** The store methods managing schedules reads and writes through. */
+export type ScheduleAdminStore = Pick<ScheduleStore, "listSchedules" | "listScheduleRuns" | "addSchedule" | "updateSchedule" | "scheduleNow">;
+
+/** The refusal of a write whose condition was lost. */
+export const SCHEDULE_LOST = "changed by another worker, try again";
+
+/** A schedule's fields as the CLI's flags and an HTTP body give them; each absent when not given. */
+export interface ScheduleFields {
+  title?: string;
+  cadence?: string;
+  spec?: string;
+  zone?: string;
+  action?: string;
+  /** build: the item's body; agent and feedback: the prompt. */
+  body?: string;
+  skip_when_busy?: boolean;
+  token_cap?: number;
+}
+
+/** The writes, each the owner's only. */
+export type ScheduleWrite = "add" | "edit" | "pause" | "resume" | "run";
+
+/** The action a kind and a body make (the CLI and the HTTP routes): build `body`, agent and feedback `prompt`, which they need. */
+export function scheduleActionOf(kind: string, body: string | undefined): ScheduleActionSpec | { problem: string } {
+  if (!(SCHEDULE_ACTION_KINDS as readonly string[]).includes(kind)) return { problem: `unknown action kind "${kind}": one of ${SCHEDULE_ACTION_KINDS.join(", ")}` };
+  const text = body?.trim() ?? "";
+  if (kind === "build") return { kind, settings: text === "" ? {} : { body: text } };
+  if (text === "") return { problem: `a${kind === "agent" ? "n" : ""} ${kind} action needs a body (--body): its prompt` };
+  return { kind: kind as ScheduleActionKind, settings: { prompt: text } };
+}
+
+const refused = (problem: string): ScheduleResult => ({ ok: false, problem });
+const findSchedule = async (store: ScheduleAdminStore, id: string): Promise<Schedule | null> => (await store.listSchedules()).find((s) => s.id === id) ?? null;
+/** The first slot of `c` in `zone` after `now`, an interval counted from the schedule's creation (as the claim counts it). */
+function firstSlot(c: Cadence, zone: string, now: Date, created_at: Timestamp): Timestamp | null {
+  const next = nextDue(c, zone, now, new Date(created_at));
+  return next === null ? null : (next.toISOString() as Timestamp);
+}
+
+/** Stores a new schedule from its fields; refused when one is missing or bad, or the ID is already stored. */
+export async function createSchedule(store: ScheduleAdminStore, id: string, f: ScheduleFields, created_by: UserId, now: Date): Promise<ScheduleResult> {
+  const missing = [...(id.trim() ? [] : ["id"]), ...(["title", "cadence", "spec", "zone", "action"] as const).filter((k) => !f[k]?.trim())];
+  if (missing.length > 0) return refused(`missing ${missing.join(", ")}`);
+  const action = scheduleActionOf(f.action!, f.body);
+  if ("problem" in action) return refused(action.problem);
+  const cadence = { kind: f.cadence!.trim() as CadenceKind, spec: f.spec!.trim() };
+  const problem = cadenceProblem(cadence, f.zone!.trim()) ?? actionProblem(action, f.token_cap);
+  if (problem) return refused(problem);
+  const exists = `schedule ${id} is already stored`;
+  if (await findSchedule(store, id)) return refused(exists);
+  const r = await addSchedule(store, {
+    id, title: f.title!.trim(), cadence, zone: f.zone!.trim(), created_by, action, skip_when_busy: f.skip_when_busy ?? false, token_cap: f.token_cap ?? null,
+  }, now);
+  // Another worker stored the ID between the read and the insert: theirs stays.
+  return r.ok && r.schedule.created_at !== now.toISOString() ? refused(exists) : r;
+}
+
+/** Reads the schedule, decides its patch (or a refusal), and writes it once, conditional on the `next_due_at` read. */
+async function decide(store: ScheduleAdminStore, id: string, patchOf: (s: Schedule) => SchedulePatch | string): Promise<ScheduleResult> {
+  const s = await findSchedule(store, id);
+  if (s === null) return refused(`no schedule ${id}`);
+  const patch = patchOf(s);
+  if (typeof patch === "string") return refused(patch);
+  if (!(await store.updateSchedule(id, s.next_due_at, patch))) return refused(SCHEDULE_LOST);
+  return { ok: true, schedule: { ...s, ...patch } };
+}
+
+/** Clears `next_due_at`, so no slot comes due; refused when it is already clear. */
+export const pauseSchedule = (store: ScheduleAdminStore, id: string, _now: Date): Promise<ScheduleResult> =>
+  decide(store, id, (s) => (s.next_due_at === null ? "already paused" : { next_due_at: null }));
+
+/** Sets `next_due_at` to the first slot after `now`; refused when it is set, or the cadence never falls due. */
+export const resumeSchedule = (store: ScheduleAdminStore, id: string, now: Date): Promise<ScheduleResult> =>
+  decide(store, id, (s) => {
+    if (s.next_due_at !== null) return "not paused";
+    const next = firstSlot(s.cadence, s.zone, now, s.created_at);
+    return next === null ? "never falls due" : { next_due_at: next };
+  });
+
+/** Sets `next_due_at` to `now`, so the next tick claims it once (a running schedule's as `refused`); refused when paused. */
+export const runSchedule = (store: ScheduleAdminStore, id: string, now: Date): Promise<ScheduleResult> =>
+  decide(store, id, (s) => (s.next_due_at === null ? "paused" : { next_due_at: now.toISOString() as Timestamp }));
+
+/**
+ * Changes only the fields given; refused with no field, or a bad cadence, zone, action or token cap. A changed cadence
+ * or zone on an unpaused schedule sets `next_due_at` to its first slot after `now`; a paused one stays paused.
+ */
+export async function editSchedule(store: ScheduleAdminStore, id: string, f: ScheduleFields, now: Date): Promise<ScheduleResult> {
+  if (Object.values(f).every((v) => v === undefined)) return refused("nothing to change: give at least one field");
+  return decide(store, id, (s) => {
+    const patch: SchedulePatch = {};
+    if (f.title !== undefined) {
+      if (!f.title.trim()) return "the title cannot be empty";
+      patch.title = f.title.trim();
+    }
+    if (f.cadence !== undefined || f.spec !== undefined || f.zone !== undefined) {
+      const cadence = { kind: (f.cadence?.trim() ?? s.cadence.kind) as CadenceKind, spec: f.spec?.trim() ?? s.cadence.spec };
+      const zone = f.zone?.trim() ?? s.zone;
+      const problem = cadenceProblem(cadence, zone);
+      if (problem) return problem;
+      if (f.cadence !== undefined || f.spec !== undefined) patch.cadence = cadence;
+      if (f.zone !== undefined) patch.zone = zone;
+      if (s.next_due_at !== null) {
+        const next = firstSlot(cadence, zone, now, s.created_at);
+        if (next === null) return "the cadence never falls due";
+        patch.next_due_at = next;
+      }
+    }
+    if (f.action !== undefined || f.body !== undefined) {
+      const kind = f.action ?? s.action?.kind;
+      if (kind === undefined) return "the schedule has no action: give --action too";
+      const old = s.action?.kind === kind ? s.action.settings : {};
+      const action = scheduleActionOf(kind, f.body ?? String(old.body ?? old.prompt ?? ""));
+      if ("problem" in action) return action.problem;
+      patch.action = { kind: action.kind, settings: { ...old, ...action.settings } };
+    }
+    if (f.skip_when_busy !== undefined) patch.skip_when_busy = f.skip_when_busy;
+    if (f.token_cap !== undefined) {
+      const problem = actionProblem(null, f.token_cap);
+      if (problem) return problem;
+      patch.token_cap = f.token_cap;
+    }
+    return patch;
+  });
+}
+
+/** One write, as the CLI and the HTTP routes run it; `fields` only for add and edit. */
+export function writeSchedule(store: ScheduleAdminStore, w: ScheduleWrite, id: string, fields: ScheduleFields, user: UserId, now: Date): Promise<ScheduleResult> {
+  if (w === "add") return createSchedule(store, id, fields, user, now);
+  if (w === "edit") return editSchedule(store, id, fields, now);
+  return { pause: pauseSchedule, resume: resumeSchedule, run: runSchedule }[w](store, id, now);
+}
+
+// `factory schedule …` (src/core/local-cli.ts hands the word here, as it stays within its size budget).
+
+export type ScheduleCommand = { verb: "list" } | { verb: "runs"; id: string } | { verb: ScheduleWrite; id: string; fields: ScheduleFields };
+
+const FLAGS: Readonly<Record<string, keyof ScheduleFields>> = {
+  "--title": "title", "--cadence": "cadence", "--spec": "spec", "--zone": "zone", "--action": "action", "--body": "body", "--skip-when-busy": "skip_when_busy", "--token-cap": "token_cap",
+};
+
+/** The words after `factory schedule`, or why they are no command (nothing is read or written). */
+export function parseScheduleArgs(args: readonly string[]): ScheduleCommand | string {
+  const [verb = "", ...rest] = args;
+  if (verb === "list") return rest.length === 0 ? { verb } : "schedule list takes no arguments";
+  if (verb === "runs" || verb === "pause" || verb === "resume" || verb === "run") {
+    if (rest.length !== 1 || !rest[0]) return `schedule ${verb} needs one schedule ID`;
+    return verb === "runs" ? { verb, id: rest[0] } : { verb, id: rest[0], fields: {} };
+  }
+  if (verb !== "add" && verb !== "edit") return `unknown schedule command ${JSON.stringify(verb)}`;
+  let id = verb === "edit" ? rest.shift() : undefined;
+  if (verb === "edit" && (id === undefined || id.startsWith("--"))) return "schedule edit needs a schedule ID, then the flags to change";
+  const fields: ScheduleFields = {};
+  for (let i = 0; i < rest.length; i += 2) {
+    const [flag, v] = [rest[i]!, rest[i + 1]];
+    const key = FLAGS[flag];
+    if (v === undefined || (flag === "--id" ? verb === "edit" || id !== undefined : key === undefined || key in fields)) return `schedule ${verb}: unexpected ${JSON.stringify(flag)}`;
+    if (flag === "--id") id = v;
+    else if (key === "skip_when_busy") {
+      if (v !== "on" && v !== "off") return "--skip-when-busy takes on or off";
+      fields.skip_when_busy = v === "on";
+    } else if (key === "token_cap") {
+      if (!/^\d+$/.test(v)) return "--token-cap takes a whole number of tokens";
+      fields.token_cap = Number(v);
+    } else fields[key!] = v;
+  }
+  if (id === undefined) return "schedule add needs --id <id>";
+  return { verb, id, fields };
+}
+
+/** One schedule as `schedule list` prints it. */
+export const scheduleLine = (s: Schedule): string => [
+  s.id, s.title, s.next_due_at ?? "paused", s.running_since === null ? "idle" : "running", s.action?.kind ?? "no action",
+  `skip when busy ${s.skip_when_busy ? "on" : "off"}`, `token cap ${tokenCap(s)}`,
+].join("\t");
+
+const runLine = (r: ScheduleRun): string =>
+  [r.occurrence_at, r.outcome, r.recorded_at, `${r.tokens ?? 0} tokens`, r.cost_usd === undefined ? "no cost" : `$${r.cost_usd}`].join("\t");
+
+/** Runs one `factory schedule` command as `user`; a write first asks `isOwner` (which may make `user` the owner). */
+export async function runScheduleCommand(store: ScheduleAdminStore, c: ScheduleCommand, user: UserId, isOwner: () => Promise<boolean>): Promise<{ code: number; lines: string[] }> {
+  const fail = (line: string) => ({ code: 1, lines: [line] });
+  if (c.verb === "list") {
+    const all = await store.listSchedules();
+    return { code: 0, lines: all.length === 0 ? ["no schedules"] : all.map(scheduleLine) };
+  }
+  if (c.verb === "runs") {
+    if ((await findSchedule(store, c.id)) === null) return fail(`no schedule ${c.id}`);
+    const runs = await store.listScheduleRuns(c.id);
+    return { code: 0, lines: runs.length === 0 ? [`no runs of ${c.id}`] : runs.map(runLine) };
+  }
+  if (!(await isOwner())) return fail(`schedule ${c.verb} refused: only the owner manages schedules; you are ${user}`);
+  const r = await writeSchedule(store, c.verb, c.id, c.fields, user, new Date(store.scheduleNow()));
+  if (!r.ok) return fail(`schedule ${c.verb} ${c.id} refused: ${r.problem}`);
+  const done = { add: "added", edit: "edited", pause: "paused", resume: "resumed", run: "set to run on the next tick:" }[c.verb];
+  return { code: 0, lines: [`${done} ${scheduleLine(r.schedule)}`] };
 }

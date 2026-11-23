@@ -2,7 +2,7 @@
 // guards every one passes after server.ts's Host check, in this order: Origin equal to the Host's own http origin,
 // Content-Type application/json, the per-process CSRF token in x-csrf-token, the body size, then the route. The
 // resume, stop, standing, improve, proposal verdict, migrate and supervisor routes then check the owner
-// (approve_spec), the rules, calendar, model credential and Ask routes the owner, the pack approvals route
+// (approve_spec), the rules, schedules, calendar, model credential and Ask routes the owner, the pack approvals route
 // approve_tool, the task and attachments routes the commands actor (the project file routes, project-files.ts PROJECT_FILE_ROUTES, only to
 // set the folder and to save; their reads are POSTs too, so they pass every guard), the plugins import the page's factory user, Re-check (design 09-dashboard-item; changes.ts) the commands token. The item commands
 // route (commands.ts) runs its own guards in the same order. A new write route adds one entry to WRITE_ROUTES (and
@@ -16,6 +16,8 @@ import { STANDING_PATH, writeStanding } from "./standing-api.js";
 import { PACK_APPROVALS_PATH, writePackApproval } from "./packs-api.js";
 import { TASK_WRITES } from "./tasks-api.js";
 import { RULE_WRITES, ownerOf } from "./rules-api.js";
+import { SCHEDULE_WRITE_PATHS, postSchedule } from "./schedules-api.js";
+import { writeSchedule } from "../core/schedule.js";
 import { IMPROVE_RUN_PATH, type ImproveRunDeps, PROPOSAL_VERDICT_PATH, improveRunWired, runImproveNow, writeProposalVerdict } from "./improve-api.js";
 import { PLUGINS_IMPORT_PATH, writePluginsImport } from "./plugins-import-api.js";
 import { PROJECT_FILE_ROUTES } from "./project-files.js";
@@ -30,7 +32,7 @@ import type { ServerDeps, UiRequest } from "./server.js";
 
 /** The 405 text for a POST to any path no write route takes. */
 export const POST_ONLY =
-  "Only the settings, item commands, pause resume, standing, improve run, pack approvals, plugins import, rule verdict, rule edit, pushback dismiss, proposal verdict, task, project file, calendar, model credential, data ask, migrate, supervisor, attachments and Re-check routes take a POST.";
+  "Only the settings, item commands, pause resume, standing, improve run, pack approvals, plugins import, rule verdict, rule edit, pushback dismiss, schedule, proposal verdict, task, project file, calendar, model credential, data ask, migrate, supervisor, attachments and Re-check routes take a POST.";
 
 /** One POST route: when it is wired for `path`, the CSRF token it checks, and its handler (after the guards). */
 export interface WriteRoute {
@@ -52,6 +54,11 @@ const WRITE_ROUTES: readonly WriteRoute[] = [
   { matches: (d, p) => p === PACK_APPROVALS_PATH && d.pauses?.auth !== undefined, token: pausesToken, run: (d, _p, b) => writePackApproval(d, d.pauses!, b) },
   { matches: (d, p) => p === PLUGINS_IMPORT_PATH && d.pauses !== undefined, token: pausesToken, run: (d, _p, b) => writePluginsImport(d, d.pauses!, b) },
   { matches: (d, p) => Object.hasOwn(RULE_WRITES, p) && d.pauses !== undefined, token: pausesToken, run: (d, p, b) => RULE_WRITES[p]!(d, d.pauses!, b) },
+  {
+    matches: (d, p) => Object.hasOwn(SCHEDULE_WRITE_PATHS, p) && d.pauses !== undefined,
+    token: pausesToken,
+    run: (d, p, b) => postSchedule(d, SCHEDULE_WRITE_PATHS[p]!, b, { write: writeSchedule, owner: (does) => ownerOf(d, d.pauses!, does), log: d.pauses!.log }),
+  },
   { matches: (d, p) => p === PROPOSAL_VERDICT_PATH && d.pauses !== undefined, token: pausesToken, run: (d, _p, b) => writeProposalVerdict(d, d.pauses!, b) },
   { matches: (d, p) => Object.hasOwn(TASK_WRITES, p) && d.commands !== undefined, token: (d) => d.commands!.token, run: (d, p, b) => TASK_WRITES[p]!(d, b) },
   { matches: (d, p) => p === ATTACH_PATH && d.commands !== undefined, token: (d) => d.commands!.token, run: (d, _p, b) => writeAttachment(d, b, attach) },
