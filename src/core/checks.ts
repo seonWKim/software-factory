@@ -179,7 +179,7 @@ export function checkedLines(results: readonly CheckResult[], o: { fixed: boolea
  * `commands` with the one whose argv equals `repo.test_command` run on the selected files only in enforce mode (appended
  * as the base rerun appends them, withTestFiles); every other command, typecheck included, runs whole, and in shadow
  * mode every command does. No `repo.test_selection`: `commands` as they are, no selection. The selection, its mode and
- * its reason go to `log` before any command runs; a selection that cannot be made (git failed) is full.
+ * its reason go to `log` before any command runs, then one line per test picked by a read; a selection that cannot be made (git failed) is full.
  */
 export async function selectedChecks(
   repo: Pick<FactoryConfig["repo"], "test_command" | "test_selection">, commands: readonly (readonly string[])[], git: TrustedGit, baseSha: string, log: (line: string) => void,
@@ -194,6 +194,7 @@ export async function selectedChecks(
     s = { full: true, reason: `full: the selection failed: ${err instanceof Error ? err.message : "unknown"}`.slice(0, 300) };
   }
   log(`test selection (${mode}): ${s.reason}${s.full ? "" : `: ${s.files.join(" ")}`}`);
+  for (const r of s.full ? [] : (s.reads ?? [])) log(`test selection (${mode}): ${r.test} reads ${r.path}`);
   return { commands: commands.map((c) => (same(c) && !s.full && mode === "enforce" ? withTestFiles(c, s.files) : [...c])), selection: s };
 }
 
