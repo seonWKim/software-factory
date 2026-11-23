@@ -301,7 +301,7 @@ describe("ui app: the Merge button", () => {
     client.setQueryData([API.session], { as_of: AT, csrf_token: "t", commands_enabled: true });
     return renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(ItemPage, { id: "wi_1" })));
   };
-  const mergeRow = (html: string) => html.match(/<span data-command="merge"[^>]*>.*?<\/span><\/span>/)?.[0] ?? null;
+  const mergeRow = (html: string) => html.match(/<span data-merge="[^"]*"[^>]*>.*?<\/span><\/span>/)?.[0] ?? null;
 
   it("shows Merge for a local or a GitHub item the API enables, and nothing for one not waiting for a merge", () => {
     for (const source of ["local", "github_issue"]) {

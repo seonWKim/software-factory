@@ -292,7 +292,7 @@ CREATE TABLE controller_schedule_runs (
     schedule_id    TEXT NOT NULL,
     occurrence_at  TEXT NOT NULL,
     outcome        TEXT NOT NULL,
-    recorded_at    TEXT NOT NULL, queued_implement_runs INTEGER,
+    recorded_at    TEXT NOT NULL, queued_implement_runs INTEGER, output TEXT, tokens INTEGER, cost_usd REAL,
     PRIMARY KEY (schedule_id, occurrence_at)
   );
 
@@ -306,7 +306,7 @@ CREATE TABLE controller_schedules (
     created_at     TEXT NOT NULL,
     next_due_at    TEXT,
     running_since  TEXT
-  , skip_when_busy INTEGER);
+  , skip_when_busy INTEGER, action_kind TEXT, action_settings TEXT, token_cap INTEGER);
 
 CREATE TABLE controller_signals (
     id            TEXT PRIMARY KEY,
@@ -344,7 +344,7 @@ CREATE TABLE controller_skill_eval_runs (
     started_at   TEXT NOT NULL,
     finished_at  TEXT,
     created_by   TEXT NOT NULL
-  , skill_version TEXT);
+  , skill_version TEXT, model_class TEXT, judge_model_class TEXT, replays INTEGER, pass_rate REAL, errored INTEGER);
 
 CREATE TABLE controller_skill_eval_suites (
     id          TEXT PRIMARY KEY,

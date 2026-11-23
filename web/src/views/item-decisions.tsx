@@ -68,7 +68,7 @@ function ChangeLine({ change }: { change: OptionChange | null | undefined }) {
     ...(change.extra_paths.length ? [t("decisions.needsPaths", { paths: change.extra_paths.join(", ") })] : []),
     ...(change.done_when.length ? [t("decisions.changesDone", { lines: change.done_when.join("; ") })] : []),
   ];
-  return <span data-option-change className="block text-xs text-pretty break-words text-text-2">{parts.join(". ")}</span>;
+  return <span data-option-change className="block text-xs text-pretty break-words text-pill-warn-fg">{parts.join(". ")}</span>;
 }
 
 /** The approve note: one `N: <answer>` line per answered decision, then the free note. */
@@ -113,7 +113,7 @@ export function DecisionsPanel({
   if (decisions.length === 0) return null;
   return (
     <div data-decisions className="mb-3 space-y-3">
-      <p className="text-xs text-pretty text-text-2">
+      <p className="text-xs text-pretty text-pill-warn-fg">
         {t("decisions.intro")}
       </p>
       {decisions.map((d, i) => {
@@ -123,15 +123,15 @@ export function DecisionsPanel({
           <fieldset key={i} data-decision={i + 1} data-layout={d.layout || undefined} className="min-w-0 max-w-xl">
             <legend className="text-sm font-medium text-pretty break-words">
               {label}
-              {d.owner_only && <span className="ml-1 text-xs text-text-2">{t("decisions.ownerOnly")}</span>}
+              {d.owner_only && <span className="ml-1 text-xs text-pill-warn-fg">{t("decisions.ownerOnly")}</span>}
             </legend>
-            {d.reason && <p className="text-xs text-pretty break-words text-text-2">{d.reason}</p>}
+            {d.reason && <p className="text-xs text-pretty break-words text-pill-warn-fg">{d.reason}</p>}
             {d.options.length > 0 ? (
               <div role="radiogroup" aria-label={label} className="mt-1 space-y-1">
                 {d.options.map((o) => (
                   <Radio key={o} name={`decision-${i + 1}`} checked={!c.own && c.value === o} onChange={() => onChange(i, { own: false, value: o })}>
                     {d.layout ? <ValueBlock>{o}</ValueBlock> : o}
-                    {o === d.default && <span className="text-xs text-text-2">{t("decisions.default")}</span>}
+                    {o === d.default && <span className="text-xs text-pill-warn-fg">{t("decisions.default")}</span>}
                     <ChangeLine change={changeOf(d, o)} />
                   </Radio>
                 ))}

@@ -134,7 +134,7 @@ describe("the Needs you section", () => {
     const lists = await ready();
     const labels = lists.flatMap(rowsOf).map((r) => {
       // No visible button or command link beside the menu: Merge, Approve and Retry are menu items.
-      const controls = [...r.querySelectorAll<HTMLElement>("button, a[data-command]")].filter((c) => !c.hidden && !c.closest("[role=menu]"));
+      const controls = [...r.querySelectorAll<HTMLElement>("button, a[data-action]")].filter((c) => !c.hidden && !c.closest("[role=menu]"));
       expect(controls.map((c) => c.getAttribute("aria-label")), r.getAttribute("data-key")).toEqual(["More commands"]);
       const first = openMenu(r)[0]!.textContent;
       closeMenu(r);
@@ -244,7 +244,8 @@ describe("the Needs you section", () => {
     const lists = await ready();
     const shortcut = rowsOf(lists[1]!)[0]!.querySelector<HTMLButtonElement>("[data-shortcut='p']")!;
     expect(shortcut.hidden).toBe(true);
-    expect(shortcut.getAttribute("data-command")).toBe("approve");
+    expect(shortcut.getAttribute("data-action")).toBe("approve");
+    expect(shortcut.getAttribute("data-item")).toBe("wi_a1");
     expect(lists[0]!.querySelector("[data-shortcut]")).toBeNull();
   });
 });

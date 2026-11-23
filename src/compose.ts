@@ -8,6 +8,9 @@ import { dirname, join } from "node:path";
 import { type FactoryConfig, cliUserConfig, toolGrantsConfig } from "./core/config.js";
 import type { ProjectRef } from "./core/project.js";
 import { scheduledAction } from "./core/controller-deps.js";
+import { agentAction } from "./controller/units/schedule/plugins/agent/agent-action.js";
+import { buildAction } from "./controller/units/schedule/plugins/build/build-action.js";
+import { feedbackAction } from "./controller/units/schedule/plugins/feedback/feedback-action.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
 import { errorText, type Logger } from "./core/log.js";
 import type { CliEnvironment, CliIdentity } from "./core/local-cli.js";
@@ -21,7 +24,7 @@ import { PackCheckRunner } from "./runtime/hooks/pack-checks.js";
 import { type HookDescriptor, UNCALLED_HOOK_POINTS } from "./shared/hook.js";
 import { type LearnedSettingsSource, LiveSettings, maxWorkers, workerCount } from "./core/settings.js";
 import { settingsBase } from "./core/settings-base.js";
-import { WorkerPool } from "./worker/index.js";
+import { READ_TOOLS, WorkerPool } from "./worker/index.js";
 import type { LocalRoute } from "./worker/index.js";
 import { type BrokerDeps, Plugins } from "./plugin-set.js";
 import type { Clock } from "./interfaces/clock.js";
@@ -252,9 +255,6 @@ export async function build(
   const bus = await createPlugin(registry, "bus", sel.bus, base);
   const ticks = await createPlugin(registry, "ticks", sel.ticks, base);
   const tacit = await LiveTacit.start(sel.tacit, (name) => createPlugin(registry, "tacit", name, base), new ConsoleLogger(clock, "tacit"));
-  // What a fired schedule occurrence runs (design 08-schedules): none unless `plugins.schedule_action` names one.
-  const schedule_action = sel.schedule_action === undefined ? undefined
-    : scheduledAction(store, await createPlugin(registry, "schedule_action", sel.schedule_action, base), new ConsoleLogger(clock, "schedule"));
   const calendars = new LiveCalendars(async (name) => createPlugin(registry, "calendar", name, { ...base, secrets: await new Plugins({ ...loaded, plugins: { ...sel, calendars: [name] } }).secrets(), clock }), new ConsoleLogger(clock, "calendar"));
   // The worker's ExecutionEngine (RFC 0015 §7): one per worker loop, built by the pool.
   const engines = await createPlugin(registry, "engine", sel.engine, { ...base, store });
@@ -265,6 +265,10 @@ export async function build(
     store, repo: base.repo, clock, log: new ConsoleLogger(clock, "startup"), ...(opts.signal ? { signal: opts.signal } : {}),
   });
   const config: FactoryConfig = { ...resolvedConfig(loaded.config, project), ...(tool_grants ? { tool_grants } : {}) };
+  // What a fired schedule occurrence runs (design 08-schedules): none unless `plugins.schedule_action` names one; its routes are the schedule unit's action folders.
+  const routes = { build: buildAction, agent: agentAction, feedback: feedbackAction }, actionCtx = { ...base, store, runner, sandbox, scanner, tools: READ_TOOLS, project: project.key, routes };
+  const schedule_action = sel.schedule_action === undefined ? undefined
+    : scheduledAction(store, await createPlugin(registry, "schedule_action", sel.schedule_action, actionCtx), new ConsoleLogger(clock, "schedule"), project.key);
   // The pack checks `hooks` names (design §4, issue #494), refused here when bad; its other names are `*.hook.ts`.
   const checks = packChecks(loaded.packs, config.hooks ?? [], { toolHooks: runner.supports_tool_hooks === true });
   await checkEnabledHooks((config.hooks ?? []).filter((n) => !checks.some((c) => c.name === n)));

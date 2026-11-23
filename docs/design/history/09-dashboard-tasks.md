@@ -1,5 +1,6 @@
 ## History
 
+- **Only Build this had an action name** (until 2026-11-23, local-task-tk_791a5df3; replaced by the task row `data-action` decision at the top of 09-dashboard-tasks.md). Before: Build this had `data-action="build"` and no task ID; the Complete checkbox and Reopen had no action name, and no row menu offered Copy as CLI command.
 - **A not-synced day had no action on the page** (until 2026-11-22, wi_76e42fbc; replaced by the Calendar Sync decision at the top of 09-dashboard-tasks.md). The toolbar held the view switch, Previous, Next and Today only, and the not-synced Notice named the days with no button, so a day outside the scheduled sync's window (one day back to 30 days ahead) stayed not synced; the page counted a day as synced only inside the last scheduled sync's window.
 
 - **A Merge row with conflicts said "Ready to merge" and "Conflicts: N files"** (until 2026-11-22, wi_96248745). Before: the row showed the Ready to merge badge (ok tone) and the merge check's conflicts beside it, two labels that disagreed while Merge was off.

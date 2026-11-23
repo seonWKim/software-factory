@@ -52,10 +52,10 @@ describe("the schedule_action plugin kind", () => {
     expect(selectPlugins(registry, { ...raw, plugins: { ...(REAL.plugins as object), schedule_action: "fixture-action" } }).schedule_action).toBe("fixture-action");
   });
 
-  it("an unknown name fails at startup, naming the ScheduleAction interface and the available names", async () => {
+  it("an unknown name fails at startup, naming the ScheduleAction interface and the available names (the routed dispatcher among them)", async () => {
     const registry = await loadRegistry([PLUGIN_ROOT, actionDir()]);
     const raw = { store: { type: "sqlite" }, plugins: { ...(REAL.plugins as object), schedule_action: "no-such-action" } };
     expect(() => selectPlugins(registry, raw)).toThrow(/unknown ScheduleAction plugin "no-such-action" at plugins\.schedule_action; available: .*fixture-action/);
-    expect(() => selectPlugins(REGISTRY, raw)).toThrow(/unknown ScheduleAction plugin "no-such-action" at plugins\.schedule_action; available: none/);
+    expect(() => selectPlugins(REGISTRY, raw)).toThrow(/unknown ScheduleAction plugin "no-such-action" at plugins\.schedule_action; available: .*routed/);
   });
 });

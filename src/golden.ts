@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import type { LoadedConfig, Prompts } from "./core/config.js";
 import { DEFAULT_MODEL_TABLE, type ModelTable, isModelRunKind, modelClassFor } from "./core/model-choice.js";
 import type { ProjectRef } from "./core/project.js";
-import { REVIEW_CONFIRM_SCHEMA, REVIEW_SCHEMA, TRIAGE_SCHEMA, findingLine, parseReview, parseReviewConfirm, parseTriage } from "./core/outputs.js";
+import { REVIEW_CONFIRM_SCHEMA, REVIEW_SCHEMA, TRIAGE_SCHEMA, findingLine, parseJudge, parseReview, parseReviewConfirm, parseTriage } from "./core/outputs.js";
 import { isCovered } from "./core/policy.js";
 import type { RunKind, StateChange, WorkItem, WorkItemId } from "./core/types.js";
 import { ROLES_DIR, goldenCasesByRole, loadRoles, replayInSandbox } from "./runtime/index.js";
@@ -19,7 +19,7 @@ import { implementReplayRunner } from "./controller/golden-gate/implement-replay
 import { loadTriageCases, triageReplayRunner } from "./controller/golden-gate/triage-replay.js";
 export { genTriageDrafts, parseGenArgs } from "./controller/golden-gate/triage-gen.js"; // golden gen (drafts triage cases from a closed item)
 import { ROLE_NAME, type RoleDescriptor } from "./shared/role.js";
-import { toolsNamed } from "./worker/index.js";
+import { toolsNamed } from "./worker/index.js"; import { JUDGE_SCHEMA } from "./worker/runs/judge/judge.run.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressChannel, EgressScanner } from "./interfaces/egress-scanner.js";
@@ -455,7 +455,7 @@ async function runOne(deps: GoldenRunDeps, role: RoleDescriptor, system: string,
   const started = deps.clock.now().getTime();
   const out: CaseResult = { id: c.id, expect: c.expect, verdict: "errored", findings: [], input_tokens: 0, output_tokens: 0, wall_ms: 0 };
   try {
-    const confirm = role.name === "review-confirm", kind = (confirm ? "review" : role.name) as RunKind; // review-confirm replays on the review's class (design 04-agents)
+    const confirm = role.name === "review-confirm", judge = role.name === "judge", kind = (confirm ? "review" : role.name) as RunKind; // review-confirm replays on the review's class (design 04-agents), the judge on strong as the runner pins it
     const result = await replayInSandbox(deps, {
       repo,
       run_id: `golden_${key}`,
@@ -468,15 +468,15 @@ async function runOne(deps: GoldenRunDeps, role: RoleDescriptor, system: string,
       deny_paths: deps.config.deny_paths,
       // The role's run class (cases carry no tier or loop: tier 5's entry, no retry bump), so golden results
       // match production; a role with no model_by entry replays on the standard class.
-      model_class: isModelRunKind(kind) ? modelClassFor(deps.model_by ?? DEFAULT_MODEL_TABLE, kind, null, 0) : "standard",
+      model_class: judge ? "strong" : isModelRunKind(kind) ? modelClassFor(deps.model_by ?? DEFAULT_MODEL_TABLE, kind, null, 0) : "standard",
       timeout_ms: deps.config.run_timeout_ms,
-      output_schema: confirm ? REVIEW_CONFIRM_SCHEMA : REVIEW_SCHEMA,
+      output_schema: confirm ? REVIEW_CONFIRM_SCHEMA : judge ? JUDGE_SCHEMA : REVIEW_SCHEMA,
       signal,
     });
     Object.assign(out, { input_tokens: result.usage.input_tokens, output_tokens: result.usage.output_tokens });
-    const answer = result.status !== "completed" ? null : confirm ? parseReviewConfirm(result.output) : parseReview(result.output);
-    // Scored on the verdict alone: unverified checks never make a case flagged (issue #222); a confirmed finding flags a review-confirm case.
-    if (answer?.ok) Object.assign(out, "confirmed" in answer.value ? { verdict: answer.value.confirmed ? "bug" : "pass" } : { verdict: answer.value.verdict, findings: answer.value.findings.map(findingLine) });
+    const answer = result.status !== "completed" ? null : confirm ? parseReviewConfirm(result.output) : judge ? parseJudge(result.output) : parseReview(result.output);
+    // Scored on the verdict alone: unverified checks never make a case flagged (issue #222); a confirmed finding flags a review-confirm case, a fix or ask verdict a judge case.
+    if (answer?.ok) Object.assign(out, "confirmed" in answer.value ? { verdict: answer.value.confirmed ? "bug" : "pass" } : "findings" in answer.value ? { verdict: answer.value.verdict, findings: answer.value.findings.map(findingLine) } : { verdict: answer.value.verdict === "fix" || answer.value.verdict === "ask" ? "bug" : "pass" });
   } catch {
     // errored, with whatever usage was read
   } finally {
