@@ -2,7 +2,8 @@
 // belongs to one skill; a run replays a suite's cases and records one verdict per case. JSON values (`input`,
 // `expected`, `detail`) are stored as text and read back as the values written. The skill-eval engine
 // (src/runtime/skill-evals/) calls them; the eval wiring (src/skill-evals.ts) records a finished run's figures, and
-// `factory eval results` and GET /api/v1/evals/<skill>/runs list a skill's runs.
+// `factory eval results` and GET /api/v1/evals/<skill>/runs list a skill's runs; `factory eval compare` and
+// GET /api/v1/evals/<skill>/compare read runs by id.
 
 import type { Timestamp, UserId } from "../core/types.js";
 
@@ -81,6 +82,8 @@ export interface SkillEvalStore {
   listSkillEvalReplays(run_id: string): Promise<SkillEvalReplay[]>;
   /** The runs of every suite of `skill_ref`, newest first (start time, then id). */
   listSkillEvalRuns(skill_ref: string): Promise<SkillEvalRun[]>;
+  /** One run by id with its figures (as listSkillEvalRuns reads it), whatever its skill; null for an unknown id. */
+  getSkillEvalRun(id: string): Promise<SkillEvalRun | null>;
   /** Writes a finished run's figures once; false when the run is unknown, still running or already has them. */
   recordSkillEvalRunFigures(id: string, f: SkillEvalRunFigures): Promise<boolean>;
 }
