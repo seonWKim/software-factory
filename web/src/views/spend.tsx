@@ -138,7 +138,7 @@ function Tasks({ view, day, onClear }: { view: SpendView; day: string | null; on
       {q.isError && day !== null ? (
         <ErrorNote error={q.error} />
       ) : !v ? (
-        <Loading rows={3} />
+        <Loading rows={3} label="loading.spendTasks" onRetry={() => void q.refetch()} />
       ) : (
         <>
           {v.items.length < v.items_total && (
@@ -166,7 +166,7 @@ export function SpendSection() {
   // The day picked on the chart: it filters the tasks table only, and stays in the browser.
   const [day, setDay] = useState<string | null>(null);
   if (q.isError) return <SpendFrame><ErrorNote error={q.error} /></SpendFrame>;
-  if (!q.data) return <SpendFrame><Loading rows={4} /></SpendFrame>;
+  if (!q.data) return <SpendFrame><Loading rows={4} label="loading.spend" onRetry={() => void q.refetch()} /></SpendFrame>;
   const v = q.data;
   const unknown = v.total.unknown;
   return (

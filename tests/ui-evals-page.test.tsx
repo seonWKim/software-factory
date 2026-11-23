@@ -178,7 +178,7 @@ describe("evals page", () => {
     runs = [];
     grid = [];
     show();
-    expect(screen.getByLabelText("Loading")).toBeTruthy();
+    expect(screen.getByLabelText("Eval runs")).toBeTruthy();
     expect(await screen.findByText("No runs yet", undefined, SLOW)).toBeTruthy();
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("review-plan");
     cleanup();

@@ -81,6 +81,18 @@ async function show(tab?: string) {
 
 const tabNames = (list: HTMLElement) => within(list).getAllByRole("tab").map((t) => t.textContent);
 
+describe("Health page: before the server's first health run ends", () => {
+  it("pending: keeps the Health checks placeholder and reads again until the stored report arrives", async () => {
+    healthBody = { checked_at: null, checks: [], pending: true };
+    history.replaceState(null, "", "/app/health");
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(createElement(QueryClientProvider, { client }, createElement(HealthPage)));
+    await waitFor(() => expect(screen.getByLabelText("Health checks").getAttribute("aria-busy")).toBe("true"));
+    healthBody = { checked_at: RESET, checks: [{ status: "ok", msg: "fine" }], pending: false };
+    await screen.findByRole("tablist", { name: "Health sections" }, SLOW);
+  });
+});
+
 describe("Health page: GitHub budget tab", () => {
   it("with overview.github_budget present the tab shows remaining of limit, reset, counted calls and github_token_days", async () => {
     current = overview({ github_budget: budget(), github_token_days: 12 });

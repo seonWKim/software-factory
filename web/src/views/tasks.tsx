@@ -228,7 +228,7 @@ export function TasksPage() {
     )}
     <div className="flex flex-col gap-6">
       {files ? (
-        !v ? <Loading rows={3} /> : <ProjectFiles project={project} name={selected?.name ?? `+${project}`} token={v.csrf_token} canWrite={v.can_build} />
+        !v ? <Loading rows={3} label="loading.tasks" onRetry={() => void q.refetch()} /> : <ProjectFiles project={project} name={selected?.name ?? `+${project}`} token={v.csrf_token} canWrite={v.can_build} />
       ) : (
       <>
       <div>
@@ -246,7 +246,7 @@ export function TasksPage() {
       <div>
         <Card label={t("tasks.listLabel")}>
           <div className="space-y-3">
-            {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <Rows.Provider value={{ token, titles, projects: known.current, completed: undo.completed }}>
+            {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} label="loading.tasks" onRetry={() => void q.refetch()} /> : <Rows.Provider value={{ token, titles, projects: known.current, completed: undo.completed }}>
                 <OpenTasks key={project ?? ""} v={v} />
               </Rows.Provider>}
             {v?.can_build && hasTasks(v) && <p className={muted}>{t("tasks.buildNote")}</p>}

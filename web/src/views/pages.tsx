@@ -9,7 +9,7 @@ import { ButtonRow } from "../components/ui/button-row.js";
 import { CopyText } from "../components/ui/copy.js";
 import { Input } from "../components/ui/input.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
-import { ErrorNote, Loading, Table, Td, Tr } from "../components/ui/parts.js";
+import { ErrorNote, Loading, type StoredFlags, Table, Td, Tr, useRefetchWhile } from "../components/ui/parts.js";
 import { Notice, PageHeader, PageToolbar, EmptyState } from "../components/ui/notice.js";
 import { ID_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import { FailuresSection, FailuresWindowSwitch, useFailuresWindow } from "./failures.js";
@@ -179,7 +179,7 @@ export function ActivityPage() {
   return (
     <div className="mt-6">
       <Card title={t("running.label")} count={o?.running}>
-        {runs.isError ? <ErrorNote error={runs.error} /> : !runs.data ? <Loading rows={2} /> : <RunningTable runs={runs.data.runs} items={map} now={now} />}
+        {runs.isError ? <ErrorNote error={runs.error} /> : !runs.data ? <Loading rows={2} label="loading.running" onRetry={() => void runs.refetch()} /> : <RunningTable runs={runs.data.runs} items={map} now={now} />}
       </Card>
       {o && (o.unreviewed_merges_7d ?? 0) > 0 && (
         <p data-testid="unreviewed-merges-line" className="mt-4 text-sm">
@@ -349,11 +349,11 @@ export function ItemsPage() {
       {rateLimit?.ends_at && <div className="mb-3"><Notice tone="warn">{t("items.rateLimit", { state: t("items.ratePaused", { time: rateLimit.ends_at }) })}</Notice></div>}
       {queuedView ? (
         <Card title={t("queue.title")} count={queue.data?.queue.length}>
-          {queue.isError ? <ErrorNote error={queue.error} /> : !queue.data || !items.data ? <Loading rows={4} /> : <QueueTable queue={queue.data.queue} items={itemsById} now={now} />}
+          {queue.isError ? <ErrorNote error={queue.error} /> : !queue.data || !items.data ? <Loading rows={4} label="loading.queue" onRetry={() => void Promise.all([queue.refetch(), items.refetch()])} /> : <QueueTable queue={queue.data.queue} items={itemsById} now={now} />}
         </Card>
       ) : (
         <Card>
-          {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading rows={6} /> : rows.length === 0 && !state && !q.trim() && !ids ? (
+          {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading rows={6} label="loading.items" onRetry={() => void items.refetch()} /> : rows.length === 0 && !state && !q.trim() && !ids ? (
             <EmptyState icon={ListTodo} title={t("items.emptyTitle")} description={t("items.emptyBody")} action={<Link href={`${BASE}tasks`} className={LINK_CLASS}>{t("items.emptyAction")}</Link>} />
           ) : tree ? (
             nodes.length === 0 ? <EmptyState icon={ListTodo} title={t("items.noMatch")} /> : (
@@ -381,7 +381,7 @@ export function ItemPage({ id }: { id: string }) {
   const viewer = useViewer();
   const [tab, pickTab] = useUrlParam("tab", (v) => v === "changes");
   if (q.isError) return <><PageHeader title={t("app.workItem")} /><ErrorNote error={q.error} /></>;
-  if (!q.data) return <><PageHeader title={t("app.workItem")} /><Loading rows={6} /></>;
+  if (!q.data) return <><PageHeader title={t("app.workItem")} /><Loading rows={6} label="loading.item" onRetry={() => void q.refetch()} /></>;
   const { item, runs, timeline } = q.data;
   // State changes and host sleeps of the item's runs, newest first.
   const entries: ({ kind: "change"; at: string; t: ItemDetail["timeline"][number] } | { kind: "sleep"; at: string; h: HostSleepRow })[] = [
@@ -770,7 +770,7 @@ export function RunnersTab() {
         </p>
       )}
       <Card title={t("runners.processes")} count={workers.data?.processes ? processes.length : undefined}>
-        {workers.isError ? <ErrorNote error={workers.error} /> : !workers.data ? <Loading rows={2} /> : workers.data.processes_error ? (
+        {workers.isError ? <ErrorNote error={workers.error} /> : !workers.data ? <Loading rows={2} label="loading.workers" onRetry={() => void workers.refetch()} /> : workers.data.processes_error ? (
           <ErrorNote error={new Error(workers.data.processes_error)} />
         ) : processes.length === 0 ? (
           <EmptyState title={t("runners.none")} />
@@ -887,7 +887,9 @@ function checksTitle(total: number, attention: number, ago: string): string {
 export function HealthPage() {
   const now = useNow();
   // Each read runs the checks: every 30 s, not every 3 s.
-  const health = useApi<Health>(API.health, 30_000);
+  const health = useApi<Health & StoredFlags>(API.health, 30_000);
+  // Pending: the server's first run has not ended (design 09-health, 2026-11-19); read again each second meanwhile.
+  useRefetchWhile(health.data?.pending === true, health.refetch);
   const merges = useApi<UnreviewedMerges>(API.unreviewedMerges, 30_000);
   const pauses = useApi<PausesView>(API.pauses);
   const overview = useApi<Overview>(API.overview);
@@ -898,7 +900,7 @@ export function HealthPage() {
   // The Failures window (`?window=`): a page control in the toolbar's second row while the Failures tab is open.
   const [failuresWindow, setFailuresWindow] = useFailuresWindow();
   if (health.isError) return <><PageHeader title={t("page.health")} /><ErrorNote error={health.error} /></>;
-  if (!health.data) return <><PageHeader title={t("page.health")} /><Loading rows={6} /></>;
+  if (!health.data || health.data.pending) return <><PageHeader title={t("page.health")} /><Loading rows={6} label="loading.health" onRetry={() => void health.refetch()} /></>;
   const order = ["fail", "warn", "ok"];
   const checks = [...health.data.checks].sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
   // Warn and fail rows stay in view; ok rows fold behind their count ("22 ok"), or behind "Show the checks" when the title already counts them.
@@ -985,7 +987,7 @@ export function HealthPage() {
       {tab === "merges" && (
         <div id="unreviewed-merges">
           <Card title={t("health.merges")} count={mergeList?.length}>
-            {merges.isError ? <ErrorNote error={merges.error} /> : !mergeList ? <Loading rows={2} /> : (
+            {merges.isError ? <ErrorNote error={merges.error} /> : !mergeList ? <Loading rows={2} label="loading.merges" onRetry={() => void merges.refetch()} /> : (
               <DataTable
                 label={t("health.merges")}
                 columns={[

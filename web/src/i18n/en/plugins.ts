@@ -1,6 +1,7 @@
 // English text, area: plugins. A key's prefix (before its first dot) belongs to this file only.
 export const plugins = {
   "plugins.intro": "Extra abilities the agents can use: connected apps (MCP), skills and tools. A pack is a folder of them that you add.",
+  "plugins.asOf": "Listed {time}",
   "plugins.tabs": "Kind",
   "plugins.tabMcp": "MCP",
   "plugins.tabSkills": "Skills",

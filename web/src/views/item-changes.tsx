@@ -29,7 +29,7 @@ function FileDiff({ id, path }: { id: string; path: string }) {
   const file = q.data?.file;
   return (
     <Card title={t("item.fileChanges", { path })}>
-      {q.isError ? <ErrorNote error={q.error} /> : !file ? <Loading rows={4} /> : (
+      {q.isError ? <ErrorNote error={q.error} /> : !file ? <Loading rows={4} label="loading.fileDiff" onRetry={() => void q.refetch()} /> : (
         <div className="space-y-2">
           <pre data-diff data-withheld={file.withheld || undefined} className="max-h-[70vh] overflow-auto rounded-control border border-border bg-surface-2 p-2 font-mono text-xs">
             {file.withheld ? file.diff : file.diff.split("\n").map((l, i) => <span key={i} className={cn("block whitespace-pre", lineClass(l))}>{l || " "}</span>)}
@@ -46,7 +46,7 @@ export function ItemChangesTab({ id }: { id: string }) {
   const q = useManualApi<ItemChanges>(API.itemChanges(id));
   const [picked, pick] = useState<string | null>(null);
   if (q.isError) return <ErrorNote error={q.error} />;
-  if (!q.data) return <Loading rows={4} />;
+  if (!q.data) return <Loading rows={4} label="loading.changedFiles" onRetry={() => void q.refetch()} />;
   const files = q.data.files;
   return (
     <>
