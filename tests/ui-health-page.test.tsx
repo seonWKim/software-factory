@@ -7,6 +7,10 @@ import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitHubBudget, ImproveView, Overview } from "../web/src/api.js";
 import { localShortDate } from "../web/src/lib/format.js";
+// Only modules with no store behind them: under jsdom on Node 22, node:sqlite (which src/setup.ts reaches) cannot load.
+import { SANDBOX_LINES } from "../src/impl/runner/os-sandbox.js";
+import { type Check, credentialPlain, sandboxChecks } from "../src/core/health-check.js";
+import { reportRows } from "../src/ui/health.js";
 
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
 // loaded by a specifier the node check skips (as tests/ui-pause.test.tsx does).
@@ -58,6 +62,7 @@ beforeEach(() => {
     if (url === "/api/v1/health") return json(200, healthBody);
     if (url === "/api/v1/unreviewed-merges") return json(200, { merges: [] });
     if (url === "/api/v1/pauses") return json(200, { pauses: [], csrf_token: null });
+    if (url === "/api/v1/model-credential") return json(200, { secrets: ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"], csrf_token: "t" });
     return json(404, { error: "Not found." });
   }));
 });
@@ -175,6 +180,32 @@ describe("Health page: the Checks card", () => {
   });
 });
 
+// No model credential and no bubblewrap or socat (design 09-health, 2026-11-23): the report the server builds from those
+// checks shows each in plain words, the three sandbox lines as one row, and the credential row opens the dialog.
+describe("Health page: the model credential and sandbox checks", () => {
+  const WHY = "Claude Code's sandbox is off on this host: sandbox is enabled but dependencies are missing: bubblewrap (bwrap) not installed, socat not installed · install missing tools (e.g. apt install bubblewrap socat) or see https://code.claude.com/docs/en/sandboxing";
+
+  it("the visible Checks text names no variable, command or URL; the raw lines are behind Details; Add model credential opens the dialog", async () => {
+    // doctor's credential line with its Health fields (tests/health.test.ts checks secretChecks gives exactly this).
+    const credential: Check = { ok: false, msg: "model credential missing: one of CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY (run: npm run setup)", ...credentialPlain(false) };
+    const checks = [
+      credential,
+      ...sandboxChecks(SANDBOX_LINES.map((line) => ({ line, enforced: false, why: WHY }))),
+    ];
+    healthBody = { checked_at: RESET, checks: reportRows(checks) };
+    await show();
+    const card = await screen.findByRole("region", { name: /2 checks need attention/ }, SLOW);
+    const text = visibleText(card);
+    expect(text).toContain("Auto mode is off: this computer has no OS sandbox. Details: how to install it");
+    for (const re of [/[A-Z]+_[A-Z_]+/, /npm run|apt install/, /https?:\/\//]) expect(text).not.toMatch(re);
+    const raw = [...card.querySelectorAll("[data-raw]")].map((d) => d.textContent).join("\n");
+    for (const c of checks) expect(raw).toContain(c.msg);
+
+    fireEvent.click(within(card).getByRole("button", { name: "Add model credential" }));
+    expect(await screen.findByRole("dialog", { name: "Add a model credential" }, SLOW)).toBeTruthy();
+  });
+});
+
 // The improve report is the Health page's Improve tab (design 09-dashboard-system, 2026-11-21; it left the Rules page),
 // read from GET /api/v1/rules's `improve`; with no such read there is no tab. Each failure group is titled in plain words (a
 // title per group: its detail, else its draft cause, else "Repeated failure"); its code, detail and draft sit behind a Disclosure.
@@ -215,6 +246,7 @@ describe("Health page: Improve tab", () => {
       if (url === "/api/v1/health") return json(200, healthBody);
       if (url === "/api/v1/unreviewed-merges") return json(200, { merges: [] });
       if (url === "/api/v1/pauses") return json(200, { pauses: [], csrf_token: null });
+      if (url === "/api/v1/model-credential") return json(200, { secrets: ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"], csrf_token: "t" });
       return json(404, { error: "Not found." });
     }));
   });
