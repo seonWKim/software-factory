@@ -338,7 +338,7 @@ CREATE TABLE controller_skill_eval_runs (
     started_at   TEXT NOT NULL,
     finished_at  TEXT,
     created_by   TEXT NOT NULL
-  , skill_version TEXT);
+  , skill_version TEXT, model_class TEXT, judge_model_class TEXT, replays INTEGER, pass_rate REAL, errored INTEGER);
 
 CREATE TABLE controller_skill_eval_suites (
     id          TEXT PRIMARY KEY,
