@@ -2,7 +2,10 @@
 // trigger rule and the outcome shapes the worker, the controller, the item API and the item page share. Pure, apart
 // from `captureAll`, which drives a ScreenshotBrowser and a storage it is handed.
 
-/** The fixed widths (phone, desktop) and the height each is shown at: no setting changes them. */
+/**
+ * The fixed widths (phone, desktop) and the height each page is laid out at: no setting changes them. The image is the
+ * whole page, as tall as its content (scripts/responsive/capture.mjs), never cut at this height.
+ */
 export const SCREENSHOT_SIZES = [{ width: 390, height: 844 }, { width: 1280, height: 800 }] as const;
 export const SCREENSHOT_THEMES = ["light", "dark"] as const;
 export type ScreenshotTheme = (typeof SCREENSHOT_THEMES)[number];
@@ -33,11 +36,22 @@ interface ScreenshotFinding {
   readonly text: string;
 }
 
-/** What a screenshot review run stores (outcome data `screenshot_review`): never a verdict the controller routes on. */
+/** One page the change touches, the section of it the change touches, and whether that section appeared in a capture. */
+export interface ChangedPageResult {
+  readonly page: string;
+  readonly section: string;
+  readonly shown: boolean;
+}
+
+/**
+ * What a screenshot review run stores (outcome data `screenshot_review`): never a verdict the controller routes on.
+ * `pages`: one result per changed page ([] in a review stored before it was kept).
+ */
 export interface ScreenshotReview {
   readonly findings: readonly ScreenshotFinding[];
   readonly unverified: readonly string[];
   readonly summary: string;
+  readonly pages: readonly ChangedPageResult[];
 }
 
 /** The run input that makes a review run the screenshot review. */
@@ -55,6 +69,9 @@ export const screenshotReviewKey = (item: string, screenshot_run: string): strin
 
 /** The unverified line of a capture that did not happen. */
 export const notCapturedLine = (reason: string): string => `screenshots not captured: ${reason}`;
+
+/** The unverified line of a changed section that appeared in no capture. */
+export const sectionNotShownLine = (p: Pick<ChangedPageResult, "page" | "section">): string => `changed section not in the screenshots: ${p.page}: ${p.section}`;
 
 /** Whether a change's files touch one of the UI paths (`repo.ui_check.paths`). No files: false. */
 export function touchesUi(files: readonly string[] | null | undefined, paths: readonly string[]): boolean {
@@ -101,13 +118,36 @@ export function parseScreenshotOutcome(v: unknown): ScreenshotOutcome | null {
   return o.captures.length > 0 || reason !== null ? { captures: o.captures.map(({ page, width, theme, key }) => ({ page, width, theme, key })), reason } : null;
 }
 
+/**
+ * The schema of the reviewer's `changed_pages` (the screenshot review's answer adds it to the review schema): one
+ * entry per page the change touches.
+ */
+export const CHANGED_PAGES_SCHEMA = {
+  type: "array",
+  description: "One entry per page the change touches: its name as the screenshots name it, the section it changes, and shown: whether that section appears in at least one of its images.",
+  items: {
+    type: "object",
+    additionalProperties: false,
+    required: ["page", "section", "shown"],
+    properties: { page: { type: "string" }, section: { type: "string" }, shown: { type: "boolean" } },
+  },
+} as const;
+
+/** The well-formed entries of a `changed_pages` list (the reviewer's answer, or a stored review's `pages`), trimmed; one with no page is dropped. */
+export function changedPagesOf(v: unknown): ChangedPageResult[] {
+  return (Array.isArray(v) ? v : [])
+    .filter((p): p is ChangedPageResult => typeof p?.page === "string" && typeof p?.section === "string" && typeof p?.shown === "boolean")
+    .map(({ page, section, shown }) => ({ page: page.trim(), section: section.trim(), shown }))
+    .filter((p) => p.page !== "");
+}
+
 /** A stored screenshot review (outcome data `screenshot_review`), or null. */
 export function parseScreenshotReview(v: unknown): ScreenshotReview | null {
-  const r = v as { findings?: unknown; unverified?: unknown; summary?: unknown } | null;
+  const r = v as { findings?: unknown; unverified?: unknown; summary?: unknown; pages?: unknown } | null;
   if (typeof r !== "object" || r === null || !Array.isArray(r.findings) || !Array.isArray(r.unverified)) return null;
   const findings = r.findings.filter((f): f is ScreenshotFinding => typeof f?.kind === "string" && typeof f?.text === "string");
   const unverified = r.unverified.filter((u): u is string => typeof u === "string");
-  return { findings, unverified, summary: typeof r.summary === "string" ? r.summary : "" };
+  return { findings, unverified, summary: typeof r.summary === "string" ? r.summary : "", pages: changedPagesOf(r.pages) };
 }
 
 /** Raised by a ScreenshotBrowser that cannot start (no Chrome, no fixture, no build): its message is the reason. */
