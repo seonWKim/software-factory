@@ -1,7 +1,8 @@
 // Open alarms in the status views (design 09-status-page, alarms in Needs you): the alerts the alarm step stored
 // (design 05-alarms), shown in Needs you and named in the why-it-waits sentence of each item they affect. An alarm
 // is open while its newest alert is younger than the alarm step's dedupe window (ALERT_DEDUPE_MS): a pattern that
-// still holds then alerts again, one that stopped is resolved. Store reads only (listAlerts, listRuns).
+// still holds then alerts again, one that stopped is resolved. One the owner dismissed (`factory alarm dismiss`, POST
+// /api/v1/alarms/dismiss) is hidden until its pattern alerts again. Store reads only (listAlerts, listRuns).
 
 import { ALERT_DEDUPE_MS, RESTART_WINDOW_MS } from "../core/alarms.js";
 import { MODEL_RUN_KINDS } from "../core/model-choice.js";
@@ -13,7 +14,10 @@ import { failureWords } from "./why.js";
 /** Most alerts one view reads: far more than the patterns that can alert within one dedupe window. */
 const ALERTS_READ = 100;
 
-/** The open alarms as of `now`, newest first: the newest alert of each pattern key, raised less than the window ago. */
+/**
+ * The open alarms as of `now`, newest first: the newest alert of each pattern key, raised less than the window ago
+ * and not dismissed at or after it was raised.
+ */
 export async function openAlarms(store: Pick<FactoryStore, "listAlerts">, now: Date): Promise<Alert[]> {
   const since = now.getTime() - ALERT_DEDUPE_MS;
   const seen = new Set<string>();
@@ -21,7 +25,7 @@ export async function openAlarms(store: Pick<FactoryStore, "listAlerts">, now: D
   for (const a of await store.listAlerts({ limit: ALERTS_READ })) {
     if (Date.parse(a.created_at) <= since || seen.has(a.pattern_key)) continue;
     seen.add(a.pattern_key);
-    out.push(a);
+    if (a.dismissed_at === undefined || a.dismissed_at < a.created_at) out.push(a);
   }
   return out;
 }
@@ -148,7 +152,7 @@ function redMainSha(a: Alert): string {
   return a.pattern_key.slice("red_main:".length);
 }
 
-/** Where the operator looks into the alarm; no command resolves one (it closes once its pattern stops). */
+/** Where the operator looks into the alarm; it closes once its pattern stops, or when dismissed (`factory alarm dismiss <id>`). */
 export function alarmCommand(a: Alert): string {
   if (a.pattern === "spend_budget") return "Spend page (/app/spend)";
   if (a.pattern === "repeated_error") return "Failures page (/app/failures)";
