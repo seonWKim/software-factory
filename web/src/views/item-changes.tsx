@@ -153,7 +153,7 @@ export function ItemChanges({ itemId, screenshots, review }: { itemId: string; s
     <div data-item-changes className="flex flex-col gap-6">
       <Card title={t("changes.screenshots")} count={screenshots?.captures.length}>
         {screenshots === null ? (
-          <EmptyState title={t("changes.noScreenshots")} description={t("changes.noScreenshotsHint")} />
+          <EmptyState title={t("changes.noScreenshots")} />
         ) : (
           <div className="flex flex-col gap-4">
             {!finished(screenshots.status) && <Notice>{t("changes.waiting")}</Notice>}

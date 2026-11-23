@@ -9,7 +9,6 @@ export const work = {
   "ids.source": "Source",
   "changes.screenshots": "Screenshots",
   "changes.noScreenshots": "No screenshots yet",
-  "changes.noScreenshotsHint": "After a review passes on a change to the dashboard, the factory takes screenshots of its pages here, before you merge.",
   "changes.waiting": "The screenshots are being taken.",
   "changes.notCaptured": "Some screenshots were not taken. Merge still runs its own page check.",
   "changes.fixture": "Pages from the sample data the page check uses, not this item's own data.",
