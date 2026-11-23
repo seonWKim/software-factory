@@ -121,7 +121,7 @@ CREATE TABLE controller_golden_fingerprints (
   );
 
 CREATE TABLE controller_green_bases (
-    project     TEXT PRIMARY KEY,
+    project_key TEXT PRIMARY KEY,
     base_sha    TEXT NOT NULL,
     checked_at  TEXT NOT NULL
   );

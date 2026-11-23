@@ -39,7 +39,7 @@ describe("GreenBaseStore", () => {
     await greens.set("o/other", "c".repeat(40));
     expect(await greens.get("o/r")).toBe("b".repeat(40));
     expect(await greens.get("o/other")).toBe("c".repeat(40));
-    expect(await store.db.all("SELECT project, base_sha, checked_at FROM controller_green_bases WHERE project = ?", ["o/r"]))
-      .toEqual([{ project: "o/r", base_sha: "b".repeat(40), checked_at: now }]);
+    expect(await store.db.all("SELECT project_key, base_sha, checked_at FROM controller_green_bases WHERE project_key = ?", ["o/r"]))
+      .toEqual([{ project_key: "o/r", base_sha: "b".repeat(40), checked_at: now }]);
   });
 });

@@ -10,7 +10,7 @@ export default defineMigration({
   tables: ["controller_green_bases"],
   async up(db) {
     await db.run(`CREATE TABLE IF NOT EXISTS controller_green_bases (
-    project     TEXT PRIMARY KEY,
+    project_key TEXT PRIMARY KEY,
     base_sha    TEXT NOT NULL,
     checked_at  TEXT NOT NULL
   )`);
