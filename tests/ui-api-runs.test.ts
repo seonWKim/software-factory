@@ -132,10 +132,13 @@ describe("ui api: host sleeps (issue #218)", () => {
     }
     const v1 = await json<{ sleeps: Record<string, unknown>[] }>(d, "/api/v1/health");
     expect(v1.sleeps.map((s) => s.woke_at)).toEqual(Array.from({ length: 10 }, (_, i) => at((11 - i) * 1000)));
-    expect(v1.sleeps[0]).toEqual({ worker_id: w1, woke_at: at(11_000), gap_ms: 60_012, run_id: claimed.id, work_item_id: claimed.work_item_id, run_status: "running" });
-    expect(v1.sleeps[1]).toEqual({ worker_id: w1, woke_at: at(10_000), gap_ms: 60_011, run_id: null, work_item_id: null, run_status: null });
+    // The held run's item comes with its title, so the Health page names it (design 09-health, 2026-11-24).
+    const title = (await store.getWorkItem(claimed.work_item_id))!.title;
+    expect(title).toBeTruthy();
+    expect(v1.sleeps[0]).toEqual({ worker_id: w1, woke_at: at(11_000), gap_ms: 60_012, run_id: claimed.id, work_item_id: claimed.work_item_id, work_item_title: title, run_status: "running" });
+    expect(v1.sleeps[1]).toEqual({ worker_id: w1, woke_at: at(10_000), gap_ms: 60_011, run_id: null, work_item_id: null, work_item_title: null, run_status: null });
     for (const s of v1.sleeps) {
-      expect(Object.keys(s).sort()).toEqual(["gap_ms", "run_id", "run_status", "woke_at", "work_item_id", "worker_id"]);
+      expect(Object.keys(s).sort()).toEqual(["gap_ms", "run_id", "run_status", "woke_at", "work_item_id", "work_item_title", "worker_id"]);
       expect(typeof s.gap_ms).toBe("number");
     }
     const old = JSON.parse((await get(d, "/api/health")).body) as Record<string, unknown>;
@@ -170,7 +173,7 @@ describe("ui api: host sleeps (issue #218)", () => {
     });
     await store.recordHostSleep({ worker_id: w1, woke_at: at(1000), gap_ms: 120_000, run_id: claimed.id });
     const v1 = await json<{ sleeps: unknown[]; checks: unknown[] }>(d, "/api/v1/health");
-    expect(v1.sleeps).toEqual([{ worker_id: w1, woke_at: at(1000), gap_ms: 120_000, run_id: claimed.id, work_item_id: null, run_status: null }]);
+    expect(v1.sleeps).toEqual([{ worker_id: w1, woke_at: at(1000), gap_ms: 120_000, run_id: claimed.id, work_item_id: null, work_item_title: null, run_status: null }]);
     expect(v1.checks).toHaveLength(2);
   });
 

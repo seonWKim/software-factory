@@ -1,4 +1,5 @@
 import type { KeyboardEventHandler, ReactNode, Ref } from "react";
+import { copyToClipboard } from "../components/ui/copy.js";
 import { announceStatus } from "../components/ui/dialog.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { ROW_TITLE } from "../components/ui/list-row.js";
@@ -28,7 +29,7 @@ export const ROW_SPACE: Readonly<Record<"list" | "tree", Readonly<Record<RowVari
 export const copyIdItem = (id: string): MenuItem => ({
   label: t("copy.id"),
   onSelect: () => {
-    navigator.clipboard?.writeText(id).then(() => announceStatus(t("copy.done")), () => undefined);
+    void copyToClipboard(id).then((ok) => ok && announceStatus(t("copy.done")));
   },
 });
 

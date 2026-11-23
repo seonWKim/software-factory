@@ -1,31 +1,30 @@
-import { useIsFetching, useQuery, useQueryClient } from "@tanstack/react-query";
-import { MoreHorizontal, RefreshCw, Search } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Search } from "lucide-react";
 import { type JSX, useEffect, useState } from "react";
 import { API, type Overview, POLL_MS, WEB_REV, getJson } from "./api.js";
 import { Brand } from "./components/ui/brand.js";
 import { Button } from "./components/ui/button.js";
 import { OverflowMenu, Tooltip } from "./components/ui/menu.js";
-import { useWide } from "./components/ui/parts.js";
 import { t } from "./i18n/index.js";
-import { cn } from "./lib/cn.js";
 import { useShortcuts } from "./keys.js";
 import { Link, NavProvider, useLocationPath } from "./nav.js";
 import { BASE, evalsRoute, pagesIn, redirectFor, routeFor } from "./pages.js";
 import { HelpDialog, SearchDialog } from "./search.js";
 import { ShortcutsLink, SideLinks, pageLabel } from "./shell/sidebar.js";
 import { ModeChip } from "./shell/mode-chip.js";
-import { ThemeControl } from "./shell/top-bar.js";
-import { type ThemeChoice, applyChoice, saveChoice, storedChoice } from "./theme.js";
+import { startTheme } from "./theme.js";
 import { DataPage } from "./views/data.js";
 import { EvalsPage, skillName } from "./views/evals.js";
 import { HealthPage, ItemPage, ItemsPage } from "./views/pages.js";
 import { PluginsPage } from "./views/plugins.js";
 import { SettingsPage } from "./views/settings.js";
-import { FactoryRevision, RevisionBanner, StopAllAgents, UpdateNote } from "./views/system-banner.js";
+import { APPEARANCE_ANCHOR } from "./views/settings/appearance.js";
+import { FactoryRevision, RevisionBanner, StopAllAgents, UnpushedMerges, UpdateNote } from "./views/system-banner.js";
 import { TranscriptView, transcriptRoute } from "./views/transcript.js";
 import { RulesPage } from "./views/rules.js";
 import { ProposalsPage } from "./views/proposals.js";
 import { CalendarPage } from "./views/calendar.js";
+import { SchedulesPage } from "./views/schedules.js";
 import { TasksPage } from "./views/tasks.js";
 import { WorkersPage } from "./views/workers.js";
 
@@ -33,6 +32,7 @@ const VIEWS: Record<string, () => JSX.Element> = {
   items: ItemsPage,
   tasks: TasksPage,
   calendar: CalendarPage,
+  schedules: SchedulesPage,
   workers: WorkersPage,
   health: HealthPage,
   rules: RulesPage,
@@ -42,7 +42,10 @@ const VIEWS: Record<string, () => JSX.Element> = {
   plugins: PluginsPage,
 };
 
-/** The app (design §9): sidebar, top bar (mode chip, running revision, update failed, search, refresh, theme), the update note and the current page. */
+/**
+ * The app (design §9): sidebar (its footer: shortcuts and the running revision), top bar (mode chip, update failed, Stop all
+ * agents, search, a More menu with Refresh and Appearance), the update toast and the current page.
+ */
 export function App() {
   const overview = useQuery({
     queryKey: [API.overview],
@@ -52,12 +55,9 @@ export function App() {
     refetchIntervalInBackground: false,
   });
   const client = useQueryClient();
-  const fetching = useIsFetching();
-  const [choice, setChoice] = useState<ThemeChoice>(storedChoice);
-  // System listens for the system colour scheme; the cleanup removes that listener when the choice changes.
-  useEffect(() => applyChoice(choice), [choice]);
+  // System listens for the system colour scheme; Settings' Appearance changes the choice (theme.ts chooseTheme).
+  useEffect(() => startTheme(), []);
   const [path, navigate] = useLocationPath();
-  const narrow = !useWide();
   const [dialog, setDialog] = useState<"search" | "help" | null>(null);
   useShortcuts({ navigate, openSearch: () => setDialog("search"), openHelp: () => setDialog("help"), path });
   const route = routeFor(path);
@@ -71,10 +71,6 @@ export function App() {
   // An evals page (evals/<skill>) has no sidebar link: Data, also hidden, is its current page, so no link is marked.
   const evalsSkill = evalsRoute(path);
   const current = transcript ? routeFor(`${BASE}items`).page : evalsSkill ? routeFor(`${BASE}data`).page : route.page;
-  const choose = (next: ThemeChoice) => {
-    saveChoice(next);
-    setChoice(next);
-  };
   const needs = overview.data?.needs_you;
   const View = VIEWS[route.page.path] ?? TasksPage;
   useEffect(() => {
@@ -104,42 +100,36 @@ export function App() {
             <div className="mt-3">
               <ShortcutsLink onOpen={() => setDialog("help")} />
             </div>
+            <div className="mt-2">
+              <FactoryRevision factory={overview.data?.factory} />
+            </div>
           </div>
         </aside>
         {/* A word longer than its line breaks (overflow-wrap is inherited), so no page's text widens the column. */}
         <div data-scroll-root className="flex min-w-0 flex-1 flex-col overflow-y-auto wrap-break-word">
-          {/* One row at every width: the revision and the status text shrink, the controls do not wrap. */}
+          {/* One row at every width, only what matters at a glance: the mode, a failed update, Stop all agents, Search and More. */}
           <header className="flex items-center gap-x-3 border-b border-border px-4 py-2 max-sm:gap-x-2">
             <ModeChip />
-            <span className="min-w-0 overflow-hidden"><FactoryRevision factory={overview.data?.factory} /></span>
             <span className="ml-auto min-w-0 truncate text-sm text-text-2" aria-live="polite">
               {overview.isError ? t("topbar.updateFailed") : null}
             </span>
             <StopAllAgents />
-            {narrow ? (
-              <OverflowMenu
-                label={t("topbar.more")}
-                icon={<MoreHorizontal aria-hidden className="size-4" />}
-                items={[
-                  { label: t("search.open"), action: "search", onSelect: () => setDialog("search") },
-                  { label: t("topbar.refresh"), action: "refresh", onSelect: () => void client.invalidateQueries() },
-                ]}
-              />
-            ) : (
-              <>
-                <Tooltip text={t("search.open")} shortcut="⌘K" placement="bottom" align="end" className="shrink-0">
-                  <Button variant="ghost" size="icon" aria-label={t("search.open")} aria-keyshortcuts="Meta+K" onClick={() => setDialog("search")}>
-                    <Search aria-hidden className="size-4" />
-                  </Button>
-                </Tooltip>
-                <Button variant="ghost" size="icon" aria-label={t("topbar.refresh")} className="shrink-0" onClick={() => void client.invalidateQueries()}>
-                  <RefreshCw aria-hidden className={cn("size-4", fetching > 0 && "animate-spin motion-reduce:animate-none")} />
-                </Button>
-              </>
-            )}
-            <ThemeControl choice={choice} onChoose={choose} />
+            <Tooltip text={t("search.open")} shortcut="⌘K" placement="bottom" align="end" className="shrink-0">
+              <Button variant="ghost" size="icon" aria-label={t("search.open")} aria-keyshortcuts="Meta+K" onClick={() => setDialog("search")}>
+                <Search aria-hidden className="size-4" />
+              </Button>
+            </Tooltip>
+            {/* Refresh is for the pages that do not poll (Data, Plugins); Appearance opens Settings' theme card. */}
+            <OverflowMenu
+              label={t("topbar.more")}
+              items={[
+                { label: t("topbar.refresh"), action: "refresh", onSelect: () => void client.invalidateQueries() },
+                { label: t("theme.title"), action: "appearance", onSelect: () => navigate(`${BASE}settings#${APPEARANCE_ANCHOR}`) },
+              ]}
+            />
           </header>
           <RevisionBanner server={overview.data?.server_rev} web={WEB_REV} />
+          <UnpushedMerges count={overview.data?.unpushed_merges} />
           <UpdateNote factory={overview.data?.factory} />
           <main className="w-full min-w-0 p-4 max-w-page-wide has-[[data-page-width=read]]:max-w-page-read">
             {transcript ? (

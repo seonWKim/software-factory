@@ -510,12 +510,11 @@ describe("design-system: the component table and the Stays fixed list", () => {
     expect(row(need)?.[1]).toContain(`\`${component}\``);
   });
 
-  it("maps an on/off choice in a list to Checkbox, says none exists yet, a follow-up adds it and Switch serves until then", () => {
+  it("maps an on/off choice in a list to the Checkbox in web/src/components/ui/checkbox.tsx", () => {
     const r = row("an on/off choice in a list");
-    expect(r?.[1]).toMatch(/Checkbox/);
-    expect(r?.join(" ")).toMatch(/no Checkbox exists yet/i);
-    expect(r?.join(" ")).toMatch(/follow-up issue adds it/);
-    expect(r?.[1]).toContain("`Switch`");
+    expect(r?.[1]).toContain("`Checkbox`");
+    expect(r?.[1]).toContain("web/src/components/ui/checkbox.tsx");
+    expect(r?.join(" ")).not.toMatch(/none yet|Switch/);
   });
 
   it("names, in code, only components that have a section", () => {

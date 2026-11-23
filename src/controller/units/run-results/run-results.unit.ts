@@ -99,6 +99,8 @@ export class RunResultsUnit {
     const decision = async (it: WorkItem): Promise<Decision> => {
       // An improve run changes nothing else on its system item (design §7): its report is already stored.
       if (run.kind === "improve") return ack(run.outcome?.status === "succeeded" ? "improve_done" : "improve_failed");
+      // A routine run changes nothing on its item either: it is read-only, and what it found is in its stored outcome.
+      if (run.kind === "routine") return ack(run.outcome?.status === "succeeded" ? "routine_done" : "routine_failed");
       // The run's full token count (design §6 Measurement); old succeeded rows keep the data.tokens they stored.
       const tokens = it.token_cost + runTokenCount(run);
       if (!run.outcome || run.outcome.status !== "succeeded") return this.c.unit("model-probe").stallScope(run, await this.applyFailedRun(it, run));
@@ -116,7 +118,7 @@ export class RunResultsUnit {
         case "merge-check": case "restart": case "judge":
           // `apply` hands merge-check runs to the merge queue, restart runs to the local-merge unit and judge runs to the phases unit, before it reads any outcome.
           throw new Error(`${run.kind} run ${run.id} reached the run outcome path`);
-        case "triage": {
+        case "triage": { const context = await this.c.unit("commands").applyQueued(it, { patch: { token_cost: tokens }, actor: SYSTEM, reason: "triaged", ack_run: run.id }); if (context.enqueue) return context; // added context: one more triage (design 02-attachments)
           // The item's size caps (src/core/size-cap.ts) decide whether the estimate needs phases (src/core/split.ts).
           const settings = this.c.k.settings(it.project), { floors } = settings, caps = sizeCaps(it, settings);
           // Migration timestamps, then path companions (design 04-triage.md): a new migration on a base branch's timestamp moves to the next free minute; companions on that answer, so one named only in
@@ -279,6 +281,10 @@ export class RunResultsUnit {
           return this.c.unit("checks-gate").checkGate(it, run, { tier, token_cost: tokens }, run.id);
         }
         case "resolve": {
+          // A base reconcile (design 05-sources): its checked merge waits for the merge queue, never for a review.
+          if (this.c.unit("local-merge").reconcileOf(it)) {
+            return { patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", token_cost: tokens }, actor: SYSTEM, reason: "resolved", detail: { cause: "base_reconcile" }, ack_run: run.id };
+          }
           // The worker pushed the merge to the same PR branch. A fresh review checks it; its key comes from
           // this run's id, so it never collides with the review of an earlier loop or resolve.
           await autoResolvedComment(this.c, it, run);
@@ -344,6 +350,7 @@ export class RunResultsUnit {
     };
     await this.c.unit("transitions").decide(run.work_item_id, async (it) => this.landed(it, run, withSpent(await decision(it), run, it)));
     await deliveredMeanwhile(this.c, run);
+    if (run.kind === "resolve" && run.outcome?.status === "succeeded") await this.c.unit("local-merge").reconciled(run.work_item_id, run.id);
   }
 
   /**

@@ -13,6 +13,7 @@ import {
 } from "../src/core/tools/index.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { ExecResult, Sandbox, SandboxHandle } from "../src/interfaces/sandbox.js";
+import { ROUTINE_TOOLS } from "../src/worker/support.js";
 
 // Part 1 of 3 for #58: the shared file and shell tools and their guards, run against the real NoOpSandbox.
 // macOS: tmpdir() is under /var, a symlink to /private/var. `raw` is the path as tmpdir() gives it, `root`
@@ -120,20 +121,31 @@ afterAll(async () => {
 });
 
 describe("tool specs", () => {
-  it("exports exactly six tools with their capabilities, each a full ToolSpec", () => {
-    expect(TOOLS.map((t) => [t.name, t.capability])).toEqual([
+  it("exports the shared tools in order with their capabilities, each a full ToolSpec", () => {
+    const expected = [
       ["Read", "read"],
       ["Glob", "read"],
       ["Grep", "read"],
       ["Write", "write"],
       ["Edit", "write"],
       ["Bash", "exec"],
-    ]);
+      ["Browse", "read"],
+    ];
+    const names = expected.map(([n]) => n);
+    expect(TOOLS.map((t) => [t.name, t.capability]).filter(([n]) => names.includes(n!))).toEqual(expected);
     for (const t of TOOLS) {
       expect(t.description.length).toBeGreaterThan(0);
       expect(t.input_schema).toMatchObject({ type: "object", properties: expect.any(Object), required: expect.any(Array) });
       expect(typeof t.run).toBe("function");
     }
+  });
+});
+
+describe("ROUTINE_TOOLS", () => {
+  it("is exactly Read, Glob, Grep and Browse, all read, with no edit, write, exec, push or merge tool", () => {
+    expect(ROUTINE_TOOLS.map((t) => [t.name, t.capability])).toEqual([["Read", "read"], ["Glob", "read"], ["Grep", "read"], ["Browse", "read"]]);
+    for (const t of ROUTINE_TOOLS) expect(TOOLS, t.name).toContain(t);
+    expect(ROUTINE_TOOLS.map((t) => t.name).filter((n) => /edit|write|bash|exec|push|merge/i.test(n))).toEqual([]);
   });
 });
 
@@ -547,6 +559,7 @@ describe("sandbox failures", () => {
         Write: { file_path: "f.txt", content: "x" },
         Edit: { file_path: "README.md", old_string: "hi", new_string: "ho" },
         Bash: { command: "true" },
+        Browse: {},
       };
       for (const t of TOOLS) {
         const r = await call(t.name, inputs[t.name], ctx({}, sandbox));

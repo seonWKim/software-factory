@@ -19,6 +19,7 @@ import { Outcome, useWrite } from "./settings-file-keys.js";
 import { ModeDialog } from "./settings/mode-dialog.js";
 import { ShowFailuresDialog, WhatFailedDialog } from "./alarm-dialogs.js";
 import { ModelCredentialDialog } from "./model-credential-dialog.js";
+import { Toast } from "../components/ui/toast.js";
 
 /**
  * Shown while the app was built from another revision than the server it talks to runs (design §9): the tab
@@ -33,11 +34,20 @@ export function RevisionBanner({ server, web }: { server: string | null | undefi
   );
 }
 
-/** This browser's last seen factory revision, and the revision whose update note waits for a Dismiss (design 09-dashboard-shell). */
-export const SEEN_REV_KEY = "sf-factory-rev";
-export const UPDATE_NOTE_KEY = "sf-update-note";
+/** Local merges whose base push waits (design 09-dashboard-shell): the RevisionBanner's markup; hidden at 0 or unknown. */
+export function UnpushedMerges({ count }: { count: number | undefined }) {
+  if (!count) return null;
+  return (
+    <p role="alert" data-testid="unpushed-merges" className="border-b border-pill-warn-fg bg-pill-warn-bg px-4 py-2 text-sm text-pretty text-pill-warn-fg">
+      {t("unpushed.merges", { count })}
+    </p>
+  );
+}
 
-/** Storage can throw (private mode, blocked site data): then nothing is stored and no note shows. */
+/** This browser's last seen factory revision (design 09-dashboard-shell): a revision's update toast shows once. */
+export const SEEN_REV_KEY = "sf-factory-rev";
+
+/** Storage can throw (private mode, blocked site data): then nothing is stored and no toast shows. */
 function stored(key: string): string | null {
   try {
     return localStorage.getItem(key);
@@ -46,71 +56,68 @@ function stored(key: string): string | null {
   }
 }
 
-function store(key: string, value: string | null): void {
+function store(key: string, value: string): void {
   try {
-    if (value === null) localStorage.removeItem(key);
-    else localStorage.setItem(key, value);
+    localStorage.setItem(key, value);
   } catch {
     // no storage: nothing kept
   }
 }
 
 /**
- * Notes `rev` as seen and says whether its update note shows: when this browser had stored another revision, `rev` is
- * an update, kept until Dismiss. A first visit (none stored) only stores it.
+ * Notes `rev` as seen and says whether its update toast shows: only when this browser had stored another revision.
+ * Storing it at once is what keeps a reload, a poll or another tab from showing the same revision's toast again. A
+ * first visit (none stored) only stores it.
  */
 function noteFor(rev: string): boolean {
   const seen = stored(SEEN_REV_KEY);
-  if (seen !== rev) {
-    store(SEEN_REV_KEY, rev);
-    if (seen !== null) store(UPDATE_NOTE_KEY, rev);
-  }
-  return stored(UPDATE_NOTE_KEY) === rev;
+  if (seen === rev) return false;
+  store(SEEN_REV_KEY, rev);
+  return seen !== null && stored(SEEN_REV_KEY) === rev;
 }
 
 const shortRev = (rev: string) => rev.slice(0, 7);
 
 /**
- * One note after the factory moved to a new revision (design 09-dashboard-shell): "Updated to <rev>: N changes", the
- * commit subjects behind a Changes toggle, and Dismiss, which this browser keeps for that revision. Without a count
- * (git failed, or no previous_rev) it names the revision only.
+ * One toast after the factory moved to a new revision (design 09-dashboard-shell): "Updated to <rev>: N changes" and
+ * the commit subjects behind a Changes toggle, in the shared Toast, which goes by itself after a few seconds (or on
+ * Dismiss). Shown once per revision in this browser. Without a count (git failed, or no previous_rev) it names the
+ * revision only.
  */
 export function UpdateNote({ factory }: { factory: FactoryState | null | undefined }) {
   const rev = factory?.rev ?? null;
   const [shown, setShown] = useState<string | null>(null);
-  useEffect(() => setShown(rev !== null && noteFor(rev) ? rev : null), [rev]);
+  useEffect(() => {
+    if (rev !== null && noteFor(rev)) setShown(rev);
+  }, [rev]);
   if (rev === null || shown !== rev) return null;
   const count = factory?.changes?.count ?? null;
   const subjects = count === null ? [] : (factory?.changes?.subjects ?? []);
   const short = shortRev(rev);
-  const dismiss = () => {
-    store(UPDATE_NOTE_KEY, null);
-    setShown(null);
-  };
   return (
-    <div role="status" data-testid="update-note" className="flex flex-wrap items-start gap-x-3 gap-y-1 border-b border-pill-info-border bg-pill-info-bg px-4 py-2 text-sm text-pill-info-fg">
-      <div className="min-w-0 grow basis-64">
-        <p data-update-text className="text-pretty">
+    <Toast key={rev} dismissLabel={t("update.dismiss")} onClose={() => setShown(null)}>
+      <div data-testid="update-note">
+        <p data-update-text className="font-medium text-pretty">
           {count === null ? t("update.noteNoCount", { rev: short }) : count === 1 ? t("update.noteOne", { rev: short }) : t("update.note", { rev: short, count })}
         </p>
         {subjects.length > 0 && (
-          <Disclosure summaryTone="text-pill-info-fg" summary={t("update.changes")}>
-            <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs wrap-anywhere">
+          <Disclosure summary={t("update.changes")}>
+            <ul className="mt-1 max-h-48 list-disc space-y-0.5 overflow-y-auto pl-5 text-xs text-text-2 wrap-anywhere">
               {subjects.map((s, i) => <li key={i}>{s}</li>)}
             </ul>
-            {count !== null && count > subjects.length && <p className="mt-1 text-xs">{t("update.more", { count: count - subjects.length })}</p>}
+            {count !== null && count > subjects.length && <p className="mt-1 text-xs text-text-2">{t("update.more", { count: count - subjects.length })}</p>}
           </Disclosure>
         )}
       </div>
-      <Button variant="ghost" size="sm" onClick={dismiss}>{t("update.dismiss")}</Button>
-    </div>
+    </Toast>
   );
 }
 
 /**
- * The running revision in the header (design 09-dashboard-shell): labelled "Factory version", its short form, and "up
- * to date" or "N behind" when the status file says (a separate code checkout); the tooltip says what the hash is. The
- * label shows from `sm` up, so the top bar stays on one row. Hidden without a factory status or a running revision.
+ * The running revision in the sidebar footer (design 09-dashboard-shell): "Factory version" over its short form and
+ * "up to date" or "N behind" when the status file says (a separate code checkout); the tooltip says what the hash is.
+ * Shown with the full sidebar (from `lg`); the icon sidebar has no room, and Health's code row names it there.
+ * Hidden without a factory status or a running revision.
  */
 export function FactoryRevision({ factory }: { factory: FactoryState | null | undefined }) {
   if (!factory?.rev) return null;
@@ -118,10 +125,10 @@ export function FactoryRevision({ factory }: { factory: FactoryState | null | un
   const behind = factory.behind ?? null;
   const text = behind === null ? rev : behind === 0 ? t("update.revCurrent", { rev }) : t("update.revBehind", { rev, count: behind });
   return (
-    <span className="flex items-baseline gap-1.5 text-xs whitespace-nowrap text-text-2">
-      <span className="hidden sm:inline">{t("update.revLabel")}</span>
-      <span data-testid="factory-rev" title={t("update.revTooltip")} className="shrink-0 font-mono">{text}</span>
-    </span>
+    <p className="px-2 text-xs text-text-2 max-lg:hidden">
+      <span className="block">{t("update.revLabel")}</span>
+      <span data-testid="factory-rev" title={t("update.revTooltip")} className="block truncate font-mono">{text}</span>
+    </p>
   );
 }
 

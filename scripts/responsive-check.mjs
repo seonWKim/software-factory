@@ -60,8 +60,11 @@ async function main() {
     ...(await sidebarPages()),
     { name: "item", path: `items/${enc(fixture.pages.item)}` },
     { name: "item-phases", path: `items/${enc(fixture.pages.parent)}` },
-    // Health's Runners tab: the worker process rows, checked by title-wrap.
-    { name: "health-runners", path: "health?tab=runners" },
+    // Health's Runs tab: the worker process rows (checked by title-wrap), Failures and the Host sleeps rows.
+    { name: "health-runs", path: "health?tab=runs" },
+    // Health's Cost and Review tabs: Spend, Efficiency, the unreviewed merges and the improve report.
+    { name: "health-cost", path: "health?tab=cost" },
+    { name: "health-review", path: "health?tab=review" },
     { name: "transcript", path: `items/${enc(fixture.pages.item)}/runs/${enc(fixture.pages.run)}` },
   ].filter((p) => only === null || p.name === only);
 

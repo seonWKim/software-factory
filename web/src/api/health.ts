@@ -7,8 +7,9 @@ export interface HostSleepRow {
   /** How late the wait ended, in ms. */
   gap_ms: number;
   run_id: string | null;
-  /** The work item and current status of the run the sleep held; null for an idle tick or a failed lookup. */
+  /** The work item, its title and the current status of the run the sleep held; null for an idle tick or a failed lookup. */
   work_item_id?: string | null;
+  work_item_title?: string | null;
   run_status?: string | null;
 }
 
@@ -30,6 +31,8 @@ export interface UnreviewedMerges {
     /** The PR's page and its checks page (a GitHub project with a stored label); null: none. */
     review_url?: string | null;
     checks_url?: string | null;
+    /** The PR's title as the forge gave it at the merge; null: recorded before titles were kept. */
+    title?: string | null;
     /** The stored verdict ("failed", "reverted"); null: none stored. */
     check_verdict?: string | null;
   }[];

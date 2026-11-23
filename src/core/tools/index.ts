@@ -4,18 +4,21 @@
 //
 // Guarantees: Read, Glob, Grep, Write and Edit never touch a path under deny_paths (or a `.env` file), in its
 // written or its symlink-resolved form, and never a path outside the workdir and writable_paths. Bash gets
-// only `policy.env` and refuses a secret-looking env_allowlist key; it is not path-checked.
+// only `policy.env` and refuses a secret-looking env_allowlist key; it is not path-checked. Browse GETs only
+// `policy.browse_url` and never reaches the sandbox.
 
 import { Bash } from "./bash.js";
+import { Browse } from "./browse.js";
 import { Edit, Read, Write } from "./file-tools.js";
 import { Glob, Grep } from "./search-tools.js";
 import type { ToolSpec } from "./types.js";
 
 export { Bash } from "./bash.js";
+export { Browse } from "./browse.js";
 export { Edit, Read, Write } from "./file-tools.js";
 export { FORBIDDEN_ENV, OUTPUT_CAP, type GuardPolicy, type GuardPolicyInput, guardPolicy } from "./policy.js";
 export { Glob, Grep } from "./search-tools.js";
 export type { ToolCapability, ToolContext, ToolResult, ToolSpec } from "./types.js";
 
-/** The six tools, in a fixed order. */
-export const TOOLS: readonly ToolSpec[] = [Read, Glob, Grep, Write, Edit, Bash];
+/** The shared tools, in a fixed order. */
+export const TOOLS: readonly ToolSpec[] = [Read, Glob, Grep, Write, Edit, Bash, Browse];

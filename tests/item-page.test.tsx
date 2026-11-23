@@ -66,6 +66,20 @@ const DETAILS: Record<string, unknown> = {
     timeline: [],
     runs: [{ id: "run_i_2", kind: "interactive", status: "succeeded", attempt: 1, started_at: AT, finished_at: AT, created_at: AT, tokens: 0, error: null }],
   },
+  "/api/v1/items/wi_closed": {
+    as_of: AT,
+    item: base("wi_closed", 40, "Rejected plan", {
+      stage: "CLOSED", close_reason: "rejected", blocked_on: "none", blocked_reason: null, tier: null, item_phase: "rejected", restart_count: 0, loop_count: 0,
+      why: { code: "closed", reason_code: "closed_as", params: { reason: "rejected" }, alarms: [], holder_id: null, next_actor: "none", refs: [], ref_url: null },
+    }),
+    timeline: [
+      { version: 1, at: AT, actor: { kind: "system", id: "system" }, reason: "intake", changes: { stage: { from: "null", to: '"NEW"' } }, detail: null },
+      { version: 2, at: AT, actor: { kind: "user", id: "local:someone" }, reason: "spec_rejected", changes: { stage: { from: '"READY"', to: '"CLOSED"' } }, detail: null },
+    ],
+    thread: [{ seq: 7, at: AT, kind: "command", author: "local:someone", role: "owner", channel: "local", anchor: "msg-7", body: "/reject out of scope" }],
+    commands: [],
+    runs: [],
+  },
   "/api/v1/items/wi_about": {
     as_of: AT,
     item: base("wi_about", 30, "About spec", {
@@ -180,16 +194,44 @@ describe("item page: timeline spec", () => {
 describe("item page: links and runs", () => {
   it("links the spec comment and PR when the URL is http(s)", async () => {
     mount("/app/items/wi_parent");
-    expect((await screen.findByRole("link", { name: "spec comment" })).getAttribute("href")).toBe("https://github.com/o/r/issues/10#issuecomment-5");
+    expect((await screen.findByRole("link", { name: "Open the posted plan" })).getAttribute("href")).toBe("https://github.com/o/r/issues/10#issuecomment-5");
     expect(screen.getByRole("link", { name: "#12" }).getAttribute("href")).toBe("https://github.com/o/r/pull/12");
+  });
+
+  it("a closed item shows one status line with what closed it and a link to the reason, no commands sentence, and only facts with a value (issue #76)", async () => {
+    mount("/app/items/wi_closed");
+    const line = await waitFor(() => {
+      const el = document.querySelector("[data-closed-status]");
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    expect(line.textContent).toMatch(/^Closed: a person rejected the plan · /);
+    expect(within(line as HTMLElement).getByRole("link", { name: "Read the reason" }).getAttribute("href")).toBe("#msg-7");
+    expect(document.querySelector("[data-commands-none]")).toBeNull();
+    expect(screen.queryByText(/^Closed: rejected$/)).toBeNull();
+    const facts = [...document.querySelectorAll("[data-item-facts] dt")].map((d) => d.textContent);
+    expect(facts).toEqual(["State", "Source", "Tokens", "Updated"]);
+    expect(document.querySelector("[data-item-facts]")!.textContent).not.toContain("–");
+  });
+
+  it("an open item keeps every fact, a dash where there is no value", async () => {
+    mount("/app/items/wi_live");
+    const facts = await waitFor(() => {
+      const dts = [...document.querySelectorAll("[data-item-facts] dt")].map((d) => d.textContent);
+      expect(dts.length).toBeGreaterThan(0);
+      return dts;
+    });
+    expect(facts).toContain("PR");
+    expect(facts).toContain("Plan");
+    expect(document.querySelector("[data-closed-status]")).toBeNull();
   });
 
   it("shows any other spec comment or PR URL as plain text", async () => {
     mount("/app/items/wi_p1");
     await screen.findByTestId("parent");
-    expect(screen.queryByRole("link", { name: /spec comment/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: /posted plan/ })).toBeNull();
     expect(screen.queryByRole("link", { name: /#14/ })).toBeNull();
-    expect(screen.getByText(/spec comment \(\[withheld: github_token\]\)/)).toBeTruthy();
+    expect(screen.getByText(/Open the posted plan \(\[withheld: github_token\]\)/)).toBeTruthy();
     expect(document.querySelector('a[href^="javascript:"]')).toBeNull();
   });
 

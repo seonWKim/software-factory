@@ -21,6 +21,8 @@ import { Inbox } from "lucide-react";
 import { Radio } from "../web/src/components/ui/radio.js";
 import { Select } from "../web/src/components/ui/select.js";
 import { Textarea } from "../web/src/components/ui/textarea.js";
+import { TOAST_MS, Toast } from "../web/src/components/ui/toast.js";
+import { act } from "@testing-library/react";
 
 // Every variant, size and state that design-system/components.md lists for the new components renders.
 
@@ -329,6 +331,35 @@ describe("status and message pieces", () => {
     expect(screen.queryByRole("button")).toBeNull();
     expect(container.querySelector("svg")).toBeNull();
     expect(screen.getByText("Nothing")).toBeTruthy();
+  });
+
+  it("Toast is a fixed status box that closes itself after TOAST_MS, waits while hovered or focused, and closes on Dismiss", () => {
+    vi.useFakeTimers();
+    try {
+      const onClose = vi.fn();
+      render(<Toast dismissLabel="Dismiss" onClose={onClose}><p>Updated</p></Toast>);
+      const box = screen.getByRole("status");
+      for (const c of ["fixed", "bg-surface", "border-border", "rounded-box", "shadow-lg"]) expect(box.className.split(" ")).toContain(c);
+      // Hovered: the timer waits, however long.
+      fireEvent.mouseEnter(box);
+      act(() => void vi.advanceTimersByTime(TOAST_MS * 3));
+      expect(onClose).not.toHaveBeenCalled();
+      // Left: TOAST_MS, then the fade, then it closes.
+      fireEvent.mouseLeave(box);
+      act(() => void vi.advanceTimersByTime(TOAST_MS - 1));
+      expect(onClose).not.toHaveBeenCalled();
+      act(() => void vi.advanceTimersByTime(1));
+      expect(box.className).toContain("opacity-0");
+      act(() => void vi.advanceTimersByTime(200));
+      expect(onClose).toHaveBeenCalledTimes(1);
+      cleanup();
+      const dismissed = vi.fn();
+      render(<Toast dismissLabel="Dismiss" onClose={dismissed}>x</Toast>);
+      fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+      expect(dismissed).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("Kbd renders a kbd element", () => {

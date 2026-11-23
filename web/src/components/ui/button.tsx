@@ -37,20 +37,22 @@ interface ButtonProps extends ComponentProps<"button"> {
   solid?: boolean;
 }
 
-export function Button({ className, variant = "secondary", size = "md", solid = false, type = "button", ...props }: ButtonProps) {
-  return (
-    <button
-      type={type}
-      className={cn(
-        "inline-flex items-center gap-1.5 rounded-control font-medium motion-safe:transition-colors",
-        "aria-pressed:bg-surface-2 aria-checked:bg-surface-2",
-        FOCUS,
-        DISABLED,
-        variant === "danger" && solid ? SOLID_DANGER : VARIANTS[variant],
-        SIZES[size],
-        className,
-      )}
-      {...props}
-    />
+/**
+ * The Button's classes, for a control that must be another library's button (react-aria's Tree chevron slot) yet look
+ * like ours. Every other caller renders `Button`.
+ */
+export function buttonClass({ variant = "secondary", size = "md", solid = false, className }: { variant?: ButtonVariant; size?: ButtonSize; solid?: boolean; className?: string | undefined } = {}): string {
+  return cn(
+    "inline-flex items-center gap-1.5 rounded-control font-medium motion-safe:transition-colors",
+    "aria-pressed:bg-surface-2 aria-checked:bg-surface-2",
+    FOCUS,
+    DISABLED,
+    variant === "danger" && solid ? SOLID_DANGER : VARIANTS[variant],
+    SIZES[size],
+    className,
   );
+}
+
+export function Button({ className, variant = "secondary", size = "md", solid = false, type = "button", ...props }: ButtonProps) {
+  return <button type={type} className={buttonClass({ variant, size, solid, className })} {...props} />;
 }

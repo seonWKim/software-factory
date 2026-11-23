@@ -5,7 +5,9 @@
 import { useState } from "react";
 import { Button, Tree, TreeItem, TreeItemContent } from "react-aria-components";
 import type { ItemRow as Item } from "../api.js";
+import { buttonClass } from "../components/ui/button.js";
 import { FOCUS } from "../components/ui/control.js";
+import { DisclosureChevron } from "../components/ui/disclosure.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { duration } from "../lib/format.js";
@@ -95,11 +97,13 @@ function NodeItem(props: { node: TreeNode; now: number; byNumber: ReadonlyMap<nu
         {({ hasChildItems, isExpanded, level }) => (
           <div className={cn("flex items-start gap-1 border-b border-border pr-1", indentFor(level))}>
             {hasChildItems ? (
-              <Button slot="chevron" className="inline-flex h-7 w-6 shrink-0 items-center justify-center text-text-2" aria-label={isExpanded ? t("tree.collapse") : t("tree.expand")}>
-                {isExpanded ? "▾" : "▸"}
+              // The design system's icon button (32px, ghost) around the Disclosure's chevron: the row's first line is 32px
+              // already, so the row keeps its height.
+              <Button slot="chevron" className={buttonClass({ variant: "ghost", size: "icon", className: "group text-text-2" })} aria-label={isExpanded ? t("tree.collapse") : t("tree.expand")}>
+                <DisclosureChevron open={isExpanded} className="size-4" />
               </Button>
             ) : (
-              <span className="w-6 shrink-0" aria-hidden />
+              <span className="w-8 shrink-0" aria-hidden />
             )}
             <Row {...props} />
           </div>

@@ -8,7 +8,7 @@ import type { Sandbox } from "../../interfaces/sandbox.js";
 import { type SecretStore, secretName } from "../../interfaces/secret-store.js";
 import { type After, GATE_HOOKS_DIR, type RunningGateHooks, startGateHooks, stopTimeoutDetail } from "./gate-hooks.js";
 import { type CheckoutDenial, checkoutDenial } from "./os-sandbox.js";
-import { copyToolchainSeeds } from "./toolchain-seeds.js";
+import { copyToolchainSeeds } from "./toolchain-seeds.js"; import { inputArgs, stdinOf } from "./image-input.js";
 import { type BridgeArgs, type GrantedToolDeps, harnessToolName, withRunBridge } from "./tool-bridge.js";
 
 export interface ClaudeCodeRunnerOptions {
@@ -222,7 +222,7 @@ export function buildClaudeArgs(
     // Streamed events (one JSON object per line) so the runner sees progress during the run (stall detection,
     // design §5 Restarts); `--verbose` is required for stream-json in print mode. The last `result` event is
     // the same object `--output-format json` prints.
-    "--output-format", "stream-json",
+    "--output-format", "stream-json", ...inputArgs(spec), // images (design 02-attachments): one stream-json message on stdin
     "--verbose",
     "--settings", JSON.stringify({ ...buildHarnessSettings(spec, spec.sandbox?.workdir, writes ? tmp : [], checkout), ...(hooks ? { hooks } : {}) }),
     "--setting-sources", "project",
@@ -334,7 +334,7 @@ export class ClaudeCodeRunner implements AgentRunner {
     try {
       result = await this.opts.sandbox.exec(spec.sandbox, buildClaudeArgs(spec, model, this.opts.claudeBin, bridge, [tmp], hooks?.settings, denial), {
         env: { ...env, ...FOREGROUND_ENV },
-        stdin: spec.prompt,
+        stdin: stdinOf(spec),
         // A backstop: the hooks' deadline ends the run first; a Stop check past its own limit fails it naming the check.
         timeout_ms: spec.timeout_ms + (hooks?.maxCheckMs ?? 0),
         signal: AbortSignal.any([spec.signal, watch.signal, ...(hooks ? [hooks.deadline] : [])]),

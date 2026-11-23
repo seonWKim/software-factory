@@ -1,25 +1,32 @@
-import type { ModelClass } from "../../../core/model-choice.js";
 import { TRIAGE_SCHEMA, parseTriage } from "../../../core/outputs.js";
 import type { Run, WorkItem } from "../../../core/types.js";
 import type { SandboxHandle } from "../../../interfaces/sandbox.js";
 import { ownerAnswersFor } from "../../../shared/command-notes.js";
-import { RunFailure, renderOwnerAnswers, renderRevision, renderWorkItem, tail } from "../../support.js";
+import { RunFailure, addedContext, renderAttachments, renderOwnerAnswers, renderRevision, renderWorkItem, tail } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
 
 /** The `parseTriage` refusal (issue #454) that earns one re-prompt (issue #488); any other refusal fails at once. */
 const MARKUP_REFUSAL = ": tool-call markup outside code";
 
-async function triage(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, signal: AbortSignal, model: ModelClass, step: RunCall["step"]) {
+async function triage(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, signal: AbortSignal, model: RunCall["model"], step: RunCall["step"]) {
   // One journaled step: a takeover after it returns the stored spec.
   return step("run-agent", async () => {
     // The owner's stored answers bind every re-write of the spec, a phase's from its parent's split (design 04-agents.md).
-    const answers = renderOwnerAnswers(await ownerAnswersFor(item, (id) => w.d.store.listStateChanges(id)));
-    const prompt = item.revision_count > 0
-      ? await w.withIndex(renderRevision(item, answers), [item.issue_text ?? item.problem, item.spec_feedback ?? ""].join("\n"))
-      : await w.withIndex(renderWorkItem(item, { includeSpec: false, answers }), item.problem);
+    // The item's own changes are read once: they carry both its answers and its added context.
+    const own = await w.d.store.listStateChanges(item.id);
+    const answers = renderOwnerAnswers(await ownerAnswersFor(item, (id) => (id === item.id ? Promise.resolve(own) : w.d.store.listStateChanges(id))));
+    // Context added on a New or in-triage item and its attachments (design 02-attachments): untrusted, after the filed text; images as image input.
+    // A store without attachments (a narrow test fake) reads as none.
+    const [contexts, attachments] = [addedContext(own), (await w.d.store.listAttachments?.(item.id)) ?? []];
+    const added = renderAttachments(contexts, attachments);
+    const images = attachments.flatMap((a) => (a.kind === "image" && a.media_type && a.data ? [{ media_type: a.media_type, data: a.data }] : []));
+    const base = item.revision_count > 0
+      ? await w.withIndex(renderRevision(item, answers), [item.issue_text ?? item.problem, item.spec_feedback ?? "", ...contexts].join("\n"))
+      : await w.withIndex(renderWorkItem(item, { includeSpec: false, answers }), [item.problem, ...contexts].join("\n"));
+    const prompt = added ? `${base}\n\n${added}` : base;
     const ask = (text: string, agentStep?: string) =>
-      w.agent(run, item, handle, signal, { prompt: text, model_class: model, output_schema: TRIAGE_SCHEMA }, agentStep);
+      w.agent(run, item, handle, signal, { prompt: text, model_class: model, output_schema: TRIAGE_SCHEMA, ...(images.length > 0 ? { images } : {}) }, agentStep);
     let result = await ask(prompt);
     let spec = parseTriage(result.output);
     if (!spec.ok && spec.error.endsWith(MARKUP_REFUSAL)) {

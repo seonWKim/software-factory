@@ -41,6 +41,8 @@ export interface GuardPolicyInput {
   readable_paths?: readonly string[];
   /** Non-secret env vars for Bash. Nothing else is inherited. */
   env_allowlist: Readonly<Record<string, string>>;
+  /** The one URL Browse may GET, set by the owner (a routine's URL). Absent or null: Browse refuses. */
+  browse_url?: string | null;
 }
 
 export interface GuardPolicy {
@@ -58,6 +60,8 @@ export interface GuardPolicy {
   /** Set when the input cannot be enforced (e.g. a relative workdir): every tool refuses. */
   readonly invalid: string | null;
   readonly output_cap: number;
+  /** The one URL Browse may GET; null: Browse refuses every call. */
+  readonly browse_url: string | null;
 }
 
 /** The one guard policy every tool enforces. Pure: no I/O, no throw. */
@@ -75,5 +79,6 @@ export function guardPolicy(input: GuardPolicyInput): GuardPolicy {
     env_refusal,
     invalid,
     output_cap: OUTPUT_CAP,
+    browse_url: input.browse_url ?? null,
   };
 }

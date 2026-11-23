@@ -350,6 +350,7 @@ export function rowToUnreviewedMerge(r: Row): UnreviewedMerge {
     merge_sha: r.merge_sha as string,
     merger_id: (r.merger_id as UserId | null | undefined) ?? null,
     at: r.at as Timestamp,
+    title: (r.title as string | null | undefined) ?? null,
   };
 }
 

@@ -1,0 +1,21 @@
+// English text, area: attach. A key's prefix (before its first dot) belongs to this file only.
+export const item = {
+  "attach.addContext": "Add context",
+  "attach.attach": "Attach",
+  "attach.contextLabel": "Context",
+  "attach.contextConsequence": "Your text is added to the filed text. When the current triage run ends, one more triage run reads both and writes the spec.",
+  "attach.sendContext": "Add context",
+  "attach.contextSent": "Context sent; one more triage run is queued",
+  "attach.attachConsequence": "The next triage run gets it: an image as image input, a link as text. Only while the item is New or in triage.",
+  "attach.kind": "What to attach",
+  "attach.image": "Image",
+  "attach.imageHelp": "PNG, JPEG, GIF or WebP, up to 5 MB.",
+  "attach.chooseFile": "Choose file",
+  "attach.noFile": "No file chosen",
+  "attach.link": "Link",
+  "attach.url": "URL",
+  "attach.urlHelp": "An http or https link. It is not opened.",
+  "attach.label": "Label (optional)",
+  "attach.attached": "Attached",
+  "attach.readFailed": "The file could not be read or sent.",
+} as const;

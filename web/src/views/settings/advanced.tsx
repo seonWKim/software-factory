@@ -10,6 +10,7 @@ import { KeyValue } from "../../components/ui/key-value.js";
 import { Table, Td, Tr } from "../../components/ui/parts.js";
 import type { MessageKey } from "../../i18n/en.js";
 import { t } from "../../i18n/index.js";
+import { SETTINGS_INTRO } from "./rows.js";
 import { duration } from "../../lib/format.js";
 import { Link } from "../../nav.js";
 import { BASE } from "../../pages.js";
@@ -45,17 +46,12 @@ function JsonValue({ text }: { text: string }) {
   );
 }
 
-function ResetButton({ row, label, token, project, learned = false }: { row: SettingRow; label: string; token: string; project?: string; learned?: boolean }) {
-  const { busy, error, done, write } = useWrite(token);
-  // A learned reset is POST { ..., learned: true }: the server runs `factory settings reset --learned`.
-  const body: SettingsWrite & { learned?: true } = { action: "reset", key: row.key, ...(project === undefined ? {} : { project }), ...(learned ? { learned: true as const } : {}) };
+/** The Reset button; its owner holds the write, so the outcome outlives the button (it unmounts once the key stops being an override). */
+function ResetButton({ label, busy, onReset, learned = false }: { label: string; busy: boolean; onReset: () => void; learned?: boolean }) {
   return (
-    <div>
-      <Button variant="secondary" disabled={busy} aria-label={t(learned ? "settings.resetLearnedLabel" : "settings.resetLabel", { label })} onClick={() => void write(body)}>
-        {learned ? t("settings.resetLearned") : t("settings.reset")}
-      </Button>
-      <Outcome error={error} done={done} />
-    </div>
+    <Button variant="secondary" disabled={busy} aria-label={t(learned ? "settings.resetLearnedLabel" : "settings.resetLabel", { label })} onClick={onReset}>
+      {learned ? t("settings.resetLearned") : t("settings.reset")}
+    </Button>
   );
 }
 
@@ -85,6 +81,9 @@ function LearnedLayer({ row, learned, view }: { row: SettingRow; learned: Learne
   const now = useNow();
   const label = t("settings.keyFor", { key: keyLabel(row.key), project: view.repo });
   const runs = learned.evidence_run_ids;
+  const { busy, error, done, write } = useWrite(view.csrf_token);
+  // A learned reset is POST { ..., learned: true }: the server runs `factory settings reset --learned`.
+  const reset = () => void write({ action: "reset", key: row.key, project: view.repo, learned: true } as SettingsWrite);
   return (
     <div data-learned className="mt-2 flex flex-wrap items-start gap-2">
       <div className="min-w-0 text-xs text-text-2">
@@ -103,7 +102,10 @@ function LearnedLayer({ row, learned, view }: { row: SettingRow; learned: Learne
           </Disclosure>
         )}
       </div>
-      <ResetButton row={row} label={label} token={view.csrf_token} project={view.repo} learned />
+      <div>
+        <ResetButton label={label} busy={busy} onReset={reset} learned />
+        <Outcome error={error} done={done} />
+      </div>
     </div>
   );
 }
@@ -139,17 +141,28 @@ function KeyDetails({ row }: { row: SettingRow }) {
 
 /** One group's keys as table rows: one shared settings row per key; the Value cell holds the editors, the per-project layer and the learned value. */
 function KeyRows({ rows, view, resets }: { rows: readonly SettingRow[]; view: SettingsView; resets: boolean }) {
-  return rows.map((row) => (
+  return rows.map((row) => <KeyRow key={row.key} row={row} view={view} resets={resets} />);
+}
+
+/** One key's row. It holds the global and the per-project reset writes, so a reset's confirmation shows in the value cell after the Reset button is gone. */
+function KeyRow({ row, view, resets }: { row: SettingRow; view: SettingsView; resets: boolean }) {
+  const global = useWrite(view.csrf_token);
+  const project = useWrite(view.csrf_token);
+  return (
     <SettingsRow
-      key={row.key}
       attrs={{ "data-key": row.key }}
       name={keyLabel(row.key)}
       description={keyHelp(row.key, row.description)}
-      control={<ValueCell row={row} view={view} />}
+      control={
+        <>
+          <ValueCell row={row} view={view} projectReset={project} />
+          <Outcome error={global.error} done={global.done} />
+        </>
+      }
       details={<KeyDetails row={row} />}
-      trailing={resets ? row.source === "override" && <ResetButton row={row} label={keyLabel(row.key)} token={view.csrf_token} /> : undefined}
+      trailing={resets ? row.source === "override" && <ResetButton label={keyLabel(row.key)} busy={global.busy} onReset={() => void global.write({ action: "reset", key: row.key })} /> : undefined}
     />
-  ));
+  );
 }
 
 /**
@@ -200,7 +213,7 @@ function ModelSummary({ value }: { value: string }) {
   return text === null ? null : <p data-model-summary className="mb-1 text-xs text-pretty text-text-2">{text}</p>;
 }
 
-function ValueCell({ row, view }: { row: SettingRow; view: SettingsView }) {
+function ValueCell({ row, view, projectReset }: { row: SettingRow; view: SettingsView; projectReset: ReturnType<typeof useWrite> }) {
   const own = view.project === null ? undefined : row.projects.find((p) => p.project === view.project);
   const learned = view.project === null ? undefined : ((row as SettingRow & { learned?: LearnedValue[] }).learned ?? []).find((l) => l.project === view.project);
   const label = keyLabel(row.key);
@@ -229,8 +242,9 @@ function ValueCell({ row, view }: { row: SettingRow; view: SettingsView }) {
           </p>
           <div className="flex flex-wrap items-start gap-2">
             <Editor row={row} label={projectLabel} value={own?.value ?? row.value} token={view.csrf_token} project={view.repo} />
-            {own?.source === "override" && <ResetButton row={row} label={projectLabel} token={view.csrf_token} project={view.repo} />}
+            {own?.source === "override" && <ResetButton label={projectLabel} busy={projectReset.busy} onReset={() => void projectReset.write({ action: "reset", key: row.key, project: view.repo })} />}
           </div>
+          <Outcome error={projectReset.error} done={projectReset.done} />
           <Duration settingKey={row.key} value={own?.value ?? row.value} />
           {learned && <LearnedLayer row={row} learned={learned} view={view} />}
         </div>
@@ -314,13 +328,13 @@ export function AdvancedTab({ view: v, query }: { view: SettingsView; query: str
         <Link href={`${BASE}data`} className={LINK_CLASS}>{t("page.data")}</Link>
       </p>
       <Card title={t("settings.settableKeys")} count={v.keys.length}>
-        <p className="mb-2 text-sm text-pretty text-text-2">{t("settings.settableIntro")}</p>
+        <p className={SETTINGS_INTRO}>{t("settings.settableIntro")}</p>
         <ProjectLabel view={v} />
         <KeysTable view={v} query={query} />
       </Card>
       <FileKeysSection view={v} />
       <Card title={PR_ONLY_TITLE} count={prOnly.length}>
-        <p className="mb-2 text-sm text-pretty text-text-2">
+        <p className={SETTINGS_INTRO}>
           {withNodes("settings.prOnlyIntro", { file: <code>{"factory.config.json"}</code> })}
         </p>
         <DataTable

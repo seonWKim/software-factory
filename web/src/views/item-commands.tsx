@@ -19,6 +19,7 @@ import { type Outcome, OutcomeText, PendingProposals } from "./command-box.js";
 import { type LocalSend, awaitsReply, commandOutcome, useCommandSend } from "./command-send.js";
 import { RestartButton } from "./merge-button.js";
 import { RejectDialog, ReviseDialog, commandLabel, type CommandDialogProps } from "./item-decisions.js";
+import { AddContextActions } from "./item-attachments.js";
 
 // Item commands (design §9, issues #228, #526; design 09-dashboard-item-commands): the sends, outcomes and dialogs
 // the item page's DecisionCard (decision-card.tsx) and the Needs you rows share. A send is POST
@@ -31,7 +32,8 @@ import { RejectDialog, ReviseDialog, commandLabel, type CommandDialogProps } fro
 // `<kind> <severity> <reason>` (verdictNote). A permission ask's paths (the item API's `paths`) go with the command
 // that allows them as `+paths` (withPaths). Feedback a `/revise` queued while implementing is listed until the run that
 // applies it starts (pendingFeedback). A merged item with `repo.restart_command` set has a `restart` row: the Restart
-// app button (RestartButton), which sends `restart` with no note, as `factory restart` does.
+// app button (RestartButton), which sends `restart` with no note, as `factory restart` does. A New or in-triage item
+// (stage NEW, where `/revise` applies) has Add context and Attach (AddContextActions, item-attachments.tsx, design 02-attachments).
 
 /** Every command that opens a dialog from a button: reject and revise (their forms), and verdict (its Accept, Changes or Reject choice). */
 export const DIALOGS = ["reject", "revise", "verdict"];
@@ -190,7 +192,7 @@ export function primaryOf(commands: readonly ItemCommand[]): ItemCommand | undef
  * Reject and Verdict, so any open item can still be rejected; then its pending proposals.
  */
 export function ItemCommands({ id, commands, reason = null }: { id: string; commands: readonly ItemCommand[]; reason?: ReactNode }) {
-  const { on: enabled, busy, local, send: post } = useCommandSend(id);
+  const { on: enabled, busy, local, send: post, session } = useCommandSend(id);
   const [open, setOpen] = useState<FormName | null>(null);
   const wrap = useRef<HTMLDivElement>(null);
   // The OverflowMenu owns its button, so the dialogs hand focus back to it by looking it up when they close.
@@ -200,17 +202,28 @@ export function ItemCommands({ id, commands, reason = null }: { id: string; comm
   // Verdict and Reject: in the "…" menu, one the viewer may not send disabled with its reason.
   const menuItems = commands.filter((c) => MENU.includes(c.name)).map((c) => menuEntry(id, c, !enabled || busy, () => setOpen(c.name as FormName)));
   const restart = commands.find((c) => c.name === "restart");
+  // Add context and Attach: a New or in-triage item where the viewer may send `/revise` (design 02-attachments).
+  const context = detail?.stage === "NEW" ? commands.find((c) => c.name === "revise" && c.allowed) : undefined;
+  // The "…" menu: in the Add context row when that row shows (one decision, one action row), else on its own.
+  const menu = menuItems.length > 0 ? <span data-item-menu className="flex"><OverflowMenu label={t("commands.more")} items={menuItems} /></span> : null;
   return (
     <div ref={wrap} className="mt-2">
       {reason}
       <QueuedFeedbackList timeline={data?.timeline} />
+      {context && (
+        <AddContextActions id={id} title={detail?.title ?? id} token={session.data?.csrf_token} off={!enabled || busy}
+          error={local.revise && "error" in local.revise ? local.revise.error : null} send={(text) => post("revise", text)}>
+          {menu}
+        </AddContextActions>
+      )}
       {restart && <RestartButton id={id} command={restart} on={enabled} busy={busy} replies={data?.replies ?? []} local={local.restart} send={() => void post("restart", "")} />}
-      {commands.length === 0 && !showsMerge(detail?.merge) && (
+      {/* Only for an open item: a closed one says so in its status line (item-facts.tsx ClosedStatus). */}
+      {commands.length === 0 && !showsMerge(detail?.merge) && detail?.stage !== "CLOSED" && (
         <p data-commands-none className="mt-2 text-sm text-pretty text-text-2">
           {t("commands.none")}
         </p>
       )}
-      {menuItems.length > 0 && <div data-item-menu className="mt-2 flex"><OverflowMenu label={t("commands.more")} items={menuItems} /></div>}
+      {menu && !context && <div className="mt-2 flex">{menu}</div>}
       <PendingProposals proposals={data?.proposals ?? []} enabled={enabled} busy={busy} outcomes={(proposal) => commandOutcome([], proposal, local[proposal])} send={post} />
       {open !== null && (
         <CommandDialog

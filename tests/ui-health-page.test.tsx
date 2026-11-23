@@ -94,28 +94,29 @@ describe("Health page: before the server's first health run ends", () => {
 });
 
 describe("Health page: GitHub budget tab", () => {
-  it("with overview.github_budget present the tab shows remaining of limit, reset, counted calls and github_token_days", async () => {
+  it("with overview.github_budget present the Cost tab's GitHub budget section shows remaining of limit, reset, counted calls and github_token_days", async () => {
     current = overview({ github_budget: budget(), github_token_days: 12 });
     const list = await show();
-    const tab = await within(list).findByRole("tab", { name: "GitHub budget" }, SLOW);
-    // Added after the other tabs, which keep their order: Efficiency sits between Merged without review and it (no rules read here, so no Improve tab).
-    expect(tabNames(list).slice(-3)).toEqual([expect.stringContaining("Merged without review"), "Efficiency", "GitHub budget"]);
-    fireEvent.click(tab);
-    const panel = await screen.findByRole("region", { name: "GitHub budget" });
+    // Four tabs (design 09-health, 2026-11-24); the budget is a section of Cost, after Spend and Efficiency.
+    expect(tabNames(list)).toEqual(["Overview", "Runs", "Cost", "Review"]);
+    fireEvent.click(within(list).getByRole("tab", { name: "Cost" }));
+    const panel = await screen.findByRole("region", { name: "GitHub budget" }, SLOW);
+    expect([...document.querySelectorAll("[data-health-section]")].map((e) => e.getAttribute("data-health-section"))).toEqual(["spend", "efficiency", "github"]);
     expect(panel.textContent).toContain(`812 of 5,000 GitHub requests left; resets at ${clock(RESET)}`);
     expect(panel.textContent).toContain("This factory made 37 of them since the last reset.");
     expect(panel.querySelector("[data-token-days]")!.textContent).toBe("GitHub token: 12 days left.");
     expect(within(panel).queryByRole("alert")).toBeNull();
   });
 
-  it("hides the tab when overview.github_budget is null, even with ?tab=github", async () => {
+  it("hides the section when overview.github_budget is null; the old ?tab=github link still opens Cost", async () => {
     current = overview({ github_budget: null, github_token_days: null });
     const list = await show("github");
-    await screen.findByRole("region", { name: /Checks/ }, SLOW);
-    // The overview has been read and rendered before the tab is looked for.
+    expect(within(list).getByRole("tab", { name: "Cost" }).getAttribute("aria-selected")).toBe("true");
+    // The overview has been read and rendered before the section is looked for.
     await waitFor(() => expect(overviewReads).toBeGreaterThan(0));
     await new Promise((r) => setTimeout(r, 20));
-    expect(within(list).queryByRole("tab", { name: "GitHub budget" })).toBeNull();
+    expect(document.querySelector("[data-health-section=spend]")).not.toBeNull();
+    expect(document.querySelector("[data-health-section=github]")).toBeNull();
     expect(screen.queryByRole("region", { name: "GitHub budget" })).toBeNull();
   });
 
@@ -265,19 +266,19 @@ describe("Health page: Improve tab", () => {
 
   const section = () => screen.findByRole("region", { name: "Improve report" }, SLOW);
 
-  it("the Improve tab comes after Efficiency and opens the report; with no rules read there is no tab", async () => {
+  it("the improve report is the Review tab's last section; with no rules read it is not drawn", async () => {
     const list = await show();
-    const tab = await within(list).findByRole("tab", { name: "Improve" }, SLOW);
-    expect(tabNames(list).slice(-2)).toEqual(["Efficiency", "Improve"]);
-    fireEvent.click(tab);
+    fireEvent.click(within(list).getByRole("tab", { name: "Review" }));
     await section();
+    expect([...document.querySelectorAll("[data-health-section]")].map((e) => e.getAttribute("data-health-section"))).toEqual(["merges", "improve"]);
     cleanup();
     rulesBody = null;
     const again = await show("improve");
-    await screen.findByRole("region", { name: /Checks/ }, SLOW);
+    expect(within(again).getByRole("tab", { name: "Review" }).getAttribute("aria-selected")).toBe("true");
+    await screen.findByRole("region", { name: "Merged without review" }, SLOW);
     await waitFor(() => expect(rulesReads).toBeGreaterThan(1));
     await new Promise((r) => setTimeout(r, 20));
-    expect(within(again).queryByRole("tab", { name: "Improve" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Improve report" })).toBeNull();
   });
 
   const REASONS: Record<string, string> = {
