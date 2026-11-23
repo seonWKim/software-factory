@@ -1,4 +1,4 @@
-import { TRIAGE_SCHEMA, parseTriage } from "../../../core/outputs.js";
+import { TRIAGE_SCHEMA, checkTestFiles, parseTriage } from "../../../core/outputs.js";
 import type { Run, WorkItem } from "../../../core/types.js";
 import type { SandboxHandle } from "../../../interfaces/sandbox.js";
 import { ownerAnswersFor } from "../../../shared/command-notes.js";
@@ -8,6 +8,16 @@ import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js
 
 /** The `parseTriage` refusal (issue #454) that earns one re-prompt (issue #488); any other refusal fails at once. */
 const MARKUP_REFUSAL = ": tool-call markup outside code";
+
+/** The base's files under tests/, from the run folder's index; null when git cannot list them (then nothing is checked). */
+async function testFiles(w: Worker, handle: SandboxHandle): Promise<string[] | null> {
+  try {
+    const r = await w.gitRaw(handle, ["ls-files", "-z", "--", "tests"]);
+    return r.exit_code === 0 ? r.stdout.split("\0").filter(Boolean) : null;
+  } catch {
+    return null; // a sandbox that cannot run git (a narrow test fake)
+  }
+}
 
 async function triage(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, signal: AbortSignal, model: RunCall["model"], step: RunCall["step"]) {
   // One journaled step: a takeover after it returns the stored spec.
@@ -27,15 +37,18 @@ async function triage(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle
     const prompt = added ? `${base}\n\n${added}` : base;
     const ask = (text: string, agentStep?: string) =>
       w.agent(run, item, handle, signal, { prompt: text, model_class: model, output_schema: TRIAGE_SCHEMA, ...(images.length > 0 ? { images } : {}) }, agentStep);
+    // The run folder is a checkout of the base (no clone of its own): its tests/ files are what the spec's test file names are checked against (design 04-pre-push-gates).
+    const tests = await testFiles(w, handle);
+    const parse = (output: unknown) => parseTriage(tests ? checkTestFiles(output, tests) : output);
     let result = await ask(prompt);
-    let spec = parseTriage(result.output);
+    let spec = parse(result.output);
     if (!spec.ok && spec.error.endsWith(MARKUP_REFUSAL)) {
       // One more call in the same step, naming the error; a second refusal fails the run with that error.
       result = await ask(
         `${prompt}\n\n## Your previous answer was refused\n\n${spec.error}\n\nNever write tool-call tags inside a field value. Answer with the JSON only.`,
         "markup-retry",
       );
-      spec = parseTriage(result.output);
+      spec = parse(result.output);
     }
     if (!spec.ok) throw new RunFailure("invalid_output", spec.error, false, { output_tail: tail(result.transcript) });
     return { spec: spec.value };
