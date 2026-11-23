@@ -26,8 +26,6 @@ export interface ClaudeCodeRunnerOptions {
    * The broker and scanner granted tools go through (architecture §5). Absent: the runner exposes no tools and refuses a run with grants.
    */
   tools?: GrantedToolDeps;
-  /** The gate Stop check's time limit. Absent: STOP_CHECK_MS (gate-hooks.ts). */
-  stopCheckMs?: number;
   /** The owner's live checkout (`repo.path`), denied to agents but for the run's own folders (`checkoutDenial`). Absent: not denied. */
   checkout?: string;
 }
@@ -286,26 +284,28 @@ export class ClaudeCodeRunner implements AgentRunner {
 
   /**
    * The gate hooks (design §4, issue #302), for an implement step the worker gave them to: the hook folder in the
-   * harness config dir for the call, then the blocks it recorded on the result. Every other step runs as before.
+   * harness config dir for the call, then the blocks and the Stop checks' test selection lines it recorded on the result. Every other step runs as before.
    */
   private async runWith(spec: AgentRunSpec, bridge?: BridgeArgs): Promise<AgentRunResult> {
     await mkdir(this.opts.claudeConfigDir, { recursive: true });
     const g = spec.gate_hooks;
     if (!g || !GATE_HOOK_ROLES.includes(spec.role)) return this.runClaude(spec, bridge);
     // Advisory: a host that cannot start (no folder, no socket) runs the step without hooks; the worker's gates decide.
+    // Each Stop check runs under the spec's stop_check_ms: the live `agent_stop_check_ms` the worker read when this
+    // run started, so a changed setting reaches the next run with no restart. A spec without it gets STOP_CHECK_MS,
+    // the setting's default (design §4 Pre-push gates).
     const hooks = await startGateHooks({
       dir: join(this.opts.claudeConfigDir, GATE_HOOKS_DIR, spec.run_id),
       spec: { ...spec, gate_hooks: g },
       sandbox: this.opts.sandbox,
       after,
       ...(this.opts.tools ? { scanner: this.opts.tools.scanner } : {}),
-      ...(this.opts.stopCheckMs === undefined ? {} : { stop_check_ms: this.opts.stopCheckMs }),
     }).catch(() => null);
     if (!hooks) return this.runClaude(spec, bridge);
     try {
       const result = await this.runClaude(spec, bridge, hooks);
-      const blocks = await hooks.blocks();
-      return blocks.length > 0 ? { ...result, gate_blocks: blocks } : result;
+      const [blocks, selections] = [await hooks.blocks(), hooks.selections()];
+      return { ...result, ...(blocks.length > 0 ? { gate_blocks: blocks } : {}), ...(selections.length > 0 ? { stop_selections: selections } : {}) };
     } finally {
       await hooks.close();
     }

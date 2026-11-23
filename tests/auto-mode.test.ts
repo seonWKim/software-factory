@@ -28,6 +28,7 @@ import { parseModeArgs, runSettings } from "../src/settings-cmd.js";
 import { FakeRunner, MemoryStorage } from "./helpers/fakes/runner.js";
 import { cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { issue, newStore, system } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 import { seedMergeRecord } from "./helpers/merge-record.js";
 
 // Auto mode (design 03-risk, issue #444): a local factory over a real git repo, as in local-merge-flow.test.ts, with the
@@ -117,7 +118,7 @@ async function autoFactory(opts: Opts = {}) {
   };
   let n = 0;
   const cli = (user: UserId, a: CliAction) =>
-    runLocalCli({ store, identity: { user, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
+    runLocalCli({ answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
   const create = async () => (await cli(ME, { action: "create", title: "A change", bodyFile: "b.md" })).lines[0] as WorkItemId;
   /** An item the improve run files for a recurring failure (design §7), through the local source as the improver. */
   const fileAsImprover = async () => {

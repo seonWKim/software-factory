@@ -121,6 +121,31 @@ describe("improve: filed patterns and the latest report (issue #308)", () => {
     expect(await store.getFiledPattern(item.project, "abc")).toEqual({ ...claimed, filed_ref: ref });
   });
 
+  it("listFiledPatternsWithin reads the filed rows of every project claimed within the window of the store's clock, oldest first; a claim with no item is left out", async () => {
+    const { store, clock } = await newStore();
+    const { item } = await store.createWorkItem(issue(1), system);
+    const { item: other } = await store.createWorkItem({ ...issue(2), project: "github:github.com:R_kgDOrepo2" }, system);
+    const report = async (n: number, project: string) => {
+      const { run } = await store.enqueueRun({ work_item_id: n === 2 ? other.id : item.id, kind: "improve", idempotency_key: `r${n}-${clock.now().getTime()}` });
+      return (await store.recordImproveReport({ run_id: run.id, project, window_start: "2026-01-01T00:00:00.000Z" as Timestamp, window_end: "2026-01-02T00:00:00.000Z" as Timestamp, groups: [], patterns: [] })).report;
+    };
+    const file = async (key: string, project: string, n: number, ref: boolean) => {
+      const r = await report(n, project);
+      const { row } = await store.takeFiledPattern({ project, pattern_key: key, error_code: "x", detail: "d", report_id: r.id, evidence: 2 });
+      if (ref) await store.setFiledPatternRef(row.id, r.id, { type: "local", id: `f-${key}`, link: "" });
+      clock.advance(1_000);
+    };
+    await file("old", item.project, 1, true);
+    const since = clock.now().toISOString() as Timestamp;
+    await file("mine", item.project, 1, true);
+    await file("theirs", other.project, 2, true);
+    await file("unfiled", item.project, 1, false);
+    const within = clock.now().getTime() - Date.parse(since);
+    const { since: read, rows } = await store.listFiledPatternsWithin(within);
+    expect(read).toBe(since);
+    expect(rows.map((p) => [p.pattern_key, p.project, p.evidence])).toEqual([["mine", item.project, 2], ["theirs", other.project, 2]]);
+  });
+
   it("a replace claim takes the row over from the named report only, with no item", async () => {
     const { store, item, reports: [a, b, c] } = await reports(3);
     const input = { project: item.project, pattern_key: "abc", error_code: "x", detail: "d", report_id: a!.id };

@@ -34,6 +34,7 @@ import { FakeSource } from "./helpers/fakes/source.js";
 import { alice, cleanScanner, config, fakeRepoLookup, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { pipeline } from "./helpers/harness.js";
 import { issue, newStore, system } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 const PR = 7;
 
@@ -966,7 +967,7 @@ describe("merge queue: a failing UI check (real git)", { timeout: 120_000 }, () 
     };
     let n = 0;
     const cli = (a: CliAction) =>
-      runLocalCli({ store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
+      runLocalCli({ answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
     /** A change to web/ reviewed and waiting for its merge. */
     const ready = async (title: string) => {
       const id = (await cli({ action: "create", title, bodyFile: "body.md" })).lines[0] as WorkItemId;

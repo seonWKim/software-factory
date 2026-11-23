@@ -526,7 +526,7 @@ describe("design-system: the component table and the Stays fixed list", () => {
     const at = readme.indexOf("## Stays fixed");
     expect(at).toBeGreaterThanOrEqual(0);
     const section = readme.slice(at, readme.indexOf("\n## ", at + 1));
-    for (const item of ["brand colour", "the one primary action per view", "page header and Card structure", "no raw IDs on a page"])
+    for (const item of ["celadon glaze palette", "the one primary action per view", "page header and Card structure", "no raw IDs on a page"])
       expect(section, item).toContain(item);
   });
 });

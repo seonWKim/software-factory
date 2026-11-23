@@ -6,6 +6,7 @@ Direction: `tighten-only` keys may only be tightened by a lower level (owner →
 
 | Key | Owner | Changed by | Scope | Direction | Class | Default | What it controls |
 |---|---|---|---|---|---|---|---|
+| `agent_stop_check_ms` | worker | runtime | global | free |  | `2400000` | Longest the gate Stop check (the check list run when an agent tries to finish) may take. |
 | `alarm_repeat_count` | controller | runtime | global | free |  | `3` | Matching failed runs on distinct items, or zero-token agent runs in a row, that raise an alert. |
 | `alarm_restart_count` | controller | runtime | global | free |  | `5` | Child restarts within 30 minutes that raise an alert. |
 | `alarm_window_minutes` | controller | runtime | global | free |  | `60` | Minutes over which the alarm counts matching failed runs and zero-token runs. |

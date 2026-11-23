@@ -12,13 +12,17 @@ export interface Unit {
 const FEATURE_DIRS = /^src\/(worker\/runs|controller\/units|controller\/handlers|inbound\/handlers|outbound\/handlers|cli\/handlers)\/([^/]+)\//;
 const PLUGIN_DIR = /^src\/((?:[a-z-]+\/)+?plugins)\/([^/]+)\//;
 
+// The dashboard's request shell and its route tables wire every ui feature (the *-api.ts routes) together, so they
+// are the composition root, not an engine that may not import a feature.
+const UI_ROOT = new Set(["src/ui/server.ts", "src/ui/write-routes.ts", "src/ui/read-routes.ts"]);
+
 /** The unit of a repo-relative path, or null for a path outside src/ and web/src/. First match wins. */
 export function unitOf(path: string): Unit | null {
   if (path.startsWith("web/src/")) return { kind: "web", name: "web" };
   if (!path.startsWith("src/")) return null;
   // The plugin API is the contract plugins implement, so it is kernel, not the composition root.
   if (path.startsWith("src/shared/") || path.startsWith("src/interfaces/") || path === "src/core/types.ts" || path === "src/plugin-api.ts") return { kind: "kernel", name: "kernel" };
-  if (/^src\/[^/]+\.tsx?$/.test(path)) return { kind: "root", name: "root" };
+  if (/^src\/[^/]+\.tsx?$/.test(path) || UI_ROOT.has(path)) return { kind: "root", name: "root" };
   const impl = /^src\/impl\/([^/]+)\//.exec(path);
   if (impl) return { kind: "adapter", name: `impl/${impl[1]}` };
   const plugin = PLUGIN_DIR.exec(path);

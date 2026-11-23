@@ -13,6 +13,7 @@ import { FakeBroker } from "./helpers/fakes/broker.js";
 import { FakeSlackPollSource, FakeSource } from "./helpers/fakes/source.js";
 import { alice, cleanScanner, config, issueRef, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore, w1 } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // Thread first, then the outbox (issue #282): the controller writes every message to the item thread, and only the
 // outbox step calls a source's postComment, once per entry, with backoff on failure. Commands come from the command
@@ -218,7 +219,7 @@ describe("no source at all", () => {
     });
     let n = 0;
     const cli = (a: CliAction) => {
-      const d: LocalCliDeps = { store, identity: { user: OWNER, from: "cli_user" }, project: async () => PROJECT_KEY, read: async () => "the body", newId: () => `id${++n}` };
+      const d: LocalCliDeps = { answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: OWNER, from: "cli_user" }, project: async () => PROJECT_KEY, read: async () => "the body", newId: () => `id${++n}` };
       return runLocalCli(d, a);
     };
     const step = async () => {

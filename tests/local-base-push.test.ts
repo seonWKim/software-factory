@@ -25,6 +25,7 @@ import { actionOf } from "../src/outbound/intents.js";
 import type { MigrationDb, SqlDriver } from "../src/state/index.js";
 import { cleanScanner, config, silent } from "./helpers/fakes/config.js";
 import { newStore, system, w1 } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // The base push (design 05-sources, Local items; RFC 0015 M8): a merge delivered with a forge selected stores one
 // keyed `push_base` action before it closes the item, to the base's destination; outbound's `local` target fetches
@@ -74,7 +75,7 @@ async function setup(opts: { forge?: Forge; store?: FactoryStore; clock?: FakeCl
   const clock = opts.clock ?? new FakeClock();
   const store = opts.store ?? (await newStore(clock)).store;
   const created = await runLocalCli(
-    { store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "b", newId: () => `id${Math.random()}` },
+    { answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "b", newId: () => `id${Math.random()}` },
     { action: "create", title: "t", bodyFile: "b" },
   );
   const id = created.lines[0] as WorkItemId;

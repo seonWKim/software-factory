@@ -131,8 +131,8 @@ export interface NewImproveReport extends ImproveWindow {
 /** A `model_stall` or `network` claim pause (design §7): the improver files no run that failed inside one. `ended_at` null: still in effect. */
 export type PauseInterval = { name: "model_stall" | "network"; started_at: Timestamp; ended_at: Timestamp | null };
 
-/** A filed pattern as claimed; the store adds `id` and `created_at`, and `filed_ref` starts null. */
-export type NewFiledPattern = Omit<FiledPattern, "id" | "created_at" | "filed_ref" | "outcome" | "outcome_at">;
+/** A filed pattern as claimed; the store adds `id` and `created_at`, and `filed_ref` starts null. `evidence` absent: stored null. */
+export type NewFiledPattern = Omit<FiledPattern, "id" | "created_at" | "filed_ref" | "outcome" | "outcome_at" | "evidence"> & { evidence?: number | null };
 
 /** A standing-approval rule as written; the store adds the timestamps. */
 export type NewStandingRule = Pick<StandingRule, "gate" | "tier" | "enabled" | "set_by">;
@@ -265,7 +265,7 @@ export type BudgetCheckpointResult =
 export interface WorkItemFilter {
   stage?: Stage | undefined;
   blocked_on?: BlockedOn | undefined; blocked_reason?: string | undefined;
-  exclude_closed?: boolean | undefined; // Leave out CLOSED items. Ignored when `stage` is given.
+  exclude_closed?: boolean | undefined; exclude_system?: boolean | undefined; // Leave out CLOSED items (ignored when `stage` is given) / system items (blocked_reason system_item).
   /** Only items updated at or after this time (with `stage: "CLOSED"`, the closes since then: owner notices). */
   updated_since?: Timestamp | undefined;
   limit: number;
@@ -393,7 +393,7 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   listWorkItemsWhere(filter: WorkItemFilter): Promise<WorkItem[]>;
   /** Number of items matching `filter`, with no limit. Read-only. */
   countWorkItemsWhere(filter: Omit<WorkItemFilter, "limit">): Promise<number>;
-  /** Number of work items in each stage. Every stage is present, 0 when it has none. Read-only. */
+  /** Number of work items in each stage, system items (blocked_reason system_item) left out. Every stage is present, 0 when it has none. Read-only. */
   countWorkItemsByStage(): Promise<Record<Stage, number>>;
   /**
    * The only way to change a work item: conditional update + state_changes row (+ optional ack/enqueue).
@@ -602,8 +602,8 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   getOpenWorkItemByTitle(project: string, title: string): Promise<WorkItem | null>;
   /** Sets the item of the row `id` while `report_id` still holds it; a row another report claimed is left alone. */
   setFiledPatternRef(id: FiledPatternId, report_id: ImproveReportId, ref: SourceRef): Promise<void>;
-  /** The filed patterns of `project` that have an item and no outcome yet, oldest first. Read-only. */
-  listFiledPatternsWithoutOutcome(project: string): Promise<FiledPattern[]>;
+  listFiledPatternsWithin(within_ms: number): Promise<{ since: Timestamp; rows: FiledPattern[] }>; // every project's rows with an item claimed at or after `since` (store clock's now − within_ms), oldest first
+  listFiledPatternsWithoutOutcome(project: string): Promise<FiledPattern[]>; // `project`'s filed patterns with an item and no outcome yet, oldest first. Read-only.
   /** Sets the outcome of row `id` only while it has none: true when this call wrote it, false when one was there. */
   setFiledPatternOutcome(id: FiledPatternId, outcome: NonNullable<FiledPattern["outcome"]>, at: Timestamp): Promise<boolean>;
 

@@ -23,6 +23,7 @@ import { requestTransition } from "../src/core/request-transition.js";
 import { FakeRunner, MemoryStorage } from "./helpers/fakes/runner.js";
 import { cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // A local task from create to merge with no GitHub plugin (design 05-sources, Local startup): the local source,
 // local auth, the local broker and the local sandbox over a real git repo. The branch stays local, the review
@@ -105,7 +106,7 @@ async function localFactory(opts: { resolve?: ConstructorParameters<typeof FakeR
   };
   let n = 0;
   const cli = (user: UserId, a: CliAction) =>
-    runLocalCli({ store, identity: { user, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
+    runLocalCli({ answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
   const messages = async (id: WorkItemId, prefix: string) =>
     (await store.listItemMessages(id)).filter((m) => m.marker.startsWith(prefix)).map((m) => m.body);
   /** A local task through triage, approval, implement and review, waiting for its merge. */
@@ -217,6 +218,26 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     await f.step();
     expect((await f.messages(id, "<!-- factory:refused:")).at(-1)).toBe("`factory merge` was not applied: only the owner may send this command.");
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+    expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
+  });
+
+  it("factory merge is refused at max_loops from implement loops (no merge check), and nothing moves", async () => {
+    const f = await localFactory();
+    const id = await f.toMergePending();
+    const it0 = (await f.store.getWorkItem(id))!;
+    // A feedback round at the loop limit: its max_loops change carries no merge queue entry.
+    const stopped = await f.store.transition({
+      id, expected_version: it0.version, actor: { kind: "system", id: "system:controller" }, reason: "max_loops",
+      patch: { blocked_on: "human", blocked_reason: "max_loops" }, detail: { comment_id: "c1" },
+    });
+    expect(stopped.ok).toBe(true);
+    const mainBefore = git(f.repo, "rev-parse", "main");
+    await f.cli(ME, { action: "command", command: "merge", id, text: "" });
+    await f.step();
+    expect((await f.messages(id, "<!-- factory:refused:")).at(-1)).toContain("is not waiting for a merge (REVIEW, max_loops)");
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "max_loops" });
+    expect((await f.store.listStateChanges(id)).some((c) => c.reason === "merge_check_again")).toBe(false);
+    expect((await f.store.listRuns(id)).some((r) => r.kind === "merge-check")).toBe(false);
     expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
   });
 
