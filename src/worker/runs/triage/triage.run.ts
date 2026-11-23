@@ -13,9 +13,12 @@ async function triage(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle
   // One journaled step: a takeover after it returns the stored spec.
   return step("run-agent", async () => {
     // The owner's stored answers bind every re-write of the spec, a phase's from its parent's split (design 04-agents.md).
-    const answers = renderOwnerAnswers(await ownerAnswersFor(item, (id) => w.d.store.listStateChanges(id)));
+    // The item's own changes are read once: they carry both its answers and its added context.
+    const own = await w.d.store.listStateChanges(item.id);
+    const answers = renderOwnerAnswers(await ownerAnswersFor(item, (id) => (id === item.id ? Promise.resolve(own) : w.d.store.listStateChanges(id))));
     // Context added on a New or in-triage item and its attachments (design 02-attachments): untrusted, after the filed text; images as image input.
-    const [contexts, attachments] = [addedContext(await w.d.store.listStateChanges(item.id)), await w.d.store.listAttachments(item.id)];
+    // A store without attachments (a narrow test fake) reads as none.
+    const [contexts, attachments] = [addedContext(own), (await w.d.store.listAttachments?.(item.id)) ?? []];
     const added = renderAttachments(contexts, attachments);
     const images = attachments.flatMap((a) => (a.kind === "image" && a.media_type && a.data ? [{ media_type: a.media_type, data: a.data }] : []));
     const base = item.revision_count > 0
