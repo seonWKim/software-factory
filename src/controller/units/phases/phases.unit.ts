@@ -73,7 +73,9 @@ function jsonStrings(v: unknown): string[] | null {
 const goalLines = (d: StateChangeDetail | null | undefined): string[] | null => (jsonStrings(d?.goal_done_when)?.length ? jsonStrings(d?.goal_done_when) : null);
 /** The fix a judge verdict's detail stores (`fix_*`), checked as parseJudge checks a fix; null for none. */
 function storedFix(d: StateChangeDetail): TriagePhase | null {
-  const r = parseJudge({ verdict: "fix", reason: "stored", fix: { title: d.fix_title, problem: d.fix_problem, done_criteria: jsonStrings(d.fix_done_criteria), allowed_paths: jsonStrings(d.fix_allowed_paths) } });
+  // parseJudge needs a non-empty reason; this one is a placeholder, never a state change's reason.
+  const placeholder = "stored";
+  const r = parseJudge({ verdict: "fix", reason: placeholder, fix: { title: d.fix_title, problem: d.fix_problem, done_criteria: jsonStrings(d.fix_done_criteria), allowed_paths: jsonStrings(d.fix_allowed_paths) } });
   return r.ok ? (r.value.fix ?? null) : null;
 }
 /** The goal_phase_added changes among `changes`: one per fix phase filed. */
