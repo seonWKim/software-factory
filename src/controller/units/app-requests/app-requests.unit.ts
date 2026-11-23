@@ -78,7 +78,7 @@ export class AppRequestsUnit {
     }
     // Refused here, but applied by a concurrent try of the same request (or the dashboard's request path): that one stands.
     if (refusal !== null && (await applied())) return settle();
-    if (refusal !== null && r.command === MERGE_COMMAND) await this.c.unit("local-merge").returned(item.id, refusal);
+    if (refusal !== null && r.command === MERGE_COMMAND) await this.c.unit("merge-queue").returned(item.id, refusal);
     await this.finishAppRequest(r, item, refusal === null ? null : say(refusal));
   }
 

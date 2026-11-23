@@ -456,9 +456,13 @@ export class MergeQueueUnit {
     await this.advance();
   }
 
-  /** Whether the item has a live entry (queued, checking, passed or merging). */
-  async queued(id: WorkItemId): Promise<boolean> {
-    return (await this.entries(id)).some((e) => LIVE_ENTRY_STATES.includes(e.state));
+  /**
+   * A merge that did not apply: an item at merge_queued goes back to merge_pending with the refusal
+   * (`merge_returned`), unless its entry is still live (a refusal of a second merge while the first runs).
+   */
+  async returned(id: WorkItemId, refusal: string): Promise<void> {
+    if ((await this.entries(id)).some((e) => LIVE_ENTRY_STATES.includes(e.state))) return;
+    await this.c.unit("commands").mergeReturned(id, refusal);
   }
 
   /** Every entry of the item, oldest first (tests and the status page). */

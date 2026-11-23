@@ -85,7 +85,7 @@ export class LocalMergeUnit {
    * Authorized by the local auth plugin for `approve_merge`, the approver role. Refused, with a reply, for an item not waiting
    * for a merge, and at once for a branch that conflicts with the local base, which starts its automatic resolve. Otherwise the change enters the merge
    * queue (RFC 0015 M8, the merge-queue unit): a merge-check run checks its merged result, and only a green one
-   * lands (`requestMerge`, an outbound delivery); the item waits at merge_queued while its entry is live; a red one is removed, the item goes back to merge_pending and the reply says why. A second merge of a queued change changes nothing. A checkout of
+   * lands (`requestMerge`, an outbound delivery); the item waits at merge_queued while its entry is live; a red one is removed, the item goes back to merge_pending and the reply says why. A second merge of a queued change (`already`) changes nothing: no return, no post. A checkout of
    * the base is fast-forwarded when clean and left as it was otherwise (the close's detail and the reply say so).
    * `who` AUTO_MERGE is auto mode's merge (autoMergeStep, design 03-risk): no person to authorize, actor
    * `system:auto`, and the state change names the mode change it ran under. Safe to run twice: the same `key` is
@@ -128,12 +128,7 @@ export class LocalMergeUnit {
         // Ready and approved: the change enters the merge queue, which checks its merged result before it lands.
         if (again) await this.c.unit("transitions").decide(item.id, async (it) => this.c.unit("commands").merge.again(it, await this.c.k.reader.listStateChanges(it.id), { kind: "user", id: principal.user_id as UserId }));
         const r = await this.c.unit("merge-queue").enter(item, auto ? AUTO_ACTOR : principal.user_id, key, detail);
-        if (r === null) return null;
-        // A second merge of a queued change: its first merge runs on, so nothing is returned or posted.
-        if ("already" in r) {
-          this.c.k.d.log.info("merge already queued", { work_item_id: item.id, reason: r.already });
-          return null;
-        }
+        if (r === null || "already" in r) return null;
         refusal = r.refusal;
       }
     }
@@ -394,24 +389,15 @@ export class LocalMergeUnit {
 
   /**
    * A refusal posted on the item: why the merge did not apply, keyed by `key`. An item at merge_queued goes back to
-   * merge_pending with it first (`returned`), so its row shows why at once.
+   * merge_pending with it first (MergeQueueUnit.returned), so its row shows why at once.
    */
   async refused(id: WorkItemId, by: string, key: string, refusal: string): Promise<void> {
-    await this.returned(id, refusal);
+    await this.c.unit("merge-queue").returned(id, refusal);
     const item = await this.c.k.reader.getWorkItem(id);
     if (!item) return;
     this.c.k.d.log.info("command refused", { work_item_id: id, command: MERGE_COMMAND, reason: refusal.split("\n")[0]!.slice(0, 300) });
     const what = by === AUTO_ACTOR ? "The automatic merge" : "`factory merge`";
     await this.c.unit("outbox").post(item, item.source, `${what} was not applied: ${refusal}.`, `<!-- factory:refused:${key} -->`);
-  }
-
-  /**
-   * A merge that did not apply: an item at merge_queued goes back to merge_pending with the refusal
-   * (`merge_returned`), unless its merge queue entry is still live (a refusal of a second merge while the first runs).
-   */
-  async returned(id: WorkItemId, refusal: string): Promise<void> {
-    if (await this.c.unit("merge-queue").queued(id)) return;
-    await this.c.unit("commands").mergeReturned(id, refusal);
   }
 
   /** Whether a merge's base is pushed to a remote: a forge that pushes a base and a sandbox that syncs it first. */
