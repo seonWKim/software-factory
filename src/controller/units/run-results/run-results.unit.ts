@@ -132,8 +132,8 @@ export class RunResultsUnit {
   }
 
   async apply(run: Run): Promise<void> {
-    // A merge-check run changes no item stage: the merge queue decides on its entry and acks it (RFC 0015 M8); a restart run's result is posted and acked (local-merge unit).
-    if (run.kind === "merge-check" || run.kind === "restart") return run.kind === "restart" ? this.c.unit("local-merge").restarted(run) : this.c.unit("merge-queue").checked(run);
+    // A merge-check run changes no item stage: the merge queue decides on its entry and acks it (RFC 0015 M8); a restart run's result is posted and acked (local-merge unit); a judge run's applies to its goal split (phases unit).
+    if (run.kind === "merge-check" || run.kind === "restart" || run.kind === "judge") return run.kind === "restart" ? this.c.unit("local-merge").restarted(run) : run.kind === "judge" ? this.c.unit("phases").judgeResult(run) : this.c.unit("merge-queue").checked(run);
     // A succeeded improve run's groups are filed before its ack (design §7); a fault is logged and the run acked.
     if (run.kind === "improve" && run.outcome?.status === "succeeded") await this.c.k.guard("improve filing", () => this.c.unit("improve").fileImprove(run));
     const ack = (reason: string): Decision => ({ patch: {}, actor: SYSTEM, reason, ack_run: run.id });
@@ -156,8 +156,8 @@ export class RunResultsUnit {
       }
 
       switch (run.kind) {
-        case "merge-check": case "restart":
-          // `apply` hands merge-check runs to the merge queue, and restart runs to the local-merge unit, before it reads any outcome.
+        case "merge-check": case "restart": case "judge":
+          // `apply` hands merge-check runs to the merge queue, restart runs to the local-merge unit and judge runs to the phases unit, before it reads any outcome.
           throw new Error(`${run.kind} run ${run.id} reached the run outcome path`);
         case "triage": {
           // The item's size caps decide whether the estimate needs phases (src/core/split.ts).
@@ -749,8 +749,8 @@ export class RunResultsUnit {
     // after a stop mid-work (rate limit, stall, timeout) the wip ref is marked `continue` by the worker, and the
     // retry runs the agent on it (design §5 Restarts).
     const wip = run.kind === "implement" && run.outcome?.status === "failed" ? run.outcome.wip : undefined;
-    // A retried review keeps the CI results read when it was queued (issue #223).
-    const input = wip ? { wip } : run.kind === "review" ? run.input : null;
+    // A retried review keeps the CI results read when it was queued (issue #223); a retried judge its phase (design 04-split-specs).
+    const input = wip ? { wip } : run.kind === "review" || run.kind === "judge" ? run.input : null;
     return {
       patch: held ? { ...restart, blocked_on: "human", blocked_reason: RECURRING_FAILURE } : restart,
       actor: SYSTEM,

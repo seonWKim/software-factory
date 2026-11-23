@@ -259,8 +259,8 @@ export class Worker {
       });
       // The guards allowed the run (its claim and its passport); the owner's hooks may still refuse it.
       await this.beforeRun(run, item);
-      // One class for every agent step of the run, the merge-conflict steps of an implement run included.
-      const model = isModelRunKind(run.kind) ? await this.modelFor(run, run.kind, item) : null;
+      // One class for every agent step of the run, the merge-conflict steps of an implement run included; the judge's is strong whatever the tier (design 04-split-specs).
+      const model = run.kind === "judge" ? "strong" : isModelRunKind(run.kind) ? await this.modelFor(run, run.kind, item) : null;
       // An update run has no agent, so the class it is handed is never used.
       // A step's timeout or the run's deadline aborts the run's signal too, so the step's work (the agent, checks)
       // stops; and a failed step settles only once its work has, so the run's folder never goes under a running agent.
@@ -511,7 +511,7 @@ export class Worker {
     if (!kind) throw new RunFailure("unknown_run_kind", run.kind);
     if (!kind.folder) return kind.execute(this, call);
     const { repo } = this.cfg;
-    const branch = run.kind === "triage" ? null : branchFor(item, this.cfg.branch_prefix);
+    const branch = run.kind === "triage" || run.kind === "judge" ? null : branchFor(item, this.cfg.branch_prefix); // the judge reads the base its phase merged into
     const plan = await this.resumePlan(run);
     const kept = plan || run.kind !== "implement" ? null : await this.keptFolder(run);
     const handle = plan?.folder ?? kept?.handle ?? (await this.route(item).sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }));
