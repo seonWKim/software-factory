@@ -4,9 +4,9 @@
 
 import type { Ctx } from "../context.js";
 import { type Decision, SYSTEM } from "../support.js";
-import type { RunResultsUnit } from "./run-results.unit.js";
+import type { needsHuman } from "./notices.js";
 
-type Stop = Parameters<RunResultsUnit["needsHuman"]>;
+type Stop = Parameters<typeof needsHuman>;
 
 /**
  * The dependency hold for an implement run's needs_human whose reason names one of the item's stored open
@@ -15,7 +15,7 @@ type Stop = Parameters<RunResultsUnit["needsHuman"]>;
  * names the stopped run. The store keeps it queued while the edge is open; coordination's release lets it start
  * once the edge merges. One comment says what it waits for, with no retry footer. Null for any other stop.
  */
-export async function dependencyStop(c: Ctx, it: Stop[0], run: Stop[1], ask: Stop[2], tokens: number): Promise<Decision> {
+export async function dependencyStop(c: Ctx, it: Stop[1], run: Stop[2], ask: Stop[3], tokens: number): Promise<Decision> {
   if (run.kind !== "implement" || it.change_ref !== null) return null;
   const v = await c.unit("coordination").readDependencies(it, "stored");
   const open = v.kind === "wait" ? v.open.filter((d) => namesRef(ask.reason, shortRef(d, it.source.id))) : [];
