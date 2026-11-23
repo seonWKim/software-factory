@@ -10,6 +10,7 @@
 // path is api.ts's. They are served here beside api.ts so it stays within its size budget. A new read route adds one
 // entry to READ_ROUTES, not a line in server.ts.
 
+import { compareSkillEvalRuns, skillEvalGrid } from "../core/skill-eval-compare.js";
 import { type ApiResult, api, apiError } from "./api.js";
 import { staleCsrf } from "./commands.js";
 import { csrfMatches } from "./settings-api.js";
@@ -53,7 +54,7 @@ const READ_ROUTES: readonly ReadRoute[] = [
   // Unwired, the supervisor path falls through to api.ts's 404.
   { path: SUPERVISOR_PATH, run: (d, u) => (d.migrate !== undefined && d.pauses !== undefined ? readSupervisor(d.migrate, d.pauses) : api(d, u)) },
   { path: CALENDAR_EVENTS_PATH, run: (d, u) => readCalendarEvents(d, u.searchParams.get("from"), u.searchParams.get("to")) },
-  { path: EVALS_PATH, run: (d, u) => readSkillEvals(d, u) },
+  { path: EVALS_PATH, run: (d, u) => readSkillEvals(d, { grid: skillEvalGrid, compare: compareSkillEvalRuns }, u) },
 ];
 
 /** Answers one GET (or HEAD) under /api/v1 on its parsed URL. */
