@@ -118,6 +118,9 @@ describe("goal lines of a split spec", () => {
 
 const system = { kind: "system", id: "test" } as const;
 const judged = (verdict: unknown): RunOutcome => ({ status: "succeeded", summary: "judge done", data: { verdict } });
+/** The comments on goal split `g`'s own issue. */
+const issueComments = (g: { parent: WorkItem; source: { comments: { source: { id: string }; marker: string }[] } }) =>
+  g.source.comments.filter((c) => c.source.id === g.parent.source.id);
 
 /** A goal split (issue `n`, two phases unless `phases` says) approved and filed, with helpers to close phases and finish judge runs. */
 async function goalSplit(n: number, opts: { goal?: string[] | null; phases?: number } = {}) {
@@ -141,6 +144,7 @@ async function goalSplit(n: number, opts: { goal?: string[] | null; phases?: num
   const judgeRuns = async () => (await f.store.listRuns(parent.id)).filter((r) => r.kind === "judge");
   /** Claims the queued judge run and completes it with `outcome`, then applies it. */
   const finishJudge = async (outcome: RunOutcome) => {
+    f.clock.advance(DAY); // past a retry's backoff
     const run = await f.store.claimRun({ worker_id: w1, kinds: ["judge"], lease_ms: 60_000 });
     expect(run).not.toBeNull();
     await f.store.completeRun(run!.id, run!.lease!.token, outcome);
@@ -273,6 +277,34 @@ describe("the judge of a goal split", () => {
     // The retry is the phase's run: a later pass queues no other one.
     await g.controller.tickPhases();
     expect((await g.judgeRuns()).map((r) => r.idempotency_key)).toEqual(keys);
+  });
+
+  it("a judge that answers invalidly up to max_attempts stops the goal as a goal question, not as a dead run", async () => {
+    const g = await goalSplit(319);
+    const [p1, p2] = g.phases;
+    await g.close(p1!, "sha-1");
+    await g.controller.tickPhases();
+    for (let n = 0; n < 3; n++) await g.finishJudge(judged({ verdict: "fix", reason: "x" }));
+    await g.controller.tickPhases();
+    await g.controller.tickOutbox();
+    expect(await g.get(g.parent)).toMatchObject({ stage: "READY", blocked_on: "human", blocked_reason: "goal_question" });
+    expect((await g.store.listStateChanges(g.parent.id)).at(-1)).toMatchObject({ reason: "judge_failed", detail: { phase: 1, error_code: "invalid_output", limit: "max_attempts" } });
+    expect(g.goalQuestions()).toHaveLength(1);
+    expect(g.goalQuestions()[0]!.body).toContain("phase 1");
+    expect(issueComments(g).filter((c) => c.marker.startsWith("run-failed:"))).toEqual([]);
+    expect(await g.get(p2!)).toMatchObject({ blocked_on: "upstream" });
+  });
+
+  it("a judge run that fails the same way twice stops the goal as a goal question", async () => {
+    const g = await goalSplit(320);
+    await g.close(g.phases[0]!, "sha-1");
+    await g.controller.tickPhases();
+    for (let n = 0; n < 2; n++) await g.finishJudge({ status: "failed", error_code: "agent_failed", detail: "the agent broke", infra: false });
+    await g.controller.tickOutbox();
+    expect(await g.get(g.parent)).toMatchObject({ blocked_on: "human", blocked_reason: "goal_question" });
+    expect((await g.store.listStateChanges(g.parent.id)).at(-1)).toMatchObject({ reason: "judge_failed", detail: { phase: 1, limit: "repeated_failure" } });
+    expect(g.goalQuestions()).toHaveLength(1);
+    expect(issueComments(g).filter((c) => c.marker.startsWith("run-failed:"))).toEqual([]);
   });
 
   it("a split without goal lines runs no judge and closes as before", async () => {

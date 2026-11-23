@@ -47,6 +47,8 @@ const JUDGE_QUEUED = "judge_queued";
 const JUDGE_VERDICT = "judge_verdict";
 /** State change reason on the parent when its judge run found no prompts/judge.md: the phase counts as unjudged, as with no goal. */
 const JUDGE_SKIPPED = "judge_skipped";
+/** State change reason on the parent when its judge run reached a retry limit: the goal stops as a goal question. */
+const JUDGE_FAILED = "judge_failed";
 /** blocked_reason (with `blocked_on: human`) of a goal split whose judge answered fix or ask, or next on its last phase. */
 const GOAL_QUESTION = "goal_question";
 /** The judge run's key for phase `phase` of goal split `parent`: one per phase (design 04-split-specs). */
@@ -511,7 +513,9 @@ export class PhasesUnit {
    * transition so a second apply is refused; the run's tokens go to the parent's token_cost. A parent no longer
    * waiting on its phases, or a run a takeover cancelled: acked, nothing else. No prompts/judge.md (`prompt_missing`):
    * the phase counts as unjudged, so the split goes on as one without a goal. Any other failure, or an answer that
-   * fails parseJudge, is retried as a triage failure is (`invalid_output`); the phase stays closed.
+   * fails parseJudge, is retried as a triage failure is (`invalid_output`); the phase stays closed. A judge that
+   * reaches a retry limit stops the goal as a goal question (`judge_failed`), not as a dead run: the parent keeps a
+   * state the owner's answer on the goal lifts, where max_attempts or repeated_failure would leave it unreachable.
    */
   async judgeResult(run: Run): Promise<void> {
     await this.c.unit("transitions").decide(run.work_item_id, async (it) => {
@@ -524,15 +528,17 @@ export class PhasesUnit {
     const ack = (reason: string, detail?: StateChangeDetail): Decision => ({ patch: {}, actor: SYSTEM, reason, ...(detail ? { detail } : {}), ack_run: run.id });
     if (takenOver(run) || !splitOpen(it)) return ack("run_ignored");
     const phase = this.judgedPhase(run);
+    const of = `phase ${phase ?? "?"} of ${(await this.recordedPhases(it.id)).length}`;
+    const stop = (limit: string, detail: StateChangeDetail) => this.goalQuestion(it, run, phase, JUDGE_FAILED, { ...detail, phase, limit },
+      `The judge of ${of} could not give a verdict (${limit}), so the goal waits for the owner.`, `Last error: ${String(detail.error_code)}`);
     if (run.outcome?.status !== "succeeded") {
       const code = run.outcome?.status === "failed" ? run.outcome.error_code || "unknown" : "cancelled";
       if (code === "prompt_missing") return ack(JUDGE_SKIPPED, { phase, run_id: run.id, error_code: code });
-      return this.c.unit("run-results").retryOrBlock(it, run, failureClass(run.outcome), code);
+      return this.c.unit("run-results").retryOrBlock(it, run, failureClass(run.outcome), code, stop);
     }
     const parsed = parseJudge(run.outcome.data.verdict);
-    if (!parsed.ok) return this.c.unit("run-results").retryOrBlock(it, run, "task", "invalid_output");
+    if (!parsed.ok) return this.c.unit("run-results").retryOrBlock(it, run, "task", "invalid_output", stop);
     const v = parsed.value;
-    const phases = await this.recordedPhases(it.id);
     const isLast = phase !== null && phase === (await this.lastPhase(it.id))?.phase;
     // done before the last phase goes on as next; next on the last leaves no phase to run, so the owner decides.
     const applied = v.verdict === "done" ? (isLast ? "done" : "next") : v.verdict === "next" && !isLast ? "next" : GOAL_QUESTION;
@@ -541,15 +547,19 @@ export class PhasesUnit {
       : {};
     const detail = { phase, verdict: v.verdict, reason: v.reason, applied, run_id: run.id, ...fix };
     if (applied !== GOAL_QUESTION) return ack(JUDGE_VERDICT, detail);
-    const patch = { blocked_on: "human" as const, blocked_reason: GOAL_QUESTION };
-    const of = `phase ${phase ?? "?"} of ${phases.length}`;
     const why = v.verdict === "fix"
       ? `The judge found that the goal's lines do not hold after ${of} and proposes a fix phase, "${v.fix?.title ?? ""}". Fix phases are not filed yet, so the goal waits for the owner.`
       : v.verdict === "ask"
         ? `The judge of ${of} asks the owner to decide before the goal goes on.`
         : `The judge answered next on ${of}, the last recorded phase, so no phase is left to run and the goal waits for the owner.`;
-    await this.c.unit("outbox").comment(it, `goal-question:${it.id}:${phase ?? "?"}`, [why, "", `Reason: ${v.reason}`, "", footerAfter(it, patch)].join("\n"));
-    return { patch, actor: SYSTEM, reason: JUDGE_VERDICT, detail, ack_run: run.id };
+    return this.goalQuestion(it, run, phase, JUDGE_VERDICT, detail, why, `Reason: ${v.reason}`);
+  }
+
+  /** Stops goal split `it` for the owner on `phase`: blocked_on human, goal_question, with one comment keyed on the phase. */
+  private async goalQuestion(it: WorkItem, run: Run, phase: number | null, reason: string, detail: StateChangeDetail, why: string, line: string): Promise<Decision> {
+    const patch = { blocked_on: "human" as const, blocked_reason: GOAL_QUESTION };
+    await this.c.unit("outbox").comment(it, `goal-question:${it.id}:${phase ?? "?"}`, [why, "", line, "", footerAfter(it, patch)].join("\n"));
+    return { patch, actor: SYSTEM, reason, detail, ack_run: run.id };
   }
 }
 
