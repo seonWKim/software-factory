@@ -20,15 +20,48 @@ export interface CommandCall {
   readonly openStore?: (loaded: Loaded) => Promise<FactoryStore>;
   /** Runs one skill eval with the configured plugins (src/skill-evals.ts skillEvalRun, built by main.ts); absent: `eval run` refuses. */
   readonly runSkillEval?: SkillEvalRunFn;
+  /** Grid and compare over stored runs (src/core/skill-eval-compare.ts, passed by main.ts); absent: `eval results --by` and `eval compare` refuse. */
+  readonly skillEvalReads?: SkillEvalReads;
 }
 
 /** One stored skill-eval run with its figures, as `eval results` prints it. */
 export type SkillEvalRunRow = Awaited<ReturnType<FactoryStore["listSkillEvalRuns"]>>[number];
 
+/** `eval run <skill>`'s options, as typed: the replays' model class, the judge's class and replays per case. */
+export interface SkillEvalRunOptions {
+  model_class?: string;
+  judge_model_class?: string;
+  replays?: number;
+}
+
 /** One `eval run <skill>`: the stored run, or why nothing was run (no run written). */
 export type SkillEvalRunFn = (
-  store: FactoryStore, loaded: Loaded, r: { skill: string; created_by: CliIdentity["user"]; signal: AbortSignal },
+  store: FactoryStore, loaded: Loaded, r: { skill: string; created_by: CliIdentity["user"]; signal: AbortSignal } & SkillEvalRunOptions,
 ) => Promise<{ run: SkillEvalRunRow } | { refused: string }>;
+
+/**
+ * One run in a grid row or a comparison. The shapes of src/core/skill-eval-compare.ts, restated here because the CLI
+ * component imports no legacy module; main.ts passes the functions, so the compiler checks the two agree.
+ */
+export interface SkillEvalRunSummary {
+  run_id: string;
+  started_at: string;
+  status: string;
+  skill_version: string | null;
+  model_class: string | null;
+  judge_model_class: string | null;
+  replays: number | null;
+  pass_rate: number | null;
+  errored: number | null;
+}
+
+/** Grid and compare, the same functions the read routes call. */
+export interface SkillEvalReads {
+  /** One row per (skill version, model class) from its newest run; runs with no figures left out. */
+  grid(runs: readonly SkillEvalRunRow[]): SkillEvalRunSummary[];
+  /** b against a: the gap, the noise band and within_noise; the three null without two pass rates. */
+  compare(a: SkillEvalRunRow, b: SkillEvalRunRow): { a: SkillEvalRunSummary; b: SkillEvalRunSummary; gap: number | null; noise_band: number | null; within_noise: boolean | null };
+}
 
 /** What a command runs with: its call, plus the CLI identity and the store, built once here for every command. */
 export interface CommandContext extends CommandCall {  /**

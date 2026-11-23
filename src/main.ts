@@ -9,6 +9,7 @@ import { CODE_ROOT_ENV, Plugins, cliConfig, loadConfig, ownerRefusal } from "./c
 import { defineCommand, loadCommands, resolveCommand } from "./cli/index.js";
 import { SENTENCE_FORM } from "./core/command-table.js";
 import { cliName, parseSentence, runSentence } from "./core/local-cli.js";
+import { compareSkillEvalRuns, skillEvalGrid } from "./core/skill-eval-compare.js";
 import { skillEvalRun } from "./skill-evals.js";
 import { SUPERVISED_ENV } from "./supervisor.js";
 
@@ -60,7 +61,8 @@ async function main(argv: readonly string[]): Promise<number> {
   // The supervisor sets the code root (its runtime copy) for its child; the cwd stays the main checkout.
   const load = () => loadConfig(process.cwd(), { codeRoot: process.env[CODE_ROOT_ENV], configFile });
   // The root wiring a command needs reaches its handler here, through the call (the handler imports no root module).
-  return found.command.run(found.args, { name: found.name, load, usage, runSkillEval: skillEvalRun });
+  const skillEvalReads = { grid: skillEvalGrid, compare: compareSkillEvalRuns };
+  return found.command.run(found.args, { name: found.name, load, usage, runSkillEval: skillEvalRun, skillEvalReads });
 }
 
 main(process.argv.slice(2)).then(
