@@ -22,6 +22,7 @@ import type { ProposalStore } from "../core/proposals.js";
 import type { StandingChangeStore } from "../core/standing.js";
 import type { ScheduleStore } from "../core/schedule.js"; import type { AttachmentStore } from "../core/attachments.js";
 import type { SkillEvalStore } from "./skill-eval-store.js";
+import type { AlertDismissalStore } from "../core/alarms.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
@@ -118,19 +119,7 @@ export interface NewAlert {
   detail: string | null;
 }
 
-export interface Alert extends NewAlert {
-  id: string;
-  created_at: Timestamp;
-  /** From listAlerts only: when the owner last dismissed this alert's pattern (design 05-alarms); absent: never. */
-  dismissed_at?: Timestamp;
-}
-
-/** A dismissed alert pattern (design 05-alarms): when, and who as an ID, never a display name. */
-export interface AlertDismissal {
-  pattern_key: string;
-  dismissed_at: Timestamp;
-  dismissed_by: UserId;
-}
+export interface Alert extends NewAlert { id: string; created_at: Timestamp; /** listAlerts only: its pattern's last dismissal (design 05-alarms); absent: none. */ dismissed_at?: Timestamp }
 
 /** An improve run's report as the improver builds it; the store adds `id` and `created_at`. */
 export interface NewImproveReport extends ImproveWindow {
@@ -366,7 +355,7 @@ export interface NoticeMessageStore {
   getNoticeQuestion(id: string): Promise<NoticeQuestion | null>;
 }
 
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore, SkillEvalStore, AttachmentStore {
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore, SkillEvalStore, AttachmentStore, AlertDismissalStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes
@@ -833,26 +822,14 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   listHostSleeps(opts: { limit: number; work_item_id?: WorkItemId }): Promise<HostSleep[]>;
 
   // Alerts (design 05-alarms): one row per pattern the alarm step saw, at most one per pattern per dedupe window.
-
   /**
-   * Stores `alert` unless its pattern already alerted within `dedupe_ms` of the store clock's now. One
-   * transaction with a conditional write on the pattern's row, so replicas recording one pattern at once store
-   * one alert; the one that did gets `created: true`.
+   * Stores `alert` unless its pattern already alerted within `dedupe_ms` of the store clock's now and was not dismissed
+   * since. One transaction with a conditional write on the pattern's row, so replicas recording one pattern at once
+   * store one alert; the one that did gets `created: true`. Dismissals: AlertDismissalStore (core/alarms.ts).
    */
   recordAlert(alert: NewAlert, dedupe_ms: number): Promise<{ created: true; alert: Alert } | { created: false }>;
-  /**
-   * The newest alerts first (created_at, then id, both descending), at most `limit`, each with its pattern's
-   * `dismissed_at` when it has one. Read-only.
-   */
+  /** The newest alerts first (created_at, then id, both descending), at most `limit`, with their pattern's `dismissed_at`. Read-only. */
   listAlerts(opts: { limit: number }): Promise<Alert[]>;
-  /**
-   * Dismisses the pattern of alert `alert_id` at the store clock's now, by `actor` (an ID). Conditional: a pattern
-   * already dismissed since its last alert keeps that dismissal (`dismissed: false`). Holds nothing and lifts no hold.
-   * Null when no alert has that id.
-   */
-  dismissAlert(alert_id: string, actor: UserId): Promise<{ pattern_key: string; dismissed: boolean; dismissed_at: Timestamp } | null>;
-  /** The patterns dismissed at or after `since`. Read-only. */
-  listAlertDismissals(since: Timestamp): Promise<AlertDismissal[]>;
 
   // Restart history (design 05-restarts): one row per unexpected child exit, so the restart alarm's count and
   // window survive a restart of the factory and every replica on a shared store sees every host's restarts.

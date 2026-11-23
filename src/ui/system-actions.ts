@@ -37,6 +37,8 @@ export interface SystemAction {
   command: string;
   /** When it ends by itself (a claim pause's end, model_stall's next probe, an alarm's close), else null. */
   until: string | null;
+  /** On an alarm: its alert's id, which Dismiss posts (POST /api/v1/alarms/dismiss). */
+  alert_id?: string;
   /** On an alarm: its pattern and error code, which pick its row's menu (What failed, Show failures). */
   pattern?: AlertPattern;
   error_code?: string;
@@ -186,7 +188,7 @@ export async function systemActions(x: SystemInput): Promise<SystemAction[]> {
   const stop = await lastAutoStop(x.store);
   for (const a of await openAlarms(x.store, x.now)) {
     add("alarm", alarmFullText(a), alarmCommand(a), alarmUntil(a));
-    const row = Object.assign(out.at(-1)!, { pattern: a.pattern, error_code: a.error_code });
+    const row = Object.assign(out.at(-1)!, { alert_id: a.id, pattern: a.pattern, error_code: a.error_code });
     if (a.pattern === "red_main") {
       const output = redMainDetail(a).output;
       Object.assign(row, { failing_tests: output?.failing_tests ?? [], output_tail: output?.output_tail ?? null });
