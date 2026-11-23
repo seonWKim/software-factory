@@ -95,8 +95,11 @@ export function linkRefusal(url: string, label: string | null): string | null {
   return null;
 }
 
-/** What `attach` stores: an image's bytes and file name, or a link with an optional label. */
-export type AttachInput = { kind: "image"; bytes: Uint8Array; name: string } | { kind: "link"; url: string; label: string | null };
+/**
+ * What `attach` stores: an image's bytes and file name, or a link with an optional label. `size`: a file over the
+ * limit, sent as its first bytes only (the CLI and the page never read or send the rest); it is refused for its size.
+ */
+export type AttachInput = { kind: "image"; bytes: Uint8Array; name: string; size?: number } | { kind: "link"; url: string; label: string | null };
 
 /** The egress scan `attach` runs on a link's text (structurally the EgressScanner's `scan`). */
 export interface TextScanner {
@@ -119,8 +122,9 @@ export async function attach(d: AttachDeps, item: WorkItem, input: AttachInput, 
   const base = { id: `at_${d.newId()}`, work_item_id: item.id, created_by: by };
   let row: NewAttachment;
   if (input.kind === "image") {
-    const bad = imageRefusal(input.bytes);
+    const bad = imageRefusal(input.bytes, Math.max(input.size ?? 0, input.bytes.length));
     if (bad) return { refuse: bad };
+    if (input.size !== undefined && input.size !== input.bytes.length) return { refuse: "nothing was attached: the image's bytes are incomplete" };
     const name = input.name.split(/[\\/]/).at(-1)!.slice(0, MAX_LABEL_CHARS);
     row = { ...base, kind: "image", media_type: imageType(input.bytes), data: Buffer.from(input.bytes).toString("base64"), size_bytes: input.bytes.length, name, url: null, label: null };
   } else {
@@ -178,10 +182,8 @@ export async function runAttach(d: AttachCliDeps, a: AttachArgs): Promise<{ code
   if ("file" in a) {
     const f = await d.read(a.file).catch(() => null);
     if (!f) return { code: 1, lines: [`nothing was attached: cannot read ${a.file}`] };
-    // A file over the limit is never read whole; the stage refusal still comes first, as `attach` orders it.
-    const big = f.size > MAX_IMAGE_BYTES ? imageRefusal(f.bytes, f.size) : null;
-    if (big) return { code: 1, lines: [attachStageRefusal(item) ?? big] };
-    input = { kind: "image", bytes: f.bytes, name: a.file };
+    // A file over the limit is read as its first bytes only; `attach` refuses it for its size, after the stage.
+    input = { kind: "image", bytes: f.bytes, name: a.file, size: f.size };
   } else {
     input = { kind: "link", url: a.url, label: a.label };
   }

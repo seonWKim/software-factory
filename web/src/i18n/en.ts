@@ -3,6 +3,7 @@
 // (tests/web-i18n-keys.test.ts). `{name}` in a text marks a value the caller fills in.
 import { data } from "./en/data.js";
 import { health } from "./en/health.js";
+import { item } from "./en/item.js";
 import { plugins } from "./en/plugins.js";
 import { proposals } from "./en/proposals.js";
 import { rules } from "./en/rules.js";
@@ -16,6 +17,7 @@ import { workers } from "./en/workers.js";
 export const en = {
   ...data,
   ...health,
+  ...item,
   ...plugins,
   ...proposals,
   ...rules,

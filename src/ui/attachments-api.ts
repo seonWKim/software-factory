@@ -1,5 +1,5 @@
 // POST /api/v1/attachments (design 02-attachments, design 09-dashboard-item): the item page's Attach dialog, one image
-// (`{ id, kind: "image", name, data }`, base64) or one link (`{ id, kind: "link", url, label }`) on a New or in-triage
+// (`{ id, kind: "image", name, data, size }`, base64; a file over 5 MB sends its first bytes and its size) or one link (`{ id, kind: "link", url, label }`) on a New or in-triage
 // item, stored through core/attachments.ts `attach`, the same path and refusals as `factory attach`. The page's
 // commands actor (UiCommands) is the one who attaches, under the owner check the item commands use. The request guards
 // (Host, Origin, Content-Type, CSRF token, the larger body limit MAX_ATTACH_BODY, JSON) run before this is reached;
@@ -31,7 +31,8 @@ function inputOf(b: Record<string, unknown>): AttachInput | string {
   if (b.kind === "image") {
     const data = str(b.data), name = str(b.name) ?? "image";
     if (data === null || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) return "an image needs `data`, its bytes as base64";
-    return { kind: "image", bytes: new Uint8Array(Buffer.from(data, "base64")), name };
+    const size = typeof b.size === "number" && Number.isSafeInteger(b.size) && b.size >= 0 ? { size: b.size } : {};
+    return { kind: "image", bytes: new Uint8Array(Buffer.from(data, "base64")), name, ...size };
   }
   return "`kind` must be image or link";
 }
