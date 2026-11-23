@@ -204,7 +204,7 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
             <span data-verdict className="inline-flex">
               <SegmentedControl<OneTapChoice | "">
                 label={t("commands.verdict")}
-                options={(["good", "bad"] as const).map((choice) => ({ id: choice, label: t(`commands.${choice}`), data: { "data-action": "verdict", "data-item": id, "data-choice": choice } }))}
+                options={([["good", t("commands.good")], ["bad", t("commands.bad")]] as const).map(([choice, label]) => ({ id: choice, label, data: { "data-action": "verdict", "data-item": id, "data-choice": choice } }))}
                 value=""
                 onChange={(choice) => choice !== "" && tap(choice)}
               />

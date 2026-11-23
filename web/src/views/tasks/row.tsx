@@ -136,8 +136,9 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false, date =
         { label: t("tasks.delete"), danger: true, onSelect: () => setMode("delete") },
       ];
   const menuLabel = t("tasks.more", { title: task.title });
-  // Copy as CLI command (a waiting item's menu has its own, for the item's command): Reopen or Build this, else Complete.
-  const own = [...items, copyCliEntry(items.find((i) => i.action !== undefined)?.action ?? "done", task.id)];
+  // Copy as CLI command on an open row (a waiting item's menu has its own, for the item's command): Build this, else
+  // Complete. A done row's menu holds only Reopen (tests/ui-tasks-done.test.tsx).
+  const own = done ? items : [...items, copyCliEntry(task.work_item_id === null ? "build" : "done", task.id)];
   return (
     <ListRow
       ref={row}
