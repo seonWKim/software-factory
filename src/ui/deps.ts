@@ -5,6 +5,7 @@ import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { SharedStorage } from "../interfaces/shared-storage.js";
+import type { UiChanges } from "./changes.js";
 import type { UiCommands } from "./commands.js";
 import type { FactoryStatus } from "./factory-status.js";
 import type { HealthMonitor } from "./health.js";
@@ -44,6 +45,11 @@ export interface UiDeps {
   commands?: UiCommands;
   /** Display names by user id (Identity's identity_profiles), read only to show. Absent: ids only. */
   displayNames?: DisplayNames;
+  /**
+   * The sandbox's trusted readChanges on the factory repo and its base (changes.ts): the item page's Changes tab and the
+   * Merge check card's Re-check. Absent: no Changes tab and no Re-check.
+   */
+  changes?: UiChanges;
   /** The Rules page's tacit ledger (rules-api.ts, issue #571), read and judged only through it. Absent: the plugin `none`. */
   tacit?: UiTacit;
 }

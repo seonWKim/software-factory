@@ -30,6 +30,7 @@ import { BASE, itemPath } from "../pages.js";
 import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, RawNames, When, byId, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
 import { ItemDecision } from "./decision-card.js";
 import { ItemAbout } from "./item-about.js";
+import { ItemChangesTab, RecheckButton } from "./item-changes.js";
 import { AddModelCredential } from "./model-credential-dialog.js";
 import { ResumeNow, type SupervisorActionName, SupervisorActions } from "./system-banner.js";
 import { Thread } from "./thread.js";
@@ -371,12 +372,14 @@ export function ItemsPage() {
 /**
  * One work item (design 09-dashboard-item): its title, then its decision (the DecisionCard while the owner is next,
  * else its reason and "…" menu), its facts, the current run with its live state, the thread (collapsed after its
- * first message), the runs (with errors) and the timeline.
+ * first message), the runs (with errors) and the timeline. An item with a branch has the tabs Overview (all of that)
+ * and Changes (item-changes.tsx) in a PageToolbar under the header, kept in `?tab=`.
  */
 export function ItemPage({ id }: { id: string }) {
   const now = useNow();
   const q = useApi<ItemDetail>(API.item(id));
   const viewer = useViewer();
+  const [tab, pickTab] = useUrlParam("tab", (v) => v === "changes");
   if (q.isError) return <><PageHeader title={t("app.workItem")} /><ErrorNote error={q.error} /></>;
   if (!q.data) return <><PageHeader title={t("app.workItem")} /><Loading rows={6} /></>;
   const { item, runs, timeline } = q.data;
@@ -397,6 +400,19 @@ export function ItemPage({ id }: { id: string }) {
         <Link href={itemPath(item.id)} aria-current="page" title={item.id} className={cn("inline-block max-w-[16ch] truncate align-bottom tabular-nums", ID_CLASS)}>{short}</Link>
       </nav>
       <PageHeader title={<span data-raw>{item.title ?? short}</span>} actions={runs.some(isInteractiveRun) ? <InteractiveBadge /> : undefined} />
+      {item.has_changes && (
+        <PageToolbar
+          tabs={
+            <Tabs
+              label={t("item.views")}
+              options={[{ id: "overview", label: t("item.tabOverview") }, { id: "changes", label: t("item.tabChanges") }]}
+              value={tab === "changes" ? "changes" : "overview"}
+              onChange={(v) => pickTab(v === "changes" ? v : null)}
+            />
+          }
+        />
+      )}
+      {item.has_changes && tab === "changes" ? <ItemChangesTab id={item.id} /> : <>
       {item.parent_id && (
         <p data-testid="parent" className="mt-1 text-sm">
           {t("item.phase", { phase: item.phase ?? "?" })} <Link href={itemPath(item.parent_id)} className={LINK_CLASS}>{t("item.splitParent")}</Link>
@@ -457,6 +473,7 @@ export function ItemPage({ id }: { id: string }) {
               {item.merge_check.conflicts.map((f) => <li key={f}>{f}</li>)}
             </ul>
           )}
+          {item.merge_check.recheck && <RecheckButton id={item.id} />}
         </Card>
       )}
       <Card title={t("item.runs")} count={runs.length}>
@@ -519,6 +536,7 @@ export function ItemPage({ id }: { id: string }) {
           })}
         </ol>
       </Card>
+      </>}
     </>
   );
 }

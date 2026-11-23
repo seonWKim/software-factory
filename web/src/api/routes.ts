@@ -10,6 +10,10 @@ export const API = {
   itemsIn: (project: string | null) => (project === null ? "/api/v1/items" : `/api/v1/items?project=${encodeURIComponent(project)}`),
   item: (id: string) => `/api/v1/items/${encodeURIComponent(id)}`,
   itemCommands: (id: string) => `/api/v1/items/${encodeURIComponent(id)}/commands`,
+  /** The item's changed files (the Changes tab); with `path`, that file's diff too. */
+  itemChanges: (id: string, path?: string) => `/api/v1/items/${encodeURIComponent(id)}/changes${path === undefined ? "" : `?path=${encodeURIComponent(path)}`}`,
+  /** Re-check: removes the item's stored merge check, so the controller checks it again. */
+  mergeRecheck: (id: string) => `/api/v1/items/${encodeURIComponent(id)}/merge-check/recheck`,
   session: "/api/v1/session",
   transcript: (id: string, run: string, params: URLSearchParams) => {
     const q = params.toString();
