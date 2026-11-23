@@ -5,7 +5,7 @@
 // are checked at once (speculative depth; solo default 1). The head lands once its check passed, through the
 // `before_merge` hooks; red removes the entry with the reason and rebuilds the entries behind it. A red for failing
 // checks also sends the item back to an implement run as a loop (counted by loop_count, limited by max_loops); any
-// other red leaves it at merge_pending. A red base (`base_red`: the UI check fails on the base alone, design 03-risk)
+// other red returns it from merge_queued to merge_pending. A red base (`base_red`: the UI check fails on the base alone, design 03-risk)
 // blames no change: the entry stays queued, held until the base moves, and red main is raised once per base sha. A
 // check that does not come back in time is ended by the delayed MergeCheckTimedOut message the unit emits when it
 // starts it.
@@ -21,6 +21,7 @@ import { createHash } from "node:crypto";
 import { runKey } from "../../../core/policy.js";
 import type { EntryFields, MergeQueue, MergeQueueEntry } from "../../actors/merge-queue/merge-queue.store.js";
 import { MergeQueueStore } from "../../actors/merge-queue/merge-queue.store.js";
+import { LIVE_ENTRY_STATES } from "../../actors/merge-queue-entry/merge-queue-entry.actor.js";
 import { mergeOutcome, type ActionRow } from "../../../outbound/index.js";
 import { MERGE_CHECK_TIMED_OUT } from "../../topics/controller-events.topic.js";
 import { AUTO, SYSTEM } from "../support.js";
@@ -39,6 +40,17 @@ const MERGE_CHECK = "merge-check";
 const MERGE_CHECK_FAILED = "merge_check_failed";
 /** How long a timer message's key is kept: past any check's time limit. */
 const TIMER_KEY_TTL_MS = 30 * 24 * 3_600_000;
+
+/**
+ * Why the queue took no new entry: `already`, the item has a live entry under another key (a second merge, which
+ * changes nothing and is not posted; the text names the entry's state), or `refusal`, posted and returned.
+ */
+export type QueueRefusal = { readonly already: string } | { readonly refusal: string };
+
+/** The words of a second merge of an item already in the queue (web/src/api/items.ts `alreadyQueued` reads them). */
+function alreadyQueued(item: WorkItem, state: string): string {
+  return `${item.id} is already in the merge queue (${state})`;
+}
 
 /** The merge queue: entry, check, land or remove, rebuild. */
 export class MergeQueueUnit {
@@ -67,17 +79,22 @@ export class MergeQueueUnit {
   /**
    * Puts a ready, approved change at the end of the queue and starts its check when it is within the speculative
    * depth. `by` is the approver's user id or `system:auto`; `key` keys the replies (one entry per key, so a replayed
-   * command is the same entry). Returns the refusal (already in the queue, or an automatic merge of a change whose
-   * latest review could not check its UI: `ui_unverified`, design 04-agents), or null.
+   * command is the same entry). While its entry is live the item is at merge_queued: moved there (`mergeEntered`,
+   * the merge key on the state change) before the first check runs, so a removal finds it there and returns it to
+   * merge_pending; a dashboard Merge moved it already. Returns `already` for an item with a live entry under another
+   * key (a second merge: nothing changes), the refusal (an automatic merge of a change whose latest review could not
+   * check its UI: `ui_unverified`, design 04-agents), or null.
    */
-  async enter(item: WorkItem, by: string, key: string, detail: Record<string, unknown>): Promise<string | null> {
+  async enter(item: WorkItem, by: string, key: string, detail: Record<string, unknown>): Promise<QueueRefusal | null> {
     if (by === AUTO.id && (await this.uiUnverified(item.id))) {
-      return `its review could not check the UI (\`ui_unverified\`), so it needs a human look; a person merges it: \`factory merge ${item.id}\` (approver role)`;
+      return { refusal: `its review could not check the UI (\`ui_unverified\`), so it needs a human look; a person merges it: \`factory merge ${item.id}\` (approver role)` };
     }
     const q = await this.queueOf();
     const entry_id = `mqe_${createHash("sha256").update(`${item.id}\n${key}`).digest("hex").slice(0, 24)}`;
     const r = await this.store().enter({ entry_id, queue_id: q.queue_id, work_item_id: item.id, entered_by: by, merge_key: key, detail });
-    if ("refused" in r) return `${item.id} is already in the merge queue (${r.refused.state})`;
+    if ("refused" in r) return { already: alreadyQueued(item, r.refused.state) };
+    // On every try while the entry is live, so a crash between the entry and the move moves it on the replay.
+    if (LIVE_ENTRY_STATES.includes(r.entry.state)) await this.c.unit("app-requests").mergeEntered(item.id, by, { merge_key: key });
     if (r.created) {
       const ahead = (await this.store().live(q.queue_id)).filter((e) => e.seq < r.entry.seq).length;
       await this.c.unit("outbox").post(item, item.source,
@@ -116,7 +133,7 @@ export class MergeQueueUnit {
       // A landing entry's item closes as it lands: only the landing decides on it.
       if (e.state === "merging") continue;
       const item = await this.c.unit("local-merge").item(e.work_item_id as WorkItemId);
-      // Waiting for its merge: merge_pending, or merge_queued once the controller took its dashboard Merge.
+      // Waiting for its merge: merge_queued once its entry was made (merge_pending until then).
       if (item && this.c.unit("commands").merge.waits(item) && item.change_ref === null) items.set(e.entry_id, item);
       else await this.leave(e, "the item no longer waits for a merge", false);
     }
@@ -437,6 +454,15 @@ export class MergeQueueUnit {
   /** On the controller's tick: the queue moves on after a restart or a removal another replica made. */
   async queueStep(): Promise<void> {
     await this.advance();
+  }
+
+  /**
+   * A merge that did not apply: an item at merge_queued goes back to merge_pending with the refusal
+   * (`merge_returned`), unless its entry is still live (a refusal of a second merge while the first runs).
+   */
+  async returned(id: WorkItemId, refusal: string): Promise<void> {
+    if ((await this.entries(id)).some((e) => LIVE_ENTRY_STATES.includes(e.state))) return;
+    await this.c.unit("commands").mergeReturned(id, refusal);
   }
 
   /** Every entry of the item, oldest first (tests and the status page). */

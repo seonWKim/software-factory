@@ -1,7 +1,7 @@
 import { ListTodo } from "lucide-react";
 import { useMemo, useState } from "react";
 import {
-  API, type FactoryState, type GitHubBudget, type Health, type HostSleepRow, type ItemDetail, type ItemRow, type Items, type Overview, type PauseRow, type PhaseRow, type PausesView, type QueueRow, type RunRow,
+  API, type FactoryState, type GitHubBudget, type Health, type HealthCheck, type HostSleepRow, type ItemDetail, type ItemRow, type Items, type Overview, type PauseRow, type PhaseRow, type PausesView, type QueueRow, type RunRow,
   type RulesView, type UnreviewedMerges, type WorkerProcess, type WorkersView, useApi,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
@@ -30,6 +30,7 @@ import { BASE, itemPath } from "../pages.js";
 import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, RawNames, When, byId, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
 import { ItemDecision } from "./decision-card.js";
 import { ItemAbout } from "./item-about.js";
+import { AddModelCredential } from "./model-credential-dialog.js";
 import { ResumeNow, type SupervisorActionName, SupervisorActions } from "./system-banner.js";
 import { Thread } from "./thread.js";
 import { transcriptPath } from "./transcript.js";
@@ -764,8 +765,11 @@ export function RunnersTab() {
 
 const HEALTH_TONE: Record<string, string> = { ok: "running", warn: "needs_approval", fail: "stuck" };
 
-/** A check's row: its sentence, then its times (a probe pause's start and next probe) relative, the local time on hover. */
-function CheckList({ checks }: { checks: Health["checks"] }) {
+/**
+ * A check's row: its sentence, then its times (a probe pause's start and next probe) relative, the local time on hover,
+ * then the action the server offers on it (the model credential's opens the Add model credential dialog).
+ */
+function CheckList({ checks }: { checks: HealthCheck[] }) {
   const now = useNow();
   if (checks.length === 0) return null;
   return (
@@ -778,6 +782,7 @@ function CheckList({ checks }: { checks: Health["checks"] }) {
             <RawNames text={c.msg} />
             {c.since !== undefined && <span className="text-text-2">{" · "}<When at={c.since} now={now} label="health.checkSince" /></span>}
             {c.next !== undefined && <span className="text-text-2">{" · "}<When at={c.next} now={now} label="health.checkNext" /></span>}
+            {c.action === "add_model_credential" && <span className="ml-2 inline-block align-baseline"><AddModelCredential /></span>}
             {c.detail !== undefined && <RawDetails className="mt-1"><code className="font-mono text-xs whitespace-pre-wrap break-all">{c.detail}</code></RawDetails>}
           </span>
         </li>

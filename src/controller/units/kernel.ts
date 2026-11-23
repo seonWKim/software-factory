@@ -67,6 +67,11 @@ export type ControllerReader = Pick<Store, (typeof READS)[number]> & Pick<Contro
   };
   /** The discovered signal sources (`*.signal.ts`, design 11-signal-ledger), in path order. */
   signals(): Promise<readonly SignalDescriptor[]>;
+  /**
+   * The file paths under the folder `path` in the factory repo's local base branch, read from objects by the
+   * sandbox (no checkout, no fetch); null when the sandbox cannot list, the branch is missing or the read fails (logged).
+   */
+  baseFiles(path: string): Promise<readonly string[] | null>;
 };
 
 /**
@@ -226,6 +231,17 @@ export class Kernel {
       llm: d.llm ?? null,
       auth: { owner: d.auth, service: d.service_auth ?? null },
       signals,
+      baseFiles: async (path) => {
+        const sandbox = d.sandbox;
+        if (!sandbox?.listLocalFiles) return null;
+        const { repo } = this.live.config();
+        try {
+          return await sandbox.listLocalFiles({ repo: repo.path, ref: repo.base_branch, path });
+        } catch (err) {
+          d.log.warn("could not list the base branch's files", { path, error: errorText(err) });
+          return null;
+        }
+      },
     };
   }
 

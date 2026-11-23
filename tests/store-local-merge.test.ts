@@ -65,9 +65,10 @@ describe.each(BACKENDS)("local merge on a shared store: $name", ({ make }) => {
     });
     const who = { provider: "local" as const, subject: "me@example.com" };
     const [r1, r2] = [replica(1), replica(2)];
-    // Both enter the merge queue at once (RFC 0015 M8): one entry, the other refused as already queued.
+    // Both enter the merge queue at once (RFC 0015 M8): one entry; the other finds it queued, which changes nothing.
     const refusals = await Promise.all([r1.mergeLocal(id, who, "k1"), r2.mergeLocal(id, who, "k2")]);
-    expect(refusals.filter((r) => r === null)).toHaveLength(1);
+    expect(refusals).toEqual([null, null]);
+    expect((await store.listStateChanges(id)).filter((c) => c.reason === "merge_returned")).toEqual([]);
     // Its merge-check run passes on the base, as a worker would report it; both replicas apply it at once.
     const run = await store.claimRun({ worker_id: w1, kinds: ["merge-check"], lease_ms: 60_000 });
     expect(run?.kind).toBe("merge-check");
