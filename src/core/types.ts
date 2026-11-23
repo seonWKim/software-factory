@@ -423,7 +423,7 @@ export interface RunAttempt {
   finished_at: Timestamp | null;
   /** The failed outcome's error code; `lease_expired` for a reaped claim; null otherwise. */
   error_code: string | null;
-  /** failureClass() of a failed outcome; `infra` for a reaped claim; null for every other status. */
+  /** failureClass() of a failed outcome; `infra` for a reaped claim; null otherwise. `stalled`: rows before 2026-11-23. */
   failure_class: "task" | "infra" | "rate_limited" | "stalled" | "checks_env" | "setup_missing" | null;
   /** outcomeTokens() of the outcome that closed it; 0 when it closed without an outcome. */
   tokens: number;
