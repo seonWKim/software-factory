@@ -31,6 +31,18 @@ describe("listSkillEvalRuns", () => {
   });
 });
 
+describe("getSkillEvalRun", () => {
+  it("reads one run by id with its figures, whatever its skill; null for an unknown id", async () => {
+    const { store } = await twoSkills();
+    await store.startSkillEvalRun({ id: "r1", suite_id: "s3", created_by: OWNER, skill_version: "v1" });
+    await store.finishSkillEvalRun("r1", "failed");
+    await store.recordSkillEvalRunFigures("r1", FIGURES);
+    expect(await store.getSkillEvalRun("r1")).toEqual((await store.listSkillEvalRuns("skills/b"))[0]);
+    expect(await store.getSkillEvalRun("r1")).toMatchObject({ id: "r1", suite_id: "s3", skill_version: "v1", ...FIGURES });
+    expect(await store.getSkillEvalRun("nope")).toBeNull();
+  });
+});
+
 describe("recordSkillEvalRunFigures", () => {
   it("writes a finished run's figures once, and reads them back", async () => {
     const { store } = await twoSkills();

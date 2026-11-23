@@ -128,6 +128,11 @@ export class SqlSkillEvalStore extends SqlScheduleStore implements SkillEvalStor
     return rows.map(rowToRun);
   }
 
+  async getSkillEvalRun(id: string): Promise<SkillEvalRun | null> {
+    const [row] = await this.db.all(`SELECT ${RUN_READ} FROM controller_skill_eval_runs WHERE id = ?`, [id]);
+    return row ? rowToRun(row) : null;
+  }
+
   recordSkillEvalRunFigures(id: string, f: SkillEvalRunFigures): Promise<boolean> {
     return this.db.transaction(async (tx) => (await tx.run(
       "UPDATE controller_skill_eval_runs SET model_class = ?, judge_model_class = ?, replays = ?, pass_rate = ?, errored = ? WHERE id = ? AND finished_at IS NOT NULL AND replays IS NULL",

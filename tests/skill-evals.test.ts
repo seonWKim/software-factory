@@ -292,6 +292,28 @@ describe("the eval wiring (runSkillEvalFor)", () => {
     expect(await store.db.all("SELECT id FROM controller_skill_eval_runs")).toEqual([]);
   });
 
+  it("runs on --model's class with the judge on judgeClass of it; --judge-model may name that class", async () => {
+    const store = await suiteWith({ c1: { input: "good", expected: ["a"] } });
+    const llm = new FakeLLM(() => yesNo("yes"));
+    const { d, runner } = await wiring(store, llm);
+    const r = await runSkillEvalFor(d, { skill: "skills/tests-first", created_by: OWNER, signal: signal(), model_class: "strong", judge_model_class: "standard", replays: 1 });
+    expect(r).toEqual({ run: expect.objectContaining({ id: "run1", status: "passed", model_class: "strong", judge_model_class: "standard", replays: 1, pass_rate: 1 }) });
+    expect(runner.specs[0]).toMatchObject({ model_class: "strong" });
+    expect(llm.requests[0]).toMatchObject({ model_class: "standard" });
+  });
+
+  it("refuses an unknown --model class, another --judge-model class and --replays above 1, writing no run nor building a plugin", async () => {
+    const store = await suiteWith({ c1: { input: "x", expected: ["a"] } });
+    const { d, plugins } = await wiring(store, new FakeLLM(() => yesNo("yes")));
+    const go = (o: { model_class?: string; judge_model_class?: string; replays?: number }) => runSkillEvalFor(d, { skill: "skills/tests-first", created_by: OWNER, signal: signal(), ...o });
+    expect(await go({ model_class: "huge" })).toEqual({ refused: expect.stringMatching(/huge.*cheap, standard, strong/) });
+    expect(await go({ judge_model_class: "standard" })).toEqual({ refused: expect.stringMatching(/--judge-model standard.*strong/) });
+    expect(await go({ model_class: "cheap", judge_model_class: "cheap" })).toEqual({ refused: expect.stringMatching(/--judge-model cheap.*strong/) });
+    expect(await go({ replays: 3 })).toEqual({ refused: expect.stringMatching(/--replays 3.*one verdict per case/) });
+    expect(plugins).not.toHaveBeenCalled();
+    expect(await store.db.all("SELECT id FROM controller_skill_eval_runs")).toEqual([]);
+  });
+
   it("figures: one replay per case, a null pass rate with no replays, the judge on judgeClass of the replay's class", () => {
     expect(runFigures("standard", [])).toEqual({ model_class: "standard", judge_model_class: "strong", replays: 0, pass_rate: null, errored: 0 });
     expect(runFigures("strong", [{ verdict: "pass" }, { verdict: "errored" }])).toEqual({ model_class: "strong", judge_model_class: "standard", replays: 2, pass_rate: 0.5, errored: 1 });
