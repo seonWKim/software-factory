@@ -20,10 +20,12 @@ import {
   computeRates,
   computeStability,
   formatReport,
+  genTriageDrafts,
   parseAddArgs,
   parseRunArgs,
   readPrRecord,
   replayPrompt,
+  renderSpec,
   runCases,
 } from "../src/golden.js";
 import { RoleCatalog, rolesShortOfGolden } from "../src/runtime/index.js";
@@ -839,5 +841,44 @@ describe("triage cases", () => {
     await writeTriageCase(base.rolesDir, "asks", [{ kind: "asks_question" }]);
     const report = await runCases({ ...base, runner: triageReplayRunner(fake, base.rolesDir, TRIAGE_PARTS) }, { role: "triage" });
     expect(report.cases.map((c) => c.verdict)).toEqual(["errored"]);
+  });
+});
+
+describe("golden gen role/triage through the store", () => {
+  /** A fake LLMProvider that answers every persona with one draft; no live call. */
+  const fakeLlm = () => {
+    const calls: { data_env: string; content: string }[] = [];
+    return {
+      calls,
+      async complete(req: { data_env: "test"; messages: { content: string }[] }) {
+        calls.push({ data_env: req.data_env, content: req.messages[0]!.content });
+        return { text: "", stop_reason: "end", parsed: { instruction: "Please add a scope gate", checks: [{ kind: "no_question" }] } };
+      },
+    };
+  };
+
+  /** The CLI's item read: the stored item's stage and its rendered spec. */
+  const specReader = (store: FactoryStore) => async (id: string) => {
+    const item = await store.getWorkItem(id as WorkItem["id"]);
+    return item && { stage: item.stage, spec: renderSpec(item) };
+  };
+
+  it("drafts from a closed item's rendered spec, and refuses an open item with no call", async () => {
+    const { store } = await newStore();
+    const closed = await seed(store, 7, "clean_merge");
+    const open = await seed(store, 8, "held");
+    const draftsDir = join(tmp, "golden", "drafts", "triage");
+
+    const llm = fakeLlm();
+    const r = await genTriageDrafts({ item: specReader(store), llm, scanner: cleanScanner, draftsDir }, { from: closed.id, force: false });
+    expect(r.dir).toBe(join(draftsDir, closed.id));
+    expect(llm.calls.length).toBe(r.drafts.length);
+    expect(llm.calls.every((c) => c.data_env === "test" && c.content.includes(`# Work item ${closed.id}`) && c.content.includes("Add a scope gate"))).toBe(true);
+    expect((await readdir(r.dir)).sort()).toEqual(r.drafts.map((d) => d.persona).sort());
+
+    const none = fakeLlm();
+    await expect(genTriageDrafts({ item: specReader(store), llm: none, scanner: cleanScanner, draftsDir }, { from: open.id, force: false })).rejects.toThrow(/not CLOSED/);
+    expect(none.calls).toEqual([]);
+    expect(existsSync(join(draftsDir, open.id))).toBe(false);
   });
 });
