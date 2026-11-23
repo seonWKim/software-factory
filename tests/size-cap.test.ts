@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OVER_CAP_NO_SIZE, SIZE_CAP_APPROVED, overCapApproval, overCapNoteRequired, sizeCaps, storedProjectCaps, storedSizeCapApproval } from "../src/core/size-cap.js";
+import { OVER_CAP_NO_SIZE, SIZE_CAP_APPROVED, overCapApproval, overCapNoteRequired, sizeCaps, storedProjectCaps } from "../src/core/size-cap.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 import { TOO_LARGE, atSizeCheckpoint, overCap, proposedCap, sizeCheckpointNote, suggestedSplit } from "../src/core/split.js";
 import { sizeDetail } from "../src/core/diff-gate.js";
@@ -120,18 +120,16 @@ describe("overCapApproval", () => {
     const d = overCapApproval(over, actor, " why ", approved);
     expect(d).toMatchObject({ patch: { stage: "RUNNING", size_cap: { max_diff_lines: 1648, max_diff_files: 40 } }, detail: { note: "why" } });
     const detail = (d as { detail: Record<string, unknown> }).detail;
-    expect(storedSizeCapApproval(detail)).toEqual({
+    expect(typeof detail[SIZE_CAP_APPROVED]).toBe("string");
+    expect(JSON.parse(detail[SIZE_CAP_APPROVED] as string)).toEqual({
       actor: "local:me", sizes: { lines: 1400, files: 12 }, project_cap: project, one_time_cap: { max_diff_lines: 1648, max_diff_files: 40 }, note: "why",
     });
-    expect(typeof detail[SIZE_CAP_APPROVED]).toBe("string");
   });
 
   it("not over the caps, or no transition to add to: as it is", () => {
     expect(overCapApproval(null, actor, null, approved)).toBe(approved);
     expect(overCapApproval(over, actor, "why", { refuse: "no" })).toEqual({ refuse: "no" });
     expect(overCapApproval(over, actor, "why", null)).toBeNull();
-    expect(storedSizeCapApproval({ note: "x" })).toBeNull();
-    expect(storedSizeCapApproval(null)).toBeNull();
   });
 });
 

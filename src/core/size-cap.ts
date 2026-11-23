@@ -74,17 +74,6 @@ export function overCapApproval<D extends { refuse: string } | { patch: WorkItem
   return { ...d, patch: { ...d.patch, size_cap: over.one_time_cap }, detail: { ...d.detail, [SIZE_CAP_APPROVED]: JSON.stringify(record) } };
 }
 
-/** The `size_cap_approved` record a state change's detail holds, or null when it holds none. */
-export function storedSizeCapApproval(detail: Readonly<Record<string, unknown>> | null | undefined): SizeCapApproval | null {
-  const raw = detail?.[SIZE_CAP_APPROVED];
-  if (typeof raw !== "string") return null;
-  try {
-    return JSON.parse(raw) as SizeCapApproval;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * A project's caps read from the store outside the controller (the CLI's and the dashboard's over-cap check before
  * anything is stored), as the controller's settings resolve them: the file's layers with the `owner/name` block
