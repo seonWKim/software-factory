@@ -129,7 +129,9 @@ function stallRate(inWindow: readonly Run[], windowMinutes: number): string {
   return `stall rate: ${stalls} of ${agent.length} agent runs in the last ${windowMinutes} minutes stalled`;
 }
 
-const isAgentRun = (r: Run) => AGENT_RUN_KINDS.includes(r.kind) && (r.status === "succeeded" || r.status === "failed");
+// A screenshot review with no image starts no agent (design 04-screenshots): never part of a zero-token streak.
+const noImage = (r: Run) => r.input?.screenshot_review === true && (r.input.screenshots?.captures.length ?? 0) === 0;
+const isAgentRun = (r: Run) => AGENT_RUN_KINDS.includes(r.kind) && (r.status === "succeeded" || r.status === "failed") && !noImage(r);
 const isStall = (r: Run) => r.outcome?.status === "failed" && r.outcome.error_code === AGENT_STALLED;
 
 function zeroTokens(newestFirst: readonly Run[], threshold: number): AlarmFinding[] {

@@ -2,7 +2,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { FactoryConfig } from "../src/core/config.js";
+import { detectAlarms } from "../src/core/alarms.js";
+import { ALARM_DEFAULTS, type FactoryConfig } from "../src/core/config.js";
 import { WORKER_KINDS } from "../src/core/settings.js";
 import type { Run, RunOutcome, UserId, WorkItem, WorkItemPatch, WorkerId } from "../src/core/types.js";
 import type { NewRun } from "../src/interfaces/factory-store.js";
@@ -400,5 +401,21 @@ describe("the item API", () => {
     // Stored, but not in the run's outcome; or another run: 404.
     expect((await get(d, q("light"))).status).toBe(404);
     expect((await get(d, q("dark", "run_other"))).status).toBe(404);
+  });
+});
+
+describe("the zero-token alarm", () => {
+  it("never counts a screenshot review that had no image (it starts no agent); a review that ran one still counts", () => {
+    const now = new Date("2026-11-23T12:00:00.000Z");
+    const review = (i: number, input: object | null) => ({
+      id: `run_${i}`, work_item_id: `wi_${i}`, kind: "review", status: "succeeded", finished_at: `2026-11-23T11:5${i}:00.000Z`,
+      input, outcome: { status: "succeeded", summary: "", data: {} },
+    }) as never;
+    const noImage = { screenshot_review: true, screenshots: { captures: [], reason: "no Chrome" } };
+    const withImage = { screenshot_review: true, screenshots: { captures: [{ page: "items", width: 390, theme: "light", key: "k" }], reason: null } };
+    const zero = (input: object | null) => detectAlarms({ runs: [0, 1, 2].map((i) => review(i, input)), restarts: [], now, settings: ALARM_DEFAULTS }).map((f) => f.pattern);
+    expect(zero(noImage)).toEqual([]);
+    expect(zero(withImage)).toEqual(["zero_tokens"]);
+    expect(zero(null)).toEqual(["zero_tokens"]);
   });
 });
