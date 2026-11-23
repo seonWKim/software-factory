@@ -25,7 +25,7 @@ import { CALENDAR_PATH, readCalendarStatus } from "./calendar-api.js";
 import { CALENDAR_EVENTS_PATH, readCalendarEvents } from "./calendar-events-api.js";
 import { MODEL_CREDENTIAL_PATH, readModelCredential } from "./model-credential.js";
 import { SUPERVISOR_PATH, readSupervisor } from "./migrate-api.js";
-import { EVALS_PATH, readSkillEvals } from "./evals-api.js";
+import { EVALS_LIST_PATH, EVALS_PATH, readEvalSuites, readSkillEvals } from "./evals-api.js";
 import { changesPathId, readItemChanges } from "./changes.js";
 import { SCHEDULES_PATH, SCHEDULE_RUNS_PATH, readScheduleRuns, readSchedules } from "./schedules-api.js";
 import type { ServerDeps, UiRequest } from "./server.js";
@@ -57,6 +57,7 @@ const READ_ROUTES: readonly ReadRoute[] = [
   // Unwired, the supervisor path falls through to api.ts's 404.
   { path: SUPERVISOR_PATH, run: (d, u) => (d.migrate !== undefined && d.pauses !== undefined ? readSupervisor(d.migrate, d.pauses) : api(d, u)) },
   { path: CALENDAR_EVENTS_PATH, run: (d, u) => readCalendarEvents(d, u.searchParams.get("from"), u.searchParams.get("to")) },
+  { path: EVALS_LIST_PATH, run: (d) => readEvalSuites(d) },
   { path: EVALS_PATH, run: (d, u) => readSkillEvals(d, { grid: skillEvalGrid, compare: compareSkillEvalRuns }, u) },
   { path: SCHEDULES_PATH, run: (d) => readSchedules(d) },
   { path: SCHEDULE_RUNS_PATH, run: (d, u) => readScheduleRuns(d, u.searchParams.get("schedule")) },
