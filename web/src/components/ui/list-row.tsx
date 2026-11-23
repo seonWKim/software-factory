@@ -7,7 +7,8 @@ export const ROW_TITLE = "block truncate text-sm";
 /**
  * One row of a bordered list (the Tasks page's Needs you, date groups and Done): an optional leading control (a
  * checkbox), the title on one full-width line, the details line under it (state chips, dates, projects, reason), any
- * extra content (a form, an error) below, and the row's "⋯" menu at the right, which holds every action of the row.
+ * extra content (a form, an error) below, and the row's "⋯" menu at the right, which holds every action of the row. The
+ * menu's 32px button is pulled up 6px so its centre is level with the title's first 20px line.
  */
 export function ListRow({ leading, title, details, menu, children, className, ...li }: Omit<LiHTMLAttributes<HTMLLIElement>, "title"> & {
   leading?: ReactNode;
@@ -25,7 +26,7 @@ export function ListRow({ leading, title, details, menu, children, className, ..
         {details && <div data-details className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-pretty text-text-2">{details}</div>}
         {children}
       </div>
-      {menu && <div data-row-menu className="flex shrink-0 items-start">{menu}</div>}
+      {menu && <div data-row-menu className="-mt-1.5 flex shrink-0 items-start">{menu}</div>}
     </li>
   );
 }

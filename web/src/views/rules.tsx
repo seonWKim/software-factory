@@ -28,9 +28,9 @@ import { ApprovalsSection, StandingProposal, StandingRule } from "./standing.js"
 
 // The Rules page (design 09-dashboard-rules.md, issue #571; two sections since 2026-11-22, the owner's choice over
 // tabs): one PageHeader that says what the page is for, with the waiting count as a Badge beside the title, then in a
-// read-width column (PageHeader `width="read"`) exactly two sections, "In effect" and "Waiting for you", and one "Details" disclosure at the end.
+// read-width column (PageHeader `width="read"`) exactly two sections, "Waiting for you" then "In effect" (since 2026-11-24), and one "Details" disclosure at the end.
 // In effect: each standing rule that is on (standing.tsx), then the ledger's applied rules (rules-applied.tsx), with a
-// search and Suggest. Waiting for you: the pending standing proposals (Accept visible, Decline in ⋯), then the entries
+// search, and Suggest at the right of the card's title. Waiting for you: the pending standing proposals (Accept visible, Decline in ⋯), then the entries
 // the ledger has not judged (judged null), candidates (`C-…`) before structure proposals (`P-…`); each is a ListRow
 // whose title is an IdDetails (the ID in its tooltip), whose details line has its Badge and, for a proposal, its plain
 // kind and file count, with Promote visible (off, with its reason in the row, when a class's draft could not be read or
@@ -227,6 +227,8 @@ export function RulesPage() {
   const standing = useApi<StandingView>(API.standing);
   // The applied-rules search, in the toolbar's second row (the page's one filter).
   const [query, setQuery] = useState("");
+  // Each Suggest press is a new round of reads in the applied rules; 0 until the first press.
+  const [round, setRound] = useState(0);
   const v = rules.data;
   const title = t("page.rules");
   if (rules.isError) return <><PageHeader title={title} width="read" /><ErrorNote error={rules.error} /></>;
@@ -271,16 +273,6 @@ export function RulesPage() {
       )}
       {v.judge !== null && <Notice tone="warn">{t("rules.readOnly")}{v.judge}</Notice>}
       {v.error !== null && <Notice tone="bad">{v.error}</Notice>}
-      <Card title={t("rules.inEffect")} count={inEffect}>
-        {standing.isError && <ErrorNote error={standing.error} />}
-        {v.applied !== null && (v.applied.rules.length > 0 || v.applied.elsewhere.length > 0) ? (
-          <Applied applied={v.applied} token={token} before={onRows.length > 0 ? onRows : undefined} query={query} />
-        ) : onRows.length > 0 ? (
-          <ul aria-label={t("rules.inEffect")} className={LIST}>{onRows}</ul>
-        ) : (
-          <p data-in-effect-empty className={muted}>{t("rules.appliedEmpty")}</p>
-        )}
-      </Card>
       <Card title={t("rules.waitingForYou")} count={waitCount}>
         {waitCount === 0 && v.error === null && <EmptyState icon={ScrollText} title={t("rules.emptyTitle")} description={t("rules.empty")} />}
         {proposals.length > 0 && (
@@ -309,6 +301,16 @@ export function RulesPage() {
             )
           );
         })}
+      </Card>
+      <Card title={t("rules.inEffect")} count={inEffect} action={hasAppliedTools(v.applied) && <Button onClick={() => setRound(round + 1)}>{t("rules.suggest")}</Button>}>
+        {standing.isError && <ErrorNote error={standing.error} />}
+        {v.applied !== null && (v.applied.rules.length > 0 || v.applied.elsewhere.length > 0) ? (
+          <Applied applied={v.applied} token={token} before={onRows.length > 0 ? onRows : undefined} query={query} round={round} />
+        ) : onRows.length > 0 ? (
+          <ul aria-label={t("rules.inEffect")} className={LIST}>{onRows}</ul>
+        ) : (
+          <p data-in-effect-empty className={muted}>{t("rules.appliedEmpty")}</p>
+        )}
       </Card>
       <Disclosure data-page-details className="mt-6" summary={t("rules.details")}>
         <div className="mt-3 space-y-6">
