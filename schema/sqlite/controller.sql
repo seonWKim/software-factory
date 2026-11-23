@@ -15,6 +15,20 @@ CREATE TABLE controller_alerts (
     created_at   TEXT NOT NULL
   );
 
+CREATE TABLE controller_attachments (
+    id            TEXT PRIMARY KEY,
+    work_item_id  TEXT NOT NULL,
+    kind          TEXT NOT NULL,
+    media_type    TEXT,
+    data          TEXT,
+    size_bytes    INTEGER,
+    name          TEXT,
+    url           TEXT,
+    label         TEXT,
+    created_by    TEXT NOT NULL,
+    created_at    TEXT NOT NULL
+  );
+
 CREATE TABLE controller_budget_checkpoints (
     id                   TEXT PRIMARY KEY,
     work_item_id         TEXT NOT NULL REFERENCES controller_work_items(id),
@@ -484,6 +498,8 @@ CREATE TABLE "controller_work_items" (
   );
 
 CREATE INDEX controller_alerts_created ON controller_alerts (created_at);
+
+CREATE INDEX controller_attachments_item ON controller_attachments (work_item_id, created_at);
 
 CREATE INDEX controller_budget_checkpoints_work_item ON controller_budget_checkpoints (work_item_id, created_at);
 
