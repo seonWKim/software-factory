@@ -348,6 +348,23 @@ describe("the screenshot run and its review", () => {
     expect(await h.state(it1)).toEqual(before);
   });
 
+  it("a finished screenshot run and screenshot review add their tokens to the item's token_cost", async () => {
+    const h = await harness();
+    const it1 = await h.inReview();
+    await h.review(it1, "pass");
+    const cost = async () => (await h.store.getWorkItem(it1.id))!.token_cost;
+    const before = await cost();
+    await h.finish("screenshot", { status: "succeeded", summary: "", data: { captures: [], reason: "no chrome", tokens: 7 } });
+    await h.controller.tickRuns();
+    expect(await cost()).toBe(before + 7);
+    await h.finish("review", { status: "succeeded", summary: "", data: { screenshot_review: { findings: [], unverified: [], summary: "" }, tokens: 40 } });
+    await h.controller.tickRuns();
+    expect(await cost()).toBe(before + 47);
+    // Applied once: a second tick adds nothing.
+    await h.controller.tickRuns();
+    expect(await cost()).toBe(before + 47);
+  });
+
   it("a failed screenshot run still queues the screenshot review, with the failure as its reason", async () => {
     const h = await harness();
     const it1 = await h.inReview();
