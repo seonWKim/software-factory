@@ -102,7 +102,7 @@ const PAGES_UNDER_TEST: { name: string; path: string; ready: string }[] = [
   { name: "Settings", path: "/app/settings", ready: "Settings" },
   { name: "Settings, integrations", path: "/app/settings?tab=integrations", ready: "Settings" },
   { name: "Settings, advanced", path: "/app/settings?tab=advanced", ready: "Settings" },
-  { name: "Runners", path: "/app/runners", ready: "Runners" },
+  { name: "Runners", path: "/app/runners", ready: "Worker processes" },
   { name: "An item", path: "/app/items/wi_1", ready: "Spec waiting" },
 ];
 

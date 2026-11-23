@@ -148,15 +148,18 @@ describe("app pages", () => {
     history.replaceState(null, "", "/app/health");
     mount();
     await screen.findByText("push access denied");
-    // The Checks tab: neither section draws below the tabs, and the Failures window switch is not shown.
+    // The Overview tab: neither section draws below the tabs, and the Failures window switch is not shown.
     expect(screen.queryByRole("heading", { level: 2, name: "Spend" })).toBeNull();
     expect(screen.queryByRole("heading", { level: 2, name: "Failures" })).toBeNull();
     expect(document.querySelector("[data-failures-window]")).toBeNull();
-    fireEvent.click(screen.getByRole("tab", { name: "Spend" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Cost" }));
     expect(await screen.findByRole("heading", { level: 2, name: "Spend" })).toBeTruthy();
     expect(screen.queryByRole("heading", { level: 2, name: "Failures" })).toBeNull();
-    fireEvent.click(screen.getByRole("tab", { name: "Failures" }));
+    // Runs holds Runners, Failures (its window switch in the toolbar) and Host sleeps, in that order.
+    fireEvent.click(screen.getByRole("tab", { name: "Runs" }));
     expect(await screen.findByRole("heading", { level: 2, name: "Failures" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 2, name: "Host sleeps" })).toBeTruthy();
+    expect([...document.querySelectorAll("[data-health-section]")].map((e) => e.getAttribute("data-health-section"))).toEqual(["runners", "failures", "sleeps"]);
     expect(document.querySelector("[data-failures-window]")).not.toBeNull();
     expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
     cleanup();
@@ -227,21 +230,48 @@ describe("app pages", () => {
     expect(state.fetched).toContain("/api/v1/items?state=needs");
   });
 
-  it("Health tabs: Checks by default, counts in the labels, a failing check marks its tab, an unknown tab selects Checks, a click keeps the history length", async () => {
+  it("Health tabs: Overview by default, four tabs, counts only for what waits on the owner, a failing check marks Overview, an unknown tab selects Overview, a click keeps the history length", async () => {
     history.replaceState(null, "", "/app/health?tab=nonsense");
     mount();
     await screen.findByText("push access denied");
     const tabs = screen.getAllByRole("tab");
-    expect(tabs.map((x) => x.textContent!.replace(/\s*\(.*$/, ""))).toEqual(["Checks", "Spend", "Failures", "Runners", "Host sleeps", "Merged without review", "Efficiency"]);
+    // One failing check (the ok one is not counted) and two unreviewed merges; Runs and Cost carry no count.
+    expect(tabs.map((x) => x.textContent)).toEqual(["Overview (1) ⚠ failing", "Runs", "Cost", "Review (2)"]);
     expect(tabs[0]!.getAttribute("aria-selected")).toBe("true");
-    expect(tabs[0]!.textContent).toContain("(2)");
-    expect(tabs[0]!.textContent).toContain("failing");
-    expect(tabs[4]!.textContent).toContain("(0)");
     const length = history.length;
-    fireEvent.click(tabs[4]!);
-    expect(location.search).toBe("?tab=sleeps");
+    fireEvent.click(tabs[1]!);
+    expect(location.search).toBe("?tab=runs");
     expect(history.length).toBe(length);
-    expect(screen.getByText("No host sleep recorded.")).toBeTruthy();
+    expect(await screen.findByText("No host sleep recorded.")).toBeTruthy();
+  });
+
+  it("an old Health tab link opens the tab that now holds it and scrolls to that section; the first section of a tab needs no scroll", async () => {
+    const scrolled: string[] = [];
+    // jsdom has no scrolling: record which element the page asked to scroll into view.
+    const proto = HTMLElement.prototype as { scrollIntoView?: unknown };
+    const before = proto.scrollIntoView;
+    proto.scrollIntoView = function (this: HTMLElement) {
+      scrolled.push(this.id);
+    };
+    try {
+      const opens: [string, string, string | null][] = [
+        ["sleeps", "Runs", "health-sleeps"], ["failures", "Runs", "health-failures"], ["runners", "Runs", null],
+        ["spend", "Cost", null], ["efficiency", "Cost", "health-efficiency"], ["merges", "Review", null], ["checks", "Overview", null],
+      ];
+      for (const [old, tab, anchor] of opens) {
+        scrolled.length = 0;
+        history.replaceState(null, "", `/app/health?tab=${old}`);
+        mount();
+        await screen.findByRole("tablist", { name: "Health sections" });
+        expect(screen.getByRole("tab", { selected: true }).textContent, old).toContain(tab);
+        await act(async () => void (await vi.advanceTimersByTimeAsync(10)));
+        expect(document.getElementById(`health-${old}`), old).not.toBeNull();
+        expect(scrolled, old).toEqual(anchor ? [anchor] : []);
+        cleanup();
+      }
+    } finally {
+      proto.scrollIntoView = before;
+    }
   });
 
   it("health lists failing checks first", async () => {
@@ -274,7 +304,7 @@ describe("unreviewed merges", () => {
   });
 
   it("Health lists them in a table: PR (linked only with a URL), merged by, short sha, when", async () => {
-    history.replaceState(null, "", "/app/health?tab=merges");
+    history.replaceState(null, "", "/app/health?tab=review");
     mount();
     const t = await screen.findByRole("table", { name: "Merged without review" });
     expect([...t.querySelectorAll("th")].map((h) => h.textContent)).toEqual(["PR", "Merged by", "Merge commit", "When"]);

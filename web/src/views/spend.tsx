@@ -113,7 +113,7 @@ function DailyChart({ days, selected, onSelect }: { days: readonly SpendDay[]; s
 }
 
 const columns = (): readonly Column<SpendItem>[] => [
-  { key: "item", header: t("col.item"), render: (r) => <Link href={itemPath(r.work_item_id)} data-raw className={LINK_CLASS}>{r.title ?? r.work_item_id}</Link> },
+  { key: "item", header: t("col.item"), render: (r) => <Link href={itemPath(r.work_item_id)} data-raw className={`${LINK_CLASS} max-w-full break-words`}>{r.title ?? r.work_item_id}</Link> },
   { key: "cost", header: t("col.cost"), numeric: true, render: (r) => usd(r.cost_usd) },
   { key: "tokens", header: t("col.tokens"), numeric: true, render: (r) => tokens(r.tokens) },
   { key: "runs", header: t("col.runs"), numeric: true, render: (r) => r.runs },

@@ -438,7 +438,7 @@ CREATE TABLE "controller_unreviewed_merges" (
     merger_id   TEXT,
     at          TEXT NOT NULL,
     change_ref  TEXT
-  );
+  , title TEXT);
 
 CREATE TABLE controller_verdicts (
     id               TEXT PRIMARY KEY,
