@@ -287,7 +287,7 @@ export const SETTABLE_KEYS = [
   "mode", "auto_merge_max_tier",
   "message_style", "notice_kinds", "quiet_hours", "review_time", "notify_channels", "integrations", "calendar",
   "stall_ms", "probe_interval_ms", "auth_pause_ms", "max_coordination_cost", "hotspot_weight", "mechanical_weight", "intake_label", "spend.daily_budget_usd", "spend.weekly_budget_usd", "tool_grants", "conflict_hotspot_threshold",
-  "worker_kinds",
+  "worker_kinds", "agent_stop_check_ms",
 ] as const;
 export type SettableKey = (typeof SETTABLE_KEYS)[number];
 
@@ -346,7 +346,7 @@ export interface SettableValues {
   stall_ms: number; probe_interval_ms: number; auth_pause_ms: number; conflict_hotspot_threshold: number;
   max_coordination_cost: number; hotspot_weight: number; mechanical_weight: number; tool_grants: ToolGrants; // run kind → granted tools (design 08-settings)
   intake_label: string | null; // null: no built-in default, and neither the file nor an override says
-  worker_kinds: RunKind[]; // the run kinds a worker claims (design 05-interactive-sessions)
+  worker_kinds: RunKind[]; agent_stop_check_ms: number; // the run kinds a worker claims (design 05-interactive-sessions); the gate Stop check's limit (04-pre-push-gates)
 }
 
 /** The built-in default of each settable key, in the form factory.config.json writes it. */
@@ -379,7 +379,7 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   auth_pause_ms: 1_800_000, // shown as the default; with no override and no file value it follows the effective retry_max_ms
   max_coordination_cost: DEFAULT_COORDINATION.max_cost, hotspot_weight: DEFAULT_COORDINATION.hotspot_weight, mechanical_weight: DEFAULT_COORDINATION.mechanical_weight, tool_grants: {},
   intake_label: null, // no built-in default: the config file must say, and its value applies
-  worker_kinds: [...WORKER_KINDS],
+  worker_kinds: [...WORKER_KINDS], agent_stop_check_ms: 2_400_000,
 });
 
 export const HEARTBEAT_LEASE_MESSAGE = "heartbeat_ms must be well under lease_ms";
