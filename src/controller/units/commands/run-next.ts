@@ -16,10 +16,10 @@ const NO_QUEUED_RUN = "the item has no queued run, so nothing changed";
 /** Queued runs read to find the moved run's position: it is first, so the first page is enough. */
 const POSITION_READ = 50;
 
-/** The thread reply of an applied Run next: the run's kind and its queue position now. */
-function runNextReply(kind: string, position: number): string {
+/** The thread reply of an applied Run next: the run's kind label ("Merge check") and its queue position now. */
+function runNextReply(label: string, position: number): string {
   return [
-    `Run next: the queued ${kind} run is now at queue position ${position}.`,
+    `Run next: the queued ${label} run is now at queue position ${position}.`,
     "It starts when a worker slot is free. A busy item, a dependency, a coordination hold, paused claims or a rate limit still keep it queued; then the item's status says why.",
   ].join(" ");
 }
@@ -31,6 +31,6 @@ export async function runNext(c: Ctx, item: Item, user_id: UserId, key: string):
   const moved = await c.k.d.store.runNext(item.id);
   if (moved.length === 0) return NO_QUEUED_RUN;
   const position = (await c.k.d.store.listQueuedInClaimOrder(POSITION_READ)).findIndex((r) => r.work_item_id === item.id) + 1;
-  await c.unit("outbox").post(item, item.source, runNextReply(moved[0]!.kind, position), `<!-- factory:run-next:${key} -->`);
+  await c.unit("outbox").post(item, item.source, runNextReply(c.unit("run-results").kindLabel(moved[0]!.kind), position), `<!-- factory:run-next:${key} -->`);
   return null;
 }

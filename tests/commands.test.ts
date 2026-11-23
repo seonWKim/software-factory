@@ -16,6 +16,7 @@ import type { AuthProvider } from "../src/interfaces/auth-provider.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { answersDetail, splitAnswers, storedAnswers } from "../src/shared/command-notes.js";
 import { retry } from "../src/controller/units/support.js";
+import { runKindLabel } from "../src/controller/units/run-results/run-kind-label.js";
 import { FakeAuth } from "./helpers/fakes/runner.js";
 import { FakeSlackPollSource, FakeSource } from "./helpers/fakes/source.js";
 import { alice, cleanScanner, config, issueRef, silent, slackRef, triageSpec } from "./helpers/fakes/config.js";
@@ -582,7 +583,7 @@ describe("footers match what the controller accepts", () => {
       }
       expect(after).toEqual(item);
       expect(refused).toHaveLength(1);
-      expect(refused[0]!.body).toContain(`a ${phase === "failed_review" ? "review" : "update"} run`);
+      expect(refused[0]!.body).toContain(`a ${phase === "failed_review" ? "Review" : "Update"} run`);
       expect(refused[0]!.body).toContain("applies only to a failed implement or resolve run");
     }
   });
@@ -603,7 +604,7 @@ describe("footers match what the controller accepts", () => {
     const item = blocked.item;
     const unit = await controller.unit("commands");
     expect(await unit.retryKind(item)).toBe("resolve");
-    const d = retry(item, system, "resolve", "keep both imports", unit.widen(item, ["src/a.ts"]));
+    const d = retry(item, system, "resolve", "keep both imports", unit.widen(item, ["src/a.ts"]), runKindLabel);
     if (!d || "refuse" in d) throw new Error(d?.refuse ?? "no decision");
     expect(d.patch.allowed_paths).toEqual([...item.allowed_paths, "src/a.ts"]);
     expect(d.enqueue).toMatchObject({ kind: "resolve", input: { notes: "keep both imports" } });

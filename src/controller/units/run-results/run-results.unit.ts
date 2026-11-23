@@ -425,12 +425,12 @@ export class RunResultsUnit {
     return pushDelivered(this.c, id, run_id);
   }
 
-  /** The item's latest succeeded review run, the one the CI gate applies to. */
   /** A run kind's plain label for owner text ("Merge check"), from the one map (run-kind-label.ts). */
   kindLabel(kind: RunKind): string {
     return runKindLabel(kind);
   }
 
+  /** The item's latest succeeded review run, the one the CI gate applies to. */
   async latestReview(id: WorkItemId): Promise<Run | undefined> {
     return (await this.c.k.reader.listRuns(id)).filter((r) => r.kind === "review" && r.outcome?.status === "succeeded" && r.input?.screenshot_review !== true).at(-1);
   }
