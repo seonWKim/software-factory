@@ -44,7 +44,7 @@ export async function autoGrant(c: Ctx, stopped: Stop[1], run: Stop[2], ask: Ask
   const covered = ask.named.length > 0 && ask.asked.length === 0;
   if (covered ? !switchedOn(c, stopped.project) : !ask.reply || !c.k.live.autoGrantable(stopped.project, ask.asked)) return undefined;
   const t = covered ? coveredTexts(ask.named) : testTexts(ask.asked, ask.reply!, c.k.live.testPathsOnly(ask.asked));
-  const d = retry(stopped, SYSTEM, "implement", t.note, covered ? null : c.unit("commands").widen(stopped, ask.asked));
+  const d = retry(stopped, SYSTEM, "implement", t.note, covered ? null : c.unit("commands").widen(stopped, ask.asked), (k) => c.unit("run-results").kindLabel(k));
   if (!d || "refuse" in d) return undefined;
   const body = [...t.body, "", footerAfter(stopped, d.patch)].join("\n");
   if (!(await c.k.d.scanner.scan("comment", body)).clean) return undefined;

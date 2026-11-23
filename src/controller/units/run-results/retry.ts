@@ -8,7 +8,7 @@ import type { Decision, Run, Tier, WorkItem } from "../support.js";
 import {
   type FailureClass, type StateChangeDetail, SYSTEM, footerAfter, fenced, CHECKS_ENV, CHECKS_ENV_LIMIT, PROVIDER_SETUP, RECURRING_FAILURE,
   REPEATED_FAILURE, SESSION_RELEASED, STALL_STREAK_HOLD, doneChecksDetail, failingTests, failureClass, failureLine, firstErrorLine,
-  repeatsFastInfraFailure, repeatsLastFailure, retryDelayMs, retryKey, retryNotBefore, sameStep, sizeCaps, stallStreak, stripAnsi,
+  repeatsFastInfraFailure, repeatsLastFailure, retryDelayMs, retryKey, retryNotBefore, runKindLabel, sameStep, sizeCaps, stallStreak, stripAnsi,
   suggestedSplit, takenOver,
 } from "./run-results.unit.js";
 
@@ -68,7 +68,7 @@ export const codeDetails = (code: string): string[] => ["", "<details><summary>D
 export async function failedBlock(c: Ctx, it: WorkItem, run: Run, code: string): Promise<Decision> {
   const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:${run.kind}:${code}` };
   const url = await c.unit("outbox").comment(it, `run-failed:${run.id}`,
-    `The ${run.kind} run failed (\`${code}\`). Comment \`/retry\` to run it again.\n\n${footerAfter(it, patch)}`, "failure_comment_url");
+    `The ${runKindLabel(run.kind)} run failed (\`${code}\`). Comment \`/retry\` to run it again.\n\n${footerAfter(it, patch)}`, "failure_comment_url");
   return {
     patch: { ...patch, failure_comment_url: url },
     actor: SYSTEM,
@@ -96,7 +96,7 @@ export async function leakBlock(
   const url = await c.unit("outbox").comment(it, `leak-blocked:${run.id}`, [
     `The ${what} were blocked by the leak scanner (${names.map((n) => `\`${n}\``).join(", ") || "a rule"}), so nothing of them was stored or posted.`,
     "",
-    `Comment \`/retry\` to run the ${kind} again, or \`/revise <feedback>\` to get a new spec written.`,
+    `Comment \`/retry\` to run the ${runKindLabel(kind)} again, or \`/revise <feedback>\` to get a new spec written.`,
     "",
     footerAfter(it, patch),
   ].join("\n"), "failure_comment_url");
@@ -184,6 +184,15 @@ export async function retryOrBlock(c: Ctx, it: WorkItem, run: Run, cls: FailureC
   };
 }
 
+/** The repeated-failure comment above its footer: the run by its label, the failure in words, its code under Details. */
+export const repeatedFailureLines = (kind: Run["kind"], code: string, line: string): string[] => [
+  "## Factory check: the same failure twice",
+  "",
+  `The ${runKindLabel(kind)} run failed twice in a row the same way: ${describeFailure(code)}.${line ? ` ${line}` : ""}`,
+  ...codeDetails(code),
+  "The factory stopped retrying it, since a third run would most likely fail the same way. Fix the cause, then comment `/retry` to run it again with a fresh attempt budget, `/revise <feedback>` to get a new spec written, or `/reject <reason>` to close.",
+];
+
 /**
  * Two task failures in a row in one step with the same code and detail line (issue #167, decided
  * 2026-11-07): the item blocks on a human with `repeated_failure` and no third run is queued. One comment,
@@ -192,15 +201,7 @@ export async function retryOrBlock(c: Ctx, it: WorkItem, run: Run, cls: FailureC
 async function repeatedFailure(c: Ctx, it: WorkItem, run: Run, code: string, detail: StateChangeDetail): Promise<Decision> {
   const line = run.outcome?.status === "failed" ? failureLine(run.outcome.detail) : "";
   const patch = { blocked_on: "human" as const, blocked_reason: REPEATED_FAILURE };
-  const body = (withDetail: boolean) => [
-    "## Factory check: the same failure twice",
-    "",
-    `The ${run.kind} run failed twice in a row the same way: ${describeFailure(code)}.${withDetail && line ? ` ${line}` : ""}`,
-    ...codeDetails(code),
-    "The factory stopped retrying it, since a third run would most likely fail the same way. Fix the cause, then comment `/retry` to run it again with a fresh attempt budget, `/revise <feedback>` to get a new spec written, or `/reject <reason>` to close.",
-    "",
-    footerAfter(it, patch),
-  ].join("\n");
+  const body = (withDetail: boolean) => [...repeatedFailureLines(run.kind, code, withDetail ? line : ""), "", footerAfter(it, patch)].join("\n");
   const scan = await c.k.d.scanner.scan("comment", body(true));
   const url = await c.unit("outbox").comment(it, `run-failed:${run.id}`, body(scan.clean), "failure_comment_url");
   return {
@@ -227,7 +228,7 @@ async function repeatedInfraFailure(c: Ctx, it: WorkItem, run: Run, code: string
   const body = (withDetail: boolean, withTail: boolean) => [
     "## Factory check: the same infrastructure failure twice",
     "",
-    `The ${run.kind} run failed twice in a row the same way, each time within a minute of starting: ${describeFailure(code)}.${withDetail && text ? ` ${text}` : ""}`,
+    `The ${runKindLabel(run.kind)} run failed twice in a row the same way, each time within a minute of starting: ${describeFailure(code)}.${withDetail && text ? ` ${text}` : ""}`,
     ...codeDetails(code),
     ...(withTail && tail
       ? ["<details><summary>Output tail of the last run</summary>", "", fenced(tail), "", "</details>", ""]
@@ -308,7 +309,7 @@ export async function providerSetup(c: Ctx, it: WorkItem, run: Run): Promise<Dec
   const body = (withDetail: boolean) => [
     "## Factory check: the model provider needs setup",
     "",
-    `The ${run.kind} run failed: ${describeFailure(PROVIDER_SETUP)}.${withDetail && detail ? ` ${detail}` : ""}`,
+    `The ${runKindLabel(run.kind)} run failed: ${describeFailure(PROVIDER_SETUP)}.${withDetail && detail ? ` ${detail}` : ""}`,
     ...codeDetails(PROVIDER_SETUP),
     "The factory does not retry this automatically, since waiting will not fix it. Check the provider account's quota or billing, the API key (`npm run setup`) and the model names in `factory.config.json`, then comment `/retry` to run it again.",
     "",
@@ -331,11 +332,12 @@ export async function providerSetup(c: Ctx, it: WorkItem, run: Run): Promise<Dec
  */
 async function lastAttemptComment(c: Ctx, it: WorkItem, run: Run, code: string, limit: string, n: number, footer: string): Promise<string | null> {
   const out = run.outcome?.status === "failed" ? run.outcome : null;
+  const label = runKindLabel(run.kind);
   const what = limit === "max_attempts"
-    ? `The ${run.kind} run failed ${n} times (limit \`max_attempts\` = ${c.k.settings(it.project).max_attempts}), so the factory stopped retrying it.`
+    ? `The ${label} run failed ${n} times (limit \`max_attempts\` = ${c.k.settings(it.project).max_attempts}), so the factory stopped retrying it.`
     : limit === CHECKS_ENV
-      ? `The ${run.kind} run's checks failed on the base branch too ${n} times (the factory requeues at most ${CHECKS_ENV_LIMIT}), so it stopped retrying it. Fix or skip the failing tests on the base branch first.`
-      : `The ${run.kind} run hit ${n} infrastructure failures (limit \`max_restart\` = ${c.k.cfg.max_restart}), so the factory stopped restarting it.`;
+      ? `The ${label} run's checks failed on the base branch too ${n} times (the factory requeues at most ${CHECKS_ENV_LIMIT}), so it stopped retrying it. Fix or skip the failing tests on the base branch first.`
+      : `The ${label} run hit ${n} infrastructure failures (limit \`max_restart\` = ${c.k.cfg.max_restart}), so the factory stopped restarting it.`;
   const tail = stripAnsi(out?.output_tail || out?.detail || "").trim();
   const first = firstErrorLine(tail);
   const tests = failingTests(tail);

@@ -1,10 +1,17 @@
-import { useState } from "react";
-import { type EvalComparison, type EvalRun, type EvalRunSummary, useEvalCompare, useEvalGrid, useEvalRuns } from "../api/evals.js";
+import { useQueryClient } from "@tanstack/react-query";
+import { type RefObject, useRef, useState } from "react";
+import { useApi } from "../api/client.js";
+import { type EvalComparison, type EvalRun, type EvalRunSummary, postEvalRun, useEvalCompare, useEvalGrid, useEvalRuns } from "../api/evals.js";
+import type { Session } from "../api/overview.js";
+import { API } from "../api/routes.js";
 import { Badge } from "../components/ui/badge.js";
+import { Button } from "../components/ui/button.js";
 import { Card } from "../components/ui/card.js";
 import { Chart } from "../components/ui/chart.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
+import { Dialog } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
+import { Input } from "../components/ui/input.js";
 import { EmptyState, PageHeader } from "../components/ui/notice.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { Select } from "../components/ui/select.js";
@@ -14,7 +21,8 @@ import { localDateTime, localShortDate } from "../lib/format.js";
 // The evals page at evals/<skill> (design 09-dashboard-evals): three read-only Cards in one column, Trend (pass rate by
 // run date), Grid (the newest run of each skill version and model class) and Compare (two runs, the gap and the noise
 // band). Plain words only: the skill's name, run dates, model classes and pass rates; no run, suite or skill ID shows.
-// Nothing here starts a run.
+// The header's one action, Run now, opens a Dialog that starts one run (POST /api/v1/evals/<skill>/runs) with a model
+// class, its judge class and a replay count; the server's refusal (403 owner check, 409 refused run) shows in it.
 
 /** The skill's name from its skill_ref (`skills/review/SKILL.md` → "review"): the last part, not the file's name. */
 export function skillName(ref: string): string {
@@ -48,8 +56,10 @@ function Trend({ runs }: { runs: readonly EvalRun[] }) {
   );
 }
 
-/** The model classes in the order cheap, standard, strong, then any other by name. */
+/** The model classes in the order cheap, standard, strong, then any other by name; Run now's model choices. */
 const CLASS_ORDER = ["cheap", "standard", "strong"];
+/** The class a run's judge uses for `model` (src/core/scorer.ts judgeClass): strong grades the others, standard grades strong. */
+const judgeOf = (model: string): string => (model === "strong" ? "standard" : "strong");
 const byClass = (a: string, b: string): number => {
   const [i, j] = [CLASS_ORDER.indexOf(a), CLASS_ORDER.indexOf(b)];
   return i < 0 && j < 0 ? a.localeCompare(b) : i < 0 ? 1 : j < 0 ? -1 : i - j;
@@ -170,11 +180,75 @@ function Compare({ skill, runs }: { skill: string; runs: readonly EvalRun[] }) {
   );
 }
 
-/** The evals page of one skill (`skill` is its skill_ref): Trend, Grid, Compare. */
+/** Run now: model class, its judge class (follows the model) and replay count; the run is stored before it closes. */
+function RunNowDialog({ skill, onClose, returnFocusTo }: { skill: string; onClose: () => void; returnFocusTo: RefObject<HTMLButtonElement | null> }) {
+  const client = useQueryClient();
+  const token = useApi<Session>(API.session, false).data?.csrf_token ?? null;
+  const [model, setModel] = useState("standard");
+  const [replays, setReplays] = useState("1");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const judge = judgeOf(model);
+  const send = async () => {
+    if (token === null) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await postEvalRun(token, skill, { model_class: model, judge_model_class: judge, replays: Number(replays) });
+      if (!r.ok) return setError(r.error ?? t("evals.runFailed"));
+      await client.invalidateQueries();
+      onClose();
+    } catch {
+      setError(t("evals.runFailed"));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Dialog
+      title={t("evals.runTitle", { skill: skillName(skill) })}
+      consequence={t("evals.runConsequence")}
+      confirmLabel={busy ? t("evals.running") : t("evals.runConfirm")}
+      confirmDisabled={busy || token === null}
+      error={error}
+      onConfirm={() => void send()}
+      onClose={onClose}
+      returnFocusTo={returnFocusTo}
+    >
+      <Field label={t("evals.runModel")} htmlFor="evals-run-model">
+        <Select id="evals-run-model" value={model} wrapperClassName="w-full" onChange={(e) => setModel(e.target.value)}>
+          {CLASS_ORDER.map((c) => <option key={c} value={c}>{c}</option>)}
+        </Select>
+      </Field>
+      <Field label={t("evals.runJudge")} htmlFor="evals-run-judge" help={t("evals.runJudgeHelp")}>
+        <Select id="evals-run-judge" value={judge} wrapperClassName="w-full" disabled onChange={() => {}}>
+          <option value={judge}>{judge}</option>
+        </Select>
+      </Field>
+      <Field label={t("evals.runReplays")} htmlFor="evals-run-replays" help={t("evals.runReplaysHelp")}>
+        <Input id="evals-run-replays" type="number" min={1} step={1} value={replays} className="w-24" onChange={(e) => setReplays(e.target.value)} />
+      </Field>
+    </Dialog>
+  );
+}
+
+/** The header's one primary action: opens the Run now Dialog. */
+function RunNow({ skill }: { skill: string }) {
+  const [open, setOpen] = useState(false);
+  const button = useRef<HTMLButtonElement>(null);
+  return (
+    <>
+      <Button ref={button} variant="primary" onClick={() => setOpen(true)}>{t("evals.runNow")}</Button>
+      {open && <RunNowDialog skill={skill} onClose={() => setOpen(false)} returnFocusTo={button} />}
+    </>
+  );
+}
+
+/** The evals page of one skill (`skill` is its skill_ref): Run now in the header, then Trend, Grid, Compare. */
 export function EvalsPage({ skill }: { skill: string }) {
   const runs = useEvalRuns(skill);
   const grid = useEvalGrid(skill);
-  const header = <PageHeader title={skillName(skill)} description={t("evals.description")} />;
+  const header = <PageHeader title={skillName(skill)} description={t("evals.description")} actions={<RunNow skill={skill} />} />;
   if (runs.isError || grid.isError) return <>{header}<ErrorNote error={new Error(t("evals.loadFailed"))} /></>;
   if (!runs.data || !grid.data) return <>{header}<Loading label="loading.evalRuns" onRetry={() => { void runs.refetch(); void grid.refetch(); }} /></>;
   if (runs.data.runs.length === 0) return <>{header}<EmptyState title={t("evals.empty")} description={t("evals.emptyHelp")} /></>;

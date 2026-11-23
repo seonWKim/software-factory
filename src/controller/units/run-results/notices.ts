@@ -10,7 +10,7 @@ import { dependencyStop } from "./dependency-stop.js";
 import { retryOrBlock } from "./retry.js";
 import {
   type NeedsHuman, AGENT_NEEDS_HUMAN, FLOOR_TIER, FORGE_AUTH, MAX_FEEDBACK_CHARS, PREFLIGHT_ACCESS, SYSTEM, commandFooter, commandState, footerAfter,
-  isCovered, preflightCheck, prNumber, quote, retryPathsReply, runKey, withholdReplyLines,
+  isCovered, preflightCheck, prNumber, quote, retryPathsReply, runKey, runKindLabel, withholdReplyLines,
 } from "./run-results.unit.js";
 
 /** A review with nothing to review: no commits ahead of the base, or an empty diff (issue #223). */
@@ -120,13 +120,13 @@ export async function needsHuman(c: Ctx, it: WorkItem, run: Run, ask: NeedsHuman
   const footer = commandFooter(commandState({ ...it, ...patch }, run.kind), run.kind === "implement" && (await c.unit("coordination").namesUnmerged(it, ask.reason)) ? [] : ["hold"]);
   const answer = run.kind === "resolve"
     ? "Reply `/resolve <your answer>` to run the resolve again with your answer as its notes, or `/retry` to run it again as it is."
-    : `Fix what it needs, then reply \`/retry\` to run the ${run.kind} again, \`/revise <feedback>\` to get a new spec written with your answer, or \`/reject <reason>\` to close.`;
+    : `Fix what it needs, then reply \`/retry\` to run the ${runKindLabel(run.kind)} again, \`/revise <feedback>\` to get a new spec written with your answer, or \`/reject <reason>\` to close.`;
   const named = [...new Set(ask.paths ?? [])], asked = named.filter((p) => !isCovered(p, it.allowed_paths)), reply = run.kind === "implement" ? retryPathsReply(asked) : null;
   const granted = run.kind === "implement" ? await autoGrant(c, { ...it, ...patch }, run, { named, asked, reply }, tokens) : undefined; if (granted !== undefined) return granted; // test paths or allowed paths only: once (design 05-restarts)
   const body = (withText: boolean) => [
     "## Factory: the agent needs a human",
     "",
-    `The ${run.kind} run stopped and asked for a human instead of going on. Nothing was pushed.`,
+    `The ${runKindLabel(run.kind)} run stopped and asked for a human instead of going on. Nothing was pushed.`,
     "",
     ...(withText
       ? [
@@ -161,7 +161,7 @@ export async function forgeAuthComment(c: Ctx, it: WorkItem, run: Run): Promise<
   await c.unit("outbox").comment(it, `forge-auth:${until}`, [
     "## Factory forge check: implement runs paused",
     "",
-    `The forge answered 401 or 403 to the factory's credentials during this item's ${run.kind} run (\`${FORGE_AUTH}\`), so implement and update runs are paused for every worker until ${until}. Triage and review runs go on.`,
+    `The forge answered 401 or 403 to the factory's credentials during this item's ${runKindLabel(run.kind)} run (\`${FORGE_AUTH}\`), so implement and update runs are paused for every worker until ${until}. Triage and review runs go on.`,
     "",
     "Check the factory's forge credentials (the app installation or token): they need write access to contents and changes on this repository. The run is retried after the pause ends.",
   ].join("\n"));
@@ -178,7 +178,7 @@ export async function preflightAccessComment(c: Ctx, it: WorkItem, run: Run): Pr
   await c.unit("outbox").comment(it, `preflight-access:${out.reset_at}`, [
     "## Factory forge check: implement runs paused",
     "",
-    `The implement preflight's \`${check}\` check failed during this item's ${run.kind} run (\`${PREFLIGHT_ACCESS}\`), so implement and update runs are paused for every worker until ${out.reset_at}. Triage and review runs go on.`,
+    `The implement preflight's \`${check}\` check failed during this item's ${runKindLabel(run.kind)} run (\`${PREFLIGHT_ACCESS}\`), so implement and update runs are paused for every worker until ${out.reset_at}. Triage and review runs go on.`,
     "",
     "Check that the factory's forge app or token can still read this repository and its changes, and that the forge answers. The run is retried after the pause ends.",
   ].join("\n"));

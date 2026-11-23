@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import { alarmCommand, alarmFullText, alarmText } from "../src/ui/alarms.js";
 import { whyWaiting, withAlarms, type WhyInput } from "../src/ui/why.js";
 import type { Alert } from "../src/interfaces/factory-store.js";
+import { repeatedFailureLines } from "../src/controller/units/run-results/retry.js";
 
 // tsconfig.test.json checks this file without JSX, so the shell fixtures (a .tsx module) load by a specifier the node check skips.
 const FIXTURES = "./ui-shell-fixtures.js";
@@ -51,6 +52,9 @@ const repeated: Alert = {
   detail: "boom in the worker", created_at: AT as Alert["created_at"],
 };
 
+/** The controller's repeated-failure comment for a merge-check run, above its footer. */
+const REPEATED_MERGE_CHECK = repeatedFailureLines("merge-check", "exception", "").join("\n");
+
 /** The failed item as the server reasons about it: triage failed twice the same way. */
 const failedInput: WhyInput = {
   item: { stage: "NEW", blocked_on: "human", blocked_reason: "repeated_failure", close_reason: null },
@@ -84,8 +88,9 @@ RESPONSES[`/api/v1/items/${failed.id}`] = {
   thread: [
     {
       seq: 1, at: AT, kind: "run-failed", author: "factory", role: "factory", channel: "github_issue", anchor: "msg-1",
-      // The comment as run-results.unit.ts writes it: the failure in words, its code under Details.
-      body: "## Factory check: the same failure twice\n\nThe triage run failed twice in a row the same way: the worker hit an unexpected error.\n\n<details><summary>Details</summary>\n\nError code: `exception`\n\n</details>",
+      // The comment as the controller writes it (retry.ts) for a merge-check run that failed twice the same way (issue
+      // #810): the run by its label, the failure in words, its code under Details.
+      body: REPEATED_MERGE_CHECK,
     },
   ],
 };
@@ -135,6 +140,13 @@ describe("owner text for a failed item (issue #758)", () => {
     // The timeline's sentence for the repeated failure, its fields in code under Details.
     expect(screen.getByText("Failed twice the same way, so it needs you")).toBeTruthy();
     expect([...container.querySelectorAll("details code")].map((c) => c.textContent)).toContain("blocked_reason: – → repeated_failure");
+  });
+
+  it("the repeated-failure comment of a merge-check run names it by its label, with no internal name outside code spans", () => {
+    expect(REPEATED_MERGE_CHECK).toContain("The Merge check run failed twice in a row the same way: the worker hit an unexpected error.");
+    const prose = REPEATED_MERGE_CHECK.replace(/`[^`]*`/g, "");
+    expect(prose).not.toMatch(/[a-z]+-[a-z]+/);
+    expect(prose).not.toMatch(/[a-z]+_[a-z]+/);
   });
 
   it("the header labels the commit hash Factory version, with a tooltip", async () => {
