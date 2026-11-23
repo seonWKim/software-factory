@@ -1,5 +1,6 @@
-// `factory eval run|results|compare|suite|case` (design 06-measurement, skill evals). Suites and cases are written
-// through the authoring rules (src/runtime/skill-evals/authoring.ts); `case try` is the call's trySkillEvalCase. The
+// `factory eval run|results|compare|suite|case|import` (design 06-measurement, skill evals). Suites and cases are
+// written through the authoring rules (src/runtime/skill-evals/authoring.ts), `import` through its importCases (the
+// configured SkillEvalSource, src/runtime/skill-evals/import.ts); `case try` is the call's trySkillEvalCase. The
 // run itself is the root wiring (src/skill-evals.ts) and the grid and compare are src/core/skill-eval-compare.ts, both
 // passed in by main.ts through the command call (runSkillEval, skillEvalReads), so this handler imports no root or
 // legacy module. <skill> is a suite's skill_ref: a skill folder.
@@ -33,7 +34,13 @@ const USAGE = `  eval run <skill> [--model <class>] [--judge-model <class>] [--r
                json is {"input": ..., "expected": [check texts]}; case edit <case-id> takes the same, a field
                not given keeps its value; case delete <case-id>; case try <case-id> [--model cheap|standard|strong]
                replays and judges one case (default standard), prints each check as yes or no with its reason,
-               then "verdict: pass|fail|errored" (exit 0 on pass), and stores no run and no replay`;
+               then "verdict: pass|fail|errored" (exit 0 on pass), and stores no run and no replay
+  eval import <skill> [--source <plugin>]
+               copies the skill's cases from the eval source (--source, else plugins.eval_source; default none)
+               into its suite as import:<source>:<skill>:<source case id>; ids already stored are kept as they
+               are, and the source is only read. Each new case passes the case add rule and the egress scan
+               first; any refusal (no source on, an unknown source, no suite, a source that cannot be read, a
+               bad case, a finding, named by rule only) exits 1 and writes nothing`;
 
 const orDash = (v: string | number | null) => (v === null ? "-" : String(v));
 const rate = (v: number | null) => (v === null ? "-" : v.toFixed(2));
@@ -125,6 +132,19 @@ async function caseCommand(argv: readonly string[], ctx: CommandContext, authori
   });
 }
 
+/** `eval import <skill> [--source <plugin>]`: null on a bad argument. */
+async function importCommand(argv: readonly string[], ctx: CommandContext, authoring: NonNullable<CommandContext["authoring"]>): Promise<number | null> {
+  const { values, positionals: [skill, ...extra] } = parseFlags({ args: [...argv], allowPositionals: true, options: { source: { type: "string" } } });
+  if (!skill || extra.length > 0) return null;
+  const importCases = authoring.importCases;
+  if (!importCases) return (console.error("eval import is not available here: run it as `factory eval import <skill>`"), 1);
+  return ctx.withStore(async (store) => report(await importCases(store, { skill, source: values.source }), (v) => {
+    for (const id of v.added) console.log(`imported case ${id}`);
+    if (v.kept.length > 0) console.log(`${v.kept.length} case${v.kept.length === 1 ? "" : "s"} already stored, kept as ${v.kept.length === 1 ? "it is" : "they are"}`);
+    console.log(`imported ${v.added.length} new case${v.added.length === 1 ? "" : "s"} from ${v.source}`);
+  }));
+}
+
 /** One grid row or compared run as one line. */
 const summaryLine = (r: SkillEvalRunSummary) =>
   `skill version ${orDash(r.skill_version)}  model ${orDash(r.model_class)}  pass rate ${rate(r.pass_rate)}  replays ${orDash(r.replays)}  (run ${r.run_id}, ${r.started_at})`;
@@ -166,7 +186,7 @@ export default defineCommand({
   names: ["eval"],
   usage: USAGE,
   async run(argv, ctx) {
-    if (argv[0] === "suite" || argv[0] === "case") {
+    if (argv[0] === "suite" || argv[0] === "case" || argv[0] === "import") {
       if (!ctx.authoring) {
         console.error(`eval ${argv[0]} is not available here: run it as \`factory eval ${argv[0]} ...\``);
         return 1;
@@ -174,7 +194,7 @@ export default defineCommand({
       const authoring = ctx.authoring;
       let code: number | null;
       try {
-        code = await (argv[0] === "suite" ? suiteCommand : caseCommand)(argv.slice(1), ctx, authoring);
+        code = await ({ suite: suiteCommand, case: caseCommand, import: importCommand }[argv[0]])(argv.slice(1), ctx, authoring);
       } catch (e) {
         console.error((e as Error).message);
         return 1;
