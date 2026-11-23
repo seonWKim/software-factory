@@ -24,6 +24,7 @@ import { TranscriptView, transcriptRoute } from "./views/transcript.js";
 import { RulesPage } from "./views/rules.js";
 import { ProposalsPage } from "./views/proposals.js";
 import { CalendarPage } from "./views/calendar.js";
+import { SchedulesPage } from "./views/schedules.js";
 import { TasksPage } from "./views/tasks.js";
 import { WorkersPage } from "./views/workers.js";
 
@@ -31,6 +32,7 @@ const VIEWS: Record<string, () => JSX.Element> = {
   items: ItemsPage,
   tasks: TasksPage,
   calendar: CalendarPage,
+  schedules: SchedulesPage,
   workers: WorkersPage,
   health: HealthPage,
   rules: RulesPage,

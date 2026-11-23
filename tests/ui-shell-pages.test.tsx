@@ -90,7 +90,7 @@ describe("app pages", () => {
     const side = screen.getByRole("complementary", { name: "Sidebar" });
     const links = [...side.querySelectorAll("a")].filter((a) => a.getAttribute("href")?.startsWith("/app/") && a.getAttribute("href") !== "/app/");
     expect(links.map((a) => [a.textContent, a.getAttribute("href")])).toEqual([
-      ["Tasks", "/app/tasks"], ["Calendar", "/app/calendar"], ["Work", "/app/items"], ["Health", "/app/health"], ["Workers", "/app/workers"],
+      ["Tasks", "/app/tasks"], ["Calendar", "/app/calendar"], ["Schedules", "/app/schedules"], ["Work", "/app/items"], ["Health", "/app/health"], ["Workers", "/app/workers"],
       ["Rules", "/app/rules"], ["Plugins", "/app/plugins"], ["Settings", "/app/settings"],
     ]);
     for (const gone of ["Activity", "Failures", "Spend", "Runners", "Data"]) expect(within(side).queryByRole("link", { name: gone })).toBeNull();
