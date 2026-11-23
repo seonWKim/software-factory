@@ -4,9 +4,10 @@
 // page; plugins-api.ts), /api/v1/plugins/import (it reads the user's own Claude Code and Codex configs, so it also
 // needs the CSRF token; plugins-import-api.ts), /api/v1/calendar (calendar-api.ts), /api/v1/model-credential (the
 // dialog's secret names; model-credential.ts), /api/v1/supervisor (what Migrate now, Start and Restart now may do;
-// migrate-api.ts), /api/v1/calendar/events (the Calendar page's range read; calendar-events-api.ts) and
-// /api/v1/evals/<skill>/runs, /grid, /compare and /suite (a skill's eval runs, grid, compare, suite and cases;
-// evals-api.ts, a path pattern), /api/v1/items/:id/changes (the item page's Changes tab; changes.ts) and /api/v1/schedules and
+// migrate-api.ts), /api/v1/calendar/events (the Calendar page's range read; calendar-events-api.ts), /api/v1/screenshot
+// (one stored image of an item's screenshot run; item-screenshots.ts) and /api/v1/evals/<skill>/runs, /grid, /compare
+// and /suite (a skill's eval runs, grid, compare, suite and cases; evals-api.ts, a path pattern),
+// /api/v1/items/:id/changes (the item page's Changes tab; changes.ts) and /api/v1/schedules and
 // /api/v1/schedules/runs (`?schedule=<id>`; schedules-api.ts); every other
 // path is api.ts's. They are served here beside api.ts so it stays within its size budget. A new read route adds one
 // entry to READ_ROUTES, not a line in server.ts.
@@ -25,6 +26,7 @@ import { CALENDAR_PATH, readCalendarStatus } from "./calendar-api.js";
 import { CALENDAR_EVENTS_PATH, readCalendarEvents } from "./calendar-events-api.js";
 import { MODEL_CREDENTIAL_PATH, readModelCredential } from "./model-credential.js";
 import { SUPERVISOR_PATH, readSupervisor } from "./migrate-api.js";
+import { SCREENSHOT_PATH, readScreenshot } from "./item-screenshots.js";
 import { EVALS_LIST_PATH, EVALS_PATH, readEvalSuites, readSkillEvals } from "./evals-api.js";
 import { changesPathId, readItemChanges } from "./changes.js";
 import { SCHEDULES_PATH, SCHEDULE_RUNS_PATH, readScheduleRuns, readSchedules } from "./schedules-api.js";
@@ -57,6 +59,7 @@ const READ_ROUTES: readonly ReadRoute[] = [
   // Unwired, the supervisor path falls through to api.ts's 404.
   { path: SUPERVISOR_PATH, run: (d, u) => (d.migrate !== undefined && d.pauses !== undefined ? readSupervisor(d.migrate, d.pauses) : api(d, u)) },
   { path: CALENDAR_EVENTS_PATH, run: (d, u) => readCalendarEvents(d, u.searchParams.get("from"), u.searchParams.get("to")) },
+  { path: SCREENSHOT_PATH, run: (d, u) => readScreenshot(d, u.searchParams) },
   { path: EVALS_LIST_PATH, run: (d) => readEvalSuites(d) },
   { path: EVALS_PATH, run: (d, u) => readSkillEvals(d, { grid: skillEvalGrid, compare: compareSkillEvalRuns }, u) },
   { path: SCHEDULES_PATH, run: (d) => readSchedules(d) },
