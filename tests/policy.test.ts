@@ -237,6 +237,23 @@ describe("auto mode rules (design 03-risk)", () => {
   });
 });
 
+// Migration timestamps (design 04-triage): a later timestamp with an allowed migration's folder, component and slug is covered.
+describe("isCovered: a later same-slug migration", () => {
+  const allowed = ["src/controller/migrations/20261122T1200-controller-new-thing.migration.ts", "tests/20261122T1200-controller-new-thing.test.ts"];
+
+  it("covers the migration and its test at a later timestamp", () => {
+    expect(isCovered("src/controller/migrations/20261122T1201-controller-new-thing.migration.ts", allowed)).toBe(true);
+    expect(isCovered("tests/20261123T0000-controller-new-thing.test.ts", allowed)).toBe(true);
+  });
+
+  it("does not cover an earlier timestamp, another slug, another component, or a later file with no allowed migration", () => {
+    expect(isCovered("src/controller/migrations/20261122T1100-controller-new-thing.migration.ts", allowed)).toBe(false);
+    expect(isCovered("src/controller/migrations/20261122T1201-controller-new-thing-two.migration.ts", allowed)).toBe(false);
+    expect(isCovered("src/worker/migrations/20261122T1201-worker-new-thing.migration.ts", allowed)).toBe(false);
+    expect(isCovered("src/controller/migrations/20261122T1201-controller-new-thing.migration.ts", ["src/core/policy.ts"])).toBe(false);
+  });
+});
+
 // Decided 2026-11-16 (design 04-triage): one rule in isCovered, used by the scope gate and the edit hook, always
 // covers the ratchet lists. Their growth is refused by tests/architecture/, and they stay on the gate list.
 describe("isCovered: the ratchet lists", () => {

@@ -123,7 +123,7 @@ async function merge(f: Awaited<ReturnType<typeof setup>>): Promise<void> {
   const done = (await f.store.listRuns(f.id)).find((r) => r.id === run!.id)!;
   await (await f.controller.unit("run-results")).apply(done);
   expect(f.sandbox.merges).toEqual([]);
-  expect(await f.store.getWorkItem(f.id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+  expect(await f.store.getWorkItem(f.id)).toMatchObject({ stage: "REVIEW", blocked_on: "ci", blocked_reason: "merge_queued" });
   // Outbound makes the merge; its DeliveryCompleted closes the item.
   await f.controller.tickOutbox();
   expect(f.sandbox.merges).toHaveLength(1);

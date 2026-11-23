@@ -1,5 +1,7 @@
 import type { FactoryConfig } from "./config.js";
 import type { Floor } from "./settings.js";
+import { laterStampOf } from "./migration-stamps.js";
+export { freeMigrationStamps, takenStamps } from "./migration-stamps.js"; // the triage branch's step, beside the scope rule
 // Type only: a value import of stats.ts would close an import cycle back to this file (phase.ts reads its constants).
 import type { TierRuleResult } from "./stats.js";
 import { type Run, type RunKind, type RunOutcome, type Tier, type Timestamp, type WorkItem } from "./types.js";
@@ -512,12 +514,13 @@ export function isUnder(path: string, a: string): boolean {
 }
 
 /**
- * A path is covered when it equals an allowed path, sits under an allowed path that ends in `/`, or is a
- * ratchet list (RATCHET_LIST). Shared by triage validation (`files_to_change`), the pre-push scope gate and
- * the edit hook, so all use one rule.
+ * A path is covered when it equals an allowed path, sits under an allowed path that ends in `/`, is a
+ * ratchet list (RATCHET_LIST), or is a migration or migration test with an allowed one's folder, component and
+ * slug and a later timestamp (laterStampOf: a build that finds the spec's timestamp taken renames the file).
+ * Shared by triage validation (`files_to_change`), the pre-push scope gate and the edit hook, so all use one rule.
  */
 export function isCovered(path: string, allowed: readonly string[]): boolean {
-  return RATCHET_LIST.test(path) || allowed.some((a) => isUnder(path, a));
+  return RATCHET_LIST.test(path) || allowed.some((a) => isUnder(path, a) || laterStampOf(path, a));
 }
 
 /**

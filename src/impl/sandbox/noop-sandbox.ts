@@ -245,6 +245,16 @@ export class NoOpSandbox implements Sandbox {
     return r.exit_code === 0 ? { commit, text: r.stdout } : null;
   }
 
+  /** The file paths under the folder `path` in the local branch `ref`, from objects only; null when the branch is missing. */
+  async listLocalFiles(spec: { repo: string; ref: string; path: string }): Promise<string[] | null> {
+    safeRef(spec.ref);
+    safePath(spec.path);
+    const commit = await this.localCommit(spec.repo, spec.ref);
+    if (commit === null) return null;
+    const out = (await this.git(spec.repo, ["ls-tree", "-r", "--name-only", "-z", "--full-tree", commit, "--", spec.path])).stdout;
+    return out.split("\0").filter((p) => p !== "");
+  }
+
   /**
    * One commit on a new local branch (design 08-settings, the file-only key writer): the blob, a tree built in a
    * temporary index file under the worktrees dir (never the repo's own index), the commit (only objects), then

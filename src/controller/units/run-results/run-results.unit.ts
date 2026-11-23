@@ -4,7 +4,7 @@
 import { prNumber } from "../../../core/change-ref.js";
 import { NO_FILES_REFUSAL, changesNoFile, commandFooter, commandState, retryPathsReply, withholdReplyLines } from "../../../core/commands.js";
 import { type NeedsHuman, type ReviewOutput, SPEC_CONFLICT, type TriageOutput, doneCheckCommands, findingLine, parseNeedsHuman, parseReview, parseTriage, specFindings } from "../../../core/outputs.js";
-import { AGENT_NEEDS_HUMAN, AUTO_ACTOR, AUTO_RESOLVE_LIMIT, autoApproveRefusal, REPEATED_FAILURE, type FailureClass, failureLine, repeatsFastInfraFailure, repeatsLastFailure, preflightCheck, PREFLIGHT_ACCESS, autoResolveAttempts, autoResolveKey, effectiveTier, failureClass, floorTier, isCovered, needsSpecApproval, nextAutoResolveAttempt, parseAutoResolveKey, retryDelayMs, retryKey, retryNotBefore, GITHUB_RATE_LIMITED, runKey, sameStep, STALL_STREAK_HOLD, stallStreak, takenOver, FORGE_AUTH, NO_AUTO_RETRY, CHECKS_ENV, CHECKS_ENV_LIMIT, SESSION_RELEASED } from "../../../core/policy.js";
+import { AGENT_NEEDS_HUMAN, AUTO_ACTOR, AUTO_RESOLVE_LIMIT, autoApproveRefusal, REPEATED_FAILURE, type FailureClass, failureLine, repeatsFastInfraFailure, repeatsLastFailure, preflightCheck, PREFLIGHT_ACCESS, autoResolveAttempts, autoResolveKey, effectiveTier, failureClass, floorTier, isCovered, needsSpecApproval, nextAutoResolveAttempt, parseAutoResolveKey, retryDelayMs, retryKey, retryNotBefore, GITHUB_RATE_LIMITED, runKey, sameStep, STALL_STREAK_HOLD, stallStreak, takenOver, FORGE_AUTH, NO_AUTO_RETRY, CHECKS_ENV, CHECKS_ENV_LIMIT, SESSION_RELEASED, freeMigrationStamps, takenStamps } from "../../../core/policy.js";
 import { FIX_SPEC_APPROVED, gatePathTouched } from "../../../core/improver.js"; import { autoApprovalDetail, ownerAnswersFor } from "../../../shared/command-notes.js";
 import { dependencyStop } from "./dependency-stop.js"; import { autoGrant } from "./auto-grant.js";
 import { conflictCounts, conflictCountsLine } from "../../../core/resolve.js";
@@ -162,9 +162,9 @@ export class RunResultsUnit {
         case "triage": {
           // The item's size caps decide whether the estimate needs phases (src/core/split.ts).
           const { max_diff_lines, max_diff_files, floors } = this.c.k.settings(it.project);
-          // Path companions first (design 04-triage.md): on the raw answer, so a companion triage named only in
+          // Migration timestamps, then path companions (design 04-triage.md): a new migration on a base branch's timestamp moves to the next free minute; companions on that answer, so one named only in
           // files_to_change is covered, and before the floor, which raises the tier or refuses a built-in rule's path.
-          const { answer, added } = applyCompanions(data.spec, this.c.k.cfg.path_companions ?? [], floors);
+          const { answer, added } = applyCompanions(freeMigrationStamps(data.spec, takenStamps((await this.c.k.reader.baseFiles("src/")) ?? [])).answer, this.c.k.cfg.path_companions ?? [], floors);
           const parsed = parseTriage(answer, { max_diff_lines, max_diff_files, check_commands: doneCheckCommands(this.c.k.cfg.repo) }); // done_checks required (design 04-triage)
           if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
           const spec = parsed.value;

@@ -71,7 +71,8 @@ function ReasonField({ id, value, onChange }: { id: string; value: string; onCha
 /**
  * The verdict dialog: the entry's full title and its detail above the fields, then a reason, and for promote of a class the rule's wording (prefilled with its title) and its
  * default and exception (prefilled from its draft). Promote of a proposal shows its Now and Proposed lines (or its
- * prose change) in the detail and is off until they are read; a prose change is recorded as applied to its target.
+ * prose change) in the detail and is off until they are read; a prose change is recorded as applied to its target and
+ * the server creates a task to build it, which the card then links to.
  */
 export function VerdictDialog({ entry, applied, verdict, token, returnFocusTo, onClose }: { entry: RuleRow; applied: AppliedRule[]; verdict: RuleVerdict; token: string; returnFocusTo: RefObject<HTMLElement | null>; onClose: () => void }) {
   const [reason, setReason] = useState("");
@@ -90,7 +91,7 @@ export function VerdictDialog({ entry, applied, verdict, token, returnFocusTo, o
   return (
     <Dialog
       title={t("rules.dialogTitle", { label, title: entry.title })}
-      consequence={t(promote ? "rules.consequencePromoteClass" : prose ? "rules.consequencePromoteProse" : CONSEQUENCE[verdict])}
+      consequence={t(promote ? "rules.consequencePromoteClass" : prose ? "rules.consequencePromoteBuild" : CONSEQUENCE[verdict])}
       confirmLabel={t("rules.send", { label: label.toLowerCase() })}
       confirmDisabled={busy || reason.trim() === "" || (promote && Object.values(rule).includes("")) || (applies && lines.isPending)}
       danger={verdict === "reject"}

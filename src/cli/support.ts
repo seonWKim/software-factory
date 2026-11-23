@@ -3,7 +3,7 @@
 import { execFile } from "node:child_process";
 import { userInfo } from "node:os";
 import { promisify } from "node:util";
-import { type Loaded, build } from "../compose.js";
+import { type CleanupStore, type Loaded, Plugins, build, cleanupReport, hostCleaner } from "../compose.js";
 import { cliUserConfig } from "../core/config.js";
 import { type CliEnvironment, type CliIdentity, cliIdentity } from "../core/local-cli.js";
 
@@ -52,4 +52,18 @@ async function gitConfig(root: string, key: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * `factory cleanup` (design 08-cleanup): this host's sweep of closed items' leftovers now, or (`dryRun`) what it would
+ * remove and what it keeps, with each reason, changing nothing. Each printed line goes to `print`. Exit 0.
+ */
+export async function runCleanup(loaded: Loaded, store: CleanupStore, dryRun: boolean, print: (line: string) => void): Promise<number> {
+  const cleaner = await hostCleaner(loaded, store, await new Plugins(loaded).clock());
+  if (!cleaner.enabled()) {
+    print("cleanup: off (cleanup.enabled is false in factory.config.json). Nothing was removed.");
+    return 0;
+  }
+  for (const line of cleanupReport(await cleaner.sweep({ dryRun }), dryRun)) print(line);
+  return 0;
 }

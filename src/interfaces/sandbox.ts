@@ -77,6 +77,12 @@ export interface Sandbox {
    */
   readLocalFile?(spec: { repo: string; ref: string; path: string }): Promise<{ commit: string; text: string } | null>;
   /**
+   * Trusted, from objects only (no checkout, no fetch): every file path under the folder `path` (ending in `/`) in
+   * the factory repo's local branch `ref`, repo-relative; null when the branch is missing. Absent: triage's
+   * migration timestamp check is off (triage, src/core/migration-stamps.ts).
+   */
+  listLocalFiles?(spec: { repo: string; ref: string; path: string }): Promise<string[] | null>;
+  /**
    * Trusted: one commit on a new local branch without a checkout (design 08-settings, the file-only key writer).
    * The commit's parent is `parent`, the local `base_ref`'s commit, and its tree is the parent's with only `path`
    * set to `content`. `refs/heads/<branch>` is then created by a conditional ref update that fails when it exists.

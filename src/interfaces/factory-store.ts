@@ -21,6 +21,7 @@ import type { SessionReservation, SessionReservationStore } from "../core/sessio
 import type { ProposalStore } from "../core/proposals.js";
 import type { StandingChangeStore } from "../core/standing.js";
 import type { ScheduleStore } from "../core/schedule.js";
+import type { SkillEvalStore } from "./skill-eval-store.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
@@ -82,7 +83,6 @@ export type RecordPrHeadResult =
   | { ok: false; reason: "not_found" }
   /** last_head_sha is no longer `expected_head` (another poll or a factory push recorded first). Nothing written. */
   | { ok: false; reason: "head_moved"; current: WorkItem };
-
 export interface NewUnreviewedMerge {
   project: string;
   /** The PR number as text; the store mirrors it into its legacy PR column. */
@@ -354,7 +354,7 @@ export interface NoticeMessageStore {
   getNoticeQuestion(id: string): Promise<NoticeQuestion | null>;
 }
 
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore {
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore, SkillEvalStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes
