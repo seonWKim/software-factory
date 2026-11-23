@@ -59,14 +59,14 @@ export function ItemChangesTab({ id }: { id: string }) {
                 data-file={f.path}
                 className={cn(picked === f.path && "bg-surface-2")}
                 title={
-                  // The path stays the row's title text; the shared Button lies over it, so the row keeps its height.
+                  // The path stays the row's title text; the shared 28px Button lies over it, full width and centred on the title, so the row keeps its height.
                   <p title={f.path} className={cn(ROW_TITLE, "relative font-mono hover:underline")}>
                     {f.path}
                     <Button
                       variant="ghost"
                       aria-pressed={picked === f.path}
                       aria-label={t("item.fileChanges", { path: f.path })}
-                      className="absolute inset-0 min-h-0! px-0! enabled:hover:bg-transparent!"
+                      className="absolute inset-x-0 top-1/2 h-7 min-h-0! -translate-y-1/2 px-0! enabled:hover:bg-transparent!"
                       onClick={() => pick(f.path)}
                     />
                   </p>
