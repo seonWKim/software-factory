@@ -4,7 +4,7 @@
 
 import type { FileConfig } from "./load-config.js";
 import { CLEANUP_KEYS, cleanupProblems } from "./cleanup/config.js";
-import { CAPABILITIES_KEYS, COORDINATION_KEYS, TOOLCHAIN_KEYS, capabilitiesProblems, coordinationProblems, goldenConfig } from "./core/config.js";
+import { CAPABILITIES_KEYS, COORDINATION_KEYS, SKILL_IMPROVE_KEYS, TOOLCHAIN_KEYS, capabilitiesProblems, coordinationProblems, goldenConfig, skillImproveProblems } from "./core/config.js";
 import { pathCompanionProblems } from "./core/companions.js";
 import { DISTILL_KEYS, IMPROVER_KEYS, improverProblems } from "./core/proposals.js";
 import { packsProblems } from "./packs/packs.js";
@@ -24,8 +24,9 @@ import { SLACK_KEYS, slackConfigProblems } from "./impl/source/slack-config.js";
  * (design 06-measurement, eval on change): the golden gate's replays and regression margin (`goldenConfig`); absent, it is off.
  * `improver` and `distill` (design 07-self-improvement, entity proposals): `max_proposals`, `schedule` and `min_cases` (`improverConfig`).
  * `cleanup` (design 08-cleanup): `enabled` and `keep_hours`, checked here (`cleanupProblems`), read by compose and the CLI (`cleanupConfig`).
+ * The six skill improvement keys (design 07-self-improvement, `SKILL_IMPROVE_KEYS`): checked here (`skillImproveProblems`), read by `skillImproveConfig`.
  */
-type CoreOnlyKey = "cli_user" | "capabilities" | "conflict_hotspot_threshold" | "golden" | "improver" | "distill" | "cleanup" | (typeof COORDINATION_KEYS)[number];
+type CoreOnlyKey = "cli_user" | "capabilities" | "conflict_hotspot_threshold" | "golden" | "improver" | "distill" | "cleanup" | (typeof COORDINATION_KEYS)[number] | (typeof SKILL_IMPROVE_KEYS)[number];
 
 export const TOP_LEVEL_KEYS = [
   "env",
@@ -102,6 +103,12 @@ export const TOP_LEVEL_KEYS = [
   "golden",
   "improver",
   "distill",
+  "skill_improve_drop_margin",
+  "skill_improve_stall_runs",
+  "skill_improve_target",
+  "skill_improve_noise",
+  "skill_drafts_per_day",
+  "skill_draft_token_budget",
 ] as const satisfies readonly (keyof FileConfig | CoreOnlyKey)[];
 
 // Fails typecheck when FileConfig gains a key that is not listed above.
@@ -271,6 +278,7 @@ export function checkConfigKeys(raw: unknown): void {
     ...capabilitiesProblems(raw),
     ...goldenProblems(raw),
     ...improverProblems(raw),
+    ...skillImproveProblems(raw),
     ...cleanupProblems(raw),
   ];
   if (problems.length > 0) throw new ConfigKeyError(problems);

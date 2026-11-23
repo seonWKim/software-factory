@@ -115,7 +115,7 @@ import * as tables from "./tables.js";
 /**
  * FactoryStore over a SqlDriver (SQLite; `db` is public for components owning tables). Every write is one driver transaction. Correctness
  * never depends on the row locks alone: every state change is also a conditional UPDATE (version,
- * status, lease token), and uniqueness is enforced by keys, with a duplicate treated as "already there". Task projects: SqlProjectStore, schedules: SqlScheduleStore (schedules.ts), skill evals: SqlSkillEvalStore (skill-evals.ts), attachments: SqlAttachmentStore (attachments.ts).
+ * status, lease token), and uniqueness is enforced by keys, with a duplicate treated as "already there". Task projects: SqlProjectStore, schedules: SqlScheduleStore (schedules.ts), skill evals: SqlSkillEvalStore (skill-evals.ts), skill drafts: SqlSkillDraftStore (skill-drafts.ts), attachments: SqlAttachmentStore (attachments.ts).
  */
 export class SqlFactoryStore extends SqlAttachmentStore implements FactoryStore {
   constructor(db: SqlDriver, private readonly clock: Clock) {
