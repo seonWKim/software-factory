@@ -18,7 +18,7 @@ export interface RedMainOutput {
 }
 
 /** Only an automatic merge this recent is reverted (design 03-risk): older ones take the stop. */
-export const REVERT_WINDOW_MS = 3_600_000;
+const REVERT_WINDOW_MS = 3_600_000;
 /** The loop reason of a reopen after a revert: the merge check's, so it counts and is shown as that loop is. */
 const MERGE_CHECK_FAILED = "merge_check_failed";
 
