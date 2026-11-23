@@ -4,7 +4,7 @@ import { type TriageOutput, parseTriage } from "./outputs.js";
 import { type ItemPhase, isClosedPhase, phaseOf } from "./phase.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, SESSION_RELEASED, blockingRunKind } from "./policy.js";
 import type { Run, RunKind, WorkItem } from "./types.js";
-import { awaitingSpec } from "./request-transition.js";
+import { MERGE_CHECK_HELP_LINE, awaitingSpec } from "./request-transition.js";
 export * from "./request-transition.js"; // the approve and merge gates' shared checks (design 04-gate-commands)
 
 /**
@@ -60,13 +60,13 @@ export interface CommandState {
   /** A local item: it takes a `/verdict` with no PR, judged on the item itself (design §4). Absent: not local. */
   local?: true;
   /**
-   * At `agent_needs_human`: the kind of run that asked (read from the item's runs; the item's fields cannot tell
-   * a resolve block from an implement block). Absent when not known.
+   * `asked_by`, at `agent_needs_human`: the kind of run that asked (read from the item's runs; the fields cannot tell a resolve block from an implement block).
+   * `merge_check`, at `max_loops`: a failed merge check stopped it (mergeCheckStopped): no `/retry`, `factory merge <id>` checks it again. Absent: not known.
    */
-  asked_by?: RunKind;
+  asked_by?: RunKind; merge_check?: true;
 }
 
-export type CommandName = "approve" | "reject" | "revise" | "retry" | "resolve" | "paths" | "hold" | "budget" | "verdict" | "standing" | "link" | "help";
+export type CommandName = "approve" | "reject" | "revise" | "retry" | "resolve" | "paths" | "hold" | "note" | "budget" | "verdict" | "standing" | "link" | "help";
 
 export interface CommandSpec {
   name: CommandName;
@@ -164,14 +164,10 @@ export const COMMANDS: readonly CommandSpec[] = [
     description: "Add paths to the allowed paths of an item being implemented, in place: an interactive session's finish checks the new list, and a worker implement run takes it at its next attempt. At most 10, each with `+` before it, notes on the lines below. It never removes a path" },
   { name: "hold", usage: "/hold <id>", phases: [], local_phases: ["agent_needs_human"], asked_by: ["implement"], needs_pr: false, changes_state: true, // a local implement stop (design 05-dependencies)
     description: "Hold until <id> merges: writes a `Depends on: <id>` line in the item's problem and queues the implement run, which waits for <id> (a local wi_… item, or a built task tk_…) to merge and then starts on its own. Refused for an ID that names no local item, the item itself, or an item already merged" },
-  {
-    name: "budget",
-    usage: "/budget [tokens]",
-    description: "Continue past the budget checkpoint with the suggested budget, or with a larger whole number of tokens",
-    phases: ["budget_checkpoint"],
-    needs_pr: false,
-    changes_state: true,
-  },
+  { name: "note", usage: "/note <text>", phases: OPEN_PHASES, needs_pr: false, changes_state: false, // an `owner_note` state change (src/controller/units/commands/note.ts)
+    description: "Add a note for the item's reviewer and implementer, such as the reason a done-when line is built differently; their next run shows it under the approver's notes. It changes no state" },
+  { name: "budget", usage: "/budget [tokens]", phases: ["budget_checkpoint"], needs_pr: false, changes_state: true,
+    description: "Continue past the budget checkpoint with the suggested budget, or with a larger whole number of tokens" },
   {
     name: "verdict",
     usage: "/verdict accept|changes|reject <severity> <reason>",
@@ -254,11 +250,11 @@ export function commandPhase(it: ItemState): CommandPhase {
 }
 
 /** `askedBy`: at `agent_needs_human`, the kind of run that asked (see CommandState.asked_by). */
-export function commandState(it: ItemState, askedBy?: RunKind): CommandState {
+export function commandState(it: ItemState, askedBy?: RunKind, mergeCheck = false): CommandState {
   const phase = commandPhase(it);
   return {
     phase, has_pr: it.change_ref !== null, ...(it.source?.type === LOCAL_SOURCE ? { local: true as const } : {}),
-    ...(phase === "agent_needs_human" && askedBy ? { asked_by: askedBy } : {}),
+    ...(phase === "agent_needs_human" && askedBy ? { asked_by: askedBy } : {}), ...(phase === "max_loops" && mergeCheck ? { merge_check: true as const } : {}),
   };
 }
 
@@ -271,7 +267,7 @@ export function itemCommandState(it: ItemState, runs: readonly Run[]): CommandSt
 export const appliesLocally = (c: CommandSpec, s: CommandState): boolean => s.local === true && !s.has_pr && (c.local_phases?.includes(s.phase) ?? false);
 
 export function applies(c: CommandSpec, s: CommandState): boolean {
-  const asked = s.phase !== "agent_needs_human" || !c.asked_by || (s.asked_by !== undefined && c.asked_by.includes(s.asked_by));
+  const asked = (s.phase !== "agent_needs_human" || !c.asked_by || (s.asked_by !== undefined && c.asked_by.includes(s.asked_by))) && !(c.name === "retry" && s.merge_check);
   return asked && (appliesLocally(c, s) || (c.phases.includes(s.phase) && (!c.needs_pr || s.has_pr || s.local === true)));
 }
 
@@ -299,7 +295,7 @@ const FACTORY_COMMANDS: readonly CommandName[] = ["standing"];
 
 /** The commands that apply in `s`, in table order, each with the description it has there; `/help` always last. */
 export function commandsFor(s: CommandState): CommandSpec[] {
-  const shown = (c: CommandSpec) => c.name !== "help" && c.name !== "paths" && !ACCOUNT_COMMANDS.includes(c.name) && !FACTORY_COMMANDS.includes(c.name); // `/paths`: in `/help`, no footer or page button yet
+  const shown = (c: CommandSpec) => c.name !== "help" && c.name !== "paths" && c.name !== "note" && !ACCOUNT_COMMANDS.includes(c.name) && !FACTORY_COMMANDS.includes(c.name); // `/paths`, `/note`: in `/help`, no footer or page button yet
   const own = (c: CommandSpec) => appliesLocally(c, s) || (s.phase === "implementing" && c.implementing_description);
   return COMMANDS.filter((c) => shown(c) && applies(c, s)).map((c) => (own(c) ? { ...c, description: meaning(c, s) } : c)).concat(commandSpec("help"));
 }
@@ -351,7 +347,7 @@ export function helpReply(s: CommandState | null): string {
     ...COMMANDS.map((c) => {
       const now = s === null ? "" : applies(c, s) ? " **(now)**" : appliesOnPr(c, s) ? " **(now, on the PR)**" : "";
       return `- \`${c.usage}\`${now}: ${meaning(c, s)}.`;
-    }),
+    }), ...(s?.merge_check ? [MERGE_CHECK_HELP_LINE] : []),
     "",
     cliHelpLine(),
   ].join("\n");
@@ -498,7 +494,7 @@ export function chatHelpReply(may: (w: CommandWho) => boolean, state: CommandSta
   for (const c of COMMAND_TABLE) {
     if (c.edge || !may(c.who)) continue;
     if (c.chat_args === "request" && state !== null) continue;
-    if (c.item && (c.name !== "merge" || state?.phase !== "merge_pending")) continue;
+    if (c.item && (c.name !== "merge" || (state?.phase !== "merge_pending" && !state?.merge_check))) continue;
     lines.push(`- \`${c.chat}\`: ${c.does}.`);
   }
   const now = state !== null && may("approve_spec") ? commandsFor(state).filter((c) => c.name !== "help") : [];

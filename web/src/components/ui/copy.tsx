@@ -9,6 +9,16 @@ import { Tooltip } from "./menu.js";
 /** 28px tall, as every button on a page (scripts/responsive/rules.mjs `button-height`). */
 const SMALL = "inline-flex min-h-7 items-center rounded-control border border-border-strong px-2 text-xs font-sans text-text-2 hover:bg-surface-2";
 
+/** Writes `value` to the clipboard; false with no clipboard (an insecure origin, a test), where the text stays selectable. */
+export async function copyToClipboard(value: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Copies `value` to the clipboard; `done` is true for 1.5 s after. With no clipboard it does nothing. */
 function useCopy(value: string) {
   const [done, setDone] = useState(false);
@@ -18,12 +28,7 @@ function useCopy(value: string) {
     return () => clearTimeout(timer);
   }, [done]);
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(value);
-      setDone(true);
-    } catch {
-      // No clipboard (an insecure origin, a test): the text stays selectable.
-    }
+    if (await copyToClipboard(value)) setDone(true);
   };
   return { done, copy: () => void copy() };
 }
@@ -32,7 +37,7 @@ function useCopy(value: string) {
 export function CopyButton({ value, what }: { value: string; what: string }) {
   const { done, copy } = useCopy(value);
   return (
-    <button type="button" aria-label={t("copy.label", { what })} title={t("copy.label", { what })} className={cn("ml-1 shrink-0", SMALL)} onClick={copy}>
+    <button type="button" aria-label={t("copy.label", { what })} title={t("copy.label", { what })} className={cn("ml-1 inline-flex min-h-6 min-w-6 shrink-0 items-center justify-center", SMALL)} onClick={copy}>
       {done ? t("copy.done") : t("copy.button")}
     </button>
   );
@@ -53,7 +58,7 @@ export function IdDetails({ label, id, nowrap }: { label: string; id: string; wh
   const { done, copy } = useCopy(id);
   return (
     <Tooltip text={id}>
-      <button type="button" data-id className={cn("inline-flex min-h-7 cursor-pointer items-center text-left font-sans text-sm", nowrap && "whitespace-nowrap")} onClick={copy}>
+      <button type="button" data-id className={cn("inline-flex min-h-7 min-w-6 cursor-pointer items-center text-left font-sans text-sm", nowrap && "whitespace-nowrap")} onClick={copy}>
         {done ? t("copy.done") : label}
       </button>
     </Tooltip>

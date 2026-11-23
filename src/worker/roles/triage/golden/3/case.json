@@ -1,0 +1,11 @@
+{
+  "id": "3",
+  "work_item_id": "golden_triage_3",
+  "expect": "should_pass",
+  "uses": ["prompt:triage.md"],
+  "note": "Planner persona: the intake already lays out ordered phases, so the spec splits.",
+  "checks": [
+    { "kind": "splits" },
+    { "kind": "names_paths", "paths": ["src/settings/"] }
+  ]
+}

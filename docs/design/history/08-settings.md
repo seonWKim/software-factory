@@ -1,5 +1,6 @@
 ## History
 
+- **`hold_policy` defaulted to `{"mode":"hold"}`** (decision changed 2026-11-23, design 05-dependencies "Overlap holds go oldest first"). Before: the default kept a cost-held run queued until `/approve`, and `run_after_minutes` without `minutes` meant 20; now the default is `{"mode":"run_after_minutes","minutes":120}` and a missing `minutes` means 120.
 - **Settings → Calendar explains Google's warning and asks to reconnect** (decision changed 2026-11-19). Before: the Calendar section had a Connect button with no explanation, and an expired sign-in showed as "Last error: google-calendar: token refresh failed (HTTP 400)".
 
 - **`conflict_hotspot_threshold`** (decision changed 2026-11-18). Before: no setting counted conflicts per file; the improve run had no hotspot step and no threshold.

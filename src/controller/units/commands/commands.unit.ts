@@ -8,7 +8,7 @@ import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
 import {
   APPROVED_RUN_QUEUED, APP_REQUEST, CHECKPOINT_REFUSAL, CLOSED_REFUSAL, HOLD_PATHS, RECHECK_PATHS_REFUSAL, appliesLocally, noFilesRefusal, appliesOnPr, approveCheck, approvesHold, awaitingSpec, commandFooter, commandNote, commandPhase, commandSpec,
   commandState, failedRunKind, floorCommand, floorTierNeeded, helpReply, parseLink, phaseLabel, refusalText, ruleOfTwoCommand, scanNote, specDecision,
-  specNotWaiting, unknownCommandReply, withTag, localMergeRefusal, mergeReturned, prMergeRefusal, queuedRun, awaitingMerge,
+  specNotWaiting, unknownCommandReply, withTag, localMergeRefusal, mergeReturned, prMergeRefusal, queuedRun, awaitingMerge, mergeCheckAgain, mergeCheckRetryRefusal, mergeCheckStopped,
 } from "../../../core/commands.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
 import { commandEvent, syncedCommand } from "../../../core/command-inbox.js";
@@ -24,7 +24,7 @@ import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEv
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 import { answerPlain, appProposal, confirmProposal, storeProposals } from "./proposals.js";
-import { FEEDBACK_REQUIRED, applyQueued, feedbackScan, queueRevise, replyQueued } from "./queued-revise.js"; import { scanClean } from "./scan.js"; import { recheckRetry } from "./premise-recheck.js"; import { commandText, pathsCommand } from "./paths.js";
+import { FEEDBACK_REQUIRED, applyQueued, feedbackScan, queueRevise, replyQueued } from "./queued-revise.js"; import { scanClean } from "./scan.js"; import { recheckRetry } from "./premise-recheck.js"; import { commandText, pathsCommand } from "./paths.js"; import { noteCommand, noteOnSource } from "./note.js";
 
 type AppSender = { user_id: UserId } | null;
 type ItemCommandEvent = Exclude<CommandEvent, { kind: "budget_continue" }>;
@@ -115,13 +115,12 @@ export class CommandsUnit {
   /**
    * The merge gate (core request-transition, design 04-gate-commands), the one copy the dashboard's request path and
    * the controller's merges share: whether an item waits for its merge (merge_pending, or merge_queued once its Merge
-   * was pressed), and why the local merge or a PR's merge does not apply to it. For the local-merge, merge-queue and
-   * pr-events units, which reach the gate's checks through this unit.
+   * was pressed), and why the local merge or a PR's merge does not apply to it (`held`: parked, resolve-held, or a
+   * failed merge check's max_loops, `stopped`, which `again` sends to merge_pending). For the local-merge, merge-queue and pr-events units.
    */
-  readonly merge = { waits: awaitingMerge,
-    localRefusal: (it: WorkItem, canMerge: boolean) => localMergeRefusal(it, canMerge, PR_NAME),
-    prRefusal: (it: WorkItem, forge: boolean) => prMergeRefusal(it, forge, PR_NAME),
-  };
+  readonly merge = { waits: awaitingMerge, stopped: mergeCheckStopped, again: mergeCheckAgain,
+    localRefusal: (it: WorkItem, canMerge: boolean, held = false) => localMergeRefusal(it, canMerge, PR_NAME, held),
+    prRefusal: (it: WorkItem, forge: boolean) => prMergeRefusal(it, forge, PR_NAME) };
 
   /**
    * A merge refused or failed after its Merge was pressed (a conflict, a red check, a hook veto): a local item at
@@ -170,19 +169,19 @@ export class CommandsUnit {
       const e = synced.event, who = { provider: "github" as const, subject: c.actor.slice("github:".length) };
       if (!this.c.k.hasAdapter(synced.source.type)) return;
       if (c.command === MERGE_COMMAND) await this.c.k.guard("event:merge", () => this.c.unit("pr-events").mergeComment(c.key, who, synced.source, c.args.pr));
+      else if (c.command === "note") await this.c.k.guard("event:note", () => noteOnSource(this.c, synced.source, who, c.key.slice("github:".length), String(c.args.text ?? ""), { say: refusalText, closed: CLOSED_REFUSAL }));
       else if (e) await this.c.k.guard(`event:${e.kind}`, () => this.c.dispatch(e));
       return;
     }
-    const id = c.args.item;
-    if (typeof id !== "string" || id === "") return;
-    const item = await this.c.k.reader.getWorkItem(id as WorkItemId);
+    const id = c.args.item; if (typeof id !== "string" || id === "") return;
     // Any source's item (design 05-sources, CLI intake): identity provider `local`, judged by the local auth plugin; never waits on its source.
-    if (!item) return;
-    // A proposal's confirm press (proposals.ts), `factory merge <id>` and `/hold <id>` (the coordination unit's) skip the comment mapping.
+    const item = await this.c.k.reader.getWorkItem(id as WorkItemId); if (!item) return;
+    // A proposal's confirm press (proposals.ts), `factory merge <id>`, `/hold <id>` (the coordination unit's) and `/note` (note.ts) skip the comment mapping.
     if (c.command === CONFIRM_COMMAND) return confirmProposal(this.c, c, item, { event: (r, s) => proposalEvent(r, s, localIdentity(c.actor)), say: refusalText });
     if (c.command === MERGE_COMMAND && item.source.type === LOCAL_SOURCE) return void (await this.c.unit("local-merge").mergeLocal(item.id, localIdentity(c.actor), c.key));
     if (c.command === MERGE_COMMAND) return this.c.unit("pr-events").mergeCommand(item, localIdentity(c.actor), c.key, item.source);
     if (c.command === "hold") return void (await this.c.unit("coordination").holdCommand(item, { who: localIdentity(c.actor) }, c.key, String(c.args.text ?? "")));
+    if (c.command === "note") return noteCommand(this.c, item, localIdentity(c.actor), c.key, String(c.args.text ?? ""), { say: refusalText, closed: CLOSED_REFUSAL });
     const e = commandEvent(c, item.source); if (e) await this.c.dispatch(e);
   }
 
@@ -574,11 +573,12 @@ export class CommandsUnit {
     if (it.blocked_reason === FLOOR_TIER) return floorCommand(e.kind, it, actor, await floorTierNeeded(this.c.k.reader, it), note, this.widen(it, paths));
     if (it.blocked_reason === RULE_OF_TWO) return ruleOfTwoCommand(e.kind, it, actor, note, paths, await this.c.k.reader.listStateChanges(it.id));
     if (e.kind === "spec_rejected") return this.reject(e, it, actor);
+    if (e.kind === "retry_requested" && mergeCheckStopped(it, await this.c.k.reader.listStateChanges(it.id))) return { refuse: mergeCheckRetryRefusal(it.id) };
     if (e.kind === "retry_requested") return commandPhase(it) === "phase_hold" ? this.c.unit("phases").retryPhase(it, actor, note, paths) : recheckRetry(it, note, paths, retry(it, actor, await this.retryKind(it), note, paths.length > 0 ? this.widen(it, paths) : null), (await this.c.k.reader.listStateChanges(it.id)).at(-1), this.c.k.d.clock.now(), RECHECK_PATHS_REFUSAL); // a day old: re-check the premise first
     const phase = commandPhase(it);
-    // At the review loop limit too: a human chose to go back through triage or to close (design §4).
-    const afterFailure = phase === "too_large" || phase === "failed_implement" || phase === "agent_needs_human" || phase === "repeated_failure" ||
-      phase === "max_loops";
+    // At the review loop limit, and in REVIEW after a factory branch's `bug` verdict (2026-11-23), too: a human chose to go back through triage or to close (design 04-spec-gate-commands).
+    const afterFailure = phase === "too_large" || phase === "failed_implement" || phase === "agent_needs_human" || phase === "repeated_failure" || phase === "max_loops" ||
+      (e.kind === "revise_requested" && it.stage === "REVIEW" && it.origin !== "adopted" && (await this.c.unit("checks-gate").lastVerdict(it.id))?.verdict === "bug");
     if (afterFailure && e.kind === "revise_requested") return this.reviseAfterFailure(e, it, actor);
     if (e.kind === "revise_requested" && phase === "implementing" && it.stage === "RUNNING") return queueRevise(this.c, e, it, actor);
     if (!awaitingSpec(it)) {
@@ -631,7 +631,7 @@ export class CommandsUnit {
   }
 
   /**
-   * `/revise <feedback>` at a failed implement run, a `diff_too_large` block or the review loop limit (design §4):
+   * `/revise <feedback>` at a failed implement run, a `diff_too_large` block, the review loop limit or in REVIEW after a `bug` verdict (design §4):
    * the item goes back through triage with the feedback, then to the spec gate. The revision counter and
    * `max_loops` apply as at the spec gate, but at the limit nothing changes: the item keeps its block, where
    * `/retry` and `/reject` still apply. restart_count + 1 so the implement run after the next `/approve` gets a
@@ -707,9 +707,9 @@ export class CommandsUnit {
     return (await this.blockedBy(it)) ?? failedRunKind(it);
   }
 
-  /** The command state of `it`, with the kind of run that asked at agent_needs_human. */
+  /** The command state of `it`, with the kind of run that asked at agent_needs_human and whether a failed merge check stopped it at max_loops. */
   async stateOf(it: WorkItem) {
-    return commandState(it, await this.askedBy(it));
+    return commandState(it, await this.askedBy(it), it.blocked_reason === "max_loops" && mergeCheckStopped(it, await this.c.k.reader.listStateChanges(it.id)));
   }
 }
 

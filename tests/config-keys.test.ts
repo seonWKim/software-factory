@@ -6,6 +6,7 @@ import { buildUiParts } from "../src/compose.js";
 import { loadConfig } from "../src/load-config.js";
 import { uiUserId } from "../src/config-values.js";
 import { goldenConfig } from "../src/core/config.js";
+import { cleanupConfig } from "../src/cleanup/index.js";
 import type { CliIdentity } from "../src/core/local-cli.js";
 import type { UserId } from "../src/core/types.js";
 import {
@@ -532,6 +533,35 @@ describe("retention (design 08-retention)", () => {
   });
 });
 
+describe("cleanup (design 08-cleanup)", () => {
+  it("is a file-only top-level key; absent, cleanup is on with keep_hours 24", async () => {
+    expect(TOP_LEVEL_KEYS).toContain("cleanup");
+    const { file } = await loadConfig(root(SQLITE));
+    expect(cleanupConfig(file)).toEqual({ enabled: true, keep_hours: 24 });
+  });
+
+  it("reads the set values; an absent key keeps its default; keep_hours 0 loads", async () => {
+    expect(cleanupConfig((await loadConfig(root({ ...SQLITE, cleanup: { enabled: false } }))).file)).toEqual({ enabled: false, keep_hours: 24 });
+    expect(cleanupConfig((await loadConfig(root({ ...SQLITE, cleanup: { keep_hours: 0 } }))).file)).toEqual({ enabled: true, keep_hours: 0 });
+  });
+
+  it("keep_hours that is not an integer of 0 or more fails config load, naming the key", async () => {
+    for (const keep_hours of [-1, 1.5, "24", null, true]) {
+      const err = await loadError({ ...SQLITE, cleanup: { keep_hours } });
+      expect(err).toBeInstanceOf(ConfigKeyError);
+      expect(err.message).toContain("cleanup.keep_hours must be an integer of 0 or more");
+    }
+    expect((await loadError({ ...SQLITE, cleanup: { enabled: "yes" } })).message).toContain("cleanup.enabled must be true or false");
+    expect((await loadError({ ...SQLITE, cleanup: 24 })).message).toContain("cleanup must be an object");
+  });
+
+  it("an unknown key under cleanup fails at load with a suggestion", async () => {
+    const err = await loadError({ ...SQLITE, cleanup: { keep_hour: 24 } });
+    expect(err.message).toContain('unknown config key "keep_hour" at cleanup.keep_hour');
+    expect(err.message).toContain('did you mean "keep_hours"?');
+  });
+});
+
 describe("golden (design 06-measurement, eval on change)", () => {
   it("is a top-level key; absent, startup succeeds and the gate is off", async () => {
     expect(TOP_LEVEL_KEYS).toContain("golden");
@@ -565,5 +595,34 @@ describe("golden (design 06-measurement, eval on change)", () => {
     const err = await loadError({ ...SQLITE, golden: { replay: 3 } });
     expect(err.message).toContain('unknown config key "replay" at golden.replay');
     expect(err.message).toContain('did you mean "replays"?');
+  });
+});
+
+describe("repo.check_tz (design §4, the merge check's time zone)", () => {
+  const REPO = REAL.repo as Record<string, unknown>;
+  const withTz = (value: unknown) => ({ ...SQLITE, repo: { ...REPO, check_tz: value } });
+
+  it("absent: off, nothing set", async () => {
+    const { check_tz: _, ...repo } = REPO;
+    expect((await loadConfig(root({ ...SQLITE, repo }))).config.repo).not.toHaveProperty("check_tz");
+  });
+
+  it("an IANA zone name loads; the checked-in config sets UTC", async () => {
+    for (const zone of ["UTC", "Asia/Seoul", "America/New_York", "Etc/GMT+9"]) {
+      expect((await loadConfig(root(withTz(zone)))).config.repo.check_tz).toBe(zone);
+    }
+    expect(REPO.check_tz).toBe("UTC");
+  });
+
+  it("a value that is not a known IANA zone fails at startup, naming the key", async () => {
+    for (const value of ["Mars/Olympus", "", "+09:00", "-05:00", "utc ", 9, null, ["UTC"], { zone: "UTC" }]) {
+      const err = await loadError(withTz(value));
+      expect(err.message, JSON.stringify(value)).toContain("repo.check_tz must be an IANA time zone name");
+    }
+  });
+
+  it("check_tz is a known repo key", async () => {
+    const err = await loadError({ ...SQLITE, repo: { ...REPO, check_zt: "UTC" } });
+    expect(err.message).toMatch(/did you mean "check_tz"/);
   });
 });

@@ -122,6 +122,9 @@ describe("Save on a file-only key asks first", () => {
     await act(async () => fireEvent.click(within(dialog()!).getByRole("button", { name: "Put on a branch" })));
     expect(posts).toEqual([{ action: "edit-file", key: "hotspot_paths", value: '["src/core/","src/ui/"]', confirm: false }]);
     expect(dialog()).toBeNull();
+    const row = keyOf(section, "hotspot_paths");
+    expect(within(row).getByText("Hotspot paths saved. It applies once you merge it.").getAttribute("role")).toBe("status");
+    expect(row.querySelector("[data-filed]")!.textContent).toContain("factory/wi_1");
   });
 
   it("a floor asks in the danger Dialog and sends confirm true only on Confirm", async () => {
@@ -176,7 +179,7 @@ describe("the project label control", () => {
     fireEvent.change(input(), { target: { value: "ghe.example.com/o/r" } });
     await save();
     expect(posts).toEqual([{ action: "project-label", value: "ghe.example.com/o/r" }]);
-    expect(await screen.findByText("project label of o/r = ghe.example.com/o/r")).not.toBeNull();
+    expect(await screen.findByText("Project label saved.")).not.toBeNull();
   });
 
   it("shows the server's refusal under the field, and the no-label line names no command", async () => {

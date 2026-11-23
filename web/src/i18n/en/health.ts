@@ -191,6 +191,7 @@ export const health = {
   "health.checks": "Checks",
   "health.tabs": "Health sections",
   "health.tabChecks": "Checks",
+  "health.tabRunners": "Runners",
   "health.tabImprove": "Improve",
   "health.checkSince": "started {time}",
   "health.checkNext": "next probe {time}",

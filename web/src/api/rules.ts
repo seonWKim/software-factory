@@ -30,13 +30,23 @@ export interface StandingProposalRow {
   created_at: string;
 }
 
-/** `/api/v1/standing`: the rules and the pending proposals; `csrf_token` is null when the server has no write route. */
+/**
+ * `/api/v1/standing`: the rules, the pending proposals and `waiting`, the items waiting now that the rule would approve
+ * (the dialogs' preview; absent from an older server); `csrf_token` is null when the server has no write route.
+ */
 export interface StandingView {
   as_of: string;
   csrf_token: string | null;
   rules: StandingRuleRow[];
   proposals: StandingProposalRow[];
+  waiting?: { id: string; title: string }[];
 }
+
+/** A POST /api/v1/standing body: a rule on or off (naming the proposal it answers, if any), its row removed, or the threshold changed. */
+export type StandingWriteBody =
+  | { rule: string; enabled: boolean; proposal?: string }
+  | { rule: string; action: "remove" }
+  | { rule: string; action: "edit"; threshold: number };
 
 /** One ledger entry waiting for the owner's verdict on the Rules page (issue #571). */
 export interface RuleRow {
@@ -54,9 +64,11 @@ export interface RuleRow {
   /** A proposal's kind (`promote-learning`, `edit-asset`, `new-asset`) and the asset it changes, when the ledger lists them. */
   kind?: string;
   target?: string;
+  /** The task a promote of this proposal created to build it (`tk_` + its ID in lower case); null before (absent from an older server). */
+  task?: string | null;
 }
 
-/** One incident behind an entry: its linked ID (T-, L-, E-), day, the agent's proposal, the owner's quote, its root reason. */
+/** One incident behind an entry: its linked ID (T-, L-, E-, P-), day, the agent's proposal, the owner's quote, its root reason. */
 export interface RuleEvidence {
   ref?: string;
   date?: string;
@@ -95,6 +107,8 @@ export interface RuleEntryView {
   detail: RuleDetail | null;
   error: string | null;
   retire?: string[] | null;
+  /** The newest ledger verdict of each evidence ID that has one; an ID with none is left out (absent from an older server). */
+  cited?: Record<string, string>;
 }
 
 /** One retired class from the ledger's retire verdicts: the owner's reason and the day (YYYY-MM-DD). */
@@ -211,10 +225,10 @@ export function useRuleEntry(id: string, enabled: boolean, round = 0) {
   return useQuery({ queryKey: [url, round], queryFn: () => getJson<RuleEntryView>(url), enabled, staleTime: Infinity, placeholderData: keepPreviousData });
 }
 
-/** POST /api/v1/standing: a rule on or off, naming the proposal it answers if any. A refusal comes back as `{ ok: false, error }`. */
+/** POST /api/v1/standing: one standing-rule change (StandingWriteBody). A refusal comes back as `{ ok: false, error }`. */
 export async function postStanding(
   token: string,
-  body: { rule: string; enabled: boolean; proposal?: string },
+  body: StandingWriteBody,
 ): Promise<{ ok: true; changed: boolean } | { ok: false; error: string }> {
   const r = await postJson<{ changed?: boolean; error?: string }>(API.standing, token, body);
   if (r.ok) return { ok: true, changed: r.value.changed === true };
@@ -224,8 +238,8 @@ export async function postStanding(
 /**
  * POST /api/v1/rules/verdict: a verdict with its reason, and for promote of a class (C-) the owner's wording, default
  * and exception. Promote of a proposal (P-) takes none: the server applies its current → proposed lines (a prose change:
- * it records the verdict as applied to its target and writes nothing), and a failed apply comes back as the error, with
- * nothing written.
+ * it records the verdict as applied to its target, writes no file and creates a task to build it), and a failure comes
+ * back as the error, with nothing written.
  */
 export async function postRuleVerdict(
   token: string,

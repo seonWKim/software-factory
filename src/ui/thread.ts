@@ -16,7 +16,7 @@ import type { FactoryStore, ItemMessage } from "../interfaces/factory-store.js";
 const FACTORY_MARKER = "<!-- factory:";
 const GITHUB_COMMENT = /^github:\d+$/;
 /** The owner commands the thread shows with their text. */
-const OWNER_COMMANDS: readonly string[] = ["approve", "revise", "retry", "reject", MERGE_COMMAND, "verdict"];
+const OWNER_COMMANDS: readonly string[] = ["approve", "revise", "retry", "reject", MERGE_COMMAND, "verdict", "note"];
 const COMMANDS_LIMIT = 200;
 
 /** The page anchor of a thread entry: `msg-<seq>`, the id the item page gives the entry. */

@@ -23,6 +23,8 @@ const SHOTS = join(ROOT, ".playwright-mcp", "responsive");
 export const VIEWPORTS = [
   { width: 1280, height: 800 },
   { width: 1024, height: 768 },
+  // Below the sidebar's 1024px breakpoint, with the icon-only sidebar: row titles must not wrap (title-wrap).
+  { width: 800, height: 1024 },
   { width: 768, height: 1024 },
   { width: 390, height: 844 },
   // Short: sticky headers and panels must not cover the content or make it unreachable.
@@ -58,6 +60,8 @@ async function main() {
     ...(await sidebarPages()),
     { name: "item", path: `items/${enc(fixture.pages.item)}` },
     { name: "item-phases", path: `items/${enc(fixture.pages.parent)}` },
+    // Health's Runners tab: the worker process rows, checked by title-wrap.
+    { name: "health-runners", path: "health?tab=runners" },
     { name: "transcript", path: `items/${enc(fixture.pages.item)}/runs/${enc(fixture.pages.run)}` },
   ].filter((p) => only === null || p.name === only);
 

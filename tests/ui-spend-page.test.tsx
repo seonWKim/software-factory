@@ -200,7 +200,8 @@ describe("Spend page: the daily chart", () => {
     show(SpendSection);
     fireEvent.mouseEnter(await bar("2026-11-07"));
     const tip = screen.getByRole("tooltip");
-    expect(tip.className).toContain("bottom-full"); // above the bar
+    expect(tip.className).toContain("top-0"); // beside the bar, so the chart's scroller does not clip it
+    expect(tip.className).toMatch(/\b(left|right)-full\b/);
     expect(tip.textContent).toContain("2026-11-07");
     expect(tip.textContent).toContain("$568.79");
     expect(tip.textContent).toContain("14 runs");
@@ -264,12 +265,12 @@ describe("Spend page: the daily chart", () => {
 });
 
 describe("Settings page: dollar budgets", () => {
-  it("Advanced links the Runners and Data pages, which the sidebar no longer shows", async () => {
+  it("Advanced links the Data page, which the sidebar does not show, and no longer Runners (a Health tab)", async () => {
     history.replaceState(null, "", "/app/settings?tab=advanced");
     show(SettingsPage);
-    const runners = await screen.findByRole("link", { name: "Runners" });
-    expect(runners.getAttribute("href")).toBe("/app/runners");
-    expect(screen.getByRole("link", { name: "Data" }).getAttribute("href")).toBe("/app/data");
+    expect((await screen.findByRole("link", { name: "Data" })).getAttribute("href")).toBe("/app/data");
+    expect(screen.queryByRole("link", { name: "Runners" })).toBeNull();
+    expect(document.querySelector('a[href="/app/runners"]')).toBeNull();
   });
 
   it("an unset budget shows an empty number field that takes a fraction such as 12.50, and saves it", async () => {

@@ -147,7 +147,7 @@ describe("GET /api/v1/settings", () => {
     expect(row("models")).toMatchObject({ kind: "models" });
     expect(row("model_by")).toMatchObject({ kind: "json" });
     // An object setting is edited as JSON text, never in a number input.
-    expect(row("hold_policy")).toMatchObject({ kind: "json", value: JSON.stringify({ mode: "hold" }) });
+    expect(row("hold_policy")).toMatchObject({ kind: "json", value: JSON.stringify({ mode: "run_after_minutes", minutes: 120 }) });
     // Free text, edited as text and sent back as a JSON string; empty by default.
     expect(row("message_style")).toMatchObject({ kind: "text", value: '""', source: "default", project_settable: false });
     expect(v.repo).toBe("o/r");

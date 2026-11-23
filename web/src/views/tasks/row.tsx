@@ -10,9 +10,10 @@ import { ListRow, ROW_TITLE } from "../../components/ui/list-row.js";
 import type { MessageKey } from "../../i18n/en.js";
 import { t } from "../../i18n/index.js";
 import { cn } from "../../lib/cn.js";
-import { localDateTime } from "../../lib/format.js";
+import { dueText, localDateTime } from "../../lib/format.js";
 import { Link } from "../../nav.js";
 import { itemPath } from "../../pages.js";
+import { copyCliEntry } from "../item-commands.js";
 import { TaskItemMenu, WorkState, useWorkItem, waitsOnOwner } from "../task-work.js";
 import { DeleteDialog, DescriptionDialog, ProjectsDialog } from "./dialogs.js";
 import { RowForm } from "./forms.js";
@@ -59,7 +60,7 @@ function useBuild(task: TaskRow, token: string | null) {
 function Title({ task, className, onOpen }: { task: TaskRow; className: string; onOpen: (() => void) | null }) {
   if (task.work_item_id !== null) {
     return (
-      <Link href={itemPath(task.work_item_id)} title={task.title} className={cn(className, "text-text-1 hover:underline")}>
+      <Link href={itemPath(task.work_item_id)} data-row-title title={task.title} className={cn(className, "text-text-1 hover:underline")}>
         {task.title}
       </Link>
     );
@@ -67,7 +68,7 @@ function Title({ task, className, onOpen }: { task: TaskRow; className: string; 
   if (onOpen !== null) {
     return (
       // The title stays the paragraph's text; the shared Button lies over it, so the row keeps its height.
-      <p title={task.title} className={cn(className, "relative hover:underline")}>
+      <p data-row-title title={task.title} className={cn(className, "relative hover:underline")}>
         {task.title}
         <Button
           variant="ghost"
@@ -79,10 +80,10 @@ function Title({ task, className, onOpen }: { task: TaskRow; className: string; 
       </p>
     );
   }
-  return <p title={task.title} className={className}>{task.title}</p>;
+  return <p data-row-title title={task.title} className={className}>{task.title}</p>;
 }
 
-export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { task: TaskRow; overdue?: boolean; sub?: boolean }) {
+export function TaskCard({ task, overdue: inOverdue = false, sub = false, date = null }: { task: TaskRow; overdue?: boolean; sub?: boolean; date?: string | null }) {
   const { token, titles, completed } = useContext(Rows);
   const row = useRef<HTMLLIElement>(null);
   const action = useTaskAction(token);
@@ -92,7 +93,7 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
   const [mode, setMode] = useState<"view" | "edit" | "sub" | "delete" | "projects" | "description">("view");
   const [checked, setChecked] = useState(false);
   const parent = task.parent_task_id ?? null;
-  const due = task.due_date === null ? null : task.due_time === null ? task.due_date : `${task.due_date} ${task.due_time}`;
+  const due = dueText(task.due_date, task.due_time, date);
   // A timed task's stored duration; none stored: none shown.
   const minutes = task.due_time === null ? null : (task.duration_minutes ?? null);
   const close = () => {
@@ -123,10 +124,11 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
   const it = useWorkItem(task.work_item_id);
   // Every action is in the row's menu (owner feedback 2026-11-20): Build this and Reopen too, and a waiting work
   // item's commands first (TaskItemMenu).
+  // Each action entry carries `data-action` (its `factory task` verb) and `data-item` (the task's ID).
   const items: MenuItem[] = done
-    ? [{ label: t("tasks.reopen"), disabled: action.busy, onSelect: () => void reopen() }]
+    ? [{ label: t("tasks.reopen"), action: "reopen", item: task.id, disabled: action.busy, onSelect: () => void reopen() }]
     : [
-        ...(task.work_item_id === null ? [{ label: t("tasks.build"), action: "build", disabled: builder.busy, onSelect: () => void builder.build() }] : []),
+        ...(task.work_item_id === null ? [{ label: t("tasks.build"), action: "build", item: task.id, disabled: builder.busy, onSelect: () => void builder.build() }] : []),
         // A built task's title goes to its work item, so its description dialog opens from here.
         ...(task.work_item_id !== null ? [{ label: t("tasks.description"), onSelect: () => setMode("description") }] : []),
         ...(parent === null ? [{ label: t("tasks.addSub"), onSelect: () => setMode("sub") }] : []),
@@ -134,6 +136,9 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
         { label: t("tasks.delete"), danger: true, onSelect: () => setMode("delete") },
       ];
   const menuLabel = t("tasks.more", { title: task.title });
+  // Copy as CLI command on an open row (a waiting item's menu has its own, for the item's command): Build this, else
+  // Complete. A done row's menu holds only Reopen (tests/ui-tasks-done.test.tsx).
+  const own = done ? items : [...items, copyCliEntry(task.work_item_id === null ? "build" : "done", task.id)];
   return (
     <ListRow
       ref={row}
@@ -152,6 +157,8 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
         <Checkbox
           checked={checked}
           aria-label={t("tasks.complete", { title: task.title })}
+          data-action="done"
+          data-item={task.id}
           disabled={action.busy}
           onChange={() => void complete()}
         />
@@ -196,7 +203,7 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
           )}
         </>
       }
-      menu={token !== null && (!done && waitsOnOwner(it) ? <TaskItemMenu it={it} extra={items} label={menuLabel} /> : <OverflowMenu label={menuLabel} items={items} />)}
+      menu={token !== null && (!done && waitsOnOwner(it) ? <TaskItemMenu it={it} extra={items} label={menuLabel} /> : <OverflowMenu label={menuLabel} items={own} />)}
     >
       {mode === "sub" && (
         <RowForm
@@ -229,13 +236,13 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
 }
 
 /** One heading and its list; the rows are the page's share of the group. */
-export function Group({ title, rows, overdue }: { title: string; rows: readonly Nested[]; overdue: boolean }) {
+export function Group({ title, rows, overdue, date = null }: { title: string; rows: readonly Nested[]; overdue: boolean; date?: string | null }) {
   return (
     <div className="space-y-1">
       <h3 className={SUB_TITLE}>{title}</h3>
       <ul aria-label={title} className="divide-y divide-border rounded-control border border-border">
         {rows.map(({ row, sub }) => (
-          <TaskCard key={row.id} task={row} overdue={overdue} sub={sub} />
+          <TaskCard key={row.id} task={row} overdue={overdue} sub={sub} date={date} />
         ))}
       </ul>
     </div>

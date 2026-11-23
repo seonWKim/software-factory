@@ -2,11 +2,12 @@
 // lives in load-config.ts and config-values.ts, so code that only reads config does not load this file.
 // Environment (local / cloud) is chosen here; core code never branches on it.
 
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, realpath, stat, writeFile } from "node:fs/promises";
 import { availableParallelism, hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { type FactoryConfig, cliUserConfig, toolGrantsConfig } from "./core/config.js";
 import type { ProjectRef } from "./core/project.js";
+import { scheduledAction } from "./core/controller-deps.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
 import { errorText, type Logger } from "./core/log.js";
 import type { CliEnvironment, CliIdentity } from "./core/local-cli.js";
@@ -63,6 +64,8 @@ import { LearnedRules, joinGuidance } from "./core/learned-rules.js";
 import { checkToolchainEnv, codeVersion, readRestarts, uiCommandsActor, uiUserId, workerIndexBase } from "./config-values.js";
 import { type Loaded, loadConfig, localProject, resolvedConfig } from "./load-config.js";
 import { reviewReplay } from "./golden-replay.js";
+import { Cleaner, type CleanupStore, agentTempRoots, cleanupConfig, hostProcesses } from "./cleanup/index.js";
+import { RUN_FOLDER } from "./setup-paths.js";
 
 export { CODE_ROOT_ENV, CONFIG_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 
@@ -159,6 +162,17 @@ function shareGitHubBudget(loaded: Loaded, github: GitHubApi, store: FactoryStor
   if (loaded.config.local_only !== true) github.shareBudget({ store, project: config.project.key, refresh_ms: config.tick_ms });
 }
 
+/** This host's cleanup of closed items' leftovers (design 08-cleanup): the controller's step and `factory cleanup`. */
+export async function hostCleaner(loaded: Loaded, store: CleanupStore, clock: Clock): Promise<Cleaner> {
+  const { repo, branch_prefix } = loaded.config;
+  // The real path: a process's working folder, as the host reports it, has no symlink in it.
+  const worktreesDir = await realpath(loaded.worktreesDir).catch(() => loaded.worktreesDir);
+  return new Cleaner({
+    store, clock, config: cleanupConfig(loaded.file), host: hostId(loaded.stateDir), log: new ConsoleLogger(clock, "cleanup"),
+    env: { repo: repo.path, worktreesDir, runFolder: RUN_FOLDER, branchPrefix: branch_prefix, baseBranch: repo.base_branch, run: runProcess, processes: hostProcesses(runProcess, repo.path), agentTempRoots: agentTempRoots() },
+  });
+}
+
 export interface Built {
   loaded: Loaded;
   clock: Clock;
@@ -238,6 +252,9 @@ export async function build(
   const bus = await createPlugin(registry, "bus", sel.bus, base);
   const ticks = await createPlugin(registry, "ticks", sel.ticks, base);
   const tacit = await LiveTacit.start(sel.tacit, (name) => createPlugin(registry, "tacit", name, base), new ConsoleLogger(clock, "tacit"));
+  // What a fired schedule occurrence runs (design 08-schedules): none unless `plugins.schedule_action` names one.
+  const schedule_action = sel.schedule_action === undefined ? undefined
+    : scheduledAction(store, await createPlugin(registry, "schedule_action", sel.schedule_action, base), new ConsoleLogger(clock, "schedule"));
   const calendars = new LiveCalendars(async (name) => createPlugin(registry, "calendar", name, { ...base, secrets: await new Plugins({ ...loaded, plugins: { ...sel, calendars: [name] } }).secrets(), clock }), new ConsoleLogger(clock, "calendar"));
   // The worker's ExecutionEngine (RFC 0015 §7): one per worker loop, built by the pool.
   const engines = await createPlugin(registry, "engine", sel.engine, { ...base, store });
@@ -274,6 +291,7 @@ export async function build(
     scanner,
     llm,
     calendar: calendars.feeds, // synced every 5 minutes (design 02-tasks); [] unless the `calendar` setting lists some
+    ...(schedule_action ? { schedule_action } : {}), // absent: the schedule unit claims nothing
     network_probe, bus, ticks, tacit, // tacit: the owner's ledger (#570), whose capture CLI outbound runs; no agent run gets it
     // Owner of a stream source's listener lease while this process holds it (docs/architecture.md, Intake).
     replica_id: `${hostname()}:${process.pid}`,
@@ -290,6 +308,7 @@ export async function build(
     ...(loaded.config.local_only === true ? {} : { github_budget: () => github.status(), refresh_forge_budget: () => github.refreshSharedBudget() }),
     // The red-main check after an automatic merge (design 03-risk) runs the checks with the worker's base env.
     check_env: baseEnv(),
+    cleanup: await hostCleaner(loaded, store, clock), // closed items' run folders, branches, processes and agent temp folders (design 08-cleanup)
   });
 
   const id_prefix = `${hostname()}:${process.pid}`;
@@ -559,6 +578,7 @@ export async function buildStatsStore(loaded: Loaded): Promise<FactoryStore> {
 }
 
 export { Plugins } from "./plugin-set.js";
+export { type CleanupStore, reportLines as cleanupReport } from "./cleanup/index.js";
 export { settingsBase } from "./core/settings-base.js";
 // Config reading moved to load-config.ts and config-values.ts (RFC 0023 step 2e); re-exported for the code that also wires.
 export {

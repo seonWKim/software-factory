@@ -1,5 +1,6 @@
 // The Calendar page and the Settings page's Calendar section: GET /api/v1/calendar/events (useCalendarEvents),
-// GET /api/v1/calendar, POST /api/v1/calendar/connect and POST /api/v1/calendar/disconnect.
+// POST /api/v1/calendar/sync (postCalendarSync), GET /api/v1/calendar, POST /api/v1/calendar/connect and POST
+// /api/v1/calendar/disconnect.
 
 import { t } from "../i18n/index.js";
 import { postJson, useApi } from "./client.js";
@@ -19,11 +20,22 @@ export interface CalendarEvents {
   to: string;
   days: CalendarDay[];
   calendar: CalendarSync[];
+  /** A sync request for exactly `from` through `to` waits for the controller. */
+  sync_pending: boolean;
 }
 
 /** The stored calendar events of the days `from` through `to`, polled like the other reads; never a calendar source call. */
 export function useCalendarEvents(from: string, to: string) {
   return useApi<CalendarEvents>(API.calendarEvents(from, to));
+}
+
+/**
+ * POST /api/v1/calendar/sync: asks the factory to sync every calendar for the local days `from` through `to` now; the
+ * controller runs it on its next poll. A refusal (not the owner, a bad range) comes back as `{ ok: false, error }`.
+ */
+export async function postCalendarSync(token: string, from: string, to: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await postJson<{ error?: string }>(API.calendarSync, token, { from, to });
+  return r.ok ? { ok: true } : { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
 /** One calendar plugin on the Settings page's Calendar section (GET /api/v1/calendar, design 08-settings). */

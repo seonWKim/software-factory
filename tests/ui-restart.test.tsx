@@ -69,7 +69,7 @@ describe("item page: Restart app", () => {
     mount();
     const button = await restartButton();
     expect(button.dataset.action).toBe("restart");
-    expect(button.closest("[data-command]")?.getAttribute("data-command")).toBe("restart");
+    expect(button.dataset.item).toBe(ID);
     fireEvent.click(button);
     await vi.waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]).toEqual({ url: `/api/v1/items/${ID}/commands`, body: { command: "restart" } });

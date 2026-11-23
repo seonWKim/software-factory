@@ -3,6 +3,7 @@
 // Only unknown keys are checked here; value and shape checks stay where they were.
 
 import type { FileConfig } from "./load-config.js";
+import { CLEANUP_KEYS, cleanupProblems } from "./cleanup/config.js";
 import { CAPABILITIES_KEYS, COORDINATION_KEYS, TOOLCHAIN_KEYS, capabilitiesProblems, coordinationProblems, goldenConfig } from "./core/config.js";
 import { pathCompanionProblems } from "./core/companions.js";
 import { DISTILL_KEYS, IMPROVER_KEYS, improverProblems } from "./core/proposals.js";
@@ -22,8 +23,9 @@ import { SLACK_KEYS, slackConfigProblems } from "./impl/source/slack-config.js";
  * the settings base reads from the file by name (`settingsBase`), checked as a positive integer (`parseSettable`). `golden`
  * (design 06-measurement, eval on change): the golden gate's replays and regression margin (`goldenConfig`); absent, it is off.
  * `improver` and `distill` (design 07-self-improvement, entity proposals): `max_proposals`, `schedule` and `min_cases` (`improverConfig`).
+ * `cleanup` (design 08-cleanup): `enabled` and `keep_hours`, checked here (`cleanupProblems`), read by compose and the CLI (`cleanupConfig`).
  */
-type CoreOnlyKey = "cli_user" | "capabilities" | "conflict_hotspot_threshold" | "golden" | "improver" | "distill" | (typeof COORDINATION_KEYS)[number];
+type CoreOnlyKey = "cli_user" | "capabilities" | "conflict_hotspot_threshold" | "golden" | "improver" | "distill" | "cleanup" | (typeof COORDINATION_KEYS)[number];
 
 export const TOP_LEVEL_KEYS = [
   "env",
@@ -71,6 +73,7 @@ export const TOP_LEVEL_KEYS = [
   "budget_min_sample",
   "inbox_retention_days",
   "retention",
+  "cleanup",
   "outbound",
   "merge_queue",
   "hooks",
@@ -126,7 +129,7 @@ export const STORE_KEYS: Readonly<Record<string, readonly string[]>> = {
   sqlite: ["type"],
 };
 
-export const REPO_KEYS = ["owner", "name", "path", "base_branch", "install_command", "test_command", "check_commands", "ui_check", "restart_command", "test_selection"] as const satisfies readonly (keyof FileConfig["repo"])[];
+export const REPO_KEYS = ["owner", "name", "path", "base_branch", "install_command", "test_command", "check_commands", "ui_check", "check_tz", "restart_command", "test_selection"] as const satisfies readonly (keyof FileConfig["repo"])[];
 export const DIALS_KEYS = ["spec_gate_min_tier", "auto_merge_max_tier"] as const satisfies readonly (keyof FileConfig["dials"])[];
 export const FLOOR_KEYS = ["prefix", "tier"] as const satisfies readonly (keyof NonNullable<FileConfig["floors"]>[number])[];
 export const MODELS_KEYS = ["cheap", "standard", "strong"] as const satisfies readonly (keyof FileConfig["models"])[];
@@ -232,6 +235,7 @@ export function unknownConfigKeys(raw: unknown): string[] {
   check(raw.toolchain, "toolchain", "toolchain", TOOLCHAIN_KEYS);
   check(raw.packs, "packs", "packs", PACKS_KEYS);
   check(raw.retention, "retention", "retention", RETENTION_KEYS);
+  check(raw.cleanup, "cleanup", "cleanup", CLEANUP_KEYS);
   check(raw.capabilities, "capabilities", "capabilities", CAPABILITIES_KEYS);
   check(raw.golden, "golden", "golden", GOLDEN_KEYS);
   check(raw.improver, "improver", "improver", IMPROVER_KEYS);
@@ -267,6 +271,7 @@ export function checkConfigKeys(raw: unknown): void {
     ...capabilitiesProblems(raw),
     ...goldenProblems(raw),
     ...improverProblems(raw),
+    ...cleanupProblems(raw),
   ];
   if (problems.length > 0) throw new ConfigKeyError(problems);
 }

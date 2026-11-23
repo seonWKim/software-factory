@@ -40,8 +40,8 @@ describe("app shell", () => {
     expect(mark.querySelector("path")!.getAttribute("fill-rule")).toBe("evenodd");
     const ember = mark.querySelector("circle")!;
     expect(ember.getAttribute("class")).toBe("fill-ember");
-    expect([ember.getAttribute("cx"), ember.getAttribute("cy")]).toEqual(["800", "224"]);
-    expect(Number(ember.getAttribute("r"))).toBeCloseTo((2.5 * 1024) / 24, 1);
+    expect([ember.getAttribute("cx"), ember.getAttribute("cy")]).toEqual(["691.6", "332.4"]);
+    expect(Number(ember.getAttribute("r"))).toBeCloseTo((2 * 1024) / 24, 1);
   });
 
   it("polls every 3 s while visible and stops while the document is hidden", async () => {
@@ -248,7 +248,7 @@ describe("sidebar", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "Settings" })).toBeTruthy();
     const open = within(side).getByRole("link", { name: "Settings" });
     expect(open.getAttribute("aria-current")).toBe("page");
-    expect(open.className.split(" ")).toEqual(expect.arrayContaining(["bg-surface-2", "font-medium"]));
+    expect(open.className.split(" ")).toEqual(expect.arrayContaining(["bg-sidebar-active", "font-medium"]));
   });
 });
 
@@ -277,11 +277,12 @@ describe("sidebar in the icon-only layout", () => {
 
 describe("top bar", () => {
   // jsdom has no layout, so this checks the classes that keep the bar inside a 390px screen (checked by screenshot).
-  it("wraps and keeps the icon buttons at full size", async () => {
+  it("stays on one row and keeps the icon buttons at full size", async () => {
     mount();
     await waitBadge();
     const header = document.querySelector("header")!;
-    expect(header.className.split(" ")).toContain("flex-wrap");
+    // One row at 390px (issue #763): a wrapping header dropped Theme onto a second row.
+    expect(header.className.split(" ")).not.toContain("flex-wrap");
     expect(within(header).getByRole("button", { name: "Refresh" }).className.split(" ")).toContain("shrink-0");
   });
 
@@ -318,7 +319,7 @@ describe("top bar", () => {
     await vi.waitFor(() => expect(icon().classList.contains("animate-spin")).toBe(true));
   });
 
-  it("the mode switch tooltip says what auto does, on hover and on focus, and keeps an auto stop's reason above it", async () => {
+  it("the mode chip tooltip says what auto does, on hover and on focus, and keeps an auto stop's reason above it", async () => {
     const AUTO = "Auto approves specs below tier 4 and merges reviewed local changes up to the auto-merge tier. Tier 4 and the gate list wait for a person.";
     const row = { key: "mode", description: "", kind: "mode", value: "manual", source: "default", file_value: null, default_value: "manual", applies_at: "", project_settable: false, projects: [] };
     const view = { as_of: AT, csrf_token: "c", repo: "o/r", project: null, project_keys: [], keys: [row], pr_only: [], ignored: [], history: [] };
@@ -339,6 +340,28 @@ describe("top bar", () => {
       const text = screen.getByRole("tooltip").textContent!;
       expect(text.startsWith("Back to manual at")).toBe(true);
       expect(text.endsWith(AUTO)).toBe(true);
+    } finally {
+      delete (RESPONSES as Record<string, unknown>)["/api/v1/settings"];
+    }
+  });
+
+  it("the top bar shows the mode as a chip, not a switch: Auto with the merge tier or Manual, a link to Settings' Mode section that writes nothing", async () => {
+    const key = (k: string, value: string) => ({ key: k, description: "", kind: k === "mode" ? "mode" : "number", value, source: "default", file_value: null, default_value: value, applies_at: "", project_settable: false, projects: [] });
+    const view = (mode: string) => ({ as_of: AT, csrf_token: "c", repo: "o/r", project: null, project_keys: [], keys: [key("mode", JSON.stringify(mode)), key("auto_merge_max_tier", "2")], pr_only: [], ignored: [], history: [] });
+    try {
+      (RESPONSES as Record<string, unknown>)["/api/v1/settings"] = view("auto");
+      mount();
+      const chip = await screen.findByTestId("mode");
+      expect(chip.textContent).toBe("Auto · merges ≤ tier 2");
+      expect(chip.getAttribute("href")).toBe("/app/settings#mode");
+      expect(within(document.querySelector("header")!).queryByRole("switch")).toBeNull();
+      fireEvent.click(chip);
+      expect(location.pathname + location.hash).toBe("/app/settings#mode");
+      expect(state.posts).toEqual([]);
+      cleanup();
+      (RESPONSES as Record<string, unknown>)["/api/v1/settings"] = view("manual");
+      mount();
+      expect((await screen.findByTestId("mode")).textContent).toBe("Manual");
     } finally {
       delete (RESPONSES as Record<string, unknown>)["/api/v1/settings"];
     }

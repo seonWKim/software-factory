@@ -523,7 +523,7 @@ describe("item page: refusals and the viewer's grants (issues #528, #453)", () =
   it("a command the owner check refuses is a disabled button with the controller's reason below the row, in plain text", async () => {
     serve({ commands: ["approve", "reject", "revise"].map((n) => ({ ...cmd(n), allowed: false, reason: NOT_OWNER })) });
     mount("/app/items/wi_g");
-    await found('[data-command="approve"]');
+    await found('button[data-action="approve"]');
     for (const name of ["Approve", "Revise"]) expect((screen.getByRole("button", { name }) as HTMLButtonElement).disabled, name).toBe(true);
     // Reject is in the "…" menu, disabled with its reason in its label.
     fireEvent.click(screen.getByRole("button", { name: "More commands" }));
