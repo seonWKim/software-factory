@@ -1,7 +1,7 @@
 // System actions in Needs you (design §9 Status page, issue #311): what the factory needs from the operator
 // besides a work item. A pending migration, a GitHub token that expires within 3 days, a missing model credential, a claim pause or a
-// worker pause in effect, an open alarm, and a dashboard or UI server that runs another
-// revision than it should. Each is one Needs-you row (needs-you.ts) and names the command that clears it (an alarm: where to look into it). Store reads and in-process values only: the overview poll
+// worker pause in effect, an open alarm, a local base whose push to origin conflicts, and a dashboard or UI server that
+// runs another revision than it should. Each is one Needs-you row (needs-you.ts) and names the command that clears it (an alarm: where to look into it). Store reads and in-process values only: the overview poll
 // asks GitHub nothing (the token's days come from this process's last health run).
 
 import { execFile } from "node:child_process";
@@ -23,7 +23,7 @@ import { MODEL_CREDENTIAL } from "../core/policy.js";
  */
 export const MODEL_CREDENTIAL_TITLE = "Add a model credential";
 
-export type SystemActionCode = "migration_pending" | "token_expiring" | "model_credential" | "claim_pause" | "worker_pause" | "alarm" | "revision_mismatch";
+export type SystemActionCode = "migration_pending" | "token_expiring" | "model_credential" | "claim_pause" | "worker_pause" | "alarm" | "base_push_conflict" | "revision_mismatch";
 
 export interface SystemAction {
   code: SystemActionCode;
@@ -146,7 +146,7 @@ export interface SystemInput {
   dashboardRev: string | null;
 }
 
-/** Every system action in effect, in a fixed order: migration, token, model credential, pauses, alarms, revisions. */
+/** Every system action in effect, in a fixed order: migration, token, model credential, pauses, alarms, base pushes, revisions. */
 export async function systemActions(x: SystemInput): Promise<SystemAction[]> {
   const out: SystemAction[] = [];
   const add = (code: SystemActionCode, text: string, command: string, until: string | null = null) =>
@@ -188,6 +188,16 @@ export async function systemActions(x: SystemInput): Promise<SystemAction[]> {
       Object.assign(row, { failing_tests: output?.failing_tests ?? [], output_tail: output?.output_tail ?? null });
     }
     if (stop?.alert_id === a.id) row.auto_stop = stop;
+  }
+
+  // A local base whose newest delivered push to origin is a conflict (design 05-sources, Local items): one row per base,
+  // read from its push actions, so a later conflict updates it and a push that lands removes it.
+  for (const b of await x.store.listBasePushBacklogs()) {
+    if (b.conflicts === null) continue;
+    const files = b.conflicts.length > 0 ? `Conflicts in ${b.conflicts.join(", ")}; ` : "";
+    const merges = `${b.waiting} local merge${b.waiting === 1 ? "" : "s"} waiting`;
+    add("base_push_conflict", `Local ${b.base_ref} can't reach origin`,
+      `${files}${merges}. Merge origin/${b.base_ref} into ${b.base_ref} in the factory repo and push it`);
   }
 
   const server = x.deps.revision ?? null;

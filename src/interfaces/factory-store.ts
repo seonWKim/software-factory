@@ -185,6 +185,15 @@ export interface BasePush {
   last_error: string | null;
 }
 
+/** The local merges of one base not on the remote yet (design 05-sources, Local items), as Needs you reads them. */
+export interface BasePushBacklog {
+  base_ref: string;
+  /** The base's push_base actions after the newest pushed one: pending, or delivered as a conflict. At least 1. */
+  waiting: number;
+  /** The conflicting files of the base's newest delivered push when it is a conflict; null otherwise. */
+  conflicts: string[] | null;
+}
+
 export type TransitionResult =
   /** `cancelled`: the runs `cancel_queued_runs` and `cancel_running_runs` cancelled (empty without them). */
   | { ok: true; item: WorkItem; state_change: StateChange; enqueued: Run | null; cancelled: RunId[] }
@@ -967,6 +976,13 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
    * delivered merge stored), delivered or not; null when its merge stored none. Read-only.
    */
   getBasePush(work_item_id: WorkItemId): Promise<BasePush | null>;
+  /**
+   * Each base with local merges not pushed (design 05-sources, Local items): the number of its push_base actions
+   * after the newest pushed one, and the conflicting files of its newest delivered push when that is a conflict. The
+   * base names come from the actions. Only actions after the newest pushed one of any base are read, so a base no
+   * merge pushes any more drops out once another base's push lands. Read-only; empty when nothing waits.
+   */
+  listBasePushBacklogs(): Promise<BasePushBacklog[]>;
 
   // App command requests (issue #245): commands sent from the factory's own app, applied by the controller tick
   // through the same path as a comment command. Created by the status page's POST /api/v1/items/:id/commands (#227).

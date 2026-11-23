@@ -246,7 +246,7 @@ describe("base push: queued by the merge's delivery, made by outbound's local ta
     expect(await basePush(f)).toMatchObject([{ delivered: true, outcome: { pushed: SHA("c") } }]);
   });
 
-  it("a remote base conflict is delivered as a conflict; the item stays closed and gets one message to fix it by hand", async () => {
+  it("a remote base conflict is delivered as a conflict; the item stays closed and gets no message (Needs you shows it)", async () => {
     const g = fakeForge();
     const f = await setup({ forge: g.forge });
     f.sandbox.sync = () => ({ synced: false, conflicts: ["a.txt", "src/c.txt"] });
@@ -260,10 +260,11 @@ describe("base push: queued by the merge's delivery, made by outbound's local ta
     expect(f.sandbox.syncs).toHaveLength(1);
     expect(await basePush(f)).toMatchObject([{ delivered: true, outcome: { conflicts: ["a.txt", "src/c.txt"] } }]);
     expect(await f.store.getWorkItem(f.id)).toEqual(closed);
-    const notes = (await f.store.listItemMessages(f.id)).filter((m) => m.marker.startsWith("<!-- factory:base-push-conflict:"));
-    expect(notes).toHaveLength(1);
-    expect(notes[0]!.body).toContain("- `a.txt`");
-    expect(notes[0]!.body).toContain("The item stays closed");
+    const messages = await f.store.listItemMessages(f.id);
+    expect(messages.filter((m) => m.marker.startsWith("<!-- factory:base-push-conflict:"))).toEqual([]);
+    expect(messages.some((m) => m.body.includes("a.txt"))).toBe(false);
+    // The conflict is read from the push itself, as Needs you reads it.
+    expect((await f.store.listBasePushBacklogs()).find((b) => b.base_ref === "main")).toEqual({ base_ref: "main", waiting: 1, conflicts: ["a.txt", "src/c.txt"] });
   });
 
   it("two replicas flushing at once push the base once", async () => {

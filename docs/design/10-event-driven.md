@@ -199,7 +199,8 @@ force.
     `push_base:<item>:<merge sha>` before the item's close, so a crash between them pushes once. The `local` target
     fetches the remote base, merges it into the local base when it moved, and has the forge push conditionally on
     the remote sha it read; a failure is a retried delivery; a remote base that conflicts is delivered as a conflict
-    and posts one message on the closed item. The status page reads it through `FactoryStore.getBasePush` (the newest
+    and posts nothing: Needs you shows it as one row per base (`FactoryStore.listBasePushBacklogs`, design
+    05-sources, Local items). The status page reads it through `FactoryStore.getBasePush` (the newest
     `push_base` action, its batch's failed tries). The `outbound_base_pushes` table and the outbox step's base push
     step are gone from the code; the table stays until the contract migration `20261109T1215-outbound-drop-base-pushes` drops it (`migrate --contract`). A row still pending
     there at the upgrade becomes the `push_base` action the merge would have stored, under its key, to the `local`

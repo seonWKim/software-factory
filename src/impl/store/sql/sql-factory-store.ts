@@ -76,6 +76,7 @@ import type {
   RecordVerdictInput,
   ThreadDelivery,
   BasePush,
+  BasePushBacklog,
   BasePushOutcome,
   ThreadLinkField,
   RecordVerdictResult,
@@ -2149,6 +2150,25 @@ export class SqlFactoryStore extends SqlScheduleStore implements FactoryStore {
       attempts: Number(batch?.attempts ?? 0), last_error: (batch?.last_error as string | null | undefined) ?? null,
       outcome: done === null ? null : done.pushed !== undefined ? "pushed" : "conflict", pushed_sha: done?.pushed ?? null,
     };
+  }
+
+  async listBasePushBacklogs(): Promise<BasePushBacklog[]> {
+    // A pushed outcome is stored as `{"pushed":…}` (local-git.ts): the rows after the newest one of any base, none
+    // of them pushed, each pending or a conflict.
+    const rows = await this.db.all(
+      `SELECT seq, args, delivered_ref FROM outbound_actions WHERE action = 'push_base' AND seq > COALESCE(
+         (SELECT MAX(seq) FROM outbound_actions WHERE action = 'push_base' AND delivered_ref LIKE '{"pushed"%'), 0) ORDER BY seq`,
+    );
+    const bases = new Map<string, BasePushBacklog>();
+    for (const row of rows) {
+      const base = (JSON.parse(String(row.args)) as { base_ref: string }).base_ref;
+      const b = bases.get(base) ?? { base_ref: base, waiting: 0, conflicts: null };
+      b.waiting++;
+      // In order, so the newest delivered conflict names the files.
+      if (row.delivered_ref !== null) b.conflicts = (JSON.parse(String(row.delivered_ref)) as { conflicts?: string[] }).conflicts ?? [];
+      bases.set(base, b);
+    }
+    return [...bases.values()];
   }
 
   /** Claims row `seq` of a queue for `lease_ms`: only an unfinished row with no live claim (and, with `fence`, a held lease). */
