@@ -145,14 +145,17 @@ function LastUsed({ at, now, dash = false }: { at: string | null; now: number; d
 
 const PATH_KEEP = { head: 14, tail: 26 } as const;
 
-/** A path on one line, cut in the middle when long; the full value in a tooltip, with a Copy button beside it. */
+/** A path on one line, cut in the middle when long; the full value in a tooltip, with a Copy button beside it.
+ *  A screen reader (and the row's text) gets the full path; the cut text is for the eye only. */
 function PathText({ value }: { value: string }) {
   const long = value.length > PATH_KEEP.head + PATH_KEEP.tail + 1;
   const shown = long ? `${value.slice(0, PATH_KEEP.head)}…${value.slice(-PATH_KEEP.tail)}` : value;
   return (
     <span className="flex items-center whitespace-nowrap">
       <Tooltip text={value} align="start">
-        <span tabIndex={0} className="font-mono text-xs">{shown}</span>
+        <span tabIndex={0} className="font-mono text-xs">
+          {long ? <><span aria-hidden="true">{shown}</span><span className="sr-only">{value}</span></> : value}
+        </span>
       </Tooltip>
       <CopyButton value={value} what={t("plugins.colPath")} />
     </span>
