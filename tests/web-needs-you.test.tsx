@@ -35,6 +35,10 @@ let projects: object[];
 let posts: { url: string; body: unknown }[];
 /** `/api/v1/items/:id` reads by item ID (a ready merge row reads its item for why its last Merge went back). */
 let details: Record<string, unknown>;
+/** The pauses read's CSRF token (null: no pause routes, so no Resume now or Dismiss). */
+let pausesToken: string | null;
+/** The answer to every POST. */
+let postReply: { status: number; body: object };
 
 beforeEach(() => {
   list = [MERGE, CHECKING, APPROVE, RETRY, NOTHING, DEP];
@@ -42,16 +46,18 @@ beforeEach(() => {
   overview = { as_of: AT, stages: {}, needs_you: 5, running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 }, system_actions: [], factory: { state: "running", rev: "0ff810f1234", target_rev: "0ff810f1234", child_pid: 1, since: AT, workers: 1, workers_source: "default", error: null, pending: [] } };
   posts = [];
   details = {};
+  pausesToken = null;
+  postReply = { status: 202, body: { seq: 1 } };
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method === "POST") {
       posts.push({ url, body: JSON.parse(String(init.body)) });
-      return new Response(JSON.stringify({ seq: 1 }), { status: 202 });
+      return new Response(JSON.stringify(postReply.body), { status: postReply.status });
     }
     const bodies: Record<string, unknown> = {
       "/api/v1/overview": overview,
       "/api/v1/items": { as_of: AT, total: list.length, items: list, facets: { allStates: list.length, state: {} }, counts: { open: 0, running: 1 } },
       "/api/v1/tasks": { today_date: "2026-11-12", today: { overdue: [], due: [] }, upcoming: [], projects, csrf_token: "tok", can_build: true, active_projects: [] },
-      "/api/v1/pauses": { pauses: [], csrf_token: null },
+      "/api/v1/pauses": { pauses: [], csrf_token: pausesToken },
       "/api/v1/session": { as_of: AT, csrf_token: "tok", commands_enabled: true, actor: "local:me", actor_source: "environment" },
     };
     for (const [id, d] of Object.entries(details)) bodies[`/api/v1/items/${encodeURIComponent(id)}`] = d;
@@ -368,5 +374,63 @@ describe("a Merge row whose last Merge came back (the 2026-11-22 screenshot at a
     expect(r.textContent).toContain("Conflicts: 9 files");
     expect(r.textContent).not.toContain("Ready to merge");
     expect(r.querySelector('[data-merge-check="conflicts"]')!.getAttribute("title")).toContain("f0.ts");
+  });
+});
+
+describe("an alarm row's Dismiss (design 09-dashboard-tasks-needs)", () => {
+  const ALARM = { code: "alarm", text: "Alarm: checks_failed failed 4 runs on several items", command: "Failures page (/app/failures)", until: AT, alert_id: "al_1", pattern: "repeated_error", error_code: "checks_failed" };
+  const STOP = {
+    code: "alarm", text: "Auto mode stopped: tests failed on main", command: "Settings", until: null, alert_id: "al_2", pattern: "auto_stopped",
+    auto_stop: { alert_id: "al_2", at: AT, cause: "red_main", failing_tests: [], output_tail: null },
+  };
+
+  async function checkRows() {
+    pausesToken = "ptok";
+    overview = { ...overview, needs_you: 2, system_actions: [ALARM, STOP] };
+    list = [];
+    mount();
+    const section = await screen.findByRole("region", { name: "Needs you" });
+    const check = within(section).getByRole("list", { name: "Check" });
+    const alarm = await waitFor(() => {
+      const r = check.querySelector<HTMLElement>("li[data-check='alarm']:not([id])");
+      if (!r?.querySelector("[data-dismiss-alarm]")) throw new Error("no Dismiss yet");
+      return r;
+    });
+    const stop = check.querySelector<HTMLElement>("li[data-check='alarm'][id]")!;
+    return { alarm, stop };
+  }
+
+  it("shows Dismiss, the sm Button, in the row's end slot beside the ⋯ menu, and none on the auto-mode stop row", async () => {
+    const { alarm, stop } = await checkRows();
+    const button = within(alarm).getByRole("button", { name: "Dismiss" });
+    expect(button.closest("[data-row-menu]")).not.toBeNull();
+    expect(button.className).toContain("min-h-7");
+    expect(button.closest("[role='menu']")).toBeNull();
+    expect(within(alarm).getByRole("button", { name: "More commands" })).toBeTruthy();
+    expect(stop.querySelector("[data-dismiss-alarm]")).toBeNull();
+    expect(within(stop).queryByRole("button", { name: "Dismiss" })).toBeNull();
+  });
+
+  it("posts the alarm's alert_id with the pauses' CSRF token, then reads the overview again", async () => {
+    const { alarm } = await checkRows();
+    const fetchMock = vi.mocked(fetch);
+    const reads = () => fetchMock.mock.calls.filter(([u, i]) => String(u).startsWith("/api/v1/overview") && !i?.method).length;
+    const before = reads();
+    fireEvent.click(within(alarm).getByRole("button", { name: "Dismiss" }));
+    await waitFor(() => expect(posts).toContainEqual({ url: "/api/v1/alarms/dismiss", body: { alert_id: "al_1" } }));
+    const call = fetchMock.mock.calls.find(([u, i]) => u === "/api/v1/alarms/dismiss" && i?.method === "POST")!;
+    expect((call[1]!.headers as Record<string, string>)["x-csrf-token"]).toBe("ptok");
+    await waitFor(() => expect(reads()).toBeGreaterThan(before));
+  });
+
+  it("shows a refused dismiss on its own line below the row's title, not in the actions column", async () => {
+    postReply = { status: 403, body: { error: "Dismissing needs write permission (approve_spec)." } };
+    const { alarm } = await checkRows();
+    fireEvent.click(within(alarm).getByRole("button", { name: "Dismiss" }));
+    const refusal = await within(alarm).findByRole("alert");
+    expect(refusal.textContent).toBe("Dismissing needs write permission (approve_spec).");
+    expect(refusal.closest("[data-row-error]")).toBeTruthy();
+    expect(refusal.closest("[data-row-menu]")).toBeNull();
+    expect(within(alarm).getByRole("button", { name: "Dismiss" }).closest("[data-row-menu]")).not.toBeNull();
   });
 });

@@ -27,6 +27,8 @@ export interface SystemAction {
   command: string;
   /** When it ends by itself, else null. */
   until: string | null;
+  /** On an alarm: its alert's id, which the row's Dismiss posts (POST /api/v1/alarms/dismiss). */
+  alert_id?: string;
   /** On an alarm: its pattern (`repeated_error`, `red_main`, `auto_stopped`, …) and error code, which pick its row's menu. */
   pattern?: string;
   error_code?: string;
