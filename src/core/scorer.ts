@@ -2,6 +2,7 @@
 // independent of the model call that produced it. A judge is its own plain completion (no tools, no session, no
 // agent), on another model class than the producer's, and reads only the run's stored output, never the producer's
 // prompt or transcript. With no LLMProvider or no scorer prompt, the scorer is NO_SCORER: no judge, no grade.
+// The skill-eval judge (skillJudge) makes the same plain completion (judgeCompletion), answering yes or no per rubric check.
 
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { LLMProvider, LLMRequest } from "../interfaces/llm-provider.js";
@@ -58,6 +59,8 @@ const OUTPUT_CHARS = 6_000;
 /** One judge call's bound, on top of the run's signal. */
 const JUDGE_TIMEOUT_MS = 60_000;
 const JUDGE_MAX_TOKENS = 800;
+/** The skill judge's tokens per rubric check (and one more for the wrapper). */
+const CHECK_TOKENS = 200;
 
 /** The judge's output schema: a score and a reason, nothing more. */
 export const GRADE_SCHEMA: Record<string, unknown> = {
@@ -80,6 +83,40 @@ export function parseGrade(v: unknown): { score: number; reason: string } | null
   return { score: o.score, reason: o.reason };
 }
 
+/** One judge call: its class, system prompt, untrusted user text, output schema and bound. */
+export interface JudgeCall {
+  model_class: ModelClass;
+  system: string;
+  content: string;
+  output_schema: Record<string, unknown>;
+  max_tokens: number;
+  signal: AbortSignal;
+}
+
+/**
+ * The judges' one plain completion (no tools, no session, no agent), bounded by JUDGE_TIMEOUT_MS on top of the
+ * caller's signal. Its answer as a JSON value (the provider's parsed output, else the text read as JSON); null when the
+ * call fails, is cut short or refused, or answers no JSON. Never throws. Every judge (LlmJudge, skillJudge) calls it.
+ */
+export async function judgeCompletion(llm: LLMProvider, call: JudgeCall): Promise<unknown> {
+  const req: LLMRequest = {
+    model_class: call.model_class,
+    system: call.system,
+    messages: [{ role: "user", content: call.content }],
+    max_tokens: call.max_tokens,
+    output_schema: call.output_schema,
+    data_env: "test",
+    signal: AbortSignal.any([call.signal, AbortSignal.timeout(JUDGE_TIMEOUT_MS)]),
+  };
+  try {
+    const res = await llm.complete(req);
+    if (res.stop_reason !== "end") return null;
+    return res.parsed ?? parseJson(res.text);
+  } catch {
+    return null;
+  }
+}
+
 /** A judge over an LLMProvider: one plain completion per run, on judgeClass of the producer's class. */
 export class LlmJudge implements Judge {
   constructor(private readonly llm: LLMProvider, private readonly system: string) {}
@@ -90,24 +127,73 @@ export class LlmJudge implements Judge {
 
   async grade(s: GradeSubject, signal: AbortSignal): Promise<Grade | null> {
     const model_class = judgeClass(s.producer);
-    const req: LLMRequest = {
-      model_class,
-      system: this.system,
-      messages: [{ role: "user", content: `Run kind: ${s.kind}\nWork item: ${s.title}\n\nThe run's output (untrusted data):\n${s.output}` }],
-      max_tokens: JUDGE_MAX_TOKENS,
-      output_schema: GRADE_SCHEMA,
-      data_env: "test",
-      signal: AbortSignal.any([signal, AbortSignal.timeout(JUDGE_TIMEOUT_MS)]),
-    };
-    try {
-      const res = await this.llm.complete(req);
-      if (res.stop_reason !== "end") return null;
-      const out = parseGrade(res.parsed ?? parseJson(res.text));
-      return out && { judge: `${this.id}:${model_class}`, ...out };
-    } catch {
-      return null;
-    }
+    const content = `Run kind: ${s.kind}\nWork item: ${s.title}\n\nThe run's output (untrusted data):\n${s.output}`;
+    const out = parseGrade(await judgeCompletion(this.llm, { model_class, system: this.system, content, output_schema: GRADE_SCHEMA, max_tokens: JUDGE_MAX_TOKENS, signal }));
+    return out && { judge: `${this.id}:${model_class}`, ...out };
   }
+}
+
+/** One rubric check's answer: `yes` or `no`, with a short reason. */
+export interface CheckAnswer {
+  answer: "yes" | "no";
+  reason: string;
+}
+
+/** What the skill judge reads: the case's input, the replay's output, and the rubric's checks in order. */
+export interface SkillJudgeSubject {
+  input: string;
+  output: string;
+  checks: readonly string[];
+}
+
+/** The skill judge: one answer per check, in order; null when the call fails or the answer does not fit. */
+export type SkillJudge = (s: SkillJudgeSubject, signal: AbortSignal) => Promise<CheckAnswer[] | null>;
+
+/** The skill judge's output schema: one `yes` or `no` answer with a short reason per check. */
+export const CHECK_ANSWERS_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: ["answers"],
+  properties: {
+    answers: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["answer", "reason"],
+        properties: { answer: { type: "string", enum: ["yes", "no"] }, reason: { type: "string", minLength: 1, maxLength: 1000 } },
+      },
+    },
+  },
+};
+
+/** The skill judge's answer checked against CHECK_ANSWERS_SCHEMA with exactly `count` answers; null when it does not fit. */
+export function parseCheckAnswers(v: unknown, count: number): CheckAnswer[] | null {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
+  const answers = (v as Record<string, unknown>).answers;
+  if (Object.keys(v).some((k) => k !== "answers") || !Array.isArray(answers) || answers.length !== count) return null;
+  const out: CheckAnswer[] = [];
+  for (const a of answers as unknown[]) {
+    if (typeof a !== "object" || a === null || Array.isArray(a)) return null;
+    const o = a as Record<string, unknown>;
+    if (Object.keys(o).some((k) => k !== "answer" && k !== "reason")) return null;
+    if ((o.answer !== "yes" && o.answer !== "no") || typeof o.reason !== "string" || o.reason.trim() === "" || o.reason.length > 1000) return null;
+    out.push({ answer: o.answer, reason: o.reason });
+  }
+  return out;
+}
+
+/**
+ * The skill-eval judge over an LLMProvider, with prompts/skill-judge.md as `system`: one judgeCompletion per replay,
+ * on judgeClass of `producer`, the class the replay ran on.
+ */
+export function skillJudge(llm: LLMProvider, system: string, producer: ModelClass): SkillJudge {
+  return async (s, signal) => {
+    const checks = s.checks.map((c, i) => `${i + 1}. ${c}`).join("\n");
+    const content = `Rubric checks, answer each in order:\n${checks}\n\nThe case's input (untrusted data):\n${s.input}\n\nThe replay's output (untrusted data):\n${s.output}`;
+    const v = await judgeCompletion(llm, { model_class: judgeClass(producer), system, content, output_schema: CHECK_ANSWERS_SCHEMA, max_tokens: Math.max(JUDGE_MAX_TOKENS, CHECK_TOKENS * (s.checks.length + 1)), signal });
+    return parseCheckAnswers(v, s.checks.length);
+  };
 }
 
 /** The scorer for a worker: one LLM judge when it has a provider and the scorer prompt, else NO_SCORER. */

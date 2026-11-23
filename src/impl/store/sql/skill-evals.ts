@@ -9,7 +9,7 @@ import { SqlScheduleStore } from "./schedules.js";
 
 const SUITE_COLUMNS = "id, skill_ref, title, created_by, created_at";
 const CASE_COLUMNS = "id, suite_id, input, expected, created_at";
-const RUN_COLUMNS = "id, suite_id, status, started_at, finished_at, created_by";
+const RUN_COLUMNS = "id, suite_id, status, started_at, finished_at, created_by, skill_version";
 const REPLAY_COLUMNS = "run_id, case_id, verdict, detail, recorded_at";
 
 const ts = (v: unknown) => String(v) as Timestamp;
@@ -19,6 +19,7 @@ const rowToCase = (r: Row): SkillEvalCase => ({ id: String(r.id), suite_id: Stri
 const rowToRun = (r: Row): SkillEvalRun => ({
   id: String(r.id), suite_id: String(r.suite_id), status: String(r.status) as SkillEvalRunStatus, started_at: ts(r.started_at),
   finished_at: r.finished_at == null ? null : ts(r.finished_at), created_by: String(r.created_by) as UserId,
+  skill_version: r.skill_version == null ? null : String(r.skill_version),
 });
 const rowToReplay = (r: Row): SkillEvalReplay => ({ run_id: String(r.run_id), case_id: String(r.case_id), verdict: String(r.verdict), detail: JSON.parse(String(r.detail)), recorded_at: ts(r.recorded_at) });
 
@@ -52,9 +53,9 @@ export class SqlSkillEvalStore extends SqlScheduleStore implements SkillEvalStor
     return (await this.db.all(`SELECT ${CASE_COLUMNS} FROM controller_skill_eval_cases WHERE suite_id = ? ORDER BY created_at, id`, [suite_id])).map(rowToCase);
   }
 
-  startSkillEvalRun(r: Pick<SkillEvalRun, "id" | "suite_id" | "created_by">): Promise<SkillEvalRun> {
+  startSkillEvalRun(r: Pick<SkillEvalRun, "id" | "suite_id" | "created_by"> & { skill_version?: string | null }): Promise<SkillEvalRun> {
     return this.db.transaction(async (tx) => {
-      await tx.run(`INSERT OR IGNORE INTO controller_skill_eval_runs (${RUN_COLUMNS}) VALUES (?, ?, 'running', ?, NULL, ?)`, [r.id, r.suite_id, this.evalStamp(), r.created_by]);
+      await tx.run(`INSERT OR IGNORE INTO controller_skill_eval_runs (${RUN_COLUMNS}) VALUES (?, ?, 'running', ?, NULL, ?, ?)`, [r.id, r.suite_id, this.evalStamp(), r.created_by, r.skill_version ?? null]);
       const [row] = await tx.all(`SELECT ${RUN_COLUMNS} FROM controller_skill_eval_runs WHERE id = ?`, [r.id]);
       return rowToRun(row!);
     });
