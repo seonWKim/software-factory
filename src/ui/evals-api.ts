@@ -17,11 +17,13 @@
 //     { "op": "suite.add", "skill", "title"? }  { "op": "suite.rename", "skill", "title" }  { "op": "suite.delete", "skill" }
 //     { "op": "case.add", "skill", "input", "expected" }  { "op": "case.edit", "case", "input"?, "expected"? }
 //     { "op": "case.delete", "case" }  { "op": "case.try", "case", "model"? }  { "op": "import", "skill" }
+// - POST /api/v1/evals/<skill>/runs: Run now, one run through UiEvals.run (evals-run-api.ts).
 // Every string in an answer leaves through the Withholder. The grid, compare and eval source functions come from the
 // route tables (read-routes.ts and write-routes.ts, the root), as main.ts passes the CLI its, so this feature has no
 // runtime import of core or runtime.
 
 import type { compareSkillEvalRuns, skillEvalGrid } from "../core/skill-eval-compare.js";
+import type { UserId } from "../core/types.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { EvalSourceSwitch, liveEvalSource } from "../runtime/live-eval-source.js";
@@ -56,13 +58,8 @@ async function withheld(w: Withholder, value: unknown): Promise<unknown> {
 /** Answers one GET under /api/v1/evals/<skill>/ (EVALS_PATH). */
 export async function readSkillEvals(d: EvalsDeps, reads: SkillEvalReads, url: URL): Promise<ApiResult> {
   const [, encoded, read] = EVALS_PATH.exec(url.pathname) ?? [];
-  let skill: string;
-  try {
-    skill = decodeURIComponent(encoded ?? "");
-  } catch {
-    return apiError(400, "The skill is not a URL-encoded skill_ref.");
-  }
-  if (skill === "") return apiError(404, "Not found.");
+  const skill = skillOf(encoded);
+  if (typeof skill !== "string") return skill;
   const w = new Withholder(d.scanner);
   if (read === "runs") return { status: 200, value: { runs: await withheld(w, await d.store.listSkillEvalRuns(skill)) } };
   if (read === "suite") return { status: 200, value: await withheld(w, await suiteOf(d, skill)) };
@@ -73,6 +70,17 @@ export async function readSkillEvals(d: EvalsDeps, reads: SkillEvalReads, url: U
   const ofSkill = new Set(suites.filter((s) => s.skill_ref === skill).map((s) => s.id));
   if (!ra || !rb || !ofSkill.has(ra.suite_id) || !ofSkill.has(rb.suite_id)) return apiError(404, "No such eval run for this skill.");
   return { status: 200, value: await withheld(w, reads.compare(ra, rb)) };
+}
+
+/** The skill_ref of a path's URL-encoded part, or the 400 (not URL-encoded) or 404 (empty) answer. */
+export function skillOf(encoded: string | undefined): string | ApiResult {
+  let skill: string;
+  try {
+    skill = decodeURIComponent(encoded ?? "");
+  } catch {
+    return apiError(400, "The skill is not a URL-encoded skill_ref.");
+  }
+  return skill === "" ? apiError(404, "Not found.") : skill;
 }
 
 /** Answers GET /api/v1/evals: the distinct skill_ref of every suite, sorted, each through the Withholder. */
@@ -98,6 +106,12 @@ export interface UiEvals {
   tryCase(store: FactoryStore, r: { case_id: string; model_class: string; signal: AbortSignal }): Promise<Authored<TriedCase>>;
   /** The eval source switch: the `integrations` entry, else `plugins.eval_source`. */
   source: EvalSourceSwitch<{ readonly enabled: boolean }>;
+  /**
+   * `eval run <skill>` over the configured plugins (src/skill-evals.ts skillEvalRun): the stored run, or why nothing was
+   * run and no run written (no suite, a model class not stored, a judge class not the model's, replays other than 1).
+   * Absent: POST /api/v1/evals/<skill>/runs is a 405.
+   */
+  run?(store: FactoryStore, r: { skill: string; created_by: UserId; signal: AbortSignal; model_class?: string; judge_model_class?: string; replays?: number }): Promise<{ run: { id: string; status: string } } | { refused: string }>;
 }
 
 /** The UI's dependencies with the evals write route. Absent `evals`: a POST to it is a 405. */
