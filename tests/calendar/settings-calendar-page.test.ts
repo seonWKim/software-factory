@@ -66,6 +66,22 @@ describe("Calendar section", () => {
     within(other).getByRole("button", { name: "Disconnect other" });
   });
 
+  it("the Card is the #calendar anchor itself, so it keeps the Card gap after Integrations; each row's actions share its head row, right-aligned (issue #77)", async () => {
+    view = { plugins: [plugin({ connected: true }), plugin({ name: "other" })] };
+    const section = await show();
+    // A wrapper around the Card made it the wrapper's first child, and Card's first:mt-0 then dropped the 24px gap.
+    expect(section.id).toBe("calendar");
+    expect(section.className.split(" ")).toEqual(expect.arrayContaining(["mt-6", "first:mt-0"]));
+    const head = section.querySelector<HTMLElement>(`[data-calendar="${NAME}"] [data-calendar-head]`)!;
+    const actions = head.querySelector<HTMLElement>("[data-calendar-actions]")!;
+    expect(actions.className.split(" ")).toContain("sm:ml-auto");
+    within(actions).getByRole("button", { name: `Disconnect ${NAME}` });
+    expect(head.className.split(" ")).toContain("flex-wrap");
+    // Rows split by one divider, the intro at a readable measure.
+    expect(section.querySelector("ul")!.className.split(" ")).toEqual(expect.arrayContaining(["divide-y", "divide-border"]));
+    expect(section.querySelector("p")!.className).toContain("max-w-[75ch]");
+  });
+
   it("Connect opens the consent page at once, with no dialog", async () => {
     await show();
     answers = [{ status: 202, body: { plugin: NAME, state: "signing_in", consent_url: URL_ } }];
