@@ -163,7 +163,7 @@ function Compare({ skill, runs }: { skill: string; runs: readonly EvalRun[] }) {
         ) : comparison.data ? (
           <DataTable label={t("evals.compare")} columns={columns} rows={compareRows(comparison.data)} rowKey={(r) => r.key} empty={t("evals.compareEmpty")} />
         ) : (
-          <Loading rows={3} />
+          <Loading rows={3} label="loading.evalCompare" onRetry={() => void comparison.refetch()} />
         )}
       </div>
     </Card>
@@ -176,7 +176,7 @@ export function EvalsPage({ skill }: { skill: string }) {
   const grid = useEvalGrid(skill);
   const header = <PageHeader title={skillName(skill)} description={t("evals.description")} />;
   if (runs.isError || grid.isError) return <>{header}<ErrorNote error={new Error(t("evals.loadFailed"))} /></>;
-  if (!runs.data || !grid.data) return <>{header}<Loading /></>;
+  if (!runs.data || !grid.data) return <>{header}<Loading label="loading.evalRuns" onRetry={() => { void runs.refetch(); void grid.refetch(); }} /></>;
   if (runs.data.runs.length === 0) return <>{header}<EmptyState title={t("evals.empty")} description={t("evals.emptyHelp")} /></>;
   return (
     <>

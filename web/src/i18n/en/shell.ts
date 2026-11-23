@@ -133,6 +133,8 @@ export const shell = {
   "loading.dataTables": "Table list",
   "loading.dataAutonomy": "Autonomy summary",
   "loading.dataRows": "Table rows",
+  "loading.evalCompare": "Score comparison",
+  "loading.evalRuns": "Eval runs",
   "loading.running": "Running work",
   "loading.queue": "Queue",
   "loading.items": "Work items",
