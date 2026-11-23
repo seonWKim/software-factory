@@ -41,6 +41,7 @@ import type {
   ClaimInput,
   CliCommand,
   Alert,
+  AlertDismissal,
   FactoryStore,
   InboxRow,
   ItemMessage,
@@ -1992,12 +1993,14 @@ export class SqlFactoryStore extends SqlAttachmentStore implements FactoryStore 
   async recordAlert(input: NewAlert, dedupe_ms: number): Promise<{ created: true; alert: Alert } | { created: false }> {
     const now = this.now();
     return this.db.transaction(async (tx) => {
-      // Conditional: only the first write of a pattern, or the one that finds its last alert dedupe_ms old, wins.
+      // Conditional: only the first write of a pattern, or the one that finds its last alert dedupe_ms old, wins. A
+      // dismissal at or after the last alert lifts the window; the winner moves last_alert_at to now, past it.
       const due =
         (await this.insertOnce(tx, "INSERT INTO controller_alert_patterns (pattern_key, last_alert_at) VALUES (?, ?)", [input.pattern_key, now])) ||
-        (await tx.run("UPDATE controller_alert_patterns SET last_alert_at = ? WHERE pattern_key = ? AND last_alert_at <= ?", [
-          now, input.pattern_key, this.after(-dedupe_ms),
-        ])) === 1;
+        (await tx.run(
+          "UPDATE controller_alert_patterns SET last_alert_at = ? WHERE pattern_key = ? AND (last_alert_at <= ? OR (dismissed_at >= last_alert_at AND last_alert_at < ?))",
+          [now, input.pattern_key, this.after(-dedupe_ms), now],
+        )) === 1;
       if (!due) return { created: false as const };
       const alert: Alert = { ...input, id: newId("al"), created_at: now };
       await tx.run(
@@ -2011,8 +2014,35 @@ export class SqlFactoryStore extends SqlAttachmentStore implements FactoryStore 
   async listAlerts(opts: { limit: number }): Promise<Alert[]> {
     const limit = Math.max(0, Math.floor(opts.limit));
     // limit is an integer computed here, inlined as the other paged reads do.
-    const rows = await this.db.all(`SELECT * FROM controller_alerts ORDER BY created_at DESC, id DESC LIMIT ${limit}`);
+    const rows = await this.db.all(
+      `SELECT a.*, p.dismissed_at FROM controller_alerts a LEFT JOIN controller_alert_patterns p ON p.pattern_key = a.pattern_key
+       ORDER BY a.created_at DESC, a.id DESC LIMIT ${limit}`,
+    );
     return rows.map(rowToAlert);
+  }
+
+  async dismissAlert(alert_id: string, actor: UserId): Promise<{ pattern_key: string; dismissed: boolean; dismissed_at: Timestamp } | null> {
+    const now = this.now();
+    return this.db.transaction(async (tx) => {
+      const [alert] = await tx.all("SELECT pattern_key FROM controller_alerts WHERE id = ?", [alert_id]);
+      if (!alert) return null;
+      const pattern_key = alert.pattern_key as string;
+      // Conditional: one dismissal per alert of the pattern; a second (or a replica's) keeps the first's time and actor.
+      const dismissed = (await tx.run(
+        "UPDATE controller_alert_patterns SET dismissed_at = ?, dismissed_by = ? WHERE pattern_key = ? AND (dismissed_at IS NULL OR dismissed_at < last_alert_at)",
+        [now, actor, pattern_key],
+      )) === 1;
+      const [row] = await tx.all("SELECT dismissed_at FROM controller_alert_patterns WHERE pattern_key = ?", [pattern_key]);
+      return { pattern_key, dismissed, dismissed_at: ((row?.dismissed_at as string | null) ?? now) as Timestamp };
+    });
+  }
+
+  async listAlertDismissals(since: Timestamp): Promise<AlertDismissal[]> {
+    const rows = await this.db.all(
+      "SELECT pattern_key, dismissed_at, dismissed_by FROM controller_alert_patterns WHERE dismissed_at >= ? ORDER BY dismissed_at DESC, pattern_key",
+      [since],
+    );
+    return rows.map((r) => ({ pattern_key: r.pattern_key as string, dismissed_at: r.dismissed_at as Timestamp, dismissed_by: r.dismissed_by as UserId }));
   }
 
   // Restart history (design 05-restarts): the key is the restart's time and a hash of its reason, so the same
@@ -2684,6 +2714,7 @@ function rowToAlert(row: Row): Alert {
     count: Number(row.count),
     detail: (row.detail as string | null) ?? null,
     created_at: row.created_at as Timestamp,
+    ...(row.dismissed_at ? { dismissed_at: row.dismissed_at as Timestamp } : {}),
   };
 }
 

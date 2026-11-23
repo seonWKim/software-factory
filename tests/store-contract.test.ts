@@ -2860,6 +2860,37 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect(results.filter((r) => r.created)).toHaveLength(1);
       expect(await store.listAlerts({ limit: 10 })).toHaveLength(1);
     });
+
+    it("dismissAlert records the time and the actor ID on the pattern, once per alert; an unknown id is null", async () => {
+      const { store, clock } = await make();
+      const r = await store.recordAlert(alert(), 6 * HOUR);
+      const id = r.created ? r.alert.id : "";
+      expect(await store.dismissAlert("al_nope", "local:owner" as UserId)).toBeNull();
+      clock.advance(60_000);
+      const at = clock.now().toISOString();
+      expect(await store.dismissAlert(id, "local:owner" as UserId)).toEqual({ pattern_key: "repeated_error:abc", dismissed: true, dismissed_at: at });
+      clock.advance(60_000);
+      expect(await store.dismissAlert(id, "local:other" as UserId)).toEqual({ pattern_key: "repeated_error:abc", dismissed: false, dismissed_at: at });
+      expect(await store.listAlertDismissals(at as Timestamp)).toEqual([{ pattern_key: "repeated_error:abc", dismissed_at: at, dismissed_by: "local:owner" }]);
+      expect(await store.listAlertDismissals(clock.now().toISOString() as Timestamp)).toEqual([]);
+      expect((await store.listAlerts({ limit: 10 }))[0]).toMatchObject({ id, dismissed_at: at });
+    });
+
+    it("a dismissal newer than the pattern's last alert lifts its dedupe window once", async () => {
+      const { store, clock } = await make();
+      const first = await store.recordAlert(alert(), 6 * HOUR);
+      clock.advance(60_000);
+      await store.dismissAlert(first.created ? first.alert.id : "", "local:owner" as UserId);
+      clock.advance(60_000);
+      const results = await Promise.all([store.recordAlert(alert({ count: 5 }), 6 * HOUR), store.recordAlert(alert({ count: 5 }), 6 * HOUR)]);
+      expect(results.filter((x) => x.created)).toHaveLength(1);
+      clock.advance(60_000);
+      expect(await store.recordAlert(alert({ count: 6 }), 6 * HOUR)).toEqual({ created: false });
+      const [newest] = await store.listAlerts({ limit: 1 });
+      // The new alert is newer than the dismissal: its alarm shows again.
+      expect(newest!.count).toBe(5);
+      expect(Date.parse(newest!.created_at)).toBeGreaterThan(Date.parse(newest!.dismissed_at!));
+    });
   });
 
   describe("retention (design 08-retention)", () => {

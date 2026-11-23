@@ -118,7 +118,19 @@ export interface NewAlert {
   detail: string | null;
 }
 
-export interface Alert extends NewAlert { id: string; created_at: Timestamp }
+export interface Alert extends NewAlert {
+  id: string;
+  created_at: Timestamp;
+  /** From listAlerts only: when the owner last dismissed this alert's pattern (design 05-alarms); absent: never. */
+  dismissed_at?: Timestamp;
+}
+
+/** A dismissed alert pattern (design 05-alarms): when, and who as an ID, never a display name. */
+export interface AlertDismissal {
+  pattern_key: string;
+  dismissed_at: Timestamp;
+  dismissed_by: UserId;
+}
 
 /** An improve run's report as the improver builds it; the store adds `id` and `created_at`. */
 export interface NewImproveReport extends ImproveWindow {
@@ -828,8 +840,19 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
    * one alert; the one that did gets `created: true`.
    */
   recordAlert(alert: NewAlert, dedupe_ms: number): Promise<{ created: true; alert: Alert } | { created: false }>;
-  /** The newest alerts first (created_at, then id, both descending), at most `limit`. Read-only. */
+  /**
+   * The newest alerts first (created_at, then id, both descending), at most `limit`, each with its pattern's
+   * `dismissed_at` when it has one. Read-only.
+   */
   listAlerts(opts: { limit: number }): Promise<Alert[]>;
+  /**
+   * Dismisses the pattern of alert `alert_id` at the store clock's now, by `actor` (an ID). Conditional: a pattern
+   * already dismissed since its last alert keeps that dismissal (`dismissed: false`). Holds nothing and lifts no hold.
+   * Null when no alert has that id.
+   */
+  dismissAlert(alert_id: string, actor: UserId): Promise<{ pattern_key: string; dismissed: boolean; dismissed_at: Timestamp } | null>;
+  /** The patterns dismissed at or after `since`. Read-only. */
+  listAlertDismissals(since: Timestamp): Promise<AlertDismissal[]>;
 
   // Restart history (design 05-restarts): one row per unexpected child exit, so the restart alarm's count and
   // window survive a restart of the factory and every replica on a shared store sees every host's restarts.

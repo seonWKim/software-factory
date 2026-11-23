@@ -3,7 +3,7 @@
 CREATE TABLE controller_alert_patterns (
     pattern_key    TEXT PRIMARY KEY,
     last_alert_at  TEXT NOT NULL
-  );
+  , dismissed_at TEXT, dismissed_by TEXT);
 
 CREATE TABLE controller_alerts (
     id           TEXT PRIMARY KEY,
