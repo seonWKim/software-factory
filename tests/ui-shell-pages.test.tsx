@@ -7,6 +7,7 @@ import { redirectFor } from "../web/src/pages.js";
 import { ItemsTable } from "../web/src/views/common.js";
 import { API, POLL_MS } from "../web/src/api.js";
 import { RevisionBanner, SEEN_REV_KEY } from "../web/src/views/system-banner.js";
+import { TOAST_MS } from "../web/src/components/ui/toast.js";
 import { VIEW_KEY } from "../web/src/views/tree.js";
 import { AT, overview, row, items, runs, queue, RESPONSES, state, installShellFixtures, waitBadge, mount } from "./ui-shell-fixtures.js";
 
@@ -415,12 +416,19 @@ describe("factory update note and header revision", () => {
     });
   });
 
-  it("Dismiss hides the note for that revision: not back on a poll or a reload", async () => {
-    localStorage.setItem(SEEN_REV_KEY, OLD); // a stored earlier revision: the note shows on load
+  it("the update toast goes by itself after 6 s and does not come back for that revision on a poll or a reload", async () => {
+    localStorage.setItem(SEEN_REV_KEY, OLD); // a stored earlier revision: the toast shows on load
     await withFactory(UPDATED, async () => {
       mount();
       const note = await screen.findByTestId("update-note");
-      fireEvent.click(within(note).getByRole("button", { name: "Dismiss" }));
+      expect(note.closest("[role=status]")!.className).toMatch(/\bfixed\b/);
+      // Stored at once: a reload while it still shows does not show it twice.
+      expect(localStorage.getItem(SEEN_REV_KEY)).toBe(NEW);
+      await act(async () => void (await vi.advanceTimersByTimeAsync(TOAST_MS - 500)));
+      expect(screen.getByTestId("update-note")).toBeTruthy();
+      await act(async () => void (await vi.advanceTimersByTimeAsync(1000)));
+      // Then the 200 ms fade.
+      await act(async () => void (await vi.advanceTimersByTimeAsync(300)));
       expect(screen.queryByTestId("update-note")).toBeNull();
       await poll();
       expect(screen.queryByTestId("update-note")).toBeNull();
@@ -428,6 +436,19 @@ describe("factory update note and header revision", () => {
       mount();
       await waitBadge();
       await poll();
+      expect(screen.queryByTestId("update-note")).toBeNull();
+    });
+  });
+
+  it("Dismiss closes the toast at once; hovering it keeps it past 6 s", async () => {
+    localStorage.setItem(SEEN_REV_KEY, OLD);
+    await withFactory(UPDATED, async () => {
+      mount();
+      const card = (await screen.findByTestId("update-note")).closest("[role=status]")!;
+      fireEvent.mouseEnter(card);
+      await act(async () => void (await vi.advanceTimersByTimeAsync(TOAST_MS * 2)));
+      expect(screen.getByTestId("update-note")).toBeTruthy();
+      fireEvent.click(within(card as HTMLElement).getByRole("button", { name: "Dismiss" }));
       expect(screen.queryByTestId("update-note")).toBeNull();
     });
   });
@@ -442,10 +463,13 @@ describe("factory update note and header revision", () => {
     });
   });
 
-  it("the header shows the running short revision and its state; only the revision without behind; nothing without a factory", async () => {
+  it("the sidebar footer shows the running short revision and its state; only the revision without behind; nothing without a factory", async () => {
     await withFactory(UPDATED, async () => {
       mount();
       await vi.waitFor(() => expect(screen.getByTestId("factory-rev").textContent).toBe("3dc0029 · up to date"));
+      // In the sidebar footer under "? Shortcuts", out of the top bar (issue #79).
+      expect(screen.getByTestId("factory-rev").closest("aside")).toBeTruthy();
+      expect(screen.getByTestId("factory-rev").closest("header")).toBeNull();
     });
     cleanup();
     await withFactory({ ...UPDATED, behind: 3 }, async () => {

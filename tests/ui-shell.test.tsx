@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // Dashboard shell tests: app shell, sidebar, icon-only sidebar and top bar. Shared setup is in ui-shell-fixtures.tsx.
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { POLL_MS } from "../web/src/api.js";
 import { THEME_KEY, paintChoice, storedChoice } from "../web/src/theme.js";
 import { BANNER_LINK_CLASS } from "../web/src/components/ui/link-style.js";
@@ -24,7 +24,6 @@ describe("app shell", () => {
     fireEvent.click(within(nav).getByText("Health"));
     expect(await screen.findByRole("heading", { level: 1, name: "Health" })).toBeTruthy();
     expect(location.pathname).toBe("/app/health");
-    expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
     expect(state.fetched.length).toBeGreaterThan(0);
     expect(state.fetched.every((u) => u.startsWith("/api/v1/"))).toBe(true);
   });
@@ -78,38 +77,28 @@ describe("app shell", () => {
     };
   }
   const isDark = () => document.documentElement.classList.contains("dark");
-  const openMenu = () => fireEvent.click(within(document.querySelector("header")!).getByRole("button", { name: "Theme" }));
-  const choose = (name: string) => {
-    openMenu();
-    fireEvent.click(within(screen.getByRole("menu", { name: "Theme" })).getByRole("menuitem", { name }));
-  };
-  const checked = () => screen.getAllByRole("menuitem").filter((i) => i.getAttribute("aria-checked") === "true").map((i) => i.textContent);
+  const SETTINGS = { as_of: AT, csrf_token: "c", repo: "o/r", project: null, project_keys: [], keys: [], pr_only: [], ignored: [], history: [] };
+  /** Mounts the app on Settings > General, whose Appearance card holds the theme (moved off the top bar, issue #79). */
+  async function mountAppearance() {
+    (RESPONSES as Record<string, unknown>)["/api/v1/settings"] = SETTINGS;
+    history.replaceState(null, "", "/app/settings");
+    mount();
+    return screen.findByRole("group", { name: "Theme" });
+  }
+  const choose = (name: string) => fireEvent.click(within(screen.getByRole("group", { name: "Theme" })).getByRole("button", { name }));
+  const pressed = () => within(screen.getByRole("group", { name: "Theme" })).getAllByRole("button").filter((b) => b.getAttribute("aria-pressed") === "true").map((b) => b.textContent);
+  afterEach(() => void delete (RESPONSES as Record<string, unknown>)["/api/v1/settings"]);
 
-  it("offers one Theme button that opens System, Light and Dark, System checked by default", async () => {
+  it("the top bar has no Theme control; Settings > General's Appearance offers System, Light and Dark, System pressed by default", async () => {
     mount();
     await waitBadge();
-    const header = document.querySelector("header")!;
-    expect(within(header).getAllByRole("button", { name: "Theme" })).toHaveLength(1);
-    expect(screen.queryByRole("radiogroup", { name: "Theme" })).toBeNull();
-    expect(screen.queryByRole("menu")).toBeNull();
-    expect(within(header).getByRole("button", { name: "Theme" }).getAttribute("aria-expanded")).toBe("false");
-    openMenu();
-    expect(within(header).getByRole("button", { name: "Theme" }).getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["System", "Light", "Dark"]);
-    expect(checked()).toEqual(["System"]);
-  });
-
-  it("the menu closes on choosing, on Escape and on a click outside", async () => {
-    mount();
-    await waitBadge();
+    expect(within(document.querySelector("header")!).queryByRole("button", { name: "Theme" })).toBeNull();
+    cleanup();
+    const group = await mountAppearance();
+    expect(within(group).getAllByRole("button").map((b) => b.textContent)).toEqual(["System", "Light", "Dark"]);
+    expect(pressed()).toEqual(["System"]);
     choose("Light");
-    expect(screen.queryByRole("menu")).toBeNull();
-    openMenu();
-    fireEvent.keyDown(window, { key: "Escape" });
-    expect(screen.queryByRole("menu")).toBeNull();
-    openMenu();
-    fireEvent.mouseDown(document.body);
-    expect(screen.queryByRole("menu")).toBeNull();
+    expect(pressed()).toEqual(["Light"]);
   });
 
   it("with no saved choice, a dark system scheme renders dark", async () => {
@@ -133,8 +122,7 @@ describe("app shell", () => {
 
   it("Light or Dark overrides the system and removes the listener; System follows it again and clears the stored value", async () => {
     const scheme = stubScheme(false);
-    mount();
-    await waitBadge();
+    await mountAppearance();
     expect(scheme.listeners()).toBe(1);
     choose("Dark");
     expect(isDark()).toBe(true);
@@ -166,11 +154,9 @@ describe("app shell", () => {
   it("a saved light or dark value applies on load, over the system", async () => {
     stubScheme(true);
     localStorage.setItem(THEME_KEY, "light");
-    mount();
-    await waitBadge();
+    await mountAppearance();
     expect(isDark()).toBe(false);
-    openMenu();
-    expect(checked()).toEqual(["Light"]);
+    expect(pressed()).toEqual(["Light"]);
   });
 
   it("the banner link takes the banner's own text token and is used by the revision banner", () => {
@@ -180,23 +166,21 @@ describe("app shell", () => {
     expect(screen.getByTestId("revision-banner").className).toMatch(/(?<![\w-])text-pill-warn-fg(?![\w-])/);
   });
 
-  it("keeps the stored choice ahead of the system preference", () => {
+  it("keeps the stored choice ahead of the system preference", async () => {
     stubScheme(true);
     localStorage.setItem(THEME_KEY, "light");
     expect(storedChoice()).toBe("light");
     paintChoice(storedChoice()); // what web/src/main.tsx does at startup
-    mount();
-    openMenu();
-    expect(checked()).toEqual(["Light"]);
+    await mountAppearance();
+    expect(pressed()).toEqual(["Light"]);
     expect(document.documentElement.classList.contains("dark")).toBe(false);
     cleanup();
     stubScheme(false);
     localStorage.setItem(THEME_KEY, "dark");
     expect(storedChoice()).toBe("dark");
     paintChoice(storedChoice());
-    mount();
-    openMenu();
-    expect(checked()).toEqual(["Dark"]);
+    await mountAppearance();
+    expect(pressed()).toEqual(["Dark"]);
     expect(document.documentElement.classList.contains("dark")).toBe(true);
   });
 });
@@ -277,13 +261,25 @@ describe("sidebar in the icon-only layout", () => {
 
 describe("top bar", () => {
   // jsdom has no layout, so this checks the classes that keep the bar inside a 390px screen (checked by screenshot).
-  it("stays on one row and keeps the icon buttons at full size", async () => {
+  it("stays on one row and keeps the Search button at full size", async () => {
     mount();
     await waitBadge();
     const header = document.querySelector("header")!;
     // One row at 390px (issue #763): a wrapping header dropped Theme onto a second row.
     expect(header.className.split(" ")).not.toContain("flex-wrap");
-    expect(within(header).getByRole("button", { name: "Refresh" }).className.split(" ")).toContain("shrink-0");
+    expect(within(header).getByRole("button", { name: "Search" }).closest(".shrink-0")).toBeTruthy();
+  });
+
+  it("holds only the mode, Stop all agents, Search and More (Refresh, Appearance): no revision or Theme button (issue #79)", async () => {
+    await atWidth(1024, async (header) => {
+      expect(within(header).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual(["Stop all agents", "Search", "More"]);
+      fireEvent.click(within(header).getByRole("button", { name: "More" }));
+      expect(within(header).getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Refresh", "Appearance"]);
+      fireEvent.click(within(header).getByRole("menuitem", { name: "Appearance" }));
+      expect(location.pathname + location.hash).toBe("/app/settings#appearance");
+      expect(within(header).queryByTestId("factory-rev")).toBeNull();
+      expect(header.textContent).not.toContain("Factory version");
+    });
   });
 
   /** Mounts the app at `px` wide with the pause routes on, so Stop all agents shows; restores both after `body`. */
@@ -303,33 +299,24 @@ describe("top bar", () => {
     }
   }
 
-  it("below sm: Stop all agents is icon-only, Search and Refresh sit in one More menu, Theme stays", async () => {
+  it("below sm: Stop all agents is icon-only and Search stays its own button beside More", async () => {
     await atWidth(390, async (header) => {
       const stop = within(header).getByRole("button", { name: "Stop all agents" });
       expect(stop.getAttribute("aria-label")).toBe("Stop all agents");
       expect(stop.textContent).toBe("");
       expect(stop.querySelector("svg")).toBeTruthy();
-      expect(within(header).queryByRole("button", { name: "Search" })).toBeNull();
-      expect(within(header).queryByRole("button", { name: "Refresh" })).toBeNull();
-      expect(within(header).getByRole("button", { name: "Theme" })).toBeTruthy();
-      fireEvent.click(within(header).getByRole("button", { name: "More" }));
-      const menu = within(header).getByRole("menu", { name: "More" });
-      const names = within(menu).getAllByRole("menuitem").map((m) => m.textContent);
-      expect(names).toEqual(expect.arrayContaining(["Search", "Refresh"]));
-      fireEvent.click(within(menu).getByRole("menuitem", { name: "Search" }));
+      expect(within(header).getByRole("button", { name: "More" })).toBeTruthy();
+      fireEvent.click(within(header).getByRole("button", { name: "Search" }));
       expect(await screen.findByRole("dialog")).toBeTruthy();
     });
   });
 
-  it("at sm and wider: Stop all agents shows its text, Search and Refresh are their own buttons, no More menu", async () => {
+  it("at sm and wider: Stop all agents shows its text beside Search", async () => {
     await atWidth(1024, async (header) => {
       const stop = within(header).getByRole("button", { name: "Stop all agents" });
       expect(stop.textContent).toBe("Stop all agents");
       expect(stop.hasAttribute("aria-label")).toBe(false);
       expect(within(header).getByRole("button", { name: "Search" })).toBeTruthy();
-      expect(within(header).getByRole("button", { name: "Refresh" })).toBeTruthy();
-      expect(within(header).getByRole("button", { name: "Theme" })).toBeTruthy();
-      expect(within(header).queryByRole("button", { name: "More" })).toBeNull();
     });
   });
 
@@ -354,16 +341,6 @@ describe("top bar", () => {
     } finally {
       RESPONSES["/api/v1/overview"] = saved;
     }
-  });
-
-  it("the Refresh icon spins while a query is fetching and not otherwise", async () => {
-    mount();
-    await waitBadge();
-    const icon = () => within(document.querySelector("header")!).getByRole("button", { name: "Refresh" }).querySelector("svg")!;
-    await vi.waitFor(() => expect(icon().classList.contains("animate-spin")).toBe(false));
-    vi.mocked(fetch).mockImplementation(() => new Promise<Response>(() => undefined));
-    fireEvent.click(within(document.querySelector("header")!).getByRole("button", { name: "Refresh" }));
-    await vi.waitFor(() => expect(icon().classList.contains("animate-spin")).toBe(true));
   });
 
   it("the mode chip tooltip says what auto does, on hover and on focus, and keeps an auto stop's reason above it", async () => {

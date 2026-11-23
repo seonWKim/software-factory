@@ -85,7 +85,7 @@ describe("item commands", () => {
 
   it("with no command that applies (a running item), says so and offers no note box or button", () => {
     mountCommands([], [], SESSION, "factory");
-    expect(document.querySelector("[data-commands-none]")?.textContent).toContain("No command applies now");
+    expect(document.querySelector("[data-commands-none]")?.textContent).toContain("Nothing needs you now");
     expect(document.querySelectorAll("[data-decision-actions] button[data-action]")).toHaveLength(0);
     expect(screen.queryByRole("textbox", { name: "Note" })).toBeNull();
   });

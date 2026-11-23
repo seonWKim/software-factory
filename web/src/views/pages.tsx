@@ -23,13 +23,14 @@ import { cn } from "../lib/cn.js";
 import { useUrlParam } from "../lib/url-param.js";
 import { type MessageKey, en } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { duration, groupedInteger, isHttpUrl, isWorkerId, localClock, localDateTime, relativeTime, runStatusLabel, termLabel, shortItemId, shortRev, tokens, workerName } from "../lib/format.js";
+import { duration, groupedInteger, localClock, localDateTime, relativeTime, runStatusLabel, termLabel, shortItemId, shortRev, tokens } from "../lib/format.js";
 import { GROUP_LABELS, ITEM_STATES, STATE_GROUPS, type StateGroup, groupOf, groupStates, isGroup, stateLabel } from "../../../src/shared/states.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
-import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, RawNames, When, byId, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
+import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, RawNames, When, byId, QueueTable, RunningTable, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
 import { ItemDecision } from "./decision-card.js";
 import { ItemAbout } from "./item-about.js";
+import { ClosedStatus, ItemFacts, TIMELINE_ANCHOR, timelineSentence } from "./item-facts.js";
 import { ItemChangesTab, RecheckButton } from "./item-changes.js";
 import { AddModelCredential } from "./model-credential-dialog.js";
 import { ResumeNow, type SupervisorActionName, SupervisorActions } from "./system-banner.js";
@@ -423,30 +424,13 @@ export function ItemPage({ id }: { id: string }) {
         id={item.id}
         commands={q.data.commands ?? []}
         replies={q.data.replies ?? []}
-        reason={item.why ? (
+        reason={item.stage === "CLOSED" ? <ClosedStatus item={item} timeline={timeline} thread={q.data.thread ?? []} now={now} viewer={viewer} /> : item.why ? (
           <p data-testid="why" className="text-sm text-pretty break-words">
             <WhyText why={item.why} />
           </p>
         ) : null}
       />
-      <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
-        {([
-          [t("col.state"), <StatusBadge state={level}>{stateLabel(level)}{level === "closed" && item.close_reason ? ` (${termLabel(item.close_reason)})` : ""}</StatusBadge>],
-          [t("item.source"), isHttpUrl(item.source.link) ? <SourceLink source={item.source} className="inline-block align-bottom" /> : short],
-          [t("item.tier"), item.tier ?? "–"],
-          [t("col.pr"), item.change_ref === null ? "–" : <UrlOrText url={item.change_url} text={`#${item.change_ref}`} />],
-          [t("item.specComment"), item.spec_comment_url ? <UrlOrText url={item.spec_comment_url} text={t("item.specCommentLink")} /> : "–"],
-          [t("item.reviewLoops"), item.loop_count],
-          [t("item.restarts"), item.restart_count],
-          [termLabel("token_cost"), tokens(item.token_cost)],
-          [t("item.updated"), <When at={item.updated_at} now={now} />],
-        ] as const).map(([k, v]) => (
-          <div key={k} className="min-w-0">
-            <dt className="text-xs text-text-2">{k}</dt>
-            <dd className="truncate tabular-nums">{typeof v === "object" ? v : String(v)}</dd>
-          </div>
-        ))}
-      </dl>
+      <ItemFacts item={item} now={now} />
       <Disclosure data-ids className="mt-2" summary={t("ids.summary")}>
         <dl className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
           <dt className="text-xs text-text-2">{t("ids.item")}</dt>
@@ -519,7 +503,7 @@ export function ItemPage({ id }: { id: string }) {
           </Table>
         )}
       </Card>
-      <Card title={t("item.timeline")} count={entries.length}>
+      <Card id={TIMELINE_ANCHOR} title={t("item.timeline")} count={entries.length}>
         <ol className="space-y-1 text-sm">
           {entries.map((e) => {
             if (e.kind === "sleep") return (
@@ -578,12 +562,6 @@ function Phases({ phases }: { phases: readonly PhaseRow[] }) {
       </ol>
     </Card>
   );
-}
-
-/** A link when the URL is http(s); the text alone otherwise (a withheld marker, a local path, anything else). */
-function UrlOrText({ url, text }: { url: string | null | undefined; text: string }) {
-  if (isHttpUrl(url)) return <a href={url} target="_blank" rel="noreferrer" className={LINK_CLASS}>{text}</a>;
-  return <span>{url && url !== text ? `${text} (${url})` : text}</span>;
 }
 
 type TimelineEntry = ItemDetail["timeline"][number];
@@ -650,22 +628,6 @@ const runResultLabel = (status: string): string => (`item.result.${status}` in e
 function errorSentence(code: string | null | undefined): string {
   const key = code ? [`item.error.${code}`, `term.${code}`, `failure.${code}.title`].find((k) => k in en) : undefined;
   return t((key ?? "item.errorFailed") as MessageKey);
-}
-
-/** The timeline's actor as a phrase: "you" for the viewer, "the factory", "worker 2", else "a person" (never a name). */
-function actorPhrase(actor: TimelineEntry["actor"], viewer: string | null): string {
-  const id = actor.kind === "system" ? null : actor.id;
-  if (!id || id === "system") return t("person.factory");
-  if (isWorkerId(id)) return workerName(id);
-  return id === viewer ? t("person.you") : t("person.other");
-}
-
-/** One timeline row's sentence ("You asked for a retry"); "Changed" for a reason with no sentence. */
-function timelineSentence(entry: TimelineEntry, viewer: string | null): string {
-  const key = `timeline.${entry.reason}`;
-  if (!entry.reason || !(key in en)) return t("item.change");
-  const whom = actorPhrase(entry.actor, viewer);
-  return t(key as MessageKey, { who: whom.charAt(0).toLocaleUpperCase() + whom.slice(1), whom });
 }
 
 function TimelineRow({ entry, now, viewer }: { entry: TimelineEntry; now: number; viewer: string | null }) {

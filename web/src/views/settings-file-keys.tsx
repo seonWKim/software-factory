@@ -13,6 +13,7 @@ import { Switch } from "../components/ui/switch.js";
 import { Textarea } from "../components/ui/textarea.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
+import { SETTINGS_INTRO } from "./settings/rows.js";
 import { termLabel } from "../lib/format.js";
 import { keyHelp, keyLabel } from "../lib/key-label.js";
 import { MergeButton } from "./merge-button.js";
@@ -446,7 +447,7 @@ export function FileKeysSection({ view }: { view: SettingsView }) {
   const common = { token: view.csrf_token };
   return (
     <Card title={t("settings.file.title")} count={fk.editable.length}>
-      <p className="mb-2 text-sm text-pretty text-text-2">{t("settings.file.intro")}</p>
+      <p className={SETTINGS_INTRO}>{t("settings.file.intro")}</p>
       <Table label={t("settings.file.title")} head={head()}>
         {fk.editable.flatMap(({ key }) => {
           if (key === "plugins") {
