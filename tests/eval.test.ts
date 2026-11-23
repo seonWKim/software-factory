@@ -8,6 +8,7 @@ import { compareSkillEvalRuns, skillEvalGrid } from "../src/core/skill-eval-comp
 import type { UserId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { Loaded } from "../src/load-config.js";
+import { skillEvalAuthoring } from "../src/skill-evals.js";
 import { newStore } from "./helpers/store.js";
 
 // `factory eval run <skill>` and `factory eval results <skill> --json` over a test store. The run function is the
@@ -31,7 +32,7 @@ async function evalCommand(store: FactoryStore, args: string[], runSkillEval?: R
   vi.spyOn(console, "log").mockImplementation((s: string) => void out.push(s));
   vi.spyOn(console, "error").mockImplementation((s: string) => void err.push(s));
   const cmd = (await loadCommands()).get("eval")!;
-  const code = await cmd.run(args, { name: "eval", usage: "", load: async () => loaded, environment: ENV, openStore: async () => kept, ...(runSkillEval ? { runSkillEval } : {}), ...(reads ? { skillEvalReads: reads } : {}) });
+  const code = await cmd.run(args, { name: "eval", authoring: skillEvalAuthoring, usage: "", load: async () => loaded, environment: ENV, openStore: async () => kept, ...(runSkillEval ? { runSkillEval } : {}), ...(reads ? { skillEvalReads: reads } : {}) });
   vi.restoreAllMocks();
   return { code, out, err };
 }
@@ -217,5 +218,16 @@ describe("factory eval compare", () => {
     expect(r.err.join("\n")).toContain("nope");
     expect((await evalCommand(store, ["compare", "ra"])).code).toBe(1);
     expect(await store.db.all("SELECT * FROM controller_skill_eval_runs")).toEqual(before);
+  });
+});
+
+describe("factory eval usage", () => {
+  it("lists the suite and case commands on a bad argument", async () => {
+    const { store } = await newStore();
+    const r = await evalCommand(store, ["other"]);
+    expect(r.code).toBe(1);
+    const text = r.err.join("\n");
+    expect(text).toContain("eval suite list|add|rename|delete");
+    expect(text).toContain("eval case list|add|edit|delete|try");
   });
 });
