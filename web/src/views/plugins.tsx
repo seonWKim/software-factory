@@ -19,6 +19,7 @@ import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { When, useNow } from "./common.js";
 import { ModelsTab } from "./plugins-models.js";
+import { EvalsCard } from "./plugins-evals.js";
 import { MergeButton } from "./merge-button.js";
 import { withNodes } from "./standing.js";
 import { Badge } from "../components/ui/badge.js";
@@ -40,7 +41,8 @@ import { Card, SUB_TITLE } from "../components/ui/card.js";
 //   button says "Importing…" and is off; then the dialog stays open and lists each item's result (stored, already
 //   added, refused with its rules) until the owner closes it, and the stored rows show on the tab at once, marked New.
 // - The Skills tab lists the skill folders' skills and the imported ones, each with its source (Folder, Claude Code,
-//   Codex); an imported one shows its SKILL.md path and, when its file is missing or changed, that state.
+//   Codex); an imported one shows its SKILL.md path and, when its file is missing or changed, that state. A row with a
+//   SKILL.md path has Evals, which opens the Evals card (plugins-evals.tsx) for that path under the table.
 // - An action's notice (approve, revoke, add, import, skill folder edit) shows on the tab it came from, in plain words;
 //   changing tab clears it and the New marks, and the next action replaces both.
 // - Add on MCP and Tools: a pack folder or one descriptor file (`add`), as `factory pack add`. Add on Skills, and
@@ -436,6 +438,8 @@ const SKILL_STATE: Record<"missing" | "changed", MessageKey> = { missing: "plugi
 function SkillsTab({ view, query, now, report, fresh }: { view: PluginsView; query: string; now: number; report: Reporter; fresh: Fresh }) {
   type Row = PluginsView["skills"][number];
   const suites = new Set(useEvalSuites().data?.skills ?? []);
+  // The SKILL.md path whose Evals card is open, under the table; none at first.
+  const [evals, setEvals] = useState<string | null>(null);
   /** The eval page of a row whose folder joined with its name is a suite's skill_ref. */
   const evalHref = (r: Row): string | undefined => {
     const key = `${r.folder}/${r.name}`;
@@ -458,11 +462,21 @@ function SkillsTab({ view, query, now, report, fresh }: { view: PluginsView; que
     },
     { key: "roles", header: t("plugins.colRoles"), render: (r) => <Roles roles={r.roles} /> },
     { key: "last_used", header: t("plugins.colLastUsed"), render: (r) => <LastUsed at={r.last_used} now={now} /> },
+    {
+      key: "evals",
+      header: t("evals.open"),
+      render: (r) => (
+        <Button size="sm" disabled={r.path === undefined} title={r.path === undefined ? t("evals.noPath") : undefined} aria-label={t("evals.openLabel", { name: r.name })} aria-pressed={r.path !== undefined && evals === r.path} onClick={() => r.path !== undefined && setEvals(r.path)}>
+          {t("evals.open")}
+        </Button>
+      ),
+    },
   ];
   return (
     <>
       <TabList view={view} tab="skills" report={report} query={query} rows={view.skills} how="plugins.emptySkills"
         table={(rows, empty) => <DataTable label={t("plugins.tabSkills")} columns={columns} rows={rows} rowKey={(r) => `${r.source ?? "folder"}\n${r.folder}\n${r.name}`} empty={empty} />} />
+      {evals !== null && <EvalsCard key={evals} path={evals} onClose={() => setEvals(null)} />}
       <SkillFolders view={view} report={report} />
     </>
   );
