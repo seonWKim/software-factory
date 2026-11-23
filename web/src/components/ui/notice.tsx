@@ -38,9 +38,15 @@ export function EmptyState({ icon: Icon, title, description, action }: { icon?: 
   );
 }
 
-/** A keyboard key, as in "press <Kbd>Esc</Kbd>". */
-export function Kbd({ children }: { children: ReactNode }) {
-  return <kbd className="rounded-control border border-border-strong bg-surface-2 px-1.5 py-0.5 font-sans text-xs text-text-1">{children}</kbd>;
+/**
+ * A keyboard key, as in "press <Kbd>Esc</Kbd>". With `hint` (a control's shortcut beside its label, a "⋯" item's `p`)
+ * the key is drawn by CSS from `data-key` and hidden from assistive tech, so the control's text (`textContent`, what a
+ * script or an agent reads) stays its label; the control names the key with `aria-keyshortcuts`.
+ */
+export function Kbd({ children, hint }: { children?: ReactNode; hint?: string }) {
+  const style = "rounded-control border border-border-strong bg-surface-2 px-1.5 py-0.5 font-sans text-xs text-text-1";
+  if (hint !== undefined) return <kbd aria-hidden data-key={hint} className={cn(style, "after:content-[attr(data-key)]")} />;
+  return <kbd className={style}>{children}</kbd>;
 }
 
 /** The page's width (design-system/tokens.json `page`): `wide` (--page-wide) for lists and tables, `read` (--page-read) for forms and reading. */

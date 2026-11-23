@@ -1,5 +1,6 @@
 ## History
 
+- **CLOSED is final** (decision changed 2026-11-23, wi_7454238f). Before: CLOSED was the WorkItem table's terminal stage, so no item left it; a reopened source made a new item.
 - **A merge closes only the work item** (decision changed 2026-11-12, issue #607). Before: no work item had a link to a plain task, so the merge paths closed the item and released its dependents, and a task the change was made for stayed open.
 - **`pr_number` removed** (decision changed 2026-11-12, the change fields phase 4). Before: the store wrote `pr_number` from `change_ref` on `controller_work_items` and `controller_unreviewed_merges`, `WorkItem` and `UnreviewedMerge` carried it, an unreviewed merge's `change_ref` had to be a PR number (its mirror column was NOT NULL), and the lookup by PR fell back to `pr_number` for a row with `change_ref` NULL.
 - **PR log and state-change keys are `change_ref`** (decision changed 2026-11-12). Before: the unreviewed-merge log line, the PR feedback state-change detail and `CheckpointText` kept the key `pr_number` (a number); log fields and state-change details kept their names.

@@ -13,6 +13,7 @@ import { cn } from "../../lib/cn.js";
 import { dueText, localDateTime } from "../../lib/format.js";
 import { Link } from "../../nav.js";
 import { itemPath } from "../../pages.js";
+import { copyCliEntry } from "../item-commands.js";
 import { TaskItemMenu, WorkState, useWorkItem, waitsOnOwner } from "../task-work.js";
 import { DeleteDialog, DescriptionDialog, ProjectsDialog } from "./dialogs.js";
 import { RowForm } from "./forms.js";
@@ -68,9 +69,10 @@ function Title({ task, className, onOpen }: { task: TaskRow; className: string; 
     return (
       // The title stays the paragraph's text; the shared Button lies over it, so the row keeps its height. The Button
       // is a fixed 28px tall, centred on the title line whatever its line height (responsive rules small-target,
-      // button-height); it sits beside the paragraph, whose truncate would clip it.
-      <div className="group relative">
-        <p data-row-title title={task.title} className={cn(className, "group-hover:underline")}>
+      // button-height); it sits beside the paragraph, whose truncate would clip it. The wrapper is the row title, so the
+      // Button stays inside it.
+      <div data-row-title className="group relative">
+        <p title={task.title} className={cn(className, "group-hover:underline")}>
           {task.title}
         </p>
         <Button
@@ -127,10 +129,11 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false, date =
   const it = useWorkItem(task.work_item_id);
   // Every action is in the row's menu (owner feedback 2026-11-20): Build this and Reopen too, and a waiting work
   // item's commands first (TaskItemMenu).
+  // Each action entry carries `data-action` (its `factory task` verb) and `data-item` (the task's ID).
   const items: MenuItem[] = done
-    ? [{ label: t("tasks.reopen"), disabled: action.busy, onSelect: () => void reopen() }]
+    ? [{ label: t("tasks.reopen"), action: "reopen", item: task.id, disabled: action.busy, onSelect: () => void reopen() }]
     : [
-        ...(task.work_item_id === null ? [{ label: t("tasks.build"), action: "build", disabled: builder.busy, onSelect: () => void builder.build() }] : []),
+        ...(task.work_item_id === null ? [{ label: t("tasks.build"), action: "build", item: task.id, disabled: builder.busy, onSelect: () => void builder.build() }] : []),
         // A built task's title goes to its work item, so its description dialog opens from here.
         ...(task.work_item_id !== null ? [{ label: t("tasks.description"), onSelect: () => setMode("description") }] : []),
         ...(parent === null ? [{ label: t("tasks.addSub"), onSelect: () => setMode("sub") }] : []),
@@ -138,6 +141,9 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false, date =
         { label: t("tasks.delete"), danger: true, onSelect: () => setMode("delete") },
       ];
   const menuLabel = t("tasks.more", { title: task.title });
+  // Copy as CLI command on an open row (a waiting item's menu has its own, for the item's command): Build this, else
+  // Complete. A done row's menu holds only Reopen (tests/ui-tasks-done.test.tsx).
+  const own = done ? items : [...items, copyCliEntry(task.work_item_id === null ? "build" : "done", task.id)];
   return (
     <ListRow
       ref={row}
@@ -156,6 +162,8 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false, date =
         <Checkbox
           checked={checked}
           aria-label={t("tasks.complete", { title: task.title })}
+          data-action="done"
+          data-item={task.id}
           disabled={action.busy}
           onChange={() => void complete()}
         />
@@ -200,7 +208,7 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false, date =
           )}
         </>
       }
-      menu={token !== null && (!done && waitsOnOwner(it) ? <TaskItemMenu it={it} extra={items} label={menuLabel} /> : <OverflowMenu label={menuLabel} items={items} />)}
+      menu={token !== null && (!done && waitsOnOwner(it) ? <TaskItemMenu it={it} extra={items} label={menuLabel} /> : <OverflowMenu label={menuLabel} items={own} />)}
     >
       {mode === "sub" && (
         <RowForm
