@@ -1,6 +1,6 @@
 // Skill improvement settings (design 07-self-improvement): six top-level keys of factory.config.json, config-file
 // only (not settable). Absent, each takes its default; a wrong value fails the config load naming the key. The skill
-// folders are capabilities.skill_folders (capabilitiesConfig), not a key of their own. Nothing reads them yet.
+// folders are capabilities.skill_folders (capabilitiesConfig), not a key of their own. The improve run reads them (src/core/skill-improve.ts).
 
 /** Each key's default. */
 export const SKILL_IMPROVE_DEFAULTS = {
