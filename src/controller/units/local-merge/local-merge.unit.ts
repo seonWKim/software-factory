@@ -3,7 +3,6 @@
 // Moved out of the legacy controller (RFC 0015 M5); the merge and the base push are outbound deliveries (M8), the
 // conflict probe and the red-main check are still inline (unit-purity ratchet).
 
-import { checkCommands, runChecks } from "../../../core/checks.js";
 import { ALERT_DEDUPE_MS } from "../../../core/alarms.js";
 import { modeOf } from "../../../core/settings.js";
 import { AUTO_ACTOR, autoMergeRefusal, branchFor } from "../../../core/policy.js";
@@ -15,11 +14,11 @@ import { lastPrNotes } from "../../../core/pr-body.js";
 import { type Actor, RECURRING_FAILURE, type Run, type SourceRef, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { ExternalIdentity } from "../../../interfaces/auth-provider.js";
 import { LOCAL_GIT_HOST, basePushOutcome, basePushTarget, gitTarget, type ActionRow } from "../../../outbound/index.js";
-import { failingTestNames } from "../../../worker/index.js";
 import { AUTO, CONFLICT_PENDING, SYSTEM, awaitingMerge } from "../support.js";
 import type { ControllerReader, ControllerWrite } from "../kernel.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
+import { type RedMainOutput, redMainCheck } from "./red-main.js";
 
 /** The reason of the state change that sends a branch fixed by hand to its fresh review. */
 const HAND_FIXED = "conflict_fixed_by_hand";
@@ -49,12 +48,6 @@ const MODE_HISTORY = 500;
 const AUTO_MERGE_BATCH = 20;
 /** Why auto mode went back to manual: the alert's error code (design 03-risk, stop conditions). */
 type AutoStop = "red_main" | "failure_alert" | "budget_checkpoint";
-
-/** What the red-main check's failing command printed: the failing tests by name (at most 10) and its tail (at most 2000 characters). */
-interface RedMainOutput {
-  failing_tests: string[];
-  output_tail: string;
-}
 
 /**
  * Why a branch that does not merge cleanly into the local base was not merged, with the conflicting files. `next`:
@@ -472,39 +465,9 @@ export class LocalMergeUnit {
     return (await this.c.k.reader.listSettingChanges(MODE_HISTORY)).find((c) => c.key === "mode" && c.project === level)?.seq ?? null;
   }
 
-  /**
-   * Red main (design 03-risk): after an automatic merge, the install command, the checks and the UI check
-   * (`repo.ui_check`) run again on the new base tip in a fresh detached checkout, through the merge check's runner
-   * (`runChecks`: its tail, at most CHECK_TAIL_CHARS). A failure, or a check that could not run, is red main
-   * (`redMain`): its alert, which keeps the failing tests and the output tail, its fix item on that tip, and auto mode
-   * set back to manual.
-   */
-  async redMainCheck(it: WorkItem): Promise<void> {
-    const sandbox = this.c.k.d.sandbox;
-    if (!sandbox) return;
-    const { repo } = this.c.k.cfg;
-    let failed: string | null = null;
-    let output: RedMainOutput | undefined;
-    let tip: string | null = null;
-    try {
-      const handle = await sandbox.create({ repo: repo.path, branch: null, base_ref: repo.base_branch });
-      tip = handle.base_sha ?? null;
-      try {
-        const round = await runChecks({
-          sandbox, handle, commands: [repo.install_command, ...checkCommands(repo), ...(repo.ui_check ? [repo.ui_check.command] : [])],
-          env: { ...this.c.k.d.check_env }, timeout_ms: this.c.k.cfg.run_timeout_ms, signal: new AbortController().signal, redact: [],
-        });
-        if (round.failed) {
-          failed = `\`${round.failed.command.join(" ")}\` ${round.failed.how} on the new tip of \`${repo.base_branch}\``;
-          output = { failing_tests: failingTestNames(round.failed.tail), output_tail: round.failed.tail };
-        }
-      } finally {
-        await sandbox.destroy(handle);
-      }
-    } catch (err) {
-      failed = `the checks could not run on the new tip of \`${repo.base_branch}\`: ${err instanceof Error ? err.message.slice(0, 200) : "unknown error"}`;
-    }
-    if (failed !== null) await this.redMain(it.project, tip ?? (await this.baseTip()), failed, output);
+  /** Red main after an automatic merge (design 03-risk): the checks on the new base tip, and the revert (red-main.ts). */
+  redMainCheck(it: WorkItem): Promise<void> {
+    return redMainCheck(this.c, it);
   }
 
   /**
@@ -513,9 +476,10 @@ export class LocalMergeUnit {
    * in `plugins.source` order that can file; and in auto mode the stop (`stopAuto`). Safe to run again: the alert's
    * conditional insert and the action's key store each once. With no sha known, only the stop. With `output` (the
    * red-main check's), the alert's detail is JSON `{ text, failing_tests, output_tail }` (`redMainDetail` in
-   * src/ui/alarms.ts reads it back); else the text alone.
+   * src/ui/alarms.ts reads it back); else the text alone. With `reverted` (the revert that made the base green again,
+   * red-main.ts), the alert alone: no fix item and no stop.
    */
-  async redMain(project: string, base_sha: string | null, detail: string, output?: RedMainOutput): Promise<void> {
+  async redMain(project: string, base_sha: string | null, detail: string, output?: RedMainOutput, reverted?: string): Promise<void> {
     if (base_sha !== null) {
       // G5: the alert reaches the status page, so its detail is scanned as UI text first, and the output tail as run
       // outcome text, as the merge check scans it: a flagged tail is stored as null, the test names are kept. The fix
@@ -530,7 +494,8 @@ export class LocalMergeUnit {
       }];
       const filer = this.c.k.filer();
       const { base_branch } = this.c.k.cfg.repo;
-      if (filer !== null) {
+      if (reverted !== undefined) this.c.k.d.log.info("red main: reverted, no fix item", { base_sha, revert_sha: reverted });
+      else if (filer !== null) {
         writes.push({ kind: "intent", action: {
           action: "file_fix_item", target: { type: filer, id: `red-main:${base_sha}`, link: "" }, key: `file_fix_item:red_main:${base_sha}`,
           args: {
@@ -542,7 +507,7 @@ export class LocalMergeUnit {
       } else this.c.k.d.log.warn("red main: no source can file its fix item", { base_sha });
       await this.c.k.commit({ writes });
     }
-    await this.stopAuto(project, "red_main", detail);
+    if (reverted === undefined) await this.stopAuto(project, "red_main", detail);
   }
 
   /** The local base branch's tip, as the merge queue lands on it; null when this controller's sandbox cannot read it. */
