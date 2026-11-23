@@ -93,6 +93,8 @@ export class RunResultsUnit {
     if (run.kind === "merge-check" || run.kind === "restart" || run.kind === "judge") return run.kind === "restart" ? this.c.unit("local-merge").restarted(run) : run.kind === "judge" ? this.c.unit("phases").judgeResult(run) : this.c.unit("merge-queue").checked(run);
     // A succeeded improve run's groups are filed before its ack (design §7); a fault is logged and the run acked.
     if (run.kind === "improve" && run.outcome?.status === "succeeded") await this.c.k.guard("improve filing", () => this.c.unit("improve").fileImprove(run));
+    // A finished routine run's findings become pending suggestions before its ack; a fault is logged and the run acked.
+    if (run.kind === "routine") await this.c.k.guard("routine findings", () => this.c.unit("routines").recordFindings(run));
     const ack = (reason: string): Decision => ({ patch: {}, actor: SYSTEM, reason, ack_run: run.id });
     // Every finished run adds its tokens to token_cost, an ignored one included (design §6 Measurement): `withSpent`
     // adds them to each decision that does not set token_cost itself.

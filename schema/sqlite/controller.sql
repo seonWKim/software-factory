@@ -302,6 +302,44 @@ CREATE TABLE controller_projects (
     archived_at  TEXT
   , base_folder TEXT);
 
+CREATE TABLE controller_routine_suggestions (
+    id             TEXT PRIMARY KEY,
+    routine_id     TEXT NOT NULL,
+    run_id         TEXT NOT NULL,
+    fingerprint    TEXT NOT NULL,
+    text           TEXT NOT NULL,
+    state          TEXT NOT NULL,
+    duplicates     INTEGER NOT NULL,
+    last_run_id    TEXT NOT NULL,
+    snoozed_until  TEXT,
+    filed_ref      TEXT,
+    decided_by     TEXT,
+    decided_at     TEXT,
+    created_at     TEXT NOT NULL,
+    UNIQUE (routine_id, fingerprint)
+  );
+
+CREATE TABLE controller_routines (
+    id             TEXT PRIMARY KEY,
+    name           TEXT NOT NULL,
+    instruction    TEXT NOT NULL,
+    url            TEXT,
+    cadence_kind   TEXT,
+    cadence_spec   TEXT,
+    zone           TEXT NOT NULL,
+    trigger_kind   TEXT,
+    run_cap_usd    REAL,
+    daily_cap_usd  REAL,
+    cap_raise_usd  REAL,
+    cap_raise_day  TEXT,
+    cap_hold_key   TEXT,
+    paused         INTEGER,
+    created_by     TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    next_due_at    TEXT,
+    last_run_at    TEXT
+  );
+
 CREATE TABLE controller_schedule_runs (
     schedule_id    TEXT NOT NULL,
     occurrence_at  TEXT NOT NULL,
@@ -530,6 +568,8 @@ CREATE INDEX controller_notices_undelivered ON controller_notices (delivered_at,
 CREATE INDEX controller_outbox_pending ON controller_outbox (published_at, seq);
 
 CREATE INDEX controller_pause_history_ended ON controller_pause_history (ended_at);
+
+CREATE INDEX controller_routines_due ON controller_routines (next_due_at);
 
 CREATE INDEX controller_schedules_due ON controller_schedules (next_due_at);
 

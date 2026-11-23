@@ -74,6 +74,60 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
     });
   });
 
+  describe("routines: updateRoutine, raiseRoutineCap and suggestions (src/core/routines.ts)", () => {
+    const MADE = "2026-11-22T12:00:00.000Z" as Timestamp;
+    const DUE = "2026-11-23T09:00:00.000Z" as Timestamp;
+    const added = async () => {
+      const { store, clock } = await make(new FakeClock(MADE));
+      await store.addRoutine({
+        id: "rt_1", name: "License", instruction: "Check the license.", url: null, schedule: { kind: "daily", spec: "09:00" }, zone: "UTC", trigger: null,
+        run_cap_usd: null, daily_cap_usd: 1, created_by: "local:owner" as UserId, created_at: MADE, next_due_at: DUE,
+      });
+      return { store, clock };
+    };
+
+    it("adds once, and moves marks or pauses only while the marks are still the ones read (IS NULL when null)", async () => {
+      const { store } = await added();
+      const before = (await store.getRoutine("rt_1"))!;
+      expect(before).toMatchObject({ paused: false, cap_raise: null, last_run_at: null, next_due_at: DUE });
+      expect(await store.addRoutine({ ...before, name: "Other" })).toEqual(before);
+      expect(await store.updateRoutine("rt_1", { next_due_at: DUE, last_run_at: MADE }, { paused: true })).toBe(false);
+      expect(await store.updateRoutine("rt_1", { next_due_at: null, last_run_at: null }, { paused: true })).toBe(false);
+      expect(await store.getRoutine("rt_1")).toEqual(before);
+      const marks = { next_due_at: "2026-11-24T09:00:00.000Z" as Timestamp, last_run_at: DUE };
+      expect(await store.updateRoutine("rt_1", { next_due_at: DUE, last_run_at: null }, marks)).toBe(true);
+      expect(await store.updateRoutine("rt_1", { next_due_at: DUE, last_run_at: null }, marks)).toBe(false);
+      expect(await store.updateRoutine("rt_1", marks, { paused: true })).toBe(true);
+      expect(await store.listRoutines()).toEqual([{ ...before, ...marks, paused: true }]);
+    });
+
+    it("raises the cap once per hold, adds on the same day and starts again on a new one", async () => {
+      const { store } = await added();
+      expect(await store.raiseRoutineCap("rt_1", { hold_key: "h1", usd: 0.5, day: "2026-11-23" })).toBe(true);
+      expect(await store.raiseRoutineCap("rt_1", { hold_key: "h1", usd: 0.5, day: "2026-11-23" })).toBe(false);
+      expect(await store.raiseRoutineCap("rt_1", { hold_key: "h2", usd: 0.25, day: "2026-11-23" })).toBe(true);
+      expect((await store.getRoutine("rt_1"))!.cap_raise).toEqual({ usd: 0.75, day: "2026-11-23", hold_key: "h2" });
+      expect(await store.raiseRoutineCap("rt_1", { hold_key: "h3", usd: 0.4, day: "2026-11-24" })).toBe(true);
+      expect((await store.getRoutine("rt_1"))!.cap_raise).toEqual({ usd: 0.4, day: "2026-11-24", hold_key: "h3" });
+    });
+
+    it("answers a suggestion only while it reads pending; a snooze reads as pending again once it runs out", async () => {
+      const { store, clock } = await added();
+      expect(await store.addRoutineSuggestions("rt_1", "run_1", [{ fingerprint: "f1", text: "one" }, { fingerprint: "f2", text: "two" }])).toEqual({ added: 2, duplicates: 0 });
+      const [one, two] = await store.listRoutineSuggestions("rt_1");
+      expect(await store.decideRoutineSuggestion(one!.id, { to: "accepted", by: "local:owner", filed_ref: "local-7" })).toBe(true);
+      expect(await store.decideRoutineSuggestion(one!.id, { to: "dismissed", by: "local:owner" })).toBe(false);
+      expect(await store.getRoutineSuggestion(one!.id)).toMatchObject({ state: "accepted", filed_ref: "local-7", decided_by: "local:owner", decided_at: MADE });
+      expect(await store.decideRoutineSuggestion(two!.id, { to: "snoozed", by: "local:owner", snooze_ms: 1000 })).toBe(true);
+      expect(await store.getRoutineSuggestion(two!.id)).toMatchObject({ state: "snoozed", snoozed_until: "2026-11-22T12:00:01.000Z" });
+      expect(await store.decideRoutineSuggestion(two!.id, { to: "dismissed", by: "local:owner" })).toBe(false);
+      clock.advance(1000);
+      expect(await store.getRoutineSuggestion(two!.id)).toMatchObject({ state: "pending" });
+      expect(await store.decideRoutineSuggestion(two!.id, { to: "dismissed", by: "local:owner" })).toBe(true);
+      expect(await store.getRoutineSuggestion("nope")).toBeNull();
+    });
+  });
+
   describe("work items", () => {
     it("intake is idempotent on (source.type, source.id) and enqueues once", async () => {
       const { store } = await make();
@@ -2220,6 +2274,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "controller_standing_rule_changes", // one record per standing-rule change (design 05-standing-approvals): 20261122T1300-state-standing-rule-changes
       "controller_green_bases", // the last green base per project (design 03-risk, red-main revert): 20261123T1001-controller-green-base
       "controller_attachments", // images and links on a New item (design 02-attachments): 20261120T1000-controller-attachments
+      "controller_routines", "controller_routine_suggestions", // routines (src/core/routines.ts): 20261120T1001-controller-routines
       "ext_packs_approvals", // approvals of pack entries: src/state/migrations/20261111T1600-state-ext-packs-approvals
       "ext_packs_entries", // pack tool and MCP server entries: src/state/migrations/20261111T1201-state-ext-packs-entries
       "ext_skill_refs", // imported skill references (design 11-plugin-import): src/state/migrations/20261115T1200-state-ext-skill-refs
