@@ -1,6 +1,6 @@
 // System actions in Needs you (design §9 Status page, issue #311): what the factory needs from the operator
 // besides a work item. A pending migration, a GitHub token that expires within 3 days, a missing model credential, a claim pause or a
-// worker pause in effect, an open alarm, a local base whose push to origin conflicts, and a dashboard or UI server that
+// worker pause in effect, an open alarm, a local base whose push to origin conflicts and whose reconcile failed, and a dashboard or UI server that
 // runs another revision than it should. Each is one Needs-you row (needs-you.ts) and names the command that clears it (an alarm: where to look into it). Store reads and in-process values only: the overview poll
 // asks GitHub nothing (the token's days come from this process's last health run).
 
@@ -16,6 +16,10 @@ import { type AutoStopNote, alarmCommand, alarmFullText, alarmUntil, lastAutoSto
 import type { ResumablePause } from "../resume-cmd.js";
 import { RESUME_IN_NEEDS_YOU, activePauses } from "./pause-api.js";
 import { MODEL_CREDENTIAL } from "../core/policy.js";
+import { reconcileOf } from "../core/local-merge.js";
+
+/** Items blocked on a person read to find a failed base reconcile: few wait at once. */
+const RECONCILE_READ = 200;
 
 /**
  * The missing model credential's Needs-you row (design §9): the fix in its title, no command; its action opens the Add
@@ -190,14 +194,20 @@ export async function systemActions(x: SystemInput): Promise<SystemAction[]> {
     if (stop?.alert_id === a.id) row.auto_stop = stop;
   }
 
-  // A local base whose newest delivered push to origin is a conflict (design 05-sources, Local items): one row per base,
-  // read from its push actions, so a later conflict updates it and a push that lands removes it.
-  for (const b of await x.store.listBasePushBacklogs()) {
-    if (b.conflicts === null) continue;
-    const files = b.conflicts.length > 0 ? `Conflicts in ${b.conflicts.join(", ")}; ` : "";
+  // A local base whose newest delivered push to origin is a conflict (design 05-sources, Base reconcile): its reconcile item
+  // merges origin in by itself, so the owner is asked only once a reconcile item of that base waits on a person (its
+  // resolve run or its merge check failed). One row per base, read from its push actions and the items blocked on a
+  // person; a push that lands removes it.
+  const conflicted = (await x.store.listBasePushBacklogs()).filter((b) => b.conflicts !== null);
+  const failed = conflicted.length === 0 ? [] : (await x.store.listWorkItemsWhere({ blocked_on: "human", exclude_closed: true, limit: RECONCILE_READ }))
+    .filter((it) => reconcileOf(it) !== null);
+  for (const b of conflicted) {
+    const it = failed.find((i) => reconcileOf(i)!.base_ref === b.base_ref);
+    if (!it) continue;
+    const files = b.conflicts!.length > 0 ? `Conflicts in ${b.conflicts!.join(", ")}; ` : "";
     const merges = `${b.waiting} local merge${b.waiting === 1 ? "" : "s"} waiting`;
-    add("base_push_conflict", `Local ${b.base_ref} can't reach origin`,
-      `${files}${merges}. Merge origin/${b.base_ref} into ${b.base_ref} in the factory repo and push it`);
+    add("base_push_conflict", `The reconcile of local ${b.base_ref} with origin failed`,
+      `${files}${merges}. See ${it.id}, then merge origin/${b.base_ref} into ${b.base_ref} in the factory repo and push it`);
   }
 
   const server = x.deps.revision ?? null;

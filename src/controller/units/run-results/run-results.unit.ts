@@ -279,6 +279,10 @@ export class RunResultsUnit {
           return this.c.unit("checks-gate").checkGate(it, run, { tier, token_cost: tokens }, run.id);
         }
         case "resolve": {
+          // A base reconcile (design 05-sources): its checked merge waits for the merge queue, never for a review.
+          if (this.c.unit("local-merge").reconcileOf(it)) {
+            return { patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", token_cost: tokens }, actor: SYSTEM, reason: "resolved", detail: { cause: "base_reconcile" }, ack_run: run.id };
+          }
           // The worker pushed the merge to the same PR branch. A fresh review checks it; its key comes from
           // this run's id, so it never collides with the review of an earlier loop or resolve.
           await autoResolvedComment(this.c, it, run);
@@ -344,6 +348,7 @@ export class RunResultsUnit {
     };
     await this.c.unit("transitions").decide(run.work_item_id, async (it) => this.landed(it, run, withSpent(await decision(it), run, it)));
     await deliveredMeanwhile(this.c, run);
+    if (run.kind === "resolve" && run.outcome?.status === "succeeded") await this.c.unit("local-merge").reconciled(run.work_item_id, run.id);
   }
 
   /**
