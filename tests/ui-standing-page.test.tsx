@@ -299,6 +299,23 @@ describe("Standing approvals section (stubbed API)", { timeout: TEST_MS }, () =>
     expect(li.matches("[data-list-row]")).toBe(true);
   });
 
+  it("names at most two approved items, then \"+N more\" that opens Details, which lists them all; no \"on\" text beside the switch", async () => {
+    const recent = ["A", "B", "C", "D"].map((title) => ({ id: `wi_${title}`, title }));
+    view = { ...view, rules: [{ ...view.rules[0]!, enabled: true, last_fired_at: new Date(Date.now() - 20 * 3600 * 1000).toISOString(), recent }] };
+    const list = await show();
+    const li = ruleItem(list, "spec-t1");
+    const line = li.querySelector<HTMLElement>("[data-recent]")!;
+    expect(line.textContent).toBe("4 items in the last 7 days: A, B, +2 more");
+    expect(within(line).getAllByRole("link").map((a) => a.textContent)).toEqual(["A", "B"]);
+    expect(li.querySelector("[data-fired]")!.textContent).toBe("last fired 20h ago");
+    expect(li.querySelector("[data-details]")!.textContent).not.toMatch(/(^|\s)on(\s|$)/);
+    const summary = li.querySelector<HTMLElement>("details[data-raw] > summary")!;
+    expect(summary.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(within(line).getByRole("button", { name: "+2 more" }));
+    expect(summary.getAttribute("aria-expanded")).toBe("true");
+    expect([...li.querySelectorAll("[data-recent-all] a")].map((a) => a.textContent)).toEqual(["A", "B", "C", "D"]);
+  });
+
   it("disables every control when the server has no write route", async () => {
     view = { ...view, csrf_token: null };
     const list = await show();

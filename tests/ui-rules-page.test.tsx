@@ -488,7 +488,10 @@ describe("Rules page", () => {
     expect(c).not.toContain("C-001");
     // The row's sentence is the rule's name; its date and parts are behind Details, not on the row.
     expect(row.querySelector("p")!.textContent).toBe("summary first");
-    expect(row.querySelector("[data-details]")).toBeNull();
+    // The row is two lines: the name, then one muted line "<scope> · Seen N times (date)"; the Details stay collapsed under it.
+    expect(row.querySelector("[data-rule-meta]")!.textContent).toBe("모든 문서 · Seen 2 times (Oct 19)");
+    expect(row.querySelector("details")!.getAttribute("open")).toBeNull();
+    expect(row.querySelector("[data-switch-blank]")).not.toBeNull();
     for (const part of ["summary first", "모든 문서", "2026-11-13", "Open with a summary.", "not given"]) expect(c).toContain(part);
     // Details are a label/value list; the incident IDs are not one of its parts (they sit in the seen line's tooltip).
     expect([...applied.querySelectorAll('[data-applied="C-001"] dt')].map((d) => d.textContent)).toEqual(["Default", "Exception", "Judged"]);
@@ -818,7 +821,7 @@ describe("Rules page", () => {
     expect(details.querySelector("[data-how] h3")!.textContent).toBe("How this works");
   });
 
-  it("two sections, In effect then Waiting for you, and one Details at the end; no tabs; every row in both is a ListRow", async () => {
+  it("two sections, Waiting for you then In effect, and one Details at the end; no tabs; every row in both is a ListRow", async () => {
     const report = { window_start: AT, window_end: AT, created_at: AT, runs: 0, patterns: 0, groups: [] };
     current = view({ applied: APPLIED, improve: { report, run_now: false, csrf_token: null } });
     standing = {
@@ -829,7 +832,10 @@ describe("Rules page", () => {
     await show();
     await waitFor(() => expect(document.querySelector('[data-proposal="sp_1"]')).not.toBeNull(), SLOW);
     // Exactly two regions, in this order; no tablist.
-    expect(screen.getAllByRole("region").map((r) => r.getAttribute("aria-label"))).toEqual(["In effect", "Waiting for you"]);
+    expect(screen.getAllByRole("region").map((r) => r.getAttribute("aria-label"))).toEqual(["Waiting for you", "In effect"]);
+    // Suggest sits in the In effect card's title line, not on a line of its own under it.
+    const suggest = within(section("In effect")).getByRole("button", { name: "Suggest" });
+    expect(suggest.closest("section")!.querySelector("h2")!.parentElement!.contains(suggest)).toBe(true);
     expect(screen.queryByRole("tablist")).toBeNull();
     // In effect: the standing rule that is on, then the applied rules.
     const effect = within(section("In effect")).getByRole("list", { name: "In effect" });
