@@ -71,7 +71,7 @@ const fakeStore = {
   async listRuns() {
     return detail.runs.map((r) => ({
       id: r.id, work_item_id: ITEM, kind: r.kind, status: r.status, attempt: r.attempt, started_at: r.started_at, finished_at: r.finished_at, lease: null,
-      outcome: r.status === "failed" ? { status: "failed", error_code: "checks_failed", detail: "npm test failed", infra: false } : { status: "succeeded", summary: "done", data: {} },
+      outcome: r.status === "failed" ? { status: "failed", error_code: "checks_failed", detail: "npm test failed", infra: false } : r.status === "succeeded" ? { status: "succeeded", summary: "done", data: {} } : null,
     }));
   },
   async listRunAttempts() {
@@ -128,13 +128,15 @@ describe("item page: Runs section", () => {
     mount(`/app/items/${ITEM}`);
     const table = await screen.findByRole("table", { name: "Runs" });
     const head = within(table).getAllByRole("columnheader").map((h) => h.textContent);
-    for (const h of ["Kind", "Attempt", "Status", "Error", "Worker", "Started", "Took", "Tokens", "Transcript"]) expect(head).toContain(h);
-    expect(head.indexOf("Kind")).toBeLessThan(head.indexOf("Attempt"));
+    for (const h of ["Step", "Try", "Result", "Error", "Worker", "Started", "Took", "Tokens", "Transcript"]) expect(head).toContain(h);
+    expect(head.indexOf("Step")).toBeLessThan(head.indexOf("Try"));
     expect(head.indexOf("Worker")).toBeLessThan(head.indexOf("Tokens"));
     const failed = table.querySelector(`tr[data-run="${FAILED}"]`)!;
-    expect(failed.textContent).toContain("checks_failed");
+    expect(failed.textContent).toContain("Project checks failed");
+    // The raw code is behind Details (data-raw), not in the row's text.
+    expect(failed.querySelector("[data-raw]")?.textContent).toContain("checks_failed");
     const worker = failed.querySelector("[data-id]")!;
-    expect(failed.querySelector("details")).toBeNull();
+    expect(failed.querySelector("details:not([data-raw])")).toBeNull();
     fireEvent.mouseEnter(worker.parentElement!);
     expect(within(failed).getByRole("tooltip").textContent).toBe("host:1:0");
     expect(failed.textContent).toContain("1.5k");
@@ -151,7 +153,7 @@ describe("transcript view", () => {
   it("a failed run: the outcome at the top, then its steps in order", async () => {
     mount(`/app/items/${ITEM}/runs/${FAILED}`);
     const outcome = await screen.findByRole("status", { name: "Run outcome" });
-    expect(outcome.textContent).toContain("Failed: checks_failed");
+    expect(outcome.textContent).toContain("Failed: Project checks failed");
     expect(outcome.textContent).toContain("npm test failed");
     const steps = await stepsOf();
     // The outcome comes before the steps in the document.
@@ -231,6 +233,53 @@ describe("transcript view", () => {
     expect(steps.map((s) => s.querySelector("pre")!.textContent)).toEqual(["starting the agent", "not json: { broken", "step two finished"]);
     expect(screen.getByText(/shown as plain lines/)).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("a running run: waits for the first output, polls every 3 s for new steps, and stops polling once the run ends", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const LIVE = "run_live";
+    const live = run(LIVE, "running", { finished_at: null });
+    detail.runs.push(live);
+    const line = (text: string) => `${JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text }] } })}\n`;
+    const calls = () => vi.mocked(fetch).mock.calls.filter(([u]) => String(u).includes(`/runs/${LIVE}/transcript`)).length;
+    try {
+      mount(`/app/items/${ITEM}/runs/${LIVE}`);
+      expect(await screen.findByText("Waiting for the agent's first output")).toBeTruthy();
+      expect(document.querySelector("[aria-busy]")).toBeNull();
+
+      files[LIVE] = line("Reading the code first.");
+      await vi.advanceTimersByTimeAsync(3000);
+      await waitFor(() => expect(stepsNow().map((s) => s.textContent)).toEqual([expect.stringContaining("Reading the code first.")]));
+
+      files[LIVE] += line("Now the test.");
+      await vi.advanceTimersByTimeAsync(3000);
+      await waitFor(() => expect(stepsNow()).toHaveLength(2));
+
+      Object.assign(live, { status: "succeeded", finished_at: "2026-11-07T00:03:00.000Z" });
+      await vi.advanceTimersByTimeAsync(3000);
+      await waitFor(() => expect(screen.getByRole("status", { name: "Run outcome" }).textContent).toContain("Succeeded"));
+      const after = calls();
+      await vi.advanceTimersByTimeAsync(12_000);
+      expect(calls()).toBe(after);
+    } finally {
+      detail.runs.pop();
+      delete files[LIVE];
+      vi.useRealTimers();
+    }
+  });
+
+  it("a finished run's transcript is not polled", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mount(`/app/items/${ITEM}/runs/${FAILED}`);
+      await stepsOf();
+      const reads = () => vi.mocked(fetch).mock.calls.filter(([u]) => String(u).includes("/transcript")).length;
+      const before = reads();
+      await vi.advanceTimersByTimeAsync(12_000);
+      expect(reads()).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("an unknown run shows the error without crashing", async () => {

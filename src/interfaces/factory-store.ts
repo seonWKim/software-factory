@@ -2,21 +2,26 @@ import type { TierHistory } from "../core/budget.js";
 import type { ChildRestart } from "./updater.js";
 import type { CoordinationSettings, DependencyLink } from "../core/coordination.js";
 import type {
-  Actor, BlockedOn, BudgetAnswer, BudgetCheckpoint, BudgetCheckpointId, ClaimDecision, ClaimPauseName, DependencyEdge, DependencyState, Tier,
-  Handoff, FiledPattern, FiledPatternId, HostSleep, ImproveReport, ImproveReportId, ImproveWindow, Run, RunAttempt, RunId, RunInput, RunKind,
-  RunOutcome, RunResume, RunStatus, SessionFinish, SourceRef, SourceType, StandingGate, StandingProposal, StandingRule, StateChange,
-  StateChangeDetail, Stage, Timestamp, UnreviewedMerge, UserId, Verdict, VerdictKind, VerdictSeverity, VerdictTarget, WorkItem, WorkItemId,
-  WorkItemPatch, WorkerId, WorkerPause,
-} from "../core/types.js";
+  Actor, BlockedOn, BudgetAnswer, BudgetCheckpoint, BudgetCheckpointId, ClaimDecision, ClaimPauseName, DependencyEdge, DependencyState, Tier, Handoff,
+  FiledPattern, FiledPatternId, HostSleep, ImproveReport, ImproveReportId, ImproveWindow, Run, RunAttempt, RunId, RunInput, RunKind, RunOutcome, RunResume,
+  RunStatus, SessionFinish, SourceRef, SourceType, StandingGate, StandingProposal, StandingRule, StateChange, StateChangeDetail, Stage, Timestamp,
+  UnreviewedMerge, UserId, Verdict, VerdictKind, VerdictSeverity, VerdictTarget, WorkItem, WorkItemId, WorkItemPatch, WorkerId, WorkerPause } from "../core/types.js";
 import type { AuthAction, AuthResource, LinkedAccount } from "./auth-provider.js";
 import type { SourceEvent } from "./source-adapter.js";
 import type { StatsRecord } from "../core/stats.js";
-import type { MergeEvaluation } from "../core/merge-evaluation.js";
+import type { MergeEvaluation, MergeWindow } from "../core/merge-evaluation.js";
 import type { LearnedSettingsStore } from "../core/learned-settings.js";
 import type { CommandProposalStore } from "../core/interpret.js";
 import type { TaskStore } from "../core/tasks.js";
 import type { NoticeStore } from "../core/notifications.js";
+import type { DesignLearningStore } from "../core/design-learnings.js";
 import type { PostedCommentReads } from "../core/reaction-verdict.js";
+import type { RunOutputStore } from "../core/stall.js";
+import type { SessionReservation, SessionReservationStore } from "../core/session.js";
+import type { ProposalStore } from "../core/proposals.js";
+import type { StandingChangeStore } from "../core/standing.js";
+import type { ScheduleStore } from "../core/schedule.js";
+import type { SkillEvalStore } from "./skill-eval-store.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
@@ -58,8 +63,7 @@ export interface AdoptedPr {
 }
 
 /**
- * The head of an open PR as a poll saw it, against the item's last recorded head (design 2026-11-01).
- * Applies only while the item's last_head_sha still equals `expected_head`.
+ * The head of an open PR as a poll saw it, against the item's last recorded head (design 2026-11-01). Applies only while the item's last_head_sha still equals `expected_head`.
  */
 export interface RecordPrHeadInput {
   id: WorkItemId;
@@ -79,7 +83,6 @@ export type RecordPrHeadResult =
   | { ok: false; reason: "not_found" }
   /** last_head_sha is no longer `expected_head` (another poll or a factory push recorded first). Nothing written. */
   | { ok: false; reason: "head_moved"; current: WorkItem };
-
 export interface NewUnreviewedMerge {
   project: string;
   /** The PR number as text; the store mirrors it into its legacy PR column. */
@@ -128,8 +131,8 @@ export interface NewImproveReport extends ImproveWindow {
 /** A `model_stall` or `network` claim pause (design §7): the improver files no run that failed inside one. `ended_at` null: still in effect. */
 export type PauseInterval = { name: "model_stall" | "network"; started_at: Timestamp; ended_at: Timestamp | null };
 
-/** A filed pattern as claimed; the store adds `id` and `created_at`, and `filed_ref` starts null. */
-export type NewFiledPattern = Omit<FiledPattern, "id" | "created_at" | "filed_ref" | "outcome" | "outcome_at">;
+/** A filed pattern as claimed; the store adds `id` and `created_at`, and `filed_ref` starts null. `evidence` absent: stored null. */
+export type NewFiledPattern = Omit<FiledPattern, "id" | "created_at" | "filed_ref" | "outcome" | "outcome_at" | "evidence"> & { evidence?: number | null };
 
 /** A standing-approval rule as written; the store adds the timestamps. */
 export type NewStandingRule = Pick<StandingRule, "gate" | "tier" | "enabled" | "set_by">;
@@ -152,8 +155,8 @@ export interface TransitionInput {
   enqueue?: Omit<NewRun, "work_item_id">;
   /**
    * Cancel every `queued` run of this item in the same transaction (waiting on `not_before` or not), so no
-   * worker can claim one afterwards. Running runs are left alone. Cancelled runs are unacknowledged, with no
-   * outcome and no `finished_at`, and go through the controller's ack path like any finished run.
+   * worker can claim one afterwards; before `enqueue`, which is kept. A move to `CLOSED` does this without the flag. Running
+   * runs are left alone. Cancelled runs are unacknowledged, with no outcome and no `finished_at`, and go through the ack path.
    */
   cancel_queued_runs?: boolean;
   /**
@@ -169,18 +172,16 @@ export interface TransitionInput {
 /** How a base push finished: `pushed` (the remote base contains the merge) or `conflict` (it moved and does not merge). */
 export type BasePushOutcome = "pushed" | "conflict";
 
-/** A local merge's base push (RFC 0015 M8: outbound's `push_base` action), as the status page shows it. */
+/** A local merge's base push (RFC 0015 M8: outbound's `push_base` action), as the status page shows it. `attempts`: failed tries so
+ * far (an outage, a rate limit, a base that moved under the push), its batch's; `outcome`: null while pending; `pushed_sha`: the
+ * remote base after a `pushed` outcome. */
 export interface BasePush {
-  base_ref: string;
-  merge_sha: string;
-  /** Failed tries so far (an outage, a rate limit, a base that moved under the push): its batch's. */
-  attempts: number;
-  /** Null while pending. */
-  outcome: BasePushOutcome | null;
-  /** The remote base after a `pushed` outcome. */
-  pushed_sha: string | null;
-  last_error: string | null;
+  base_ref: string; merge_sha: string; attempts: number; outcome: BasePushOutcome | null; pushed_sha: string | null; last_error: string | null;
 }
+
+/** One base's local merges not on the remote (design 05-sources, Local items): `waiting` counts its push_base actions after
+ * the newest pushed one (at least 1); `conflicts`: the files of its newest delivered push when a conflict, else null. */
+export interface BasePushBacklog { base_ref: string; waiting: number; conflicts: string[] | null }
 
 export type TransitionResult =
   /** `cancelled`: the runs `cancel_queued_runs` and `cancel_running_runs` cancelled (empty without them). */
@@ -262,7 +263,7 @@ export type BudgetCheckpointResult =
 export interface WorkItemFilter {
   stage?: Stage | undefined;
   blocked_on?: BlockedOn | undefined; blocked_reason?: string | undefined;
-  exclude_closed?: boolean | undefined; // Leave out CLOSED items. Ignored when `stage` is given.
+  exclude_closed?: boolean | undefined; exclude_system?: boolean | undefined; // Leave out CLOSED items (ignored when `stage` is given) / system items (blocked_reason system_item).
   /** Only items updated at or after this time (with `stage: "CLOSED"`, the closes since then: owner notices). */
   updated_since?: Timestamp | undefined;
   limit: number;
@@ -274,7 +275,7 @@ export interface ClaimInput {
   lease_ms: number;
   /** The coordination threshold and weights (design §5, 2026-11-03). Absent: DEFAULT_COORDINATION. */
   coordination?: CoordinationSettings;
-  workers?: { count: number; owners: readonly WorkerId[] }; // The slot cap (design §5, 2026-11-18): live `workers`, every loop id of this process. Absent: none.
+  workers?: { count: number }; // The slot cap (design §5, 2026-11-18; per factory since 2026-11-20): the live `workers`, counted over every process's running runs. Absent: none.
 }
 /** The slot cap's kinds: any kind claims below `workers`; a short one also in one slot beyond while every slot holds a capped one. */
 export const SHORT_KINDS: readonly RunKind[] = ["merge-check", "review", "triage"], CAPPED_KINDS: readonly RunKind[] = ["implement", "resolve"];
@@ -324,17 +325,16 @@ export type LeaseResult ={ ok: true; run: Run } | { ok: false; reason: "lease_lo
 /** `actor`: the person (state change actor, run actor_id). `detail` gets `run_id`. `owner`: the lease owner, never a worker id. */
 export interface StartSessionInput {
   id: WorkItemId; expected_version: number; actor: Extract<Actor, { kind: "user" }>; patch: WorkItemPatch; reason: string; detail: StateChangeDetail;
-  owner: string; lease_ms: number; transcript_url: string | null;
+  owner: string; lease_ms: number; transcript_url: string | null; /** Absent: DEFAULT_COORDINATION. */ coordination?: CoordinationSettings;
 }
 
 export type StartSessionResult =
-  /** `cancelled`: the item's queued triage runs. */
-  | { ok: true; item: WorkItem; run: Run; state_change: StateChange; cancelled: RunId[] }
-  | { ok: false; reason: "not_found" }
-  | { ok: false; reason: "version_conflict"; current: WorkItem }
-  | { ok: false; reason: "session_open" | "implement_run"; run_id: RunId }
-  /** A running implement-type or interactive run of another item shares `paths` with this item's allowed_paths. */
-  | { ok: false; reason: "overlap"; work_item_id: WorkItemId; run_id: RunId; paths: string[] };
+  /** `cancelled`: the item's queued triage runs. `taken_over`: its queued implement-type runs the start cancelled. */
+  | { ok: true; item: WorkItem; run: Run; state_change: StateChange; cancelled: RunId[]; taken_over: RunId[] }
+  | { ok: false; reason: "not_found" } | { ok: false; reason: "version_conflict"; current: WorkItem }
+  | { ok: false; reason: "session_open" | "implement_run"; run_id: RunId } | { ok: false; reason: "reserved"; reservation: SessionReservation }
+  /** A running implement-type or interactive run of another item shares `paths` at `cost` >= `max_cost` (sessionHold: files_to_change, else allowed_paths). */
+  | { ok: false; reason: "overlap"; work_item_id: WorkItemId; run_id: RunId; paths: string[]; cost: number; max_cost: number };
 /** What `session note`, `--tokens`, `--transcript` and `finish` write (scanned by the caller). `note` is appended, the rest replace. */
 export interface SessionUpdate { note?: string; tokens?: number; transcript_url?: string; last_finish?: Omit<SessionFinish, "at"> }
 /** `applied`: the highest migration recorded in the database (0 when none). `latest`: the highest this code has. */
@@ -354,7 +354,7 @@ export interface NoticeMessageStore {
   getNoticeQuestion(id: string): Promise<NoticeQuestion | null>;
 }
 
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore {
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore, SkillEvalStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes
@@ -370,11 +370,11 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
    * parent link) and enqueues `enqueue` in the same transaction, only when created.
    */
   createWorkItem(
-    input: NewWorkItem,
-    actor: Actor,
-    opts?: { enqueue?: Omit<NewRun, "work_item_id">; detail?: StateChangeDetail },
+    input: NewWorkItem, actor: Actor, opts?: { enqueue?: Omit<NewRun, "work_item_id">; detail?: StateChangeDetail },
   ): Promise<{ item: WorkItem; created: boolean }>;
   getWorkItem(id: WorkItemId): Promise<WorkItem | null>;
+  /** IDs of the work items whose ID starts with `prefix`, in ID order: a key range, no list scan (design 05-sources, short IDs); none for "". Read-only. */
+  findWorkItemIds(prefix: string): Promise<WorkItemId[]>;
   getWorkItemBySource(type: SourceType, sourceId: string): Promise<WorkItem | null>;
   /**
    * The item in `project` whose PR (factory or adopted) has this change_ref (oldest if several). A row with
@@ -391,7 +391,7 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   listWorkItemsWhere(filter: WorkItemFilter): Promise<WorkItem[]>;
   /** Number of items matching `filter`, with no limit. Read-only. */
   countWorkItemsWhere(filter: Omit<WorkItemFilter, "limit">): Promise<number>;
-  /** Number of work items in each stage. Every stage is present, 0 when it has none. Read-only. */
+  /** Number of work items in each stage, system items (blocked_reason system_item) left out. Every stage is present, 0 when it has none. Read-only. */
   countWorkItemsByStage(): Promise<Record<Stage, number>>;
   /**
    * The only way to change a work item: conditional update + state_changes row (+ optional ack/enqueue).
@@ -430,8 +430,8 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   listVerdictsSince(since: Timestamp | null): Promise<Verdict[]>;
   /** Runs in `status` (of `kinds` when given), by finish time (`updated_at` on rows with none). Read-only. */
   listRunsFinishedSince(q: { status: RunStatus; kinds?: readonly RunKind[]; since: Timestamp | null }): Promise<Run[]>;
-  /** Stored per-merge evaluations merged at or after `since` (null: all), oldest first (design 06-measurement). Read-only. */
-  listMergeEvaluations(since: Timestamp | null): Promise<MergeEvaluation[]>;
+  /** Stored per-merge evaluations merged at or after `since` (null: all; `within_ms`: of the store's clock), oldest first (design 06-measurement). Read-only. */
+  listMergeEvaluations(since: MergeWindow): Promise<MergeEvaluation[]>;
 
   // Budget checkpoints (design §6)
 
@@ -551,9 +551,9 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
 
   /**
    * `session start` (design §5, 2026-11-01), one transaction under the claim lock. Refused with nothing written while
-   * the item has a running interactive run or a queued or running implement-type run, or a running implement-type or
-   * interactive run of another item overlaps its allowed_paths (after `patch`). Else: the transition, the item's
-   * queued triage runs cancelled, and one `interactive` run inserted running (attempt 1, lease token 1).
+   * the item has a running interactive or implement-type run or another owner's reservation (`reserved`), or a running implement-type or interactive run of
+   * another item overlaps its allowed_paths (after `patch`). Else: the transition (detail `taken_over`), the item's queued triage and implement-type runs
+   * cancelled (the latter with TAKEOVER_OUTCOME), one `interactive` run inserted running (attempt 1, lease token 1), the item's reservation ended.
    */
   startSession(input: StartSessionInput): Promise<StartSessionResult>;
   /** Writes `update` on the interactive run while it is `running` with this `token`; lease_lost otherwise. */
@@ -600,14 +600,13 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   getOpenWorkItemByTitle(project: string, title: string): Promise<WorkItem | null>;
   /** Sets the item of the row `id` while `report_id` still holds it; a row another report claimed is left alone. */
   setFiledPatternRef(id: FiledPatternId, report_id: ImproveReportId, ref: SourceRef): Promise<void>;
-  /** The filed patterns of `project` that have an item and no outcome yet, oldest first. Read-only. */
-  listFiledPatternsWithoutOutcome(project: string): Promise<FiledPattern[]>;
+  listFiledPatternsWithin(within_ms: number): Promise<{ since: Timestamp; rows: FiledPattern[] }>; // every project's rows with an item claimed at or after `since` (store clock's now − within_ms), oldest first
+  listFiledPatternsWithoutOutcome(project: string): Promise<FiledPattern[]>; // `project`'s filed patterns with an item and no outcome yet, oldest first. Read-only.
   /** Sets the outcome of row `id` only while it has none: true when this call wrote it, false when one was there. */
   setFiledPatternOutcome(id: FiledPatternId, outcome: NonNullable<FiledPattern["outcome"]>, at: Timestamp): Promise<boolean>;
 
-  // Standing approvals (design 05-standing-approvals). Stored only: nothing acts on a rule or a proposal yet.
-
-  /** Writes the rule of (gate, tier): a new row, or the stored row's `enabled` and `set_by` with a new `updated_at`. */
+  // Standing approvals (design 05-standing-approvals); deleting a rule and its change records: StandingChangeStore.
+  /** Writes the rule of (gate, tier), a new row or the stored row's `enabled` and `set_by` with a new `updated_at`, and its change record. */
   putStandingRule(input: NewStandingRule): Promise<StandingRule>;
   /** Every rule, by gate then tier. */
   listStandingRules(): Promise<StandingRule[]>;
@@ -966,6 +965,8 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
    * delivered merge stored), delivered or not; null when its merge stored none. Read-only.
    */
   getBasePush(work_item_id: WorkItemId): Promise<BasePush | null>;
+  /** Each base with local merges not pushed (BasePushBacklog), from the push_base actions after the newest pushed one. Read-only. */
+  listBasePushBacklogs(): Promise<BasePushBacklog[]>;
 
   // App command requests (issue #245): commands sent from the factory's own app, applied by the controller tick
   // through the same path as a comment command. Created by the status page's POST /api/v1/items/:id/commands (#227).

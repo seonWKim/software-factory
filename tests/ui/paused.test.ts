@@ -3,7 +3,7 @@ import type { WorkerId } from "../../src/core/types.js";
 import { api } from "../../src/ui/api.js";
 import { HealthMonitor } from "../../src/ui/health.js";
 import { type PriorityInput, badgesOf, levelOf } from "../../src/ui/priority.js";
-import { cleanScanner } from "../helpers/fakes.js";
+import { cleanScanner } from "../helpers/fakes/config.js";
 import { issue, newStore, system } from "../helpers/store.js";
 
 // Design §5 Pause: the dashboard shows a paused run as queued, never as stuck, however long it waits. Read

@@ -15,7 +15,7 @@ import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
-import { Card } from "../components/ui/card.js";
+import { Card, SUB_TITLE } from "../components/ui/card.js";
 
 // The Data page (design §9, issue #239): one Autonomy line (design §6), the Ask box, then every store table on the
 // left with its row count, owner and one-line description, and one page of the chosen table's rows on the right,
@@ -45,7 +45,7 @@ export function DataPage() {
       <PageHeader title={t("page.data")} />
       <AutonomyLine />
       {tables.data?.csrf_token ? <AskBox token={tables.data.csrf_token} /> : null}
-      <div className="flex min-w-0 gap-4 max-md:flex-col">
+      <div data-raw className="flex min-w-0 gap-4 max-md:flex-col">
         <nav aria-label={t("data.tables")} className="w-56 shrink-0 max-md:w-full">
           {tables.isError ? <ErrorNote error={tables.error} /> : !tables.data ? <Loading rows={6} label="loading.dataTables" onRetry={() => void tables.refetch()} /> : (
             <ul className="space-y-0.5 text-sm">
@@ -267,7 +267,7 @@ function AskAnswer({ result }: { result: DataAskResult }) {
     <div className="mt-3 min-w-0 space-y-2" data-testid="data-ask-answer">
       {result.sql !== null && (
         <div>
-          <h3 className="text-xs font-medium text-text-2">{t("data.ask.query")}</h3>
+          <h3 className={SUB_TITLE}>{t("data.ask.query")}</h3>
           <pre className="mt-1 overflow-x-auto rounded-control border border-border bg-surface-2 px-3 py-2 font-mono text-xs whitespace-pre-wrap break-words" data-testid="data-ask-sql">
             {result.sql}
           </pre>

@@ -73,8 +73,10 @@ function expectShared(links: HTMLAnchorElement[]) {
 }
 
 describe("shared link style", () => {
-  it("is applied to every link on the Tasks page, Work items, an item page and Data", async () => {
-    for (const [path, ready] of [["tasks", "Task 1"], ["items", "Title 1"], ["items/wi_1", "Title 1"], ["data", "work_items"]] as const) {
+  // The Tasks page has no accent content link left: an open task's title opens its description dialog, a built task
+  // shows no raw item ID, and the Needs you titles are quiet (filtered out above) (owner feedback 2026-11-20).
+  it("is applied to every link on Work items, an item page and Data", async () => {
+    for (const [path, ready] of [["items", "Title 1"], ["items/wi_1", "Title 1"], ["data", "work_items"]] as const) {
       const { container } = await mountAt(path, ready);
       if (path === "data") { fireEvent.click((await screen.findAllByText("work_items"))[0]!); await screen.findAllByText("wi_1"); }
       expectShared(contentLinks(container));
@@ -118,7 +120,8 @@ describe("accent is not a text colour", () => {
     for (const f of walk("web/src")) expect(readFileSync(f, "utf8"), f).not.toMatch(/text-accent/);
   });
   it("has link and ID styles in link-style.ts as token classes", () => {
-    expect(LINK_CLASS.split(" ")).toEqual(expect.arrayContaining(["text-text-1", "hover:underline"]));
+    expect(LINK_CLASS.split(" ")).toEqual(expect.arrayContaining(["text-text-1", "underline"]));
+    expect(LINK_CLASS).not.toContain("hover:underline");
     expect(ID_CLASS.split(" ")).toEqual(expect.arrayContaining(["text-text-3", "font-mono"]));
     expect(`${LINK_CLASS} ${ID_CLASS}`).not.toContain("accent");
   });

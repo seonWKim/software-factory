@@ -158,10 +158,22 @@ function renderBlocks(list: Block[]): ReactNode[] {
   return out;
 }
 
-export function Markdown({ text }: { text: string }) {
+function headingLevels(list: Block[]): number[] {
+  return list.flatMap((b) => (b.kind === "heading" ? [b.level] : b.kind === "details" ? headingLevels(b.body) : []));
+}
+
+// Each heading level the text uses becomes its rank (shallowest 1, so h3), so levels step down one at a time.
+function renumber(list: Block[], ranks: readonly number[]): Block[] {
+  return list.map((b) => (b.kind === "heading" ? { ...b, level: ranks.indexOf(b.level) + 1 } : b.kind === "details" ? { ...b, body: renumber(b.body, ranks) } : b));
+}
+
+/** `renumberHeadings`: the shallowest heading in the text renders as h3 and each deeper level as the next one down, skipping none. */
+export function Markdown({ text, renumberHeadings = false }: { text: string; renumberHeadings?: boolean }) {
+  let list = blocks(text);
+  if (renumberHeadings) list = renumber(list, [...new Set(headingLevels(list))].sort((a, b) => a - b));
   return (
-    <div data-markdown className="space-y-3 text-sm leading-relaxed text-pretty break-words">
-      {renderBlocks(blocks(text))}
+    <div data-markdown data-raw className="space-y-3 text-sm leading-relaxed text-pretty break-words">
+      {renderBlocks(list)}
     </div>
   );
 }

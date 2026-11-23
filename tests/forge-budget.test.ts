@@ -15,7 +15,8 @@ import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import { secretName } from "../src/interfaces/secret-store.js";
 import { syncChecks } from "../src/ui/health.js";
-import { FakeAuth, cleanScanner, config, recordingLog } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, recordingLog } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
 const credentials: GitHubCredentials = { token: async () => new OpaqueSecret(secretName("GITHUB_TOKEN"), "ghs_test") };
@@ -184,23 +185,25 @@ describe("controller: optional reads wait for the shared budget's reset", () => 
 });
 
 describe("Health: the sync line", () => {
-  it("shows the shared budget, its reset (UTC) and the replica holding the sync lease; a warn below 10% or with no holder", async () => {
+  it("says the requests left in plain words, keeps the reset (UTC) and the replica for Details; a warn below 10% or with no holder", async () => {
     const { store, gh, client, controller, clock } = await setup();
     await store.advanceCursor("project_key:o/r", null, PROJECT_KEY);
     expect(await syncChecks(store, REPO, FORGE_BUDGET_PLUGIN, clock.now())).toEqual([]);
     const b = controller("replica-7");
-    gh.state.remaining = 812;
+    gh.state.remaining = 2566;
     gh.state.reset = Date.parse("2026-11-08T09:12:00Z") / 1000;
     await b.controller.tickOutbox();
     await client("a").request("GET", "/repos/o/r");
     expect(await syncChecks(store, REPO, FORGE_BUDGET_PLUGIN, clock.now())).toEqual([
-      { ok: true, msg: "GitHub: 812/5000 left, resets 09:12, synced by replica replica-7" },
+      { ok: true, msg: "GitHub: 2566/5000 left, resets 09:12, synced by replica replica-7", plain: "GitHub: 2,566 of 5,000 requests left this hour" },
     ]);
     gh.state.remaining = 400;
     clock.advance(1);
     await client("a").request("GET", "/repos/o/r");
     expect(await syncChecks(store, REPO, FORGE_BUDGET_PLUGIN, clock.now())).toMatchObject([{ ok: false, warn: true }]);
     clock.advance(config.lease_ms);
-    expect((await syncChecks(store, REPO, FORGE_BUDGET_PLUGIN, clock.now()))[0]!.msg).toMatch(/no replica holds the sync lease$/);
+    const [stale] = await syncChecks(store, REPO, FORGE_BUDGET_PLUGIN, clock.now());
+    expect(stale!.msg).toMatch(/no replica holds the sync lease$/);
+    expect(stale!.plain).toBe("GitHub: 400 of 5,000 requests left this hour; no worker syncs it now");
   });
 });

@@ -55,6 +55,7 @@ const STATUS: Record<ItemPhase, WorkStatus> = {
   failed_run: "needs_human",
   max_loops: "needs_human",
   merge_conflict: "needs_human",
+  session_released: "needs_human",
   upstream_wait: "needs_human",
   ci_wait: "needs_human",
   budget_wait: "needs_human",

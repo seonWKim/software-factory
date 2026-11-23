@@ -8,7 +8,9 @@ import { existsSync } from "node:fs";
 import { chmod, cp, readFile, readdir, realpath, rename, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import { basename, dirname, join, sep } from "node:path";
-import { type Loaded, Plugins } from "./compose.js";
+import { type Loaded } from "./load-config.js";
+import { Plugins } from "./plugin-set.js";
+import { folderUnsafe, mergedRule } from "./cleanup/index.js";
 import { baseEnv, runProcess } from "./impl/process/run-process.js";
 import { DRAIN_MARGIN_MS, PID_FILE } from "./impl/updater/git-worktree.js";
 import { SUPERVISOR_STATUS_FILE, type CommandRunner, type SupervisorStatus } from "./interfaces/updater.js";
@@ -220,20 +222,6 @@ async function worktreeList(d: TeardownDeps, repo: string): Promise<GitWorktree[
   return out;
 }
 
-/** Why a folder's work is not safe to drop, or null: uncommitted changes, or (a clone) commits the repository lacks. */
-async function unsafe(d: TeardownDeps, repo: string, dir: string, clone: boolean): Promise<string | null> {
-  const status = await git(d, dir, ["status", "--porcelain"]);
-  if (status.exit_code !== 0) return "its git status could not be read";
-  if (status.stdout.split("\n").some((l) => l.trim() !== "" && l !== `?? ${PID_FILE}`)) return "it has uncommitted changes";
-  if (!clone) return null;
-  const heads = (await git(d, dir, ["for-each-ref", "--format=%(objectname)", "refs/heads/"])).stdout.split("\n");
-  const head = await git(d, dir, ["rev-parse", "--verify", "--quiet", "HEAD"]);
-  for (const sha of new Set([...heads, head.stdout].map((s) => s.trim()).filter(Boolean))) {
-    if ((await git(d, repo, ["cat-file", "-e", `${sha}^{commit}`])).exit_code !== 0) return "it holds commits the repository does not have";
-  }
-  return null;
-}
-
 async function makePlan(loaded: Loaded, o: TeardownOptions, d: TeardownDeps): Promise<Plan> {
   const repo = loaded.config.repo.path;
   const stateDir = await real(loaded.stateDir);
@@ -252,7 +240,7 @@ async function makePlan(loaded: Loaded, o: TeardownOptions, d: TeardownDeps): Pr
       if (inWorktrees) plan.kept.push(`worktree ${w.path}: not made by the factory`);
       continue;
     }
-    const why = existsSync(w.path) ? await unsafe(d, repo, w.path, false) : null;
+    const why = existsSync(w.path) ? await folderUnsafe(d.run, repo, w.path, false) : null;
     if (why) {
       remaining.push(w);
       plan.kept.push(`worktree ${w.path}: ${why}`);
@@ -266,7 +254,7 @@ async function makePlan(loaded: Loaded, o: TeardownOptions, d: TeardownDeps): Pr
     if (isScratchFolder(name)) plan.removals.push({ kind: "folder", path });
     else if (!RUN_FOLDER.test(name)) plan.kept.push(`folder ${path}: not made by the factory`);
     else {
-      const why = await unsafe(d, repo, path, true);
+      const why = await folderUnsafe(d.run, repo, path, true);
       if (why) plan.kept.push(`run folder ${path}: ${why}`);
       else plan.removals.push({ kind: "clone", path });
     }
@@ -279,14 +267,7 @@ async function makePlan(loaded: Loaded, o: TeardownOptions, d: TeardownDeps): Pr
 
   const checkedOut = new Set(remaining.map((w) => w.branch).filter((b): b is string => b !== null));
   const base = loaded.config.repo.base_branch;
-  const bases: string[] = [];
-  for (const ref of [`refs/heads/${base}`, `refs/remotes/origin/${base}`]) {
-    if ((await git(d, repo, ["rev-parse", "--verify", "--quiet", ref])).exit_code === 0) bases.push(ref);
-  }
-  const merged = async (sha: string) => {
-    for (const b of bases) if ((await git(d, repo, ["merge-base", "--is-ancestor", sha, b])).exit_code === 0) return true;
-    return false;
-  };
+  const { merged } = await mergedRule(d.run, repo, base);
   const branchPrefix = `refs/heads/${loaded.config.branch_prefix}`;
   for (const line of (await gitOut(d, repo, ["for-each-ref", "--format=%(refname) %(objectname)"])).split("\n")) {
     const [ref, sha] = line.split(" ");

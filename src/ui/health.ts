@@ -1,14 +1,15 @@
 // GET /api/health and the app's health reads: the same checks as `factory doctor`, from the one implementation
 // (doctorChecks, src/setup.ts), which the composition root passes in as `run`, plus the GitHub sync line
-// (syncChecks), a store read. It limits how often the checks run, shares one run between concurrent requests,
-// and egress-scans every message before it leaves (design §9).
+// (syncChecks), a store read. The report shows each check in plain words with its raw text as `detail` (reportRows).
+// It limits how often the checks run, shares one run between concurrent requests, and egress-scans every message
+// before it leaves (design §9).
 
 import { syncLeaseName } from "../core/lease.js";
 import { readStoredProject } from "../core/project-labels.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
-import { type Check, type CheckStatus, checkStatus } from "../setup.js";
+import { type Check, type CheckAction, type CheckStatus, checkStatus } from "../core/health-check.js";
 import { BackgroundSnapshot } from "./background-refresh.js";
 import { Withholder } from "./withhold.js";
 
@@ -17,11 +18,14 @@ export const HEALTH_MIN_INTERVAL_MS = 60_000;
 /** Below this share of the limit left, the sync line is a warn: optional reads wait for the reset on every replica. */
 const LOW_SHARE = 0.1;
 
+const grouped = new Intl.NumberFormat("en-US");
+
 /**
  * The GitHub sync line (design 05-coordination, sync lease): the shared budget (`forge_budget`, plugin `plugin`) and
- * the replica holding `sync:github_issue:<project>`, from the store only, no GitHub call. E.g.
- * `GitHub: 812/5000 left, resets 09:12, synced by replica host:42` (reset in UTC). A warn with no live holder or
- * under 10% left. None while neither is stored (no GitHub plugin selected, or nothing synced yet).
+ * the replica holding `sync:github_issue:<project>`, from the store only, no GitHub call. Health shows the plain
+ * `GitHub: 812 of 5,000 requests left this hour`; the raw `GitHub: 812/5000 left, resets 09:12, synced by replica
+ * host:42` (reset in UTC) goes behind Details. A warn with no live holder or under 10% left. None while neither is
+ * stored (no GitHub plugin selected, or nothing synced yet).
  */
 export async function syncChecks(
   store: Pick<FactoryStore, "getCursor" | "getForgeBudget" | "getSyncLease">, repo: { owner: string; name: string }, plugin: string, now: Date,
@@ -34,7 +38,9 @@ export async function syncChecks(
   const left = budget ? `${budget.remaining}/${budget.limit} left, resets ${budget.reset_at.slice(11, 16)}` : "budget not reported yet";
   const low = budget !== null && Date.parse(budget.reset_at) > now.getTime() && budget.remaining < budget.limit * LOW_SHARE;
   const msg = `GitHub: ${left}, ${holder ? `synced by replica ${holder}` : "no replica holds the sync lease"}`;
-  return [{ ok: holder !== null && !low, ...((holder === null || low) && { warn: true }), msg }];
+  const requests = budget ? `GitHub: ${grouped.format(budget.remaining)} of ${grouped.format(budget.limit)} requests left this hour` : "GitHub: requests left not reported yet";
+  const plain = holder ? requests : `${requests}; no worker syncs it now`;
+  return [{ ok: holder !== null && !low, ...((holder === null || low) && { warn: true }), msg, plain }];
 }
 
 /** One finished run, messages as the checks wrote them. Never leaves this module unfiltered. */
@@ -44,15 +50,70 @@ interface RawRun {
   checks: readonly Check[];
 }
 
-/** What GET /api/health returns. Every `msg` has passed through the Withholder. */
+/**
+ * One row of the report: `msg` is the sentence Health shows; `detail`, when the check has one, the raw text behind
+ * Details; `action`, when the row offers one, what the page opens (the Add model credential dialog); `since` / `next`,
+ * when the check names a time, its ISO instants (the page shows them in local time).
+ */
+export interface HealthRow {
+  status: CheckStatus;
+  msg: string;
+  detail?: string;
+  action?: CheckAction;
+  since?: string;
+  next?: string;
+}
+
+/** What GET /api/health returns. Every `msg` and `detail` has passed through the Withholder. */
 export interface HealthReport {
   /** When the reported run finished; null while `pending`. */
   checked_at: string | null;
-  checks: { status: CheckStatus; msg: string }[];
+  checks: HealthRow[];
   /** No run has finished yet (the server's stored report, design 09-health): no checks, the page keeps its placeholder. */
   pending: boolean;
   /** A run is going: a newer report follows. */
   refreshing: boolean;
+}
+
+/**
+ * An absolute file path in a check's text (after the start, a space or a bracket; not a GitHub API route after its
+ * method): Health shows it only behind Details.
+ */
+const PATH = /(?<=^|[\s(])(?<!(?:GET|POST|PUT|PATCH|DELETE) )~?\/[^\s;,()'"]+/g;
+
+/** A check as a report row: its `plain` sentence, else its text with every path moved behind Details, else its text. */
+function row(c: Check): HealthRow {
+  const plain = c.plain ?? c.msg.replace(PATH, "(path in Details)");
+  const extra = { ...(c.action !== undefined && { action: c.action }), ...(c.since !== undefined && { since: c.since }), ...(c.next !== undefined && { next: c.next }) };
+  return plain === c.msg ? { status: checkStatus(c), msg: c.msg, ...extra } : { status: checkStatus(c), msg: plain, detail: c.msg, ...extra };
+}
+
+/** A group's checks (one result, one `plain`) as one row: the first's, with every check's text behind Details. */
+function groupRow(members: readonly Check[]): HealthRow {
+  const first = row(members[0]!);
+  return members.length === 1 ? first : { ...first, detail: members.map((c) => c.msg).join("\n") };
+}
+
+/**
+ * The report's rows, in the checks' order (design 09-health, 2026-11-20): each check in plain words with its raw text as
+ * `detail`, and every GitHub status-label check folded into one row where the first stood: "GitHub labels: all present",
+ * or one warn "GitHub labels: N missing (run: npm run setup)" for N missing or unchecked, their lines in `detail`. The
+ * checks of one `group` (one cause, such as the three sandbox lines) fold the same way into one row (2026-11-23).
+ */
+export function reportRows(checks: readonly Check[]): HealthRow[] {
+  const labels = checks.filter((c) => c.label !== undefined);
+  const missing = labels.filter((c) => !c.ok);
+  const folded: HealthRow = missing.length === 0
+    ? { status: "ok", msg: "GitHub labels: all present", detail: labels.map((c) => c.msg).join("\n") }
+    : { status: "warn", msg: `GitHub labels: ${missing.length} missing (run: npm run setup)`, detail: missing.map((c) => c.msg).join("\n") };
+  const groups = new Map<string, Check[]>();
+  for (const c of checks) if (c.label === undefined && c.group !== undefined) groups.set(c.group, [...(groups.get(c.group) ?? []), c]);
+  return checks.flatMap((c) => {
+    if (c.label !== undefined) return c === labels[0] ? [folded] : [];
+    const members = c.group === undefined ? undefined : groups.get(c.group)!;
+    if (members === undefined) return [row(c)];
+    return c === members[0] ? [groupRow(members)] : [];
+  });
 }
 
 /**
@@ -128,13 +189,18 @@ export class HealthMonitor {
     return { run: null, refreshing: true };
   }
 
-  /** The checks for the API, every message through the Withholder. */
+  /** The checks for the API as report rows (`reportRows`), every message and detail through the Withholder. */
   async report(scanner: EgressScanner): Promise<HealthReport> {
     const { run, refreshing } = await this.current();
     if (!run) return { checked_at: null, checks: [], pending: true, refreshing };
     const w = new Withholder(scanner);
-    const checks = [];
-    for (const c of run.checks) checks.push({ status: checkStatus(c), msg: (await w.plain(c.msg)).text });
+    const checks: HealthRow[] = [];
+    for (const c of reportRows(run.checks)) {
+      // `since` and `next` are instants the checks computed, never outside text: they pass as they are.
+      const { detail, ...rest } = c;
+      const msg = (await w.plain(c.msg)).text;
+      checks.push(detail === undefined ? { ...rest, msg } : { ...rest, msg, detail: (await w.plain(detail)).text });
+    }
     return { checked_at: run.checked_at.toISOString(), checks, pending: false, refreshing };
   }
 }

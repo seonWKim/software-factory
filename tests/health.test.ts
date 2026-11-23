@@ -6,7 +6,8 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type Loaded, Plugins, loadConfig } from "../src/compose.js";
+import { type Loaded, loadConfig } from "../src/load-config.js";
+import { Plugins } from "../src/plugin-set.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import { type Secret, secretName } from "../src/interfaces/secret-store.js";
@@ -15,10 +16,15 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { REGISTRY, type Registry, withPlugin } from "../src/plugins.js";
-import { type Check, checkLine, checkStatus, checksExitCode, doctor, doctorChecks } from "../src/setup.js";
-import { HEALTH_MIN_INTERVAL_MS, HealthMonitor } from "../src/ui/health.js";
+import { type Check, checkLine, checkStatus, checksExitCode, doctor, doctorChecks, SECRET_WORDS, secretChecks } from "../src/setup.js";
+import { credentialPlain, sandboxChecks as linesToChecks } from "../src/core/health-check.js";
+import { MODEL_CREDENTIAL } from "../src/impl/claude/claude-shared.js";
+import { SANDBOX_LINES, type SandboxEnforcement } from "../src/impl/runner/os-sandbox.js";
+import { MemorySecretStore } from "./helpers/fakes/secrets.js";
+import { buildStatsStore } from "../src/compose.js";
+import { HEALTH_MIN_INTERVAL_MS, HealthMonitor, reportRows } from "../src/ui/health.js";
 import { type UiDeps, type UiResponse, respond } from "../src/ui/server.js";
-import { fakeGitHubAccess } from "./helpers/fakes.js";
+import { fakeGitHubAccess } from "./helpers/fakes/github.js";
 import { BACKENDS } from "./helpers/store.js";
 
 const REPO_ROOT = join(import.meta.dirname, "..");
@@ -125,9 +131,46 @@ describe("health: one implementation behind doctor and the page", () => {
     const res = await get(port, "/api/health");
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toMatch(/^application\/json/);
-    const report = JSON.parse(res.body) as { checked_at: string; checks: { status: string; msg: string }[] };
+    const report = JSON.parse(res.body) as { checked_at: string; checks: { status: string; msg: string; detail?: string }[] };
     expect(Number.isNaN(Date.parse(report.checked_at))).toBe(false);
-    expect(report.checks).toEqual(expected.map((c) => ({ status: checkStatus(c), msg: c.msg })));
+    expect(report.checks).toEqual(reportRows(expected));
+    // Every doctor line is still in the report, in order: as the row's text, or behind its Details (of the labels, the missing ones).
+    const raw = report.checks.flatMap((c) => (c.detail ?? c.msg).split("\n"));
+    expect(raw).toEqual(expected.filter((c) => !(c.label && c.ok)).map((c) => c.msg));
+  });
+
+  it("the report says each changed check in plain words, with no file path outside Details (design 09-health, 2026-11-20)", async () => {
+    const { loaded } = await setupDoctor();
+    const { port } = await uiFor(loaded);
+    const { checks } = JSON.parse((await get(port, "/api/health")).body) as { checks: { status: string; msg: string; detail?: string }[] };
+    const secretRow = checks.find((c) => c.msg === "Your secret file is private")!;
+    expect(secretRow).toMatchObject({ status: "ok", detail: expect.stringContaining(`secret file at ${loaded.secretsFile} is private`) });
+    // Eight of the nine status labels are missing in the fixture: one warn row, the names behind Details.
+    const labels = checks.filter((c) => c.msg.startsWith("GitHub labels:"));
+    expect(labels).toEqual([{ status: "warn", msg: "GitHub labels: 8 missing (run: npm run setup)", detail: expect.stringContaining('status label "sf: incomplete" exists') }]);
+    expect(checks.some((c) => c.msg.startsWith("status label"))).toBe(false);
+    expect(checks.find((c) => c.msg.startsWith("Config file:"))!.msg).toBe("Config file: the repository's own");
+    for (const c of checks) expect(c.msg).not.toMatch(/(^|[\s(])~?\/[\w.-]+\//);
+  });
+
+  it("reportRows: all labels present is one ok row; a non-private secret file names no path; any other path goes behind Details", () => {
+    const label = (name: string, ok: boolean): Check => ({ ok, msg: `status label "${name}" exists`, label: name, ...(!ok && { warn: true }) });
+    const rows = reportRows([
+      { ok: true, msg: "first" },
+      label("sf: a", true),
+      { ok: false, msg: "secret file at /home/u/.env is private (mode 644; run: chmod 600 /home/u/.env)", plain: "Your secret file can be read by other users; the fix is in Details" },
+      label("sf: b", true),
+      { ok: true, msg: "toolchain cache /home/u/.gradle exists (read-only for agents)" },
+    ]);
+    expect(rows).toEqual([
+      { status: "ok", msg: "first" },
+      { status: "ok", msg: "GitHub labels: all present", detail: 'status label "sf: a" exists\nstatus label "sf: b" exists' },
+      { status: "fail", msg: "Your secret file can be read by other users; the fix is in Details", detail: "secret file at /home/u/.env is private (mode 644; run: chmod 600 /home/u/.env)" },
+      { status: "ok", msg: "toolchain cache (path in Details) exists (read-only for agents)", detail: "toolchain cache /home/u/.gradle exists (read-only for agents)" },
+    ]);
+    expect(reportRows([label("sf: a", false), label("sf: b", true)])).toEqual([
+      { status: "warn", msg: "GitHub labels: 1 missing (run: npm run setup)", detail: 'status label "sf: a" exists' },
+    ]);
   });
 
   it("doctor and the health API show each per-project setting's effective value and source layer (design 2026-11-01)", async () => {
@@ -150,7 +193,7 @@ describe("health: one implementation behind doctor and the page", () => {
     const { loaded } = await setupDoctor();
     const checks = await doctorChecks(loaded);
     log.mockClear();
-    const code = await doctor(loaded);
+    const code = await doctor(loaded, buildStatsStore);
     expect(log.mock.calls.map((c) => String(c[0]))).toEqual(checks.map(checkLine));
     expect(code).toBe(1); // claude CLI not found
 
@@ -179,6 +222,60 @@ describe("health: one implementation behind doctor and the page", () => {
     const { port } = await uiFor({ ...loaded, registry, plugins: { ...loaded.plugins, llm: "counting" } });
     await get(port, "/api/health");
     expect(calls).toBe(0);
+  });
+});
+
+// The model credential and sandbox checks in plain words (design 09-health, 2026-11-23): a sentence with no variable name,
+// command or URL, the raw doctor line behind Details; the sandbox lines of one cause are one row; doctor's lines are unchanged.
+const OFF_WHY = "Claude Code's sandbox is off on this host: sandbox is enabled but dependencies are missing: bubblewrap (bwrap) not installed, socat not installed · install missing tools (e.g. apt install bubblewrap socat) or see https://code.claude.com/docs/en/sandboxing";
+const box = (enforced: boolean, why: string): SandboxEnforcement => ({ reads: { enforced, why }, writes: { enforced, why }, network: { enforced, why } });
+/** doctorChecks' sandbox lines for a probe result. */
+const sandboxChecks = (b: SandboxEnforcement) => linesToChecks(SANDBOX_LINES.map((line) => ({ line, ...b[line] })));
+const RAW = [/[A-Z]+_[A-Z_]+/, /npm run|apt install/, /https?:\/\//];
+
+describe("health: the model credential and sandbox checks in plain words", () => {
+  it("doctor prints the same credential and sandbox lines as before", async () => {
+    const missing = await secretChecks(MODEL_CREDENTIAL, new MemorySecretStore(), SECRET_WORDS);
+    expect(missing.map(checkLine)).toEqual(["FAIL  model credential missing: one of CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY (run: npm run setup)"]);
+    // The check tests/ui-health-page.test.tsx builds by hand (that jsdom test cannot load src/setup.ts).
+    expect(missing).toEqual([{ ok: false, msg: missing[0]!.msg, ...credentialPlain(false) }]);
+    const present = await secretChecks(MODEL_CREDENTIAL, new MemorySecretStore({ ANTHROPIC_API_KEY: "k" }), SECRET_WORDS);
+    expect(present.map(checkLine)).toEqual(["ok    model credential present (ANTHROPIC_API_KEY)"]);
+    expect(sandboxChecks(box(false, OFF_WHY)).map(checkLine)).toEqual(["reads", "writes", "network"].map((k) => `warn  sandbox ${k}: not OS-enforced, so auto mode is refused (${OFF_WHY})`));
+    expect(sandboxChecks(box(true, "probe ok")).map(checkLine)).toEqual(["reads", "writes", "network"].map((k) => `ok    sandbox ${k}: OS-enforced (probe ok)`));
+  });
+
+  it("each check has a plain sentence with no variable name, command or URL", async () => {
+    const checks = [
+      ...(await secretChecks(MODEL_CREDENTIAL, new MemorySecretStore(), SECRET_WORDS)),
+      ...(await secretChecks(MODEL_CREDENTIAL, new MemorySecretStore({ ANTHROPIC_API_KEY: "k" }), SECRET_WORDS)),
+      ...sandboxChecks(box(false, OFF_WHY)),
+      ...sandboxChecks(box(true, "probe ok")),
+    ];
+    for (const c of checks) {
+      expect(c.plain).toBeTruthy();
+      for (const re of RAW) expect(c.plain).not.toMatch(re);
+    }
+  });
+
+  it("reportRows: the three sandbox warnings of one cause are one row; the credential row offers the dialog, raw text behind Details", async () => {
+    const credential = await secretChecks(MODEL_CREDENTIAL, new MemorySecretStore(), SECRET_WORDS);
+    const sandbox = sandboxChecks(box(false, OFF_WHY));
+    const rows = reportRows([{ ok: true, msg: "first" }, ...credential, ...sandbox, { ok: true, msg: "last" }]);
+    expect(rows).toEqual([
+      { status: "ok", msg: "first" },
+      { status: "fail", msg: expect.any(String), detail: credential[0]!.msg, action: "add_model_credential" },
+      { status: "warn", msg: "Auto mode is off: this computer has no OS sandbox. Details: how to install it", detail: sandbox.map((c) => c.msg).join("\n") },
+      { status: "ok", msg: "last" },
+    ]);
+    for (const r of rows) for (const re of RAW) expect(r.msg).not.toMatch(re);
+  });
+
+  it("reportRows: sandbox lines of different causes stay apart, one row per cause", () => {
+    const mixed: SandboxEnforcement = { reads: { enforced: true, why: "a" }, writes: { enforced: false, why: "b" }, network: { enforced: false, why: "b" } };
+    const rows = reportRows(sandboxChecks(mixed));
+    expect(rows.map((r) => r.status)).toEqual(["ok", "warn"]);
+    expect(rows[1]!.detail!.split("\n")).toEqual(["sandbox writes: not OS-enforced, so auto mode is refused (b)", "sandbox network: not OS-enforced, so auto mode is refused (b)"]);
   });
 });
 

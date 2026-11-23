@@ -8,7 +8,8 @@ import { CHILD_ERROR_MESSAGE } from "./interfaces/updater.js";
 import { CODE_ROOT_ENV, Plugins, cliConfig, loadConfig, ownerRefusal } from "./compose.js";
 import { defineCommand, loadCommands, resolveCommand } from "./cli/index.js";
 import { SENTENCE_FORM } from "./core/command-table.js";
-import { parseSentence, runSentence } from "./core/local-cli.js";
+import { cliName, parseSentence, runSentence } from "./core/local-cli.js";
+import { skillEvalRun } from "./skill-evals.js";
 import { SUPERVISED_ENV } from "./supervisor.js";
 
 const HEADER = `factory [--config <path>] <command>
@@ -26,7 +27,9 @@ const SENTENCE = defineCommand({
   usage: `  ${SENTENCE_FORM.padEnd(40)} A command in your own words: printed as typed lines under a proposal ID and stored
                pending; nothing changes until \`factory confirm <proposal-id>\` (one model call, plugins.llm)`,
   async run(args, ctx) {
-    const parsed = parseSentence(args);
+    // A project's wrapper names itself in FACTORY_CLI_NAME, so the hints name the command the owner typed.
+    const cli = cliName(process.env);
+    const parsed = parseSentence(args, cli);
     if ("error" in parsed) {
       console.error(`${parsed.error}\n${ctx.usage}`);
       return 1;
@@ -36,7 +39,7 @@ const SENTENCE = defineCommand({
       const p = new Plugins(loaded);
       const secrets = await p.secrets();
       const refusal = ownerRefusal(loaded, store, identity.user, "approve_spec");
-      const r = await runSentence({ store, llm: await p.llm(secrets), scanner: await p.scanner(secrets), identity, refusal, newId: () => randomUUID() }, parsed.text);
+      const r = await runSentence({ store, llm: await p.llm(secrets), scanner: await p.scanner(secrets), identity, refusal, newId: () => randomUUID(), cli }, parsed.text);
       for (const line of r.lines) (r.code === 0 ? console.log : console.error)(line);
       return r.code;
     });
@@ -56,7 +59,8 @@ async function main(argv: readonly string[]): Promise<number> {
   }
   // The supervisor sets the code root (its runtime copy) for its child; the cwd stays the main checkout.
   const load = () => loadConfig(process.cwd(), { codeRoot: process.env[CODE_ROOT_ENV], configFile });
-  return found.command.run(found.args, { name: found.name, load, usage });
+  // The root wiring a command needs reaches its handler here, through the call (the handler imports no root module).
+  return found.command.run(found.args, { name: found.name, load, usage, runSkillEval: skillEvalRun });
 }
 
 main(process.argv.slice(2)).then(

@@ -5,12 +5,13 @@
 // each value through the Withholder before it leaves (api.ts); `refs` are the same-repo issue numbers it names.
 //
 // Precedence, first match wins: closed, blocked on a person or the budget, running, a claim
-// pause that stops this run's kind, a dependency, a phase hold, a coordination hold, a retry's not_before, the
-// queue position, and last nothing (no run moves it). An open alarm that affects the item is named after the
+// pause that stops this run's kind, a dependency, a phase hold, a coordination hold, a run kind no worker claims
+// (`worker_kinds`: it waits for a session), a retry's not_before, the queue position, and last nothing (no run moves it). An open alarm that affects the item is named after the
 // reason (withAlarms), whichever rule gave it.
 
-import { DEPENDENCY_CLOSED, DEPENDENCY_CYCLE, type ItemPhase, PERSON_PHASES, isClosedPhase, phaseOf } from "../core/phase.js";
-import { failureClass, IMPLEMENT_KINDS, retryClears } from "../core/policy.js";
+import { DEPENDENCY_CLOSED, DEPENDENCY_CYCLE, FAILED_PHASES, type ItemPhase, PERSON_PHASES, isClosedPhase, phaseOf } from "../core/phase.js";
+import { isModelRunKind } from "../core/model-choice.js";
+import { AGENT_STALLED, failureClass, IMPLEMENT_KINDS, REPEATED_FAILURE, retryClears } from "../core/policy.js";
 import type { BlockedOn, ClaimDecision, CloseReason, RunKind, RunOutcome, Stage } from "../core/types.js";
 import { FAILURE_DESCRIPTIONS } from "./failures.js";
 
@@ -36,13 +37,17 @@ export type ReasonCode =
   | "closed" | "closed_as"
   | "budget" | "merge_pending" | "spec_pending" | "max_revisions" | "dependency_closed" | "dependency_cycle" | "max_loops" | "merge_conflict"
   | "recurring_none" | "recurring_stalled" | "recurring_rate_limited" | "recurring_infra" | "recurring_own"
-  | "run_failed" | "person_idle" | "person"
+  | "failed_triage" | "failed_implement" | "failed_review" | "failed_update" | "failed_step"
+  | "repeated_triage" | "repeated_implement" | "repeated_step"
+  | "agent_needs_human" | "floor_tier" | "rule_of_two" | "session_released" | "changes_requested" | "empty_diff"
+  | "delivery_failed" | "checks_failed" | "checks_failed_update" | "eval_regression"
+  | "person_idle" | "person_code" | "person"
   | "deadlock" | "deadlock_unknown" | "running"
-  | "paused_rate_limit" | "paused_model_stall" | "paused_forge_auth" | "paused_preflight"
+  | "paused_rate_limit" | "paused_model_stall" | "paused_model_credential" | "paused_forge_auth" | "paused_preflight"
   | "dependency" | "dependency_unknown"
   | "phase_parent_one" | "phase_parent_many" | "phase_parent" | "phase_prev_ref" | "phase_prev" | "ci" | "other_issue"
   | "held_running" | "held_pr" | "held_waiting"
-  | "not_before" | "queued_at" | "queued" | "idle";
+  | "not_before" | "queued_at" | "queued" | "waits_session" | "idle";
 
 export interface Why {
   code: WhyCode;
@@ -65,8 +70,12 @@ export interface Why {
 export interface ClaimPauses {
   rate_limit?: string | null;
   model_stall?: string | null;
+  /** The missing model credential's pause (design §5 Restarts): it stops agent runs only. */
+  model_credential?: string | null;
   forge_auth?: string | null;
   preflight_access?: string | null;
+  /** The run kinds workers claim now (`worker_kinds`); a queued run of another kind waits for a session. Absent or null: every kind. */
+  worker_kinds?: readonly RunKind[] | null;
 }
 
 export interface WhyInput {
@@ -124,30 +133,36 @@ export function heldBy(decision: WhyInput["decision"], run: { id: string } | nul
   return decision?.decision === "held" && !decision.approved_by && run !== null && decision.run_id === run.id;
 }
 
-/** `2026-11-07 12:30 UTC` from an ISO time; the text as is when it is not one. */
-function when(iso: string): string {
-  return /^\d{4}-\d\d-\d\dT\d\d:\d\d/.test(iso) ? `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC` : iso;
-}
-
 function why(code: WhyCode, reason_code: ReasonCode, next_actor: NextActor, params: Why["params"] = {}, holder_id: string | null = null): Why {
   return { code, reason_code, params, next_actor, refs: refsOf(Object.values(params).join(" ")), alarms: [], holder_id };
 }
 
-/** The recurring-failure reason by why a plain retry is likely enough (policy retryClears), or the task's own failure. */
+/**
+ * The recurring-failure reason by why a plain retry is likely enough (policy retryClears), or the task's own failure.
+ * A stall is an infra failure (design 05-restarts, 2026-11-23) with its own words, read from its error code.
+ */
 const RECURRING: Partial<Record<ReturnType<typeof failureClass>, ReasonCode>> = {
-  stalled: "recurring_stalled",
   rate_limited: "recurring_rate_limited",
   infra: "recurring_infra",
 };
 
+/** What an owner reads for an error code the factory has no plain words for: never the code itself. */
+export const UNKNOWN_FAILURE = "It failed with an error the factory has no plain words for yet.";
+
+/** An error code in plain words, one sentence (FAILURE_DESCRIPTIONS); any other code gets UNKNOWN_FAILURE, never the code. */
+export function failureWords(code: string): string {
+  return FAILURE_DESCRIPTIONS[code] ?? UNKNOWN_FAILURE;
+}
+
 /**
- * A recurring-failure hold (design 05-alarms): the last failed run's failure in plain words (FAILURE_DESCRIPTIONS,
- * else its code) and whether a plain retry is likely enough. With no failed run it names no failure.
+ * A recurring-failure hold (design 05-alarms): the last failed run's failure in plain words (failureWords) and
+ * whether a plain retry is likely enough. With no failed run it names no failure.
  */
 function recurring(f: HeldFailure | null): Why {
   if (f === null) return why("human", "recurring_none", "human");
-  const said = FAILURE_DESCRIPTIONS[f.outcome.error_code]?.replace(/\.$/, "") ?? f.code;
-  const code = retryClears(f.outcome) ? (RECURRING[failureClass(f.outcome)] ?? "recurring_own") : "recurring_own";
+  const said = failureWords(f.outcome.error_code).replace(/\.$/, "");
+  const code = !retryClears(f.outcome) ? "recurring_own"
+    : f.outcome.error_code === AGENT_STALLED ? "recurring_stalled" : (RECURRING[failureClass(f.outcome)] ?? "recurring_own");
   return why("human", code, "human", { failure: f.detail ? `${said} (${f.detail})` : said });
 }
 
@@ -160,33 +175,74 @@ const PERSON: Partial<Record<ItemPhase, ReasonCode>> = {
   max_revisions: "max_revisions",
   max_loops: "max_loops",
   merge_conflict: "merge_conflict",
-  too_large: "run_failed",
-  failed_implement: "run_failed",
-  failed_review: "run_failed",
-  failed_run: "run_failed",
-  repeated_failure: "run_failed",
 };
+
+/** The step a failed run's reason names (`run_failed:<kind>:<code>`), by its kind; any other kind is "a step". */
+const FAILED_STEP: Partial<Record<RunKind, ReasonCode>> = {
+  triage: "failed_triage",
+  implement: "failed_implement",
+  review: "failed_review",
+  update: "failed_update",
+};
+/** A repeated failure's step: the stage says it only in NEW and RUNNING (in REVIEW it may be a review, update or resolve run). */
+const REPEATED_STEP: Partial<Record<Stage, ReasonCode>> = { NEW: "repeated_triage", RUNNING: "repeated_implement" };
+/** The run that failed when the reason names no kind (`max_attempts`, `max_restart`): the stage says (phase.ts STAGE_FAILURES). */
+const STAGE_KIND: Partial<Record<Stage, RunKind>> = { NEW: "triage", RUNNING: "implement", REVIEW: "review" };
+/** A failed run's stored reason that names no error code, in plain words. */
+const STAGE_FAILURE: Readonly<Record<string, string>> = {
+  max_attempts: "It failed on every try it was allowed.",
+  max_restart: "The factory restarted it too many times.",
+};
+/** A failed run's stored reason: `run_failed:<kind>:<code>`. */
+const RUN_FAILED = /^run_failed:([^:]+):(.*)$/;
+
+/**
+ * A failed run's hold in words: which step failed, from its reason's kind or the item's stage, and its failure in
+ * plain words (failureWords), never the code. A repeated failure says the step failed twice the same way.
+ */
+function failedRun(i: WhyInput["item"]): Why {
+  const r = i.blocked_reason ?? "";
+  if (r === REPEATED_FAILURE) return why("human", REPEATED_STEP[i.stage] ?? "repeated_step", "human");
+  const m = RUN_FAILED.exec(r);
+  const kind = m ? (m[1] as RunKind) : STAGE_KIND[i.stage];
+  const failure = m ? failureWords(m[2]!) : (STAGE_FAILURE[r] ?? UNKNOWN_FAILURE);
+  return why("human", (kind && FAILED_STEP[kind]) ?? "failed_step", "human", { failure });
+}
+
+/** The stored hold reasons of a person's wait with a sentence of their own (`why.reason.<code>`). */
+const PERSON_REASONS: ReadonlySet<string> = new Set<ReasonCode>([
+  "agent_needs_human", "floor_tier", "rule_of_two", "session_released", "changes_requested", "empty_diff", "delivery_failed",
+  "checks_failed", "checks_failed_update", "eval_regression",
+]);
+
+/** A stored reason that is a code (no spaces), not a sentence a person or the factory wrote. */
+const CODE = /^[a-z0-9_:.-]+$/;
 
 function human(i: WhyInput["item"], p: ItemPhase, failure: HeldFailure | null): Why {
   const r = i.blocked_reason ?? "";
   if (p === "dependency_closed") return why("human", "dependency_closed", "human", { ref: r.slice(DEPENDENCY_CLOSED.length + 1) });
   if (p === "dependency_cycle") return why("human", "dependency_cycle", "human", { cycle: r.slice(DEPENDENCY_CYCLE.length + 1).trim() });
   if (p === "recurring_failure") return recurring(failure);
+  // A failed run of a kind with no phase of its own (resolve, merge-check) waits as person_wait: the same words.
+  if (FAILED_PHASES.has(p) || RUN_FAILED.test(r)) return failedRun(i);
   const code = PERSON[p];
-  if (code === "run_failed") return why("human", code, "human", { reason: r });
   if (code) return why("human", code, "human");
   // No stored reason: the item's state and what moves it next, never an empty or "no reason" text.
   if (!r) return why("human", "person_idle", "human", { stage: i.stage });
+  if (PERSON_REASONS.has(r)) return why("human", r as ReasonCode, "human");
+  // Any other code reads as a generic wait, never as the code; a written sentence is said as it is.
+  if (CODE.test(r)) return why("human", "person_code", "human");
   return why("human", "person", "human", { reason: r });
 }
 
 /** The claim pause that stops this run's kind, by the store's claim rule (sql-factory-store claimRun). */
 function pause(p: ClaimPauses, kind: RunKind): Why | null {
-  if (p.rate_limit) return why("paused", "paused_rate_limit", "factory", { until: when(p.rate_limit) });
+  if (p.rate_limit) return why("paused", "paused_rate_limit", "factory", { until: p.rate_limit });
   if (p.model_stall) return why("paused", "paused_model_stall", "factory");
+  if (p.model_credential && isModelRunKind(kind)) return why("paused", "paused_model_credential", "human");
   if (!IMPLEMENT_KINDS.includes(kind)) return null;
-  if (p.forge_auth) return why("paused", "paused_forge_auth", "human", { until: when(p.forge_auth) });
-  if (p.preflight_access) return why("paused", "paused_preflight", "human", { until: when(p.preflight_access) });
+  if (p.forge_auth) return why("paused", "paused_forge_auth", "human", { until: p.forge_auth });
+  if (p.preflight_access) return why("paused", "paused_preflight", "human", { until: p.preflight_access });
   return null;
 }
 
@@ -237,7 +293,8 @@ export function whyWaiting(x: WhyInput): Why {
   if (p === "dependency_hold") return dependency(i.blocked_reason);
   if (p === "phase_hold" || p === "phases_open" || p === "upstream_wait" || p === "ci_wait" || x.phases.waiting_on > 0) return splitWait(p, x.phases);
   if (heldBy(d, run)) return why("held", HOLDER[d!.holder_kind], "other_item", { holder: holderName(d!) }, holder);
-  if (run && x.not_before) return why("not_before", "not_before", "factory", { until: when(x.not_before) });
+  if (run && x.pauses.worker_kinds && !x.pauses.worker_kinds.includes(run.kind)) return why("queued", "waits_session", "human", { kind: run.kind });
+  if (run && x.not_before) return why("not_before", "not_before", "factory", { until: x.not_before });
   if (run) return run.position ? why("queued", "queued_at", "factory", { position: run.position }) : why("queued", "queued", "factory", { kind: run.kind });
   return why("idle", "idle", "human");
 }

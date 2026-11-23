@@ -1,6 +1,9 @@
+import { DONE_CHECKS_SCHEMA, type DoneCheck, parseDoneChecks } from "./done-checks.js";
 import { isCovered } from "./policy.js";
-import { MAX_PHASES, MIN_PHASES, type SplitLimits, splitError } from "./split.js";
+import { MAX_PHASES, MIN_PHASES, type SplitLimits, parseGoalLines, splitError } from "./split.js";
+import { DEPENDENCY_OPTIONS, proposedDependency } from "./task-build.js";
 import type { Tier } from "./types.js";
+export { doneCheckCommands } from "./done-checks.js"; // the triage branch's check_commands (src/core/done-checks.ts)
 
 // Structured outputs of each agent role: JSON Schema for the harness + a validator for the control plane.
 // Agents can be wrong; nothing they return is trusted until it passes these.
@@ -10,28 +13,19 @@ export interface TriageOutput {
   in_short: string;
   problem: string;
   done_criteria: string[];
+  done_checks?: DoneCheck[]; // one check per done-when line, in order (design 04-triage, 2026-11-22); absent on an older answer or a session's spec without one
   desired_output: string;
-  /**
-   * What is in and out of scope as one text: the stored `scope`. From `in_scope` and `out_of_scope` when triage
-   * returned them (issue #229), else an older output's own `scope` field.
-   */
+  /** In and out of scope as one text: the stored `scope`, from `in_scope` and `out_of_scope` (issue #229), else an older output's own `scope`. */
   scope: string;
   /** In-scope items, one per entry. Absent on an older output, which has only `scope`. */
   in_scope?: string[];
   /** Out-of-scope items, one per entry. Absent on an older output. */
   out_of_scope?: string[];
-  /**
-   * Decisions the human must make before approving: risky choices, open questions (at most 5 shown), one line each
-   * as the spec comment shows it. Optional in the schema (a cheap model often leaves it out when there are none);
-   * the validator defaults it to [].
-   */
+  /** Decisions the human must make before approving (at most 5 shown), one line each as the spec comment shows it. Optional; the validator defaults it to []. */
   decisions?: string[];
   /** The same decisions with their proposed default and owner-only flag (issue #444), for auto mode. [] when none. */
   decision_items?: SpecDecision[];
-  /**
-   * Owner defaults triage applied instead of asking (issue #315), one rule per entry. Optional in the schema;
-   * the validator defaults it to [].
-   */
+  /** Owner defaults triage applied instead of asking (issue #315), one rule per entry. Optional; the validator defaults it to []. */
   applied_defaults?: string[];
   allowed_paths: string[];
   /** Every file or directory the done criteria create or edit; each must be covered by `allowed_paths`. */
@@ -42,18 +36,14 @@ export interface TriageOutput {
   estimated_lines: number;
   /** Triage's estimate of the number of changed files. */
   estimated_files: number;
-  /**
-   * A split into ordered phases (2 to 4), each mergeable on its own. Required when the estimate is over the
-   * split threshold (src/core/split.ts); absent for an ordinary spec.
-   */
+  /** A split into 2 to 4 ordered phases, each mergeable on its own: required over the split threshold (src/core/split.ts), else absent. */
   phases?: TriagePhase[];
+  goal_done_when?: string[]; // a split's goal lines, in order (design 04-split-specs, 2026-11-22); only with phases
 }
 
 /**
- * One triage decision (issue #444): the question, the default triage proposes, and whether only the owner may answer
- * it. Auto mode approves a spec with each default unless a decision is owner-only. A plain-text decision (an older
- * answer), or one with no flag or no default, counts as owner-only. Since issue #526 triage also gives the reason it
- * asks and 2 to 4 options (or none); an older decision has neither.
+ * One triage decision (issue #444): the question, the proposed default, and whether only the owner may answer it (auto mode approves
+ * with each default unless one is). A plain-text decision, or one with no flag or no default, is owner-only. Reason and options: issue #526.
  */
 export interface SpecDecision {
   /** The question. Triage writes it as `question`; the stored decision keeps the name `text`. */
@@ -63,11 +53,20 @@ export interface SpecDecision {
   reason?: string;
   /** The answers to pick from, the default among them; absent or empty for a free answer. */
   options?: string[];
+  /** What picking an option changes (design 04-triage, 2026-11-21), one entry per option that changes any; absent when none (and on an older decision). */
+  option_changes?: OptionChange[];
+  layout?: boolean; // a layout decision: each option is a text sketch of a page, shown in monospace
 }
 
+/** One option's changes to the spec: the paths it needs beyond allowed_paths, and the done-when lines it changes. */
+export type OptionChange = { option: string; extra_paths: string[]; done_when: string[] };
+
+/** The changes of the option `answer` picks on decision `d`, or null when it changes nothing (or is no option). */
+export const optionChange = (d: Pick<SpecDecision, "option_changes">, answer: string | null): OptionChange | null =>
+  d.option_changes?.find((c) => c.option === answer) ?? null;
+
 /** How many options a decision with options offers (issue #526); a decision may also have none. */
-export const MIN_OPTIONS = 2;
-export const MAX_OPTIONS = 4;
+export const MIN_OPTIONS = 2, MAX_OPTIONS = 4, MAX_LAYOUT_OPTIONS = 3; // a layout decision offers MIN_OPTIONS to MAX_LAYOUT_OPTIONS
 
 /** One phase of a split spec. On /approve it becomes a sub-issue and then an ordinary work item. */
 export interface TriagePhase {
@@ -78,17 +77,13 @@ export interface TriagePhase {
 }
 
 /**
- * An agent's "I cannot go on without a human" answer (implement, resolve and review): why, and the one question
- * the owner should answer. Short plain text, each at most NEEDS_HUMAN_MAX_CHARS. Not a failure: the controller
- * blocks the item with `agent_needs_human` and starts no retry.
+ * An agent's "I cannot go on without a human" answer (implement, resolve and review): why, and the one question the owner should
+ * answer, each at most NEEDS_HUMAN_MAX_CHARS. Not a failure: the controller blocks the item with `agent_needs_human`, no retry.
  */
 export interface NeedsHuman {
   reason: string;
   question: string;
-  /**
-   * Implement only (issue #280): paths the agent needs outside the allowed paths. Shown to the owner as the exact
-   * `/retry +paths ...` reply, never applied: only the owner's reply widens allowed_paths. Absent when none.
-   */
+  /** Implement only (issue #280): paths needed outside the allowed paths, shown as the `/retry +paths ...` reply, never applied. Absent when none. */
   paths?: string[];
 }
 
@@ -102,19 +97,12 @@ export interface ImplementOutput {
   summary: string;
   /** "" when the agent returned needs_human or spec_conflict without it. */
   next_steps: string;
-  /**
-   * Work the spec asks for that this change does not do, one entry each (issue #229): a needed file outside
-   * the allowed paths, a step left for a follow-up. Non-empty marks the PR incomplete. [] when absent.
-   */
+  /** Work the spec asks for that this change does not do, one entry each (issue #229). Non-empty marks the PR incomplete. [] when absent. */
   missing: string[];
   /** Where the change differs from the spec on purpose, one entry each. [] when absent. */
   deviations: string[];
   needs_human?: NeedsHuman;
-  /**
-   * A done criterion that cannot be met inside the spec (issue #222): a file outside the allowed paths, a
-   * criterion against a repo rule. Non-empty: the run fails with this reason, nothing is pushed, and the
-   * controller starts a spec revision. Absent when the agent left it out or returned "".
-   */
+  /** A done criterion that cannot be met inside the spec (issue #222): the run fails with it and a spec revision starts. Absent when empty. */
   spec_conflict?: string;
 }
 
@@ -128,48 +116,45 @@ export const SPEC_CONFLICT = "spec_conflict";
 /** The longest `spec_conflict` reason the validator accepts: what a failed run's detail keeps. */
 export const SPEC_CONFLICT_MAX_CHARS = 500;
 
-/**
- * One reviewer finding (issue #222): `code` is a defect the implementer can fix inside the spec; `spec` is one
- * that needs the spec changed (a needed file outside the allowed paths, a criterion against a repo rule).
- */
-export interface ReviewFinding {
-  kind: "code" | "spec";
-  text: string;
-}
+/** One reviewer finding (issue #222): `code`, a defect fixable inside the spec; `spec`, one that needs the spec changed (a file outside the allowed paths, a criterion against a repo rule). */
+export type ReviewFinding = { kind: "code" | "spec"; text: string };
 
 export interface ReviewOutput {
   verdict: "pass" | "bug";
   tier: Tier;
   findings: ReviewFinding[];
-  /**
-   * Checks the reviewer could not run (e.g. the tests in its sandbox). Never a finding. Left out when empty, so
-   * an older review parses to the same value; read it with `unverifiedOf`.
-   */
+  /** Checks the reviewer could not run (e.g. the tests in its sandbox). Never a finding. Left out when empty; read it with `unverifiedOf`. */
   unverified?: string[];
   /** A UI change whose build, type-check or screenshots could not run: header "needs a human look", no auto merge. Left out when unset. */
   ui_unverified?: boolean;
+  /** Done-when lines built differently, each with its reason from the work item (design 04-agents). Left out when empty. */
+  built_differently?: BuiltDifferently[];
+  unconfirmed?: ReviewFinding[]; // findings their confirm run did not confirm (design 04-agents): stored, never routed; left out when empty
   summary: string;
   needs_human?: NeedsHuman;
 }
 
-/** The review's unverified checks; [] when it has none. */
-export function unverifiedOf(r: Pick<ReviewOutput, "unverified">): string[] {
-  return r.unverified ?? [];
-}
+/** A done-when line the change builds differently, and the reason the work item gives for it. */
+export type BuiltDifferently = { line: string; reason: string };
 
+/** The review's done-when lines built differently; [] when it has none. */
+export const builtDifferentlyOf = (r: Pick<ReviewOutput, "built_differently">): BuiltDifferently[] => r.built_differently ?? [];
+
+/** The review's unverified checks; [] when it has none. */
+export const unverifiedOf = (r: Pick<ReviewOutput, "unverified">): string[] => r.unverified ?? [];
+
+export const BUILT_DIFFERENTLY_FINDING = "built differently from the spec with no reason in the work item: "; // the factory's own code finding for such a line
 /** The findings that need the spec changed. */
-export function specFindings(r: Pick<ReviewOutput, "findings">): ReviewFinding[] {
-  return r.findings.filter((f) => f.kind === "spec");
-}
+export const specFindings = (r: Pick<ReviewOutput, "findings">): ReviewFinding[] => r.findings.filter((f) => f.kind === "spec");
 
 /** A finding as one line of text: a spec finding says so. */
-export function findingLine(f: ReviewFinding): string {
-  return f.kind === "spec" ? `(spec) ${f.text}` : f.text;
-}
+export const findingLine = (f: ReviewFinding): string => (f.kind === "spec" ? `(spec) ${f.text}` : f.text);
 
 const tierSchema = { type: "integer", minimum: 1, maximum: 5 };
 const strings = { type: "array", items: { type: "string" } };
 const count = { type: "integer", minimum: 0 };
+/** A closed object schema whose every property is required. */
+const closed = (properties: Record<string, unknown>) => ({ type: "object", additionalProperties: false, required: Object.keys(properties), properties });
 
 /** The most "Decisions for you" lines a spec shows (issue #229). */
 export const MAX_DECISIONS = 5;
@@ -188,27 +173,27 @@ export const TRIAGE_SCHEMA = {
   additionalProperties: false,
   required: [
     "in_short", "problem", "done_criteria", "desired_output", "in_scope", "out_of_scope", "allowed_paths",
-    "files_to_change", "tier", "tier_reason", "estimated_lines", "estimated_files",
+    "files_to_change", "tier", "tier_reason", "estimated_lines", "estimated_files", "done_checks",
   ],
   properties: {
     in_short: { type: "string" },
     problem: { type: "string" },
-    done_criteria: { ...strings, minItems: 1 },
+    done_criteria: { ...strings, minItems: 1 }, done_checks: DONE_CHECKS_SCHEMA,
     decisions: {
       type: "array",
       maxItems: MAX_DECISIONS,
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["question", "reason", "options", "default", "owner_only"],
-        properties: {
+      items: closed({
           question: { type: "string", description: "The question, in one line." },
           reason: { type: "string", description: "Why you ask: what the answer changes." },
           options: { ...strings, maxItems: MAX_OPTIONS, description: `[] for a free answer, or ${MIN_OPTIONS} to ${MAX_OPTIONS} answers to pick from.` },
           default: { type: "string", description: "The answer you propose, one of the options when there are any; the factory takes it when it approves on its own." },
           owner_only: { type: "boolean", description: "true when only the owner may answer: no default fits, or the choice is risky." },
-        },
-      },
+          option_changes: { type: "array", maxItems: MAX_OPTIONS, description: "[] when no option changes the spec. Otherwise one entry per option that does: the paths it needs outside allowed_paths and the done-when lines it changes.", items: closed({
+              option: { type: "string", description: "One of the options, as written there." },
+              extra_paths: { ...strings, description: "Repo-relative paths this option needs that allowed_paths does not cover. [] when none." },
+              done_when: { ...strings, description: "The done-when lines this option changes, each as the line it becomes. [] when none." } }) },
+          layout: { type: "boolean", description: `true only for a layout decision: ${MIN_OPTIONS} to ${MAX_LAYOUT_OPTIONS} options, each a text sketch of the page.` },
+      }),
     },
     applied_defaults: { ...strings, maxItems: MAX_APPLIED_DEFAULTS },
     desired_output: { type: "string" },
@@ -220,21 +205,8 @@ export const TRIAGE_SCHEMA = {
     tier_reason: { type: "string" },
     estimated_lines: count,
     estimated_files: count,
-    phases: {
-      type: "array",
-      maxItems: MAX_PHASES,
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["title", "problem", "done_criteria", "allowed_paths"],
-        properties: {
-          title: { type: "string" },
-          problem: { type: "string" },
-          done_criteria: { ...strings, minItems: 1 },
-          allowed_paths: { ...strings, minItems: 1 },
-        },
-      },
-    },
+    phases: { type: "array", maxItems: MAX_PHASES, items: closed({ title: { type: "string" }, problem: { type: "string" }, done_criteria: { ...strings, minItems: 1 }, allowed_paths: { ...strings, minItems: 1 } }) },
+    goal_done_when: { ...strings, description: "Only with phases: what the whole split must do once every phase merged, one line each." },
   },
 };
 
@@ -304,39 +276,31 @@ export const REVIEW_SCHEMA = {
   properties: {
     verdict: { enum: ["pass", "bug"] },
     tier: tierSchema,
-    findings: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["kind", "text"],
-        properties: {
-          kind: { enum: ["code", "spec"], description: "code: fixable inside the spec. spec: needs the spec changed." },
-          text: { type: "string" },
-        },
-      },
-    },
+    findings: { type: "array", items: closed({ kind: { enum: ["code", "spec"], description: "code: fixable inside the spec. spec: needs the spec changed." }, text: { type: "string" } }) },
     unverified: { ...strings, description: "Checks you could not run or confirm. Never makes the verdict bug." },
     ui_unverified: { type: "boolean", description: "True only when a change to UI paths could not have its build, type-check or screenshots run." },
+    built_differently: { type: "array", description: "Done-when lines the diff builds differently. Empty or absent when every line is built as written.", items: closed({
+      line: { type: "string", description: "The done-when line." },
+      reason: { type: "string", description: "The reason, taken only from the work item (its decisions or owner notes). Empty when it gives none: that is a code finding and the verdict bug." },
+    }) },
     summary: { type: "string" },
     needs_human: NEEDS_HUMAN_SCHEMA,
   },
 };
 
+export type ReviewConfirmOutput = { confirmed: boolean; reason: string }; // a confirm run's answer (design 04-agents): does the finding hold in the diff, and why
+export const REVIEW_CONFIRM_SCHEMA = closed({ confirmed: { type: "boolean" }, reason: { type: "string" } });
+
 type Validation<T> = { ok: true; value: T } | { ok: false; error: string };
 
-function isObj(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const isStr = (v: unknown): v is string => typeof v === "string";
 const isStrs = (v: unknown): v is string[] => Array.isArray(v) && v.every(isStr);
 const isTier = (v: unknown): v is Tier => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 5;
 const isCount = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
 
 /** Repo-relative, no traversal, no absolute paths. */
-function isSafePath(p: string): boolean {
-  return p.length > 0 && !p.startsWith("/") && !p.split("/").includes("..");
-}
+const isSafePath = (p: string): boolean => p.length > 0 && !p.startsWith("/") && !p.split("/").includes("..");
 
 /**
  * Triage refuses `.claude/` paths (design 04-triage.md, 2026-11-15): they are owner-only and the agent sandbox
@@ -376,14 +340,41 @@ function parseQuestion(d: Record<string, unknown>, at: string): SpecDecision | s
   if (!isStr(d.question) || d.question.trim() === "") return `${at}.question: must be a non-empty string`;
   if (!isStr(d.reason) || d.reason.trim() === "") return `${at}.reason: must be a non-empty string`;
   if (d.default !== undefined && d.default !== null && !isStr(d.default)) return `${at}.default: must be a string`;
-  const options = d.options ?? [];
+  const options = proposedDependency(d.question) !== null ? DEPENDENCY_OPTIONS : d.options ?? []; // a dependency proposal is always yes/no (design 04-triage)
   if (!isStrs(options) || options.some((o) => o.trim() === "") || (options.length > 0 && (options.length < MIN_OPTIONS || options.length > MAX_OPTIONS))) {
     return `${at}.options: must be [] or ${MIN_OPTIONS} to ${MAX_OPTIONS} non-empty strings`;
   }
   const def = defaultOf(d.default);
   if (options.length > 0 && (def === null || !options.includes(def))) return `${at}.default: must be one of the options`;
-  if (d.owner_only !== undefined && typeof d.owner_only !== "boolean") return `${at}.owner_only: must be true or false`;
-  return { text: d.question, default: def, owner_only: d.owner_only !== false || def === null, reason: d.reason, ...(options.length > 0 ? { options } : {}) };
+  for (const k of ["owner_only", "layout"] as const) if (d[k] !== undefined && typeof d[k] !== "boolean") return `${at}.${k}: must be true or false`;
+  if (d.layout === true && (options.length < MIN_OPTIONS || options.length > MAX_LAYOUT_OPTIONS)) return `${at}.options: a layout decision needs ${MIN_OPTIONS} to ${MAX_LAYOUT_OPTIONS} options`;
+  const changes = parseOptionChanges(d.option_changes, options, at);
+  if (isStr(changes)) return changes;
+  return { text: d.question, default: def, owner_only: d.owner_only !== false || def === null, reason: d.reason, ...(options.length > 0 ? { options } : {}), ...extras(d, changes) };
+}
+
+/** The optional layout flag and option changes of a parsed decision. */
+const extras = (d: Record<string, unknown>, changes: OptionChange[]) => ({ ...(d.layout === true ? { layout: true } : {}), ...(changes.length > 0 ? { option_changes: changes } : {}) });
+
+/** `option_changes` (design 04-triage): absent is none; each entry names an option once, with safe `extra_paths` (no `.claude/`) and `done_when` lines. */
+function parseOptionChanges(v: unknown, options: readonly string[], at: string): OptionChange[] | string {
+  if (v === undefined || v === null) return [];
+  const field = `${at}.option_changes`;
+  if (!Array.isArray(v)) return `${field}: must be a list`;
+  const out: OptionChange[] = [];
+  for (const [i, c] of v.entries()) {
+    const here = `${field}[${i}]`;
+    if (!isObj(c) || !isStr(c.option) || !options.includes(c.option)) return `${here}.option: must be one of the options`;
+    if (out.some((o) => o.option === c.option)) return `${here}.option: names an option twice`;
+    const extra_paths = c.extra_paths ?? [];
+    if (!isStrs(extra_paths) || !extra_paths.every(isSafePath)) return `${here}.extra_paths: must be repo-relative paths`;
+    const ownerOnly = ownerOnlyError(`${here}.extra_paths`, extra_paths), done_when = c.done_when ?? [];
+    if (ownerOnly) return ownerOnly;
+    if (!isStrs(done_when)) return `${here}.done_when: must be a list of strings`;
+    const lines = done_when.filter((l) => l.trim() !== ""); // an entry that changes nothing is dropped
+    if (extra_paths.length > 0 || lines.length > 0) out.push({ option: c.option, extra_paths, done_when: lines });
+  }
+  return out;
 }
 
 /**
@@ -403,10 +394,11 @@ function parseDecisions(v: unknown): Validation<SpecDecision[]> {
       out.push(q);
     } else if (isObj(d) && isStr(d.text) && (d.default === undefined || d.default === null || isStr(d.default))) {
       const def = defaultOf(d.default);
-      out.push({
-        text: d.text, default: def, owner_only: d.owner_only !== false || def === null,
-        ...(isStr(d.reason) ? { reason: d.reason } : {}), ...(isStrs(d.options) && d.options.length > 0 ? { options: d.options } : {}),
-      });
+      const options = isStrs(d.options) ? d.options : [];
+      const changes = parseOptionChanges(d.option_changes, options, at);
+      if (isStr(changes)) return { ok: false, error: changes };
+      out.push({ text: d.text, default: def, owner_only: d.owner_only !== false || def === null, ...(isStr(d.reason) ? { reason: d.reason } : {}),
+        ...(options.length > 0 ? { options } : {}), ...extras(d, changes) });
     } else return { ok: false, error: `${at}.question: must be a non-empty string` };
   }
   return { ok: true, value: out };
@@ -443,11 +435,8 @@ function parsePhases(v: unknown): Validation<TriagePhase[] | undefined> {
   return { ok: true, value: phases };
 }
 
-/**
- * Validates a triage answer. With `limits` (the item's configured size caps), it also applies the split rule:
- * an estimate over the threshold (src/core/split.ts) is rejected unless it has 2 to 4 phases.
- */
-export function parseTriage(v: unknown, limits?: SplitLimits): Validation<TriageOutput> {
+/** Validates a triage answer; with `limits` (the item's size caps) an estimate over the split threshold also needs 2 to 4 phases, and `check_commands` (the triage branch's) requires done_checks. */
+export function parseTriage(v: unknown, limits?: SplitLimits & { check_commands?: readonly string[] }): Validation<TriageOutput> {
   if (!isObj(v)) return { ok: false, error: "not an object" };
   const {
     in_short, problem, done_criteria, desired_output, scope, allowed_paths, files_to_change, tier, tier_reason, estimated_lines,
@@ -473,10 +462,13 @@ export function parseTriage(v: unknown, limits?: SplitLimits): Validation<Triage
   const applied_defaults = v.applied_defaults ?? [];
   if (!isStrs(applied_defaults)) return { ok: false, error: "applied_defaults: must be a list of strings" };
   if (!isStrs(done_criteria) || done_criteria.length === 0) return { ok: false, error: "done_criteria" };
+  const checks = parseDoneChecks(v.done_checks, done_criteria, limits?.check_commands);
+  if (!checks.ok) return checks;
   // Bare tool-call markup (issue #446) is refused, never repaired: the run is retried like any invalid output.
   const markup = markupError({
     in_short, problem, desired_output, tier_reason, ...(lists ? { in_scope: scoped.in_scope, out_of_scope: scoped.out_of_scope } : { scope: scoped.scope }),
-    done_criteria, decisions: [...decisions, ...decision_items.flatMap((d) => [d.reason ?? "", ...(d.options ?? [])])], applied_defaults,
+    done_criteria, applied_defaults, goal_done_when: isStrs(v.goal_done_when) ? v.goal_done_when : undefined, done_checks: (checks.value ?? []).flatMap((c) => ("reason" in c ? [c.reason] : [])),
+    decisions: [...decisions, ...decision_items.flatMap((d) => [d.reason ?? "", ...(d.options ?? []), ...(d.option_changes ?? []).flatMap((c) => c.done_when)])],
   });
   if (markup) return { ok: false, error: markup };
   if (!isStrs(allowed_paths) || allowed_paths.length === 0 || !allowed_paths.every(isSafePath)) {
@@ -493,6 +485,8 @@ export function parseTriage(v: unknown, limits?: SplitLimits): Validation<Triage
   if (!isCount(estimated_lines) || !isCount(estimated_files)) return { ok: false, error: "estimated_lines/estimated_files" };
   const phases = parsePhases(v.phases);
   if (!phases.ok) return phases;
+  const goal = parseGoalLines(v.goal_done_when, phases.value?.length ?? 0);
+  if (!goal.ok) return goal;
   if (limits) {
     const err = splitError({ estimated_lines, estimated_files }, phases.value?.length ?? 0, limits);
     if (err) return { ok: false, error: err };
@@ -501,7 +495,8 @@ export function parseTriage(v: unknown, limits?: SplitLimits): Validation<Triage
     ok: true,
     value: {
       in_short, problem, done_criteria, desired_output, ...scoped, allowed_paths, files_to_change, tier, tier_reason, estimated_lines,
-      estimated_files, decisions, decision_items, applied_defaults, ...(phases.value ? { phases: phases.value } : {}),
+      estimated_files, decisions, decision_items, applied_defaults, ...(phases.value ? { phases: phases.value } : {}), ...(goal.value ? { goal_done_when: goal.value } : {}),
+      ...(checks.value ? { done_checks: checks.value } : {}),
     },
   };
 }
@@ -509,10 +504,7 @@ export function parseTriage(v: unknown, limits?: SplitLimits): Validation<Triage
 /** A short, non-empty plain-text field of needs_human. */
 const isShort = (v: unknown): v is string => isStr(v) && v.trim() !== "" && v.length <= NEEDS_HUMAN_MAX_CHARS;
 
-/**
- * The optional needs_human field: absent (or null) is none; otherwise both reason and question must be
- * non-empty and at most NEEDS_HUMAN_MAX_CHARS. Anything else is invalid output, retried like any other.
- */
+/** The optional needs_human: absent (or null) is none; else reason and question are non-empty, at most NEEDS_HUMAN_MAX_CHARS. Else invalid output. */
 export function parseNeedsHuman(v: unknown): Validation<NeedsHuman | undefined> {
   if (v === undefined || v === null) return { ok: true, value: undefined };
   if (!isObj(v) || !isShort(v.reason) || !isShort(v.question)) {
@@ -526,10 +518,7 @@ export function parseNeedsHuman(v: unknown): Validation<NeedsHuman | undefined> 
   return { ok: true, value: { reason: v.reason.trim(), question: v.question.trim(), ...(kept.length ? { paths: kept } : {}) } };
 }
 
-/**
- * Why an answer is not an object. A runner that completed returns the structured output, or the agent's final
- * text when it gave none (it stopped at max turns, or answered in prose): the error says which.
- */
+/** Why an answer is not an object: no answer (it stopped at max turns), plain text (it answered in prose), or another type. */
 function noAnswerError(v: unknown): string {
   if (v === undefined || v === null || v === "") return "no structured answer: the agent ended without one";
   // The text itself stays in the run's output tail: a failure detail never carries unscanned agent text.
@@ -570,6 +559,7 @@ export function parseImplement(v: unknown): Validation<ImplementOutput> {
   return { ok: true, value: { summary: v.summary, next_steps: v.next_steps, ...lists } };
 }
 
+const findingOf = (f: unknown): ReviewFinding | null => (isObj(f) && (f.kind === "code" || f.kind === "spec") && isStr(f.text) ? { kind: f.kind, text: f.text } : null);
 export function parseReview(v: unknown): Validation<ReviewOutput> {
   if (!isObj(v)) return { ok: false, error: "not an object" };
   const { verdict, tier, findings, summary } = v;
@@ -578,20 +568,32 @@ export function parseReview(v: unknown): Validation<ReviewOutput> {
   const parsed: ReviewFinding[] = [];
   for (const [i, f] of findings.entries()) {
     // An older review's finding is a plain string: a code finding (issue #222).
-    if (isStr(f)) parsed.push({ kind: "code", text: f });
-    else if (isObj(f) && (f.kind === "code" || f.kind === "spec") && isStr(f.text)) parsed.push({ kind: f.kind, text: f.text });
-    else return { ok: false, error: `findings[${i}]: an object with kind "code" or "spec" and a text` };
+    const p = isStr(f) ? { kind: "code" as const, text: f } : findingOf(f);
+    if (!p) return { ok: false, error: `findings[${i}]: an object with kind "code" or "spec" and a text` };
+    parsed.push(p);
   }
+  const unconfirmed = Array.isArray(v.unconfirmed) ? v.unconfirmed.map(findingOf) : v.unconfirmed === undefined ? [] : [null]; // set by the worker's confirm runs
+  if (unconfirmed.includes(null)) return { ok: false, error: "unconfirmed" };
   const unverified = v.unverified ?? [];
   if (!isStrs(unverified)) return { ok: false, error: "unverified" };
   if (v.ui_unverified !== undefined && typeof v.ui_unverified !== "boolean") return { ok: false, error: "ui_unverified" };
+  const differently = v.built_differently ?? [];
+  if (!Array.isArray(differently) || !differently.every((d) => isObj(d) && isStr(d.line) && isStr(d.reason))) return { ok: false, error: "built_differently" };
+  const lines = (differently as BuiltDifferently[]).map((d) => ({ line: d.line.trim(), reason: d.reason.trim() })).filter((d) => d.line);
+  // A line built differently with no reason in the work item is a defect (design 04-agents): a code finding.
+  for (const d of lines) if (!d.reason) parsed.push({ kind: "code", text: `${BUILT_DIFFERENTLY_FINDING}${d.line}` });
+  const built = lines.filter((d) => d.reason);
   const ask = parseNeedsHuman(v.needs_human);
   if (!ask.ok) return ask;
-  return {
-    ok: true,
-    value: {
-      verdict, tier, findings: parsed, summary, ...(unverified.length > 0 ? { unverified } : {}),
-      ...(v.ui_unverified === true ? { ui_unverified: true } : {}), ...(ask.value ? { needs_human: ask.value } : {}),
-    },
-  };
+  return { ok: true, value: {
+    verdict: parsed.length > findings.length ? "bug" : verdict, tier, findings: parsed, summary, ...(unverified.length > 0 ? { unverified } : {}),
+    ...(v.ui_unverified === true ? { ui_unverified: true } : {}), ...(built.length > 0 ? { built_differently: built } : {}),
+    ...(unconfirmed.length > 0 ? { unconfirmed: unconfirmed as ReviewFinding[] } : {}), ...(ask.value ? { needs_human: ask.value } : {}),
+  } };
+}
+
+/** A confirm run's answer: `confirmed` a boolean and `reason` a string, else no valid answer (its finding stays). */
+export function parseReviewConfirm(v: unknown): Validation<ReviewConfirmOutput> {
+  if (!isObj(v) || typeof v.confirmed !== "boolean" || !isStr(v.reason)) return { ok: false, error: isObj(v) ? "confirmed/reason" : noAnswerError(v) };
+  return { ok: true, value: { confirmed: v.confirmed, reason: v.reason.trim() } };
 }

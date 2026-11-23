@@ -204,8 +204,8 @@ export interface LoadedConfig {
    * (design §4): the implement run before push (and in its merge-conflict step), the update run on the merged
    * branch, the resolve run after install. Absent: `[test_command]` (checkCommands in src/core/checks.ts).
    * `ui_check`: the UI check (design §4), run only by the merge-check run, after the install command and the checks,
-   * on a merged result that changes a path under one of its `paths` prefixes. Absent: off.
-   */
+   * on a merged result that changes a path under one of its `paths` prefixes. Absent: off. `restart_command`: argv
+   * the restart run runs in the base checkout (design 04-gate-commands, restart); absent: no Restart app, off. `test_selection`: the test files the check before push runs (src/core/test-selection.ts); absent: the full test command. `check_tz`: the IANA zone every merge-check command gets as TZ (checkTzConfig); absent: off. */
   repo: {
     owner: string;
     name: string;
@@ -214,7 +214,7 @@ export interface LoadedConfig {
     install_command: string[];
     test_command: string[];
     check_commands?: string[][];
-    ui_check?: UiCheck;
+    ui_check?: UiCheck; check_tz?: string; restart_command?: string[]; test_selection?: { hubs: string[]; always: string[] };
   };
   /**
    * True when config selects no forge plugin (design 05-sources, Local startup; set by the composition root from
@@ -310,7 +310,7 @@ export interface LoadedConfig {
    * of its own. A PR-only key; absent or false (the default): every pack entry needs the owner's approval.
    */
   packs_auto_approve_read_only?: boolean;
-  /** Worker loops in one `dev` or `worker` process (architecture §4). An integer of 1 or more; default 1. */
+  /** Worker loops in one `dev` or `worker` process (architecture §4). An integer of 0 or more (0: none claims); default 1. */
   workers: number;
   /**
    * Worker slots in one process, the most `workers` can be raised to live (`factory settings set workers`).
@@ -325,8 +325,7 @@ export interface LoadedConfig {
   /**
    * Coordination (design §5, 2026-11-03): `max_coordination_cost`, `hotspot_paths`, `hotspot_weight`,
    * `mechanical_paths` and `mechanical_weight` (issue #297), `hold_policy` and `hotspot_mode` (issue #314),
-   * `conflict_window_days` (design 05-dependencies) from
-   * factory.config.json, checked at load by
+   * `conflict_window_days` (design 05-dependencies) from factory.config.json, checked at load by
    * `coordinationConfig` and passed in by compose.ts. Absent: DEFAULT_COORDINATION.
    */
   coordination?: CoordinationSettings;
@@ -348,6 +347,7 @@ export interface LoadedConfig {
    * path. The agents may read them and never write them. Absent: no input folder, every run as before the key.
    */
   read_only_inputs?: readonly string[];
+  improver?: import("./proposals.js").ImproverConfig; // improver.max_proposals, .schedule, distill.min_cases (design 07, improverConfig); absent: IMPROVER_DEFAULTS
 }
 
 /**
@@ -585,8 +585,8 @@ export interface Prompts {
   triage: string;
   implement: string;
   review: string;
-  /** prompts/resolve.md. Absent when the file is missing; a resolve run then fails with `prompt_missing`. */
-  resolve?: string;
+  resolve?: string; // prompts/resolve.md; absent when the file is missing: a resolve run then fails with `prompt_missing`
+  "review-confirm"?: string; // prompts/review-confirm.md (design 04-agents); absent: each confirm step fails and its finding stays
   /** prompts/improve.md, the improve run's system prompt (design §7). Absent: the improve run asks no model. */
   improve?: string;
 }

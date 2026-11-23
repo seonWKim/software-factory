@@ -104,14 +104,17 @@ async function entryRows(d: Pick<CapabilityDeps, "store">, kind: "mcp_server" | 
   return out;
 }
 
-/** What an imported server's row says while it has no tool names: listing, not stdio, or did not start (no error text). */
+/** What an imported server's row says while it has no tool names: listing or not stdio. */
 const MCP_LIST_NOTE = {
   requested: "listing its tools",
   running: "listing its tools",
   not_approved: "listing its tools",
   not_stdio: "not a stdio server: its tools are not listed",
-  did_not_start: "did not start",
 } as const;
+
+/** An imported server's row with no tool names: "Couldn't start <name>" (no error text), else its list note. */
+const mcpServerNote = (name: string, status: keyof typeof MCP_LIST_NOTE | "did_not_start"): string =>
+  status === "did_not_start" ? `Couldn't start ${name}` : `MCP server ${name}: ${MCP_LIST_NOTE[status]}`;
 
 /**
  * The Tools tab's rows of each approved imported MCP server, from its current description's stored listing: one per
@@ -125,7 +128,7 @@ async function mcpToolRows(d: Pick<CapabilityDeps, "store">): Promise<ToolRow[]>
   for (const server of await approvedImportedServers(db)) {
     const list = lists.get(`${server.name}\n${server.description_hash}`);
     if (list?.status === "listed") out.push(...list.tools.map((tool) => row(`mcp:${server.name}:${tool}`, `From MCP server ${server.name}`)));
-    else out.push(row(`mcp:${server.name}`, `MCP server ${server.name}: ${MCP_LIST_NOTE[list?.status ?? "requested"]}`));
+    else out.push(row(`mcp:${server.name}`, mcpServerNote(server.name, list?.status ?? "requested")));
   }
   return out;
 }

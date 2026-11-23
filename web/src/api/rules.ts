@@ -1,12 +1,13 @@
 // The Rules page: GET /api/v1/standing, /api/v1/rules and /api/v1/rules/entry; POST /api/v1/standing (postStanding),
-// POST /api/v1/rules/verdict (postRuleVerdict) and POST /api/v1/improve/run (postImproveRun).
+// POST /api/v1/rules/verdict (postRuleVerdict), /api/v1/rules/edit (postRuleEdit), /api/v1/rules/pushbacks/dismiss
+// (postPushbackDismiss) and POST /api/v1/improve/run (postImproveRun).
 
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { t } from "../i18n/index.js";
 import { getJson, postJson } from "./client.js";
 import { API } from "./routes.js";
 
-/** One standing rule of `/api/v1/standing` (design 05-standing-approvals). `last_used_at`: null, not recorded yet. */
+/** One standing rule of `/api/v1/standing` (design 05-standing-approvals): when it last fired (null: never) and the items it approved in the last 7 days. */
 export interface StandingRuleRow {
   rule: string;
   gate: string;
@@ -16,7 +17,8 @@ export interface StandingRuleRow {
   set_by: string | null;
   created_at: string | null;
   updated_at: string | null;
-  last_used_at: string | null;
+  last_fired_at: string | null;
+  recent: { id: string; title: string }[];
 }
 
 /** A proposal to turn a rule on that no one has answered yet. */
@@ -28,13 +30,23 @@ export interface StandingProposalRow {
   created_at: string;
 }
 
-/** `/api/v1/standing`: the rules and the pending proposals; `csrf_token` is null when the server has no write route. */
+/**
+ * `/api/v1/standing`: the rules, the pending proposals and `waiting`, the items waiting now that the rule would approve
+ * (the dialogs' preview; absent from an older server); `csrf_token` is null when the server has no write route.
+ */
 export interface StandingView {
   as_of: string;
   csrf_token: string | null;
   rules: StandingRuleRow[];
   proposals: StandingProposalRow[];
+  waiting?: { id: string; title: string }[];
 }
+
+/** A POST /api/v1/standing body: a rule on or off (naming the proposal it answers, if any), its row removed, or the threshold changed. */
+export type StandingWriteBody =
+  | { rule: string; enabled: boolean; proposal?: string }
+  | { rule: string; action: "remove" }
+  | { rule: string; action: "edit"; threshold: number };
 
 /** One ledger entry waiting for the owner's verdict on the Rules page (issue #571). */
 export interface RuleRow {
@@ -52,9 +64,11 @@ export interface RuleRow {
   /** A proposal's kind (`promote-learning`, `edit-asset`, `new-asset`) and the asset it changes, when the ledger lists them. */
   kind?: string;
   target?: string;
+  /** The task a promote of this proposal created to build it (`tk_` + its ID in lower case); null before (absent from an older server). */
+  task?: string | null;
 }
 
-/** One incident behind an entry: its linked ID (T-, L-, E-), day, the agent's proposal, the owner's quote, its root reason. */
+/** One incident behind an entry: its linked ID (T-, L-, E-, P-), day, the agent's proposal, the owner's quote, its root reason. */
 export interface RuleEvidence {
   ref?: string;
   date?: string;
@@ -75,6 +89,8 @@ export interface RuleDetail {
   /** A proposal's current lines of its target and the change it proposes, when the ledger carries them. */
   current?: string;
   proposed?: string;
+  /** A proposal's change in prose, when it gives no current and proposed lines. */
+  change?: string;
   incidents?: number;
   /** The incidents, newest first. */
   evidence?: RuleEvidence[];
@@ -91,6 +107,8 @@ export interface RuleEntryView {
   detail: RuleDetail | null;
   error: string | null;
   retire?: string[] | null;
+  /** The newest ledger verdict of each evidence ID that has one; an ID with none is left out (absent from an older server). */
+  cited?: Record<string, string>;
 }
 
 /** One retired class from the ledger's retire verdicts: the owner's reason and the day (YYYY-MM-DD). */
@@ -110,6 +128,13 @@ export interface AppliedRule {
   incidents: string[] | null;
   judged: string | null;
   raw: string | null;
+}
+
+/** One active pushback in no class yet: its incident ID (sent by Dismiss, never shown), the owner's words, the day or null. */
+export interface PushbackRow {
+  id: string;
+  pushback: string;
+  date: string | null;
 }
 
 /** One agents home and the first of bin/tacit and bin/evolve that is missing or not executable there (null: both are). */
@@ -132,6 +157,8 @@ export interface RulesView {
   applied: { rules: AppliedRule[]; elsewhere: string[] } | null;
   /** The retired classes, newest first; null with the ledger off (absent from an older server). */
   retired?: RetiredRule[] | null;
+  /** The active unclustered pushbacks and a failed read's error; null (or absent) with the ledger off or a plugin without them. */
+  pushbacks?: { rows: PushbackRow[]; error: string | null } | null;
   error: string | null;
   csrf_token: string | null;
   judge: string | null;
@@ -157,18 +184,34 @@ export interface ImproveReportView {
   created_at: string;
   /** The runs in all groups. */
   runs: number;
-  /** Single-run patterns. */
+  /** Single-run patterns (not shown). */
   patterns: number;
   groups: ImproveGroupView[];
 }
 
-/** One failure group: its draft's cause and fix, or one note (withheld, failed, skipped); `filing` null: not filed yet. */
+/** One failure group: its draft's cause and fix, or one note (withheld, failed, skipped); `filing` null: not filed yet; `hotspot` marks a file. */
 export interface ImproveGroupView {
   error_code: string;
   detail: string | null;
   runs: number;
-  draft: { cause: string | null; fix: string | null; note: string | null } | null;
-  filing: string | null;
+  /** True for an often-edited file (its `detail` is the file), not a failure group. */
+  hotspot: boolean;
+  draft: { cause: string | null; fix: string | null; note: ImproveNote | null } | null;
+  filing: ImproveFilingView | null;
+}
+
+/** A draft that was skipped, failed or withheld: `reason` is the stored code, or `withheld`. */
+export interface ImproveNote {
+  status: string;
+  reason: string;
+}
+
+/** A group's filing: `reason` is the code of a skipped or failed one (`withheld` for a withheld one), else null; `runs` the new runs a comment named. */
+export interface ImproveFilingView {
+  status: "filed" | "linked" | "commented" | "skipped" | "withheld" | "failed";
+  reason: string | null;
+  ref: string | null;
+  runs: number | null;
 }
 
 export type RuleVerdict = "promote" | "reject" | "hold" | "retire";
@@ -182,10 +225,10 @@ export function useRuleEntry(id: string, enabled: boolean, round = 0) {
   return useQuery({ queryKey: [url, round], queryFn: () => getJson<RuleEntryView>(url), enabled, staleTime: Infinity, placeholderData: keepPreviousData });
 }
 
-/** POST /api/v1/standing: a rule on or off, naming the proposal it answers if any. A refusal comes back as `{ ok: false, error }`. */
+/** POST /api/v1/standing: one standing-rule change (StandingWriteBody). A refusal comes back as `{ ok: false, error }`. */
 export async function postStanding(
   token: string,
-  body: { rule: string; enabled: boolean; proposal?: string },
+  body: StandingWriteBody,
 ): Promise<{ ok: true; changed: boolean } | { ok: false; error: string }> {
   const r = await postJson<{ changed?: boolean; error?: string }>(API.standing, token, body);
   if (r.ok) return { ok: true, changed: r.value.changed === true };
@@ -194,14 +237,30 @@ export async function postStanding(
 
 /**
  * POST /api/v1/rules/verdict: a verdict with its reason, and for promote of a class (C-) the owner's wording, default
- * and exception. Promote of a proposal (P-) takes none: the server applies its current → proposed lines, and a failed
- * apply comes back as the error, with nothing written.
+ * and exception. Promote of a proposal (P-) takes none: the server applies its current → proposed lines (a prose change:
+ * it records the verdict as applied to its target, writes no file and creates a task to build it), and a failure comes
+ * back as the error, with nothing written.
  */
 export async function postRuleVerdict(
   token: string,
   body: { id: string; verdict: RuleVerdict; reason: string; text?: string; default?: string; exception?: string },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const r = await postJson<{ error?: string }>(API.ruleVerdict, token, body);
+  return postRules(API.ruleVerdict, token, body);
+}
+
+/** POST /api/v1/rules/edit: an applied class's new wording, default and exception; no reason, no verdict. */
+export function postRuleEdit(token: string, body: { id: string; text: string; default: string; exception: string }) {
+  return postRules("/api/v1/rules/edit", token, body);
+}
+
+/** POST /api/v1/rules/pushbacks/dismiss: records the pushback as noise. */
+export function postPushbackDismiss(token: string, body: { id: string }) {
+  return postRules("/api/v1/rules/pushbacks/dismiss", token, body);
+}
+
+/** A Rules page write: ok, or the server's refusal as `error`. */
+async function postRules(url: string, token: string, body: object): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await postJson<{ error?: string }>(url, token, body);
   if (r.ok) return { ok: true };
   return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }

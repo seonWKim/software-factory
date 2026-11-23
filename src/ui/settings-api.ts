@@ -18,7 +18,7 @@
 
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
-import type { Loaded } from "../compose.js";
+import type { Loaded } from "../load-config.js";
 import { checkConfigKeys, configFailLines } from "../config-keys.js";
 import { type LearnedSetting, learnedFromRows } from "../core/learned-settings.js";
 import { type ProjectRef, rekeyProjectSettings } from "../core/project.js";
@@ -67,6 +67,8 @@ export interface UiSettings {
   csrfToken: string;
   /** The `approve_merge` check for `mode`, `auto_merge_max_tier` and a loosening change (SettingsDeps.mayApproveMerge). Absent: no check. */
   mayApproveMerge?: () => Promise<string | null>;
+  /** The OS sandbox check before `mode` becomes auto (SettingsDeps.sandbox, compose.ts sandboxEnforcement). Absent: no check. */
+  sandbox?: NonNullable<SettingsDeps["sandbox"]>;
   /** Each integration interface (src/plugins.ts INTEGRATION_KINDS) and the plugin factory.config.json selects for it. Absent: none listed. */
   integrations?: readonly { kind: string; interface: string; configured: string }[];
   /**
@@ -254,7 +256,7 @@ const NUMBER_KEYS: ReadonlySet<string> = new Set([
   "first_output_ms", "poll_interval_ms", "tick_ms", "heartbeat_ms", "lease_ms", "workers", "alarm_repeat_count", "alarm_window_minutes",
   "alarm_restart_count", "standing_approvals.threshold", "auto_merge_max_tier", "stall_ms", "probe_interval_ms", "auth_pause_ms",
   "max_coordination_cost", "hotspot_weight", "mechanical_weight", "spend.daily_budget_usd", "spend.weekly_budget_usd",
-  "conflict_hotspot_threshold",
+  "conflict_hotspot_threshold", "agent_stop_check_ms",
 ]);
 /** A key's kind from its built-in default's type; a number box only for a listed numeric key, so an unmapped key reads as text. */
 const kindOf = (k: SettableKey): Kind => {
@@ -488,6 +490,7 @@ export async function writeSettings(d: PauseDeps, s: UiSettings, body: unknown):
     // The same scanner the page's reads withhold through: a flagged message_style is refused, as on the CLI.
     scanner: d.scanner,
     ...(s.mayApproveMerge ? { mayApproveMerge: s.mayApproveMerge } : {}),
+    ...(s.sandbox ? { sandbox: s.sandbox } : {}),
     ...(editFile
       ? {
           editFile: async (req: ConfigEditRequest) => {

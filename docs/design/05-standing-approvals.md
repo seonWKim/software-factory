@@ -1,15 +1,44 @@
 # 5. Coordination: standing approvals
 
-- **The page shows and changes rules** (decision changed 2026-11-08, issue #300, phase 3 of 3 of #293; before: rules
-  and proposals were shown and changed only through `/standing`, see History). The Settings page's "Standing
-  approvals" section lists each rule (gate, tier, the effective threshold, on or off, who set it, created, and last
-  used, which is not recorded yet and shows "not recorded") with an on or off switch, and each pending proposal (its
+- **The page adds, pauses, edits and removes the rule, and every change is recorded** (decision changed 2026-11-22,
+  wi_5c1c03d0; before: each write was the rule row and one log line, with no audit row, see History).
+  - **Writes.** `POST /api/v1/standing` takes `{ rule, enabled, proposal? }` (add: on, creating the row if none; pause:
+    off), `{ rule, action: "remove" }`, which deletes the rule row (`deleteStandingRule`), and
+    `{ rule, action: "edit", threshold }`, which sets the one global `standing_approvals.threshold` through the Settings
+    write (`writeSettings`: the same refusals as `factory settings set`, a 422). The threshold is not a field of the
+    rule, and the only rule is still `spec-t1`. Each write is behind the same request guards and owner check
+    (`approve_spec`); a refusal is a 403 whose text names the missing permission, with nothing written. Nothing is
+    written when nothing would change (`changed: false`): a pause of a rule already off or with no row, a remove with
+    no row, an edit to the threshold in force.
+  - **Change record.** `controller_standing_rule_changes` (migration `20261122T1300-state-standing-rule-changes`), one
+    row per change: `gate`, `tier`, `action` (`add`, `pause`, `edit`, `remove`), `before_value` and `after_value`
+    (JSON `{"enabled":…}` or `{"threshold":…}`; null before an add with no row and after a remove), `actor` (a user
+    ID, never a display name) and `at`. `putStandingRule` writes its record in the transaction that writes the row, so
+    `/standing accept|decline`, the turn-off after `/revise` or `/reject` and the page each leave one record per write
+    (an accept records `add`, a decline `pause`); `deleteStandingRule` writes its record with the delete; an edit's is
+    written by `recordStandingRuleChange` once the setting is stored (its `runtime_settings_changes` audit row stays).
+    There is no second copy of the rule and no file. Store methods: `StandingChangeStore` in `src/core/standing.ts`,
+    implemented in `src/impl/store/sql/standing-rules.ts`.
+  - **Preview.** `GET /api/v1/standing` adds `waiting` (`[{ id, title }]`, through the Withholder): the items waiting
+    now that the rule covers (`waitingForRule` and `ruleWouldApprove`): READY, on a human, `spec_pending` (the
+    spec-gate dial held them), tier 1, the latest spec not a split and not held (no file changed, dropped request
+    values or owner answers), and allowed paths touching no protected category (`protectedCategory`, with the
+    project's floors). It reads the newest 100 such items from the store, with no remote call. Turning the rule on
+    does not approve them at once: the rule acts when a spec's triage outcome is applied, as before.
+  - **Not built:** a history view of the records on the page; a timed pause (a pause lasts until the rule is turned
+    on again); any rule but `spec-t1`. Page: `09-dashboard-rules.md`.
+- **The page shows and changes rules** (decision changed 2026-11-21, wi_1cf90455; before: "last used" was not
+  recorded and showed "not recorded", see History). On the Rules page each rule that is on is a row of "In effect"
+  and each one that is off a row under its Details (since 2026-11-22): its switch, its sentence, when it last fired and
+  the items it approved in the last 7 days, each linked by its title; gate, tier, the effective threshold, who set it
+  and created behind the row's Details. Pending proposals are rows of "Waiting for you". Firings are read, never written, from the
+  stored `standing_approved` state changes whose actor is `standing:<rule>`. Each pending proposal (its
   rule not on and not written since the proposal was stored, read from the stored rows alone) with Accept and
-  Decline. Read: `GET /api/v1/standing`; write: `POST /api/v1/standing` with `{ rule, enabled, proposal? }`, behind
+  Decline. Read: `GET /api/v1/standing`; write: `POST /api/v1/standing` (the decision above), behind
   the resume route's guards and its owner check (`approve_spec`, the `/approve` check), so the page accepts what
   `/standing accept|decline` accepts and refuses any rule but `spec-t1`. A rule already in the asked state is not
-  written. Each write is the rule row (`set_by` = the factory user ID) and one log line, with no audit row; a stored
-  per-person audit record (enterprise) is a follow-up. Routes and guards: `09-dashboard-app.md`. One code path
+  written. Each write is the rule row (`set_by` = the factory user ID), its change record (the decision above) and
+  one log line. Routes and guards: `09-dashboard-app.md`. One code path
   for one worker or many: the user is the owner, the linked local account or `cli_user`, and that ID goes in
   `set_by`.
 - **A rule acts at the spec gate** (decision changed 2026-11-07, issue #299, phase 2 of 3 of #293; before: phase 1

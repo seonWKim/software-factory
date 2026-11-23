@@ -20,7 +20,8 @@ Run each through its npm script, never the test runner directly.
 | Raw controls: no `<button>`, `<select>`, `<textarea>` or `<input>` under `web/src` outside `components/ui/` (added by wi_5b2b; no ratchet list) | `tests/design-system.test.ts` | `npm test -- tests/design-system.test.ts` |
 | Every shared component has a section in `components.md` and renders | `tests/web-ui-components.test.tsx` | `npm test -- tests/web-ui-components.test.tsx` |
 | No English text outside the catalog (wi_9b74) | `tests/web-i18n-text.test.ts` | `npm test -- tests/web-i18n-text.test.ts` |
-| Every page at five window sizes, light and dark | `scripts/responsive-check.mjs` | `npm run check:responsive` (runs at merge, where a browser can start; not in the agent sandbox) |
+| Two page widths as tokens, `<main>` takes its width from `PageHeader`, no page sets a page width, every view h2 is `CARD_TITLE` and every h3 `SUB_TITLE` | `tests/design-system.test.ts` | `npm test -- tests/design-system.test.ts` |
+| Every page at five window sizes, light and dark: the layout rules, and the page template's structure (one h1; h1 and h2 sizes the same on every page; `<main>` at `--page-wide` or `--page-read`; every button 28px or 32px tall, except a chart's bar, `[data-chart-bar]`; no snake_case or `wi_` text outside `[data-raw]`), each failure naming its rule | `scripts/responsive-check.mjs`, `scripts/responsive/rules.mjs` | `npm run check:responsive` (runs at merge, where a browser can start; not in the agent sandbox) |
 
 ## Existing pages
 
@@ -30,8 +31,8 @@ The raw-controls check applies to every file under `web/src` outside `components
 
 - [ ] Composed from `components/ui`; no raw `<button>`, `<select>`, `<textarea>` or `<input>`.
 - [ ] A new shared component has a section in `components.md`.
-- [ ] Layout follows `patterns.md`: one primary action, a state for loading, empty and error.
-- [ ] Text follows `writing.md`: sentence case, a next step, no raw IDs, no command as the main text, compact times.
+- [ ] Layout follows `patterns.md`: one primary action, a state for loading, empty and error, the page width from `PageHeader`'s `width`, tabs and filters in the `PageToolbar`, h2s from `Card` and h3s in `SUB_TITLE`, text shown as stored inside `[data-raw]`.
+- [ ] Text follows `writing.md`: sentence case, a next step, no raw IDs, no command as the main text, compact times, no code names outside Details, the glossary's words.
 - [ ] Every text is in `en.ts` and read with `t()`.
 - [ ] Colours are token classes; no hex.
 - [ ] Usable by keyboard, with a visible focus ring and a visible label on every field.

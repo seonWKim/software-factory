@@ -9,11 +9,13 @@
 // time (readSkillRefs): its bytes are hashed against the stored SHA-256 and only its front matter description is kept.
 // "Last used" comes from runs already stored (their finish time, their reported model and their stored transcript), so
 // a tool call writes nothing new. Pure but for the skill folder listing and the skill file reads.
+//
+// A skill's version (skillVersion) is the one place a skill folder's bodies are read: they are hashed, never kept.
 
 import { createHash } from "node:crypto";
 import { open, readFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export type CapabilityKind = "skill" | "tool" | "provider";
 
@@ -198,6 +200,32 @@ export async function readSkillRefs(refs: readonly SkillRef[]): Promise<Skill[]>
   return out.sort((a, b) => a.name.localeCompare(b.name) || a.folder.localeCompare(b.folder));
 }
 
+/** Every regular file under `dir`, as absolute paths; symbolic links and other entries are left out. */
+async function filesUnder(dir: string): Promise<string[]> {
+  const out: string[] = [];
+  for (const e of await readdir(dir, { withFileTypes: true })) {
+    const path = join(dir, e.name);
+    if (e.isDirectory()) out.push(...(await filesUnder(path)));
+    else if (e.isFile()) out.push(path);
+  }
+  return out;
+}
+
+/**
+ * A skill folder's version: the SHA-256 (hex) over each regular file's path relative to the folder (with `/`) and
+ * its bytes, in path order. Each name and body is length-prefixed, so a renamed, added, removed or edited file gives
+ * another version, and the same contents always the same one. Throws when the folder cannot be read.
+ */
+export async function skillVersion(folder: string): Promise<string> {
+  const hash = createHash("sha256");
+  const files = (await filesUnder(folder)).map((f) => ({ f, name: relative(folder, f).split(sep).join("/") }));
+  for (const { f, name } of files.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+    const bytes = await readFile(f);
+    hash.update(`${Buffer.byteLength(name)}:${name}\0${bytes.length}:`).update(bytes);
+  }
+  return hash.digest("hex");
+}
+
 /** One stored run, as the registry reads it: newest first. `model`: the model its usage reports, null when none. */
 export interface StoredRun {
   id: string;
@@ -210,13 +238,14 @@ export interface StoredRun {
  * When each capability was last used, from stored runs only (newest first):
  * - a provider entry: the newest run of one of its roles whose reported model is one of the entry's model names;
  * - a skill or tool: the newest run whose stored transcript holds one of its markers (`markers`, by capability id).
- * `transcript(run)` reads one run's stored transcript, null when it has none; it is asked only while a marker is unfound.
+ * `holds(run, markers)` says which of `markers` one run's stored transcript holds, null when it has none; it is asked
+ * only while a marker is unfound, and only for the unfound ones.
  */
 export async function lastUsed(
   runs: readonly StoredRun[],
   providers: readonly { id: string; roles: readonly string[]; models: readonly string[] }[],
   markers: ReadonlyMap<string, readonly string[]>,
-  transcript: (run: StoredRun) => Promise<string | null>,
+  holds: (run: StoredRun, markers: readonly string[]) => Promise<ReadonlySet<string> | null>,
 ): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   for (const p of providers) {
@@ -227,10 +256,10 @@ export async function lastUsed(
   const open = new Map([...markers].filter(([, m]) => m.length > 0));
   for (const run of runs) {
     if (open.size === 0) break;
-    const text = await transcript(run);
-    if (text === null) continue;
+    const held = await holds(run, [...new Set([...open.values()].flat())]);
+    if (held === null) continue;
     for (const [id, m] of open) {
-      if (!m.some((x) => text.includes(x))) continue;
+      if (!m.some((x) => held.has(x))) continue;
       out.set(id, run.finished_at);
       open.delete(id);
     }

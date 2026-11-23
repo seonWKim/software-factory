@@ -1,14 +1,17 @@
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { API, type ItemRow, type MergeCheckView, type Overview, type QueueRow, type RunRow, type Session, type Why, mergeCheckLabel, showsMerge, useApi } from "../api.js";
 import { IdDetails } from "../components/ui/copy.js";
+import { Disclosure } from "../components/ui/disclosure.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
+import { type MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
-import { ID_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
-import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, isHttpUrl, isWorkerId, shortSource, until, whyText, workerName } from "../lib/format.js";
+import { BLOCK_LINK_CLASS, ID_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
+import { duration, isHttpUrl, isWorkerId, localDateTime, relativeTime, shortSource, whyText, workerName } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
-import { Badge } from "../components/ui/badge.js";
+import { StatusBadge } from "../components/ui/badge.js";
+import { groupOf } from "../../../src/shared/states.js";
 
 /** Date.now(), ticking each second, for "Ns ago" texts. */
 export function useNow(): number {
@@ -20,6 +23,21 @@ export function useNow(): number {
   return now;
 }
 
+/**
+ * A relative time in the one compact form (`relativeTime`), with the exact local time in the element's title. `label`
+ * is a catalog text with `{time}` (and the `vars`) for a time inside a sentence ("started {time}"); "–" when there is no time.
+ */
+export function When({ at, now, label, vars }: { at: string | null | undefined; now: number; label?: MessageKey; vars?: Record<string, string | number> }) {
+  if (!at) return <>{t("format.none")}</>;
+  const time = relativeTime(at, now);
+  return <time dateTime={at} title={localDateTime(at)}>{label ? t(label, { ...vars, time }) : time}</time>;
+}
+
+/** The raw fields of a row or card, behind one "Details" toggle: the only place a page shows a stored field name or code as it is stored (`data-raw`, skipped by tests/web-plain-words.test.tsx). */
+export function RawDetails({ children, className }: { children: ReactNode; className?: string }) {
+  return <Disclosure data-raw className={className} summary={t("details.raw")}>{children}</Disclosure>;
+}
+
 /** The viewer: the factory user the page's commands act as (the session's actor), null while unknown. */
 export function useViewer(): string | null {
   return useApi<Session>(API.session, false).data?.actor ?? null;
@@ -28,7 +46,7 @@ export function useViewer(): string | null {
 /** A worker as "worker N" (its slot number), the full ID behind it (decision 3 of the readable-names change). */
 export function WorkerName({ id }: { id: string | null | undefined }) {
   if (!id) return <>–</>;
-  return <IdDetails label={workerName(id)} id={id} what="worker ID" />;
+  return <IdDetails label={workerName(id)} id={id} what="worker ID" nowrap />;
 }
 
 /**
@@ -38,7 +56,7 @@ export function WorkerName({ id }: { id: string | null | undefined }) {
 export function PersonName({ id, name, viewer }: { id: string | null; name?: string | null | undefined; viewer: string | null }) {
   if (!id || id === "system") return <>{t("person.factory")}</>;
   if (isWorkerId(id)) return <WorkerName id={id} />;
-  return <IdDetails label={id === viewer ? t("person.you") : (name || t("person.other"))} id={id} what="user ID" />;
+  return <IdDetails label={id === viewer ? t("person.you") : (name || t("person.other"))} id={id} what="user ID" nowrap />;
 }
 
 /**
@@ -63,7 +81,7 @@ export function SourceLink({ source, className, itemId }: { source: { id: string
 /** An item's title linking to its page, wrapping at any width; "Untitled item" when it has none. */
 export function ItemTitle({ id, title }: { id: string; title: string | null }) {
   return (
-    <Link href={itemPath(id)} className={cn("font-medium", LINK_CLASS)}>
+    <Link href={itemPath(id)} data-raw={title !== null ? "" : undefined} className={cn("font-medium", LINK_CLASS)}>
       {title ?? t("item.untitled")}
     </Link>
   );
@@ -82,6 +100,21 @@ export function MergeCheckNote({ check }: { check: MergeCheckView }) {
       {mergeCheckLabel(check)}
     </span>
   );
+}
+
+/** A snake_case name or an item ID, as `npm run check:responsive`'s raw-name rule finds them (scripts/responsive/rules.mjs). */
+const RAW_NAME = /\b(?:wi_[0-9a-z]+|[a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b/g;
+
+/** A sentence that may quote names as written (a check's message): each snake_case name or item ID in it sits in `data-raw`, the words around it stay plain. */
+export function RawNames({ text }: { text: string }) {
+  const parts: ReactNode[] = [];
+  let last = 0;
+  for (const m of text.matchAll(RAW_NAME)) {
+    parts.push(text.slice(last, m.index), <span key={m.index} data-raw>{m[0]}</span>);
+    last = m.index + m[0].length;
+  }
+  parts.push(text.slice(last));
+  return <>{parts}</>;
 }
 
 /** `#N` not part of `owner/name#N`, as the server reads refs (src/ui/why.ts). */
@@ -167,14 +200,12 @@ export const byId = (items: readonly ItemRow[] | undefined): Map<string, ItemRow
 /** What a Needs-you row asks of the owner: merge a PR, approve a spec, or answer or fix (everything else). */
 export type NeedGroup = "merge" | "approve" | "answer";
 
-/** The levels of an item that waits on the owner (the server's NEEDS_YOU): a stuck item waits on nobody's answer. */
-const WAITING_LEVELS: readonly string[] = NEEDS_YOU_LEVELS.filter((l) => l !== "stuck");
-
 /**
- * The items that wait on the owner, one Needs-you row each (src/ui/needs-you.ts): blocked on a person or the budget.
- * An item started past a deadlock is Blocked by another task and goes on by itself.
+ * The items that wait on the owner, one Needs-you row each (src/ui/needs-you.ts): the state table's Needs-you group.
+ * A triage run's ask (Waiting), a failed run and a stuck item (Problem) are no row; an item started past a deadlock is
+ * Blocked by another task and goes on by itself.
  */
-export const needsYou = (items: readonly ItemRow[]): ItemRow[] => items.filter((i) => WAITING_LEVELS.includes(i.item_phase));
+export const needsYou = (items: readonly ItemRow[]): ItemRow[] => items.filter((i) => groupOf(i.item_phase) === "needs");
 
 export function needGroup(it: ItemRow): NeedGroup {
   if (showsMerge(it.merge) || it.item_phase === "ready_to_merge") return "merge";
@@ -198,7 +229,7 @@ export function ItemsTable({ items, now, label, empty, plugins }: { items: reado
       header: t("col.item"),
       className: "max-w-md",
       render: (it) => (
-        <Link href={itemPath(it.id)} className={cn("block font-medium sm:truncate", LINK_CLASS)}>
+        <Link href={itemPath(it.id)} data-raw data-row-title className={cn("font-medium sm:truncate", BLOCK_LINK_CLASS)}>
           {it.title ?? shortSource(it.source.id)}
         </Link>
       ),
@@ -208,14 +239,14 @@ export function ItemsTable({ items, now, label, empty, plugins }: { items: reado
       header: t("col.state"),
       render: (it) => (
         <>
-          <Badge level={it.item_phase}>{LEVEL_LABELS[it.item_phase] ?? it.item_phase}</Badge>
+          <StatusBadge state={it.item_phase} />
           {isInteractiveRun(it.run) && <> <InteractiveBadge /></>}
           {it.merge_check && <MergeCheckNote check={it.merge_check} />}
         </>
       ),
     },
     { key: "why", header: t("col.why"), className: "text-text-2", render: (it) => (it.why ? <WhyText why={it.why} /> : it.blocked_reason || "–") },
-    { key: "since", header: t("col.since"), className: "tabular-nums whitespace-nowrap", render: (it) => ago(it.since, now) },
+    { key: "since", header: t("col.since"), className: "tabular-nums whitespace-nowrap", render: (it) => <When at={it.since} now={now} /> },
     ...(plugins?.issues === "github"
       ? [{ key: "issue", header: t("col.issue"), className: "tabular-nums", render: (it: ItemRow) => (it.issue ? <Ext href={it.issue.url}>#{it.issue.number}</Ext> : "–") }]
       : []),
@@ -237,7 +268,7 @@ export const isInteractiveRun = (run: { kind: string; status: string } | null | 
 
 /** The badge an item shows while a person handles it as an interactive task. */
 export function InteractiveBadge() {
-  return <Badge level="running">{t("run.interactive")}</Badge>;
+  return <StatusBadge state="running">{t("run.interactive")}</StatusBadge>;
 }
 
 /** Running runs with their item, owner and heartbeat. */
@@ -247,8 +278,8 @@ export function RunningTable({ runs, items, now }: { runs: readonly RunRow[]; it
     { key: "kind", header: t("col.run"), render: (r) => runKindLabel(r.kind) },
     { key: "attempt", header: t("col.attempt"), numeric: false, className: "tabular-nums" },
     { key: "worker", header: t("col.worker"), render: (r) => <WorkerName id={r.owner} /> },
-    { key: "running_for", header: t("col.runningFor"), className: "tabular-nums", render: (r) => ago(r.started_at, now) },
-    { key: "heartbeat", header: t("col.heartbeat"), className: "tabular-nums", render: (r) => t("time.ago", { time: ago(r.heartbeat_at, now) }) },
+    { key: "running_for", header: t("col.runningFor"), className: "tabular-nums", render: (r) => (r.started_at ? duration(now - Date.parse(r.started_at)) : t("format.none")) },
+    { key: "heartbeat", header: t("col.heartbeat"), className: "tabular-nums", render: (r) => <When at={r.heartbeat_at} now={now} /> },
   ];
   return <DataTable label={t("running.label")} columns={columns} rows={runs.filter((r) => r.status === "running")} rowKey={(r) => r.id} empty={t("running.empty")} dataKey />;
 }
@@ -260,8 +291,8 @@ export function QueueTable({ queue, items, now, limit }: { queue: readonly Queue
     { key: "item", header: t("col.item"), className: "max-w-md", render: (q) => <RunItemCell id={q.work_item_id} item={items.get(q.work_item_id)} /> },
     { key: "kind", header: t("col.run"), render: (r) => runKindLabel(r.kind) },
     { key: "attempt", header: t("col.attempt"), numeric: false, className: "tabular-nums" },
-    { key: "queued", header: t("col.queued"), className: "tabular-nums", render: (q) => t("time.ago", { time: ago(q.created_at, now) }) },
-    { key: "starts", header: t("col.starts"), className: "tabular-nums", render: (q) => (q.why && q.why.code !== "queued" && q.why.code !== "not_before" ? <WhyText why={q.why} /> : until(q.not_before, now)) },
+    { key: "queued", header: t("col.queued"), className: "tabular-nums", render: (q) => <When at={q.created_at} now={now} /> },
+    { key: "starts", header: t("col.starts"), className: "tabular-nums", render: (q) => (q.why && q.why.code !== "queued" && q.why.code !== "not_before" ? <WhyText why={q.why} /> : q.not_before && Date.parse(q.not_before) > now ? <When at={q.not_before} now={now} /> : t("queue.now")) },
   ];
   return <DataTable label={t("queue.title")} columns={columns} rows={limit ? queue.slice(0, limit) : queue} rowKey={(q) => q.id} empty={t("queue.empty")} dataKey />;
 }

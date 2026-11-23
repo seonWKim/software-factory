@@ -5,6 +5,7 @@ import { parseQuickEdit } from "../src/core/quick-add.js";
 import type { UserId, WorkItemId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { issue, newStore, system } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // Managing plain tasks (design 02-tasks): edit with quick-add words, hard delete, and one level of sub-tasks, from the
 // CLI and chat. The store methods themselves are covered in tests/store-contract.test.ts.
@@ -16,7 +17,7 @@ async function setup() {
   const { store } = await newStore(clock);
   let n = 0;
   const d: LocalCliDeps = {
-    store, identity: { user: USER, from: "git user.email" }, project: async () => null, read: async () => "", newId: () => `id${++n}`,
+    answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: USER, from: "git user.email" }, project: async () => null, read: async () => "", newId: () => `id${++n}`,
   };
   /** As typed: `factory task <args...>`. */
   const cli = (...args: string[]) => {

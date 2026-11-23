@@ -2,12 +2,20 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { STATS_MIN_SAMPLE_DEFAULT, buildStatsStore, loadConfig, statsConfig } from "../src/compose.js";
+import { STATS_MIN_SAMPLE_DEFAULT, statsConfig } from "../src/config-values.js";
+import { buildStatsStore } from "../src/compose.js";
+import { loadConfig } from "../src/load-config.js";
 import type { StatsConfig } from "../src/core/config.js";
-import { type StatsRecord, aggregateAutonomy, aggregateStats, collectAutonomy, collectStats, formatStatsText } from "../src/core/stats.js";
-import type { Tier, UserId, VerdictSeverity, WorkItemId } from "../src/core/types.js";
+import { type MergeEvaluation, noVerdicts } from "../src/core/merge-evaluation.js";
+import {
+  type StatsRecord, aggregateAutonomy, aggregateStats, aggregateTierMerges, collectAutonomy, collectStats, collectTierMerges, droppedBack, formatStatsText, tierRule,
+} from "../src/core/stats.js";
+import type { Tier, Timestamp, UserId, VerdictSeverity, WorkItemId } from "../src/core/types.js";
+import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
-import { human, issue, newStore, system } from "./helpers/store.js";
+import { HOTSPOT } from "../src/core/hotspots.js";
+import { FILING_KINDS } from "../src/core/stats.js";
+import { OTHER_PROJECT_KEY, PROJECT_KEY, human, issue, newStore, system } from "./helpers/store.js";
 
 const WEIGHTS = { none: 0, minor: 1, major: 3, critical: 10 };
 const REPO_ROOT = join(import.meta.dirname, "..");
@@ -208,7 +216,7 @@ describe("factory stats", () => {
     });
     await collectStats(spy, config);
     await collectAutonomy(spy);
-    expect(new Set(calls)).toEqual(new Set(["listStatsRecords", "listRunsByKind"]));
+    expect(new Set(calls)).toEqual(new Set(["listStatsRecords", "listRunsByKind", "listMergeEvaluations", "listFiledPatternsWithin", "listProposals"]));
     expect(await snapshot()).toEqual(before);
   });
 });
@@ -303,6 +311,154 @@ describe("factory stats: interactive sessions (design §5, 2026-11-01)", () => {
   });
 });
 
+describe("factory stats: per-tier merge record and rule (design 06-measurement)", () => {
+  const config: StatsConfig = { weights: WEIGHTS, min_sample: 2 };
+  let n = 0;
+  /** One merge evaluation of `tier`, clean unless `over` says otherwise. */
+  const ev = (tier: Tier | null, over: Partial<MergeEvaluation> = {}): MergeEvaluation => ({
+    work_item_id: `wi_${++n}` as WorkItemId, project: "p", merge_sha: `s${n}`, tier, merged_by: "system:merge", merged_at: "2026-11-01T00:00:00.000Z" as Timestamp,
+    token_cost: 0, title: null, reverted: 0, fixed_forward: 0, verdicts: noVerdicts(), explicit: noVerdicts(), critical: 0, ...over,
+  });
+  const clean = (count: number, tier: Tier | null = 1) => Array.from({ length: count }, () => ev(tier));
+
+  it("the rule: 50 merges with at most 1 reverted or fixed forward and no critical verdict qualify", () => {
+    expect(tierRule(1, clean(50))).toBe("met");
+    expect(tierRule(1, [...clean(49), ev(1, { reverted: 1 })])).toBe("met");
+    expect(tierRule(2, [...clean(48), ev(2, { reverted: 1 }), ev(2, { fixed_forward: 2 })])).toBe("not_met");
+    expect(tierRule(3, [...clean(49), ev(3, { critical: 1 })])).toBe("not_met");
+    expect(tierRule(null, clean(50, null))).toBe("met");
+  });
+
+  it("the rule reads only the last 50 merges: an older revert or critical verdict no longer counts", () => {
+    const old = [ev(1, { reverted: 1 }), ev(1, { fixed_forward: 1 }), ev(1, { critical: 1 })];
+    expect(tierRule(1, [...old, ...clean(50)])).toBe("met");
+    expect(tierRule(1, [...clean(50), ...old])).toBe("not_met");
+  });
+
+  it("the drop-back: 2 reverted or fixed-forward merges among the last 20 drop a tier back, 1 does not, older ones are not read", () => {
+    expect(droppedBack([...clean(19), ev(1, { reverted: 1 })])).toBe(false);
+    expect(droppedBack([...clean(18), ev(1, { reverted: 1 }), ev(1, { fixed_forward: 1 })])).toBe(true);
+    expect(droppedBack([ev(1, { reverted: 1 }), ...clean(10), ev(1, { fixed_forward: 1 })])).toBe(true); // fewer than 20 merges
+    expect(droppedBack([ev(1, { reverted: 1 }), ev(1, { reverted: 1 }), ...clean(20)])).toBe(false);
+    expect(droppedBack([ev(1, { reverted: 1 }), ...clean(19), ev(1, { reverted: 1 })])).toBe(false); // the first is the 21st from the end
+  });
+
+  it("fewer than 50 merges never qualify, however clean", () => {
+    expect(tierRule(1, clean(49))).toBe("too_few");
+    expect(tierRule(1, [])).toBe("too_few");
+  });
+
+  it("tiers 4 and 5 show never and never qualify, even with a clean record", () => {
+    expect(tierRule(4, clean(60, 4))).toBe("never");
+    expect(tierRule(5, clean(60, 5))).toBe("never");
+    const rows = aggregateTierMerges([...clean(60, 4), ...clean(60, 5)], []);
+    expect(rows.filter((r) => r.tier === 4 || r.tier === 5).map((r) => [r.rule, r.qualifies])).toEqual([["never", false], ["never", false]]);
+  });
+
+  it("per tier: merges in the window, reverted or fixed forward, explicit verdicts other than accept, and the rule", () => {
+    const recent = [
+      ev(2, { reverted: 1, explicit: { ...noVerdicts(), changes: 2, accept: 3 } }),
+      ev(2, { fixed_forward: 1, reverted: 1, explicit: { ...noVerdicts(), reject: 1 }, verdicts: { ...noVerdicts(), changes: 5 } }),
+      ev(2),
+      ev(null, { explicit: { ...noVerdicts(), accept: 1 } }),
+    ];
+    const rows = aggregateTierMerges([...clean(50, 2), ...recent], recent);
+    expect(rows.map((r) => r.tier)).toEqual([1, 2, 3, 4, 5, null]);
+    expect(rows.find((r) => r.tier === 2)).toEqual({
+      tier: 2, merged: 3, reverted_or_fixed: 2, not_accept: 3, sample: 50, sample_bad: 2, sample_critical: 0, rule: "not_met", qualifies: false,
+    });
+    expect(rows.find((r) => r.tier === null)).toMatchObject({ merged: 1, reverted_or_fixed: 0, not_accept: 0, sample: 1, rule: "too_few", qualifies: false });
+    expect(rows.find((r) => r.tier === 1)).toMatchObject({ merged: 0, sample: 0, rule: "too_few", qualifies: false });
+  });
+
+  /** Merges one new item of `tier` through the store's own transition. */
+  async function merge(store: Store, i: number, tier: Tier | null) {
+    const { item } = await store.createWorkItem(issue(i), system);
+    const r = await store.transition({
+      id: item.id, expected_version: item.version, actor: system, reason: "pr_merged",
+      patch: { stage: "CLOSED", close_reason: "completed", merge_sha: `sha${i}`, tier, blocked_on: "none", blocked_reason: null },
+    });
+    if (!r.ok) throw new Error(r.reason);
+    return r.item;
+  }
+
+  it("factory stats shows the record in text and --json, from the store, counting only the last 30 days as merged", async () => {
+    const clock = new FakeClock("2026-10-01T00:00:00.000Z");
+    const { store } = await newStore(clock);
+    for (let i = 0; i < 50; i++) await merge(store, 100 + i, 1); // old: in the rule sample, not in the 30 days
+    clock.advance(40 * 86_400_000);
+    const reverted = await merge(store, 200, 1);
+    await store.transition({ id: reverted.id, expected_version: reverted.version, patch: {}, actor: system, reason: "reverted" });
+    const checked = await merge(store, 201, 3);
+    const v = await store.recordVerdict({
+      id: checked.id, expected_version: checked.version, actor: human, verdict: "changes", severity: "critical", reason: "x",
+      comment_id: "c-201", target: "pr", implicit: false, pr_head: null,
+    });
+    if (!v.ok) throw new Error(v.reason);
+
+    const report = await collectStats(store, config);
+    expect(report.merges).toEqual(await collectTierMerges(store));
+    expect(report.merges!.find((r) => r.tier === 1)).toEqual({
+      tier: 1, merged: 1, reverted_or_fixed: 1, not_accept: 0, sample: 50, sample_bad: 1, sample_critical: 0, rule: "met", qualifies: true,
+    });
+    expect(report.merges!.find((r) => r.tier === 3)).toMatchObject({ merged: 1, not_accept: 1, sample_critical: 1, rule: "too_few", qualifies: false });
+    expect(JSON.parse(JSON.stringify(report)).merges).toEqual(report.merges);
+
+    const lines = formatStatsText(report).split("\n");
+    const head = lines.findIndex((l) => /^tier\s+merged_30d\s+reverted_or_fixed\s+not_accept\s+rule$/.test(l));
+    expect(head).toBeGreaterThan(0);
+    expect(lines.slice(head + 1, head + 7).map((l) => l.split(/\s{2,}/))).toEqual([
+      ["1", "1", "1", "0", "met"],
+      ["2", "0", "0", "0", "too few merges (0 of 50)"],
+      ["3", "1", "0", "1", "too few merges (1 of 50)"],
+      ["4", "0", "0", "0", "never"],
+      ["5", "0", "0", "0", "never"],
+      ["untiered", "0", "0", "0", "too few merges (0 of 50)"],
+    ]);
+  });
+});
+
+describe("factory stats: what merges took from the owner (design 06-efficiency)", () => {
+  const config: StatsConfig = { weights: WEIGHTS, min_sample: 2 };
+  const HOUR = 3_600_000;
+
+  it("human touches per merged item, median hours waiting on the owner and the revert/fix-forward rate, each labelled with its window", async () => {
+    const clock = new FakeClock("2026-11-01T00:00:00.000Z");
+    const { store } = await newStore(clock);
+    const { item } = await store.createWorkItem(issue(1), system);
+    const asked = await store.transition({
+      id: item.id, expected_version: item.version, actor: system, reason: "spec_pending",
+      patch: { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" }, detail: { ask_reason: "spec_pending", ask_tier: 1 },
+    });
+    if (!asked.ok) throw new Error(asked.reason);
+    clock.advance(3 * HOUR);
+    const approved = await store.transition({ id: item.id, expected_version: asked.item.version, actor: human, reason: "spec_approved", patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null } });
+    if (!approved.ok) throw new Error(approved.reason);
+    const merged = await store.transition({ id: item.id, expected_version: approved.item.version, actor: system, reason: "pr_merged", patch: { stage: "CLOSED", close_reason: "completed", merge_sha: "sha1" } });
+    if (!merged.ok) throw new Error(merged.reason);
+    const { item: other } = await store.createWorkItem(issue(2), system);
+    const m2 = await store.transition({ id: other.id, expected_version: other.version, actor: system, reason: "pr_merged", patch: { stage: "CLOSED", close_reason: "completed", merge_sha: "sha2" } });
+    if (!m2.ok) throw new Error(m2.reason);
+    await store.transition({ id: other.id, expected_version: m2.item.version, patch: {}, actor: system, reason: "reverted" });
+
+    const report = await collectStats(store, config);
+    expect(report.owner).toEqual({ merged: 2, asks: 1, touches_per_merged: 0.5, wait_hours_median: 3, revert_rate: 0.5, reverted_or_fixed: 1 });
+    const lines = formatStatsText(report).split("\n");
+    expect(lines).toContain("human touches per merged item (last 30 days): 0.50 (1 asks, 2 merged)");
+    expect(lines).toContain("median hours waiting on the owner (last 30 days): 3.0");
+    expect(lines).toContain("revert/fix-forward rate (last 30 days): 0.50 (1 of 2 merged)");
+  });
+
+  it("a window with no asks shows no data, never 0", async () => {
+    const { store } = await newStore();
+    const report = await collectStats(store, config);
+    const text = formatStatsText(report);
+    expect(text).toContain("human touches per merged item (last 30 days): no data");
+    expect(text).toContain("median hours waiting on the owner (last 30 days): no data");
+    expect(text).toContain("revert/fix-forward rate (last 30 days): no data");
+  });
+});
+
 describe("stats config", () => {
   it("defaults min_sample to 10 and keeps the weights as given", () => {
     expect(STATS_MIN_SAMPLE_DEFAULT).toBe(10);
@@ -335,6 +491,78 @@ describe("stats config", () => {
     const real = JSON.parse(readFileSync(join(REPO_ROOT, "factory.config.json"), "utf8")) as Record<string, unknown>;
     const dir = tempRoot({ ...real, stats: { weights: { ...WEIGHTS, major: -3 } } });
     await expect(loadConfig(dir)).rejects.toThrow(/stats\.weights\.major/);
+  });
+});
+
+// Issue #775: what the factory files on itself, per kind, over the last 30 days. Done and rejected read each item's close_reason.
+describe("factory stats: filings per kind", () => {
+  const config: StatsConfig = { weights: WEIGHTS, min_sample: 2 };
+  type Close = "completed" | "rejected" | null;
+
+  async function seeded() {
+    const clock = new FakeClock("2026-03-01T00:00:00.000Z");
+    const { store } = await newStore(clock);
+    const { item: sys } = await store.createWorkItem(issue(900), system);
+    const { run } = await store.enqueueRun({ work_item_id: sys.id, kind: "improve", idempotency_key: "improve" });
+    const window = { window_start: "2026-02-28T00:00:00.000Z" as Timestamp, window_end: "2026-03-01T00:00:00.000Z" as Timestamp };
+    const { report } = await store.recordImproveReport({ run_id: run.id, project: PROJECT_KEY, ...window, groups: [], patterns: [] });
+    let n = 0;
+    const item = async (project: string, close: Close) => {
+      const { item } = await store.createWorkItem({ ...issue(++n), project }, system);
+      if (close) await store.transition({ id: item.id, expected_version: item.version, actor: system, reason: "closed", patch: { stage: "CLOSED", close_reason: close } });
+      return item.source;
+    };
+    const pattern = async (error_code: string, close: Close, project = PROJECT_KEY) => {
+      const ref = await item(project, close);
+      const { row } = await store.takeFiledPattern({ project, pattern_key: `k${n}`, error_code, detail: "d", report_id: report.id, evidence: 3 });
+      await store.setFiledPatternRef(row.id, report.id, ref);
+    };
+    const proposal = async (close: Close) => {
+      const ref = await item(PROJECT_KEY, close);
+      const { proposal: p } = await store.recordProposal({
+        project: PROJECT_KEY, report_id: report.id, pattern_key: `p${n}`, error_code: "checks_failed", run_count: 2, file: "prompts/review.md", state: "pending", needs_human_merge: false,
+      });
+      await store.decideProposal(p.id, "promote", "local:owner" as UserId);
+      await store.setProposalFiledRef(p.id, ref);
+    };
+    // Outside the window: 40 days before the stats are read.
+    await pattern(HOTSPOT, "rejected");
+    await proposal("rejected");
+    clock.set("2026-04-01T00:00:00.000Z");
+    await pattern(HOTSPOT, "completed");
+    await pattern(HOTSPOT, "rejected");
+    await pattern(HOTSPOT, "rejected", OTHER_PROJECT_KEY);
+    await pattern(HOTSPOT, null);
+    await pattern("checks_failed", "rejected");
+    await pattern("agent_timed_out", null);
+    await proposal("completed");
+    // A promoted proposal with no item yet is not counted.
+    const { proposal: unfiled } = await store.recordProposal({
+      project: PROJECT_KEY, report_id: report.id, pattern_key: "unfiled", error_code: "x", run_count: 2, file: "prompts/review.md", state: "pending", needs_human_merge: false,
+    });
+    await store.decideProposal(unfiled.id, "promote", "local:owner" as UserId);
+    clock.set("2026-04-10T00:00:00.000Z");
+    return { store };
+  }
+
+  it("counts filed, done and rejected per kind over the last 30 days, across projects", async () => {
+    const { store } = await seeded();
+    const report = await collectStats(store, config);
+    expect(report.filings?.map((r) => r.kind)).toEqual([...FILING_KINDS]);
+    expect(report.filings).toEqual([
+      { kind: "hotspot", filed: 4, done: 1, rejected: 2 },
+      { kind: "failure_pattern", filed: 2, done: 0, rejected: 1 },
+      { kind: "proposal", filed: 1, done: 1, rejected: 0 },
+    ]);
+  });
+
+  it("factory stats prints one row per kind with filed, done and rejected", async () => {
+    const { store } = await seeded();
+    const lines = formatStatsText(await collectStats(store, config)).split("\n");
+    const at = lines.findIndex((l) => /^filed_by_factory\s+filed\s+done\s+rejected$/.test(l));
+    expect(at).toBeGreaterThan(0);
+    expect(lines.slice(at + 1, at + 4).map((l) => l.split(/\s{2,}/))).toEqual([["hotspot", "4", "1", "2"], ["failure pattern", "2", "0", "1"], ["proposal", "1", "1", "0"]]);
+    expect(lines.join("\n")).toContain("in the last 30 days");
   });
 });
 

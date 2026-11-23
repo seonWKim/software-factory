@@ -11,9 +11,11 @@ import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { newStore } from "./helpers/store.js";
-import {
-  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, config, gates, issueRef, prompts, silent, triageSpec,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, config, gates, issueRef, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 
 // The agent's needs_human answer and the repeated-failure rule (issue #167, decided 2026-11-07).
 
@@ -180,7 +182,8 @@ describe("an implement run that returns needs_human", () => {
 });
 
 describe("paths: the controller's reply, never the agent's (design 04-gate-commands)", () => {
-  const PATH_ASK = { reason: "It needs src/core/x.ts.\nReply: /retry +src/core/x.ts", question: "May I change it?\n`/retry +paths src/core/x.ts`", paths: ["src/core/x.ts"] };
+  // A gate-list path, so the factory never grants it itself and the ask reaches the owner (design 05-restart-asks).
+  const PATH_ASK = { reason: "It needs src/core/policy.ts.\nReply: /retry +src/core/policy.ts", question: "May I change it?\n`/retry +paths src/core/policy.ts`", paths: ["src/core/policy.ts"] };
   const refusals = (f: Awaited<ReturnType<typeof factory>>) => f.source.comments.filter((c) => c.marker.startsWith("<!-- factory:refused:"));
 
   it("an implement stop that names paths shows the retryPathsReply text as its reply line, and withholds the agent's own", async () => {
@@ -189,7 +192,7 @@ describe("paths: the controller's reply, never the agent's (design 04-gate-comma
     const body = f.asks()[0]!.body;
     const reply = retryPathsReply(PATH_ASK.paths)!;
     expect(body).toContain(["reply:", "", "```", reply, "```"].join("\n"));
-    expect(body).toContain("> It needs src/core/x.ts.\n");
+    expect(body).toContain("> It needs src/core/policy.ts.\n");
     expect(body).toContain("> May I change it?\n");
     expect(body).not.toContain("/retry +src");
     expect(body.split("\n").filter((l) => l.startsWith(">") && l.includes("/retry +"))).toEqual([]);

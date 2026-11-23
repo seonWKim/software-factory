@@ -7,6 +7,8 @@ import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SettingRow, SettingsView } from "../web/src/api.js";
 import { PR_ONLY_KEYS, SETTABLE_KEYS } from "../src/core/settings.js";
+import { ADVANCED_GROUPS, GROUP_KEYS, appliesKey } from "../web/src/views/settings/advanced-groups.js";
+import { modelSummary } from "../web/src/views/settings/values.js";
 import { type MessageKey, en } from "../web/src/i18n/en.js";
 import { keyHelp, keyLabel } from "../web/src/lib/key-label.js";
 
@@ -41,7 +43,7 @@ const view: SettingsView = {
     row("workers", { value: "5", max: 8, capped_at: null, applies_at: "the worker pool's next tick" }),
     row("models", { kind: "models", value: '{"cheap":"haiku","standard":"sonnet","strong":"opus"}', source: "default", file_value: null, applies_at: "the next run that starts" }),
     row("model_by", { kind: "json", value: MODEL_BY, file_value: MODEL_BY, default_value: MODEL_BY, applies_at: "the next run that starts" }),
-    row("hold_policy", { kind: "json", value: '{"mode":"hold"}', source: "default", file_value: null, default_value: '{"mode":"hold"}', applies_at: "the next claim" }),
+    row("hold_policy", { kind: "json", value: '{"mode":"hold"}', source: "override", file_value: null, default_value: '{"mode":"run_after_minutes","minutes":120}', applies_at: "the next claim" }),
     row("message_style", { kind: "text", value: '"Short."', file_value: '"Short."', default_value: '""' }),
     row("phases_auto_approve", { kind: "boolean", value: "false", source: "default", file_value: null, applies_at: "the next phase spec triage writes" }),
     row("auto_grant_test_paths", { kind: "boolean", value: "true", default_value: "true", file_value: null, source: "default" }),
@@ -145,7 +147,8 @@ const pick = (select: HTMLElement, value: string) => {
   fireEvent.click(select);
   fireEvent.click(within(screen.getByRole("listbox")).getAllByRole<HTMLButtonElement>("option").find((o) => o.value === value)!);
 };
-const rowOf = (table: HTMLElement, key: string) => table.querySelector<HTMLElement>(`tr[data-key="${key}"]`)!;
+// A key's row, whichever group holds it: For developers is a table of its own, beside the one `table` names.
+const rowOf = (table: HTMLElement, key: string) => table.ownerDocument.querySelector<HTMLElement>(`tr[data-key="${key}"]`)!;
 const selectedTab = () => screen.getAllByRole("tab").find((t) => t.getAttribute("aria-selected") === "true")!.textContent;
 /** The names of the page's top-level sections, in page order. */
 const regions = () => [...document.querySelectorAll<HTMLElement>("section[aria-label]")].map((e) => e.getAttribute("aria-label")!);
@@ -171,15 +174,16 @@ describe("Settings page", () => {
 
   it("shows a row per settable key with its value, source and applies-at", async () => {
     const table = await show();
-    expect([...table.querySelectorAll("tbody > tr")].map((r) => r.getAttribute("data-key"))).toEqual(view.keys.map((k) => k.key));
+    const rowKeys = [...table.querySelectorAll("tr[data-key]"), ...document.querySelectorAll("details[data-group] tr[data-key]")].map((r) => r.getAttribute("data-key"));
+    expect([...rowKeys].sort()).toEqual(view.keys.map((k) => k.key).sort());
     const loops = rowOf(table, "max_loops");
     expect((within(loops).getByLabelText(`${keyLabel("max_loops")}`) as HTMLInputElement).value).toBe("4");
     expect(loops.textContent).toContain("override");
-    expect(loops.textContent).toContain("the controller's next decision");
+    expect(loops.textContent).toContain("within a minute");
     const tick = rowOf(table, "tick_ms");
     expect(tick.textContent).toContain("default");
     expect(tick.textContent).toContain("default: 2s");
-    expect(tick.textContent).toContain("the next tick");
+    expect(tick.textContent).toContain("within a minute");
     // A long unbroken value may break anywhere, so the table fits its card at 1280 px and Reset keeps its 12 px.
     expect(within(tick).getByText("2s", { selector: "span" }).className.split(" ")).toContain("wrap-anywhere");
     // Reset only where an override exists.
@@ -311,7 +315,7 @@ describe("Settings page", () => {
     expect(headers["x-csrf-token"]).toBe(TOKEN);
     expect(headers["content-type"]).toBe("application/json");
     expect(JSON.parse(posts[0]!.init.body as string)).toEqual({ action: "set", key: "max_loops", value: "5" });
-    expect(within(loops).getByRole("status").textContent).toContain("max_loops = 5");
+    expect(within(loops).getByRole("status").textContent).toBe("Review rounds saved: 5");
 
     await act(async () => fireEvent.click(within(rowOf(table, "phases_auto_approve")).getByRole("switch")));
     expect(JSON.parse(posts[1]!.init.body as string)).toEqual({ action: "set", key: "phases_auto_approve", value: "true" });
@@ -356,7 +360,7 @@ describe("Settings page", () => {
     // A short object is listed in full, with no summary; its default too.
     const hold = rowOf(table, "hold_policy");
     expect(hold.querySelectorAll("summary")).toHaveLength(1); // its Details only
-    expect(fileValue(hold).textContent).toBe("default: modehold");
+    expect(fileValue(hold).textContent).toBe("default: moderun_after_minutesminutes120");
   });
 
   it("shows a millisecond key's File value like its Value (30m), and an empty File value or default as empty", async () => {
@@ -392,7 +396,7 @@ describe("Settings page", () => {
     expect(table).toBeTruthy();
   });
 
-  it("hold_policy is a select (hold, start, wait) with the server mode's meaning in each label; wait adds minutes, starting at 20", async () => {
+  it("hold_policy is a select (hold, start, wait) with the server mode's meaning in each label; wait adds minutes, starting at 120", async () => {
     const table = await show();
     const hold = rowOf(table, "hold_policy");
     const select = within(hold).getByRole("combobox", { name: `${keyLabel("hold_policy")}` });
@@ -409,10 +413,10 @@ describe("Settings page", () => {
     fireEvent.click(within(hold).getByRole("button", { name: `Save ${keyLabel("hold_policy")}` }));
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(JSON.parse(posts[0]!.init.body as string)).toEqual({ action: "set", key: "hold_policy", value: '{"mode":"run"}' });
-    // wait shows minutes at 20 and writes run_after_minutes with them.
+    // wait shows minutes at 120 (the default hold limit) and writes run_after_minutes with them.
     pick(select, "wait");
     const minutes = within(hold).getByLabelText(`${keyLabel("hold_policy")} minutes`) as HTMLInputElement;
-    expect(minutes.value).toBe("20");
+    expect(minutes.value).toBe("120");
     fireEvent.change(minutes, { target: { value: "5" } });
     fireEvent.click(within(hold).getByRole("button", { name: `Save ${keyLabel("hold_policy")}` }));
     await waitFor(() => expect(posts).toHaveLength(2));
@@ -653,8 +657,9 @@ describe("Settings page: the typed form of the file-only keys (design 08-setting
     expect(keyOf(section, "plugins.runner").querySelector("details")!.textContent).not.toContain("guard");
     // The read-only keys' reason sits under the name as the description.
     expect(section.querySelector('tr[data-read-only="env"] p')!.textContent).toContain("locally or in the cloud");
-    // The sub-heading is drawn like the section title.
-    for (const name of ["Read-only keys", "Change on a local branch"]) expect(screen.getByRole("heading", { name }).className).toContain("text-balance text-base font-semibold");
+    // The section title is the Card's h2; the sub-group under it is an h3 in the one sub-group style.
+    expect(screen.getByRole("heading", { level: 2, name: "Change on a local branch" }).className).toContain("text-balance text-base font-semibold");
+    expect(screen.getByRole("heading", { level: 3, name: "Read-only keys" }).className).toContain("text-xs font-medium text-text-2");
   });
 
   it("Save sends edit-file through the writer, then shows the branch and a Merge button that merges the item locally", async () => {
@@ -749,5 +754,104 @@ describe("Settings page: the typed form of the file-only keys (design 08-setting
     expect(screen.queryByRole("region", { name: FILE_SECTION })).toBeNull();
     // Without the form every PR-only key stays in the table.
     expect(screen.getByRole("table", { name: PR_ONLY }).querySelector('tr[data-key="plugins"]')).not.toBeNull();
+  });
+});
+
+describe("Settings page: Mode lines, grouped Advanced keys and plain timing (design 09-dashboard-settings)", () => {
+  // Most important first (owner feedback 2026-11-20): Limits leads, and workers is its first key.
+  it("each settable key is in exactly one group, and the groups run Limits, Models, Retries, Notices, For developers", () => {
+    expect(ADVANCED_GROUPS.map((g) => en[g.title])).toEqual(["Limits", "Models", "Retries", "Notices", "For developers"]);
+    expect(GROUP_KEYS.limits[0]).toBe("workers");
+    for (const key of SETTABLE_KEYS) {
+      const groups = ADVANCED_GROUPS.filter((g) => GROUP_KEYS[g.id].includes(key)).map((g) => g.id);
+      expect(groups, key).toHaveLength(1);
+    }
+    for (const g of ADVANCED_GROUPS) for (const key of GROUP_KEYS[g.id]) expect(SETTABLE_KEYS as readonly string[], key).toContain(key);
+    for (const key of ["lease_ms", "heartbeat_ms", "hotspot_weight", "mechanical_weight", "max_coordination_cost"]) expect(GROUP_KEYS.developers).toContain(key);
+  });
+
+  it("the Advanced tab draws a heading per group in order, and For developers collapsed after them", async () => {
+    const table = await show();
+    expect([...table.querySelectorAll("tr[data-group]")].map((r) => r.textContent)).toEqual(["Limits", "Models", "Retries"]); // the fixture has no Notices key
+    const dev = document.querySelector<HTMLDetailsElement>("details[data-group=developers]")!;
+    expect(dev.querySelector("summary")!.textContent).toBe("For developers");
+    expect(dev.open).toBe(false);
+    expect(dev.querySelector('tr[data-key="tick_ms"]')).not.toBeNull();
+    expect(table.querySelector('tr[data-key="tick_ms"]')).toBeNull();
+    // Each row sits after its own group's heading.
+    const order = [...table.querySelectorAll("tbody > tr")].map((r) => r.getAttribute("data-group") ?? r.getAttribute("data-key"));
+    expect(order.indexOf("max_attempts")).toBe(order.indexOf("retries") + 1);
+    expect(order.indexOf("model_by")).toBeGreaterThan(order.indexOf("models"));
+  });
+
+  it("orders the keys in a group by GROUP_KEYS, not by the server's order", async () => {
+    const table = await show();
+    const keys = [...table.querySelectorAll("tbody > tr[data-key]")].map((r) => r.getAttribute("data-key")!);
+    for (const g of ADVANCED_GROUPS) {
+      const listed = GROUP_KEYS[g.id].filter((k) => keys.includes(k));
+      expect(keys.filter((k) => GROUP_KEYS[g.id].includes(k)), g.id).toEqual(listed);
+    }
+  });
+
+  it("search keeps the keys whose name, label or help text matches, For developers too, and says when none matches", async () => {
+    const table = await show();
+    const search = screen.getByRole("searchbox", { name: "Search settings" });
+    // The search is a page filter: in the PageToolbar's second row, not inside the Settable keys card.
+    expect(search.closest("[data-page-toolbar]")).not.toBeNull();
+    expect(search.closest("section")).toBeNull();
+    fireEvent.change(search, { target: { value: "TICK_MS" } });
+    // The settable keys only: the file keys and PR-only tables below are not searched.
+    const shownKeys = () => [...(screen.queryByRole("table", { name: "Settable keys" })?.querySelectorAll("tr[data-key]") ?? []), ...document.querySelectorAll("details[data-group] tr[data-key]")].map((r) => r.getAttribute("data-key"));
+    // A developers key matched by its name shows in the table, and the collapsed For developers is gone.
+    expect(shownKeys()).toEqual(["tick_ms"]);
+    expect(document.querySelector("details[data-group=developers]")).toBeNull();
+    // A key matched by its label.
+    fireEvent.change(search, { target: { value: keyLabel("max_loops").toUpperCase() } });
+    expect(shownKeys()).toContain("max_loops");
+    fireEvent.change(search, { target: { value: "no such setting zz" } });
+    expect(shownKeys()).toEqual([]);
+    expect(document.querySelector("[data-no-match]")!.textContent).toBe("No setting matches \u201cno such setting zz\u201d.");
+    // Clearing it brings every key back, For developers collapsed again.
+    fireEvent.change(search, { target: { value: "" } });
+    expect(shownKeys().sort()).toEqual(view.keys.map((k) => k.key).sort());
+    expect(document.querySelector<HTMLDetailsElement>("details[data-group=developers]")!.open).toBe(false);
+    void table;
+  });
+
+  it("Details says when a change applies in one of three phrases", async () => {
+    await show();
+    expect(appliesKey("the next run that starts")).toBe("settings.appliesTask");
+    expect(appliesKey("the next claim or lease renewal")).toBe("settings.appliesTask");
+    expect(appliesKey("the controller's next decision")).toBe("settings.appliesMinute");
+    expect(appliesKey("the next load of the Tasks page")).toBe("settings.appliesNow");
+    const phrases = ["Applies right away", "to the next task", "within a minute"];
+    for (const k of view.keys) expect(phrases, k.key).toContain(rowOf(document.body, k.key).querySelector("details[data-details] dl")!.lastElementChild!.textContent);
+  });
+
+  it("the model row shows the planning and building classes, read from the value", async () => {
+    // The default model_by: planning cheap, building standard, strong from the 3rd try.
+    const byDefault = '{"triage":"cheap","implement":{"1":"standard","2":"standard","3":"strong","4":"strong","5":"strong"},"review":"standard","retry_up":true}';
+    expect(modelSummary(byDefault)).toBe("Planning: cheap · Building: standard, strong from the 3rd try");
+    expect(modelSummary('{"triage":"cheap","implement":{"1":"standard"}}')).toBe("Planning: cheap · Building: standard");
+    expect(modelSummary("not json")).toBeNull();
+    const table = await show();
+    expect(rowOf(table, "model_by").querySelector("[data-model-summary]")!.textContent).toBe("Planning: cheap · Building: standard, strong from the 4th try");
+  });
+
+  it("General shows Mode as three lines and the tier control with each level explained", async () => {
+    view.keys.push(row("auto_merge_max_tier", { value: "1" }));
+    afterEachReset = () => view.keys.pop();
+    await show("general");
+    const lines = [...document.querySelectorAll("li")].map((l) => l.textContent);
+    expect(lines).toEqual(expect.arrayContaining(["Manual: you approve specs and merge.", "Back to manual on a red main, a crash loop or a budget checkpoint."]));
+    expect(lines.filter((l) => /^(Manual|Auto|Back to manual)/.test(l ?? ""))).toHaveLength(3);
+    expect(document.body.textContent).toContain("Merge on its own up to risk level…");
+    expect([...document.querySelectorAll("[data-tier-levels] li")].map((l) => l.textContent)).toEqual(["0: none", "1: docs and tests only", "2: a small local code change", "3: core logic, config, prompts or gates", "Tier 4 and the gate list always wait for a person."]);
+  });
+
+  it("the extra pages line reads More pages", async () => {
+    await show();
+    expect(document.body.textContent).toContain("More pages");
+    expect(document.body.textContent).not.toContain("Pages not in the sidebar");
   });
 });

@@ -5,14 +5,16 @@
 import { useState } from "react";
 import { Button, Tree, TreeItem, TreeItemContent } from "react-aria-components";
 import type { ItemRow } from "../api.js";
+import { FOCUS } from "../components/ui/control.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
-import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, shortSource } from "../lib/format.js";
+import { duration, shortItemId } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
-import { SourceLink, WhyText, WorkerName, runKindLabel } from "./common.js";
-import { Badge } from "../components/ui/badge.js";
+import { When, WhyText, WorkerName, runKindLabel } from "./common.js";
+import { StatusBadge } from "../components/ui/badge.js";
+import { type TreeNode, issueNumber } from "./tree-model.js";
 
 /** Browser storage keys: the chosen view, and the expanded rows (a list of item ids; absent: the default). */
 export const VIEW_KEY = "sf.items.view";
@@ -20,132 +22,47 @@ export const EXPANDED_KEY = "sf.items.expanded";
 
 export type View = "tree" | "list";
 
-/** The tree's own filter besides the API's levels: items held behind another item. */
-export const HELD = "held";
-
-export interface TreeNode {
-  item: ItemRow;
-  children: TreeNode[];
-  /** True when the item only shows as the parent of a match. */
-  context: boolean;
-}
-
-const issueNumber = (it: ItemRow): number | null => {
-  const m = /#(\d+)$/.exec(it.source.id);
-  return m ? Number(m[1]) : null;
-};
-
-const needsYou = (it: ItemRow) => (NEEDS_YOU_LEVELS as readonly string[]).includes(it.item_phase);
-
-/** Held behind another item: a held claim, or a phase waiting for the phase before it. */
-export function isHeld(it: ItemRow): boolean {
-  return it.why?.code === "held" || (it.why?.code === "phase" && !!it.parent_id);
-}
-
-/** The state filter as the list's server filter reads it, applied to a row. */
-function inState(it: ItemRow, state: string | null): boolean {
-  if (state === null) return true;
-  if (state === "needs") return needsYou(it);
-  if (state === HELD) return isHeld(it);
-  return it.item_phase === state;
-}
-
-/** True when the title or the source id holds the search text (a leading # is optional). */
-function inSearch(it: ItemRow, q: string): boolean {
-  const needle = q.trim().toLowerCase().replace(/^#/, "");
-  if (!needle) return true;
-  return (it.title ?? "").toLowerCase().includes(needle) || it.source.id.toLowerCase().includes(needle);
-}
-
-export interface TreeFilter {
-  state: string | null;
-  q: string;
-  showClosed: boolean;
-  /** Only these items (a link from Failures names them); closed ones show too. */
-  ids?: ReadonlySet<string> | null;
-}
-
-/** Whether a row passes the filters: closed rows only with Show closed (or the Closed filter). */
-export function itemMatches(it: ItemRow, f: TreeFilter): boolean {
-  if (f.ids) return f.ids.has(it.id) && inSearch(it, f.q);
-  if (it.item_phase === "closed" && !f.showClosed && f.state !== "closed") return false;
-  return inState(it, f.state) && inSearch(it, f.q);
-}
-
-/**
- * The tree of the rows that match, each once. A phase sits under its split parent, in phase order, whatever it
- * waits for; a match whose parent is in the list shows that parent for context. Roots keep the API's order.
- */
-export function buildTree(rows: readonly ItemRow[], f: TreeFilter): TreeNode[] {
-  const byId = new Map(rows.map((r) => [r.id, r]));
-  const shown = new Set<string>();
-  const matched = new Set<string>();
-  for (const r of rows) {
-    if (!itemMatches(r, f)) continue;
-    matched.add(r.id);
-    for (let cur: ItemRow | undefined = r; cur && !shown.has(cur.id); cur = cur.parent_id ? byId.get(cur.parent_id) : undefined) shown.add(cur.id);
-  }
-  const node = (it: ItemRow): TreeNode => ({
-    item: it,
-    context: !matched.has(it.id),
-    children: rows
-      .filter((c) => c.parent_id === it.id && shown.has(c.id))
-      .sort((a, b) => (a.phase ?? Infinity) - (b.phase ?? Infinity) || (issueNumber(a) ?? 0) - (issueNumber(b) ?? 0))
-      .map(node),
-  });
-  return rows.filter((r) => shown.has(r.id) && !(r.parent_id && byId.has(r.parent_id))).map(node);
-}
-
-/** The ids of every row that has children. */
-export function parentIds(nodes: readonly TreeNode[]): string[] {
-  return nodes.flatMap((n) => (n.children.length > 0 ? [n.item.id, ...parentIds(n.children)] : []));
-}
-
-/** The expanded rows when nothing is saved: every parent that has an open phase. */
-export function defaultExpanded(nodes: readonly TreeNode[]): string[] {
-  return nodes.flatMap((n) => (n.children.some((c) => c.item.item_phase !== "closed") ? [n.item.id, ...defaultExpanded(n.children)] : defaultExpanded(n.children)));
-}
-
-/** What an item waits for: the number to show and the item it names (null when it is not in the list). */
-function waitsFor(it: ItemRow, byNumber: ReadonlyMap<number, ItemRow>): { label: string; id: string | null } | null {
+/** The item another item waits for (a dependency, an earlier phase or a coordination hold), or null when none or not in the list. */
+function waitsFor(it: ItemRow, byNumber: ReadonlyMap<number, ItemRow>, byId: ReadonlyMap<string, ItemRow>): ItemRow | null {
   if (it.claim?.decision === "held" && !it.claim.approved && it.run?.status === "queued" && it.claim.holder) {
     const n = /^#(\d+)$/.exec(it.claim.holder)?.[1];
-    return { label: it.claim.holder, id: it.claim.holder_id ?? (n ? (byNumber.get(Number(n))?.id ?? null) : null) };
+    return (it.claim.holder_id ? byId.get(it.claim.holder_id) : undefined) ?? (n ? (byNumber.get(Number(n)) ?? null) : null);
   }
   const n = it.waiting_on_number;
   const waits = it.why?.code === "dependency" || (it.why?.code === "phase" && !!it.parent_id);
-  return waits && n ? { label: `#${n}`, id: byNumber.get(n)?.id ?? null } : null;
+  return waits && n ? (byNumber.get(n) ?? null) : null;
 }
 
-const CHIP = "rounded-control border border-border-strong px-1.5 py-0.5 text-xs whitespace-nowrap";
-
-function Row({ node, now, byNumber }: { node: TreeNode; now: number; byNumber: ReadonlyMap<number, ItemRow> }) {
+/**
+ * One item's row: its title (the link to it; never its id, design-system/writing.md), its state, the run, the PR and
+ * why it waits. A blocked item's state badge links to the item it waits for, named on hover.
+ */
+function Row({ node, now, byNumber, byId }: { node: TreeNode; now: number; byNumber: ReadonlyMap<number, ItemRow>; byId: ReadonlyMap<string, ItemRow> }) {
   const it = node.item;
-  const waits = waitsFor(it, byNumber);
+  const waits = waitsFor(it, byNumber, byId);
   const run = it.run;
+  const badge = <StatusBadge state={it.item_phase} />;
   return (
     <div className={cn("flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-1 py-1", node.context && "text-text-2")}>
-      <SourceLink source={it.source} itemId={it.id} className="shrink-0" />
-      <Link href={itemPath(it.id)} className={cn("min-w-0 truncate font-medium", LINK_CLASS)}>{it.title ?? shortSource(it.source.id)}</Link>
-      <Badge level={it.item_phase}>{LEVEL_LABELS[it.item_phase] ?? it.item_phase}</Badge>
-      {waits && (
-        waits.id ? (
-          <Link href={itemPath(waits.id)} className={cn(CHIP, LINK_CLASS)} data-waits-for>{t("tree.waitsFor", { label: waits.label })}</Link>
-        ) : (
-          <span className={CHIP} data-waits-for>{t("tree.waitsFor", { label: waits.label })}</span>
-        )
+      <Link href={itemPath(it.id)} data-raw data-row-title className={cn("min-w-0 truncate font-medium", LINK_CLASS)}>{it.title ?? shortItemId(it.id)}</Link>
+      {waits ? (
+        <Link href={itemPath(waits.id)} data-waits-for title={t("tree.waitsFor", { title: waits.title ?? shortItemId(waits.id) })} className={cn("rounded-pill", FOCUS)}>
+          {badge}
+        </Link>
+      ) : (
+        badge
       )}
       {run && (
         <span className="text-xs whitespace-nowrap tabular-nums" data-run>
           {runKindLabel(run.kind)} #{run.attempt}
           {run.status === "queued" && run.position !== null && t("tree.queue", { position: run.position })}
-          {run.started_at && run.status === "running" && ` · ${ago(run.started_at, now)}`}
+          {run.started_at && run.status === "running" && ` · ${duration(now - Date.parse(run.started_at))}`}
         </span>
       )}
       {it.change_ref !== null && (
         it.change_url ? <a href={it.change_url} target="_blank" rel="noreferrer" className={cn("text-xs tabular-nums", LINK_CLASS)}>{t("tree.pr", { ref: it.change_ref })}</a> : <span className="text-xs tabular-nums">{t("tree.pr", { ref: it.change_ref })}</span>
       )}
-      <span className="text-xs whitespace-nowrap tabular-nums text-text-2">{ago(it.updated_at, now)}</span>
+      <span className="text-xs whitespace-nowrap tabular-nums text-text-2"><When at={it.updated_at} now={now} /></span>
       <span className="flex basis-full flex-wrap gap-x-2 text-xs text-text-2 sm:basis-auto sm:text-sm">
         {it.why && <WhyText why={it.why} />}
         {run?.worker_id && <WorkerName id={run.worker_id} />}
@@ -158,7 +75,7 @@ function Row({ node, now, byNumber }: { node: TreeNode; now: number; byNumber: R
 const INDENT = ["pl-0", "pl-4", "pl-8", "pl-12", "pl-16"] as const;
 const indentFor = (level: number) => INDENT[Math.min(Math.max(level, 1), INDENT.length) - 1];
 
-function NodeItem(props: { node: TreeNode; now: number; byNumber: ReadonlyMap<number, ItemRow> }) {
+function NodeItem(props: { node: TreeNode; now: number; byNumber: ReadonlyMap<number, ItemRow>; byId: ReadonlyMap<string, ItemRow> }) {
   const { node } = props;
   return (
     <TreeItem id={node.item.id} textValue={node.item.title ?? node.item.source.id} className="outline-none data-[focus-visible]:ring-2 data-[focus-visible]:ring-focus">
@@ -166,11 +83,11 @@ function NodeItem(props: { node: TreeNode; now: number; byNumber: ReadonlyMap<nu
         {({ hasChildItems, isExpanded, level }) => (
           <div className={cn("flex items-start gap-1 border-b border-border pr-1", indentFor(level))}>
             {hasChildItems ? (
-              <Button slot="chevron" className="mt-1 w-5 shrink-0 text-text-2" aria-label={isExpanded ? t("tree.collapse") : t("tree.expand")}>
+              <Button slot="chevron" className="inline-flex h-7 w-6 shrink-0 items-center justify-center text-text-2" aria-label={isExpanded ? t("tree.collapse") : t("tree.expand")}>
                 {isExpanded ? "▾" : "▸"}
               </Button>
             ) : (
-              <span className="w-5 shrink-0" aria-hidden />
+              <span className="w-6 shrink-0" aria-hidden />
             )}
             <Row {...props} />
           </div>
@@ -213,6 +130,7 @@ export function ItemsTree({ nodes, rows, now, expanded, onExpanded }: {
   onExpanded: (ids: Iterable<string>) => void;
 }) {
   const byNumber = new Map<number, ItemRow>();
+  const byId = new Map(rows.map((r) => [r.id, r] as const));
   for (const r of rows) {
     const n = issueNumber(r);
     if (n !== null) byNumber.set(n, r);
@@ -225,7 +143,7 @@ export function ItemsTree({ nodes, rows, now, expanded, onExpanded }: {
       onExpandedChange={(keys) => onExpanded([...keys].map(String))}
       className="rounded-control border border-border text-sm"
     >
-      {nodes.map((n) => <NodeItem key={n.item.id} node={n} now={now} byNumber={byNumber} />)}
+      {nodes.map((n) => <NodeItem key={n.item.id} node={n} now={now} byNumber={byNumber} byId={byId} />)}
     </Tree>
   );
 }

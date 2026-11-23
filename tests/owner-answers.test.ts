@@ -6,7 +6,8 @@ import type { RunCall } from "../src/worker/run-kind.js";
 import { answersDetail, type DecisionAnswer } from "../src/shared/command-notes.js";
 import { renderRevision, renderWorkItem } from "../src/worker/support.js";
 import triage from "../src/worker/runs/triage/triage.run.js";
-import { alice, issueRef, pipeline, triageSpec } from "./helpers/fakes.js";
+import { alice, issueRef, triageSpec } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 
 // Owner answers (design 04-agents.md): the answers stored on an approval bind every later spec of the item and its
 // phases. The triage prompt carries them, and the controller holds a spec that drops one for `/approve`.

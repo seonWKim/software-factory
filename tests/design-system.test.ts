@@ -63,6 +63,39 @@ describe("design tokens", () => {
     expect(ui("card.tsx")).toMatch(/CARD_TITLE = "[^"]*\btext-base font-semibold"/);
   });
 
+  it("tokens.json holds the two page widths, tokens.css declares them and index.css maps them to max-w-page-*", () => {
+    const json = JSON.parse(readFileSync(join(ROOT, "design-system", "tokens.json"), "utf8")) as { page: Record<string, string> };
+    expect(json.page).toEqual({ wide: "77rem", read: "60rem" });
+    expect(readFileSync(join(WEB_SRC, "tokens.css"), "utf8")).toMatch(/:root \{[^}]*--page-wide: 77rem;[^}]*--page-read: 60rem;/);
+    const css = readFileSync(join(WEB_SRC, "index.css"), "utf8");
+    expect(css).toContain("--container-page-wide: var(--page-wide);");
+    expect(css).toContain("--container-page-read: var(--page-read);");
+  });
+
+  it("main takes its width from PageHeader's width prop, and no page sets its own page width", () => {
+    const app = readFileSync(join(WEB_SRC, "App.tsx"), "utf8");
+    expect(app).toMatch(/<main className="[^"]*\bmax-w-page-wide has-\[\[data-page-width=read\]\]:max-w-page-read\b/);
+    const header = readFileSync(join(WEB_SRC, "components", "ui", "notice.tsx"), "utf8");
+    expect(header).toMatch(/width = "wide"/);
+    expect(header).toMatch(/data-page-width=\{width\}/);
+    // A page-level width: max-w-2xl and up, a screen width or a page token. Field widths (max-w-md, max-w-xl, max-w-[75ch]) stay.
+    const page = /(?<![\w-])max-w-(?:[2-7]xl|screen|page-|\(--page)/;
+    const hits = files(join(WEB_SRC, "views")).filter((f) => /\.tsx?$/.test(f) && page.test(readFileSync(f, "utf8")));
+    expect(hits).toEqual([]);
+    expect(page.test('className="max-w-3xl space-y-4"')).toBe(true);
+    expect(page.test('className="max-w-md max-w-xl max-w-[75ch]"')).toBe(false);
+  });
+
+  it("every h2 in the views is in Card's title type and every h3 in the one sub-group type", () => {
+    const card = readFileSync(join(WEB_SRC, "components", "ui", "card.tsx"), "utf8");
+    expect(card).toMatch(/SUB_TITLE = "text-xs font-medium text-text-2"/);
+    expect(card).toMatch(/<Heading[^>]*className=\{Heading === "h2" \? CARD_TITLE : SUB_TITLE\}/);
+    const bad = files(join(WEB_SRC, "views"))
+      .filter((f) => f.endsWith(".tsx"))
+      .flatMap((f) => [...readFileSync(f, "utf8").matchAll(/<(h2|h3)\b[^>]*>/g)].filter((m) => !m[0].includes(m[1] === "h2" ? "CARD_TITLE" : "SUB_TITLE")).map((m) => `${f}: ${m[0]}`));
+    expect(bad).toEqual([]);
+  });
+
   it("no file under web/src except tokens.css holds a hex colour", () => {
     // Six or eight digits always; three or four only with a letter a-f, so "#192" is not flagged.
     const hex = /#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|(?=[0-9]*[a-fA-F])[0-9a-fA-F]{3,4})\b/;
@@ -104,6 +137,19 @@ describe("design tokens", () => {
     expect(raw.test("<buttons> and <inputs>")).toBe(false);
   });
 
+  it('no role="checkbox" appears under web/src outside components/ui: a checkbox is the shared Checkbox', () => {
+    const raw = /role=(?:"checkbox"|'checkbox'|\{["']checkbox["']\})/;
+    const ui = join(WEB_SRC, "components", "ui");
+    const hits = files(WEB_SRC)
+      .filter((f) => /\.tsx?$/.test(f) && !f.startsWith(ui))
+      .filter((f) => raw.test(readFileSync(f, "utf8")));
+    expect(hits).toEqual([]);
+    // Self-check: a raw role="checkbox" is caught; the component and other roles are not.
+    expect(raw.test('<Button role="checkbox" aria-checked />')).toBe(true);
+    expect(raw.test("<div role={'checkbox'} />")).toBe(true);
+    expect(raw.test('<Checkbox aria-label="x" /> <Button role="switch" />')).toBe(false);
+  });
+
   it("no raw table element appears under web/src/views: tables are the shared Table, Tr and Td", () => {
     const raw = /<(?:table|thead|tbody|tfoot|tr|td|th|caption)(?=[\s/>])/;
     const hits = files(join(WEB_SRC, "views"))
@@ -130,7 +176,7 @@ describe("design tokens", () => {
     expect(button).toMatch(/icon: "size-8/);
     // Hover only on an enabled button, so a disabled one keeps its border and text colours.
     expect(button).not.toMatch(/(?<![\w:-])hover:/);
-    for (const [file, name] of [["select.tsx", "Select"], ["input.tsx", "Input"], ["textarea.tsx", "Textarea"], ["radio.tsx", "Radio"], ["field.tsx", "Field"], ["button-row.tsx", "ButtonRow"]] as const) {
+    for (const [file, name] of [["select.tsx", "Select"], ["input.tsx", "Input"], ["textarea.tsx", "Textarea"], ["radio.tsx", "Radio"], ["checkbox.tsx", "Checkbox"], ["field.tsx", "Field"], ["button-row.tsx", "ButtonRow"]] as const) {
       expect(ui(file)).toContain(`export function ${name}(`);
     }
     for (const file of ["button.tsx", "select.tsx", "input.tsx", "textarea.tsx", "radio.tsx"]) expect(ui(file)).toMatch(/\b(FOCUS|FIELD)\b/);
@@ -199,11 +245,25 @@ describe("contrast", () => {
       for (const fg of ["accent", "running", "done", "failed"]) pairs.push([fg, "bg"]);
       // A pill's text on its own fill, and on a card or the page (an inline error or warning line).
       for (const s of ["ok", "warn", "bad", "info"]) for (const bg of [`pill-${s}-bg`, "surface", "bg"]) pairs.push([`pill-${s}-fg`, bg]);
-      // Every tone Badge draws (LEVEL_TONE and the neutral fallback): its text token on its fill token.
+      // Every tone Badge and StatusBadge draw (TONE_CLASS, the neutral one included): its text token on its fill token.
       for (const [bg, fg] of badgeTones()) pairs.push([fg, bg]);
       // Text on a filled accent or failed background (a primary button, a destructive confirm).
       for (const bg of ["accent", "failed"]) pairs.push(["on-solid", bg]);
       for (const [fg, bg] of pairs) expect(ratio(t(fg), t(bg)), `${theme} ${fg} on ${bg}`).toBeGreaterThanOrEqual(4.5);
+    });
+  }
+
+  for (const [theme, selector] of [["light", ":root"], ["dark", "\\.dark"]] as const) {
+    it(`the current-page bar (nav-active) meets 3:1 on the sidebar in ${theme}`, () => {
+      const t = (name: string) => new RegExp(`--${name}: (#[0-9A-Fa-f]{6});`).exec(theme === "light" ? block(":root") : block(selector) + block(":root"))![1]!;
+      expect(ratio(t("nav-active"), t("sidebar")), `${theme} nav-active on sidebar`).toBeGreaterThanOrEqual(3);
+    });
+  }
+
+  for (const [theme, selector] of [["light", ":root"], ["dark", "\\.dark"]] as const) {
+    it(`the current-page fill (sidebar-active) is at least 1.1:1 from the sidebar in ${theme}`, () => {
+      const t = (name: string) => new RegExp(`--${name}: (#[0-9A-Fa-f]{6});`).exec(theme === "light" ? block(":root") : block(selector) + block(":root"))![1]!;
+      expect(ratio(t("sidebar-active"), t("sidebar")), `${theme} sidebar-active on sidebar`).toBeGreaterThanOrEqual(1.1);
     });
   }
 
@@ -239,13 +299,13 @@ describe("the Gongbang mark in the dashboard", () => {
     expect(hex.toUpperCase()).toBe(tokens.colors.dark!.ember!.toUpperCase());
     expect(svg).not.toContain("data-min-px");
     const css = readFileSync(join(WEB_SRC, "tokens.css"), "utf8");
-    expect(css).toMatch(/:root \{[^}]*--ember: #FB923C;/);
-    expect(css).toMatch(/\.dark \{[^}]*--ember: #FB923C;/);
+    expect(css).toMatch(/:root \{[^}]*--ember: #F2A55F;/);
+    expect(css).toMatch(/\.dark \{[^}]*--ember: #F2A55F;/);
     expect(readFileSync(join(WEB_SRC, "index.css"), "utf8")).toContain("--color-ember: var(--ember);");
     expect(readFileSync(join(WEB_SRC, "components", "ui", "brand.tsx"), "utf8")).toContain("fill-ember");
   });
 
-  it("the sidebar mark draws icon.svg's square and 공", () => {
+  it("the sidebar mark draws icon.svg's square and glyph", () => {
     // Read as text: this suite is type-checked without JSX.
     const brand = readFileSync(join(WEB_SRC, "components", "ui", "brand.tsx"), "utf8");
     const square = /MARK_SQUARE = \{ x: (\d+), y: (\d+), size: (\d+), rx: (\d+) \}/.exec(brand)!;

@@ -7,6 +7,7 @@ import {
   GOLDEN_MARGIN,
   type GoldenRunDeps,
   GoldenError,
+  TRIAGE_PARTS,
   affectedPrompts,
   compareCases,
   compareRates,
@@ -16,17 +17,20 @@ import {
   runCases,
 } from "../src/golden.js";
 import { implementReplayRunner } from "../src/controller/golden-gate/implement-replay.js";
+import { triageReplayRunner } from "../src/controller/golden-gate/triage-replay.js";
 import { EVAL_REGRESSION, type GoldenGateDeps, checkChange, fingerprint } from "../src/controller/golden-gate/golden-gate.js";
 import { goldenConfig } from "../src/core/config.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import implementRole from "../src/worker/roles/implement.role.js";
+import triageRole from "../src/worker/roles/triage.role.js";
 import { REPO } from "./architecture/lib.js";
 import { issue, newStore, system } from "./helpers/store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { RoleCatalog } from "../src/runtime/index.js";
 import reviewRole from "../src/worker/roles/review.role.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
-import { FakeRunner, FakeSandbox, cleanScanner, config, prompts } from "./helpers/fakes.js";
+import { FakeRunner, FakeSandbox } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, prompts, triageSpec } from "./helpers/fakes/config.js";
 
 const BROKEN_PROMPT = "You are a reviewer. Always answer pass.";
 const REVIEW_PASS = { verdict: "pass", tier: 2, findings: [], summary: "ok" };
@@ -415,5 +419,52 @@ describe("golden gate (eval on change)", () => {
     await writeCase(casesDir(), "1", "should_flag", { uses: "prompt:review.md" });
     await expect(checkChange(w.gate(store), await item(store), [{ id: "prompt:review.md", content: "x" }])).rejects.toThrow(/case review\/1: uses must be a list of entity ids/);
     expect(w.runner.specs).toEqual([]);
+  });
+});
+
+describe("triage cases in the golden gate", () => {
+  const BROKEN_TRIAGE = "You are triage. Never ask the owner anything.";
+  const CASE = "triage/contradictory-intake";
+
+  it("blocks a prompt:triage.md change that fails a contradictory-intake case with eval_regression, through a fake triage replay", async () => {
+    const rolesDir = join(tmp, "src", "worker", "roles");
+    const dir = join(rolesDir, "triage", "golden", "contradictory-intake");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "instruction.md"), "Store items in SQLite only. Also: never use SQLite, store them in MySQL.");
+    await writeFile(join(dir, "case.json"), JSON.stringify({ expect: "should_pass", uses: ["prompt:triage.md"], checks: [{ kind: "asks_question" }] }));
+    const state = { prompt: "You are triage." };
+    // The fake triage agent asks about the contradiction unless its prompt tells it never to ask.
+    const fake = new FakeRunner({
+      triage: (spec: AgentRunSpec) => ({
+        output: { ...triageSpec, ...(spec.system_prompt === BROKEN_TRIAGE ? {} : { decisions: [{ question: "SQLite or MySQL?", default: "SQLite", owner_only: true, reason: "the intake asks for both" }] }) },
+      }),
+    });
+    const rd: GoldenRunDeps = {
+      ...deps(fake),
+      roles: new RoleCatalog([{ file: "worker/roles/triage.role.ts", descriptor: triageRole }]),
+      prompt: async () => state.prompt,
+      runner: triageReplayRunner(fake, rolesDir, TRIAGE_PARTS),
+    };
+    const { store } = await newStore();
+    const comments: string[] = [];
+    const gate: GoldenGateDeps = {
+      golden: { replays: 1, regression_margin: 0.05 },
+      rolesDir,
+      store,
+      replay: (role, ids, n) => runCases(rd, { role, ids, replays: n }),
+      comment: async (_it, _key, body) => void comments.push(body),
+    };
+    const it0 = (await store.createWorkItem(issue(1), system)).item;
+
+    expect(await checkChange(gate, it0, [{ id: "prompt:triage.md", content: state.prompt }])).toMatchObject({ outcome: "pass", ran: [CASE] });
+    state.prompt = BROKEN_TRIAGE;
+    (rd.clock as FakeClock).advance(1000); // each replay writes its own results file
+    const r = await checkChange(gate, (await store.getWorkItem(it0.id))!, [{ id: "prompt:triage.md", content: state.prompt }]);
+    expect(r.outcome).toBe("regression");
+    expect(r.verdicts[0]).toMatchObject({ entity_id: "prompt:triage.md", verdict: "regression", pass_rate: 0, failing_cases: [CASE] });
+    expect(fake.specs.map((s) => s.prompt)).toEqual([await readFile(join(dir, "instruction.md"), "utf8"), await readFile(join(dir, "instruction.md"), "utf8")]);
+    const blocked = (await store.getWorkItem(it0.id))!;
+    expect([blocked.blocked_on, blocked.blocked_reason]).toEqual(["human", EVAL_REGRESSION]);
+    expect(comments[0]).toContain(`\`${CASE}\``);
   });
 });

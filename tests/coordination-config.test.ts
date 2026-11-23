@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadConfig } from "../src/compose.js";
+import { loadConfig } from "../src/load-config.js";
 import { ConfigKeyError, checkConfigKeys } from "../src/config-keys.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import { coordinationConfig } from "../src/core/config.js";
@@ -13,7 +13,9 @@ import { Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
-import { FakeBroker, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, config, prompts, silent } from "./helpers/fakes.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, prompts, silent } from "./helpers/fakes/config.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 
 type ClaimInput = Parameters<FactoryStore["claimRun"]>[0];
@@ -101,10 +103,12 @@ describe("hold_policy and hotspot_mode at config load (issue #314)", () => {
     expect(problems({ hotspot_mode: "soft" })).toEqual([expect.stringMatching(/^hotspot_mode must be "policy" or "hold"/)]);
   });
 
-  it("valid values load; run_after_minutes without minutes means 20; absent keys take the defaults", () => {
+  it("valid values load; run_after_minutes without minutes means 120; absent keys take the defaults (run_after_minutes 120)", () => {
     expect(problems({ hold_policy: { mode: "run" }, hotspot_mode: "hold" })).toEqual([]);
-    expect(coordinationConfig({ hold_policy: { mode: "run_after_minutes" } }).hold_policy).toEqual({ mode: "run_after_minutes", minutes: 20 });
-    expect(coordinationConfig({})).toMatchObject({ hold_policy: { mode: "hold" }, hotspot_mode: "policy" });
+    expect(coordinationConfig({ hold_policy: { mode: "run_after_minutes" } }).hold_policy).toEqual({ mode: "run_after_minutes", minutes: 120 });
+    expect(coordinationConfig({})).toMatchObject({ hold_policy: { mode: "run_after_minutes", minutes: 120 }, hotspot_mode: "policy" });
+    // mode hold is still a valid value: it keeps a run held until /approve.
+    expect(coordinationConfig({ hold_policy: { mode: "hold" } }).hold_policy).toEqual({ mode: "hold" });
   });
 
   it("factory settings set refuses the same values and accepts a valid one", async () => {

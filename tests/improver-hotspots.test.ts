@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
+import { DEFAULT_COORDINATION } from "../src/core/coordination.js";
 import { IMPROVER, SYSTEM_ITEM, patternKey, systemSource } from "../src/core/improver.js";
 import { DEFAULT_HOTSPOT_THRESHOLD, HOTSPOT, conflictFiles, hotspotGroups } from "../src/core/hotspots.js";
 import { SETTABLE_DEFAULTS, SETTABLE_KEYS, parseSettable } from "../src/core/settings.js";
@@ -23,7 +24,9 @@ import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { issue, newStore, system } from "./helpers/store.js";
-import { FakeAuth, FakeBroker, FakeSandbox, MemoryStorage, PROJECT, config, prompts, silent } from "./helpers/fakes.js";
+import { FakeAuth, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { PROJECT, config, prompts, silent } from "./helpers/fakes/config.js";
 
 const noRunner = { run: () => { throw new Error("the improve run called the agent runner"); } } as unknown as AgentRunner;
 
@@ -73,7 +76,9 @@ async function setup() {
   const controller = new ControllerRole({ store, sources: [new LocalSource(store)], auth: new FakeAuth(), clock, config, log: silent, scanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner: noRunner, broker: new FakeBroker(), storage: new MemoryStorage(),
-    clock, config: { ...config, repo: { ...config.repo, path: repo.dir } }, prompts, log: silent, scanner, toolEnv: {}, awake: new NoKeepAwake(),
+    // The improve run claims while other runs are left running: the slot cap counts them, so allow a few.
+    // hold_policy hold: the held runs stay held across the days the tests skip, instead of timing out and starting.
+    clock, config: { ...config, workers: 4, repo: { ...config.repo, path: repo.dir }, coordination: { ...DEFAULT_COORDINATION, hold_policy: { mode: "hold" } } }, prompts, log: silent, scanner, toolEnv: {}, awake: new NoKeepAwake(),
   });
   let n = 0;
   /** A finished run of a new item: `kind` with `outcome`, finished now (then the clock moves a second). */

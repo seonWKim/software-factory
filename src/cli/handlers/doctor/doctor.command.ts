@@ -1,4 +1,4 @@
-import type { Loaded } from "../../../compose.js";
+import { type Loaded, buildStatsStore } from "../../../compose.js";
 import { configFailLines } from "../../../config-keys.js";
 import { doctor } from "../../../setup.js";
 import { defineCommand } from "../../command.js";
@@ -16,6 +16,6 @@ export default defineCommand({
       for (const line of configFailLines(err)) console.log(line);
       return 1;
     }
-    return doctor(loaded, { llm: args.includes("--llm") });
+    return doctor(loaded, buildStatsStore, { llm: args.includes("--llm") });
   },
 });

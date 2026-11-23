@@ -9,9 +9,11 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { build, loadConfig, localProject } from "../src/compose.js";
+import { build } from "../src/compose.js";
+import { loadConfig, localProject } from "../src/load-config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { SourceType, UserId, WorkerId, WorkItem, WorkItemId } from "../src/core/types.js";
+import { MODE_KEY, SELECTION_ACTOR, type SelectionRecord, cleanCursor } from "../src/core/test-selection.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import { type CliAction, runLocalCli } from "../src/core/local-cli.js";
 import { OwnerAuth } from "../src/core/authorize.js";
@@ -26,11 +28,13 @@ import type { Sandbox } from "../src/interfaces/sandbox.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import { autoResolveKey } from "../src/core/policy.js";
 import { NODE_PROBE, offNode, onNode } from "../src/worker/runs/merge-check/node-version.js";
-import {
-  FakeAuth, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, cleanScanner, config, fakeRepoLookup, pipeline, prompts, silent,
-  triageSpec,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, fakeRepoLookup, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 import { issue, newStore, system } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 const PR = 7;
 
@@ -526,14 +530,18 @@ describe("merge check run: the UI check (fake sandbox)", () => {
 
   /** `ui`: the UI check's reply in the merged checkout (the first) and in the base's (the second): an exit and output, or a throw. */
   type UiReply = { exit: number; out?: string } | "throw";
-  async function mergeCheckRun(o: { ui_check?: typeof ui_check; changed: string[]; exits?: Record<string, number>; ui?: { merged: UiReply; base?: UiReply } }) {
-    const repo = { ...config.repo, check_commands: [["npm", "run", "typecheck"], ["npm", "test"]], ...(o.ui_check ? { ui_check: o.ui_check } : {}) };
+  async function mergeCheckRun(o: { ui_check?: typeof ui_check; check_tz?: string; changed: string[]; exits?: Record<string, number>; ui?: { merged: UiReply; base?: UiReply } }) {
+    const repo = {
+      ...config.repo, check_commands: [["npm", "run", "typecheck"], ["npm", "test"]], ...(o.ui_check ? { ui_check: o.ui_check } : {}), ...(o.check_tz ? { check_tz: o.check_tz } : {}),
+    };
     const f = await pipeline({ config: { repo } });
     f.sandbox.changedFiles = o.changed;
     Object.assign(f.sandbox.exits, o.exits ?? {});
     const exec = f.sandbox.exec.bind(f.sandbox);
     const handles: string[] = [];
+    const tz: [string, string | undefined][] = []; // each non-git command and the TZ it ran with
     f.sandbox.exec = async (h, cmd, eo) => {
+      if (cmd[0] !== "git") tz.push([cmd.join(" "), eo.env?.TZ]);
       const r = await exec(h, cmd, eo);
       if (!handles.includes(h.id)) handles.push(h.id);
       if (!o.ui || cmd.join(" ") !== "npm run check:responsive") return r;
@@ -551,8 +559,22 @@ describe("merge check run: the UI check (fake sandbox)", () => {
     const run = (await f.runs(moved.item, "merge-check"))[0]!;
     const diffs = f.sandbox.gitCalls.filter((c) => c.startsWith("diff --name-only") && !c.includes("--diff-filter=U"));
     const data = run.outcome?.status === "succeeded" ? run.outcome.data : {};
-    return { commands: f.sandbox.commands, diffs, outcome: run.outcome, data, created: f.sandbox.created, gitCalls: f.sandbox.gitCalls, destroyed: f.sandbox.destroyed };
+    return { commands: f.sandbox.commands, diffs, outcome: run.outcome, data, created: f.sandbox.created, gitCalls: f.sandbox.gitCalls, destroyed: f.sandbox.destroyed, tz };
   }
+
+  it("with repo.check_tz, the install command, the checks, the UI check and its base rerun all run with TZ set to that zone", async () => {
+    const r = await mergeCheckRun({ ui_check, check_tz: "UTC", changed: ["web/a.css"], ui: { merged: { exit: 1 } } });
+    const all = ["npm ci", "npm run typecheck", "npm test", "npm run check:responsive", "npm ci", "npm run check:responsive"];
+    expect(r.commands).toEqual(all);
+    expect(r.tz.filter(([c]) => all.includes(c))).toEqual(all.map((c) => [c, "UTC"]));
+  });
+
+  it("with no repo.check_tz, no merge-check command gets a TZ variable and the result is unchanged", async () => {
+    const r = await mergeCheckRun({ ui_check, changed: ["web/a.css"] });
+    expect(r.commands).toEqual(["npm ci", "npm run typecheck", "npm test", "npm run check:responsive"]);
+    expect(r.tz.every(([, zone]) => zone === undefined)).toBe(true);
+    expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "green" } });
+  });
 
   it("a merged result touching web/ runs the UI check after the install command and the checks", async () => {
     const r = await mergeCheckRun({ ui_check, changed: ["README.md", "web/src/App.tsx"] });
@@ -667,8 +689,11 @@ describe("merge check run: one rerun of the failing test files (fake sandbox)", 
   const FAIL = " FAIL  tests/a.test.ts > suite > flaky\n FAIL  tests/b.test.ts > other > case\n";
   type Reply = { exit: number; out?: string } | "throw";
 
-  /** Each command's replies by its argv joined with spaces, one per call in order (then exit 0). */
-  async function rerunRun(replies: Record<string, Reply[]>, o: { ui?: true } = {}) {
+  /**
+   * Each command's replies by its argv joined with spaces, one per call in order (then exit 0). `selection`: the
+   * item's selection before push, recorded on an earlier finished run, with the project's mode set to `mode`.
+   */
+  async function rerunRun(replies: Record<string, Reply[]>, o: { ui?: true; selection?: SelectionRecord; mode?: "enforce" } = {}) {
     const repo = {
       ...config.repo, check_commands: [["npm", "test"], ["npm", "run", "lint"]],
       ...(o.ui ? { ui_check: { command: ["npm", "run", "check:responsive"], paths: ["web/"] } } : {}),
@@ -682,7 +707,17 @@ describe("merge check run: one rerun of the failing test files (fake sandbox)", 
       if (reply === "throw") throw new Error("spawn ENOENT");
       return reply === undefined ? r : { ...r, exit_code: reply.exit, stdout: reply.out ?? "" };
     };
-    const { item } = await f.store.createWorkItem(issue(7), system);
+    let { item } = await f.store.createWorkItem(issue(7), system);
+    if (o.selection) {
+      const queued = await f.store.transition({ id: item.id, expected_version: item.version, actor: system, reason: "test_setup", patch: {}, enqueue: { kind: "triage", idempotency_key: "t-1" } });
+      if (!queued.ok) throw new Error("setup");
+      item = queued.item;
+      const run = (await f.store.claimRun({ worker_id: "earlier" as WorkerId, kinds: ["triage"], lease_ms: 60_000 }))!;
+      await f.store.completeRun(run.id, run.lease!.token, { status: "succeeded", summary: "s", data: { test_selection: o.selection } });
+    }
+    if (o.mode) {
+      await f.store.setLearnedSetting({ project: item.project, key: MODE_KEY, expected: null, value: JSON.stringify(o.mode), evidence_run_ids: [], window_end: "2025-12-31T00:00:00.000Z" as never, actor: SELECTION_ACTOR });
+    }
     const moved = await f.store.transition({
       id: item.id, expected_version: item.version, actor: system, reason: "test_setup", patch: {},
       enqueue: { kind: "merge-check", idempotency_key: "mc-1", input: { merge_check: { base_ref: "main", branches: [`factory/${item.id}`] } } },
@@ -690,7 +725,7 @@ describe("merge check run: one rerun of the failing test files (fake sandbox)", 
     if (!moved.ok) throw new Error("setup");
     expect(await f.w1.tick()).toBe(true);
     const outcome = (await f.runs(moved.item, "merge-check"))[0]!.outcome;
-    return { commands: f.sandbox.commands, outcome, data: outcome?.status === "succeeded" ? outcome.data : {} };
+    return { commands: f.sandbox.commands, outcome, data: outcome?.status === "succeeded" ? outcome.data : {}, store: f.store, item };
   }
 
   it("a fail-then-pass test file is rerun alone, the list goes on, and the green result lists the flaky tests", async () => {
@@ -712,6 +747,25 @@ describe("merge check run: one rerun of the failing test files (fake sandbox)", 
     expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "red", why: "checks", command: "npm test", how: "exited 1" } });
     expect(r.data.failing_tests).toEqual(["tests/a.test.ts > suite > flaky", "tests/b.test.ts > other > case"]);
     expect(r.data).not.toHaveProperty("flaky_tests");
+  });
+
+  // Test selection's revert (design §4, shadow mode): the list above runs whole in every mode.
+  it("a failing file the item's enforced selection left out is a miss: named on the red result, and the mode goes back to shadow", async () => {
+    const failing = { "npm test": [{ exit: 1, out: FAIL }], "npm test -- tests/a.test.ts tests/b.test.ts": [{ exit: 1, out: FAIL }] };
+    const enforced: SelectionRecord = { mode: "enforce", full: false, files: ["tests/a.test.ts"], reason: "1 files" };
+    const r = await rerunRun(failing, { selection: enforced, mode: "enforce" });
+    expect(r.commands).toEqual(["npm ci", "npm test", "npm test -- tests/a.test.ts tests/b.test.ts"]);
+    expect(r.data).toMatchObject({ result: "red", why: "checks", selection_miss: ["tests/b.test.ts"] });
+    expect(await r.store.getLearnedSetting(r.item.project, MODE_KEY)).toMatchObject({ value: '"shadow"' });
+    expect((await r.store.listLearnedSettingChanges(10)).map((c) => [c.key, c.old_value, c.new_value, c.actor])).toEqual([
+      [MODE_KEY, '"enforce"', '"shadow"', SELECTION_ACTOR], [MODE_KEY, null, '"enforce"', SELECTION_ACTOR],
+    ]);
+    expect(await r.store.getCursor(cleanCursor(r.item.project))).toBeNull();
+
+    // A selection made in shadow mode ran the whole command before push: its files decide nothing at the merge check.
+    const shadow = await rerunRun(failing, { selection: { ...enforced, mode: "shadow" }, mode: "enforce" });
+    expect(shadow.data).not.toHaveProperty("selection_miss");
+    expect(await shadow.store.getLearnedSetting(shadow.item.project, MODE_KEY)).toMatchObject({ value: '"enforce"' });
   });
 
   it("a failure naming no test file is not rerun and stays red", async () => {
@@ -860,8 +914,11 @@ describe("merge queue: a failing UI check (real git)", { timeout: 120_000 }, () 
   const ident = ["-c", "user.name=t", "-c", "user.email=t@example.com"];
   const sh = (cwd: string, ...args: string[]) => git(cwd, ...args).trim();
 
-  /** A local factory over a real repo whose `check:responsive` script is `script`; `depth`: the merge queue's depth. */
-  async function uiFactory(script: string, depth = 1) {
+  /**
+   * A local factory over a real repo whose `check:responsive` script is `script`; `depth`: the merge queue's depth.
+   * `o.test`: the test command (default: passes); `o.check_tz`: repo.check_tz; `o.machine_tz`: the worker's own TZ.
+   */
+  async function uiFactory(script: string, depth = 1, o: { test?: string[]; check_tz?: string; machine_tz?: string } = {}) {
     const root = mkdtempSync(join(tmpdir(), "sf-ui-check-"));
     const repo = join(root, "repo");
     sh(root, "init", "--quiet", "-b", "main", repo);
@@ -874,7 +931,10 @@ describe("merge queue: a failing UI check (real git)", { timeout: 120_000 }, () 
     const pass = ["sh", "-c", "exit 0"];
     const cfg: FactoryConfig = {
       ...config, project, local_only: true, merge_queue_depth: depth,
-      repo: { ...config.repo, path: repo, install_command: pass, test_command: pass, ui_check: { command: ["npm", "run", "check:responsive"], paths: ["web/", "src/ui/"] } },
+      repo: {
+        ...config.repo, path: repo, install_command: pass, test_command: o.test ?? pass, ui_check: { command: ["npm", "run", "check:responsive"], paths: ["web/", "src/ui/"] },
+        ...(o.check_tz ? { check_tz: o.check_tz } : {}),
+      },
     };
     const clock = new FakeClock();
     const { store } = await newStore(clock);
@@ -897,7 +957,8 @@ describe("merge queue: a failing UI check (real git)", { timeout: 120_000 }, () 
     const broker = new LocalToolBroker({ store, scanner: cleanScanner, branchPrefix: cfg.branch_prefix, repoPath: repo });
     const worker = new Worker({
       id: "w1" as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config: cfg, prompts,
-      log: silent, scanner: cleanScanner, toolEnv: { PATH: process.env.PATH ?? "", HOME: root, GIT_CONFIG_GLOBAL: "/dev/null" }, awake: new NoKeepAwake(),
+      log: silent, scanner: cleanScanner, toolEnv: { PATH: process.env.PATH ?? "", HOME: root, GIT_CONFIG_GLOBAL: "/dev/null", ...(o.machine_tz ? { TZ: o.machine_tz } : {}) },
+      awake: new NoKeepAwake(),
     });
     const step = async () => {
       await controller.tickIntake();
@@ -906,7 +967,7 @@ describe("merge queue: a failing UI check (real git)", { timeout: 120_000 }, () 
     };
     let n = 0;
     const cli = (a: CliAction) =>
-      runLocalCli({ store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
+      runLocalCli({ answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
     /** A change to web/ reviewed and waiting for its merge. */
     const ready = async (title: string) => {
       const id = (await cli({ action: "create", title, bodyFile: "body.md" })).lines[0] as WorkItemId;
@@ -942,6 +1003,34 @@ describe("merge queue: a failing UI check (real git)", { timeout: 120_000 }, () 
     expect(refused.join("\n")).toContain("`npm run check:responsive`");
     expect(refused.join("\n")).toContain("did not move and the change left the merge queue");
     expect((await f.store.listAlerts({ limit: 10 })).some((a) => a.pattern === "red_main")).toBe(false);
+  });
+
+  // The red-main incident of 2026-11-22 (fixed by wi_74ef152e): a fixture window of exactly one UTC day. 20:00Z on
+  // 2026-11-22 is already 2026-11-23 in Asia/Seoul, so this test passes on the owner's machine and fails under UTC.
+  const oneUtcDay = ["node", "-e", "process.exit(new Date('2026-11-22T20:00:00Z').getDate() === 23 ? 0 : 1)"];
+
+  it("repo.check_tz UTC on an Asia/Seoul machine: a test that passes only outside UTC passes the implement checks and turns the merge check red", async () => {
+    const f = await uiFactory("exit 0", 1, { test: oneUtcDay, check_tz: "UTC", machine_tz: "Asia/Seoul" });
+    const id = await f.ready("Web change");
+    const mainBefore = sh(f.repo, "rev-parse", "main");
+
+    await f.merge(id);
+    await f.step();
+
+    expect(sh(f.repo, "rev-parse", "main")).toBe(mainBefore);
+    const check = (await f.store.listRuns(id)).find((r) => r.kind === "merge-check")!;
+    expect(check.outcome).toMatchObject({ status: "succeeded", data: { result: "red", why: "checks", command: oneUtcDay.join(" ") } });
+  });
+
+  it("with no repo.check_tz, the same test on the same machine passes the merge check: nothing changes", async () => {
+    const f = await uiFactory("exit 0", 1, { test: oneUtcDay, machine_tz: "Asia/Seoul" });
+    const id = await f.ready("Web change");
+
+    await f.merge(id);
+    await f.step();
+
+    const check = (await f.store.listRuns(id)).find((r) => r.kind === "merge-check")!;
+    expect(check.outcome).toMatchObject({ status: "succeeded", data: { result: "green" } });
   });
 
   it("main fails alone: the queued changes stay queued with no loop, one red_main alert and one fix item for the base sha, and no check again until main moves", async () => {

@@ -4,7 +4,8 @@
 
 import type { FactoryConfig } from "./config.js";
 import type { TickLease } from "./lease.js";
-import type { Logger } from "./log.js";
+import { type Logger, errorText } from "./log.js";
+import { type ScheduleRun, type ScheduleStore, runDueSchedules } from "./schedule.js";
 import type { LearnedSettingsSource, LiveSettings } from "./settings.js";
 import type { AuthAction, AuthDecision, AuthProvider } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -13,6 +14,7 @@ import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { Forge } from "../interfaces/forge.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { NetworkProbe } from "../interfaces/network-probe.js";
+import type { ScheduleAction } from "../interfaces/schedule-action.js";
 import type { Sandbox } from "../interfaces/sandbox.js";
 import type { SourceAdapter } from "../interfaces/source-adapter.js";
 import type { TacitLedger } from "../interfaces/tacit-ledger.js";
@@ -141,9 +143,55 @@ export interface ControllerDeps {
    */
   check_env?: Readonly<Record<string, string>>;
   /**
+   * Which of `names` (top-level entries such as `README.md`, `bin`) exist in the repo's base checkout: the merge
+   * reply's run hint when no `repo.restart_command` is set (design 04-gate-commands, restart). Absent: none found.
+   */
+  repo_entries?: (names: readonly string[]) => Promise<string[]>;
+  /**
    * The owner's tacit ledger (`plugins.tacit`, issue #570): a `/revise`, a `/reject` and a `changes` verdict each
    * record one capture intent, keyed by the command's comment ID, that outbound delivers to it. Absent, or not
    * `enabled` (the `none` plugin): nothing is captured and no intent recorded.
    */
   tacit?: TacitLedger;
+  /**
+   * The selected ScheduleAction (`plugins.schedule_action`, design 08-schedules), bound by compose to the store's
+   * claim pass (scheduledAction). Absent: the schedule unit claims nothing, so a due occurrence stays unclaimed
+   * until an action is selected.
+   */
+  schedule_action?: ScheduledAction;
+}
+
+/** A ScheduleAction bound to the store's claim pass: what the schedule unit calls with each tick's time. */
+export interface ScheduledAction {
+  /** Claims the occurrences due at `now` and runs the action once per fired one; returns the fired runs. */
+  fireDue(now: Date): Promise<ScheduleRun[]>;
+}
+
+/**
+ * Binds `action` to `store`'s claims (design 08-schedules, phase 2): each pass claims the schedules due at the time
+ * it is given (runDueSchedules, no clock read), runs the action once per fired occurrence in claim order, then ends
+ * the run, whether the action returned or threw (a throw is logged), so a failed action never leaves the schedule
+ * refusing its next occurrences. Safe on several replicas and safe to run twice: a lost or repeated claim fires nothing.
+ */
+export function scheduledAction(store: ScheduleStore, action: ScheduleAction, log: Logger): ScheduledAction {
+  return {
+    async fireDue(now) {
+      const { fired } = await runDueSchedules(store, now);
+      if (fired.length === 0) return fired;
+      // The claim set `running_since`; the stored row carries it, and endScheduleRun clears it only while it still holds.
+      const byId = new Map((await store.listSchedules()).map((s) => [s.id, s]));
+      for (const run of fired) {
+        const schedule = byId.get(run.schedule_id);
+        if (!schedule) continue;
+        try {
+          await action.run(schedule, run.occurrence_at);
+        } catch (err) {
+          log.warn("schedule action failed", { schedule_id: run.schedule_id, occurrence_at: run.occurrence_at, error: errorText(err) });
+        } finally {
+          if (schedule.running_since !== null) await store.endScheduleRun(schedule.id, schedule.running_since);
+        }
+      }
+      return fired;
+    },
+  };
 }

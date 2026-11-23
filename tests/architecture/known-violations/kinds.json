@@ -1,0 +1,13 @@
+{
+  "adapter→adapter": 29,
+  "adapter→engine": 14,
+  "adapter→legacy": 70,
+  "adapter→root": 3,
+  "engine→feature": 8,
+  "engine→root": 3,
+  "feature→adapter": 26,
+  "feature→engine": 42,
+  "feature→feature": 16,
+  "feature→legacy": 123,
+  "feature→root": 38
+}

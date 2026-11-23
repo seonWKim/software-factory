@@ -9,7 +9,9 @@ const REPO_ROOT = join(import.meta.dirname, "..");
 const KNOWN: [query: string, expected: string][] = [
   ["keep awake caffeinate lid sleep", "docs/plugins/keep-awake.md"],
   ["egress scanner secret patterns", "docs/plugins/egress-scanner.md"],
-  ["self-improvement additive learnings improver", "docs/design/07-self-improvement.md"],
+  ["self-improvement improver failure pattern", "docs/design/07-self-improvement.md"],
+  ["learned rules promoted pack cap", "docs/design/07-learned-rules.md"],
+  ["conflict hotspot held items", "docs/design/07-conflict-hotspots.md"],
 ];
 
 describe("bm25 over the real docs/ tree: known queries", () => {

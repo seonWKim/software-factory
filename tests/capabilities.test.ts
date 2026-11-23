@@ -20,7 +20,7 @@ import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { SecretStore } from "../src/interfaces/secret-store.js";
 import type { SharedStorage } from "../src/interfaces/shared-storage.js";
 import { REGISTRY } from "../src/plugins.js";
-import { readSkills, skillFolderPath } from "../src/runtime/capabilities/capabilities.js";
+import { readSkills, skillFolderPath, skillVersion } from "../src/runtime/capabilities/capabilities.js";
 import { type UiCapabilitySources, capabilitySources, readCapabilities } from "../src/ui/capabilities-api.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type UiDeps, respond } from "../src/ui/server.js";
@@ -289,7 +289,7 @@ describe("GET /api/v1/settings/capabilities", () => {
     const folder = await skillFolder({ dirs: [`leak-${SECRET}`] });
     const providers = [{ interface: "runner" as const, plugin: "openai-compatible", selected: true, endpoint: "api.example.com", models: { cheap: SECRET, standard: "m", strong: "m" } }];
     const tools = [{ name: "forge.preflight", description: `token ${SECRET}`, read_only: true, origin: "broker" as const }];
-    const { d, settings, store, storage } = await setup({ skill_folders: [folder], tools, providers }, { secrets: [SECRET] });
+    const { d, store, storage } = await setup({ skill_folders: [folder], tools, providers }, { secrets: [SECRET] });
     await finishedRun(store, storage, 1, "m", `{"secret":"${SECRET}"}\n`);
     const r = await respond(d, { method: "GET", url: "/api/v1/settings/capabilities", host: "127.0.0.1:4310" });
     expect(r.status).toBe(200);
@@ -315,5 +315,42 @@ describe("GET /api/v1/settings/capabilities", () => {
     const plain: UiSettings = { ...t.settings };
     delete plain.editFile;
     expect(await caps(t.d, plain)).toEqual([]);
+  });
+});
+
+describe("skillVersion", () => {
+  /** A skill folder with `files` (relative path → text). */
+  async function folderWith(files: Record<string, string>): Promise<string> {
+    const root = await tmp();
+    for (const [name, text] of Object.entries(files)) {
+      await mkdir(join(root, name, ".."), { recursive: true });
+      await writeFile(join(root, name), text);
+    }
+    return root;
+  }
+
+  it("is a SHA-256 over the folder's file names and bytes, the same for the same contents", async () => {
+    const files = { "SKILL.md": "---\nname: s\n---\nbody\n", "refs/a.md": "a" };
+    const v = await skillVersion(await folderWith(files));
+    expect(v).toMatch(/^[0-9a-f]{64}$/);
+    expect(await skillVersion(await folderWith(files))).toBe(v);
+  });
+
+  it("changes when a file's bytes change, a file is renamed, added or removed", async () => {
+    const base = await skillVersion(await folderWith({ "SKILL.md": "one", "refs/a.md": "a" }));
+    const others = [
+      await skillVersion(await folderWith({ "SKILL.md": "two", "refs/a.md": "a" })),
+      await skillVersion(await folderWith({ "SKILL.md": "one", "refs/b.md": "a" })),
+      await skillVersion(await folderWith({ "SKILL.md": "one", "refs/a.md": "a", "c.md": "" })),
+      await skillVersion(await folderWith({ "SKILL.md": "one" })),
+      // A name's bytes moved into the body is another version too.
+      await skillVersion(await folderWith({ "SKILL.md": "one", "refs/a.m": "da" })),
+    ];
+    for (const o of others) expect(o).not.toBe(base);
+    expect(new Set(others).size).toBe(others.length);
+  });
+
+  it("throws for a folder that cannot be read", async () => {
+    await expect(skillVersion(join(await tmp(), "missing"))).rejects.toThrow();
   });
 });

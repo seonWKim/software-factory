@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import migration from "../src/controller/migrations/20261111T1610-controller-tasks.migration.js";
 import { type CliAction, type LocalCliDeps, parseLocalCliArgs, runLocalCli } from "../src/core/local-cli.js";
-import { type NewTask, type Task, localDate, taskViews } from "../src/core/tasks.js";
-import type { Timestamp, UserId } from "../src/core/types.js";
+import { type NewTask, localDate, taskViews } from "../src/core/tasks.js";
+import type { UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { MIGRATIONS_TABLE, type MigrationDb, type SqlDriver, tableExists } from "../src/state/index.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // Plain tasks (design 02-tasks, issue #606): stored in controller_tasks, never a work item; quick-add on the CLI;
 // conditional, idempotent writes; one next occurrence per recurring completion.
@@ -17,7 +18,7 @@ async function setup(clock = new FakeClock("2026-11-11T12:00:00.000Z")) {
   const { store } = await newStore(clock);
   let n = 0;
   const d: LocalCliDeps = {
-    store, identity: { user: USER, from: "git user.email" }, project: async () => null, read: async () => "", newId: () => `id${++n}`,
+    answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: USER, from: "git user.email" }, project: async () => null, read: async () => "", newId: () => `id${++n}`,
   };
   /** As typed: `factory task <args...>`. */
   const cli = (...args: string[]) => {
@@ -70,6 +71,18 @@ describe("factory task add", () => {
     expect(b!.due_date).toBe(localDate(clock.now(), 1));
     expect(b!.due_date).toMatch(/^2020-0[23]-/);
     expect(a!.created_at).toBe("2020-02-28T12:00:00.000Z");
+  });
+});
+
+describe("addTask and the body field", () => {
+  it("writes the body it is given and reads it back; left out it is null; a repeated add keeps the stored row", async () => {
+    const { store } = await setup();
+    const added = await store.addTask(task({ id: "tk_p-0009", body: "Rationale: r\nProposal: P-0009" }));
+    expect(added.body).toBe("Rationale: r\nProposal: P-0009");
+    expect((await store.getTask("tk_p-0009"))!.body).toBe("Rationale: r\nProposal: P-0009");
+    expect((await store.addTask(task({ id: "tk_p-0009", body: "other" }))).body).toBe("Rationale: r\nProposal: P-0009");
+    expect((await store.addTask(task({ id: "tk_2" }))).body).toBeNull();
+    expect((await store.getTask("tk_2"))!.body).toBeNull();
   });
 });
 
@@ -187,9 +200,11 @@ describe("migration: controller_tasks", () => {
     const { store } = await newStore();
     const { item } = await store.createWorkItem(issue(1), system);
     await store.db.run("DROP TABLE controller_tasks");
-    // The later column migrations on this table (#607, sub-tasks, schedule) run again too, as they would after this one on an older store.
-    const later = ["20261112T1500-controller-tasks-work-item", "20261112T1800-controller-sub-tasks", "20261113T0900-controller-task-schedule"];
-    await store.db.run(`DELETE FROM ${MIGRATIONS_TABLE} WHERE id IN (?, ?, ?, ?)`, [ID, ...later]);
+    // The later column migrations on this table (#607, sub-tasks, schedule, description) run again too, as they would after this one on an older store.
+    const later = [
+      "20261112T1500-controller-tasks-work-item", "20261112T1800-controller-sub-tasks", "20261113T0900-controller-task-schedule", "20261119T1000-controller-tasks-body",
+    ];
+    await store.db.run(`DELETE FROM ${MIGRATIONS_TABLE} WHERE id IN (${[ID, ...later].map(() => "?").join(", ")})`, [ID, ...later]);
     expect(await tableExists(mdb(store.db), "controller_tasks")).toBe(false);
     await store.migrate();
     expect(await tableExists(mdb(store.db), "controller_tasks")).toBe(true);

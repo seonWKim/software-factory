@@ -16,6 +16,8 @@
 // `merge` fields are built here too.
 // `merge` (design §9, the Merge button) is an app command beside the item commands, with no note: the local merge
 // of `factory merge` for a local item, the PR's merge on the forge for any other.
+// `restart` (design 09-dashboard-item-commands, the Restart app button) is an app command with no note too: on a
+// merged item when `repo.restart_command` is set (UiCommands.restart), the same request `factory restart` stores.
 // The command box (design 09-dashboard-app) sends `sentence` with the words as its note, for the controller's
 // plain-words reader; a pending proposal's Confirm all sends `proposal_confirm` and its Cancel `proposal_cancel`, each
 // with `proposal`, the proposal ID only. The item API's `proposals` lists the item's pending proposals, found by the
@@ -24,20 +26,23 @@
 import { randomUUID } from "node:crypto";
 import { COMMAND_TABLE } from "../core/command-table.js";
 import {
-  COMMANDS, type CommandName, ROW_LABELS, commandPhase, commandSpec, commandsFor, itemCommandState, latestSpec, mergeQueued, mergeRoute, phaseLabel, requestTransition,
+  COMMANDS, type CommandName, ROW_LABELS, commandPhase, commandSpec, commandsFor, itemCommandState, latestSpec, mergeQueued, mergeQueuedLabel, mergeRoute, noFilesRefusal,
+  phaseLabel, refusalText, requestTransition,
 } from "../core/commands.js";
 import { refusalReply } from "../core/authorize.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, isProposalId, parseProposalMarker, typed } from "../core/interpret.js";
 import { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND } from "../core/local-cli.js";
 import { MERGE_COMMAND } from "../core/local-merge.js";
+import { RESTART_COMMAND, mergedIntoBase } from "../core/restart.js";
 import { parseNeedsHuman } from "../core/outputs.js";
 import { phaseOf } from "../core/phase.js";
 import { isCovered } from "../core/policy.js";
-import type { Run, UserId, WorkItem, WorkItemId } from "../core/types.js";
+import type { Run, StateChange, UserId, WorkItem, WorkItemId } from "../core/types.js";
 import type { AuthDecision } from "../interfaces/auth-provider.js";
 import type { AppCommandRequest } from "../interfaces/factory-store.js";
 import { answersDetail, splitAnswers } from "../shared/command-notes.js";
 import type { UiDeps } from "./deps.js";
+import type { Pending } from "./priority.js";
 import { csrfMatches } from "./settings-api.js";
 import { Withholder } from "./withhold.js";
 
@@ -59,13 +64,10 @@ export interface UiCommands {
   forge?: boolean;
   /** Whether the controller's sandbox can merge locally, for a local item's Merge; set by compose.ts buildUiParts. Absent: not known here; the controller still checks. */
   localMerge?: boolean;
-  /**
-   * Whether a dashboard Merge of the item is stored and not handled yet (core mergeRequested): its button reads
-   * "Merging…" until the controller's pass enters the merge queue. Set by compose.ts buildUiParts. Absent: not read.
-   */
-  mergeRequested?: (id: WorkItemId) => Promise<boolean>;
   /** How a refusal names the item's PR, as the controller names it (`PR #N`); set by compose.ts buildUiParts, so ui writes no change-ref form. Absent: the bare ref. */
   changeName?: (change_ref: string) => string;
+  /** Whether `repo.restart_command` is set, so a merged item offers Restart app; set by compose.ts buildUiParts. Absent: not offered. */
+  restart?: boolean;
 }
 
 /** The largest commands body read. A command and a 2000-character note fit well inside it. */
@@ -74,17 +76,20 @@ export const MAX_COMMAND_BODY = 16 * 1024;
 export const MAX_NOTE = 2000;
 /** The replies the item API lists: the newest this many of the item's requests. */
 export const REPLIES_LIMIT = 50;
-/** A command the page may send: an item command, or the local merge, which has no comment command. */
-export type AppCommand = CommandName | typeof MERGE_COMMAND;
+/** A command the page may send: an item command, the local merge or the restart, neither of which has a comment command. */
+export type AppCommand = CommandName | typeof MERGE_COMMAND | typeof RESTART_COMMAND;
 const COMMENT_NAMES: readonly string[] = COMMANDS.map((c) => c.name);
 /**
  * Commands the page may send: every item command but `/help` and the account command `/link`, then the command
- * table's other item commands (`merge`), so a new item command in the table reaches the page too.
+ * table's other item commands (`merge`), so a new item command in the table reaches the page too, then `restart`.
  */
 export const APP_COMMANDS: readonly AppCommand[] = [
   ...COMMANDS.map((c) => c.name).filter((n) => n !== "help" && n !== "link"),
   ...COMMAND_TABLE.filter((c) => c.item && !COMMENT_NAMES.includes(c.name)).map((c) => c.name as AppCommand),
+  RESTART_COMMAND,
 ];
+/** Commands that take no note. */
+const NO_NOTE: readonly AppCommand[] = [MERGE_COMMAND, RESTART_COMMAND];
 /** Commands that need text: the reason or the feedback. */
 const NEEDS_TEXT: readonly AppCommand[] = ["reject", "revise"];
 
@@ -153,7 +158,7 @@ export function parseCommand(body: unknown): PageRequest | { error: string } {
   const note = typeof b.note === "string" ? b.note : "";
   if (note.length > MAX_NOTE) return { error: `note must be at most ${MAX_NOTE} characters` };
   const text = note.trim();
-  if (command === MERGE_COMMAND && text !== "") return { error: "merge takes no note" };
+  if (NO_NOTE.includes(command) && text !== "") return { error: `${command} takes no note` };
   if (NEEDS_TEXT.includes(command) && text === "") return { error: `${command} needs text: ${command === "reject" ? "your reason" : "your feedback"}` };
   return text === "" ? { command } : { command, note: text };
 }
@@ -209,7 +214,7 @@ const APPLIED_NOW: readonly string[] = ["approve", MERGE_COMMAND];
 async function applyNow(d: UiDeps, r: AppCommandRequest, item: WorkItem): Promise<Record<string, unknown>> {
   const c = d.commands;
   if (!c?.allowed || !APPLIED_NOW.includes(r.command)) return {};
-  const done = await requestTransition({
+  const done = (r.command === "approve" ? await noFilesApprove(d, c.allowed, r, item) : null) ?? await requestTransition({
     store: d.store, scanner: d.scanner, allowed: c.allowed, answers: { split: splitAnswers, detail: answersDetail }, changeName: c.changeName ?? String, forge: c.forge, localMerge: c.localMerge,
   }, r, item);
   const it = done.item;
@@ -222,6 +227,22 @@ async function applyNow(d: UiDeps, r: AppCommandRequest, item: WorkItem): Promis
   };
 }
 
+/**
+ * An Approve of a spec that changes no file in this repo (design 04-spec-gate-commands, 2026-11-20): refused with the
+ * controller's reply (core noFilesRefusal) once the owner check passed, the request marked handled so the controller
+ * posts nothing; null for any other approve, which requestTransition answers (a failed owner check too).
+ */
+async function noFilesApprove(
+  d: UiDeps, allowed: NonNullable<UiCommands["allowed"]>, r: AppCommandRequest, item: WorkItem,
+): Promise<{ outcome: "refused"; item: WorkItem; label: null; refusal: string } | null> {
+  const it = (await d.store.getWorkItem(item.id)) ?? item;
+  const reason = noFilesRefusal(it, await d.store.listRuns(it.id));
+  if (reason === null || !(await allowed("approve_spec")).allow) return null;
+  const refusal = refusalText("/approve", reason);
+  await d.store.markAppCommandRequest(r.seq, refusal);
+  return { outcome: "refused", item: it, label: null, refusal };
+}
+
 /** GET /api/v1/session: the per-process token, whether commands are on, and who they act as; null (a 404) when not wired. */
 export function readSession(d: UiDeps, now: Date): Record<string, unknown> | null {
   if (!d.commands) return null;
@@ -231,8 +252,15 @@ export function readSession(d: UiDeps, now: Date): Record<string, unknown> | nul
 /** The actions the page asks about for its actor: approve_spec for the item commands, approve_merge for Merge. */
 export type PageAction = "approve_spec" | "approve_merge";
 
-/** The page actor's grant of one action: allowed, or refused with the controller's reply (refusalReply). */
-export type ActorGrant = { allow: true } | { allow: false; reason: string };
+/**
+ * The page actor's grant of one action: allowed, or refused with the controller's reply (refusalReply). `restart`:
+ * the server offers Restart app (UiCommands.restart), carried here because the item API hands itemCommands the grant.
+ */
+export type ActorGrant = ({ allow: true } | { allow: false; reason: string }) & {
+  restart?: boolean;
+  /** The item's state changes, for the rows' `repeated_stop` (stopCount); carried here for the same reason. Absent: not read. */
+  changes?: (id: WorkItemId) => Promise<readonly StateChange[]>;
+};
 
 /**
  * Whether the page's actor holds `action`, as the controller checks it for an app command (design §9): the owner check
@@ -243,18 +271,19 @@ export type ActorGrant = { allow: true } | { allow: false; reason: string };
  */
 export function actorGrant(d: UiDeps, action: PageAction): () => Promise<ActorGrant> {
   let asked: Promise<ActorGrant> | null = null;
+  const carried = { ...(d.commands?.restart === true ? { restart: true } : {}), changes: (id: WorkItemId) => d.store.listStateChanges(id) };
   const ask = async (): Promise<ActorGrant> => {
     const c = d.commands;
-    if (c?.actor == null || !c.allowed) return action === "approve_spec" ? { allow: true } : { allow: false, reason: NOT_MERGER };
+    if (c?.actor == null || !c.allowed) return action === "approve_spec" ? { allow: true, ...carried } : { allow: false, reason: NOT_MERGER, ...carried };
     const decision = await c.allowed(action);
-    return decision.allow ? { allow: true } : { allow: false, reason: refusalReply(decision.reason) };
+    return decision.allow ? { allow: true, ...carried } : { allow: false, reason: refusalReply(decision.reason), ...carried };
   };
   return () => (asked ??= ask());
 }
 
 /** One entry of the item API's `commands`: a command that applies now, and whether the viewer may send it. */
 export interface ItemCommandRow {
-  name: CommandName;
+  name: CommandName | typeof RESTART_COMMAND;
   usage: string;
   description: string;
   allowed: boolean;
@@ -265,8 +294,21 @@ export interface ItemCommandRow {
    * allowed paths, which the decision's button sends as `+paths`. Absent when the item holds no such ask.
    */
   paths?: string[];
+  /** The item stopped the same way REPEATED_STOP times or more (stopCount): the page's main action is Revise or Reject, not Retry. Absent otherwise. */
+  repeated_stop?: true;
 }
 
+/** The identical stops from which an item's main action is Revise or Reject (design 09-dashboard-item-commands, 2026-11-20). */
+export const REPEATED_STOP = 3;
+
+/** How many state changes set the item's current blocked_reason, the current stop included (0 when it has none). */
+export function stopCount(it: Pick<WorkItem, "blocked_reason">, changes: readonly StateChange[]): number {
+  if (it.blocked_reason === null) return 0;
+  return changes.filter((c) => c.changes.blocked_reason?.to === it.blocked_reason).length;
+}
+
+/** What the `restart` row says it does. */
+const RESTART_DESCRIPTION = "Run repo.restart_command in the repo's base checkout, so the running app serves the merged code; its result is posted in the thread";
 /** The commands that take `+paths` (design §4, issue #280). */
 const PATHS_COMMANDS: readonly string[] = ["approve", "retry", "resolve"];
 
@@ -294,19 +336,24 @@ async function askedPaths(it: WorkItem, runs: readonly Run[], text: (v: string) 
  * the Withholder: it names a user ID). Every command but `merge` (its own button) needs approve_spec, as the
  * controller checks it; `/verdict`'s record_verdict comes with the same role. Not `/help`: it answers a comment and the
  * page cannot send it (APP_COMMANDS), so a button for it could only be refused. A permission ask's paths go on the
- * commands that take `+paths` (askedPaths).
+ * commands that take `+paths` (askedPaths). A merged item gets `restart` (the Restart app button) when the server
+ * offers it (`grant.restart`), with the same grant as the item commands.
  */
 export async function itemCommands(
   it: WorkItem, runs: readonly Run[], grant: ActorGrant, text: (v: string) => Promise<string | null>,
 ): Promise<ItemCommandRow[]> {
   const reason = grant.allow ? null : await text(grant.reason);
   const paths = await askedPaths(it, runs, text);
-  return commandsFor(itemCommandState(it, runs))
-    .filter((c) => APP_COMMANDS.includes(c.name))
-    .map((c) => ({
-      name: c.name, usage: c.usage, description: c.description, allowed: grant.allow, reason,
-      ...(paths.length > 0 && PATHS_COMMANDS.includes(c.name) ? { paths } : {}),
-    }));
+  const cmds = commandsFor(itemCommandState(it, runs)).filter((c) => APP_COMMANDS.includes(c.name));
+  // Its state changes say how often the item stopped with its current blocked_reason (none read when it has none).
+  const stops = it.blocked_reason !== null && grant.changes ? stopCount(it, await grant.changes(it.id)) : 0;
+  const rows: ItemCommandRow[] = cmds.map((c) => ({
+    name: c.name, usage: c.usage, description: c.description, allowed: grant.allow, reason,
+    ...(paths.length > 0 && PATHS_COMMANDS.includes(c.name) ? { paths } : {}),
+    ...(stops >= REPEATED_STOP ? { repeated_stop: true as const } : {}),
+  }));
+  if (grant.restart === true && mergedIntoBase(it)) rows.push({ name: RESTART_COMMAND, usage: RESTART_COMMAND, description: RESTART_DESCRIPTION, allowed: grant.allow, reason });
+  return rows;
 }
 
 /**
@@ -319,7 +366,7 @@ export async function itemCommands(
 export async function needsYouCommands(d: UiDeps, it: WorkItem, grant: () => Promise<ActorGrant>, text: (v: string) => Promise<string | null>) {
   const runs = phaseOf(it) === "agent_needs_human" ? await d.store.listRuns(it.id) : [];
   const all = await itemCommands(it, runs, await grant(), text);
-  return all.filter((c) => c.name === "verdict" || (c.name !== "budget" && commandSpec(c.name).changes_state));
+  return all.filter((c) => c.name === "verdict" || (c.name !== "budget" && c.name !== RESTART_COMMAND && commandSpec(c.name).changes_state));
 }
 
 /**
@@ -336,8 +383,19 @@ export async function waitingSpec(it: WorkItem, runs: readonly Run[], text: (v: 
   for (const d of spec.decision_items ?? []) {
     const options = [];
     for (const o of d.options ?? []) options.push((await text(o))!);
+    // Each option's changes (design 09-dashboard-item-commands, 2026-11-21), with the extra paths the item's
+    // allowed_paths do not cover: the approve dialog warns about those before anything is sent.
+    const option_changes = [];
+    for (const c of d.option_changes ?? []) {
+      const done_when = [];
+      for (const l of c.done_when) done_when.push((await text(l))!);
+      option_changes.push({
+        option: (await text(c.option))!, extra_paths: c.extra_paths, done_when, uncovered_paths: c.extra_paths.filter((p) => !isCovered(p, it.allowed_paths)),
+      });
+    }
     decisions.push({
-      question: (await text(d.text))!, options, default: await text(d.default), reason: await text(d.reason ?? null), owner_only: d.owner_only,
+      question: (await text(d.text))!, options, default: await text(d.default), reason: await text(d.reason ?? null), owner_only: d.owner_only, option_changes,
+      ...(d.layout ? { layout: true } : {}),
     });
   }
   return { in_short: await text(spec.in_short), decisions };
@@ -395,14 +453,15 @@ const off = (reason: string): MergeReadiness => ({ enabled: false, reason });
  * The item API's `merge`, from stored state only (no forge call): enabled for an item waiting for its merge that
  * the page's user may merge. A local item with no PR merges through the local merge, any item with a PR through
  * its PR on the forge (design 05-sources). The merge check applies to a factory PR, the one item it runs for. The
- * controller checks everything again when it applies the request; GitHub checks the head at merge time.
+ * controller checks everything again when it applies the request; GitHub checks the head at merge time. `pending`:
+ * the item's pending command (list.ts pendingOf), the rule the ranking reads too.
  */
-export async function mergeReadiness(d: UiDeps, it: WorkItem, check: MergeCheckState | null, allowed: () => Promise<ActorGrant>): Promise<MergeReadiness> {
-  // Merge taken by the controller (design 09-dashboard-app): the merge queue checks a local item's merged result.
+export async function mergeReadiness(d: UiDeps, it: WorkItem, check: MergeCheckState | null, allowed: () => Promise<ActorGrant>, pending: Pending | null = null): Promise<MergeReadiness> {
+  // Merge taken by the controller (design 09-dashboard-item-commands): the merge queue checks a local item's merged result.
   if (mergeQueued(it)) return off(ROW_LABELS.checking);
   if (commandPhase(it) !== "merge_pending") return off(NOT_WAITING);
-  // A Merge stored and not handled yet: the controller enters the merge queue on its next pass, so a read before it keeps "Merging…".
-  if (await d.commands?.mergeRequested?.(it.id)) return off(ROW_LABELS.merging);
+  // A Merge stored and not handled yet: the controller takes it on a later pass, so until then it reads its place in line.
+  if (pending?.command === "merge") return off(mergeQueuedLabel(pending.position));
   // The controller's route: a local item with no PR takes the local merge, an item with a PR its PR's merge.
   const local = mergeRoute(it) === "local";
   if (!local && it.change_ref === null) return off("no PR to merge");

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { STATE_GROUPS, groupStates } from "../../src/shared/states.js";
 import {
   type FilterRow,
   NO_FILTERS,
@@ -29,6 +30,11 @@ const rows: Row[] = [
   row("running", { level: "running", stage: "RUNNING", tier: 2, kind: "implement", search: searchKeys("o/r#4", "Running item") }),
   row("queued", { level: "queued", stage: "NEW", kind: "triage", search: searchKeys("o/r#5", "Queued item") }),
   row("closed", { level: "closed", stage: "CLOSED", tier: 2, search: searchKeys("o/r#9", "Done item") }),
+];
+const finished: Row[] = [
+  row("merged", { level: "merged", stage: "CLOSED" }),
+  row("wontdo", { level: "closed", stage: "CLOSED" }),
+  row("rejected", { level: "rejected", stage: "CLOSED" }),
 ];
 
 const parse = (qs: string) => {
@@ -102,16 +108,40 @@ describe("ui filters", () => {
     expect(parse("state=&stage=&tier=&kind=&q=").state).toBeUndefined();
   });
 
-  it("`needs` is Needs you and Needs triage, never Blocked by another task", () => {
-    const split = [row("you", { level: "needs_you" }), row("triage", { level: "needs_triage" }), row("blocked", { level: "blocked_by_task" })];
-    expect(applyFilters(split, parse("state=needs")).map((r) => r.name)).toEqual(["you", "triage"]);
+  it("`needs` is the Needs-you group: never Needs triage, Failed or Blocked by another task", () => {
+    const split = [row("you", { level: "needs_you" }), row("triage", { level: "needs_triage" }), row("failed", { level: "failed" }), row("blocked", { level: "blocked_by_task" })];
+    expect(applyFilters(split, parse("state=needs")).map((r) => r.name)).toEqual(["you"]);
     expect(applyFilters(split, parse("state=blocked_by_task")).map((r) => r.name)).toEqual(["blocked"]);
-    expect(facetCounts(split, NO_FILTERS).state.needs).toBe(2);
+    expect(facetCounts(split, NO_FILTERS).state.needs).toBe(1);
   });
 
-  it("the needs_you level is no option of its own: the Needs you group shows it", () => {
-    expect(parseFilters(new URLSearchParams("state=needs_you"))).toEqual({ ok: false, error: "Unknown state." });
-    expect(applyFilters([row("you", { level: "needs_you" })], parse("state=needs")).map((r) => r.name)).toEqual(["you"]);
+  it("each group filter holds its states, and every state is its own option", () => {
+    const split = [row("you", { level: "needs_you" }), row("triage", { level: "needs_triage" }), row("held", { level: "held" }), row("failed", { level: "failed" }), row("stuck", { level: "stuck" }), row("run", { level: "running" })];
+    expect(applyFilters(split, parse("state=waiting")).map((r) => r.name)).toEqual(["triage", "held"]);
+    expect(applyFilters(split, parse("state=problem")).map((r) => r.name)).toEqual(["failed", "stuck"]);
+    expect(applyFilters(split, parse("state=active")).map((r) => r.name)).toEqual(["run"]);
+    expect(applyFilters(split, parse("state=needs_you")).map((r) => r.name)).toEqual(["you"]);
+    expect(applyFilters(split, parse("state=held")).map((r) => r.name)).toEqual(["held"]);
+    const c = facetCounts(split, NO_FILTERS);
+    expect([c.state.needs, c.state.active, c.state.waiting, c.state.problem, c.state.finished]).toEqual([1, 1, 2, 2, 0]);
+  });
+
+  it("finished rows show with a Finished filter; state=closed is every Finished state", () => {
+    expect(applyFilters(finished, NO_FILTERS)).toEqual([]);
+    expect(applyFilters(finished, parse("state=finished")).map((r) => r.name)).toEqual(["merged", "wontdo", "rejected"]);
+    expect(applyFilters(finished, parse("state=closed")).map((r) => r.name)).toEqual(["merged", "wontdo", "rejected"]);
+    expect(applyFilters(finished, parse("state=merged")).map((r) => r.name)).toEqual(["merged"]);
+    expect(applyFilters(finished, parse("state=rejected")).map((r) => r.name)).toEqual(["rejected"]);
+    expect(facetCounts(finished, NO_FILTERS).state.finished).toBe(3);
+  });
+
+  it("system is no Work filter, and no state group lists it", () => {
+    expect(parseFilters(new URLSearchParams("state=system"))).toEqual({ ok: false, error: "Unknown state." });
+    for (const g of STATE_GROUPS) expect(groupStates(g)).not.toContain("system");
+  });
+
+  it("run and worker states are no Work filter", () => {
+    for (const s of ["draining", "succeeded", "cancelled"]) expect(parseFilters(new URLSearchParams(`state=${s}`))).toEqual({ ok: false, error: "Unknown state." });
   });
 
   it("the old level ids needs_human and waiting_on_issue are unknown states", () => {

@@ -1,14 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
-  IMPLEMENT_KINDS, autoApproveRefusal, autoMergeRefusal, effectiveTier, failureClass, floorTier, isCovered, pathsOverlap, retryDelayMs, retryKey, runKey,
-  sameStep, workItemIdFromBranch,
+  IMPLEMENT_KINDS, TAKEOVER_OUTCOME, autoApproveRefusal, autoMergeRefusal, effectiveTier, failureClass, floorTier, isCovered, pathsOverlap, retryDelayMs, retryKey, runKey,
+  sameStep, takenOver, workItemIdFromBranch, SETUP_MISSING, retryClears,
 } from "../src/core/policy.js";
+import { harnessCredential } from "../src/impl/runner/claude-code-runner.js";
+import { thrownFailure } from "../src/worker/support.js";
+import { MemorySecretStore } from "./helpers/fakes/secrets.js";
 import { GATE_PATHS, gatePathTouched } from "../src/core/improver.js";
 import { PROTECTED_PATHS, protectedCategory } from "../src/core/standing.js";
 import { parseTriage } from "../src/core/outputs.js";
 import { PROVIDER_SETUP } from "../src/interfaces/agent-runner.js";
+import { DROP_BACK_BAD, DROP_BACK_SAMPLE, TIER_RULE_MAX_BAD, TIER_RULE_SAMPLE } from "../src/core/stats.js";
 import type { WorkItemId } from "../src/core/types.js";
-import { triageSpec } from "./helpers/fakes.js";
+import { triageSpec } from "./helpers/fakes/config.js";
 
 describe("policy", () => {
   const floors = [{ prefix: "prompts/", tier: 3 as const }, { prefix: "src/impl/broker/", tier: 4 as const }];
@@ -59,6 +63,20 @@ describe("policy", () => {
     expect(failureClass(null)).toBe("task");
     // A provider's quota, key or model error is the task's own failure, never a rate limit (no claim pause).
     expect(failureClass(failed(PROVIDER_SETUP, false))).toBe("task");
+  });
+
+  // Bug: a missing model credential is an "exception" (infra), so the run is retried, counted toward max_restart and
+  // the repeated-failure rule, and Health lists it as an unexpected worker error.
+  it("classifies a missing model credential as setup_missing, apart from task and infra", async () => {
+    const thrown = await harnessCredential(new MemorySecretStore({})).then(() => null, (err: unknown) => err);
+    const f = thrownFailure(thrown);
+    expect(f).toMatchObject({ code: SETUP_MISSING, infra: false });
+    expect(f.detail).toContain("CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY");
+    expect(thrownFailure(new Error("boom")).code).toBe("exception");
+    const outcome = { status: "failed" as const, error_code: SETUP_MISSING, detail: f.detail, infra: true };
+    expect(failureClass(outcome)).toBe("setup_missing");
+    // A retry cannot succeed until the credential exists: Retry is not the clearing action for it.
+    expect(retryClears(outcome)).toBe(false);
   });
 
   it("maps factory branches back to work items", () => {
@@ -113,6 +131,16 @@ describe("policy", () => {
   });
 });
 
+describe("takenOver", () => {
+  it("is true only for a cancelled run with the takeover outcome; other cancelled or failed runs keep their counting", () => {
+    expect(takenOver({ status: "cancelled", outcome: TAKEOVER_OUTCOME })).toBe(true);
+    expect(takenOver({ status: "cancelled", outcome: null })).toBe(false);
+    expect(failureClass(null)).toBe("task"); // a plain cancel still counts as a task failure
+    expect(takenOver({ status: "failed", outcome: TAKEOVER_OUTCOME })).toBe(false);
+    expect(takenOver({ status: "cancelled", outcome: { status: "failed", error_code: "agent_failed", detail: "", infra: false } })).toBe(false);
+  });
+});
+
 describe("implement-type runs", () => {
   it("implement-type kinds are implement (also a review fix) and update; triage and review are not", () => {
     expect([...IMPLEMENT_KINDS].sort()).toEqual(["implement", "update"]);
@@ -136,7 +164,7 @@ describe("auto mode rules (design 03-risk)", () => {
   });
 
   it("merges only a complete local change below tier 4, off the gate list, at or under the setting's tier", () => {
-    const ok = { tier: 2 as const, max_tier: 3, incomplete: false, gate_path: null, local: true };
+    const ok = { tier: 2 as const, max_tier: 3, incomplete: false, gate_path: null, local: true, rule: "met" as const, dropped_back: false };
     expect(autoMergeRefusal(ok)).toBeNull();
     expect(autoMergeRefusal({ ...ok, local: false })).toContain("local");
     expect(autoMergeRefusal({ ...ok, tier: 4, max_tier: 9 })).toContain("tier 4");
@@ -144,6 +172,21 @@ describe("auto mode rules (design 03-risk)", () => {
     expect(autoMergeRefusal({ ...ok, incomplete: true })).toContain("incomplete");
     expect(autoMergeRefusal({ ...ok, max_tier: 1 })).toContain("auto_merge_max_tier (1)");
     expect(autoMergeRefusal({ ...ok, max_tier: 0 })).toContain("auto_merge_max_tier (0)");
+  });
+
+  it("under the setting, refuses a tier whose rule fails or that dropped back, naming the tier and the rule", () => {
+    const ok = { tier: 2 as const, max_tier: 3, incomplete: false, gate_path: null, local: true, rule: "met" as const, dropped_back: false };
+    expect(autoMergeRefusal({ ...ok, rule: "not_met" })).toBe(
+      "tier 2 does not meet the auto-merge rule: it has more than 1 reverted or fixed-forward merge, or a critical verdict, in its last 50",
+    );
+    expect(autoMergeRefusal({ ...ok, rule: "too_few" })).toBe("tier 2 does not meet the auto-merge rule: it has fewer than 50 merges");
+    expect(autoMergeRefusal({ ...ok, tier: 3, dropped_back: true })).toBe(
+      "tier 3 dropped back: 2 or more of its last 20 merges were reverted or fixed forward",
+    );
+    // The refusal's numbers are the rule's and the drop-back's own (policy.ts cannot import them: an import cycle).
+    expect([TIER_RULE_SAMPLE, TIER_RULE_MAX_BAD, DROP_BACK_SAMPLE, DROP_BACK_BAD]).toEqual([50, 1, 20, 2]);
+    // The setting is checked first: a tier above it is refused for the setting, whatever its record.
+    expect(autoMergeRefusal({ ...ok, max_tier: 1, rule: "not_met" })).toContain("auto_merge_max_tier (1)");
   });
 
   it("the gate list is one list: the merge check's paths, every standing-rule protected path, the identity and tool folders", () => {
@@ -191,6 +234,23 @@ describe("auto mode rules (design 03-risk)", () => {
     expect(r.value.decisions).toEqual(["Warn? Proposed default: No.", "Drop it? Proposed default: Yes. (owner only)", "Rename it?"]);
     const again = parseTriage(r.value);
     expect(again.ok && again.value.decision_items).toEqual(r.value.decision_items);
+  });
+});
+
+// Migration timestamps (design 04-triage): a later timestamp with an allowed migration's folder, component and slug is covered.
+describe("isCovered: a later same-slug migration", () => {
+  const allowed = ["src/controller/migrations/20261122T1200-controller-new-thing.migration.ts", "tests/20261122T1200-controller-new-thing.test.ts"];
+
+  it("covers the migration and its test at a later timestamp", () => {
+    expect(isCovered("src/controller/migrations/20261122T1201-controller-new-thing.migration.ts", allowed)).toBe(true);
+    expect(isCovered("tests/20261123T0000-controller-new-thing.test.ts", allowed)).toBe(true);
+  });
+
+  it("does not cover an earlier timestamp, another slug, another component, or a later file with no allowed migration", () => {
+    expect(isCovered("src/controller/migrations/20261122T1100-controller-new-thing.migration.ts", allowed)).toBe(false);
+    expect(isCovered("src/controller/migrations/20261122T1201-controller-new-thing-two.migration.ts", allowed)).toBe(false);
+    expect(isCovered("src/worker/migrations/20261122T1201-worker-new-thing.migration.ts", allowed)).toBe(false);
+    expect(isCovered("src/controller/migrations/20261122T1201-controller-new-thing.migration.ts", ["src/core/policy.ts"])).toBe(false);
   });
 });
 

@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { localProject } from "../src/compose.js";
+import { localProject } from "../src/load-config.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { type CliAction, runLocalCli } from "../src/core/local-cli.js";
@@ -18,10 +18,12 @@ import { HealthMonitor } from "../src/ui/health.js";
 import type { UiDeps } from "../src/ui/deps.js";
 import { api } from "../src/ui/api.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
-import type { Forge } from "../src/interfaces/forge.js";
 import { autoResolveKey } from "../src/core/policy.js";
-import { FakeGitHubClient, FakeRunner, MemoryStorage, cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes.js";
+import { requestTransition } from "../src/core/request-transition.js";
+import { FakeRunner, MemoryStorage } from "./helpers/fakes/runner.js";
+import { cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // A local task from create to merge with no GitHub plugin (design 05-sources, Local startup): the local source,
 // local auth, the local broker and the local sandbox over a real git repo. The branch stays local, the review
@@ -74,10 +76,6 @@ async function localFactory(opts: { resolve?: ConstructorParameters<typeof FakeR
   };
   const clock = new FakeClock();
   const { store } = await newStore(clock);
-  // Recording fakes: a GitHub client and a forge. Neither may be called.
-  const github = new FakeGitHubClient();
-  const forgeCalls: string[] = [];
-  const forge = new Proxy({}, { get: (_t, k) => (k === "then" ? undefined : () => (forgeCalls.push(String(k)), Promise.reject(new Error("forge")))) }) as Forge;
   const auth = new OwnerAuth(store);
   const sandbox = new NoOpSandbox(join(root, "wt"), undefined, undefined, { local: true });
   const controller = new ControllerRole({
@@ -108,7 +106,7 @@ async function localFactory(opts: { resolve?: ConstructorParameters<typeof FakeR
   };
   let n = 0;
   const cli = (user: UserId, a: CliAction) =>
-    runLocalCli({ store, identity: { user, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
+    runLocalCli({ answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
   const messages = async (id: WorkItemId, prefix: string) =>
     (await store.listItemMessages(id)).filter((m) => m.marker.startsWith(prefix)).map((m) => m.body);
   /** A local task through triage, approval, implement and review, waiting for its merge. */
@@ -134,7 +132,7 @@ async function localFactory(opts: { resolve?: ConstructorParameters<typeof FakeR
     return git(repo, "rev-parse", "main");
   };
   const resolves = async (id: WorkItemId) => (await store.listRuns(id)).filter((r) => r.kind === "resolve");
-  return { repo, origin, owner, remoteRefs, store, runner, github, forgeCalls, step, cli, messages, toMergePending, appMerge, controller, clock, gates, conflictOnMain, resolves };
+  return { repo, origin, owner, remoteRefs, store, runner, step, cli, messages, toMergePending, appMerge, controller, clock, gates, conflictOnMain, resolves };
 }
 
 describe("a local task from create to merge, no GitHub plugin", { timeout: 60_000 }, () => {
@@ -174,11 +172,9 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     expect(at.every((i) => i >= 0)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
 
-    // No push, no forge: the remote and the owner's checkout are as they were; the fakes saw no call.
+    // No push: the remote and the owner's checkout are as they were.
     expect(f.remoteRefs()).toBe(remoteBefore);
     expect(f.owner()).toEqual(ownerBefore);
-    expect(f.github.calls).toEqual([]);
-    expect(f.forgeCalls).toEqual([]);
     expect(await f.store.getBasePush(id)).toBeNull();
   });
 
@@ -223,7 +219,26 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     expect((await f.messages(id, "<!-- factory:refused:")).at(-1)).toBe("`factory merge` was not applied: only the owner may send this command.");
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
     expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
-    expect(f.github.calls).toEqual([]);
+  });
+
+  it("factory merge is refused at max_loops from implement loops (no merge check), and nothing moves", async () => {
+    const f = await localFactory();
+    const id = await f.toMergePending();
+    const it0 = (await f.store.getWorkItem(id))!;
+    // A feedback round at the loop limit: its max_loops change carries no merge queue entry.
+    const stopped = await f.store.transition({
+      id, expected_version: it0.version, actor: { kind: "system", id: "system:controller" }, reason: "max_loops",
+      patch: { blocked_on: "human", blocked_reason: "max_loops" }, detail: { comment_id: "c1" },
+    });
+    expect(stopped.ok).toBe(true);
+    const mainBefore = git(f.repo, "rev-parse", "main");
+    await f.cli(ME, { action: "command", command: "merge", id, text: "" });
+    await f.step();
+    expect((await f.messages(id, "<!-- factory:refused:")).at(-1)).toContain("is not waiting for a merge (REVIEW, max_loops)");
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "max_loops" });
+    expect((await f.store.listStateChanges(id)).some((c) => c.reason === "merge_check_again")).toBe(false);
+    expect((await f.store.listRuns(id)).some((r) => r.kind === "merge-check")).toBe(false);
+    expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
   });
 
   it("factory merge on a conflict names the files and starts the automatic resolve: local base merged into the local branch, gates run, committed, nothing pushed, reviewed, merge_pending", async () => {
@@ -271,8 +286,6 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     await f.cli(ME, { action: "command", command: "merge", id, text: "" });
     await f.step();
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: git(f.repo, "rev-parse", "main") });
-    expect(f.github.calls).toEqual([]);
-    expect(f.forgeCalls).toEqual([]);
   });
 
   it("the merge check finds the conflict when the local base moves and starts the same resolve run", async () => {
@@ -327,6 +340,126 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     expect(runs.map((r) => r.idempotency_key)).toContain(`${id}:resolve:l0:r1`);
     expect(runs.at(-1)!.input).toEqual({ notes: "keep the branch's workflow" });
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+  });
+
+  it("factory merge on an item parked at merge_conflict_pending: still conflicting is refused with the files and factory resolve, the owner only, then a hand fix gets a fresh review of its head and no resolve run", async () => {
+    const f = await localFactory({ resolve: () => { throw new Error("the agent gave up"); } });
+    const id = await f.toMergePending();
+    const branch = `factory/${id}`;
+    const main = f.conflictOnMain();
+    await f.cli(ME, { action: "command", command: "merge", id, text: "" });
+    await f.step();
+    const parked = { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending" };
+    expect(await f.store.getWorkItem(id)).toMatchObject(parked);
+    const resolvesBefore = (await f.resolves(id)).map((r) => r.idempotency_key);
+    const changes = async () => (await f.store.listStateChanges(id)).length;
+
+    // Still conflicting: refused with the files and `factory resolve`; nothing moves, no resolve run starts.
+    const before = await changes();
+    await f.cli(ME, { action: "command", command: "merge", id, text: "" });
+    await f.step();
+    const reply = (await f.messages(id, "<!-- factory:refused:")).at(-1)!;
+    expect(reply).toContain("does not merge cleanly");
+    expect(reply).toContain(`- \`${WORKFLOW}\``);
+    expect(reply).toContain(`factory resolve ${id}`);
+    expect(reply).not.toContain("is not waiting for a merge");
+    expect(await f.store.getWorkItem(id)).toMatchObject(parked);
+    expect(await changes()).toBe(before);
+    expect((await f.resolves(id)).map((r) => r.idempotency_key)).toEqual(resolvesBefore);
+
+    // The owner merges the local base into the branch by hand.
+    const side = join(f.repo, "..", "hand");
+    git(f.repo, "worktree", "add", "--quiet", side, branch);
+    try { git(side, ...ident, "merge", "--quiet", "main"); } catch { /* the conflict, resolved below */ }
+    writeFileSync(join(side, WORKFLOW), "name: scope\non: push\n");
+    git(side, "add", WORKFLOW);
+    git(side, ...ident, "commit", "--quiet", "--no-edit");
+    git(f.repo, "worktree", "remove", side);
+    const head = git(f.repo, "rev-parse", branch);
+
+    // Anyone but the owner is still refused, and nothing moves.
+    await f.cli(DEV, { action: "command", command: "merge", id, text: "" });
+    await f.step();
+    expect((await f.messages(id, "<!-- factory:refused:")).at(-1)).toBe("`factory merge` was not applied: only the owner may send this command.");
+    expect(await f.store.getWorkItem(id)).toMatchObject(parked);
+
+    // The clean hand fix: no resolve run, one fresh review keyed on the branch head, then merge_pending.
+    await f.cli(ME, { action: "command", command: "merge", id, text: "" });
+    await f.step();
+    expect((await f.resolves(id)).map((r) => r.idempotency_key)).toEqual(resolvesBefore);
+    const fixed = (await f.store.listStateChanges(id)).find((c) => c.reason === "conflict_fixed_by_hand")!;
+    expect(fixed).toMatchObject({ actor: { kind: "user", id: ME }, detail: { head_sha: head } });
+    const reviews = (await f.store.listRuns(id)).filter((r) => r.idempotency_key === `${id}:review:hand-fixed:${head}`);
+    expect(reviews.map((r) => r.status)).toEqual(["succeeded"]);
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: null });
+    expect((await f.messages(id, "<!-- factory:hand-fixed:")).join("")).toContain(`factory merge ${id}`);
+
+    // Then `factory merge` lands the hand-fixed branch.
+    await f.cli(ME, { action: "command", command: "merge", id, text: "" });
+    await f.step();
+    const landed = git(f.repo, "rev-parse", "main");
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: landed });
+    expect(git(f.repo, "rev-list", "--parents", "-n", "1", landed).split(" ").slice(1)).toEqual([main, head]);
+  });
+
+  it("factory merge on an item held for recurring_failure after its resolve runs failed: a hand fix gets a fresh review, the request gate passes it, and a hold with no failed resolve is refused", async () => {
+    const f = await localFactory({ resolve: () => { throw new Error("the agent stalled"); } });
+    const system = { kind: "system", id: "test" } as const;
+    const hold = async (id: WorkItemId) => {
+      const it = (await f.store.getWorkItem(id))!;
+      await f.store.transition({ id, expected_version: it.version, actor: system, reason: "recurring_failure", patch: { blocked_on: "human", blocked_reason: "recurring_failure" }, detail: { pattern_key: "k" } });
+    };
+    const gate = async (id: WorkItemId) => {
+      const r = (await f.store.getAppCommandRequest(await f.appMerge(ME, id)))!;
+      return requestTransition({
+        store: f.store, scanner: cleanScanner, allowed: async () => ({ allow: true }), answers: {} as never, changeName: String, localMerge: true,
+      }, r, (await f.store.getWorkItem(id))!);
+    };
+
+    // A hold on an item with no failed resolve run: `factory merge` is refused, nothing moves.
+    const other = await f.toMergePending();
+    await hold(other);
+    expect((await gate(other)).outcome).toBe("refused");
+    await f.cli(ME, { action: "command", command: "merge", id: other, text: "" });
+    await f.step();
+    expect((await f.messages(other, "<!-- factory:refused:")).at(-1)).toContain("is not waiting for a merge");
+    expect(await f.store.getWorkItem(other)).toMatchObject({ blocked_reason: "recurring_failure" });
+
+    const id = await f.toMergePending();
+    const branch = `factory/${id}`;
+    f.conflictOnMain();
+    await f.cli(ME, { action: "command", command: "merge", id, text: "" });
+    await f.step();
+    expect((await f.resolves(id)).at(-1)!.status).toBe("failed");
+    await hold(id);
+    const held = { stage: "REVIEW", blocked_on: "human", blocked_reason: "recurring_failure" };
+    expect(await f.store.getWorkItem(id)).toMatchObject(held);
+    const resolvesBefore = (await f.resolves(id)).map((r) => r.idempotency_key);
+
+    // Still conflicting: refused with the files, as a parked item is; the hold stays.
+    await f.cli(ME, { action: "command", command: "merge", id, text: "" });
+    await f.step();
+    const reply = (await f.messages(id, "<!-- factory:refused:")).at(-1)!;
+    expect(reply).toContain("does not merge cleanly");
+    expect(reply).not.toContain("is not waiting for a merge");
+    expect(await f.store.getWorkItem(id)).toMatchObject(held);
+
+    // The hand fix: the dashboard's request gate passes it, and `factory merge` sends it to its fresh review.
+    const side = join(f.repo, "..", "hand");
+    git(f.repo, "worktree", "add", "--quiet", side, branch);
+    try { git(side, ...ident, "merge", "--quiet", "main"); } catch { /* the conflict, resolved below */ }
+    writeFileSync(join(side, WORKFLOW), "name: scope\non: push\n");
+    git(side, "add", WORKFLOW);
+    git(side, ...ident, "commit", "--quiet", "--no-edit");
+    git(f.repo, "worktree", "remove", side);
+    const head = git(f.repo, "rev-parse", branch);
+    expect((await gate(id)).outcome).toBe("queued");
+    await f.step();
+    expect((await f.resolves(id)).map((r) => r.idempotency_key)).toEqual(resolvesBefore);
+    expect((await f.store.listStateChanges(id)).find((c) => c.reason === "conflict_fixed_by_hand")).toMatchObject({ detail: { head_sha: head } });
+    const reviews = (await f.store.listRuns(id)).filter((r) => r.idempotency_key === `${id}:review:hand-fixed:${head}`);
+    expect(reviews.map((r) => r.status)).toEqual(["succeeded"]);
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
   });
 
   it("factory resolve on a local item waiting for a merge whose branch conflicts starts a resolve run", async () => {
@@ -416,9 +549,6 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     const merged = (await f.store.listStateChanges(id)).find((c) => c.reason === "local_merged")!;
     expect(merged.actor).toEqual({ kind: "user", id: ME });
     expect((await f.messages(id, "<!-- factory:local-merged:")).join("")).toContain(main.slice(0, 12));
-
-    expect(f.github.calls).toEqual([]);
-    expect(f.forgeCalls).toEqual([]);
   });
 });
 

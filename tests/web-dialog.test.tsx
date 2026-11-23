@@ -139,14 +139,6 @@ describe("the verdict dialog on a Needs-you row", () => {
     );
   }
 
-  it("a row shows its primary button first, then ⋯", () => {
-    mountRow();
-    const row = document.querySelector("li[data-key]")!;
-    expect([...row.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Approve", "⋯"]);
-    fireEvent.click(screen.getByRole("button", { name: "More commands" }));
-    expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Verdict", "Reject", "Revise"]);
-  });
-
   const openFromMenu = (name: string) => {
     const more = screen.getByRole("button", { name: "More commands" });
     fireEvent.click(more);
@@ -244,6 +236,36 @@ describe("the approve dialog", () => {
     for (let i = 1; i < order.length; i++) expect(order[i - 1]!.compareDocumentPosition(order[i]!) & Node.DOCUMENT_POSITION_FOLLOWING, `${i}`).toBeTruthy();
     expect(dialog.querySelector("[data-confirm-answers]")!.textContent).toBe("1. Fail the job, or only warn? → Only warn (your answer)");
     expect(dialog.querySelector("[data-confirm-next]")!.textContent).toBe("Next: The factory starts the implement run on this spec.");
+  });
+
+  it("an answer whose option needs a path outside the allowed paths shows the path and its done-when change, warns in a Notice and sends nothing (design 09-dashboard-item-commands, 2026-11-21)", () => {
+    const change = { option: "Only warn", extra_paths: ["docs/ci.md"], done_when: ["CI warns on an outside path"], uncovered_paths: ["docs/ci.md"] };
+    const onSend = vi.fn();
+    const opener = { current: null };
+    const answers = [{ ...ANSWERS[0], change }];
+    render(<ApproveDialog title="Approve Spec waiting" phase="spec_pending" answers={answers} note="" busy={false} error={null} returnFocusTo={opener} onSend={onSend} onClose={() => {}} />);
+    const dialog = screen.getByRole("dialog", { name: "Approve Spec waiting" });
+    expect(dialog.querySelector("[data-confirm-answers] [data-option-change]")!.textContent).toBe("Needs docs/ci.md. Changes done when: CI warns on an outside path");
+    const warning = within(dialog).getByRole("alert");
+    expect(warning.textContent).toContain("docs/ci.md");
+    expect(warning.textContent).toContain("/approve +paths docs/ci.md");
+    expect(warning.closest("[data-option-paths-warning]")).not.toBeNull();
+    const approve = within(dialog).getByRole("button", { name: "Approve" });
+    expect(approve.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(approve);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("the default answer, or a change whose paths are covered, needs no warning and Approve stays on", () => {
+    const covered = { option: "Only warn", extra_paths: ["docs/ci.md"], done_when: [], uncovered_paths: [] };
+    const opener = { current: null };
+    for (const answers of [[{ ...ANSWERS[0], change: covered }], [{ ...ANSWERS[0], isDefault: true, change: { ...covered, uncovered_paths: ["docs/ci.md"] } }]]) {
+      render(<ApproveDialog title="Approve" phase="spec_pending" answers={answers} note="" busy={false} error={null} returnFocusTo={opener} onSend={() => {}} onClose={() => {}} />);
+      const dialog = screen.getByRole("dialog", { name: "Approve" });
+      expect(within(dialog).queryByRole("alert")).toBeNull();
+      expect(within(dialog).getByRole("button", { name: "Approve" }).hasAttribute("disabled")).toBe(false);
+      cleanup();
+    }
   });
 
   it("Approve sends the answers and the note once; Esc sends nothing and closes it", () => {

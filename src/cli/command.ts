@@ -18,7 +18,17 @@ export interface CommandCall {
   readonly environment?: (root: string) => Promise<CliEnvironment>;
   /** Opens the configured store; absent: buildStatsStore. */
   readonly openStore?: (loaded: Loaded) => Promise<FactoryStore>;
+  /** Runs one skill eval with the configured plugins (src/skill-evals.ts skillEvalRun, built by main.ts); absent: `eval run` refuses. */
+  readonly runSkillEval?: SkillEvalRunFn;
 }
+
+/** One stored skill-eval run with its figures, as `eval results` prints it. */
+export type SkillEvalRunRow = Awaited<ReturnType<FactoryStore["listSkillEvalRuns"]>>[number];
+
+/** One `eval run <skill>`: the stored run, or why nothing was run (no run written). */
+export type SkillEvalRunFn = (
+  store: FactoryStore, loaded: Loaded, r: { skill: string; created_by: CliIdentity["user"]; signal: AbortSignal },
+) => Promise<{ run: SkillEvalRunRow } | { refused: string }>;
 
 /** What a command runs with: its call, plus the CLI identity and the store, built once here for every command. */
 export interface CommandContext extends CommandCall {  /**

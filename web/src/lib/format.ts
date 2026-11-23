@@ -1,25 +1,50 @@
+import { stateLabel } from "../../../src/shared/states.js";
 import type { Why } from "../api.js";
 import { type MessageKey, en } from "../i18n/en.js";
-import { formatInteger, t, withUnit } from "../i18n/index.js";
+import { formatInteger, locale, t, withUnit } from "../i18n/index.js";
 
 // Display helpers. Pure: `now` is passed in, so a test can fix it.
 
-/** "12s", "4m", "3h", "2d" since `at`; "–" for none. */
-export function ago(at: string | null | undefined, now: number): string {
-  if (!at) return t("format.none");
-  const s = Math.max(0, Math.floor((now - Date.parse(at)) / 1000));
-  if (s < 60) return withUnit(s, "s");
-  if (s < 3600) return withUnit(Math.floor(s / 60), "m");
-  if (s < 86400) return withUnit(Math.floor(s / 3600), "h");
-  return withUnit(Math.floor(s / 86400), "d");
-}
-
-/** "in 4m" for a time ahead, "now" for one passed; "–" for none. */
-export function until(at: string | null | undefined, now: number): string {
+/**
+ * The one relative time, compact: "just now" within a minute either way, "4m ago" / "3h ago" / "2d ago" for the past,
+ * "in 4m" for the future; "–" for none. A caller puts the exact local time (`localDateTime`) in the element's title.
+ */
+export function relativeTime(at: string | null | undefined, now: number): string {
   if (!at) return t("format.none");
   const ms = Date.parse(at) - now;
-  return ms <= 0 ? t("format.now") : t("format.in", { time: ago(new Date(now - ms).toISOString(), now) });
+  const s = Math.floor(Math.abs(ms) / 1000);
+  if (s < 60) return t("time.justNow");
+  const span = s < 3600 ? withUnit(Math.floor(s / 60), "m") : s < 86400 ? withUnit(Math.floor(s / 3600), "h") : withUnit(Math.floor(s / 86400), "d");
+  return t(ms > 0 ? "time.in" : "time.ago", { time: span });
 }
+
+/** The internal names that have a catalog label: field names, reason codes and permissions. */
+const TERM_KEYS: Readonly<Record<string, MessageKey>> = {
+  agent_needs_human: "term.agent_needs_human",
+  approve_merge: "term.approve_merge",
+  approve_spec: "term.approve_spec",
+  allowed_paths: "term.allowed_paths",
+  blocked_on: "term.blocked_on",
+  checks_failed: "term.checks_failed",
+  rule_of_two: "term.rule_of_two",
+  spec_conflict: "term.spec_conflict",
+  token_cost: "term.token_cost",
+};
+
+/** An internal name (a field, reason or command code) in words: its catalog label (`term.<code>`), else the code with spaces for underscores. */
+export function termLabel(code: string): string {
+  const key = TERM_KEYS[code];
+  return key ? t(key) : code.replaceAll("_", " ");
+}
+
+/** A run error's code in words: its term label, else its failure title, else the code with spaces for underscores. */
+export function errorLabel(code: string): string {
+  const title = `failure.${code}.title`;
+  return code in TERM_KEYS || !(title in en) ? termLabel(code) : t(title as MessageKey);
+}
+
+/** A run's status in one form each ("Succeeded", "Failed", "Running"): its label in the one state table; an unknown one as words. */
+export const runStatusLabel = stateLabel;
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
@@ -28,6 +53,50 @@ export function localDateTime(at: string): string {
   const d = new Date(at);
   if (Number.isNaN(d.getTime())) return at;
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+/**
+ * A task's due text in the viewer's locale: the time alone when the date is the heading's (`heading`), else date and time
+ * ("Nov 21, 9:00 AM"), or the date alone for a task with no time; null for no date, or a dated heading and no time.
+ */
+export function dueText(date: string | null, time: string | null, heading: string | null): string | null {
+  if (date === null) return null;
+  const [y, m, d] = date.split("-").map(Number);
+  const [h, min] = time === null ? [undefined, undefined] : time.split(":").map(Number);
+  if (!y || !m || !d || (time !== null && (h === undefined || min === undefined || Number.isNaN(h) || Number.isNaN(min)))) return time === null ? date : `${date} ${time}`;
+  const at = new Date(y, m - 1, d, h ?? 0, min ?? 0);
+  const day: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" };
+  const clock: Intl.DateTimeFormatOptions = { hour: "numeric", minute: "2-digit" };
+  if (date === heading) return time === null ? null : new Intl.DateTimeFormat(locale(), clock).format(at);
+  return new Intl.DateTimeFormat(locale(), time === null ? day : { ...day, ...clock }).format(at);
+}
+
+/** An ISO time as the viewer's short local date ("Nov 18"); the text itself when it is not one. */
+export function localShortDate(at: string): string {
+  const d = new Date(at);
+  return Number.isNaN(d.getTime()) ? at : new Intl.DateTimeFormat(locale(), { month: "short", day: "numeric" }).format(d);
+}
+
+/** Whether `start` to `end` is one whole local day ending at local midnight of the day `made` falls on. */
+export function isPreviousLocalDay(start: string, end: string, made: string): boolean {
+  const s = new Date(start);
+  const e = new Date(end);
+  const m = new Date(made);
+  if ([s, e, m].some((d) => Number.isNaN(d.getTime()))) return false;
+  const nextDay = new Date(s.getFullYear(), s.getMonth(), s.getDate() + 1);
+  const madeDay = new Date(m.getFullYear(), m.getMonth(), m.getDate());
+  return s.getTime() === new Date(s.getFullYear(), s.getMonth(), s.getDate()).getTime() && e.getTime() === nextDay.getTime() && e.getTime() === madeDay.getTime();
+}
+
+/** A whole number grouped by thousands in the active locale ("4,844"). */
+export function groupedInteger(n: number): string {
+  return new Intl.NumberFormat(locale(), { maximumFractionDigits: 0 }).format(n);
+}
+
+/** An ISO time as the viewer's local clock time ("9:51 PM"); the text itself when it is not one. */
+export function localClock(at: string): string {
+  const d = new Date(at);
+  return Number.isNaN(d.getTime()) ? at : new Intl.DateTimeFormat(locale(), { hour: "numeric", minute: "2-digit" }).format(d);
 }
 
 /** A local item id: `local-` (or `local-filed-`), its hex id, then its phase suffixes (`-phase-N`, nested). */
@@ -42,6 +111,11 @@ export function shortSource(id: string): string {
   if (i >= 0) return id.slice(i);
   const m = LOCAL_ID.exec(id);
   return m ? m[1]! + m[2]!.replaceAll("-phase-", "-p") : id;
+}
+
+/** A work item's short ID (design 09-dashboard-item): "c86970ff" for "wi_c86970ff…", the 8 hex characters after `wi_` that the CLI accepts; any other ID as it is. */
+export function shortItemId(id: string): string {
+  return /^wi_([0-9a-f]{8})/.exec(id)?.[1] ?? id;
 }
 
 /** 38521431 → "38.5M"; 29285 → "29.3k". */
@@ -80,19 +154,6 @@ export function isHttpUrl(url: string | null | undefined): url is string {
 
 export const shortRev =(rev: string | null | undefined) => (rev ? rev.slice(0, 7) : t("format.unknown"));
 
-/** The status page's level names (src/ui/priority.ts LEVEL_LABELS), for the same words in both UIs. */
-export const LEVEL_LABELS: Record<string, string> = Object.fromEntries(
-  ["ready_to_merge", "needs_approval", "needs_you", "needs_triage", "stuck", "running", "queued", "blocked_by_task", "closed"].map((level) => [
-    level,
-    t(`level.${level}` as MessageKey),
-  ]),
-);
-
-/**
- * Levels that wait on the operator: the Floor lists them first. Never "Blocked by another task".
- */
-export const NEEDS_YOU_LEVELS = ["ready_to_merge", "needs_approval", "needs_you", "needs_triage", "stuck"] as const;
-
 /** "worker 3" for a worker id `<host>:<pid>:<slot>` (its slot number); "a worker" for any other id; "–" for none. */
 export function workerName(id: string | null | undefined): string {
   if (!id) return "–";
@@ -129,14 +190,15 @@ export function stateAndNext(stage: string, commands: readonly { name: string; a
 
 /**
  * Why an item waits, in the active locale: its reason code's text (`why.reason.<code>`, one per code) with the values
- * the API sent, then the open alarms that affect it. `holder` stands for the holder's name (WhyText puts a link
+ * the API sent, then the open alarms that affect it. `until` comes as an ISO instant and reads as the viewer's local time. `holder` stands for the holder's name (WhyText puts a link
  * there); without it the name is the holder's title or ref, or "another item". An unknown code shows as is.
  */
 export function whyText(why: Pick<Why, "reason_code" | "params" | "alarms">, holder?: string): string {
   const vars: Record<string, string | number> = { ...why.params };
   const stage = `why.stage.${vars.stage}`;
   if (stage in en) vars.stage = t(stage as MessageKey);
+  if (typeof vars.until === "string") vars.until = localDateTime(vars.until);
   if ("holder" in vars) vars.holder = holder ?? (vars.holder || t("why.anotherItem"));
   const key = `why.reason.${why.reason_code}`;
-  return [key in en ? t(key as MessageKey, vars) : why.reason_code, ...why.alarms].join(". ");
+  return [key in en ? t(key as MessageKey, vars) : termLabel(why.reason_code), ...why.alarms].join(". ");
 }

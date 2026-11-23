@@ -9,8 +9,11 @@ import { LocalSource } from "../src/impl/source/local-source.js";
 import type { AuthAction, Principal } from "../src/interfaces/auth-provider.js";
 import type { SourceEvent, VerdictEventTarget } from "../src/interfaces/source-adapter.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, mallory, silent } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, mallory, silent } from "./helpers/fakes/config.js";
 import { newStore, system, PROJECT_KEY } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 describe("parseVerdict", () => {
   it("reads the verdict, the severity and the reason (following lines included)", () => {
@@ -289,7 +292,7 @@ describe("factory verdict on a local item (issue #523)", () => {
       repeated_failure_rule: false,
     });
     let n = 0;
-    const d: LocalCliDeps = { store, identity: { user: ME, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "b", newId: () => `id${++n}` };
+    const d: LocalCliDeps = { answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: ME, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "b", newId: () => `id${++n}` };
     /** A local item filed from the CLI, put at `patch`. */
     const filed = async (patch: WorkItemPatch): Promise<WorkItem> => {
       const id = (await runLocalCli(d, { action: "create", title: "t", bodyFile: "b" })).lines[0] as WorkItemId;

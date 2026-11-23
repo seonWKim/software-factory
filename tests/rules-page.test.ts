@@ -1,7 +1,8 @@
 // The Rules page and the learned rules in the prompt (issue #571). The page lists the ledger's pending entries through
 // TacitLedger.pending and sends promote, reject and hold through TacitLedger.verdict, owner only, with a reason, and for
 // promote of a class the owner's wording, default and exception, which the plugin writes into the home's rules.md
-// before the verdict (rolled back if the verdict fails); promote of a proposal applies its lines to its target first. A promoted rule reaches the next run's prompt under its own
+// before the verdict (rolled back if the verdict fails); promote of a proposal applies its lines to its target first,
+// or with no lines records the verdict and stores one task to build it. A promoted rule reaches the next run's prompt under its own
 // heading, read through the plugin's rules() only. Every test runs against a temp home with stub CLIs that take only
 // the real CLIs' forms: no real home, no network, no live model.
 //
@@ -25,16 +26,18 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { AgentsHomeTacitLedger, checkAgentsHome, tacitLedgerAt } from "../src/impl/tacit/agents-home-tacit-ledger.js";
 import { NoTacitLedger } from "../src/impl/tacit/no-tacit-ledger.js";
-import type { TacitApplied, TacitEntryDetail, TacitLedger } from "../src/interfaces/tacit-ledger.js";
+import { type TacitApplied, type TacitEntryDetail, type TacitLedger, TacitRefusal } from "../src/interfaces/tacit-ledger.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type UiTacit, uiTacit } from "../src/ui/rules-api.js";
 import type { PauseDeps, UiPauses } from "../src/ui/pause-api.js";
 import { type UiRequest, respond } from "../src/ui/server.js";
 import { type UiSettings, newCsrfToken } from "../src/ui/settings-api.js";
 import { newStore } from "./helpers/store.js";
-import {
-  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, prompts, silent, triageSpec,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 
 const HOST = "127.0.0.1:4310";
 const ORIGIN = `http://${HOST}`;
@@ -59,7 +62,9 @@ const RULES_MD = "# Rules\n\n## 다른 곳에 인코딩된 규칙\n- C-009 → C
  * As the real ledger does, `tacit verdict … promote` exits 1 without both `--rule` and `--encoded-to` (`evolve verdict
  * … promote` without `--applied-to`, with the owner's message), and writes no
  * rules file: the factory does. `bin/sync-agents` logs each run to `<root>/synced`; `<root>/refuse` makes tacit
- * verdict fail and `<root>/sync-fail` sync-agents. The home holds `private/tacit/rules.md` (RULES_MD). Node scripts.
+ * verdict fail and `<root>/sync-fail` sync-agents. `bin/tacit show --active --unclustered` prints the rows of
+ * `<root>/pushbacks.json` and `bin/tacit status <T-id> noise` logs to `<root>/statuses` and drops that row (both forms
+ * assumed, docs/plugins/tacit-ledger.md). The home holds `private/tacit/rules.md` (RULES_MD). Node scripts.
  */
 function stubHome(entries: Entry[]) {
   const root = mkdtempSync(join(tmpdir(), "sf-rules-"));
@@ -91,8 +96,21 @@ const verdict = (id, decisions, options) => {
   return opts;
 };
 `;
-  writeFileSync(join(home, "bin", "tacit"), `${node("usage: tacit {capture --agent <name> | verdict <class> {hold,promote,reject,retire} --reason <reason> [--rule <rule text>] [--encoded-to <file>]}")}
+  writeFileSync(join(home, "bin", "tacit"), `${node("usage: tacit {capture --agent <name> | verdict <class> {hold,promote,reject,retire} --reason <reason> [--rule <rule text>] [--encoded-to <file>] | show --active --unclustered | status <incident> noise}")}
 if (a[0] === "capture") { if (a.length !== 3 || a[1] !== "--agent") usage(); process.exit(0); }
+const pushbacks = path.join(${JSON.stringify(root)}, "pushbacks.json");
+const active = () => (fs.existsSync(pushbacks) ? JSON.parse(fs.readFileSync(pushbacks, "utf8")) : []);
+if (a[0] === "show") {
+  if (a.length !== 3 || a[1] !== "--active" || a[2] !== "--unclustered") usage();
+  process.stdout.write(["# active, unclustered", ...active().map((p) => "- " + p.id + (p.date ? " " + p.date : "") + " — \\"" + p.words + "\\"")].join("\\n") + "\\n");
+  process.exit(0);
+}
+if (a[0] === "status") {
+  if (a.length !== 3 || !/^T-/.test(a[1]) || a[2] !== "noise") usage();
+  fs.appendFileSync(path.join(${JSON.stringify(root)}, "statuses"), a.slice(1).join(" ") + "\\n");
+  fs.writeFileSync(pushbacks, JSON.stringify(active().filter((p) => p.id !== a[1])));
+  process.exit(0);
+}
 if (a[2] === "promote" && !(a.includes("--rule") && a.includes("--encoded-to"))) { process.stderr.write("promote requires --rule and --encoded-to\\n"); process.exit(1); }
 if (fs.existsSync(path.join(${JSON.stringify(root)}, "refuse"))) { process.stderr.write("ledger locked\\n"); process.exit(1); }
 verdict(/^C-/, ["hold", "promote", "reject", "retire"], ["--rule", "--encoded-to"]);
@@ -129,6 +147,9 @@ fs.appendFileSync(${JSON.stringify(synced)}, "synced\\n");
     verdicts: () => (existsSync(verdicts) ? readFileSync(verdicts, "utf8").trim().split("\n").map((l) => JSON.parse(l) as string[]) : []),
     syncs: () => (existsSync(synced) ? readFileSync(synced, "utf8").trim().split("\n").length : 0),
     entries: () => JSON.parse(readFileSync(ledger, "utf8")) as Entry[],
+    /** Sets the active unclustered pushbacks `tacit show --active --unclustered` prints. */
+    pushbacks: (rows: { id: string; words: string; date?: string }[]) => writeFileSync(join(root, "pushbacks.json"), JSON.stringify(rows)),
+    statuses: () => (existsSync(join(root, "statuses")) ? readFileSync(join(root, "statuses"), "utf8").trim().split("\n") : []),
   };
 }
 
@@ -143,7 +164,7 @@ const promote = (id: string, over: Record<string, unknown> = {}) =>
 const listed = (e: Entry) => ({
   id: e.id, title: e.title, state: e.state, ...(e.kind !== undefined ? { kind: e.kind } : {}), ...(e.target !== undefined ? { target: e.target } : {}),
   judged: null, draft_error: null,
-  draft: e.id.startsWith("C-") ? { default: e.title, exception: "없음", incidents: ["T-1", "T-2"], scope: "software" } : null,
+  draft: e.id.startsWith("C-") ? { default: e.title, exception: "없음", incidents: ["T-1", "T-2"], scope: "software" } : null, task: null,
 });
 
 const PENDING: Entry[] = [
@@ -258,7 +279,7 @@ describe("Rules page: GET /api/v1/rules", SPAWNS, () => {
     utimesSync(join(dir, "rule-candidates.md"), built, built);
     writeFileSync(join(dir, "ledger.jsonl"), `${JSON.stringify({ type: "verdict", class: "C-012", ts: "2026-11-13T10:00:00Z", decision: "promote", reason: "r", by: "owner", rule: "x", encoded_to: "private/tacit/rules.md" })}\n`);
     const v = await (await page(s.ledger)).get();
-    expect(v.entries.find((e: { id: string }) => e.id === "C-012")).toEqual({ id: "C-012", title: "keep existing CLI flags", state: "pending", judged: "promote", draft: null, draft_error: null });
+    expect(v.entries.find((e: { id: string }) => e.id === "C-012")).toEqual({ id: "C-012", title: "keep existing CLI flags", state: "pending", judged: "promote", draft: null, draft_error: null, task: null });
     expect(v.entries.find((e: { id: string }) => e.id === "C-013")).toEqual(listed(PENDING[2]!));
   });
 
@@ -266,7 +287,7 @@ describe("Rules page: GET /api/v1/rules", SPAWNS, () => {
     const s = stubHome(PENDING);
     writeFileSync(join(s.home, "bin", "evolve"), `#!/bin/sh\n[ "$1" = pending ] && { printf '## tacit Pending 1\\n- C-012 keep flags\\n'; exit 0; }\necho 'ledger locked' >&2\nexit 3\n`);
     const v = await (await page(s.ledger)).get();
-    expect(v.entries).toEqual([{ id: "C-012", title: "keep flags", state: "pending", judged: null, draft: null, draft_error: expect.stringContaining("evolve show exited 3: ledger locked") }]);
+    expect(v.entries).toEqual([{ id: "C-012", title: "keep flags", state: "pending", judged: null, draft: null, draft_error: expect.stringContaining("evolve show exited 3: ledger locked"), task: null }]);
   });
 
   it("names why a user who is not the owner cannot judge", async () => {
@@ -338,7 +359,7 @@ describe("Rules page: GET /api/v1/rules/entry", () => {
     const p = await page(f.ledger);
     expect(await p.entry("?id=C-012")).toEqual({
       status: 200,
-      value: { id: "C-012", error: null, retire: null, detail: { id: "C-012", default: "Keep every flag.", exceptions: "deprecated ones", incidents: 2, evidence: [{ ref: "T-1", date: "2026-11-02", quote: "keep --json" }], root_reason: "renames skip callers", scope: "CLI" } },
+      value: { id: "C-012", error: null, retire: null, cited: {}, detail: { id: "C-012", default: "Keep every flag.", exceptions: "deprecated ones", incidents: 2, evidence: [{ ref: "T-1", date: "2026-11-02", quote: "keep --json" }], root_reason: "renames skip callers", scope: "CLI" } },
     });
     const bare = fakeLedger(async (id) => ({ id, kind: "edit-asset", target: "prompts/review.md" }));
     expect((await (await page(bare.ledger)).entry("?id=P-20261103-34e9")).value.detail).toEqual({ id: "P-20261103-34e9", kind: "edit-asset", target: "prompts/review.md" });
@@ -391,9 +412,135 @@ describe("Rules page: GET /api/v1/rules/entry", () => {
     const shown = fakeLedger(async (id) => ({ id, scope: "from the plugin" }));
     const ui = await uiTacit("fake", async (n) => (n === "fake" ? shown.ledger : new NoTacitLedger()), { base: baseFromConfig(config), source: store, log: silent, config });
     expect(await ui.ledger.show!("C-012")).toEqual({ id: "C-012", scope: "from the plugin" });
+    expect(await ui.ledger.decided!(["P-0003"])).toEqual({});
     await (ui.ledger as unknown as { apply(i: Record<string, string>): Promise<void> }).apply({ tacit: "none" });
     expect(ui.ledger.enabled).toBe(false);
     expect(await ui.ledger.show!("C-012")).toBeNull();
+    expect(await ui.ledger.decided!(["P-0003"])).toEqual({});
+  });
+});
+
+/** What a proposal to build gives: no Now or Proposed lines. */
+const BUILD: TacitEntryDetail = {
+  id: "P-0009", description: "Add a quiet-hours subcommand to evolve.", kind: "new-asset", target: "bin/evolve", root_reason: "Notices wake the owner at night.",
+  evidence: [{ ref: "T-1", date: "2026-11-05", quote: "stop at 3am" }, { ref: "P-0003", date: "2026-11-01" }, { ref: "T-1" }],
+};
+
+/**
+ * A fake ledger for a promote of P-0009, whose `show` gives `detail`: `verdict` logs each call and records its decision
+ * where `decided` reads it back (the ledger's verdict log), or throws `failWith`.
+ */
+function buildLedger(detail: TacitEntryDetail | null = BUILD) {
+  const verdicts: string[][] = [];
+  const decisions: Record<string, string> = {};
+  const state: { failWith: Error | null; shows: number } = { failWith: null, shows: 0 };
+  const ledger: TacitLedger = {
+    enabled: true,
+    capture: async () => {},
+    rules: async () => [],
+    pending: async () => [{ id: "P-0009", title: "Quiet hours for evolve", state: "open", kind: "new-asset", target: "bin/evolve" }],
+    show: async () => { state.shows++; return detail; },
+    verdict: async (id, decision, reason) => {
+      if (state.failWith !== null) throw state.failWith;
+      verdicts.push([id, decision, reason]);
+      decisions[id] = decision;
+    },
+    decided: async (ids) => Object.fromEntries(ids.filter((id) => decisions[id] !== undefined).map((id) => [id, decisions[id]!])),
+  };
+  return { ledger, verdicts, decisions, state };
+}
+
+describe("Rules page: promote of a proposal with no lines builds it as a task", () => {
+  const PROMOTE = { id: "P-0009", verdict: "promote", reason: "worth building" };
+  const BODY = [
+    "Rationale: Notices wake the owner at night.", "Change: Add a quiet-hours subcommand to evolve.", "Target: bin/evolve", "Evidence: T-1, P-0003", "Proposal: P-0009",
+  ].join("\n");
+
+  it("sends the verdict once, then stores one task: tk_ + the ID in lower case, the proposal's title, a body with rationale, change, target, evidence and ID", async () => {
+    const f = buildLedger();
+    const p = await page(f.ledger);
+    expect((await p.get()).entries[0].task).toBeNull();
+    expect(await p.post(PROMOTE)).toEqual({ status: 200, value: { id: "P-0009", verdict: "promote", task_id: "tk_p-0009" } });
+    expect(f.verdicts).toEqual([["P-0009", "promote", "worth building"]]);
+    const task = await p.store.getTask("tk_p-0009");
+    expect(task).toMatchObject({ id: "tk_p-0009", title: "Quiet hours for evolve", body: BODY, created_by: OWNER, done_at: null, work_item_id: null });
+    expect((await p.store.listTasks(100)).map((t) => t.id)).toEqual(["tk_p-0009"]);
+    // The card links the task from then on.
+    expect((await p.get()).entries[0].task).toBe("tk_p-0009");
+  });
+
+  it("a retry, also after a lost response, sends no second verdict and stores no second task", async () => {
+    const f = buildLedger();
+    const p = await page(f.ledger);
+    await p.post(PROMOTE);
+    expect(await p.post(PROMOTE)).toEqual({ status: 200, value: { id: "P-0009", verdict: "promote", task_id: "tk_p-0009" } });
+    expect(f.verdicts).toHaveLength(1);
+    expect((await p.store.listTasks(100)).map((t) => t.id)).toEqual(["tk_p-0009"]);
+    // The verdict was recorded but the answer (and the task) was lost: the retry reads the ledger's verdict and only stores the task.
+    const lost = buildLedger();
+    lost.decisions["P-0009"] = "promote";
+    const q = await page(lost.ledger);
+    expect((await q.post(PROMOTE)).status).toBe(200);
+    expect(lost.verdicts).toEqual([]);
+    expect((await q.store.listTasks(100)).map((t) => t.id)).toEqual(["tk_p-0009"]);
+  });
+
+  it("a verdict that is refused or fails stores no task, and its error is the answer", async () => {
+    const f = buildLedger();
+    const p = await page(f.ledger);
+    f.state.failWith = new TacitRefusal("P-0009 (evolve show) has no target line: nothing written");
+    expect(await p.post(PROMOTE)).toEqual({ status: 409, value: { error: "The promote was refused: P-0009 (evolve show) has no target line: nothing written" } });
+    f.state.failWith = new Error("evolve verdict exited 1: evolve: P-0009 was judged already");
+    expect(await p.post(PROMOTE)).toEqual({ status: 502, value: { error: "The ledger refused the verdict: evolve verdict exited 1: evolve: P-0009 was judged already" } });
+    expect(await p.store.getTask("tk_p-0009")).toBeNull();
+    expect(await p.store.listTasks(100)).toEqual([]);
+  });
+
+  it("a proposal with no target, or no detail, is refused before any verdict runs, with no task", async () => {
+    for (const detail of [{ ...BUILD, target: undefined }, null]) {
+      const f = buildLedger(detail as TacitEntryDetail | null);
+      const p = await page(f.ledger);
+      expect(await p.post(PROMOTE)).toMatchObject({ status: 409, value: { error: expect.stringContaining("refused") } });
+      expect(f.verdicts).toEqual([]);
+      expect(await p.store.listTasks(100)).toEqual([]);
+    }
+  });
+
+  it("a proposal ID a task ID cannot be made from is a 400 before any CLI runs", async () => {
+    const f = buildLedger();
+    const p = await page(f.ledger);
+    for (const id of ["P-00 9", "P-0009/x", "P-"]) {
+      expect(await p.post({ ...PROMOTE, id })).toMatchObject({ status: 400, value: { error: expect.stringContaining("P- followed by") } });
+    }
+    expect(f.state.shows).toBe(0);
+    expect(f.verdicts).toEqual([]);
+    // Hold and reject take no task, so their ID is not checked against it.
+    expect((await p.post({ id: "P-00 9", verdict: "hold", reason: "x" })).status).toBe(200);
+  });
+
+  it("a proposal with both lines is applied as before: the verdict, and no task", async () => {
+    const f = buildLedger({ ...BUILD, current: "a", proposed: "b" });
+    const p = await page(f.ledger);
+    expect(await p.post(PROMOTE)).toEqual({ status: 200, value: { id: "P-0009", verdict: "promote" } });
+    expect(f.verdicts).toEqual([["P-0009", "promote", "worth building"]]);
+    expect(await p.store.listTasks(100)).toEqual([]);
+  });
+
+  it("the task's title and body pass through the Withholder", async () => {
+    const f = buildLedger({ ...BUILD, root_reason: `leaked ${SECRET}` });
+    const p = await page(f.ledger, OWNER, [SECRET]);
+    expect((await p.post(PROMOTE)).status).toBe(200);
+    const task = await p.store.getTask("tk_p-0009");
+    expect(task!.body).not.toContain(SECRET);
+    expect(task!.body).toMatch(/^Rationale: \[withheld: [^\n]*\nChange: Add a quiet-hours subcommand to evolve\.\n/);
+    expect(task!.body).toContain("Proposal: P-0009");
+  });
+
+  it("the entry read gives each cited ID's recorded verdict, and none for an ID with no record", async () => {
+    const f = buildLedger();
+    f.decisions["P-0003"] = "promote";
+    const v = (await (await page(f.ledger)).entry("?id=P-0009")).value;
+    expect(v.cited).toEqual({ "P-0003": "promote" });
   });
 });
 
@@ -697,6 +844,118 @@ describe("Rules page: retire through POST /api/v1/rules/verdict", SPAWNS, () => 
     });
     expect(s.verdicts()).toHaveLength(1);
     expect(readFileSync(s.rulesFile, "utf8")).not.toContain("## C-001");
+  });
+});
+
+describe("Rules page: edit through POST /api/v1/rules/edit", SPAWNS, () => {
+  const EDIT_URL = { url: "/api/v1/rules/edit" };
+  const edit = (id: string, over: Record<string, unknown> = {}) => ({ id, text: "summary on top", default: "Open with one line.\nThen the detail.", exception: "a one-word reply", ...over });
+
+  it("rewrites only the block's heading, default and exception, runs sync-agents with no verdict, and the page shows the new text", async () => {
+    const s = stubHome([...PENDING, ...APPLIED_ENTRIES]);
+    writeFileSync(s.rulesFile, APPLIED_MD);
+    const p = await page(s.ledger);
+    expect(await p.post(edit("C-001"), EDIT_URL)).toEqual({ status: 200, value: { id: "C-001" } });
+    expect(readFileSync(s.rulesFile, "utf8")).toBe(APPLIED_MD.replace(
+      "## C-001 summary first\n- 기본값: Open every summary with one line.\n",
+      "## C-001 summary on top\n- 기본값: Open with one line.\n- 기본값: Then the detail.\n- 예외 (이럴 땐 override): a one-word reply\n",
+    ));
+    expect(s.verdicts()).toEqual([]);
+    expect(s.syncs()).toBe(1);
+    expect(p.log.lines.map((l) => [l.msg, l.fields])).toEqual([["rule edited", { id: "C-001", actor: OWNER }]]);
+    const rule = (await p.get()).applied.rules[0];
+    expect(rule).toMatchObject({ id: "C-001", name: "summary on top", default: "Open with one line.\nThen the detail.", exceptions: "a one-word reply", incidents: ["T-1", "T-2"], judged: "2025-11-01" });
+  });
+
+  it("refuses with nothing written and no CLI run: a proposal ID or a bad field (400), a non-owner (403), no block (409), a failed guard", async () => {
+    const s = stubHome([...PENDING, ...APPLIED_ENTRIES]);
+    writeFileSync(s.rulesFile, APPLIED_MD);
+    const p = await page(s.ledger);
+    expect(await p.post(edit("P-0007"), EDIT_URL)).toMatchObject({ status: 400, value: { error: "id must be a class (C-) ID" } });
+    expect(await p.post(edit("C-001", { default: " " }), EDIT_URL)).toMatchObject({ status: 400, value: { error: "default must be 1 to 2000 characters" } });
+    expect(await p.post(edit("C-001", { exception: "x".repeat(2001) }), EDIT_URL)).toMatchObject({ status: 400, value: { error: "exception must be 1 to 2000 characters" } });
+    expect(await p.post(edit("C-001", { reason: "why" }), EDIT_URL)).toMatchObject({ status: 400, value: { error: 'unknown field "reason"' } });
+    expect(await (await page(s.ledger, OTHER)).post(edit("C-001"), EDIT_URL)).toMatchObject({ status: 403, value: { error: expect.stringContaining("Only the owner edits rules") } });
+    expect(await p.post(edit("C-012"), EDIT_URL)).toMatchObject({ status: 409, value: { error: expect.stringContaining("The edit was refused: C-012 has no block") } });
+    expect((await p.post(edit("C-001"), { ...EDIT_URL, origin: "http://evil.example" })).status).toBe(403);
+    expect((await p.post(edit("C-001"), { ...EDIT_URL, contentType: "text/plain" })).status).toBe(415);
+    expect((await p.post(edit("C-001"), { ...EDIT_URL, csrfToken: "stale" })).status).toBe(403);
+    expect(readFileSync(s.rulesFile, "utf8")).toBe(APPLIED_MD);
+    expect(s.verdicts()).toEqual([]);
+    expect(s.syncs()).toBe(0);
+  });
+
+  it("a sync-agents that fails after the write is a 502 that says the rule was saved; the new text stays", async () => {
+    const s = stubHome(APPLIED_ENTRIES);
+    writeFileSync(s.rulesFile, APPLIED_MD);
+    writeFileSync(join(s.root, "sync-fail"), "");
+    expect(await (await page(s.ledger)).post(edit("C-001"), EDIT_URL)).toEqual({
+      status: 502, value: { error: "The rule was saved, but sync-agents failed: sync-agents exited 4: agents dir locked" },
+    });
+    expect(readFileSync(s.rulesFile, "utf8")).toContain("## C-001 summary on top\n");
+  });
+
+  it("the ledger off, or a ledger with no edit, is a 409", async () => {
+    expect(await (await page(new NoTacitLedger())).post(edit("C-001"), EDIT_URL)).toMatchObject({ status: 409 });
+    expect(await (await page(fakeLedger(async () => null).ledger)).post(edit("C-001"), EDIT_URL)).toMatchObject({ status: 409, value: { error: "This rules plugin cannot edit a rule." } });
+  });
+});
+
+describe("Rules page: pushbacks", SPAWNS, () => {
+  const DISMISS_URL = { url: "/api/v1/rules/pushbacks/dismiss" };
+
+  it("GET lists the active unclustered pushbacks; Dismiss records the noise status and the pushback leaves the list", async () => {
+    const s = stubHome(PENDING);
+    s.pushbacks([{ id: "T-0201", words: "keep the --json flag", date: "2026-11-20" }, { id: "T-0202", words: "요약 먼저" }]);
+    const p = await page(s.ledger);
+    expect((await p.get()).pushbacks).toEqual({
+      rows: [{ id: "T-0201", pushback: "keep the --json flag", date: "2026-11-20" }, { id: "T-0202", pushback: "요약 먼저", date: null }], error: null,
+    });
+    expect(await p.post({ id: "T-0201" }, DISMISS_URL)).toEqual({ status: 200, value: { id: "T-0201" } });
+    expect(s.statuses()).toEqual(["T-0201 noise"]);
+    expect((await p.get()).pushbacks.rows.map((r: { id: string }) => r.id)).toEqual(["T-0202"]);
+    expect(p.log.lines.map((l) => [l.msg, l.fields])).toEqual([["pushback dismissed", { id: "T-0201", actor: OWNER }]]);
+  });
+
+  it("every pushback text passes the Withholder", async () => {
+    const s = stubHome(PENDING);
+    s.pushbacks([{ id: "T-1", words: `paste ${SECRET}` }]);
+    const v = await (await page(s.ledger, OWNER, [SECRET])).get();
+    expect(JSON.stringify(v)).not.toContain(SECRET);
+    expect(v.pushbacks.rows[0].pushback).toMatch(/^\[withheld: /);
+  });
+
+  it("dismiss refuses before any CLI runs: a non-T ID or another field (400), a non-owner (403), a stale token", async () => {
+    const s = stubHome(PENDING);
+    s.pushbacks([{ id: "T-1", words: "x" }]);
+    const p = await page(s.ledger);
+    expect(await p.post({ id: "C-001" }, DISMISS_URL)).toMatchObject({ status: 400, value: { error: "id must be a pushback (T-) ID" } });
+    expect(await p.post({ id: "T-1", reason: "x" }, DISMISS_URL)).toMatchObject({ status: 400, value: { error: 'unknown field "reason"' } });
+    expect(await (await page(s.ledger, OTHER)).post({ id: "T-1" }, DISMISS_URL)).toMatchObject({ status: 403, value: { error: expect.stringContaining("Only the owner dismisses pushbacks") } });
+    expect((await p.post({ id: "T-1" }, { ...DISMISS_URL, csrfToken: "stale" })).status).toBe(403);
+    expect(s.statuses()).toEqual([]);
+  });
+
+  it("the ledger off or a ledger with no pushbacks: no list; a failed read: its error, and the rest of the page loads", async () => {
+    expect((await (await page(new NoTacitLedger())).get()).pushbacks).toBeNull();
+    expect((await (await page(undefined)).get()).pushbacks).toBeNull();
+    const plain = fakeLedger(async () => null);
+    expect((await (await page(plain.ledger)).get()).pushbacks).toBeNull();
+    const broken: TacitLedger = { ...plain.ledger, pushbacks: async () => { throw new Error("tacit show exited 3: ledger locked"); } };
+    const v = await (await page(broken)).get();
+    expect(v.pushbacks).toEqual({ rows: [], error: "The pushbacks could not be read: tacit show exited 3: ledger locked" });
+    expect(v.entries.map((e: { id: string }) => e.id)).toEqual(PENDING.map((e) => e.id));
+    expect(await (await page(plain.ledger)).post({ id: "T-1" }, DISMISS_URL)).toMatchObject({ status: 409, value: { error: "This rules plugin cannot dismiss a pushback." } });
+  });
+
+  it("the UI's live holder has pushbacks only while the plugin it built has them", async () => {
+    const { store } = await newStore(new FakeClock());
+    const listed = { ...fakeLedger(async () => null).ledger, pushbacks: async () => [{ id: "T-1", pushback: "x" }] };
+    const ui = await uiTacit("fake", async (n) => (n === "fake" ? listed : new NoTacitLedger()), { base: baseFromConfig(config), source: store, log: silent, config });
+    expect(await ui.ledger.pushbacks!()).toEqual([{ id: "T-1", pushback: "x" }]);
+    await (ui.ledger as unknown as { apply(i: Record<string, string>): Promise<void> }).apply({ tacit: "none" });
+    expect(ui.ledger.pushbacks).toBeUndefined();
+    await expect(ui.ledger.dismiss!("T-1")).rejects.toThrow(/cannot dismiss/);
   });
 });
 

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { chmod, cp, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { BaseSyncResult, BaseSyncSpec, LocalMergeResult, LocalMergeSpec } from "../../core/local-merge.js";
+import type { BaseSyncResult, BaseSyncSpec, LocalMergeResult, LocalMergeSpec, LocalRevertResult, LocalRevertSpec } from "../../core/local-merge.js";
 import type { ExecOptions, ExecResult, NewBranchCommit, NewBranchResult, Sandbox, SandboxHandle, SandboxSpec } from "../../interfaces/sandbox.js";
 import { baseEnv, type RunProcessOptions, runProcess } from "../process/run-process.js";
 
@@ -245,6 +245,16 @@ export class NoOpSandbox implements Sandbox {
     return r.exit_code === 0 ? { commit, text: r.stdout } : null;
   }
 
+  /** The file paths under the folder `path` in the local branch `ref`, from objects only; null when the branch is missing. */
+  async listLocalFiles(spec: { repo: string; ref: string; path: string }): Promise<string[] | null> {
+    safeRef(spec.ref);
+    safePath(spec.path);
+    const commit = await this.localCommit(spec.repo, spec.ref);
+    if (commit === null) return null;
+    const out = (await this.git(spec.repo, ["ls-tree", "-r", "--name-only", "-z", "--full-tree", commit, "--", spec.path])).stdout;
+    return out.split("\0").filter((p) => p !== "");
+  }
+
   /**
    * One commit on a new local branch (design 08-settings, the file-only key writer): the blob, a tree built in a
    * temporary index file under the worktrees dir (never the repo's own index), the commit (only objects), then
@@ -307,6 +317,53 @@ export class NoOpSandbox implements Sandbox {
     const moved = await this.moveBase(spec.repo, spec.base_ref, local, sha, spec.message);
     if (!moved) throw new Error(`\`${spec.base_ref}\` moved while the remote base was merged into it`);
     return { synced: true, local: sha, remote, contains: false, not_updated: moved.not_updated };
+  }
+
+  /**
+   * The red-main revert (design 03-risk): the local base at `merge_sha`, whose first parent is `parent`, moves to a
+   * commit with `parent`'s tree and git's own revert message (`This reverts commit <merge_sha>, reversing changes made
+   * to <parent>`), objects only, then `moveBase` conditionally on the merge. The item's branch, when it is still at the
+   * merge's second parent, moves to a commit on top of the revert with the merge's tree, so the next attempt holds the
+   * change and a later merge lands it again. A base that already reverts the merge (a repeat, another replica) is
+   * `already` and moves nothing.
+   */
+  async revertLocal(spec: LocalRevertSpec): Promise<LocalRevertResult> {
+    safeRef(spec.base_ref);
+    safeRef(spec.branch);
+    for (const sha of [spec.merge_sha, spec.parent]) if (!/^[0-9a-f]{40,64}$/.test(sha)) throw new Error(`not a commit sha: ${JSON.stringify(sha)}`);
+    const tip = await this.localCommit(spec.repo, spec.base_ref);
+    if (tip === null) return { reverted: false, refused: `the factory repo has no local branch \`${spec.base_ref}\`` };
+    if (tip !== spec.merge_sha) {
+      if (await this.reverts(spec.repo, tip, spec)) return { reverted: true, sha: tip, already: true, branch_reapplied: false };
+      return { reverted: false, refused: `\`${spec.base_ref}\` is at \`${tip}\`, not at the merge` };
+    }
+    const [, first, second] = (await this.git(spec.repo, ["rev-list", "--parents", "-n", "1", spec.merge_sha])).stdout.trim().split(" ");
+    if (first !== spec.parent) return { reverted: false, refused: `the merge's first parent is \`${first ?? "none"}\`, not the green base` };
+    const subject = (await this.git(spec.repo, ["log", "-1", "--format=%s", spec.merge_sha])).stdout.trim();
+    const message = `Revert "${subject}"\n\nThis reverts commit ${spec.merge_sha}, reversing\nchanges made to ${spec.parent}.`;
+    const sha = await this.commitMerge(spec.repo, await this.treeOf(spec.repo, spec.parent), [spec.merge_sha], message, spec.identity);
+    if (!(await this.moveBase(spec.repo, spec.base_ref, spec.merge_sha, sha, message))) {
+      const now = await this.localCommit(spec.repo, spec.base_ref);
+      if (now !== null && (await this.reverts(spec.repo, now, spec))) return { reverted: true, sha: now, already: true, branch_reapplied: false };
+      return { reverted: false, refused: `\`${spec.base_ref}\` moved while the merge was reverted` };
+    }
+    let branch_reapplied = false;
+    if (second !== undefined && (await this.localCommit(spec.repo, spec.branch)) === second) {
+      const again = `Apply ${spec.branch} again\n\n\`${spec.base_ref}\` reverted its merge ${spec.merge_sha} as ${sha}; this puts the change back on the branch for its next attempt.`;
+      const put = await this.commitMerge(spec.repo, await this.treeOf(spec.repo, spec.merge_sha), [sha], again, spec.identity);
+      branch_reapplied = (await this.git(spec.repo, ["update-ref", "-m", `Apply ${spec.branch} again`, `refs/heads/${spec.branch}`, put, second], false)).exit_code === 0;
+    }
+    return { reverted: true, sha, already: false, branch_reapplied };
+  }
+
+  /** Whether `commit` reverts `spec.merge_sha`: its first parent is the merge and its tree is `spec.parent`'s. */
+  private async reverts(repo: string, commit: string, spec: LocalRevertSpec): Promise<boolean> {
+    const parent = await this.git(repo, ["rev-parse", "--verify", "--quiet", `${commit}^1`], false);
+    return parent.exit_code === 0 && parent.stdout.trim() === spec.merge_sha && (await this.treeOf(repo, commit)) === (await this.treeOf(repo, spec.parent));
+  }
+
+  private async treeOf(repo: string, commit: string): Promise<string> {
+    return (await this.git(repo, ["rev-parse", "--verify", "--end-of-options", `${commit}^{tree}`])).stdout.trim();
   }
 
   /**

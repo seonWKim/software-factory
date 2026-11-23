@@ -8,6 +8,14 @@ import type { NewThreadDelivery, ThreadLinkField } from "../interfaces/factory-s
 import type { Forge } from "../interfaces/forge.js";
 import type { Sandbox } from "../interfaces/sandbox.js";
 
+// What follows a merge: the restart command and the merge reply's run hint (design 04-gate-commands, restart).
+export * from "./restart.js";
+// The auto merge step's tier rule and drop-back (design 03-risk), re-exported so the unit reads them through this module.
+export { droppedBack, tierRule } from "./stats.js";
+// The red-main check's runner and the revert's loop key (design 03-risk), read by the unit through this module too.
+export { checkCommands, runChecks } from "./checks.js";
+export { runKey } from "./policy.js";
+
 /**
  * The source type of items filed in the factory itself: the store holds their thread and state, so they need no
  * adapter (issue #282), and they take the local broker and the local merge, never the forge (design 05-sources).
@@ -133,9 +141,53 @@ export function canReadLocal(sandbox: Sandbox | undefined): sandbox is LocalRead
   return !!sandbox && typeof (sandbox as Partial<LocalReadSandbox>).localBranch === "function";
 }
 
+/** What the red-main revert asks the sandbox (design 03-risk): revert one automatic merge at the tip of the local base. */
+export interface LocalRevertSpec {
+  repo: string;
+  /** The local base branch: it moves only from `merge_sha` to the revert commit. */
+  base_ref: string;
+  /** The merge commit to revert: the base's tip. */
+  merge_sha: string;
+  /** The merge's first parent, the base the red-main check found green: anything else reverts nothing. */
+  parent: string;
+  /** The item's local branch: put back on top of the revert when it is at the merge's second parent. */
+  branch: string;
+  /** The factory's git identity, never a person's. */
+  identity: { name: string; email: string };
+}
+
+/**
+ * `reverted`: the base is at `sha`, a commit whose tree is `parent`'s, with git's message `This reverts commit
+ * <merge_sha>` (`already`: it was before this call, so a repeat changes nothing); `branch_reapplied`: the item's
+ * branch was moved to a commit on top of it that applies the change again. `refused`: nothing moved, and why (the
+ * base is not at the merge, or the merge's first parent is not `parent`).
+ */
+export type LocalRevertResult =
+  | { reverted: true; sha: string; already: boolean; branch_reapplied: boolean }
+  | { reverted: false; refused: string };
+
+/**
+ * A sandbox that can revert an automatic merge on the local base (objects and one conditional ref update, as the
+ * local merge): no checkout, no hook, no push. Optional, checked at runtime (`canRevertLocal`), so a sandbox
+ * without it keeps today's stop.
+ */
+export type LocalRevertSandbox = Sandbox & { revertLocal(spec: LocalRevertSpec): Promise<LocalRevertResult> };
+
+export function canRevertLocal(sandbox: Sandbox | undefined): sandbox is LocalRevertSandbox {
+  return !!sandbox && typeof (sandbox as Partial<LocalRevertSandbox>).revertLocal === "function";
+}
+
 export function canMergeLocal(sandbox: Sandbox | undefined): sandbox is LocalMergeSandbox {
   const s = sandbox as Partial<LocalMergeSandbox> | undefined;
   return !!s && typeof s.mergeLocal === "function" && typeof s.localConflicts === "function";
+}
+
+/**
+ * Whether the sandbox can append to a file on the local base (design 07-design-learnings): it merges locally, reads
+ * local branches and files, and commits one file on a new local branch, with no checkout and no network call.
+ */
+export function canAppendLocal(sandbox: Sandbox | undefined): boolean {
+  return canMergeLocal(sandbox) && canReadLocal(sandbox) && typeof sandbox.readLocalFile === "function" && typeof sandbox.commitNewBranch === "function";
 }
 
 /**

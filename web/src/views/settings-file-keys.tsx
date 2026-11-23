@@ -13,8 +13,9 @@ import { Switch } from "../components/ui/switch.js";
 import { Textarea } from "../components/ui/textarea.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
+import { termLabel } from "../lib/format.js";
 import { keyHelp, keyLabel } from "../lib/key-label.js";
-import { MergeButton } from "./item-commands.js";
+import { MergeButton } from "./merge-button.js";
 import { SettingsRow } from "./settings-row.js";
 import { withNodes } from "./standing.js";
 import { Disclosure } from "../components/ui/disclosure.js";
@@ -30,14 +31,33 @@ import { Card, CardSection } from "../components/ui/card.js";
 
 type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
 
-/** A write and its outcome for one field: the refusal stays next to the field until the next try. */
+/** A value sent with a set, in plain words: text as typed, a list joined by commas; "" for an empty or nested value. */
+function plainValue(sent: string): string {
+  const v = parse(sent);
+  if (typeof v === "string") return v;
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  if (Array.isArray(v) && v.every((x) => typeof x === "string" || typeof x === "number")) return v.join(", ");
+  return "";
+}
+
+/** The confirmation, composed from the request: the setting's label and the value sent, never the CLI's line. */
+function confirmation(body: SettingsWrite, named?: string): string {
+  if (body.action === "project-label") return t("settings.savedPlain", { label: t("settings.projectLabel") });
+  const label = named ?? keyLabel(body.key);
+  if (body.action === "reset") return t("settings.resetDone", { label });
+  if (body.action === "edit-file") return t("settings.savedFile", { label });
+  const value = plainValue(body.value);
+  return value === "" ? t("settings.savedPlain", { label }) : t("settings.savedValue", { label, value });
+}
+
+/** A write and its outcome for one field (`named` is a row's label when the key's own differs, as a plugin kind's): the refusal stays next to the field until the next try. */
 export function useWrite(token: string) {
   const client = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [filed, setFiled] = useState<{ item: string; branch: string } | null>(null);
-  const write = async (body: SettingsWrite): Promise<boolean> => {
+  const write = async (body: SettingsWrite, named?: string): Promise<boolean> => {
     setBusy(true);
     setError(null);
     setDone(null);
@@ -47,7 +67,7 @@ export function useWrite(token: string) {
         setError(r.error);
         return false;
       }
-      setDone(r.lines[0] ?? t("settings.saved"));
+      setDone(confirmation(body, named));
       setFiled(r.filed ?? null);
       await client.invalidateQueries({ queryKey: [API.settings] });
       return true;
@@ -264,7 +284,7 @@ function FieldsControl({ spec, draft, label, onChange }: { spec: Extract<Spec, {
   return (
     <div className="flex w-full flex-wrap items-start gap-x-4 gap-y-3">
       {Object.entries(spec.fields).map(([k, sub], i) => (
-        <Field key={k} label={<span className="font-mono text-xs">{k}</span>} htmlFor={`${uid}-${i}`} className={sub.kind === "list" || sub.kind === "pairs" || sub.kind === "json" || sub.kind === "fields" ? "w-full" : ""}>
+        <Field key={k} label={<span className="text-xs">{termLabel(k)}</span>} htmlFor={`${uid}-${i}`} className={sub.kind === "list" || sub.kind === "pairs" || sub.kind === "json" || sub.kind === "fields" ? "w-full" : ""}>
           <Control spec={sub} id={`${uid}-${i}`} draft={draft[k] ?? toDraft(sub, undefined)} label={`${label} ${k}`} onChange={(next) => onChange({ ...draft, [k]: next })} />
         </Field>
       ))}
@@ -290,7 +310,7 @@ const shownJson = (v: Json | undefined): string => (v === undefined ? t("setting
 /** The raw key name behind a Details toggle, under a row's human label; a guard plugin's Details also says "guard". */
 export function KeyNameDetails({ name, guard }: { name: string; guard?: boolean }) {
   return (
-    <Disclosure summary={t("settings.details")}>
+    <Disclosure data-raw summary={t("settings.details")}>
       <KeyValue
         className="mt-1"
         items={[
@@ -317,7 +337,7 @@ function FileKey({ name, member, label, help, spec, value, token, danger, guard 
   const own = member === undefined ? value : isObject(value) ? value[member] : undefined;
   const shown = draft ?? toDraft(spec, own);
   const send = async (next: Json): Promise<boolean> => {
-    const ok = await write({ action: "edit-file", key: name, value: JSON.stringify(next), confirm: danger });
+    const ok = await write({ action: "edit-file", key: name, value: JSON.stringify(next), confirm: danger }, label);
     if (ok) setDraft(null);
     return ok;
   };

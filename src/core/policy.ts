@@ -1,6 +1,10 @@
 import type { FactoryConfig } from "./config.js";
 import type { Floor } from "./settings.js";
-import type { Run, RunKind, RunOutcome, Tier, Timestamp, WorkItem } from "./types.js";
+import { laterStampOf } from "./migration-stamps.js";
+export { freeMigrationStamps, takenStamps } from "./migration-stamps.js"; // the triage branch's step, beside the scope rule
+// Type only: a value import of stats.ts would close an import cycle back to this file (phase.ts reads its constants).
+import type { TierRuleResult } from "./stats.js";
+import { type Run, type RunKind, type RunOutcome, type Tier, type Timestamp, type WorkItem } from "./types.js";
 
 // Deterministic gate rules (control plane). Same input, same output.
 
@@ -23,9 +27,12 @@ export function needsSpecApproval(tier: Tier, dials: FactoryConfig["dials"]): bo
   return tier >= dials.spec_gate_min_tier;
 }
 
-/** Never for an incomplete PR, one whose implementer reports missing work (issue #229), whatever its tier. */
+/**
+ * Never for an incomplete PR, one whose implementer reports missing work (issue #229), whatever its tier. The setting
+ * alone: the tier's merge record is read only at the merge itself (autoMergeStep), so this assumes it holds.
+ */
 export function canAutoMerge(tier: Tier, dials: FactoryConfig["dials"], incomplete = false): boolean {
-  return autoMergeRefusal({ tier, max_tier: dials.auto_merge_max_tier, incomplete, gate_path: null, local: true }) === null;
+  return autoMergeRefusal({ tier, max_tier: dials.auto_merge_max_tier, incomplete, gate_path: null, local: true, rule: "met", dropped_back: false }) === null;
 }
 
 /** The actor of every automatic approval, merge and stop in auto mode (design 03-risk). */
@@ -51,17 +58,33 @@ export function autoApproveRefusal(o: { tier: Tier; decisions: readonly AutoDeci
   return null;
 }
 
+/** What each result of the tier rule (tierRule; its numbers are TIER_RULE_SAMPLE and TIER_RULE_MAX_BAD) says in a refusal. */
+const RULE_REFUSAL: Record<Exclude<TierRuleResult, "met">, string> = {
+  too_few: "has fewer than 50 merges",
+  not_met: "has more than 1 reverted or fixed-forward merge, or a critical verdict, in its last 50",
+  never: "never qualifies",
+};
+
 /**
  * Why auto mode leaves a reviewed change for a person's merge (design 03-risk), or null when it merges it. Only a
  * local item merges by itself (there is no forge merge to call); tier 4 and up, a change that touches the gate list,
- * an incomplete change (issue #229) and a tier above `max_tier` (the `auto_merge_max_tier` setting) never do.
+ * an incomplete change (issue #229) and a tier above `max_tier` (the `auto_merge_max_tier` setting) never do. Under
+ * the setting, a tier merges only while its merge record holds: `dropped_back` (droppedBack: 2 of its last 20 merges
+ * reverted or fixed forward) and a `rule` (tierRule over its last 50) other than met refuse it. The setting is never written.
  */
-export function autoMergeRefusal(o: { tier: Tier; max_tier: number; incomplete: boolean; gate_path: string | null; local: boolean }): string | null {
+export function autoMergeRefusal(o: {
+  tier: Tier; max_tier: number; incomplete: boolean; gate_path: string | null; local: boolean; rule: TierRuleResult; dropped_back: boolean;
+}): string | null {
   if (!o.local) return "only a local item merges automatically; its PR waits for a person";
   if (o.tier >= AUTO_NEVER_TIER) return `a tier ${o.tier} change never merges automatically`;
   if (o.gate_path !== null) return `it touches the gate list (\`${o.gate_path}\`)`;
   if (o.incomplete) return "it is incomplete";
   if (o.tier > o.max_tier) return `its tier ${o.tier} is above auto_merge_max_tier (${o.max_tier})`;
+  if (o.dropped_back) {
+    // The numbers are DROP_BACK_BAD and DROP_BACK_SAMPLE (stats.ts).
+    return `tier ${o.tier} dropped back: 2 or more of its last 20 merges were reverted or fixed forward`;
+  }
+  if (o.rule !== "met") return `tier ${o.tier} does not meet the auto-merge rule: it ${RULE_REFUSAL[o.rule]}`;
   return null;
 }
 
@@ -95,35 +118,73 @@ export function retryDelayMs(attempt: number, base_ms: number, max_ms: number): 
 
 /**
  * Why a run failed, for the retry budget (design §5 Restarts): a usage or rate limit is not an attempt, and
- * neither is a stall (the model printed nothing for `stall_ms`); a pre-push check whose failing test files
- * also fail on the base branch (`checks_env`) spends neither budget and has its own cap, CHECKS_ENV_LIMIT per
- * item; infra failures (lease loss, timeout, exception) count toward `max_restart`; anything else is the
- * task's own failure and counts toward `max_attempts`. A run with no outcome (cancelled) is a task failure.
+ * neither is a missing model credential (`setup_missing`, which the worker requeues and never stores for an agent
+ * run); a pre-push check whose failing test files also fail on the base branch (`checks_env`) spends neither
+ * budget and has its own cap, CHECKS_ENV_LIMIT per item; infra failures (lease loss, timeout, exception, and a
+ * stall: the model printed nothing for `stall_ms`, decision of 2026-11-23) count toward `max_restart`; anything else
+ * is the task's own failure and counts toward `max_attempts`. A run with no outcome (cancelled) is a task failure; a
+ * run an accepted interactive takeover cancelled (`takenOver`) is left out of the step's counts by `retryOrBlock`.
  */
-export type FailureClass = "rate_limited" | "stalled" | "checks_env" | "infra" | "task";
+export type FailureClass = "rate_limited" | "checks_env" | "setup_missing" | "infra" | "task";
 
 export function failureClass(outcome: RunOutcome | null): FailureClass {
   if (outcome?.status !== "failed") return "task";
   if (outcome.error_code === RATE_LIMITED || outcome.error_code === GITHUB_RATE_LIMITED) return "rate_limited";
-  if (outcome.error_code === AGENT_STALLED) return "stalled";
+  // The worker stores a stall with `infra: false`; it is infra all the same.
+  if (outcome.error_code === AGENT_STALLED) return "infra";
   if (outcome.error_code === CHECKS_ENV) return "checks_env";
+  if (outcome.error_code === SETUP_MISSING) return "setup_missing";
   return outcome.infra ? "infra" : "task";
 }
 
 /**
- * True when a plain retry is likely to clear the failed run's outcome (design 05-alarms, held items): a stall,
- * a usage or rate limit, or an infra failure. Any other failure is the task's own, which a retry alone repeats.
+ * The error code on the outcome of a queued implement or update run that an accepted interactive takeover cancelled
+ * (design §5 Restarts, 2026-11-19). The run stays `cancelled`; the outcome only marks it as no attempt.
+ */
+export const INTERACTIVE_TAKEOVER = "interactive_takeover";
+export const TAKEOVER_OUTCOME: RunOutcome = {
+  status: "failed", error_code: INTERACTIVE_TAKEOVER, detail: "an interactive task took the item over before the run started", infra: false,
+};
+
+/** Whether an accepted interactive takeover cancelled the run: it counts toward neither max_attempts nor max_restart. */
+export function takenOver(run: Pick<Run, "status" | "outcome">): boolean {
+  return run.status === "cancelled" && run.outcome?.status === "failed" && run.outcome.error_code === INTERACTIVE_TAKEOVER;
+}
+
+/**
+ * True when a plain retry is likely to clear the failed run's outcome (design 05-alarms, held items): a usage or
+ * rate limit, or an infra failure (a stall included). Any other failure is the task's own, which a retry alone repeats.
+ * A missing model credential (`setup_missing`) is neither: no retry succeeds until the owner adds the credential.
  */
 export function retryClears(outcome: RunOutcome | null): boolean {
   const c = failureClass(outcome);
-  return c === "stalled" || c === "rate_limited" || c === "infra";
+  return c === "rate_limited" || c === "infra";
 }
 
 /**
  * The error code of a run whose agent printed nothing for `stall_ms` while no tool call was open (design §5
- * Restarts). Not an attempt; it pauses every claim (`model_stall`) until a probe on the cheap model answers.
+ * Restarts). An infra failure, retried with backoff; STALL_STREAK_HOLD in a row in one step hold the item. When no
+ * other running run got model output either (`stallIsGlobal`), it also pauses every claim (`model_stall`) until a
+ * probe on the cheap model answers.
  */
 export const AGENT_STALLED = "agent_stalled";
+
+/** The stalls in a row in one step that hold its item (`recurring_failure`, design 05-restarts, 2026-11-23). */
+export const STALL_STREAK_HOLD = 3;
+
+/** The stalls in a row that end `step` (its runs, oldest first), read from the run history; any other outcome ends it. */
+export function stallStreak(step: readonly Pick<Run, "outcome">[]): number {
+  const last = step.findLastIndex((r) => r.outcome?.status !== "failed" || r.outcome.error_code !== AGENT_STALLED);
+  return step.length - 1 - last;
+}
+
+/**
+ * Whether a stall at `stalledAt` (ms) is the model's (design 05-restarts, decision of 2026-11-20): no running run's
+ * last model output (`latest`, the store's latest; null: none got any) is within `stall_ms` of it.
+ */
+export function stallIsGlobal(latest: Timestamp | null, stalledAt: number, stall_ms: number): boolean {
+  return latest === null || Date.parse(latest) <= stalledAt - stall_ms;
+}
 
 /**
  * The claim pause of a stall (design §5 Restarts): its row holds the next probe time, and claims stay paused
@@ -222,6 +283,31 @@ export function probePauseOf(name: string): ProbePause | null {
   return null;
 }
 
+/**
+ * The error code of a run whose agent runner found no model credential in the secret store (design §5 Restarts,
+ * setup state, 2026-11-21). Not a failure of the run, like NETWORK_UNAVAILABLE: the worker puts an agent run back in
+ * the queue with its attempt unchanged and starts the `model_credential` claim pause, so it is never retried and never
+ * counts toward max_attempts, max_restart, the repeated-failure rule or an alarm.
+ */
+export const SETUP_MISSING = "setup_missing";
+
+/**
+ * The claim pause of a missing model credential (design §5 Restarts): no agent run (MODEL_RUN_KINDS) is claimed while
+ * it is in effect. It has no end time: its row holds MODEL_CREDENTIAL_UNTIL until a worker whose check finds the
+ * credential ends it. Not resumable by a person (RESUMABLE_PAUSES leaves it out): adding the credential ends it.
+ */
+export const MODEL_CREDENTIAL = "model_credential" as const;
+export const MODEL_CREDENTIAL_UNTIL = "9999-12-31T23:59:59.999Z" as Timestamp;
+
+/**
+ * Whether `err` says no model credential is in the secret store: an Error whose `code` is SETUP_MISSING, as the
+ * claude-code runner throws it (an adapter, it tags the error rather than import this module). Its message names
+ * the secrets, never a value.
+ */
+export function isSetupMissing(err: unknown): err is Error {
+  return err instanceof Error && (err as { code?: unknown }).code === SETUP_MISSING;
+}
+
 /** The network probe's first wait and its longest one (design §5 Restarts): 30 s, backing off to 5 min. */
 export const NETWORK_PROBE_MS = { first: 30_000, max: 300_000 } as const;
 
@@ -278,8 +364,8 @@ export function classifyNetwork(code: string, detail: string): { code: string; d
 
 /**
  * When a failed run's automatic retry may be claimed (design §5 Restarts). A model rate limit: its reset (none:
- * `retry_max_ms` after the failure). A stall: at once, the stall pause holds claims. A forge 401/403, a failed
- * access check or a forge rate limit: the later of the backoff and the pause end in `reset`. Else the backoff.
+ * `retry_max_ms` after the failure). A forge 401/403, a failed access check or a forge rate limit: the later of the
+ * backoff and the pause end in `reset`. Else, a stall included, the backoff.
  */
 export function retryNotBefore(o: {
   cls: FailureClass;
@@ -291,7 +377,6 @@ export function retryNotBefore(o: {
 }): Timestamp {
   const at = (ms: number) => new Date(ms).toISOString() as Timestamp;
   if (o.cls === "rate_limited" && o.code !== GITHUB_RATE_LIMITED) return o.reset ?? at(o.failed_at + o.retry_max_ms);
-  if (o.cls === "stalled") return at(o.failed_at);
   const pauseEnd = PAUSE_CODES.includes(o.code) && o.reset ? Date.parse(o.reset) : Number.NaN;
   return at(Number.isNaN(pauseEnd) ? o.backoff_at : Math.max(o.backoff_at, pauseEnd));
 }
@@ -343,8 +428,8 @@ export function failureLine(detail: string): string {
 
 /**
  * Whether `run`, a task failure, repeats the step's previous task failure: same error code, same detail line.
- * `step`: the step's runs in order (the first run and its automatic retries), `run` among them. Rate limits,
- * stalls and infra failures are not attempts, so they are skipped, neither counted nor breaking the row.
+ * `step`: the step's runs in order (the first run and its automatic retries), `run` among them. Rate limits and
+ * infra failures (stalls included) are not task attempts, so they are skipped, neither counted nor breaking the row.
  */
 export function repeatsLastFailure(step: readonly Pick<Run, "id" | "outcome">[], run: Pick<Run, "id" | "outcome">): boolean {
   const o = run.outcome;
@@ -366,7 +451,7 @@ export function repeatsFastInfraFailure(
   run: Pick<Run, "id" | "outcome" | "started_at" | "finished_at">,
 ): boolean {
   const infra = (r: Pick<Run, "outcome">) =>
-    r.outcome?.status === "failed" && failureClass(r.outcome) === "infra" && r.outcome.error_code !== PREFLIGHT_ACCESS ? r.outcome : null;
+    r.outcome?.status === "failed" && failureClass(r.outcome) === "infra" && r.outcome.error_code !== PREFLIGHT_ACCESS && r.outcome.error_code !== AGENT_STALLED ? r.outcome : null;
   const fast = (r: Pick<Run, "started_at" | "finished_at">) => {
     const took = Date.parse(r.finished_at ?? "") - Date.parse(r.started_at ?? "");
     return Number.isFinite(took) && took < FAST_FAILURE_MS;
@@ -429,12 +514,13 @@ export function isUnder(path: string, a: string): boolean {
 }
 
 /**
- * A path is covered when it equals an allowed path, sits under an allowed path that ends in `/`, or is a
- * ratchet list (RATCHET_LIST). Shared by triage validation (`files_to_change`), the pre-push scope gate and
- * the edit hook, so all use one rule.
+ * A path is covered when it equals an allowed path, sits under an allowed path that ends in `/`, is a
+ * ratchet list (RATCHET_LIST), or is a migration or migration test with an allowed one's folder, component and
+ * slug and a later timestamp (laterStampOf: a build that finds the spec's timestamp taken renames the file).
+ * Shared by triage validation (`files_to_change`), the pre-push scope gate and the edit hook, so all use one rule.
  */
 export function isCovered(path: string, allowed: readonly string[]): boolean {
-  return RATCHET_LIST.test(path) || allowed.some((a) => isUnder(path, a));
+  return RATCHET_LIST.test(path) || allowed.some((a) => isUnder(path, a) || laterStampOf(path, a));
 }
 
 /**

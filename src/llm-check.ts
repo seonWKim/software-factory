@@ -3,7 +3,7 @@
 // (channel `log`): a provider's error text could carry a credential. A field with a finding is withheld
 // whole as `[withheld: <rule>]` (design, withhold-not-mask); its text is never printed.
 
-import type { Plugins } from "./compose.js";
+import type { Plugins } from "./plugin-set.js";
 import { selectedLlms } from "./plugins.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";

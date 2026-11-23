@@ -153,3 +153,49 @@ describe("overview factory.workers", () => {
     expect(await overview({ override: "50" })).toMatchObject({ workers: 10, workers_source: "override" });
   });
 });
+
+// The Failures card on Health in plain words (design 09-health, 2026-11-20): its title names no error code, and each
+// group's title is its failure.* entry's title; the code is behind Details. Rendered on the server from a filled query
+// cache; the module loads by a path in a variable (tsconfig.test.json has no JSX or DOM).
+const WEB_FAILURES = "../web/src/views/failures.js";
+
+/** The Failures card rendered on the server with one failure group of `code`: its full HTML and the part outside Details. */
+async function renderGroup(code: string): Promise<{ html: string; visible: string }> {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
+  const { FailuresSection } = (await import(WEB_FAILURES)) as { FailuresSection: () => unknown };
+  const at = "2026-11-07T08:30:00.000Z";
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  const runs = [{ id: "run_1", work_item_id: "wi_1", kind: "implement", attempt: 1, detail: "x", worker: null, finished_at: at }];
+  client.setQueryData(["/api/v1/failures?window=24h"], { as_of: at, window: "24h", cap: 200, total: 1, capped: false, groups: [{ code, count: 1, last_seen: at, items: 1, runs }] });
+  client.setQueryData(["/api/v1/items"], { items: [] });
+  const saved = (globalThis as { location?: unknown }).location;
+  (globalThis as { location?: unknown }).location = { search: "" };
+  try {
+    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(FailuresSection as never))).replace(/<!-- -->/g, "");
+    return { html, visible: html.replace(/<details data-raw[\s\S]*?<\/details>/g, "") };
+  } finally {
+    (globalThis as { location?: unknown }).location = saved;
+  }
+}
+
+describe("Failures card: plain titles", () => {
+  it("titles the card and each group with no error code outside Details", async () => {
+    const { html, visible } = await renderGroup("tests_failed");
+    expect(visible).toContain(`>${en["failures.title"]}<`);
+    expect(en["failures.title"]).toBe("Failed runs by cause");
+    expect(visible).toContain(`>${en["failure.tests_failed.title"]}<`);
+    expect(visible).not.toMatch(/error code|tests_failed/);
+    expect(html).toContain("tests_failed");
+  });
+
+  // RFC 0024 WP1 added setup_missing (no model credential); without its catalog entries the group shows the raw code
+  // and "This error code has no plain description yet."
+  it("explains setup_missing in plain words, with a next step that names no command", async () => {
+    const { html, visible } = await renderGroup("setup_missing");
+    for (const text of ["Model credential missing", "No model credential is saved yet, so agent runs wait until one is added.", "Add a model credential on this computer. Waiting runs start on their own within seconds."]) expect(visible).toContain(`>${text}<`);
+    expect(visible).not.toMatch(/setup_missing|no plain description/);
+    expect(html).toContain("setup_missing");
+  });
+});

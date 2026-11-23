@@ -3,15 +3,18 @@
 import { LiveSettings, type ProjectSettings, modeOf, settingValues } from "../../core/settings.js";
 import { LOCAL_SOURCE, threadDelivery } from "../../core/local-merge.js";
 import { errorText } from "../../core/log.js";
+import { askDetail } from "../../core/owner-asks.js";
 import { type SourceRef, type SourceType, type WorkItem } from "../../core/types.js";
 import type { Forge } from "../../interfaces/forge.js";
-import type { SourceAdapter } from "../../interfaces/source-adapter.js";
 import { type ControllerDeps, rateLimitWait } from "../../core/controller-deps.js";
 import type { ActionRow, NewAction } from "../../outbound/index.js";
 import type { Draft } from "../../shared/envelope.js";
 import { CODE_ROOT, type SqlDriver, forgetOnFailure } from "../../state/index.js";
 import { loadDescriptors } from "../../runtime/index.js";
 import { type SignalDescriptor, uniqueSignals } from "../signals/signal.js";
+
+/** A configured source, as the deps carry it. */
+type SourceAdapter = NonNullable<ControllerDeps["source"]>;
 
 /**
  * The sources a controller runs (design 2026-11-01): any number, no two of one type. PRs come from the forge,
@@ -40,7 +43,7 @@ const READS = [
   "listDeliveries", "listRuns", "listUnacknowledgedRuns", "listStateChanges", "listBudgetCheckpoints", "listClaimDecisions", "getTierHistory",
   "getMergeCheck", "getAppCommandRequest", "listItemMessages", "listSettingChanges", "getWorkItemByMergeSha",
   "listVerdicts", "listStandingRules", "latestSignalTimes", "listSignalRefs", "listStateChangesSince", "listVerdictsSince", "listRunsFinishedSince",
-  "listNoticesFor", "listHeldNotices", "listDueReminders",
+  "listNoticesFor", "listHeldNotices", "listDueReminders", "listMergeEvaluations",
 ] as const;
 
 /**
@@ -64,6 +67,11 @@ export type ControllerReader = Pick<Store, (typeof READS)[number]> & Pick<Contro
   };
   /** The discovered signal sources (`*.signal.ts`, design 11-signal-ledger), in path order. */
   signals(): Promise<readonly SignalDescriptor[]>;
+  /**
+   * The file paths under the folder `path` in the factory repo's local base branch, read from objects by the
+   * sandbox (no checkout, no fetch); null when the sandbox cannot list, the branch is missing or the read fails (logged).
+   */
+  baseFiles(path: string): Promise<readonly string[] | null>;
 };
 
 /**
@@ -223,6 +231,17 @@ export class Kernel {
       llm: d.llm ?? null,
       auth: { owner: d.auth, service: d.service_auth ?? null },
       signals,
+      baseFiles: async (path) => {
+        const sandbox = d.sandbox;
+        if (!sandbox?.listLocalFiles) return null;
+        const { repo } = this.live.config();
+        try {
+          return await sandbox.listLocalFiles({ repo: repo.path, ref: repo.base_branch, path });
+        } catch (err) {
+          d.log.warn("could not list the base branch's files", { path, error: errorText(err) });
+          return null;
+        }
+      },
     };
   }
 
@@ -256,7 +275,17 @@ export class Kernel {
     await this.commit({ writes: before });
     const store = this.d.store;
     const write = { transition: store.transition, budget_checkpoint: store.openBudgetCheckpoint, budget_answer: store.answerBudgetCheckpoint, claim_approval: store.approveClaimHold, verdict: store.recordVerdict }[w.kind];
-    return (write as (input: W["input"]) => Promise<ItemCommitted<W>>).call(store, w.input);
+    return (write as (input: W["input"]) => Promise<ItemCommitted<W>>).call(store, await this.withAsk(w.input));
+  }
+
+  /**
+   * An entry into an owner state (`blocked_on: "human"`) as an ask (design 06-efficiency): its state change's detail
+   * gets the reason code and the item's tier after the patch (read only when the patch sets none). Other writes pass as they are.
+   */
+  private async withAsk<I extends ItemWrite["input"]>(input: I): Promise<I> {
+    if (!("patch" in input) || input.patch.blocked_on !== "human") return input;
+    const tier = input.patch.tier !== undefined ? input.patch.tier : ((await this.d.store.getWorkItem(input.id))?.tier ?? null);
+    return { ...input, detail: { ...input.detail, ...askDetail(input.patch, tier) } };
   }
 
   /** `/link <code>`: the code's one conditional redeem (used once, counted on a failure), committed here. */

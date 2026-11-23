@@ -2,8 +2,7 @@ import { API, type CapabilitiesView, type CapabilityRow, useApi } from "../api.j
 import { type Column, DataTable } from "../components/ui/data-table.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { t } from "../i18n/index.js";
-import { ago } from "../lib/format.js";
-import { useNow } from "./common.js";
+import { When, useNow } from "./common.js";
 import { Card } from "../components/ui/card.js";
 import { Badge } from "../components/ui/badge.js";
 
@@ -41,7 +40,7 @@ export function ModelsTab() {
     {
       key: "last_used",
       header: t("settings.capColLastUsed"),
-      render: (r) => <span className="text-xs tabular-nums whitespace-nowrap">{r.last_used ? t("time.ago", { time: ago(r.last_used, now) }) : t("settings.capNever")}</span>,
+      render: (r) => <span className="text-xs tabular-nums whitespace-nowrap">{r.last_used ? <When at={r.last_used} now={now} /> : t("settings.capNever")}</span>,
     },
   ];
   return (

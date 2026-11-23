@@ -3,7 +3,9 @@
 //
 // It seeds a throwaway store (scripts/responsive/fixture.mjs), serves it with the built UI server on a free port,
 // opens every dashboard page in the system's headless Chrome over CDP (scripts/responsive/cdp.mjs) at each
-// VIEWPORT in light and dark, and applies the rules in scripts/responsive/rules.mjs. One line per failure; a
+// VIEWPORT in light and dark, and applies the rules in scripts/responsive/rules.mjs: the layout rules and the page
+// template's structure rules, whose h1 and h2 sizes are also compared across pages (`heading-size`, against the first
+// page with that heading at the same viewport and theme). One line per failure; a
 // screenshot of each failing page/viewport/theme, failing elements outlined, under .playwright-mcp/responsive/.
 // A console error or a failed request (scripts/responsive/console.mjs) at a page/viewport/theme fails it too.
 //
@@ -21,6 +23,8 @@ const SHOTS = join(ROOT, ".playwright-mcp", "responsive");
 export const VIEWPORTS = [
   { width: 1280, height: 800 },
   { width: 1024, height: 768 },
+  // Below the sidebar's 1024px breakpoint, with the icon-only sidebar: row titles must not wrap (title-wrap).
+  { width: 800, height: 1024 },
   { width: 768, height: 1024 },
   { width: 390, height: 844 },
   // Short: sticky headers and panels must not cover the content or make it unreachable.
@@ -56,12 +60,16 @@ async function main() {
     ...(await sidebarPages()),
     { name: "item", path: `items/${enc(fixture.pages.item)}` },
     { name: "item-phases", path: `items/${enc(fixture.pages.parent)}` },
+    // Health's Runners tab: the worker process rows, checked by title-wrap.
+    { name: "health-runners", path: "health?tab=runners" },
     { name: "transcript", path: `items/${enc(fixture.pages.item)}/runs/${enc(fixture.pages.run)}` },
   ].filter((p) => only === null || p.name === only);
 
   await rm(SHOTS, { recursive: true, force: true });
   await mkdir(SHOTS, { recursive: true });
   const failures = [];
+  /** The first page's h1 and h2 font sizes per viewport and theme: every other page must match them. */
+  const headingSizes = new Map();
   let checks = 0;
   try {
     for (const p of pages) {
@@ -81,9 +89,16 @@ async function main() {
           await page.send("Emulation.setDeviceMetricsOverride", { ...vp, deviceScaleFactor: 1, mobile: false });
           await page.eval(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))`);
           await page.eval(`document.querySelectorAll("[data-responsive-fail]").forEach((e) => e.removeAttribute("data-responsive-fail"))`);
-          const found = await page.eval(`(${checkLayout.toString()})(${JSON.stringify(LIMITS)})`);
+          const { failures: found, sizes } = await page.eval(`(${checkLayout.toString()})(${JSON.stringify(LIMITS)})`);
           checks++;
           const where = `${p.name || "floor"} ${vp.width}x${vp.height} ${theme}`;
+          for (const [tag, size] of Object.entries(sizes)) {
+            if (size === null) continue;
+            const key = `${tag} ${vp.width}x${vp.height} ${theme}`;
+            const first = headingSizes.get(key);
+            if (!first) headingSizes.set(key, { size, page: p.name });
+            else if (first.size !== size) failures.push(`${where}  heading-size  ${tag}  (${size}, the ${first.page} page's ${tag} is ${first.size})`);
+          }
           // What the page logged since its load (at the first viewport) or the previous viewport.
           for (const message of page.takeConsole()) failures.push(`${where}  console  ${message}`);
           if (found.length === 0) continue;

@@ -4,7 +4,7 @@
 // No CLI or chat logic: the methods take plain arguments, so an HTTP route can call them too.
 
 import {
-  type AddSubTaskResult, type CompleteTaskResult, type DeleteTaskResult, type DoneTasks, type DoneWindow, type NewTask, type Recurrence, type ReopenTaskResult, type Task, type TaskEdit, type TaskPriority,
+  type AddSubTaskResult, type CompleteTaskResult, type DeleteTaskResult, type DoneTasks, type DoneWindow, type NewTask, type Recurrence, type ReopenTaskResult, type SetTaskBodyResult, type Task, type TaskEdit, type TaskPriority,
   type TaskTime, type UpdateTaskResult, applyTaskEdit, dueDate, nextDueDate, reminderDays, reminderDue,
 } from "../../../core/tasks.js";
 import type { NewNotice } from "../../../core/notifications.js";
@@ -15,7 +15,7 @@ import { linkTaskProjects, unlinkTask } from "./projects.js";
 import { newId } from "./rows.js";
 
 const COLUMNS =
-  "id, title, list, priority, due_date, due_time, recurrence, created_by, created_at, done_at, parent_id, work_item_id, parent_task_id, duration_minutes, reminded_at";
+  "id, title, list, priority, due_date, due_time, recurrence, created_by, created_at, done_at, parent_id, work_item_id, parent_task_id, duration_minutes, reminded_at, body";
 
 const text = (v: unknown): string | null => (v == null ? null : String(v));
 
@@ -26,6 +26,7 @@ function rowToTask(r: Row): Task {
     created_by: String(r.created_by) as UserId, created_at: String(r.created_at) as Timestamp, done_at: text(r.done_at) as Timestamp | null,
     parent_id: text(r.parent_id), work_item_id: text(r.work_item_id) as WorkItemId | null, parent_task_id: text(r.parent_task_id),
     duration_minutes: r.duration_minutes == null ? null : Number(r.duration_minutes), reminded_at: text(r.reminded_at) as Timestamp | null,
+    body: text(r.body),
   };
 }
 
@@ -37,9 +38,9 @@ async function select(db: SqlExecutor, column: "id" | "parent_id", value: string
 /** Inserts `t` unless a row has its ID (or, for an occurrence, its parent); false when it inserted nothing. */
 async function insert(db: SqlDriver, tx: SqlExecutor, t: Task): Promise<boolean> {
   try {
-    await tx.run(`INSERT INTO controller_tasks (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+    await tx.run(`INSERT INTO controller_tasks (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
       t.id, t.title, t.list, t.priority, t.due_date, t.due_time, t.recurrence, t.created_by, t.created_at, t.done_at, t.parent_id, t.work_item_id,
-      t.parent_task_id, t.duration_minutes, t.reminded_at,
+      t.parent_task_id, t.duration_minutes, t.reminded_at, t.body,
     ]);
     return true;
   } catch (err) {
@@ -53,7 +54,7 @@ function newRow(t: NewTask, now: Date, parent_task_id: string | null): Task {
   return {
     id: t.id, title: t.title, list: t.list, priority: t.priority, due_date: t.due === null ? null : dueDate(t.due, now), due_time: t.due_time,
     recurrence: t.recurrence, created_by: t.created_by, created_at: now.toISOString() as Timestamp, done_at: null, parent_id: null,
-    work_item_id: null, parent_task_id, duration_minutes: t.duration_minutes ?? null, reminded_at: null,
+    work_item_id: null, parent_task_id, duration_minutes: t.duration_minutes ?? null, reminded_at: null, body: t.body ?? null,
   };
 }
 
@@ -100,19 +101,48 @@ export async function updateTask(db: SqlDriver, id: string, edit: TaskEdit, now:
   });
 }
 
-/** In one transaction: refused while a sub-task is open; else detaches the done ones, drops its project links and deletes the row. */
-export async function deleteTask(db: SqlDriver, id: string): Promise<DeleteTaskResult> {
+/** Writes the description where the task is still open; the same description again writes the same value. */
+export async function setTaskBody(db: SqlDriver, id: string, body: string | null): Promise<SetTaskBodyResult> {
+  return db.transaction(async (tx) => {
+    const task = await select(tx, "id", id);
+    if (task === null) return { ok: false, reason: "not_found" } as const;
+    if (task.done_at !== null) return { ok: false, reason: "done" } as const;
+    await tx.run("UPDATE controller_tasks SET body = ? WHERE id = ? AND done_at IS NULL", [body, id]);
+    return { ok: true, task: (await select(tx, "id", id))! } as const;
+  });
+}
+
+/**
+ * In one transaction: refused while a sub-task is open, unless `with_sub_tasks`, which deletes every sub-task (open and
+ * done) and its project links with it; else detaches the done ones. Then drops its project links and deletes the row.
+ */
+export async function deleteTask(db: SqlDriver, id: string, opts: { with_sub_tasks?: boolean } = {}): Promise<DeleteTaskResult> {
   return db.transaction(async (tx) => {
     const task = await select(tx, "id", id);
     if (task === null) return { ok: false, reason: "not_found" } as const;
     const subs = (await tx.all(`SELECT ${COLUMNS} FROM controller_tasks WHERE parent_task_id = ? ORDER BY id`, [id])).map(rowToTask);
-    const open = subs.filter((s) => s.done_at === null);
-    if (open.length > 0) return { ok: false, reason: "open_sub_tasks", sub_tasks: open } as const;
-    if (subs.length > 0) await tx.run("UPDATE controller_tasks SET parent_task_id = NULL WHERE parent_task_id = ? AND done_at IS NOT NULL", [id]);
+    if (opts.with_sub_tasks === true) {
+      for (const s of subs) {
+        await unlinkTask(tx, s.id);
+        await tx.run("DELETE FROM controller_tasks WHERE id = ?", [s.id]);
+      }
+    } else {
+      const open = subs.filter((s) => s.done_at === null);
+      if (open.length > 0) return { ok: false, reason: "open_sub_tasks", sub_tasks: open } as const;
+      if (subs.length > 0) await tx.run("UPDATE controller_tasks SET parent_task_id = NULL WHERE parent_task_id = ? AND done_at IS NOT NULL", [id]);
+    }
     await unlinkTask(tx, id);
     await tx.run("DELETE FROM controller_tasks WHERE id = ?", [id]);
-    return { ok: true, task, detached: subs.map((s) => ({ ...s, parent_task_id: null })) } as const;
+    return opts.with_sub_tasks === true
+      ? ({ ok: true, task, detached: [], deleted: subs } as const)
+      : ({ ok: true, task, detached: subs.map((s) => ({ ...s, parent_task_id: null })), deleted: [] } as const);
   });
+}
+
+/** Read-only: each task's number of open sub-tasks, over every stored task; a task with none is left out. */
+export async function countOpenSubTasks(db: SqlDriver): Promise<Record<string, number>> {
+  const rows = await db.all("SELECT parent_task_id, COUNT(*) AS n FROM controller_tasks WHERE parent_task_id IS NOT NULL AND done_at IS NULL GROUP BY parent_task_id");
+  return Object.fromEntries(rows.map((r) => [String(r.parent_task_id), Number(r.n)]));
 }
 
 export async function listTasks(db: SqlDriver, limit: number): Promise<Task[]> {
@@ -207,7 +237,8 @@ export async function linkTask(db: SqlDriver, id: string, work_item_id: WorkItem
 
 /**
  * In `tx`: completes each open task linked to the item, as completeTask does each. The store's close transition calls it
- * in the item's own transaction (design 02-tasks), so a closed item never leaves its task open; a second call finds none open.
+ * in the item's own transaction when the item closes as completed (design 02-tasks), so a completed item never leaves its
+ * task open; a second call finds none open.
  */
 export async function completeLinkedTasks(db: SqlDriver, tx: SqlExecutor, work_item_id: WorkItemId, now: Timestamp): Promise<Task[]> {
   const open = await tx.all("SELECT id FROM controller_tasks WHERE work_item_id = ? AND done_at IS NULL ORDER BY id", [work_item_id]);

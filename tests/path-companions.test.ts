@@ -2,20 +2,21 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadConfig } from "../src/compose.js";
-import { ConfigKeyError } from "../src/config-keys.js";
-import { type PathCompanion, applyCompanions, pathCompanionProblems, pathCompanionsConfig, refusedCompanion } from "../src/core/companions.js";
+import { loadConfig } from "../src/load-config.js";
+import { type PathCompanion, applyCompanions, companionNote, pathCompanionProblems, pathCompanionsConfig, refusedCompanion } from "../src/core/companions.js";
 import { GATE_PATHS } from "../src/core/improver.js";
 import type { Floor } from "../src/core/settings.js";
 import { PROTECTED_PATHS } from "../src/core/standing.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { parseTriage } from "../src/core/outputs.js";
+import { MAX_APPLIED_DEFAULTS, parseTriage } from "../src/core/outputs.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import { renderSpec } from "../src/core/spec-comment.js";
 import type { RunOutcome, WorkItem } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent, triageSpec } from "./helpers/fakes.js";
+import { FakeAuth } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, silent, triageSpec } from "./helpers/fakes/config.js";
 import { newStore, w1 } from "./helpers/store.js";
 
 // Path companions (design 04-triage.md, issue #224): a change to one path also needs others. The controller
@@ -134,6 +135,64 @@ describe("applyCompanions", () => {
 });
 
 // Built-in rules (decided 2026-11-18): a file's companions read from its path alone, since triage has no clone.
+// Decided 2026-11-22 (wi_3f9ab60a): an entry may say why (`reason`, noted in the spec's applied defaults) and may
+// need more named paths (`with`), so a rule fires only on the change it is for.
+describe("companion rule reasons and `with`", () => {
+  const STORE: PathCompanion = { when: "src/store.ts", also: ["src/store/"], reason: "the store is at its line budget" };
+  const out = (files: string[], companions: PathCompanion[], over: Record<string, unknown> = {}) => {
+    const r = applyCompanions(answer({ allowed_paths: files, files_to_change: files, ...over }), companions, []);
+    return { ...(r.answer as { allowed_paths: string[]; applied_defaults?: string[] }), added: r.added };
+  };
+
+  it("a matching rule adds its paths and notes its reason under the applied defaults, after triage's own", () => {
+    const a = out(["src/store.ts"], [STORE], { applied_defaults: ["Owner default: keep the CLI flag."] });
+    expect(a.allowed_paths).toContain("src/store/");
+    expect(a.applied_defaults).toEqual(["Owner default: keep the CLI flag.", "Added by companion rule: the store is at its line budget"]);
+    expect(parseTriage(a).ok).toBe(true);
+  });
+
+  it("a rule that does not match adds no path and no note", () => {
+    const a = out(["src/other.ts"], [STORE]);
+    expect(a.allowed_paths).not.toContain("src/store/");
+    expect(a.applied_defaults).toBeUndefined();
+  });
+
+  it("a rule whose paths are already allowed adds no note", () => {
+    expect(out(["src/store.ts", "src/store/"], [STORE]).applied_defaults).toBeUndefined();
+  });
+
+  it("a rule with no reason adds its paths and no note", () => {
+    const a = out(["src/store.ts"], [{ when: "src/store.ts", also: ["src/store/"] }]);
+    expect(a.allowed_paths).toContain("src/store/");
+    expect(a.applied_defaults).toBeUndefined();
+  });
+
+  it("two rules with the same reason give one note", () => {
+    const twin: PathCompanion = { when: "src/store.ts", also: ["docs/store.md"], reason: STORE.reason! };
+    expect(out(["src/store.ts"], [STORE, twin]).applied_defaults?.filter((d) => d.startsWith("Added by companion rule"))).toHaveLength(1);
+  });
+
+  it("notes that would pass the applied-defaults limit share one line; with no room left none is added", () => {
+    const rules: PathCompanion[] = [STORE, { when: "src/store.ts", also: ["docs/x.md"], reason: "x" }];
+    const nine = Array.from({ length: MAX_APPLIED_DEFAULTS - 1 }, (_, i) => `d${i}`);
+    expect(out(["src/store.ts"], rules, { applied_defaults: nine }).applied_defaults).toEqual([...nine, companionNote("the store is at its line budget; x")]);
+    const full = Array.from({ length: MAX_APPLIED_DEFAULTS }, (_, i) => `d${i}`);
+    const a = out(["src/store.ts"], rules, { applied_defaults: full });
+    expect(a.applied_defaults).toEqual(full);
+    expect(a.allowed_paths).toContain("src/store/");
+    expect(parseTriage(a).ok).toBe(true);
+  });
+
+  it("a rule with `with` applies only when files_to_change names every `with` path too", () => {
+    const kind: PathCompanion = { when: "lib/types.ts", with: ["lib/runs/"], also: ["lib/kinds.ts"], reason: "a new run kind" };
+    expect(out(["lib/types.ts"], [kind]).added).toEqual([]);
+    expect(out(["lib/runs/a/a.run.ts"], [kind]).added).toEqual([]);
+    const both = out(["lib/types.ts", "lib/runs/a/a.run.ts"], [kind]);
+    expect(both.added).toEqual([{ path: "lib/kinds.ts", because: "lib/types.ts" }]);
+    expect(both.applied_defaults).toContain("Added by companion rule: a new run kind");
+  });
+});
+
 describe("built-in companion rules", () => {
   const allowedAfter = (files: string[], floors: Floor[] = []) => {
     const out = applyCompanions(answer({ allowed_paths: files, files_to_change: files }), [], floors);
@@ -153,12 +212,31 @@ describe("built-in companion rules", () => {
     ["web/src/views/settings-calendar.tsx", "web/src/i18n/en/settings.ts"],
     ["web/src/views/settings/editor.tsx", "web/src/i18n/en/settings.ts"],
     ["web/src/components/rules.tsx", "web/src/i18n/en/rules.ts"],
-  ])("a web view or component %s adds its i18n area file %s and the generated barrel", (file, area) => {
+  ])("a web view or component %s whose area file exists adds only its i18n area file %s, not the barrel", (file, area) => {
     const { paths, added } = allowedAfter([file]);
     expect(paths).toContain(area);
     expect(added).toContainEqual({ path: area, because: file });
+    expect(paths).not.toContain("web/src/i18n/en.ts");
+    expect(added.map((a) => a.path)).not.toContain("web/src/i18n/en.ts");
+  });
+
+  it("a new area file named by triage also adds the generated barrel the answer names", () => {
+    const view = "web/src/views/quotas.tsx";
+    const out = applyCompanions(
+      answer({ allowed_paths: [view, "web/src/i18n/en/quotas.ts"], files_to_change: [view, "web/src/i18n/en/quotas.ts", "web/src/i18n/en.ts"] }),
+      [],
+      [],
+    );
+    const paths = (out.answer as { allowed_paths: string[] }).allowed_paths;
+    expect(paths).toContain("web/src/i18n/en/quotas.ts");
     expect(paths).toContain("web/src/i18n/en.ts");
-    expect(added).toContainEqual({ path: "web/src/i18n/en.ts", because: file });
+    expect(out.added).toContainEqual({ path: "web/src/i18n/en.ts", because: "web/src/i18n/en.ts" });
+  });
+
+  it("a plan for one page's text names neither the design index nor the barrel", () => {
+    const { paths } = allowedAfter(["web/src/views/tasks.tsx", "web/src/i18n/en/tasks.ts"]);
+    expect(paths).not.toContain("docs/design.md");
+    expect(paths).not.toContain("web/src/i18n/en.ts");
   });
 
   it("a web file that names no area adds neither an area file nor the barrel", () => {
@@ -179,7 +257,7 @@ describe("built-in companion rules", () => {
   });
 
   it("a test, a doc or a non-source file adds no test", () => {
-    for (const file of ["tests/hotspots.test.ts", "docs/setup.md", "schema/sqlite.sql", "src/types.d.ts", "src/index.ts", "web/src/views/data.tsx", "scripts/x.ts"]) {
+    for (const file of ["tests/hotspots.test.ts", "docs/setup.md", "schema/sqlite/bus.sql", "src/types.d.ts", "src/index.ts", "web/src/views/data.tsx", "scripts/x.ts"]) {
       expect(allowedAfter([file]).added.filter((a) => a.path.startsWith("tests/"))).toEqual([]);
     }
   });
@@ -199,6 +277,10 @@ describe("built-in companion rules", () => {
     expect(added.filter((a) => a.path.includes("table-docs"))).toEqual([]);
     // Only the covering-test rule's path is added for it.
     expect(added.filter((a) => a.because === migration)).toEqual([{ path: "tests/20261120T1000-x.test.ts", because: migration }]);
+  });
+
+  it("the migrations folder itself, named for a new migration, adds its owner's table-docs file", () => {
+    expect(allowedAfter(["src/worker/migrations/"]).added).toContainEqual({ path: "src/worker/table-docs.ts", because: "src/worker/migrations/" });
   });
 
   it("a file that is not a .ts file directly under src/<owner>/migrations/ adds no table-docs file", () => {
@@ -285,6 +367,10 @@ describe("path_companions load check", () => {
     ["a non-string also", [{ when: "a", also: [3] }], /path_companions\[0\]\.also/],
     ["an absolute path", [{ when: "/etc/x", also: ["b"] }], /path_companions\[0\]\.when/],
     ["an unknown key", [{ when: "a", also: ["b"], why: "x" }], /path_companions\[0\] has unknown key "why"/],
+    ["an empty reason", [{ when: "a", also: ["b"], reason: " " }], /path_companions\[0\]\.reason/],
+    ["a non-string reason", [{ when: "a", also: ["b"], reason: 3 }], /path_companions\[0\]\.reason/],
+    ["an empty with", [{ when: "a", also: ["b"], with: [] }], /path_companions\[0\]\.with/],
+    ["an absolute with", [{ when: "a", also: ["b"], with: ["/x"] }], /path_companions\[0\]\.with/],
   ])("rejects %s, naming the key and the entry index", (_, value, message) => {
     const problems = pathCompanionProblems({ path_companions: value });
     expect(problems.join("\n")).toMatch(message);
@@ -310,18 +396,14 @@ describe("path_companions load check", () => {
     };
     const SQLITE = { ...REAL, store: { type: "sqlite" } };
 
-    it("a bad entry fails loadConfig with the entry index", async () => {
-      const err = await loadConfig(root({ ...SQLITE, path_companions: [{ when: "a", also: [] }] })).then(() => null, (e: Error) => e);
-      expect(err).toBeInstanceOf(ConfigKeyError);
-      expect(err!.message).toContain("path_companions[0].also");
-    });
-
     it("the repo's own entries load", async () => {
       const loaded = await loadConfig(root(SQLITE));
       expect(loaded.config.path_companions).toEqual(expect.arrayContaining([
-        { when: "docs/design.md", also: ["docs/design/"] },
-        { when: "docs/plugins.md", also: ["docs/plugins/"] },
+        expect.objectContaining({ when: "docs/design.md", also: ["docs/design/"] }),
+        expect.objectContaining({ when: "docs/plugins.md", also: ["docs/plugins/"] }),
       ]));
+      // Every checked-in entry says why, so the spec notes it.
+      expect(loaded.config.path_companions!.filter((c) => !c.reason)).toEqual([]);
     });
 
     // Issue #315: the checked-in pairs for the store interface, the config keys and a design topic file.
@@ -347,9 +429,9 @@ describe("path_companions load check", () => {
     });
 
     // Decided 2026-11-16: the generated files a change implies (npm run schema:snapshot, npm run settings:catalog).
-    it("naming a migration or the SQLite schema adds schema/sqlite.sql", async () => {
-      expect(await allowedFor("src/controller/migrations/0042-example.ts")).toContain("schema/sqlite.sql");
-      expect(await allowedFor("src/impl/store/sqlite/schema.ts")).toContain("schema/sqlite.sql");
+    it("naming a migration or the SQLite schema adds schema/sqlite/", async () => {
+      expect(await allowedFor("src/controller/migrations/0042-example.ts")).toContain("schema/sqlite/");
+      expect(await allowedFor("src/impl/store/sqlite/schema.ts")).toContain("schema/sqlite/");
     });
 
     it.each([
@@ -364,17 +446,44 @@ describe("path_companions load check", () => {
       expect(await allowedFor(`${folder}example.setting.ts`)).toContain("docs/settings.md");
     });
 
-    it("naming neither adds no generated file", async () => {
-      const paths = await allowedFor("src/core/policy.ts");
-      expect(paths).not.toContain("schema/sqlite.sql");
-      expect(paths).not.toContain("docs/settings.md");
+    // Decided 2026-11-22 (wi_3f9ab60a): the pairs behind most agent_needs_human stops of 2026-11-20..22.
+    it("naming a controller migration or the SQLite schema adds src/controller/table-docs.ts", async () => {
+      expect(await allowedFor("src/controller/migrations/")).toContain("src/controller/table-docs.ts");
+      expect(await allowedFor("src/controller/migrations/20261122T1000-x.migration.ts")).toContain("src/controller/table-docs.ts");
+      expect(await allowedFor("src/impl/store/sqlite/schema.ts")).toContain("src/controller/table-docs.ts");
     });
 
-    it("an absent key loads with no companions", async () => {
-      const rest: Record<string, unknown> = { ...SQLITE };
-      delete rest.path_companions;
-      const loaded = await loadConfig(root(rest));
-      expect(loaded.config.path_companions).toEqual([]);
+    it("naming the SQL store adds its folder, for the new file its line budget needs", async () => {
+      expect(await allowedFor("src/impl/store/sql/sql-factory-store.ts")).toContain("src/impl/store/sql/");
+    });
+
+    const KIND_FILES = [
+      "src/core/settings.ts",
+      "src/worker/settings/worker-kinds.setting.ts",
+      "docs/settings.md",
+      "tests/settings-catalog.test.ts",
+      "tests/worker-kinds.test.ts",
+      "tests/architecture/rule-of-two.test.ts",
+    ];
+    it("a new run kind (the RunKind union and a run folder) adds WORKER_KINDS, the worker_kinds setting, its catalog page, the catalog test and the two tests that pin the kind and role lists", async () => {
+      const loaded = await loadConfig(root(SQLITE));
+      const files = ["src/core/types.ts", "src/worker/runs/judge/judge.run.ts"];
+      const a = applyCompanions(answer({ allowed_paths: files, files_to_change: files }), loaded.config.path_companions ?? [], []).answer as { allowed_paths: string[]; applied_defaults: string[] };
+      expect(a.allowed_paths).toEqual(expect.arrayContaining(KIND_FILES));
+      expect(a.applied_defaults.some((d) => d.startsWith("Added by companion rule: a new run kind"))).toBe(true);
+    });
+
+    it("an edit to one existing run, or to the types alone, adds none of the run-kind files (they are gate paths)", async () => {
+      for (const file of ["src/worker/runs/review/review.run.ts", "src/core/types.ts"]) {
+        const paths = await allowedFor(file);
+        expect(paths.filter((p) => KIND_FILES.includes(p))).toEqual([]);
+      }
+    });
+
+    it("naming neither adds no generated file", async () => {
+      const paths = await allowedFor("src/core/policy.ts");
+      expect(paths).not.toContain("schema/sqlite/");
+      expect(paths).not.toContain("docs/settings.md");
     });
   });
 });
@@ -443,6 +552,24 @@ describe("the controller's triage branch", () => {
     await f.triage(answer({ tier: 3, allowed_paths: ["docs/a.md"], files_to_change: ["docs/a.md"] }));
     expect((await f.get(it0)).tier).toBe(4);
     expect(f.specBody()).toContain("Tier raised from 3 to 4 because a path is under a floor");
+  });
+
+  it("a /revise reruns triage, and the revised spec gets the companion paths and the reason note too", async () => {
+    const f = await setup({ path_companions: [{ when: "src/store.ts", also: ["src/store/"], reason: "the store is at its line budget" }] });
+    const it0 = await f.intake(5);
+    await f.triage(answer({ tier: 3, allowed_paths: ["src/a.ts"], files_to_change: ["src/a.ts"] }));
+    expect((await f.get(it0)).allowed_paths).not.toContain("src/store/");
+    f.source.queue.push({ kind: "revise_requested", source: issueRef(5), comment_id: "7001", requester: alice, feedback: "put it in the store" });
+    await f.controller.tickIntake();
+    expect(await f.get(it0)).toMatchObject({ stage: "NEW", revision_count: 1 });
+    await f.triage(answer({ tier: 3, allowed_paths: ["src/store.ts"], files_to_change: ["src/store.ts"] }));
+    const it1 = await f.get(it0);
+    expect(it1).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
+    expect(it1.allowed_paths).toContain("src/store/");
+    const revised = f.source.comments.filter((c) => c.marker.startsWith("<!-- factory:spec:")).at(-1)!.body;
+    expect(revised).toContain("### Applied defaults");
+    expect(revised).toContain("- Added by companion rule: the store is at its line budget");
+    expect(revised).toContain("- `src/store/`: added because the spec names `src/store.ts`");
   });
 
   it("a split spec keeps its phases' allowed_paths; the phase approved by its parent gets the spec line", async () => {

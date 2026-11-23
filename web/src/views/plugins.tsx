@@ -5,24 +5,24 @@ import {
   getPluginsImport, postPackAdd, postPackApproval, postPluginsImport, postSettings, useApi,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { Checkbox } from "../components/ui/checkbox.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
-import { EMPTY_BOX, Notice, PageHeader } from "../components/ui/notice.js";
+import { EMPTY_BOX, Notice, PageHeader, PageToolbar } from "../components/ui/notice.js";
 import { cn } from "../lib/cn.js";
 import { ErrorNote, Loading, type StoredFlags, useRefetchWhile } from "../components/ui/parts.js";
 import { Tabs } from "../components/ui/tabs.js";
 import { useUrlParam } from "../lib/url-param.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { ago } from "../lib/format.js";
-import { useNow } from "./common.js";
+import { When, useNow } from "./common.js";
 import { ModelsTab } from "./plugins-models.js";
-import { MergeButton } from "./item-commands.js";
+import { MergeButton } from "./merge-button.js";
 import { withNodes } from "./standing.js";
 import { Badge } from "../components/ui/badge.js";
-import { Card } from "../components/ui/card.js";
+import { Card, SUB_TITLE } from "../components/ui/card.js";
 
 // The Plugins page (design 09-dashboard-app, 2026-11-16): what the agents can use, in four tabs (MCP, Skills, Tools, Models),
 // read from GET /api/v1/plugins, the rows `factory plugins list` prints. "Plugins" here are agent capabilities, never
@@ -118,7 +118,7 @@ function NameCell({ name, description, fresh = false }: { name: string; descript
 const Roles = ({ roles }: { roles: readonly string[] }) => <span className="text-xs text-pretty">{roles.length > 0 ? roles.join(", ") : t("plugins.noRole")}</span>;
 
 function LastUsed({ at, now }: { at: string | null; now: number }) {
-  return <span className="text-xs tabular-nums whitespace-nowrap">{at ? t("time.ago", { time: ago(at, now) }) : t("plugins.never")}</span>;
+  return <span className="text-xs tabular-nums whitespace-nowrap">{at ? <When at={at} now={now} /> : t("plugins.never")}</span>;
 }
 
 const STATUS: Record<McpStatus, { label: MessageKey; level: string | undefined }> = {
@@ -187,7 +187,7 @@ function resultText(r: ImportResult): string {
 function ImportResults({ results }: { results: readonly ImportResult[] }) {
   return (
     <section className="flex flex-col gap-1">
-      <h3 className="text-sm font-semibold">{t("plugins.importResults")}</h3>
+      <h3 className={SUB_TITLE}>{t("plugins.importResults")}</h3>
       <ul aria-label={t("plugins.importResults")} className="flex flex-col gap-1">
         {results.map((r) => {
           const ok = r.outcome === "stored" || r.outcome === "already_added";
@@ -273,17 +273,12 @@ function ImportDialog({ tab, token, report, onClose }: { tab: ListTab; token: st
             const on = i.imported || checked.has(key);
             return (
               <li key={key} data-import-item={i.name} className="flex items-start gap-3 px-3 py-2">
-                {/* The shared Button as a checkbox, as on the Tasks page: components/ui has no checkbox. */}
-                <Button
-                  size="icon"
-                  role="checkbox"
-                  aria-checked={on}
+                <Checkbox
+                  checked={on}
                   aria-label={t("plugins.importSelect", { name: i.name, source: t(SOURCE[i.source]) })}
                   disabled={busy || locked}
-                  onClick={() => toggle(key)}
-                >
-                  <span aria-hidden>{on ? "✓" : ""}</span>
-                </Button>
+                  onChange={() => toggle(key)}
+                />
                 <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <span className="text-xs wrap-anywhere">{i.name}</span>
                   <span className="text-xs text-pretty wrap-anywhere text-text-2">{i.path ?? t(SOURCE[i.source])}</span>
@@ -525,9 +520,10 @@ export function PluginsPage() {
   return (
     <>
       <PageHeader title={t("page.plugins")} description={t("plugins.intro")} />
-      <div className="flex flex-col gap-3">
-        <Tabs label={t("plugins.tabs")} options={TABS.map((x) => ({ id: x.id, label: t(x.label) }))} value={tab} onChange={choose} />
+      <PageToolbar tabs={<Tabs label={t("plugins.tabs")} options={TABS.map((x) => ({ id: x.id, label: t(x.label) }))} value={tab} onChange={choose} />}>
         {tab !== "models" && <Input type="search" aria-label={t("plugins.search")} placeholder={t("plugins.search")} className="w-full sm:max-w-sm" value={query} onChange={(e) => setQuery(e.target.value)} />}
+      </PageToolbar>
+      <div className="flex flex-col gap-3">
         {outcome && (
           <Notice tone={outcome.ok ? "ok" : "bad"}>
             {outcome.lines.map((l, i) => <span key={i} className="block break-words">{l}</span>)}
@@ -544,7 +540,7 @@ export function PluginsPage() {
           <Loading rows={3} label="loading.plugins" onRetry={() => void q.refetch()} />
         ) : (
           <>
-            <p className="text-xs text-text-2">{t("plugins.asOf", { time: t("time.ago", { time: ago(listed.as_of, now) }) })}</p>
+            <p className="text-xs text-text-2"><When at={listed.as_of} now={now} label="plugins.asOf" /></p>
             {tab === "mcp" ? (
               <McpTab view={listed} query={query} report={report} fresh={fresh} />
             ) : tab === "skills" ? (

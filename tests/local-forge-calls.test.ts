@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { issueNumber } from "../src/core/change-ref.js";
-import type { SourceRef, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
+import type { SourceRef, WorkItem, WorkerId } from "../src/core/types.js";
 import { Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
-import type { ToolCallContext } from "../src/interfaces/tool-broker.js";
-import { FakeGitHubClient, FakeSandbox, MemoryStorage, alice, cleanScanner, issueRef, pipeline, prompts, runComments } from "./helpers/fakes.js";
-import { issue, newStore, system } from "./helpers/store.js";
+import { FakeGitHubClient } from "./helpers/fakes/github.js";
+import { FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { alice, cleanScanner, issueRef, prompts, runComments } from "./helpers/fakes/config.js";
+import { pipeline } from "./helpers/harness.js";
 
 // A local item with GitHub selected (design 05-sources): its gate comments stay in its item thread, so the
 // implement run makes no forge comment. A GitHub item keeps its comments on its issue.

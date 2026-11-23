@@ -18,13 +18,18 @@ import { HealthMonitor } from "../src/ui/health.js";
 import type { FactoryStatus } from "../src/ui/factory-status.js";
 import { type ApiDeps, respond } from "../src/ui/server.js";
 import { LastChecks, REVISION_STAMP, olderThanFactory, parseRevision, serverRevision } from "../src/ui/system-actions.js";
+import { recordAction } from "../src/outbound/intents.js";
+import type { SqlDriver } from "../src/state/index.js";
 import { buildRevision } from "../web/vite.config.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 const REV_A = "a".repeat(40);
 const REV_B = "b".repeat(40);
 
-interface Action { code: string; text: string; command: string; until: string | null; work_item_id: string | null }
+interface Action {
+  code: string; text: string; command: string; until: string | null; work_item_id: string | null; pause?: string;
+  pattern?: string; error_code?: string; failing_tests?: string[]; output_tail?: string | null;
+}
 interface Overview { needs_you: number; system_actions: Action[]; server_rev: string | null; github_token_days: number | "unknown" | null }
 
 afterEach(() => {
@@ -139,20 +144,58 @@ describe("system actions: GitHub token expiry from the last health run", () => {
 });
 
 describe("system actions: claim and worker pauses", () => {
-  it("a claim pause in effect is listed with its end time, the dashboard's Resume now first and its CLI command after", async () => {
+  it("a claim pause in effect is listed by its plain name, its pause and end time, Needs you's Resume now first and its CLI command after", async () => {
     const { overview, store, clock } = await setup();
     const until = new Date(clock.now().getTime() + 3_600_000).toISOString() as Timestamp;
     await store.pauseClaims(until, "rate_limit");
     const o = await overview();
-    const command = "Resume now on the Status page (/app/), or factory resume rate_limit";
-    expect(o.system_actions).toContainEqual({ code: "claim_pause", text: `Claim pause rate_limit in effect, until ${until}`, command, until });
+    const command = "Resume now in Needs you on Tasks, or factory resume rate_limit";
+    expect(o.system_actions).toContainEqual({ code: "claim_pause", text: "Usage or rate limit", command, until, pause: "rate_limit" });
     expect(command.indexOf("Resume now")).toBeLessThan(command.indexOf("factory resume"));
     expect(o.needs_you).toBe(1);
   });
 
-  it("a worker pause is listed with `factory workers resume`, until it is resumed", async () => {
+  it("model_stall's row is named \"Model not answering\" and until is its next probe; no text names the Status page", async () => {
+    const { overview, store, clock } = await setup();
+    const probe = new Date(clock.now().getTime() + 60_000).toISOString() as Timestamp;
+    await store.pauseClaims(probe, "model_stall");
+    const row = (await overview()).system_actions.find((a) => a.code === "claim_pause")!;
+    expect(row).toMatchObject({ text: "Model not answering", pause: "model_stall", until: probe });
+    expect(row.text).not.toMatch(/model_stall|Claim pause|\d{4}-\d{2}-\d{2}T/);
+    expect(row.command).toContain("factory resume model_stall");
+    expect(row.command).not.toContain("Status page");
+  });
+
+  // Bug: the missing model credential shows twice (its own row and a claim_pause row whose Resume now cannot end
+  // it), or its row does not say how to fix it, or its text names a command the dashboard bans.
+  it("a missing model credential is one row with the fix in its title, no command in it, and no Resume now; it goes once the pause ends", async () => {
+    const { overview, store } = await setup();
+    await store.pauseClaims("9999-12-31T23:59:59.999Z" as Timestamp, "model_credential");
+    const o = await overview();
+    expect(o.system_actions).toEqual([{ code: "model_credential", text: "Add a model credential", command: "Add model credential, or npm run setup", until: null }]);
+    expect(o.system_actions[0]!.text).not.toMatch(/npm|`|run /);
+    expect(o.needs_you).toBe(1);
+    await store.endClaimPause("model_credential");
+    expect(codes(await overview())).toEqual([]);
+  });
+
+  it("the owner pause (`factory stop`, the all-workers row) is a pause row with Resume now and `factory resume owner`, not a worker pause row", async () => {
     const { overview, store } = await setup();
     await store.pauseWorkers({ all: true }, "local:me");
+    expect((await overview()).system_actions).toEqual([
+      { code: "claim_pause", text: "Agents stopped", command: "Resume now in Needs you on Tasks, or factory resume owner", until: null, pause: "owner" },
+    ]);
+    await store.resumeWorkers();
+    expect(codes(await overview())).toEqual([]);
+  });
+
+  it("a per-worker pause is listed with `factory workers resume`, until it is resumed", async () => {
+    const { overview, store } = await setup();
+    const { item } = await store.createWorkItem(issue(6), system);
+    const cur = (await store.getWorkItem(item.id))!;
+    await store.transition({ id: item.id, expected_version: cur.version, patch: { stage: "RUNNING" }, actor: system, reason: "x", enqueue: { kind: "implement", idempotency_key: "i" } });
+    await store.claimRun({ worker_id: "host:1:0" as WorkerId, kinds: ["implement"], lease_ms: 60_000 });
+    expect((await store.pauseWorkers({ count: 1 }, "local:me")).paused).toEqual(["host:1:0"]);
     expect((await overview()).system_actions).toEqual([
       { code: "worker_pause", text: "1 worker pause in effect (factory workers pause)", command: "factory workers resume", until: null },
     ]);
@@ -179,15 +222,39 @@ describe("system actions: claim deadlock", () => {
 });
 
 describe("system actions: open alarms", () => {
-  it("each open alarm is listed and is its own Needs-you row: two alarms and a worker pause add 3 to needs_you", async () => {
+  it("each open alarm is listed and is its own Needs-you row: two alarms and the owner pause add 3 to needs_you", async () => {
     const { overview, store } = await setup();
     await store.recordAlert({ pattern: "repeated_error", pattern_key: "repeated_error:a", error_code: "checks_failed", count: 4, detail: null }, ALERT_DEDUPE_MS);
     await store.recordAlert({ pattern: "zero_tokens", pattern_key: "zero_tokens", error_code: "zero_tokens", count: 3, detail: null }, ALERT_DEDUPE_MS);
     await store.pauseWorkers({ all: true }, "local:me");
     const o = await overview();
     expect(codes(o).filter((c) => c === "alarm")).toHaveLength(2);
-    expect(codes(o)).toContain("worker_pause");
+    expect(codes(o)).toContain("claim_pause");
     expect(o.needs_you).toBe(3);
+  });
+});
+
+describe("system actions: an alarm's pattern, error code and red-main output", () => {
+  it("each alarm carries its pattern and error code; a red_main alarm carries the failing tests and tail its detail keeps, and its text stays the sentence", async () => {
+    const { overview, store } = await setup();
+    const detail = JSON.stringify({ text: "`npm test` exited 1 on the new tip of `main`", failing_tests: ["tests/a.test.ts > adds"], output_tail: "FAIL tests/a.test.ts > adds" });
+    await store.recordAlert({ pattern: "red_main", pattern_key: "red_main:abc", error_code: "red_main", count: 1, detail }, ALERT_DEDUPE_MS);
+    await store.recordAlert({ pattern: "repeated_error", pattern_key: "repeated_error:a", error_code: "checks_failed", count: 4, detail: null }, ALERT_DEDUPE_MS);
+    const alarms = (await overview()).system_actions.filter((a) => a.code === "alarm");
+    const red = alarms.find((a) => a.pattern === "red_main")!;
+    expect(red).toMatchObject({ error_code: "red_main", failing_tests: ["tests/a.test.ts > adds"], output_tail: "FAIL tests/a.test.ts > adds" });
+    expect(red.text).toBe("Alarm: the base branch fails its checks on its own at `abc`; merge-queue changes wait until it moves: `npm test` exited 1 on the new tip of `main`");
+    const repeated = alarms.find((a) => a.pattern === "repeated_error")!;
+    expect(repeated.error_code).toBe("checks_failed");
+    expect(repeated).not.toHaveProperty("failing_tests");
+  });
+
+  it("a red_main alarm stored before the output was kept (plain text detail) carries no tests and a null tail", async () => {
+    const { overview, store } = await setup();
+    await store.recordAlert({ pattern: "red_main", pattern_key: "red_main:abc", error_code: "red_main", count: 1, detail: "`npm test` exited 1" }, ALERT_DEDUPE_MS);
+    const red = (await overview()).system_actions.find((a) => a.code === "alarm")!;
+    expect(red).toMatchObject({ pattern: "red_main", failing_tests: [], output_tail: null });
+    expect(red.text).toMatch(/: `npm test` exited 1$/);
   });
 });
 
@@ -198,6 +265,51 @@ describe("system actions: the auto-stop alarm", () => {
     const command = (await overview()).system_actions.find((a) => a.code === "alarm")!.command;
     expect(command).toContain("Turn auto back on in Settings (/app/settings)");
     expect(command.indexOf("/app/settings")).toBeLessThan(command.indexOf("factory mode auto"));
+  });
+});
+
+describe("system actions: a local base that can't reach origin (design 05-sources, Local items)", () => {
+  /** One local merge's base push of `base`, as a delivered merge stores it; `delivered` is its outcome once pushed. */
+  async function push(store: FactoryStore, clock: FakeClock, n: number, base: string, delivered?: { pushed: string } | { conflicts: string[] }) {
+    const db = (store as unknown as { db: SqlDriver }).db;
+    const { item } = await store.createWorkItem(issue(n), system);
+    const key = `push_base:${item.id}:${n}`;
+    const now = clock.now().toISOString();
+    await recordAction(db, { action: "push_base", target: { type: "git", id: `local:${base}:push`, link: "" }, work_item_id: item.id, key, args: { base_ref: base, merge_sha: String(n), message: "m" } }, now);
+    if (delivered) await db.run("UPDATE outbound_actions SET delivered_at = ?, delivered_ref = ? WHERE intent_key = ?", [now, JSON.stringify(delivered), key]);
+  }
+  const conflictRows = (o: Overview) => o.system_actions.filter((a) => a.code === "base_push_conflict");
+
+  it("a conflicting push is one row naming the files and the local merges waiting; a second one updates it; a push that lands removes it", async () => {
+    const { overview, store, clock } = await setup();
+    await push(store, clock, 1, "main");
+    // Pending only: nothing for a person yet.
+    expect(conflictRows(await overview())).toEqual([]);
+
+    await push(store, clock, 2, "main", { conflicts: ["a.txt", "src/c.txt"] });
+    let rows = conflictRows(await overview());
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.text).toBe("Local main can't reach origin");
+    expect(rows[0]!.command).toContain("a.txt, src/c.txt");
+    expect(rows[0]!.command).toContain("2 local merges waiting");
+
+    await push(store, clock, 3, "main", { conflicts: ["b.txt"] });
+    rows = conflictRows(await overview());
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.command).toContain("b.txt");
+    expect(rows[0]!.command).not.toContain("a.txt");
+    expect(rows[0]!.command).toContain("3 local merges waiting");
+
+    await push(store, clock, 4, "main", { pushed: "p" });
+    expect(conflictRows(await overview())).toEqual([]);
+  });
+
+  it("another base's row names that base", async () => {
+    const { overview, store, clock } = await setup();
+    await push(store, clock, 1, "trunk", { conflicts: ["x.txt"] });
+    const [row] = conflictRows(await overview());
+    expect(row!.text).toBe("Local trunk can't reach origin");
+    expect(row!.command).toContain("1 local merge waiting");
   });
 });
 
@@ -215,6 +327,7 @@ describe("needs_you: the number of Needs-you rows (design 09-status-page)", () =
 
   /** The overview, checked against the rows the section lists for the same reads: the waiting items, then one per system action. */
   async function counted(s: Awaited<ReturnType<typeof setup>>) {
+    await s.store.setSettingOverride({ key: "review_time", project: "", value: '""', actor: "local:owner" }); // every waiting item is a row: none held until review_time
     const o = await s.overview();
     const r = await respond(s.d, { method: "GET", url: "/api/v1/items", host: "127.0.0.1:4310" });
     const levels = (JSON.parse(r.body) as { items: { item_phase: string }[] }).items.map((i) => i.item_phase);
@@ -251,7 +364,7 @@ describe("needs_you: the number of Needs-you rows (design 09-status-page)", () =
     await s.store.pauseWorkers({ all: true }, "local:me");
     await s.store.pauseWorkers({ all: true }, "local:me");
     const before = await counted(s);
-    expect(codes(before.o)).toEqual(["migration_pending", "worker_pause"]);
+    expect(codes(before.o)).toEqual(["migration_pending", "claim_pause"]);
     expect(before.o.needs_you).toBe(2);
     await alarm(s.store, "checks_failed");
     expect((await counted(s)).o.needs_you).toBe(3);

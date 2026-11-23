@@ -5,12 +5,11 @@ import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { Dialog } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
-import { Input } from "../components/ui/input.js";
+import { Input, PASSWORD } from "../components/ui/input.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { t } from "../i18n/index.js";
-import { ago } from "../lib/format.js";
-import { useNow } from "./common.js";
+import { When, useNow } from "./common.js";
 import { Card } from "../components/ui/card.js";
 import { Badge } from "../components/ui/badge.js";
 
@@ -46,12 +45,6 @@ export function CalendarSection({ token }: { token: string }) {
     </div>
   );
 }
-
-/**
- * A password field from the shared Input, whose typed variants are text, search and number only: it hands `type` to the
- * native field as given. Adding `password` to Input's variants (components.md) is a follow-up outside this change.
- */
-const PASSWORD = { type: "password" } as unknown as { type: "text" };
 
 /** What the last Connect answered, until the next one. */
 type Asking = { needs: string[] } | null;
@@ -116,10 +109,10 @@ function CalendarRow({ plugin, token }: { plugin: CalendarPluginView; token: str
   return (
     <li data-calendar={plugin.name} className="flex flex-col gap-1">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="font-medium wrap-anywhere">{plugin.name}</span>
+        <span data-raw className="font-medium wrap-anywhere">{plugin.name}</span>
         <Badge level={plugin.connected ? "ready_to_merge" : undefined}>{plugin.connected ? t("calendar.connected") : t("calendar.notConnected")}</Badge>
         <span className="text-xs text-text-2 tabular-nums">
-          {plugin.synced_at ? t("calendar.lastSync", { time: t("time.ago", { time: ago(plugin.synced_at, now) }) }) : t("calendar.neverSynced")}
+          {plugin.synced_at ? <When at={plugin.synced_at} now={now} label="calendar.lastSync" /> : t("calendar.neverSynced")}
         </span>
       </div>
       {reconnect ? (
@@ -127,7 +120,7 @@ function CalendarRow({ plugin, token }: { plugin: CalendarPluginView; token: str
           {t("calendar.reconnect")}
         </p>
       ) : (
-        plugin.error && <p className="text-xs text-pretty break-words text-pill-bad-fg">{t("calendar.lastError", { error: plugin.error })}</p>
+        plugin.error && <p data-raw className="text-xs text-pretty break-words text-pill-bad-fg">{t("calendar.lastError", { error: plugin.error })}</p>
       )}
       {!plugin.connected && !plugin.default_client && <p className="text-xs text-pretty text-text-2">{t("calendar.noDefaultClient")}</p>}
       <Attempt plugin={plugin} consent={consent} />

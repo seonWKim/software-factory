@@ -3,15 +3,23 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
+import { type CoordinationSettings, DEFAULT_COORDINATION } from "../src/core/coordination.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { Sessions, parseTarget } from "../src/core/session.js";
-import type { Run, RunKind, Tier, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
+import { RESERVATION_MS, Sessions, WAIT_POLL_MS, parseTarget } from "../src/core/session.js";
+import type { LocalRoute } from "../src/core/worker-deps.js";
+import { settingValues } from "../src/core/settings.js";
+import { MODE_KEY, SELECTION_ACTOR, cleanCursor } from "../src/core/test-selection.js";
+import type { Run, RunKind, Tier, UserId, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { STORE_BRANCH } from "../src/interfaces/tool-broker.js";
 import { FileSessionFiles, githubIssues, parseSessionArgs, runSession } from "../src/session-cmd.js";
-import {
-  FakeAuth, FakeBroker, FakeForge, FakeIssues, FakeSandbox, FakeSource, MemorySessionFiles, alice, cleanScanner, config, issueRef, mallory, silent, waitFor,
-} from "./helpers/fakes.js";
+import { FakeAuth, FakeIssues, FakeSandbox, MemorySessionFiles } from "./helpers/fakes/runner.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { FakeForge } from "./helpers/fakes/forge.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { alice, cleanScanner, config, issueRef, mallory, recordingLog, silent, waitFor } from "./helpers/fakes/config.js";
+import type { Logger } from "../src/core/log.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 // `factory session` (design §5, 2026-11-01) on fakes: sandbox, broker, auth and issues are fakes; the SQLite store
@@ -25,19 +33,25 @@ const SPEC_TEXT = JSON.stringify(SPEC);
 /** A key-shaped string the leak scanner flags, built here so no such literal sits in the repository. */
 const AWS_SHAPED = ["AKIA", "ABCDEFGHIJKLMNOP"].join("");
 const W1 = "w1" as WorkerId;
+/** max_cost 1: one shared ordinary file (1.0) holds, as every shared path did before the cost rule (design 05-dependencies, 2026-11-21). */
+const STRICT: CoordinationSettings = { ...DEFAULT_COORDINATION, max_cost: 1 };
 
-async function harness() {
+/** `coordination`: the config's settings, STRICT unless given, so these tests reach a refusal with one shared file. */
+async function harness(
+  { coordination = STRICT, config: base = config, ...o }: { local?: LocalRoute; config?: FactoryConfig; log?: Logger; coordination?: CoordinationSettings } = {},
+) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
-  const cfg: FactoryConfig = config;
+  const cfg: FactoryConfig = { ...base, coordination };
   const sandbox = new FakeSandbox();
   sandbox.changedFiles = ["src/a/x.ts"];
   const broker = new FakeBroker();
   const files = new MemorySessionFiles();
   const issues = new FakeIssues({ 7: { source: issueRef(7), title: "Session issue", body: "the body", author: mallory } });
-  const sessions = new Sessions({
-    store, sandbox, broker, scanner: cleanScanner, auth: new FakeAuth(), clock, config: cfg, log: silent, files, issues, toolEnv: {}, owner: "session:host:1",
-  });
+  const deps = {
+    store, sandbox, broker, scanner: cleanScanner, auth: new FakeAuth(), clock, config: cfg, log: silent, files, issues, toolEnv: {}, owner: "session:host:1", ...o,
+  };
+  const sessions = new Sessions(deps);
   const source = new FakeSource();
   // Outbound's pushes and PR opens land in `broker.calls` under the broker tools' names (RFC 0015 M7), with no ctx.
   const forge = new FakeForge(source, broker.calls);
@@ -62,12 +76,12 @@ async function harness() {
   const item = async (id: WorkItemId) => (await store.getWorkItem(id))!;
   const runs = async (id: WorkItemId, kind?: RunKind) => (await store.listRuns(id)).filter((r) => !kind || r.kind === kind);
   const start = (target: string, extra: { spec?: string; transcript?: string } = {}) => sessions.start({ target, person: alice, ...extra });
-  return { clock, store, cfg, sandbox, broker, forge, files, issues, sessions, controller, deliver, running, enqueue, snapshot, item, runs, start };
+  return { clock, store, cfg, sandbox, broker, forge, source, files, issues, sessions, deps, controller, deliver, running, enqueue, snapshot, item, runs, start };
 }
 type H = Awaited<ReturnType<typeof harness>>;
 /** A harness with an open session on item #1 (`it0`, allowed `paths`); `file` is its local record. */
-async function started(paths = ["src/a/"]) {
-  const h = await harness();
+async function started(paths = ["src/a/"], o: Parameters<typeof harness>[0] = {}) {
+  const h = await harness(o);
   const it0 = await h.running(1, paths);
   const r = await h.start(it0.id);
   expect(r.ok).toBe(true);
@@ -162,11 +176,59 @@ describe("session start", () => {
       const before = await h.snapshot(it0.id);
       const r = await h.start(it0.id);
       expect(r.ok).toBe(false);
-      expect(r.lines.join("\n")).toMatch(/o\/r#2 .* overlaps the allowed_paths: src\/a\/x\.ts/);
+      expect(r.lines.join("\n")).toMatch(/o\/r#2 .* overlaps at cost 1 \(max_coordination_cost 1\): src\/a\/x\.ts/);
       expect(await h.snapshot(it0.id)).toBe(before);
       expect(h.sandbox.destroyed).toBe(1); // the folder made before the store's check is removed again
       expect(h.files.files.size).toBe(0);
       expect((await h.start((await h.running(3, ["src/c/"])).id)).ok).toBe(true);
+    });
+
+    it("not when the shared files cost less than the configured max_coordination_cost, as for workers", async () => {
+      const h = await harness({ coordination: DEFAULT_COORDINATION });
+      const other = await h.running(2, ["src/a/x.ts"]);
+      await h.enqueue(other, "implement", "i2");
+      await h.store.claimRun({ worker_id: W1, kinds: ["implement"], lease_ms: 60_000 });
+      const r = await h.start((await h.running(1, ["src/a/"])).id); // src/a/x.ts weighs 1.0, below the default 2.5
+      expect(r.ok).toBe(true);
+    });
+
+    it("when another item's running run overlaps: its queued implement run stays queued, no attempt and no state change", async () => {
+      const h = await harness();
+      const other = await h.running(2, ["src/a/x.ts"]);
+      await h.enqueue(other, "implement", "i2");
+      await h.store.claimRun({ worker_id: W1, kinds: ["implement"], lease_ms: 60_000 });
+      const it0 = await h.running(1, ["src/a/"]);
+      await h.enqueue(it0, "implement", "i1");
+      const before = await h.item(it0.id);
+      const changes = (await h.store.listStateChanges(it0.id)).length;
+      const r = await h.start(it0.id);
+      expect(r.ok).toBe(false);
+      expect(r.lines.join("\n")).toMatch(/overlaps at cost 1 \(max_coordination_cost 1\)/);
+      expect((await h.runs(it0.id, "implement")).map((x) => [x.status, x.attempt, x.outcome])).toEqual([["queued", 0, null]]);
+      expect((await h.item(it0.id)).version).toBe(before.version);
+      expect(await h.store.listStateChanges(it0.id)).toHaveLength(changes);
+      await h.controller.tickRuns(); // nothing finished, so nothing counts toward max_attempts
+      expect(await h.item(it0.id)).toMatchObject({ version: before.version, blocked_on: "none" });
+    });
+
+    it("for a running interactive or implement run: the item's queued runs stay queued, in the store's own check too", async () => {
+      const h = await harness();
+      const busy = await h.running(1, ["src/t1/"]);
+      await h.enqueue(busy, "implement", "i1");
+      await h.store.claimRun({ worker_id: W1, kinds: ["implement"], lease_ms: 60_000 });
+      await h.enqueue(busy, "update", "u1");
+      const open = await h.running(2, ["src/t2/"]);
+      expect((await h.start(open.id)).ok).toBe(true);
+      await h.enqueue(open, "implement", "i2");
+      for (const [it0, why] of [[busy, "implement_run"], [open, "session_open"]] as const) {
+        expect(await unchanged(h, it0.id)).toMatch(/running implement run|already has an open session/);
+        const cur = await h.item(it0.id);
+        const r = await h.store.startSession({
+          id: it0.id, expected_version: cur.version, actor: { kind: "user", id: "github:1" as UserId }, patch: {}, reason: "session_started", detail: {}, owner: "o", lease_ms: 60_000, transcript_url: null,
+        });
+        expect(r).toMatchObject({ ok: false, reason: why });
+        expect((await h.runs(it0.id)).filter((x) => x.status === "queued")).toHaveLength(1);
+      }
     });
 
     it("with an invalid --spec file, checked by the triage parser", async () => {
@@ -198,6 +260,30 @@ describe("session start", () => {
   });
 
 
+  it("a run cancelled by an accepted takeover is no attempt and gets no retry: taking over more often than max_attempts never holds the item", async () => {
+    const h = await harness();
+    const it0 = await h.running(1);
+    for (let n = 0; n <= settingValues(h.cfg.project.key, h.cfg.settings).max_attempts; n++) {
+      await h.enqueue(it0, "implement", `i${n}`); // a fresh implement run each time, as a /retry after the abandon queues
+      const queued = (await h.runs(it0.id, "implement")).filter((x) => x.status === "queued");
+      expect(queued).toHaveLength(1);
+      const r = await h.start(it0.id);
+      expect(r.ok).toBe(true);
+      const cancelled = (await h.store.getRun(queued[0]!.id))!;
+      expect(cancelled).toMatchObject({ status: "cancelled", outcome: { status: "failed", error_code: "interactive_takeover", infra: false } });
+      // One state change: the start itself, naming the run it took over.
+      expect((await h.store.listStateChanges(it0.id)).at(-1)).toMatchObject({ reason: "session_started", detail: { taken_over: cancelled.id } });
+      await h.controller.tickRuns();
+      // The session replaced the run: acknowledged with no retry, so nothing is left queued for a worker after the session.
+      expect((await h.store.getRun(cancelled.id))!.acknowledged_at).not.toBeNull();
+      expect((await h.store.listStateChanges(it0.id)).at(-1)).toMatchObject({ reason: "run_ignored" });
+      expect((await h.runs(it0.id, "implement")).filter((x) => x.status === "queued")).toEqual([]);
+      expect((await h.item(it0.id)).blocked_reason).not.toBe("max_attempts");
+      await h.sessions.abandon({ id: it0.id });
+      await h.controller.tickRuns();
+    }
+  });
+
   it("a worker never claims a queued implement-type run whose item overlaps an open session, nor an interactive run", async () => {
     const h = await harness();
     const it0 = await h.running(1, ["src/a/"]);
@@ -205,7 +291,7 @@ describe("session start", () => {
     const overlapping = await h.running(2, ["src/a/y.ts"]);
     await h.enqueue(overlapping, "implement", "i2");
     const all = ["triage", "implement", "review", "update", "resolve", "interactive"] as const;
-    const claim = () => h.store.claimRun({ worker_id: W1, kinds: all, lease_ms: 60_000 });
+    const claim = () => h.store.claimRun({ worker_id: W1, kinds: all, lease_ms: 60_000, coordination: STRICT }); // as a worker passes its config's
     expect(await claim()).toBeNull();
     const free = await h.running(3, ["src/b/"]);
     await h.enqueue(free, "implement", "i3");
@@ -215,6 +301,141 @@ describe("session start", () => {
     await h.store.resumeWorkers();
     await h.sessions.abandon({ id: it0.id });
     expect((await claim())?.work_item_id).toBe(overlapping.id);
+  });
+});
+
+// `session start --spec f --wait` (design 05-interactive-sessions, 2026-11-21): a NEW item whose files a running run
+// holds is reserved for the waiting session, which tries again every WAIT_POLL_MS of the injected Clock.
+describe("session start --wait", () => {
+  /** `h` with a NEW item #1 (triage queued) and item #2's implement run running on src/a/x.ts, overlapping SPEC's src/a/. */
+  async function busy(o: { local?: LocalRoute } = {}, source?: WorkItem["source"]) {
+    const h = await harness(o);
+    const other = await h.running(2, ["src/a/x.ts"]);
+    await h.enqueue(other, "implement", "i2");
+    const run = (await h.store.claimRun({ worker_id: W1, kinds: ["implement"], lease_ms: 60_000 }))!;
+    const { item: it0 } = await h.store.createWorkItem({ ...issue(1), ...(source ? { source } : {}) }, system, { enqueue: { kind: "triage", idempotency_key: "t1" } });
+    let sleeps = 0;
+    const sleep = h.clock.sleep.bind(h.clock);
+    h.clock.sleep = (ms, signal) => (sleeps++, sleep(ms, signal));
+    const printed: string[] = [];
+    const stop = new AbortController();
+    const wait = (sessions = h.sessions) => sessions.start({ target: it0.id, person: alice, spec: SPEC_TEXT, wait: true, signal: stop.signal, progress: (l) => printed.push(l) });
+    /** Waits until the start sleeps for the `n`th time. */
+    const slept = (n: number) => waitFor(() => sleeps >= n, `sleep ${n}`);
+    const endOther = () => h.store.completeRun(run.id, run.lease!.token, { status: "failed", error_code: "x", detail: "", infra: false });
+    return { ...h, it0, run, printed, stop, wait, slept, endOther };
+  }
+
+  it("waits instead of refusing, reserves the item for this session, and no worker claims its triage run", async () => {
+    const h = await busy();
+    const p = h.wait();
+    await h.slept(1);
+    expect(h.printed.join("\n")).toMatch(/waiting: running work on o\/r#2 .* overlaps at cost 1 \(max_coordination_cost 1\): src\/a\/x\.ts/);
+    expect(h.printed.join("\n")).toContain("reserved for this session until 2026-01-01T02:00:00.000Z, so triage skips it");
+    expect(await h.store.getReservation(h.it0.id)).toMatchObject({ owner: "session:host:1", expires_at: "2026-01-01T02:00:00.000Z" });
+    for (const worker_id of [W1, "w2" as WorkerId]) expect(await h.store.claimRun({ worker_id, kinds: ["triage"], lease_ms: 60_000 })).toBeNull();
+    expect(await h.item(h.it0.id)).toMatchObject({ stage: "NEW", blocked_on: "none", version: 1 });
+    h.stop.abort();
+    await p;
+  });
+
+  it("does not start while the files stay busy, then starts on the first check after the running run ends", async () => {
+    const h = await busy();
+    const p = h.wait();
+    await h.slept(1);
+    for (let n = 2; n <= 4; n++) {
+      h.clock.advance(WAIT_POLL_MS);
+      await h.slept(n);
+      expect(await h.runs(h.it0.id, "interactive")).toEqual([]);
+      expect(await h.store.getReservation(h.it0.id)).not.toBeNull();
+    }
+    expect(h.sandbox.created).toHaveLength(1); // one run folder for the whole wait
+    await h.endOther();
+    h.clock.advance(WAIT_POLL_MS);
+    const r = await p;
+    expect(r.ok).toBe(true);
+    expect((await h.runs(h.it0.id)).map((x) => [x.kind, x.status])).toEqual([["triage", "cancelled"], ["interactive", "running"]]);
+    expect(await h.item(h.it0.id)).toMatchObject({ stage: "RUNNING", allowed_paths: ["src/a/"], done_criteria: ["the widget works"] });
+    expect(await h.store.getReservation(h.it0.id)).toBeNull();
+    expect(h.files.files.size).toBe(1);
+  });
+
+  it("a reservation older than 2 hours ends the wait: no reservation is left and triage claims the item", async () => {
+    const h = await busy();
+    const p = h.wait();
+    await h.slept(1);
+    for (let n = 2; n * WAIT_POLL_MS <= RESERVATION_MS + WAIT_POLL_MS; n++) {
+      h.clock.advance(WAIT_POLL_MS);
+      if (n * WAIT_POLL_MS <= RESERVATION_MS) await h.slept(n);
+    }
+    const r = await p;
+    expect(r).toMatchObject({ ok: false });
+    expect(r.lines.join("\n")).toMatch(/the reservation ended .* the item goes to triage as usual/);
+    expect(await h.store.getReservation(h.it0.id)).toBeNull();
+    expect(h.sandbox.destroyed).toBe(1);
+    expect((await h.store.claimRun({ worker_id: W1, kinds: ["triage"], lease_ms: 60_000 }))?.work_item_id).toBe(h.it0.id);
+  });
+
+  it("another session's start on the reserved item is refused naming the reservation, with or without --wait", async () => {
+    const h = await busy();
+    const p = h.wait();
+    await h.slept(1);
+    const other = new Sessions({ ...h.deps, owner: "session:host:2" });
+    const naming = /reserved by a waiting session \(session:host:1\) until 2026-01-01T02:00:00\.000Z/;
+    expect((await other.start({ target: h.it0.id, person: alice, spec: SPEC_TEXT })).lines.join("\n")).toMatch(naming);
+    expect((await other.start({ target: h.it0.id, person: alice, spec: SPEC_TEXT, wait: true })).lines.join("\n")).toMatch(naming);
+    expect(await h.runs(h.it0.id, "interactive")).toEqual([]);
+    expect(await h.store.getReservation(h.it0.id)).toMatchObject({ owner: "session:host:1" });
+    h.stop.abort();
+    await p;
+  });
+
+  it("stopping the wait (Ctrl-C) releases the reservation now and removes the run folder", async () => {
+    const h = await busy();
+    const p = h.wait();
+    await h.slept(1);
+    h.stop.abort();
+    const r = await p;
+    expect(r.ok).toBe(false);
+    expect(r.lines.join("\n")).toMatch(/stopped waiting: the reservation is released/);
+    expect([await h.store.getReservation(h.it0.id), h.sandbox.destroyed, h.files.files.size]).toEqual([null, 1, 0]);
+    expect((await h.store.claimRun({ worker_id: W1, kinds: ["triage"], lease_ms: 60_000 }))?.work_item_id).toBe(h.it0.id);
+  });
+
+  it("starts at once with no reservation left when the files are free", async () => {
+    const h = await busy();
+    await h.endOther();
+    expect((await h.wait()).ok).toBe(true);
+    expect([await h.store.getReservation(h.it0.id), h.printed]).toEqual([null, []]);
+  });
+
+  it("--wait on an item that is not NEW, or with no --spec, is refused with today's message and reserves nothing", async () => {
+    const h = await harness();
+    const it0 = await h.running(1, ["src/t/"]);
+    const r = await h.sessions.start({ target: it0.id, person: alice, spec: SPEC_TEXT, wait: true });
+    expect(r.lines.join("\n")).toContain("--spec applies only to a NEW item");
+    const { item: fresh } = await h.store.createWorkItem(issue(3), system, { enqueue: { kind: "triage", idempotency_key: "t3" } });
+    const n = await h.sessions.start({ target: fresh.id, person: alice, wait: true });
+    expect([n.ok, n.lines.join("\n")]).toEqual([false, "refused: the item has no spec yet: pass --spec <file>, or wait for triage and `/approve`"]);
+    expect(await h.sessions.start({ target: it0.id, person: alice, wait: true })).toMatchObject({ ok: false });
+    expect([await h.store.getReservation(it0.id), await h.store.getReservation(fresh.id), await h.runs(it0.id, "interactive")]).toEqual([null, null, []]);
+  });
+
+  it("a local item reserves and starts through the local route with no forge call", async () => {
+    const broker = new FakeBroker();
+    broker.tools = broker.tools.filter((t) => t.name === STORE_BRANCH); // the local broker has no preflight
+    broker.toForge = false;
+    const sandbox = new FakeSandbox();
+    const h = await busy({ local: { broker, sandbox } }, { type: "local", id: "local-1", link: "local:local-1" });
+    const p = h.wait();
+    await h.slept(1);
+    expect(await h.store.getReservation(h.it0.id)).not.toBeNull();
+    await h.endOther();
+    h.clock.advance(WAIT_POLL_MS);
+    expect((await p).ok).toBe(true);
+    expect(await h.item(h.it0.id)).toMatchObject({ stage: "RUNNING" });
+    expect(sandbox.created).toHaveLength(1);
+    expect([h.sandbox.created, h.broker.calls, h.broker.preflights, h.broker.stores, h.issues.asked]).toEqual([[], [], [], [], []]);
   });
 });
 
@@ -282,6 +503,77 @@ describe("session finish", () => {
     h.sandbox.numstat = "3000\t0\tREADME.md\0";
     h.sandbox.status = " M src/a/x.ts\0";
     expect(await refusedOpen(h)).toMatch(/uncommitted changes[\s\S]*scope:[\s\S]*size:/);
+  });
+
+  it("a failed test command names its failing files and shows its output; only the reason is stored", async () => {
+    let h = await started();
+    h.sandbox.exits["npm test"] = 1;
+    h.sandbox.stdouts["npm test"] = " FAIL  tests/a.test.ts > widget > renders\n FAIL  tests/b.test.ts > other\n FAIL  tests/a.test.ts > widget > again\nAssertionError: expected 1 to be 2\n";
+    let out = await refusedOpen(h);
+    // The files line comes before the refusal, the output after its reasons.
+    expect(out).toMatch(/^failing test files: tests\/a\.test\.ts, tests\/b\.test\.ts\nfinish refused;[\s\S]*- tests: `npm test` exited 1\ntest output \(last lines\):\n {5}FAIL {2}tests\/a\.test\.ts > widget > renders[\s\S]*\n {4}AssertionError: expected 1 to be 2$/);
+    expect((await h.runs(h.it0.id, "interactive"))[0]!.last_finish?.reasons).toEqual(["tests: `npm test` exited 1"]);
+
+    h = await started();
+    h.sandbox.exits["npm test"] = 1;
+    h.sandbox.stdouts["npm test"] = "Error: Cannot find module 'x'\n";
+    out = await refusedOpen(h);
+    expect(out).not.toContain("failing test files");
+    expect(out).toContain("    Error: Cannot find module 'x'");
+
+    h = await started();
+    h.sandbox.exits["npm test"] = 1;
+    h.sandbox.stdouts["npm test"] = ` FAIL  tests/a.test.ts > leaks\nkey ${AWS_SHAPED}\n`;
+    out = await refusedOpen(h);
+    expect(out).toContain("did not pass the egress scan");
+    expect(out).not.toContain(AWS_SHAPED);
+    expect(out).not.toContain("failing test files");
+  });
+
+  const selecting: FactoryConfig = { ...config, repo: { ...config.repo, test_selection: { hubs: [], always: ["tests/architecture/"] } } };
+  // The import graph: one git grep (`path\0line` per line); tests/y.test.ts reaches another file.
+  const GRAPH = 'tests/x.test.ts\0import { x } from "../src/a/x.js";\ntests/y.test.ts\0import { b } from "../src/b.js";\n';
+
+  it("in enforce mode the test command runs on the files the diff reaches plus the always-run list, logged first; without repo.test_selection, whole", async () => {
+    const log = recordingLog();
+    const h = await started(["src/a/"], { config: selecting, log });
+    await h.store.setLearnedSetting({
+      project: h.it0.project, key: MODE_KEY, expected: null, value: '"enforce"', evidence_run_ids: [], window_end: h.clock.now().toISOString() as never, actor: SELECTION_ACTOR,
+    });
+    h.sandbox.markers = GRAPH;
+    expect((await h.sessions.finish({})).ok).toBe(true);
+    expect(h.sandbox.commands).toEqual(["npm test -- tests/x.test.ts tests/architecture/"]);
+    const run = (await h.runs(h.it0.id, "interactive"))[0]!;
+    expect(log.lines.filter((l) => l.msg.startsWith("test selection"))).toEqual([{
+      level: "info", msg: "test selection (enforce): 2 files, 1 reaching the 1 changed source and test files, plus 1 always-run: tests/x.test.ts tests/architecture/", fields: { work_item_id: h.it0.id, run_id: run.id },
+    }]);
+    expect(run.outcome).toMatchObject({ status: "succeeded", data: { test_selection: { mode: "enforce", files: ["tests/x.test.ts", "tests/architecture/"] } } });
+
+    const whole = await started();
+    whole.sandbox.markers = h.sandbox.markers;
+    expect((await whole.sessions.finish({})).ok).toBe(true);
+    expect(whole.sandbox.commands).toEqual(["npm test"]);
+  });
+
+  it("in shadow mode (no stored mode) the test command runs whole; a refused finish with a miss resets the count, a passing finish counts once", async () => {
+    const h = await started(["src/a/"], { config: selecting });
+    h.sandbox.markers = GRAPH;
+    await h.store.advanceCursor(cleanCursor(h.it0.project), null, "7");
+    // tests/y.test.ts fails; the diff (src/a/x.ts) does not reach it: a miss.
+    h.sandbox.exits["npm test"] = 1;
+    h.sandbox.stdouts["npm test"] = " FAIL  tests/y.test.ts > y\n";
+    expect((await h.sessions.finish({})).ok).toBe(false);
+    expect(await h.store.getCursor(cleanCursor(h.it0.project))).toBe("0");
+    // A failure inside the selection is no miss, and a refused finish is not counted: the retry counts once.
+    h.sandbox.stdouts["npm test"] = " FAIL  tests/x.test.ts > x\n";
+    expect((await h.sessions.finish({})).ok).toBe(false);
+    expect(await h.store.getCursor(cleanCursor(h.it0.project))).toBe("0");
+    h.sandbox.exits["npm test"] = 0;
+    expect((await h.sessions.finish({})).ok).toBe(true);
+    expect(h.sandbox.commands).toEqual(["npm test", "npm test", "npm test"]);
+    expect(await h.store.getCursor(cleanCursor(h.it0.project))).toBe("1");
+    const run = (await h.runs(h.it0.id, "interactive"))[0]!;
+    expect(run.outcome).toMatchObject({ status: "succeeded", data: { test_selection: { mode: "shadow", full: false, files: ["tests/x.test.ts", "tests/architecture/"] } } });
   });
 
   it("a floor hit is refused with the paths and the required tier; the session stays open and no floor_blocked is written", async () => {
@@ -392,6 +684,90 @@ describe("session end without a PR", () => {
     expect(h.files.files.size).toBe(0);
   });
 
+  it("the `session_lost` detail names the last heartbeat, the run's updated_at before the reaper's write, in ISO 8601", async () => {
+    const h = await started();
+    const { it0, file } = h;
+    const stop = new AbortController();
+    const beating = h.sessions.heartbeat(file, stop.signal);
+    const before = (await h.runs(it0.id, "interactive"))[0]!.updated_at;
+    h.clock.advance(h.cfg.heartbeat_ms);
+    await waitFor(async () => (await h.runs(it0.id, "interactive"))[0]!.updated_at > before, "a heartbeat");
+    stop.abort();
+    await beating;
+    const last = (await h.runs(it0.id, "interactive"))[0]!.updated_at;
+    expect(last).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    h.clock.advance(h.cfg.lease_ms + 1);
+    await h.controller.tickReaper();
+    const run = (await h.runs(it0.id, "interactive"))[0]!;
+    expect(run.outcome).toMatchObject({ error_code: "session_lost", detail: `the session's lease expired; last heartbeat at ${last}` });
+    expect(run.updated_at).not.toBe(last);
+  });
+
+  describe("/retry on the released item (design 04-spec-gate-commands, 2026-11-22)", () => {
+    /** A harness whose session on `it0` was abandoned and released, and a `/retry` with `note` sent as comment `id`. */
+    const released_ = async () => {
+      const h = await started();
+      await h.sessions.abandon({});
+      await h.controller.tickRuns();
+      expect(await h.item(h.it0.id)).toMatchObject(released);
+      const retry = async (id: string, note?: string) => {
+        await h.controller.handleEvent({ kind: "retry_requested", source: h.it0.source, comment_id: id, requester: alice, ...(note === undefined ? {} : { note }) });
+        await h.controller.tickOutbox();
+      };
+      const refusals = (id: string) => h.source.comments.filter((c) => c.marker === `<!-- factory:refused:${id} -->`);
+      return { ...h, retry, refusals };
+    };
+
+    it("`/retry +paths` adds the paths and queues the implement run with a new key in one transition; a new session takes it over", async () => {
+      const h = await released_();
+      const [before, changes] = [await h.item(h.it0.id), (await h.store.listStateChanges(h.it0.id)).length];
+      await h.retry("r1", "+paths src/worker/index.ts");
+      const after = await h.item(h.it0.id);
+      expect(after).toMatchObject({ stage: "RUNNING", blocked_on: "none", blocked_reason: null, restart_count: before.restart_count + 1, version: before.version + 1 });
+      expect(after.allowed_paths).toEqual([...before.allowed_paths, "src/worker/index.ts"]);
+      const added = await h.store.listStateChanges(h.it0.id);
+      expect(added.slice(changes).map((c) => c.reason)).toEqual(["retry_requested"]);
+      expect(added.at(-1)!.detail).toMatchObject({ added_paths: JSON.stringify(["src/worker/index.ts"]) });
+      const queued = (await h.runs(h.it0.id, "implement")).filter((x) => x.status === "queued");
+      expect(queued).toHaveLength(1);
+      expect(h.refusals("r1")).toEqual([]);
+      // The existing takeover rule: a new `interactive start` cancels the queued implement run and starts the session.
+      expect((await h.start(h.it0.id)).ok).toBe(true);
+      expect((await h.store.getRun(queued[0]!.id))!.status).toBe("cancelled");
+      expect((await h.store.listStateChanges(h.it0.id)).at(-1)).toMatchObject({ reason: "session_started", detail: { taken_over: queued[0]!.id } });
+    });
+
+    it("`/retry` with no paths queues the implement run and leaves allowed_paths and tier as they were", async () => {
+      const h = await released_();
+      const before = await h.item(h.it0.id);
+      await h.retry("r2");
+      const after = await h.item(h.it0.id);
+      expect(after).toMatchObject({ blocked_on: "none", blocked_reason: null, restart_count: before.restart_count + 1, allowed_paths: before.allowed_paths, tier: before.tier });
+      expect((await h.runs(h.it0.id, "implement")).map((x) => x.status)).toEqual(["queued"]);
+    });
+
+    it("a refused path changes nothing and gets one reply, also when sent twice", async () => {
+      const h = await released_();
+      for (const [id, note] of [["r3", "+paths ../x.ts"], ["r4", "+paths src/**/*.ts"], ["r5", "+paths /etc/x"]] as const) {
+        const before = await h.snapshot(h.it0.id);
+        await h.retry(id, note);
+        await h.retry(id, note);
+        expect(await h.snapshot(h.it0.id)).toBe(before);
+        expect(h.refusals(id)).toHaveLength(1);
+      }
+    });
+
+    it("on an item released outside RUNNING there is no failed run to retry", async () => {
+      const h = await harness();
+      const it0 = await h.running(1, ["src/a/"], 2, { stage: "REVIEW", blocked_on: "human", blocked_reason: "session_released" });
+      const before = await h.snapshot(it0.id);
+      await h.controller.handleEvent({ kind: "retry_requested", source: it0.source, comment_id: "r6", requester: alice });
+      await h.controller.tickOutbox();
+      expect(await h.snapshot(it0.id)).toBe(before);
+      expect(h.source.comments.find((c) => c.marker === "<!-- factory:refused:r6 -->")!.body).toContain("there is no failed run to retry");
+    });
+  });
+
   it("--tokens takes a whole number of 0 or more; the latest total is added to token_cost once, when the run ends", async () => {
     const h = await started();
     const { it0 } = h;
@@ -436,7 +812,8 @@ describe("session flow and CLI", () => {
     expect(parseSessionArgs(["finish", "--tokens", "0"])).toEqual({ cmd: "finish", tokens: 0 });
     expect(parseSessionArgs(["abandon", "wi_abc", "--tokens", "9"])).toEqual({ cmd: "abandon", id: "wi_abc", tokens: 9 });
     for (const t of ["-1", "1.5", "x"]) expect(parseSessionArgs(["finish", "--tokens", t])).toEqual({ error: "--tokens takes a whole number of 0 or more" });
-    for (const bad of [["finish", "--spec", "x"], ["start"], ["note"], ["push"]]) expect(parseSessionArgs(bad)).toHaveProperty("error");
+    for (const bad of [["finish", "--spec", "x"], ["start"], ["note"], ["push"], ["finish", "--wait"]]) expect(parseSessionArgs(bad)).toHaveProperty("error");
+    expect(parseSessionArgs(["start", "wi_abc", "--spec", "s.json", "--wait"])).toEqual({ cmd: "start", target: "wi_abc", spec: "s.json", wait: true });
   });
 
   it("keeps open sessions as owner-only files under the sessions folder", async () => {
@@ -449,7 +826,7 @@ describe("session flow and CLI", () => {
     expect([await files.list(), await files.read("../x" as WorkItemId)]).toEqual([[], null]);
   });
 
-  it("runSession maps the login to the GitHub account, keeps the lease until stopped, and finishes through the broker's store", async () => {
+  it("runSession with --as maps the login to the GitHub account, keeps the lease until stopped, and finishes through the broker's store", async () => {
     const h = await harness();
     const it0 = await h.running(1);
     const replies: Record<string, unknown> = {
@@ -459,7 +836,8 @@ describe("session flow and CLI", () => {
     const github = { request: async <T>(_m: string, path: string): Promise<T> => (path in replies ? (replies[path] as T) : Promise.reject(new Error("404"))) };
     const printed: string[] = [];
     const stop = new AbortController();
-    const deps = { sessions: h.sessions, config: h.cfg, github, readSpec: async () => SPEC_TEXT, print: (l: string) => printed.push(l), stop: stop.signal };
+    const identity = { user: "github:2" as UserId, from: "cli_user" as const };
+    const deps = { sessions: h.sessions, identity, githubSource: true, github, readSpec: async () => SPEC_TEXT, print: (l: string) => printed.push(l), stop: stop.signal, awake: new NoKeepAwake(), log: silent };
     const started = runSession(deps, { cmd: "start", target: it0.id, as: "alice" });
     await waitFor(async () => (await h.runs(it0.id, "interactive")).length === 1, "session start");
     expect(printed).toContain("run folder: /wt/1");
@@ -472,5 +850,22 @@ describe("session flow and CLI", () => {
     const issues = githubIssues(github, { owner: "o", name: "r" });
     expect(await issues.issue(3)).toEqual({ source: { type: "github_issue", id: "o/r#3", link: "https://github.com/o/r/issues/3" }, title: "T", body: "", author: { provider: "github", subject: "9" } });
     expect([await issues.issue(4), await issues.issue(5)]).toEqual([null, null]);
+  });
+
+  it("runSession with no --as and the GitHub source off starts as the CLI identity with no GitHub call", async () => {
+    const h = await harness();
+    const it0 = await h.running(1);
+    let calls = 0;
+    const github = { request: async <T>(): Promise<T> => (calls++, Promise.reject(new Error("network_unavailable"))) };
+    const stop = new AbortController();
+    const deps = {
+      sessions: h.sessions, identity: { user: "github:1" as UserId, from: "cli_user" as const }, githubSource: false, github,
+      readSpec: async () => SPEC_TEXT, print: () => {}, stop: stop.signal, awake: new NoKeepAwake(), log: silent,
+    };
+    const started = runSession(deps, { cmd: "start", target: it0.id });
+    await waitFor(async () => (await h.runs(it0.id, "interactive")).length === 1, "session start");
+    stop.abort();
+    expect(await started).toBe(0);
+    expect([(await h.runs(it0.id, "interactive"))[0]!.actor_id, calls]).toEqual(["github:1", 0]);
   });
 });

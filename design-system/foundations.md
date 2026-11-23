@@ -8,16 +8,16 @@ Each colour has a light and a dark value; `.dark` on `<html>` switches them, so 
 
 | Token | Class | Light | Dark | Use |
 |---|---|---|---|---|
-| `bg` | `bg-bg` | #FBFAF7 | #17171A | page background |
-| `surface` | `bg-surface` | #FFFFFF | #212125 | cards, controls, menus |
-| `surface-2` | `bg-surface-2` | #F3F2EE | #2C2C30 | hover, table heads, neutral badge |
-| `border` | `border-border` | #E4E2DC | #34343A | dividers, table and card edges |
-| `border-strong` | `border-border-strong` | #C2C0BB | #59595D | control edges, dashed empty boxes |
-| `text` | `text-text-1` | #1C1C1E | #F2F2F4 | body text |
-| `text-2` | `text-text-2` | #5E5E63 | #A1A1A8 | secondary text, hints |
-| `text-3` | `text-text-3` | #66666A | #93939A | placeholders, counts |
-| `accent` | `text-accent` | #C2410C | #FB923C | the primary Button and the selected-tab underline only |
-| `ember` | `fill-ember` | #FB923C | #FB923C | the dot of the Gongbang mark |
+| `bg` | `bg-bg` | #F7F9F7 | #151917 | page background |
+| `surface` | `bg-surface` | #FFFFFF | #1E2321 | cards, controls, menus |
+| `surface-2` | `bg-surface-2` | #EEF2EF | #29302D | hover, table heads, neutral badge |
+| `border` | `border-border` | #DDE3DF | #323A36 | dividers, table and card edges |
+| `border-strong` | `border-border-strong` | #BAC3BE | #56605B | control edges, dashed empty boxes |
+| `text` | `text-text-1` | #1A1F1D | #EFF3F1 | body text |
+| `text-2` | `text-text-2` | #59625E | #9FA8A4 | secondary text, hints |
+| `text-3` | `text-text-3` | #616A66 | #909A95 | placeholders, counts |
+| `accent` | `text-accent` | #2C6A5C | #8CCDBB | the primary Button and the selected-tab underline only |
+| `ember` | `fill-ember` | #F2A55F | #F2A55F | the dot of the Gongbang mark |
 | `running` | | #1D4ED8 | #60A5FA | a running task |
 | `done` | | #15803D | #4ADE80 | a finished task |
 | `failed` | | #B91C1C | #F87171 | a failed task |
@@ -36,7 +36,7 @@ Four tones, each with `bg`, `fg` and `border`. Classes: `bg-pill-<tone>-bg text-
 | `bad` | #F8E8E8 / #482F33 | #B91C1C / #FBAAAA | stuck, failed, destructive |
 | `info` | #E8EDFB / #2C394B | #1D4ED8 / #60A5FA | running, a note |
 
-A work item's level maps to a tone in one place, `LEVEL_TONE` in `web/src/components/ui/badge.tsx`. `Badge` reads it; never write a second map.
+An item's, a run's or a worker's state maps to its label and tone in one place, the state table in `src/shared/states.ts`; `StatusBadge` and `Badge` in `web/src/components/ui/badge.tsx` read it, and `TONE_CLASS` there maps a tone to its tokens. Never write a second map.
 
 ## Type
 

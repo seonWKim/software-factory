@@ -4,20 +4,23 @@
 import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { type SyncOutcome, syncCalendars } from "./calendar/index.js";
-import { type Loaded, Plugins, buildStatsStore, settingsBase } from "./compose.js";
+import type { Loaded } from "./load-config.js";
+import { Plugins } from "./plugin-set.js";
+import { settingsBase } from "./core/settings-base.js";
 import { runCanary } from "./canary.js";
+import { type Check, type CheckStatus, TOKEN_FAIL_DAYS, TOKEN_WARN_DAYS, checkStatus } from "./core/health-check.js";
 import { type LoadedConfig, readOnlyOverlaps } from "./core/config.js";
 import { describeSettings, resolveSettings, settingsFor } from "./core/settings.js";
 import { llmCheckFromPlugins } from "./llm-check.js";
 import { GitHubError } from "./impl/github/github-client.js";
 import { prFlagLabels, statusLabels } from "./impl/github/github-issue-source.js";
 import { baseEnv, runProcess } from "./impl/process/run-process.js";
+import { SANDBOX_LINES, type SandboxEnforcement, probeOsSandbox } from "./impl/runner/os-sandbox.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
 import type { GitHubApi } from "./interfaces/github-credentials.js";
-import { SqlFactoryStore } from "./impl/store/sql/sql-factory-store.js";
-import { storeSql } from "./impl/store/sql/store-sql.js";
+import { storeSql, storeSqlOrNull } from "./impl/store/sql/store-sql.js";
 import type { SecretName, SecretStore } from "./interfaces/secret-store.js";
-import type { ConnectContext } from "./plugin-api.js";
+import { type ConnectContext, selectedRunners } from "./plugin-api.js";
 import { REGISTRY, type SecretDeclaration, connectHooks, createPlugin, declaredSecrets, selectedSetups } from "./plugins.js";
 import type { Ask } from "./cli/handlers/setup/ask.js";
 import { storeRunAttemptChecks } from "./worker/migrations/run-attempt-status.js";
@@ -42,19 +45,8 @@ export function neededSecrets(
 
 // doctor
 
-/**
- * `warn`: reported, but does not fail doctor. Used for hardening that local use may skip. `token_days`: the
- * GitHub token expiry check only, the whole days left. `fix`: how to fix a FAIL whose `msg` reports outside text
- * as it came (an error, a version), so the text itself stays as reported; other FAIL lines say it in `msg`.
- */
-export type Check = { ok: boolean; msg: string; warn?: boolean; token_days?: number; fix?: string };
-
-/** A check's result in one word: what doctor prints and the status page shows. */
-export type CheckStatus = "ok" | "warn" | "fail";
-
-export function checkStatus(c: Check): CheckStatus {
-  return c.ok ? "ok" : c.warn ? "warn" : "fail";
-}
+export { type Check, type CheckStatus, TOKEN_FAIL_DAYS, TOKEN_WARN_DAYS, checkStatus } from "./core/health-check.js";
+import { credentialPlain, sandboxChecks } from "./core/health-check.js";
 
 const STATUS_WORD: Record<CheckStatus, string> = { ok: "ok  ", warn: "warn", fail: "FAIL" };
 const STATUS_MARK: Record<CheckStatus, string> = { ok: "✓", warn: "!", fail: "✗" };
@@ -80,21 +72,23 @@ export function checksExitCode(checks: readonly Check[]): number {
  * The health checks, the one implementation behind both `doctor` and the status page's Health panel.
  * Read-only: writes nothing to the store, makes no model call, and never puts a secret value in a message
  * itself. Messages may carry error text from GitHub, so a surface that shows them to anyone but the operator's terminal must
- * egress-scan them first (the status page does).
+ * egress-scan them first (the status page does). `opts.sandbox`: the OS sandbox probe (tests pass a fake); one warn per line it does not enforce.
  */
-export async function doctorChecks(loaded: Loaded, opts: { github?: boolean } = {}): Promise<Check[]> {
+export async function doctorChecks(loaded: Loaded, opts: { github?: boolean; sandbox?: () => Promise<SandboxEnforcement> } = {}): Promise<Check[]> {
   // Setup passes the person's GitHub answer, which a declined config diff leaves unwritten.
   const github = opts.github ?? loaded.config.local_only !== true;
   const checks: Check[] = [configFileCheck(loaded), ...settingsChecks(loaded), ...(await toolchainChecks(loaded.config))];
-  const add = (ok: boolean, msg: string, warn = false) => checks.push({ ok, msg, warn });
+  const box = await (opts.sandbox ?? (() => probeOsSandbox({ runners: selectedRunners(loaded.plugins) })))();
+  checks.push(...sandboxChecks(SANDBOX_LINES.map((line) => ({ line, ...box[line] }))));
+  const add = (ok: boolean, msg: string, warn = false, plain?: string) => checks.push({ ok, msg, warn, ...(plain !== undefined && { plain }) });
 
   try {
     const s = await stat(loaded.secretsFile);
     const mode = (s.mode & 0o777).toString(8);
     const open = (s.mode & 0o077) !== 0;
-    add(!open, `secret file at ${loaded.secretsFile} is private (mode ${mode}${open ? `; run: chmod 600 ${loaded.secretsFile}` : ""})`);
+    add(!open, `secret file at ${loaded.secretsFile} is private (mode ${mode}${open ? `; run: chmod 600 ${loaded.secretsFile}` : ""})`, false, open ? "Your secret file can be read by other users; the fix is in Details" : "Your secret file is private");
   } catch {
-    add(false, `secret file exists at ${loaded.secretsFile} (run: npm run setup)`);
+    add(false, `secret file exists at ${loaded.secretsFile} (run: npm run setup)`, false, "Your secret file is missing (run: npm run setup)");
     return checks;
   }
   const inside = loaded.secretsFile.startsWith(loaded.root);
@@ -103,7 +97,7 @@ export async function doctorChecks(loaded: Loaded, opts: { github?: boolean } = 
   const plugins = new Plugins(loaded);
   const secrets = await plugins.secrets();
   // One check per secret the selected plugins declare (or per group of alternatives).
-  checks.push(...(await secretChecks(neededSecrets(loaded, github), secrets)));
+  checks.push(...(await secretChecks(neededSecrets(loaded, github), secrets, SECRET_WORDS)));
   checks.push(anthropicKeyCheck(process.env.ANTHROPIC_API_KEY));
 
   const claude = await runProcess(["claude", "--version"], { cwd: loaded.root, env: baseEnv() }).catch(() => null);
@@ -189,9 +183,6 @@ export async function toolchainChecks(config: Pick<LoadedConfig, "toolchain" | "
   return checks;
 }
 
-/** At or under this many days left a token is a FAIL; under TOKEN_WARN_DAYS a warn (design §9 Health). */
-export const TOKEN_FAIL_DAYS = 0;
-export const TOKEN_WARN_DAYS = 3;
 
 /**
  * The GitHub token's expiry line. An App sign-in (`grant` present) is always ok and makes no read: the factory mints
@@ -218,8 +209,8 @@ export async function tokenExpiryCheck(
 
 /** The one line that names the config file in use: `--config` / FACTORY_CONFIG, or the checked-in file. */
 export function configFileCheck(loaded: Pick<Loaded, "configFile" | "externalConfig">): Check {
-  const how = loaded.externalConfig === null ? "checked-in" : "--config / FACTORY_CONFIG";
-  return { ok: true, msg: `config file: ${loaded.configFile} (${how})` };
+  const external = loaded.externalConfig !== null;
+  return { ok: true, msg: `config file: ${loaded.configFile} (${external ? "--config / FACTORY_CONFIG" : "checked-in"})`, plain: external ? "Config file: the one --config or FACTORY_CONFIG names" : "Config file: the repository's own" };
 }
 
 /**
@@ -235,11 +226,16 @@ export function settingsChecks(loaded: Pick<Loaded, "config">): Check[] {
   );
 }
 
+type GroupWords = Readonly<Record<string, (found: boolean) => Pick<Check, "plain" | "action">>>;
+/** The `oneOf` groups doctor gives Health words: the model credential (design 09-health, 2026-11-23). */
+export const SECRET_WORDS: GroupWords = { "model credential": credentialPlain };
+
 /**
  * One check per declared secret: present is ok, missing is a FAIL with a hint to run setup. Declarations
- * sharing a `oneOf` label make one check that passes when any of them is present. Never prints a value.
+ * sharing a `oneOf` label make one check that passes when any of them is present; `words` gives a group's Health fields
+ * (doctor passes the model credential's sentence and action). Never prints a value.
  */
-export async function secretChecks(declared: readonly SecretDeclaration[], secrets: SecretStore): Promise<Check[]> {
+export async function secretChecks(declared: readonly SecretDeclaration[], secrets: SecretStore, words: GroupWords = {}): Promise<Check[]> {
   const order: string[] = [];
   const singles = new Map<string, SecretDeclaration>();
   const groups = new Map<string, { names: SecretName[]; found: SecretName | null }>();
@@ -264,9 +260,10 @@ export async function secretChecks(declared: readonly SecretDeclaration[], secre
     if (key.startsWith("oneOf:")) {
       const label = key.slice("oneOf:".length);
       const g = groups.get(label)!;
+      const plain = words[label]?.(g.found !== null);
       return g.found
-        ? { ok: true, msg: `${label} present (${g.found})` }
-        : { ok: false, msg: `${label} missing: one of ${g.names.join(", ")} (run: npm run setup)` };
+        ? { ok: true, msg: `${label} present (${g.found})`, ...plain }
+        : { ok: false, msg: `${label} missing: one of ${g.names.join(", ")} (run: npm run setup)`, ...plain };
     }
     const d = singles.get(key)!;
     return present.has(d.name)
@@ -308,28 +305,31 @@ async function isMissing(members: readonly SecretDeclaration[], secrets: SecretS
 }
 
 /**
- * One check per status label and PR flag label. A missing one is a warning, never a FAIL: the factory creates it on first
- * use, so it only means setup has not run since status labels were added.
+ * One check per status label and PR flag label, each carrying its `label` (Health shows them as one row). A missing one
+ * is a warning, never a FAIL: the factory creates it on first use, so it only means setup has not run since status labels were added.
  */
 export async function statusLabelChecks(client: Pick<GitHubApi, "request">, repo: { owner: string; name: string }, prefix: string): Promise<Check[]> {
   const checks: Check[] = [];
   for (const l of [...statusLabels(prefix), ...prFlagLabels(prefix)]) {
     try {
       await client.request("GET", `/repos/${repo.owner}/${repo.name}/labels/${encodeURIComponent(l.name)}`);
-      checks.push({ ok: true, msg: `status label "${l.name}" exists` });
+      checks.push({ ok: true, msg: `status label "${l.name}" exists`, label: l.name });
     } catch (err) {
       const why = err instanceof GitHubError && err.status === 404
         ? "run: npm run setup"
         : `could not check: ${err instanceof Error ? err.message.slice(0, 120) : "error"}`;
-      checks.push({ ok: false, msg: `status label "${l.name}" exists (${why})`, warn: true });
+      checks.push({ ok: false, msg: `status label "${l.name}" exists (${why})`, warn: true, label: l.name });
     }
   }
   return checks;
 }
 
-/** `llm`: one extra line that runs the LLM check (two real provider calls). Plain doctor calls no model. */
-export async function doctor(loaded: Loaded, opts: { llm?: boolean } = {}): Promise<number> {
-  const open = () => buildStatsStore(loaded).then((s) => ({ sql: s instanceof SqlFactoryStore ? s.db : null, close: () => s.close() }));
+/**
+ * `openStore`: the store the run-attempt checks read (the CLI passes compose's buildStatsStore, so this file does not
+ * load the composition root, RFC 0023). `llm`: one extra line that runs the LLM check (two real provider calls).
+ */
+export async function doctor(loaded: Loaded, openStore: (l: Loaded) => Promise<FactoryStore>, opts: { llm?: boolean } = {}): Promise<number> {
+  const open = () => openStore(loaded).then((s) => ({ sql: storeSqlOrNull(s), close: () => s.close() }));
   const checks = [...(await doctorChecks(loaded)), ...(await storeRunAttemptChecks(open))];
   if (opts.llm) {
     const r = await llmCheckFromPlugins(new Plugins(loaded), "cheap");

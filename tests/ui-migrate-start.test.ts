@@ -7,7 +7,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type Loaded, buildUiParts, loadConfig } from "../src/compose.js";
+import { type Loaded, loadConfig } from "../src/load-config.js";
+import { buildUiParts } from "../src/compose.js";
 import { OwnerAuth } from "../src/core/authorize.js";
 import type { LogFields, Logger } from "../src/core/log.js";
 import type { CliIdentity } from "../src/core/local-cli.js";
@@ -25,7 +26,7 @@ import { MIGRATE_PATH, SUPERVISOR_PATH, type UiMigrate } from "../src/ui/migrate
 import type { UiPauses } from "../src/ui/pause-api.js";
 import { type ServerDeps, type UiRequest, respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
-import { waitFor } from "./helpers/fakes.js";
+import { waitFor } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
 const HOST = "127.0.0.1:4310";

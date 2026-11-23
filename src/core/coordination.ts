@@ -1,5 +1,5 @@
 import { isUnder, pathsOverlap } from "./policy.js";
-import type { DependencyKind, DependencyState, SharedPath, SourceRef, Timestamp } from "./types.js";
+import type { DependencyKind, DependencyState, SharedPath, SourceRef, Timestamp, WorkItem } from "./types.js";
 
 /**
  * Coordination (design §5, decided 2026-11-03): when an implement run may start next to other work. Pure: no
@@ -9,9 +9,13 @@ import type { DependencyKind, DependencyState, SharedPath, SourceRef, Timestamp 
  *   cost against any holder is at or above `max_cost` is held. Holders: items with an implement run in progress,
  *   items with an open PR, and other queued implement runs.
  * - Deadlock rule: a run held only by other queued runs (no running item, no open PR) is claimed when its turn
- *   comes, so the oldest of a group that holds each other goes first. A queued run never holds on its own: it
- *   cannot make progress before it is claimed, so only a running item or an open PR keeps a run queued.
- * - Hold policy (issue #314): a `held` run then waits, starts after `minutes`, or starts at once (`holdOutcome`).
+ *   comes, so the oldest of a group that holds each other goes first. A queued run that is not held never holds
+ *   on its own: it cannot make progress before it is claimed.
+ * - Oldest held first (decided 2026-11-23): a queued run that is itself held holds every newer run it overlaps, and
+ *   a running item or open PR holds a run already held only when it was ahead of it (`aheadOf`). So when a blocker
+ *   merges, the oldest held run starts and newer overlapping runs wait for it.
+ * - Hold policy (issue #314): a `held` run then waits, starts after `minutes` (default 120), or starts at once
+ *   (`holdOutcome`).
  * - Dependencies: an item waits for every item it depends on to merge. A cycle is refused.
  */
 
@@ -27,12 +31,14 @@ export const LEARNED_STEP = 0.5;
 export const LEARNED_CAP = 4.0;
 /** Default `hotspot_weight`. */
 export const DEFAULT_HOTSPOT_WEIGHT = 3.0;
-/** Default `hotspot_paths`: the files nearly every change touches, and that conflict when two do. */
+/**
+ * Default `hotspot_paths`: the files nearly every change touches, and that conflict when two do. A mechanical path
+ * (`docs/design.md`) is never a hotspot, so it is not listed here.
+ */
 export const DEFAULT_HOTSPOTS: readonly string[] = [
   "src/impl/store/sqlite/schema.ts",
   "src/controller/",
   "src/worker/",
-  "docs/design.md",
   "SET_UP.md",
 ];
 
@@ -51,14 +57,15 @@ export const DEFAULT_MECHANICAL: readonly string[] = [
 export const DEFAULT_MECHANICAL_WEIGHT = 0.25;
 
 /**
- * `hold_policy` (design §5, issue #314): what a cost hold does. `hold` keeps the run queued until `/approve` (the
- * default); `run_after_minutes` claims it once it has been held `minutes`; `run` claims it at once. Settable live.
+ * `hold_policy` (design §5, issue #314): what a cost hold does. `hold` keeps the run queued until `/approve`;
+ * `run_after_minutes` (the default, 120 minutes since 2026-11-23) claims it once it has been held `minutes`; `run`
+ * claims it at once. Settable live.
  */
 export type HoldPolicy = { mode: "hold" } | { mode: "run_after_minutes"; minutes: number } | { mode: "run" };
 export const HOLD_POLICY_MODES = ["hold", "run_after_minutes", "run"] as const;
 /** `minutes` of `run_after_minutes` when the value gives none. */
-export const DEFAULT_HOLD_MINUTES = 20;
-export const DEFAULT_HOLD_POLICY: HoldPolicy = { mode: "hold" };
+export const DEFAULT_HOLD_MINUTES = 120;
+export const DEFAULT_HOLD_POLICY: HoldPolicy = { mode: "run_after_minutes", minutes: DEFAULT_HOLD_MINUTES };
 /** `hotspot_mode`: `policy` (default) lets a hotspot hold follow `hold_policy`; `hold` always keeps it held. */
 export const HOTSPOT_MODES = ["policy", "hold"] as const;
 export type HotspotMode = (typeof HOTSPOT_MODES)[number];
@@ -159,6 +166,13 @@ export function pathWeight(path: string, conflicts: ReadonlyMap<string, number>,
   return { path, weight: Math.max(BASE_WEIGHT, learnedWeight(n), hotspot ? s.hotspot_weight : 0), conflicts: n, hotspot };
 }
 
+/**
+ * Shared index files a normal change never edits (design 05-dependencies, decided 2026-11-20): the design index
+ * (edited only to add a topic file) and the generated i18n catalog barrel (edited only for a new area file). A
+ * shared one counts only when both runs' lists name it; a folder that merely covers it claims nothing.
+ */
+export const UNCLAIMED_INDEXES: readonly string[] = ["docs/design.md", "web/src/i18n/en.ts"];
+
 /** The cost of running two items side by side: the shared paths with their weights, and their sum. */
 export function coordinationCost(
   a: readonly string[],
@@ -166,7 +180,8 @@ export function coordinationCost(
   conflicts: ReadonlyMap<string, number>,
   s: CoordinationSettings,
 ): { shared: SharedPath[]; cost: number } {
-  const shared = pathsOverlap(a, b).map((p) => pathWeight(p, conflicts, s));
+  const claimed = (p: string) => !UNCLAIMED_INDEXES.includes(p) || (a.includes(p) && b.includes(p));
+  const shared = pathsOverlap(a, b).filter(claimed).map((p) => pathWeight(p, conflicts, s));
   // Weights are multiples of 0.25 by default; rounding keeps a sum like 2.4999999 from slipping under a threshold.
   const cost = Math.round(shared.reduce((sum, p) => sum + p.weight, 0) * 1000) / 1000;
   return { shared, cost };
@@ -183,6 +198,26 @@ export interface Holder {
   files: readonly string[];
   /** `files` are allowed_paths, because the holder's open PR has no stored file list. */
   fallback: boolean;
+  /**
+   * Running and PR holders: when the item's first implement run was queued and when it started. Null or absent:
+   * none recorded, so it counts as ahead of any hold (`aheadOf`).
+   */
+  queued?: Timestamp | null;
+  started?: Timestamp | null;
+  /** Waiting holders: its run is held and comes before the candidate in the claim order, so it holds it (rule 2). */
+  held?: boolean;
+}
+
+/**
+ * Whether running or PR holder `h` may hold a run held since `holdStart` that was queued at `queued` (design
+ * 05-dependencies, decided 2026-11-23): only when its implement run started before the hold began, or was queued
+ * before the held run (it was ahead in the claim order, so the held run waits for it). A holder with no recorded
+ * implement run counts as started before any hold. Waiting holders always pass: the claim order rules them.
+ */
+export function aheadOf(h: Holder, holdStart: Timestamp, queued: Timestamp): boolean {
+  if (h.kind === "waiting" || !h.started) return true;
+  const before = (t: Timestamp | null | undefined, ref: Timestamp) => !!t && Date.parse(t) < Date.parse(ref);
+  return before(h.started, holdStart) || before(h.queued, queued);
 }
 
 export interface Hold {
@@ -193,7 +228,7 @@ export interface Hold {
 
 /**
  * Every holder whose cost against the candidate is at or above `max_cost`: running and PR holders first, then
- * waiting ones, each group highest cost first. So the first hold is the one that decides (claimDecision) and the
+ * held waiting ones, then the other waiting ones, each group highest cost first. So the first hold is the one that decides (claimDecision) and the
  * one the stored decision names: a run held by an open PR names the PR, even when a queued run shares more files.
  * Only holders of the same project and another item count.
  */
@@ -209,17 +244,39 @@ export function holdsOn(
     const { shared, cost } = coordinationCost(candidate.files, h.files, conflicts, s);
     if (shared.length > 0 && cost >= s.max_cost) holds.push({ holder: h, shared, cost });
   }
-  const rank = (h: Hold) => (h.holder.kind === "waiting" ? 1 : 0);
+  const rank = (h: Hold) => (h.holder.kind !== "waiting" ? 0 : h.holder.held ? 1 : 2);
   return holds.sort((x, y) => rank(x) - rank(y) || y.cost - x.cost);
+}
+
+/** An item as the session rule reads it: the files it claims are `files_to_change`, else `allowed_paths`. */
+export type ClaimingItem = Pick<WorkItem, "id" | "project" | "files_to_change" | "allowed_paths">;
+
+/**
+ * The interactive session rule (design 05-dependencies, decided 2026-11-21): a session start next to running work,
+ * and a claim next to an open session, use the workers' cost rule (`holdsOn`) instead of refusing on any shared
+ * path, so shared mechanical paths (0.25) and unnamed shared indexes no longer hold. `running`: the other side's
+ * running runs with their items. The highest hold (cost at or above `max_cost`) with its run, or null.
+ */
+export function sessionHold(
+  candidate: ClaimingItem,
+  running: readonly { run_id: string; item: ClaimingItem }[],
+  conflicts: ReadonlyMap<string, number>,
+  s: CoordinationSettings,
+): (Hold & { run_id: string }) | null {
+  const files = (it: ClaimingItem) => it.files_to_change ?? it.allowed_paths;
+  const holders = running.map(({ item }): Holder => ({ work_item_id: item.id, project: item.project, ref: item.id, kind: "running", files: files(item), fallback: false }));
+  const hold = holdsOn({ work_item_id: candidate.id, project: candidate.project, files: files(candidate) }, holders, conflicts, s)[0];
+  return hold ? { ...hold, run_id: running.find((r) => r.item.id === hold.holder.work_item_id)!.run_id } : null;
 }
 
 /**
  * What a claim does with a queued implement run, given its holds: `free` (nothing holds it), `deadlock` (held
- * only by other waiting runs: claimed, the claim takes runs oldest first) or `held` (it stays queued).
+ * only by other waiting runs that are not held themselves: claimed, the claim takes runs oldest first) or `held`
+ * (it stays queued: a running item, an open PR, or an older held run holds it).
  */
 export function claimDecision(holds: readonly Hold[]): "free" | "deadlock" | "held" {
   if (holds.length === 0) return "free";
-  return holds.every((h) => h.holder.kind === "waiting") ? "deadlock" : "held";
+  return holds.every((h) => h.holder.kind === "waiting" && !h.holder.held) ? "deadlock" : "held";
 }
 
 /**

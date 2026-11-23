@@ -2,8 +2,9 @@ import { COMMAND_TABLE, type CommandWho, cliHelpLine } from "./command-table.js"
 import { LOCAL_SOURCE } from "./local-merge.js";
 import { type TriageOutput, parseTriage } from "./outputs.js";
 import { type ItemPhase, isClosedPhase, phaseOf } from "./phase.js";
-import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind } from "./policy.js";
+import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, SESSION_RELEASED, blockingRunKind } from "./policy.js";
 import type { Run, RunKind, WorkItem } from "./types.js";
+import { MERGE_CHECK_HELP_LINE, awaitingSpec } from "./request-transition.js";
 export * from "./request-transition.js"; // the approve and merge gates' shared checks (design 04-gate-commands)
 
 /**
@@ -37,6 +38,7 @@ export type CommandPhase =
   | "merge_pending"
   | "max_loops"
   | "merge_conflict"
+  | "session_released"
   | "other_blocked"
   /** CLOSED with its PR merged: only a `/verdict` still applies (design §4). */
   | "merged"
@@ -44,7 +46,7 @@ export type CommandPhase =
 
 export const COMMAND_PHASES: readonly CommandPhase[] = [
   "triaging", "spec_pending", "budget_checkpoint", "max_revisions", "implementing", "dependency_hold", "dependency_closed", "phase_hold", "floor_tier", "rule_of_two", "too_large",
-  "failed_implement", "failed_review", "failed_run", "agent_needs_human", "repeated_failure", "recurring_failure", "reviewing", "merge_pending", "max_loops", "merge_conflict", "other_blocked", "merged", "closed",
+  "failed_implement", "failed_review", "failed_run", "agent_needs_human", "repeated_failure", "recurring_failure", "reviewing", "merge_pending", "max_loops", "merge_conflict", "session_released", "other_blocked", "merged", "closed",
 ];
 
 const OPEN_PHASES = COMMAND_PHASES.filter((p) => p !== "closed" && p !== "merged");
@@ -58,13 +60,13 @@ export interface CommandState {
   /** A local item: it takes a `/verdict` with no PR, judged on the item itself (design §4). Absent: not local. */
   local?: true;
   /**
-   * At `agent_needs_human`: the kind of run that asked (read from the item's runs; the item's fields cannot tell
-   * a resolve block from an implement block). Absent when not known.
+   * `asked_by`, at `agent_needs_human`: the kind of run that asked (read from the item's runs; the fields cannot tell a resolve block from an implement block).
+   * `merge_check`, at `max_loops`: a failed merge check stopped it (mergeCheckStopped): no `/retry`, `factory merge <id>` checks it again. Absent: not known.
    */
-  asked_by?: RunKind;
+  asked_by?: RunKind; merge_check?: true;
 }
 
-export type CommandName = "approve" | "reject" | "revise" | "retry" | "resolve" | "budget" | "verdict" | "standing" | "link" | "help";
+export type CommandName = "approve" | "reject" | "revise" | "retry" | "resolve" | "paths" | "hold" | "note" | "budget" | "verdict" | "standing" | "link" | "help";
 
 export interface CommandSpec {
   name: CommandName;
@@ -140,9 +142,9 @@ export const COMMANDS: readonly CommandSpec[] = [
       "`/retry +paths <path>...` (at most 10, notes on the lines below) after a failed implement or resolve run also adds those paths to the allowed paths; a resolve run gets the notes without the `+paths` line. " +
       "At a dependency closed without a merge, it reads the dependencies again and starts the implement run if none is still closed. " +
       "At the review loop limit, it starts an implement run with the loop count reset; `+paths` applies there too. " +
-      "On an item held for a recurring failure, it lifts the hold so the item's queued runs start. On a held phase of a split, it releases the phase into triage once the previous phase closed without a merge",
+      "On an item held for a recurring failure, it lifts the hold so the item's queued runs start. On a held phase of a split, it releases the phase into triage once the previous phase closed without a merge. After an interactive session ended without a PR, it queues the implement run (which a new `interactive start` can take over); `+paths` applies there too",
     // At a dependency closed unmerged it reads the dependencies again (design §5); at a phase hold it releases the phase unless the previous one is open (design 04-split-specs).
-    phases: ["failed_run", "failed_review", "too_large", "failed_implement", "agent_needs_human", "repeated_failure", "dependency_closed", "max_loops", "recurring_failure", "phase_hold"],
+    phases: ["failed_run", "failed_review", "too_large", "failed_implement", "agent_needs_human", "repeated_failure", "dependency_closed", "max_loops", "recurring_failure", "phase_hold", "session_released"],
     needs_pr: false,
     changes_state: true,
   },
@@ -158,14 +160,14 @@ export const COMMANDS: readonly CommandSpec[] = [
     needs_pr: false,
     changes_state: true,
   },
-  {
-    name: "budget",
-    usage: "/budget [tokens]",
-    description: "Continue past the budget checkpoint with the suggested budget, or with a larger whole number of tokens",
-    phases: ["budget_checkpoint"],
-    needs_pr: false,
-    changes_state: true,
-  },
+  { name: "paths", usage: "/paths +<path>...", phases: ["implementing", "failed_implement", "too_large", "session_released"], needs_pr: false, changes_state: true, // any RUNNING item: the controller checks the stage (design 05-interactive-sessions)
+    description: "Add paths to the allowed paths of an item being implemented, in place: an interactive session's finish checks the new list, and a worker implement run takes it at its next attempt. At most 10, each with `+` before it, notes on the lines below. It never removes a path" },
+  { name: "hold", usage: "/hold <id>", phases: [], local_phases: ["agent_needs_human"], asked_by: ["implement"], needs_pr: false, changes_state: true, // a local implement stop (design 05-dependencies)
+    description: "Hold until <id> merges: writes a `Depends on: <id>` line in the item's problem and queues the implement run, which waits for <id> (a local wi_… item, or a built task tk_…) to merge and then starts on its own. Refused for an ID that names no local item, the item itself, or an item already merged" },
+  { name: "note", usage: "/note <text>", phases: OPEN_PHASES, needs_pr: false, changes_state: false, // an `owner_note` state change (src/controller/units/commands/note.ts)
+    description: "Add a note for the item's reviewer and implementer, such as the reason a done-when line is built differently; their next run shows it under the approver's notes. It changes no state" },
+  { name: "budget", usage: "/budget [tokens]", phases: ["budget_checkpoint"], needs_pr: false, changes_state: true,
+    description: "Continue past the budget checkpoint with the suggested budget, or with a larger whole number of tokens" },
   {
     name: "verdict",
     usage: "/verdict accept|changes|reject <severity> <reason>",
@@ -205,13 +207,11 @@ export const COMMANDS: readonly CommandSpec[] = [
 ];
 
 const BY_NAME = new Map(COMMANDS.map((c) => [c.name, c]));
-
-export function commandSpec(name: CommandName): CommandSpec {
-  return BY_NAME.get(name)!;
-}
+export const commandSpec = (name: CommandName): CommandSpec => BY_NAME.get(name)!;
 
 /** blocked_reason prefix (with `blocked_on: human`) of an item whose dependency closed without a merge (design §5). */
 export { DEPENDENCY_CLOSED } from "./phase.js";
+export { LOCAL_ID, dependsOnIds, localItemOf, wantedDependsOn, withDependsOn } from "./task-build.js"; // for `/hold` and the coordination unit
 
 /** Block reasons whose step `/retry` reads from the stage (or, for the agent blocks, from the item's runs first). */
 const STAGE_RETRY_REASONS: readonly (string | null)[] = ["max_attempts", "max_restart", AGENT_NEEDS_HUMAN, REPEATED_FAILURE];
@@ -222,6 +222,7 @@ const STAGE_RETRY_REASONS: readonly (string | null)[] = ["max_attempts", "max_re
  * first (`blockingRunKind`), since a resolve block has an implement block's stage.
  */
 export function failedRunKind(it: WorkItem): RunKind | undefined {
+  if (it.blocked_reason === SESSION_RELEASED) return it.stage === "RUNNING" ? "implement" : undefined; // the run a released session replaced
   const kind = it.blocked_reason?.match(/^run_failed:(triage|implement|review|update):/)?.[1] as RunKind | undefined;
   if (kind) return kind;
   if (!STAGE_RETRY_REASONS.includes(it.blocked_reason)) return undefined;
@@ -237,7 +238,7 @@ type ItemState = Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason" | "cha
 const SAME: ReadonlySet<ItemPhase> = new Set<Extract<ItemPhase, CommandPhase>>([
   "budget_checkpoint", "floor_tier", "rule_of_two", "agent_needs_human", "repeated_failure", "recurring_failure", "dependency_closed", "too_large",
   "failed_implement", "failed_review", "failed_run", "spec_pending", "max_revisions", "merge_pending", "max_loops", "merge_conflict", "dependency_hold",
-  "phase_hold", "triaging", "implementing", "reviewing",
+  "phase_hold", "session_released", "triaging", "implementing", "reviewing",
 ]);
 const isCommandPhase = (p: ItemPhase): p is Extract<ItemPhase, CommandPhase> => SAME.has(p);
 
@@ -249,11 +250,11 @@ export function commandPhase(it: ItemState): CommandPhase {
 }
 
 /** `askedBy`: at `agent_needs_human`, the kind of run that asked (see CommandState.asked_by). */
-export function commandState(it: ItemState, askedBy?: RunKind): CommandState {
+export function commandState(it: ItemState, askedBy?: RunKind, mergeCheck = false): CommandState {
   const phase = commandPhase(it);
   return {
     phase, has_pr: it.change_ref !== null, ...(it.source?.type === LOCAL_SOURCE ? { local: true as const } : {}),
-    ...(phase === "agent_needs_human" && askedBy ? { asked_by: askedBy } : {}),
+    ...(phase === "agent_needs_human" && askedBy ? { asked_by: askedBy } : {}), ...(phase === "max_loops" && mergeCheck ? { merge_check: true as const } : {}),
   };
 }
 
@@ -266,9 +267,8 @@ export function itemCommandState(it: ItemState, runs: readonly Run[]): CommandSt
 export const appliesLocally = (c: CommandSpec, s: CommandState): boolean => s.local === true && !s.has_pr && (c.local_phases?.includes(s.phase) ?? false);
 
 export function applies(c: CommandSpec, s: CommandState): boolean {
-  if (appliesLocally(c, s)) return true;
-  if (!c.phases.includes(s.phase) || (c.needs_pr && !s.has_pr && !s.local)) return false;
-  return s.phase !== "agent_needs_human" || !c.asked_by || (s.asked_by !== undefined && c.asked_by.includes(s.asked_by));
+  const asked = (s.phase !== "agent_needs_human" || !c.asked_by || (s.asked_by !== undefined && c.asked_by.includes(s.asked_by))) && !(c.name === "retry" && s.merge_check);
+  return asked && (appliesLocally(c, s) || (c.phases.includes(s.phase) && (!c.needs_pr || s.has_pr || s.local === true)));
 }
 
 /** Whether `c` is accepted as a comment on the item's PR with its PR meaning (`pr_phases`); needs a PR. */
@@ -295,7 +295,7 @@ const FACTORY_COMMANDS: readonly CommandName[] = ["standing"];
 
 /** The commands that apply in `s`, in table order, each with the description it has there; `/help` always last. */
 export function commandsFor(s: CommandState): CommandSpec[] {
-  const shown = (c: CommandSpec) => c.name !== "help" && !ACCOUNT_COMMANDS.includes(c.name) && !FACTORY_COMMANDS.includes(c.name);
+  const shown = (c: CommandSpec) => c.name !== "help" && c.name !== "paths" && c.name !== "note" && !ACCOUNT_COMMANDS.includes(c.name) && !FACTORY_COMMANDS.includes(c.name); // `/paths`, `/note`: in `/help`, no footer or page button yet
   const own = (c: CommandSpec) => appliesLocally(c, s) || (s.phase === "implementing" && c.implementing_description);
   return COMMANDS.filter((c) => shown(c) && applies(c, s)).map((c) => (own(c) ? { ...c, description: meaning(c, s) } : c)).concat(commandSpec("help"));
 }
@@ -307,9 +307,10 @@ function meaning(c: CommandSpec, s: CommandState | null): string {
   return [c.description, c.implementing_description, c.pr_description, c.local_description].filter((d) => d).join(". ");
 }
 
-/** One command as every list shows it: the issue footer and `/help`, Slack's help in an item's thread. */
+/** One command with its full description: Slack's help in an item's thread. */
 const line = (c: CommandSpec): string => `- \`${c.usage}\`: ${c.description}.`;
-
+/** One command as a footer shows it: its first sentence only; the footer's last line, `/help`, gives the rest. */
+const footerLine = (c: CommandSpec): string => `- \`${c.usage}\`: ${c.description.split(/\.\s+(?=[A-Z`])/)[0]}.`;
 const prLine = (c: CommandSpec): string => `- \`${c.usage}\`: ${c.pr_description ?? c.description}.`;
 
 /**
@@ -321,7 +322,7 @@ export function commandFooter(s: CommandState, except: readonly CommandName[] = 
   const cmds = commandsFor(s).filter((c) => !except.includes(c.name));
   const onPr = prCommandsFor(s);
   const out = onPr.length ? ["On the change, you can reply with:", ...onPr.map(prLine), ""] : [];
-  out.push("Commands you can reply with now:", ...cmds.map(line));
+  out.push("Commands you can reply with now:", ...cmds.map(footerLine));
   if (!cmds.some((c) => c.changes_state)) out.push("No command changes this item's state now.");
   return out.join("\n");
 }
@@ -346,22 +347,20 @@ export function helpReply(s: CommandState | null): string {
     ...COMMANDS.map((c) => {
       const now = s === null ? "" : applies(c, s) ? " **(now)**" : appliesOnPr(c, s) ? " **(now, on the PR)**" : "";
       return `- \`${c.usage}\`${now}: ${meaning(c, s)}.`;
-    }),
+    }), ...(s?.merge_check ? [MERGE_CHECK_HELP_LINE] : []),
     "",
     cliHelpLine(),
   ].join("\n");
 }
 
 const PHASE_LABELS: Record<CommandPhase, string> = {
-  triaging: "triaging", spec_pending: "spec waiting for approval", budget_checkpoint: "paused at a budget checkpoint",
-  max_revisions: "spec at the revision limit", implementing: "implementing", dependency_hold: "waiting for a dependency to merge",
-  dependency_closed: "blocked: a dependency was closed without a merge", floor_tier: "blocked by the floor check",
-  rule_of_two: "waiting for a person to approve its run (Rule of Two)", too_large: "blocked: the change was too large",
-  failed_implement: "blocked by a failed implement run", failed_review: "blocked by a failed review run", failed_run: "blocked by a failed run",
-  agent_needs_human: "blocked: the agent asked for a human", repeated_failure: "blocked: a run failed the same way twice",
-  recurring_failure: "held: its run failed like a known recurring failure", reviewing: "in review", merge_pending: "waiting for a human merge",
-  max_loops: "review loop limit reached", merge_conflict: "PR has a merge conflict", other_blocked: "blocked for another reason", merged: "merged",
-  closed: "closed", phase_hold: "held: waiting for the previous phase of its split",
+  triaging: "triaging", spec_pending: "spec waiting for approval", budget_checkpoint: "paused at a budget checkpoint", max_revisions: "spec at the revision limit", implementing: "implementing",
+  dependency_hold: "waiting for a dependency to merge", dependency_closed: "blocked: a dependency was closed without a merge", floor_tier: "blocked by the floor check",
+  rule_of_two: "waiting for a person to approve its run (Rule of Two)", too_large: "blocked: the change was too large", failed_implement: "blocked by a failed implement run",
+  failed_review: "blocked by a failed review run", failed_run: "blocked by a failed run", agent_needs_human: "blocked: the agent asked for a human",
+  repeated_failure: "blocked: a run failed the same way twice", recurring_failure: "held: its run failed like a known recurring failure", reviewing: "in review", merge_pending: "waiting for a human merge",
+  max_loops: "review loop limit reached", merge_conflict: "PR has a merge conflict", session_released: "released: its session ended without a PR", other_blocked: "blocked for another reason",
+  merged: "merged", closed: "closed", phase_hold: "held: waiting for the previous phase of its split",
 };
 
 /** The phase in the words the owner sees: `/help`, the command table and every refusal use it, never a stage name. */
@@ -379,7 +378,8 @@ function whenText(c: CommandSpec): string {
         ? "any open or merged item"
         : c.phases.map((p) => PHASE_LABELS[p]).join(", ");
   const on = (label: string, ps?: readonly CommandPhase[]) => (ps?.length ? `; ${label}: ${ps.map((p) => PHASE_LABELS[p]).join(", ")}` : "");
-  return (c.needs_pr ? `${where}, once it has a PR (a local item needs none)` : where) + on("on a local item with no PR", c.local_phases) + on("on its PR", c.pr_phases);
+  // A command that applies only to a local item (`phases` empty) starts with its local phases.
+  return ((c.needs_pr ? `${where}, once it has a PR (a local item needs none)` : where) + on("on a local item with no PR", c.local_phases) + on("on its PR", c.pr_phases)).replace(/^; /, "");
 }
 
 /** The command table in SET_UP.md, generated from COMMANDS; a test keeps the two equal. */
@@ -464,9 +464,9 @@ export function retryPathsReply(paths: readonly string[], command = "/retry"): s
   return `${command} +paths ${unique.join(" ")}`;
 }
 
-/** An agent's text without its own `/retry +`, `/approve +` or `/resolve +` lines: only the controller's reply is shown. */
+/** An agent's text without its own `/retry +`, `/approve +`, `/resolve +` or `/paths +` lines: only the controller's reply is shown. */
 export const withholdReplyLines = (text: string): string =>
-  text.split(/\r?\n/).filter((l) => !/\/(?:retry|approve|resolve)\s+\+/i.test(l)).join("\n").trim() || "(withheld: a reply command the agent wrote)";
+  text.split(/\r?\n/).filter((l) => !/\/(?:retry|approve|resolve|paths)\s+\+/i.test(l)).join("\n").trim() || "(withheld: a reply command the agent wrote)";
 
 /**
  * `/link <code>` (design 2026-11-01): the code, or "" when the line has none. Null for any other comment. The
@@ -485,7 +485,7 @@ export const CHAT_BOT = "@software-factory";
  * The chat `help` reply: only the commands the sender may run in that place. `may` says whether the sender's role
  * allows an action; `state` is the item's when asked in its thread, else null. Outside an item's thread: the
  * reads, the request that starts work, and `/link` (there a bare `link` would be a request). In an item's thread: the
- * reads, `merge` when it applies, and the item's commands that apply now, each line the issue footer's text for that
+ * reads, `merge` when it applies, and the item's commands that apply now, each with its full description for that
  * state (issue #528) shown without its `/` (chatForm, issue #541), as typed after the mention there. Writes refused in
  * chat (`edge`) are never listed.
  */
@@ -494,7 +494,7 @@ export function chatHelpReply(may: (w: CommandWho) => boolean, state: CommandSta
   for (const c of COMMAND_TABLE) {
     if (c.edge || !may(c.who)) continue;
     if (c.chat_args === "request" && state !== null) continue;
-    if (c.item && (c.name !== "merge" || state?.phase !== "merge_pending")) continue;
+    if (c.item && (c.name !== "merge" || (state?.phase !== "merge_pending" && !state?.merge_check))) continue;
     lines.push(`- \`${c.chat}\`: ${c.does}.`);
   }
   const now = state !== null && may("approve_spec") ? commandsFor(state).filter((c) => c.name !== "help") : [];
@@ -555,6 +555,15 @@ export function dependencyHoldRefusal(held: string | null): string {
 export function specNotWaiting(phase: CommandPhase): string {
   return `the spec is not waiting for approval (the item is ${phaseLabel(phase)})`;
 }
+
+/** The reason for `/approve` on a spec that changes no file in this repo (design 04-spec-gate-commands, 2026-11-20); the spec comment says it too. */
+export const NO_FILES_REFUSAL = "the spec changes no file in this repo (its files_to_change is empty), so there is nothing to implement; reply `/revise <feedback>` for a spec that changes a file here, or `/reject <reason>` to close";
+/** Whether `spec` changes no file in this repo: one spec (not a split) whose files_to_change is empty. */
+export const changesNoFile = (spec: TriageOutput | null): boolean => spec !== null && !spec.phases && spec.files_to_change.length === 0;
+/** NO_FILES_REFUSAL when `it` waits at the spec gate on a spec that changes no file, else null. The caller passes the runs. */
+export const noFilesRefusal = (it: WorkItem, runs: readonly Run[]): string | null => (awaitingSpec(it) && changesNoFile(latestSpec(runs)) ? NO_FILES_REFUSAL : null);
+/** The reason for `/retry +paths` on an item whose `/retry` re-checks its premise first (design 04-spec-gate-commands, 2026-11-20). */
+export const RECHECK_PATHS_REFUSAL = "the item's last change is more than a day old, so `/retry` re-checks its premise with a new triage run first, and `+paths` does not apply to that; reply `/retry` without `+paths`, then `/approve +paths <path>...` on the new spec";
 
 /**
  * Why `/approve` cannot apply to `it` whatever its runs say, in the controller's words; null when the controller may

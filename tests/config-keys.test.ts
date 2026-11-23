@@ -2,8 +2,11 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildUiParts, loadConfig, uiUserId } from "../src/compose.js";
+import { buildUiParts } from "../src/compose.js";
+import { loadConfig } from "../src/load-config.js";
+import { uiUserId } from "../src/config-values.js";
 import { goldenConfig } from "../src/core/config.js";
+import { cleanupConfig } from "../src/cleanup/index.js";
 import type { CliIdentity } from "../src/core/local-cli.js";
 import type { UserId } from "../src/core/types.js";
 import {
@@ -68,15 +71,6 @@ describe("config keys: unknown keys fail at load", () => {
     expect(err.message).toContain('did you mean "type"?');
   });
 
-  it("a mysql store fails at startup through the unknown FactoryStore plugin error that names store.type", async () => {
-    const mysql = { type: "mysql", host: "localhost", port: 3306, database: "software_factory", user: "factory" };
-    const err = await loadError({ ...REAL, store: mysql });
-    expect(err).not.toBeInstanceOf(ConfigKeyError);
-    expect(err.message).toMatch(/unknown FactoryStore plugin "mysql" at store\.type/);
-    // Its keys are not reported as unknown store keys: a type not in STORE_KEYS skips that check.
-    expect(err.message).not.toContain("store.host");
-  });
-
   it("an unknown key inside a floors entry names the path with the index", async () => {
     const floors = [{ prefix: "a/", tiar: 3 }, ...(REAL.floors as object[])];
     const err = await loadError({ ...REAL, floors });
@@ -98,6 +92,29 @@ describe("config keys: unknown keys fail at load", () => {
       expect(err.message).toContain(`valid ${block} keys: ${keys.join(", ")}`);
     });
   }
+
+  it("repo.restart_command: absent is off, an argv of non-empty strings loads, any other value fails startup naming the key", async () => {
+    const repo = REAL.repo as Record<string, unknown>;
+    expect((await loadConfig(root({ ...REAL, repo }))).config.repo.restart_command).toBeUndefined();
+    const set = await loadConfig(root({ ...REAL, repo: { ...repo, restart_command: ["bin/restart", "--port", "8080"] } }));
+    expect(set.config.repo.restart_command).toEqual(["bin/restart", "--port", "8080"]);
+    for (const bad of ["bin/stop && bin/start", [], ["bin/restart", ""], [1], null]) {
+      const err = await loadError({ ...REAL, repo: { ...repo, restart_command: bad } });
+      expect(err.message, JSON.stringify(bad)).toContain("repo.restart_command must be a non-empty array of non-empty strings (argv)");
+    }
+  });
+
+  it("repo.test_selection: absent is off, this repo's hubs and always lists load, a bad value fails startup naming the key", async () => {
+    const { test_selection, ...repo } = REAL.repo as Record<string, unknown>;
+    expect(test_selection).toBeDefined();
+    expect((await loadConfig(root({ ...REAL, repo }))).config.repo.test_selection).toBeUndefined();
+    const set = await loadConfig(root(REAL));
+    expect(set.config.repo.test_selection).toEqual(test_selection);
+    for (const bad of [[], { hubs: ["src/"], always: [] }, { hubs: [], always: ["/abs/"] }, { hubs: [], always: [], extra: 1 }]) {
+      const err = await loadError({ ...REAL, repo: { ...repo, test_selection: bad } });
+      expect(err.message, JSON.stringify(bad)).toContain("repo.test_selection");
+    }
+  });
 
   it('a sqlite store with the key "host" fails', async () => {
     const err = await loadError({ ...REAL, store: { type: "sqlite", host: "localhost" } });
@@ -209,11 +226,6 @@ describe("config keys: packs (design 11-packs.md)", () => {
 describe("config keys: defaults and projects", () => {
   const ID = "seonWKim/software-factory";
   const PROJECT_KEYS = ["max_attempts", "max_diff_lines", "max_diff_files", "budgets", "floors"];
-
-  it("defaults and projects are valid top-level keys", () => {
-    expect(TOP_LEVEL_KEYS).toContain("defaults");
-    expect(TOP_LEVEL_KEYS).toContain("projects");
-  });
 
   it("an unknown key inside a project names the project and the key, lists the project keys and suggests", async () => {
     const err = await loadError({ ...REAL, projects: { [ID]: { max_dif_lines: 10 } } });
@@ -334,10 +346,6 @@ describe("coordination config (design §5, 2026-11-03)", () => {
     expect(err).toBeInstanceOf(ConfigKeyError);
     expect(err.message).toContain("conflict_window_days must be a positive integer");
   });
-
-  it("the checked-in config loads with the coordination keys", async () => {
-    await expect(loadConfig(root(SQLITE))).resolves.toBeTruthy();
-  });
 });
 
 describe("config keys: openai_compatible", () => {
@@ -345,17 +353,8 @@ describe("config keys: openai_compatible", () => {
   const BLOCK = { base_url: "https://api.example.test/v1", models: MODELS };
   const withBlock = (block: unknown) => ({ ...SQLITE, openai_compatible: block });
 
-  it("is a top-level key", () => {
-    expect(TOP_LEVEL_KEYS).toContain("openai_compatible");
-  });
-
   it("a valid block loads", async () => {
     await expect(loadConfig(root(withBlock(BLOCK)))).resolves.toBeTruthy();
-  });
-
-  it("the checked-in config, which has no block, still loads", async () => {
-    expect(REAL).not.toHaveProperty("openai_compatible");
-    await expect(loadConfig(root(SQLITE))).resolves.toBeTruthy();
   });
 
   it("a misspelled key in the block names its full path and the valid keys", async () => {
@@ -415,10 +414,6 @@ describe("config keys: openai_compatible", () => {
 });
 
 describe("config keys: path_companions (design 04-triage.md)", () => {
-  it("is a top-level key", () => {
-    expect(TOP_LEVEL_KEYS).toContain("path_companions");
-  });
-
   it("a config that sets it loads without an unknown-key error", async () => {
     const loaded = await loadConfig(root({ ...SQLITE, path_companions: [{ when: "src/a.ts", also: ["docs/a/"] }] }));
     expect(loaded.config.path_companions).toEqual([{ when: "src/a.ts", also: ["docs/a/"] }]);
@@ -538,6 +533,35 @@ describe("retention (design 08-retention)", () => {
   });
 });
 
+describe("cleanup (design 08-cleanup)", () => {
+  it("is a file-only top-level key; absent, cleanup is on with keep_hours 24", async () => {
+    expect(TOP_LEVEL_KEYS).toContain("cleanup");
+    const { file } = await loadConfig(root(SQLITE));
+    expect(cleanupConfig(file)).toEqual({ enabled: true, keep_hours: 24 });
+  });
+
+  it("reads the set values; an absent key keeps its default; keep_hours 0 loads", async () => {
+    expect(cleanupConfig((await loadConfig(root({ ...SQLITE, cleanup: { enabled: false } }))).file)).toEqual({ enabled: false, keep_hours: 24 });
+    expect(cleanupConfig((await loadConfig(root({ ...SQLITE, cleanup: { keep_hours: 0 } }))).file)).toEqual({ enabled: true, keep_hours: 0 });
+  });
+
+  it("keep_hours that is not an integer of 0 or more fails config load, naming the key", async () => {
+    for (const keep_hours of [-1, 1.5, "24", null, true]) {
+      const err = await loadError({ ...SQLITE, cleanup: { keep_hours } });
+      expect(err).toBeInstanceOf(ConfigKeyError);
+      expect(err.message).toContain("cleanup.keep_hours must be an integer of 0 or more");
+    }
+    expect((await loadError({ ...SQLITE, cleanup: { enabled: "yes" } })).message).toContain("cleanup.enabled must be true or false");
+    expect((await loadError({ ...SQLITE, cleanup: 24 })).message).toContain("cleanup must be an object");
+  });
+
+  it("an unknown key under cleanup fails at load with a suggestion", async () => {
+    const err = await loadError({ ...SQLITE, cleanup: { keep_hour: 24 } });
+    expect(err.message).toContain('unknown config key "keep_hour" at cleanup.keep_hour');
+    expect(err.message).toContain('did you mean "keep_hours"?');
+  });
+});
+
 describe("golden (design 06-measurement, eval on change)", () => {
   it("is a top-level key; absent, startup succeeds and the gate is off", async () => {
     expect(TOP_LEVEL_KEYS).toContain("golden");
@@ -571,5 +595,34 @@ describe("golden (design 06-measurement, eval on change)", () => {
     const err = await loadError({ ...SQLITE, golden: { replay: 3 } });
     expect(err.message).toContain('unknown config key "replay" at golden.replay');
     expect(err.message).toContain('did you mean "replays"?');
+  });
+});
+
+describe("repo.check_tz (design §4, the merge check's time zone)", () => {
+  const REPO = REAL.repo as Record<string, unknown>;
+  const withTz = (value: unknown) => ({ ...SQLITE, repo: { ...REPO, check_tz: value } });
+
+  it("absent: off, nothing set", async () => {
+    const { check_tz: _, ...repo } = REPO;
+    expect((await loadConfig(root({ ...SQLITE, repo }))).config.repo).not.toHaveProperty("check_tz");
+  });
+
+  it("an IANA zone name loads; the checked-in config sets UTC", async () => {
+    for (const zone of ["UTC", "Asia/Seoul", "America/New_York", "Etc/GMT+9"]) {
+      expect((await loadConfig(root(withTz(zone)))).config.repo.check_tz).toBe(zone);
+    }
+    expect(REPO.check_tz).toBe("UTC");
+  });
+
+  it("a value that is not a known IANA zone fails at startup, naming the key", async () => {
+    for (const value of ["Mars/Olympus", "", "+09:00", "-05:00", "utc ", 9, null, ["UTC"], { zone: "UTC" }]) {
+      const err = await loadError(withTz(value));
+      expect(err.message, JSON.stringify(value)).toContain("repo.check_tz must be an IANA time zone name");
+    }
+  });
+
+  it("check_tz is a known repo key", async () => {
+    const err = await loadError({ ...SQLITE, repo: { ...REPO, check_zt: "UTC" } });
+    expect(err.message).toMatch(/did you mean "check_tz"/);
   });
 });

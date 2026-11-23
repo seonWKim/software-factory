@@ -1,18 +1,18 @@
 import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { API, type StepFilter, type TranscriptPage, type TranscriptStep, getJson } from "../api.js";
+import { API, POLL_MS, type StepFilter, type TranscriptPage, type TranscriptStep, getJson } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
-import { PageHeader, EmptyState } from "../components/ui/notice.js";
+import { PageHeader, PageToolbar, EmptyState } from "../components/ui/notice.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { cn } from "../lib/cn.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { ago } from "../lib/format.js";
+import { duration, errorLabel, runStatusLabel } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
-import { runKindLabel } from "./common.js";
+import { When, runKindLabel } from "./common.js";
 import { Card } from "../components/ui/card.js";
 import { Badge } from "../components/ui/badge.js";
 
@@ -20,7 +20,9 @@ import { Badge } from "../components/ui/badge.js";
 // steps, one page (at most 64 KiB of the file) at a time. Every text is what the API gave: scanned on channel
 // `ui`, a flagged step already "[withheld: <rule>]". Assistant text collapses past five lines, tool results start
 // collapsed, errors are highlighted. A failed run can jump to its last 20 steps, read from the file's end. The
-// step-type filter runs on the server, so it holds across pages. Never polls: a stored transcript does not change.
+// step-type filter runs on the server, so it holds across pages. While the run is queued or running, the worker
+// rewrites its transcript as it goes (at most every 5 s): the page polls every POLL_MS (3 s) and reads on to the
+// next page on its own, so new steps appear without a reload; once the run ends it stops polling.
 
 /** Lines of assistant text shown before "Show all". */
 export const TEXT_LINES = 5;
@@ -33,6 +35,9 @@ const FILTERS: readonly { value: StepFilter | null; label: MessageKey }[] = [
   { value: "commands", label: "transcript.filterCommands" },
   { value: "reads", label: "transcript.filterReads" },
 ];
+
+/** Whether a run is still writing its transcript (queued or running). */
+const isLive = (status: string | undefined) => status === "queued" || status === "running";
 
 export const transcriptPath = (item: string, run: string) => `${itemPath(item)}/runs/${encodeURIComponent(run)}`;
 
@@ -142,13 +147,14 @@ function Outcome({ run, now }: { run: TranscriptPage["run"]; now: number }) {
       )}
     >
       <p className="font-medium">
-        {failed ? t("transcript.failed", { code: o.error_code ?? t("transcript.unknown") }) : o ? t("transcript.succeeded") : t("transcript.noOutcome", { status: run.status })}
+        {failed ? t("transcript.failed", { code: o.error_code ? errorLabel(o.error_code) : t("transcript.unknown") }) : o ? t("transcript.succeeded") : t("transcript.noOutcome", { status: runStatusLabel(run.status) })}
       </p>
-      {failed && o.detail && <p>{o.detail}</p>}
-      {!failed && o?.summary && <p>{o.summary}</p>}
+      {failed && o.detail && <p data-raw>{o.detail}</p>}
+      {!failed && o?.summary && <p data-raw>{o.summary}</p>}
       <p className="mt-1 text-xs opacity-80 tabular-nums">
-        {t("transcript.runLine", { kind: runKindLabel(run.kind), attempt: run.attempt, worker: run.worker_id ?? "–", started: run.started_at ? `${ago(run.started_at, now)}${t("topbar.ago")}` : "–" })}
-        {run.started_at && run.finished_at ? t("transcript.took", { time: ago(run.started_at, Date.parse(run.finished_at)) }) : ""}
+        {t("transcript.runLine", { kind: runKindLabel(run.kind), attempt: run.attempt, worker: run.worker_id ?? "–" })}
+        {run.started_at && <> · <When at={run.started_at} now={now} label="item.startedAgo" /></>}
+        {run.started_at && run.finished_at ? t("transcript.took", { time: duration(Date.parse(run.finished_at) - Date.parse(run.started_at)) }) : ""}
       </p>
     </div>
   );
@@ -173,7 +179,7 @@ export function TranscriptView({ itemId, runId }: { itemId: string; runId: strin
     queryFn: ({ pageParam }) => getJson<TranscriptPage>(API.transcript(itemId, runId, query({ offset: pageParam, filter, tail, part }))),
     initialPageParam: 0,
     getNextPageParam: (last: TranscriptPage) => (last.mode === "tail" || last.next === null ? undefined : last.next),
-    refetchInterval: false,
+    refetchInterval: (query) => (isLive(query.state.data?.pages[0]?.run.status) ? POLL_MS : false),
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     staleTime: Infinity,
@@ -189,9 +195,12 @@ export function TranscriptView({ itemId, runId }: { itemId: string; runId: strin
     return n;
   })();
   const { hasNextPage, isFetchingNextPage, fetchNextPage } = q;
+  const live = isLive(pages[0]?.run.status);
   useEffect(() => {
-    if (filter && hasNextPage && !isFetchingNextPage && emptyRun > 0 && emptyRun < AUTO_PAGES) void fetchNextPage();
-  }, [filter, hasNextPage, isFetchingNextPage, emptyRun, fetchNextPage]);
+    // While live, the next page is read as soon as the file grows past this one, the same way as an empty filter page.
+    const auto = live || (filter && emptyRun > 0 && emptyRun < AUTO_PAGES);
+    if (auto && hasNextPage && !isFetchingNextPage) void fetchNextPage();
+  }, [live, filter, hasNextPage, isFetchingNextPage, emptyRun, fetchNextPage]);
 
   if (q.isError) {
     return (
@@ -210,36 +219,39 @@ export function TranscriptView({ itemId, runId }: { itemId: string; runId: strin
     <>
       <Back itemId={itemId} />
       <PageHeader title={t("transcript.title", { kind: runKindLabel(run.kind), attempt: run.attempt })} />
-      <Outcome run={run} now={now} />
-      <ButtonRow className="mt-6" role="group" aria-label={t("transcript.stepType")}>
-        {FILTERS.map((f) => (
-          <Button key={f.label} aria-pressed={filter === f.value} onClick={() => setFilter(f.value)}>
-            {t(f.label)}
-          </Button>
-        ))}
-        {run.status === "failed" && !tail && (
-          <Button variant="ghost" onClick={() => setTail(true)} className={cn("ml-auto", LINK_CLASS)}>{t("transcript.jumpTail")}</Button>
-        )}
-        {tail && (
-          <Button variant="ghost" onClick={() => setTail(false)} className={cn("ml-auto", LINK_CLASS)}>{t("transcript.fromStart")}</Button>
-        )}
-      </ButtonRow>
-      {first.parts.length > 1 && (
-        <ButtonRow className="mt-2" role="group" aria-label={t("transcript.agentStep")}>
-          {first.parts.map((p) => (
-            <Button key={p || "main"} aria-pressed={first.part === p} onClick={() => setPart(p)}>
-              {p || t("transcript.mainStep")}
+      {/* The step-type filter and the agent-step choice are page filters: the toolbar's second row, under the title. */}
+      <PageToolbar>
+        <ButtonRow role="group" aria-label={t("transcript.stepType")}>
+          {FILTERS.map((f) => (
+            <Button key={f.label} aria-pressed={filter === f.value} onClick={() => setFilter(f.value)}>
+              {t(f.label)}
             </Button>
           ))}
+          {run.status === "failed" && !tail && (
+            <Button variant="ghost" onClick={() => setTail(true)} className={cn("ml-auto", LINK_CLASS)}>{t("transcript.jumpTail")}</Button>
+          )}
+          {tail && (
+            <Button variant="ghost" onClick={() => setTail(false)} className={cn("ml-auto", LINK_CLASS)}>{t("transcript.fromStart")}</Button>
+          )}
         </ButtonRow>
-      )}
+        {first.parts.length > 1 && (
+          <ButtonRow role="group" aria-label={t("transcript.agentStep")}>
+            {first.parts.map((p) => (
+              <Button key={p || "main"} aria-pressed={first.part === p} onClick={() => setPart(p)}>
+                {p || t("transcript.mainStep")}
+              </Button>
+            ))}
+          </ButtonRow>
+        )}
+      </PageToolbar>
+      <Outcome run={run} now={now} />
       <Card title={t("transcript.steps")} count={steps.length}>
         {first.format === "plain" && <p className="mb-2 text-xs text-text-2">{t("transcript.plainFormat")}</p>}
         {tail && first.earlier && <p className="mb-2 text-xs text-text-2">{t("transcript.tailNote")}</p>}
         {steps.length === 0 && !hasNextPage ? (
-          <EmptyState title={filter ? t("transcript.noneOfType") : t("transcript.noSteps")} />
+          <EmptyState title={filter ? t("transcript.noneOfType") : live ? t("transcript.waiting") : t("transcript.noSteps")} />
         ) : (
-          <ol aria-label={t("transcript.stepsList")} className="min-w-0 space-y-2">
+          <ol data-raw aria-label={t("transcript.stepsList")} className="min-w-0 space-y-2">
             {steps.map((s) => <StepView key={s.id} step={s} />)}
           </ol>
         )}
