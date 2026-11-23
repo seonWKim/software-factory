@@ -132,8 +132,8 @@ export class RunResultsUnit {
   }
 
   async apply(run: Run): Promise<void> {
-    // A merge-check run changes no item stage: the merge queue decides on its entry and acks it (RFC 0015 M8); a restart run's result is posted and acked (local-merge unit).
-    if (run.kind === "merge-check" || run.kind === "restart") return run.kind === "restart" ? this.c.unit("local-merge").restarted(run) : this.c.unit("merge-queue").checked(run);
+    // A merge-check run changes no item stage: the merge queue decides on its entry and acks it (RFC 0015 M8); a restart run's result is posted and acked (local-merge unit); a judge run's applies to its goal split (phases unit).
+    if (run.kind === "merge-check" || run.kind === "restart" || run.kind === "judge") return run.kind === "restart" ? this.c.unit("local-merge").restarted(run) : run.kind === "judge" ? this.c.unit("phases").judgeResult(run) : this.c.unit("merge-queue").checked(run);
     // A succeeded improve run's groups are filed before its ack (design §7); a fault is logged and the run acked.
     if (run.kind === "improve" && run.outcome?.status === "succeeded") await this.c.k.guard("improve filing", () => this.c.unit("improve").fileImprove(run));
     const ack = (reason: string): Decision => ({ patch: {}, actor: SYSTEM, reason, ack_run: run.id });
@@ -156,8 +156,8 @@ export class RunResultsUnit {
       }
 
       switch (run.kind) {
-        case "merge-check": case "restart":
-          // `apply` hands merge-check runs to the merge queue, and restart runs to the local-merge unit, before it reads any outcome.
+        case "merge-check": case "restart": case "judge":
+          // `apply` hands merge-check runs to the merge queue, restart runs to the local-merge unit and judge runs to the phases unit, before it reads any outcome.
           throw new Error(`${run.kind} run ${run.id} reached the run outcome path`);
         case "triage": { const context = await this.c.unit("commands").applyQueued(it, { patch: { token_cost: tokens }, actor: SYSTEM, reason: "triaged", ack_run: run.id }); if (context.enqueue) return context; // added context: one more triage (design 02-attachments)
           // The item's size caps decide whether the estimate needs phases (src/core/split.ts).
@@ -677,12 +677,11 @@ export class RunResultsUnit {
    * this step (the first run and its automatic retries): a rate limit or a run a takeover cancelled is never an attempt; infra failures
    * (stalls too; 3 in a row hold the item) count toward max_restart (and add one to restart_count); task failures toward max_attempts. `checks_env`
    * spends neither: it is counted over the item's whole run history, and the one after CHECKS_ENV_LIMIT blocks
-   * the item on a human (`run_failed:<kind>:checks_env`) with no retry. Under both
-   * limits, a new run is enqueued in the same transition with `not_before` = failure + backoff (rate limit:
-   * its reset time). At a limit, the item blocks on a human with the last error posted. The retry key comes
-   * from the failed run's key, and the ack fences the run, so applying it twice enqueues one retry.
+   * the item on a human (`run_failed:<kind>:checks_env`) with no retry. Under both limits, a new run is enqueued in
+   * the same transition with `not_before` = failure + backoff (rate limit: its reset time). At a limit, the item blocks on a human with the last error posted (with `stop`: `stop`'s decision,
+   * no comment, as a goal's judge, 04-split-specs). The retry key is the failed run's; the ack fences a second apply.
    */
-  async retryOrBlock(it: WorkItem, run: Run, cls: FailureClass, code: string): Promise<Decision> {
+  async retryOrBlock(it: WorkItem, run: Run, cls: FailureClass, code: string, stop?: (limit: string, detail: StateChangeDetail) => Promise<Decision>): Promise<Decision> {
     const { max_restart, retry_base_ms, retry_max_ms } = this.c.k.cfg;
     const { max_attempts } = this.c.k.settings(it.project);
     const step = (await this.c.k.reader.listRuns(it.id)).filter(
@@ -710,6 +709,7 @@ export class RunResultsUnit {
     const limit = task >= max_attempts ? "max_attempts" : infra >= max_restart ? "max_restart" : null;
     // Neither a rate limit, a checks_env run nor a missing model credential is an attempt: they never reach a limit (design §5 Restarts).
     if (!held && cls !== "rate_limited" && cls !== "checks_env" && cls !== "setup_missing" && limit) {
+      if (stop) return stop(limit, detail);
       const patch = { ...restart, blocked_on: "human" as const, blocked_reason: limit };
       const url = await this.lastAttemptComment(it, run, code, limit, limit === "max_attempts" ? task : infra, footerAfter(it, patch));
       return {
@@ -721,11 +721,11 @@ export class RunResultsUnit {
       };
     }
     // The same task failure twice in a row (decided 2026-11-07): a third run would fail the same way.
-    if (cls === "task" && this.c.k.d.repeated_failure_rule !== false && repeatsLastFailure(step, run)) return this.repeatedFailure(it, run, code, detail);
+    if (cls === "task" && this.c.k.d.repeated_failure_rule !== false && repeatsLastFailure(step, run)) return stop ? stop(REPEATED_FAILURE, detail) : this.repeatedFailure(it, run, code, detail);
     // The same infra failure twice in a row, each within a minute of its start (issue #216): no passing hiccup.
-    if (cls === "infra" && this.c.k.d.repeated_failure_rule !== false && repeatsFastInfraFailure(step, run)) {
-      return this.repeatedInfraFailure(it, run, code, { ...detail, fast_repeat: true });
-    }
+    const fast = cls === "infra" && this.c.k.d.repeated_failure_rule !== false && repeatsFastInfraFailure(step, run) ? { ...detail, fast_repeat: true } : null;
+    if (fast) return stop ? stop(REPEATED_FAILURE, fast) : this.repeatedInfraFailure(it, run, code, fast);
+    if (held && stop) return stop(RECURRING_FAILURE, { ...detail, stall_streak: streak });
     // A forge 401/403, a failed access check or a forge rate limit also waits for its claim pause to end (design §5 Restarts).
     const notBefore = retryNotBefore({
       cls, code, failed_at: failedAt, backoff_at: failedAt + retryDelayMs(task + infra, retry_base_ms, retry_max_ms),
@@ -735,8 +735,8 @@ export class RunResultsUnit {
     // after a stop mid-work (rate limit, stall, timeout) the wip ref is marked `continue` by the worker, and the
     // retry runs the agent on it (design §5 Restarts).
     const wip = run.kind === "implement" && run.outcome?.status === "failed" ? run.outcome.wip : undefined;
-    // A retried review keeps the CI results read when it was queued (issue #223).
-    const input = wip ? { wip } : run.kind === "review" ? run.input : null;
+    // A retried review keeps the CI results read when it was queued (issue #223); a retried judge its phase (design 04-split-specs).
+    const input = wip ? { wip } : run.kind === "review" || run.kind === "judge" ? run.input : null;
     return {
       patch: held ? { ...restart, blocked_on: "human", blocked_reason: RECURRING_FAILURE } : restart,
       actor: SYSTEM,

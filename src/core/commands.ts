@@ -3,10 +3,9 @@ import { LOCAL_SOURCE } from "./local-merge.js";
 import { type TriageOutput, parseTriage } from "./outputs.js";
 import { type ItemPhase, isClosedPhase, phaseOf } from "./phase.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, SESSION_RELEASED, blockingRunKind } from "./policy.js";
-import type { Run, RunKind, WorkItem } from "./types.js";
+import { SCHEDULE_CHECKPOINT } from "./schedule.js"; import type { Run, RunKind, WorkItem } from "./types.js";
 import { MERGE_CHECK_HELP_LINE, awaitingSpec } from "./request-transition.js";
-export * from "./request-transition.js"; // the approve and merge gates' shared checks (design 04-gate-commands)
-export { AT_TRIAGE, type Attachment, addedContext, attachmentLine } from "./attachments.js"; // added context and attachments, for triage (design 02-attachments)
+export * from "./request-transition.js"; export { AT_TRIAGE, type Attachment, addedContext, attachmentLine } from "./attachments.js"; // the gates' shared checks (design 04-gate-commands); added context and attachments, for triage (02-attachments)
 
 /**
  * The human commands on a work item (design §4): one table of names, usage, descriptions and the states
@@ -579,6 +578,7 @@ export function approveRefusal(it: ItemState): string | null {
   if (it.stage === "CLOSED") return CLOSED_REFUSAL;
   if (it.stage === "RUNNING" && it.blocked_on === "none") return null;
   if (it.blocked_reason === "budget_checkpoint") return CHECKPOINT_REFUSAL;
+  if (it.blocked_reason === SCHEDULE_CHECKPOINT) return null; // the approve gate closes it (design 08-schedules)
   const s = commandState(it);
   if (applies(commandSpec("approve"), s)) return null;
   if (it.stage === "READY" && (it.blocked_on === "upstream" || it.blocked_reason === "delivery_failed")) return null;

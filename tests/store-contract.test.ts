@@ -184,6 +184,24 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
     });
   });
 
+  describe("merge checks (design 05-merge-conflict, Re-check)", () => {
+    it("clearMergeCheck removes only that item's stored check, leaves the item as it was, and is safe to run twice", async () => {
+      const { store } = await make();
+      const { item: a } = await store.createWorkItem(issue(1), system);
+      const { item: b } = await store.createWorkItem(issue(2), system);
+      const check = { mergeable: true, conflicts: [], head_sha: "a".repeat(40), base_sha: "b".repeat(40) };
+      await store.recordMergeCheck({ work_item_id: a.id, ...check });
+      await store.recordMergeCheck({ work_item_id: b.id, ...check });
+      expect(await store.clearMergeCheck(a.id)).toBe(true);
+      expect(await store.getMergeCheck(a.id)).toBeNull();
+      expect(await store.getMergeCheck(b.id)).not.toBeNull();
+      expect(await store.clearMergeCheck(a.id)).toBe(false);
+      const after = (await store.getWorkItem(a.id))!;
+      expect([after.stage, after.blocked_on, after.blocked_reason, after.version]).toEqual([a.stage, a.blocked_on, a.blocked_reason, a.version]);
+      expect(await store.listStateChanges(a.id)).toHaveLength((await store.listStateChanges(b.id)).length);
+    });
+  });
+
   describe("runs and leases", () => {
     async function queued() {
       const ctx = await make();

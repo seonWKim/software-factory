@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
@@ -562,6 +562,25 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
       `transcripts/${item.id}/${runs[0]!.id}.merge.json`,
       `transcripts/${item.id}/${runs[0]!.id}.resolve.json`,
     ]);
+  });
+
+  it("a modify/delete conflict the retry resolves by deleting the file: the deletion is staged and the merge is pushed", async () => {
+    const f = await setup({
+      moveMain: (dev) => {
+        git(dev, "pull", "--quiet", "--ff-only", "origin", "main");
+        git(dev, "rm", "--quiet", "--", "src/a.txt");
+        commitFile(dev, "src/b.txt", "a moved to b\n", "main replaces a with b");
+        git(dev, "push", "--quiet", "origin", "main");
+      },
+      resolve: () => undefined, // the first step leaves the conflict
+      retry: (wd) => rmSync(join(wd, "src/a.txt")), // takes the base's deletion, without staging it
+    });
+    const item = await f.approveAndImplement();
+    const branch = `refs/heads/factory/${item.id}`;
+    const runs = await f.implementRuns(item.id);
+    expect(runs[0]!.outcome).toMatchObject({ status: "succeeded", data: { conflicts: ["src/a.txt"] } });
+    expect(git(f.origin, "ls-tree", "--name-only", "-r", branch, "--", "src")).toBe("src/b.txt");
+    expect(f.contains(branch, f.remote("refs/heads/main"))).toBe(true);
   });
 
   it("the resolve-step retry keeps the gates: markers left fail merge_conflict and push nothing", async () => {

@@ -5,10 +5,12 @@
 // needs the CSRF token; plugins-import-api.ts), /api/v1/calendar (calendar-api.ts), /api/v1/model-credential (the
 // dialog's secret names; model-credential.ts), /api/v1/supervisor (what Migrate now, Start and Restart now may do;
 // migrate-api.ts), /api/v1/calendar/events (the Calendar page's range read; calendar-events-api.ts) and
-// /api/v1/evals/<skill>/runs (a skill's eval runs; evals-api.ts, a path pattern); every other
+// /api/v1/evals/<skill>/runs, /grid and /compare (a skill's eval runs, grid and compare; evals-api.ts, a path
+// pattern) and /api/v1/items/:id/changes (the item page's Changes tab; changes.ts); every other
 // path is api.ts's. They are served here beside api.ts so it stays within its size budget. A new read route adds one
 // entry to READ_ROUTES, not a line in server.ts.
 
+import { compareSkillEvalRuns, skillEvalGrid } from "../core/skill-eval-compare.js";
 import { type ApiResult, api, apiError } from "./api.js";
 import { staleCsrf } from "./commands.js";
 import { csrfMatches } from "./settings-api.js";
@@ -22,7 +24,8 @@ import { CALENDAR_PATH, readCalendarStatus } from "./calendar-api.js";
 import { CALENDAR_EVENTS_PATH, readCalendarEvents } from "./calendar-events-api.js";
 import { MODEL_CREDENTIAL_PATH, readModelCredential } from "./model-credential.js";
 import { SUPERVISOR_PATH, readSupervisor } from "./migrate-api.js";
-import { EVALS_RUNS_PATH, readSkillEvalRuns } from "./evals-api.js";
+import { EVALS_PATH, readSkillEvals } from "./evals-api.js";
+import { changesPathId, readItemChanges } from "./changes.js";
 import type { ServerDeps, UiRequest } from "./server.js";
 
 /** One GET (or HEAD) route under /api/v1: its path (or a pattern over it) and its read. */
@@ -52,11 +55,13 @@ const READ_ROUTES: readonly ReadRoute[] = [
   // Unwired, the supervisor path falls through to api.ts's 404.
   { path: SUPERVISOR_PATH, run: (d, u) => (d.migrate !== undefined && d.pauses !== undefined ? readSupervisor(d.migrate, d.pauses) : api(d, u)) },
   { path: CALENDAR_EVENTS_PATH, run: (d, u) => readCalendarEvents(d, u.searchParams.get("from"), u.searchParams.get("to")) },
-  { path: EVALS_RUNS_PATH, run: (d, u) => readSkillEvalRuns(d, u.pathname) },
+  { path: EVALS_PATH, run: (d, u) => readSkillEvals(d, { grid: skillEvalGrid, compare: compareSkillEvalRuns }, u) },
 ];
 
 /** Answers one GET (or HEAD) under /api/v1 on its parsed URL. */
 export async function readApi(d: ServerDeps, url: URL, req: UiRequest): Promise<ApiResult> {
   const route = READ_ROUTES.find((r) => (typeof r.path === "string" ? r.path === url.pathname : r.path.test(url.pathname)));
-  return route ? route.run(d, url, req) : api(d, url);
+  if (route) return route.run(d, url, req);
+  const changesId = changesPathId(url.pathname);
+  return changesId !== null ? readItemChanges(d, changesId, url.searchParams.get("path")) : api(d, url);
 }

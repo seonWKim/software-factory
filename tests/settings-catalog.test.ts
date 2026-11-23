@@ -53,11 +53,9 @@ describe("settings catalog", () => {
     for (const k of DASHBOARD_KEYS) expect(SETTABLE_KEYS as readonly string[], k).not.toContain(k);
   });
 
-  it("holds worker_kinds, a global runtime list of the worker, free, defaulting to all eight claimable kinds", () => {
-    expect(catalog.get("worker_kinds")).toMatchObject({
-      owner: "worker", type: "list", changed_by: "runtime", scope: "global", direction: "free",
-      default: ["triage", "review", "merge-check", "update", "restart", "improve", "implement", "resolve"],
-    });
+  it("holds worker_kinds, a global runtime list of the worker, free, defaulting to every claimable kind", () => {
+    expect(catalog.get("worker_kinds")).toMatchObject({ owner: "worker", type: "list", changed_by: "runtime", scope: "global", direction: "free", default: [...WORKER_KINDS] });
+    expect(WORKER_KINDS).toContain("judge");
     expect(SETTABLE_DEFAULTS.worker_kinds).toEqual([...WORKER_KINDS]);
   });
 

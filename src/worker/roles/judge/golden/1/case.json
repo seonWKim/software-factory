@@ -1,0 +1,6 @@
+{
+  "id": "1",
+  "work_item_id": "golden_judge_1",
+  "expect": "should_flag",
+  "note": "The last phase merged a chunks helper that drops the last partial chunk, so the goal line 'no item is lost' does not hold. The judge must not answer done: fix (or ask) flags the case."
+}

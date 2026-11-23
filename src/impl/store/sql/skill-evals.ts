@@ -58,6 +58,43 @@ export class SqlSkillEvalStore extends SqlScheduleStore implements SkillEvalStor
     return (await this.db.all(`SELECT ${CASE_COLUMNS} FROM controller_skill_eval_cases WHERE suite_id = ? ORDER BY created_at, id`, [suite_id])).map(rowToCase);
   }
 
+  updateSkillEvalSuiteTitle(id: string, title: string): Promise<SkillEvalSuite | null> {
+    return this.db.transaction(async (tx) => {
+      await tx.run("UPDATE controller_skill_eval_suites SET title = ? WHERE id = ?", [title, id]);
+      const [row] = await tx.all(`SELECT ${SUITE_COLUMNS} FROM controller_skill_eval_suites WHERE id = ?`, [id]);
+      return row ? rowToSuite(row) : null;
+    });
+  }
+
+  deleteSkillEvalSuite(id: string): Promise<"deleted" | "running" | "unknown"> {
+    return this.db.transaction(async (tx) => {
+      const [suite] = await tx.all("SELECT id FROM controller_skill_eval_suites WHERE id = ?", [id]);
+      if (!suite) return "unknown";
+      const [running] = await tx.all("SELECT id FROM controller_skill_eval_runs WHERE suite_id = ? AND status = 'running'", [id]);
+      if (running) return "running";
+      await tx.run("DELETE FROM controller_skill_eval_cases WHERE suite_id = ?", [id]);
+      await tx.run("DELETE FROM controller_skill_eval_suites WHERE id = ?", [id]);
+      return "deleted";
+    });
+  }
+
+  async getSkillEvalCase(id: string): Promise<SkillEvalCase | null> {
+    const [row] = await this.db.all(`SELECT ${CASE_COLUMNS} FROM controller_skill_eval_cases WHERE id = ?`, [id]);
+    return row ? rowToCase(row) : null;
+  }
+
+  updateSkillEvalCase(id: string, c: Pick<SkillEvalCase, "input" | "expected">): Promise<SkillEvalCase | null> {
+    return this.db.transaction(async (tx) => {
+      await tx.run("UPDATE controller_skill_eval_cases SET input = ?, expected = ? WHERE id = ?", [JSON.stringify(c.input), JSON.stringify(c.expected), id]);
+      const [row] = await tx.all(`SELECT ${CASE_COLUMNS} FROM controller_skill_eval_cases WHERE id = ?`, [id]);
+      return row ? rowToCase(row) : null;
+    });
+  }
+
+  deleteSkillEvalCase(id: string): Promise<boolean> {
+    return this.db.transaction(async (tx) => (await tx.run("DELETE FROM controller_skill_eval_cases WHERE id = ?", [id])) === 1);
+  }
+
   startSkillEvalRun(r: Pick<SkillEvalRun, "id" | "suite_id" | "created_by"> & { skill_version?: string | null }): Promise<SkillEvalRun> {
     return this.db.transaction(async (tx) => {
       await tx.run(`INSERT OR IGNORE INTO controller_skill_eval_runs (${RUN_COLUMNS}) VALUES (?, ?, 'running', ?, NULL, ?, ?)`, [r.id, r.suite_id, this.evalStamp(), r.created_by, r.skill_version ?? null]);
@@ -89,6 +126,11 @@ export class SqlSkillEvalStore extends SqlScheduleStore implements SkillEvalStor
       [skill_ref],
     );
     return rows.map(rowToRun);
+  }
+
+  async getSkillEvalRun(id: string): Promise<SkillEvalRun | null> {
+    const [row] = await this.db.all(`SELECT ${RUN_READ} FROM controller_skill_eval_runs WHERE id = ?`, [id]);
+    return row ? rowToRun(row) : null;
   }
 
   recordSkillEvalRunFigures(id: string, f: SkillEvalRunFigures): Promise<boolean> {

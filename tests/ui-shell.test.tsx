@@ -286,6 +286,53 @@ describe("top bar", () => {
     expect(within(header).getByRole("button", { name: "Refresh" }).className.split(" ")).toContain("shrink-0");
   });
 
+  /** Mounts the app at `px` wide with the pause routes on, so Stop all agents shows; restores both after `body`. */
+  async function atWidth(px: number, body: (header: HTMLElement) => Promise<void>) {
+    const wide = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: px });
+    RESPONSES["/api/v1/pauses"] = { pauses: [], csrf_token: "tok" };
+    try {
+      mount();
+      await waitBadge();
+      const header = document.querySelector("header")!;
+      await within(header).findByRole("button", { name: "Stop all agents" });
+      await body(header);
+    } finally {
+      delete RESPONSES["/api/v1/pauses"];
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: wide });
+    }
+  }
+
+  it("below sm: Stop all agents is icon-only, Search and Refresh sit in one More menu, Theme stays", async () => {
+    await atWidth(390, async (header) => {
+      const stop = within(header).getByRole("button", { name: "Stop all agents" });
+      expect(stop.getAttribute("aria-label")).toBe("Stop all agents");
+      expect(stop.textContent).toBe("");
+      expect(stop.querySelector("svg")).toBeTruthy();
+      expect(within(header).queryByRole("button", { name: "Search" })).toBeNull();
+      expect(within(header).queryByRole("button", { name: "Refresh" })).toBeNull();
+      expect(within(header).getByRole("button", { name: "Theme" })).toBeTruthy();
+      fireEvent.click(within(header).getByRole("button", { name: "More" }));
+      const menu = within(header).getByRole("menu", { name: "More" });
+      const names = within(menu).getAllByRole("menuitem").map((m) => m.textContent);
+      expect(names).toEqual(expect.arrayContaining(["Search", "Refresh"]));
+      fireEvent.click(within(menu).getByRole("menuitem", { name: "Search" }));
+      expect(await screen.findByRole("dialog")).toBeTruthy();
+    });
+  });
+
+  it("at sm and wider: Stop all agents shows its text, Search and Refresh are their own buttons, no More menu", async () => {
+    await atWidth(1024, async (header) => {
+      const stop = within(header).getByRole("button", { name: "Stop all agents" });
+      expect(stop.textContent).toBe("Stop all agents");
+      expect(stop.hasAttribute("aria-label")).toBe(false);
+      expect(within(header).getByRole("button", { name: "Search" })).toBeTruthy();
+      expect(within(header).getByRole("button", { name: "Refresh" })).toBeTruthy();
+      expect(within(header).getByRole("button", { name: "Theme" })).toBeTruthy();
+      expect(within(header).queryByRole("button", { name: "More" })).toBeNull();
+    });
+  });
+
   it("has no Needs you chip and no age text; the sidebar Tasks badge keeps the count", async () => {
     mount();
     await waitBadge();
