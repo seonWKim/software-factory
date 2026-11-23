@@ -1203,7 +1203,8 @@ describe("Rules page", () => {
 
   it("no rules string names a tool, the ledger or a CLI path", async () => {
     const { rules } = await import("../web/src/i18n/en/rules.js");
-    for (const [key, text] of Object.entries(rules)) expect([key, text]).not.toEqual([key, expect.stringMatching(/evolve|tacit|sync-agents|ledger|bin\//i)]);
+    const { standing } = await import("../web/src/i18n/en/standing.js");
+    for (const [key, text] of Object.entries({ ...rules, ...standing })) expect([key, text]).not.toEqual([key, expect.stringMatching(/evolve|tacit|sync-agents|ledger|bin\//i)]);
   });
 
   it("the intro says what the page is for in plain words, and no raw rule ID, provider ID, ISO time or kind shows outside Details", async () => {
