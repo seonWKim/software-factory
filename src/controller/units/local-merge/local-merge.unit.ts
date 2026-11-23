@@ -402,27 +402,16 @@ export class LocalMergeUnit {
    * A delivered base push (design 05-sources, Local items; RFC 0015 M8): outbound's `local` target fetched the
    * remote base, merged it into the local base when it moved, and pushed, conditionally on the remote base it read.
    * A failure (an outage, a rate limit, a base that moved again) is a delivery failure outbound retries with its
-   * batch's backoff. A remote base that does not merge cleanly posts one message on the item, which stays closed:
-   * the merge happened, only its push waits for a person. Never changes an item.
+   * batch's backoff. A remote base that does not merge cleanly is a delivered conflict: the item stays closed (the
+   * merge happened, only its push waits for a person), and Needs you shows it from the stored push
+   * (`listBasePushBacklogs`), so nothing is posted. Never changes an item.
    */
   async basePushDelivered(row: ActionRow): Promise<void> {
     const r = basePushOutcome(row);
     if (r === null || !row.work_item_id) return;
     const base = String(row.args.base_ref);
-    if ("pushed" in r) {
-      this.c.k.d.log.info("base pushed", { work_item_id: row.work_item_id, base_ref: base, sha: r.pushed });
-      return;
-    }
-    const item = await this.c.k.reader.getWorkItem(row.work_item_id as WorkItemId);
-    if (!item) return;
-    const body = [
-      `The local \`${base}\` (with this item's merge \`${String(row.args.merge_sha).slice(0, 12)}\`) was not pushed: \`origin/${base}\` moved and does not merge cleanly into it. Conflicting files:`,
-      "",
-      ...r.conflicts.map((f) => `- \`${f}\``),
-      "",
-      `The item stays closed. In the factory repo, merge \`origin/${base}\` into \`${base}\`, commit the resolution and push \`${base}\` by hand.`,
-    ].join("\n");
-    await this.c.unit("outbox").post(item, item.source, body, `<!-- factory:base-push-conflict:${row.seq} -->`);
+    if ("pushed" in r) this.c.k.d.log.info("base pushed", { work_item_id: row.work_item_id, base_ref: base, sha: r.pushed });
+    else this.c.k.d.log.warn("base push conflict", { work_item_id: row.work_item_id, base_ref: base, conflicts: r.conflicts.length });
   }
 
   /**

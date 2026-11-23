@@ -75,8 +75,6 @@ import type {
   RecordPrHeadResult,
   RecordVerdictInput,
   ThreadDelivery,
-  BasePush,
-  BasePushOutcome,
   ThreadLinkField,
   RecordVerdictResult,
   OwnerDecision,
@@ -120,6 +118,7 @@ import { SqlSkillEvalStore } from "./skill-evals.js";
 import { claimLock, endReservations, liveReservations, reservationOf } from "./reservations.js";
 import * as notices from "./notices.js";
 import * as noticeMessages from "./notice-messages.js";
+import * as basePush from "./base-push.js";
 import * as posted from "./posted-comments.js";
 import * as verdicts from "./verdicts.js";
 import * as standing from "./standing-rules.js";
@@ -2132,24 +2131,10 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
     return this.failQueued(QUEUES.outbox, seq, token, error, retry_in_ms);
   }
 
-  // The base push (design 05-sources, Local items; RFC 0015 M8): outbound's `push_base` action, its tries its batch's.
+  // The base push (design 05-sources, Local items; RFC 0015 M8): base-push.ts
 
-  async getBasePush(work_item_id: WorkItemId): Promise<BasePush | null> {
-    const [row] = await this.db.all(
-      "SELECT seq, args, delivered_ref FROM outbound_actions WHERE action = 'push_base' AND work_item_id = ? ORDER BY seq DESC LIMIT 1", [work_item_id],
-    );
-    if (!row) return null;
-    const [batch] = await this.db.all(
-      "SELECT b.attempts, b.last_error FROM outbound_batch_intents i JOIN outbound_batches b ON b.id = i.batch_id WHERE i.intent_id = ?", [`act_${Number(row.seq)}`],
-    );
-    const args = JSON.parse(String(row.args)) as { base_ref: string; merge_sha: string };
-    const done = row.delivered_ref === null ? null : (JSON.parse(String(row.delivered_ref)) as { pushed?: string; conflicts?: string[] });
-    return {
-      base_ref: args.base_ref, merge_sha: args.merge_sha,
-      attempts: Number(batch?.attempts ?? 0), last_error: (batch?.last_error as string | null | undefined) ?? null,
-      outcome: done === null ? null : done.pushed !== undefined ? "pushed" : "conflict", pushed_sha: done?.pushed ?? null,
-    };
-  }
+  getBasePush(work_item_id: WorkItemId) { return basePush.getBasePush(this.db, work_item_id); }
+  listBasePushBacklogs() { return basePush.listBasePushBacklogs(this.db); }
 
   /** Claims row `seq` of a queue for `lease_ms`: only an unfinished row with no live claim (and, with `fence`, a held lease). */
   private async claimQueued(q: Queue, seq: number, lease_ms: number, fence?: SyncFence): Promise<number | null> {

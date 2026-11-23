@@ -253,6 +253,7 @@ export function ItemsPage() {
   const [q, setQ] = useState("");
   const [ids, setIds] = useState<ReadonlySet<string> | null>(initialIds);
   const [showClosed, setShowClosed] = useState(false);
+  const [showSystem, setShowSystem] = useState(false);
   const tree = view === "tree";
   const queuedView = state === "queued";
   const setView = (v: View) => {
@@ -270,6 +271,7 @@ export function ItemsPage() {
     if (state) params.set("state", state);
     if (q.trim()) params.set("q", q.trim());
   }
+  if (showSystem) params.set("system", "1");
   const query = params.toString();
   const items = useApi<Items>(query ? `${API.items}?${query}` : API.items);
   const overview = useApi<Overview>(API.overview);
@@ -277,20 +279,20 @@ export function ItemsPage() {
   const queue = useQueuedRuns();
   const rateLimit = pauses.data?.pauses.find((x) => x.name === "rate_limit");
   const rows = items.data?.items ?? [];
-  const filter: TreeFilter = { state, q, showClosed, ids };
-  const nodes = useMemo(() => buildTree(rows, filter), [items.data, state, q, showClosed, ids]);
+  const filter: TreeFilter = { state, q, showClosed, showSystem, ids };
+  const nodes = useMemo(() => buildTree(rows, filter), [items.data, state, q, showClosed, showSystem, ids]);
   const [expanded, setExpanded] = useExpanded(defaultExpanded(nodes));
   const itemsById = useMemo(() => byId(items.data?.items), [items.data]);
   // The tree, and a list narrowed to named items, read every row and filter in the page.
   const local = tree || ids !== null;
   // Running, with no search and no named items, is the server's count of runs whose status is running, as Activity's Running now.
   const narrowed = !!q.trim() || ids !== null;
-  const counted = (s: string) => (s === "queued" ? (queue.data?.queue.length ?? "…") : s === "running" && !narrowed && items.data ? items.data.counts.running : local ?rows.filter((r) => itemMatches(r, { state: s, q, showClosed, ids })).length : (items.data?.facets.state[s] ?? 0));
+  const counted = (s: string) => (s === "queued" ? (queue.data?.queue.length ?? "…") : s === "running" && !narrowed && items.data ? items.data.counts.running : local ?rows.filter((r) => itemMatches(r, { state: s, q, showClosed, showSystem, ids })).length : (items.data?.facets.state[s] ?? 0));
   const group = groupOfFilter(state);
   // A group or state tab with no rows is hidden, unless it is the one selected.
   const shows = (s: string) => s === state || s === group || counted(s) !== 0;
   // All, with no search, no named items and closed items hidden, is the server's open count (stage not CLOSED), as Activity's Open items.
-  const allCount = !narrowed && !showClosed && items.data ? items.data.counts.open : local ? rows.filter((r) => itemMatches(r, { state: null, q, showClosed, ids })).length : (items.data?.facets.allStates ?? "");
+  const allCount = !narrowed && !showClosed && items.data ? items.data.counts.open : local ? rows.filter((r) => itemMatches(r, { state: null, q, showClosed, showSystem, ids })).length : (items.data?.facets.allStates ?? "");
   return (
     <>
       <PageHeader title={t("page.work")} description={t("work.pageDescription")} />
@@ -330,13 +332,12 @@ export function ItemsPage() {
           className="w-full max-w-sm"
         />
         <SegmentedControl label={t("items.view")} options={VIEW_OPTIONS} value={view} onChange={setView} />
-        {tree && (
-          <ButtonRow>
-            <Button size="sm" aria-pressed={showClosed} onClick={() => setShowClosed(!showClosed)}>{t("items.showClosed")}</Button>
-            <Button size="sm" onClick={() => setExpanded(parentIds(nodes))}>{t("items.expandAll")}</Button>
-            <Button size="sm" onClick={() => setExpanded([])}>{t("items.collapseAll")}</Button>
-          </ButtonRow>
-        )}
+        <ButtonRow>
+          {tree && <Button size="sm" aria-pressed={showClosed} onClick={() => setShowClosed(!showClosed)}>{t("items.showClosed")}</Button>}
+          <Button size="sm" aria-pressed={showSystem} onClick={() => setShowSystem(!showSystem)}>{t("items.showSystem")}</Button>
+          {tree && <Button size="sm" onClick={() => setExpanded(parentIds(nodes))}>{t("items.expandAll")}</Button>}
+          {tree && <Button size="sm" onClick={() => setExpanded([])}>{t("items.collapseAll")}</Button>}
+        </ButtonRow>
       </PageToolbar>
       {ids && (
         <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -351,7 +352,9 @@ export function ItemsPage() {
         </Card>
       ) : (
         <Card>
-          {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading rows={6} /> : tree ? (
+          {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading rows={6} /> : rows.length === 0 && !state && !q.trim() && !ids ? (
+            <EmptyState icon={ListTodo} title={t("items.emptyTitle")} description={t("items.emptyBody")} action={<Link href={`${BASE}tasks`} className={LINK_CLASS}>{t("items.emptyAction")}</Link>} />
+          ) : tree ? (
             nodes.length === 0 ? <EmptyState icon={ListTodo} title={t("items.noMatch")} /> : (
               <ItemsTree nodes={nodes} rows={rows} now={now} expanded={expanded} onExpanded={setExpanded} />
             )

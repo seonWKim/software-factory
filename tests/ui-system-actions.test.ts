@@ -18,6 +18,8 @@ import { HealthMonitor } from "../src/ui/health.js";
 import type { FactoryStatus } from "../src/ui/factory-status.js";
 import { type ApiDeps, respond } from "../src/ui/server.js";
 import { LastChecks, REVISION_STAMP, olderThanFactory, parseRevision, serverRevision } from "../src/ui/system-actions.js";
+import { recordAction } from "../src/outbound/intents.js";
+import type { SqlDriver } from "../src/state/index.js";
 import { buildRevision } from "../web/vite.config.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
@@ -263,6 +265,51 @@ describe("system actions: the auto-stop alarm", () => {
     const command = (await overview()).system_actions.find((a) => a.code === "alarm")!.command;
     expect(command).toContain("Turn auto back on in Settings (/app/settings)");
     expect(command.indexOf("/app/settings")).toBeLessThan(command.indexOf("factory mode auto"));
+  });
+});
+
+describe("system actions: a local base that can't reach origin (design 05-sources, Local items)", () => {
+  /** One local merge's base push of `base`, as a delivered merge stores it; `delivered` is its outcome once pushed. */
+  async function push(store: FactoryStore, clock: FakeClock, n: number, base: string, delivered?: { pushed: string } | { conflicts: string[] }) {
+    const db = (store as unknown as { db: SqlDriver }).db;
+    const { item } = await store.createWorkItem(issue(n), system);
+    const key = `push_base:${item.id}:${n}`;
+    const now = clock.now().toISOString();
+    await recordAction(db, { action: "push_base", target: { type: "git", id: `local:${base}:push`, link: "" }, work_item_id: item.id, key, args: { base_ref: base, merge_sha: String(n), message: "m" } }, now);
+    if (delivered) await db.run("UPDATE outbound_actions SET delivered_at = ?, delivered_ref = ? WHERE intent_key = ?", [now, JSON.stringify(delivered), key]);
+  }
+  const conflictRows = (o: Overview) => o.system_actions.filter((a) => a.code === "base_push_conflict");
+
+  it("a conflicting push is one row naming the files and the local merges waiting; a second one updates it; a push that lands removes it", async () => {
+    const { overview, store, clock } = await setup();
+    await push(store, clock, 1, "main");
+    // Pending only: nothing for a person yet.
+    expect(conflictRows(await overview())).toEqual([]);
+
+    await push(store, clock, 2, "main", { conflicts: ["a.txt", "src/c.txt"] });
+    let rows = conflictRows(await overview());
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.text).toBe("Local main can't reach origin");
+    expect(rows[0]!.command).toContain("a.txt, src/c.txt");
+    expect(rows[0]!.command).toContain("2 local merges waiting");
+
+    await push(store, clock, 3, "main", { conflicts: ["b.txt"] });
+    rows = conflictRows(await overview());
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.command).toContain("b.txt");
+    expect(rows[0]!.command).not.toContain("a.txt");
+    expect(rows[0]!.command).toContain("3 local merges waiting");
+
+    await push(store, clock, 4, "main", { pushed: "p" });
+    expect(conflictRows(await overview())).toEqual([]);
+  });
+
+  it("another base's row names that base", async () => {
+    const { overview, store, clock } = await setup();
+    await push(store, clock, 1, "trunk", { conflicts: ["x.txt"] });
+    const [row] = conflictRows(await overview());
+    expect(row!.text).toBe("Local trunk can't reach origin");
+    expect(row!.command).toContain("1 local merge waiting");
   });
 });
 

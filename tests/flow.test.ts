@@ -232,12 +232,14 @@ describe("failed checks after an implement run that pushed nothing", () => {
     expect(skipped(await f.store.listRuns(f.item.id)).map((r) => r.acknowledged_at !== null)).toEqual([true]);
   });
 
-  it("a review_bug loop that pushes nothing still stops in REVIEW, even with failed checks", async () => {
+  it("a review_bug loop that pushes nothing loops on its findings to max_loops, never on failed checks", async () => {
     const f = await noPush(94, [failed], { reviews: ["bug"] });
-    const reasons = (await f.store.listStateChanges(f.item.id)).map((c) => c.reason);
+    const changes = await f.store.listStateChanges(f.item.id);
+    const reasons = changes.map((c) => c.reason);
     expect(reasons).toContain("review_bug");
+    expect(changes.some((c) => c.reason === "review_bug" && c.detail?.unchanged_head === true)).toBe(true);
     expect(reasons).not.toContain("checks_failed");
-    expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "none", loop_count: 1 });
+    expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "max_loops", loop_count: config.max_loops - 1 });
     expect(f.forge.checkResults).toEqual([failed]);
   });
 
@@ -335,9 +337,9 @@ describe("failed checks after an implement run that pushed nothing", () => {
       await unchangedAfterTicks(await stalled(98, [failed, pending]), pending);
     });
 
-    it("after a bug verdict: no state change and no run", async () => {
+    it("after a bug verdict: never stalled (it loops to max_loops), and a pass changes nothing", async () => {
       const f = await noPush(99, [failed], { reviews: ["bug"] });
-      expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "none", blocked_reason: null });
+      expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "max_loops" });
       await unchangedAfterTicks(f, failed);
     });
 

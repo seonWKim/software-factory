@@ -2495,6 +2495,45 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       await db.run("UPDATE outbound_actions SET delivered_at = ?, delivered_ref = ? WHERE intent_key = ?", [now, JSON.stringify({ conflicts: ["x"] }), `push_base:${item.id}:${"d".repeat(40)}`]);
       expect(await store.getBasePush(item.id)).toMatchObject({ merge_sha: "d".repeat(40), outcome: "conflict", pushed_sha: null, attempts: 0 });
     });
+
+    it("a base's backlog: its pushes after its newest pushed one, with the conflicting files of its newest delivered push when that is a conflict", async () => {
+      const { store, clock } = await make();
+      const db = (store as unknown as { db: SqlDriver }).db;
+      const now = clock.now().toISOString();
+      let n = 0;
+      const push = async (base: string, delivered?: { pushed: string } | { conflicts: string[] }) => {
+        const { item } = await store.createWorkItem(issue(100 + ++n), system);
+        const key = `push_base:${item.id}:${n}`;
+        await recordAction(db, { action: "push_base", target: { type: "git", id: `h:${base}:push`, link: "" }, work_item_id: item.id, key, args: { base_ref: base, merge_sha: String(n), message: "m" } }, now);
+        if (delivered) await db.run("UPDATE outbound_actions SET delivered_at = ?, delivered_ref = ? WHERE intent_key = ?", [now, JSON.stringify(delivered), key]);
+      };
+      const of = async (base: string) => (await store.listBasePushBacklogs()).find((b) => b.base_ref === base) ?? null;
+      expect(await of("main")).toBeNull();
+
+      await push("main", { pushed: "p" });
+      expect(await of("main")).toBeNull();
+      // One pending push: waiting, no conflict.
+      await push("main");
+      expect(await of("main")).toEqual({ base_ref: "main", waiting: 1, conflicts: null });
+      // A conflict, then a pending one after it: both wait, the conflict's files named.
+      await push("main", { conflicts: ["a.txt"] });
+      await push("main");
+      expect(await of("main")).toEqual({ base_ref: "main", waiting: 3, conflicts: ["a.txt"] });
+      // A newer conflict replaces the files.
+      await push("main", { conflicts: ["b.txt", "c.txt"] });
+      expect(await of("main")).toEqual({ base_ref: "main", waiting: 4, conflicts: ["b.txt", "c.txt"] });
+      // Another base is its own backlog.
+      await push("release", { conflicts: ["r.txt"] });
+      expect(await of("release")).toEqual({ base_ref: "release", waiting: 1, conflicts: ["r.txt"] });
+      expect(await of("main")).toMatchObject({ waiting: 4 });
+      // A push that lands on another base leaves this base's backlog as it is.
+      await push("release", { pushed: "r" });
+      expect(await of("release")).toBeNull();
+      expect(await of("main")).toEqual({ base_ref: "main", waiting: 4, conflicts: ["b.txt", "c.txt"] });
+      // A push that lands clears the base: nothing before it waits.
+      await push("main", { pushed: "q" });
+      expect(await of("main")).toBeNull();
+    });
   });
 
   describe("item thread actor (migration 39)", () => {
