@@ -580,7 +580,7 @@ export class CommandsUnit {
     const afterFailure = phase === "too_large" || phase === "failed_implement" || phase === "agent_needs_human" || phase === "repeated_failure" || phase === "max_loops" ||
       (e.kind === "revise_requested" && it.stage === "REVIEW" && it.origin !== "adopted" && (await this.c.unit("checks-gate").lastVerdict(it.id))?.verdict === "bug");
     if (afterFailure && e.kind === "revise_requested") return this.reviseAfterFailure(e, it, actor);
-    if (e.kind === "revise_requested" && phase === "implementing" && it.stage === "RUNNING") return queueRevise(this.c, e, it, actor);
+    if (e.kind === "revise_requested" && ((phase === "implementing" && it.stage === "RUNNING") || phase === "triaging")) return queueRevise(this.c, e, it, actor); // added context on a New item (design 02-attachments)
     if (!awaitingSpec(it)) {
       const onPr = e.kind === "revise_requested" && it.change_ref !== null && commandSpec("revise").pr_phases?.includes(phase)
         ? `; to send feedback to the implementer, reply \`/revise <feedback>\` on PR #${it.change_ref}`

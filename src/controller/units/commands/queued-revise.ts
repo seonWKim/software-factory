@@ -1,10 +1,12 @@
 // `/revise` while implementing (design 04-gate-commands, 2026-11-15): no agent runner takes a message during its session,
 // so the feedback is queued as a `revise_queued` state change and applied when the run ends, before review, as one
 // implement run (`revise_applied`). A `revise_applied` or `max_loops` row naming its comment ID settles it. It reads
-// state changes through the kernel's reader.
+// state changes through the kernel's reader. On a New or in-triage item (design 02-attachments) the same row, with
+// `at: triage` in its detail, is added context: the triage run's end applies it as exactly one more triage run.
 
 import { type CommandEvent, type Decision, type Refusal, MAX_FEEDBACK_CHARS, SYSTEM, footerAfter } from "../support.js";
 import type { Ctx } from "../context.js";
+import { runKey } from "../../../core/policy.js";
 
 type ReviseEvent = Extract<CommandEvent, { kind: "revise_requested" }>;
 type WorkItem = Parameters<typeof footerAfter>[0];
@@ -20,6 +22,11 @@ export const REVISE_QUEUED_PATH = "queued: applies when this run ends";
 /** The refusal of a `/revise` with no feedback after it. */
 export const FEEDBACK_REQUIRED = "it needs feedback after the command, e.g. `/revise keep the existing CLI flag`";
 
+/** The `at` detail of added context: a `/revise` on a New or in-triage item, applied by one more triage run. */
+export const AT_TRIAGE = "triage";
+/** The path an added context took, as its reply names it. */
+export const CONTEXT_QUEUED_PATH = "queued: one more triage run reads it when the current one ends";
+
 /** The comment IDs a settling row (`revise_applied`, `max_loops`) names in its `comment_ids` detail. */
 function settledIds(c: Pick<StateChange, "detail">): string[] {
   const raw = c.detail?.comment_ids;
@@ -32,13 +39,13 @@ function settledIds(c: Pick<StateChange, "detail">): string[] {
   }
 }
 
-/** The queued `/revise` feedback of an item not applied yet, oldest first, from its state changes in order. */
-export function pendingRevises(changes: readonly Pick<StateChange, "reason" | "detail">[]): { comment_id: string; feedback: string }[] {
+/** The queued `/revise` feedback of an item not applied yet, oldest first, from its state changes in order; `at` triage: its added context only, else none of it. */
+export function pendingRevises(changes: readonly Pick<StateChange, "reason" | "detail">[], at: typeof AT_TRIAGE | null = null): { comment_id: string; feedback: string }[] {
   const settled = new Set(changes.filter((c) => c.reason === REVISE_APPLIED || c.reason === "max_loops").flatMap(settledIds));
   const out: { comment_id: string; feedback: string }[] = [];
   for (const c of changes) {
     const id = c.detail?.comment_id, feedback = c.detail?.feedback;
-    if (c.reason === REVISE_QUEUED && typeof id === "string" && typeof feedback === "string" && !settled.has(id) && !out.some((p) => p.comment_id === id)) {
+    if (c.reason === REVISE_QUEUED && (c.detail?.at ?? null) === at && typeof id === "string" && typeof feedback === "string" && !settled.has(id) && !out.some((p) => p.comment_id === id)) {
       out.push({ comment_id: id, feedback });
     }
   }
@@ -55,8 +62,9 @@ export async function feedbackScan(c: Ctx, it: WorkItem, feedback: string): Prom
 }
 
 /**
- * `/revise <feedback>` while implementing: one `revise_queued` state change (no field changes) keyed on the comment ID.
- * Empty or flagged feedback is refused and nothing is stored; the same comment again is a no-op.
+ * `/revise <feedback>` while implementing, or on a New or in-triage item (its detail `at: triage`): one `revise_queued`
+ * state change (no field changes) keyed on the comment ID. Empty or flagged feedback is refused and nothing is stored;
+ * the same comment again is a no-op.
  */
 export async function queueRevise(c: Ctx, e: ReviseEvent, it: WorkItem, actor: Actor): Promise<Decision | Refusal> {
   const feedback = e.feedback.trim();
@@ -64,13 +72,16 @@ export async function queueRevise(c: Ctx, e: ReviseEvent, it: WorkItem, actor: A
   const blocked = await feedbackScan(c, it, feedback);
   if (blocked) return blocked;
   if ((await c.k.reader.listStateChanges(it.id)).some((x) => x.reason === REVISE_QUEUED && x.detail?.comment_id === e.comment_id)) return null;
-  return { patch: {}, actor, reason: REVISE_QUEUED, detail: { comment_id: e.comment_id, feedback: feedback.slice(0, MAX_FEEDBACK_CHARS).trim() } };
+  const at = it.stage === "NEW" ? { at: AT_TRIAGE } : {};
+  return { patch: {}, actor, reason: REVISE_QUEUED, detail: { comment_id: e.comment_id, feedback: feedback.slice(0, MAX_FEEDBACK_CHARS).trim(), ...at } };
 }
 
 /** A `/revise` stored as queued feedback gets one reply naming the path it took, keyed on the comment ID. */
 export async function replyQueued(c: Ctx, item: WorkItem, comment_id: string): Promise<void> {
   const queued = (await c.k.reader.listStateChanges(item.id)).some((x) => x.reason === REVISE_QUEUED && x.detail?.comment_id === comment_id);
-  const body = `\`/revise\` ${REVISE_QUEUED_PATH}. Your feedback goes to one more implement run on the item's branch right after the current run, before review.`;
+  const body = item.stage === "NEW"
+    ? `\`/revise\` ${CONTEXT_QUEUED_PATH}. That triage run reads the filed text and the context you added, so the new spec reflects both.`
+    : `\`/revise\` ${REVISE_QUEUED_PATH}. Your feedback goes to one more implement run on the item's branch right after the current run, before review.`;
   if (queued) await c.unit("outbox").post(item, item.source, body, `<!-- factory:revise-queued:${comment_id} -->`);
 }
 
@@ -82,6 +93,7 @@ export async function replyQueued(c: Ctx, item: WorkItem, comment_id: string): P
  * run end) finds none pending and returns `d` unchanged, which its acknowledged run then fences. None pending: `d`.
  */
 export async function applyQueued(c: Ctx, it: WorkItem, d: NonNullable<Decision>, nextKey: string): Promise<NonNullable<Decision>> {
+  if (it.stage === "NEW") return retriage(c, it, d);
   const pending = pendingRevises(await c.k.reader.listStateChanges(it.id));
   if (pending.length === 0) return d;
   const { enqueue: _review, ...rest } = d;
@@ -104,5 +116,24 @@ export async function applyQueued(c: Ctx, it: WorkItem, d: NonNullable<Decision>
     reason: REVISE_APPLIED,
     detail: { ...detail, feedback: notes },
     enqueue: { kind: "implement", idempotency_key: `${nextKey}:revise-${pending[0]!.comment_id}`, input: { notes } },
+  };
+}
+
+/**
+ * The end of a triage run (`d`, its ack) with added context pending (design 02-attachments): instead of the spec, exactly
+ * one more triage run, keyed on the first pending comment ID, and a `revise_applied` row naming every pending comment
+ * ID, so a second apply on the same run end finds none pending. The stage stays NEW; the next triage reads every
+ * context added so far. None pending: `d`.
+ */
+async function retriage(c: Ctx, it: WorkItem, d: NonNullable<Decision>): Promise<NonNullable<Decision>> {
+  const pending = pendingRevises(await c.k.reader.listStateChanges(it.id), AT_TRIAGE);
+  if (pending.length === 0) return d;
+  const { enqueue: _spec, ...rest } = d;
+  return {
+    ...rest,
+    actor: SYSTEM,
+    reason: REVISE_APPLIED,
+    detail: { comment_ids: JSON.stringify(pending.map((p) => p.comment_id)), at: AT_TRIAGE },
+    enqueue: { kind: "triage", idempotency_key: `${runKey(it, "triage")}:context-${pending[0]!.comment_id}` },
   };
 }

@@ -149,7 +149,7 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
   },
   item("approve", "[notes]", "Store `/approve` for the item"),
   item("retry", "[text]", "Store `/retry` for the item"),
-  item("revise", "<feedback>", "Store `/revise` for the item"),
+  item("revise", "<feedback>", "Store `/revise` for the item; on a New or in-triage item it adds context, queued for one re-triage after the current triage run"),
   item("reject", "<reason>", "Store `/reject` for the item"),
   item("resolve", "[notes]", "Store `/resolve` for the item"),
   {

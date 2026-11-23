@@ -5,6 +5,7 @@
 export const TABLE_DOCS: Readonly<Record<string, string>> = {
   controller_alert_patterns: "When each alarm pattern last alerted, so a repeat inside its quiet window stays silent.",
   controller_alerts: "Stored alarms (failure bursts, spend budgets and others) that show in Needs you.",
+  controller_attachments: "Images and links the owner attached to a New or in-triage item, for its triage run; an image's bytes are base64 in data.",
   controller_budget_checkpoints: "Runs held at their tier's token budget, and the owner's answer to each.",
   "controller_budget_checkpoints.answer": "The owner's answer: more budget, or stop.",
   controller_claim_decisions: "Why a run was started or held when a worker claimed it (coordination cost, dependencies).",

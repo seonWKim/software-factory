@@ -159,7 +159,7 @@ export class RunResultsUnit {
         case "merge-check": case "restart":
           // `apply` hands merge-check runs to the merge queue, and restart runs to the local-merge unit, before it reads any outcome.
           throw new Error(`${run.kind} run ${run.id} reached the run outcome path`);
-        case "triage": {
+        case "triage": { const context = await this.c.unit("commands").applyQueued(it, { patch: { token_cost: tokens }, actor: SYSTEM, reason: "triaged", ack_run: run.id }); if (context.enqueue) return context; // added context: one more triage (design 02-attachments)
           // The item's size caps decide whether the estimate needs phases (src/core/split.ts).
           const { max_diff_lines, max_diff_files, floors } = this.c.k.settings(it.project);
           // Migration timestamps, then path companions (design 04-triage.md): a new migration on a base branch's timestamp moves to the next free minute; companions on that answer, so one named only in

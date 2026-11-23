@@ -92,6 +92,8 @@ export interface CommandSpec {
   local_description?: string;
   /** What it means in the `implementing` phase, when that differs (`/revise` queued, design 04-gate-commands). */
   implementing_description?: string;
+  /** What it means in the `triaging` phase, when that differs (`/revise` adds context, design 02-attachments). */
+  triaging_description?: string;
   /** At `agent_needs_human`, it applies only when the run that asked was one of these kinds. Absent: any kind. */
   asked_by?: readonly RunKind[];
 }
@@ -124,9 +126,10 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: "revise",
     usage: "/revise <feedback>",
     description: "Get a new spec written with your feedback",
-    // While implementing it is queued, not sent into the running session (design 04-gate-commands).
+    // While implementing or triaging it is queued, not sent into the running session (design 04-gate-commands, 02-attachments).
     implementing_description: "While implementing: queue your feedback for one more implement run on the item's branch when the run ends, before review",
-    phases: ["spec_pending", "implementing", "too_large", "failed_implement", "agent_needs_human", "repeated_failure", "max_loops"],
+    triaging_description: "On a New or in-triage item: add context (the dashboard's Add context), queued, so one more triage run reads the filed text and your text when the current one ends",
+    phases: ["triaging", "spec_pending", "implementing", "too_large", "failed_implement", "agent_needs_human", "repeated_failure", "max_loops"],
     needs_pr: false,
     changes_state: true,
     pr_phases: ["merge_pending", "failed_review"],
@@ -296,7 +299,7 @@ const FACTORY_COMMANDS: readonly CommandName[] = ["standing"];
 /** The commands that apply in `s`, in table order, each with the description it has there; `/help` always last. */
 export function commandsFor(s: CommandState): CommandSpec[] {
   const shown = (c: CommandSpec) => c.name !== "help" && c.name !== "paths" && c.name !== "note" && !ACCOUNT_COMMANDS.includes(c.name) && !FACTORY_COMMANDS.includes(c.name); // `/paths`, `/note`: in `/help`, no footer or page button yet
-  const own = (c: CommandSpec) => appliesLocally(c, s) || (s.phase === "implementing" && c.implementing_description);
+  const own = (c: CommandSpec) => appliesLocally(c, s) || (s.phase === "implementing" && c.implementing_description) || (s.phase === "triaging" && c.triaging_description);
   return COMMANDS.filter((c) => shown(c) && applies(c, s)).map((c) => (own(c) ? { ...c, description: meaning(c, s) } : c)).concat(commandSpec("help"));
 }
 
@@ -304,7 +307,8 @@ export function commandsFor(s: CommandState): CommandSpec[] {
 function meaning(c: CommandSpec, s: CommandState | null): string {
   if (s !== null && appliesLocally(c, s) && c.local_description) return c.local_description;
   if (s?.phase === "implementing" && c.implementing_description) return c.implementing_description;
-  return [c.description, c.implementing_description, c.pr_description, c.local_description].filter((d) => d).join(". ");
+  if (s?.phase === "triaging" && c.triaging_description) return c.triaging_description;
+  return [c.description, c.implementing_description, c.pr_description, c.local_description, c.triaging_description].filter((d) => d).join(". ");
 }
 
 /** One command with its full description: Slack's help in an item's thread. */
