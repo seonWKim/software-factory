@@ -29,6 +29,7 @@ export function MergeButton({ id, source, merge, replies = [], returned = null }
       <Button
         variant="primary"
         data-action="merge"
+        data-item={id}
         disabled={!merge.enabled || !on || merging}
         title={source === "local"
           ? t("commands.mergeLocal")
@@ -46,17 +47,17 @@ export function MergeButton({ id, source, merge, replies = [], returned = null }
  * The Restart app button (design 09-dashboard-item-commands), on a merged item's page when `repo.restart_command` is
  * set: sends `restart` with no note. "Restarting…" from the click until the controller's reply, then "Restart queued"
  * (the run's result is posted in the thread) or the refusal; disabled with the controller's reason when the viewer
- * may not send it.
+ * may not send it. Its `data-action` is `restart`, the one action with no CLI verb yet (design 09-dashboard-item-commands).
  */
-export function RestartButton({ command, on, busy, replies, local, send }: {
-  command: ItemCommand; on: boolean; busy: boolean; replies: readonly CommandReply[]; local: LocalSend | undefined; send: () => void;
+export function RestartButton({ id, command, on, busy, replies, local, send }: {
+  id: string; command: ItemCommand; on: boolean; busy: boolean; replies: readonly CommandReply[]; local: LocalSend | undefined; send: () => void;
 }) {
   const reply = command.allowed ? commandOutcome(replies, "restart", local) : notAllowed(command);
   const waiting = command.allowed && (busy || awaitsReply(reply));
   const outcome: Outcome = waiting ? null : reply?.tone === "status" && reply.text === t("commands.done") ? { tone: "status", text: t("commands.restartQueued") } : reply;
   return (
-    <span data-command="restart" className="mt-2 inline-flex flex-wrap items-center gap-2">
-      <Button variant="secondary" data-action="restart" disabled={!on || !command.allowed || waiting} title={t("commands.restartTitle")} onClick={send}>
+    <span className="mt-2 inline-flex flex-wrap items-center gap-2">
+      <Button variant="secondary" data-action="restart" data-item={id} disabled={!on || !command.allowed || waiting} title={t("commands.restartTitle")} onClick={send}>
         {waiting ? t("commands.restarting") : t("commands.restart")}
       </Button>
       <OutcomeText outcome={outcome} />

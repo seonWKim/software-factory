@@ -13,18 +13,18 @@ import { DEFAULT_MODEL_TABLE, type ModelTable, isModelRunKind, modelClassFor } f
 import type { ProjectRef } from "./core/project.js";
 import { REVIEW_CONFIRM_SCHEMA, REVIEW_SCHEMA, TRIAGE_SCHEMA, findingLine, parseJudge, parseReview, parseReviewConfirm, parseTriage } from "./core/outputs.js";
 import { isCovered } from "./core/policy.js";
-import type { RunId, RunKind, StateChange, WorkItem, WorkItemId } from "./core/types.js";
-import { ROLES_DIR, goldenCasesByRole, loadRoles } from "./runtime/index.js";
+import type { RunKind, StateChange, WorkItem, WorkItemId } from "./core/types.js";
+import { ROLES_DIR, goldenCasesByRole, loadRoles, replayInSandbox } from "./runtime/index.js";
 import { implementReplayRunner } from "./controller/golden-gate/implement-replay.js";
 import { loadTriageCases, triageReplayRunner } from "./controller/golden-gate/triage-replay.js";
 export { genTriageDrafts, parseGenArgs } from "./controller/golden-gate/triage-gen.js"; // golden gen (drafts triage cases from a closed item)
 import { ROLE_NAME, type RoleDescriptor } from "./shared/role.js";
 import { toolsNamed } from "./worker/index.js"; import { JUDGE_SCHEMA } from "./worker/runs/judge/judge.run.js";
-import type { AgentRole, AgentRunner } from "./interfaces/agent-runner.js";
+import type { AgentRunner } from "./interfaces/agent-runner.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressChannel, EgressScanner } from "./interfaces/egress-scanner.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
-import type { Sandbox, SandboxHandle } from "./interfaces/sandbox.js";
+import type { Sandbox } from "./interfaces/sandbox.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
 
 export const EXPECTS = ["should_flag", "should_pass"] as const;
@@ -418,7 +418,7 @@ async function loadCases(rolesDir: string, role: RoleDescriptor & { prompt: stri
 /** The replay prompt: the stored spec plus the stored diff, in the worker's review layout; the spec alone with no diff. */
 export const replayPrompt = (c: Pick<LoadedCase, "spec" | "diff">) => (c.diff === null ? c.spec : `${c.spec}\n\n## Diff\n\n\`\`\`diff\n${c.diff}\n\`\`\``);
 
-/** Replays every case of `role` (with `ids`, only those) `replays` times each (default once), then writes the results file. Each replay gets its own detached sandbox (`branch: null`), destroyed after. No doc index: a replay does not depend on the docs. */
+/** Replays every case of `role` (with `ids`, only those) `replays` times each (default once), then writes the results file. Each replay goes through replayInSandbox: its own detached sandbox, destroyed after, and no doc index (a replay does not depend on the docs). */
 export async function runCases(deps: GoldenRunDeps, opts: { role: string; prompts?: readonly string[]; ids?: readonly string[]; replays?: number }): Promise<GoldenReport> {
   const role = roleFor(deps, opts.role);
   const cases = await loadCases(deps.rolesDir, role, opts.prompts, opts.ids);
@@ -449,27 +449,23 @@ function casePrompts(v: unknown, id: string): string[] | null {
   return v as string[];
 }
 
+/** One replay through the shared replay primitive (replayInSandbox): a fresh detached sandbox, destroyed after. */
 async function runOne(deps: GoldenRunDeps, role: RoleDescriptor, system: string, c: LoadedCase, key: string, signal: AbortSignal): Promise<CaseResult> {
   const { repo } = deps.config;
   const started = deps.clock.now().getTime();
   const out: CaseResult = { id: c.id, expect: c.expect, verdict: "errored", findings: [], input_tokens: 0, output_tokens: 0, wall_ms: 0 };
-  let handle: SandboxHandle | null = null;
   try {
-    handle = await deps.sandbox.create({ repo: repo.path, branch: null, base_ref: repo.base_branch });
     const confirm = role.name === "review-confirm", judge = role.name === "judge", kind = (confirm ? "review" : role.name) as RunKind; // review-confirm replays on the review's class (design 04-agents), the judge on strong as the runner pins it
-    const result = await deps.runner.run({
-      run_id: `golden_${key}` as RunId,
-      work_item_id: c.work_item_id as WorkItemId,
-      role: role.name as AgentRole,
-      sandbox: handle,
+    const result = await replayInSandbox(deps, {
+      repo,
+      run_id: `golden_${key}`,
+      work_item_id: c.work_item_id,
+      role: role.name,
       system_prompt: system,
       prompt: replayPrompt(c),
       tools: toolsNamed(role.tools),
-      tool_grants: [],
-      lease_token: 0,
       env_allowlist: gitIdentity(deps.config.agent_git_identity),
       deny_paths: deps.config.deny_paths,
-      writable_paths: [],
       // The role's run class (cases carry no tier or loop: tier 5's entry, no retry bump), so golden results
       // match production; a role with no model_by entry replays on the standard class.
       model_class: judge ? "strong" : isModelRunKind(kind) ? modelClassFor(deps.model_by ?? DEFAULT_MODEL_TABLE, kind, null, 0) : "standard",
@@ -484,7 +480,6 @@ async function runOne(deps: GoldenRunDeps, role: RoleDescriptor, system: string,
   } catch {
     // errored, with whatever usage was read
   } finally {
-    if (handle) await deps.sandbox.destroy(handle);
     out.wall_ms = deps.clock.now().getTime() - started;
   }
   return out;

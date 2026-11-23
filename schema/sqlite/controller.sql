@@ -120,6 +120,12 @@ CREATE TABLE controller_golden_fingerprints (
     at                TEXT NOT NULL
   );
 
+CREATE TABLE controller_green_bases (
+    project_key TEXT PRIMARY KEY,
+    base_sha    TEXT NOT NULL,
+    checked_at  TEXT NOT NULL
+  );
+
 CREATE TABLE controller_handoffs (
     id            TEXT PRIMARY KEY,
     run_id        TEXT NOT NULL REFERENCES worker_runs(id),
@@ -338,7 +344,7 @@ CREATE TABLE controller_skill_eval_runs (
     started_at   TEXT NOT NULL,
     finished_at  TEXT,
     created_by   TEXT NOT NULL
-  );
+  , skill_version TEXT, model_class TEXT, judge_model_class TEXT, replays INTEGER, pass_rate REAL, errored INTEGER);
 
 CREATE TABLE controller_skill_eval_suites (
     id          TEXT PRIMARY KEY,

@@ -50,7 +50,12 @@ export interface ControllerRoleDeps extends ControllerDeps {
    * tests. Absent: the config's `hooks` (none unless the owner lists some), as the worker's `before_run`.
    */
   hooks?: { readonly enabled: readonly string[]; readonly list?: readonly HookDescriptor[] };
+  /** This host's cleanup of closed items' leftovers (design 08-cleanup), built by compose. Absent: none runs. */
+  cleanup?: CleanupPort;
 }
+
+/** The cleanup the `cleanup` unit's step takes (src/cleanup's Cleaner). */
+type CleanupPort = Parameters<UnitOperations["cleanup"]["cleanupStep"]>[1];
 
 type ComponentBus = EventBus & Inbox & Relay;
 
@@ -214,6 +219,8 @@ export class ControllerRole implements Decisions {
     this.decide(units, r);
     // The daily retention pass (design 08-retention), tried each poll interval; the store's day mark makes it daily.
     units.schedule("retention", () => this.kernel.cfg.poll_interval_ms, () => this.tickRetention());
+    // The close callback and the daily sweep of closed items' leftovers (design 08-cleanup), each poll interval.
+    units.schedule("cleanup", () => this.kernel.cfg.poll_interval_ms, () => this.tickCleanup());
     // The label, never the key: log lines and comments name a project by its readable path.
     this.role.log.info("controller started", { project: this.kernel.cfg.project.label });
     await Promise.all([
@@ -273,6 +280,11 @@ export class ControllerRole implements Decisions {
   /** One retention step (design 08-retention): today's pass, unless the day is marked or another replica holds it. */
   async tickRetention(): Promise<void> {
     await (await this.router()).unit("retention").retentionStep(this.role.store);
+  }
+
+  /** One cleanup step (design 08-cleanup): the close callback, then today's sweep unless marked. Nothing without a cleanup. */
+  async tickCleanup(): Promise<void> {
+    if (this.role.cleanup) await (await this.router()).unit("cleanup").cleanupStep(this.role.store, this.role.cleanup);
   }
 
   /**

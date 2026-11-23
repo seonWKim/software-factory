@@ -422,13 +422,15 @@ export function prMergeRefusal(it: WorkItem, forge: boolean, name: ChangeName): 
 }
 
 /**
- * The controller's entry of a dashboard Merge (request `seq`) into the local merge queue: merge_pending →
- * merge_queued, tagged with the request, before its merge runs. Null when the item does not wait at merge_pending
- * (queued already, or moved on), or takes its PR's merge: the forge merges it in one call, with no queue to wait in.
+ * A local merge's entry into the merge queue: merge_pending → merge_queued, tagged with `detail`, before its first
+ * check runs. The dashboard's Merge passes its request seq (`app_request`) before its merge runs; the queue, for
+ * `factory merge`, `/merge` and auto mode, passes the merge key when it creates the entry. Null when the item does
+ * not wait at merge_pending (queued already, or moved on), or takes its PR's merge: the forge merges it in one call,
+ * with no queue to wait in.
  */
-export function mergeEntered(it: WorkItem, actor: Actor, seq: number): Transition | null {
+export function mergeEntered(it: WorkItem, actor: Actor, detail: StateChangeDetail): Transition | null {
   if (!awaitingMerge(it) || mergeQueued(it) || mergeRoute(it) !== "local") return null;
-  return { patch: { blocked_on: "ci", blocked_reason: MERGE_QUEUED }, actor, reason: MERGE_REQUESTED, detail: { [APP_REQUEST]: seq } };
+  return { patch: { blocked_on: "ci", blocked_reason: MERGE_QUEUED }, actor, reason: MERGE_REQUESTED, detail };
 }
 
 /** Whether a dashboard Merge for the item, other than request `seq`, is stored and not handled yet: the item reads "Merging…". */

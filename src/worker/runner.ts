@@ -229,9 +229,9 @@ export class Worker {
   }
 
   async executeHeld(run: Run, token: number, engine: ExecutionEngine, ref: RunRef, adopted: Adopted, lease: AbortController): Promise<void> {
-    const log = { run_id: run.id, work_item_id: run.work_item_id, kind: run.kind, attempt: run.attempt, worker_id: this.d.id };
-    const startedAt = this.d.clock.now().getTime();
-    this.d.log.info("run start", log);
+    const log = { run_id: run.id, work_item_id: run.work_item_id, kind: run.kind, attempt: run.attempt, worker_id: this.d.id }, startedAt = this.d.clock.now().getTime();
+    const hold = run.kind === "implement" ? (await this.d.store.listClaimDecisions(run.work_item_id)).find((d) => d.run_id === run.id && d.decision !== "held") : undefined, p = this.live.values().hold_policy; // a run past a cost hold names its decision and, timed_out, the limit (design 05-dependencies)
+    this.d.log.info("run start", { ...log, hold_decision: hold?.decision, hold_limit_minutes: hold?.decision === "timed_out" && p.mode === "run_after_minutes" ? p.minutes : undefined });
     const stopHeartbeat = new AbortController();
     const heartbeat = this.heartbeat(run, engine, stopHeartbeat.signal);
     // `workers pause` reaches a running implement or review run within one tick_ms (design §5 Pause).

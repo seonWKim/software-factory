@@ -42,8 +42,9 @@ async function review(
   const ahead = (await w.git(handle, ["rev-list", "--count", `${base}..HEAD`])).trim();
   const diff = ahead === "0" ? "" : await w.git(handle, ["diff", `${base}...HEAD`]);
   if (diff.trim() === "") return { no_agent: "empty_diff", head_sha };
-  // A paused review resuming its own session is the same review, never a repeat of it.
-  if (!plan?.session && head_sha !== "" && lastVerdictHead(await w.d.store.listRuns(item.id), run.id) === head_sha) {
+  // A paused review resuming its own session is the same review, never a repeat of it; a rereview (a note or spec
+  // newer than the last `bug` verdict, design 05-ci-gate) reviews that head again on purpose.
+  if (!plan?.session && run.input?.rereview !== true && head_sha !== "" && lastVerdictHead(await w.d.store.listRuns(item.id), run.id) === head_sha) {
     return { no_agent: "unchanged_head", head_sha };
   }
   // The approver's notes, then the answers to the spec's decisions (issue #526).
