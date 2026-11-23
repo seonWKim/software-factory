@@ -52,7 +52,7 @@ describe("Run next applied by the controller", () => {
     await h.apply();
     await h.apply(); // a second pass applies nothing again
     expect(await h.order()).toEqual([impl.id, triage.id]);
-    expect(await h.thread(impl)).toEqual([expect.stringContaining("Run next: the queued implement run is now at queue position 1.")]);
+    expect(await h.thread(impl)).toEqual([expect.stringContaining("Run next: the queued Implement run is now at queue position 1.")]);
     expect(await h.store.getAppCommandRequest(r.seq)).toMatchObject({ refusal: null });
     expect(await h.store.getWorkItem(impl.id)).toMatchObject({ version: impl.version, stage: impl.stage, blocked_on: impl.blocked_on });
     // It starts nothing: the run is still queued.

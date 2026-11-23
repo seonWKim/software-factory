@@ -92,7 +92,7 @@ export class TransitionsUnit {
       if (!this.inTable(item, wanted.patch)) return null;
       // The Rule of Two: every run the factory queues passes here; one no person approved is held (design 10-event-driven).
       const refused = await this.ruleOfTwoRefusal(item, wanted);
-      const personHold = refused === null ? null : ruleOfTwoHold(item, wanted, refused);
+      const personHold = refused === null ? null : ruleOfTwoHold(item, wanted, refused, this.c.unit("run-results").kindLabel(wanted.enqueue!.kind));
       // The one budget check: every implement or review run the factory would queue passes here (design §6).
       const held = personHold ? null : budgetHold(item, wanted, await this.loadBudget(item, wanted));
       const hold = held?.hold ?? null;
@@ -146,16 +146,16 @@ export class TransitionsUnit {
 }
 
 /**
- * `d` with its run held by the Rule of Two: the rest of `d` stands (its reason too, so an auto approval is still
+ * `d` with its run held by the Rule of Two (`label`: the run kind's plain label): the rest of `d` stands (its reason too, so an auto approval is still
  * recorded as one), the item blocks on a human, and the run is kept on the state change's detail (`held_by`) for the
  * `/approve` that queues it. One comment, keyed on the held run's key.
  */
-function ruleOfTwoHold(it: WorkItem, d: NonNullable<Decision>, refusal: string): { hold: NonNullable<Decision>; comment: ThreadEntry } {
+function ruleOfTwoHold(it: WorkItem, d: NonNullable<Decision>, refusal: string, label: string): { hold: NonNullable<Decision>; comment: ThreadEntry } {
   const run = d.enqueue!;
   const { enqueue: _held, ...rest } = d;
   const patch = { ...d.patch, blocked_on: "human" as const, blocked_reason: RULE_OF_TWO };
   const body = [
-    `The ${run.kind} run was not started: ${refusal.replace(/^rule_of_two: /, "")}. Auto mode's approval is not a person's.`,
+    `The ${label} run was not started: ${refusal.replace(/^rule_of_two: /, "")}. Auto mode's approval is not a person's.`,
     "",
     "Reply `/approve` to start it, or `/reject <reason>` to close the item.",
     "",

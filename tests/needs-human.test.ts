@@ -253,7 +253,7 @@ describe("a review run that returns needs_human", () => {
     expect(await f.queued(it0)).toEqual([]);
     expect(f.broker.calls.some((c) => JSON.stringify(c.args).includes("factory:review:"))).toBe(false);
     expect(f.asks()).toHaveLength(1);
-    expect(f.asks()[0]!.body).toContain("The review run stopped");
+    expect(f.asks()[0]!.body).toContain("The Review run stopped");
     expect(f.asks()[0]!.body).toContain("`/retry`");
 
     ask = false;
