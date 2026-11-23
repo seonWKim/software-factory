@@ -18,7 +18,7 @@ import { itemAlarms, openAlarms } from "./alarms.js";
 import { actorGrant, itemCommands, itemProposals, itemReplies, mergeReadiness, needsYouCommands, readSession, waitingSpec } from "./commands.js";
 import { type DataCtx, type DataResult, dataAutonomy, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
-import { LIST_LIMIT, activeRuns, closedFacetRows, itemCounts, itemState, latestDecision, holderTitles, listRows, mergeLinks, readClaimPauses, readPhases, waitingOn, whyOf, withTitle } from "./list.js";
+import { LIST_LIMIT, activeRuns, closedFacetRows, itemCounts, itemState, latestDecision, holderTitles, listRows, readClaimPauses, readPhases, waitingOn, whyOf, withTitle } from "./list.js";
 import { runTokens } from "./deps.js";
 import { heldFailureOf, needCtx, needOf } from "./need.js";
 import { WITH_NEED, askReason, holdingNow } from "./priority.js";
@@ -38,9 +38,11 @@ import { needsYouCount } from "./needs-you.js";
 import { latestWhyAnchor, threadRows } from "./thread.js";
 import type { Why } from "./why.js";
 import { displayName } from "./names.js";
+import { sleepRows, unreviewedMerges } from "./health-rows.js";
 import { Withholder } from "./withhold.js";
 import { itemGraph, windowRuns } from "./graph.js";
 import type { MergeCheck } from "../interfaces/factory-store.js";
+import { baseCommittedAt, changesHead, mergeCheckRow, needsRecheck, overlapsOf } from "./changes.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** Host sleeps on /health (design §9): the newest ten. */
@@ -76,7 +78,7 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
     case "/runs": return windowRuns({ store: d.store, text: (v, ch) => c.text(v, ch), now: c.now }, url.searchParams.get("window"), (r) => runRow(c, r));
     case "/queue": return ok(await queue(c));
     case "/workers": return ok(await workers(c));
-    case "/unreviewed-merges": return unreviewedMerges(c, url.searchParams);
+    case "/unreviewed-merges": return unreviewedMerges(c, url.searchParams, c.now);
     case "/health": return ok(await health(c));
     case "/failures":
       return failures({ store: d.store, text: (v) => c.text(v, "run_outcome").then((t) => t!), now: c.now }, url.searchParams);
@@ -225,17 +227,6 @@ async function health(c: ApiCtx) {
   return { ...report, sleeps: await sleepRows(c, rows, true) };
 }
 
-/** Host sleeps as the API returns them: ids, a timestamp and a number. `runs` adds the held run's item and status (null if the lookup fails). */
-async function sleepRows(c: ApiCtx, rows: readonly HostSleep[], runs = false) {
-  const out = [];
-  for (const h of rows) {
-    const run = runs && h.run_id ? await c.d.store.getRun(h.run_id).catch(() => null) : null;
-    const held = runs ? { work_item_id: run ? await c.text(run.work_item_id) : null, run_status: run?.status ?? null } : {};
-    out.push({ worker_id: (await c.text(h.worker_id))!, woke_at: h.woke_at, gap_ms: h.gap_ms, run_id: h.run_id, ...held });
-  }
-  return out;
-}
-
 async function overview(c: ApiCtx, params: URLSearchParams) {
   const s = c.d.store;
   const stages: Record<Stage, number> = await s.countWorkItemsByStage();
@@ -287,35 +278,6 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
   };
 }
 
-const MERGES_DEFAULT = 50;
-const MERGES_MAX = 200;
-
-/** PRs that merged with no work item, newest first. The project is its stored label, never its key. */
-async function unreviewedMerges(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
-  let limit = MERGES_DEFAULT;
-  const raw = params.get("limit");
-  if (raw !== null) {
-    if (!/^\d+$/.test(raw) || Number(raw) < 1) return apiError(400, "limit must be a whole number from 1 to 200.");
-    limit = Math.min(Number(raw), MERGES_MAX);
-  }
-  const out = [];
-  for (const m of await c.d.store.listUnreviewedMerges(limit)) {
-    const label = await c.projectLabel(m.project);
-    // Scan the whole sha, then shorten it: a cut-off secret would no longer match a rule.
-    const sha = await c.text(m.merge_sha);
-    out.push({
-      project: await c.text(label),
-      change_ref: m.change_ref, change_url: null, // no stored link (UnreviewedMerge carries only the ref): mergeLinks derives the PR's
-      ...(await mergeLinks(m.project, label, m.change_ref, (v) => c.text(v))),
-      merge_sha: sha === m.merge_sha ? sha.slice(0, 7) : sha,
-      merged_by: m.merger_id === null ? "unknown" : await c.text(m.merger_id),
-      merged_by_name: m.merger_id === null ? null : await c.text(await displayName(c.d.displayNames, m.merger_id)),
-      recorded_at: m.at,
-    });
-  }
-  return ok({ as_of: c.now.toISOString(), merges: out });
-}
-
 async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
   const parsed = parseFilters(params);
   if (!parsed.ok) return apiError(400, parsed.error);
@@ -325,12 +287,13 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
   const shown = await inProject(c.d.store, params.get("project"), applyFilters(rows, f));
   const checks = new Map<string, MergeCheck>();
   for (const m of await c.d.store.listMergeChecks(shown.filter((r) => phaseOf(r.item) === "merge_pending").map((r) => r.item.id))) checks.set(m.work_item_id, m);
+  const overlaps = await overlapsOf(rows.map((r) => r.item), (v) => c.text(v)); // among every ready item, whatever the filter
   const out = [];
   const [allowed, commandGrant, review_time] = [actorGrant(c.d, "approve_merge"), actorGrant(c.d, "approve_spec"), (await effectiveGlobal(c.d, "review_time")).value]; // each read once per list
   for (const r of shown) {
     const it = r.item;
     const decision = r.decision; // the current run's only: an earlier run's hold is stale
-    const merge_check = await mergeCheckRow(c, it, checks.get(it.id) ?? null);
+    const merge_check = await mergeCheckRow((v) => c.text(v), it, checks.get(it.id) ?? null);
     out.push({
       id: it.id,
       source: { type: it.source.type, id: it.source.id, link: it.source.link },
@@ -354,7 +317,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       merge_check,
       merge: await mergeReadiness(c.d, it, merge_check, allowed, r.pending),
       ...askReason(r.input, r.level, review_time, holdingNow(review_time, c.now)), // rank_reason and held, on an ask only
-      ...(WITH_NEED.includes(r.level) ? { need: await c.need(it, merge_check), commands: await needsYouCommands(c.d, it, commandGrant, (v) => c.text(v)) } : {}),
+      ...(WITH_NEED.includes(r.level) ? { need: await c.need(it, merge_check), commands: await needsYouCommands(c.d, it, commandGrant, (v) => c.text(v)), overlaps: overlaps.get(it.id) ?? [] } : {}),
       why: await c.why(r.why, it),
       parent_id: it.parent_id,
       phase: it.phase,
@@ -393,7 +356,8 @@ async function item(c: ApiCtx, id: WorkItemId) {
   for (const a of await s.listRunAttempts(id)) attemptsOf.set(a.run_id, [...(attemptsOf.get(a.run_id) ?? []), a]);
   // Which runs have a stored transcript: one listing of the item's prefix. A storage error only hides the links.
   const stored = c.d.storage ? await c.d.storage.list(itemPrefix(id)).catch((): string[] => []) : [];
-  const merge_check = await mergeCheckRow(c, it, phaseOf(it) === "merge_pending" ? await s.getMergeCheck(id) : null);
+  const check = await s.getMergeCheck(id), merge_check = await mergeCheckRow((v) => c.text(v), it, check);
+  const recheck = needsRecheck(merge_check?.checked_at ?? null, merge_check?.checked_at ? await baseCommittedAt(c.d) : null);
   const st = await itemState({ store: s, w: c.w, now: c.now, lease_ms: c.d.lease_ms }, it, runs, changes); // as the list reads it
   const timeline = [];
   for (const sc of changes) timeline.push(await stateChange(c, sc));
@@ -441,7 +405,7 @@ async function item(c: ApiCtx, id: WorkItemId) {
       created_at: it.created_at,
       updated_at: it.updated_at,
       conflicts: conflictCounts(runs, changes),
-      merge_check,
+      merge_check: merge_check && { ...merge_check, ...(recheck && { recheck }) }, has_changes: c.d.changes !== undefined && changesHead(it, check) !== null, // the Changes tab
       merge: await mergeReadiness(c.d, it, merge_check, actorGrant(c.d, "approve_merge"), st.pending),
       item_phase: st.level,
       reason_code: st.why.reason_code,
@@ -472,26 +436,6 @@ async function phaseRows(c: ApiCtx, it: WorkItem) {
     out.push({ id: p.id, phase: p.phase, title: await c.text(p.title || null), stage: p.stage, source: { type: p.source.type, id: p.source.id, link: p.source.link } });
   }
   return out;
-}
-
-/**
- * The local merge check of a ready-to-merge item (null for any other item): `mergeable` or `conflicts` from its
- * stored result, or `checking` while it has none, or while the result is for an older head than the one the
- * factory last recorded. File names pass the Withholder, each on its own.
- */
-async function mergeCheckRow(c: ApiCtx, it: WorkItem, m: MergeCheck | null) {
-  // Waiting for a person's merge (core/phase.ts): the only state the local merge check runs on (design §5 Merge check).
-  if (phaseOf(it) !== "merge_pending") return null;
-  const current = m !== null && (it.last_head_sha === null || it.last_head_sha === m.head_sha);
-  const conflicts: string[] = [];
-  if (current) for (const f of m.conflicts) conflicts.push((await c.text(f))!);
-  return {
-    state: !current ? ("checking" as const) : m.mergeable ? ("mergeable" as const) : ("conflicts" as const),
-    conflicts,
-    head_sha: m?.head_sha ?? null,
-    base_sha: m?.base_sha ?? null,
-    checked_at: m?.checked_at ?? null,
-  };
 }
 
 /** A state change as the page's timeline shows it: from/to as JSON text, each value withheld on its own. */

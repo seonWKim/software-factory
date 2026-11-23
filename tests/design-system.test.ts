@@ -63,12 +63,14 @@ describe("design tokens", () => {
     expect(ui("card.tsx")).toMatch(/CARD_TITLE = "[^"]*\btext-base font-semibold"/);
   });
 
-  it("a Disclosure summary is text-2 by default, and the update note's on the info fill passes text-pill-info-fg", () => {
+  it("a Disclosure summary is text-2 by default, and the update toast on the surface keeps it (no pill fill under it)", () => {
     expect(readFileSync(join(WEB_SRC, "components", "ui", "disclosure.tsx"), "utf8")).toMatch(/summaryTone = "text-text-2"/);
+    expect(readFileSync(join(WEB_SRC, "components", "ui", "toast.tsx"), "utf8")).toMatch(/\bbg-surface\b/);
     const banner = readFileSync(join(WEB_SRC, "views", "system-banner.tsx"), "utf8");
     const note = banner.slice(banner.indexOf("export function UpdateNote"), banner.indexOf("export function FactoryRevision"));
-    expect(note).toMatch(/bg-pill-info-bg/);
-    expect(note).toMatch(/<Disclosure summaryTone="text-pill-info-fg"/);
+    expect(note).toMatch(/<Toast\b/);
+    expect(note).not.toMatch(/bg-pill-/);
+    expect(note).toMatch(/<Disclosure summary=/);
   });
 
   it("tokens.json holds the two page widths, tokens.css declares them and index.css maps them to max-w-page-*", () => {

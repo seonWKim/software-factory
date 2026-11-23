@@ -49,7 +49,7 @@ export function ModelsTab() {
       {q.isError ? (
         <ErrorNote error={q.error} />
       ) : !rows ? (
-        <Loading rows={3} />
+        <Loading rows={3} label="loading.models" onRetry={() => void q.refetch()} />
       ) : (
         <DataTable label={title} columns={columns} rows={rows} rowKey={(r) => r.id} empty={t("settings.providersEmpty")} />
       )}

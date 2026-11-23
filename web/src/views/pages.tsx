@@ -1,5 +1,5 @@
 import { ListTodo } from "lucide-react";
-import { useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
   API, type FactoryState, type GitHubBudget, type Health, type HealthCheck, type HostSleepRow, type ItemDetail, type ItemRow, type Items, type Overview, type PauseRow, type PhaseRow, type PausesView, type QueueRow, type RunRow,
   type RulesView, type UnreviewedMerges, type WorkerProcess, type WorkersView, useApi,
@@ -9,7 +9,7 @@ import { ButtonRow } from "../components/ui/button-row.js";
 import { CopyText } from "../components/ui/copy.js";
 import { Input } from "../components/ui/input.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
-import { ErrorNote, Loading, Table, Td, Tr } from "../components/ui/parts.js";
+import { ErrorNote, Loading, type StoredFlags, Table, Td, Tr, useRefetchWhile } from "../components/ui/parts.js";
 import { Notice, PageHeader, PageToolbar, EmptyState } from "../components/ui/notice.js";
 import { ID_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import { FailuresSection, FailuresWindowSwitch, useFailuresWindow } from "./failures.js";
@@ -23,13 +23,15 @@ import { cn } from "../lib/cn.js";
 import { useUrlParam } from "../lib/url-param.js";
 import { type MessageKey, en } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { duration, groupedInteger, isHttpUrl, isWorkerId, localClock, localDateTime, relativeTime, runStatusLabel, termLabel, shortItemId, shortRev, tokens, workerName } from "../lib/format.js";
+import { duration, groupedInteger, localClock, localDateTime, relativeTime, runStatusLabel, termLabel, shortItemId, shortRev, tokens } from "../lib/format.js";
 import { GROUP_LABELS, ITEM_STATES, STATE_GROUPS, type StateGroup, groupOf, groupStates, isGroup, stateLabel } from "../../../src/shared/states.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
-import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, RawNames, When, byId, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
+import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, RawNames, When, byId, QueueTable, RunningTable, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
 import { ItemDecision } from "./decision-card.js";
 import { ItemAbout } from "./item-about.js";
+import { ClosedStatus, ItemFacts, TIMELINE_ANCHOR, timelineSentence } from "./item-facts.js";
+import { ItemChangesTab, RecheckButton } from "./item-changes.js";
 import { AddModelCredential } from "./model-credential-dialog.js";
 import { ResumeNow, type SupervisorActionName, SupervisorActions } from "./system-banner.js";
 import { Thread } from "./thread.js";
@@ -40,9 +42,7 @@ import { Disclosure } from "../components/ui/disclosure.js";
 import { Card, SUB_TITLE } from "../components/ui/card.js";
 import { Badge, StatusBadge } from "../components/ui/badge.js";
 import { Tooltip } from "../components/ui/menu.js";
-
-/** A host sleep's gap in whole minutes, at least 1 (only gaps over 60 s are recorded). */
-const sleptMinutes = (gap_ms: number): number => Math.max(1, Math.round(gap_ms / 60_000));
+import { HostSleeps, sleptMinutes } from "./host-sleeps.js";
 
 /** "host slept N min" for a host sleep's gap, on the item timeline. */
 export const sleptText = (gap_ms: number): string => t("host.slept", { min: sleptMinutes(gap_ms) });
@@ -136,7 +136,7 @@ function PauseItem({ pause, token, now }: { pause: PauseRow; token: string | nul
       <span className="min-w-0 text-pretty text-text-1">{pauseLabel(pause.name)}</span>
       {at !== null && (
         <span className="min-w-0 tabular-nums break-words text-text-2" title={localDateTime(at)}>
-          {pause.ends_at === null ? relativeTime(at, now) : t(pause.name === "model_stall" ? "pause.nextProbe" : "pause.ends", { time: at })}
+          {pause.ends_at === null ? relativeTime(at, now) : t(pause.name === "model_stall" ? "pause.nextProbe" : "pause.ends", { time: localDateTime(at) })}
           {pause.ends_at !== null && Date.parse(at) > now ? ` (${relativeTime(at, now)})` : ""}
         </span>
       )}
@@ -178,7 +178,7 @@ export function ActivityPage() {
   return (
     <div className="mt-6">
       <Card title={t("running.label")} count={o?.running}>
-        {runs.isError ? <ErrorNote error={runs.error} /> : !runs.data ? <Loading rows={2} /> : <RunningTable runs={runs.data.runs} items={map} now={now} />}
+        {runs.isError ? <ErrorNote error={runs.error} /> : !runs.data ? <Loading rows={2} label="loading.running" onRetry={() => void runs.refetch()} /> : <RunningTable runs={runs.data.runs} items={map} now={now} />}
       </Card>
       {o && (o.unreviewed_merges_7d ?? 0) > 0 && (
         <p data-testid="unreviewed-merges-line" className="mt-4 text-sm">
@@ -348,11 +348,11 @@ export function ItemsPage() {
       {rateLimit?.ends_at && <div className="mb-3"><Notice tone="warn">{t("items.rateLimit", { state: t("items.ratePaused", { time: rateLimit.ends_at }) })}</Notice></div>}
       {queuedView ? (
         <Card title={t("queue.title")} count={queue.data?.queue.length}>
-          {queue.isError ? <ErrorNote error={queue.error} /> : !queue.data || !items.data ? <Loading rows={4} /> : <QueueTable queue={queue.data.queue} items={itemsById} now={now} />}
+          {queue.isError ? <ErrorNote error={queue.error} /> : !queue.data || !items.data ? <Loading rows={4} label="loading.queue" onRetry={() => void Promise.all([queue.refetch(), items.refetch()])} /> : <QueueTable queue={queue.data.queue} items={itemsById} now={now} />}
         </Card>
       ) : (
         <Card>
-          {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading rows={6} /> : rows.length === 0 && !state && !q.trim() && !ids ? (
+          {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading rows={6} label="loading.items" onRetry={() => void items.refetch()} /> : rows.length === 0 && !state && !q.trim() && !ids ? (
             <EmptyState icon={ListTodo} title={t("items.emptyTitle")} description={t("items.emptyBody")} action={<Link href={`${BASE}tasks`} className={LINK_CLASS}>{t("items.emptyAction")}</Link>} />
           ) : tree ? (
             nodes.length === 0 ? <EmptyState icon={ListTodo} title={t("items.noMatch")} /> : (
@@ -371,14 +371,16 @@ export function ItemsPage() {
 /**
  * One work item (design 09-dashboard-item): its title, then its decision (the DecisionCard while the owner is next,
  * else its reason and "…" menu), its facts, the current run with its live state, the thread (collapsed after its
- * first message), the runs (with errors) and the timeline.
+ * first message), the runs (with errors) and the timeline. An item with a branch has the tabs Overview (all of that)
+ * and Changes (item-changes.tsx) in a PageToolbar under the header, kept in `?tab=`.
  */
 export function ItemPage({ id }: { id: string }) {
   const now = useNow();
   const q = useApi<ItemDetail>(API.item(id));
   const viewer = useViewer();
+  const [tab, pickTab] = useUrlParam("tab", (v) => v === "changes");
   if (q.isError) return <><PageHeader title={t("app.workItem")} /><ErrorNote error={q.error} /></>;
-  if (!q.data) return <><PageHeader title={t("app.workItem")} /><Loading rows={6} /></>;
+  if (!q.data) return <><PageHeader title={t("app.workItem")} /><Loading rows={6} label="loading.item" onRetry={() => void q.refetch()} /></>;
   const { item, runs, timeline } = q.data;
   // State changes and host sleeps of the item's runs, newest first.
   const entries: ({ kind: "change"; at: string; t: ItemDetail["timeline"][number] } | { kind: "sleep"; at: string; h: HostSleepRow })[] = [
@@ -397,6 +399,19 @@ export function ItemPage({ id }: { id: string }) {
         <Link href={itemPath(item.id)} aria-current="page" title={item.id} className={cn("inline-block max-w-[16ch] truncate align-bottom tabular-nums", ID_CLASS)}>{short}</Link>
       </nav>
       <PageHeader title={<span data-raw>{item.title ?? short}</span>} actions={runs.some(isInteractiveRun) ? <InteractiveBadge /> : undefined} />
+      {item.has_changes && (
+        <PageToolbar
+          tabs={
+            <Tabs
+              label={t("item.views")}
+              options={[{ id: "overview", label: t("item.tabOverview") }, { id: "changes", label: t("item.tabChanges") }]}
+              value={tab === "changes" ? "changes" : "overview"}
+              onChange={(v) => pickTab(v === "changes" ? v : null)}
+            />
+          }
+        />
+      )}
+      {item.has_changes && tab === "changes" ? <ItemChangesTab id={item.id} /> : <>
       {item.parent_id && (
         <p data-testid="parent" className="mt-1 text-sm">
           {t("item.phase", { phase: item.phase ?? "?" })} <Link href={itemPath(item.parent_id)} className={LINK_CLASS}>{t("item.splitParent")}</Link>
@@ -407,30 +422,13 @@ export function ItemPage({ id }: { id: string }) {
         id={item.id}
         commands={q.data.commands ?? []}
         replies={q.data.replies ?? []}
-        reason={item.why ? (
+        reason={item.stage === "CLOSED" ? <ClosedStatus item={item} timeline={timeline} thread={q.data.thread ?? []} now={now} viewer={viewer} /> : item.why ? (
           <p data-testid="why" className="text-sm text-pretty break-words">
             <WhyText why={item.why} />
           </p>
         ) : null}
       />
-      <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
-        {([
-          [t("col.state"), <StatusBadge state={level}>{stateLabel(level)}{level === "closed" && item.close_reason ? ` (${termLabel(item.close_reason)})` : ""}</StatusBadge>],
-          [t("item.source"), isHttpUrl(item.source.link) ? <SourceLink source={item.source} className="inline-block align-bottom" /> : short],
-          [t("item.tier"), item.tier ?? "–"],
-          [t("col.pr"), item.change_ref === null ? "–" : <UrlOrText url={item.change_url} text={`#${item.change_ref}`} />],
-          [t("item.specComment"), item.spec_comment_url ? <UrlOrText url={item.spec_comment_url} text={t("item.specCommentLink")} /> : "–"],
-          [t("item.reviewLoops"), item.loop_count],
-          [t("item.restarts"), item.restart_count],
-          [termLabel("token_cost"), tokens(item.token_cost)],
-          [t("item.updated"), <When at={item.updated_at} now={now} />],
-        ] as const).map(([k, v]) => (
-          <div key={k} className="min-w-0">
-            <dt className="text-xs text-text-2">{k}</dt>
-            <dd className="truncate tabular-nums">{typeof v === "object" ? v : String(v)}</dd>
-          </div>
-        ))}
-      </dl>
+      <ItemFacts item={item} now={now} />
       <Disclosure data-ids className="mt-2" summary={t("ids.summary")}>
         <dl className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
           <dt className="text-xs text-text-2">{t("ids.item")}</dt>
@@ -457,6 +455,7 @@ export function ItemPage({ id }: { id: string }) {
               {item.merge_check.conflicts.map((f) => <li key={f}>{f}</li>)}
             </ul>
           )}
+          {item.merge_check.recheck && <RecheckButton id={item.id} />}
         </Card>
       )}
       <Card title={t("item.runs")} count={runs.length}>
@@ -502,7 +501,7 @@ export function ItemPage({ id }: { id: string }) {
           </Table>
         )}
       </Card>
-      <Card title={t("item.timeline")} count={entries.length}>
+      <Card id={TIMELINE_ANCHOR} title={t("item.timeline")} count={entries.length}>
         <ol className="space-y-1 text-sm">
           {entries.map((e) => {
             if (e.kind === "sleep") return (
@@ -519,6 +518,7 @@ export function ItemPage({ id }: { id: string }) {
           })}
         </ol>
       </Card>
+      </>}
     </>
   );
 }
@@ -560,12 +560,6 @@ function Phases({ phases }: { phases: readonly PhaseRow[] }) {
       </ol>
     </Card>
   );
-}
-
-/** A link when the URL is http(s); the text alone otherwise (a withheld marker, a local path, anything else). */
-function UrlOrText({ url, text }: { url: string | null | undefined; text: string }) {
-  if (isHttpUrl(url)) return <a href={url} target="_blank" rel="noreferrer" className={LINK_CLASS}>{text}</a>;
-  return <span>{url && url !== text ? `${text} (${url})` : text}</span>;
 }
 
 type TimelineEntry = ItemDetail["timeline"][number];
@@ -632,22 +626,6 @@ const runResultLabel = (status: string): string => (`item.result.${status}` in e
 function errorSentence(code: string | null | undefined): string {
   const key = code ? [`item.error.${code}`, `term.${code}`, `failure.${code}.title`].find((k) => k in en) : undefined;
   return t((key ?? "item.errorFailed") as MessageKey);
-}
-
-/** The timeline's actor as a phrase: "you" for the viewer, "the factory", "worker 2", else "a person" (never a name). */
-function actorPhrase(actor: TimelineEntry["actor"], viewer: string | null): string {
-  const id = actor.kind === "system" ? null : actor.id;
-  if (!id || id === "system") return t("person.factory");
-  if (isWorkerId(id)) return workerName(id);
-  return id === viewer ? t("person.you") : t("person.other");
-}
-
-/** One timeline row's sentence ("You asked for a retry"); "Changed" for a reason with no sentence. */
-function timelineSentence(entry: TimelineEntry, viewer: string | null): string {
-  const key = `timeline.${entry.reason}`;
-  if (!entry.reason || !(key in en)) return t("item.change");
-  const whom = actorPhrase(entry.actor, viewer);
-  return t(key as MessageKey, { who: whom.charAt(0).toLocaleUpperCase() + whom.slice(1), whom });
 }
 
 function TimelineRow({ entry, now, viewer }: { entry: TimelineEntry; now: number; viewer: string | null }) {
@@ -752,7 +730,7 @@ export function RunnersTab() {
         </p>
       )}
       <Card title={t("runners.processes")} count={workers.data?.processes ? processes.length : undefined}>
-        {workers.isError ? <ErrorNote error={workers.error} /> : !workers.data ? <Loading rows={2} /> : workers.data.processes_error ? (
+        {workers.isError ? <ErrorNote error={workers.error} /> : !workers.data ? <Loading rows={2} label="loading.workers" onRetry={() => void workers.refetch()} /> : workers.data.processes_error ? (
           <ErrorNote error={new Error(workers.data.processes_error)} />
         ) : processes.length === 0 ? (
           <EmptyState title={t("runners.none")} />
@@ -794,9 +772,22 @@ function CheckList({ checks }: { checks: HealthCheck[] }) {
   );
 }
 
-type HealthTab = "checks" | "spend" | "failures" | "runners" | "sleeps" | "merges" | "pauses" | "efficiency" | "improve" | "github";
+/**
+ * Health's four tabs and the sections each holds, in order (design 09-health, 2026-11-24). A section's ID is the tab ID
+ * it had before the merge, so an old link (`?tab=sleeps`) still names it: it opens the tab that holds it, scrolled to it.
+ */
+const HEALTH_TABS = {
+  overview: ["pauses", "checks"],
+  runs: ["runners", "failures", "sleeps"],
+  cost: ["spend", "efficiency", "github"],
+  review: ["merges", "improve"],
+} as const;
+type HealthTab = keyof typeof HEALTH_TABS;
+type HealthSection = (typeof HEALTH_TABS)[HealthTab][number];
+const TAB_OF = new Map<string, HealthTab>(Object.entries(HEALTH_TABS).flatMap(([tab, sections]) => [[tab, tab as HealthTab], ...sections.map((s): [string, HealthTab] => [s, tab as HealthTab])]));
 
-
+/** A section's anchor on the Health page. */
+const sectionAnchor = (s: HealthSection) => `health-${s}`;
 
 /**
  * The GitHub budget tab (design 09-health, 2026-11-20): what the controller stored after its last poll, so no GitHub
@@ -824,41 +815,6 @@ function GitHubBudgetTab({ budget, tokenDays }: { budget: GitHubBudget; tokenDay
   );
 }
 
-interface SleepGroup {
-  woke_at: string;
-  gap_ms: number;
-  workers: Set<string>;
-  /** The runs the sleep held, once each (by run id), with their item and current status. */
-  runs: Map<string, { work_item_id: string; status: string }>;
-  /** The API entries behind the row, for its Details. */
-  raw: HostSleepRow[];
-}
-
-/**
- * One row per sleep event: entries that woke in the same minute (one per worker, milliseconds apart) merge, the gap
- * being the largest and the workers counted once each.
- */
-function groupSleeps(sleeps: readonly HostSleepRow[]): SleepGroup[] {
-  const groups = new Map<string, SleepGroup>();
-  for (const h of sleeps) {
-    const minute = Math.floor(Date.parse(h.woke_at) / 60_000);
-    const key = Number.isNaN(minute) ? h.woke_at : String(minute);
-    const g: SleepGroup = groups.get(key) ?? { woke_at: h.woke_at, gap_ms: 0, workers: new Set<string>(), runs: new Map(), raw: [] };
-    g.gap_ms = Math.max(g.gap_ms, h.gap_ms);
-    g.workers.add(h.worker_id);
-    if (h.run_id && h.work_item_id && h.run_status) g.runs.set(h.run_id, { work_item_id: h.work_item_id, status: h.run_status });
-    g.raw.push(h);
-    groups.set(key, g);
-  }
-  return [...groups.values()];
-}
-
-/** "Computer slept 15 min at 6:18 PM; 4 workers paused": the largest gap, the local wake time and the distinct workers. */
-function sleepText(g: SleepGroup): string {
-  const n = g.workers.size;
-  return t("health.sleepRow", { min: sleptMinutes(g.gap_ms), time: localClock(g.woke_at), workers: t(n === 1 ? "health.pausedOne" : "health.pausedMany", { count: n }) });
-}
-
 /** The Checks card's title: all pass, or how many need attention, then when they ran ("All 27 checks pass · 4m ago"). */
 function checksTitle(total: number, attention: number, ago: string): string {
   if (total === 0) return t("health.checks");
@@ -866,127 +822,137 @@ function checksTitle(total: number, attention: number, ago: string): string {
   return t(attention === 1 ? "health.attentionOne" : "health.attentionMany", { count: attention, time: ago });
 }
 
+/**
+ * When the URL named a section (`?tab=sleeps`), scroll to it once it is drawn; the first section drawn in its tab needs
+ * no scroll. The sections above it read their own data and grow when it arrives, so the scroll waits until none of
+ * them shows its placeholder (`aria-busy`), at most 3 s. Looks after each render until the section is there, since the
+ * sections appear only once the checks have loaded.
+ */
+function useScrollToSection(section: HealthSection | null) {
+  const done = useRef(false);
+  const stop = useRef<() => void>(() => undefined);
+  useEffect(() => () => stop.current(), []);
+  useEffect(() => {
+    if (done.current || section === null) return;
+    const el = document.getElementById(sectionAnchor(section));
+    if (!el) return;
+    done.current = true;
+    if (!el.previousElementSibling || !el.parentElement) return;
+    const box = el.parentElement;
+    const loading = () => box.querySelector('[aria-busy="true"]') !== null;
+    const observer = new MutationObserver(() => !loading() && go());
+    const timer = setTimeout(() => go(), 3_000);
+    stop.current = () => {
+      observer.disconnect();
+      clearTimeout(timer);
+    };
+    const go = () => {
+      stop.current();
+      el.scrollIntoView?.({ block: "start" });
+    };
+    if (loading()) observer.observe(box, { subtree: true, childList: true, attributes: true });
+    else go();
+  });
+}
+
 export function HealthPage() {
   const now = useNow();
   // Each read runs the checks: every 30 s, not every 3 s.
-  const health = useApi<Health>(API.health, 30_000);
+  const health = useApi<Health & StoredFlags>(API.health, 30_000);
+  // Pending: the server's first run has not ended (design 09-health, 2026-11-19); read again each second meanwhile.
+  useRefetchWhile(health.data?.pending === true, health.refetch);
   const merges = useApi<UnreviewedMerges>(API.unreviewedMerges, 30_000);
   const pauses = useApi<PausesView>(API.pauses);
   const overview = useApi<Overview>(API.overview);
   const rules = useApi<RulesView>(API.rules);
   const viewer = useViewer();
   const held = (pauses.data?.pauses.length ?? 0) > 0;
-  const [picked, pick] = useUrlParam("tab", (v) => ["checks", "spend", "failures", "runners", "sleeps", "merges", "pauses", "efficiency", "improve", "github"].includes(v));
-  // The Failures window (`?window=`): a page control in the toolbar's second row while the Failures tab is open.
+  // `?tab=` takes a tab ID or a section ID (an old tab's link); a section opens its tab and scrolls to it.
+  const [picked, pick] = useUrlParam("tab", (v) => TAB_OF.has(v));
+  const tab: HealthTab = (picked && TAB_OF.get(picked)) || "overview";
+  const section = picked && !(picked in HEALTH_TABS) ? (picked as HealthSection) : null;
+  useScrollToSection(section);
+  // The Failures window (`?window=`): a page control in the toolbar's second row while the Runs tab is open.
   const [failuresWindow, setFailuresWindow] = useFailuresWindow();
   if (health.isError) return <><PageHeader title={t("page.health")} /><ErrorNote error={health.error} /></>;
-  if (!health.data) return <><PageHeader title={t("page.health")} /><Loading rows={6} /></>;
+  if (!health.data || health.data.pending) return <><PageHeader title={t("page.health")} /><Loading rows={6} label="loading.health" onRetry={() => void health.refetch()} /></>;
   const order = ["fail", "warn", "ok"];
   const checks = [...health.data.checks].sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
   // Warn and fail rows stay in view; ok rows fold behind their count ("22 ok"), or behind "Show the checks" when the title already counts them.
   const open = checks.filter((c) => c.status !== "ok");
   const fine = checks.filter((c) => c.status === "ok");
-  const sleeps = groupSleeps(health.data.sleeps ?? []);
   const failing = checks.some((c) => c.status === "fail");
   const mergeList = merges.data?.merges;
   const budget = overview.data?.github_budget ?? null;
-  // The improve report (design 09-dashboard-system, 2026-11-21): from the rules read's `improve`; no tab without one.
+  // The improve report (design 09-dashboard-system, 2026-11-21): from the rules read's `improve`; no section without one.
   const improve = rules.data?.improve ?? null;
+  // A count in a tab's label only for what waits on the owner: checks that need attention and held pauses; merges to sample.
+  const attention = open.length + (pauses.data?.pauses.length ?? 0);
+  const counted = (label: string, n: number | undefined) => (n ? `${label} (${n})` : label);
   const options: { id: HealthTab; label: string }[] = [
-    { id: "checks", label: `${t("health.tabChecks")} (${checks.length})${failing ? ` ${t("health.failMark")}` : ""}` },
-    { id: "spend", label: t("page.spend") },
-    { id: "failures", label: t("page.failures") },
-    { id: "runners", label: t("health.tabRunners") },
-    { id: "sleeps", label: `${t("health.sleeps")} (${sleeps.length})` },
-    { id: "merges", label: `${t("health.merges")}${mergeList ? ` (${mergeList.length})` : ""}` },
-    // Only while a worker is held.
-    ...(held ? [{ id: "pauses" as const, label: `${t("pause.title")} (${pauses.data!.pauses.length})` }] : []),
-    { id: "efficiency", label: t("efficiency.title") },
-    ...(improve ? [{ id: "improve" as const, label: t("health.tabImprove") }] : []),
-    // Only while a GitHub budget is stored (GitHub selected and polled).
-    ...(budget ? [{ id: "github" as const, label: t("health.githubBudget") }] : []),
+    { id: "overview", label: `${counted(t("health.tabOverview"), attention)}${failing ? ` ${t("health.failMark")}` : ""}` },
+    { id: "runs", label: t("health.tabRuns") },
+    { id: "cost", label: t("health.tabCost") },
+    { id: "review", label: counted(t("health.tabReview"), mergeList?.length) },
   ];
-  const tab = options.some((o) => o.id === picked) ? (picked as HealthTab) : "checks";
+  // Each section of the open tab, in order; a section with nothing to show (no pause held, no budget stored, no report) is not drawn.
+  const draw: Record<HealthSection, () => ReactNode> = {
+    pauses: () => held && pauses.data && (
+      <Card title={t("pause.title")} count={pauses.data.pauses.length}>
+        <PauseList view={pauses.data} now={now} />
+      </Card>
+    ),
+    checks: () => (
+      <Card title={checksTitle(checks.length, open.length, relativeTime(health.data!.checked_at, now))}>
+        <CheckList checks={open} />
+        {fine.length > 0 && (
+          <Disclosure data-testid="ok-checks" className={open.length > 0 ? "mt-2" : undefined} summary={open.length > 0 ? t("health.okCount", { count: fine.length }) : t("health.showChecks")}>
+            <CheckList checks={fine} />
+          </Disclosure>
+        )}
+      </Card>
+    ),
+    runners: () => <RunnersTab />,
+    failures: () => <FailuresSection win={failuresWindow} />,
+    sleeps: () => <HostSleeps sleeps={health.data!.sleeps ?? []} now={now} />,
+    spend: () => <SpendSection />,
+    efficiency: () => <EfficiencyTab />,
+    github: () => budget && <GitHubBudgetTab budget={budget} tokenDays={overview.data?.github_token_days} />,
+    merges: () => (
+      <div id="unreviewed-merges">
+        <Card title={t("health.merges")} count={mergeList?.length}>
+          {merges.isError ? <ErrorNote error={merges.error} /> : !mergeList ? <Loading rows={2} label="loading.merges" onRetry={() => void merges.refetch()} /> : (
+            <DataTable
+              label={t("health.merges")}
+              columns={[
+                { key: "pr", header: t("col.pr"), className: "tabular-nums", render: (m) => (m.change_url ? <a href={m.change_url} target="_blank" rel="noreferrer" className={LINK_CLASS}>#{m.change_ref}</a> : `#${m.change_ref}`) },
+                { key: "merged_by", header: t("health.mergedBy"), className: "text-xs break-words", render: (m) => (m.merged_by && m.merged_by !== "unknown" ? <span title={m.merged_by}>{m.merged_by === viewer ? t("person.you") : t("person.other")}</span> : t("format.unknown")) },
+                { key: "merge_sha", header: t("health.mergeCommit"), className: "font-mono text-xs" },
+                { key: "recorded_at", header: t("col.when"), className: "tabular-nums whitespace-nowrap", render: (m) => <When at={m.recorded_at} now={now} /> },
+              ]}
+              rows={mergeList}
+              rowKey={(m) => `${m.project}#${m.change_ref}`}
+              empty={t("health.noMerges")}
+            />
+          )}
+        </Card>
+      </div>
+    ),
+    improve: () => improve && <Improve view={improve} />,
+  };
   return (
     <>
       <PageHeader title={t("page.health")} />
       <PageToolbar tabs={<Tabs label={t("health.tabs")} options={options} value={tab} onChange={pick} />}>
-        {tab === "failures" && <FailuresWindowSwitch value={failuresWindow} onChange={setFailuresWindow} />}
+        {tab === "runs" && <FailuresWindowSwitch value={failuresWindow} onChange={setFailuresWindow} />}
       </PageToolbar>
       <CodeRevision factory={overview.data?.factory} />
-      {tab === "checks" && (
-        <Card title={checksTitle(checks.length, open.length, relativeTime(health.data.checked_at, now))}>
-          <CheckList checks={open} />
-          {fine.length > 0 && (
-            <Disclosure data-testid="ok-checks" className={open.length > 0 ? "mt-2" : undefined} summary={open.length > 0 ? t("health.okCount", { count: fine.length }) : t("health.showChecks")}>
-              <CheckList checks={fine} />
-            </Disclosure>
-          )}
-        </Card>
-      )}
-      {tab === "spend" && <SpendSection />}
-      {tab === "failures" && <FailuresSection win={failuresWindow} />}
-      {tab === "runners" && <RunnersTab />}
-      {tab === "pauses" && pauses.data && (
-        <Card title={t("pause.title")} count={pauses.data.pauses.length}>
-          <PauseList view={pauses.data} now={now} />
-        </Card>
-      )}
-      {tab === "sleeps" && (
-        <Card title={t("health.sleeps")} count={sleeps.length}>
-          {sleeps.length === 0 ? (
-            <EmptyState title={t("health.noSleep")} />
-          ) : (
-            <ul className="space-y-1 text-sm">
-              {sleeps.map((h) => (
-                <li key={h.woke_at} className="text-sm" data-testid="host-sleep">
-                  <span className="flex flex-wrap items-baseline gap-x-3">
-                    <span className="font-medium tabular-nums">{sleepText(h)}</span>
-                    <span className="tabular-nums text-text-2"><When at={h.woke_at} now={now} /></span>
-                  </span>
-                  {h.runs.size > 0 && (
-                    <div className="mt-1 text-xs text-text-2" data-testid="host-sleep-runs">
-                      <span>{t("health.sleepRuns")}</span>
-                      <ul className="ml-4 list-disc">
-                        {[...h.runs].map(([id, r]) => (
-                          <li key={id}>
-                            <Link href={itemPath(r.work_item_id)} data-raw className={LINK_CLASS}>{r.work_item_id}</Link>: {runStatusLabel(r.status)}
-                          </li>
-                        ))}
-                      </ul>
-                      <p>{t("health.sleepHint")} <Link href={`${BASE}settings?tab=advanced`} className={LINK_CLASS}>{t("health.sleepHintLink")}</Link></p>
-                    </div>
-                  )}
-                  <RawDetails className="mt-1"><code className="font-mono text-xs whitespace-pre-wrap break-all">{h.raw.map((r) => `${r.woke_at} ${r.worker_id} gap_ms=${r.gap_ms}`).join("\n")}</code></RawDetails>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
-      )}
-      {tab === "merges" && (
-        <div id="unreviewed-merges">
-          <Card title={t("health.merges")} count={mergeList?.length}>
-            {merges.isError ? <ErrorNote error={merges.error} /> : !mergeList ? <Loading rows={2} /> : (
-              <DataTable
-                label={t("health.merges")}
-                columns={[
-                  { key: "pr", header: t("col.pr"), className: "tabular-nums", render: (m) => (m.change_url ? <a href={m.change_url} target="_blank" rel="noreferrer" className={LINK_CLASS}>#{m.change_ref}</a> : `#${m.change_ref}`) },
-                  { key: "merged_by", header: t("health.mergedBy"), className: "text-xs break-words", render: (m) => (m.merged_by && m.merged_by !== "unknown" ? <span title={m.merged_by}>{m.merged_by === viewer ? t("person.you") : t("person.other")}</span> : t("format.unknown")) },
-                  { key: "merge_sha", header: t("health.mergeCommit"), className: "font-mono text-xs" },
-                  { key: "recorded_at", header: t("col.when"), className: "tabular-nums whitespace-nowrap", render: (m) => <When at={m.recorded_at} now={now} /> },
-                ]}
-                rows={mergeList}
-                rowKey={(m) => `${m.project}#${m.change_ref}`}
-                empty={t("health.noMerges")}
-              />
-            )}
-          </Card>
-        </div>
-      )}
-      {tab === "efficiency" && <EfficiencyTab />}
-      {tab === "improve" && improve && <Improve view={improve} />}
-      {tab === "github" && budget && <GitHubBudgetTab budget={budget} tokenDays={overview.data?.github_token_days} />}
+      <div className="mt-6 flex flex-col gap-6 first:mt-0">
+        {HEALTH_TABS[tab].map((s) => {
+          const body = draw[s]();
+          return body ? <div key={s} id={sectionAnchor(s)} data-health-section={s} className="min-w-0 scroll-mt-4">{body}</div> : null;
+        })}
+      </div>
     </>
   );
 }

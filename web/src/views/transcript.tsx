@@ -211,7 +211,7 @@ export function TranscriptView({ itemId, runId }: { itemId: string; runId: strin
       </>
     );
   }
-  if (!last) return <><PageHeader title={t("app.runTranscript")} /><Loading rows={6} /></>;
+  if (!last) return <><PageHeader title={t("app.runTranscript")} /><Loading rows={6} label="loading.transcript" onRetry={() => void q.refetch()} /></>;
   const first = pages[0]!;
   const run = first.run;
   const steps = pages.flatMap((p) => p.steps);

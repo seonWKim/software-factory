@@ -20,7 +20,7 @@ import type { RunOutputStore } from "../core/stall.js";
 import type { SessionReservation, SessionReservationStore } from "../core/session.js";
 import type { ProposalStore } from "../core/proposals.js";
 import type { StandingChangeStore } from "../core/standing.js";
-import type { ScheduleStore } from "../core/schedule.js";
+import type { ScheduleStore } from "../core/schedule.js"; import type { AttachmentStore } from "../core/attachments.js";
 import type { SkillEvalStore } from "./skill-eval-store.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
@@ -85,10 +85,10 @@ export type RecordPrHeadResult =
   | { ok: false; reason: "head_moved"; current: WorkItem };
 export interface NewUnreviewedMerge {
   project: string;
-  /** The PR number as text; the store mirrors it into its legacy PR column. */
   change_ref: string;
   merge_sha: string;
   merger_id: UserId | null;
+  title?: string | null;
 }
 
 export interface NewRun {
@@ -354,7 +354,7 @@ export interface NoticeMessageStore {
   getNoticeQuestion(id: string): Promise<NoticeQuestion | null>;
 }
 
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore, SkillEvalStore {
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore, SkillEvalStore, AttachmentStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes
@@ -845,13 +845,12 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
 
   // Merge checks (design §5 Merge check, issue #248): the latest local merge check of each ready-to-merge item.
 
-  /**
-   * Stores `check` as the item's one latest result, replacing any earlier one; `checked_at` is the store clock's
-   * now. Returns the stored row.
-   */
+  /** Stores `check` as the item's one latest result, replacing any earlier one; `checked_at` is the store clock's now. Returns it. */
   recordMergeCheck(check: NewMergeCheck): Promise<MergeCheck>;
   /** The item's latest result; null when it was never checked. Read-only. */
   getMergeCheck(work_item_id: WorkItemId): Promise<MergeCheck | null>;
+  /** Removes the item's stored result (the dashboard's Re-check; no other row); true when one was removed. Safe to run twice. */
+  clearMergeCheck(work_item_id: WorkItemId): Promise<boolean>;
   /** The latest results of the given items (those with one), in no set order. Read-only. */
   listMergeChecks(work_item_ids: readonly WorkItemId[]): Promise<MergeCheck[]>;
 

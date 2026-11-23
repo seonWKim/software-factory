@@ -110,11 +110,15 @@ export interface BaseSyncSpec {
 /**
  * `synced`: push `local` (the local base, a descendant of `remote`) conditionally on `remote`, the remote base the
  * sandbox read; `contains`: the remote base already contains the merge, so nothing is pushed. `conflicts`: the
- * remote base moved and does not merge cleanly into the local one (the paths, sorted); nothing moved.
+ * remote base moved and does not merge cleanly into the local one (the paths, sorted), `remote` its commit, which
+ * keys the reconcile item; nothing moved.
  */
 export type BaseSyncResult =
   | { synced: true; local: string; remote: string; contains: boolean; not_updated: string[] }
-  | { synced: false; conflicts: string[] };
+  | { synced: false; conflicts: string[]; remote: string };
+
+// The base reconcile's item key (design 05-sources, Base reconcile), kept beside the sandbox port its run uses.
+export { reconcileOf, reconcileSourceId } from "../interfaces/sandbox.js";
 
 /**
  * A sandbox that can bring the remote base into the local one: fetches only the remote base branch, and when it

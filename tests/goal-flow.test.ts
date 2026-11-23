@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
+import type { FactoryConfig } from "../src/core/config.js";
 import { SPLIT_APPROVED } from "../src/core/split.js";
 import type { RunOutcome, SourceRef, WorkItem } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -21,11 +22,11 @@ const phase = (n: number) => ({ title: `Part ${n}`, problem: `Problem of part ${
 const bigSpec = (extra: Record<string, unknown> = {}) => ({ ...triageSpec, estimated_lines: 2600, estimated_files: 30, phases: [phase(1), phase(2)], ...extra });
 const triaged = (spec: unknown): RunOutcome => ({ status: "succeeded", summary: "s", data: { spec } });
 
-async function setup() {
+async function setup(cfg: Partial<FactoryConfig> = {}) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
-  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: { ...config, ...cfg }, log: silent, scanner: cleanScanner });
   const intake = async (n: number): Promise<WorkItem> => {
     source.queue.push({ kind: "item_requested", source: issueRef(n), requester: alice, title: "Big change", body: "do it all" });
     await controller.tickIntake();
@@ -117,14 +118,15 @@ describe("goal lines of a split spec", () => {
 });
 
 const system = { kind: "system", id: "test" } as const;
+const FIX = { title: "Wire the flow", problem: "the flow stops at step 2", done_criteria: ["the flow runs end to end"], allowed_paths: ["src/flow/"] };
 const judged = (verdict: unknown): RunOutcome => ({ status: "succeeded", summary: "judge done", data: { verdict } });
 /** The comments on goal split `g`'s own issue. */
 const issueComments = (g: { parent: WorkItem; source: { comments: { source: { id: string }; marker: string }[] } }) =>
   g.source.comments.filter((c) => c.source.id === g.parent.source.id);
 
 /** A goal split (issue `n`, two phases unless `phases` says) approved and filed, with helpers to close phases and finish judge runs. */
-async function goalSplit(n: number, opts: { goal?: string[] | null; phases?: number } = {}) {
-  const f = await setup();
+async function goalSplit(n: number, opts: { goal?: string[] | null; phases?: number; cfg?: Partial<FactoryConfig> } = {}) {
+  const f = await setup(opts.cfg);
   const parent = await f.intake(n);
   const goal = opts.goal === undefined ? GOAL : opts.goal;
   const count = opts.phases ?? 2;
@@ -154,7 +156,34 @@ async function goalSplit(n: number, opts: { goal?: string[] | null; phases?: num
   const verdicts = async () => (await f.store.listStateChanges(parent.id)).filter((c) => c.reason === "judge_verdict");
   const goalQuestions = () => f.source.comments.filter((c) => c.source.id === issueRef(n).id && c.marker.includes(`goal-question:${parent.id}`));
   const closeComment = () => f.source.comments.find((c) => c.source.id === issueRef(n).id && c.body.startsWith("Closed because"));
-  return { ...f, parent, phases, get, close, judgeRuns, finishJudge, verdicts, goalQuestions, closeComment };
+  /** The goal's comments whose marker starts with `factory:<prefix>:<parent id>`. */
+  const marked = (prefix: string) => f.source.comments.filter((c) => c.source.id === issueRef(n).id && c.marker.includes(`${prefix}:${parent.id}`));
+  /** The parent's recorded phases, in phase order: its approval's, then each goal_phase_added's. */
+  const recorded = async () => {
+    const changes = await f.store.listStateChanges(parent.id);
+    const ids = [
+      ...(JSON.parse(String(changes.find((c) => c.reason === SPLIT_APPROVED)!.detail!.sub_issues)) as string[]),
+      ...changes.filter((c) => c.reason === "goal_phase_added").map((c) => String(c.detail!.sub_issue)),
+    ];
+    return Promise.all(ids.map(async (id) => (await f.store.listPhases(parent.id)).find((p) => p.source.id === id)!));
+  };
+  let comment = 900;
+  /** A command on the goal's issue from alice under a new comment id. */
+  const command = async (kind: "spec_approved" | "spec_rejected") => {
+    const at = { source: issueRef(n), comment_id: String(++comment), approver: alice };
+    f.source.queue.push(kind === "spec_approved" ? { kind, ...at } : { kind, ...at, reason: "not worth it" });
+    await f.controller.tickIntake();
+    await f.controller.tickOutbox();
+  };
+  /** Closes merged phase `p` (merge sha `sha`), queues its judge and applies `verdict`. */
+  const judgePhase = async (p: WorkItem, sha: string, verdict: unknown) => {
+    await close(p, sha);
+    await f.controller.tickPhases();
+    await finishJudge(judged(verdict));
+    await f.controller.tickPhases();
+    await f.controller.tickOutbox();
+  };
+  return { ...f, parent, phases, get, close, judgeRuns, finishJudge, verdicts, goalQuestions, closeComment, marked, recorded, command, judgePhase };
 }
 
 describe("the judge of a goal split", () => {
@@ -218,26 +247,121 @@ describe("the judge of a goal split", () => {
     expect(await g.get(g.parent)).toMatchObject({ stage: "READY", blocked_on: "upstream" });
   });
 
-  it("fix on a phase stops the goal for the owner with one comment, keeps the fix on the change, adds no phase and closes nothing", async () => {
+  it("fix on a phase files a fix phase under the goal: the next phase number, held after the phase before it, recorded with goal_phase_added", async () => {
     const g = await goalSplit(313);
     const [p1, p2] = g.phases;
-    const rows = (await g.store.listPhases(g.parent.id)).map((p) => p.id);
-    await g.close(p1!, "sha-1");
-    await g.controller.tickPhases();
-    const fix = { title: "Wire the flow", problem: "the flow stops at step 2", done_criteria: ["the flow runs end to end"], allowed_paths: ["src/flow/"] };
-    await g.finishJudge(judged({ verdict: "fix", reason: "the first goal line does not hold", fix }));
-    await g.controller.tickPhases();
-    await g.controller.tickRuns();
-    await g.controller.tickOutbox();
-    expect(await g.get(g.parent)).toMatchObject({ stage: "READY", blocked_on: "human", blocked_reason: "goal_question" });
-    expect((await g.verdicts()).at(-1)!.detail).toMatchObject({
-      phase: 1, verdict: "fix", applied: "goal_question", fix_title: fix.title, fix_problem: fix.problem,
-      fix_done_criteria: JSON.stringify(fix.done_criteria), fix_allowed_paths: JSON.stringify(fix.allowed_paths),
-    });
-    expect(g.goalQuestions()).toHaveLength(1);
-    expect(g.goalQuestions()[0]!.body).toContain("the first goal line does not hold");
+    await g.judgePhase(p1!, "sha-1", { verdict: "fix", reason: "the first goal line does not hold", fix: FIX });
+    expect(await g.get(g.parent)).toMatchObject({ stage: "READY", blocked_on: "upstream", blocked_reason: "phases_open" });
+    const recorded = await g.recorded();
+    expect(recorded.map((p) => p.id).slice(0, 2)).toEqual([p1!.id, p2!.id]);
+    const added = recorded[2]!;
+    expect(added).toMatchObject({ parent_id: g.parent.id, phase: 3, stage: "NEW", blocked_on: "upstream", blocked_reason: "phase_hold" });
+    expect(added.title).toContain(FIX.title);
+    const change = (await g.store.listStateChanges(g.parent.id)).find((c) => c.reason === "goal_phase_added")!;
+    expect(change.detail).toMatchObject({ phase: 1, verdict: "fix", applied: "fix", added_phase: 3, sub_issue: added.source.id, fix_title: FIX.title });
+    expect(g.goalQuestions()).toEqual([]);
+    // The fix phase is in the goal's thread, with the verdict.
+    expect(g.marked("goal-phase")).toHaveLength(1);
+    expect(g.marked("goal-phase")[0]!.body).toContain(FIX.title);
+    expect(g.marked("goal-phase")[0]!.body).toContain("the first goal line does not hold");
+    // The judge let the goal go on: phase 2 starts, and the fix phase waits for it.
+    expect(await g.get(p2!)).toMatchObject({ blocked_on: "none" });
+    expect(await g.get(added)).toMatchObject({ blocked_on: "upstream", blocked_reason: "phase_hold" });
+    await g.judgePhase(p2!, "sha-2", { verdict: "next", reason: "phase 2 did its part" });
+    expect(await g.get(added)).toMatchObject({ blocked_on: "none", blocked_reason: null });
+    await g.judgePhase(added, "sha-3", { verdict: "done", reason: "every goal line holds" });
+    expect(await g.get(g.parent)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "sha-3" });
+    // Each verdict is a message in the goal's thread.
+    expect(g.marked("goal-verdict").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("a last phase that merges but misses a goal line gets a fix phase, not a closed goal", async () => {
+    const g = await goalSplit(321);
+    const [p1, p2] = g.phases;
+    await g.judgePhase(p1!, "sha-1", { verdict: "next", reason: "on to phase 2" });
+    await g.judgePhase(p2!, "sha-2", { verdict: "fix", reason: "the docs line does not hold", fix: FIX });
+    expect(await g.get(g.parent)).toMatchObject({ stage: "READY", blocked_on: "upstream", blocked_reason: "phases_open" });
+    expect(g.closeComment()).toBeUndefined();
+    const added = (await g.recorded())[2]!;
+    expect(added).toMatchObject({ phase: 3 });
+    // Phase 2 merged and was judged: the fix phase starts.
+    expect(await g.get(added)).toMatchObject({ blocked_on: "none", blocked_reason: null });
+  });
+
+  it("at the fix cap of 2 the goal waits for the owner with one comment; /approve files one more fix phase", async () => {
+    const g = await goalSplit(322);
+    await g.judgePhase(g.phases[0]!, "sha-1", { verdict: "next", reason: "go on" });
+    await g.judgePhase(g.phases[1]!, "sha-2", { verdict: "fix", reason: "missing a", fix: { ...FIX, title: "Fix A" } });
+    await g.judgePhase((await g.recorded())[2]!, "sha-3", { verdict: "fix", reason: "missing b", fix: { ...FIX, title: "Fix B" } });
+    expect(await g.get(g.parent)).toMatchObject({ blocked_on: "upstream", blocked_reason: "phases_open" });
+    await g.judgePhase((await g.recorded())[3]!, "sha-4", { verdict: "fix", reason: "missing c", fix: { ...FIX, title: "Fix C" } });
+    expect(await g.get(g.parent)).toMatchObject({ stage: "READY", blocked_on: "human", blocked_reason: "goal_limit" });
+    expect(await g.recorded()).toHaveLength(4);
+    expect(g.marked("goal-limit")).toHaveLength(1);
+    const body = g.marked("goal-limit")[0]!.body;
+    expect(body).toContain("2 fix phases");
+    expect(body).toContain("cap of 2");
+    expect(body).toContain("Fix C");
+    expect((await g.verdicts()).at(-1)!.detail).toMatchObject({ phase: 4, verdict: "fix", applied: "goal_limit", fix_title: "Fix C" });
+
+    await g.command("spec_approved");
+    expect(await g.get(g.parent)).toMatchObject({ stage: "READY", blocked_on: "upstream", blocked_reason: "phases_open" });
+    const recorded = await g.recorded();
+    expect(recorded[4]).toMatchObject({ phase: 5 });
+    expect(recorded[4]!.title).toContain("Fix C");
+    expect(g.marked("goal-phase").map((c) => c.body).some((b) => b.includes("Fix C"))).toBe(true);
+    // A second /approve has no question to answer.
+    await g.command("spec_approved");
+    expect(await g.recorded()).toHaveLength(5);
+  });
+
+  it("/reject at the fix cap closes the goal rejected", async () => {
+    const g = await goalSplit(323);
+    await g.judgePhase(g.phases[0]!, "sha-1", { verdict: "fix", reason: "a", fix: { ...FIX, title: "Fix A" } });
+    await g.judgePhase(g.phases[1]!, "sha-2", { verdict: "fix", reason: "b", fix: { ...FIX, title: "Fix B" } });
+    await g.judgePhase((await g.recorded())[2]!, "sha-3", { verdict: "fix", reason: "c", fix: { ...FIX, title: "Fix C" } });
+    expect(await g.get(g.parent)).toMatchObject({ blocked_on: "human", blocked_reason: "goal_limit" });
+    await g.command("spec_rejected");
+    expect(await g.get(g.parent)).toMatchObject({ stage: "CLOSED", close_reason: "rejected" });
+  });
+
+  it("a goal question with a fix proposed: /approve files that fix phase from the verdict's fix fields", async () => {
+    const g = await goalSplit(324);
+    await g.judgePhase(g.phases[0]!, "sha-1", { verdict: "ask", reason: "the goal lines contradict each other" });
+    expect(await g.get(g.parent)).toMatchObject({ blocked_on: "human", blocked_reason: "goal_question" });
+    // A question recorded with a fix (as before fix phases were filed) keeps its fix_* fields on the verdict.
+    const cur = await g.get(g.parent);
+    const fix = { fix_title: "Fix Q", fix_problem: "q", fix_done_criteria: JSON.stringify(["q works"]), fix_allowed_paths: JSON.stringify(["src/q/"]) };
+    expect((await g.store.transition({
+      id: cur.id, expected_version: cur.version, actor: system, reason: "judge_verdict", patch: {},
+      detail: { phase: 1, verdict: "fix", reason: "q is missing", applied: "goal_question", ...fix },
+    })).ok).toBe(true);
+    await g.command("spec_approved");
+    expect(await g.get(g.parent)).toMatchObject({ blocked_on: "upstream", blocked_reason: "phases_open" });
+    const added = (await g.recorded())[2]!;
+    expect(added).toMatchObject({ phase: 3 });
+    expect(added.title).toContain("Fix Q");
+  });
+
+  it("a goal question with no fix: /approve releases the next held phase, and on the last phase is refused naming /reject", async () => {
+    const g = await goalSplit(325);
+    const [p1, p2] = g.phases;
+    await g.judgePhase(p1!, "sha-1", { verdict: "ask", reason: "only the owner can say" });
     expect(await g.get(p2!)).toMatchObject({ blocked_on: "upstream" });
-    expect((await g.store.listPhases(g.parent.id)).map((p) => p.id)).toEqual(rows);
+    await g.command("spec_approved");
+    await g.controller.tickPhases();
+    expect(await g.get(g.parent)).toMatchObject({ blocked_on: "upstream", blocked_reason: "phases_open" });
+    expect((await g.verdicts()).at(-1)!.detail).toMatchObject({ phase: 1, applied: "next" });
+    expect(await g.get(p2!)).toMatchObject({ blocked_on: "none" });
+
+    await g.judgePhase(p2!, "sha-2", { verdict: "next", reason: "more is needed" });
+    expect(await g.get(g.parent)).toMatchObject({ blocked_on: "human", blocked_reason: "goal_question" });
+    const before = g.source.comments.length;
+    await g.command("spec_approved");
+    expect(await g.get(g.parent)).toMatchObject({ blocked_on: "human", blocked_reason: "goal_question" });
+    expect(g.source.comments.slice(before).some((c) => c.body.includes("/reject"))).toBe(true);
+    await g.command("spec_rejected");
+    expect(await g.get(g.parent)).toMatchObject({ stage: "CLOSED", close_reason: "rejected" });
   });
 
   it("ask on a phase, and next on the last recorded phase, stop the goal for the owner", async () => {
@@ -338,5 +462,27 @@ describe("the judge of a goal split", () => {
     expect(await g.verdicts()).toEqual([]);
     expect(await g.get(g.parent)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "sha-2" });
     expect(g.closeComment()!.body).not.toContain("goal");
+  });
+});
+
+describe("a goal split in auto mode", () => {
+  it("three phases run to the end with zero asks when every decision has a default (phases_auto_approve on)", async () => {
+    const g = await goalSplit(330, { phases: 3, cfg: { phases_auto_approve: true } });
+    const verdicts = [{ verdict: "next", reason: "phase 1 did its part" }, { verdict: "next", reason: "phase 2 did its part" }, { verdict: "done", reason: "every goal line holds" }];
+    for (const [i, p] of g.phases.entries()) {
+      // The scripted triage answer for the phase: a spec with every decision on its default, approved by the parent's /approve.
+      await g.finishTriage(triaged(triageSpec));
+      expect(await g.get(p)).toMatchObject({ stage: "RUNNING", blocked_on: "none" });
+      await g.judgePhase(p, `sha-${i + 1}`, verdicts[i]);
+    }
+    expect(await g.get(g.parent)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "sha-3" });
+    // Asks after the owner's /approve of the split: any change that left the goal or a phase waiting on a person.
+    const after = (await g.splitApproved(g.parent))!.version;
+    const asks: string[] = [];
+    for (const it of [g.parent, ...g.phases]) {
+      for (const c of await g.store.listStateChanges(it.id)) if (c.changes.blocked_on?.to === "human" && (it.id !== g.parent.id || c.version > after)) asks.push(`${it.id}:${c.reason}`);
+    }
+    expect(asks).toEqual([]);
+    expect(g.goalQuestions()).toEqual([]);
   });
 });

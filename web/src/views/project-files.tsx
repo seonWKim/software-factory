@@ -4,6 +4,7 @@ import { postJson } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { Card } from "../components/ui/card.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
+import { DisclosureChevron } from "../components/ui/disclosure.js";
 import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
 import { EmptyState } from "../components/ui/notice.js";
@@ -93,8 +94,8 @@ function SubFolder({ project, token, path, name, open, onOpen }: { project: stri
   };
   return (
     <li className="min-w-0">
-      <Button variant="ghost" size="sm" aria-expanded={children !== null} disabled={busy} className="w-full justify-start text-left break-all" onClick={() => void toggle()}>
-        <span aria-hidden className="w-3 shrink-0 text-text-3">{children !== null ? "▾" : "▸"}</span>
+      <Button variant="ghost" size="sm" aria-expanded={children !== null} disabled={busy} className="group w-full justify-start text-left break-all" onClick={() => void toggle()}>
+        <DisclosureChevron open={children !== null} />
         {name}/
       </Button>
       {error !== null && <p role="alert" className={ALERT}>{error}</p>}
@@ -119,6 +120,8 @@ function Editor({ project, token, path, canWrite }: { project: string; token: st
   const [text, setText] = useState("");
   const [state, setState] = useState<SaveState>("idle");
   const [error, setError] = useState<string | null>(null);
+  // A Retry of the placeholder reads the file again.
+  const [reads, setReads] = useState(0);
   const latest = useRef("");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saving = useRef(false);
@@ -174,7 +177,7 @@ function Editor({ project, token, path, canWrite }: { project: string; token: st
         void saveRef.current();
       }
     };
-  }, [project, token, path]);
+  }, [project, token, path, reads]);
 
   const change = (value: string) => {
     setText(value);
@@ -183,7 +186,7 @@ function Editor({ project, token, path, canWrite }: { project: string; token: st
     timer.current = setTimeout(() => void saveRef.current(), SAVE_DELAY_MS);
   };
 
-  if (file === null) return error === null ? <Loading rows={4} /> : <p role="alert" className={ALERT}>{error}</p>;
+  if (file === null) return error === null ? <Loading rows={4} label="loading.file" onRetry={() => setReads((n) => n + 1)} /> : <p role="alert" className={ALERT}>{error}</p>;
   const id = `project-file-${path}`;
   return (
     <div className="flex min-w-0 flex-col gap-2">
@@ -286,7 +289,7 @@ export function ProjectFiles({ project, name, token, canWrite }: { project: stri
   const body =
     token === null ? <p className={muted}>{t("tasks.filesOff")}</p>
     : error !== null ? <p role="alert" className={ALERT}>{error}</p>
-    : root === null ? <Loading rows={3} />
+    : root === null ? <Loading rows={3} label="loading.projectFiles" onRetry={() => setReads((n) => n + 1)} />
     : root.folder === null ? <EmptyState icon={FolderOpen} title={t("tasks.noFolder")} description={t("tasks.noFolderHint")} action={setFolder} />
     : (
       <div className="flex min-w-0 flex-col gap-4 md:flex-row">

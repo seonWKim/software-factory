@@ -19,7 +19,7 @@ describe("web i18n", () => {
   it("shows English when the browser language has no catalog", () => {
     setLanguages(["fr-FR"]);
     expect(locale()).toBe("en");
-    expect(t("topbar.refresh")).toBe("Refresh");
+    expect(t("update.dismiss")).toBe("Dismiss");
   });
 
   it("picks the first browser language that has a catalog", () => {
@@ -32,14 +32,14 @@ describe("web i18n", () => {
     try {
       setLanguages(["xx"]);
       expect(locale()).toBe("xx");
-      expect(t("topbar.refresh")).toBe("Refresh");
+      expect(t("update.dismiss")).toBe("Dismiss");
     } finally {
       delete (CATALOGS as Record<string, object>).xx;
     }
   });
 
   it("fills values into a message", () => {
-    expect(t("topbar.themeDark")).toBe("Dark");
+    expect(t("update.noteOne", { rev: "73c8082" })).toBe("Updated to 73c8082: 1 change");
   });
 
   it("formats numbers for the active locale", () => {

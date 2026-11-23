@@ -48,7 +48,7 @@ export function SettingsPage() {
   // The Advanced tab's search, in the toolbar's second row while that tab is open.
   const [query, setQuery] = useState("");
   if (settings.isError) return <><PageHeader title={t("page.settings")} width="read" /><ErrorNote error={settings.error} /></>;
-  if (!settings.data) return <><PageHeader title={t("page.settings")} width="read" /><Loading rows={8} /></>;
+  if (!settings.data) return <><PageHeader title={t("page.settings")} width="read" /><Loading rows={8} label="loading.settings" onRetry={() => void settings.refetch()} /></>;
   const v = settings.data;
   return (
     <>

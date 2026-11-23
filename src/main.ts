@@ -10,7 +10,7 @@ import { defineCommand, loadCommands, resolveCommand } from "./cli/index.js";
 import { SENTENCE_FORM } from "./core/command-table.js";
 import { cliName, parseSentence, runSentence } from "./core/local-cli.js";
 import { compareSkillEvalRuns, skillEvalGrid } from "./core/skill-eval-compare.js";
-import { skillEvalRun } from "./skill-evals.js";
+import { skillEvalAuthoring, skillEvalRun, skillEvalTry } from "./skill-evals.js";
 import { SUPERVISED_ENV } from "./supervisor.js";
 
 const HEADER = `factory [--config <path>] <command>
@@ -62,7 +62,7 @@ async function main(argv: readonly string[]): Promise<number> {
   const load = () => loadConfig(process.cwd(), { codeRoot: process.env[CODE_ROOT_ENV], configFile });
   // The root wiring a command needs reaches its handler here, through the call (the handler imports no root module).
   const skillEvalReads = { grid: skillEvalGrid, compare: compareSkillEvalRuns };
-  return found.command.run(found.args, { name: found.name, load, usage, runSkillEval: skillEvalRun, skillEvalReads });
+  return found.command.run(found.args, { name: found.name, load, usage, runSkillEval: skillEvalRun, trySkillEvalCase: skillEvalTry, authoring: skillEvalAuthoring, skillEvalReads });
 }
 
 main(process.argv.slice(2)).then(

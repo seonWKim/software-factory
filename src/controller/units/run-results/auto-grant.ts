@@ -6,9 +6,9 @@
 
 import type { Ctx } from "../context.js";
 import { type Decision, SYSTEM, footerAfter, retry } from "../support.js";
-import type { RunResultsUnit } from "./run-results.unit.js";
+import type { needsHuman } from "./notices.js";
 
-type Stop = Parameters<RunResultsUnit["needsHuman"]>;
+type Stop = Parameters<typeof needsHuman>;
 type Change = Awaited<ReturnType<Ctx["k"]["reader"]["listStateChanges"]>>[number];
 /** An ask's paths: every one it named (`named`), those no allowed path covers (`asked`), and the owner's reply for them. */
 export type Ask = { named: readonly string[]; asked: readonly string[]; reply: string | null };
@@ -37,7 +37,7 @@ function switchedOn(c: Ctx, project: string): boolean {
  * restart or another worker sees it. undefined: ask the owner as before. null: this run's grant is stored already
  * (another worker applied it), so nothing changes and no owner comment is posted.
  */
-export async function autoGrant(c: Ctx, stopped: Stop[0], run: Stop[1], ask: Ask, tokens: number): Promise<Decision | undefined> {
+export async function autoGrant(c: Ctx, stopped: Stop[1], run: Stop[2], ask: Ask, tokens: number): Promise<Decision | undefined> {
   const grants = autoGrants(await c.k.reader.listStateChanges(stopped.id));
   if (grants.some((g) => g.detail?.run_id === run.id)) return null;
   if (grants.length >= MAX_AUTO_GRANTS) return undefined;

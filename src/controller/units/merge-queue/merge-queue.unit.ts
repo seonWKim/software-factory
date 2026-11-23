@@ -361,7 +361,7 @@ export class MergeQueueUnit {
   /**
    * A red check for failing checks on the merged result: the item goes back to an implement run as a loop
    * (`merge_check_failed`: stage RUNNING, loop_count + 1, the run keyed by the new loop), or at `max_loops` blocks on
-   * a human; then the entry leaves with the reason. Both name the failing tests, or with none the command and its exit
+   * a human (a base reconcile neither: it only returns to merge_pending); then the entry leaves with the reason. Both name the failing tests, or with none the command and its exit
    * text; the state change keeps the output tail. The item first, conditional on it still waiting for the merge: a crash after it leaves an entry whose item
    * no longer waits, which the next step removes; a repeat changes nothing.
    */
@@ -379,6 +379,11 @@ export class MergeQueueUnit {
     let next = `fix it on the branch and run the merge again`;
     await this.c.unit("transitions").decide(e.work_item_id as WorkItemId, (it) => {
       if (!this.c.unit("commands").merge.waits(it)) return null;
+      // A base reconcile has no spec to implement (design 05-sources): it returns to merge_pending, and Needs you asks the owner.
+      if (this.c.unit("local-merge").reconcileOf(it)) {
+        next = "the reconcile moved nothing; resolve it by hand";
+        return null;
+      }
       const loop = it.loop_count + 1;
       const detail = { entry_id: e.entry_id, run_id: run.id, command, how, failing_tests: JSON.stringify(tests), output_tail: tail };
       if (loop >= limit) {

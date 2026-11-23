@@ -168,9 +168,9 @@ describe("items tree", () => {
 
   it("the Tree and List switch is a segmented control", async () => {
     await mount();
-    const view = screen.getByRole("group", { name: "View" });
-    expect(within(view).getByRole("button", { name: "Tree" }).getAttribute("aria-pressed")).toBe("true");
-    expect(within(view).getByRole("button", { name: "List" }).getAttribute("aria-pressed")).toBe("false");
+    const view = screen.getByRole("radiogroup", { name: "View" });
+    expect(within(view).getByRole("radio", { name: "Tree" }).getAttribute("aria-checked")).toBe("true");
+    expect(within(view).getByRole("radio", { name: "List" }).getAttribute("aria-checked")).toBe("false");
   });
 
   it("the Needs you group shows Needs approval and Needs you, never Needs triage or Blocked by another task", async () => {
@@ -210,7 +210,7 @@ describe("items tree", () => {
 
   it("the list view has Show system items too, and asks the server with system=1", async () => {
     await mount();
-    fireEvent.click(screen.getByRole("button", { name: "List" }));
+    fireEvent.click(screen.getByRole("radio", { name: "List" }));
     await screen.findByRole("table", { name: "Work items" });
     fireEvent.click(screen.getByRole("button", { name: "Show system items" }));
     await settle();
@@ -235,7 +235,7 @@ describe("items tree", () => {
 
   it("the List toggle shows the flat list from the server's query, and is remembered", async () => {
     await mount();
-    fireEvent.click(screen.getByRole("button", { name: "List" }));
+    fireEvent.click(screen.getByRole("radio", { name: "List" }));
     const table = await screen.findByRole("table", { name: "Work items" });
     expect(table.querySelectorAll("tbody tr").length).toBe(ROWS.length);
     expect(localStorage.getItem(VIEW_KEY)).toBe("list");
@@ -277,13 +277,23 @@ describe("items tree", () => {
     expect(titles(again)).not.toContain("Phase one");
   });
 
-  it("moves the wait reason and worker to a second line at phone width and uses no animation", async () => {
+  it("moves the wait reason and worker to a second line at phone width and uses no animation beyond the shared chevron button's motion-safe ones", async () => {
     const tree = await mount();
     const second = rowOf(tree, "Phase one").querySelector("[data-id]")!.closest("[class*=basis-full]")!;
     expect(second.className).toContain("basis-full");
     expect(second.className).toContain("sm:basis-auto");
-    // Token classes switch themes through CSS variables, so there is no dark: variant; no animation.
-    expect(tree.innerHTML).not.toMatch(/animate-|transition/);
+    // Token classes switch themes through CSS variables, so there is no dark: variant; no animation, except the expand
+    // button's colour and the chevron's turn, which are the shared Button's and DisclosureChevron's and motion-safe.
+    expect(tree.innerHTML.replace(/motion-safe:transition-(colors|transform)|motion-safe:duration-150|motion-safe:ease-out/g, "")).not.toMatch(/animate-|transition/);
+  });
+
+  it("an expandable row's toggle is the design system's 32px icon button holding the Disclosure chevron, turned down when open", async () => {
+    const tree = await mount();
+    const toggle = tree.querySelector("[data-chevron]")!.closest("button")!;
+    expect(toggle.className.split(/\s+/)).toEqual(expect.arrayContaining(["size-8", "rounded-control"]));
+    expect(toggle.textContent).toBe("");
+    const chevron = toggle.querySelector("[data-chevron]")!;
+    expect(chevron.getAttribute("class")!.includes("rotate-90")).toBe(toggle.closest("[aria-expanded]")!.getAttribute("aria-expanded") === "true");
   });
 
   it("has no axe violations", async () => {

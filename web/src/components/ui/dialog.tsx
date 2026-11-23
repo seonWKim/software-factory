@@ -1,4 +1,5 @@
-import { type FormEvent, type ReactNode, type RefObject, useEffect, useId, useRef } from "react";
+import { X } from "lucide-react";
+import { type FormEvent, type KeyboardEvent, type ReactNode, type RefObject, useEffect, useId, useRef } from "react";
 import { createPortal } from "react-dom";
 import { t } from "../../i18n/index.js";
 import { cn } from "../../lib/cn.js";
@@ -13,6 +14,8 @@ import { ButtonRow } from "./button-row.js";
 // components/ui set: radius card, padding space-6, a text-base font-semibold title, and a right-aligned ButtonRow footer
 // with Cancel (secondary, outline; `cancelLabel` names it Close where each change is saved at once) before the confirm (primary, filled accent; or danger filled with the failed colour).
 // The title is one line, truncated, with the full text in its tooltip. The backdrop dims in both themes.
+// ModalPanel is the same modal without a confirm (the shortcut list, the search): a header with a close icon button
+// and a body that scrolls by itself.
 
 export interface DialogProps {
   /** The title: the action and the item it acts on. */
@@ -33,12 +36,33 @@ export interface DialogProps {
   children?: ReactNode;
 }
 
-export function Dialog({ title, consequence, confirmLabel, confirmDisabled = false, cancelLabel = t("common.cancel"), danger = false, error, onConfirm, onClose, returnFocusTo, children }: DialogProps) {
+/** The native modal the dialogs share: opened on mount, closed on unmount, rendered into `document.body`. */
+interface ModalProps {
+  labelledBy: string;
+  onClose: () => void;
+  returnFocusTo?: RefObject<HTMLElement | null> | undefined;
+  /** Runs before the shared Escape handling; may call `preventDefault` to keep the key for itself. */
+  onKeyDown?: ((e: KeyboardEvent<HTMLDialogElement>) => void) | undefined;
+  /** Where focus goes on open; the first field, else the first enabled button, by default. */
+  focusFirst?: string;
+  className: string;
+  children: ReactNode;
+}
+
+const FIRST_FIELD = "input:not([disabled]), textarea:not([disabled]), select:not([disabled])";
+
+/**
+ * The mechanics of every modal: showModal (the page behind is inert, so Tab stays in the dialog), Esc and a click on
+ * the backdrop close it, focus goes in on open and back to `returnFocusTo` (else the element focused when it opened)
+ * on close, without scrolling the page. A press that starts inside the panel and ends on the backdrop (selecting text)
+ * does not close it.
+ */
+function Modal({ labelledBy, onClose, returnFocusTo, onKeyDown, focusFirst, className, children }: ModalProps) {
   const ref = useRef<HTMLDialogElement>(null);
-  const titleId = useId();
   const opener = useRef<Element | null>(document.activeElement);
   const close = useRef(onClose);
   close.current = onClose;
+  const pressedInside = useRef(false);
 
   useEffect(() => {
     const el = ref.current;
@@ -48,31 +72,24 @@ export function Dialog({ title, consequence, confirmLabel, confirmDisabled = fal
       if (typeof el.showModal === "function") el.showModal();
       else el.setAttribute("open", "");
     }
-    el.querySelector<HTMLElement>("input:not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled])")?.focus();
+    el.querySelector<HTMLElement>(focusFirst ?? `${FIRST_FIELD}, button:not([disabled])`)?.focus({ preventScroll: true });
     return () => {
       if (el.open && typeof el.close === "function") el.close();
-      if (back instanceof HTMLElement && back.isConnected) back.focus();
+      if (back instanceof HTMLElement && back.isConnected) back.focus({ preventScroll: true });
     };
     // Opens once per mount; the focus target is read at that time.
   }, []);
 
-  const submit = (e?: FormEvent) => {
-    e?.preventDefault();
-    if (!confirmDisabled) onConfirm();
-  };
-
   return createPortal(
     <dialog
       ref={ref}
-      aria-labelledby={titleId}
+      aria-labelledby={labelledBy}
       data-dialog
       onKeyDown={(e) => {
-        if (e.key === "Enter" && e.target instanceof HTMLInputElement) {
-          // Enter in a single-line field confirms once: the browser's own implicit submit is cancelled.
+        onKeyDown?.(e);
+        if (!e.defaultPrevented && e.key === "Escape") {
           e.preventDefault();
-          submit();
-        } else if (e.key === "Escape") {
-          e.preventDefault();
+          e.stopPropagation();
           close.current();
         }
       }}
@@ -80,14 +97,47 @@ export function Dialog({ title, consequence, confirmLabel, confirmDisabled = fal
         e.preventDefault();
         close.current();
       }}
+      onPointerDown={(e) => {
+        pressedInside.current = e.target !== ref.current;
+      }}
       onClick={(e) => {
-        if (e.target === ref.current) close.current();
+        const inside = pressedInside.current;
+        pressedInside.current = false;
+        if (e.target === ref.current && !inside) close.current();
       }}
       className={cn(
-        "m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-xl overflow-y-auto rounded-card p-0",
+        "w-[calc(100%-2rem)] p-0",
         "border border-border-strong bg-surface text-text-1",
         "backdrop:bg-text-1/60 dark:backdrop:bg-bg/80",
+        className,
       )}
+    >
+      {children}
+    </dialog>,
+    document.body,
+  );
+}
+
+export function Dialog({ title, consequence, confirmLabel, confirmDisabled = false, cancelLabel = t("common.cancel"), danger = false, error, onConfirm, onClose, returnFocusTo, children }: DialogProps) {
+  const titleId = useId();
+  const submit = (e?: FormEvent) => {
+    e?.preventDefault();
+    if (!confirmDisabled) onConfirm();
+  };
+
+  return (
+    <Modal
+      labelledBy={titleId}
+      onClose={onClose}
+      returnFocusTo={returnFocusTo}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" && e.target instanceof HTMLInputElement) {
+          // Enter in a single-line field confirms once: the browser's own implicit submit is cancelled.
+          e.preventDefault();
+          submit();
+        }
+      }}
+      className="m-auto max-h-[calc(100dvh-2rem)] max-w-xl overflow-y-auto rounded-card"
     >
       <form onSubmit={submit} className="flex flex-col gap-3 p-6">
         <h2 id={titleId} title={title} className="truncate text-base font-semibold">
@@ -105,7 +155,7 @@ export function Dialog({ title, consequence, confirmLabel, confirmDisabled = fal
           </p>
         )}
         <ButtonRow className="justify-end">
-          <Button variant="secondary" onClick={() => close.current()}>
+          <Button variant="secondary" onClick={onClose}>
             {cancelLabel}
           </Button>
           <Button type="submit" variant={danger ? "danger" : "primary"} solid={danger} disabled={confirmDisabled}>
@@ -113,8 +163,61 @@ export function Dialog({ title, consequence, confirmLabel, confirmDisabled = fal
           </Button>
         </ButtonRow>
       </form>
-    </dialog>,
-    document.body,
+    </Modal>
+  );
+}
+
+export interface ModalPanelProps {
+  /** The panel's name: its visible title, or only its accessible name when `header` replaces the title. */
+  title: string;
+  /** Shown in the header in place of the title (the search field); the title stays as the hidden heading. */
+  header?: ReactNode;
+  /** `md` (32rem, a search) or `lg` (42rem, a reference list). */
+  size?: "md" | "lg";
+  /** `center` (default) or `top`: held near the top, so a list that filters as you type does not move the panel. */
+  placement?: "center" | "top";
+  onClose: () => void;
+  returnFocusTo?: RefObject<HTMLElement | null>;
+  /** Keys the panel's content handles before Esc closes it (a list's arrows). */
+  onKeyDown?: (e: KeyboardEvent<HTMLDialogElement>) => void;
+  children: ReactNode;
+}
+
+const PANEL_SIZE = { md: "max-w-lg", lg: "max-w-2xl" } as const;
+
+/**
+ * A modal panel with no confirm: a reference list or a search. The header holds the title (or `header`) and a close
+ * icon Button at its right; the body scrolls by itself. Same mechanics as Dialog: Esc, a click outside and the close
+ * button close it; focus goes to its first field, else to the body, and back to the opener on close.
+ */
+export function ModalPanel({ title, header, size = "lg", placement = "center", onClose, returnFocusTo, onKeyDown, children }: ModalPanelProps) {
+  const titleId = useId();
+  return (
+    <Modal
+      labelledBy={titleId}
+      onClose={onClose}
+      returnFocusTo={returnFocusTo}
+      onKeyDown={onKeyDown}
+      focusFirst={`${FIRST_FIELD}, [data-panel-body]`}
+      className={cn(
+        "flex-col overflow-hidden rounded-card shadow-lg open:flex",
+        PANEL_SIZE[size],
+        placement === "top" ? "mx-auto mt-[10dvh] max-h-[80dvh]" : "m-auto max-h-[calc(100dvh-2rem)]",
+      )}
+    >
+      <header className="flex shrink-0 items-center gap-3 border-b border-border py-3 pr-3 pl-5">
+        <h2 id={titleId} className={cn("min-w-0 flex-1 truncate text-base font-semibold", header !== undefined && "sr-only")}>
+          {title}
+        </h2>
+        {header !== undefined && <div className="min-w-0 flex-1">{header}</div>}
+        <Button variant="ghost" size="icon" aria-label={t("common.close")} onClick={onClose} className="text-text-2">
+          <X aria-hidden className="size-4" />
+        </Button>
+      </header>
+      <div data-panel-body tabIndex={-1} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4 text-sm outline-none">
+        {children}
+      </div>
+    </Modal>
   );
 }
 

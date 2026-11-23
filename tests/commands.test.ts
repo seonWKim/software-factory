@@ -231,6 +231,9 @@ describe("command table", () => {
     expect(commandFooter(s("reviewing", true))).not.toContain("/revise");
     expect(helpReply(s("failed_review", true))).toContain("`/revise <feedback>` **(now, on the PR)**: Get a new spec written with your feedback. While implementing: queue your feedback for one more implement run on the item's branch when the run ends, before review. On the PR:");
     expect(commandsFor(s("implementing")).find((c) => c.name === "revise")!.description).toMatch(/^While implementing: queue your feedback/);
+    // On a New or in-triage item it adds context, queued for one re-triage (design 02-attachments).
+    expect(commandsFor(s("triaging")).find((c) => c.name === "revise")!.description).toMatch(/^On a New or in-triage item: add context/);
+    expect(commandTableMarkdown()).toMatch(/\| `\/revise <feedback>` \|[^\n]*On a New or in-triage item: add context[^\n]*\| triaging, spec waiting for approval/);
     expect(helpReply(s("failed_review", true))).toContain("(blocked by a failed review run)");
     expect(commandTableMarkdown()).toContain("; on its PR: waiting for a human merge, blocked by a failed review run |");
   });
@@ -312,8 +315,8 @@ describe("command table", () => {
     for (const phase of COMMAND_PHASES) {
       const s = { phase, has_pr: false, local: true as const };
       expect({ phase, on: applies(revise, s) }).toEqual({ phase, on: phase === "merge_pending" || revise.phases.includes(phase) });
-      // Implementing has its own meaning (the queued /revise), checked in the command table tests.
-      if (phase !== "merge_pending" && phase !== "implementing" && applies(revise, s)) expect(commandsFor(s).find((c) => c.name === "revise")!.description).toBe(revise.description);
+      // Implementing and triaging have their own meaning (the queued /revise, added context), checked in the command table tests.
+      if (phase !== "merge_pending" && phase !== "implementing" && phase !== "triaging" && applies(revise, s)) expect(commandsFor(s).find((c) => c.name === "revise")!.description).toBe(revise.description);
     }
     expect(applies(revise, commandState(item("local", null, "run_failed:review:invalid_output")))).toBe(false);
     // The item API offers it with the local description, under the same grant as approve.
@@ -321,7 +324,7 @@ describe("command table", () => {
     const rows = await itemCommands(it, [], { allow: false, reason: "no role" }, async (v) => v);
     expect(rows.find((r) => r.name === "revise")).toEqual({ name: "revise", usage: "/revise <feedback>", description: shown.description, allowed: false, reason: "no role" });
     expect((await itemCommands(it, [], { allow: true }, async (v) => v)).find((r) => r.name === "revise")?.allowed).toBe(true);
-    expect(commandTableMarkdown()).toContain(`. ${revise.local_description} |`);
+    expect(commandTableMarkdown()).toContain(`. ${revise.local_description}. ${revise.triaging_description} |`);
     expect(commandTableMarkdown()).toContain("; on a local item with no PR: waiting for a human merge; on its PR: ");
   });
 

@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import { chmod, cp, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { BaseSyncResult, BaseSyncSpec, LocalMergeResult, LocalMergeSpec, LocalRevertResult, LocalRevertSpec } from "../../core/local-merge.js";
-import type { ExecOptions, ExecResult, NewBranchCommit, NewBranchResult, Sandbox, SandboxHandle, SandboxSpec } from "../../interfaces/sandbox.js";
+import type {
+  ChangedFile, ChangesRead, ChangesSpec, ExecOptions, ExecResult, NewBranchCommit, NewBranchResult, ReconcileSpec, ReconcileStart, Sandbox, SandboxHandle, SandboxSpec,
+} from "../../interfaces/sandbox.js";
 import { baseEnv, type RunProcessOptions, runProcess } from "../process/run-process.js";
 
 /** Runs one process; `runProcess` unless a test injects a fake. */
@@ -256,6 +258,36 @@ export class NoOpSandbox implements Sandbox {
   }
 
   /**
+   * The trusted base (no fetch) and, given a head, `git diff --numstat <base>...<head>` and one file's patch: reads of
+   * objects only. No rename detection, external diff or textconv, so a repo's own config runs nothing here.
+   */
+  async readChanges(spec: ChangesSpec): Promise<ChangesRead> {
+    safeRef(spec.base_ref);
+    const ref = await this.git(spec.repo, ["rev-parse", "--verify", "--quiet", "--end-of-options", `${this.baseRef(spec.base_ref)}^{commit}`], false);
+    if (ref.exit_code !== 0) return { base: null, files: [], patch: null };
+    const sha = ref.stdout.trim();
+    const time = Number((await this.git(spec.repo, ["log", "-1", "--format=%ct", sha])).stdout.trim());
+    const base = { sha, committed_at: new Date(time * 1000).toISOString() };
+    if (spec.head_sha === undefined) return { base, files: [], patch: null };
+    if (!/^[0-9a-f]{40,64}$/.test(spec.head_sha)) throw new Error(`not a commit sha: ${JSON.stringify(spec.head_sha)}`);
+    const range = `${sha}...${spec.head_sha}`;
+    const diff = ["diff", "--no-renames", "--no-ext-diff", "--no-textconv", "--no-color"];
+    const files: ChangedFile[] = [];
+    for (const entry of (await this.git(spec.repo, [...diff, "--numstat", "-z", range])).stdout.split("\0")) {
+      const m = /^(-|\d+)\t(-|\d+)\t([\s\S]+)$/.exec(entry);
+      if (m) files.push({ path: m[3]!, added: m[1] === "-" ? null : Number(m[1]), removed: m[2] === "-" ? null : Number(m[2]) });
+    }
+    files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    if (spec.path === undefined) return { base, files, patch: null };
+    // A literal pathspec: the path is a file name, never a glob or magic.
+    const text = (await this.git(spec.repo, [...diff, range, "--", `:(literal)${spec.path}`])).stdout;
+    const bytes = Buffer.from(text, "utf8");
+    const max = spec.max_bytes ?? Infinity;
+    const patch = bytes.length > max ? { text: bytes.subarray(0, max).toString("utf8"), truncated: true } : { text, truncated: false };
+    return { base, files, patch };
+  }
+
+  /**
    * One commit on a new local branch (design 08-settings, the file-only key writer): the blob, a tree built in a
    * temporary index file under the worktrees dir (never the repo's own index), the commit (only objects), then
    * `refs/heads/<branch>` created by `update-ref` with an empty old value, which fails when the branch exists.
@@ -312,11 +344,30 @@ export class NoOpSandbox implements Sandbox {
     if (await this.isAncestor(spec.repo, spec.merge_sha, remote)) return { synced: true, local, remote, contains: true, not_updated: [] };
     if (await this.isAncestor(spec.repo, remote, local)) return { synced: true, local, remote, contains: false, not_updated: [] };
     const tree = await this.mergeTree(spec.repo, local, remote);
-    if (tree.conflicts.length > 0) return { synced: false, conflicts: tree.conflicts };
+    if (tree.conflicts.length > 0) return { synced: false, conflicts: tree.conflicts, remote };
     const sha = await this.commitMerge(spec.repo, tree.tree, [local, remote], spec.message, spec.identity);
     const moved = await this.moveBase(spec.repo, spec.base_ref, local, sha, spec.message);
     if (!moved) throw new Error(`\`${spec.base_ref}\` moved while the remote base was merged into it`);
     return { synced: true, local: sha, remote, contains: false, not_updated: moved.not_updated };
+  }
+
+  /**
+   * A base reconcile (design 05-sources, Base reconcile): fetches only origin's base, also on the local route, and
+   * creates the local branch `branch` at the local base when it is missing (a conditional ref update that never moves
+   * an existing branch, so a retry resumes it). Objects and that one ref only.
+   */
+  async startReconcile(spec: ReconcileSpec): Promise<ReconcileStart> {
+    safeRef(spec.base_ref);
+    safeRef(spec.branch);
+    const origin = await this.fetchRemoteBase(spec.repo, spec.base_ref);
+    const local = await this.localCommit(spec.repo, spec.base_ref);
+    if (local === null) throw new Error(`the factory repo has no local branch \`${spec.base_ref}\``);
+    if ((await this.localCommit(spec.repo, spec.branch)) === null) {
+      await this.git(spec.repo, ["update-ref", "-m", `Reconcile ${spec.base_ref} with origin`, `refs/heads/${spec.branch}`, local, ""], false);
+    }
+    const start = await this.localCommit(spec.repo, spec.branch);
+    if (start === null) throw new Error(`the reconcile branch \`${spec.branch}\` could not be made`);
+    return { origin, start };
   }
 
   /**

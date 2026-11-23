@@ -1,6 +1,8 @@
 import { Children, Fragment, type ReactNode, createContext, isValidElement, useContext, useEffect, useState } from "react";
+import type { MessageKey } from "../../i18n/en.js";
 import { t } from "../../i18n/index.js";
 import { cn } from "../../lib/cn.js";
+import { Button } from "./button.js";
 
 // Small shared pieces for the pages: a data table and the loading and error states. Plain Tailwind; no component
 // library. Blocks are Card (card.tsx), badges Badge (badge.tsx), empty lists EmptyState (notice.tsx).
@@ -92,21 +94,75 @@ export function Td({ children, className, ...attrs }: { children?: ReactNode; cl
   return <td {...attrs} className={cn("px-3 py-2 align-top", className)}>{children}</td>;
 }
 
-/** A row-shaped placeholder while the first read is in flight. */
-export function Loading({ rows = 3 }: { rows?: number }) {
+/** After this long the placeholder shows what it waits for and for how long (design 09-dashboard-shell, 2026-11-19). */
+export const LOADING_BARS_MS = 1_000;
+/** After this long the placeholder gives up: the error with Retry. */
+export const LOADING_TIMEOUT_MS = 30_000;
+
+/**
+ * The one placeholder while a read is in flight: row-shaped bars for about 1 s, then "<label>: Still loading… (n s)"
+ * under them, then after 30 s the ErrorNote with Retry. Retry calls `onRetry` and starts the steps again. `label` names
+ * what it waits for (an i18n key, e.g. "loading.plugins": "Plugin list").
+ */
+export function Loading({ rows = 3, label, onRetry }: { rows?: number; label: MessageKey; onRetry: () => void }) {
+  const [started, setStarted] = useState(() => Date.now());
+  const [now, setNow] = useState(started);
+  useEffect(() => {
+    const tick = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(tick);
+  }, [started]);
+  const elapsed = now - started;
+  if (elapsed >= LOADING_TIMEOUT_MS) {
+    const retry = () => {
+      const at = Date.now();
+      setStarted(at);
+      setNow(at);
+      onRetry();
+    };
+    return <ErrorNote error={new Error(t("loading.timedOut", { label: t(label) }))} onRetry={retry} />;
+  }
   return (
-    <div aria-busy="true" aria-label={t("common.loading")} className="space-y-2">
+    <div aria-busy="true" aria-label={t(label)} className="space-y-2">
       {Array.from({ length: rows }, (_, i) => (
         <div key={i} className="h-8 rounded-control bg-surface-2" />
       ))}
+      {elapsed >= LOADING_BARS_MS && (
+        <p role="status" className="text-sm text-text-2">
+          {t(label)}: {t("loading.still", { n: Math.floor(elapsed / 1_000) })}
+        </p>
+      )}
     </div>
   );
 }
 
-export function ErrorNote({ error }: { error: unknown }) {
+/** A read's error; with `onRetry`, a Retry button beside it. Without, the note alone as it always was. */
+export function ErrorNote({ error, onRetry }: { error: unknown; onRetry?: () => void }) {
+  const text = t("common.couldNotLoad", { message: error instanceof Error ? error.message : String(error) });
+  const tone = "rounded-control bg-pill-bad-bg px-3 py-2 text-sm text-pill-bad-fg";
+  if (!onRetry) return <p role="alert" className={tone}>{text}</p>;
   return (
-    <p role="alert" className="rounded-control bg-pill-bad-bg px-3 py-2 text-sm text-pill-bad-fg">
-      {t("common.couldNotLoad", { message: error instanceof Error ? error.message : String(error) })}
-    </p>
+    <div role="alert" className={cn("flex flex-wrap items-center gap-2", tone)}>
+      <p className="min-w-0 flex-1 break-words">{text}</p>
+      <Button size="sm" onClick={onRetry}>{t("loading.retry")}</Button>
+    </div>
   );
+}
+
+/** The flags of a route that answers from the server's stored result (GET /api/v1/health, /api/v1/plugins). */
+export interface StoredFlags {
+  /** No result yet: keep the placeholder. */
+  pending?: boolean;
+  /** No good result: the last refresh failed. */
+  failed?: boolean;
+  /** A newer result is on its way. */
+  refreshing?: boolean;
+}
+
+/** While `on` (a stored result still pending or refreshing on the server), reads again every second. */
+export function useRefetchWhile(on: boolean, refetch: () => unknown): void {
+  useEffect(() => {
+    if (!on) return;
+    const tick = setInterval(() => void refetch(), LOADING_BARS_MS);
+    return () => clearInterval(tick);
+  }, [on, refetch]);
 }

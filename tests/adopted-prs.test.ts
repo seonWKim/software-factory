@@ -342,12 +342,13 @@ describe("merges of pull requests the factory did not open", () => {
     const f = await factory();
     await f.poll(
       { kind: "change_merged", change_ref: "60", head_branch: "feature/x", merge_sha: "m60", merger: alice, fork: true },
-      { kind: "change_merged", change_ref: "61", head_branch: "patch-1", merge_sha: "m61", merger: null },
+      { kind: "change_merged", change_ref: "61", head_branch: "patch-1", merge_sha: "m61", merger: null, title: "Config: 1 worker" },
     );
     await f.poll({ kind: "change_merged", change_ref: "61", head_branch: "patch-1", merge_sha: "m61", merger: null });
     expect(await f.store.listWorkItems(10)).toEqual([]);
     const rows = await f.store.listUnreviewedMerges(10);
-    expect(rows.map((r) => [r.change_ref, r.merge_sha, r.merger_id]).sort()).toEqual([["60", "m60", "github:1"], ["61", "m61", null]]);
+    // The PR's title as the forge gave it, kept for the Tasks page's merge rows; none given: null.
+    expect(rows.map((r) => [r.change_ref, r.merge_sha, r.merger_id, r.title]).sort()).toEqual([["60", "m60", "github:1", null], ["61", "m61", null, "Config: 1 worker"]]);
   });
 
   it("a PR closed without a merge and with no item records nothing", async () => {

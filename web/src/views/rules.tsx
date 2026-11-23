@@ -230,7 +230,7 @@ export function RulesPage() {
   const v = rules.data;
   const title = t("page.rules");
   if (rules.isError) return <><PageHeader title={title} width="read" /><ErrorNote error={rules.error} /></>;
-  if (!v) return <><PageHeader title={title} width="read" /><Loading rows={3} /></>;
+  if (!v) return <><PageHeader title={title} width="read" /><Loading rows={3} label="loading.rules" onRetry={() => void rules.refetch()} /></>;
   if (!v.enabled) {
     return (
       <>

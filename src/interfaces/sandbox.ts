@@ -83,6 +83,14 @@ export interface Sandbox {
    */
   listLocalFiles?(spec: { repo: string; ref: string; path: string }): Promise<string[] | null>;
   /**
+   * Trusted, from objects only (no checkout, no fetch, no ref written): the factory repo's trusted base (`origin/<base_ref>`,
+   * or the local branch when nothing fetches origin) with its committer time, and, given `head_sha`, what that head changes
+   * against it as `git diff <base>...<head>` lists it: each file with its added and removed line counts, and, given `path`
+   * too, that file's patch cut to `max_bytes`. The dashboard's Changes tab and Re-check read it (design 09-dashboard-item).
+   * `base` null: the repo has no such base. Throws on a git error (an unknown head, no merge base). Absent: no Changes tab.
+   */
+  readChanges?(spec: ChangesSpec): Promise<ChangesRead>;
+  /**
    * Trusted: one commit on a new local branch without a checkout (design 08-settings, the file-only key writer).
    * The commit's parent is `parent`, the local `base_ref`'s commit, and its tree is the parent's with only `path`
    * set to `content`. `refs/heads/<branch>` is then created by a conditional ref update that fails when it exists.
@@ -90,6 +98,13 @@ export interface Sandbox {
    * they are. `exists`: the branch was there; `base_moved`: the base is no longer at `parent`; nothing moved.
    */
   commitNewBranch?(spec: NewBranchCommit): Promise<NewBranchResult>;
+  /**
+   * Trusted, for a base reconcile (design 05-sources, Base reconcile): fetches only origin's `base_ref` into the
+   * factory repo's `refs/remotes/origin/<base_ref>`, also on the local route, and creates the local branch `branch` at
+   * the local `base_ref` when it is missing, so the reconcile branch starts from local main, never from origin. An
+   * existing branch is kept (a retry resumes it). Throws on a failed fetch or a missing local base. Absent: no reconcile.
+   */
+  startReconcile?(spec: ReconcileSpec): Promise<ReconcileStart>;
   exec(handle: SandboxHandle, cmd: readonly string[], opts: ExecOptions): Promise<ExecResult>;
   copyIn(handle: SandboxHandle, hostPath: string, sandboxPath: string): Promise<void>;
   copyOut(handle: SandboxHandle, sandboxPath: string, hostPath: string): Promise<void>;
@@ -102,6 +117,33 @@ export interface Sandbox {
   reattach?(id: string): Promise<SandboxHandle | null>;
   /** Idempotent. Safe on an already-destroyed handle. */
   destroy(handle: SandboxHandle): Promise<void>;
+}
+
+export interface ChangesSpec {
+  repo: string;
+  base_ref: string;
+  /** The head to list the changes of; absent: only the base is read. */
+  head_sha?: string;
+  /** One changed file to read the patch of (needs `head_sha`). */
+  path?: string;
+  /** The patch's limit in bytes; a longer patch is cut there and marked `truncated`. */
+  max_bytes?: number;
+}
+
+/** One changed file: its path and line counts; both counts null for a binary file. */
+export interface ChangedFile {
+  path: string;
+  added: number | null;
+  removed: number | null;
+}
+
+export interface ChangesRead {
+  /** The trusted base's commit and its committer time (ISO 8601); null when the repo has no such base. */
+  base: { sha: string; committed_at: string } | null;
+  /** The changed files in path order; empty without `head_sha`. */
+  files: ChangedFile[];
+  /** The file's patch; null without `path`. */
+  patch: { text: string; truncated: boolean } | null;
 }
 
 export interface NewBranchCommit {
@@ -118,4 +160,28 @@ export interface NewBranchCommit {
   identity: { name: string; email: string };
 }
 
-export type NewBranchResult = { created: true; sha: string } | { created: false; reason: "exists" | "base_moved" };
+export interface ReconcileSpec {
+  repo: string;
+  base_ref: string;
+  /** The reconcile item's local branch. */
+  branch: string;
+}
+
+/** The local source id of the one reconcile item for origin's `base_ref` at `remote`: a second conflict on that sha files none. */
+export function reconcileSourceId(base_ref: string, remote: string): string {
+  return `base-reconcile:${base_ref}:${remote}`;
+}
+
+/** The base and origin commit a reconcile item merges (from its local source id), or null for any other item. */
+export function reconcileOf(it: { source: { type: string; id: string } }): { base_ref: string; remote: string } | null {
+  const m = it.source.type === "local" ? /^base-reconcile:(.+):([0-9a-f]{40,64})$/.exec(it.source.id) : null;
+  return m ? { base_ref: m[1]!, remote: m[2]! } : null;
+}
+
+/** `origin`: origin's base commit as fetched; `start`: the reconcile branch's commit (the local base when it was made). */
+export interface ReconcileStart {
+  origin: string;
+  start: string;
+}
+
+export type NewBranchResult ={ created: true; sha: string } | { created: false; reason: "exists" | "base_moved" };

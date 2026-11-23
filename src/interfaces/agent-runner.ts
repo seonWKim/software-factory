@@ -87,6 +87,12 @@ export interface AgentRunSpec {
   stop_check_ms?: number;
   /** JSON Schema the final answer must match. */
   output_schema?: Record<string, unknown>;
+  /**
+   * Images the model gets as image input with the prompt (design 02-attachments): triage's attached images, base64,
+   * handed to the harness on stdin, never written to the sandbox's working tree. A runner that takes no image input
+   * ignores them; the prompt still names each one. Absent: none.
+   */
+  images?: readonly AgentImage[];
   /** Abort when the worker loses its lease, or when `workers pause` stops the run (design §5 Pause). */
   signal: AbortSignal;
   /**
@@ -114,6 +120,12 @@ export interface AgentRunSpec {
    * worker's gates would fail it. Advisory: the worker's gates still decide. Absent: no hooks.
    */
   gate_hooks?: GateHooks;
+}
+
+/** One image for the model: its type (png, jpeg, gif or webp) and its bytes, base64. */
+export interface AgentImage {
+  media_type: string;
+  data: string;
 }
 
 /**

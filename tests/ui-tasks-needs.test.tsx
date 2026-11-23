@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /// <reference lib="dom" />
 /// <reference lib="dom.iterable" />
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ItemRow } from "../web/src/api.js";
 import { SLOW, TOKEN, card, json, chooseMenu, item, menuItems, reset, row, s, show, teardown, view } from "./ui-tasks-fixtures.js";
@@ -102,6 +102,31 @@ describe("Needs you", () => {
     await waitFor(() => expect(s.posts.some((p) => p.url.endsWith("/commands"))).toBe(true), SLOW);
     const sent = s.posts.filter((p) => p.url.endsWith("/commands")).map((p) => JSON.parse(String(p.init.body)));
     expect(sent).toEqual([{ command: "retry", note: "+paths web/src/x.tsx docs/y.md" }]);
+  });
+
+  it("notes each ready-to-merge item that shares a changed file with another ready item, naming the path and the other item", async () => {
+    const ready = { item_phase: "ready_to_merge", merge: { enabled: true, reason: null } };
+    s.items = [
+      item("wi_m1", { ...ready, title: "First ready", overlaps: [{ id: "wi_m2", title: "Second ready", source_id: "local:wi_m2", paths: ["src/a.ts"] }] }),
+      item("wi_m2", { ...ready, title: "Second ready", overlaps: [{ id: "wi_m1", title: "First ready", source_id: "local:wi_m1", paths: ["src/a.ts", "src/b.ts"] }] }),
+      item("wi_m3", { ...ready, title: "Alone", overlaps: [] }),
+    ];
+    await show();
+    const notes = await screen.findByRole("list", { name: "Ready to merge items that change the same files" }, SLOW);
+    const text = [...notes.querySelectorAll("li")].map((li) => li.textContent);
+    expect(text).toEqual([
+      "First ready and Second ready both change src/a.ts. Merge one first, then check the other.",
+      "Second ready and First ready both change 2 files, src/a.ts among them. Merge one first, then check the other.",
+    ]);
+    expect(notes.textContent).not.toContain("Alone");
+    expect(notes.querySelector("a")!.getAttribute("href")).toBe("/app/items/wi_m1");
+  });
+
+  it("shows no overlap note when no ready item shares a file", async () => {
+    s.items = [item("wi_m3", { item_phase: "ready_to_merge", merge: { enabled: true, reason: null }, title: "Alone", overlaps: [] })];
+    await show();
+    await screen.findByRole("region", { name: "Needs you" }, SLOW);
+    expect(screen.queryByRole("list", { name: "Ready to merge items that change the same files" })).toBeNull();
   });
 
   it("is not rendered when nothing waits", async () => {
@@ -259,6 +284,30 @@ describe("Needs you", () => {
     expect([...sample.querySelectorAll("[data-risk]")].map((r) => r.textContent)).toEqual(["Checks failed", "Reverted", "Not reviewed"]);
     // The look was stored: this visit's time replaces the old one.
     expect(Number(kept.get("factory.needs-you.last-look"))).toBeGreaterThan(Date.parse("2026-11-12T00:00:00.000Z"));
+  });
+
+  it("a merge row's primary text is its PR title linked to the PR, '#N' secondary; the repository shows only when merges span repositories", async () => {
+    storage();
+    withMerges([merge("436", "2026-11-12T00:00:00.000Z", { title: "Seed golden cases: 5 clean merges" }), merge("162", "2026-11-11T00:00:00.000Z")]);
+    await show();
+    const sample = await screen.findByRole("region", { name: "Worth sampling" }, SLOW);
+    const rows = [...sample.querySelectorAll<HTMLElement>("li[data-key]")];
+    const first = rows[0]!.querySelector("a")!;
+    expect([first.textContent, first.getAttribute("href")]).toEqual(["Seed golden cases: 5 clean merges", "https://github.com/o/r/pull/436"]);
+    expect(rows[0]!.querySelector("[data-ref]")!.textContent).toBe("#436");
+    expect([...rows[0]!.querySelectorAll("[data-details] > *")].map((e) => e.textContent)).toEqual(["#436", "Not reviewed", "Checks", "Review"]);
+    // A row recorded before titles were kept reads "PR #162", with no second number.
+    expect(rows[1]!.querySelector("a")!.textContent).toBe("PR #162");
+    expect(rows[1]!.querySelector("[data-ref]")).toBeNull();
+    // One repository: it is named nowhere.
+    expect(sample.textContent).not.toContain("o/r");
+    expect(sample.querySelectorAll("h3")).toHaveLength(0);
+    cleanup();
+    withMerges([merge("5", "2026-11-12T00:00:00.000Z", { title: "A" }), merge("6", "2026-11-11T00:00:00.000Z", { project: "o/other", title: "B" })]);
+    await show();
+    const both = await screen.findByRole("region", { name: "Worth sampling" }, SLOW);
+    expect([...both.querySelectorAll("h3")].map((h) => h.textContent)).toEqual(["o/r", "o/other"]);
+    expect(within(both).getByRole("list", { name: "Worth sampling: o/other" }).textContent).toContain("B");
   });
 
   it("a first visit counts the last 7 days of merges", async () => {

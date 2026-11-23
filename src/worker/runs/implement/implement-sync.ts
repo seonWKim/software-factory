@@ -184,7 +184,10 @@ async function conflictStep(
   const pending = (await w.gitRaw(handle, ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"])).exit_code === 0;
   if (name === "resolve" && pending) {
     await w.git(handle, ["add", "-u"]);
-    await w.git(handle, ["add", "-A", "--", ...conflicts]);
+    // A conflicting file the resolution deleted (modify/delete) is staged by `add -u` and matches no path any
+    // more, which `add` rejects: pass only the conflicting paths still in the index or the working tree.
+    const kept = (await w.git(handle, ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ...conflicts])).split("\0").filter(Boolean);
+    if (kept.length > 0) await w.git(handle, ["add", "-A", "--", ...kept]);
   }
   const left = await unmerged(w, handle);
   if (left.length > 0) return done(`unmerged paths remain after the resolution step: ${left.join(", ")}`);

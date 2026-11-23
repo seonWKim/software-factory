@@ -1,15 +1,13 @@
 {
-  "controller/units/commands/commands.unit.ts": 736,
-  "controller/units/run-results/run-results.unit.ts": 1147,
+  "controller/units/commands/commands.unit.ts": 734,
   "core/settings.ts": 802,
-  "core/types.ts": 732,
+  "core/types.ts": 731,
   "golden.ts": 666,
   "impl/github/github-issue-source.ts": 719,
   "impl/runner/claude-code-runner.ts": 660,
-  "impl/store/sql/sql-factory-store.ts": 2749,
+  "impl/store/sql/sql-factory-store.ts": 2748,
   "impl/store/sqlite/schema.ts": 736,
   "impl/updater/git-worktree.ts": 903,
-  "interfaces/factory-store.ts": 1347,
-  "ui/api.ts": 626,
+  "interfaces/factory-store.ts": 1346,
   "worker/runner.ts": 1037
 }

@@ -393,11 +393,11 @@ function commentMarker(key: string, report: string): string {
 
 /**
  * Files the groups of `report` (design §7) and stores each group's filing on the report. First, a stall group one of whose runs held
- * a host sleep (`stalledBySleep`) is not filed or commented: one information alert (`host_sleep`). Then its runs that failed in a
+ * a host sleep (`sleptRuns`) is not filed, commented or alerted: `skipped` with `host_sleep`. Then its runs that failed in a
  * model-stall or network pause are left out (`outsidePauses`): none left, `skipped` with `pause`; under FILE_MIN, no filing (report only).
  * Of the rest, a group whose pattern has an open filed item gets one comment naming its runs not linked there yet (none: `linked`); one whose item closed
  * in the last 30 days is skipped (a rejected one is filed again once its evidence at least doubles the evidence stored at that filing); one whose draft needs a
- * person or touches the gate list goes to Needs you as an alert with the cause (`needs_person`); any other is filed as a fix item, which runs without a person,
+ * person or touches the gate list is `skipped` with `needs_person`, and goes to Needs you as an alert with the cause unless it is a pushback group; any other is filed as a fix item, which runs without a person,
  * its runs and marker in the body, its evidence stored with the claim. Every body passes the egress scan first: a flagged one is not sent and is recorded
  * `withheld` with its rules. Each `hotspot` row alike, no pause or FILE_MIN check: "Reduce conflicts on <file>", no draft, skipped (`open_item`) while the store
  * holds an open item of that title. Groups and hot files are taken together, largest evidence first (`evidenceOf`; a stable sort keeps report order on a
@@ -425,7 +425,7 @@ type Caps = { issues: number; comments: number };
 async function fileGroup(d: FilingDeps, report: ImproveReport, all: FailureGroup, caps: Caps): Promise<ImproveFiling | undefined> {
   const key = patternKey(all);
   // First: a stall that followed a host sleep is the host's, not the repo's, so nothing is filed or commented.
-  if (await stalledBySleep(d.store, all)) return toSleepAlert(d, all, key);
+  if ((await sleptRuns(d.store, all)).size > 0) return { status: "skipped", reason: "host_sleep" };
   // Failures inside a model-stall or network pause are the outage's; what is left must recur across items. A hot file keeps its own rule.
   const g = isHotspot(all) ? all : await outsidePauses(d.store, all);
   if (!isHotspot(g) && g.run_ids.length === 0) return { status: "skipped", reason: "pause" };
@@ -470,9 +470,11 @@ function needsPerson(draft: ImproveDraft | undefined): boolean {
 
 /**
  * A group no automatic fix may take goes to Needs you: one alert (`alertOnce`, key `needs_person:<key>`) whose detail names why and
- * the draft's cause. No item is filed, so no fix run is queued; a retry of the same report stores no second alert.
+ * the draft's cause. No item is filed, so no fix run is queued; a retry of the same report stores no second alert. A pushback group
+ * stores no alert (design 05-alarms, 2026-11-23): the owner's own words are no failure to act on; the report still lists it.
  */
 async function toPerson(d: FilingDeps, g: FailureGroup, key: string): Promise<ImproveFiling> {
+  if (g.error_code === PUSHBACK) return { status: "skipped", reason: "needs_person" };
   const draft = g.draft as Extract<ImproveDraft, { touches_prompts_or_gate: boolean }>;
   const why = draft.needs_person ? "the draft says a person must decide" : "the fix touches the factory's prompts or gates";
   const cause = draft.status === "drafted" ? ` Draft cause (model, unverified): ${draft.cause}` : "";
@@ -498,30 +500,22 @@ async function outsidePauses(store: FilingDeps["store"], g: FailureGroup): Promi
 /** Host sleeps read per work item of a stall group: far more than the sleeps of one item's recent runs. */
 const SLEEPS_READ = 100;
 
-/** The information alert's key of a pattern skipped for a host sleep. */
-export const sleepAlertKey = (key: string) => `host_sleep:${key}`;
-
 /**
- * Whether `g` is a stall group (`agent_stalled`) one of whose runs held a recorded host sleep (design §7): the machine
- * slept, so the stall is the host runtime's and the repo holds no code to fix. One host sleep read per item of the
- * group, matched by run ID. The improver's filing and the stall hold (`recurringStalls`) both read this rule.
+ * The runs of `g` that held a recorded host sleep, when `g` is a stall group (`agent_stalled`; any other: none). The machine
+ * slept, so such a stall is the host runtime's and the repo holds no code to fix. One host sleep read per item of the
+ * group, matched by run ID. The improver's filing (any run: the group is skipped) and the alarm step's repeated-error
+ * check (each such run left out, design 05-alarms) both read this rule.
  */
-export async function stalledBySleep(
+export async function sleptRuns(
   store: Pick<FactoryStore, "listHostSleeps">, g: Pick<FailureGroup, "error_code" | "run_ids" | "work_item_ids">,
-): Promise<boolean> {
-  if (g.error_code !== AGENT_STALLED) return false;
+): Promise<Set<RunId>> {
+  const slept = new Set<RunId>();
+  if (g.error_code !== AGENT_STALLED) return slept;
   const runs = new Set<RunId>(g.run_ids);
   for (const id of g.work_item_ids) {
-    const sleeps = await store.listHostSleeps({ limit: SLEEPS_READ, work_item_id: id });
-    if (sleeps.some((s) => s.run_id !== null && runs.has(s.run_id))) return true;
+    for (const s of await store.listHostSleeps({ limit: SLEEPS_READ, work_item_id: id })) if (s.run_id !== null && runs.has(s.run_id)) slept.add(s.run_id);
   }
-  return false;
-}
-
-/** A stall group that followed a host sleep is not filed: one information alert (`alertOnce`, key `host_sleep:<key>`). It holds no item. */
-async function toSleepAlert(d: FilingDeps, g: FailureGroup, key: string): Promise<ImproveFiling> {
-  await alertOnce(d, g, sleepAlertKey(key), `Host sleep: these ${g.run_ids.length} ${g.error_code} runs followed a host sleep, so no fix item was filed; the stall is the host's, not this repo's code.`);
-  return { status: "skipped", reason: "host_sleep" };
+  return slept;
 }
 
 async function commentGroup(d: FilingDeps, report: ImproveReport, g: FailureGroup, row: FiledPattern & { filed_ref: SourceRef }, key: string, caps: Caps): Promise<ImproveFiling> {

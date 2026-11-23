@@ -1,7 +1,7 @@
 // The implement run's pre-push checks and gates (design §4): the check rounds and their fix step, the base rerun,
 // the agent's gate hooks, and the scope, size and floor gates. Split out of implement.run.ts so parallel items
 // that change different parts of the run do not share one file.
-import { AGENT_STOP_CHECKS_DEFAULT, settingValues, type FloorHit, NumstatError, diffGates, scopeGate, BASE_CHECKOUT_DIR, CHECKS_FAILED_RUN, type CheckResult, type DoneCheckResult, TOOLCHAIN_MISSING, PrePushSelection, checkCommands, checkedLinesText, commandText, doneCheckRound, failingTestFiles, toolchainMissing, withTestFiles, IMPLEMENT_SCHEMA, parseImplement, CHECKS_ENV, CHECKS_ENV_LIMIT, type Run, type WorkItem, type GateHooks, type PackRefusal, type StopSelection, type SandboxHandle } from "./legacy-imports.js";
+import { AGENT_STOP_CHECKS_DEFAULT, settingValues, type FloorHit, NumstatError, diffGates, scopeGate, BASE_CHECKOUT_DIR, CHECKS_FAILED_RUN, type CheckResult, type DoneCheckResult, TOOLCHAIN_MISSING, PrePushSelection, checkCommands, checkedLinesText, commandText, doneCheckRound, failingTestFiles, toolchainMissing, withTestFiles, IMPLEMENT_SCHEMA, parseImplement, sizeCaps, CHECKS_ENV, CHECKS_ENV_LIMIT, type Run, type WorkItem, type GateHooks, type PackRefusal, type StopSelection, type SandboxHandle } from "./legacy-imports.js";
 import { type FixContext, NO_HOOKS, RunFailure, failingTestNames, gitIdentity, renderWorkItem, scopeReply, tail } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { outputLines } from "./conflict-ask.js";
@@ -156,15 +156,17 @@ async function checksEnv(w: Worker, run: Run, item: WorkItem, failed: CheckResul
   });
 }
 
+/** The item's size caps: its one-time cap, else its project's settings (src/core/size-cap.ts). */
+export const itemCaps = (w: Worker, item: WorkItem) => sizeCaps(item, settingValues(item.project, w.cfg.settings, w.d.learned));
+
 /**
  * The gate hooks for an implement agent step (design §4, issue #302): the values the worker's gates use, the check list
  * with the check env (no test database), the Stop hook's cap with what earlier steps used, and the test selection.
  */
 export function gateHooks(w: Worker, run: Run, item: WorkItem, start: string, baseSha: string, mode: StopSelection["mode"]): GateHooks {
-  const { max_diff_lines, max_diff_files } = settingValues(item.project, w.cfg.settings, w.d.learned);
   return {
     allowed_paths: [...item.allowed_paths], start_sha: start, base_sha: baseSha,
-    limits: { max_diff_lines, max_diff_files },
+    limits: itemCaps(w, item),
     check_commands: checkCommands(w.cfg.repo),
     check_env: { ...w.d.toolEnv, ...w.slotEnv() },
     stop_checks: w.cfg.agent_stop_checks ?? AGENT_STOP_CHECKS_DEFAULT,
@@ -211,12 +213,12 @@ export async function prePushGates(
   conflicts: readonly string[] = [],
 ): Promise<{ floor: FloorHit[] | null; paths: string[] }> {
   await scopeGateStep(w, run, item, handle, baseSha, conflicts);
-  // The item's project's gate settings (design 2026-11-01), read only through settingValues. The gates themselves
-  // are src/core/pre-push.ts, shared with `session finish` (design §5, 2026-11-01).
+  // The item's project's gate settings (design 2026-11-01), read only through settingValues, with its size caps. The
+  // gates themselves are src/core/pre-push.ts, shared with `session finish` (design §5, 2026-11-01).
   const s = settingValues(item.project, w.cfg.settings, w.d.learned);
   let gates;
   try {
-    gates = await diffGates((args) => w.git(handle, args), baseSha, item, s);
+    gates = await diffGates((args) => w.git(handle, args), baseSha, item, { ...s, ...itemCaps(w, item) });
   } catch (err) {
     if (err instanceof NumstatError) throw new RunFailure("git_failed", err.message, true);
     throw err;

@@ -113,7 +113,7 @@ function DailyChart({ days, selected, onSelect }: { days: readonly SpendDay[]; s
 }
 
 const columns = (): readonly Column<SpendItem>[] => [
-  { key: "item", header: t("col.item"), render: (r) => <Link href={itemPath(r.work_item_id)} data-raw className={LINK_CLASS}>{r.title ?? r.work_item_id}</Link> },
+  { key: "item", header: t("col.item"), render: (r) => <Link href={itemPath(r.work_item_id)} data-raw className={`${LINK_CLASS} max-w-full break-words`}>{r.title ?? r.work_item_id}</Link> },
   { key: "cost", header: t("col.cost"), numeric: true, render: (r) => usd(r.cost_usd) },
   { key: "tokens", header: t("col.tokens"), numeric: true, render: (r) => tokens(r.tokens) },
   { key: "runs", header: t("col.runs"), numeric: true, render: (r) => r.runs },
@@ -138,7 +138,7 @@ function Tasks({ view, day, onClear }: { view: SpendView; day: string | null; on
       {q.isError && day !== null ? (
         <ErrorNote error={q.error} />
       ) : !v ? (
-        <Loading rows={3} />
+        <Loading rows={3} label="loading.spendTasks" onRetry={() => void q.refetch()} />
       ) : (
         <>
           {v.items.length < v.items_total && (
@@ -166,7 +166,7 @@ export function SpendSection() {
   // The day picked on the chart: it filters the tasks table only, and stays in the browser.
   const [day, setDay] = useState<string | null>(null);
   if (q.isError) return <SpendFrame><ErrorNote error={q.error} /></SpendFrame>;
-  if (!q.data) return <SpendFrame><Loading rows={4} /></SpendFrame>;
+  if (!q.data) return <SpendFrame><Loading rows={4} label="loading.spend" onRetry={() => void q.refetch()} /></SpendFrame>;
   const v = q.data;
   const unknown = v.total.unknown;
   return (

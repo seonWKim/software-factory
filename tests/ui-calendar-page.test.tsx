@@ -85,7 +85,8 @@ const show = () => render(createElement(QueryClientProvider, { client: new Query
 const entries = (root: ParentNode = document) => [...root.querySelectorAll<HTMLElement>("[data-event]")].map((e) => e.dataset.event);
 const heading = () => screen.getByRole("heading", { level: 2 }).textContent;
 const lastRead = () => reads.at(-1);
-const press = (name: string) => fireEvent.click(screen.getByRole("button", { name }));
+/** Presses a button or a view segment (a radio) by its name. */
+const press = (name: string) => fireEvent.click(screen.queryByRole("radio", { name }) ?? screen.getByRole("button", { name }));
 /** Waits for the days of the read `from`..`to` to show. */
 const shownRange = async (from: string, to: string) => {
   await screen.findByText((_, el) => el?.getAttribute("data-day") === from, undefined, SLOW);
@@ -95,18 +96,22 @@ const shownRange = async (from: string, to: string) => {
 describe("Calendar page", () => {
   it("the view control is exactly Week and Month, Week selected on load", async () => {
     show();
-    const control = await screen.findByRole("group", { name: "Calendar view" }, SLOW);
-    expect(within(control).getAllByRole("button").map((b) => [b.textContent, b.getAttribute("aria-pressed")])).toEqual([["Week", "true"], ["Month", "false"]]);
+    const control = await screen.findByRole("radiogroup", { name: "Calendar view" }, SLOW);
+    expect(within(control).getAllByRole("radio").map((b) => [b.textContent, b.getAttribute("aria-checked")])).toEqual([["Week", "true"], ["Month", "false"]]);
     expect(screen.queryByRole("button", { name: "Day" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Upcoming" })).toBeNull();
   });
 
-  it("one row of the page toolbar holds the view switch, then Previous, Next, Today and Sync, outside the Card", async () => {
+  it("one row of the page toolbar holds the view switch, then Previous week, Today, Next week, the period and Sync last, outside the Card", async () => {
     show();
-    const toolbar = (await screen.findByRole("group", { name: "Calendar view" }, SLOW)).parentElement!;
+    const toolbar = (await screen.findByRole("radiogroup", { name: "Calendar view" }, SLOW)).parentElement!;
     expect(toolbar.hasAttribute("data-calendar-toolbar")).toBe(true);
     await within(toolbar).findByRole("button", { name: "Sync" }, SLOW);
-    expect(within(toolbar).getAllByRole("button").map((b) => b.textContent)).toEqual(["Week", "Month", "Previous", "Next", "Today", "Sync"]);
+    expect(within(toolbar).getAllByRole("radio").map((b) => b.textContent)).toEqual(["Week", "Month"]);
+    // Previous, Next and Sync are icon buttons: their names are their aria-labels.
+    expect(within(toolbar).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual(["Previous week", "Today", "Next week", "Sync"]);
+    const order = [...toolbar.querySelectorAll("[role=radiogroup], button:not([role=radio]), h2")].map((e) => e.tagName === "H2" ? "period" : e.getAttribute("aria-label") ?? e.textContent);
+    expect(order).toEqual(["Calendar view", "Previous week", "Today", "Next week", "period", "Sync"]);
     expect(document.querySelectorAll("[data-calendar-toolbar]")).toHaveLength(1);
     expect(toolbar.closest("[data-page-toolbar]")).not.toBeNull();
     expect(toolbar.closest("section")).toBeNull();
@@ -118,7 +123,10 @@ describe("Calendar page", () => {
     expect(heading()).toBe("Nov 9 – 15, 2026");
     const week = screen.getByRole("list", { name: "Nov 9 – 15, 2026" });
     expect(week.tagName).toBe("OL");
-    expect(week.className).toContain("grid-cols-7");
+    // Seven flexible columns from lg up (no fixed min width, so no sideways scroll); stacked below it.
+    expect(week.className.split(/\s+/)).toEqual(expect.arrayContaining(["grid-cols-1", "lg:grid-cols-7"]));
+    expect(week.className).not.toMatch(/min-w-\[/);
+    expect(week.closest(".overflow-x-auto")).toBeNull();
     expect([...week.querySelectorAll<HTMLElement>(":scope > li")].map((d) => d.dataset.day)).toEqual([
       "2026-11-09", "2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13", "2026-11-14", "2026-11-15",
     ]);
@@ -133,32 +141,36 @@ describe("Calendar page", () => {
     const unsynced = document.querySelector<HTMLElement>('[data-day="2026-11-09"]')!;
     expect(unsynced.hasAttribute("data-not-synced")).toBe(true);
     expect(unsynced.className).toContain("bg-surface-2");
-    expect(unsynced.textContent).toBe("Mon, Nov 9");
+    expect(within(unsynced).getByRole("heading", { level: 3 }).textContent).toContain("Mon, Nov 9");
+    expect(unsynced.querySelector("ul")).toBeNull();
     const empty = document.querySelector<HTMLElement>('[data-day="2026-11-12"]')!;
     expect(empty.hasAttribute("data-not-synced")).toBe(false);
     expect(empty.querySelector("p, ul")).toBeNull();
   });
 
-  it("the period heading is the only h2, the Card's title, announced when it changes", async () => {
+  it("the period heading is the only h2, in the toolbar line, announced when it changes; the Card is named by it", async () => {
     show();
     await shownRange("2026-11-09", "2026-11-15");
     const h2 = screen.getByRole("heading", { level: 2 });
     expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(1);
-    expect(h2.closest("[data-calendar-toolbar]")).toBeNull();
+    expect(h2.closest("[data-calendar-toolbar]")).not.toBeNull();
     expect(h2.getAttribute("aria-live")).toBe("polite");
     const card = screen.getByRole("region", { name: "Nov 9 – 15, 2026" });
-    expect(card.querySelector("h2")).toBe(h2);
+    expect(card.querySelector("h2")).toBeNull();
     press("Month");
     await shownRange("2026-11-01", "2026-11-30");
     expect(heading()).toBe("November 2026");
-    expect(screen.getByRole("region", { name: "November 2026" }).querySelector("h2")!.textContent).toBe("November 2026");
+    expect(screen.getByRole("region", { name: "November 2026" })).toBeTruthy();
   });
 
-  it("today is circled in Week and Month, and no other day is", async () => {
+  it("today's date sits on the neutral ink dot in Week and Month (no outline, no accent), and no other day's does", async () => {
     show();
     await shownRange("2026-11-09", "2026-11-15");
     expect([...document.querySelectorAll("[data-today]")].map((e) => e.closest("[data-day]")!.getAttribute("data-day"))).toEqual(["2026-11-12"]);
-    expect(document.querySelector("[data-today]")!.className).toContain("outline-accent");
+    const dot = document.querySelector("[data-today]")!.className;
+    expect(dot).toContain("bg-text-1");
+    expect(dot).not.toMatch(/outline|accent/);
+    expect(document.querySelector("[data-today]")!.textContent).toBe("12");
     press("Month");
     await shownRange("2026-11-01", "2026-11-30");
     const today = [...document.querySelectorAll<HTMLElement>("[data-today]")];
@@ -169,13 +181,14 @@ describe("Calendar page", () => {
   it("each event has a colour strip from a token, the same for one source across reads", async () => {
     show();
     await shownRange("2026-11-09", "2026-11-15");
-    const strip = (id: string) => document.querySelector(`[data-event="${id}"] [data-strip]`)!.className;
+    // The strip's colour class (the month's strip adds layout classes of its own at phone width).
+    const strip = (id: string) => document.querySelector(`[data-event="${id}"] [data-strip]`)!.className.match(/bg-kind-[a-z-]+/)?.[0];
     expect(strip("google-calendar:holiday")).toMatch(/bg-kind-/);
     expect(strip("google-calendar:holiday")).toBe(strip("google-calendar:lunch"));
     const before = strip("google-calendar:lunch");
     press("Month");
     await shownRange("2026-11-01", "2026-11-30");
-    expect(document.querySelector('[data-event="google-calendar:lunch"] [data-strip]')!.className).toBe(before);
+    expect(strip("google-calendar:lunch")).toBe(before);
   });
 
   it("an event names its source only when more than one calendar is connected", async () => {
@@ -289,8 +302,8 @@ describe("Calendar page", () => {
     expect(screen.queryByRole("button", { name: "Sync" })).toBeNull();
   });
 
-  /** The Sync buttons on the page, by their text. */
-  const syncButtons = () => screen.getAllByRole("button").filter((b) => /^(Sync|Sync these days|Syncing…)$/.test(b.textContent ?? ""));
+  /** The Sync buttons on the page, by their name: the toolbar's icon button by its aria-label, the note's by its text. */
+  const syncButtons = () => screen.getAllByRole("button").filter((b) => /^(Sync|Sync these days|Syncing…)$/.test(b.getAttribute("aria-label") ?? b.textContent ?? ""));
 
   it("Sync posts the days on screen with the token; both buttons show Syncing…, disabled, until it is done, and a second press sends nothing", { timeout: 15_000 }, async () => {
     show();
@@ -299,7 +312,7 @@ describe("Calendar page", () => {
     within(screen.getByRole("status")).getByRole("button", { name: "Sync these days" });
     fireEvent.click(sync);
     fireEvent.click(sync);
-    await waitFor(() => expect(syncButtons().map((b) => [b.textContent, (b as HTMLButtonElement).disabled, b.getAttribute("aria-busy")])).toEqual([
+    await waitFor(() => expect(syncButtons().map((b) => [b.getAttribute("aria-label") ?? b.textContent, (b as HTMLButtonElement).disabled, b.getAttribute("aria-busy")])).toEqual([
       ["Syncing…", true, "true"],
       ["Syncing…", true, "true"],
     ]), SLOW);

@@ -115,7 +115,7 @@ import * as signals from "./signals.js";
 import * as evaluations from "./merge-evaluations.js";
 import * as proposals from "./command-proposals.js";
 import * as tasks from "./tasks.js";
-import { SqlSkillEvalStore } from "./skill-evals.js";
+import { SqlAttachmentStore } from "./attachments.js";
 import { claimLock, endReservations, liveReservations, reservationOf } from "./reservations.js";
 import { type CoordContext, claimDecisionsOf, claimOrder, claimOrderSql, implementTimes, RELEASED, releaseHolder, writeClaimDecision } from "./claim-coordination.js";
 import * as notices from "./notices.js";
@@ -128,9 +128,9 @@ import * as standing from "./standing-rules.js";
 /**
  * FactoryStore over a SqlDriver (SQLite; `db` is public for components owning tables). Every write is one driver transaction. Correctness
  * never depends on the row locks alone: every state change is also a conditional UPDATE (version,
- * status, lease token), and uniqueness is enforced by keys, with a duplicate treated as "already there". Task projects: SqlProjectStore, schedules: SqlScheduleStore (schedules.ts), skill evals: SqlSkillEvalStore (skill-evals.ts).
+ * status, lease token), and uniqueness is enforced by keys, with a duplicate treated as "already there". Task projects: SqlProjectStore, schedules: SqlScheduleStore (schedules.ts), skill evals: SqlSkillEvalStore (skill-evals.ts), attachments: SqlAttachmentStore (attachments.ts).
  */
-export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
+export class SqlFactoryStore extends SqlAttachmentStore implements FactoryStore {
   constructor(db: SqlDriver, private readonly clock: Clock) {
     super(db, () => clock.now().toISOString() as Timestamp);
   }
@@ -1444,8 +1444,8 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
     return this.db.transaction(async (tx) => {
       const created = await this.insertOnce(
         tx,
-        "INSERT INTO controller_unreviewed_merges (id, project, change_ref, merge_sha, merger_id, at) VALUES (?, ?, ?, ?, ?, ?)",
-        [newId("um") as UnreviewedMergeId, input.project, input.change_ref, input.merge_sha, input.merger_id, this.now()],
+        "INSERT INTO controller_unreviewed_merges (id, project, change_ref, merge_sha, merger_id, at, title) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [newId("um") as UnreviewedMergeId, input.project, input.change_ref, input.merge_sha, input.merger_id, this.now(), input.title ?? null],
       );
       const [row] = await tx.all("SELECT * FROM controller_unreviewed_merges WHERE project = ? AND change_ref = ?", [input.project, input.change_ref]);
       return { merge: rowToUnreviewedMerge(row!), created };
@@ -1788,11 +1788,7 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
   async recordMergeCheck(c: NewMergeCheck): Promise<MergeCheck> {
     const checked_at = this.now();
     const values: SqlValue[] = [c.mergeable ? 1 : 0, JSON.stringify(c.conflicts), c.head_sha, c.base_sha, checked_at];
-    const update = () =>
-      this.db.run(
-        "UPDATE controller_merge_checks SET mergeable = ?, conflicts = ?, head_sha = ?, base_sha = ?, checked_at = ? WHERE work_item_id = ?",
-        [...values, c.work_item_id],
-      );
+    const update = () => this.db.run("UPDATE controller_merge_checks SET mergeable = ?, conflicts = ?, head_sha = ?, base_sha = ?, checked_at = ? WHERE work_item_id = ?", [...values, c.work_item_id]);
     // Keyed by work_item_id: update the row, else insert it; a concurrent first insert that loses updates instead.
     if ((await update()) === 0) {
       const sql = "INSERT INTO controller_merge_checks (mergeable, conflicts, head_sha, base_sha, checked_at, work_item_id) VALUES (?, ?, ?, ?, ?, ?)";
@@ -1806,6 +1802,9 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
     return row ? rowToMergeCheck(row) : null;
   }
 
+  async clearMergeCheck(work_item_id: WorkItemId): Promise<boolean> {
+    return (await this.db.run("DELETE FROM controller_merge_checks WHERE work_item_id = ?", [work_item_id])) > 0;
+  }
   async listMergeChecks(work_item_ids: readonly WorkItemId[]): Promise<MergeCheck[]> {
     if (work_item_ids.length === 0) return [];
     const rows = await this.db.all(`SELECT * FROM controller_merge_checks WHERE work_item_id IN (${placeholders(work_item_ids.length)})`, [...work_item_ids]);
