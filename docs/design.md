@@ -1,14 +1,14 @@
 # Software factory: design index
 
-Read this index, then only the topics you touch. A topic states its current decision first, replaced ones in `history/<topic>.md`. Add a line here only for a new topic. "§5" means `05-*`.
+Read this index, then only the topics you touch. Topics: current decision first, replaced ones in `history/<topic>.md`. Add a line here only for a new topic. "§5" means `05-*`.
 
 ## 1. Shape
-- [01-shape.md](design/01-shape.md): flow from intake to the human gate and post-merge.
+- [01-shape.md](design/01-shape.md): intake to human gate and post-merge.
 
 ## 2. Work item
 - [02-work-item.md](design/02-work-item.md): one work-item shape for every source.
 - [02-attachments.md](design/02-attachments.md): triage context, images, links.
-- [02-tasks.md](design/02-tasks.md): plain tasks: table, `task add`, route.
+- [02-tasks.md](design/02-tasks.md): table, `task add`, route.
 - [02-tasks-quick-add.md](design/02-tasks-quick-add.md): quick-add words, repeats.
 - [02-tasks-projects.md](design/02-tasks-projects.md): task projects.
 - [02-tasks-build.md](design/02-tasks-build.md): Build this, merge close.
@@ -20,7 +20,7 @@ Read this index, then only the topics you touch. A topic states its current deci
 - [03-risk.md](design/03-risk.md): tier and safety ratchet.
 
 ## 4. Agents
-- [04-agents.md](design/04-agents.md): agent roles, model class per run kind and tier.
+- [04-agents.md](design/04-agents.md): agent roles, model per run kind and tier.
 - [04-gate-commands.md](design/04-gate-commands.md): human commands, refusals, footers.
 - [04-spec-gate-commands.md](design/04-spec-gate-commands.md): spec answers, `/revise`.
 - [04-chat-commands.md](design/04-chat-commands.md): chat commands.
@@ -37,7 +37,7 @@ Read this index, then only the topics you touch. A topic states its current deci
 - [05-restart-asks.md](design/05-restart-asks.md): runs asking for paths.
 - [05-restart-pauses.md](design/05-restart-pauses.md): claim pauses, drains.
 - [05-alarms.md](design/05-alarms.md): repeated errors, zero-token runs.
-- [05-sandbox.md](design/05-sandbox.md): sandbox interface, run folders, tools.
+- [05-sandbox.md](design/05-sandbox.md): interface, run folders, tools.
 - [05-merge-conflict.md](design/05-merge-conflict.md): update runs, `/resolve`.
 - [05-ci-gate.md](design/05-ci-gate.md): CI workflow, check gate.
 - [05-sources.md](design/05-sources.md): local items, thread, outbox, CLI.
@@ -72,6 +72,7 @@ Read this index, then only the topics you touch. A topic states its current deci
 - [08-retention.md](design/08-retention.md): daily retention pass.
 - [08-cleanup.md](design/08-cleanup.md): closed items' leftovers.
 - [08-schedules.md](design/08-schedules.md): schedules and runs.
+- [08-routines.md](design/08-routines.md): routines.
 
 ## 9. Status page
 - [09-status-page.md](design/09-status-page.md): read-only status page.
