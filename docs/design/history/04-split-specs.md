@@ -1,5 +1,7 @@
 ## History
 
+- **An oversize triage answer with no phases waits at its size checkpoint** (2026-11-23, phase 1 of local-task-tk_8bb1417c). Before: "The 85% threshold" said an estimate over 85% of either cap "is rejected unless it has 2 to 4 phases"; each size reader (session's diff gates, the implement run's limits and pre-push gate, run-results' triage check and size-check text) read the caps from the project settings on its own; and `phases_auto_approve` named only a split spec, a non-phase item and a parent no longer `phases_open` as the cases that wait for a human.
+
 - **A split parent closes once every recorded phase is closed** (2026-11-18). Before: `closeSplitIfDone` closed a `phases_open` parent only when every recorded phase was `CLOSED` / `completed`, always as completed with no merge sha; a phase closed any other way (rejected, won't do) kept the parent open with no end, so its dependents never started (wi_34339813, #317).
 
 - **`/retry` releases a held phase** (2026-11-12). Before: a held phase fell under the generic "other blocked" command phase, so `/retry` did nothing on it, and a phase whose previous phase closed without a merge (rejected as superseded by other work) stayed held forever and had to be refiled by hand (#598, phase 3 of #569 after #595 was rejected).
