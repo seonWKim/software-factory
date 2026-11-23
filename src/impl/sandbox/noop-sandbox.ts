@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import { chmod, cp, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { BaseSyncResult, BaseSyncSpec, LocalMergeResult, LocalMergeSpec, LocalRevertResult, LocalRevertSpec } from "../../core/local-merge.js";
-import type { ChangedFile, ChangesRead, ChangesSpec, ExecOptions, ExecResult, NewBranchCommit, NewBranchResult, Sandbox, SandboxHandle, SandboxSpec } from "../../interfaces/sandbox.js";
+import type {
+  ChangedFile, ChangesRead, ChangesSpec, ExecOptions, ExecResult, NewBranchCommit, NewBranchResult, ReconcileSpec, ReconcileStart, Sandbox, SandboxHandle, SandboxSpec,
+} from "../../interfaces/sandbox.js";
 import { baseEnv, type RunProcessOptions, runProcess } from "../process/run-process.js";
 
 /** Runs one process; `runProcess` unless a test injects a fake. */
@@ -342,11 +344,30 @@ export class NoOpSandbox implements Sandbox {
     if (await this.isAncestor(spec.repo, spec.merge_sha, remote)) return { synced: true, local, remote, contains: true, not_updated: [] };
     if (await this.isAncestor(spec.repo, remote, local)) return { synced: true, local, remote, contains: false, not_updated: [] };
     const tree = await this.mergeTree(spec.repo, local, remote);
-    if (tree.conflicts.length > 0) return { synced: false, conflicts: tree.conflicts };
+    if (tree.conflicts.length > 0) return { synced: false, conflicts: tree.conflicts, remote };
     const sha = await this.commitMerge(spec.repo, tree.tree, [local, remote], spec.message, spec.identity);
     const moved = await this.moveBase(spec.repo, spec.base_ref, local, sha, spec.message);
     if (!moved) throw new Error(`\`${spec.base_ref}\` moved while the remote base was merged into it`);
     return { synced: true, local: sha, remote, contains: false, not_updated: moved.not_updated };
+  }
+
+  /**
+   * A base reconcile (design 05-sources, Base reconcile): fetches only origin's base, also on the local route, and
+   * creates the local branch `branch` at the local base when it is missing (a conditional ref update that never moves
+   * an existing branch, so a retry resumes it). Objects and that one ref only.
+   */
+  async startReconcile(spec: ReconcileSpec): Promise<ReconcileStart> {
+    safeRef(spec.base_ref);
+    safeRef(spec.branch);
+    const origin = await this.fetchRemoteBase(spec.repo, spec.base_ref);
+    const local = await this.localCommit(spec.repo, spec.base_ref);
+    if (local === null) throw new Error(`the factory repo has no local branch \`${spec.base_ref}\``);
+    if ((await this.localCommit(spec.repo, spec.branch)) === null) {
+      await this.git(spec.repo, ["update-ref", "-m", `Reconcile ${spec.base_ref} with origin`, `refs/heads/${spec.branch}`, local, ""], false);
+    }
+    const start = await this.localCommit(spec.repo, spec.branch);
+    if (start === null) throw new Error(`the reconcile branch \`${spec.branch}\` could not be made`);
+    return { origin, start };
   }
 
   /**
