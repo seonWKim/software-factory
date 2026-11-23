@@ -54,7 +54,7 @@ async function setup(start = "2026-11-22T12:00:00.000Z") {
  * read, so a claim can only go by the tick's time. No action: the deps hold nothing.
  */
 function unitOver(store: SqlFactoryStore, action?: ScheduleAction, log = silent): ScheduleUnit {
-  const d = action ? { schedule_action: scheduledAction(store, action, log) } : {};
+  const d = action ? { schedule_action: scheduledAction(store, action, log, "local:here:repo") } : {};
   return new ScheduleUnit({ k: { d } } as unknown as Ctx);
 }
 
