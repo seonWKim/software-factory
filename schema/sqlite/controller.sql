@@ -334,6 +334,24 @@ CREATE TABLE controller_signals (
     UNIQUE (source, source_ref)
   );
 
+CREATE TABLE controller_skill_draft_days (
+    project_key  TEXT NOT NULL,
+    day          TEXT NOT NULL,
+    count        INTEGER NOT NULL,
+    PRIMARY KEY (project_key, day)
+  );
+
+CREATE TABLE controller_skill_drafts (
+    id           TEXT PRIMARY KEY,
+    project_key  TEXT NOT NULL,
+    skill_ref    TEXT NOT NULL,
+    state        TEXT NOT NULL CHECK (state IN ('tried', 'proposed', 'promoted', 'rejected', 'held')),
+    tokens       INTEGER NOT NULL,
+    detail       TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+  );
+
 CREATE TABLE controller_skill_eval_cases (
     id          TEXT PRIMARY KEY,
     suite_id    TEXT NOT NULL,
@@ -536,6 +554,8 @@ CREATE INDEX controller_schedules_due ON controller_schedules (next_due_at);
 CREATE INDEX controller_signals_item ON controller_signals (work_item_id, at);
 
 CREATE INDEX controller_signals_source_at ON controller_signals (source, at);
+
+CREATE INDEX controller_skill_drafts_project ON controller_skill_drafts (project_key, skill_ref);
 
 CREATE INDEX controller_skill_eval_cases_suite ON controller_skill_eval_cases (suite_id);
 

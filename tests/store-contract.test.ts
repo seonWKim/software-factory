@@ -15,6 +15,7 @@ import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { ARCHIVE_ONLY, RENAMES } from "../src/state/migrations/20261108T1300-state-prefix-tables.migration.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import type { FactoryStore, ForgeBudget, NewAlert, WorkerProcessReport } from "../src/interfaces/factory-store.js";
+import { SKILL_DRAFT_STATES, type SkillDraftState } from "../src/interfaces/skill-draft-store.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { recordAction } from "../src/outbound/intents.js";
 import { MIGRATIONS_TABLE, type MigrationDb, type SqlDriver, applyMigrations, discoverMigrations } from "../src/state/index.js";
@@ -32,6 +33,80 @@ const prUrl = (label: string, n: number) => `https://${label}/pull/${n}`;
 
 describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $name", ({ name, make: makeBackend }) => {
   const make = makeBackend;
+  describe("skill drafts: states and the daily count (design 07-self-improvement, skill improvement)", () => {
+    const draft = (id: string, state: SkillDraftState = "tried") => ({ id, project_key: PROJECT_KEY, skill_ref: "skills/a", state, tokens: 120, detail: { score: 0.8 } });
+
+    it("holds a draft row in each of tried, proposed, promoted, rejected and held, read back as written", async () => {
+      const { store } = await make();
+      expect([...SKILL_DRAFT_STATES]).toEqual(["tried", "proposed", "promoted", "rejected", "held"]);
+      for (const state of SKILL_DRAFT_STATES) {
+        const added = await store.addSkillDraft(draft(`d-${state}`, state));
+        expect(added).toMatchObject({ ...draft(`d-${state}`, state), created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z" });
+        expect(await store.getSkillDraft(`d-${state}`)).toEqual(added);
+      }
+      expect((await store.listSkillDrafts(PROJECT_KEY)).map((d) => d.state).sort()).toEqual([...SKILL_DRAFT_STATES].sort());
+      expect(await store.listSkillDrafts(OTHER_PROJECT_KEY)).toEqual([]);
+      expect(await store.getSkillDraft("missing")).toBeNull();
+    });
+
+    it("is idempotent on the id: a second add returns the stored row", async () => {
+      const { store } = await make();
+      const first = await store.addSkillDraft(draft("d1"));
+      expect(await store.addSkillDraft({ ...draft("d1"), tokens: 9 })).toEqual(first);
+    });
+
+    it("refuses any other state, on add and on a state change, and stores nothing", async () => {
+      const { store } = await make();
+      await expect(store.addSkillDraft({ ...draft("d1"), state: "merged" as SkillDraftState })).rejects.toThrow(/state/);
+      expect(await store.getSkillDraft("d1")).toBeNull();
+      await store.addSkillDraft(draft("d2"));
+      await expect(store.setSkillDraftState("d2", "tried", "done" as SkillDraftState)).rejects.toThrow(/state/);
+      expect((await store.getSkillDraft("d2"))!.state).toBe("tried");
+    });
+
+    it("the table itself refuses another state, past the store's check", async () => {
+      const { store } = await make();
+      await expect(store.db.run("INSERT INTO controller_skill_drafts (id, project_key, skill_ref, state, tokens, detail, created_at, updated_at) VALUES ('x', 'p', 's', 'merged', 0, '{}', 't', 't')")).rejects.toThrow();
+    });
+
+    it("changes state only from the state expected, stamped with the store clock", async () => {
+      const { store, clock } = await make();
+      await store.addSkillDraft(draft("d1"));
+      clock.advance(60_000);
+      expect(await store.setSkillDraftState("d1", "proposed", "promoted")).toBe(false);
+      expect(await store.setSkillDraftState("d1", "tried", "proposed", { note: "better" })).toBe(true);
+      expect(await store.getSkillDraft("d1")).toMatchObject({ state: "proposed", detail: { note: "better" }, created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:01:00.000Z" });
+      expect(await store.setSkillDraftState("d1", "proposed", "held")).toBe(true);
+      expect((await store.getSkillDraft("d1"))!.detail).toEqual({ note: "better" });
+      expect(await store.setSkillDraftState("missing", "tried", "proposed")).toBe(false);
+    });
+
+    it("the daily count is one row per project and UTC day, raised only while below the cap", async () => {
+      const { store, clock } = await make(new FakeClock("2026-11-24T23:59:00.000Z"));
+      expect(await store.takeSkillDraftSlot(PROJECT_KEY, 2)).toBe(true);
+      expect(await store.takeSkillDraftSlot(PROJECT_KEY, 2)).toBe(true);
+      expect(await store.takeSkillDraftSlot(PROJECT_KEY, 2)).toBe(false);
+      expect(await store.skillDraftCount(PROJECT_KEY)).toBe(2);
+      expect(await store.takeSkillDraftSlot(OTHER_PROJECT_KEY, 2)).toBe(true);
+      clock.advance(60_000); // past midnight UTC: a new day starts at 0
+      expect(await store.skillDraftCount(PROJECT_KEY)).toBe(0);
+      expect(await store.takeSkillDraftSlot(PROJECT_KEY, 2)).toBe(true);
+      const rows = await store.db.all("SELECT project_key, day, count FROM controller_skill_draft_days ORDER BY project_key, day");
+      expect(rows).toEqual([
+        { project_key: PROJECT_KEY, day: "2026-11-24", count: 2 },
+        { project_key: PROJECT_KEY, day: "2026-11-25", count: 1 },
+        { project_key: OTHER_PROJECT_KEY, day: "2026-11-24", count: 1 },
+      ]);
+    });
+
+    it("a cap of 0 takes no slot and writes no row", async () => {
+      const { store } = await make();
+      expect(await store.takeSkillDraftSlot(PROJECT_KEY, 0)).toBe(false);
+      expect(await store.skillDraftCount(PROJECT_KEY)).toBe(0);
+      expect(await store.db.all("SELECT day FROM controller_skill_draft_days")).toEqual([]);
+    });
+  });
+
   describe("schedules: updateSchedule (design 08-schedules)", () => {
     const DAILY = { id: "sch_1", title: "Daily", cadence: { kind: "daily" as const, spec: "09:00" }, zone: "UTC", created_by: "local:owner" as UserId };
     const DUE = "2026-11-23T09:00:00.000Z" as Timestamp;
@@ -2210,6 +2285,8 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "controller_skill_eval_cases",
       "controller_skill_eval_runs",
       "controller_skill_eval_replays",
+      "controller_skill_drafts", // skill improvement: the *-controller-skill-improve migration
+      "controller_skill_draft_days",
       "controller_tasks", // plain tasks: src/controller/migrations/20261111T1610-controller-tasks
       "controller_notices", // owner notices: src/controller/migrations/20261112T0900-controller-notices
       "controller_notice_messages", "controller_notice_questions", // Slack notice records: 20261112T2100-controller-notice-messages
@@ -4428,5 +4505,25 @@ describe("20261116T1300 and 20261116T1310: the plugin import's pointer tables on
     } finally {
       await driver.close();
     }
+  });
+});
+
+describe("skill draft slots: two replicas on one SQLite file (design 07-self-improvement)", () => {
+  it("cannot pass the cap together: the conditional increment is one statement", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sf-skill-draft-days-"));
+    const clock = new FakeClock();
+    const open = async () => {
+      const s = new SqlFactoryStore(new SqliteDriver(join(dir, "factory.db")), clock);
+      await s.migrate();
+      return s;
+    };
+    const a = await open();
+    const b = await open();
+    const taken = await Promise.all(Array.from({ length: 10 }, (_, i) => (i % 2 ? a : b).takeSkillDraftSlot(PROJECT_KEY, 3)));
+    expect(taken.filter(Boolean)).toHaveLength(3);
+    expect(await a.skillDraftCount(PROJECT_KEY)).toBe(3);
+    expect(await b.skillDraftCount(PROJECT_KEY)).toBe(3);
+    await a.close();
+    await b.close();
   });
 });
