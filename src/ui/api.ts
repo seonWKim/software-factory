@@ -486,10 +486,10 @@ async function runRow(c: ApiCtx, r: Run) {
   };
 }
 
-/** Queued runs, oldest first, each with why its item waits (what the Starts column shows). */
+/** Queued runs in claim order (Run next first, design §5 2026-11-22), each with why its item waits (what the Starts column shows). */
 async function queue(c: ApiCtx) {
   const s = c.d.store;
-  const runs = await s.listRunsByStatus(["queued"], LIST_LIMIT);
+  const runs = await s.listQueuedInClaimOrder(LIST_LIMIT);
   const { active, position } = await activeRuns(s);
   const items = new Map<WorkItemId, WorkItem | null>();
   for (const r of runs) if (!items.has(r.work_item_id)) items.set(r.work_item_id, await s.getWorkItem(r.work_item_id));

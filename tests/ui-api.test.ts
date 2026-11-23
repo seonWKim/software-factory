@@ -811,3 +811,32 @@ describe("ui api: unreviewed merge links (design 09-status-page)", () => {
     expect(title("9")).toBeNull();
   });
 });
+
+describe("ui api: queue positions in claim order (design 05-coordination, 2026-11-22)", () => {
+  type Row = { id: string; why: { params: Record<string, unknown> } | null };
+  /** The queued items' positions as the Queue page, the Items list and the item page show them. */
+  async function positions(d: UiDeps, ids: readonly WorkItemId[]) {
+    const queue = await json<{ queue: { position: number; work_item_id: string }[] }>(d, "/api/v1/queue");
+    const list = await json<{ items: Row[] }>(d, "/api/v1/items");
+    const page = async (id: WorkItemId) => (await json<{ item: Row }>(d, `/api/v1/items/${encodeURIComponent(id)}`)).item.why?.params.position;
+    const out = [];
+    for (const id of ids) {
+      out.push([queue.queue.find((q) => q.work_item_id === id)?.position, list.items.find((r) => r.id === id)?.why?.params.position, await page(id)]);
+    }
+    return out;
+  }
+
+  it("a merge check queued after two triage runs is position 1; Run next moves an item to 1, a later Run next ahead of it, the rest keep their order", async () => {
+    const { d, store, items } = await seeded();
+    const check = await make(store, 20, "Merge check");
+    const cur = (await store.getWorkItem(check.id))!;
+    await store.transition({ id: check.id, expected_version: cur.version, patch: {}, actor: system, reason: "x", enqueue: { kind: "merge-check", idempotency_key: "mc:20" } });
+    const ids = [items.queued.id, items.queued2.id, check.id];
+    // By creation time the merge check would be 3; the claim order puts it first.
+    expect(await positions(d, ids)).toEqual([[2, 2, 2], [3, 3, 3], [1, 1, 1]]);
+    await store.runNext(items.queued2.id);
+    expect(await positions(d, ids)).toEqual([[3, 3, 3], [1, 1, 1], [2, 2, 2]]);
+    await store.runNext(items.queued.id);
+    expect(await positions(d, ids)).toEqual([[1, 1, 1], [2, 2, 2], [3, 3, 3]]);
+  });
+});

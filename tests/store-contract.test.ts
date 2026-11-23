@@ -2026,9 +2026,44 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       const held = (await store.listRunsByStatus(["queued"], 10)).map((r) => r.idempotency_key).sort();
       expect(held).toEqual(["1:implement", "2:update"]);
     });
+
+    it("Run next puts the item's queued run first, ahead of the kind rank; a later Run next goes ahead of it; the rest keep their order", async () => {
+      const { store, clock } = await make();
+      const items = [];
+      for (const [n, kind] of (["implement", "triage", "implement", "merge-check", "review"] as RunKind[]).entries()) {
+        items.push((await enqueue(store, n + 1, kind)).item);
+        clock.advance(1_000);
+      }
+      const keys = async () => (await store.listQueuedInClaimOrder(10)).map((r) => r.idempotency_key);
+      // No Run next yet: the kind rank, as before (no backfill changes it).
+      expect(await keys()).toEqual(["4:merge-check", "5:review", "2:triage", "1:implement", "3:implement"]);
+      expect((await store.runNext(items[2]!.id)).map((r) => r.idempotency_key)).toEqual(["3:implement"]);
+      expect((await store.runNext(items[1]!.id)).map((r) => r.idempotency_key)).toEqual(["2:triage"]);
+      // The later Run next is position 1, the earlier one position 2; the other runs keep their order.
+      expect(await keys()).toEqual(["2:triage", "3:implement", "4:merge-check", "5:review", "1:implement"]);
+      const order: (string | undefined)[] = [];
+      for (let i = 0; i < 5; i++) order.push((await claim(store))?.idempotency_key);
+      expect(order).toEqual(["2:triage", "3:implement", "4:merge-check", "5:review", "1:implement"]);
+    });
+
+    it("Run next on an item with no queued run changes nothing; it never starts a run its item holds back", async () => {
+      const { store } = await make();
+      // Item 1: an update running and an implement queued behind it, so its implement is held (one branch writer per item).
+      const { item: a } = await enqueue(store, 1, "update");
+      expect((await claim(store))?.kind).toBe("update");
+      expect(await store.runNext(a.id)).toEqual([]);
+      await store.transition({ id: a.id, expected_version: 1, patch: {}, actor: system, reason: "x", enqueue: { kind: "implement", idempotency_key: "1:implement" } });
+      await enqueue(store, 2, "triage");
+      expect((await store.runNext(a.id)).map((r) => r.status)).toEqual(["queued"]);
+      expect((await store.listQueuedInClaimOrder(10)).map((r) => r.idempotency_key)).toEqual(["1:implement", "2:triage"]);
+      // Position 1, but held: the triage behind it is claimed and the implement stays queued.
+      expect((await claim(store))?.idempotency_key).toBe("2:triage");
+      expect(await claim(store)).toBeNull();
+      expect((await store.listQueuedInClaimOrder(10)).map((r) => r.idempotency_key)).toEqual(["1:implement"]);
+    });
   });
 
-  describe("claim cap: implement and resolve wait at `workers`; short runs take one slot beyond", () => {
+  describe("claim cap: every kind waits at `workers`; a merge check takes one slot beyond", () => {
     const ALL_KINDS: RunKind[] = ["triage", "implement", "review", "update", "resolve", "merge-check"];
     /** Loop ids: p:0 … p:3, so three `workers` and the first loop above them. The cap counts every process's runs. */
     const owners = [0, 1, 2, 3].map((n) => `p:${n}` as WorkerId);
@@ -2062,26 +2097,36 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect((await store.listRunsByStatus(["queued"], 10)).map((r) => r.idempotency_key)).toEqual(["3:resolve"]);
     });
 
-    for (const short of ["review", "triage"] as RunKind[]) {
-      it(`with every slot on implement or resolve, a queued ${short} takes one slot beyond; update and implement do not`, async () => {
-        const { store } = await make();
-        await fill(store, ["implement", "resolve"]);
-        await enqueue(store, 3, "update");
-        await enqueue(store, 4, "implement");
-        await enqueue(store, 5, short);
-        expect((await claim(store, owners[2]!, 2))?.kind).toBe(short);
-        // Only one slot beyond `workers`.
-        await enqueue(store, 6, "merge-check");
-        expect(await claim(store, owners[3]!, 2)).toBeNull();
-        const queued = (await store.listRunsByStatus(["queued"], 10)).map((r) => r.idempotency_key).sort();
-        expect(queued).toEqual(["3:update", "4:implement", "6:merge-check"]);
-      });
-    }
-
-    it("a slot holding a short run leaves no slot beyond for another short run", async () => {
+    it("with every slot on implement or resolve, only a merge check takes the slot beyond: review, triage, update and implement wait", async () => {
       const { store } = await make();
-      await fill(store, ["implement", "review"]);
+      await fill(store, ["implement", "resolve"]);
+      for (const [n, kind] of (["update", "implement", "review", "triage"] as RunKind[]).entries()) await enqueue(store, n + 3, kind);
+      expect(await claim(store, owners[2]!, 2)).toBeNull();
+      await enqueue(store, 7, "merge-check");
+      expect((await claim(store, owners[2]!, 2))?.kind).toBe("merge-check");
+      // Only one slot beyond `workers`: a second merge check waits too.
+      await enqueue(store, 8, "merge-check");
+      expect(await claim(store, owners[3]!, 2)).toBeNull();
+      const queued = (await store.listRunsByStatus(["queued"], 10)).map((r) => r.idempotency_key).sort();
+      expect(queued).toEqual(["3:update", "4:implement", "5:review", "6:triage", "8:merge-check"]);
+    });
+
+    it("with every slot on a triage run, a merge check is claimed in the slot beyond before any queued triage run", async () => {
+      const { store } = await make();
+      await fill(store, ["triage", "triage"]);
       await enqueue(store, 3, "triage");
+      expect(await claim(store, owners[2]!, 2)).toBeNull();
+      await enqueue(store, 4, "merge-check");
+      expect((await claim(store, owners[2]!, 2))?.idempotency_key).toBe("4:merge-check");
+      expect(await claim(store, owners[3]!, 2)).toBeNull();
+      expect((await store.listRunsByStatus(["queued"], 10)).map((r) => r.idempotency_key)).toEqual(["3:triage"]);
+    });
+
+    it("a Run next does not lift the cap: a bumped implement still waits at `workers`", async () => {
+      const { store } = await make();
+      await fill(store, ["triage", "review"]);
+      const { item } = await enqueue(store, 3, "implement");
+      expect(await store.runNext(item.id)).toHaveLength(1);
       expect(await claim(store, owners[2]!, 2)).toBeNull();
     });
 
@@ -2099,15 +2144,16 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect((await claim(store, "b:0" as WorkerId, 4))?.idempotency_key).toBe("5:implement");
     });
 
-    it("while another process holds `workers` implement runs, a review takes the one slot beyond and a triage then waits", async () => {
+    it("while another process holds `workers` implement runs, a merge check takes the one slot beyond and a review waits", async () => {
       const { store } = await make();
       for (let n = 1; n <= 4; n++) {
         await enqueue(store, n, "implement");
         expect((await claim(store, `a:${n - 1}` as WorkerId, 4))?.kind).toBe("implement");
       }
       await enqueue(store, 5, "review");
-      expect((await claim(store, "b:0" as WorkerId, 4))?.kind).toBe("review");
-      await enqueue(store, 6, "triage");
+      expect(await claim(store, "b:0" as WorkerId, 4)).toBeNull();
+      await enqueue(store, 6, "merge-check");
+      expect((await claim(store, "b:0" as WorkerId, 4))?.kind).toBe("merge-check");
       expect(await claim(store, "b:1" as WorkerId, 4)).toBeNull();
     });
 

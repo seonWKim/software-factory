@@ -5,6 +5,7 @@ import {
   alreadyQueued, mergeInFlight, mergeReturned, plainRefusal, showsMerge, useApi,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { ButtonRow } from "../components/ui/button-row.js";
 import { copyToClipboard } from "../components/ui/copy.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
@@ -34,6 +35,8 @@ import { AddContextActions } from "./item-attachments.js";
 // applies it starts (pendingFeedback). A merged item with `repo.restart_command` set has a `restart` row: the Restart
 // app button (RestartButton), which sends `restart` with no note, as `factory restart` does. A New or in-triage item
 // (stage NEW, where `/revise` applies) has Add context and Attach (AddContextActions, item-attachments.tsx, design 02-attachments).
+// An item with a queued run has Run next (RunNextButton, design 05-coordination), which sends `run-next` with no note,
+// as `factory run-next` does; in the "…" menu when the Add context row already holds three actions.
 
 /** Every command that opens a dialog from a button: reject and revise (their forms), and verdict (its Accept, Changes or Reject choice). */
 export const DIALOGS = ["reject", "revise", "verdict"];
@@ -202,8 +205,11 @@ export function ItemCommands({ id, commands, reason = null }: { id: string; comm
   // Verdict and Reject: in the "…" menu, one the viewer may not send disabled with its reason.
   const menuItems = commands.filter((c) => MENU.includes(c.name)).map((c) => menuEntry(id, c, !enabled || busy, () => setOpen(c.name as FormName)));
   const restart = commands.find((c) => c.name === "restart");
+  const queued = data?.runs.some((r) => r.status === "queued") ?? false;
   // Add context and Attach: a New or in-triage item where the viewer may send `/revise` (design 02-attachments).
   const context = detail?.stage === "NEW" ? commands.find((c) => c.name === "revise" && c.allowed) : undefined;
+  // Run next: a button beside the "…" menu, or a menu entry when the Add context row already has three actions.
+  if (queued && context) menuItems.push({ label: t("commands.runNext"), disabled: !enabled || busy, action: "run-next", item: id, onSelect: () => void post("run-next", "") });
   // The "…" menu: in the Add context row when that row shows (one decision, one action row), else on its own.
   const menu = menuItems.length > 0 ? <span data-item-menu className="flex"><OverflowMenu label={t("commands.more")} items={menuItems} /></span> : null;
   return (
@@ -218,12 +224,17 @@ export function ItemCommands({ id, commands, reason = null }: { id: string; comm
       )}
       {restart && <RestartButton id={id} command={restart} on={enabled} busy={busy} replies={data?.replies ?? []} local={local.restart} send={() => void post("restart", "")} />}
       {/* Only for an open item: a closed one says so in its status line (item-facts.tsx ClosedStatus). */}
-      {commands.length === 0 && !showsMerge(detail?.merge) && detail?.stage !== "CLOSED" && (
+      {commands.length === 0 && !queued && !showsMerge(detail?.merge) && detail?.stage !== "CLOSED" && (
         <p data-commands-none className="mt-2 text-sm text-pretty text-text-2">
           {t("commands.none")}
         </p>
       )}
-      {menu && !context && <div className="mt-2 flex">{menu}</div>}
+      {!context && (queued || menuItems.length > 0) && (
+        <ButtonRow data-item-menu className="mt-2">
+          {queued && <RunNextButton id={id} on={enabled} busy={busy} replies={data?.replies ?? []} local={local["run-next"]} send={() => void post("run-next", "")} />}
+          {menuItems.length > 0 && <OverflowMenu label={t("commands.more")} items={menuItems} />}
+        </ButtonRow>
+      )}
       <PendingProposals proposals={data?.proposals ?? []} enabled={enabled} busy={busy} outcomes={(proposal) => commandOutcome([], proposal, local[proposal])} send={post} />
       {open !== null && (
         <CommandDialog
@@ -238,6 +249,25 @@ export function ItemCommands({ id, commands, reason = null }: { id: string; comm
         />
       )}
     </div>
+  );
+}
+
+/**
+ * Run next (design 05-coordination): a secondary button, beside the "…" menu, on an item with a queued run. It sends
+ * `run-next` with no note; "Moving…" until the controller's reply, then "Moved to the front of the queue" (its reply in
+ * the thread gives the position) or the refusal. The controller checks the owner and starts nothing that is held.
+ */
+function RunNextButton({ id, on, busy, replies, local, send }: { id: string; on: boolean; busy: boolean; replies: readonly CommandReply[]; local: LocalSend | undefined; send: () => void }) {
+  const reply = commandOutcome(replies, "run-next", local);
+  const waiting = busy || awaitsReply(reply);
+  const outcome: Outcome = waiting ? null : reply?.tone === "status" && reply.text === t("commands.done") ? { tone: "status", text: t("commands.runNextDone") } : reply;
+  return (
+    <span className="inline-flex flex-wrap items-center gap-2">
+      <Button variant="secondary" data-action="run-next" data-item={id} disabled={!on || waiting} title={t("commands.runNextTitle")} onClick={send}>
+        {waiting ? t("commands.runNextMoving") : t("commands.runNext")}
+      </Button>
+      <OutcomeText outcome={outcome} />
+    </span>
   );
 }
 

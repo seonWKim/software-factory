@@ -75,7 +75,7 @@ CREATE TABLE worker_runs (
     acknowledged_at   TEXT,
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL
-  , started_at TEXT, finished_at TEXT, not_before TEXT, input TEXT, paused_at TEXT, paused_by TEXT, session_id TEXT, pause_state TEXT, actor_id TEXT, transcript_url TEXT, session_tokens INTEGER, code_version TEXT, deadline_at TEXT, last_output_at TEXT);
+  , started_at TEXT, finished_at TEXT, not_before TEXT, input TEXT, paused_at TEXT, paused_by TEXT, session_id TEXT, pause_state TEXT, actor_id TEXT, transcript_url TEXT, session_tokens INTEGER, code_version TEXT, deadline_at TEXT, last_output_at TEXT, run_next_seq INTEGER);
 
 CREATE INDEX worker_host_sleeps_run ON worker_host_sleeps (run_id);
 

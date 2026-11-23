@@ -16,4 +16,5 @@ export const TABLE_DOCS: Readonly<Record<string, string>> = {
   "worker_runs.status": "queued, running, succeeded, failed or cancelled.",
   "worker_runs.outcome": "JSON result of the run; usage.cost_usd is its cost in dollars.",
   "worker_runs.finished_at": "When the run ended (UTC); Spend counts a run on this day.",
+  "worker_runs.run_next_seq": "Set by the owner's Run next on a queued run: it starts first, the highest number first; empty for every other run.",
 };
