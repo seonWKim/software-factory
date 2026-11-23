@@ -83,12 +83,13 @@ describe("Health page claim pauses", () => {
     return screen.findByRole("list", { name: "Claim pauses" });
   };
 
-  it("lists each active pause with its name, when it ends and a Resume now button", async () => {
+  it("lists each active pause with its name, when it ends in local time and a Resume now button", async () => {
     const list = await show();
     const items = [...list.querySelectorAll<HTMLElement>("li[data-pause]")];
     expect(items.map((li) => li.getAttribute("data-pause"))).toEqual(["rate_limit", "forge_auth"]);
     for (const li of items) {
-      expect(li.textContent).toContain(ENDS);
+      expect(li.textContent).toContain(`ends at ${localDateTime(ENDS)}`);
+      expect(li.textContent).not.toContain(ENDS);
       expect(within(li).getByRole("button", { name: "Resume now" })).toBeTruthy();
     }
   });

@@ -292,7 +292,7 @@ describe("host sleep: the app's pages", () => {
   /** The page without its Details disclosures (data-raw), where the raw entries are. */
   const visible = (html: string) => html.replace(/<details data-raw[\s\S]*?<\/details>/g, "");
 
-  it("Health lists the recent sleeps as 'Computer slept N min at <local time>; N workers paused', newest first", async () => {
+  it("Health lists the recent sleeps as one compact row each, 'Slept N min' then 'at <local time> · N workers paused', newest first", async () => {
     onTab("sleeps");
     const { API } = (await import(WEB_API)) as { API: { health: string; unreviewedMerges: string } };
     const html = await renderPage("HealthPage", {
@@ -303,9 +303,10 @@ describe("host sleep: the app's pages", () => {
       [API.unreviewedMerges]: { as_of: AT, merges: [] },
     });
     expect(html).toContain("Host sleeps");
-    expect(html).toContain(`Computer slept 5 min at ${clock(AT)}; 1 worker paused`);
-    expect(html).toContain(`Computer slept 1 min at ${clock("2026-11-07T07:00:00.000Z")}; 1 worker paused`);
-    expect(html.indexOf("Computer slept 5 min")).toBeLessThan(html.indexOf("Computer slept 1 min"));
+    const rows = [...html.matchAll(/data-testid="host-sleep"[\s\S]*?<\/li>/g)].map((m) => m[0].replace(/<[^>]+>/g, "|").replace(/\|+/g, "|"));
+    expect(rows[0]).toContain(`|Slept 5 min|at ${clock(AT)} · 1 worker paused|`);
+    expect(rows[1]).toContain(`|Slept 1 min|at ${clock("2026-11-07T07:00:00.000Z")} · 1 worker paused|`);
+    expect(rows).toHaveLength(2);
     expect(html).not.toContain("No host sleep recorded.");
     // The ISO wake time and the worker id are behind Details only.
     expect(visible(html)).not.toMatch(/>[^<]*\d{4}-\d{2}-\d{2}T\d{2}:\d{2}[^<]*</);
@@ -322,15 +323,15 @@ describe("host sleep: the app's pages", () => {
     entries.push({ worker_id: "host:1:0", woke_at: "2026-11-07T18:18:42.004Z", gap_ms: 60_500, run_id: null });
     const html = await renderPage("HealthPage", { [API.health]: health(entries), [API.unreviewedMerges]: { as_of: AT, merges: [] } });
     expect(html.match(/data-testid="host-sleep"/g)).toHaveLength(1);
-    expect(html.match(/Computer slept/g)).toHaveLength(1);
-    expect(html).toContain(`Computer slept 15 min at ${clock(woke)}; 4 workers paused`);
-    expect(html).toContain("Host sleeps (1)");
+    expect(html.match(/Slept \d+ min/g)).toHaveLength(1);
+    expect(html).toContain("Slept 15 min");
+    expect(html).toContain(`at ${clock(woke)} · 4 workers paused`);
   });
 
-  it("Health lists each run a sleep held once, with its item and status, and the keep-awake hint; an idle sleep has neither", async () => {
+  it("Health lists each run a sleep held once, by item title and short ID, behind one disclosure; the keep-awake hint shows once, above the rows", async () => {
     onTab("sleeps");
     const { API } = (await import(WEB_API)) as { API: { health: string; unreviewedMerges: string } };
-    const run = { run_id: "run_1", work_item_id: "wi_7", run_status: "queued" };
+    const run = { run_id: "run_1", work_item_id: "wi_799f5babc4bd49cea646f98cb5a12008", work_item_title: "Fix the login page", run_status: "queued" };
     const html = await renderPage("HealthPage", {
       [API.health]: health([
         { worker_id: "host:1:0", woke_at: AT, gap_ms: 5 * 60_000, ...run },
@@ -342,10 +343,13 @@ describe("host sleep: the app's pages", () => {
     const v = visible(html);
     expect(v.match(/data-testid="host-sleep"/g)).toHaveLength(2);
     expect(v.match(/data-testid="host-sleep-runs"/g)).toHaveLength(1);
-    expect(v.match(/>wi_7</g)).toHaveLength(1);
-    expect(v).toContain("Runs it held:");
-    expect(v).toMatch(/wi_7<\/a>: Queued/i);
+    expect(v).toContain("1 run held");
+    // The item by its title, linked, then its short ID and the run's status; no wi_ ID in the visible text.
+    expect(v).toMatch(/href="\/app\/items\/wi_799f5babc4bd49cea646f98cb5a12008"[^>]*>Fix the login page<\/a><span[^>]*>799f5bab<\/span><span[^>]*>Queued<\/span>/);
+    expect(v.replace(/<[^>]+>/g, " ")).not.toContain("wi_");
+    // The hint once, before the first row, not inside one.
     expect(v.match(/Keep awake can stop/g)).toHaveLength(1);
+    expect(v.indexOf("Keep awake can stop")).toBeLessThan(v.indexOf('data-testid="host-sleep"'));
     expect(v).toContain('href="/app/settings?tab=advanced"');
   });
 
@@ -356,8 +360,8 @@ describe("host sleep: the app's pages", () => {
       [API.health]: health([{ worker_id: "host:1:0", woke_at: AT, gap_ms: 5 * 60_000, run_id: "run_1", work_item_id: null, run_status: null }]),
       [API.unreviewedMerges]: { as_of: AT, merges: [] },
     });
-    expect(html).toContain("Computer slept 5 min");
-    expect(html).not.toContain("Runs it held:");
+    expect(html).toContain("Slept 5 min");
+    expect(html).not.toContain("run held");
     expect(html).not.toContain("Keep awake can stop");
   });
 
@@ -366,7 +370,7 @@ describe("host sleep: the app's pages", () => {
     const { API } = (await import(WEB_API)) as { API: { health: string; unreviewedMerges: string } };
     const html = await renderPage("HealthPage", { [API.health]: health([]), [API.unreviewedMerges]: { as_of: AT, merges: [] } });
     expect(html).toContain("No host sleep recorded.");
-    expect(html).not.toContain("Computer slept");
+    expect(html).not.toContain("Slept ");
   });
 
   it("the item timeline shows 'host slept N min' for each sleep of the item's runs, in time order with the changes", async () => {

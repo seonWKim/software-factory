@@ -561,8 +561,9 @@ export class CommandsUnit {
     if (e.kind === "revise_requested" && (e.pr || asFeedback)) {
       return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, change_ref: e.pr?.change_ref ?? it.change_ref, key: { comment_id: e.comment_id } });
     }
-    // `/approve` (design §4): the approve gate every source shares (core request-transition), a split's filing claimed here; a spec that changes no file in this repo is refused first (design 04-spec-gate-commands).
+    // `/approve` (design §4): a goal split waiting for the owner (goal_question, goal_limit) is answered by the phases unit (design 04-split-specs); else the approve gate every source shares (core request-transition), a split's filing claimed here; a spec that changes no file in this repo is refused first (design 04-spec-gate-commands).
     if (e.kind === "spec_approved") {
+      if (this.c.unit("phases").waitsOnGoal(it)) return this.c.unit("phases").approveGoal(it, actor);
       const noFiles = noFilesRefusal(it, await this.c.k.reader.listRuns(it.id)), a = noFiles ? { refuse: noFiles } : await approveCheck(this.c.k.reader, it, { actor, note, paths, comment_id: e.comment_id, tag, widen: (p) => this.widen(it, p), answers: NOTE_ANSWERS });
       return a && "split" in a ? this.c.unit("phases").approveSplit(it, a.split, actor, a.note, e.comment_id, a.tag) : a;
     }
@@ -581,8 +582,7 @@ export class CommandsUnit {
     if (e.kind === "revise_requested" && ((phase === "implementing" && it.stage === "RUNNING") || phase === "triaging")) return queueRevise(this.c, e, it, actor); // added context on a New item (design 02-attachments)
     if (!awaitingSpec(it)) {
       const onPr = e.kind === "revise_requested" && it.change_ref !== null && commandSpec("revise").pr_phases?.includes(phase)
-        ? `; to send feedback to the implementer, reply \`/revise <feedback>\` on PR #${it.change_ref}`
-        : "";
+        ? `; to send feedback to the implementer, reply \`/revise <feedback>\` on PR #${it.change_ref}` : "";
       return { refuse: `${specNotWaiting(phase)}${onPr}` };
     }
     switch (e.kind) {

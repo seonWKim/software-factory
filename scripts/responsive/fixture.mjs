@@ -210,6 +210,14 @@ async function seed(store, storage) {
     await runOnce(store, it, "implement", `run:${n}`, null, `host-${n}-${"b".repeat(30)}:1:${n}`);
   }
 
+  // Host sleeps (Health's Runs tab): one that held the failed run, on two workers, and an idle one.
+  const woke = (min) => new Date(Date.now() - min * 60_000).toISOString();
+  for (const slot of [0, 1]) await store.recordHostSleep({ worker_id: `host-with-a-long-name.example.internal:4242:${slot}`, woke_at: woke(90), gap_ms: 15 * 60_000, run_id: slot === 0 ? failed.id : null });
+  await store.recordHostSleep({ worker_id: "host-with-a-long-name.example.internal:4242:0", woke_at: woke(600), gap_ms: 8 * 60_000, run_id: null });
+  // PRs merged with no work item (Tasks' Worth sampling, Health's Review tab): one with a long title, one recorded before titles were kept.
+  await store.recordUnreviewedMerge({ project: PROJECT.key, change_ref: "436", merge_sha: "c".repeat(40), merger_id: OWNER, title: `Seed golden cases: ${LONG_TITLE}` });
+  await store.recordUnreviewedMerge({ project: PROJECT.key, change_ref: "162", merge_sha: "d".repeat(40), merger_id: OWNER });
+
   // One open plain task with a due date, so the Tasks rows (and their small-target check) have a task to draw. Its
   // title is long but holds no snake_case name (raw-name).
   await store.addTask({ id: "tk_responsive_plain_task", title: "Pay rent and file the quarterly receipts for the apartment before the landlord's office closes on Friday", list: "inbox", priority: 1, due: { days_from_today: 1 }, due_time: null, recurrence: null, created_by: OWNER });
