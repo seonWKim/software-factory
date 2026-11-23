@@ -1,5 +1,5 @@
-// The page-scroll rule of `npm run check:responsive` (scripts/responsive/rules.mjs) also reads the scroll root.
-// Run against a stand-in document, no browser.
+// Rules of `npm run check:responsive` (scripts/responsive/rules.mjs): page-scroll also reads the scroll root, and
+// small-target measures a labelled input by its label. Run against a stand-in document, no browser.
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -11,18 +11,40 @@ const { checkLayout, LIMITS } = (await import(pathToFileURL(join(ROOT, "scripts"
   LIMITS: unknown;
 };
 
-/** A body with one element the rule can find: the scroll root, with the given widths. */
-function pageWith(scroll: { scrollWidth: number; clientWidth: number }) {
+type Box = { width: number; height: number };
+
+/** A painted stand-in element of the given tag and box, inside `label` when given. */
+function element(tag: string, box: Box, label: unknown = null) {
+  const el = {
+    nodeType: 1,
+    tagName: tag.toUpperCase(),
+    id: "",
+    classList: [],
+    childNodes: [],
+    parentElement: null,
+    getAttribute: () => null,
+    setAttribute() {},
+    matches: (q: string) => q.split(",").some((p) => p.trim().split(/[:[]/)[0] === tag),
+    closest: (q: string) => (q === "label" ? label : null),
+    getBoundingClientRect: () => ({ left: 0, top: 0, right: box.width, bottom: box.height, ...box }),
+  };
+  return el;
+}
+
+/** A page whose scroll root has the given widths and whose body holds `elements`. */
+function pageWith(scroll: { scrollWidth: number; clientWidth: number }, elements: unknown[] = []) {
   const root = { ...scroll, setAttribute() {} };
-  const empty = { querySelectorAll: () => [], querySelector: () => null };
+  const empty = { querySelectorAll: (q: string) => (q === "*" ? elements : []), querySelector: () => null };
   vi.stubGlobal("window", { innerHeight: 844 });
-  vi.stubGlobal("getComputedStyle", () => ({ overflowY: "visible", fontSize: "16px", getPropertyValue: () => "" }));
+  vi.stubGlobal("getComputedStyle", () => ({ overflowX: "visible", overflowY: "visible", display: "block", visibility: "visible", opacity: "1", position: "static", clip: "auto", fontSize: "16px", font: "16px sans-serif", paddingLeft: "0", paddingRight: "0", borderLeftWidth: "0", borderRightWidth: "0", getPropertyValue: () => "" }));
+  vi.stubGlobal("CSS", { escape: (v: string) => v });
   vi.stubGlobal("NodeFilter", { SHOW_TEXT: 4 });
   vi.stubGlobal("document", {
     documentElement: { clientWidth: 390, scrollWidth: 390, setAttribute() {}, getAttribute: () => null, parentElement: null, nodeType: 1, tagName: "HTML", classList: [] },
     body: { ...empty, setAttribute() {}, createTreeWalker: undefined },
     querySelector: (q: string) => (q === "[data-scroll-root]" ? root : null),
     createTreeWalker: () => ({ nextNode: () => null }),
+    createElement: () => ({ getContext: () => ({ font: "", measureText: () => ({ width: 8 }) }) }),
   });
 }
 
@@ -39,5 +61,26 @@ describe("check:responsive page-scroll", () => {
   it("passes when the scroll root fits", () => {
     pageWith({ scrollWidth: 334, clientWidth: 334 });
     expect(checkLayout(LIMITS).failures.filter((x) => x.rule === "page-scroll")).toEqual([]);
+  });
+});
+
+describe("check:responsive small-target", () => {
+  const fits = { scrollWidth: 334, clientWidth: 334 };
+  const small = (elements: unknown[]) => {
+    pageWith(fits, elements);
+    return checkLayout(LIMITS).failures.filter((x) => x.rule === "small-target");
+  };
+
+  it("measures an input inside a label by the label's box", () => {
+    const label = element("label", { width: 32, height: 32 });
+    expect(small([element("input", { width: 16, height: 16 }, label)])).toEqual([]);
+  });
+
+  it("fails an input under 24px with no label", () => {
+    expect(small([element("input", { width: 16, height: 16 })])).toHaveLength(1);
+  });
+
+  it("fails a button under 24px tall", () => {
+    expect(small([element("button", { width: 200, height: 20 })])).toHaveLength(1);
   });
 });

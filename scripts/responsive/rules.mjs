@@ -12,7 +12,8 @@
 //   overlay-bounds  an open dialog, popover, menu, listbox or tooltip extends past the viewport.
 //   small-target    a painted interactive element (button, link, input, select, textarea, summary, or a role of
 //                   button, menuitem, checkbox, radio, switch, tab) is smaller than 24x24 CSS px; links in running
-//                   text count too.
+//                   text count too. An input inside a <label> is measured by the label's box, which clicks it (the
+//                   Checkbox's 16px box sits in a 32px label).
 //   unreachable     the page is taller than the viewport but html or body hides vertical overflow.
 //
 // The page template's structure (docs/design/09-dashboard-shell.md, design-system/patterns.md), one rule each:
@@ -156,8 +157,12 @@ export function checkLayout(limits) {
     }
 
     // small-target
-    if (el.matches(interactive) && (r.width < limits.minTarget - 0.5 || r.height < limits.minTarget - 0.5)) {
-      fail("small-target", el, `${Math.round(r.width)}x${Math.round(r.height)}px, under ${limits.minTarget}x${limits.minTarget}px`);
+    if (el.matches(interactive)) {
+      const label = el.matches("input") ? el.closest("label") : null;
+      const hit = label ? label.getBoundingClientRect() : r;
+      if (hit.width < limits.minTarget - 0.5 || hit.height < limits.minTarget - 0.5) {
+        fail("small-target", el, `${Math.round(hit.width)}x${Math.round(hit.height)}px, under ${limits.minTarget}x${limits.minTarget}px`);
+      }
     }
 
     // tall-fixed
