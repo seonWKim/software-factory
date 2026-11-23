@@ -30,6 +30,7 @@ import { BASE, itemPath } from "../pages.js";
 import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, RawNames, When, byId, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
 import { ItemDecision } from "./decision-card.js";
 import { ItemAbout } from "./item-about.js";
+import { type ItemScreenshotReview, type ItemScreenshots, ItemChanges } from "./item-changes.js";
 import { AddModelCredential } from "./model-credential-dialog.js";
 import { ResumeNow, type SupervisorActionName, SupervisorActions } from "./system-banner.js";
 import { Thread } from "./thread.js";
@@ -368,6 +369,11 @@ export function ItemsPage() {
   );
 }
 
+/** The item page's tabs (design 04-screenshots): its overview, and the Changes tab with the screenshots. */
+type ItemTab = "overview" | "changes";
+/** What the item API adds for the Changes tab (src/ui/item-screenshots.ts). */
+type ItemChangesFields = { screenshots?: ItemScreenshots | null; screenshot_review?: ItemScreenshotReview | null };
+
 /**
  * One work item (design 09-dashboard-item): its title, then its decision (the DecisionCard while the owner is next,
  * else its reason and "…" menu), its facts, the current run with its live state, the thread (collapsed after its
@@ -375,8 +381,9 @@ export function ItemsPage() {
  */
 export function ItemPage({ id }: { id: string }) {
   const now = useNow();
-  const q = useApi<ItemDetail>(API.item(id));
+  const q = useApi<ItemDetail & ItemChangesFields>(API.item(id));
   const viewer = useViewer();
+  const [picked, pick] = useUrlParam("tab", (v) => v === "changes");
   if (q.isError) return <><PageHeader title={t("app.workItem")} /><ErrorNote error={q.error} /></>;
   if (!q.data) return <><PageHeader title={t("app.workItem")} /><Loading rows={6} /></>;
   const { item, runs, timeline } = q.data;
@@ -389,6 +396,8 @@ export function ItemPage({ id }: { id: string }) {
   const transcripts = q.data.transcripts ?? {};
   const short = shortItemId(item.id);
   const level = item.item_phase;
+  const tab: ItemTab = picked === "changes" ? "changes" : "overview";
+  const tabs: { id: ItemTab; label: string }[] = [{ id: "overview", label: t("changes.tabOverview") }, { id: "changes", label: t("changes.tabChanges") }];
   return (
     <>
       <nav aria-label={t("item.breadcrumb")} className="mb-1 text-sm">
@@ -402,7 +411,7 @@ export function ItemPage({ id }: { id: string }) {
           {t("item.phase", { phase: item.phase ?? "?" })} <Link href={itemPath(item.parent_id)} className={LINK_CLASS}>{t("item.splitParent")}</Link>
         </p>
       )}
-      <ItemAbout item={item} />
+      <PageToolbar tabs={<Tabs label={t("changes.tabs")} options={tabs} value={tab} onChange={(v) => pick(v === "overview" ? null : v)} />} />
       <ItemDecision
         id={item.id}
         commands={q.data.commands ?? []}
@@ -413,112 +422,117 @@ export function ItemPage({ id }: { id: string }) {
           </p>
         ) : null}
       />
-      <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
-        {([
-          [t("col.state"), <StatusBadge state={level}>{stateLabel(level)}{level === "closed" && item.close_reason ? ` (${termLabel(item.close_reason)})` : ""}</StatusBadge>],
-          [t("item.source"), isHttpUrl(item.source.link) ? <SourceLink source={item.source} className="inline-block align-bottom" /> : short],
-          [t("item.tier"), item.tier ?? "–"],
-          [t("col.pr"), item.change_ref === null ? "–" : <UrlOrText url={item.change_url} text={`#${item.change_ref}`} />],
-          [t("item.specComment"), item.spec_comment_url ? <UrlOrText url={item.spec_comment_url} text={t("item.specCommentLink")} /> : "–"],
-          [t("item.reviewLoops"), item.loop_count],
-          [t("item.restarts"), item.restart_count],
-          [termLabel("token_cost"), tokens(item.token_cost)],
-          [t("item.updated"), <When at={item.updated_at} now={now} />],
-        ] as const).map(([k, v]) => (
-          <div key={k} className="min-w-0">
-            <dt className="text-xs text-text-2">{k}</dt>
-            <dd className="truncate tabular-nums">{typeof v === "object" ? v : String(v)}</dd>
-          </div>
-        ))}
-      </dl>
-      <Disclosure data-ids className="mt-2" summary={t("ids.summary")}>
-        <dl className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
-          <dt className="text-xs text-text-2">{t("ids.item")}</dt>
-          <dd className="min-w-0"><CopyText value={item.id} what="item ID" /></dd>
-          <dt className="text-xs text-text-2">{t("ids.source")}</dt>
-          <dd className="min-w-0"><CopyText value={item.source.id} what="source ID" /></dd>
+      {tab === "changes" ? <ItemChanges itemId={item.id} screenshots={q.data.screenshots ?? null} review={q.data.screenshot_review ?? null} /> : (
+        <>
+        <ItemAbout item={item} />
+        <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
+          {([
+            [t("col.state"), <StatusBadge state={level}>{stateLabel(level)}{level === "closed" && item.close_reason ? ` (${termLabel(item.close_reason)})` : ""}</StatusBadge>],
+            [t("item.source"), isHttpUrl(item.source.link) ? <SourceLink source={item.source} className="inline-block align-bottom" /> : short],
+            [t("item.tier"), item.tier ?? "–"],
+            [t("col.pr"), item.change_ref === null ? "–" : <UrlOrText url={item.change_url} text={`#${item.change_ref}`} />],
+            [t("item.specComment"), item.spec_comment_url ? <UrlOrText url={item.spec_comment_url} text={t("item.specCommentLink")} /> : "–"],
+            [t("item.reviewLoops"), item.loop_count],
+            [t("item.restarts"), item.restart_count],
+            [termLabel("token_cost"), tokens(item.token_cost)],
+            [t("item.updated"), <When at={item.updated_at} now={now} />],
+          ] as const).map(([k, v]) => (
+            <div key={k} className="min-w-0">
+              <dt className="text-xs text-text-2">{k}</dt>
+              <dd className="truncate tabular-nums">{typeof v === "object" ? v : String(v)}</dd>
+            </div>
+          ))}
         </dl>
-      </Disclosure>
-      <CurrentRun runs={runs} itemId={item.id} now={now} />
-      <Thread entries={q.data.thread ?? []} now={now} />
-      <Phases phases={item.phases ?? []} />
-      {item.merge_check && (
-        <Card title={t("item.mergeCheck")}>
-          <p className="text-sm" data-merge-check-detail>
-            <MergeCheckNote check={item.merge_check} />
-            {item.merge_check.base_sha && item.merge_check.checked_at && (
-              <span className="ml-2 text-text-2">
-                {t("item.againstBase")} <code className="font-mono text-xs" title={item.merge_check.base_sha}>{item.merge_check.base_sha.slice(0, 12)}</code>, <When at={item.merge_check.checked_at} now={now} label="item.checkedAgo" />
-              </span>
+        <Disclosure data-ids className="mt-2" summary={t("ids.summary")}>
+          <dl className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
+            <dt className="text-xs text-text-2">{t("ids.item")}</dt>
+            <dd className="min-w-0"><CopyText value={item.id} what="item ID" /></dd>
+            <dt className="text-xs text-text-2">{t("ids.source")}</dt>
+            <dd className="min-w-0"><CopyText value={item.source.id} what="source ID" /></dd>
+          </dl>
+        </Disclosure>
+        <CurrentRun runs={runs} itemId={item.id} now={now} />
+        <Thread entries={q.data.thread ?? []} now={now} />
+        <Phases phases={item.phases ?? []} />
+        {item.merge_check && (
+          <Card title={t("item.mergeCheck")}>
+            <p className="text-sm" data-merge-check-detail>
+              <MergeCheckNote check={item.merge_check} />
+              {item.merge_check.base_sha && item.merge_check.checked_at && (
+                <span className="ml-2 text-text-2">
+                  {t("item.againstBase")} <code className="font-mono text-xs" title={item.merge_check.base_sha}>{item.merge_check.base_sha.slice(0, 12)}</code>, <When at={item.merge_check.checked_at} now={now} label="item.checkedAgo" />
+                </span>
+              )}
+            </p>
+            {item.merge_check.conflicts.length > 0 && (
+              <ul aria-label={t("item.conflicting")} className="mt-1 list-disc pl-6 font-mono text-xs">
+                {item.merge_check.conflicts.map((f) => <li key={f}>{f}</li>)}
+              </ul>
             )}
-          </p>
-          {item.merge_check.conflicts.length > 0 && (
-            <ul aria-label={t("item.conflicting")} className="mt-1 list-disc pl-6 font-mono text-xs">
-              {item.merge_check.conflicts.map((f) => <li key={f}>{f}</li>)}
-            </ul>
+          </Card>
+        )}
+        <Card title={t("item.runs")} count={runs.length}>
+          {runs.length === 0 ? <EmptyState title={t("item.noRun")} /> : (
+            <Table label={t("item.runs")} head={[t("item.step"), t("item.try"), t("item.result"), t("item.error"), t("col.worker"), t("item.started"), t("item.took"), t("col.tokens"), t("item.transcript")]}>
+              {foldRuns(runs).map(({ run: r, tries }) => (
+                <Tr key={r.id} data-run={r.id}>
+                  <Td className="min-w-40">
+                    {runKindLabel(r.kind)}{" "}
+                    {tries.length === 1 ? <code className="font-mono text-xs break-all text-text-2" title={r.id}>{shortRunId(r.id)}</code> : (
+                      <RawDetails className="mt-1">
+                        <ul aria-label={t("item.runIds")} className="mt-1 font-mono text-xs break-all">
+                          {tries.map((x) => <li key={x.id}><code>{x.id}</code></li>)}
+                        </ul>
+                      </RawDetails>
+                    )}
+                  </Td>
+                  <Td className="tabular-nums">{tries.length > 1 ? t("item.foldedTries", { count: tries.length }) : t("item.tryNumber", { number: Math.max(1, r.attempt) })}</Td>
+                  <Td><StatusBadge state={r.status}>{runResultLabel(r.status)}</StatusBadge></Td>
+                  <Td className="max-w-md min-w-40 text-xs break-words text-text-1">
+                    {r.error ? (
+                      <>
+                        <span className="font-medium">{errorSentence(r.error.code)}</span>
+                        <RawDetails>
+                          <p>{t("item.runId")} <code className="font-mono break-all">{r.id}</code></p>
+                          {r.error.code && <code className="font-mono">{r.error.code}</code>}
+                          {r.error.detail && <p className="mt-1 whitespace-pre-wrap">{r.error.detail}</p>}
+                        </RawDetails>
+                      </>
+                    ) : "–"}
+                  </Td>
+                  <Td><WorkerName id={r.attempts?.at(-1)?.worker_id} /></Td>
+                  <Td className="tabular-nums whitespace-nowrap"><When at={r.started_at} now={now} /></Td>
+                  <Td className="tabular-nums">{r.started_at && r.finished_at ? duration(Date.parse(r.finished_at) - Date.parse(r.started_at)) : "–"}</Td>
+                  <Td className="tabular-nums">{tokens(tries.reduce((sum, x) => sum + (x.tokens ?? 0), 0))}</Td>
+                  <Td className="whitespace-nowrap">
+                    {(transcripts[r.id]?.length ?? 0) > 0 ? (
+                      <Link href={transcriptPath(item.id, r.id)} className={LINK_CLASS}>{t("item.open")}</Link>
+                    ) : "–"}
+                  </Td>
+                </Tr>
+              ))}
+            </Table>
           )}
         </Card>
+        <Card title={t("item.timeline")} count={entries.length}>
+          <ol className="space-y-1 text-sm">
+            {entries.map((e) => {
+              if (e.kind === "sleep") return (
+                <li key={`sleep:${e.h.worker_id}:${e.h.woke_at}`} className="flex gap-3" data-testid="host-sleep">
+                  <span className="w-16 shrink-0 text-right text-text-3 tabular-nums"><When at={e.h.woke_at} now={now} /></span>
+                  <span className="min-w-0">
+                    <span className="font-medium">{sleptText(e.h.gap_ms)}</span>
+                    <span className="text-text-3">{t("item.on")}</span>
+                    <WorkerName id={e.h.worker_id} />
+                  </span>
+                </li>
+              );
+              return <TimelineRow key={e.t.version} entry={e.t} now={now} viewer={viewer} />;
+            })}
+          </ol>
+        </Card>
+        </>
       )}
-      <Card title={t("item.runs")} count={runs.length}>
-        {runs.length === 0 ? <EmptyState title={t("item.noRun")} /> : (
-          <Table label={t("item.runs")} head={[t("item.step"), t("item.try"), t("item.result"), t("item.error"), t("col.worker"), t("item.started"), t("item.took"), t("col.tokens"), t("item.transcript")]}>
-            {foldRuns(runs).map(({ run: r, tries }) => (
-              <Tr key={r.id} data-run={r.id}>
-                <Td className="min-w-40">
-                  {runKindLabel(r.kind)}{" "}
-                  {tries.length === 1 ? <code className="font-mono text-xs break-all text-text-2" title={r.id}>{shortRunId(r.id)}</code> : (
-                    <RawDetails className="mt-1">
-                      <ul aria-label={t("item.runIds")} className="mt-1 font-mono text-xs break-all">
-                        {tries.map((x) => <li key={x.id}><code>{x.id}</code></li>)}
-                      </ul>
-                    </RawDetails>
-                  )}
-                </Td>
-                <Td className="tabular-nums">{tries.length > 1 ? t("item.foldedTries", { count: tries.length }) : t("item.tryNumber", { number: Math.max(1, r.attempt) })}</Td>
-                <Td><StatusBadge state={r.status}>{runResultLabel(r.status)}</StatusBadge></Td>
-                <Td className="max-w-md min-w-40 text-xs break-words text-text-1">
-                  {r.error ? (
-                    <>
-                      <span className="font-medium">{errorSentence(r.error.code)}</span>
-                      <RawDetails>
-                        <p>{t("item.runId")} <code className="font-mono break-all">{r.id}</code></p>
-                        {r.error.code && <code className="font-mono">{r.error.code}</code>}
-                        {r.error.detail && <p className="mt-1 whitespace-pre-wrap">{r.error.detail}</p>}
-                      </RawDetails>
-                    </>
-                  ) : "–"}
-                </Td>
-                <Td><WorkerName id={r.attempts?.at(-1)?.worker_id} /></Td>
-                <Td className="tabular-nums whitespace-nowrap"><When at={r.started_at} now={now} /></Td>
-                <Td className="tabular-nums">{r.started_at && r.finished_at ? duration(Date.parse(r.finished_at) - Date.parse(r.started_at)) : "–"}</Td>
-                <Td className="tabular-nums">{tokens(tries.reduce((sum, x) => sum + (x.tokens ?? 0), 0))}</Td>
-                <Td className="whitespace-nowrap">
-                  {(transcripts[r.id]?.length ?? 0) > 0 ? (
-                    <Link href={transcriptPath(item.id, r.id)} className={LINK_CLASS}>{t("item.open")}</Link>
-                  ) : "–"}
-                </Td>
-              </Tr>
-            ))}
-          </Table>
-        )}
-      </Card>
-      <Card title={t("item.timeline")} count={entries.length}>
-        <ol className="space-y-1 text-sm">
-          {entries.map((e) => {
-            if (e.kind === "sleep") return (
-              <li key={`sleep:${e.h.worker_id}:${e.h.woke_at}`} className="flex gap-3" data-testid="host-sleep">
-                <span className="w-16 shrink-0 text-right text-text-3 tabular-nums"><When at={e.h.woke_at} now={now} /></span>
-                <span className="min-w-0">
-                  <span className="font-medium">{sleptText(e.h.gap_ms)}</span>
-                  <span className="text-text-3">{t("item.on")}</span>
-                  <WorkerName id={e.h.worker_id} />
-                </span>
-              </li>
-            );
-            return <TimelineRow key={e.t.version} entry={e.t} now={now} viewer={viewer} />;
-          })}
-        </ol>
-      </Card>
     </>
   );
 }
