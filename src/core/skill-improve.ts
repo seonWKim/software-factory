@@ -11,7 +11,6 @@ import { cyrb53 } from "./hash.js";
 import { MODEL_CLASSES, type ModelClass } from "./model-choice.js";
 import type { SkillImproveConfig } from "./skill-improve-config.js";
 import type { UserId } from "./types.js";
-import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { LLMProvider, LLMResponse } from "../interfaces/llm-provider.js";
@@ -57,7 +56,8 @@ export interface SkillImproveDeps {
   scanner: EgressScanner;
   /** The improve run's metered provider: the draft call's usage counts toward the run's. */
   llm: LLMProvider;
-  clock: Clock;
+  /** The injected Clock (only its now): the owner question's UTC day. */
+  clock: { now(): Date };
   wiring: SkillImproveWiring;
   signal: AbortSignal;
 }

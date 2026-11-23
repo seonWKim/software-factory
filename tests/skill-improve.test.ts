@@ -378,7 +378,7 @@ describe("the improve run", () => {
   it("with capabilities.skill_folders absent (no wiring) no draft is taken and no question is asked", async () => {
     const { store, llm, run, project } = await improveRun(false);
     expect(run.outcome).toMatchObject({ status: "succeeded" });
-    expect(run.outcome!.data).not.toHaveProperty("skill_drafts");
+    expect(run.outcome).not.toHaveProperty("data.skill_drafts");
     expect(llm.calls.filter((c) => c.system === PROMPT)).toEqual([]);
     expect(await store.listSkillDrafts(project)).toEqual([]);
     expect(await store.listAlerts({ limit: 10 })).toEqual([]);
