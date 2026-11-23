@@ -1,4 +1,4 @@
-import { withoutUiCheck, settingValues, type ModelClass, requiredTier, CHECKS_FAILED_RUN, type CheckResult, type DoneCheckResult, TOOLCHAIN_MISSING, PrePushSelection, checkedLines, manualLines, IMPLEMENT_SCHEMA, type NeedsHuman, SPEC_CONFLICT, findingLine, parseImplement, parseReview, CHECKS_ENV, branchFor, wipBranchFor, type Run, type WorkItem, type SandboxHandle, type ToolCallContext } from "./legacy-imports.js";
+import { withoutUiCheck, type ModelClass, requiredTier, CHECKS_FAILED_RUN, type CheckResult, type DoneCheckResult, TOOLCHAIN_MISSING, PrePushSelection, checkedLines, manualLines, IMPLEMENT_SCHEMA, type NeedsHuman, SPEC_CONFLICT, findingLine, parseImplement, parseReview, CHECKS_ENV, branchFor, wipBranchFor, type Run, type WorkItem, type SandboxHandle, type ToolCallContext } from "./legacy-imports.js";
 import { type ContinueWip, type DiffBudget, type FixContext, LOOP_STARTS, MAX_PR_FILES, NO_COMMITS_DETAIL, type ResumePlan, RunFailure, RunPaused, STOPPED_CODES, WIP_TEXT_CHARS, continues, fenced, gitIdentity, prTitle, renderBudget, renderContinueNewSession, renderMergeCheckFailure, renderNewSessionResume, renderRequest, renderSessionResume, renderWorkItem, runCommits, specQuery, tail } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { RESUME_LOST } from "../../bundle.js";
@@ -6,7 +6,7 @@ import { decisionsSection } from "../../../shared/command-notes.js";
 import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
 import { repairedAnswer, type KeepWork } from "./implement-repair.js";
 import { syncBase } from "./implement-sync.js";
-import { RATCHET_LISTS, checksBeforePush, fixStep, gateHooks, prePushGates } from "./implement-checks.js";
+import { RATCHET_LISTS, checksBeforePush, fixStep, gateHooks, itemCaps, prePushGates } from "./implement-checks.js";
 import { commitWorktree, keepStopped, keepWip, overBudget, pauseImplement, preflight, restoreWip, resumeWip, saveRunBundle, watchDiff } from "./implement-wip.js";
 
 /**
@@ -64,9 +64,8 @@ async function implement(
       const previous = await previousContext(w, item, run);
       const notes = [await w.approverNotes(item), decisionsSection(await w.d.store.listStateChanges(item.id), fenced)].filter(Boolean).join("\n\n");
       const feedback = await prFeedback(w, item, run);
-      // The item's project's limits, as the size gate reads them (design §4, issue #217).
-      const { max_diff_lines, max_diff_files } = settingValues(item.project, w.cfg.settings, w.d.learned);
-      const limits = { max_diff_lines, max_diff_files };
+      // The item's size caps, as the size gate reads them (design §4, issue #217).
+      const limits = itemCaps(w, item);
       const budget = renderBudget(limits);
       const prompt = plan?.session || kept
         ? [renderSessionResume(plan ? plan.state.head : continued?.head ?? null, plan ? null : "stopped"), budget].join("\n\n")

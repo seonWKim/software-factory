@@ -3,7 +3,7 @@ import { isCovered } from "./policy.js";
 import { MAX_PHASES, MIN_PHASES, type SplitLimits, parseGoalLines, splitError } from "./split.js";
 import { DEPENDENCY_OPTIONS, proposedDependency } from "./task-build.js";
 import type { Tier } from "./types.js";
-export { doneCheckCommands } from "./done-checks.js"; // the triage branch's check_commands (src/core/done-checks.ts)
+export { doneCheckCommands } from "./done-checks.js"; export { sizeCaps } from "./size-cap.js"; // the triage branch's check_commands; an item's size caps for the implement run
 
 // Structured outputs of each agent role: JSON Schema for the harness + a validator for the control plane.
 // Agents can be wrong; nothing they return is trusted until it passes these.
@@ -427,8 +427,8 @@ function parsePhases(v: unknown): Validation<TriagePhase[] | undefined> {
   return { ok: true, value: phases };
 }
 
-/** Validates a triage answer; with `limits` (the item's size caps) an estimate over the split threshold also needs 2 to 4 phases, and `check_commands` (the triage branch's) requires done_checks. */
-export function parseTriage(v: unknown, limits?: SplitLimits & { check_commands?: readonly string[] }): Validation<TriageOutput> {
+/** Validates a triage answer; with both caps in `limits` an estimate over the split threshold also needs 2 to 4 phases, and `check_commands` (the triage branch's) requires done_checks. */
+export function parseTriage(v: unknown, limits?: Partial<SplitLimits> & { check_commands?: readonly string[] }): Validation<TriageOutput> {
   if (!isObj(v)) return { ok: false, error: "not an object" };
   const {
     in_short, problem, done_criteria, desired_output, scope, allowed_paths, files_to_change, tier, tier_reason, estimated_lines,
@@ -479,8 +479,8 @@ export function parseTriage(v: unknown, limits?: SplitLimits & { check_commands?
   if (!phases.ok) return phases;
   const goal = parseGoalLines(v.goal_done_when, phases.value?.length ?? 0);
   if (!goal.ok) return goal;
-  if (limits) {
-    const err = splitError({ estimated_lines, estimated_files }, phases.value?.length ?? 0, limits);
+  if (limits?.max_diff_lines !== undefined && limits.max_diff_files !== undefined) {
+    const err = splitError({ estimated_lines, estimated_files }, phases.value?.length ?? 0, { max_diff_lines: limits.max_diff_lines, max_diff_files: limits.max_diff_files });
     if (err) return { ok: false, error: err };
   }
   return {
