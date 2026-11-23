@@ -92,9 +92,9 @@ async function show() {
 }
 
 describe("Health page: Efficiency tab", () => {
-  it("is selected by ?tab=efficiency and shows the charts' totals and the latest week's figures with their change", async () => {
+  it("?tab=efficiency opens the Cost tab at it and shows the charts' totals and the latest week's figures with their change", async () => {
     const card = await show();
-    expect(screen.getByRole("tab", { name: "Efficiency" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tab", { name: "Cost" }).getAttribute("aria-selected")).toBe("true");
     expect(card.querySelectorAll("[data-chart]")).toHaveLength(3);
     expect(card.textContent).toContain("3 finished");
     expect(card.textContent).toContain("Week of 2026-11-16, so far");

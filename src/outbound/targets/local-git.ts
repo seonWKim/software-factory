@@ -36,8 +36,11 @@ export interface GitBasePushSpec {
   readonly message: string;
 }
 
-/** `pushed`: the remote base is at `sha` (it contains the merge). `conflicts`: it moved and does not merge cleanly. */
-export type GitBasePushResult = { readonly pushed: string } | { readonly conflicts: readonly string[] };
+/**
+ * `pushed`: the remote base is at `sha` (it contains the merge). `conflicts`: it moved and does not merge cleanly;
+ * `remote`, its commit, keys the reconcile item (absent on a conflict stored before the reconcile).
+ */
+export type GitBasePushResult = { readonly pushed: string } | { readonly conflicts: readonly string[]; readonly remote?: string };
 
 export interface GitAppendSpec {
   readonly base_ref: string;
@@ -83,7 +86,7 @@ interface RepoSandbox {
     checks: readonly (readonly string[])[]; timeout_ms: number; expected_base?: string; expected_head?: string;
   }): Promise<{ merged: true; sha: string; already: boolean; not_updated: string[] } | { merged: false; refused?: string }>;
   syncBase?(spec: { repo: string; base_ref: string; merge_sha: string; message: string; identity: { name: string; email: string } }): Promise<
-    { synced: true; local: string; remote: string; contains: boolean } | { synced: false; conflicts: string[] }
+    { synced: true; local: string; remote: string; contains: boolean } | { synced: false; conflicts: string[]; remote: string }
   >;
   localBranch?(spec: { repo: string; branch: string }): Promise<string | null>;
   readLocalFile?(spec: { repo: string; ref: string; path: string }): Promise<{ commit: string; text: string } | null>;
@@ -121,7 +124,7 @@ export function localGit(sandbox: unknown, forge: TargetDeps["forge"], cfg: () =
     pushBase: !forge?.pushBase || !sync ? null : async (spec) => {
       const c = cfg();
       const s = await sync({ repo: c.repo, base_ref: spec.base_ref, merge_sha: spec.merge_sha, identity: c.identity, message: spec.message });
-      if (!s.synced) return { conflicts: s.conflicts };
+      if (!s.synced) return { conflicts: s.conflicts, remote: s.remote };
       if (s.contains) return { pushed: s.remote };
       await forge.pushBase!({ repo: c.repo, base_ref: spec.base_ref, sha: s.local, expected_sha: s.remote });
       return { pushed: s.local };
@@ -198,7 +201,7 @@ export async function deliverGit(git: LocalGit, row: ActionRow): Promise<{ url: 
   }
   if (row.action !== "push_base" || !git.pushBase) throw new Error(`the local target does not deliver ${row.action}`);
   const r = await git.pushBase({ base_ref: String(a.base_ref), merge_sha: String(a.merge_sha), message: String(a.message) });
-  return { url: null, ref: JSON.stringify("conflicts" in r ? { conflicts: capped(r.conflicts) } : r) };
+  return { url: null, ref: JSON.stringify("conflicts" in r ? { conflicts: capped(r.conflicts), ...(r.remote ? { remote: r.remote } : {}) } : r) };
 }
 
 /** A delivered merge's outcome; null for a row with none (not delivered yet). */

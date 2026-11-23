@@ -16,7 +16,7 @@ import { NeedActions, sendErrorTexts, useMergeReply } from "./item-commands.js";
 import { FloorStatus } from "./pages.js";
 import { CheckRow } from "./system-banner.js";
 import { OutcomeText } from "./command-box.js";
-import { Card, SUB_TITLE } from "../components/ui/card.js";
+import { Card, CardSection, SUB_TITLE } from "../components/ui/card.js";
 import { Badge, StatusBadge } from "../components/ui/badge.js";
 import { ListRow, ROW_TITLE } from "../components/ui/list-row.js";
 import type { MenuItem } from "../components/ui/menu.js";
@@ -188,33 +188,50 @@ function riskOf(verdict: string | null | undefined): { key: "tasks.riskFailed" |
 
 type Merge = UnreviewedMerges["merges"][number];
 
-/** One merged PR as a row: its link, its checks and review links, its risk badge (`risk`) and who merged it. */
+/**
+ * One merged PR as a row: its title as the link to the PR (as stored, `data-raw`; "PR #436" for a row recorded before
+ * titles were kept), then "#436", its risk badge (`risk`), and its checks and review links. The repository is not on
+ * the row: the list names it once per group when merges from more than one appear.
+ */
 function MergeRow({ m, risk }: { m: Merge; risk: boolean }) {
-  const label = t("tasks.mergeLink", { ref: m.change_ref });
+  const label = m.title ?? t("tasks.mergeLink", { ref: m.change_ref });
   const r = riskOf(m.check_verdict);
+  const raw = m.title ? { "data-raw": true, title: m.title } : {};
   return (
     <ListRow
       data-key={m.change_ref}
-      title={m.review_url ? <a href={m.review_url} target="_blank" rel="noreferrer" className={cn(ROW_TITLE, "leading-6", BLOCK_LINK_CLASS)}>{label}</a> : <span className={ROW_TITLE}>{label}</span>}
+      title={m.review_url ? <a href={m.review_url} target="_blank" rel="noreferrer" {...raw} className={cn(ROW_TITLE, "leading-6", BLOCK_LINK_CLASS)}>{label}</a> : <span {...raw} className={ROW_TITLE}>{label}</span>}
       details={
         <>
+          {m.title && <span data-ref className="tabular-nums">{t("tasks.mergeRef", { ref: m.change_ref })}</span>}
           {risk && <span data-risk><Badge level={r.level}>{t(r.key)}</Badge></span>}
           {m.checks_url && <a href={m.checks_url} target="_blank" rel="noreferrer" className={LINK_CLASS}>{t("tasks.checksLink")}</a>}
           {m.review_url && <a href={m.review_url} target="_blank" rel="noreferrer" className={LINK_CLASS}>{t("tasks.reviewLink")}</a>}
-          {m.project && <span>{m.project}</span>}
         </>
       }
     />
   );
 }
 
-const MergeList = ({ merges, title, risk }: { merges: readonly Merge[]; title: string; risk: boolean }) => (
-  <Card title={title} count={merges.length}>
-    <ul aria-label={title} className="divide-y divide-border rounded-control border border-border">
-      {merges.map((m) => <MergeRow key={`${m.project}:${m.change_ref}`} m={m} risk={risk} />)}
-    </ul>
-  </Card>
+const MergeRows = ({ merges, label, risk }: { merges: readonly Merge[]; label: string; risk: boolean }) => (
+  <ul aria-label={label} className="divide-y divide-border rounded-control border border-border">
+    {merges.map((m) => <MergeRow key={`${m.project}:${m.change_ref}`} m={m} risk={risk} />)}
+  </ul>
 );
+
+/** The merges in one list; with merges from more than one repository, one group per repository under its name, in first-seen order. */
+function MergeList({ merges, title, risk }: { merges: readonly Merge[]; title: string; risk: boolean }) {
+  const repos = [...new Set(merges.map((m) => m.project ?? ""))];
+  return (
+    <Card title={title} count={merges.length}>
+      {repos.length < 2 ? <MergeRows merges={merges} label={title} risk={risk} /> : repos.map((repo) => (
+        <CardSection key={repo} title={repo || t("format.unknown")}>
+          <MergeRows merges={merges.filter((m) => (m.project ?? "") === repo)} label={`${title}: ${repo || t("format.unknown")}`} risk={risk} />
+        </CardSection>
+      ))}
+    </Card>
+  );
+}
 
 /**
  * The merged-without-you and worth-sampling cards (design 09-dashboard-tasks): the PRs that merged with no work item.

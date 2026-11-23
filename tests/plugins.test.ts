@@ -98,6 +98,8 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
   calendar: {},
   // Optional with no default (design 08-schedules): leaving plugins.schedule_action out selects no action.
   schedule_action: {},
+  // Optional (design 06-measurement): leaving plugins.eval_source out selects no source, as `none` does.
+  eval_source: {},
 };
 
 /** Every descriptor file under src/impl with what it exports, loaded the way the registry loads them. */
@@ -208,8 +210,8 @@ describe("plugin registry: defaults", () => {
       // The calendar list defaults to [] (no source), so nothing is built for it.
       if (kind === "calendar") continue;
       // No schedule action is a default: none is selected, so nothing is built for it.
-      if (kind === "schedule_action") {
-        expect(loaded.plugins.schedule_action).toBeUndefined();
+      if (kind === "schedule_action" || kind === "eval_source") {
+        expect(loaded.plugins[kind]).toBeUndefined();
         continue;
       }
       const name = loaded.plugins[kind];
@@ -228,7 +230,8 @@ describe("plugin registry: defaults", () => {
   it("the checked-in factory.config.json selects the defaults, except the GitHub App bot, local and Slack intake, the bm25 doc index and the agents-home tacit ledger, leaving awake to the platform", async () => {
     for (const platform of ["darwin", "linux"]) {
       const loaded = await loadConfig(root(REAL), { platform });
-      const { store: _s, github_auth, sources, capability, tacit, forge, ...rest } = loaded.plugins;
+      const { store: _s, github_auth, sources, capability, tacit, forge, eval_source, ...rest } = loaded.plugins;
+      expect(eval_source).toBe("none");
       expect(github_auth).toBe("app");
       expect(tacit).toBe("agents-home");
       expect(sources).toEqual(["github-issues", "local", "slack"]);
@@ -238,7 +241,7 @@ describe("plugin registry: defaults", () => {
       expect(rest).toEqual(defaults);
     }
     const { awake: _w, ...fixed } = defaultPlugins("darwin");
-    expect(REAL.plugins).toEqual({ ...fixed, github_auth: "app", source: ["github-issues", "local", "slack"], capability: "bm25", tacit: "agents-home" });
+    expect(REAL.plugins).toEqual({ ...fixed, github_auth: "app", source: ["github-issues", "local", "slack"], capability: "bm25", tacit: "agents-home", eval_source: "none" });
   });
 
   it("awake defaults to caffeinate on macOS and none everywhere else", async () => {

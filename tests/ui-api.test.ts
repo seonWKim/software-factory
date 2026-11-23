@@ -796,4 +796,18 @@ describe("ui api: unreviewed merge links (design 09-status-page)", () => {
     expect(of("7")).toMatchObject({ review_url: "https://github.com/o/r/pull/7", checks_url: "https://github.com/o/r/pull/7/checks", check_verdict: null });
     for (const ref of ["8", "9"]) expect(of(ref), ref).toMatchObject({ review_url: null, checks_url: null, check_verdict: null });
   });
+
+  it("each row carries the PR's stored title through the Withholder; a row recorded without one has null", async () => {
+    const { d, store, clock } = await seeded();
+    await store.recordUnreviewedMerge({ project: PROJECT.key, change_ref: "7", merge_sha: "a".repeat(40), merger_id: null, title: "Seed golden cases" });
+    clock.advance(1000);
+    await store.recordUnreviewedMerge({ project: PROJECT.key, change_ref: "8", merge_sha: "b".repeat(40), merger_id: null, title: `Leak ${"ghp_" + "a".repeat(36)}` });
+    clock.advance(1000);
+    await store.recordUnreviewedMerge({ project: PROJECT.key, change_ref: "9", merge_sha: "c".repeat(40), merger_id: null });
+    const merges = (await json<{ merges: { change_ref: string; title: string | null }[] }>({ ...d, forge } as unknown as UiDeps, "/api/v1/unreviewed-merges")).merges;
+    const title = (ref: string) => merges.find((m) => m.change_ref === ref)!.title;
+    expect(title("7")).toBe("Seed golden cases");
+    expect(title("8")).toMatch(/^\[withheld: /);
+    expect(title("9")).toBeNull();
+  });
 });

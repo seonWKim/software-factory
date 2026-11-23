@@ -5,7 +5,7 @@ import { branchFor, isCovered, parseAutoResolveKey } from "../../../core/policy.
 import { mergeAppendedConflicts } from "../../../core/mechanical.js";
 import { type ConflictFile, RESOLVE_TESTS_FAILED, lastResolveFailure, renderResolvePrompt, resolveScopeViolations } from "../../../core/resolve.js";
 import type { Run, WorkItem } from "../../../core/types.js";
-import type { SandboxHandle } from "../../../interfaces/sandbox.js";
+import { type Sandbox, type SandboxHandle, reconcileOf } from "../../../interfaces/sandbox.js";
 import type { ToolCallContext } from "../../../interfaces/tool-broker.js";
 import { NO_HOOKS, RunFailure, failingTestNames, gitIdentity, specQuery, tail } from "../../support.js";
 import { cachedInstall } from "../../install-cache.js";
@@ -38,6 +38,8 @@ async function resolve(w: Worker, run: Run, item: WorkItem, ctx: ToolCallContext
   const identity = gitIdentity(w.cfg.agent_git_identity);
   // A local item's sandbox reads the factory repo's local base and branch, also with a forge selected (its route).
   const { sandbox } = w.route(item);
+  // A base reconcile (design 05-sources): origin's base as fetched is merged into the item's branch, made from local main.
+  const origin = reconcileOf(item) === null ? null : await startReconcile(w, sandbox, branch);
   const handle = await sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }).catch((err: unknown) => {
     throw new RunFailure("git_failed", `worktree: ${err instanceof Error ? err.message : "unknown"}`, true);
   });
@@ -49,7 +51,7 @@ async function resolve(w: Worker, run: Run, item: WorkItem, ctx: ToolCallContext
     let ran = false;
     const done = await step("resolve", async (): Promise<Resolved> => {
       ran = true;
-      return mergeAndResolve(w, run, item, handle, signal, model, { branch, baseRef, identity });
+      return mergeAndResolve(w, run, item, handle, signal, model, { branch, baseRef, identity, origin });
     });
     if ("needs_human" in done) return { needs_human: done.needs_human };
     const { conflicts, head, base_sha: baseSha } = done;
@@ -66,6 +68,19 @@ async function resolve(w: Worker, run: Run, item: WorkItem, ctx: ToolCallContext
   }
 }
 
+/**
+ * A reconcile item's start (design 05-sources, Base reconcile): the sandbox fetches origin's base and makes the item's
+ * branch from local main when it is missing; returns origin's commit, which the run merges. A sandbox that cannot is
+ * `no_reconcile`; a failed fetch is infra, retried.
+ */
+async function startReconcile(w: Worker, sandbox: Sandbox, branch: string): Promise<string> {
+  const { repo } = w.cfg;
+  if (!sandbox.startReconcile) throw new RunFailure("no_reconcile", "this sandbox cannot start a base reconcile");
+  const r = await sandbox.startReconcile({ repo: repo.path, base_ref: repo.base_branch, branch }).catch((err: unknown) => {
+    throw new RunFailure("git_failed", `reconcile: ${err instanceof Error ? err.message : "unknown"}`, true);
+  });
+  return r.origin;
+}
 
 /** The journaled result of the resolve step: a human was asked for, or the checked merge commit and its bundle. */
 type Resolved =
@@ -84,11 +99,12 @@ type Resolved =
  */
 async function mergeAndResolve(
   w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, signal: AbortSignal, model: ModelClass,
-  o: { branch: string; baseRef: string; identity: Record<string, string> },
+  o: { branch: string; baseRef: string; identity: Record<string, string>; origin: string | null },
 ): Promise<Resolved> {
   const { repo } = w.cfg;
   const { branch, baseRef, identity } = o;
-  const baseSha = await w.trustedBase(handle);
+  // A reconcile merges origin's commit (its objects are the factory repo's, which the run folder borrows), not local main.
+  const baseSha = o.origin ?? (await w.trustedBase(handle));
   // The run's own git folder, inside its workdir: the clone has no other.
   const gitDir = (await w.git(handle, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
   const dirs = await w.gitDirs(handle);
@@ -101,7 +117,7 @@ async function mergeAndResolve(
 
   const merge = await w.gitRaw(
     handle,
-    ["merge", "--no-ff", "--no-commit", "-m", `Merge ${baseRef} into ${branch}`, baseRef],
+    ["merge", "--no-ff", "--no-commit", "-m", `Merge ${baseRef} into ${branch}`, o.origin ?? baseRef],
     identity,
   );
   const conflicts = (await w.git(handle, ["diff", "--name-only", "-z", "--diff-filter=U"])).split("\0").filter(Boolean);

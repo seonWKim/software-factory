@@ -10,7 +10,6 @@
 import {
   SCREENSHOT_REVIEW, notCapturedLine, parseScreenshotOutcome, parseScreenshotReview, screenshotReviewKey, screenshotRunKey, touchesUi,
 } from "../../../shared/screenshots.js";
-import { runTokenCount } from "../../../core/types.js";
 import type { Ctx } from "../context.js";
 import { SYSTEM } from "../support.js";
 import type { RunResultsUnit } from "./run-results.unit.js";
@@ -38,13 +37,12 @@ function passingReview(run: Run): boolean {
 }
 
 /**
- * One plain transition on the item: no stage or blocked change, `ack` acknowledged when given with its tokens added to
+ * One plain transition on the item: no stage or blocked change, `ack` acknowledged when given with its tokens (`spent`) added to
  * token_cost (design §6 Measurement; the ack fences the add, so a second apply adds nothing), `enqueue` queued (a no-op
  * when its key is stored, so a second apply queues nothing). Re-read and tried again on a version conflict.
  */
-async function plain(c: Ctx, id: Item["id"], reason: string, o: { ack?: Run; enqueue?: Queued; detail?: Record<string, string> }): Promise<void> {
-  const { ack, ...rest } = o;
-  const spent = ack ? runTokenCount(ack) : 0;
+async function plain(c: Ctx, id: Item["id"], reason: string, o: { ack?: Run; spent?: number; enqueue?: Queued; detail?: Record<string, string> }): Promise<void> {
+  const { ack, spent = 0, ...rest } = o;
   for (let i = 0; i < CONFLICT_RETRIES; i++) {
     const item = await c.k.reader.getWorkItem(id);
     if (!item) return;
@@ -72,12 +70,12 @@ export async function queueScreenshots(c: Ctx, run: Run): Promise<void> {
   });
 }
 
-/** A screenshot run's or a screenshot review's result, acknowledged. */
-export async function screenshotStep(c: Ctx, run: Run): Promise<void> {
-  if (run.kind === "screenshot") return screenshotsTaken(c, run);
+/** A screenshot run's or a screenshot review's result, acknowledged with its tokens (`spent`) added to token_cost. */
+export async function screenshotStep(c: Ctx, run: Run, spent: number): Promise<void> {
+  if (run.kind === "screenshot") return screenshotsTaken(c, run, spent);
   const item = await c.k.reader.getWorkItem(run.work_item_id);
   if (item) await c.unit("outbox").post(item, item.source, screenshotReviewComment(run), `<!-- factory:screenshot-review:${run.id} -->`);
-  await plain(c, run.work_item_id, SCREENSHOT_REVIEWED, { ack: run });
+  await plain(c, run.work_item_id, SCREENSHOT_REVIEWED, { ack: run, spent });
 }
 
 /** What a screenshot run stored, or why it stored nothing: a failed or cancelled run names its error code. */
@@ -90,11 +88,12 @@ function screenshotsOf(run: Run): { captures: { page: string; width: number; the
 }
 
 /** A finished screenshot run: one screenshot review queued on its captures or its reason (an open item only), and the run acknowledged. */
-async function screenshotsTaken(c: Ctx, run: Run): Promise<void> {
+async function screenshotsTaken(c: Ctx, run: Run, spent: number): Promise<void> {
   const it = await c.k.reader.getWorkItem(run.work_item_id);
   const open = it !== null && it.stage !== "CLOSED";
   await plain(c, run.work_item_id, SCREENSHOT_REVIEW_QUEUED, {
     ack: run,
+    spent,
     detail: { run_id: run.id },
     ...(open ? { enqueue: { kind: "review", idempotency_key: screenshotReviewKey(run.work_item_id, run.id), input: { screenshot_review: true, screenshot_run_id: run.id, screenshots: screenshotsOf(run) } } } : {}),
   });

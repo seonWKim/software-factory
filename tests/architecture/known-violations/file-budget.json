@@ -1,7 +1,7 @@
 {
-  "controller/units/commands/commands.unit.ts": 738,
+  "controller/units/commands/commands.unit.ts": 736,
   "core/settings.ts": 802,
-  "core/types.ts": 732,
+  "core/types.ts": 731,
   "golden.ts": 666,
   "impl/github/github-issue-source.ts": 719,
   "impl/runner/claude-code-runner.ts": 660,
@@ -9,6 +9,5 @@
   "impl/store/sqlite/schema.ts": 736,
   "impl/updater/git-worktree.ts": 903,
   "interfaces/factory-store.ts": 1348,
-  "ui/api.ts": 609,
   "worker/runner.ts": 1037
 }

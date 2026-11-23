@@ -279,6 +279,7 @@ export class GitHubForge implements Forge {
           head_branch: p.head.ref,
           merge_sha: p.merge_commit_sha,
           merger: full.merged_by ? identity(full.merged_by) : null,
+          ...(p.title ? { title: p.title } : {}),
           ...fork,
         });
       } else {

@@ -214,6 +214,7 @@ export class PrEventsUnit {
       change_ref: e.change_ref,
       merge_sha: e.merge_sha,
       merger_id: merger?.user_id ?? null,
+      title: e.title ?? null,
     });
     if (created) {
       this.c.k.d.log.warn("unreviewed merge", { change_ref: e.change_ref, merge_sha: e.merge_sha, user_id: merger?.user_id ?? null, fork: e.fork ?? false });

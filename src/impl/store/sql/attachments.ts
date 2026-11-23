@@ -1,0 +1,43 @@
+// Attachments (design 02-attachments): the AttachmentStore methods over `controller_attachments`, as
+// SqlAttachmentStore, which SqlFactoryStore extends, so these methods add no line to sql-factory-store.ts's budget.
+// The insert is conditional on the item's stage being NEW in the same statement, so an item that left triage
+// between the caller's check and the write gets nothing stored. An image's bytes are stored as base64 text.
+
+import type { Attachment, AttachmentStore, ImageType, NewAttachment } from "../../../core/attachments.js";
+import type { Timestamp, UserId, WorkItemId } from "../../../core/types.js";
+import type { Row, SqlDriver } from "../../../state/index.js";
+import { SqlSkillEvalStore } from "./skill-evals.js";
+
+const COLUMNS = "id, work_item_id, kind, media_type, data, size_bytes, name, url, label, created_by, created_at";
+const text = (v: unknown) => (v == null ? null : String(v));
+
+const rowToAttachment = (r: Row): Attachment => ({
+  id: String(r.id), work_item_id: String(r.work_item_id) as WorkItemId, kind: String(r.kind) as Attachment["kind"],
+  media_type: text(r.media_type) as ImageType | null, data: text(r.data), size_bytes: r.size_bytes == null ? null : Number(r.size_bytes),
+  name: text(r.name), url: text(r.url), label: text(r.label), created_by: String(r.created_by) as UserId, created_at: String(r.created_at) as Timestamp,
+});
+
+/** AttachmentStore over a SqlDriver; `attachStamp` is the store's injected Clock's time. */
+export class SqlAttachmentStore extends SqlSkillEvalStore implements AttachmentStore {
+  constructor(db: SqlDriver, private readonly attachStamp: () => Timestamp) {
+    super(db, attachStamp);
+  }
+
+  addAttachment(a: NewAttachment): Promise<Attachment | null> {
+    return this.db.transaction(async (tx) => {
+      const [known] = await tx.all(`SELECT ${COLUMNS} FROM controller_attachments WHERE id = ?`, [a.id]);
+      if (known) return rowToAttachment(known);
+      const added = await tx.run(
+        `INSERT INTO controller_attachments (${COLUMNS}) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM controller_work_items WHERE id = ? AND stage = 'NEW')`,
+        [a.id, a.work_item_id, a.kind, a.media_type, a.data, a.size_bytes, a.name, a.url, a.label, a.created_by, this.attachStamp(), a.work_item_id],
+      );
+      if (added !== 1) return null;
+      const [row] = await tx.all(`SELECT ${COLUMNS} FROM controller_attachments WHERE id = ?`, [a.id]);
+      return rowToAttachment(row!);
+    });
+  }
+
+  async listAttachments(work_item_id: WorkItemId): Promise<Attachment[]> {
+    return (await this.db.all(`SELECT ${COLUMNS} FROM controller_attachments WHERE work_item_id = ? ORDER BY created_at, id`, [work_item_id])).map(rowToAttachment);
+  }
+}

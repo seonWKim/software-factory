@@ -5,23 +5,24 @@ first, replaced ones in `history/<topic>.md`. A design change edits the topic fi
 for a new topic. "§5" means `05-*`.
 
 ## 1. Shape
-- [01-shape.md](design/01-shape.md): flow from intake to the human gate and post-merge.
+- [01-shape.md](design/01-shape.md): intake to human gate and post-merge.
 
 ## 2. Work item
-- [02-work-item.md](design/02-work-item.md): one work-item shape for every source.
+- [02-work-item.md](design/02-work-item.md): one work-item shape for all sources.
+- [02-attachments.md](design/02-attachments.md): triage context, images, links.
 - [02-tasks.md](design/02-tasks.md): plain tasks: table, `task add`, route.
 - [02-tasks-quick-add.md](design/02-tasks-quick-add.md): quick-add words, repeats.
 - [02-tasks-projects.md](design/02-tasks-projects.md): task projects.
 - [02-tasks-build.md](design/02-tasks-build.md): Build this, merge close.
 - [02-tasks-edit.md](design/02-tasks-edit.md): edit, delete, sub-tasks.
-- [02-tasks-page.md](design/02-tasks-page.md): what the Tasks page lists, edits and completes.
+- [02-tasks-page.md](design/02-tasks-page.md): what the Tasks page lists and edits.
 - [02-tasks-calendar.md](design/02-tasks-calendar.md): calendar, Google sync, events in tasks.
 
 ## 3. Risk
-- [03-risk.md](design/03-risk.md): how the tier is set and rechecked, and the safety ratchet.
+- [03-risk.md](design/03-risk.md): how the tier is set, rechecked; safety ratchet.
 
 ## 4. Agents
-- [04-agents.md](design/04-agents.md): agent roles, model class per run kind and tier.
+- [04-agents.md](design/04-agents.md): agent roles, model class per kind and tier.
 - [04-gate-commands.md](design/04-gate-commands.md): human commands, refusals, footers.
 - [04-spec-gate-commands.md](design/04-spec-gate-commands.md): spec answers, `/revise`, `/resolve`.
 - [04-chat-commands.md](design/04-chat-commands.md): classifier, chat answers, proposals.
@@ -36,7 +37,7 @@ for a new topic. "§5" means `05-*`.
 - [05-coordination.md](design/05-coordination.md): claim order, leases, fencing.
 - [05-dependencies.md](design/05-dependencies.md): parallel workers, holds.
 - [05-restarts.md](design/05-restarts.md): stalled runs, retries, backoff, handoff.
-- [05-restart-asks.md](design/05-restart-asks.md): runs that ask for paths or a dependency.
+- [05-restart-asks.md](design/05-restart-asks.md): runs asking for paths or a dependency.
 - [05-restart-pauses.md](design/05-restart-pauses.md): claim pauses, rate limits, drains.
 - [05-alarms.md](design/05-alarms.md): repeated errors, zero-token runs.
 - [05-sandbox.md](design/05-sandbox.md): sandbox interface, run folders, tools.
@@ -45,22 +46,22 @@ for a new topic. "§5" means `05-*`.
 - [05-sources.md](design/05-sources.md): local items, startup, thread, outbox, CLI intake.
 - [05-slack-intake.md](design/05-slack-intake.md): Slack presses, mentions, replies, emoji.
 - [05-github-sync.md](design/05-github-sync.md): GitHub client, forge PRs, call budget.
-- [05-stream-intake.md](design/05-stream-intake.md): stream intake, many sources, adopted PRs.
-- [05-interactive-sessions.md](design/05-interactive-sessions.md): own LLM session as a run.
+- [05-stream-intake.md](design/05-stream-intake.md): stream intake, adopted PRs.
+- [05-interactive-sessions.md](design/05-interactive-sessions.md): own LLM session as run.
 - [05-status-labels.md](design/05-status-labels.md): the eight status labels.
 - [05-standing-approvals.md](design/05-standing-approvals.md): spec decision records, run check.
 
 ## 6. Measurement
 - [06-measurement.md](design/06-measurement.md): feedback rate, reverts, stats, golden set.
 - [06-token-budget.md](design/06-token-budget.md): per-tier token checkpoints.
-- [06-spend.md](design/06-spend.md): spend per day, week and item, and dollar budgets.
+- [06-spend.md](design/06-spend.md): spend per day, week, item; budgets.
 - [06-efficiency.md](design/06-efficiency.md): items, tokens and time per period.
 
 ## 7. Self-improvement
 - [07-self-improvement.md](design/07-self-improvement.md): how the factory changes itself.
 - [07-conflict-hotspots.md](design/07-conflict-hotspots.md): hotspots.
 - [07-learned-rules.md](design/07-learned-rules.md): learned rules.
-- [07-improve-report.md](design/07-improve-report.md): improve report, Run now, retirement.
+- [07-improve-report.md](design/07-improve-report.md): improve report, Run now, retiring.
 - [07-design-learnings.md](design/07-design-learnings.md): UI corrections.
 
 ## 8. Operations
@@ -114,7 +115,7 @@ for a new topic. "§5" means `05-*`.
 
 ## 11. Packs and signal ledger
 - [11-packs.md](design/11-packs.md): pack layers, the `packs` key.
-- [11-plugin-import.md](design/11-plugin-import.md): `plugins import` of skills and MCP servers.
+- [11-plugin-import.md](design/11-plugin-import.md): `plugins import` of skills, MCP servers.
 - [11-signal-ledger.md](design/11-signal-ledger.md): `controller_signals`, sources, tags.
 
 ## 12. Notification channels

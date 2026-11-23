@@ -652,10 +652,7 @@ export interface BudgetCheckpoint {
 
 export type UnreviewedMergeId = Brand<string, "UnreviewedMergeId">;
 
-/**
- * A change that merged with no work item (design 2026-11-01): skipped with `factory: skip`, from a fork,
- * never adopted, or merged before the first poll. One row per (project, change_ref).
- */
+/** A change that merged with no work item (skipped, a fork, never adopted, merged before the first poll); one row per (project, change_ref). */
 export interface UnreviewedMerge {
   id: UnreviewedMergeId;
   /** The project key (design 2026-11-01), as on WorkItem. */
@@ -665,6 +662,8 @@ export interface UnreviewedMerge {
   /** The merger's user ID; null when the forge did not name one or it did not resolve to a user. */
   merger_id: UserId | null;
   at: Timestamp;
+  /** The PR's title as the forge gave it at the merge; null for a row recorded before titles were kept (2026-11-24). */
+  title: string | null;
 }
 
 /** How a dependency edge was found (design 2026-11-03). Each kind is the same edge to the scheduler. */

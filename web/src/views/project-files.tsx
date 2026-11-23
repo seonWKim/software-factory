@@ -4,6 +4,7 @@ import { postJson } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { Card } from "../components/ui/card.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
+import { DisclosureChevron } from "../components/ui/disclosure.js";
 import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
 import { EmptyState } from "../components/ui/notice.js";
@@ -93,8 +94,8 @@ function SubFolder({ project, token, path, name, open, onOpen }: { project: stri
   };
   return (
     <li className="min-w-0">
-      <Button variant="ghost" size="sm" aria-expanded={children !== null} disabled={busy} className="w-full justify-start text-left break-all" onClick={() => void toggle()}>
-        <span aria-hidden className="w-3 shrink-0 text-text-3">{children !== null ? "▾" : "▸"}</span>
+      <Button variant="ghost" size="sm" aria-expanded={children !== null} disabled={busy} className="group w-full justify-start text-left break-all" onClick={() => void toggle()}>
+        <DisclosureChevron open={children !== null} />
         {name}/
       </Button>
       {error !== null && <p role="alert" className={ALERT}>{error}</p>}

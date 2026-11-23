@@ -93,7 +93,7 @@ export class RunResultsUnit {
     // A merge-check run changes no item stage: the merge queue decides on its entry and acks it (RFC 0015 M8); a restart run's result is posted and acked (local-merge unit); a judge run's applies to its goal split (phases unit).
     // Screenshot runs and screenshot reviews post and ack, changing no item state; a passing review on a UI change queues a screenshot run first (design 04-screenshots).
     if (run.kind === "merge-check" || run.kind === "restart" || run.kind === "judge") return run.kind === "restart" ? this.c.unit("local-merge").restarted(run) : run.kind === "judge" ? this.c.unit("phases").judgeResult(run) : this.c.unit("merge-queue").checked(run);
-    if (isScreenshotStep(run)) return screenshotStep(this.c, run); else await this.c.k.guard("screenshots", () => queueScreenshots(this.c, run));
+    if (isScreenshotStep(run)) return screenshotStep(this.c, run, runTokenCount(run)); else await this.c.k.guard("screenshots", () => queueScreenshots(this.c, run));
     // A succeeded improve run's groups are filed before its ack (design §7); a fault is logged and the run acked.
     if (run.kind === "improve" && run.outcome?.status === "succeeded") await this.c.k.guard("improve filing", () => this.c.unit("improve").fileImprove(run));
     const ack = (reason: string): Decision => ({ patch: {}, actor: SYSTEM, reason, ack_run: run.id });
@@ -118,7 +118,7 @@ export class RunResultsUnit {
       switch (run.kind) {
         case "merge-check": case "restart": case "judge": case "screenshot": // `apply` hands these to the merge queue, the local-merge unit, the phases unit and screenshots.ts before it reads any outcome.
           throw new Error(`${run.kind} run ${run.id} reached the run outcome path`);
-        case "triage": {
+        case "triage": { const context = await this.c.unit("commands").applyQueued(it, { patch: { token_cost: tokens }, actor: SYSTEM, reason: "triaged", ack_run: run.id }); if (context.enqueue) return context; // added context: one more triage (design 02-attachments)
           // The item's size caps (src/core/size-cap.ts) decide whether the estimate needs phases (src/core/split.ts).
           const settings = this.c.k.settings(it.project), { floors } = settings, caps = sizeCaps(it, settings);
           // Migration timestamps, then path companions (design 04-triage.md): a new migration on a base branch's timestamp moves to the next free minute; companions on that answer, so one named only in
@@ -281,6 +281,10 @@ export class RunResultsUnit {
           return this.c.unit("checks-gate").checkGate(it, run, { tier, token_cost: tokens }, run.id);
         }
         case "resolve": {
+          // A base reconcile (design 05-sources): its checked merge waits for the merge queue, never for a review.
+          if (this.c.unit("local-merge").reconcileOf(it)) {
+            return { patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", token_cost: tokens }, actor: SYSTEM, reason: "resolved", detail: { cause: "base_reconcile" }, ack_run: run.id };
+          }
           // The worker pushed the merge to the same PR branch. A fresh review checks it; its key comes from
           // this run's id, so it never collides with the review of an earlier loop or resolve.
           await autoResolvedComment(this.c, it, run);
@@ -346,6 +350,7 @@ export class RunResultsUnit {
     };
     await this.c.unit("transitions").decide(run.work_item_id, async (it) => this.landed(it, run, withSpent(await decision(it), run, it)));
     await deliveredMeanwhile(this.c, run);
+    if (run.kind === "resolve" && run.outcome?.status === "succeeded") await this.c.unit("local-merge").reconciled(run.work_item_id, run.id);
   }
 
   /**

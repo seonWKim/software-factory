@@ -18,7 +18,7 @@ import { itemAlarms, openAlarms } from "./alarms.js";
 import { actorGrant, itemCommands, itemProposals, itemReplies, mergeReadiness, needsYouCommands, readSession, waitingSpec } from "./commands.js";
 import { type DataCtx, type DataResult, dataAutonomy, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
-import { LIST_LIMIT, activeRuns, closedFacetRows, itemCounts, itemState, latestDecision, holderTitles, listRows, mergeLinks, readClaimPauses, readPhases, waitingOn, whyOf, withTitle } from "./list.js";
+import { LIST_LIMIT, activeRuns, closedFacetRows, itemCounts, itemState, latestDecision, holderTitles, listRows, readClaimPauses, readPhases, waitingOn, whyOf, withTitle } from "./list.js";
 import { runTokens } from "./deps.js";
 import { heldFailureOf, needCtx, needOf } from "./need.js";
 import { WITH_NEED, askReason, holdingNow } from "./priority.js";
@@ -38,6 +38,7 @@ import { needsYouCount } from "./needs-you.js";
 import { latestWhyAnchor, threadRows } from "./thread.js";
 import type { Why } from "./why.js";
 import { displayName } from "./names.js";
+import { sleepRows, unreviewedMerges } from "./health-rows.js";
 import { Withholder } from "./withhold.js";
 import { itemGraph, windowRuns } from "./graph.js";
 import type { MergeCheck } from "../interfaces/factory-store.js";
@@ -77,7 +78,7 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
     case "/runs": return windowRuns({ store: d.store, text: (v, ch) => c.text(v, ch), now: c.now }, url.searchParams.get("window"), (r) => runRow(c, r));
     case "/queue": return ok(await queue(c));
     case "/workers": return ok(await workers(c));
-    case "/unreviewed-merges": return unreviewedMerges(c, url.searchParams);
+    case "/unreviewed-merges": return unreviewedMerges(c, url.searchParams, c.now);
     case "/health": return ok(await health(c));
     case "/failures":
       return failures({ store: d.store, text: (v) => c.text(v, "run_outcome").then((t) => t!), now: c.now }, url.searchParams);
@@ -226,17 +227,6 @@ async function health(c: ApiCtx) {
   return { ...report, sleeps: await sleepRows(c, rows, true) };
 }
 
-/** Host sleeps as the API returns them: ids, a timestamp and a number. `runs` adds the held run's item and status (null if the lookup fails). */
-async function sleepRows(c: ApiCtx, rows: readonly HostSleep[], runs = false) {
-  const out = [];
-  for (const h of rows) {
-    const run = runs && h.run_id ? await c.d.store.getRun(h.run_id).catch(() => null) : null;
-    const held = runs ? { work_item_id: run ? await c.text(run.work_item_id) : null, run_status: run?.status ?? null } : {};
-    out.push({ worker_id: (await c.text(h.worker_id))!, woke_at: h.woke_at, gap_ms: h.gap_ms, run_id: h.run_id, ...held });
-  }
-  return out;
-}
-
 async function overview(c: ApiCtx, params: URLSearchParams) {
   const s = c.d.store;
   const stages: Record<Stage, number> = await s.countWorkItemsByStage();
@@ -267,6 +257,8 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
     as_of: c.now.toISOString(),
     /** The revision this UI server's build was made from (its dist/ stamp); the app compares it with the one built into it. */
     server_rev: c.d.revision ?? null,
+    /** Local merges whose base push has not reached origin: the waiting push_base actions over all bases. A store read, no forge call. */
+    unpushed_merges: (await s.listBasePushBacklogs()).reduce((n, b) => n + b.waiting, 0),
     plugins: c.d.plugins ?? { issues: null },
     ...(factory === undefined ? {} : { factory }),
     stages,
@@ -286,35 +278,6 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
     },
     unreviewed_merges_7d: await s.countUnreviewedMergesSince(new Date(c.now.getTime() - 7 * DAY_MS).toISOString() as Timestamp),
   };
-}
-
-const MERGES_DEFAULT = 50;
-const MERGES_MAX = 200;
-
-/** PRs that merged with no work item, newest first. The project is its stored label, never its key. */
-async function unreviewedMerges(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
-  let limit = MERGES_DEFAULT;
-  const raw = params.get("limit");
-  if (raw !== null) {
-    if (!/^\d+$/.test(raw) || Number(raw) < 1) return apiError(400, "limit must be a whole number from 1 to 200.");
-    limit = Math.min(Number(raw), MERGES_MAX);
-  }
-  const out = [];
-  for (const m of await c.d.store.listUnreviewedMerges(limit)) {
-    const label = await c.projectLabel(m.project);
-    // Scan the whole sha, then shorten it: a cut-off secret would no longer match a rule.
-    const sha = await c.text(m.merge_sha);
-    out.push({
-      project: await c.text(label),
-      change_ref: m.change_ref, change_url: null, // no stored link (UnreviewedMerge carries only the ref): mergeLinks derives the PR's
-      ...(await mergeLinks(m.project, label, m.change_ref, (v) => c.text(v))),
-      merge_sha: sha === m.merge_sha ? sha.slice(0, 7) : sha,
-      merged_by: m.merger_id === null ? "unknown" : await c.text(m.merger_id),
-      merged_by_name: m.merger_id === null ? null : await c.text(await displayName(c.d.displayNames, m.merger_id)),
-      recorded_at: m.at,
-    });
-  }
-  return ok({ as_of: c.now.toISOString(), merges: out });
 }
 
 async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {

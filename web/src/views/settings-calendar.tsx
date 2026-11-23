@@ -12,6 +12,8 @@ import { t } from "../i18n/index.js";
 import { When, useNow } from "./common.js";
 import { Card } from "../components/ui/card.js";
 import { Badge } from "../components/ui/badge.js";
+import { cn } from "../lib/cn.js";
+import { SETTINGS_INTRO, SETTINGS_ROW, SETTINGS_ROWS } from "./settings/rows.js";
 
 // The Settings page's Calendar section (design 08-settings, 2026-11-13): each calendar plugin the server lists from
 // the registry's connect hooks, by its own name (this file names no provider), connected or not, with its last sync time
@@ -32,17 +34,16 @@ export function CalendarSection({ token }: { token: string }) {
   // A server without the section (an older build) answers no list: the page shows no section rather than failing.
   const plugins = view.data.plugins ?? [];
   if (plugins.length === 0) return null;
+  // The Card itself is the `#calendar` anchor (the Calendar page's Connect link): no wrapper, so it keeps Card's 24px gap.
   return (
-    <div id="calendar">
-      <Card title={t("calendar.title")} count={plugins.length}>
-        <p className="mb-2 text-sm text-pretty text-text-2">{t("calendar.hint")}</p>
-        <ul className="space-y-4 text-sm">
-          {plugins.map((p) => (
-            <CalendarRow key={p.name} plugin={p} token={token} />
-          ))}
-        </ul>
-      </Card>
-    </div>
+    <Card id="calendar" title={t("calendar.title")} count={plugins.length}>
+      <p className={SETTINGS_INTRO}>{t("calendar.hint")}</p>
+      <ul className={SETTINGS_ROWS}>
+        {plugins.map((p) => (
+          <CalendarRow key={p.name} plugin={p} token={token} />
+        ))}
+      </ul>
+    </Card>
   );
 }
 
@@ -107,13 +108,40 @@ function CalendarRow({ plugin, token }: { plugin: CalendarPluginView; token: str
   };
 
   return (
-    <li data-calendar={plugin.name} className="flex flex-col gap-1">
-      <div className="flex flex-wrap items-center gap-2">
-        <span data-raw className="font-medium wrap-anywhere">{plugin.name}</span>
-        <Badge level={plugin.connected ? "ready_to_merge" : undefined}>{plugin.connected ? t("calendar.connected") : t("calendar.notConnected")}</Badge>
-        <span className="text-xs text-text-2 tabular-nums">
-          {plugin.synced_at ? <When at={plugin.synced_at} now={now} label="calendar.lastSync" /> : t("calendar.neverSynced")}
-        </span>
+    <li data-calendar={plugin.name} className={cn(SETTINGS_ROW, "flex flex-col gap-2")}>
+      {/* One row at desktop: the name, its state and last sync, then the actions at the right end; below it wraps. */}
+      <div data-calendar-head className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <div className="flex min-w-0 grow basis-64 flex-wrap items-center gap-2">
+          <span data-raw className="font-medium wrap-anywhere">{plugin.name}</span>
+          <Badge level={plugin.connected ? "ready_to_merge" : undefined}>{plugin.connected ? t("calendar.connected") : t("calendar.notConnected")}</Badge>
+          <span className="text-xs text-text-2 tabular-nums">
+            {plugin.synced_at ? <When at={plugin.synced_at} now={now} label="calendar.lastSync" /> : t("calendar.neverSynced")}
+          </span>
+        </div>
+        <ButtonRow data-calendar-actions className="sm:ml-auto">
+          {(!plugin.connected || reconnect) && (
+            <>
+              {plugin.default_client && (
+                <Button disabled={busy || signingIn} aria-label={t("calendar.connectLabel", { name: plugin.name })} onClick={() => void connect()}>
+                  {t("calendar.connect")}
+                </Button>
+              )}
+              <Button
+                variant={plugin.default_client ? "ghost" : "secondary"}
+                disabled={busy || signingIn}
+                aria-label={t("calendar.ownClientLabel", { name: plugin.name })}
+                onClick={() => void connect({})}
+              >
+                {plugin.default_client ? t("calendar.ownClient") : t("calendar.ownClientMain")}
+              </Button>
+            </>
+          )}
+          {plugin.connected && (
+            <Button variant="danger" disabled={busy || signingIn} aria-label={t("calendar.disconnectLabel", { name: plugin.name })} onClick={() => (setError(null), setConfirming(true))}>
+              {t("calendar.disconnect")}
+            </Button>
+          )}
+        </ButtonRow>
       </div>
       {reconnect ? (
         <p role="alert" className="text-xs font-medium text-pretty text-pill-bad-fg">
@@ -124,30 +152,6 @@ function CalendarRow({ plugin, token }: { plugin: CalendarPluginView; token: str
       )}
       {!plugin.connected && !plugin.default_client && <p className="text-xs text-pretty text-text-2">{t("calendar.noDefaultClient")}</p>}
       <Attempt plugin={plugin} consent={consent} />
-      <ButtonRow>
-        {(!plugin.connected || reconnect) && (
-          <>
-            {plugin.default_client && (
-              <Button disabled={busy || signingIn} aria-label={t("calendar.connectLabel", { name: plugin.name })} onClick={() => void connect()}>
-                {t("calendar.connect")}
-              </Button>
-            )}
-            <Button
-              variant={plugin.default_client ? "ghost" : "secondary"}
-              disabled={busy || signingIn}
-              aria-label={t("calendar.ownClientLabel", { name: plugin.name })}
-              onClick={() => void connect({})}
-            >
-              {plugin.default_client ? t("calendar.ownClient") : t("calendar.ownClientMain")}
-            </Button>
-          </>
-        )}
-        {plugin.connected && (
-          <Button variant="danger" disabled={busy || signingIn} aria-label={t("calendar.disconnectLabel", { name: plugin.name })} onClick={() => (setError(null), setConfirming(true))}>
-            {t("calendar.disconnect")}
-          </Button>
-        )}
-      </ButtonRow>
       {(!plugin.connected || reconnect) && <ConnectNote key={String(reconnect)} open={reconnect} />}
       {error && asking === null && !confirming && (
         <p role="alert" className="text-xs text-pretty break-words text-pill-bad-fg">

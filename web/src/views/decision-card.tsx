@@ -1,10 +1,10 @@
 import { type MouseEvent, type ReactNode, type RefObject, useRef, useState } from "react";
 import { API, type CommandReply, type ItemCommand, type ItemDetail, type ThreadEntry, mergeReturned, showsMerge, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { ButtonRow } from "../components/ui/button-row.js";
 import { CARD_TITLE, SUB_TITLE } from "../components/ui/card.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { OverflowMenu } from "../components/ui/menu.js";
-import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { Textarea } from "../components/ui/textarea.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
@@ -205,12 +205,14 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
           {showMerge ? <span className="inline-flex"><MergeButton id={id} source={detail?.source.type} merge={merge} replies={replies} returned={mergeReturned(data)} /></span> : primary && button(primary)}
           {verdict && (
             <span data-verdict className="inline-flex">
-              <SegmentedControl<OneTapChoice | "">
-                label={t("commands.verdict")}
-                options={([["good", t("commands.good")], ["bad", t("commands.bad")]] as const).map(([choice, label]) => ({ id: choice, label, data: { "data-action": "verdict", "data-item": id, "data-choice": choice } }))}
-                value=""
-                onChange={(choice) => choice !== "" && tap(choice)}
-              />
+              {/* Good and Bad send a verdict at once: actions, not a choice, so two Buttons in one named group. */}
+              <ButtonRow role="group" aria-label={t("commands.verdict")}>
+                {([["good", t("commands.good")], ["bad", t("commands.bad")]] as const).map(([choice, label]) => (
+                  <Button key={choice} data-action="verdict" data-item={id} data-choice={choice} onClick={() => tap(choice)}>
+                    {label}
+                  </Button>
+                ))}
+              </ButtonRow>
             </span>
           )}
           {verdict && (

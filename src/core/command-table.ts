@@ -12,10 +12,10 @@ import type { CommandName } from "./commands.js";
 export type CommandWho = "anyone" | "submit_work" | "approve_spec" | "approve_merge" | "owner";
 
 /**
- * The CLI handler that runs it: local tasks, item commands, settings and the mode, or (`sentence`) the
+ * The CLI handler that runs it: local tasks, item commands, settings and the mode, schedules, or (`sentence`) the
  * plain-words reader, which `factory` runs for any first word no handler claims (src/main.ts).
  */
-export type CommandGroup = "task" | "item" | "settings" | "sentence";
+export type CommandGroup = "task" | "item" | "settings" | "sentence" | "schedule";
 
 /** The sentence form's name: `factory "<words>"`, a command in the owner's own words (design 04-gate-commands). */
 export const SENTENCE_FORM = '"<words>"';
@@ -149,7 +149,7 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
   },
   item("approve", "[notes]", "Store `/approve` for the item"),
   item("retry", "[text]", "Store `/retry` for the item"),
-  item("revise", "<feedback>", "Store `/revise` for the item"),
+  item("revise", "<feedback>", "Store `/revise` for the item; on a New or in-triage item it adds context, queued for one re-triage after the current triage run"),
   item("reject", "<reason>", "Store `/reject` for the item"),
   item("resolve", "[notes]", "Store `/resolve` for the item"),
   {
@@ -206,7 +206,35 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
     name: "mode", args: "auto|manual [--project <owner/name>]", who: "approve_merge", group: "settings", does: "The same as `settings set mode <auto|manual>`",
     prints: "the mode's new and old value", chat: "mode auto|manual [--project <owner/name>]", chat_args: "any", item: false, edge: true,
   },
+  ...scheduleCommands(),
 ];
+
+/** `factory schedule …` (design 08-schedules): list, add, edit, pause, resume, run and runs, in that order; the writes are the owner's only. */
+function scheduleCommands(): TableCommand[] {
+  const optional = "[--body <text>] [--skip-when-busy on|off] [--token-cap <n>]";
+  const one = (name: string, args: string, chat: string, chat_args: ChatArgs, does: string, prints: string): TableCommand => ({
+    name: `schedule ${name}`, args, who: "owner", group: "schedule", does, prints, chat: `schedule ${chat}`, chat_args, item: false, edge: false,
+  });
+  return [
+    one("list", "", "list", "none", "List the schedules", "one line per schedule: ID, title, next due time or `paused`, running or idle, action kind, skip when busy, token cap"),
+    one(
+      "add", `--id <id> --title <t> --cadence <interval|daily|weekly|cron> --spec <spec> --zone <IANA> --action <build|agent|feedback> ${optional}`, "add <flags>", "any",
+      "Store a new schedule, first due at its cadence's next slot after now; refused for an ID already stored, a bad cadence, zone or action, " +
+        "and an agent or feedback action without `--body` (its prompt; a build's item body)",
+      "the stored schedule's line",
+    ),
+    one(
+      "edit", `<id> [--title <t>] [--cadence <interval|daily|weekly|cron>] [--spec <spec>] [--zone <IANA>] [--action <build|agent|feedback>] ${optional}`, "edit <id> <flags>", "any",
+      "Change only the flags given; a new cadence or zone sets an unpaused schedule's next due time to its first slot after now, " +
+        "and a paused one stays paused; refused with no flag, or a bad cadence, zone, action or token cap",
+      "the edited schedule's line",
+    ),
+    one("pause", "<id>", "pause <id>", "id", "Clear the schedule's next due time, so none of its slots fire; refused when already paused", "the paused schedule's line"),
+    one("resume", "<id>", "resume <id>", "id", "Set a paused schedule's next due time to its first slot after now; refused when not paused", "the resumed schedule's line"),
+    one("run", "<id>", "run <id>", "id", "Set the schedule's next due time to now, so the next tick fires it once; refused when paused, writing nothing", "the schedule's line"),
+    one("runs", "<id>", "runs <id>", "id", "List the schedule's runs, oldest first", "one line per run: occurrence, outcome, recorded time, tokens, cost"),
+  ];
+}
 
 /** As typed after `factory`. */
 export function cliUsageOf(c: TableCommand): string {
