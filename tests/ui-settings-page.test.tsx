@@ -881,4 +881,40 @@ describe("Settings page: Mode lines, grouped Advanced keys and plain timing (des
     expect(document.body.textContent).toContain("More pages");
     expect(document.body.textContent).not.toContain("Pages not in the sidebar");
   });
+
+  it("an integration on from the config file is a read-only switch in the on colour, with a lock and a description; one on from the dashboard is the same colour", async () => {
+    view.keys.push(row("integrations", { kind: "json", value: '{"eval_source":"agents-home"}', source: "override" }));
+    view.integrations = [
+      { kind: "tacit", interface: "TacitLedger", plugin: "agents-home", source: "config", configured: "agents-home" },
+      { kind: "eval_source", interface: "SkillEvalSource", plugin: "agents-home", source: "setting", configured: "none" },
+    ];
+    try {
+      await show("integrations");
+      const config = await screen.findByRole("switch", { name: "Integration: TacitLedger" });
+      const dashboard = screen.getByRole("switch", { name: "Integration: SkillEvalSource" });
+      const track = (el: HTMLElement) => (el.firstElementChild as HTMLElement).className;
+      expect(track(config)).toContain("bg-text-1");
+      expect(track(config)).toBe(track(dashboard));
+      expect(config.className).not.toContain("opacity-50");
+      expect(dashboard.className).toContain("disabled:opacity-50");
+      expect(config.getAttribute("aria-readonly")).toBe("true");
+      expect((config as HTMLButtonElement).disabled).toBe(false);
+      const rowOf = (kind: string) => document.querySelector(`[data-integration="${kind}"]`) as HTMLElement;
+      expect(within(rowOf("tacit")).getByTestId("integration-lock").getAttribute("aria-hidden")).toBe("true");
+      expect(within(rowOf("eval_source")).queryByTestId("integration-lock")).toBeNull();
+      expect(rowOf("tacit").textContent).toContain("Set in the config file; change it there");
+      const described = document.getElementById(config.getAttribute("aria-describedby") ?? "");
+      expect(described?.textContent).toContain("Set in the config file; change it there");
+      expect(described?.textContent).toContain("plugins.tacit");
+      expect(dashboard.getAttribute("aria-describedby")).toBeNull();
+      fireEvent.focus(config);
+      expect(screen.getByRole("tooltip").textContent).toContain("plugins.tacit");
+      fireEvent.click(config);
+      expect(posts).toEqual([]);
+      expect(screen.queryByRole("dialog")).toBeNull();
+    } finally {
+      view.keys.pop();
+      delete view.integrations;
+    }
+  });
 });
