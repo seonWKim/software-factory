@@ -8,6 +8,7 @@ import type { Timestamp, UserId } from "../../../core/types.js";
 import type { Alert, NewAlert } from "../../../interfaces/factory-store.js";
 import type { Row, SqlDriver } from "../../../state/index.js";
 import { newId } from "./rows.js";
+import { insertOnce } from "./store-steps.js";
 
 /**
  * Stores `input` unless its pattern alerted after `window_start`. A dismissal at or after the pattern's last alert
@@ -15,17 +16,12 @@ import { newId } from "./rows.js";
  */
 export async function recordAlert(db: SqlDriver, now: Timestamp, input: NewAlert, window_start: Timestamp): Promise<{ created: true; alert: Alert } | { created: false }> {
   return db.transaction(async (tx) => {
-    let due: boolean;
-    try {
-      await tx.run("INSERT INTO controller_alert_patterns (pattern_key, last_alert_at) VALUES (?, ?)", [input.pattern_key, now]);
-      due = true;
-    } catch (err) {
-      if (!db.isDuplicateKey(err)) throw err;
-      due = (await tx.run(
+    const due =
+      (await insertOnce(db, tx, "INSERT INTO controller_alert_patterns (pattern_key, last_alert_at) VALUES (?, ?)", [input.pattern_key, now])) ||
+      (await tx.run(
         "UPDATE controller_alert_patterns SET last_alert_at = ? WHERE pattern_key = ? AND (last_alert_at <= ? OR (dismissed_at >= last_alert_at AND last_alert_at < ?))",
         [now, input.pattern_key, window_start, now],
       )) === 1;
-    }
     if (!due) return { created: false as const };
     const alert: Alert = { ...input, id: newId("al"), created_at: now };
     await tx.run(
