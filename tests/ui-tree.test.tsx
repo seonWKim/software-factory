@@ -126,6 +126,20 @@ describe("items tree", () => {
     expect(within(rowOf(tree, "Phase one")).getByRole("link", { name: "PR #41" }).getAttribute("href")).toBe("https://github.com/o/r/pull/41");
   });
 
+  it("each row is a compact ItemRow with its item's ID only as data-item-id; a held row's second line names what holds it", async () => {
+    const tree = await mount();
+    const row = rowOf(tree, "Phase two").querySelector<HTMLElement>("[data-item-row]")!;
+    expect(row.dataset.itemRow).toBe("compact");
+    expect(row.dataset.itemId).toBe("wi_12");
+    expect(row.querySelector("[data-row-second]")!.textContent).toBe("Held behind Phase one");
+    // It quotes a stored title, so it is raw text (the responsive raw-name rule skips it).
+    expect(row.querySelector("[data-row-second] [data-raw]")!.textContent).toBe("Held behind Phase one");
+    expect(rowOf(tree, "Phase one").querySelector("[data-row-second]")).toBeNull();
+    // The chevron and the indentation stay outside the ItemRow.
+    expect(row.querySelector("[slot=chevron]")).toBeNull();
+    expect(row.parentElement!.className).toMatch(/\bpl-\d/);
+  });
+
   it("never moves a held item under the item it waits for", () => {
     const nodes = buildTree(ROWS, { state: null, q: "", showClosed: false });
     const phase1 = nodes.flatMap((n) => n.children).find((n) => n.item.id === "wi_11")!;

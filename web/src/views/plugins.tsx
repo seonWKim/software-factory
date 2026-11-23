@@ -22,6 +22,10 @@ import { ModelsTab } from "./plugins-models.js";
 import { MergeButton } from "./merge-button.js";
 import { withNodes } from "./standing.js";
 import { Badge } from "../components/ui/badge.js";
+import { useEvalSuites } from "../api/evals.js";
+import { LINK_CLASS } from "../components/ui/link-style.js";
+import { Link } from "../nav.js";
+import { BASE } from "../pages.js";
 import { Card, SUB_TITLE } from "../components/ui/card.js";
 
 // The Plugins page (design 09-dashboard-app, 2026-11-16): what the agents can use, in four tabs (MCP, Skills, Tools, Models),
@@ -103,11 +107,11 @@ function useReporter(tab: Tab, setReport: (r: { tab: Tab; report: Report } | nul
 const freshKey = (kind: ImportItem["kind"], name: string, source?: string): string => (kind === "skill" ? `skill\n${source ?? ""}\n${name}` : `mcp_server\n${name}`);
 
 /** A name in mono, with its description under it; `fresh`: a row the last import stored, marked New. */
-function NameCell({ name, description, fresh = false }: { name: string; description: string | null; fresh?: boolean }) {
+function NameCell({ name, description, fresh = false, href }: { name: string; description: string | null; fresh?: boolean; href?: string | undefined }) {
   return (
     <div data-new={fresh ? "" : undefined} className="flex min-w-0 flex-col gap-0.5">
       <span className="flex min-w-0 flex-wrap items-center gap-1.5">
-        <span className="text-xs wrap-anywhere">{name}</span>
+        {href === undefined ? <span className="text-xs wrap-anywhere">{name}</span> : <Link href={href} className={cn(LINK_CLASS, "text-xs wrap-anywhere")}>{name}</Link>}
         {fresh && <Badge level="running">{t("plugins.new")}</Badge>}
       </span>
       {description && <span className="text-xs text-pretty wrap-anywhere text-text-2">{description}</span>}
@@ -431,8 +435,14 @@ const SKILL_STATE: Record<"missing" | "changed", MessageKey> = { missing: "plugi
 
 function SkillsTab({ view, query, now, report, fresh }: { view: PluginsView; query: string; now: number; report: Reporter; fresh: Fresh }) {
   type Row = PluginsView["skills"][number];
+  const suites = new Set(useEvalSuites().data?.skills ?? []);
+  /** The eval page of a row whose folder joined with its name is a suite's skill_ref. */
+  const evalHref = (r: Row): string | undefined => {
+    const key = `${r.folder}/${r.name}`;
+    return suites.has(key) ? `${BASE}evals/${encodeURIComponent(key)}` : undefined;
+  };
   const columns: Column<Row>[] = [
-    { key: "name", header: t("plugins.colName"), render: (r) => <NameCell name={r.name} description={r.description} fresh={r.source !== undefined && (fresh?.has(freshKey("skill", r.name, r.source)) ?? false)} /> },
+    { key: "name", header: t("plugins.colName"), render: (r) => <NameCell name={r.name} description={r.description} href={evalHref(r)} fresh={r.source !== undefined && (fresh?.has(freshKey("skill", r.name, r.source)) ?? false)} /> },
     { key: "source", header: t("plugins.colSource"), render: (r) => <span className="text-xs whitespace-nowrap">{t(r.source ? SOURCE[r.source] : "plugins.sourceFolder")}</span> },
     { key: "folder", header: t("plugins.colFolder"), render: (r) => <span className="font-mono text-xs wrap-anywhere">{r.folder}</span> },
     {

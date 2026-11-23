@@ -48,3 +48,6 @@ export function useEvalCompare(skill: string, a: string | null, b: string | null
   const url = a && b ? `${base(skill, "compare")}?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}` : null;
   return useQuery({ queryKey: [url], queryFn: () => getJson<EvalComparison>(url!), enabled: url !== null });
 }
+
+/** The skill_refs that have a suite (GET /api/v1/evals); read once when the page opens, never polled. */
+export const useEvalSuites = () => useApi<{ skills: string[] }>("/api/v1/evals", false);

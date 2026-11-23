@@ -5,6 +5,7 @@
 //   (`factory eval results <skill> --by version,model --json`, skillEvalGrid).
 // - GET /api/v1/evals/<skill>/compare?a=<run-a>&b=<run-b>: the two runs, the gap, the noise band and within_noise
 //   (`factory eval compare <run-a> <run-b> --json`, compareSkillEvalRuns); 404 when a run is unknown or of another skill.
+// - GET /api/v1/evals: { skills }, the distinct skill_ref of every suite, sorted (the Skills tab links the rows it names).
 // <skill> is the suite's skill_ref, URL-encoded (it holds a slash). Read-only: no run starts here and nothing is
 // written. Every stored string leaves through the Withholder. The grid and compare functions come from the route
 // table (read-routes.ts, the root), as main.ts passes them to the CLI, so this feature has no runtime import of core.
@@ -14,6 +15,9 @@ import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { type ApiResult, apiError } from "./api.js";
 import { Withholder } from "./withhold.js";
+
+/** The suite list: GET /api/v1/evals. */
+export const EVALS_LIST_PATH = "/api/v1/evals";
 
 /** /api/v1/evals/<skill>/<read>, with the URL-encoded skill_ref and the read as its groups. */
 export const EVALS_PATH = /^\/api\/v1\/evals\/([^/]+)\/(runs|grid|compare)$/;
@@ -54,4 +58,11 @@ export async function readSkillEvals(d: EvalsDeps, reads: SkillEvalReads, url: U
   const ofSkill = new Set(suites.filter((s) => s.skill_ref === skill).map((s) => s.id));
   if (!ra || !rb || !ofSkill.has(ra.suite_id) || !ofSkill.has(rb.suite_id)) return apiError(404, "No such eval run for this skill.");
   return { status: 200, value: await withheld(w, reads.compare(ra, rb)) };
+}
+
+/** Answers GET /api/v1/evals: the distinct skill_ref of every suite, sorted, each through the Withholder. */
+export async function readEvalSuites(d: EvalsDeps): Promise<ApiResult> {
+  const w = new Withholder(d.scanner);
+  const refs = [...new Set((await d.store.listSkillEvalSuites()).map((s) => s.skill_ref))].sort();
+  return { status: 200, value: { skills: await withheld(w, refs) } };
 }

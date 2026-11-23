@@ -42,9 +42,12 @@ describe("Tasks page", () => {
     expect(within(screen.getByRole("list", { name: dayLabel("2026-11-13") })).getByText("tk_soon")).toBeTruthy();
     expect(card("tk_soon").textContent).toContain("#home");
     expect(screen.getByRole("list", { name: "No date" }).textContent).toContain("tk_inbox");
-    // No raw ID on the row: the work's state sits on the details line, under the title.
+    // No raw ID on the row: the work's state is the row's badge, before the title; the row carries the ID as data-item-id.
     expect(card("tk_built").textContent).not.toContain("wi_1");
-    expect(card("tk_built").querySelector("[data-details] [data-work]")).not.toBeNull();
+    expect(card("tk_built").querySelector("[data-row-badge] [data-work]")).not.toBeNull();
+    expect(card("tk_built").dataset.itemId).toBe("wi_1");
+    // An unbuilt task has no work item: data-task only.
+    expect(card("tk_soon").hasAttribute("data-item-id")).toBe(false);
     expect(menuItems(card("tk_built"))).not.toContain("Build this");
   });
 
@@ -95,17 +98,23 @@ describe("Tasks page", () => {
     });
   });
 
-  it("Build this, first in an unbuilt task's menu, posts the task's ID with the token; a refusal shows on the row", async () => {
+  it("Build this, an unbuilt task's one primary action, posts the task's ID with the token; a refusal shows on the row's second line", async () => {
     await show();
-    expect(menuItems(card("tk_now"))[0]).toBe("Build this");
-    chooseMenu(card("tk_now"), "Build this");
+    const build = (id: string) => within(card(id)).getByRole("button", { name: "Build this" });
+    expect(build("tk_now").closest("[data-row-action]")).not.toBeNull();
+    expect(menuItems(card("tk_now"))).not.toContain("Build this");
+    // Its title is plain text: there is no item page to link.
+    expect(within(card("tk_now")).queryByRole("link", { name: "tk_now" })).toBeNull();
+    fireEvent.click(build("tk_now"));
     await waitFor(() => expect(s.posts).toHaveLength(1));
     expect(s.posts[0]!.url).toBe("/api/v1/tasks/build");
     expect(new Headers(s.posts[0]!.init.headers).get("x-csrf-token")).toBe(TOKEN);
     expect(JSON.parse(String(s.posts[0]!.init.body))).toEqual({ id: "tk_now" });
     s.answer = { status: 409, body: { error: "no project is stored yet" } };
-    chooseMenu(card("tk_late"), "Build this");
-    expect((await within(card("tk_late")).findByRole("alert", undefined, SLOW)).textContent).toBe("no project is stored yet");
+    fireEvent.click(build("tk_late"));
+    const alert = await within(card("tk_late")).findByRole("alert", undefined, SLOW);
+    expect(alert.textContent).toBe("no project is stored yet");
+    expect(alert.closest("[data-row-second]")).not.toBeNull();
   });
 
   it("with no commands actor a row has no menu, so no Build this", async () => {
@@ -113,6 +122,7 @@ describe("Tasks page", () => {
     await show();
     expect(card("tk_now").querySelector("[data-row-menu]")).toBeNull();
     expect(document.querySelector("[data-task] [aria-haspopup=menu]")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Build this" })).toBeNull();
   });
 
   describe("calendar events leave the Tasks list (design 02-tasks)", () => {
@@ -289,10 +299,11 @@ describe("Tasks page", () => {
 });
 
 describe("the description dialog (design 02-tasks and 09-dashboard-tasks)", () => {
-  const open = (id: string) => fireEvent.click(within(card(id)).getByRole("button", { name: `Description: ${id}` }));
+  // The title is plain text on an unbuilt task (design 09-dashboard-tasks, one ItemRow): Description is in the ⋯ menu.
+  const open = (id: string) => chooseMenu(card(id), "Description");
   const dialog = () => document.querySelector<HTMLDialogElement>("dialog[data-dialog]");
 
-  it("the title opens a dialog with the stored description in a textarea, outside the row, so the row keeps its children", async () => {
+  it("Description in the menu opens a dialog with the stored description in a textarea, outside the row, so the row keeps its children", async () => {
     s.current = view({ today: { overdue: [row("tk_late", { due_date: "2026-11-10", body: "the old notes" })], due: [] } });
     await show();
     const before = card("tk_late").innerHTML;
@@ -341,15 +352,15 @@ describe("the description dialog (design 02-tasks and 09-dashboard-tasks)", () =
     await show();
     const link = within(card("tk_built")).getByRole("link", { name: "tk_built" });
     expect(link.getAttribute("href")).toBe("/app/items/wi_1");
-    expect(within(card("tk_built")).queryByRole("button", { name: "Description: tk_built" })).toBeNull();
     chooseMenu(card("tk_built"), "Description");
     expect(dialog()!.textContent).toContain("Built as wi_1: the work item keeps the text it was built with");
   });
 
-  it("with no commands actor the title opens nothing", async () => {
+  it("with no commands actor the title is plain text and the row has no menu", async () => {
     s.current = view({ csrf_token: null, can_build: false });
     await show();
-    expect(within(card("tk_late")).queryByRole("button", { name: "Description: tk_late" })).toBeNull();
+    expect(within(card("tk_late")).getByText("tk_late").tagName).toBe("P");
+    expect(within(card("tk_late")).queryByRole("button")).toBeNull();
   });
 });
 
@@ -384,16 +395,24 @@ describe("a built task's Work row: queued and pending states", () => {
   }
 });
 
-// A row is checkbox, then the title on one line (cut with an ellipsis, the full title on hover), then the details and
-// state on a second line, then the menu: nothing beside the title takes its width (owner feedback 2026-11-20).
+// A row is an ItemRow (design 09-dashboard-tasks): the checkbox, then one line in the row order, the state badge, the
+// title (cut with an ellipsis, the full title on hover), the due time as why, the list as project and the other
+// details, then the menu. A second line only for an error.
 describe("a task row's layout", () => {
-  it("keeps the title on one truncated line with its full text as a tooltip, and the details and state under it", async () => {
+  it("puts the checkbox before the badge, then the truncated title, the due time and the list, in the comfortable variant", async () => {
     await show();
     const title = card("tk_built").querySelector<HTMLElement>("a[title]")!;
     expect(title.getAttribute("title")).toBe("tk_built");
     expect(title.className).toContain("truncate");
-    const details = card("tk_built").querySelector<HTMLElement>("[data-details]")!;
-    expect(details.previousElementSibling).toBe(title.closest("div > *"));
-    expect(card("tk_built").className).not.toContain("flex-wrap");
+    const line = title.parentElement!;
+    expect(line.firstElementChild!.hasAttribute("data-row-badge")).toBe(true);
+    expect(line.children[1]).toBe(title);
+    expect(card("tk_built").dataset.itemRow).toBe("comfortable");
+    const soon = card("tk_soon");
+    expect(soon.querySelector("[role=checkbox], input[type=checkbox]")!.compareDocumentPosition(soon.querySelector("[data-row-title]")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(soon.querySelector("[data-row-project]")!.textContent).toBe("#home");
+    // Its group's heading names its due day, so the why slot shows no date (dueText).
+    expect(soon.textContent).not.toContain("2026-11-13");
+    expect(soon.querySelector("[data-row-second]")).toBeNull();
   });
 });

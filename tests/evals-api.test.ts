@@ -118,3 +118,23 @@ describe("GET /api/v1/evals/<skill>/compare", () => {
     expect((await get(store, CLEAN, `/api/v1/evals/${encodeURIComponent(SKILL)}/compare?a=old`)).status).toBe(400);
   });
 });
+
+describe("GET /api/v1/evals", () => {
+  it("lists the distinct skill_refs of every suite, sorted, and writes nothing", async () => {
+    const store = await seeded();
+    await store.createSkillEvalSuite({ id: "s3", skill_ref: SKILL, title: "again", created_by: OWNER });
+    const { proxy, calls } = watched(store);
+    const r = await get(proxy, CLEAN, "/api/v1/evals");
+    expect(r.status).toBe(200);
+    expect(r.value).toEqual({ skills: ["skills/other", SKILL] });
+    expect(calls).toEqual(["listSkillEvalSuites"]);
+  });
+
+  it("withholds a flagged ref", async () => {
+    const { store } = await newStore();
+    await store.createSkillEvalSuite({ id: "s1", skill_ref: "skills/LEAK", title: "t", created_by: OWNER });
+    const r = await get(store, FLAGGING, "/api/v1/evals");
+    expect(JSON.stringify(r.value)).not.toContain("LEAK");
+    expect((r.value as { skills: string[] }).skills[0]).toMatch(/^\[withheld: /);
+  });
+});

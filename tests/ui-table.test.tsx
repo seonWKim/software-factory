@@ -107,11 +107,13 @@ describe("Needs you at 390px", () => {
     expect(document.querySelector("table")).toBeNull();
     const cards = within(screen.getByRole("list", { name: "Needs you" })).getAllByRole("listitem");
     expect(cards.map((c) => c.getAttribute("data-key"))).toEqual(["wi_1", "wi_2"]);
-    const [title, under] = [...cards[0]!.children] as HTMLElement[];
-    expect(within(title!).getByRole("link").textContent).toBe("A rather long title that must wrap on a phone");
-    // The title wraps in a card; it is cut off only in the table.
-    expect(within(title!).getByRole("link").className).not.toMatch(/(^|\s)truncate(\s|$)/);
-    expect(under!.textContent).toContain("Needs approval");
+    expect(cards.map((c) => c.getAttribute("data-item-id"))).toEqual(["wi_1", "wi_2"]);
+    // An ItemRow's first cell is its state; the title, the link, sits under it.
+    const [state, under] = [...cards[0]!.children] as HTMLElement[];
+    expect(state!.textContent).toContain("Needs approval");
+    expect(within(under!).getByRole("link").textContent).toBe("A rather long title that must wrap on a phone");
+    // The title wraps in a card.
+    expect(within(under!).getByRole("link").className).not.toMatch(/(^|\s)truncate(\s|$)/);
     expect(cards[0]!.querySelector("dl")!.textContent).toContain("Waits for your /approve on the spec.");
     for (const el of document.querySelectorAll("*")) expect(el.className).not.toMatch(/overflow-x-(auto|scroll)/);
   });
