@@ -257,6 +257,8 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
     as_of: c.now.toISOString(),
     /** The revision this UI server's build was made from (its dist/ stamp); the app compares it with the one built into it. */
     server_rev: c.d.revision ?? null,
+    /** Local merges whose base push has not reached origin: the waiting push_base actions over all bases. A store read, no forge call. */
+    unpushed_merges: (await s.listBasePushBacklogs()).reduce((n, b) => n + b.waiting, 0),
     plugins: c.d.plugins ?? { issues: null },
     ...(factory === undefined ? {} : { factory }),
     stages,

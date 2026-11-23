@@ -55,6 +55,8 @@ export interface Overview {
   as_of: string;
   /** The revision the UI server's build was made from (its dist/ stamp); compared with WEB_REV. Null: unknown. */
   server_rev?: string | null;
+  /** Local merges waiting for their base push (all bases); absent on an older server. */
+  unpushed_merges?: number;
   stages: Record<string, number>;
   /** The number of Needs-you rows: open items blocked on a person or the budget, plus one per system action (each alarm its own): "Needs you (N)". */
   needs_you: number;

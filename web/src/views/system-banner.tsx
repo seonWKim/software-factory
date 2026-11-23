@@ -34,6 +34,16 @@ export function RevisionBanner({ server, web }: { server: string | null | undefi
   );
 }
 
+/** Local merges whose base push waits (design 09-dashboard-shell): the RevisionBanner's markup; hidden at 0 or unknown. */
+export function UnpushedMerges({ count }: { count: number | undefined }) {
+  if (!count) return null;
+  return (
+    <p role="alert" data-testid="unpushed-merges" className="border-b border-pill-warn-fg bg-pill-warn-bg px-4 py-2 text-sm text-pretty text-pill-warn-fg">
+      {t("unpushed.merges", { count })}
+    </p>
+  );
+}
+
 /** This browser's last seen factory revision (design 09-dashboard-shell): a revision's update toast shows once. */
 export const SEEN_REV_KEY = "sf-factory-rev";
 
