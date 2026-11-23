@@ -119,7 +119,8 @@ describe("accent is not a text colour", () => {
     for (const f of walk("web/src")) expect(readFileSync(f, "utf8"), f).not.toMatch(/text-accent/);
   });
   it("has link and ID styles in link-style.ts as token classes", () => {
-    expect(LINK_CLASS.split(" ")).toEqual(expect.arrayContaining(["text-text-1", "hover:underline"]));
+    expect(LINK_CLASS.split(" ")).toEqual(expect.arrayContaining(["text-text-1", "underline"]));
+    expect(LINK_CLASS).not.toContain("hover:underline");
     expect(ID_CLASS.split(" ")).toEqual(expect.arrayContaining(["text-text-3", "font-mono"]));
     expect(`${LINK_CLASS} ${ID_CLASS}`).not.toContain("accent");
   });

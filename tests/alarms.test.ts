@@ -5,14 +5,14 @@ import { type ControllerDeps } from "../src/core/controller-deps.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import { enqueueImprove, manualWindow, normalizeDetail, patternKey } from "../src/core/improver.js";
-import { AGENT_STALLED } from "../src/core/policy.js";
-import { RECURRING_FAILURE, type RunKind, type RunOutcome, type Timestamp, type WorkerId } from "../src/core/types.js";
-import type { LLMProvider } from "../src/interfaces/llm-provider.js";
+import { AGENT_STALLED, INTERACTIVE, SESSION_ABANDONED } from "../src/core/policy.js";
+import { RECURRING_FAILURE, type Run, type RunKind, type RunOutcome, type Timestamp, type UserId, type WorkerId } from "../src/core/types.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { ChildRestart } from "../src/interfaces/updater.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { alarmCommand, alarmText, alarmsFor, openAlarms } from "../src/ui/alarms.js";
+import { alarmCommand, alarmFullText, alarmText, alarmsFor, openAlarms } from "../src/ui/alarms.js";
+import { UNKNOWN_FAILURE } from "../src/ui/why.js";
 import { FakeAuth } from "./helpers/fakes/runner.js";
 import { FakeSource } from "./helpers/fakes/source.js";
 import { cleanScanner, config, issueRef, silent } from "./helpers/fakes/config.js";
@@ -125,7 +125,10 @@ describe("alarms: zero-token runs", () => {
     expect(alerts[0]).toMatchObject({ pattern: "zero_tokens", error_code: "zero_tokens", count: 3 });
     // The detail adds only how the last run ended: the alarm sentence (alarmText) already says the streak.
     expect(alerts[0]!.detail).toBe("the last failed with b");
-    expect(`${alarmText(alerts[0]!)}: ${alerts[0]!.detail}`).toBe("Alarm: 3 agent runs in a row used no tokens: the last failed with b");
+    // The owner reads the error in words, never its code: "b" has none, so a generic sentence.
+    expect(alarmFullText(alerts[0]!)).toBe(`${alarmText(alerts[0]!)}: the last one failed (${UNKNOWN_FAILURE.charAt(0).toLowerCase()}${UNKNOWN_FAILURE.slice(1, -1)})`);
+    expect(alarmFullText({ ...alerts[0]!, detail: "the last failed with exception" })).toBe("Alarm: 3 agent runs in a row used no tokens: the last one failed (the worker hit an unexpected error)");
+    expect(alarmFullText({ ...alerts[0]!, detail: "the last succeeded" })).toBe("Alarm: 3 agent runs in a row used no tokens: the last one succeeded");
     const probeAt = new Date(clock.now().getTime() + STALL_DEFAULTS.probe_interval_ms).toISOString();
     expect(await store.getClaimPause("model_stall")).toBe(probeAt);
   });
@@ -382,36 +385,137 @@ describe("alarms: recurring patterns", () => {
     expect(retried).toEqual(new Set(hit.map((r) => r.work_item_id)));
   });
 
-  it("a model_stall pattern: once the probe answers, only the pattern's items are held and other items are claimed", async () => {
-    const { store, clock } = await newStore();
-    const llm = { complete: async () => ({ text: "OK", stop_reason: "end", usage: { input_tokens: 1, output_tokens: 1, cost_usd: null } }) } as unknown as LLMProvider;
-    const c = controller(store, clock, { source: new FakeSource(), llm });
-    const stalled: RunOutcome = { status: "failed", error_code: AGENT_STALLED, detail: "no model output for 300000 ms", infra: false };
-    // The recurring stall pattern is known (filed); another stall pattern, stalled twice on one item, is not.
-    await file(store, 100, { error_code: AGENT_STALLED, detail: "no model output for # ms" });
-    const a = await finish(store, stalled);
-    const b = await finish(store, stalled);
-    const unknown = await finish(store, { ...stalled, detail: "first output never came" });
-    await store.enqueueRun({ work_item_id: unknown.work_item_id, kind: "implement", idempotency_key: `${unknown.id}:again` });
-    const again = (await store.claimRun({ worker_id: "w" as WorkerId, kinds: ["implement"], lease_ms: 60_000 }))!;
-    await store.completeRun(again.id, again.lease!.token, { ...stalled, detail: "first output never came" });
-    const { item: other } = await store.createWorkItem(issue(9_002), system, { enqueue: { kind: "triage", idempotency_key: "other" } });
-    for (const r of [a, b, unknown]) await store.enqueueRun({ work_item_id: r.work_item_id, kind: "implement", idempotency_key: `${r.id}:retry` });
-    await store.pauseClaims(clock.now().toISOString() as Timestamp, "model_stall");
-    clock.advance(MIN);
-    expect(await store.claimRun({ worker_id: "w2" as WorkerId, kinds: ["triage", "implement"], lease_ms: 60_000 })).toBeNull();
+});
 
-    await c.tickModelProbe();
-    expect(await store.getClaimPause("model_stall")).toBeNull();
-    for (const r of [a, b]) expect(await store.getWorkItem(r.work_item_id)).toMatchObject({ blocked_on: "human", blocked_reason: RECURRING_FAILURE });
-    expect(await store.getWorkItem(unknown.work_item_id)).toMatchObject({ blocked_on: "none" });
+// Design 05-alarms, decision of 2026-11-23: a stall pattern across items alerts with the stall rate and holds no item.
+describe("alarms: stall patterns", () => {
+  const stalled: RunOutcome = { status: "failed", error_code: AGENT_STALLED, detail: "no model output for 300000 ms", infra: false, usage: USAGE };
+  const stallKey = () => patternKey({ error_code: AGENT_STALLED, detail: "no model output for # ms" });
+  /** `n` stalls, each on a new item, one minute apart. */
+  const stalls = async (store: FactoryStore, clock: FakeClock, n: number) => {
+    const runs = [];
+    for (let i = 0; i < n; i++) {
+      clock.advance(MIN);
+      runs.push(await finish(store, stalled));
+    }
+    return runs;
+  };
+  /** Queues a retry of each of `runs`, then claims every implement run it can: the items whose retry was claimed. */
+  const claimAll = async (store: FactoryStore, runs: readonly Run[]) => {
+    for (const r of runs) await store.enqueueRun({ work_item_id: r.work_item_id, kind: "implement", idempotency_key: `${r.id}:a1` });
     const claimed = new Set<string>();
     for (let w = 2; ; w++) {
-      const r = await store.claimRun({ worker_id: `w${w}` as WorkerId, kinds: ["triage", "implement"], lease_ms: 60_000 });
-      if (!r) break;
+      const r = await store.claimRun({ worker_id: `w${w}` as WorkerId, kinds: ["implement"], lease_ms: 60_000 });
+      if (!r) return claimed;
       claimed.add(r.work_item_id);
     }
-    expect(claimed).toEqual(new Set([other.id, unknown.work_item_id]));
+  };
+
+  it("one stall each on 6 items, matching one pattern, holds none of them; one alert names the pattern and the rate", async () => {
+    const { store, clock } = await newStore();
+    const c = controller(store, clock, { source: new FakeSource() });
+    // 14 agent runs finish in the window: 8 succeed, 6 stall with one pattern.
+    for (let i = 0; i < 8; i++) await finish(store, { status: "succeeded", summary: "ok", data: { tokens: 10 } }, "review");
+    const hit = await stalls(store, clock, 6);
+    await c.tickAlarms();
+    await c.tickAlarms();
+    for (const r of hit) {
+      expect(await store.getWorkItem(r.work_item_id)).toMatchObject({ blocked_on: "none", blocked_reason: null });
+      expect((await store.listStateChanges(r.work_item_id)).map((ch) => ch.reason)).not.toContain(RECURRING_FAILURE);
+    }
+    const alerts = (await store.listAlerts({ limit: 10 })).filter((a) => a.error_code === AGENT_STALLED);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatchObject({ pattern: "repeated_error", pattern_key: `repeated_error:${stallKey()}`, count: 6 });
+    expect(alerts[0]!.detail).toBe("no model output for # ms; stall rate: 6 of 14 agent runs in the last 60 minutes stalled");
+    // Each stalled run's retry is claimed.
+    expect(await claimAll(store, hit)).toEqual(new Set(hit.map((r) => r.work_item_id)));
+  });
+
+  it("the re-raise and the filed-pattern hold hold no item for stall runs", async () => {
+    const { store, clock } = await newStore();
+    const c = controller(store, clock, { source: new FakeSource() });
+    const { run } = await enqueueImprove({ store, clock: new FakeClock() }, PROJECT_KEY, "manual");
+    const { report } = await store.recordImproveReport({ run_id: run.id, project: PROJECT_KEY, ...manualWindow(new Date()), groups: [], patterns: [] });
+    const row = (await store.takeFiledPattern({ project: PROJECT_KEY, pattern_key: stallKey(), error_code: AGENT_STALLED, detail: "no model output for # ms", report_id: report.id })).row;
+    await store.setFiledPatternRef(row.id, row.report_id, issueRef(100));
+    const hit = [...(await stalls(store, clock, 3))];
+    await c.tickAlarms();
+    hit.push(...(await stalls(store, clock, 3)));
+    await c.tickAlarms();
+    expect((await store.listAlerts({ limit: 50 })).map((a) => a.pattern_key)).toContain(`recurring:${stallKey()}`);
+    for (const r of hit) expect(await store.getWorkItem(r.work_item_id)).toMatchObject({ blocked_on: "none" });
+    expect(await claimAll(store, hit)).toEqual(new Set(hit.map((r) => r.work_item_id)));
+  });
+});
+
+// Design 05-alarms, decision of 2026-11-23: a stall that followed a host sleep and an abandoned interactive run are no failures to act on.
+describe("alarms: runs that are not failures a person must act on", () => {
+  const stalled: RunOutcome = { status: "failed", error_code: AGENT_STALLED, detail: "no model output for 300000 ms", infra: false, usage: USAGE };
+  const stallKey = () => patternKey({ error_code: AGENT_STALLED, detail: "no model output for # ms" });
+  const abandon: RunOutcome = { status: "failed", error_code: SESSION_ABANDONED, detail: "the person abandoned the session", infra: false };
+  /** `n` stalls, each on a new item, one minute apart; `slept` of them (the first) recorded a host sleep. */
+  const stalls = async (store: FactoryStore, clock: FakeClock, n: number, slept: number) => {
+    const runs = [];
+    for (let i = 0; i < n; i++) {
+      clock.advance(MIN);
+      const run = await finish(store, stalled);
+      if (i < slept) await store.recordHostSleep({ worker_id: "w" as WorkerId, woke_at: clock.now().toISOString() as Timestamp, gap_ms: 600_000, run_id: run.id });
+      runs.push(run);
+    }
+    return runs;
+  };
+  const repeated = async (store: FactoryStore) => (await store.listAlerts({ limit: 50 })).filter((a) => a.pattern === "repeated_error");
+  /** One interactive session on a new item, abandoned by the owner. */
+  const abandonSession = async (store: FactoryStore) => {
+    const { item } = await store.createWorkItem(issue(next++), system);
+    const patch = { stage: "RUNNING" as const, allowed_paths: ["src/"] };
+    const r = await store.startSession({ id: item.id, expected_version: 1, actor: { kind: "user", id: "github:1" as UserId }, patch, reason: "session_started", detail: {}, owner: "session:h:1", lease_ms: 60_000, transcript_url: null });
+    if (!r.ok) throw new Error(r.reason);
+    expect(r.run.kind).toBe(INTERACTIVE);
+    await store.completeRun(r.run.id, 1, abandon);
+  };
+
+  it("a stall that followed a host sleep is left out of the count; the stall rate still counts every stall", async () => {
+    const { store, clock } = await newStore();
+    const c = controller(store, clock, { source: new FakeSource() });
+    await stalls(store, clock, 3, 1);
+    await c.tickAlarms();
+    expect(await repeated(store)).toEqual([]);
+    // A stall with no host sleep on it counts as before: three counted stalls alert.
+    await stalls(store, clock, 1, 0);
+    await c.tickAlarms();
+    const alerts = await repeated(store);
+    expect(alerts.map((a) => [a.pattern_key, a.count])).toEqual([[`repeated_error:${stallKey()}`, 3]]);
+    expect(alerts[0]!.detail).toBe("no model output for # ms; stall rate: 4 of 4 agent runs in the last 60 minutes stalled");
+  });
+
+  it("a stall pattern whose runs followed host sleeps stores no re-raise", async () => {
+    const { store, clock } = await newStore();
+    const c = controller(store, clock, { source: new FakeSource() });
+    const { run } = await enqueueImprove({ store, clock: new FakeClock() }, PROJECT_KEY, "manual");
+    const { report } = await store.recordImproveReport({ run_id: run.id, project: PROJECT_KEY, ...manualWindow(new Date()), groups: [], patterns: [] });
+    const row = (await store.takeFiledPattern({ project: PROJECT_KEY, pattern_key: stallKey(), error_code: AGENT_STALLED, detail: "no model output for # ms", report_id: report.id })).row;
+    await store.setFiledPatternRef(row.id, row.report_id, issueRef(100));
+    await stalls(store, clock, 3, 3);
+    await c.tickAlarms();
+    await stalls(store, clock, 3, 3);
+    await c.tickAlarms();
+    expect(await repeated(store)).toEqual([]);
+  });
+
+  it("an abandoned interactive run raises no repeated-error alert, alone or among others with the same code", async () => {
+    const { store, clock } = await newStore();
+    const c = controller(store, clock, { source: new FakeSource() });
+    for (let i = 0; i < 3; i++) await abandonSession(store);
+    await c.tickAlarms();
+    expect(await repeated(store)).toEqual([]);
+    // Runs of another kind with the same code count as before; the abandoned interactive runs do not add to them.
+    for (let i = 0; i < 2; i++) await finish(store, abandon);
+    await c.tickAlarms();
+    expect(await repeated(store)).toEqual([]);
+    await finish(store, abandon);
+    await c.tickAlarms();
+    expect((await repeated(store)).map((a) => [a.error_code, a.count])).toEqual([[SESSION_ABANDONED, 3]]);
   });
 });
 

@@ -9,8 +9,8 @@ import { readStoredProject } from "../core/project-labels.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
-import { type Check, type CheckStatus, checkStatus } from "../core/health-check.js";
-import { type Activity, BackgroundSnapshot } from "./background-refresh.js";
+import { type Check, type CheckAction, type CheckStatus, checkStatus } from "../core/health-check.js";
+import { BackgroundSnapshot } from "./background-refresh.js";
 import { Withholder } from "./withhold.js";
 
 export const HEALTH_MIN_INTERVAL_MS = 60_000;
@@ -52,20 +52,27 @@ interface RawRun {
 
 /**
  * One row of the report: `msg` is the sentence Health shows; `detail`, when the check has one, the raw text behind
- * Details; `since` / `next`, when the check names a time, its ISO instants (the page shows them in local time).
+ * Details; `action`, when the row offers one, what the page opens (the Add model credential dialog); `since` / `next`,
+ * when the check names a time, its ISO instants (the page shows them in local time).
  */
 export interface HealthRow {
   status: CheckStatus;
   msg: string;
   detail?: string;
+  action?: CheckAction;
   since?: string;
   next?: string;
 }
 
 /** What GET /api/health returns. Every `msg` and `detail` has passed through the Withholder. */
 export interface HealthReport {
-  checked_at: string;
+  /** When the reported run finished; null while `pending`. */
+  checked_at: string | null;
   checks: HealthRow[];
+  /** No run has finished yet (the server's stored report, design 09-health): no checks, the page keeps its placeholder. */
+  pending: boolean;
+  /** A run is going: a newer report follows. */
+  refreshing: boolean;
 }
 
 /**
@@ -77,14 +84,21 @@ const PATH = /(?<=^|[\s(])(?<!(?:GET|POST|PUT|PATCH|DELETE) )~?\/[^\s;,()'"]+/g;
 /** A check as a report row: its `plain` sentence, else its text with every path moved behind Details, else its text. */
 function row(c: Check): HealthRow {
   const plain = c.plain ?? c.msg.replace(PATH, "(path in Details)");
-  const times = { ...(c.since !== undefined && { since: c.since }), ...(c.next !== undefined && { next: c.next }) };
-  return plain === c.msg ? { status: checkStatus(c), msg: c.msg, ...times } : { status: checkStatus(c), msg: plain, detail: c.msg, ...times };
+  const extra = { ...(c.action !== undefined && { action: c.action }), ...(c.since !== undefined && { since: c.since }), ...(c.next !== undefined && { next: c.next }) };
+  return plain === c.msg ? { status: checkStatus(c), msg: c.msg, ...extra } : { status: checkStatus(c), msg: plain, detail: c.msg, ...extra };
+}
+
+/** A group's checks (one result, one `plain`) as one row: the first's, with every check's text behind Details. */
+function groupRow(members: readonly Check[]): HealthRow {
+  const first = row(members[0]!);
+  return members.length === 1 ? first : { ...first, detail: members.map((c) => c.msg).join("\n") };
 }
 
 /**
  * The report's rows, in the checks' order (design 09-health, 2026-11-20): each check in plain words with its raw text as
  * `detail`, and every GitHub status-label check folded into one row where the first stood: "GitHub labels: all present",
- * or one warn "GitHub labels: N missing (run: npm run setup)" for N missing or unchecked, their lines in `detail`.
+ * or one warn "GitHub labels: N missing (run: npm run setup)" for N missing or unchecked, their lines in `detail`. The
+ * checks of one `group` (one cause, such as the three sandbox lines) fold the same way into one row (2026-11-23).
  */
 export function reportRows(checks: readonly Check[]): HealthRow[] {
   const labels = checks.filter((c) => c.label !== undefined);
@@ -92,18 +106,26 @@ export function reportRows(checks: readonly Check[]): HealthRow[] {
   const folded: HealthRow = missing.length === 0
     ? { status: "ok", msg: "GitHub labels: all present", detail: labels.map((c) => c.msg).join("\n") }
     : { status: "warn", msg: `GitHub labels: ${missing.length} missing (run: npm run setup)`, detail: missing.map((c) => c.msg).join("\n") };
-  return checks.flatMap((c) => (c.label === undefined ? [row(c)] : c === labels[0] ? [folded] : []));
+  const groups = new Map<string, Check[]>();
+  for (const c of checks) if (c.label === undefined && c.group !== undefined) groups.set(c.group, [...(groups.get(c.group) ?? []), c]);
+  return checks.flatMap((c) => {
+    if (c.label !== undefined) return c === labels[0] ? [folded] : [];
+    const members = c.group === undefined ? undefined : groups.get(c.group)!;
+    if (members === undefined) return [row(c)];
+    return c === members[0] ? [groupRow(members)] : [];
+  });
 }
 
 /**
  * Runs the checks at most once per `min_interval_ms` per process (measured between run starts), whoever
- * asks: every read of the report counts. A request during a run waits for that run.
+ * asks: every read of the report counts. A request during a run waits for that run. After `serveStored()` (the UI
+ * server) a report never waits: it is the stored one, refreshed in the background (design 09-health, 2026-11-19).
  * In-process state on purpose: it is a per-process rate limit on a read-only probe, not shared state.
  */
 export class HealthMonitor {
   private last: RawRun | null = null;
   private inflight: Promise<RawRun> | null = null;
-  private snapshot: BackgroundSnapshot<RawRun> | null = null;
+  private stored: BackgroundSnapshot<RawRun> | null = null;
 
   constructor(
     private readonly run: () => Promise<Check[]>,
@@ -129,7 +151,7 @@ export class HealthMonitor {
     try {
       return await this.execute(started_at);
     } catch (err) {
-      return this.failed(started_at, err);
+      return this.failed(started_at, this.clock.now(), err);
     }
   }
 
@@ -139,54 +161,46 @@ export class HealthMonitor {
   }
 
   /** doctor would stop on this error; the report shows it as one FAIL instead (scanned like any message). */
-  private failed(started_at: Date, err: unknown): RawRun {
+  private failed(started_at: Date, checked_at: Date, err: unknown): RawRun {
     const checks = [{ ok: false, msg: `health checks could not finish: ${err instanceof Error ? err.message.slice(0, 120) : "error"}` }];
-    return { started_at, checked_at: this.clock.now(), checks };
+    return { started_at, checked_at, checks };
   }
 
   /**
-   * From now on `report` answers from the last run at once and the checks run in the background (design 09-health,
-   * 2026-11-19): every `min_interval_ms` while the page is in use, and after `refresh()`. The first report waits for
-   * the first run only; a run that throws keeps the last good one. `activity` is shared with the other routes' snapshots,
-   * so a read of any of them keeps this one refreshing. Not started: the on-demand behaviour above.
+   * From now on `report` answers from the stored run at once (design 09-health, 2026-11-19): `pending` before the
+   * first run ends, and a read starts a background run only when the stored one is `min_interval_ms` old or
+   * `refreshNow()` marked it stale. No timer. A run that throws keeps the last good one. A second call does nothing.
    */
-  start(activity?: Activity): void {
-    this.snapshot ??= new BackgroundSnapshot(() => this.execute(this.clock.now()), this.clock, this.min_interval_ms, activity);
-    this.snapshot.start();
+  serveStored(): void {
+    this.stored ??= new BackgroundSnapshot(() => this.execute(this.clock.now()), this.clock, this.min_interval_ms);
   }
 
-  /** Stops the background runs and goes back to checking on request. */
-  stop(): void {
-    this.snapshot?.stop();
-    this.snapshot = null;
+  /** After a write: marks the stored run stale and starts the next run now. Does nothing before `serveStored()`. */
+  refreshNow(): void {
+    this.stored?.markStale();
+    this.stored?.refreshInBackground();
   }
 
-  /** Starts a background run now (after a write); does nothing when not started. */
-  refresh(): void {
-    this.snapshot?.refreshInBackground();
-  }
-
-  private async current(): Promise<RawRun> {
-    if (!this.snapshot) return this.latest();
-    try {
-      return (await this.snapshot.read()).value;
-    } catch (err) {
-      return this.failed(this.clock.now(), err);
-    }
+  private async current(): Promise<{ run: RawRun | null; refreshing: boolean }> {
+    if (!this.stored) return { run: await this.latest(), refreshing: false };
+    const r = this.stored.read();
+    if (r.state === "ready") return { run: r.value, refreshing: r.refreshing };
+    if (r.state === "failed") return { run: this.failed(r.at, r.at, r.error), refreshing: false };
+    return { run: null, refreshing: true };
   }
 
   /** The checks for the API as report rows (`reportRows`), every message and detail through the Withholder. */
   async report(scanner: EgressScanner): Promise<HealthReport> {
-    const r = await this.current();
+    const { run, refreshing } = await this.current();
+    if (!run) return { checked_at: null, checks: [], pending: true, refreshing };
     const w = new Withholder(scanner);
     const checks: HealthRow[] = [];
-    for (const c of reportRows(r.checks)) {
+    for (const c of reportRows(run.checks)) {
       // `since` and `next` are instants the checks computed, never outside text: they pass as they are.
       const { detail, ...rest } = c;
       const msg = (await w.plain(c.msg)).text;
       checks.push(detail === undefined ? { ...rest, msg } : { ...rest, msg, detail: (await w.plain(detail)).text });
     }
-    return { checked_at: r.checked_at.toISOString(), checks };
+    return { checked_at: run.checked_at.toISOString(), checks, pending: false, refreshing };
   }
 }
-

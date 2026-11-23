@@ -75,4 +75,15 @@ export function routeFor(pathname: string): Route {
   return { page: PAGES.find((p) => p.path === rest) ?? TASKS, itemId: null };
 }
 
+/** The skill_ref of an evals page path under /app/ (`evals/<skill>`, the skill URL-encoded), or null. */
+export function evalsRoute(pathname: string): string | null {
+  const m = /^evals\/([^/]+)$/.exec(restOf(pathname));
+  if (!m) return null;
+  try {
+    return decodeURIComponent(m[1]!) || null;
+  } catch {
+    return null;
+  }
+}
+
 export const itemPath = (id: string) => `${BASE}items/${encodeURIComponent(id)}`;

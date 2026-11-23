@@ -78,7 +78,7 @@ function Row({ node, now, byNumber, byId }: { node: TreeNode; now: number; byNum
       action={it.change_ref !== null && <PrLink number={it.change_ref} url={it.change_url} />}
       menuLabel={t("items.more", { title })}
       copyId={it.id}
-      second={waits && t("tree.heldBehind", { title: waitsTitle })}
+      second={waits && <span data-raw={waits.title !== null ? "" : undefined} className="break-words">{t("tree.heldBehind", { title: waitsTitle })}</span>}
     />
   );
 }
@@ -95,11 +95,11 @@ function NodeItem(props: { node: TreeNode; now: number; byNumber: ReadonlyMap<nu
         {({ hasChildItems, isExpanded, level }) => (
           <div className={cn("flex items-start gap-1 border-b border-border pr-1", indentFor(level))}>
             {hasChildItems ? (
-              <Button slot="chevron" className="inline-flex h-7 w-5 shrink-0 items-center justify-center text-text-2" aria-label={isExpanded ? t("tree.collapse") : t("tree.expand")}>
+              <Button slot="chevron" className="inline-flex h-7 w-6 shrink-0 items-center justify-center text-text-2" aria-label={isExpanded ? t("tree.collapse") : t("tree.expand")}>
                 {isExpanded ? "▾" : "▸"}
               </Button>
             ) : (
-              <span className="w-5 shrink-0" aria-hidden />
+              <span className="w-6 shrink-0" aria-hidden />
             )}
             <Row {...props} />
           </div>

@@ -153,19 +153,24 @@ export function Timeline({ data, windowMs, highlight }: { data: WindowRuns; wind
               return (
                 <li key={run.id} className="absolute" style={{ left: pct(s.start), width: `max(${((s.end - s.start) / windowMs) * 100}%, 4px)`, top: lane * LANE_PX + 4, height: LANE_PX - 8 }}>
                   <Tooltip text={<TipText lines={lines} />} placement={lane < lanes / 2 ? "bottom" : "top"} align={s.start - from < windowMs / 2 ? "start" : "end"} className="h-full w-full">
+                    <span
+                      aria-hidden
+                      data-bar
+                      className={cn(
+                        "block h-full w-full rounded-control",
+                        KIND_FILL[kindCategory(run.kind)],
+                        STATUS_LOOK[run.status],
+                        lit && "ring-2 ring-text-1 ring-offset-1 ring-offset-surface",
+                        highlight !== null && !lit && "opacity-40",
+                      )}
+                    />
+                    {/* The link is the bar's hit area, centred on it and at least 24x24px (the small-target rule); the drawn bar keeps its time width. */}
                     <Link
                       href={itemPath(run.work_item_id)}
                       aria-label={`${lines[0]}: ${lines[2]}`}
                       data-run={run.id}
                       data-highlight={lit ? "true" : undefined}
-                      className={cn(
-                        "block h-full w-full rounded-control",
-                        KIND_FILL[kindCategory(run.kind)],
-                        STATUS_LOOK[run.status],
-                        FOCUS,
-                        lit && "ring-2 ring-text-1 ring-offset-1 ring-offset-surface",
-                        highlight !== null && !lit && "opacity-40",
-                      )}
+                      className={cn("absolute top-1/2 left-1/2 h-full min-h-6 w-full min-w-6 -translate-x-1/2 -translate-y-1/2 rounded-control", FOCUS)}
                     />
                   </Tooltip>
                 </li>
@@ -270,10 +275,10 @@ export function WorkersPage() {
         <SegmentedControl label={t("workers.window")} options={WORKER_WINDOWS.map((w) => ({ id: w, label: w }))} value={win} onChange={setWin} />
       </PageToolbar>
       <Card title={t("workers.timeline.title")}>
-        {runs.data ? <Timeline data={runs.data} windowMs={WINDOW_MS[win]} highlight={highlight} /> : runs.isError ? <ErrorNote error={runs.error} /> : <Loading />}
+        {runs.data ? <Timeline data={runs.data} windowMs={WINDOW_MS[win]} highlight={highlight} /> : runs.isError ? <ErrorNote error={runs.error} /> : <Loading label="loading.timeline" onRetry={() => void runs.refetch()} />}
       </Card>
       <Card title={t("workers.graph.title")}>
-        {graph.data ? <DependencyGraph data={graph.data} highlight={highlight} onHighlight={setHighlight} /> : graph.isError ? <ErrorNote error={graph.error} /> : <Loading />}
+        {graph.data ? <DependencyGraph data={graph.data} highlight={highlight} onHighlight={setHighlight} /> : graph.isError ? <ErrorNote error={graph.error} /> : <Loading label="loading.graph" onRetry={() => void graph.refetch()} />}
       </Card>
     </div>
   );

@@ -130,7 +130,7 @@ describe("item page: Runs section", () => {
     const head = within(table).getAllByRole("columnheader").map((h) => h.textContent);
     expect(head).toEqual(["Status", "Run", "Detail", "Worker", "Started", "Transcript"]);
     const failed = table.querySelector(`tr[data-run="${FAILED}"]`)!;
-    expect(failed.querySelector("[data-row-title]")!.textContent).toBe("Implement #2");
+    expect(failed.querySelector("[data-cell-title]")!.textContent).toBe("Implement #2");
     expect(failed.querySelector("[data-row-second]")!.textContent).toContain("Project checks failed");
     expect(failed.textContent).toContain("took 3m");
     // The raw code is behind Details (data-raw), not in the row's text.

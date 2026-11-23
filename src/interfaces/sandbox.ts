@@ -77,6 +77,20 @@ export interface Sandbox {
    */
   readLocalFile?(spec: { repo: string; ref: string; path: string }): Promise<{ commit: string; text: string } | null>;
   /**
+   * Trusted, from objects only (no checkout, no fetch): every file path under the folder `path` (ending in `/`) in
+   * the factory repo's local branch `ref`, repo-relative; null when the branch is missing. Absent: triage's
+   * migration timestamp check is off (triage, src/core/migration-stamps.ts).
+   */
+  listLocalFiles?(spec: { repo: string; ref: string; path: string }): Promise<string[] | null>;
+  /**
+   * Trusted, from objects only (no checkout, no fetch, no ref written): the factory repo's trusted base (`origin/<base_ref>`,
+   * or the local branch when nothing fetches origin) with its committer time, and, given `head_sha`, what that head changes
+   * against it as `git diff <base>...<head>` lists it: each file with its added and removed line counts, and, given `path`
+   * too, that file's patch cut to `max_bytes`. The dashboard's Changes tab and Re-check read it (design 09-dashboard-item).
+   * `base` null: the repo has no such base. Throws on a git error (an unknown head, no merge base). Absent: no Changes tab.
+   */
+  readChanges?(spec: ChangesSpec): Promise<ChangesRead>;
+  /**
    * Trusted: one commit on a new local branch without a checkout (design 08-settings, the file-only key writer).
    * The commit's parent is `parent`, the local `base_ref`'s commit, and its tree is the parent's with only `path`
    * set to `content`. `refs/heads/<branch>` is then created by a conditional ref update that fails when it exists.
@@ -96,6 +110,33 @@ export interface Sandbox {
   reattach?(id: string): Promise<SandboxHandle | null>;
   /** Idempotent. Safe on an already-destroyed handle. */
   destroy(handle: SandboxHandle): Promise<void>;
+}
+
+export interface ChangesSpec {
+  repo: string;
+  base_ref: string;
+  /** The head to list the changes of; absent: only the base is read. */
+  head_sha?: string;
+  /** One changed file to read the patch of (needs `head_sha`). */
+  path?: string;
+  /** The patch's limit in bytes; a longer patch is cut there and marked `truncated`. */
+  max_bytes?: number;
+}
+
+/** One changed file: its path and line counts; both counts null for a binary file. */
+export interface ChangedFile {
+  path: string;
+  added: number | null;
+  removed: number | null;
+}
+
+export interface ChangesRead {
+  /** The trusted base's commit and its committer time (ISO 8601); null when the repo has no such base. */
+  base: { sha: string; committed_at: string } | null;
+  /** The changed files in path order; empty without `head_sha`. */
+  files: ChangedFile[];
+  /** The file's patch; null without `path`. */
+  patch: { text: string; truncated: boolean } | null;
 }
 
 export interface NewBranchCommit {

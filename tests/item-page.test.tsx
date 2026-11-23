@@ -525,7 +525,7 @@ describe("item page: refusals and the viewer's grants (issues #528, #453)", () =
   it("a command the owner check refuses is a disabled button with the controller's reason below the row, in plain text", async () => {
     serve({ commands: ["approve", "reject", "revise"].map((n) => ({ ...cmd(n), allowed: false, reason: NOT_OWNER })) });
     mount("/app/items/wi_g");
-    await found('[data-command="approve"]');
+    await found('button[data-action="approve"]');
     for (const name of ["Approve", "Revise"]) expect((screen.getByRole("button", { name }) as HTMLButtonElement).disabled, name).toBe(true);
     // Reject is in the "…" menu, disabled with its reason in its label.
     fireEvent.click(screen.getByRole("button", { name: "More commands" }));
@@ -668,7 +668,7 @@ describe("item page: Interactive task badge", () => {
     const table = await screen.findByRole("table", { name: "Runs" });
     const heading = screen.getByRole("heading", { level: 1 });
     expect(within(heading.parentElement!.parentElement!).getByText("Interactive task")).toBeTruthy();
-    const cell = table.querySelector<HTMLElement>('tr[data-run="run_i_1"] [data-row-title]')!;
+    const cell = table.querySelector<HTMLElement>('tr[data-run="run_i_1"] [data-cell-title]')!;
     expect(cell.textContent).toContain("Interactive task");
     expect(cell.textContent).not.toMatch(/\binteractive\b/);
   });
@@ -678,7 +678,7 @@ describe("item page: Interactive task badge", () => {
     const table = await screen.findByRole("table", { name: "Runs" });
     // No header badge: the run's title is the only text that names it.
     expect(screen.queryAllByText("Interactive task")).toHaveLength(0);
-    expect(table.querySelector('tr[data-run="run_i_2"] [data-row-title]')!.textContent).toBe("Interactive task #1");
+    expect(table.querySelector('tr[data-run="run_i_2"] [data-cell-title]')!.textContent).toBe("Interactive task #1");
   });
 });
 

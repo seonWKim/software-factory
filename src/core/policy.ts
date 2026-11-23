@@ -1,8 +1,10 @@
 import type { FactoryConfig } from "./config.js";
 import type { Floor } from "./settings.js";
+import { laterStampOf } from "./migration-stamps.js";
+export { freeMigrationStamps, takenStamps } from "./migration-stamps.js"; // the triage branch's step, beside the scope rule
 // Type only: a value import of stats.ts would close an import cycle back to this file (phase.ts reads its constants).
 import type { TierRuleResult } from "./stats.js";
-import { RECURRING_FAILURE, type Run, type RunKind, type RunOutcome, type StateChangeDetail, type Tier, type Timestamp, type WorkItem } from "./types.js";
+import { type Run, type RunKind, type RunOutcome, type Tier, type Timestamp, type WorkItem } from "./types.js";
 
 // Deterministic gate rules (control plane). Same input, same output.
 
@@ -116,19 +118,20 @@ export function retryDelayMs(attempt: number, base_ms: number, max_ms: number): 
 
 /**
  * Why a run failed, for the retry budget (design §5 Restarts): a usage or rate limit is not an attempt, and
- * neither is a stall (the model printed nothing for `stall_ms`) nor a missing model credential (`setup_missing`,
- * which the worker requeues and never stores for an agent run); a pre-push check whose failing test files
- * also fail on the base branch (`checks_env`) spends neither budget and has its own cap, CHECKS_ENV_LIMIT per
- * item; infra failures (lease loss, timeout, exception) count toward `max_restart`; anything else is the
- * task's own failure and counts toward `max_attempts`. A run with no outcome (cancelled) is a task failure; a run
- * an accepted interactive takeover cancelled (`takenOver`) is left out of the step's counts by `retryOrBlock`.
+ * neither is a missing model credential (`setup_missing`, which the worker requeues and never stores for an agent
+ * run); a pre-push check whose failing test files also fail on the base branch (`checks_env`) spends neither
+ * budget and has its own cap, CHECKS_ENV_LIMIT per item; infra failures (lease loss, timeout, exception, and a
+ * stall: the model printed nothing for `stall_ms`, decision of 2026-11-23) count toward `max_restart`; anything else
+ * is the task's own failure and counts toward `max_attempts`. A run with no outcome (cancelled) is a task failure; a
+ * run an accepted interactive takeover cancelled (`takenOver`) is left out of the step's counts by `retryOrBlock`.
  */
-export type FailureClass = "rate_limited" | "stalled" | "checks_env" | "setup_missing" | "infra" | "task";
+export type FailureClass = "rate_limited" | "checks_env" | "setup_missing" | "infra" | "task";
 
 export function failureClass(outcome: RunOutcome | null): FailureClass {
   if (outcome?.status !== "failed") return "task";
   if (outcome.error_code === RATE_LIMITED || outcome.error_code === GITHUB_RATE_LIMITED) return "rate_limited";
-  if (outcome.error_code === AGENT_STALLED) return "stalled";
+  // The worker stores a stall with `infra: false`; it is infra all the same.
+  if (outcome.error_code === AGENT_STALLED) return "infra";
   if (outcome.error_code === CHECKS_ENV) return "checks_env";
   if (outcome.error_code === SETUP_MISSING) return "setup_missing";
   return outcome.infra ? "infra" : "task";
@@ -149,20 +152,31 @@ export function takenOver(run: Pick<Run, "status" | "outcome">): boolean {
 }
 
 /**
- * True when a plain retry is likely to clear the failed run's outcome (design 05-alarms, held items): a stall,
- * a usage or rate limit, or an infra failure. Any other failure is the task's own, which a retry alone repeats.
+ * True when a plain retry is likely to clear the failed run's outcome (design 05-alarms, held items): a usage or
+ * rate limit, or an infra failure (a stall included). Any other failure is the task's own, which a retry alone repeats.
+ * A missing model credential (`setup_missing`) is neither: no retry succeeds until the owner adds the credential.
  */
 export function retryClears(outcome: RunOutcome | null): boolean {
   const c = failureClass(outcome);
-  return c === "stalled" || c === "rate_limited" || c === "setup_missing" || c === "infra";
+  return c === "rate_limited" || c === "infra";
 }
 
 /**
  * The error code of a run whose agent printed nothing for `stall_ms` while no tool call was open (design §5
- * Restarts). Not an attempt; when no other running run got model output either (`stallIsGlobal`), it pauses every
- * claim (`model_stall`) until a probe on the cheap model answers; otherwise it holds only its item (`stallHold`).
+ * Restarts). An infra failure, retried with backoff; STALL_STREAK_HOLD in a row in one step hold the item. When no
+ * other running run got model output either (`stallIsGlobal`), it also pauses every claim (`model_stall`) until a
+ * probe on the cheap model answers.
  */
 export const AGENT_STALLED = "agent_stalled";
+
+/** The stalls in a row in one step that hold its item (`recurring_failure`, design 05-restarts, 2026-11-23). */
+export const STALL_STREAK_HOLD = 3;
+
+/** The stalls in a row that end `step` (its runs, oldest first), read from the run history; any other outcome ends it. */
+export function stallStreak(step: readonly Pick<Run, "outcome">[]): number {
+  const last = step.findLastIndex((r) => r.outcome?.status !== "failed" || r.outcome.error_code !== AGENT_STALLED);
+  return step.length - 1 - last;
+}
 
 /**
  * Whether a stall at `stalledAt` (ms) is the model's (design 05-restarts, decision of 2026-11-20): no running run's
@@ -170,19 +184,6 @@ export const AGENT_STALLED = "agent_stalled";
  */
 export function stallIsGlobal(latest: Timestamp | null, stalledAt: number, stall_ms: number): boolean {
   return latest === null || Date.parse(latest) <= stalledAt - stall_ms;
-}
-
-/** The state change detail key that holds a stall hold's end (design 05-restarts). */
-export const HELD_UNTIL = "held_until";
-
-/**
- * The hold of a stalled run's item while other runs still get model output (design 05-restarts), merged into the
- * decision that applies the run and queues its retry (not claimed while held): `recurring_failure` with no pattern
- * key and its end `until`. Null when that decision leaves the item closed or blocked.
- */
-export function stallHold(after: Pick<WorkItem, "stage" | "blocked_on">, detail: StateChangeDetail | undefined, until: Timestamp) {
-  if (after.stage === "CLOSED" || after.blocked_on !== "none") return null;
-  return { patch: { blocked_on: "human" as const, blocked_reason: RECURRING_FAILURE }, reason: RECURRING_FAILURE, detail: { ...detail, [HELD_UNTIL]: until } };
 }
 
 /**
@@ -363,8 +364,8 @@ export function classifyNetwork(code: string, detail: string): { code: string; d
 
 /**
  * When a failed run's automatic retry may be claimed (design §5 Restarts). A model rate limit: its reset (none:
- * `retry_max_ms` after the failure). A stall: at once, the stall pause holds claims. A forge 401/403, a failed
- * access check or a forge rate limit: the later of the backoff and the pause end in `reset`. Else the backoff.
+ * `retry_max_ms` after the failure). A forge 401/403, a failed access check or a forge rate limit: the later of the
+ * backoff and the pause end in `reset`. Else, a stall included, the backoff.
  */
 export function retryNotBefore(o: {
   cls: FailureClass;
@@ -376,7 +377,6 @@ export function retryNotBefore(o: {
 }): Timestamp {
   const at = (ms: number) => new Date(ms).toISOString() as Timestamp;
   if (o.cls === "rate_limited" && o.code !== GITHUB_RATE_LIMITED) return o.reset ?? at(o.failed_at + o.retry_max_ms);
-  if (o.cls === "stalled") return at(o.failed_at);
   const pauseEnd = PAUSE_CODES.includes(o.code) && o.reset ? Date.parse(o.reset) : Number.NaN;
   return at(Number.isNaN(pauseEnd) ? o.backoff_at : Math.max(o.backoff_at, pauseEnd));
 }
@@ -428,8 +428,8 @@ export function failureLine(detail: string): string {
 
 /**
  * Whether `run`, a task failure, repeats the step's previous task failure: same error code, same detail line.
- * `step`: the step's runs in order (the first run and its automatic retries), `run` among them. Rate limits,
- * stalls and infra failures are not attempts, so they are skipped, neither counted nor breaking the row.
+ * `step`: the step's runs in order (the first run and its automatic retries), `run` among them. Rate limits and
+ * infra failures (stalls included) are not task attempts, so they are skipped, neither counted nor breaking the row.
  */
 export function repeatsLastFailure(step: readonly Pick<Run, "id" | "outcome">[], run: Pick<Run, "id" | "outcome">): boolean {
   const o = run.outcome;
@@ -451,7 +451,7 @@ export function repeatsFastInfraFailure(
   run: Pick<Run, "id" | "outcome" | "started_at" | "finished_at">,
 ): boolean {
   const infra = (r: Pick<Run, "outcome">) =>
-    r.outcome?.status === "failed" && failureClass(r.outcome) === "infra" && r.outcome.error_code !== PREFLIGHT_ACCESS ? r.outcome : null;
+    r.outcome?.status === "failed" && failureClass(r.outcome) === "infra" && r.outcome.error_code !== PREFLIGHT_ACCESS && r.outcome.error_code !== AGENT_STALLED ? r.outcome : null;
   const fast = (r: Pick<Run, "started_at" | "finished_at">) => {
     const took = Date.parse(r.finished_at ?? "") - Date.parse(r.started_at ?? "");
     return Number.isFinite(took) && took < FAST_FAILURE_MS;
@@ -514,12 +514,13 @@ export function isUnder(path: string, a: string): boolean {
 }
 
 /**
- * A path is covered when it equals an allowed path, sits under an allowed path that ends in `/`, or is a
- * ratchet list (RATCHET_LIST). Shared by triage validation (`files_to_change`), the pre-push scope gate and
- * the edit hook, so all use one rule.
+ * A path is covered when it equals an allowed path, sits under an allowed path that ends in `/`, is a
+ * ratchet list (RATCHET_LIST), or is a migration or migration test with an allowed one's folder, component and
+ * slug and a later timestamp (laterStampOf: a build that finds the spec's timestamp taken renames the file).
+ * Shared by triage validation (`files_to_change`), the pre-push scope gate and the edit hook, so all use one rule.
  */
 export function isCovered(path: string, allowed: readonly string[]): boolean {
-  return RATCHET_LIST.test(path) || allowed.some((a) => isUnder(path, a));
+  return RATCHET_LIST.test(path) || allowed.some((a) => isUnder(path, a) || laterStampOf(path, a));
 }
 
 /**

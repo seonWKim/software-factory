@@ -113,7 +113,7 @@ export function FailuresSection({ win }: { win?: FailuresWindow }) {
   return (
     <Card id="failures" title={t("page.failures")}>
       <CardSection title={t("failures.title")} count={q.data?.total}>
-        {q.isError ? <ErrorNote error={q.error} /> : !q.data ? <Loading rows={3} /> : q.data.groups.length === 0 ? (
+        {q.isError ? <ErrorNote error={q.error} /> : !q.data ? <Loading rows={3} label="loading.failures" onRetry={() => void q.refetch()} /> : q.data.groups.length === 0 ? (
           <EmptyState title={t("failures.empty")} />
         ) : (
           <>

@@ -2,11 +2,15 @@
 // lives in load-config.ts and config-values.ts, so code that only reads config does not load this file.
 // Environment (local / cloud) is chosen here; core code never branches on it.
 
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, realpath, stat, writeFile } from "node:fs/promises";
 import { availableParallelism, hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { type FactoryConfig, cliUserConfig, toolGrantsConfig } from "./core/config.js";
 import type { ProjectRef } from "./core/project.js";
+import { scheduledAction } from "./core/controller-deps.js";
+import { agentAction } from "./controller/units/schedule/plugins/agent/agent-action.js";
+import { buildAction } from "./controller/units/schedule/plugins/build/build-action.js";
+import { feedbackAction } from "./controller/units/schedule/plugins/feedback/feedback-action.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
 import { errorText, type Logger } from "./core/log.js";
 import type { CliEnvironment, CliIdentity } from "./core/local-cli.js";
@@ -20,7 +24,7 @@ import { PackCheckRunner } from "./runtime/hooks/pack-checks.js";
 import { type HookDescriptor, UNCALLED_HOOK_POINTS } from "./shared/hook.js";
 import { type LearnedSettingsSource, LiveSettings, maxWorkers, workerCount } from "./core/settings.js";
 import { settingsBase } from "./core/settings-base.js";
-import { WorkerPool } from "./worker/index.js";
+import { READ_TOOLS, WorkerPool } from "./worker/index.js";
 import type { LocalRoute } from "./worker/index.js";
 import { type BrokerDeps, Plugins } from "./plugin-set.js";
 import type { Clock } from "./interfaces/clock.js";
@@ -63,6 +67,8 @@ import { LearnedRules, joinGuidance } from "./core/learned-rules.js";
 import { checkToolchainEnv, codeVersion, readRestarts, uiCommandsActor, uiUserId, workerIndexBase } from "./config-values.js";
 import { type Loaded, loadConfig, localProject, resolvedConfig } from "./load-config.js";
 import { reviewReplay } from "./golden-replay.js";
+import { Cleaner, type CleanupStore, agentTempRoots, cleanupConfig, hostProcesses } from "./cleanup/index.js";
+import { RUN_FOLDER } from "./setup-paths.js";
 
 export { CODE_ROOT_ENV, CONFIG_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 
@@ -159,6 +165,17 @@ function shareGitHubBudget(loaded: Loaded, github: GitHubApi, store: FactoryStor
   if (loaded.config.local_only !== true) github.shareBudget({ store, project: config.project.key, refresh_ms: config.tick_ms });
 }
 
+/** This host's cleanup of closed items' leftovers (design 08-cleanup): the controller's step and `factory cleanup`. */
+export async function hostCleaner(loaded: Loaded, store: CleanupStore, clock: Clock): Promise<Cleaner> {
+  const { repo, branch_prefix } = loaded.config;
+  // The real path: a process's working folder, as the host reports it, has no symlink in it.
+  const worktreesDir = await realpath(loaded.worktreesDir).catch(() => loaded.worktreesDir);
+  return new Cleaner({
+    store, clock, config: cleanupConfig(loaded.file), host: hostId(loaded.stateDir), log: new ConsoleLogger(clock, "cleanup"),
+    env: { repo: repo.path, worktreesDir, runFolder: RUN_FOLDER, branchPrefix: branch_prefix, baseBranch: repo.base_branch, run: runProcess, processes: hostProcesses(runProcess, repo.path), agentTempRoots: agentTempRoots() },
+  });
+}
+
 export interface Built {
   loaded: Loaded;
   clock: Clock;
@@ -248,6 +265,10 @@ export async function build(
     store, repo: base.repo, clock, log: new ConsoleLogger(clock, "startup"), ...(opts.signal ? { signal: opts.signal } : {}),
   });
   const config: FactoryConfig = { ...resolvedConfig(loaded.config, project), ...(tool_grants ? { tool_grants } : {}) };
+  // What a fired schedule occurrence runs (design 08-schedules): none unless `plugins.schedule_action` names one; its routes are the schedule unit's action folders.
+  const routes = { build: buildAction, agent: agentAction, feedback: feedbackAction }, actionCtx = { ...base, store, runner, sandbox, scanner, tools: READ_TOOLS, project: project.key, routes };
+  const schedule_action = sel.schedule_action === undefined ? undefined
+    : scheduledAction(store, await createPlugin(registry, "schedule_action", sel.schedule_action, actionCtx), new ConsoleLogger(clock, "schedule"), project.key);
   // The pack checks `hooks` names (design §4, issue #494), refused here when bad; its other names are `*.hook.ts`.
   const checks = packChecks(loaded.packs, config.hooks ?? [], { toolHooks: runner.supports_tool_hooks === true });
   await checkEnabledHooks((config.hooks ?? []).filter((n) => !checks.some((c) => c.name === n)));
@@ -274,6 +295,7 @@ export async function build(
     scanner,
     llm,
     calendar: calendars.feeds, // synced every 5 minutes (design 02-tasks); [] unless the `calendar` setting lists some
+    ...(schedule_action ? { schedule_action } : {}), // absent: the schedule unit claims nothing
     network_probe, bus, ticks, tacit, // tacit: the owner's ledger (#570), whose capture CLI outbound runs; no agent run gets it
     // Owner of a stream source's listener lease while this process holds it (docs/architecture.md, Intake).
     replica_id: `${hostname()}:${process.pid}`,
@@ -290,6 +312,7 @@ export async function build(
     ...(loaded.config.local_only === true ? {} : { github_budget: () => github.status(), refresh_forge_budget: () => github.refreshSharedBudget() }),
     // The red-main check after an automatic merge (design 03-risk) runs the checks with the worker's base env.
     check_env: baseEnv(),
+    cleanup: await hostCleaner(loaded, store, clock), // closed items' run folders, branches, processes and agent temp folders (design 08-cleanup)
   });
 
   const id_prefix = `${hostname()}:${process.pid}`;
@@ -424,6 +447,7 @@ export interface UiParts {
   displayNames: (user_ids: readonly string[]) => Promise<ReadonlyMap<string, string>>; // by user id from Identity's identity_profiles (M9), only to show
   tacit: UiTacit; // the Rules page's ledger, switched by the `integrations` setting before each Rules request (design 08-settings)
   migrate: import("./ui/migrate-api.js").UiMigrate; // Migrate now, Start and Restart now (design 08-self-update): state dir, clock, run_timeout_ms, steps
+  changes: import("./ui/changes.js").UiChanges | undefined; // the sandbox's readChanges on repo.path and its base: the Changes tab and Re-check (design 09-dashboard-item)
   close(): Promise<void>;
 }
 
@@ -438,10 +462,8 @@ export interface UiParts {
  */
 export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity }): Promise<UiParts> {
   await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
-  const p = new Plugins(loaded);
-  const clock = await p.clock();
-  const secrets = await p.secrets();
-  const store = await p.store(secrets, clock);
+  const p = new Plugins(loaded), clock = await p.clock();
+  const secrets = await p.secrets(), store = await p.store(secrets, clock);
   await store.migrate();
   const scanner = await p.scanner(secrets);
   const { owner, name } = loaded.config.repo, token = newCsrfToken();
@@ -461,15 +483,16 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   // One token per process for every write route; held only in memory, never written to a file, the store or a log.
   // The UI server, loaded here only: through setup.ts it reaches GitHub modules a solo start must not load.
   const who = uiCommandsActor(uiUserId(loaded.file.ui), opts.identity, (await import("./ui/server.js")).BIND);
-  // The Merge button's facts (design §9): a forge selected, a sandbox that merges locally (built only to ask).
+  // The Merge button's facts (design §9): a forge selected, a sandbox that merges locally (built only to ask, and to read changes).
+  const sbx = await p.sandbox(), changes = sbx.readChanges && ((spec: Parameters<import("./ui/changes.js").UiChanges>[0]) => sbx.readChanges!({ repo: loaded.config.repo.path, base_ref: loaded.config.repo.base_branch, ...spec }));
   const commands: UiCommands = {
-    ...who, token, forge: loaded.plugins.forge !== undefined, localMerge: canMergeLocal(await p.sandbox()), changeName: (ref) => `PR #${ref}`, restart: loaded.config.repo.restart_command !== undefined,
+    ...who, token, forge: loaded.plugins.forge !== undefined, localMerge: canMergeLocal(sbx), changeName: (ref) => `PR #${ref}`, restart: loaded.config.repo.restart_command !== undefined,
     allowed: (action) => (who.actor === null ? Promise.resolve({ allow: false, reason: "no_actor" }) : onProject(who.actor, action, true)),
   };
   // The mode switch, the auto-merge tier and a loosening change need approve_merge on the project (design 08-settings), as the Merge button.
   settings.mayApproveMerge = async () => refusalOf(await onProject(opts.identity.user, "approve_merge"));
   settings.sandbox = () => sandboxEnforcement(loaded); // `mode auto` needs the OS sandbox, as from the CLI (design 05-sandbox.md)
-  settings.editFile = configWriter({ loaded, store, sandbox: await p.sandbox(), now: () => clock.now().toISOString(), actor: opts.identity.user, loadConfig, project: async () => (await settings.resolveProject())?.key ?? null });
+  settings.editFile = configWriter({ loaded, store, sandbox: sbx, now: () => clock.now().toISOString(), actor: opts.identity.user, loadConfig, project: async () => (await settings.resolveProject())?.key ?? null });
   settings.calendar = (await import("./ui/calendar-api.js")).uiCalendar(loaded, {
     store, actor: settings.actor, clock, base: settings.base, connect: async (r) => (await import("./setup.js")).connectCalendar(r),
   }); // its Calendar section
@@ -488,7 +511,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   const profiles = new ProfileStore(storeSql(store)), displayNames = (ids: readonly string[]) => profiles.displayNames(ids);
   const tacit = await uiTacit(loaded.plugins.tacit, (n) => createPlugin(loaded.registry, "tacit", n, p.base), { config: loaded.config, base: settingsBase(loaded), source: store, log: new ConsoleLogger(clock, "tacit") });
   const migrate = (await import("./ui/migrate-api.js")).uiMigrate({ stateDir: loaded.stateDir, clock, runTimeoutMs: loaded.config.run_timeout_ms, githubApi: () => p.githubApi(), resolveProject }); // its GitHub client only for owner/name rows
-  return { clock, store, scanner, settings, commands, pauses, displayNames, tacit, migrate, close: () => identity.stop().then(() => store.close()) };
+  return { clock, store, scanner, settings, commands, pauses, displayNames, tacit, migrate, changes, close: () => identity.stop().then(() => store.close()) };
 }
 
 const refusalOf = (d: AuthDecision): string | null => (d.allow ? null : d.reason);
@@ -559,6 +582,7 @@ export async function buildStatsStore(loaded: Loaded): Promise<FactoryStore> {
 }
 
 export { Plugins } from "./plugin-set.js";
+export { type CleanupStore, reportLines as cleanupReport } from "./cleanup/index.js";
 export { settingsBase } from "./core/settings-base.js";
 // Config reading moved to load-config.ts and config-values.ts (RFC 0023 step 2e); re-exported for the code that also wires.
 export {

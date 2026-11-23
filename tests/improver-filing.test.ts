@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { IMPROVER, MAX_FILED_ISSUES, SYSTEM_ITEM, enqueueImprove, fileReport, issueMarker, manualWindow, patternKey, systemSource } from "../src/core/improver.js";
+import { IMPROVER, MAX_NEW_ITEMS, PUSHBACK, SYSTEM_ITEM, enqueueImprove, fileReport, issueMarker, manualWindow, patternKey, systemSource } from "../src/core/improver.js";
 import { Worker } from "../src/worker/index.js";
 import type { FailureGroup, ImproveDraft, ImproveReport, ImproveWindow, RunId, SourceRef, Timestamp, UserId, WorkItem, WorkerId, WorkItemId } from "../src/core/types.js";
 import type { AgentRunner } from "../src/interfaces/agent-runner.js";
@@ -211,17 +211,18 @@ describe("improve filing: solo, the local source", () => {
     expect(await w.store.listItemMessages(item!.id)).toHaveLength(1);
   });
 
-  it(`files at most MAX_FILED_ISSUES (${MAX_FILED_ISSUES}) items per run; the rest are skipped with the cap as reason`, async () => {
+  it(`files at most MAX_NEW_ITEMS (${MAX_NEW_ITEMS}) items per run; the rest are skipped with the cap as reason and their count`, async () => {
     const w = await local();
-    const groups = MAX_FILED_ISSUES + 2;
+    const groups = MAX_NEW_ITEMS + 3;
     for (let g = 0; g < groups; g++) for (let i = 0; i < 3; i++) await w.fail(`code_${g}`);
     w.clock.set("2026-03-05T06:00:00.000Z");
     const report = await w.improve();
-    expect(await filedItems(w.store)).toHaveLength(MAX_FILED_ISSUES);
+    expect(await filedItems(w.store)).toHaveLength(MAX_NEW_ITEMS);
     const statuses = report.groups.map((g) => g.filing!.status);
-    expect(statuses.slice(0, MAX_FILED_ISSUES).every((s) => s === "filed")).toBe(true);
-    expect(report.groups.slice(MAX_FILED_ISSUES).map((g) => g.filing)).toEqual([
-      { status: "skipped", reason: "issue_cap" }, { status: "skipped", reason: "issue_cap" },
+    // Equal counts: report order decides.
+    expect(statuses.slice(0, MAX_NEW_ITEMS).every((s) => s === "filed")).toBe(true);
+    expect(report.groups.slice(MAX_NEW_ITEMS).map((g) => g.filing)).toEqual([
+      { status: "skipped", reason: "issue_cap", count: 3 }, { status: "skipped", reason: "issue_cap", count: 3 }, { status: "skipped", reason: "issue_cap", count: 3 },
     ]);
   });
 
@@ -388,6 +389,25 @@ describe("improve filing: fix specs", () => {
     expect(await w.store.listAlerts({ limit: 10 })).toHaveLength(2);
   });
 
+  it("a pushback group that needs a person stores no alert; the report still lists it, skipped with needs_person", async () => {
+    const w = await local();
+    const runs = [await w.fail("provider_setup"), await w.fail("provider_setup"), await w.fail("provider_setup")];
+    const other = [await w.fail("quota_hit"), await w.fail("quota_hit"), await w.fail("quota_hit")];
+    const report = await draftedReport(w.store, w.clock, [
+      await groupOf(w.store, PUSHBACK, runs, drafted({ needs_person: true })),
+      await groupOf(w.store, "quota_hit", other, drafted({ needs_person: true })),
+    ]);
+    const source = w.sources[0]!;
+    const done = await fileReport({ store: w.store, scanner: w.scanner, clock: w.clock, file: source.fileIssue!.bind(source), comment: async () => {} }, report);
+    expect(done.groups.map((g) => [g.error_code, g.filing])).toEqual([
+      [PUSHBACK, { status: "skipped", reason: "needs_person" }],
+      ["quota_hit", { status: "skipped", reason: "needs_person" }],
+    ]);
+    expect(await filedItems(w.store)).toEqual([]);
+    // The other group keeps its needs_person alert; the pushback group stores none.
+    expect((await w.store.listAlerts({ limit: 10 })).map((a) => a.pattern_key)).toEqual([`needs_person:${patternKey(report.groups[1]!)}`]);
+  });
+
   it("a draft that needs no person and touches no gate path gets one fix item with its triage run queued; of two replicas one files it", async () => {
     const w = await local();
     const runs = [await w.fail("checks_failed"), await w.fail("checks_failed"), await w.fail("checks_failed")];
@@ -455,7 +475,7 @@ describe("improve filing: a stall group that followed a host sleep", () => {
   const slept = (w: { store: FactoryStore; clock: FakeClock }, run: RunId | null) =>
     w.store.recordHostSleep({ worker_id: w1, woke_at: w.clock.now().toISOString() as Timestamp, gap_ms: 600_000, run_id: run });
 
-  it("is not filed: no item, no triage run, its filing skipped with host_sleep, one information alert a day that holds nothing", async () => {
+  it("is not filed: no item, no triage run, its filing skipped with host_sleep, and no alert is stored", async () => {
     const w = await local();
     const runs = [await w.fail(AGENT_STALLED, "silent"), await w.fail(AGENT_STALLED, "silent")];
     await slept(w, runs[1]!);
@@ -466,17 +486,12 @@ describe("improve filing: a stall group that followed a host sleep", () => {
     expect(await filedItems(w.store)).toEqual([]);
     expect(await w.store.listRunsByKind("triage", ["queued"])).toEqual([]);
     expect(await w.store.getFiledPattern(PROJECT.key, patternKey(report.groups[0]!))).toBeNull();
-    const alerts = await w.store.listAlerts({ limit: 10 });
-    expect(alerts.map((a) => [a.pattern, a.pattern_key, a.error_code, a.count])).toEqual([
-      ["repeated_error", `host_sleep:${patternKey(report.groups[0]!)}`, AGENT_STALLED, 2],
-    ]);
-    expect(alerts[0]!.detail).toContain("followed a host sleep, so no fix item was filed");
-    expect(w.scanner.scans.some((s) => s.channel === "ui" && s.content === alerts[0]!.detail)).toBe(true);
-    // The alert holds no item: the stalled items are not blocked.
+    expect(await w.store.listAlerts({ limit: 10 })).toEqual([]);
+    // Nothing holds the stalled items.
     for (const id of report.groups[0]!.work_item_ids) expect(await w.store.getWorkItem(id)).toMatchObject({ blocked_on: "none" });
-    // Another improve run the same day stores no second alert and files nothing.
+    // Another improve run the same day skips it again, stores no alert and files nothing.
     expect((await w.improve()).groups[0]!.filing).toEqual({ status: "skipped", reason: "host_sleep" });
-    expect(await w.store.listAlerts({ limit: 10 })).toHaveLength(1);
+    expect(await w.store.listAlerts({ limit: 10 })).toEqual([]);
     expect(await filedItems(w.store)).toEqual([]);
   });
 
@@ -504,17 +519,6 @@ describe("improve filing: a stall group that followed a host sleep", () => {
     expect(comments).toEqual([]);
   });
 
-  it("a flagged alert text is stored without its detail", async () => {
-    const w = await local();
-    const runs = [await w.fail(AGENT_STALLED, "silent"), await w.fail(AGENT_STALLED, "silent")];
-    await slept(w, runs[0]!);
-    const report = await draftedReport(w.store, w.clock, [{ ...(await groupOf(w.store, AGENT_STALLED, runs, { status: "skipped", reason: "call_cap" })), detail: "silent" }]);
-    const flagUi: EgressScanner = { scan: async (channel) => (channel === "ui" ? { clean: false, findings: [{ rule: "test_leak", channel }] } : { clean: true }) };
-    const source = w.sources[0]!;
-    await fileReport({ store: w.store, scanner: flagUi, clock: w.clock, file: source.fileIssue!.bind(source), comment: async () => {} }, report);
-    expect((await w.store.listAlerts({ limit: 10 })).map((a) => [a.pattern_key, a.detail])).toEqual([[`host_sleep:${patternKey(report.groups[0]!)}`, null]]);
-  });
-
   it("a stall group with no host sleep on its runs is filed and triaged as before; a sleep of another run or an idle tick does not count", async () => {
     const w = await local();
     for (let i = 0; i < 3; i++) await w.fail(AGENT_STALLED, "silent");
@@ -526,7 +530,6 @@ describe("improve filing: a stall group that followed a host sleep", () => {
     expect(items).toHaveLength(1);
     expect(report.groups.map((g) => g.filing)).toEqual([{ status: "filed", ref: items[0]!.source }]);
     expect((await w.store.listRuns(items[0]!.id)).map((r) => [r.kind, r.status])).toEqual([["triage", "queued"]]);
-    expect((await w.store.listAlerts({ limit: 10 })).filter((a) => a.pattern_key.startsWith("host_sleep:"))).toEqual([]);
   });
 
   it("a group with another error code is filed as before, even when its runs held a host sleep", async () => {
@@ -712,5 +715,101 @@ describe("improve filing: one hot file is filed once", () => {
     await w.store.createWorkItem({ ...issue(9), title: `Reduce conflicts on ${FILE}x` }, system);
     expect(filing(await fileReport(d, await report()))).toEqual({ status: "filed", ref: expect.objectContaining({ id: "o/r#100" }) });
     expect(client.posts()).toBe(1);
+  });
+});
+
+// Issue #775: 12 of 42 "Reduce conflicts" filings were rejected, and a rejected file was filed again with the same
+// evidence. Candidates are ranked by evidence before the new-item cap; a rejected filing waits for doubled evidence.
+describe("improve filing: rank, cap and rejected filings", () => {
+  const hotRow = (file: string, runs: number, held: number): FailureGroup => ({
+    error_code: HOTSPOT, detail: file, work_item_ids: [],
+    run_ids: Array.from({ length: runs }, (_, i) => `run_${file}_${i}` as RunId),
+    held_item_ids: Array.from({ length: held }, (_, i) => `held_${file}_${i}` as WorkItemId),
+  });
+  async function hotspots() {
+    const w = await local();
+    const source = w.sources[0]!;
+    const d = { store: w.store, scanner: w.scanner, clock: w.clock, file: source.fileIssue!.bind(source), comment: async () => {} };
+    /** A new report holding `patterns`, filed; the clock moves a second first. */
+    const fileRows = async (patterns: FailureGroup[]): Promise<ImproveReport> => {
+      const { run } = await enqueueImprove(w, PROJECT.key, "manual");
+      w.clock.advance(1_000);
+      const { report } = await w.store.recordImproveReport({ run_id: run.id, project: PROJECT.key, ...manualWindow(w.clock.now()), groups: [], patterns });
+      return fileReport(d, report);
+    };
+    const reject = async (file: string) => {
+      const item = (await filedItems(w.store)).find((i) => i.title === `Reduce conflicts on ${file}` && i.stage !== "CLOSED")!;
+      await w.store.transition({ id: item.id, expected_version: item.version, actor: system, reason: "x", patch: { stage: "CLOSED", close_reason: "rejected" } });
+    };
+    const titles = async () => (await filedItems(w.store)).map((i) => i.title).sort();
+    return { w, fileRows, reject, titles };
+  }
+
+  it("of 5 candidate patterns the 2 with the largest evidence are filed; the other 3 are skipped with issue_cap and their count", async () => {
+    const { fileRows, titles } = await hotspots();
+    const rows = [hotRow("a.ts", 1, 2), hotRow("b.ts", 2, 4), hotRow("c.ts", 1, 1), hotRow("d.ts", 3, 2), hotRow("e.ts", 2, 2)];
+    const report = await fileRows(rows);
+    expect(await titles()).toEqual(["Reduce conflicts on b.ts", "Reduce conflicts on d.ts"]);
+    expect(report.patterns.map((p) => [p.detail, p.filing!.status])).toEqual([["a.ts", "skipped"], ["b.ts", "filed"], ["c.ts", "skipped"], ["d.ts", "filed"], ["e.ts", "skipped"]]);
+    expect(report.patterns.filter((p) => p.filing!.status === "skipped").map((p) => p.filing)).toEqual([
+      { status: "skipped", reason: "issue_cap", count: 3 }, { status: "skipped", reason: "issue_cap", count: 2 }, { status: "skipped", reason: "issue_cap", count: 4 },
+    ]);
+  });
+
+  it("failure groups and hot files are ranked together: a larger hot file goes before a smaller group", async () => {
+    const w = await local();
+    for (let g = 0; g < 2; g++) for (let i = 0; i < 3; i++) await w.fail(`code_${g}`);
+    const source = w.sources[0]!;
+    const d = { store: w.store, scanner: w.scanner, clock: w.clock, file: source.fileIssue!.bind(source), comment: async () => {} };
+    w.clock.set("2026-03-05T06:00:00.000Z");
+    const plain = await w.improve();
+    const { run } = await enqueueImprove(w, PROJECT.key, "manual");
+    // The same groups again under a new report, with a hot file of 5 ahead of them.
+    for (const g of plain.groups) {
+      const item = (await filedItems(w.store)).find((i) => i.source.id === (g.filing as { ref: SourceRef }).ref.id)!;
+      await w.store.transition({ id: item.id, expected_version: item.version, actor: system, reason: "x", patch: { stage: "CLOSED", close_reason: "rejected" } });
+    }
+    w.clock.set("2026-05-05T06:00:00.000Z");
+    const groups = plain.groups.map(({ filing: _, ...g }) => g);
+    const { report } = await w.store.recordImproveReport({ run_id: run.id, project: PROJECT.key, ...DAY, groups, patterns: [hotRow("big.ts", 2, 3)] });
+    const done = await fileReport(d, report);
+    expect(done.patterns[0]!.filing!.status).toBe("filed");
+    expect(done.groups.map((g) => g.filing!.status)).toEqual(["filed", "skipped"]);
+    expect(done.groups[1]!.filing).toEqual({ status: "skipped", reason: "issue_cap", count: 3 });
+  });
+
+  it("a rejected hot file is not filed again with the same evidence; it is when the evidence doubles, and the new evidence is stored", async () => {
+    const { w, fileRows, reject, titles } = await hotspots();
+    await fileRows([hotRow("x.ts", 1, 2)]);
+    expect(await w.store.getFiledPattern(PROJECT.key, patternKey(hotRow("x.ts", 0, 0)))).toMatchObject({ evidence: 3 });
+    await reject("x.ts");
+    w.clock.advance(86_400_000);
+    expect((await fileRows([hotRow("x.ts", 1, 2)])).patterns[0]!.filing).toEqual({ status: "skipped", reason: "recently_closed" });
+    expect((await fileRows([hotRow("x.ts", 2, 3)])).patterns[0]!.filing).toEqual({ status: "skipped", reason: "recently_closed" });
+    expect(await titles()).toEqual(["Reduce conflicts on x.ts"]);
+    const doubled = await fileRows([hotRow("x.ts", 2, 4)]);
+    expect(doubled.patterns[0]!.filing).toMatchObject({ status: "filed" });
+    expect(await titles()).toEqual(["Reduce conflicts on x.ts", "Reduce conflicts on x.ts"]);
+    expect(await w.store.getFiledPattern(PROJECT.key, patternKey(hotRow("x.ts", 0, 0)))).toMatchObject({ evidence: 6, report_id: doubled.id });
+  });
+
+  it("an item closed as completed is not filed again within 30 days, even with doubled evidence", async () => {
+    const { w, fileRows, titles } = await hotspots();
+    await fileRows([hotRow("y.ts", 1, 1)]);
+    const [item] = await filedItems(w.store);
+    await w.store.transition({ id: item!.id, expected_version: item!.version, actor: system, reason: "x", patch: { stage: "CLOSED", close_reason: "completed" } });
+    expect((await fileRows([hotRow("y.ts", 4, 4)])).patterns[0]!.filing).toEqual({ status: "skipped", reason: "recently_closed" });
+    expect(await titles()).toEqual(["Reduce conflicts on y.ts"]);
+  });
+
+  it("a rejected filing with no stored evidence (filed before it was stored) is filed again only 30 days after its close", async () => {
+    const { w, fileRows, reject, titles } = await hotspots();
+    await fileRows([hotRow("z.ts", 1, 1)]);
+    await w.store.db.run("UPDATE controller_filed_patterns SET evidence = NULL");
+    await reject("z.ts");
+    expect((await fileRows([hotRow("z.ts", 5, 5)])).patterns[0]!.filing).toEqual({ status: "skipped", reason: "recently_closed" });
+    w.clock.advance(31 * 86_400_000);
+    expect((await fileRows([hotRow("z.ts", 1, 1)])).patterns[0]!.filing).toMatchObject({ status: "filed" });
+    expect(await titles()).toEqual(["Reduce conflicts on z.ts", "Reduce conflicts on z.ts"]);
   });
 });

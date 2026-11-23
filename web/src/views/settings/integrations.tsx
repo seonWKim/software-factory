@@ -30,7 +30,7 @@ function TurnOnDialog({ name, busy, error, onTurnOn, onClose }: { name: string; 
       onConfirm={() => v?.turn_on != null && onTurnOn(v.turn_on)}
       onClose={onClose}
     >
-      {!v ? !rules.isError && <Loading rows={2} /> : (
+      {!v ? !rules.isError && <Loading rows={2} label="loading.rules" onRetry={() => void rules.refetch()} /> : (
         <>
           {v.home !== null && <AgentsHomePicker home={v.home} />}
           {v.judge !== null && <Notice tone="warn">{v.judge}</Notice>}

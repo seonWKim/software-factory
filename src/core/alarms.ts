@@ -4,18 +4,21 @@
 // 6 hours through the store's conditional insert. A new repeated-error alert holds the items it hit for a person, and
 // only a crash loop stops auto mode (design 03-risk). A failed run whose pattern has an open filed item holds its item
 // for a person at once. A failure pattern that already alerted or was filed re-raises, at most once an hour, when it
-// keeps failing: its items are held and its filed item gets a comment. The same step checks the spend budgets
+// keeps failing: its items are held and its filed item gets a comment. A stall (`agent_stalled`) is an infra failure
+// its own item's retry rules handle (design 05-restarts): its pattern alerts, with the stall rate, and holds no item
+// through any of these paths. None of these repeated-error paths counts a stall run that followed a recorded host sleep
+// or an interactive run the owner abandoned: neither is a failure a person must act on. The same step checks the spend budgets
 // (design 06-spend): 80% and 100% of a daily or weekly budget alert once each per period, and never stop, pause or
 // hold anything. A run the pack grant check refused holds its item for a person at once and alerts once an hour, so
 // an unattended run that could not reach its tools is never a silent no-op. No forge, LLM or sandbox call; every text
 // is scanned first.
 
-import { groupFailures, normalizeDetail, patternKey, sleepAlertKey, stalledBySleep } from "./improver.js";
+import { groupFailures, normalizeDetail, patternKey, sleptRuns } from "./improver.js";
 import type { Logger } from "./log.js";
-import { AGENT_STALLED, HELD_UNTIL, MODEL_STALL } from "./policy.js";
+import { AGENT_STALLED, INTERACTIVE, MODEL_STALL, SESSION_ABANDONED } from "./policy.js";
 import { DAY_MS, dayStart, spendTotals, utcDay, weekStart } from "./spend.js";
 import {
-  type FailureGroup, type FiledPattern, RECURRING_FAILURE, type Run, type RunKind, type RunOutcome, type SourceRef, type StateChange, type Timestamp, type WorkItem, type WorkItemId,
+  type FailureGroup, type FiledPattern, RECURRING_FAILURE, type Run, type RunId, type RunKind, type RunOutcome, type SourceRef, type StateChange, type Timestamp, type WorkItem, type WorkItemId,
   runTokenCount,
 } from "./types.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -71,13 +74,15 @@ export interface AlarmFinding {
   error_code: string;
   count: number;
   detail: string;
-  /** A repeated error's pattern and its failed runs, whose items its new alert holds; never stored with the alert. */
+  /** A repeated error's pattern and its failed runs, whose items its new alert holds (none for stalls); never stored with the alert. */
   held?: { pattern_key: string; runs: readonly Run[] };
 }
 
 /**
  * The patterns in `runs` and `restarts` as of `now`. Pure and deterministic. Repeated error: failed runs inside
- * the window that share an error code and normalized detail, on at least `alarm_repeat_count` distinct items.
+ * the window that share an error code and normalized detail, on at least `alarm_repeat_count` distinct items, leaving out
+ * the runs in `skip` (stalls that followed a host sleep, `sleptStalls`) and abandoned interactive runs (`abandoned`); a
+ * stall pattern's detail adds the stall rate (`stallRate`, which counts every stall) and it holds no item.
  * Zero tokens: the newest `alarm_repeat_count` or more agent runs finished inside the window all used no tokens.
  * Child restarts: at least `alarm_restart_count` restarts within RESTART_WINDOW_MS, with the last exit reason.
  */
@@ -86,6 +91,8 @@ export function detectAlarms(input: {
   restarts: readonly ChildRestart[];
   now: Date;
   settings: AlarmSettings;
+  /** Failed runs the repeated-error check leaves out; absent: none. */
+  skip?: ReadonlySet<RunId>;
 }): AlarmFinding[] {
   const { settings: s } = input;
   const now = input.now.getTime();
@@ -94,13 +101,13 @@ export function detectAlarms(input: {
     .filter((r) => r.finished_at !== null && Date.parse(r.finished_at) >= since && Date.parse(r.finished_at) <= now)
     // Stable: runs finished at the same time keep the store's order (newest first, then insertion).
     .sort((a, b) => cmp(b.finished_at!, a.finished_at!));
-  return [...repeatedErrors(finished, s.alarm_repeat_count), ...zeroTokens(finished, s.alarm_repeat_count), ...childRestarts(input.restarts, now, s.alarm_restart_count)];
+  return [...repeatedErrors(finished, input.skip ?? new Set(), s.alarm_repeat_count, s.alarm_window_minutes), ...zeroTokens(finished, s.alarm_repeat_count), ...childRestarts(input.restarts, now, s.alarm_restart_count)];
 }
 
-function repeatedErrors(newestFirst: readonly Run[], threshold: number): AlarmFinding[] {
+function repeatedErrors(newestFirst: readonly Run[], skip: ReadonlySet<RunId>, threshold: number, windowMinutes: number): AlarmFinding[] {
   const groups = new Map<string, { code: string; detail: string; runs: Run[]; items: Set<WorkItemId> }>();
   for (const r of newestFirst) {
-    if (r.kind === "improve" || r.status !== "failed" || r.outcome?.status !== "failed") continue;
+    if (r.kind === "improve" || r.status !== "failed" || r.outcome?.status !== "failed" || abandoned(r) || skip.has(r.id)) continue;
     const detail = normalizeDetail(r.outcome.detail ?? "");
     const key = `${r.outcome.error_code}\n${detail}`;
     const g = groups.get(key) ?? { code: r.outcome.error_code, detail, runs: [], items: new Set<WorkItemId>() };
@@ -113,17 +120,47 @@ function repeatedErrors(newestFirst: readonly Run[], threshold: number): AlarmFi
     .sort(([a], [b]) => cmp(a, b))
     .map(([, g]) => {
       const key = patternKey({ error_code: g.code, detail: g.detail });
-      return { pattern: "repeated_error", pattern_key: alertKey(key), error_code: g.code, count: g.runs.length, detail: g.detail, held: { pattern_key: key, runs: g.runs } };
+      const finding = { pattern: "repeated_error" as const, pattern_key: alertKey(key), error_code: g.code, count: g.runs.length };
+      if (g.code === AGENT_STALLED) return { ...finding, detail: `${g.detail}; ${stallRate(newestFirst, windowMinutes)}` };
+      return { ...finding, detail: g.detail, held: { pattern_key: key, runs: g.runs } };
     });
 }
 
+/** The stall rate of the window's runs: every stall in it, of the agent runs finished in it. */
+function stallRate(inWindow: readonly Run[], windowMinutes: number): string {
+  const agent = inWindow.filter(isAgentRun);
+  const stalls = agent.filter(isStall).length;
+  return `stall rate: ${stalls} of ${agent.length} agent runs in the last ${windowMinutes} minutes stalled`;
+}
+
+const isAgentRun = (r: Run) => AGENT_RUN_KINDS.includes(r.kind) && (r.status === "succeeded" || r.status === "failed");
+const isStall = (r: Run) => r.outcome?.status === "failed" && r.outcome.error_code === AGENT_STALLED;
+/** An interactive run the owner abandoned (design 05-alarms, 2026-11-23): the owner's choice, not a failure to act on. */
+const abandoned = (r: Run) => r.kind === INTERACTIVE && r.outcome?.status === "failed" && r.outcome.error_code === SESSION_ABANDONED;
+
+/**
+ * The stall runs of `runs` that followed a recorded host sleep (`sleptRuns`, the improver's rule), which the repeated-error
+ * check leaves out. Host sleeps are read only for a stall pattern with at least `threshold` runs, so a poll with no such
+ * pattern reads none.
+ */
+async function sleptStalls(store: Pick<FactoryStore, "listHostSleeps">, runs: readonly Run[], threshold: number): Promise<Set<RunId>> {
+  const slept = new Set<RunId>();
+  const { groups, patterns } = groupFailures(runs);
+  for (const g of [...groups, ...patterns]) {
+    if (g.error_code !== AGENT_STALLED || g.run_ids.length < threshold) continue;
+    for (const id of await sleptRuns(store, g)) slept.add(id);
+  }
+  return slept;
+}
+
 function zeroTokens(newestFirst: readonly Run[], threshold: number): AlarmFinding[] {
-  const agent = newestFirst.filter((r) => AGENT_RUN_KINDS.includes(r.kind) && (r.status === "succeeded" || r.status === "failed"));
+  const agent = newestFirst.filter(isAgentRun);
   let streak = 0;
   while (streak < agent.length && runTokenCount(agent[streak]!) === 0) streak++;
   if (streak < threshold) return [];
   const last = agent[0]!.outcome;
-  // How the last run ended only: the alarm's sentence (alarmText in src/ui/alarms.ts) already says the streak.
+  // How the last run ended only: the alarm's sentence (alarmText in src/ui/alarms.ts) already says the streak. The
+  // stored detail keeps the code; alarmFullText there reads this exact form and words the code for the owner.
   const detail = last?.status === "failed" ? `the last failed with ${last.error_code}` : "the last succeeded";
   return [{ pattern: "zero_tokens", pattern_key: "zero_tokens", error_code: "zero_tokens", count: streak, detail }];
 }
@@ -145,6 +182,7 @@ export interface AlarmDeps {
   store: Pick<
     FactoryStore,
     "listRunsFinishedWithin" | "listRunsFinishedBetween" | "recordAlert" | "listAlerts" | "getFiledPattern" | "pauseClaims" | "getWorkItemBySource" | "listStateChanges"
+    | "listHostSleeps"
   >;
   scanner: EgressScanner;
   clock: Clock;
@@ -165,18 +203,21 @@ export interface AlarmDeps {
  * A new zero-token alert starts the model_stall pause, first probe after `probe_interval_ms`; a new repeated-error
  * alert holds the items it hit (`hold`), so the failing items wait for a person and auto mode goes on. Each recurring
  * pattern re-raises first (`reraise`), then each failed run of an open filed pattern holds its item (`holdFiled`), then
- * each pack grant refusal holds its item and alerts (`holdRefused`). Returns the alerts this call stored. Safe to run
+ * each pack grant refusal holds its item and alerts (`holdRefused`). The new alert, the re-raise and the filed-pattern
+ * hold leave out stalls that followed a host sleep (`sleptStalls`) and abandoned interactive runs. Returns the alerts this call stored. Safe to run
  * twice and on several replicas at once: the store's conditional insert dedupes.
  */
 export async function alarmStep(d: AlarmDeps, settings: AlarmSettings & { probe_interval_ms: number; spend?: SpendBudgets }): Promise<Alert[]> {
   const now = d.clock.now();
   const runs = await d.store.listRunsFinishedWithin(Math.max(settings.alarm_window_minutes * 60_000, RERAISE_WINDOW_MS));
   const restarts = d.restarts ? await d.restarts() : [];
+  const skip = await sleptStalls(d.store, runs, settings.alarm_repeat_count);
+  const counted = runs.filter((r) => !skip.has(r.id) && !abandoned(r));
   // Before this step's own alerts, so a pattern's new 6-hour alert never hides the re-raise it is due.
-  const stored = await reraise(d, runs, now, settings.alarm_repeat_count);
-  await holdFiled(d, runs, now);
+  const stored = await reraise(d, counted, now, settings.alarm_repeat_count);
+  await holdFiled(d, counted, now);
   stored.push(...(await holdRefused(d, runs, now)));
-  for (const { held, ...f } of detectAlarms({ runs, restarts, now, settings })) {
+  for (const { held, ...f } of detectAlarms({ runs, restarts, now, settings, skip })) {
     // G5: alerts reach the status page, so the detail is scanned as UI text, never stored unscanned.
     const scan = await d.scanner.scan("ui", f.detail);
     const r = await d.store.recordAlert({ ...f, detail: scan.clean ? f.detail : null }, ALERT_DEDUPE_MS);
@@ -245,13 +286,16 @@ function recentPatterns(runs: readonly Run[], now: Date): FailureGroup[] {
   return [...groups, ...patterns];
 }
 
+/** Whether a failure pattern's runs hold their items: any pattern but a stall's (design 05-restarts, 2026-11-23). */
+const holds = (g: Pick<FailureGroup, "error_code">): boolean => g.error_code !== AGENT_STALLED;
+
 /**
  * Re-raises each recurring pattern: one that already alerted (its repeated-error alert) or was filed (its filed
  * pattern), and that failed `threshold` more runs within the last hour after its last re-raise (none yet: after it
  * was first known, the earlier of its alert and its filing). The re-raise is an alert (pattern `repeated_error`, key
  * `recurring:<key>`) the store dedupes for RERAISE_WINDOW_MS, so of several replicas or steps exactly one stores it,
- * at most once an hour. That one holds the pattern's items (each not held for it since its run, `unheld`) and comments the
- * count since filing on its filed item.
+ * at most once an hour. That one holds the pattern's items (each not held for it since its run, `unheld`; a stall
+ * pattern holds none) and comments the count since filing on its filed item.
  * Returns the re-raises it stored.
  */
 async function reraise(d: AlarmDeps, runs: readonly Run[], now: Date, threshold: number): Promise<Alert[]> {
@@ -279,7 +323,7 @@ async function reraise(d: AlarmDeps, runs: readonly Run[], now: Date, threshold:
     if (!r.created) continue;
     stored.push(r.alert);
     d.log.warn("alarm: recurring failure", { alert_id: r.alert.id, error_code: g.error_code, count: fresh, items: g.work_item_ids.length });
-    if (d.hold) await d.hold({ pattern_key: key, work_item_ids: await unheld(d, runsOf(g, byRun), key, null) });
+    if (d.hold && holds(g)) await d.hold({ pattern_key: key, work_item_ids: await unheld(d, runsOf(g, byRun), key, null) });
     if (filed?.filed_ref && d.comment) await commentFiled(d, { ...filed, filed_ref: filed.filed_ref }, now, fresh, r.alert.id);
   }
   return stored;
@@ -289,12 +333,12 @@ async function reraise(d: AlarmDeps, runs: readonly Run[], now: Date, threshold:
  * Holds the item of each failed run of the last RERAISE_WINDOW_MS whose pattern has an open filed item and that
  * finished after the filing: from its first matching run, not after `alarm_repeat_count` of them. Open: in the store
  * and not closed, or not in the store yet and filed less than FILED_INTAKE_MS ago. The hold itself is a conditional
- * transition of an item nothing else blocks, so a second step writes nothing.
+ * transition of an item nothing else blocks, so a second step writes nothing. A stall pattern holds nothing.
  */
 async function holdFiled(d: AlarmDeps, runs: readonly Run[], now: Date): Promise<void> {
   if (!d.hold) return;
   const byId = new Map(runs.map((r) => [r.id, r]));
-  for (const g of recentPatterns(runs, now)) {
+  for (const g of recentPatterns(runs, now).filter(holds)) {
     const key = patternKey(g);
     const filed = await d.store.getFiledPattern(d.project, key);
     if (!filed?.filed_ref) continue;
@@ -366,7 +410,7 @@ async function commentFiled(d: AlarmDeps, filed: FiledPattern & { filed_ref: Sou
   const body = [
     `This failure keeps coming back: ${all?.run_ids.length ?? fresh} failed runs since this item was filed (${filed.created_at}), ${fresh} of them in the last hour.`,
     "",
-    "The work items it hit are held (`recurring_failure`) until this fix merges; then they are retried.",
+    holds(filed) ? "The work items it hit are held (`recurring_failure`) until this fix merges; then they are retried." : "The work items it hit are retried with backoff; none is held for it.",
   ].join("\n");
   const scan = await d.scanner.scan("comment", body);
   if (!scan.clean) return;
@@ -385,28 +429,6 @@ async function knownSince(
   const filed = await d.store.getFiledPattern(d.project, key);
   const known = [newest.get(alertKey(key)), filed ? Date.parse(filed.created_at) : undefined].filter((m): m is number => m !== undefined);
   return known.length === 0 ? null : { at: Math.min(...known), filed };
-}
-
-/**
- * The recurring stall patterns of the last hour, whose items are held once the model answers (design 05-restarts):
- * failed runs with `agent_stalled` sharing a normalized detail, two or more of them (a group, as the improver files
- * them), of a pattern already known by its alert or its filing. The model answered, so the stall is the pattern's.
- * A pattern the improver skipped for a host sleep (its `host_sleep:<key>` alert), or whose runs of the hour held one
- * (`stalledBySleep`, the improver's rule), holds nothing: no fix item is filed for it, so nothing would release it.
- */
-export async function recurringStalls(
-  d: Pick<AlarmDeps, "project" | "clock"> & { store: AlarmDeps["store"] & Pick<FactoryStore, "listHostSleeps"> },
-): Promise<HeldPattern[]> {
-  const out: HeldPattern[] = [];
-  let newest: Map<string, number> | null = null;
-  for (const g of recentPatterns(await d.store.listRunsFinishedWithin(RERAISE_WINDOW_MS), d.clock.now())) {
-    if (g.error_code !== AGENT_STALLED || g.run_ids.length < 2) continue;
-    newest ??= await newestAlerts(d.store);
-    const key = patternKey(g);
-    if (newest.has(sleepAlertKey(key)) || (await stalledBySleep(d.store, g))) continue;
-    if (await knownSince(d, key, newest)) out.push({ pattern_key: key, work_item_ids: g.work_item_ids });
-  }
-  return out;
 }
 
 /** A recurring pattern and the items it hit, which it holds. */
@@ -440,20 +462,6 @@ export async function heldKey(
 export function releasePatch(it: Pick<WorkItem, "blocked_reason">, pattern_key: string, fix: Pick<WorkItem, "id" | "stage" | "merge_sha"> | null) {
   if (it.blocked_reason !== RECURRING_FAILURE || !fix || fix.stage !== "CLOSED" || !fix.merge_sha) return null;
   return { patch: { blocked_on: "none" as const, blocked_reason: null }, reason: RELEASED, detail: { pattern_key, fix_work_item_id: fix.id } };
-}
-
-/** When a held item's stall hold ends (its last hold's `held_until`, design 05-restarts), or null: not held, or held by a pattern. */
-export async function stallHeldUntil(
-  it: Pick<WorkItem, "blocked_reason">, changes: () => Promise<readonly Pick<StateChange, "reason" | "detail">[]>,
-): Promise<string | null> {
-  if (it.blocked_reason !== RECURRING_FAILURE) return null;
-  const until = (await changes()).filter((c) => c.reason === RECURRING_FAILURE).at(-1)?.detail?.[HELD_UNTIL];
-  return typeof until === "string" ? until : null;
-}
-
-/** The release of a stall hold (design 05-restarts) once its end `until` passed. */
-export function stallRelease(until: string) {
-  return { patch: { blocked_on: "none" as const, blocked_reason: null }, reason: RELEASED, detail: { [HELD_UNTIL]: until } };
 }
 
 function cmp(a: string, b: string): number {

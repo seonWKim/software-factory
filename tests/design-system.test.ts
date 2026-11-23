@@ -63,6 +63,14 @@ describe("design tokens", () => {
     expect(ui("card.tsx")).toMatch(/CARD_TITLE = "[^"]*\btext-base font-semibold"/);
   });
 
+  it("a Disclosure summary is text-2 by default, and the update note's on the info fill passes text-pill-info-fg", () => {
+    expect(readFileSync(join(WEB_SRC, "components", "ui", "disclosure.tsx"), "utf8")).toMatch(/summaryTone = "text-text-2"/);
+    const banner = readFileSync(join(WEB_SRC, "views", "system-banner.tsx"), "utf8");
+    const note = banner.slice(banner.indexOf("export function UpdateNote"), banner.indexOf("export function FactoryRevision"));
+    expect(note).toMatch(/bg-pill-info-bg/);
+    expect(note).toMatch(/<Disclosure summaryTone="text-pill-info-fg"/);
+  });
+
   it("tokens.json holds the two page widths, tokens.css declares them and index.css maps them to max-w-page-*", () => {
     const json = JSON.parse(readFileSync(join(ROOT, "design-system", "tokens.json"), "utf8")) as { page: Record<string, string> };
     expect(json.page).toEqual({ wide: "77rem", read: "60rem" });
@@ -233,7 +241,7 @@ describe("contrast", () => {
   });
 
   for (const [theme, selector] of [["light", ":root"], ["dark", "\\.dark"]] as const) {
-    it(`meets 4.5:1 in ${theme}`, () => {
+    it(`meets 4.5:1 in ${theme}, text and pill-*-fg on each pill-{ok,warn,bad,info}-bg included`, () => {
       const root = block(":root");
       const t = (name: string) => {
         const m = new RegExp(`--${name}: (#[0-9A-Fa-f]{6});`).exec(theme === "light" ? root : block(selector) + root);
@@ -245,6 +253,8 @@ describe("contrast", () => {
       for (const fg of ["accent", "running", "done", "failed"]) pairs.push([fg, "bg"]);
       // A pill's text on its own fill, and on a card or the page (an inline error or warning line).
       for (const s of ["ok", "warn", "bad", "info"]) for (const bg of [`pill-${s}-bg`, "surface", "bg"]) pairs.push([`pill-${s}-fg`, bg]);
+      // The text a panel on a pill fill may use: its own fg (above) or text-1; never text-2 or text-3.
+      for (const s of ["ok", "warn", "bad", "info"]) pairs.push(["text", `pill-${s}-bg`]);
       // Every tone Badge and StatusBadge draw (TONE_CLASS, the neutral one included): its text token on its fill token.
       for (const [bg, fg] of badgeTones()) pairs.push([fg, bg]);
       // Text on a filled accent or failed background (a primary button, a destructive confirm).
@@ -257,6 +267,13 @@ describe("contrast", () => {
     it(`the current-page bar (nav-active) meets 3:1 on the sidebar in ${theme}`, () => {
       const t = (name: string) => new RegExp(`--${name}: (#[0-9A-Fa-f]{6});`).exec(theme === "light" ? block(":root") : block(selector) + block(":root"))![1]!;
       expect(ratio(t("nav-active"), t("sidebar")), `${theme} nav-active on sidebar`).toBeGreaterThanOrEqual(3);
+    });
+  }
+
+  for (const [theme, selector] of [["light", ":root"], ["dark", "\\.dark"]] as const) {
+    it(`the current-page fill (sidebar-active) is at least 1.1:1 from the sidebar in ${theme}`, () => {
+      const t = (name: string) => new RegExp(`--${name}: (#[0-9A-Fa-f]{6});`).exec(theme === "light" ? block(":root") : block(selector) + block(":root"))![1]!;
+      expect(ratio(t("sidebar-active"), t("sidebar")), `${theme} sidebar-active on sidebar`).toBeGreaterThanOrEqual(1.1);
     });
   }
 
@@ -292,13 +309,13 @@ describe("the Gongbang mark in the dashboard", () => {
     expect(hex.toUpperCase()).toBe(tokens.colors.dark!.ember!.toUpperCase());
     expect(svg).not.toContain("data-min-px");
     const css = readFileSync(join(WEB_SRC, "tokens.css"), "utf8");
-    expect(css).toMatch(/:root \{[^}]*--ember: #FB923C;/);
-    expect(css).toMatch(/\.dark \{[^}]*--ember: #FB923C;/);
+    expect(css).toMatch(/:root \{[^}]*--ember: #F2A55F;/);
+    expect(css).toMatch(/\.dark \{[^}]*--ember: #F2A55F;/);
     expect(readFileSync(join(WEB_SRC, "index.css"), "utf8")).toContain("--color-ember: var(--ember);");
     expect(readFileSync(join(WEB_SRC, "components", "ui", "brand.tsx"), "utf8")).toContain("fill-ember");
   });
 
-  it("the sidebar mark draws icon.svg's square and 공", () => {
+  it("the sidebar mark draws icon.svg's square and glyph", () => {
     // Read as text: this suite is type-checked without JSX.
     const brand = readFileSync(join(WEB_SRC, "components", "ui", "brand.tsx"), "utf8");
     const square = /MARK_SQUARE = \{ x: (\d+), y: (\d+), size: (\d+), rx: (\d+) \}/.exec(brand)!;

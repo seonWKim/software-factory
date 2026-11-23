@@ -9,8 +9,9 @@ import type { MenuItem } from "../../components/ui/menu.js";
 import type { MessageKey } from "../../i18n/en.js";
 import { t } from "../../i18n/index.js";
 import { cn } from "../../lib/cn.js";
-import { localDateTime } from "../../lib/format.js";
+import { dueText, localDateTime } from "../../lib/format.js";
 import { itemPath } from "../../pages.js";
+import { copyCliEntry } from "../item-commands.js";
 import { ItemRow, copyIdItem } from "../item-row.js";
 import { TaskItemMenu, WorkState, useWorkItem, waitsOnOwner } from "../task-work.js";
 import { DeleteDialog, DescriptionDialog, ProjectsDialog } from "./dialogs.js";
@@ -50,7 +51,7 @@ function useBuild(task: TaskRow, token: string | null) {
   return { build, busy, error };
 }
 
-export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { task: TaskRow; overdue?: boolean; sub?: boolean }) {
+export function TaskCard({ task, overdue: inOverdue = false, sub = false, date = null }: { task: TaskRow; overdue?: boolean; sub?: boolean; date?: string | null }) {
   const { token, titles, completed } = useContext(Rows);
   const row = useRef<HTMLLIElement>(null);
   const action = useTaskAction(token);
@@ -60,7 +61,7 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
   const [mode, setMode] = useState<"view" | "edit" | "sub" | "delete" | "projects" | "description">("view");
   const [checked, setChecked] = useState(false);
   const parent = task.parent_task_id ?? null;
-  const due = task.due_date === null ? null : task.due_time === null ? task.due_date : `${task.due_date} ${task.due_time}`;
+  const due = dueText(task.due_date, task.due_time, date);
   // A timed task's stored duration; none stored: none shown.
   const minutes = task.due_time === null ? null : (task.duration_minutes ?? null);
   const close = () => {
@@ -92,8 +93,9 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
   const unbuilt = task.work_item_id === null;
   // The row's one primary action: Build this on an open task with no work item (design 09-dashboard-tasks). A done
   // task has none: Reopen is in its menu, as is every other action, and a waiting work item's commands come first.
+  // Each menu entry that acts carries `data-action` (its `factory task` verb) and `data-item` (the task's ID).
   const items: MenuItem[] = done
-    ? [{ label: t("tasks.reopen"), disabled: action.busy, onSelect: () => void reopen() }]
+    ? [{ label: t("tasks.reopen"), action: "reopen", item: task.id, disabled: action.busy, onSelect: () => void reopen() }]
     : [
         { label: t("tasks.description"), onSelect: () => setMode("description") },
         ...(parent === null ? [{ label: t("tasks.addSub"), onSelect: () => setMode("sub") }] : []),
@@ -103,6 +105,9 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
   const menuLabel = t("tasks.more", { title: task.title });
   const waiting = !done && waitsOnOwner(it);
   const error = builder.error ?? (mode !== "delete" && mode !== "projects" && mode !== "description" ? action.error : null);
+  // Copy as CLI command on an open row (a waiting item's menu has its own, for the item's command): Build this, else
+  // Complete. A done row's menu holds Reopen, then Copy ID for a built task.
+  const own = done ? items : [...items, copyCliEntry(unbuilt ? "build" : "done", task.id)];
   return (
     <ItemRow
       variant="comfortable"
@@ -123,6 +128,8 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
         <Checkbox
           checked={checked}
           aria-label={t("tasks.complete", { title: task.title })}
+          data-action="done"
+          data-item={task.id}
           disabled={action.busy}
           onChange={() => void complete()}
         />
@@ -169,12 +176,12 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
         </>
       }
       action={token !== null && !done && unbuilt && (
-        <Button size="sm" variant="secondary" data-action="build" disabled={builder.busy} onClick={() => void builder.build()}>
+        <Button size="sm" variant="secondary" data-action="build" data-item={task.id} disabled={builder.busy} onClick={() => void builder.build()}>
           {t("tasks.build")}
         </Button>
       )}
       menu={token !== null && waiting ? <TaskItemMenu it={it} extra={[...items, ...(task.work_item_id ? [copyIdItem(task.work_item_id)] : [])]} label={menuLabel} /> : undefined}
-      menuItems={token === null ? undefined : items}
+      menuItems={token === null ? undefined : own}
       menuLabel={menuLabel}
       copyId={token === null ? undefined : (task.work_item_id ?? undefined)}
       second={error !== null && (
@@ -204,13 +211,13 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false }: { ta
 }
 
 /** One heading and its list; the rows are the page's share of the group. */
-export function Group({ title, rows, overdue }: { title: string; rows: readonly Nested[]; overdue: boolean }) {
+export function Group({ title, rows, overdue, date = null }: { title: string; rows: readonly Nested[]; overdue: boolean; date?: string | null }) {
   return (
     <div className="space-y-1">
       <h3 className={SUB_TITLE}>{title}</h3>
       <ul aria-label={title} className="divide-y divide-border rounded-control border border-border">
         {rows.map(({ row, sub }) => (
-          <TaskCard key={row.id} task={row} overdue={overdue} sub={sub} />
+          <TaskCard key={row.id} task={row} overdue={overdue} sub={sub} date={date} />
         ))}
       </ul>
     </div>

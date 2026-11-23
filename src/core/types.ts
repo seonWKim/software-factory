@@ -166,19 +166,17 @@ export type StateChangeDetail = Record<string, string | number | boolean | null>
 /**
  * `update` runs no agent: the worker merges the base branch into a factory PR branch (design §5).
  * `resolve` is the agent run a human starts with `/resolve` on a merge conflict (design §5).
- * `manual` is a record, not work: a person pushed to the item's PR branch (design 2026-11-01). It is written
- * already succeeded and acknowledged, so no worker claims it and the controller applies nothing from it.
+ * `manual` is a record, not work: a person pushed to the item's PR branch (design 2026-11-01). It is written already succeeded and acknowledged, so
+ * no worker claims it and the controller applies nothing from it. `judge`: one read-only run per merged goal phase, on its goal split's parent (04-split-specs).
  * `interactive`: a person's own LLM session (`factory session`, design §5, 2026-11-01), written running with a lease,
  * never queued or claimed. It ends by `session finish` (succeeded), `session abandon` or a lost lease (failed).
- * `improve` runs no agent (design §7): it groups the failed runs of a time window into one stored report, with one
- * plain model call (no tools) per group of two or more runs for a draft cause and fix. It belongs to its project's
- * system work item, queued daily and by `factory improve`.
+ * `improve` runs no agent (design §7): it groups the failed runs of a time window into one stored report, with one plain model call (no tools)
+ * per group of two or more runs for a draft cause and fix. It belongs to its project's system work item, queued daily and by `factory improve`.
  */
-export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual" | "interactive" | "improve" | "merge-check" | "restart";
+export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual" | "interactive" | "improve" | "merge-check" | "restart" | "judge";
 
 /**
- * What the controller hands a run beyond the work item. `notes`: a human's `/resolve` text, untrusted. `wip`: the
- * failed implement run's commits on the forge; the retry pushes them with no agent run (design §5 Restarts).
+ * What the controller hands a run beyond the work item. `notes`: a human's `/resolve` text, or the newest note a `rereview` runs for, untrusted. `wip`: the failed implement run's commits on the forge; the retry pushes them with no agent run (design §5 Restarts).
  */
 export interface RunInput {
   notes?: string;
@@ -189,10 +187,12 @@ export interface RunInput {
   improve?: ImproveWindow;
   /** A review run's CI results (design §4, issue #223) read when it was queued: empty, none ran; null, the read failed; absent, not read. */
   ci_checks?: PrCheckResult[] | null;
+  /** A review queued because a note or spec came after the last `bug` verdict at an unchanged head: it reviews that head again (design 05-ci-gate, 2026-11-23). */ rereview?: true;
   /** An implement run's failing tests from the failed CI job's log after its one rerun (design 05-ci-gate), redacted, untrusted. */
   ci_failing_tests?: string;
-  /** A merge-check run's base and the branches merged onto it in queue order, this change last (RFC 0015 M8). */
-  merge_check?: { base_ref: string; branches: string[] };
+  merge_check?: { base_ref: string; branches: string[] }; // a merge-check run's base and the branches merged onto it in queue order, this change last (RFC 0015 M8)
+  /** A judge run's goal lines, merged phase and recorded phases' titles (design 04-split-specs), fixed at enqueue so a retry judges the same. */
+  judge?: { phase: number; goal_done_when: string[]; title: string; problem: string; done_criteria: string[]; merge_sha: string; phases: string[] };
 }
 
 /** One check on a PR's head commit and its result. The name is forge text: untrusted (G5). */
@@ -227,24 +227,24 @@ export interface FailureGroup {
 }
 
 /**
- * A group's filing (design §7). `filed`: a new item with the group's runs. `commented`: it matched an open filed item; one comment named `run_ids`, its runs
- * not linked there before. `linked`: it matched one, all runs linked, nothing posted. `skipped`: past a cap, the matched item closed in the last 30 days, no source
- * can file, `needs_person`, `host_sleep` (a stall after a host sleep), `pause` (every run failed in a model-stall or network pause), `in_flight` (another caller is
- * filing it) or `open_item` (a hot file with an open item of its title), all not filed. `withheld`: the egress scan flagged the body. `failed`: the call threw.
+ * A group's filing (design §7). `filed`: a new item with the group's runs. `commented`: it matched an open filed item; one comment named `run_ids`, its runs not linked there
+ * before. `linked`: it matched one, all runs linked, nothing posted. `skipped`: past a cap, the matched item closed in the last 30 days, no source can file, `needs_person`,
+ * `host_sleep` (a stall after a host sleep), `pause` (every run failed in a model-stall or network pause), `in_flight` (another caller is filing it) or `open_item` (a hot
+ * file with an open item of its title), all not filed; `count`: an `issue_cap` row's evidence. `withheld`: the egress scan flagged the body. `failed`: the call threw.
  */
 export type ImproveFiling =
   | { status: "filed" | "linked"; ref: SourceRef }
   | { status: "commented"; ref: SourceRef; run_ids: RunId[] }
-  | { status: "skipped"; reason: "issue_cap" | "comment_cap" | "recently_closed" | "no_source" | "needs_person" | "host_sleep" | "pause" | "in_flight" | "open_item" }
+  | { status: "skipped"; reason: "issue_cap" | "comment_cap" | "recently_closed" | "no_source" | "needs_person" | "host_sleep" | "pause" | "in_flight" | "open_item"; count?: number }
   | { status: "withheld"; rules: string[] }
   | { status: "failed"; reason: "error" };
 
 export type FiledPatternId = Brand<string, "FiledPatternId">;
 
 /**
- * One pattern filed from an improve report (design §7), unique per (project, pattern_key). `report_id`: the report that claimed
- * it, whose ID is in the item's marker. `filed_ref`: the item, null while the filing is claimed but not yet done (a retry looks
- * the marker up first). `outcome`: whether its fix held, set (`outcome_at`) 7 days after the item closed as completed; else null.
+ * One pattern filed from an improve report (design §7), unique per (project, pattern_key). `report_id`: the report that claimed it, whose ID is in the
+ * item's marker. `filed_ref`: the item, null while the filing is claimed but not yet done (a retry looks the marker up first). `outcome`: whether its fix
+ * held, set (`outcome_at`) 7 days after the item closed as completed; else null. `evidence`: its count at filing (runs, plus held items); null before.
  */
 export interface FiledPattern {
   id: FiledPatternId;
@@ -255,8 +255,8 @@ export interface FiledPattern {
   report_id: ImproveReportId;
   filed_ref: SourceRef | null;
   created_at: Timestamp;
-  outcome: "holds" | "regressed" | null;
-  outcome_at: Timestamp | null;
+  outcome: "holds" | "regressed" | null; outcome_at: Timestamp | null;
+  evidence: number | null;
 }
 
 /**
@@ -423,7 +423,7 @@ export interface RunAttempt {
   finished_at: Timestamp | null;
   /** The failed outcome's error code; `lease_expired` for a reaped claim; null otherwise. */
   error_code: string | null;
-  /** failureClass() of a failed outcome; `infra` for a reaped claim; null for every other status. */
+  /** failureClass() of a failed outcome; `infra` for a reaped claim; null otherwise. `stalled`: rows before 2026-11-23. */
   failure_class: "task" | "infra" | "rate_limited" | "stalled" | "checks_env" | "setup_missing" | null;
   /** outcomeTokens() of the outcome that closed it; 0 when it closed without an outcome. */
   tokens: number;

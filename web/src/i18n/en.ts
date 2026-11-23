@@ -2,12 +2,14 @@
 // file and run `npm run i18n:catalog`. A key's prefix (the part before its first dot) decides its area file
 // (tests/web-i18n-keys.test.ts). `{name}` in a text marks a value the caller fills in.
 import { data } from "./en/data.js";
+import { evals } from "./en/evals.js";
 import { health } from "./en/health.js";
 import { plugins } from "./en/plugins.js";
 import { proposals } from "./en/proposals.js";
 import { rules } from "./en/rules.js";
 import { settings } from "./en/settings.js";
 import { shell } from "./en/shell.js";
+import { standing } from "./en/standing.js";
 import { system } from "./en/system.js";
 import { tasks } from "./en/tasks.js";
 import { work } from "./en/work.js";
@@ -15,12 +17,14 @@ import { workers } from "./en/workers.js";
 
 export const en = {
   ...data,
+  ...evals,
   ...health,
   ...plugins,
   ...proposals,
   ...rules,
   ...settings,
   ...shell,
+  ...standing,
   ...system,
   ...tasks,
   ...work,

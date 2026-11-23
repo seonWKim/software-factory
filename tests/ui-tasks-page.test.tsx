@@ -411,7 +411,8 @@ describe("a task row's layout", () => {
     const soon = card("tk_soon");
     expect(soon.querySelector("[role=checkbox], input[type=checkbox]")!.compareDocumentPosition(soon.querySelector("[data-row-title]")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(soon.querySelector("[data-row-project]")!.textContent).toBe("#home");
-    expect(soon.textContent).toContain("due 2026-11-13");
+    // Its group's heading names its due day, so the why slot shows no date (dueText).
+    expect(soon.textContent).not.toContain("2026-11-13");
     expect(soon.querySelector("[data-row-second]")).toBeNull();
   });
 });

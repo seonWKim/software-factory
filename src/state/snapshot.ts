@@ -1,14 +1,29 @@
-// The schema snapshot (RFC 0015 §6.3): every table and index of a database as one SQL text, so review sees
-// each schema change as a diff of schema/sqlite.sql.
+// The schema snapshot (RFC 0015 §6.3): every table and index of a database as SQL text, one file per owner
+// prefix under schema/sqlite/, so review sees each schema change as a diff of its owner's file and work items
+// for different owners do not share one generated file.
 
 import type { SqlExecutor } from "./sql-driver.js";
 
-/** Tables first, then indexes, each sorted by name; SQLite's own tables left out. */
-export async function sqliteSnapshot(db: SqlExecutor): Promise<string> {
+/** The file of tables that carry none of the owner prefixes. */
+const UNPREFIXED_FILE = "unprefixed.sql";
+
+/**
+ * File name (`<prefix without _>.sql`, or `unprefixed.sql`) → that owner's tables then indexes, each sorted by
+ * name; an index goes with its table. Only owners with tables get a file; SQLite's own tables are left out.
+ */
+export async function sqliteSnapshot(db: SqlExecutor, prefixes: readonly string[]): Promise<Map<string, string>> {
   const rows = await db.all(
-    "SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END, name",
+    "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END, name",
   );
-  return header("sqlite") + rows.map((r) => `${String(r.sql).trim()};\n`).join("\n");
+  const longestFirst = [...prefixes].sort((a, b) => b.length - a.length);
+  const groups = new Map<string, string[]>();
+  for (const r of rows) {
+    const table = String(r.tbl_name);
+    const prefix = longestFirst.find((p) => table.startsWith(p));
+    const file = prefix ? `${prefix.replace(/_$/, "")}.sql` : UNPREFIXED_FILE;
+    groups.set(file, [...(groups.get(file) ?? []), `${String(r.sql).trim()};\n`]);
+  }
+  return new Map([...groups].sort(([a], [b]) => a.localeCompare(b)).map(([file, parts]) => [file, header("sqlite") + parts.join("\n")]));
 }
 
 function header(dialect: string): string {

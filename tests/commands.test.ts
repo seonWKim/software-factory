@@ -341,6 +341,21 @@ describe("command table", () => {
     expect(helpReply({ ...local, asked_by: "implement" })).toContain("`/hold <id>` **(now)**: Hold until <id> merges");
   });
 
+  it("at max_loops after a failed merge check, /help marks `factory merge <id>` and not /retry; chat help lists merge; without it, /retry as before", () => {
+    const stopped = { phase: "max_loops", has_pr: false, local: true, merge_check: true } as const;
+    const help = helpReply(stopped);
+    expect(help).toContain("- `factory merge <id>` **(now)**: The owner checks the merged result once more");
+    expect(help).not.toContain("- `/retry` **(now)**");
+    expect(help).toContain("- `/revise <feedback>` **(now)**");
+    expect(applies(commandSpec("retry"), stopped)).toBe(false);
+    expect(commandFooter(stopped)).not.toContain("`/retry`");
+    expect(chatHelpReply(() => true, stopped)).toContain("- `merge`:");
+    const loops = { phase: "max_loops", has_pr: false, local: true } as const;
+    expect(helpReply(loops)).toContain("- `/retry` **(now)**");
+    expect(helpReply(loops)).not.toContain("- `factory merge <id>` **(now)**");
+    expect(chatHelpReply(() => true, loops)).not.toContain("- `merge`:");
+  });
+
   it("/help names the state by its label, not its phase id", () => {
     expect(helpReply(s("spec_pending"))).toContain("(spec waiting for approval)");
     expect(helpReply(s("spec_pending"))).not.toContain("spec_pending");

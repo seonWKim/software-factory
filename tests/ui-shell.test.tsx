@@ -40,8 +40,8 @@ describe("app shell", () => {
     expect(mark.querySelector("path")!.getAttribute("fill-rule")).toBe("evenodd");
     const ember = mark.querySelector("circle")!;
     expect(ember.getAttribute("class")).toBe("fill-ember");
-    expect([ember.getAttribute("cx"), ember.getAttribute("cy")]).toEqual(["800", "224"]);
-    expect(Number(ember.getAttribute("r"))).toBeCloseTo((2.5 * 1024) / 24, 1);
+    expect([ember.getAttribute("cx"), ember.getAttribute("cy")]).toEqual(["691.6", "332.4"]);
+    expect(Number(ember.getAttribute("r"))).toBeCloseTo((2 * 1024) / 24, 1);
   });
 
   it("polls every 3 s while visible and stops while the document is hidden", async () => {
@@ -248,7 +248,7 @@ describe("sidebar", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "Settings" })).toBeTruthy();
     const open = within(side).getByRole("link", { name: "Settings" });
     expect(open.getAttribute("aria-current")).toBe("page");
-    expect(open.className.split(" ")).toEqual(expect.arrayContaining(["bg-surface-2", "font-medium"]));
+    expect(open.className.split(" ")).toEqual(expect.arrayContaining(["bg-sidebar-active", "font-medium"]));
   });
 });
 
@@ -277,12 +277,60 @@ describe("sidebar in the icon-only layout", () => {
 
 describe("top bar", () => {
   // jsdom has no layout, so this checks the classes that keep the bar inside a 390px screen (checked by screenshot).
-  it("wraps and keeps the icon buttons at full size", async () => {
+  it("stays on one row and keeps the icon buttons at full size", async () => {
     mount();
     await waitBadge();
     const header = document.querySelector("header")!;
-    expect(header.className.split(" ")).toContain("flex-wrap");
+    // One row at 390px (issue #763): a wrapping header dropped Theme onto a second row.
+    expect(header.className.split(" ")).not.toContain("flex-wrap");
     expect(within(header).getByRole("button", { name: "Refresh" }).className.split(" ")).toContain("shrink-0");
+  });
+
+  /** Mounts the app at `px` wide with the pause routes on, so Stop all agents shows; restores both after `body`. */
+  async function atWidth(px: number, body: (header: HTMLElement) => Promise<void>) {
+    const wide = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: px });
+    RESPONSES["/api/v1/pauses"] = { pauses: [], csrf_token: "tok" };
+    try {
+      mount();
+      await waitBadge();
+      const header = document.querySelector("header")!;
+      await within(header).findByRole("button", { name: "Stop all agents" });
+      await body(header);
+    } finally {
+      delete RESPONSES["/api/v1/pauses"];
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: wide });
+    }
+  }
+
+  it("below sm: Stop all agents is icon-only, Search and Refresh sit in one More menu, Theme stays", async () => {
+    await atWidth(390, async (header) => {
+      const stop = within(header).getByRole("button", { name: "Stop all agents" });
+      expect(stop.getAttribute("aria-label")).toBe("Stop all agents");
+      expect(stop.textContent).toBe("");
+      expect(stop.querySelector("svg")).toBeTruthy();
+      expect(within(header).queryByRole("button", { name: "Search" })).toBeNull();
+      expect(within(header).queryByRole("button", { name: "Refresh" })).toBeNull();
+      expect(within(header).getByRole("button", { name: "Theme" })).toBeTruthy();
+      fireEvent.click(within(header).getByRole("button", { name: "More" }));
+      const menu = within(header).getByRole("menu", { name: "More" });
+      const names = within(menu).getAllByRole("menuitem").map((m) => m.textContent);
+      expect(names).toEqual(expect.arrayContaining(["Search", "Refresh"]));
+      fireEvent.click(within(menu).getByRole("menuitem", { name: "Search" }));
+      expect(await screen.findByRole("dialog")).toBeTruthy();
+    });
+  });
+
+  it("at sm and wider: Stop all agents shows its text, Search and Refresh are their own buttons, no More menu", async () => {
+    await atWidth(1024, async (header) => {
+      const stop = within(header).getByRole("button", { name: "Stop all agents" });
+      expect(stop.textContent).toBe("Stop all agents");
+      expect(stop.hasAttribute("aria-label")).toBe(false);
+      expect(within(header).getByRole("button", { name: "Search" })).toBeTruthy();
+      expect(within(header).getByRole("button", { name: "Refresh" })).toBeTruthy();
+      expect(within(header).getByRole("button", { name: "Theme" })).toBeTruthy();
+      expect(within(header).queryByRole("button", { name: "More" })).toBeNull();
+    });
   });
 
   it("has no Needs you chip and no age text; the sidebar Tasks badge keeps the count", async () => {

@@ -184,6 +184,24 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
     });
   });
 
+  describe("merge checks (design 05-merge-conflict, Re-check)", () => {
+    it("clearMergeCheck removes only that item's stored check, leaves the item as it was, and is safe to run twice", async () => {
+      const { store } = await make();
+      const { item: a } = await store.createWorkItem(issue(1), system);
+      const { item: b } = await store.createWorkItem(issue(2), system);
+      const check = { mergeable: true, conflicts: [], head_sha: "a".repeat(40), base_sha: "b".repeat(40) };
+      await store.recordMergeCheck({ work_item_id: a.id, ...check });
+      await store.recordMergeCheck({ work_item_id: b.id, ...check });
+      expect(await store.clearMergeCheck(a.id)).toBe(true);
+      expect(await store.getMergeCheck(a.id)).toBeNull();
+      expect(await store.getMergeCheck(b.id)).not.toBeNull();
+      expect(await store.clearMergeCheck(a.id)).toBe(false);
+      const after = (await store.getWorkItem(a.id))!;
+      expect([after.stage, after.blocked_on, after.blocked_reason, after.version]).toEqual([a.stage, a.blocked_on, a.blocked_reason, a.version]);
+      expect(await store.listStateChanges(a.id)).toHaveLength((await store.listStateChanges(b.id)).length);
+    });
+  });
+
   describe("runs and leases", () => {
     async function queued() {
       const ctx = await make();
@@ -374,7 +392,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
         [{ status: "failed" as const, error_code: "agent_error", detail: "", infra: false, usage }, "task", 20],
         [{ status: "failed" as const, error_code: "push_failed", detail: "", infra: true }, "infra", 0],
         [{ status: "failed" as const, error_code: "rate_limited", detail: "", infra: true, usage }, "rate_limited", 20],
-        [{ status: "failed" as const, error_code: "agent_stalled", detail: "", infra: true }, "stalled", 0],
+        [{ status: "failed" as const, error_code: "agent_stalled", detail: "", infra: false }, "infra", 0],
       ] as const;
       // One store for every case (a fresh database per case is slow): one item each, claimed in turn.
       const { store } = await make();
@@ -672,6 +690,16 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       await store.createWorkItem(issue(2), system);
       await store.transition({ id: item.id, expected_version: 1, patch: { stage: "CLOSED", close_reason: "wont_do" }, actor: system, reason: "x" });
       expect(await store.countWorkItemsByStage()).toEqual({ NEW: 1, READY: 0, RUNNING: 0, REVIEW: 0, CLOSED: 1 });
+    });
+
+    it("system items are left out of countWorkItemsByStage and of lists that exclude them", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      const sys = await store.createWorkItem({ ...issue(2), hold: { blocked_on: "upstream", blocked_reason: "system_item" } }, system);
+      expect((await store.countWorkItemsByStage()).NEW).toBe(1);
+      expect((await store.listWorkItemsWhere({ exclude_system: true, limit: 10 })).map((i) => i.id)).toEqual([item.id]);
+      expect(await store.countWorkItemsWhere({ exclude_system: true })).toBe(1);
+      expect((await store.listWorkItemsWhere({ limit: 10 })).map((i) => i.id)).toContain(sys.item.id);
     });
 
     it("listRunsByStatus returns runs in the given statuses, oldest first, up to the limit", async () => {
@@ -2090,6 +2118,10 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "controller_merge_queues", // RFC 0015 M8: src/controller/migrations/20261109T0300-controller-merge-queue
       "controller_merge_queue_entries",
       "controller_signals", // the signal ledger: src/controller/migrations/20261111T1210-controller-signals
+      "controller_skill_eval_suites", // skill evals: the *-controller-skill-evals migration
+      "controller_skill_eval_cases",
+      "controller_skill_eval_runs",
+      "controller_skill_eval_replays",
       "controller_tasks", // plain tasks: src/controller/migrations/20261111T1610-controller-tasks
       "controller_notices", // owner notices: src/controller/migrations/20261112T0900-controller-notices
       "controller_notice_messages", "controller_notice_questions", // Slack notice records: 20261112T2100-controller-notice-messages
@@ -2098,6 +2130,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "controller_design_learnings", // owner corrections to UI changes (design 07-design-learnings): 20261120T1201-controller-design-learnings
       "controller_schedules", "controller_schedule_runs", // schedules (design 08-schedules): 20261122T1000-controller-schedules
       "controller_standing_rule_changes", // one record per standing-rule change (design 05-standing-approvals): 20261122T1300-state-standing-rule-changes
+      "controller_green_bases", // the last green base per project (design 03-risk, red-main revert): 20261123T1001-controller-green-base
       "ext_packs_approvals", // approvals of pack entries: src/state/migrations/20261111T1600-state-ext-packs-approvals
       "ext_packs_entries", // pack tool and MCP server entries: src/state/migrations/20261111T1201-state-ext-packs-entries
       "ext_skill_refs", // imported skill references (design 11-plugin-import): src/state/migrations/20261115T1200-state-ext-skill-refs
@@ -2479,6 +2512,45 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       await push("d".repeat(40));
       await db.run("UPDATE outbound_actions SET delivered_at = ?, delivered_ref = ? WHERE intent_key = ?", [now, JSON.stringify({ conflicts: ["x"] }), `push_base:${item.id}:${"d".repeat(40)}`]);
       expect(await store.getBasePush(item.id)).toMatchObject({ merge_sha: "d".repeat(40), outcome: "conflict", pushed_sha: null, attempts: 0 });
+    });
+
+    it("a base's backlog: its pushes after its newest pushed one, with the conflicting files of its newest delivered push when that is a conflict", async () => {
+      const { store, clock } = await make();
+      const db = (store as unknown as { db: SqlDriver }).db;
+      const now = clock.now().toISOString();
+      let n = 0;
+      const push = async (base: string, delivered?: { pushed: string } | { conflicts: string[] }) => {
+        const { item } = await store.createWorkItem(issue(100 + ++n), system);
+        const key = `push_base:${item.id}:${n}`;
+        await recordAction(db, { action: "push_base", target: { type: "git", id: `h:${base}:push`, link: "" }, work_item_id: item.id, key, args: { base_ref: base, merge_sha: String(n), message: "m" } }, now);
+        if (delivered) await db.run("UPDATE outbound_actions SET delivered_at = ?, delivered_ref = ? WHERE intent_key = ?", [now, JSON.stringify(delivered), key]);
+      };
+      const of = async (base: string) => (await store.listBasePushBacklogs()).find((b) => b.base_ref === base) ?? null;
+      expect(await of("main")).toBeNull();
+
+      await push("main", { pushed: "p" });
+      expect(await of("main")).toBeNull();
+      // One pending push: waiting, no conflict.
+      await push("main");
+      expect(await of("main")).toEqual({ base_ref: "main", waiting: 1, conflicts: null });
+      // A conflict, then a pending one after it: both wait, the conflict's files named.
+      await push("main", { conflicts: ["a.txt"] });
+      await push("main");
+      expect(await of("main")).toEqual({ base_ref: "main", waiting: 3, conflicts: ["a.txt"] });
+      // A newer conflict replaces the files.
+      await push("main", { conflicts: ["b.txt", "c.txt"] });
+      expect(await of("main")).toEqual({ base_ref: "main", waiting: 4, conflicts: ["b.txt", "c.txt"] });
+      // Another base is its own backlog.
+      await push("release", { conflicts: ["r.txt"] });
+      expect(await of("release")).toEqual({ base_ref: "release", waiting: 1, conflicts: ["r.txt"] });
+      expect(await of("main")).toMatchObject({ waiting: 4 });
+      // A push that lands on another base leaves this base's backlog as it is.
+      await push("release", { pushed: "r" });
+      expect(await of("release")).toBeNull();
+      expect(await of("main")).toEqual({ base_ref: "main", waiting: 4, conflicts: ["b.txt", "c.txt"] });
+      // A push that lands clears the base: nothing before it waits.
+      await push("main", { pushed: "q" });
+      expect(await of("main")).toBeNull();
     });
   });
 

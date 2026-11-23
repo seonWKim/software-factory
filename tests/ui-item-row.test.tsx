@@ -135,6 +135,13 @@ describe("the lists render ItemRow", () => {
     expect(within(tr).getByRole("link", { name: "Title 4" }).getAttribute("href")).toBe("/app/items/wi_4");
     expect(tr.textContent).toContain("Implement #2");
     expect(tr.textContent).not.toMatch(RAW_ID);
+    // The stored title is raw text (the responsive raw-name rule skips it); a table's title column wraps, so it is a
+    // cell title, not a one-line row title (title-wrap).
+    const title = within(tr).getByRole("link", { name: "Title 4" });
+    expect(title.hasAttribute("data-raw")).toBe(true);
+    expect(title.hasAttribute("data-cell-title")).toBe(true);
+    expect(title.hasAttribute("data-row-title")).toBe(false);
+    expect(title.className).not.toContain("truncate");
   });
 
   it("the Needs you rows: data-item-id, the title links, the ⋯ menu keeps only the item's commands (no Copy ID)", () => {

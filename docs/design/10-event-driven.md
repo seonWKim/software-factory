@@ -10,9 +10,14 @@ force.
 
 - **Every table carries its owner's prefix** (since 2026-11-08): `bus_`, `inbound_`, `controller_`, `worker_`,
   `outbound_`, `identity_`/`authz_`, `runtime_`, `ui_`, `ext_<name>_`. A component's code names only its own
-  tables (`tests/architecture/table-ownership.test.ts`). The generated `schema/sqlite.sql` is
-  the full table list; `npm run schema:snapshot` rewrites it, and
-  `tests/architecture/schema-snapshot.test.ts` fails when it is stale.
+  tables (`tests/architecture/table-ownership.test.ts`).
+- **The generated table list is one file per owner prefix under `schema/sqlite/`** (decision changed 2026-11-22,
+  issue #754; replaces "one generated `schema/sqlite.sql`", see History). Each prefix that has tables gets
+  `schema/sqlite/<prefix>.sql` (`bus.sql`, `controller.sql`, `authz.sql`, ...) with every table and index of that
+  owner; tables with no prefix are in `unprefixed.sql`. `npm run schema:snapshot` rewrites the files and removes any
+  it no longer produces; `tests/architecture/schema-snapshot.test.ts` fails when one is stale, missing or extra.
+  Reason: the one file was a path companion of every migration, so items for different owners held each other on
+  it (5 held items in a week, no conflict runs). One file per table (about 104) would pass the file cap.
 - **Schema changes are timestamped migrations** (since 2026-11-08): `<yyyymmddThhmm>-<component>-<slug>.migration.ts`
   in the owning component's `migrations/` folder, found by discovery, recorded in `runtime_schema_migrations`.
   They run after the frozen numbered baseline (the list in `src/impl/store/sqlite/schema.ts`), which gets no
@@ -194,7 +199,8 @@ force.
     `push_base:<item>:<merge sha>` before the item's close, so a crash between them pushes once. The `local` target
     fetches the remote base, merges it into the local base when it moved, and has the forge push conditionally on
     the remote sha it read; a failure is a retried delivery; a remote base that conflicts is delivered as a conflict
-    and posts one message on the closed item. The status page reads it through `FactoryStore.getBasePush` (the newest
+    and posts nothing: Needs you shows it as one row per base (`FactoryStore.listBasePushBacklogs`, design
+    05-sources, Local items). The status page reads it through `FactoryStore.getBasePush` (the newest
     `push_base` action, its batch's failed tries). The `outbound_base_pushes` table and the outbox step's base push
     step are gone from the code; the table stays until the contract migration `20261109T1215-outbound-drop-base-pushes` drops it (`migrate --contract`). A row still pending
     there at the upgrade becomes the `push_base` action the merge would have stored, under its key, to the `local`

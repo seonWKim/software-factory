@@ -43,7 +43,7 @@ function Total({ label, total, budget }: { label: string; total: SpendTotals; bu
 /** The y-axis values: the most a day cost, half of it and 0 (only 0 when nothing cost anything), top first. */
 const yTicks = (max: number): number[] => (max > 0 ? [max, max / 2, 0] : [0]);
 
-/** A day's details, shown above its bar: date, cost, runs, tokens and its top items, each linking to its item. */
+/** A day's details, shown beside its bar: date, cost, runs, tokens and its top items, each linking to its item. */
 function DayDetail({ d }: { d: SpendDay }) {
   const facts = [usd(d.cost_usd), t(d.runs === 1 ? "spend.dayRunsOne" : "spend.dayRunsMany", { count: d.runs }), t("spend.tokens", { tokens: tokens(d.tokens) })];
   if (d.unknown > 0) facts.push(t("spend.dayUnknown", { count: d.unknown }));
@@ -67,8 +67,9 @@ function DayDetail({ d }: { d: SpendDay }) {
 
 /**
  * One bar per UTC day, scaled to the day that cost most, on a y-axis of cost labels with gridlines; the x-axis names
- * only the first and last day. Hover or focus on a bar shows that day's details; a click (or Enter or Space) picks
- * the day, and again lets it go.
+ * only the first and last day. Hover or focus on a bar shows that day's details beside it; a click (or Enter or Space)
+ * picks the day, and again lets it go. Each bar is at least 24px wide, so the plot scrolls sideways inside the card
+ * when the window is narrower than that.
  */
 function DailyChart({ days, selected, onSelect }: { days: readonly SpendDay[]; selected: string | null; onSelect(day: string | null): void }) {
   const max = Math.max(...days.map((d) => d.cost_usd), 0);
@@ -81,27 +82,30 @@ function DailyChart({ days, selected, onSelect }: { days: readonly SpendDay[]; s
           <span key={i} data-tick={i} className="absolute right-0 translate-y-1/2 whitespace-nowrap" style={{ bottom: pct(v) }}>{usd(v)}</span>
         ))}
       </div>
-      <div className="min-w-0 flex-1">
-        <div className="relative h-32">
-          {ticks.map((v, i) => (
-            <span key={i} aria-hidden data-gridline={i} className="pointer-events-none absolute inset-x-0 border-t border-dashed border-border" style={{ bottom: pct(v) }} />
-          ))}
-          <ol aria-label={t("spend.chartLabel")} className="relative flex h-full items-end gap-px">
-            {days.map((d, i) => (
-              <li key={d.day} data-day={d.day} className="flex h-full min-w-0 flex-1">
-                <Tooltip text={<DayDetail d={d} />} align={i < days.length / 3 ? "start" : i >= (2 * days.length) / 3 ? "end" : "center"} className="h-full w-full">
-                  <Button data-chart-bar variant="ghost" size="sm" aria-pressed={selected === d.day} onClick={() => onSelect(selected === d.day ? null : d.day)} className="h-full w-full items-end! px-0!">
-                    <span className="sr-only">{t("spend.bar", { day: d.day, cost: usd(d.cost_usd) })}</span>
-                    <span aria-hidden className={cn("w-full rounded-t-control bg-accent", selected !== null && selected !== d.day && "opacity-40")} style={{ height: pct(d.cost_usd) }} />
-                  </Button>
-                </Tooltip>
-              </li>
+      {/* Scrolls inside the card when the window is narrow: every bar keeps at least 24px (the small-target rule). */}
+      <div data-chart-scroll className="min-w-0 flex-1 overflow-x-auto">
+        <div style={{ minWidth: `${days.length * 25}px` }}>
+          <div className="relative h-32">
+            {ticks.map((v, i) => (
+              <span key={i} aria-hidden data-gridline={i} className="pointer-events-none absolute inset-x-0 border-t border-dashed border-border" style={{ bottom: pct(v) }} />
             ))}
-          </ol>
-        </div>
-        <div aria-hidden data-axis="x" className="mt-1 flex justify-between gap-2 text-xs text-text-2 tabular-nums">
-          <span>{days[0]?.day}</span>
-          <span>{days.at(-1)?.day}</span>
+            <ol aria-label={t("spend.chartLabel")} className="relative flex h-full items-end gap-px">
+              {days.map((d, i) => (
+                <li key={d.day} data-day={d.day} className="flex h-full min-w-0 flex-1">
+                  <Tooltip text={<DayDetail d={d} />} placement="beside" align={i < days.length / 2 ? "start" : "end"} className="h-full w-full">
+                    <Button data-chart-bar variant="ghost" size="sm" aria-pressed={selected === d.day} onClick={() => onSelect(selected === d.day ? null : d.day)} className="h-full w-full items-end! px-0!">
+                      <span className="sr-only">{t("spend.bar", { day: d.day, cost: usd(d.cost_usd) })}</span>
+                      <span aria-hidden className={cn("w-full rounded-t-control bg-accent", selected !== null && selected !== d.day && "opacity-40")} style={{ height: pct(d.cost_usd) }} />
+                    </Button>
+                  </Tooltip>
+                </li>
+              ))}
+            </ol>
+          </div>
+          <div aria-hidden data-axis="x" className="mt-1 flex justify-between gap-2 text-xs text-text-2 tabular-nums">
+            <span>{days[0]?.day}</span>
+            <span>{days.at(-1)?.day}</span>
+          </div>
         </div>
       </div>
     </div>
@@ -134,7 +138,7 @@ function Tasks({ view, day, onClear }: { view: SpendView; day: string | null; on
       {q.isError && day !== null ? (
         <ErrorNote error={q.error} />
       ) : !v ? (
-        <Loading rows={3} />
+        <Loading rows={3} label="loading.spendTasks" onRetry={() => void q.refetch()} />
       ) : (
         <>
           {v.items.length < v.items_total && (
@@ -162,7 +166,7 @@ export function SpendSection() {
   // The day picked on the chart: it filters the tasks table only, and stays in the browser.
   const [day, setDay] = useState<string | null>(null);
   if (q.isError) return <SpendFrame><ErrorNote error={q.error} /></SpendFrame>;
-  if (!q.data) return <SpendFrame><Loading rows={4} /></SpendFrame>;
+  if (!q.data) return <SpendFrame><Loading rows={4} label="loading.spend" onRetry={() => void q.refetch()} /></SpendFrame>;
   const v = q.data;
   const unknown = v.total.unknown;
   return (

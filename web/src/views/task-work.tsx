@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { API, type ItemRow as Item, type Items, type Overview, type SystemAction, type UnreviewedMerges, mergeCheckLabel, mergeInFlight, useApi, useItems } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { Dialog } from "../components/ui/dialog.js";
-import { LINK_CLASS } from "../components/ui/link-style.js";
+import { BLOCK_LINK_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import { ErrorNote } from "../components/ui/parts.js";
 import type { MessageKey } from "../i18n/en.js";
 import { whyText } from "../lib/format.js";
@@ -135,8 +135,9 @@ function WorkRow({ it }: { it: Item }) {
             </span>
           )}
           {reason !== "" && !chip && (
-            <span data-need title={reason} className="min-w-0 flex-1 basis-40 truncate">
-              {toNeed ? <Link href={toNeed} className={LINK_CLASS}>{reason}</Link> : reason}
+            // Below sm the reason wraps onto as many lines as it needs; from sm up it is one line cut with an ellipsis.
+            <span data-need title={reason} className="min-w-0 flex-1 basis-40 break-words sm:truncate">
+              {toNeed ? <Link href={toNeed} className={cn("sm:truncate", BLOCK_LINK_CLASS)}>{reason}</Link> : reason}
             </span>
           )}
         </>
@@ -193,7 +194,7 @@ function MergeRow({ m, risk }: { m: Merge; risk: boolean }) {
   return (
     <ListRow
       data-key={m.change_ref}
-      title={m.review_url ? <a href={m.review_url} target="_blank" rel="noreferrer" className={cn(ROW_TITLE, LINK_CLASS)}>{label}</a> : <span className={ROW_TITLE}>{label}</span>}
+      title={m.review_url ? <a href={m.review_url} target="_blank" rel="noreferrer" className={cn(ROW_TITLE, "leading-6", BLOCK_LINK_CLASS)}>{label}</a> : <span className={ROW_TITLE}>{label}</span>}
       details={
         <>
           {risk && <span data-risk><Badge level={r.level}>{t(r.key)}</Badge></span>}

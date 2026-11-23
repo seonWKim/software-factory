@@ -51,7 +51,7 @@ export function ShowFailuresDialog({ code, onClose }: { code: string; onClose: (
   return (
     <Dialog title={t("needs.showFailures")} confirmLabel={t("needs.alarmClose")} onConfirm={onClose} onClose={onClose}>
       <div data-show-failures className="min-w-0 text-sm">
-        {q.isError ? <ErrorNote error={q.error} /> : !q.data ? <Loading rows={2} /> : group ? (
+        {q.isError ? <ErrorNote error={q.error} /> : !q.data ? <Loading rows={2} label="loading.failures" onRetry={() => void q.refetch()} /> : group ? (
           <ul>
             <FailureGroupView group={group} now={now} titles={titles} />
           </ul>

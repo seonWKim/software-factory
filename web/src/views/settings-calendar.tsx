@@ -28,7 +28,7 @@ import { Badge } from "../components/ui/badge.js";
 export function CalendarSection({ token }: { token: string }) {
   const view = useApi<CalendarView>(API.calendar);
   if (view.isError) return <ErrorNote error={view.error} />;
-  if (!view.data) return <Loading rows={1} />;
+  if (!view.data) return <Loading rows={1} label="loading.calendarSync" onRetry={() => void view.refetch()} />;
   // A server without the section (an older build) answers no list: the page shows no section rather than failing.
   const plugins = view.data.plugins ?? [];
   if (plugins.length === 0) return null;

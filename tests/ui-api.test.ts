@@ -96,6 +96,18 @@ describe("ui api: items", () => {
     expect(list.items.filter((i) => !["merged", "closed", "rejected"].includes(i.item_phase))).toHaveLength(open);
   });
 
+  it("system items are left out of the list, its facet counts and Open items", async () => {
+    const { d, store } = await seeded();
+    const before = await json<{ counts: { open: number }; total: number; facets: { allStates: number } }>(d, "/api/v1/items");
+    const sys = await store.createWorkItem({ ...issue(9001), hold: { blocked_on: "upstream", blocked_reason: "system_item" } }, system);
+    const after = await json<{ counts: { open: number }; total: number; facets: { allStates: number }; items: { id: string }[] }>(d, "/api/v1/items");
+    expect(after.items.map((i) => i.id)).not.toContain(sys.item.id);
+    expect(after.total).toBe(before.total);
+    expect(after.facets.allStates).toBe(before.facets.allStates);
+    expect(after.counts.open).toBe(before.counts.open);
+    expect((await json<{ open: number }>(d, "/api/v1/overview")).open).toBe(before.counts.open);
+  });
+
   it("the default list has every open item ranked, and the filters narrow it", async () => {
     const { d, items } = await seeded();
     const all = await json<{ items: { id: string; item_phase: string; reason_code: string; stage: string; run_status: string | null }[] }>(d, "/api/v1/items");
@@ -554,6 +566,141 @@ describe("GET /api/v1/tasks/preview: the quick-add preview (design 09-dashboard-
     const r = await get(d, preview(`call ${SECRET} tomorrow`));
     expect(r.status).toBe(200);
     expect(r.body).not.toContain(SECRET);
+  });
+});
+
+describe("ui api: Changes tab, Re-check and the overlap note (design 09-dashboard-item, 09-dashboard-tasks)", () => {
+  const HOST = "127.0.0.1:4310";
+  const TOKEN = newCsrfToken();
+  const HEAD = "a".repeat(40), BASE = "b".repeat(40);
+  const MERGE_PENDING = { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" } as const;
+  const DIFF = "diff --git a/src/a.ts b/src/a.ts\n+one\n";
+
+  /** The seeded API with a fake readChanges (no git): it records each call and answers from `files` and `base_at`. */
+  async function setup() {
+    const s = await seeded();
+    const calls: Record<string, unknown>[] = [];
+    const state = { base_at: "2026-01-01T00:00:00.000Z", patch: DIFF, truncated: false, fail: false };
+    s.d.commands = { actor: "github:7" as UserId, source: "config", token: TOKEN };
+    s.d.changes = async (spec) => {
+      calls.push({ ...spec });
+      if (state.fail) throw new Error("git diff failed: bad object");
+      const base = { sha: BASE, committed_at: state.base_at };
+      if (spec.head_sha === undefined) return { base, files: [], patch: null };
+      const files = [{ path: "src/a.ts", added: 1, removed: 0 }, { path: `leak-${SECRET}.txt`, added: 2, removed: 3 }, { path: "bin.dat", added: null, removed: null }];
+      return { base, files, patch: spec.path === undefined ? null : { text: state.patch, truncated: state.truncated } };
+    };
+    return { ...s, calls, state };
+  }
+
+  const post = (d: UiDeps, path: string, o: { token?: string; origin?: string } = {}) =>
+    respond(d, { method: "POST", url: path, host: HOST, origin: o.origin ?? `http://${HOST}`, contentType: "application/json", csrfToken: o.token ?? TOKEN, body: "{}" });
+
+  it("lists a ready item's changed files with their counts for the head its merge check stored, each path through the scanner", async () => {
+    const { d, store, items, calls } = await setup();
+    await store.recordMergeCheck({ work_item_id: items.merge.id, mergeable: true, conflicts: [], head_sha: HEAD, base_sha: BASE });
+    expect((await json<{ item: { has_changes: boolean } }>(d, `/api/v1/items/${items.merge.id}`)).item.has_changes).toBe(true);
+    const body = await json<{ head_sha: string; files: { path: string; added: number | null; removed: number | null }[] }>(d, `/api/v1/items/${items.merge.id}/changes`);
+    expect(body.head_sha).toBe(HEAD);
+    expect(body.files).toEqual([
+      { path: "src/a.ts", added: 1, removed: 0 },
+      { path: expect.stringMatching(/^\[withheld: /), added: 2, removed: 3 },
+      { path: "bin.dat", added: null, removed: null },
+    ]);
+    expect(JSON.stringify(body)).not.toContain(SECRET);
+    expect(calls).toContainEqual({ head_sha: HEAD });
+  });
+
+  it("reads one file's diff with the 256 KiB limit; a truncated diff says so; a diff with a finding is withheld and its row stays", async () => {
+    const { d, store, items, calls, state } = await setup();
+    await store.recordMergeCheck({ work_item_id: items.merge.id, mergeable: true, conflicts: [], head_sha: HEAD, base_sha: BASE });
+    const url = `/api/v1/items/${items.merge.id}/changes?path=${encodeURIComponent("src/a.ts")}`;
+    const file = (await json<{ file: Record<string, unknown> }>(d, url)).file;
+    expect(file).toEqual({ path: "src/a.ts", diff: DIFF, withheld: false, truncated: false });
+    expect(calls.at(-1)).toEqual({ head_sha: HEAD, path: "src/a.ts", max_bytes: 256 * 1024 });
+    state.truncated = true;
+    expect((await json<{ file: { truncated: boolean } }>(d, url)).file.truncated).toBe(true);
+    state.patch = `+token = ${SECRET}\n`;
+    const leaked = await json<{ files: { path: string }[]; file: { diff: string; withheld: boolean } }>(d, url);
+    expect(leaked.file.withheld).toBe(true);
+    expect(leaked.file.diff).toMatch(/^\[withheld: /);
+    expect(leaked.files.map((f) => f.path)).toContain("src/a.ts");
+    expect(JSON.stringify(leaked)).not.toContain(SECRET);
+    expect((await get(d, `/api/v1/items/${items.merge.id}/changes?path=nope.ts`)).status).toBe(404);
+  });
+
+  it("an item with a branch that is not ready shows Changes from its last head; an item with no branch, or no sandbox read, has none", async () => {
+    const { d, store, items } = await setup();
+    await store.recordPrHead({ id: items.approve.id, expected_head: null, head_sha: "c".repeat(40), manual: null });
+    expect((await json<{ item: { has_changes: boolean } }>(d, `/api/v1/items/${items.approve.id}`)).item.has_changes).toBe(true);
+    expect((await json<{ head_sha: string }>(d, `/api/v1/items/${items.approve.id}/changes`)).head_sha).toBe("c".repeat(40));
+    expect((await json<{ item: { has_changes: boolean } }>(d, `/api/v1/items/${items.done.id}`)).item.has_changes).toBe(false);
+    expect((await get(d, `/api/v1/items/${items.done.id}/changes`)).status).toBe(404);
+    delete d.changes;
+    expect((await json<{ item: { has_changes: boolean } }>(d, `/api/v1/items/${items.approve.id}`)).item.has_changes).toBe(false);
+    expect((await get(d, `/api/v1/items/${items.approve.id}/changes`)).status).toBe(404);
+  });
+
+  it("a git error answers 404, never the error text", async () => {
+    const { d, store, items, state } = await setup();
+    await store.recordMergeCheck({ work_item_id: items.merge.id, mergeable: true, conflicts: [], head_sha: HEAD, base_sha: BASE });
+    state.fail = true;
+    const r = await get(d, `/api/v1/items/${items.merge.id}/changes`);
+    expect(r.status).toBe(404);
+    expect(r.body).not.toContain("bad object");
+  });
+
+  it("offers Re-check when the stored check is older than the base's last commit, and not when it is newer", async () => {
+    const { d, store, items, clock, state } = await setup();
+    await store.recordMergeCheck({ work_item_id: items.merge.id, mergeable: true, conflicts: [], head_sha: HEAD, base_sha: BASE });
+    const recheck = async () => (await json<{ item: { merge_check: { recheck?: boolean } } }>(d, `/api/v1/items/${items.merge.id}`)).item.merge_check.recheck ?? false;
+    state.base_at = new Date(clock.now().getTime() - 60_000).toISOString();
+    expect(await recheck()).toBe(false);
+    state.base_at = new Date(clock.now().getTime() + 60_000).toISOString();
+    expect(await recheck()).toBe(true);
+  });
+
+  it("Re-check removes the stored check behind the CSRF check; the card then reads checking; no item field or version changes", async () => {
+    const { d, store, items } = await setup();
+    await store.recordMergeCheck({ work_item_id: items.merge.id, mergeable: true, conflicts: [], head_sha: HEAD, base_sha: BASE });
+    const before = (await store.getWorkItem(items.merge.id))!;
+    const changes = (await store.listStateChanges(items.merge.id)).length;
+    const path = `/api/v1/items/${items.merge.id}/merge-check/recheck`;
+    expect((await post(d, path, { token: "stale" })).status).toBe(403);
+    expect((await post(d, path, { origin: "http://evil.example" })).status).toBe(403);
+    expect(await store.getMergeCheck(items.merge.id)).not.toBeNull();
+    const r = await post(d, path);
+    expect(r.status).toBe(200);
+    expect(JSON.parse(r.body)).toEqual({ work_item_id: items.merge.id, cleared: true });
+    expect(await store.getMergeCheck(items.merge.id)).toBeNull();
+    const card = (await json<{ item: { merge_check: { state: string; recheck?: boolean } } }>(d, `/api/v1/items/${items.merge.id}`)).item.merge_check;
+    expect(card.state).toBe("checking");
+    expect(card.recheck).toBeUndefined(); // offered only when true
+    const after = (await store.getWorkItem(items.merge.id))!;
+    expect([after.stage, after.blocked_on, after.blocked_reason, after.version]).toEqual([before.stage, before.blocked_on, before.blocked_reason, before.version]);
+    expect(await store.listStateChanges(items.merge.id)).toHaveLength(changes);
+    expect((await post(d, "/api/v1/items/wi_nope/merge-check/recheck")).status).toBe(404);
+  });
+
+  it("Re-check runs no git read in the request", async () => {
+    const { d, store, items, calls } = await setup();
+    await store.recordMergeCheck({ work_item_id: items.merge.id, mergeable: true, conflicts: [], head_sha: HEAD, base_sha: BASE });
+    expect((await post(d, `/api/v1/items/${items.merge.id}/merge-check/recheck`)).status).toBe(200);
+    expect(calls).toEqual([]);
+  });
+
+  it("notes each ready item's overlap with another ready item by exact shared path, from pr_files only", async () => {
+    const { d, store, items } = await setup();
+    await patch(store, items.merge, { pr_files: ["src/a.ts", "src/b.ts"] });
+    const other = await patch(store, await make(store, 50, "Other ready"), { ...MERGE_PENDING, pr_files: ["src/a.ts", "src/dir/c.ts"] });
+    const sameDir = await patch(store, await make(store, 51, "Same dir only"), { ...MERGE_PENDING, pr_files: ["src/dir/d.ts"] });
+    await patch(store, items.approve, { pr_files: ["src/b.ts"] }); // not ready: no note
+    const rows = (await json<{ items: { id: string; overlaps?: unknown[] }[] }>(d, "/api/v1/items")).items;
+    const of = (id: string) => rows.find((r) => r.id === id)!.overlaps;
+    expect(of(items.merge.id)).toEqual([{ id: other.id, title: "Other ready", source_id: other.source.id, paths: ["src/a.ts"] }]);
+    expect(of(other.id)).toEqual([{ id: items.merge.id, title: "Merge me", source_id: items.merge.source.id, paths: ["src/a.ts"] }]);
+    expect(of(sameDir.id)).toEqual([]);
+    expect(of(items.approve.id)).toEqual([]);
   });
 });
 

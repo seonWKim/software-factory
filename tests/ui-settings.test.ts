@@ -147,7 +147,7 @@ describe("GET /api/v1/settings", () => {
     expect(row("models")).toMatchObject({ kind: "models" });
     expect(row("model_by")).toMatchObject({ kind: "json" });
     // An object setting is edited as JSON text, never in a number input.
-    expect(row("hold_policy")).toMatchObject({ kind: "json", value: JSON.stringify({ mode: "hold" }) });
+    expect(row("hold_policy")).toMatchObject({ kind: "json", value: JSON.stringify({ mode: "run_after_minutes", minutes: 120 }) });
     // Free text, edited as text and sent back as a JSON string; empty by default.
     expect(row("message_style")).toMatchObject({ kind: "text", value: '""', source: "default", project_settable: false });
     expect(v.repo).toBe("o/r");
@@ -225,7 +225,7 @@ describe("POST /api/v1/settings", () => {
     const [c] = await store.listSettingChanges(1);
     expect(c!.actor).toBe(`local:${userInfo().username}`);
     // buildUiParts takes the actor the ui command builds as the CLI identity (issue #318): cli_user, git user.email, the OS
-    // login, or anonymous; an ID, never a display name (tests/local-cli.test.ts covers the order).
+    // login, or anonymous; an ID, never a display name (tests/local-cli-identity.test.ts covers the order).
     const main = readFileSync(join(import.meta.dirname, "../src/cli/handlers/ui/ui.command.ts"), "utf8");
     expect(main).toContain("const identity = await ctx.identity();");
     expect(main).toContain("buildUiParts(loaded, { identity })");

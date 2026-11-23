@@ -210,6 +210,10 @@ async function seed(store, storage) {
     await runOnce(store, it, "implement", `run:${n}`, null, `host-${n}-${"b".repeat(30)}:1:${n}`);
   }
 
+  // One open plain task with a due date, so the Tasks rows (and their small-target check) have a task to draw. Its
+  // title is long but holds no snake_case name (raw-name).
+  await store.addTask({ id: "tk_responsive_plain_task", title: "Pay rent and file the quarterly receipts for the apartment before the landlord's office closes on Friday", list: "inbox", priority: 1, due: { days_from_today: 1 }, due_time: null, recurrence: null, created_by: OWNER });
+
   // Alerts and a claim pause, for the Floor and Health banners.
   await store.recordAlert({ pattern: "repeated_error", pattern_key: "repeated_error:responsive", error_code: "checks_failed", count: 7, detail: `npm test exited 1 in ${LONG_WORD}` }, ALERT_DEDUPE_MS);
   await store.recordAlert({ pattern: "zero_tokens", pattern_key: "zero_tokens:responsive", error_code: "agent_error", count: 3, detail: null }, ALERT_DEDUPE_MS);

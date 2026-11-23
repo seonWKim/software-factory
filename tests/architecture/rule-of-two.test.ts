@@ -44,12 +44,13 @@ describe("rule-of-two", () => {
   });
 
   it("covers every agent run kind with the tools the worker gives it", () => {
-    // review-confirm is a step role inside the review run (design 04-agents), not a run kind of its own.
-    const steps = ["review-confirm"];
-    expect(roles.all().map((r) => r.name).filter((n) => !steps.includes(n))).toEqual([...MODEL_RUN_KINDS].sort());
-    for (const s of steps) expect(roles.get(s), s).not.toBeNull();
+    // review-confirm is a step role inside the review run (design 04-agents), not a run kind of its own. The judge is a
+    // run kind whose class the runner pins (design 04-split-specs), so model_by does not list it.
+    const steps = ["review-confirm"], pinned = ["judge"];
+    expect(roles.all().map((r) => r.name).filter((n) => !steps.includes(n) && !pinned.includes(n))).toEqual([...MODEL_RUN_KINDS].sort());
+    for (const s of [...steps, ...pinned]) expect(roles.get(s), s).not.toBeNull();
     const names = (t: readonly { name: string }[]) => t.map((x) => x.name);
-    const readOnly = ["triage", ...steps];
+    const readOnly = ["triage", ...steps, ...pinned];
     for (const r of roles.all()) expect(r.tools, r.name).toEqual(names(readOnly.includes(r.name) ? READ_TOOLS : WRITE_TOOLS));
   });
 

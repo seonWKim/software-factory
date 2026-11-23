@@ -75,7 +75,8 @@ describe("policy", () => {
     expect(thrownFailure(new Error("boom")).code).toBe("exception");
     const outcome = { status: "failed" as const, error_code: SETUP_MISSING, detail: f.detail, infra: true };
     expect(failureClass(outcome)).toBe("setup_missing");
-    expect(retryClears(outcome)).toBe(true);
+    // A retry cannot succeed until the credential exists: Retry is not the clearing action for it.
+    expect(retryClears(outcome)).toBe(false);
   });
 
   it("maps factory branches back to work items", () => {
@@ -233,6 +234,23 @@ describe("auto mode rules (design 03-risk)", () => {
     expect(r.value.decisions).toEqual(["Warn? Proposed default: No.", "Drop it? Proposed default: Yes. (owner only)", "Rename it?"]);
     const again = parseTriage(r.value);
     expect(again.ok && again.value.decision_items).toEqual(r.value.decision_items);
+  });
+});
+
+// Migration timestamps (design 04-triage): a later timestamp with an allowed migration's folder, component and slug is covered.
+describe("isCovered: a later same-slug migration", () => {
+  const allowed = ["src/controller/migrations/20261122T1200-controller-new-thing.migration.ts", "tests/20261122T1200-controller-new-thing.test.ts"];
+
+  it("covers the migration and its test at a later timestamp", () => {
+    expect(isCovered("src/controller/migrations/20261122T1201-controller-new-thing.migration.ts", allowed)).toBe(true);
+    expect(isCovered("tests/20261123T0000-controller-new-thing.test.ts", allowed)).toBe(true);
+  });
+
+  it("does not cover an earlier timestamp, another slug, another component, or a later file with no allowed migration", () => {
+    expect(isCovered("src/controller/migrations/20261122T1100-controller-new-thing.migration.ts", allowed)).toBe(false);
+    expect(isCovered("src/controller/migrations/20261122T1201-controller-new-thing-two.migration.ts", allowed)).toBe(false);
+    expect(isCovered("src/worker/migrations/20261122T1201-worker-new-thing.migration.ts", allowed)).toBe(false);
+    expect(isCovered("src/controller/migrations/20261122T1201-controller-new-thing.migration.ts", ["src/core/policy.ts"])).toBe(false);
   });
 });
 

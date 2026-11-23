@@ -21,7 +21,9 @@ import { dayLabel } from "./tasks/groups.js";
 // heading is the Card's h2; the view switch and the period buttons are the page's PageToolbar. Each event has a colour strip chosen from its source's name and names its source only when
 // several calendars are connected. A day the last syncs did not cover is shaded, never drawn empty, and one note above the
 // grid names those days; an empty synced day shows no text. A source whose last sync failed is named with its last sync time, and its stored
-// events stay listed. With no calendar connected the empty state links to the Integrations tab of Settings.
+// events stay listed. A connected calendar that has not synced yet is named with "Not synced yet". The read lists the
+// calendars the live `calendar` setting connects, as Settings → Integrations does; only with none connected the empty
+// state links to the Integrations tab of Settings.
 // Sync (after Today, shown once a calendar is connected) and the note's "Sync these days" post one request to sync
 // every calendar for the days shown (POST /api/v1/calendar/sync); both show "Syncing…", disabled, until the request
 // is done (the read's `sync_pending`), and a second press sends nothing.
@@ -182,6 +184,20 @@ function StaleCalendars({ calendar }: { calendar: readonly CalendarSync[] }) {
   );
 }
 
+/** The connected sources with no sync yet (none failed either): their days are unknown until the first sync. */
+function UnsyncedCalendars({ unsynced }: { unsynced: readonly CalendarSync[] }) {
+  if (unsynced.length === 0) return null;
+  return (
+    <Notice tone="info" title={t("calendar.neverSynced")}>
+      {unsynced.map((c) => (
+        <p key={c.source} data-calendar-unsynced={c.source} className="text-pretty break-words">
+          {c.source}
+        </p>
+      ))}
+    </Notice>
+  );
+}
+
 /** The unsynced days as short dates, a run of days as one range: "Nov 2 – 8, Nov 10". */
 function unsyncedDays(days: readonly CalendarDay[]): string {
   const short = (date: string) => {
@@ -240,13 +256,15 @@ function Events({ v, view, label, s }: { v: CalendarEvents; view: View; label: s
   if (v.calendar.length === 0) {
     return <EmptyState icon={CalendarDays} title={t("calendarPage.emptyNone")} action={<Link href={CONNECT_PATH} className={cn(LINK_CLASS, "text-sm")}>{t("calendarPage.connect")}</Link>} />;
   }
+  const unsynced = v.calendar.filter((c) => c.synced_at === null && !c.failed);
   const today = iso(new Date());
   const showSource = v.calendar.length > 1;
   return (
     <div className="space-y-3">
       <StaleCalendars calendar={v.calendar} />
+      <UnsyncedCalendars unsynced={unsynced} />
       {s.error !== null && <Notice tone="bad">{s.error}</Notice>}
-      {v.days.some((d) => !d.synced) && (
+      {unsynced.length === 0 && v.days.some((d) => !d.synced) && (
         <Notice tone="info">
           <div data-not-synced-note className="flex flex-wrap items-center justify-between gap-2">
             <p className="min-w-0 text-pretty">{t("calendarPage.notSyncedDays", { days: unsyncedDays(v.days) })}</p>
@@ -288,7 +306,7 @@ export function CalendarPage() {
     </PageToolbar>
     {/* The period ("Nov 9 – 15, 2026") is the Card's h2, announced when it changes. */}
     <Card title={label} live>
-      {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <Events v={v} view={view} label={label} s={s} />}
+      {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} label="loading.calendar" onRetry={() => void q.refetch()} /> : <Events v={v} view={view} label={label} s={s} />}
     </Card>
     </>
   );

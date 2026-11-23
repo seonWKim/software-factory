@@ -83,7 +83,7 @@ export function SourceLink({ source, className, itemId }: { source: { id: string
 /** An item's title linking to its page, wrapping at any width; "Untitled item" when it has none. */
 export function ItemTitle({ id, title }: { id: string; title: string | null }) {
   return (
-    <Link href={itemPath(id)} data-raw={title !== null ? "" : undefined} className={cn("font-medium", LINK_CLASS)}>
+    <Link href={itemPath(id)} data-raw={title !== null ? "" : undefined} className={cn("max-w-full font-medium break-words", LINK_CLASS)}>
       {title ?? t("item.untitled")}
     </Link>
   );
@@ -288,6 +288,7 @@ export function RunningTable({ runs, items, now }: { runs: readonly RunRow[]; it
       "data-key": r.id,
       badge: <StatusBadge state={r.status} />,
       title,
+      titleRaw: item?.title != null,
       href: itemPath(r.work_item_id),
       why: <>{runTitle(r)} · <When at={r.heartbeat_at} now={now} label="running.heartbeat" /></>,
       worker: <WorkerName id={r.owner} />,

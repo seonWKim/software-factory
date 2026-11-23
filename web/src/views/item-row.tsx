@@ -70,16 +70,21 @@ function rowMenu(s: ItemRowSlots): ReactNode {
   return items.length > 0 ? <OverflowMenu label={s.menuLabel ?? t("commands.more")} items={items} /> : null;
 }
 
-function Title({ s, className }: { s: ItemRowSlots; className: string }) {
+/**
+ * The title: `data-row-title` in a list or tree row, one line (the responsive check's title-wrap rule); in a table
+ * `data-cell-title`, as a table's title column wraps (a card's too).
+ */
+function Title({ s, className, cell = false }: { s: ItemRowSlots; className: string; cell?: boolean }) {
   if (s.editing) return <>{s.editing}</>;
+  const mark = cell ? { "data-cell-title": "" } : { "data-row-title": "" };
   if (s.href) {
     return (
-      <Link href={s.href} title={s.title} data-row-title data-raw={s.titleRaw ? "" : undefined} className={cn(className, LINK_CLASS, s.titleClassName)}>
+      <Link href={s.href} title={s.title} {...mark} data-raw={s.titleRaw ? "" : undefined} className={cn(LINK_CLASS, className, s.titleClassName)}>
         {s.title}
       </Link>
     );
   }
-  return <p title={s.title} data-row-title className={cn(className, s.titleClassName)}>{s.title}</p>;
+  return <p title={s.title} {...mark} className={cn(className, s.titleClassName)}>{s.title}</p>;
 }
 
 const AGE = "text-xs whitespace-nowrap tabular-nums text-text-2";
@@ -140,8 +145,9 @@ function ListRowOf(props: ListProps & DataAttrs) {
     <li ref={ref} tabIndex={tabIndex} onKeyDown={onKeyDown} {...dataOf(props)} data-item-row={variant} data-item-id={itemId} className={cn("flex items-start", ROW_SPACE.list[variant], className)}>
       {lead}
       <div className="min-w-0 flex-1 space-y-1">
-        {/* One line: the slots are its children, so a slot's parts sit beside the badge (small muted text but the title). */}
-        <div data-row-line className={cn("flex min-w-0 flex-wrap items-center gap-y-1 text-xs text-pretty text-text-2", ROW_SPACE.list[variant].split(" ")[0])}>
+        {/* One line: the slots are its children, so a slot's parts sit beside the badge (small muted text but the title).
+            It is also the row's details (`data-details`, as a ListRow's), where the due time and the list are read. */}
+        <div data-row-line data-details className={cn("flex min-w-0 flex-wrap items-center gap-y-1 text-xs text-pretty text-text-2", ROW_SPACE.list[variant].split(" ")[0])}>
           {props.badge && <span data-row-badge className="flex shrink-0 items-center gap-1">{props.badge}</span>}
           <Title s={props} className={cn(ROW_TITLE, "min-w-0 flex-1 basis-40 text-text-1")} />
           {props.why}
@@ -166,7 +172,7 @@ function TreeRow(props: TreeProps & DataAttrs) {
       {props.badge}
       <Title s={props} className="min-w-0 truncate font-medium" />
       {/* At phone width the why and the worker take their own line. */}
-      <span className="flex basis-full flex-wrap gap-x-2 text-xs text-text-2 sm:basis-auto sm:text-sm">
+      <span className="flex min-w-0 basis-full flex-wrap gap-x-2 *:min-w-0 text-xs wrap-anywhere text-text-2 sm:basis-auto sm:text-sm">
         {props.why}
         {props.project}
         {props.worker}
@@ -185,7 +191,7 @@ function TableRow(props: TableProps & DataAttrs) {
     badge: () => <Td key="badge">{props.badge}</Td>,
     title: () => (
       <Td key="title" className="max-w-md min-w-40">
-        <Title s={props} className="font-medium break-words" />
+        <Title s={props} cell className="max-w-full font-medium break-words" />
         {props.second && <div data-row-second className="mt-1 text-xs break-words">{props.second}</div>}
       </Td>
     ),
