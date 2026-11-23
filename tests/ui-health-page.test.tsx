@@ -7,12 +7,10 @@ import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitHubBudget, ImproveView, Overview } from "../web/src/api.js";
 import { localShortDate } from "../web/src/lib/format.js";
+// Only modules with no store behind them: under jsdom on Node 22, node:sqlite (which src/setup.ts reaches) cannot load.
 import { SANDBOX_LINES } from "../src/impl/runner/os-sandbox.js";
-import { MODEL_CREDENTIAL } from "../src/impl/claude/claude-shared.js";
-import { sandboxChecks } from "../src/core/health-check.js";
-import { SECRET_WORDS, secretChecks } from "../src/setup.js";
+import { type Check, credentialPlain, sandboxChecks } from "../src/core/health-check.js";
 import { reportRows } from "../src/ui/health.js";
-import { MemorySecretStore } from "./helpers/fakes/secrets.js";
 
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
 // loaded by a specifier the node check skips (as tests/ui-pause.test.tsx does).
@@ -188,8 +186,10 @@ describe("Health page: the model credential and sandbox checks", () => {
   const WHY = "Claude Code's sandbox is off on this host: sandbox is enabled but dependencies are missing: bubblewrap (bwrap) not installed, socat not installed · install missing tools (e.g. apt install bubblewrap socat) or see https://code.claude.com/docs/en/sandboxing";
 
   it("the visible Checks text names no variable, command or URL; the raw lines are behind Details; Add model credential opens the dialog", async () => {
+    // doctor's credential line with its Health fields (tests/health.test.ts checks secretChecks gives exactly this).
+    const credential: Check = { ok: false, msg: "model credential missing: one of CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY (run: npm run setup)", ...credentialPlain(false) };
     const checks = [
-      ...(await secretChecks(MODEL_CREDENTIAL, new MemorySecretStore(), SECRET_WORDS)),
+      credential,
       ...sandboxChecks(SANDBOX_LINES.map((line) => ({ line, enforced: false, why: WHY }))),
     ];
     healthBody = { checked_at: RESET, checks: reportRows(checks) };
@@ -246,7 +246,7 @@ describe("Health page: Improve tab", () => {
       if (url === "/api/v1/health") return json(200, healthBody);
       if (url === "/api/v1/unreviewed-merges") return json(200, { merges: [] });
       if (url === "/api/v1/pauses") return json(200, { pauses: [], csrf_token: null });
-    if (url === "/api/v1/model-credential") return json(200, { secrets: ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"], csrf_token: "t" });
+      if (url === "/api/v1/model-credential") return json(200, { secrets: ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"], csrf_token: "t" });
       return json(404, { error: "Not found." });
     }));
   });

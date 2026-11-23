@@ -17,7 +17,7 @@ import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { REGISTRY, type Registry, withPlugin } from "../src/plugins.js";
 import { type Check, checkLine, checkStatus, checksExitCode, doctor, doctorChecks, SECRET_WORDS, secretChecks } from "../src/setup.js";
-import { sandboxChecks as linesToChecks } from "../src/core/health-check.js";
+import { credentialPlain, sandboxChecks as linesToChecks } from "../src/core/health-check.js";
 import { MODEL_CREDENTIAL } from "../src/impl/claude/claude-shared.js";
 import { SANDBOX_LINES, type SandboxEnforcement } from "../src/impl/runner/os-sandbox.js";
 import { MemorySecretStore } from "./helpers/fakes/secrets.js";
@@ -237,6 +237,8 @@ describe("health: the model credential and sandbox checks in plain words", () =>
   it("doctor prints the same credential and sandbox lines as before", async () => {
     const missing = await secretChecks(MODEL_CREDENTIAL, new MemorySecretStore(), SECRET_WORDS);
     expect(missing.map(checkLine)).toEqual(["FAIL  model credential missing: one of CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY (run: npm run setup)"]);
+    // The check tests/ui-health-page.test.tsx builds by hand (that jsdom test cannot load src/setup.ts).
+    expect(missing).toEqual([{ ok: false, msg: missing[0]!.msg, ...credentialPlain(false) }]);
     const present = await secretChecks(MODEL_CREDENTIAL, new MemorySecretStore({ ANTHROPIC_API_KEY: "k" }), SECRET_WORDS);
     expect(present.map(checkLine)).toEqual(["ok    model credential present (ANTHROPIC_API_KEY)"]);
     expect(sandboxChecks(box(false, OFF_WHY)).map(checkLine)).toEqual(["reads", "writes", "network"].map((k) => `warn  sandbox ${k}: not OS-enforced, so auto mode is refused (${OFF_WHY})`));
