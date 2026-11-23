@@ -5,6 +5,7 @@ import { API, type Overview, POLL_MS, WEB_REV, getJson } from "./api.js";
 import { Brand } from "./components/ui/brand.js";
 import { Button } from "./components/ui/button.js";
 import { OverflowMenu } from "./components/ui/menu.js";
+import { useWide } from "./components/ui/parts.js";
 import { t } from "./i18n/index.js";
 import { cn } from "./lib/cn.js";
 import { useShortcuts } from "./keys.js";
@@ -26,19 +27,6 @@ import { ProposalsPage } from "./views/proposals.js";
 import { CalendarPage } from "./views/calendar.js";
 import { TasksPage } from "./views/tasks.js";
 import { WorkersPage } from "./views/workers.js";
-
-/** Below Tailwind's `sm` (640px). */
-const SM_PX = 640;
-
-function useBelowSm(): boolean {
-  const [below, setBelow] = useState(() => innerWidth < SM_PX);
-  useEffect(() => {
-    const onResize = () => setBelow(innerWidth < SM_PX);
-    addEventListener("resize", onResize);
-    return () => removeEventListener("resize", onResize);
-  }, []);
-  return below;
-}
 
 const VIEWS: Record<string, () => JSX.Element> = {
   items: ItemsPage,
@@ -68,7 +56,7 @@ export function App() {
   // System listens for the system colour scheme; the cleanup removes that listener when the choice changes.
   useEffect(() => applyChoice(choice), [choice]);
   const [path, navigate] = useLocationPath();
-  const narrow = useBelowSm();
+  const narrow = !useWide();
   const [dialog, setDialog] = useState<"search" | "help" | null>(null);
   useShortcuts({ navigate, openSearch: () => setDialog("search"), openHelp: () => setDialog("help"), path });
   const route = routeFor(path);
