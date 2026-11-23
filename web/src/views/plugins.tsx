@@ -107,7 +107,7 @@ function useReporter(tab: Tab, setReport: (r: { tab: Tab; report: Report } | nul
 const freshKey = (kind: ImportItem["kind"], name: string, source?: string): string => (kind === "skill" ? `skill\n${source ?? ""}\n${name}` : `mcp_server\n${name}`);
 
 /** A name in mono, with its description under it; `fresh`: a row the last import stored, marked New. */
-function NameCell({ name, description, fresh = false, href }: { name: string; description: string | null; fresh?: boolean; href?: string }) {
+function NameCell({ name, description, fresh = false, href }: { name: string; description: string | null; fresh?: boolean; href?: string | undefined }) {
   return (
     <div data-new={fresh ? "" : undefined} className="flex min-w-0 flex-col gap-0.5">
       <span className="flex min-w-0 flex-wrap items-center gap-1.5">
