@@ -131,10 +131,9 @@ export class ImproveUnit {
     return this.c.k.d.clock.now().toISOString() as Timestamp;
   }
 
-  /** The first source in `plugins.source` order that can file (`fileIssue`), bound; null when none can. */
+  /** The filing source's `fileIssue` (the kernel's `filingSource`); null when no source can file. */
   private filer(): FilingDeps["file"] {
-    const filer = this.c.k.sources.find((s) => typeof s.fileIssue === "function");
-    return filer?.fileIssue ? (input) => filer.fileIssue!(input) : null;
+    return this.c.k.filingSource()?.fileIssue ?? null;
   }
 
   /** A comment on a filed item: through its thread (and the outbox) when the store holds it, else to its source. */

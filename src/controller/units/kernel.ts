@@ -5,6 +5,7 @@ import { LOCAL_SOURCE, threadDelivery } from "../../core/local-merge.js";
 import { errorText } from "../../core/log.js";
 import { askDetail } from "../../core/owner-asks.js";
 import { type Run, type SourceRef, type SourceType, type WorkItem, outcomeCost } from "../../core/types.js";
+import type { Forge } from "../../interfaces/forge.js";
 import { type ControllerDeps, rateLimitWait } from "../../core/controller-deps.js";
 import { ROUTINE_CAP, ROUTINES, type Routine, type RoutinePlan, type SuggestionDecision, carrierSource, dueSlot, fingerprint, holdSource, lastCost, overRunCap, planRoutine, routineFindings, routineOfCarrier, routineOfHold } from "../../core/routines.js";
 import type { ActionRow, NewAction } from "../../outbound/index.js";
@@ -15,8 +16,6 @@ import { type SignalDescriptor, uniqueSignals } from "../signals/signal.js";
 
 /** A configured source, as the deps carry it. */
 type SourceAdapter = NonNullable<ControllerDeps["source"]>;
-/** The forge, as the deps carry it. */
-type Forge = NonNullable<ControllerDeps["forge"]>;
 /** The routines unit's constants and types (src/core/routines.ts), through the kernel, which reads and writes for it. */
 export { ROUTINE_CAP, ROUTINE_CAP_APPROVED, ROUTINE_CAP_REJECTED, SNOOZE_MS } from "../../core/routines.js";
 export type { RoutinePlan, RoutineSuggestion } from "../../core/routines.js";
@@ -340,9 +339,9 @@ export class Kernel {
       log.info("routine findings stored as suggestions", { routine_id: w.routine_id, run_id: w.run_id, ...r });
     } else if (w.decision.to !== "accepted") await store.decideRoutineSuggestion(w.id, w.decision);
     else {
-      const filer = this.sources.find((s) => typeof s.fileIssue === "function");
-      if (!filer) return log.warn("no source can file the accepted suggestion; it stays pending", { suggestion_id: w.id });
-      const ref = await filer.fileIssue!(w.decision.issue);
+      const fileIssue = this.filingSource()?.fileIssue;
+      if (!fileIssue) return log.warn("no source can file the accepted suggestion; it stays pending", { suggestion_id: w.id });
+      const ref = await fileIssue(w.decision.issue);
       await store.decideRoutineSuggestion(w.id, { to: "accepted", by: w.decision.by, filed_ref: ref.id });
     }
   }
@@ -373,9 +372,18 @@ export class Kernel {
     return this.d.store.redeemLinkCode(...a);
   }
 
-  /** The first configured source, in `plugins.source` order, that can file an item (`fileIssue`); null when none can. */
+  /**
+   * The first configured source, in `plugins.source` order, that can file an item, with its `fileIssue` bound; null
+   * when none can. The one lookup behind `filer()`, an accepted suggestion and the improve unit's filing.
+   */
+  filingSource(): { type: SourceType; fileIssue: NonNullable<SourceAdapter["fileIssue"]> } | null {
+    const s = this.sources.find((x) => typeof x.fileIssue === "function");
+    return s?.fileIssue ? { type: s.type, fileIssue: (input) => s.fileIssue!(input) } : null;
+  }
+
+  /** The type of the source that files an item (`filingSource`); null when none can. */
   filer(): SourceType | null {
-    return this.sources.find((s) => typeof s.fileIssue === "function")?.type ?? null;
+    return this.filingSource()?.type ?? null;
   }
 
   /** Whether this process runs an adapter of `type` (a synced source's own command is applied only there). */
