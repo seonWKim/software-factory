@@ -2,7 +2,7 @@
 // a `repo.ui_check` path. No agent and no push. In a run folder on the item's branch it runs the install command
 // (through the run-side install cache) and the dashboard's build, then captures every sidebar page, the item page and
 // the transcript page at 390px and 1280px, in light and dark, from the seeded fixture store (never the item's data),
-// each PNG put in shared storage under `<item id>/<run id>/<page>-<width>-<theme>.png`. A build that fails, a missing
+// every command through the run's sandbox, each PNG put in shared storage under `<item id>/<run id>/<page>-<width>-<theme>.png`. A build that fails, a missing
 // Chrome or a failed capture is a result: the captures it has and a reason, never a run failure, so the item is not
 // held. The controller then queues the screenshot review on what it stored.
 
@@ -10,7 +10,7 @@ import { cachedInstall } from "../../install-cache.js";
 import type { Worker } from "../../runner.js";
 import { DEFAULT_TIMEOUTS, type RunCall, type RunKindDescriptor, defineRunKind } from "../../run-kind.js";
 import { chromeBrowser } from "../../../shared/chrome-browser.js";
-import { type ScreenshotBrowser, type ScreenshotOutcome, captureAll } from "../../../shared/screenshots.js";
+import { type RunExec, type ScreenshotBrowser, type ScreenshotOutcome, captureAll } from "../../../shared/screenshots.js";
 
 /** The dashboard's build: the fixture serves the checkout's dist/ and web/dist/. */
 export const BUILD_COMMAND = ["npm", "run", "--silent", "build"];
@@ -25,7 +25,8 @@ async function screenshot(w: Worker, c: RunCall, browser: ScreenshotBrowser): Pr
     if (install?.failed) return { captures: [], reason: `the install command failed (${install.failed.how})` };
     const build = await runOn([BUILD_COMMAND]);
     if (build.failed) return { captures: [], reason: `the build failed (${build.failed.how})` };
-    return captureAll(browser, w.d.storage, { item_id: item.id, run_id: run.id, root: handle.workdir, signal });
+    const exec: RunExec = (cmd, o) => w.d.sandbox.exec(handle, cmd, o);
+    return captureAll(browser, w.d.storage, { item_id: item.id, run_id: run.id, exec, signal });
   });
   return { captures: outcome.captures, reason: outcome.reason, review_run_id };
 }

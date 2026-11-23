@@ -1,12 +1,12 @@
-// The screenshot run's capture (docs/design/04-screenshots.md), started by the worker's Chrome browser
-// (src/shared/chrome-browser.ts) in the checkout it built. It seeds the same throwaway fixture store as
+// The screenshot run's capture (docs/design/04-screenshots.md), run by the worker's Chrome browser
+// (src/shared/chrome-browser.ts) through the run's sandbox, in the checkout it built. It seeds the same throwaway fixture store as
 // `npm run check:responsive` (fixture.mjs: no real item, token or secret), serves it with the checkout's built UI
 // server and opens headless Chrome through the check's driver (cdp.mjs). Nothing is written to disk but the fixture's
 // and Chrome's temp folders, both removed on exit: every image goes back to the worker on stdout.
 //
-// Protocol, one JSON object per line. Out first: {"ready": {item, run, pages_ts}} or {"error", "unavailable": true}.
-// In: {"shoot": {path, width, height, theme}}; out: {"png": <base64>} or {"error"}. stdin closing ends the script.
-import { readFile } from "node:fs/promises";
+// Protocol, one JSON object per line. In, on stdin: the shots, {"shoot": {path, width, height, theme}}, where a path's
+// ":item" and ":run" stand for the fixture's item and run IDs. Out first: {"ready": true} or {"error", "unavailable": true};
+// then one line per shot, in order: {"png": <base64>} or {"error"}. stdin closing ends the script.
 import { createInterface } from "node:readline";
 import { findChrome, launch } from "./cdp.mjs";
 
@@ -33,15 +33,15 @@ async function main() {
     return out({ error: `Chrome did not start: ${message(e)}`, unavailable: true });
   }
   try {
-    const pages_ts = await readFile(new URL("../../web/src/pages.ts", import.meta.url), "utf8");
-    out({ ready: { item: fixture.pages.item, run: fixture.pages.run, pages_ts } });
+    const at = (path) => path.replace(":item", encodeURIComponent(fixture.pages.item)).replace(":run", encodeURIComponent(fixture.pages.run));
+    out({ ready: true });
     const { page } = browser;
     for await (const line of createInterface({ input: process.stdin })) {
       const { shoot } = JSON.parse(line);
       try {
         await page.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: shoot.theme }] });
         await page.send("Emulation.setDeviceMetricsOverride", { width: shoot.width, height: shoot.height, deviceScaleFactor: 1, mobile: false });
-        await page.goto(`${fixture.url}/app/${shoot.path}`);
+        await page.goto(`${fixture.url}/app/${at(shoot.path)}`);
         await page.eval(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))`);
         const { data } = await page.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
         out({ png: data });

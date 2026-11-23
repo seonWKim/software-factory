@@ -61,15 +61,31 @@ export function touchesUi(files: readonly string[] | null | undefined, paths: re
   return (files ?? []).some((f) => paths.some((p) => f.startsWith(p)));
 }
 
+/** The placeholders in a page path the capture script fills with its fixture's item and run IDs. */
+export const FIXTURE_ITEM = ":item";
+export const FIXTURE_RUN = ":run";
+
 /**
  * The pages a screenshot run captures: every sidebar page `web/src/pages.ts` lists (as check:responsive reads it), then
- * the fixture's item page and its run's transcript page.
+ * the fixture's item page and its run's transcript page (their IDs as FIXTURE_ITEM and FIXTURE_RUN).
  */
-export function capturePages(pagesTs: string, fixture: { readonly item: string; readonly run: string }): ScreenshotPage[] {
+export function capturePages(pagesTs: string): ScreenshotPage[] {
   const sidebar = [...pagesTs.matchAll(/\{\s*path:\s*"([^"]*)",\s*label:\s*"([^"]+)"/g)].map((m) => ({ name: m[1] || "floor", path: m[1]! }));
-  const item = `items/${encodeURIComponent(fixture.item)}`;
-  return [...sidebar, { name: "item", path: item }, { name: "transcript", path: `${item}/runs/${encodeURIComponent(fixture.run)}` }];
+  const item = `items/${FIXTURE_ITEM}`;
+  return [...sidebar, { name: "item", path: item }, { name: "transcript", path: `${item}/runs/${FIXTURE_RUN}` }];
 }
+
+/** One shot: a page at a size and theme. */
+export interface Shot {
+  readonly page: ScreenshotPage;
+  readonly width: number;
+  readonly height: number;
+  readonly theme: ScreenshotTheme;
+}
+
+/** Every page at each width in each theme, in capture order. */
+export const shotsOf = (pages: readonly ScreenshotPage[]): Shot[] =>
+  pages.flatMap((page) => SCREENSHOT_SIZES.flatMap((size) => SCREENSHOT_THEMES.map((theme) => ({ page, ...size, theme }))));
 
 const THEMES: readonly string[] = SCREENSHOT_THEMES;
 const isCapture = (c: unknown): c is Capture => {
@@ -97,54 +113,55 @@ export function parseScreenshotReview(v: unknown): ScreenshotReview | null {
 /** Raised by a ScreenshotBrowser that cannot start (no Chrome, no fixture, no build): its message is the reason. */
 export class CaptureUnavailable extends Error {}
 
+/** A command in the run folder, through the run's sandbox (the worker binds `Sandbox.exec` to its handle). */
+export type RunExec = (
+  cmd: readonly string[],
+  o: { env: Readonly<Record<string, string>>; stdin?: string; signal?: AbortSignal },
+) => Promise<{ exit_code: number | null; stdout: string; stderr: string }>;
+
 /** A browser on the seeded fixture dashboard, open until `close`. */
 export interface BrowserSession {
-  /** The pages it can show (capturePages on the checkout's sidebar and its fixture's item and run). */
+  /** The pages it can show (capturePages on the checkout's sidebar). */
   readonly pages: readonly ScreenshotPage[];
   /** One PNG of `page` at the size and theme. */
   shoot(page: ScreenshotPage, at: { width: number; height: number; theme: ScreenshotTheme }): Promise<Uint8Array>;
   close(): Promise<void>;
 }
 
-/** Starts the seeded fixture dashboard built in `root` and a browser on it. Chrome in production, a fake in tests. */
+/** Starts the seeded fixture dashboard built in the run folder `exec` runs in, and a browser on it. Chrome in production, a fake in tests. */
 export interface ScreenshotBrowser {
-  open(root: string, signal: AbortSignal): Promise<BrowserSession>;
+  open(exec: RunExec, signal: AbortSignal): Promise<BrowserSession>;
 }
 
 const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e)).split("\n")[0]!.slice(0, 300);
 
 /**
- * Every page at each width in each theme, each PNG put in `storage` under its key as soon as it is taken. A browser
- * that cannot open, or a capture that fails, ends the run with the captures it has and a reason: never a throw,
- * unless the run was aborted.
+ * Every shot (shotsOf), each PNG put in `storage` under its key as soon as the browser hands it over. A browser that
+ * cannot open, or a capture that fails, ends the run with the captures it has and a reason: never a throw, unless the
+ * run was aborted.
  */
 export async function captureAll(
   browser: ScreenshotBrowser,
   storage: { put(key: string, data: Uint8Array): Promise<void> },
-  o: { item_id: string; run_id: string; root: string; signal: AbortSignal },
+  o: { item_id: string; run_id: string; exec: RunExec; signal: AbortSignal },
 ): Promise<ScreenshotOutcome> {
   let session: BrowserSession;
   try {
-    session = await browser.open(o.root, o.signal);
+    session = await browser.open(o.exec, o.signal);
   } catch (e) {
     if (o.signal.aborted) throw e;
     return { captures: [], reason: e instanceof CaptureUnavailable ? messageOf(e) : `the browser did not start: ${messageOf(e)}` };
   }
   const captures: Capture[] = [];
   try {
-    for (const page of session.pages) {
-      for (const size of SCREENSHOT_SIZES) {
-        for (const theme of SCREENSHOT_THEMES) {
-          const at = `${page.name} at ${size.width}px, ${theme}`;
-          try {
-            const key = screenshotKey(o.item_id, o.run_id, page.name, size.width, theme);
-            await storage.put(key, await session.shoot(page, { ...size, theme }));
-            captures.push({ page: page.name, width: size.width, theme, key });
-          } catch (e) {
-            if (o.signal.aborted) throw e;
-            return { captures, reason: `the capture of ${at} failed: ${messageOf(e)}` };
-          }
-        }
+    for (const { page, theme, ...size } of shotsOf(session.pages)) {
+      try {
+        const key = screenshotKey(o.item_id, o.run_id, page.name, size.width, theme);
+        await storage.put(key, await session.shoot(page, { ...size, theme }));
+        captures.push({ page: page.name, width: size.width, theme, key });
+      } catch (e) {
+        if (o.signal.aborted) throw e;
+        return { captures, reason: `the capture of ${page.name} at ${size.width}px, ${theme} failed: ${messageOf(e)}` };
       }
     }
   } finally {

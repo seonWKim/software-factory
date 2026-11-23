@@ -1,7 +1,6 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { detectAlarms } from "../src/core/alarms.js";
 import { ALARM_DEFAULTS, type FactoryConfig } from "../src/core/config.js";
 import { WORKER_KINDS } from "../src/core/settings.js";
@@ -15,7 +14,7 @@ import type { UiDeps } from "../src/ui/server.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { CAPTURE_ENV, captureEnv, chromeBrowser } from "../src/shared/chrome-browser.js";
 import {
-  type BrowserSession, CaptureUnavailable, SCREENSHOT_SIZES, SCREENSHOT_THEMES, type ScreenshotBrowser, captureAll, capturePages, screenshotKey,
+  type BrowserSession, CaptureUnavailable, type RunExec, SCREENSHOT_SIZES, SCREENSHOT_THEMES, type ScreenshotBrowser, captureAll, capturePages, screenshotKey,
 } from "../src/shared/screenshots.js";
 import { Worker } from "../src/worker/index.js";
 import { loadRunKinds } from "../src/worker/run-kind.js";
@@ -36,19 +35,18 @@ const UI = { command: ["npm", "run", "-s", "check:responsive"], paths: ["web/", 
 const actor = { kind: "system" as const, id: "system:test" };
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
 const PAGES_TS = `export const PAGES = [\n  { path: "", label: "Floor" },\n  { path: "items", label: "Work" },\n  { path: "settings", label: "Settings" },\n];\n`;
-const FIXTURE = { item: "local-fixture-item", run: "run_fixture" };
 
-/** A browser on a fake fixture: records what it opened and shot; `failAt` fails that shot (1-based), `refuse` fails the open. */
+/** A browser on a fake fixture: records the exec it opened on and what it shot; `failAt` fails that shot (1-based), `refuse` fails the open. */
 function fakeBrowser(o: { failAt?: number; refuse?: Error } = {}) {
-  const opened: string[] = [];
+  const opened: RunExec[] = [];
   const shots: string[] = [];
   let closed = 0;
   const browser: ScreenshotBrowser = {
-    async open(root) {
+    async open(exec) {
       if (o.refuse) throw o.refuse;
-      opened.push(root);
+      opened.push(exec);
       const session: BrowserSession = {
-        pages: capturePages(PAGES_TS, FIXTURE),
+        pages: capturePages(PAGES_TS),
         async shoot(page, at) {
           shots.push(`${page.path}@${at.width}x${at.height}:${at.theme}`);
           if (shots.length === o.failAt) throw new Error("Page.captureScreenshot: target closed\nstack");
@@ -65,12 +63,14 @@ function fakeBrowser(o: { failAt?: number; refuse?: Error } = {}) {
 }
 
 const signal = new AbortController().signal;
+/** An exec that is never called (the fake browser runs nothing). */
+const noExec: RunExec = async () => ({ exit_code: 0, stdout: "", stderr: "" });
 
 describe("the capture set", () => {
   it("is every sidebar page, then the item page and the transcript page, each at 390px and 1280px in light and dark", async () => {
     const f = fakeBrowser();
     const storage = new MemoryStorage();
-    const out = await captureAll(f.browser, storage, { item_id: "it1", run_id: "run1", root: "/wt/1", signal });
+    const out = await captureAll(f.browser, storage, { item_id: "it1", run_id: "run1", exec: noExec, signal });
     expect(out.reason).toBeNull();
     const pages = ["floor", "items", "settings", "item", "transcript"];
     expect([...new Set(out.captures.map((c) => c.page))]).toEqual(pages);
@@ -79,10 +79,10 @@ describe("the capture set", () => {
     }
     expect(out.captures.find((c) => c.page === "item")).toMatchObject({ key: "it1/run1/item-390-light.png" });
     expect([...storage.data.keys()]).toEqual(out.captures.map((c) => c.key));
-    // The item and transcript pages are the fixture's, at the heights check:responsive uses.
-    expect(f.shots).toContain(`items/${FIXTURE.item}@390x844:light`);
-    expect(f.shots).toContain(`items/${FIXTURE.item}/runs/${FIXTURE.run}@1280x800:dark`);
-    expect(f.opened).toEqual(["/wt/1"]);
+    // The item and transcript pages are the fixture's (the capture script fills its IDs), at the heights check:responsive uses.
+    expect(f.shots).toContain("items/:item@390x844:light");
+    expect(f.shots).toContain("items/:item/runs/:run@1280x800:dark");
+    expect(f.opened).toEqual([noExec]);
     expect(f.closed()).toBe(1);
   });
 
@@ -94,7 +94,7 @@ describe("the capture set", () => {
 
   it("reads the sidebar pages from the checkout's web/src/pages.ts, as check:responsive does", async () => {
     const real = await readFile(join(import.meta.dirname, "..", "web", "src", "pages.ts"), "utf8");
-    const pages = capturePages(real, FIXTURE).map((p) => p.name);
+    const pages = capturePages(real).map((p) => p.name);
     expect(pages).toEqual(expect.arrayContaining(["items", "settings", "item", "transcript"]));
     expect(pages.slice(-2)).toEqual(["item", "transcript"]);
   });
@@ -104,7 +104,7 @@ describe("a capture that fails", () => {
   it("ends with the captures it has and a reason, and closes the browser", async () => {
     const f = fakeBrowser({ failAt: 3 });
     const storage = new MemoryStorage();
-    const out = await captureAll(f.browser, storage, { item_id: "it1", run_id: "run1", root: "/wt/1", signal });
+    const out = await captureAll(f.browser, storage, { item_id: "it1", run_id: "run1", exec: noExec, signal });
     expect(out.captures.map((c) => c.key)).toEqual(["it1/run1/floor-390-light.png", "it1/run1/floor-390-dark.png"]);
     expect(out.reason).toBe("the capture of floor at 1280px, light failed: Page.captureScreenshot: target closed");
     expect(storage.data.size).toBe(out.captures.length);
@@ -112,56 +112,63 @@ describe("a capture that fails", () => {
   });
 
   it("a browser that cannot start (no Chrome) gives its reason and no capture", async () => {
-    const out = await captureAll(fakeBrowser({ refuse: new CaptureUnavailable("Chrome is not installed on this worker") }).browser, new MemoryStorage(), { item_id: "i", run_id: "r", root: "/x", signal });
+    const out = await captureAll(fakeBrowser({ refuse: new CaptureUnavailable("Chrome is not installed on this worker") }).browser, new MemoryStorage(), { item_id: "i", run_id: "r", exec: noExec, signal });
     expect(out).toEqual({ captures: [], reason: "Chrome is not installed on this worker" });
   });
 });
 
 describe("the Chrome browser", () => {
-  const dirs: string[] = [];
-  afterEach(async () => {
-    for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true });
-  });
-  /** A checkout whose capture script is a stand-in (plain Node, no Chrome) that speaks the protocol. */
-  async function checkout(script: string): Promise<string> {
-    const root = await mkdtemp(join(tmpdir(), "sf-shots-test-"));
-    dirs.push(root);
-    await mkdir(join(root, "scripts", "responsive"), { recursive: true });
-    await writeFile(join(root, "scripts", "responsive", "capture.mjs"), script);
-    return root;
+  /**
+   * An exec standing in for the run's sandbox: records every command; `test -f` finds the script when `script` is set,
+   * `cat` prints PAGES_TS, and the capture script's stdout is `script` given the stdin.
+   */
+  function sandboxExec(script: ((stdin: string) => string) | null) {
+    const calls: { cmd: string; env: Readonly<Record<string, string>>; stdin: string | undefined }[] = [];
+    const exec: RunExec = async (cmd, o) => {
+      calls.push({ cmd: cmd.join(" "), env: o.env, stdin: o.stdin });
+      if (cmd[0] === "test") return { exit_code: script ? 0 : 1, stdout: "", stderr: "" };
+      if (cmd[0] === "cat") return { exit_code: 0, stdout: PAGES_TS, stderr: "" };
+      return { exit_code: 0, stdout: script!(o.stdin ?? ""), stderr: "" };
+    };
+    return { exec, calls };
   }
+  const line = (m: unknown) => `${JSON.stringify(m)}\n`;
 
-  it("passes the capture script only the env Chrome needs: no token or secret", () => {
+  it("passes the capture script only the env Chrome needs: no token or secret", async () => {
     const env = captureEnv({ PATH: "/usr/bin", HOME: "/home/o", GITHUB_TOKEN: "ghp_x", ANTHROPIC_API_KEY: "sk-x", SF_SECRET: "s", CHROME_PATH: "/c" });
     expect(env).toEqual({ PATH: "/usr/bin", HOME: "/home/o", CHROME_PATH: "/c" });
     expect(CAPTURE_ENV.some((k) => /TOKEN|KEY|SECRET|PASSWORD/.test(k))).toBe(false);
+    const s = sandboxExec(() => line({ ready: true }));
+    await captureAll(chromeBrowser({ PATH: "/usr/bin", GITHUB_TOKEN: "ghp_x" }), new MemoryStorage(), { item_id: "i", run_id: "r", exec: s.exec, signal });
+    expect(s.calls.map((c) => c.env)).toEqual(s.calls.map(() => ({ PATH: "/usr/bin" })));
   });
 
-  it("captures through the script's JSON lines, one PNG per shot", async () => {
-    const root = await checkout([
-      `import { createInterface } from "node:readline";`,
-      `const out = (m) => process.stdout.write(JSON.stringify(m) + "\\n");`,
-      `out({ ready: { item: "it", run: "r", pages_ts: ${JSON.stringify(PAGES_TS)} } });`,
-      `for await (const line of createInterface({ input: process.stdin })) {`,
-      `  const { shoot } = JSON.parse(line);`,
-      `  out(shoot.path === "settings" ? { error: "boom" } : { png: Buffer.from(shoot.path + "@" + shoot.width + shoot.theme).toString("base64") });`,
-      `}`,
-    ].join("\n"));
+  it("runs every command through the run's exec, the capture once with the fixed shots on stdin, one PNG line per shot", async () => {
+    const s = sandboxExec((stdin) => line({ ready: true }) + stdin.trim().split("\n").map((l) => {
+      const { shoot } = JSON.parse(l) as { shoot: { path: string; width: number; theme: string } };
+      return line(shoot.path === "settings" ? { error: "boom" } : { png: Buffer.from(`${shoot.path}@${shoot.width}${shoot.theme}`).toString("base64") });
+    }).join(""));
     const storage = new MemoryStorage();
-    const out = await captureAll(chromeBrowser(), storage, { item_id: "i", run_id: "r", root, signal });
+    const out = await captureAll(chromeBrowser(), storage, { item_id: "i", run_id: "r", exec: s.exec, signal });
+    expect(s.calls.map((c) => c.cmd)).toEqual(["test -f scripts/responsive/capture.mjs", "cat web/src/pages.ts", "node --disable-warning=ExperimentalWarning scripts/responsive/capture.mjs"]);
+    const shots = s.calls[2]!.stdin!.trim().split("\n").map((l) => JSON.parse(l) as { shoot: { path: string } });
+    expect(shots.map((x) => x.shoot.path)).toEqual(expect.arrayContaining(["", "items", "settings", "items/:item", "items/:item/runs/:run"]));
     expect(out.captures.map((c) => c.page)).toEqual(["floor", "floor", "floor", "floor", "items", "items", "items", "items"]);
     expect(out.reason).toBe("the capture of settings at 390px, light failed: boom");
     expect(Buffer.from(storage.data.get("i/r/items-1280-dark.png")!).toString()).toBe("items@1280dark");
   });
 
-  it("a script that reports Chrome missing, or a checkout with no script, is a reason", async () => {
-    const root = await checkout(`process.stdout.write(JSON.stringify({ error: "Chrome is not installed on this worker (set CHROME_PATH)", unavailable: true }) + "\\n");`);
-    expect(await captureAll(chromeBrowser(), new MemoryStorage(), { item_id: "i", run_id: "r", root, signal })).toEqual({
+  it("a script that reports Chrome missing, a checkout with no script, or a script that stops short is a reason", async () => {
+    const missing = sandboxExec(() => line({ error: "Chrome is not installed on this worker (set CHROME_PATH)", unavailable: true }));
+    expect(await captureAll(chromeBrowser(), new MemoryStorage(), { item_id: "i", run_id: "r", exec: missing.exec, signal })).toEqual({
       captures: [], reason: "Chrome is not installed on this worker (set CHROME_PATH)",
     });
-    const empty = await mkdtemp(join(tmpdir(), "sf-shots-test-"));
-    dirs.push(empty);
-    expect((await captureAll(chromeBrowser(), new MemoryStorage(), { item_id: "i", run_id: "r", root: empty, signal })).reason).toBe("the checkout has no scripts/responsive/capture.mjs");
+    const none = sandboxExec(null);
+    expect((await captureAll(chromeBrowser(), new MemoryStorage(), { item_id: "i", run_id: "r", exec: none.exec, signal })).reason).toBe("the checkout has no scripts/responsive/capture.mjs");
+    const short = sandboxExec(() => line({ ready: true }) + line({ png: Buffer.from("x").toString("base64") }));
+    const out = await captureAll(chromeBrowser(), new MemoryStorage(), { item_id: "i", run_id: "r", exec: short.exec, signal });
+    expect(out.captures).toHaveLength(1);
+    expect(out.reason).toBe("the capture of floor at 390px, dark failed: the capture script exited");
   });
 
   it("the capture script seeds the fixture store only and writes no file in the repository or .playwright-mcp/", async () => {
@@ -169,16 +176,21 @@ describe("the Chrome browser", () => {
     expect(text).toMatch(/import\("\.\/fixture\.mjs"\)/);
     expect(text).not.toMatch(/factory\.config|\.factory\/|\.playwright-mcp|writeFile/);
   });
+
+  it("is never a host process: no child_process import", async () => {
+    const text = await readFile(join(import.meta.dirname, "..", "src", "shared", "chrome-browser.ts"), "utf8");
+    expect(text).not.toMatch(/child_process|spawn\(/);
+  });
 });
 
-/** A store, a controller and a worker whose screenshot runs use `browser` (Chrome, the default, finds no script in the fake folder). */
+/** A store, a controller and a worker whose screenshot runs use Chrome, the default; the fake sandbox has no capture script. */
 async function harness(o: { ui_check?: FactoryConfig["repo"]["ui_check"] | null; exits?: Record<string, number> } = {}) {
   const { store, clock } = await newStore();
   const ui = o.ui_check === null ? {} : { ui_check: o.ui_check ?? UI };
   const cfg: FactoryConfig = { ...config, repo: { ...config.repo, ...ui } };
   const controller = new ControllerRole({ store, sources: [new FakeSource()], auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
   const sandbox = new FakeSandbox();
-  Object.assign(sandbox.exits, o.exits ?? {});
+  Object.assign(sandbox.exits, { "test -f scripts/responsive/capture.mjs": 1 }, o.exits ?? {});
   const runner = new FakeRunner({ review: () => ({ output: { verdict: "pass", tier: 2, findings: [{ kind: "code", text: "breaks decision rule 1 on items at 390px, dark" }], summary: "one rule" } }) });
   const storage = new MemoryStorage();
   const worker = new Worker({
@@ -266,7 +278,10 @@ describe("the screenshot run and its review", () => {
     const kind = screenshotRun(f.browser);
     const data = await kind.execute(h.worker, { run, item: it1, ctx: {} as never, signal, model: "cheap", step: (_id, fn) => fn({} as never), handle });
     expect(h.sandbox.commands).toEqual(expect.arrayContaining(["npm ci", BUILD_COMMAND.join(" ")]));
-    expect(f.opened).toEqual([handle.workdir]);
+    // The browser's commands go to the run's sandbox, on its handle.
+    expect(f.opened).toHaveLength(1);
+    await f.opened[0]!(["echo", "in-sandbox"], { env: {} });
+    expect(h.sandbox.commands).toContain("echo in-sandbox");
     expect(data).toMatchObject({ reason: null, review_run_id: run.input?.review_run_id });
     expect((data.captures as unknown[]).length).toBe(5 * 4);
     expect([...h.storage.data.keys()].every((k) => k.startsWith(`${it1.id}/${run.id}/`))).toBe(true);
@@ -289,7 +304,7 @@ describe("the screenshot run and its review", () => {
     const it1 = await h.inReview();
     await h.review(it1, "pass");
     const before = await h.state(it1);
-    // The worker's screenshot run: Chrome's browser finds no capture script in the fake folder.
+    // The worker's screenshot run: Chrome's browser, through the sandbox, finds no capture script in the fake folder.
     while (await h.worker.tick()) await h.controller.tickRuns();
     await h.controller.tickRuns();
     const [shot] = await h.runs(it1, "screenshot");
