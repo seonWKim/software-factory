@@ -433,6 +433,8 @@ export const work = {
   "decisions.commentOn": "Comment on {section}",
   "decisions.optionalComment": "Optional comment",
   "commands.accept": "Accept",
+  "commands.copyCli": "Copy as CLI command",
+  "commands.copiedCli": "Copied {command}",
   "commands.changes": "Changes",
   "commands.reject": "Reject",
   "commands.good": "Good",

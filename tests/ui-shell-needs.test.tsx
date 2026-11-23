@@ -119,15 +119,15 @@ describe("Needs-you command buttons (issue #453)", () => {
     mountNeeds(["approve", "reject", "revise"].map(cmd));
     expect(visibleButtons()).toEqual(["More commands"]);
     expect(screen.queryByRole("menuitem")).toBeNull();
-    expect(menuLabels()).toEqual(["Approve", "Reject", "Revise"]);
+    expect(menuLabels()).toEqual(["Approve", "Reject", "Revise", "Copy as CLI command"]);
     cleanup();
     mountNeeds([cmd("retry"), cmd("reject")]);
-    expect(menuLabels()).toEqual(["Retry", "Reject"]);
+    expect(menuLabels()).toEqual(["Retry", "Reject", "Copy as CLI command"]);
     expect(rowOf("retry").hidden).toBe(true);
     cleanup();
     // No primary: no p shortcut and no Open button (the title links to the item).
     mountNeeds([cmd("reject")]);
-    expect(menuLabels()).toEqual(["Reject"]);
+    expect(menuLabels()).toEqual(["Reject", "Copy as CLI command"]);
     expect(document.querySelector("[data-shortcut]")).toBeNull();
     expect(rowOf("open")).toBeNull();
     cleanup();

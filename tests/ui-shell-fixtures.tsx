@@ -130,6 +130,7 @@ export const cmd = (name: string) => ({ name, usage: `/${name}`, description: `$
 export const SESSION = { as_of: AT, csrf_token: "tok-123", commands_enabled: true, actor: "local:me", actor_source: "environment" as const };
 
 export const cap = (name: string) => name[0]!.toUpperCase() + name.slice(1);
-export const rowOf = (name: string) => document.querySelector(`[data-command="${name}"]`) as HTMLElement;
+/** The element whose `data-action` is `name` (a Needs-you row's hidden shortcut button while its menu is shut). */
+export const rowOf = (name: string) => document.querySelector(`[data-action="${name}"]`) as HTMLElement;
 export const settle = () => act(async () => void (await vi.advanceTimersByTimeAsync(10)));
 export const button = (name: string) => screen.getByRole("button", { name: cap(name) }) as HTMLButtonElement;

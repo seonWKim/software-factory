@@ -4,13 +4,14 @@ import { type JSX, useEffect, useState } from "react";
 import { API, type Overview, POLL_MS, WEB_REV, getJson } from "./api.js";
 import { Brand } from "./components/ui/brand.js";
 import { Button } from "./components/ui/button.js";
+import { Tooltip } from "./components/ui/menu.js";
 import { t } from "./i18n/index.js";
 import { cn } from "./lib/cn.js";
 import { useShortcuts } from "./keys.js";
 import { Link, NavProvider, useLocationPath } from "./nav.js";
 import { BASE, pagesIn, redirectFor, routeFor } from "./pages.js";
 import { HelpDialog, SearchDialog } from "./search.js";
-import { SideLinks, pageLabel } from "./shell/sidebar.js";
+import { ShortcutsLink, SideLinks, pageLabel } from "./shell/sidebar.js";
 import { ModeChip } from "./shell/mode-chip.js";
 import { ThemeControl } from "./shell/top-bar.js";
 import { type ThemeChoice, applyChoice, saveChoice, storedChoice } from "./theme.js";
@@ -95,6 +96,9 @@ export function App() {
             <div className="border-t border-border pt-3">
               <SideLinks label={t("nav.setup")} pages={pagesIn("bottom")} current={current} />
             </div>
+            <div className="mt-3">
+              <ShortcutsLink onOpen={() => setDialog("help")} />
+            </div>
           </div>
         </aside>
         <div data-scroll-root className="flex min-w-0 flex-1 flex-col overflow-y-auto">
@@ -106,9 +110,11 @@ export function App() {
               {overview.isError ? t("topbar.updateFailed") : null}
             </span>
             <StopAllAgents />
-            <Button variant="ghost" size="icon" aria-label={t("search.open")} className="shrink-0" onClick={() => setDialog("search")}>
-              <Search aria-hidden className="size-4" />
-            </Button>
+            <Tooltip text={t("search.open")} shortcut="⌘K" placement="bottom" align="end" className="shrink-0">
+              <Button variant="ghost" size="icon" aria-label={t("search.open")} aria-keyshortcuts="Meta+K" onClick={() => setDialog("search")}>
+                <Search aria-hidden className="size-4" />
+              </Button>
+            </Tooltip>
             <Button variant="ghost" size="icon" aria-label={t("topbar.refresh")} className="shrink-0" onClick={() => void client.invalidateQueries()}>
               <RefreshCw aria-hidden className={cn("size-4", fetching > 0 && "animate-spin motion-reduce:animate-none")} />
             </Button>

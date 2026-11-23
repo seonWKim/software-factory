@@ -19,6 +19,7 @@ import reviewRole from "../src/worker/roles/review.role.js";
 import { FakeRunner, FakeSandbox } from "./helpers/fakes/runner.js";
 import { cleanScanner, config, prompts } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
+import { type SkillEvalWiring, runFigures, runSkillEvalFor } from "../src/skill-evals.js";
 
 vi.mock("../src/runtime/skill-evals/replay.js", async (load) => {
   const m = await load<typeof import("../src/runtime/skill-evals/replay.js")>();
@@ -241,5 +242,58 @@ describe("runSkillEval", () => {
     expect(after.find((r) => r.id === "r2")).toMatchObject({ skill_version: v2, status: "passed" });
     expect(await store.listSkillEvalReplays("r1")).toEqual(firstReplays);
     expect(await store.listSkillEvalReplays("r2")).toEqual([expect.objectContaining({ case_id: "c1", verdict: "pass" })]);
+  });
+});
+
+describe("the eval wiring (runSkillEvalFor)", () => {
+  /** The wiring over `store`, a skill folder `skills/tests-first` under tmp, a fake sandbox, runner and judge LLM. */
+  async function wiring(store: SkillEvalWiring["store"], llm: LLMProvider, o: { skillFile?: boolean } = {}) {
+    const folder = join(tmp, "skills", "tests-first");
+    await mkdir(folder, { recursive: true });
+    if (o.skillFile !== false) await writeFile(join(folder, "SKILL.md"), "Write the test first.");
+    const sandbox = new FakeSandbox();
+    const runner = new FakeRunner({ implement: (spec) => ({ output: `did ${spec.prompt}` }) });
+    const plugins = vi.fn(async () => ({ sandbox, runner, llm, scanner: cleanScanner }));
+    const d: SkillEvalWiring = {
+      store, root: tmp, judgePrompt: async () => JUDGE_PROMPT, plugins, repo: REPO, deny_paths: [".env"], timeout_ms: 1000, newId: () => "run1",
+    };
+    return { d, folder, runner, plugins };
+  }
+
+  it("runs the skill's suite once and stores the run with its version, classes, replays, pass rate and errored count", async () => {
+    const store = await suiteWith({ c1: { input: "good", expected: ["a"] }, c2: { input: "bad", expected: ["a"] }, c3: { input: "x", expected: "no rubric" } });
+    const llm = new FakeLLM((req) => (req.messages[0]!.content.includes("did good") ? yesNo("yes") : yesNo("no")));
+    const { d, folder, runner } = await wiring(store, llm);
+
+    const r = await runSkillEvalFor(d, { skill: "skills/tests-first", created_by: OWNER, signal: signal() });
+
+    expect(r).toEqual({ run: expect.objectContaining({
+      id: "run1", suite_id: "s1", status: "failed", created_by: OWNER, skill_version: await skillVersion(folder),
+      model_class: "standard", judge_model_class: "strong", replays: 3, pass_rate: 1 / 3, errored: 1,
+    }) });
+    expect(runner.specs[0]).toMatchObject({ system_prompt: "Write the test first.", model_class: "standard", tools: [] });
+    expect(llm.requests[0]).toMatchObject({ model_class: "strong", system: JUDGE_PROMPT });
+    expect((await store.listSkillEvalRuns("skills/tests-first")).map((x) => x.id)).toEqual(["run1"]);
+  });
+
+  it("refuses, naming the skill, when no suite exists for it, and writes no run nor builds a plugin", async () => {
+    const store = await suiteWith({ c1: { input: "x", expected: ["a"] } });
+    const { d, plugins } = await wiring(store, new FakeLLM(() => yesNo("yes")));
+    const r = await runSkillEvalFor(d, { skill: "skills/missing", created_by: OWNER, signal: signal() });
+    expect(r).toEqual({ refused: expect.stringContaining("skills/missing") });
+    expect(plugins).not.toHaveBeenCalled();
+    expect(await store.db.all("SELECT id FROM controller_skill_eval_runs")).toEqual([]);
+  });
+
+  it("refuses when the skill's SKILL.md cannot be read, and writes no run", async () => {
+    const store = await suiteWith({ c1: { input: "x", expected: ["a"] } });
+    const { d } = await wiring(store, new FakeLLM(() => yesNo("yes")), { skillFile: false });
+    expect(await runSkillEvalFor(d, { skill: "skills/tests-first", created_by: OWNER, signal: signal() })).toEqual({ refused: expect.stringContaining("skills/tests-first") });
+    expect(await store.db.all("SELECT id FROM controller_skill_eval_runs")).toEqual([]);
+  });
+
+  it("figures: one replay per case, a null pass rate with no replays, the judge on judgeClass of the replay's class", () => {
+    expect(runFigures("standard", [])).toEqual({ model_class: "standard", judge_model_class: "strong", replays: 0, pass_rate: null, errored: 0 });
+    expect(runFigures("strong", [{ verdict: "pass" }, { verdict: "errored" }])).toEqual({ model_class: "strong", judge_model_class: "standard", replays: 2, pass_rate: 0.5, errored: 1 });
   });
 });

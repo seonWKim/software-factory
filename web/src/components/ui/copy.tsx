@@ -9,6 +9,16 @@ import { Tooltip } from "./menu.js";
 /** 28px tall, as every button on a page (scripts/responsive/rules.mjs `button-height`). */
 const SMALL = "inline-flex min-h-7 items-center rounded-control border border-border-strong px-2 text-xs font-sans text-text-2 hover:bg-surface-2";
 
+/** Writes `value` to the clipboard; false with no clipboard (an insecure origin, a test), where the text stays selectable. */
+export async function copyToClipboard(value: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Copies `value` to the clipboard; `done` is true for 1.5 s after. With no clipboard it does nothing. */
 function useCopy(value: string) {
   const [done, setDone] = useState(false);
@@ -18,12 +28,7 @@ function useCopy(value: string) {
     return () => clearTimeout(timer);
   }, [done]);
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(value);
-      setDone(true);
-    } catch {
-      // No clipboard (an insecure origin, a test): the text stays selectable.
-    }
+    if (await copyToClipboard(value)) setDone(true);
   };
   return { done, copy: () => void copy() };
 }
