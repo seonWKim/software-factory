@@ -26,6 +26,7 @@ import type { ScheduleAction } from "./interfaces/schedule-action.js";
 import type { ScheduleActionRoutes } from "./controller/units/schedule/plugins/ports.js";
 import type { ToolSpec } from "./core/tools/types.js";
 import type { SharedStorage } from "./interfaces/shared-storage.js";
+import type { SkillEvalSource } from "./interfaces/skill-eval-source.js";
 import type { SourceAdapter } from "./interfaces/source-adapter.js";
 import type { TacitLedger } from "./interfaces/tacit-ledger.js";
 import type { ToolBroker } from "./interfaces/tool-broker.js";
@@ -65,6 +66,8 @@ export interface Instances {
   calendar: CalendarSource;
   /** What a fired schedule occurrence runs (docs/plugins/schedule-action.md); optional, no default. */
   schedule_action: ScheduleAction;
+  /** Where `factory eval import` reads a skill's cases (docs/plugins/skill-eval-source.md); optional, read only. */
+  eval_source: SkillEvalSource;
 }
 
 export type PluginKind = keyof Instances;
@@ -73,7 +76,7 @@ export type PluginKind = keyof Instances;
  * Kinds config may leave unselected (issue #172): no plugin is their default, and an absent value or "none"
  * selects nothing. Never a guard. `calendar` is selected as a list (`calendars` in the Selection), never one name.
  */
-export type OptionalKind = "forge" | "calendar" | "schedule_action";
+export type OptionalKind = "forge" | "calendar" | "schedule_action" | "eval_source";
 
 /** Everything a plugin may read: the loaded config, plus the extra values a canary run adds to the scan. */
 export interface BaseContext {
@@ -129,6 +132,8 @@ export interface Contexts {
    * key its items go into, and one route per action kind (src/controller/units/schedule/plugins/).
    */
   schedule_action: BaseContext & { store: FactoryStore; runner: AgentRunner; sandbox: Sandbox; scanner: EgressScanner; tools: readonly ToolSpec[]; project: string; routes: ScheduleActionRoutes };
+  /** Built by `factory eval import` only; the plugin finds its own home. */
+  eval_source: BaseContext;
 }
 
 /** What a plugin's setup hook gets: the forge client (no credentials), and where to print its progress lines. */

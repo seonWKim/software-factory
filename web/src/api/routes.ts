@@ -63,6 +63,12 @@ export const API = {
   calendarSync: "/api/v1/calendar/sync",
   /** The Calendar page's read of the stored events of the local days `from` through `to` (YYYY-MM-DD, inclusive). */
   calendarEvents: (from: string, to: string) => `/api/v1/calendar/events?from=${from}&to=${to}`,
+  /** The Schedules page's read of every schedule. */
+  schedules: "/api/v1/schedules",
+  /** One schedule's run rows. */
+  scheduleRuns: (id: string) => `/api/v1/schedules/runs?schedule=${encodeURIComponent(id)}`,
+  /** One of the Schedules page's writes (owner only). */
+  scheduleWrite: (verb: ScheduleVerb) => `/api/v1/schedules/${verb}`,
   taskBuild: "/api/v1/tasks/build",
   taskAction: (action: TaskAction) => `/api/v1/tasks/${action}`,
   dataTables: "/api/v1/data/tables",
@@ -76,3 +82,6 @@ export const API = {
 
 /** A Tasks page row action: the path segment of its route. */
 export type TaskAction = "edit" | "done" | "reopen" | "delete" | "sub";
+
+/** A Schedules page write: the path segment of its route. */
+export type ScheduleVerb = "add" | "edit" | "pause" | "resume" | "run";

@@ -10,9 +10,10 @@ interface CheckboxProps extends Omit<ComponentProps<"input">, "type" | "children
 /**
  * A checkbox (design §9): a 16px box drawn from the tokens (text-2 border on surface; checked, an accent border and an
  * accent check mark) inside a 32px hit area, with the same focus ring as every control. The role and the checked state
- * come from the native input; `aria-checked` mirrors `checked` for the tests and tools that read the attribute.
+ * come from the native input; `aria-checked` mirrors `checked` for the tests and tools that read the attribute. A click
+ * and Space toggle it (native), and so does Enter; a disabled one does nothing.
  */
-export function Checkbox({ className, children, checked, ...props }: CheckboxProps) {
+export function Checkbox({ className, children, checked, onKeyDown, ...props }: CheckboxProps) {
   return (
     <label className={cn("inline-flex min-h-8 min-w-8 items-center gap-2 text-sm break-words", children === undefined && "justify-center", className)}>
       <span className="relative inline-grid size-4 shrink-0 place-items-center">
@@ -20,6 +21,13 @@ export function Checkbox({ className, children, checked, ...props }: CheckboxPro
           type="checkbox"
           checked={checked}
           aria-checked={checked}
+          onKeyDown={(e) => {
+            onKeyDown?.(e);
+            if (e.key !== "Enter" || e.defaultPrevented) return;
+            // Enter toggles as Space does; a disabled input ignores the click.
+            e.preventDefault();
+            e.currentTarget.click();
+          }}
           className={cn(
             "peer size-4 appearance-none rounded-control border border-text-2 bg-surface checked:border-accent",
             FOCUS,

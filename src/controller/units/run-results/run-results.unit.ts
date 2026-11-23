@@ -99,6 +99,8 @@ export class RunResultsUnit {
     const decision = async (it: WorkItem): Promise<Decision> => {
       // An improve run changes nothing else on its system item (design §7): its report is already stored.
       if (run.kind === "improve") return ack(run.outcome?.status === "succeeded" ? "improve_done" : "improve_failed");
+      // A routine run changes nothing on its item either: it is read-only, and what it found is in its stored outcome.
+      if (run.kind === "routine") return ack(run.outcome?.status === "succeeded" ? "routine_done" : "routine_failed");
       // The run's full token count (design §6 Measurement); old succeeded rows keep the data.tokens they stored.
       const tokens = it.token_cost + runTokenCount(run);
       if (!run.outcome || run.outcome.status !== "succeeded") return this.c.unit("model-probe").stallScope(run, await this.applyFailedRun(it, run));

@@ -56,7 +56,8 @@
     "bus": "sql",
     "ticks": "time-based",
     "engine": "journal",
-    "tacit": "agents-home"
+    "tacit": "agents-home",
+    "eval_source": "none"
   },
   "models": { "cheap": "haiku", "standard": "sonnet", "strong": "opus" },
   "model_by": {

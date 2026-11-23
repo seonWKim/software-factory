@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { POLL_MS } from "../web/src/api.js";
 import { THEME_KEY, paintChoice, storedChoice } from "../web/src/theme.js";
 import { BANNER_LINK_CLASS } from "../web/src/components/ui/link-style.js";
-import { RevisionBanner } from "../web/src/views/system-banner.js";
+import { RevisionBanner, UnpushedMerges } from "../web/src/views/system-banner.js";
 import { AT, overview, row, RESPONSES, state, installShellFixtures, waitBadge, mount } from "./ui-shell-fixtures.js";
 
 installShellFixtures();
@@ -18,7 +18,7 @@ describe("app shell", () => {
     expect(screen.queryByRole("navigation", { name: "Factory" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Needs you" })).toBeNull();
     const tasks = screen.getByRole("navigation", { name: "Tasks" });
-    expect([...tasks.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Tasks4", "Calendar"]);
+    expect([...tasks.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Tasks4", "Calendar", "Schedules"]);
     const nav = screen.getByRole("navigation", { name: "System" });
     expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Work", "Health", "Workers"]);
     fireEvent.click(within(nav).getByText("Health"));
@@ -167,6 +167,20 @@ describe("app shell", () => {
     expect(screen.getByTestId("revision-banner").className).toMatch(/(?<![\w-])text-pill-warn-fg(?![\w-])/);
   });
 
+  it("the unpushed-merges line shows its count with the warn tokens, and nothing at 0", () => {
+    const { rerender } = render(<UnpushedMerges count={3} />);
+    const el = screen.getByTestId("unpushed-merges");
+    expect(el.textContent).toBe("3 local merges not pushed");
+    expect(el.className).toMatch(/(?<![\w-])text-pill-warn-fg(?![\w-])/);
+    expect(el.className).toMatch(/(?<![\w-])bg-pill-warn-bg(?![\w-])/);
+    rerender(<UnpushedMerges count={1} />);
+    expect(screen.getByTestId("unpushed-merges").textContent).toBe("1 local merges not pushed");
+    rerender(<UnpushedMerges count={0} />);
+    expect(screen.queryByTestId("unpushed-merges")).toBeNull();
+    rerender(<UnpushedMerges count={undefined} />);
+    expect(screen.queryByTestId("unpushed-merges")).toBeNull();
+  });
+
   it("keeps the stored choice ahead of the system preference", async () => {
     stubScheme(true);
     localStorage.setItem(THEME_KEY, "light");
@@ -212,7 +226,7 @@ describe("sidebar", () => {
       expect(nav.getAttribute("aria-label")).toBe(name);
     }
     const links = (name: string) => within(screen.getByRole("navigation", { name })).getAllByRole("link").map((a) => a.textContent);
-    expect(links("Tasks")).toEqual(["Tasks", "Calendar"]);
+    expect(links("Tasks")).toEqual(["Tasks", "Calendar", "Schedules"]);
     expect(links("System")).toEqual(["Work", "Health", "Workers"]);
     expect(links("Setup")).toEqual(["Rules", "Plugins", "Settings"]);
     expect(document.querySelector("aside details, aside summary, aside [data-chevron]")).toBeNull();

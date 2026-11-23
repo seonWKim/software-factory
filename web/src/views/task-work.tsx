@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { API, type ItemRow, type Items, type Overview, type SystemAction, type UnreviewedMerges, mergeCheckLabel, mergeInFlight, useApi, useItems } from "../api.js";
+import { API, type ItemRow as Item, type Items, type Overview, type SystemAction, type UnreviewedMerges, mergeCheckLabel, mergeInFlight, useApi, useItems } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { Dialog } from "../components/ui/dialog.js";
 import { BLOCK_LINK_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import { ErrorNote } from "../components/ui/parts.js";
 import type { MessageKey } from "../i18n/en.js";
-import { shortSource, whyText } from "../lib/format.js";
+import { whyText } from "../lib/format.js";
 import { t } from "../i18n/index.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
@@ -18,9 +18,10 @@ import { CheckRow } from "./system-banner.js";
 import { OutcomeText } from "./command-box.js";
 import { Card, CardSection, SUB_TITLE } from "../components/ui/card.js";
 import { Badge, StatusBadge } from "../components/ui/badge.js";
-import { ListRow, ROW_TITLE } from "../components/ui/list-row.js";
 import type { MenuItem } from "../components/ui/menu.js";
+import { ListRow, ROW_TITLE } from "../components/ui/list-row.js";
 import { cn } from "../lib/cn.js";
+import { ItemRow } from "./item-row.js";
 import { lastLook, markLook } from "../lib/last-look.js";
 
 /**
@@ -28,34 +29,34 @@ import { lastLook, markLook } from "../lib/last-look.js";
  * is, as the item page's button does (the server's pending request rule: "Merge queued (position N)", "Checking
  * build"), with no Merge button.
  */
-const ItemState = ({ it }: { it: ItemRow }) => <StatusBadge state={it.item_phase}>{mergeInFlight(it.merge) ? it.merge.reason : undefined}</StatusBadge>;
+const ItemState = ({ it }: { it: Item }) => <StatusBadge state={it.item_phase}>{mergeInFlight(it.merge) ? it.merge.reason : undefined}</StatusBadge>;
 
 /** A reason that is only a short status code ("failed: spec_conflict"): shown as a chip beside the badge, not as a line. */
 const CODE_REASON = /^[a-z][a-z ]{0,20}: [a-z0-9_.-]{1,40}$/i;
 /** An Answer-or-fix item's reason (the need's, else the why's en.ts text); empty for Merge and Approve, which say it with the badge. */
-const needReason = (it: ItemRow): string => (needGroup(it) === "answer" ? (it.need?.reason ?? (it.why ? whyText(it.why) : "")) : "");
+const needReason = (it: Item): string => (needGroup(it) === "answer" ? (it.need?.reason ?? (it.why ? whyText(it.why) : "")) : "");
 
 /**
  * The "⋯" menu of a waiting item, as in every Needs you row: its primary command first (Merge, Approve, Retry or
  * Answer), then its other commands, then `extra` (the row's own actions). `cmd`: the row's sends (useCommandSend);
  * `inlineErrors` false leaves a failed send's error to the row.
  */
-function RowActions({ it, cmd, inlineErrors = true, extra, label }: { it: ItemRow; cmd: ReturnType<typeof useCommandSend>; inlineErrors?: boolean; extra?: readonly MenuItem[]; label?: string }) {
+function RowActions({ it, cmd, inlineErrors = true, extra, label }: { it: Item; cmd: ReturnType<typeof useCommandSend>; inlineErrors?: boolean; extra?: readonly MenuItem[]; label?: string }) {
   const checking = it.merge_check?.state === "checking";
   return <NeedActions id={it.id} title={it.title ?? it.id} commands={it.commands ?? []} pr={it.change_ref} group={needGroup(it)} merge={it.merge} checking={checking} cmd={cmd} allow={allowEntries(needReason(it))} inlineErrors={inlineErrors} extra={extra} label={label} />;
 }
 
 /** The work item a built task links to, from the items list; undefined while it loads or when the list lacks it. */
-export function useWorkItem(id: string | null): ItemRow | undefined {
+export function useWorkItem(id: string | null): Item | undefined {
   const items = useApi<Items>(API.items).data?.items;
   return id === null ? undefined : items?.find((i) => i.id === id);
 }
 
 /** True when the item waits on the owner (it is in Needs you): an open task's row then puts its commands in the row's menu. */
-export const waitsOnOwner = (it: ItemRow | undefined): it is ItemRow => it !== undefined && needsYou([it]).length > 0;
+export const waitsOnOwner = (it: Item | undefined): it is Item => it !== undefined && needsYou([it]).length > 0;
 
 /** An open task's menu when its work item waits on the owner: the item's commands first, then the task's own `extra`. */
-export function TaskItemMenu({ it, extra, label }: { it: ItemRow; extra: readonly MenuItem[]; label: string }) {
+export function TaskItemMenu({ it, extra, label }: { it: Item; extra: readonly MenuItem[]; label: string }) {
   const cmd = useCommandSend(it.id);
   return <RowActions it={it} cmd={cmd} extra={extra} label={label} />;
 }
@@ -89,13 +90,14 @@ export function WorkState({ id, title, open: taskOpen }: { id: string; title: st
 const GROUPS: readonly [NeedGroup, MessageKey][] = [["merge", "needs.groupMerge"], ["approve", "needs.groupApprove"], ["answer", "needs.groupAnswer"]];
 
 /**
- * One compact Needs you row: the item (and its PR), its state as one badge (a merge check's conflicts are that state:
- * "Conflicts: N files", the files on hover, not "Ready to merge" beside them), the reason only for an Answer-or-fix
- * item (Merge and Approve say it with the badge; it links to the item's latest thread entry when the need names one),
- * on the shared ListRow; every action is in its "⋯" menu, the primary first. A failed send's error and a merge's
- * refusal take their own line below the row's content, never the menu cell (design-system/patterns.md C-050).
+ * One Needs you row, an ItemRow (comfortable, as every row on Tasks): its state as one badge (a merge check's
+ * conflicts are that state: "Conflicts: N files", the files on hover, not "Ready to merge" beside them), the item's
+ * title linking to it, then why: its rank reason, and the reason only for an Answer-or-fix item (Merge and Approve say
+ * it with the badge; it links to the item's latest thread entry when the need names one). Every action is in its "⋯"
+ * menu, the primary first; its PR, as a muted number, follows. A failed send's error and a merge's refusal are the
+ * row's second line, never the menu cell (design-system/patterns.md C-050).
  */
-function WorkRow({ it }: { it: ItemRow }) {
+function WorkRow({ it }: { it: Item }) {
   const cmd = useCommandSend(it.id);
   const merge = useMergeReply(it.id, needGroup(it), it.merge, cmd);
   const errors = [...new Set([...sendErrorTexts(cmd.local), ...(merge.outcome?.tone === "error" ? [merge.outcome.text] : [])])];
@@ -104,25 +106,22 @@ function WorkRow({ it }: { it: ItemRow }) {
   const chip = CODE_REASON.test(reason);
   const toNeed = it.need?.anchor ? `${itemPath(it.id)}#${it.need.anchor}` : null;
   return (
-    <ListRow
+    <ItemRow
+      variant="comfortable"
+      itemId={it.id}
       data-key={it.id}
-      title={
-        <span className="flex min-w-0 items-baseline gap-2">
-          <Link href={itemPath(it.id)} title={it.title ?? undefined} data-raw className={cn(ROW_TITLE, "leading-6 text-text-1 hover:underline")}>
-            {it.title ?? shortSource(it.source.id)}
-          </Link>
-          {it.change_ref !== null && <span className="shrink-0 text-xs text-text-2 tabular-nums">#{it.change_ref}</span>}
+      badge={conflicts ? (
+        <span data-merge-check="conflicts" title={conflicts.conflicts.join("\n")}>
+          <Badge level="failed">{mergeCheckLabel(conflicts)}</Badge>
         </span>
-      }
-      details={
+      ) : (
+        <StatusBadge state={it.item_phase} />
+      )}
+      title={it.title ?? t("item.untitled")}
+      titleRaw={it.title !== null}
+      href={itemPath(it.id)}
+      why={
         <>
-          {conflicts ? (
-            <span data-merge-check="conflicts" title={conflicts.conflicts.join("\n")}>
-              <Badge level="failed">{mergeCheckLabel(conflicts)}</Badge>
-            </span>
-          ) : (
-            <StatusBadge state={it.item_phase} />
-          )}
           {it.rank_reason !== undefined && <span data-rank><Badge level={it.held ? "held" : undefined}>{it.rank_reason}</Badge></span>}
           {chip && (
             <span data-need title={reason}>
@@ -143,14 +142,14 @@ function WorkRow({ it }: { it: ItemRow }) {
           )}
         </>
       }
+      details={it.change_ref !== null && <span className="shrink-0 tabular-nums">#{it.change_ref}</span>}
       menu={<RowActions it={it} cmd={cmd} inlineErrors={false} />}
-    >
-      {errors.length > 0 && (
+      second={errors.length > 0 && (
         <div data-row-error className="flex min-w-0 flex-col gap-1">
           {errors.map((text) => <OutcomeText key={text} outcome={{ tone: "error", text }} />)}
         </div>
       )}
-    </ListRow>
+    />
   );
 }
 
@@ -158,7 +157,7 @@ function WorkRow({ it }: { it: ItemRow }) {
  * The Needs you rows as one compact list per group: the waiting items under Merge, Approve, Answer or fix, then the
  * system actions (`checks`, each open alarm its own row) under Check, in that order; no group, no heading, for no row.
  */
-export function NeedsList({ items, checks = [] }: { items: readonly ItemRow[]; checks?: readonly SystemAction[] }) {
+export function NeedsList({ items, checks = [] }: { items: readonly Item[]; checks?: readonly SystemAction[] }) {
   const groups = GROUPS.map(([group, title]) => ({ title: t(title), rows: items.filter((it) => needGroup(it) === group).map((it) => <WorkRow key={it.id} it={it} />) }))
     .concat({ title: t("needs.groupCheck"), rows: checks.map((a, i) => <CheckRow key={`${a.code}:${i}`} action={a} />) })
     .filter((g) => g.rows.length > 0);
@@ -177,7 +176,7 @@ export function NeedsList({ items, checks = [] }: { items: readonly ItemRow[]; c
 }
 
 /** The time of a held ask's "Held until HH:MM" rank reason; null when the ask is not held. */
-const heldTime = (it: ItemRow): string | null => (it.held ? /^Held until (.+)$/.exec(it.rank_reason ?? "")?.[1] ?? null : null);
+const heldTime = (it: Item): string | null => (it.held ? /^Held until (.+)$/.exec(it.rank_reason ?? "")?.[1] ?? null : null);
 
 /** The merge's risk badge: its stored verdict (failed, reverted), else "Not reviewed". */
 function riskOf(verdict: string | null | undefined): { key: "tasks.riskFailed" | "tasks.riskReverted" | "tasks.riskUnreviewed"; level: string | undefined } {

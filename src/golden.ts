@@ -19,7 +19,7 @@ import { implementReplayRunner } from "./controller/golden-gate/implement-replay
 import { loadTriageCases, triageReplayRunner } from "./controller/golden-gate/triage-replay.js";
 export { genTriageDrafts, parseGenArgs } from "./controller/golden-gate/triage-gen.js"; // golden gen (drafts triage cases from a closed item)
 import { ROLE_NAME, type RoleDescriptor } from "./shared/role.js";
-import { toolsNamed } from "./worker/index.js"; import { JUDGE_SCHEMA } from "./worker/runs/judge/judge.run.js";
+import { toolsNamed } from "./worker/index.js"; import { JUDGE_SCHEMA } from "./worker/runs/judge/judge.run.js"; import { ROUTINE_SCHEMA, parseRoutine } from "./worker/runs/routine/routine.run.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressChannel, EgressScanner } from "./interfaces/egress-scanner.js";
@@ -410,7 +410,7 @@ async function loadCases(rolesDir: string, role: RoleDescriptor & { prompt: stri
     const prompts = casePrompts(meta.prompts, id) ?? [role.prompt];
     if (only && !prompts.some((p) => only.includes(p))) continue;
     const work_item_id = typeof meta.work_item_id === "string" ? meta.work_item_id : `golden_${id}`;
-    out.push({ id, expect, prompts, work_item_id, diff: role.name === "triage" ? null : await readFile(join(dir, CASE_DIFF), "utf8"), spec: await readFile(join(dir, CASE_INSTRUCTION), "utf8") });
+    out.push({ id, expect, prompts, work_item_id, diff: role.name === "triage" || role.name === "routine" ? null : await readFile(join(dir, CASE_DIFF), "utf8"), spec: await readFile(join(dir, CASE_INSTRUCTION), "utf8") });
   }
   return out;
 }
@@ -455,7 +455,7 @@ async function runOne(deps: GoldenRunDeps, role: RoleDescriptor, system: string,
   const started = deps.clock.now().getTime();
   const out: CaseResult = { id: c.id, expect: c.expect, verdict: "errored", findings: [], input_tokens: 0, output_tokens: 0, wall_ms: 0 };
   try {
-    const confirm = role.name === "review-confirm", judge = role.name === "judge", kind = (confirm ? "review" : role.name) as RunKind; // review-confirm replays on the review's class (design 04-agents), the judge on strong as the runner pins it
+    const confirm = role.name === "review-confirm", judge = role.name === "judge", routine = role.name === "routine", kind = (confirm ? "review" : role.name) as RunKind; // review-confirm replays on the review's class (design 04-agents), the judge on strong as the runner pins it
     const result = await replayInSandbox(deps, {
       repo,
       run_id: `golden_${key}`,
@@ -470,11 +470,11 @@ async function runOne(deps: GoldenRunDeps, role: RoleDescriptor, system: string,
       // match production; a role with no model_by entry replays on the standard class.
       model_class: judge ? "strong" : isModelRunKind(kind) ? modelClassFor(deps.model_by ?? DEFAULT_MODEL_TABLE, kind, null, 0) : "standard",
       timeout_ms: deps.config.run_timeout_ms,
-      output_schema: confirm ? REVIEW_CONFIRM_SCHEMA : judge ? JUDGE_SCHEMA : REVIEW_SCHEMA,
+      output_schema: confirm ? REVIEW_CONFIRM_SCHEMA : judge ? JUDGE_SCHEMA : routine ? ROUTINE_SCHEMA : REVIEW_SCHEMA,
       signal,
     });
     Object.assign(out, { input_tokens: result.usage.input_tokens, output_tokens: result.usage.output_tokens });
-    const answer = result.status !== "completed" ? null : confirm ? parseReviewConfirm(result.output) : judge ? parseJudge(result.output) : parseReview(result.output);
+    const answer = result.status !== "completed" ? null : confirm ? parseReviewConfirm(result.output) : judge ? parseJudge(result.output) : routine ? parseRoutine(result.output) : parseReview(result.output);
     // Scored on the verdict alone: unverified checks never make a case flagged (issue #222); a confirmed finding flags a review-confirm case, a fix or ask verdict a judge case.
     if (answer?.ok) Object.assign(out, "confirmed" in answer.value ? { verdict: answer.value.confirmed ? "bug" : "pass" } : "findings" in answer.value ? { verdict: answer.value.verdict, findings: answer.value.findings.map(findingLine) } : { verdict: answer.value.verdict === "fix" || answer.value.verdict === "ask" ? "bug" : "pass" });
   } catch {

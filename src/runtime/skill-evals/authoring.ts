@@ -5,6 +5,7 @@
 // structural (the SkillEvalStore calls used here), so this component imports no legacy module.
 
 import { type CaseVerdict, type SkillEvalEngineDeps, judgeCase, rubricChecks } from "./engine.js";
+import type { ImportedCases, SkillEvalImportRequest, SkillEvalImportStore } from "./import.js";
 
 export interface AuthoredSuite { id: string; skill_ref: string; title: string }
 export interface AuthoredCase { id: string; suite_id: string; input: unknown; expected: unknown }
@@ -105,4 +106,6 @@ export interface SkillEvalAuthoring {
   deleteSuite(store: SkillEvalAuthoringStore, skill: string, announce: (runs: number) => void): Promise<Authored<{ runs: number }>>;
   addCase(store: SkillEvalAuthoringStore, skill: string, f: CaseFields): Promise<Authored<AuthoredCase>>;
   editCase(store: SkillEvalAuthoringStore, id: string, f: CaseFields): Promise<Authored<AuthoredCase>>;
+  /** `eval import` over the configured SkillEvalSource and egress scanner (import.ts, wired by main.ts); absent: it refuses. */
+  importCases?(store: SkillEvalImportStore, r: SkillEvalImportRequest): Promise<Authored<ImportedCases>>;
 }

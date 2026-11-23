@@ -251,7 +251,7 @@ function set<K extends ProjectSettingKey>(o: Partial<ProjectSettings>, k: K, v: 
  * The one list: the worker's claim, its startup check and the `worker_kinds` check read it here, since core cannot
  * import the worker. `interactive` and `manual` are never claimed.
  */
-export const WORKER_KINDS = ["triage", "review", "merge-check", "update", "restart", "improve", "implement", "resolve", "judge"] as const satisfies readonly RunKind[];
+export const WORKER_KINDS = ["triage", "review", "merge-check", "update", "restart", "improve", "implement", "resolve", "judge", "routine"] as const satisfies readonly RunKind[];
 
 /**
  * `worker_kinds`: a non-empty list of distinct kinds from WORKER_KINDS, or the message that names the setting. An

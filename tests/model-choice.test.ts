@@ -6,6 +6,7 @@ import { loadConfig } from "../src/load-config.js";
 import {
   DEFAULT_MODEL_BY,
   DEFAULT_MODEL_TABLE,
+  MODEL_RUN_KINDS,
   type ModelTable,
   bumpClass,
   modelClassFor,
@@ -81,6 +82,12 @@ describe("model class per run kind and tier: the default table", () => {
     });
   }
 
+  it("routine is an agent run kind and uses cheap at every tier, also on a retry loop", () => {
+    expect(MODEL_RUN_KINDS).toContain("routine");
+    expect(DEFAULT_MODEL_BY.routine).toBe("cheap");
+    for (const tier of [...TIERS, null]) expect(modelClassFor(T, "routine", tier, 1)).toBe("cheap");
+  });
+
   it("an item with no tier yet takes the tier-5 entry", () => {
     expect(modelClassFor(T, "implement", null, 0)).toBe("strong");
     expect(modelClassFor(T, "triage", null, 0)).toBe("cheap");
@@ -139,8 +146,9 @@ describe("retry after a review loop", () => {
 });
 
 describe("model_by and models in factory.config.json", () => {
-  it("the shipped model_by is exactly the default table, and loading it yields that table", async () => {
-    expect(REAL.model_by).toEqual(DEFAULT_MODEL_BY);
+  it("each row the shipped model_by lists is the default row, and loading it yields the default table", async () => {
+    // A run kind the file leaves out (one added after the file was written, such as routine) keeps its default row.
+    expect(DEFAULT_MODEL_BY).toMatchObject(REAL.model_by as object);
     expect(REAL.models).toEqual({ cheap: "haiku", standard: "sonnet", strong: "opus" });
     const loaded = await loadConfig(root(REAL));
     expect(loaded.model_by).toEqual(DEFAULT_MODEL_TABLE);
