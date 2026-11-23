@@ -1,6 +1,6 @@
 // English text, area: evals. A key's prefix (before its first dot) belongs to this file only.
 export const evals = {
-  "evals.description": "How this skill did on its test cases, run by run. Read only.",
+  "evals.description": "How this skill did on its test cases, run by run.",
   "evals.loadFailed": "The runs could not be read. Refresh the page to try again.",
   "evals.empty": "No runs yet",
   "evals.emptyHelp": "A run appears here once the skill has been tested.",
@@ -33,4 +33,15 @@ export const evals = {
   "evals.points": "{sign}{n} points",
   "evals.band": "±{n} points",
   "evals.noGap": "Not enough replays to say",
+  "evals.runNow": "Run now",
+  "evals.runTitle": "Run the tests of {skill}",
+  "evals.runConsequence": "Runs every test case once and judges the answers. This can take a few minutes; the run shows here when it ends.",
+  "evals.runConfirm": "Run",
+  "evals.running": "Running…",
+  "evals.runModel": "Model",
+  "evals.runJudge": "Judge model",
+  "evals.runJudgeHelp": "Follows the model: the judge always uses a different class from the one it grades.",
+  "evals.runReplays": "Replays per case",
+  "evals.runReplaysHelp": "Each case is replayed once per run.",
+  "evals.runFailed": "The run could not start. Try again.",
 } as const;

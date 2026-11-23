@@ -1,9 +1,9 @@
 // The evals page's reads (design 06-measurement, 09-dashboard-evals): GET /api/v1/evals/<skill>/runs, /grid and
-// /compare?a=&b=, the same fields as the CLI's --json. <skill> is the skill_ref, URL-encoded. Read-only. A null figure
-// means none was recorded, never 0.
+// /compare?a=&b=, the same fields as the CLI's --json, and Run now's POST /api/v1/evals/<skill>/runs. <skill> is the
+// skill_ref, URL-encoded. A null figure means none was recorded, never 0.
 
 import { useQuery } from "@tanstack/react-query";
-import { getJson, useApi } from "./client.js";
+import { getJson, postJson, useApi } from "./client.js";
 
 /** A skill's stored run (FactoryStore.listSkillEvalRuns), newest first in the list. */
 export interface EvalRun {
@@ -51,3 +51,20 @@ export function useEvalCompare(skill: string, a: string | null, b: string | null
 
 /** The skill_refs that have a suite (GET /api/v1/evals); read once when the page opens, never polled. */
 export const useEvalSuites = () => useApi<{ skills: string[] }>("/api/v1/evals", false);
+
+/** Run now's options, as `factory eval run`'s flags: the model class as stored (never a model ID), its judge class, replays. */
+export interface EvalRunOptions {
+  model_class: string;
+  judge_model_class: string;
+  replays: number;
+}
+
+/**
+ * Run now: POST /api/v1/evals/<skill>/runs, which runs the suite once and answers when the run is stored. The run's ID
+ * and status, or the server's reason (403 for the owner check, 409 for a refused run), null when it gave none.
+ */
+export async function postEvalRun(token: string, skill: string, o: EvalRunOptions): Promise<{ ok: true; run_id: string; status: string } | { ok: false; error: string | null }> {
+  const r = await postJson<{ run_id?: string; status?: string; error?: string }>(base(skill, "runs"), token, o);
+  if (r.ok && r.value.run_id !== undefined && r.value.status !== undefined) return { ok: true, run_id: r.value.run_id, status: r.value.status };
+  return { ok: false, error: r.value.error ?? null };
+}

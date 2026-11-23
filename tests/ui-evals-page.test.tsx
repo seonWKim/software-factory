@@ -9,7 +9,8 @@ import type { EvalComparison, EvalRun, EvalRunSummary } from "../web/src/api/eva
 import { BASE, evalsRoute, routeFor } from "../web/src/pages.js";
 
 // The evals page at evals/<skill> (design 09-dashboard-evals): Trend, Grid and Compare in that order, "no run" in an
-// empty grid cell, plain words only (no run, suite or skill ID), no control that starts a run. The reads are a fake fetch.
+// empty grid cell, plain words only (no run, suite or skill ID), and Run now in the header, whose Dialog posts one run.
+// The reads and the POST are a fake fetch.
 
 // A variable path keeps the view's JSX out of the test type check, as the Efficiency page test does.
 const VIEW_MODULE = "../web/src/views/evals.js";
@@ -39,12 +40,21 @@ let grid: EvalRunSummary[] = GRID;
 let comparison: EvalComparison | null = null;
 let fail = false;
 let urls: string[] = [];
+let posts: { url: string; body: unknown; token: string | null }[] = [];
+/** The POST's answer: a stored run by default. */
+let postAnswer = () => json(200, { run_id: "run_new1", status: "passed" });
 
 beforeEach(() => {
   urls = [];
-  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+  posts = [];
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     urls.push(url);
     const enc = encodeURIComponent(SKILL);
+    if (init?.method === "POST") {
+      posts.push({ url, body: JSON.parse(String(init.body)), token: new Headers(init.headers).get("x-csrf-token") });
+      return postAnswer();
+    }
+    if (url === "/api/v1/session") return json(200, { as_of: "2026-11-24T00:00:00.000Z", csrf_token: "tok", commands_enabled: true, actor: null, actor_source: null });
     if (fail) return json(500, { error: "boom" });
     if (url === `/api/v1/evals/${enc}/runs`) return json(200, { runs });
     if (url === `/api/v1/evals/${enc}/grid`) return json(200, { rows: grid });
@@ -62,6 +72,7 @@ afterEach(() => {
   grid = GRID;
   comparison = null;
   fail = false;
+  postAnswer = () => json(200, { run_id: "run_new1", status: "passed" });
   cleanup();
   vi.unstubAllGlobals();
 });
@@ -90,15 +101,17 @@ describe("evals route", () => {
 });
 
 describe("evals page", () => {
-  it("shows Trend, Grid and Compare in that order under the skill's name, with no control that starts a run", async () => {
+  it("shows Trend, Grid and Compare in that order under the skill's name, with Run now as the header's one primary action", async () => {
     const { container } = show();
     await screen.findByRole("region", { name: "Compare two runs" }, SLOW);
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("review-plan");
     expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["Pass rate over time", "Latest run per version and model class", "Compare two runs"]);
-    expect(screen.queryByRole("button", { name: /run now/i })).toBeNull();
-    expect(container.textContent).not.toMatch(/run now/i);
-    // The only controls are the two pickers.
-    expect(screen.queryAllByRole("button")).toHaveLength(0);
+    const header = container.querySelector("header")!;
+    expect(within(header).getAllByRole("button").map((b) => b.textContent)).toEqual(["Run now"]);
+    // The one primary Button on the page is Run now (the Button's primary variant is the accent fill).
+    const primary = [...container.querySelectorAll("button")].filter((b) => b.className.includes("bg-accent"));
+    expect(primary.map((b) => b.textContent)).toEqual(["Run now"]);
+    // Beside Run now, the only controls are the two pickers.
     expect(screen.getAllByRole("combobox")).toHaveLength(2);
   });
 
@@ -187,5 +200,65 @@ describe("evals page", () => {
     const alert = await screen.findByRole("alert", undefined, SLOW);
     expect(alert.textContent).not.toContain("review-plan");
     expect(alert.textContent).not.toContain("HTTP");
+  });
+});
+
+describe("Run now", () => {
+  async function open() {
+    const view = show();
+    fireEvent.click(await screen.findByRole("button", { name: "Run now" }, SLOW));
+    const dialog = await screen.findByRole("dialog", undefined, SLOW);
+    // The session token is read when the Dialog opens; Run is enabled once it is in.
+    await vi.waitFor(() => expect((within(dialog).getByRole("button", { name: "Run" }) as HTMLButtonElement).disabled).toBe(false), SLOW);
+    return { ...view, dialog };
+  }
+
+  it("opens a Dialog with Field, Select and Input (type number) for model, judge model and replay count; replays start at 1", async () => {
+    const { dialog } = await open();
+    expect(within(dialog).getByRole("combobox", { name: "Model" }).textContent).toContain("standard");
+    expect(within(dialog).getByRole("combobox", { name: "Judge model" }).textContent).toContain("strong");
+    const replays = within(dialog).getByLabelText("Replays per case") as HTMLInputElement;
+    expect(replays.type).toBe("number");
+    expect(replays.value).toBe("1");
+    // The footer is a ButtonRow with the primary Button last.
+    const buttons = within(dialog).getAllByRole("button").filter((b) => b.getAttribute("role") !== "combobox" && !b.hasAttribute("aria-haspopup"));
+    expect(buttons.map((b) => b.textContent).slice(-2)).toEqual(["Cancel", "Run"]);
+    expect(buttons.at(-1)!.className).toContain("bg-accent");
+    // The model options are model classes as stored, never a model ID.
+    fireEvent.click(within(dialog).getByRole("combobox", { name: "Model" }));
+    expect(screen.getAllByRole("option").map((o) => o.textContent?.trim())).toEqual(["cheap", "standard", "strong"]);
+  });
+
+  it("the judge model follows the chosen model, and the run is posted with that class, as stored", async () => {
+    const { dialog } = await open();
+    fireEvent.click(within(dialog).getByRole("combobox", { name: "Model" }));
+    fireEvent.click(screen.getByRole("option", { name: /strong/ }));
+    expect(within(dialog).getByRole("combobox", { name: "Judge model" }).textContent).toContain("standard");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Run" }));
+    await vi.waitFor(() => expect(posts).toHaveLength(1), SLOW);
+    expect(posts[0]).toEqual({ url: `/api/v1/evals/${encodeURIComponent(SKILL)}/runs`, body: { model_class: "strong", judge_model_class: "standard", replays: 1 }, token: "tok" });
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), SLOW);
+  });
+
+  it.each([
+    [403, "Only the owner starts a skill eval run: you are local:bob."],
+    [409, "--replays 2: a run stores one verdict per case, so it replays each case once: nothing run"],
+  ])("shows a %i reason in the Dialog, which stays open", async (status, error) => {
+    postAnswer = () => json(status, { error });
+    const { dialog } = await open();
+    fireEvent.change(within(dialog).getByLabelText("Replays per case"), { target: { value: "2" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Run" }));
+    const alert = await within(dialog).findByRole("alert", undefined, SLOW);
+    expect(alert.textContent).toBe(error);
+    expect(posts[0]!.body).toMatchObject({ replays: 2 });
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
+  it("shows in the header with no runs yet", async () => {
+    runs = [];
+    grid = [];
+    show();
+    expect(await screen.findByText("No runs yet", undefined, SLOW)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Run now" })).toBeTruthy();
   });
 });
