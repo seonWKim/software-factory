@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { checkConfigKeys } from "../src/config-keys.js";
 import { capabilitiesConfig } from "../src/core/config.js";
+import { MODEL_RUN_KINDS } from "../src/core/model-choice.js";
 import type { SettingsBase } from "../src/core/settings.js";
 import type { WorkerId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -257,7 +258,8 @@ describe("GET /api/v1/settings/capabilities", () => {
     const by = (id: string) => list.find((c) => c.id === id)!;
     expect(by("tool:forge.preflight")).toMatchObject({ kind: "tool", enabled: true, roles: ["review", "triage"] });
     expect(by("tool:git.store_branch")).toMatchObject({ enabled: false, roles: [] });
-    expect(by("runner:claude-code")).toMatchObject({ kind: "provider", enabled: true, roles: ["triage", "implement", "review", "resolve"] });
+    expect(by("runner:claude-code")).toMatchObject({ kind: "provider", enabled: true, roles: [...MODEL_RUN_KINDS] });
+    expect(by("runner:claude-code").roles).toEqual(expect.arrayContaining(["triage", "implement", "review", "resolve", "routine"]));
     expect(by("runner:claude-code").models).toEqual([{ class: "cheap", model: "haiku" }, { class: "standard", model: "sonnet" }, { class: "strong", model: "opus" }]);
     expect(by("runner:openai-compatible")).toMatchObject({ enabled: false, roles: [], detail: "api.example.com" });
     expect(by("llm:claude-cli")).toMatchObject({ enabled: true, roles: ["improve"] });

@@ -173,7 +173,7 @@ export type StateChangeDetail = Record<string, string | number | boolean | null>
  * `improve` runs no agent (design §7): it groups the failed runs of a time window into one stored report, with one plain model call (no tools)
  * per group of two or more runs for a draft cause and fix. It belongs to its project's system work item, queued daily and by `factory improve`.
  */
-export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual" | "interactive" | "improve" | "merge-check" | "restart" | "judge";
+export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual" | "interactive" | "improve" | "merge-check" | "restart" | "judge" | "routine";
 
 /**
  * What the controller hands a run beyond the work item. `notes`: a human's `/resolve` text, or the newest note a `rereview` runs for, untrusted. `wip`: the failed implement run's commits on the forge; the retry pushes them with no agent run (design §5 Restarts).
@@ -183,8 +183,7 @@ export interface RunInput {
   wip?: WipRef;
   /** An interactive run's record (design §5, 2026-11-01), kept here so no schema step is needed. Read via the Run fields. */
   session?: SessionRecord;
-  /** An improve run's report window (design §7), fixed at enqueue so a retry reports the same runs. */
-  improve?: ImproveWindow;
+  /** An improve run's report window (design §7), fixed at enqueue so a retry reports the same runs. */ improve?: ImproveWindow;
   /** A review run's CI results (design §4, issue #223) read when it was queued: empty, none ran; null, the read failed; absent, not read. */
   ci_checks?: PrCheckResult[] | null;
   /** A review queued because a note or spec came after the last `bug` verdict at an unchanged head: it reviews that head again (design 05-ci-gate, 2026-11-23). */ rereview?: true;
@@ -193,6 +192,7 @@ export interface RunInput {
   merge_check?: { base_ref: string; branches: string[] }; // a merge-check run's base and the branches merged onto it in queue order, this change last (RFC 0015 M8)
   /** A judge run's goal lines, merged phase and recorded phases' titles (design 04-split-specs), fixed at enqueue so a retry judges the same. */
   judge?: { phase: number; goal_done_when: string[]; title: string; problem: string; done_criteria: string[]; merge_sha: string; phases: string[] };
+  routine?: { instruction: string; url: string | null }; // a `routine` run (read-only: Read, Glob, Grep, Browse): the owner's instruction and the one URL Browse may GET, fixed at enqueue
 }
 
 /** One check on a PR's head commit and its result. The name is forge text: untrusted (G5). */

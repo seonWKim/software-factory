@@ -6,7 +6,7 @@ import { type ReviewOutput, builtDifferentlyOf, specFindings, unverifiedOf } fro
 import { AGENT_STALLED, RATE_LIMITED, SETUP_MISSING, classifyNetwork, isSetupMissing } from "../core/policy.js";
 import { type LocalRoute, type PrText, TRUSTED_GIT_ENV, type WorkerDeps, baseRefspec, claimableKinds, hasTool, prTitle, requeueForCredential, routeFor, runPushIntents, threadDelivery } from "../core/worker-deps.js";
 import { failingTestsAndSuites, stripAnsi } from "../core/output-summary.js";
-import { Bash, Edit, Glob, Grep, Read, TOOLS, type ToolSpec, Write } from "../core/tools/index.js";
+import { Bash, Browse, Edit, Glob, Grep, Read, TOOLS, type ToolSpec, Write } from "../core/tools/index.js";
 import type { Run, RunId, RunKind, RunResume, RunUsage, Timestamp, WipRef, WorkItem } from "../core/types.js";
 import type { AgentRunResult } from "../interfaces/agent-runner.js";
 import type { SandboxHandle } from "../interfaces/sandbox.js";
@@ -72,6 +72,8 @@ export const gitVerb = (args: readonly string[]): string => {
 export const MAX_PR_FILES = 500;
 /** The read role's tools (triage): only `read` capability, no write or exec tool. */
 export const READ_TOOLS: readonly ToolSpec[] = [Read, Glob, Grep];
+/** The routine role's tools: the read set and Browse (GET of the owner-set URL only), every one `read` capability. */
+export const ROUTINE_TOOLS: readonly ToolSpec[] = [Read, Glob, Grep, Browse];
 /** The write roles' tools (implement, review, update, resolve). Order is the runner's `--tools` order. */
 export const WRITE_TOOLS: readonly ToolSpec[] = [Bash, Read, Edit, Write, Glob, Grep];
 
