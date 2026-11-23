@@ -274,11 +274,11 @@ function issueNumber(it: WorkItem): number | null {
   return m ? Number(m[1]) : null;
 }
 
-/** Every item's queued or running run (running wins) and each queued run's 1-based place, in the Queue's order. */
+/** Every item's queued or running run (running wins) and each queued run's 1-based place in claim order (the store's, design §5 2026-11-22), the Queue's order. */
 export async function activeRuns(store: FactoryStore): Promise<{ active: Map<WorkItemId, Run>; position: Map<string, number> }> {
   const active = new Map<WorkItemId, Run>();
   const position = new Map<string, number>();
-  for (const [i, r] of (await store.listRunsByStatus(["queued"], LIST_LIMIT)).entries()) {
+  for (const [i, r] of (await store.listQueuedInClaimOrder(LIST_LIMIT)).entries()) {
     position.set(r.id, i + 1);
     if (!active.has(r.work_item_id)) active.set(r.work_item_id, r);
   }

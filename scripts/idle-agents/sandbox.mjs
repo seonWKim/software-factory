@@ -1,8 +1,9 @@
-// The idle agents' sandbox Gongbang (local development process, scripts/idle-agents.mjs): the responsive check's
-// seeded throwaway store (scripts/responsive/fixture.mjs) served by the real UI server on a free port, plus a Rules
-// page backed by a throwaway copy of the owner's agents home, so verdicts, promotes and retires run the real
-// `tacit` and `evolve` CLIs without touching the real ledger. `sync-agents` in the copy is a no-op: it would write
-// into the owner's real agent instruction files. Prints `SANDBOX_URL=<url>` once ready; stops and deletes
+// The personas' sandbox Gongbang (local development process; the owner starts it by hand and passes its URL to
+// `node scripts/personas-schedules.mjs --sandbox-url <url>`): the responsive check's seeded throwaway store
+// (scripts/responsive/fixture.mjs) served by the real UI server on a free port, plus a Rules page backed by a
+// throwaway copy of the owner's agents home, so verdicts, promotes and retires run the real `tacit` and `evolve`
+// CLIs without touching the real ledger. `sync-agents` in the copy is a no-op: it would write into the owner's real
+// agent instruction files. Prints `SANDBOX_URL=<url>` once ready; stops and deletes
 // everything on SIGTERM or SIGINT. Needs a build (`npm run build`) first.
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, writeFileSync } from "node:fs";

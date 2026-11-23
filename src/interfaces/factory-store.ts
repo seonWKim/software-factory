@@ -277,8 +277,8 @@ export interface ClaimInput {
   coordination?: CoordinationSettings;
   workers?: { count: number }; // The slot cap (design §5, 2026-11-18; per factory since 2026-11-20): the live `workers`, counted over every process's running runs. Absent: none.
 }
-/** The slot cap's kinds: any kind claims below `workers`; a short one also in one slot beyond while every slot holds a capped one. */
-export const SHORT_KINDS: readonly RunKind[] = ["merge-check", "review", "triage"], CAPPED_KINDS: readonly RunKind[] = ["implement", "resolve"];
+/** The slot cap's one slot beyond `workers` (design §5, 2026-11-22): only these kinds take it, while `workers` runs of any kind run. */
+export const EXTRA_SLOT_KINDS: readonly RunKind[] = ["merge-check"];
 
 /** `/approve` on an implement run held by coordination cost (design §5, 2026-11-03). */
 export interface ApproveClaimHoldInput {
@@ -453,10 +453,10 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   // Runs
 
   /**
-   * Pull-based claim: among queued runs of the given kinds whose `not_before` has passed, the first by kind rank (merge-check,
-   * resolve, review, triage, update, implement), then created_at, then insertion order → running, attempt + 1, new lease with
-   * token + 1. An implement-type run whose item already has one running, or a run over the slot cap (`input.workers`,
-   * SHORT_KINDS), is skipped, never blocking the runs after it. Returns null while the `rate_limit`, `model_stall` or `network`
+   * Pull-based claim: among queued runs of the given kinds whose `not_before` has passed, the first in claim order (Run next
+   * first, the latest first; then kind rank: merge-check, resolve, review, triage, update, implement; then created_at, then
+   * insertion order) → running, attempt + 1, new lease with token + 1. An implement-type run whose item already has one
+   * running, or a run over the slot cap (`input.workers`, EXTRA_SLOT_KINDS), is skipped, never blocking the runs after it. Returns null while the `rate_limit`, `model_stall` or `network`
    * claim pause is in effect; while the `forge_auth` pause is, implement-type runs (implement, update) are skipped and stay
    * queued; while the `github_rate_limit` pause is, implement-type and review runs are skipped and stay queued (triage and
    * resolve claim). Coordination (design §5, 2026-11-03), in the same transaction as the claim: a queued `implement` run is
@@ -561,17 +561,15 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   /** Runs of `kind` in one of `statuses`, any item, oldest first. Read-only. */
   listRunsByKind(kind: RunKind, statuses: readonly RunStatus[]): Promise<Run[]>;
   listRuns(id: WorkItemId): Promise<Run[]>;
-  /**
-   * Every attempt record (one per claim, design §6) of the item's runs: runs in listRuns order, each run's
-   * attempts in attempt order. Read-only.
-   */
+  /** Every attempt record (one per claim, design §6) of the item's runs: runs in listRuns order, each run's attempts in attempt order. Read-only. */
   listRunAttempts(id: WorkItemId): Promise<RunAttempt[]>;
   /** Runs (any item) in one of `statuses`, oldest first by created_at. Read-only. */
   listRunsByStatus(statuses: readonly RunStatus[], limit: number): Promise<Run[]>;
-  /**
-   * Runs whose finished_at lies within the last `window_ms` of the store's clock, newest first. Runs that
-   * finished before finished_at existed (null) are never included. Read-only.
-   */
+  /** Queued runs (any item) in claimRun's order, the queue positions the pages show (design §5, 2026-11-22). Read-only. */
+  listQueuedInClaimOrder(limit: number): Promise<Run[]>;
+  /** Run next (design §5, 2026-11-22): the item's queued runs (not interactive) go first in claim order, ahead of earlier bumps; starts nothing. Returns them, none when it has none. */
+  runNext(id: WorkItemId): Promise<Run[]>;
+  /** Runs whose finished_at lies within the last `window_ms` of the store's clock, newest first; never one with no finished_at (null). Read-only. */
   listRunsFinishedWithin(window_ms: number): Promise<Run[]>;
   /** Runs whose finished_at is in [start, end), oldest first (finished_at, then insertion order). Read-only. */
   listRunsFinishedBetween(start: Timestamp, end: Timestamp): Promise<Run[]>;

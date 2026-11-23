@@ -181,6 +181,16 @@ describe("workers config", () => {
   });
 });
 
+/** The kinds of the runs the pool's claims by `worker_id` returned, in order. */
+async function claimedBy(s: Awaited<ReturnType<typeof setup>>, worker_id: string): Promise<string[]> {
+  const out: string[] = [];
+  for (const [i, [input]] of s.claimRun.mock.calls.entries()) {
+    const run = await s.claimRun.mock.results[i]!.value;
+    if (input.worker_id === worker_id && run) out.push(run.kind);
+  }
+  return out;
+}
+
 describe("worker pool", () => {
   it("workers: 3 runs three runs at once, each claimed by a different worker", async () => {
     const s = await setup({ workers: 3, queued: 4 });
@@ -210,7 +220,7 @@ describe("worker pool", () => {
     await loops;
   });
 
-  it("with every slot on an implement run, the first loop above `workers` claims one short run, never a second", async () => {
+  it("with every slot on an implement run, the first loop above `workers` claims a merge check, never a triage", async () => {
     const s = await setup({ workers: 1, maxWorkers: 3, queued: 2 });
     // Slot 0 holds an implement run (a 30-minute build): running in the store, held by its loop.
     await s.store.createWorkItem(issue(100), system, { enqueue: { kind: "implement", idempotency_key: "100:implement" } });
@@ -218,31 +228,39 @@ describe("worker pool", () => {
     s.pool.workers[0]!.holding = "implement";
     const stop = new AbortController();
     const loops = s.pool.run(stop.signal);
-    await waitFor(() => s.started() === 1, "a triage run in the slot beyond");
+    await waitFor(() => s.claimRun.mock.calls.some(([input]) => input.worker_id === "host:42:1"), "a claim from the loop above `workers`");
     for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
-    expect(s.started()).toBe(1);
-    expect(await s.store.listRunsByStatus(["queued"], 10)).toHaveLength(1);
+    // The two queued triage runs stay queued: the slot beyond takes a merge check only.
+    expect(s.started()).toBe(0);
+    expect(await s.store.listRunsByStatus(["queued"], 10)).toHaveLength(2);
+    await s.store.createWorkItem(issue(101), system, { enqueue: { kind: "merge-check", idempotency_key: "101:merge-check" } });
+    s.clock.advance(config.tick_ms); // the loops' next tick
+    // Slot 0's loop is idle in this test (its implement run was claimed by hand), so either loop may take it.
+    await waitFor(async () => [...await claimedBy(s, "host:42:0"), ...await claimedBy(s, "host:42:1")].includes("merge-check"), "a merge check in the slot beyond");
+    expect(await s.store.listRunsByStatus(["queued"], 10)).toHaveLength(2);
     const pooled = s.claimRun.mock.calls.slice(1).map(([input]) => input); // the first is this test's own claim
     // Every claim passes the live cap only: the store counts every process's running runs, not a list of owners.
     expect(pooled.every((input) => JSON.stringify(input.workers) === JSON.stringify({ count: 1 }))).toBe(true);
-    // The loop above `workers` claims; the one after it never runs.
-    expect(pooled.map((input) => input.worker_id)).toContain("host:42:1");
+    // The loop after the first one above `workers` never runs.
     expect(pooled.map((input) => input.worker_id)).not.toContain("host:42:2");
     stop.abort();
-    s.gates[0]!();
+    s.gates.forEach((g) => g());
     await loops;
   });
 
-  it("while a slot holds a short run, the loop above `workers` does not claim", async () => {
+  it("while a slot holds a triage run, the loop above `workers` claims too: a merge check does not wait for the triage", async () => {
     const s = await setup({ workers: 1, maxWorkers: 3, queued: 2 });
     const stop = new AbortController();
     const loops = s.pool.run(stop.signal);
     await waitFor(() => s.started() === 1, "a triage run in flight");
-    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+    await s.store.createWorkItem(issue(101), system, { enqueue: { kind: "merge-check", idempotency_key: "101:merge-check" } });
+    s.clock.advance(config.tick_ms); // the loops' next tick
+    await waitFor(async () => (await claimedBy(s, "host:42:1")).includes("merge-check"), "a merge check in the slot beyond");
+    // The second triage run is not started beside the first: it waits for slot 0.
     expect(s.started()).toBe(1);
-    expect(new Set(s.claimRun.mock.calls.map(([input]) => input.worker_id))).toEqual(new Set(["host:42:0"]));
+    expect(await claimedBy(s, "host:42:1")).not.toContain("triage");
     stop.abort();
-    s.gates[0]!();
+    s.gates.forEach((g) => g());
     await loops;
   });
 

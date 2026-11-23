@@ -1,83 +1,52 @@
-# How an idle-time agent gives feedback
+# How a persona gives feedback
 
-Shared rules for the local idle-time agents in `.claude/agents/gongbang-*.md`. They run through `scripts/idle-agents.mjs`: the developer and designer only when the software-factory has no open work, the two users once a day. They are a local development process for this repository. They are not part of the factory.
+Shared rules for the Gongbang personas in `.claude/agents/gongbang-*.md`. Each persona runs as a feedback schedule of this repository's own Gongbang (`persona-<agent>`, daily at 09:00, added by `scripts/personas-schedules.mjs`). They are a local development process for this repository. They are not part of the factory.
 
-"The software-factory" below is this repository's own Gongbang (dashboard on port 4310, CLI `npm run -s factory --` from this checkout). A user agent also owns a project with its own, separate Gongbang instance; the rules for that instance are in its agent file.
+## What a run can do
 
-## Start of every run
+A run is the factory's feedback action: one read-only agent in a fresh checkout of this repository, with Read, Glob and Grep only. It has no shell, no browser and no network. It cannot run the factory CLI, `curl`, `git`, a test or a build, and it cannot write a file. Where your agent file, or a file it points to such as `scripts/idle-agents/dev-team.md`, asks for one of those (a notes file, a team board, filing a task through the CLI, a browser visit, a command), skip that step and do what you can by reading code. A sandbox URL in your prompt is for reference only: nothing in this run can open it.
 
-1. Read your notes file, `.factory/idle-agents/<your agent name>.md`. It holds what you checked before, what you filed, and what to check next. A missing file means this is your first run.
-2. Read what is already open, so you never file a duplicate:
-   - `curl -s http://127.0.0.1:4310/api/v1/items`: the open work items and their titles.
-   - `npm run -s factory -- task list`: local work items and open plain tasks.
-3. Pick one area you have not covered recently, using your notes. Go deep on it rather than wide.
+You do not file anything yourself. You answer with findings, and the factory files each one that cites evidence as a local work item.
 
-## Every user agent run
+## One run
 
-These hold for the two user agents (`gongbang-user-en`, `gongbang-user-ko`), which own a project:
+1. Pick one area your agent file cares about. Go deep on it rather than wide.
+2. Read the code, docs and tests of that area: `docs/design.md` and the topic files it links, `web/src/` for the dashboard, `src/` for the rest.
+3. Answer with your findings (below), or with none.
 
-- **Revision check first.** The prompt has a "Project factory revision" line, computed by the script from the project's `.factory/supervisor.json` `rev` and this repository's `origin/main`. If it says the project factory is more than a day behind, write that in your notes and file it as a problem. Before filing any other problem, check it is not already fixed on main. "Unknown" is not a problem by itself; note it.
-- **One real step.** Each run takes one real step toward the project goal: it moves an item forward, reviews a diff, or files the next project task. Checking status alone is not a step. Name the step in your notes.
-- **The browser, every run.** Each run opens its project dashboard in the browser at least once. Take the page from your notes' "not checked" list, oldest first, so the list rotates instead of rolling over day after day.
+## What is worth reporting
 
-## What is worth filing
+- **Real problems only.** A problem must be something you read in this checkout: code that does the wrong thing, a page that shows the wrong state, a doc that says one thing while the code does another, a missing step a user would need. A guess or a taste you can't back with a quote is not reported.
+- **Product problems only.** Report it only if a Gongbang user on another project would also hit it. A problem that only helps develop this repository (a dev script, a local check) is not reported.
+- **Some things are never reported:** a request to loosen a guard (secrets, egress, tool broker, sandbox, auth), a request to raise auto-merge tiers, and a feature whose only reason is another person (Gongbang serves one owner).
+- **At most 3 tasks per run,** most important first. When nothing meets the bar, answer with no tasks. A run that reports nothing is a fine run.
 
-- **Real problems only.** A problem must be something you saw or measured, with the steps to repeat it or the numbers. A guess or a taste you can't back with evidence is not filed. Write it in your notes as "to check next".
-- **Product problems only.** File it only if a Gongbang user on another project would also hit it. A problem that only helps develop this repository (a dev script, a local check) goes in your notes, not to the factory.
-- **Some things are never filed:** a request to loosen a guard (secrets, egress, tool broker, sandbox, auth), a request to raise auto-merge tiers, and a feature whose only reason is another person (Gongbang serves one owner).
-- **Seen in two runs is evidence.** An observation written in your notes in two separate runs, on different local dates, meets the evidence bar: file it, with both dates as evidence under "Found by". Your notes keep a "seen" count per observation (see the end of every run); raise it each run you see it again. Do not leave a repeat as "seen once, not filed".
-- **At most 2 tasks per run.** When nothing meets the bar, file nothing, and say so in your notes. A run that files nothing is a fine run.
+## How to answer
 
-## How to file
+Each task has:
 
-Write the body to a file under `.factory/idle-agents/drafts/`, then run:
+- **title**: at most 50 characters.
+- **body**: short and plain, in English (quote Korean text exactly where it matters), with these sections:
 
-```
-npm run -s factory -- task create --title "<at most 50 characters>" --body-file .factory/idle-agents/drafts/<file>.md
-```
+  ```
+  <one sentence: the problem>
 
-The body is short and plain. Write it in English, and quote Korean text exactly where it matters. It has these sections:
+  ## AS-IS → TO-BE
+  - AS-IS: what happens now
+  - TO-BE: what should happen
 
-```
-<one sentence: the problem>
+  ## Found by
+  - Persona <agent name>: what you read and why it shows the problem
 
-## AS-IS → TO-BE
-- AS-IS: what happens now (steps, page, numbers)
-- TO-BE: what should happen
+  ## Done when
+  - 1 to 3 checks a test or a person can run
+  ```
 
-## Found by
-- Local idle agent <name>, <YYYY-MM-DD>: how you found it (page, width, steps, or the command and its output)
-- (for a repeat) the second date you saw it, and what you saw then
-
-## Done when
-- 1 to 3 checks a test or a person can run
-```
+- **evidence**: one or more entries, each the repo-relative `path` you read, the `line` if you know it, and a short `quote` of the text it is about. A task without evidence is not filed.
 
 Name files and functions only when you read them, and never invent a cause. Do not prescribe the implementation: the factory's spec step does that.
 
 ## Never
 
-- Never send a command to the software-factory: no approve, merge, reject, retry, revise, verdict, settings, mode, resume or pause. That includes buttons on http://127.0.0.1:4310 that send one. The sandbox, and a user agent's own project instance, are yours to click.
-- Never add, edit or delete tasks or projects in the software-factory. The one exception is `task create` for your feedback.
-- Never edit files in this repository or in a project repository. The only files you write are under `.factory/idle-agents/`.
-- Never read or print `~/.config/software-factory/.env`, `.factory/test-mysql.url`, or any token.
-- Never run `npm install`, `npx` for a package that is not installed, or `git` commands that change anything.
-
-## End of every run
-
-Append to your notes file:
-
-```
-## <YYYY-MM-DD HH:MM>
-- Checked: <area, pages, commands>
-- Step: <user agents: the one real step toward the project goal>
-- Browser: <user agents: the dashboard pages opened, or "browser unavailable">
-- Revision: <user agents: the project factory revision line, and whether it is behind>
-- Seen: <each open observation, one line each: "<observation> (seen N: <dates>)">; filed ones are dropped
-- Filed: <work item IDs and titles, or "nothing">
-- Fine: <what worked well, in one line>
-- Next: <1 to 3 things to check on a later run>
-- Not checked: <pages or areas still to visit, oldest first; the next run's browser visit takes the first>
-```
-
-Keep the notes under about 200 lines. When they grow past that, fold the oldest entries into a short "Covered so far" list at the top, keeping every open "seen" line with its dates.
+- Never put a secret, a token or the contents of `~/.config/software-factory/.env` or `.factory/test-mysql.url` in an answer.
+- Never write a file, a note or a team board, and never ask the factory to run a command for you.

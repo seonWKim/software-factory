@@ -4,7 +4,7 @@
 // inside the claim's transaction, under the claim lock.
 
 import type { Hold, Holder } from "../../../core/coordination.js";
-import type { ClaimDecision, RunId, Timestamp, WorkItem } from "../../../core/types.js";
+import type { ClaimDecision, RunId, RunKind, Timestamp, WorkItem } from "../../../core/types.js";
 import type { Row, SqlExecutor, SqlValue } from "../../../state/index.js";
 import { placeholders } from "./retention.js";
 import { rowToClaimDecision } from "./rows.js";
@@ -126,4 +126,15 @@ export async function writeClaimDecision(
       [d.runId, d.it.id, ...values, now],
     );
   }
+}
+
+/**
+ * claimRun's kind rank (design §5 Coordination, 2026-11-18): a restart the owner asked for, then merge check, then resolve, to move changes to merge; then
+ * review and triage; then the branch writers, implement last; improve after all.
+ */
+const CLAIM_ORDER: readonly RunKind[] = ["restart", "merge-check", "resolve", "review", "triage", "update", "implement"];
+/** claimRun's order over `worker_runs r` (design §5 Coordination, 2026-11-22): Run next first, the latest first; then CLAIM_ORDER; then created_at, then insertion order. */
+export function claimOrderSql(seq: string): { sql: string; params: string[] } {
+  const rank = CLAIM_ORDER.map((_, i) => `WHEN ? THEN ${i}`).join(" ");
+  return { sql: `CASE WHEN r.run_next_seq IS NULL THEN 1 ELSE 0 END, r.run_next_seq DESC, CASE r.kind ${rank} ELSE ${CLAIM_ORDER.length} END, r.created_at, r.${seq}`, params: [...CLAIM_ORDER] };
 }
