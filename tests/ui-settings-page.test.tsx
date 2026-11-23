@@ -334,6 +334,33 @@ describe("Settings page", () => {
     expect(JSON.parse(posts[4]!.init.body as string)).toEqual({ action: "reset", key: "max_loops" });
   });
 
+  it("confirms a reset in a status region that outlives the Reset button, global and per project", async () => {
+    const table = await show();
+    const keys = view.keys;
+    const saved = keys.map((k) => ({ ...k }));
+    afterEachReset = () => keys.forEach((k, i) => Object.assign(k, saved[i]));
+    // A successful POST turns the row's source into default, as the server does.
+    const original = fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      const r = await original(url, init);
+      if (init?.method === "POST") {
+        const body = JSON.parse(init.body as string) as { key: string; project?: string };
+        const k = keys.find((x) => x.key === body.key)!;
+        if (body.project === undefined) k.source = "default";
+        else k.projects = k.projects.map((p) => ({ ...p, source: "file" as const }));
+      }
+      return r;
+    }));
+    for (const [key, name] of [["max_loops", keyLabel("max_loops")], ["max_attempts", `${keyLabel("max_attempts")} for o/r`]] as const) {
+      const row = rowOf(table, key);
+      await act(async () => fireEvent.click(within(row).getByRole("button", { name: `Reset ${name}` })));
+      await waitFor(() => expect(within(rowOf(table, key)).queryByRole("button", { name: `Reset ${name}` })).toBeNull());
+      const text = within(rowOf(table, key)).getByRole("status").textContent!;
+      expect(text).toBe(`${keyLabel(key)} back to the default.`);
+      expect(text).not.toMatch(/[a-z]+_[a-z]+/);
+    }
+  });
+
   it("shows a refusal next to the field it came from", async () => {
     const table = await show();
     answer = { status: 422, body: { error: "refused: workers 9 is above the config file's max_workers (8)" } };
