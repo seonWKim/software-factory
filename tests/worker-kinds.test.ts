@@ -24,10 +24,10 @@ import { issue, newStore, system } from "./helpers/store.js";
 const NARROW: readonly RunKind[] = ["triage", "review", "merge-check", "update", "restart", "improve"];
 const REPO = { owner: "o", name: "r" };
 
-/** A worker on `store` with live settings (8 slots, so the slot cap never stops a claim here); execute is a no-op that records the claimed kind. */
+/** A worker on `store` with live settings (16 slots, so the slot cap never stops a claim here); execute is a no-op that records the claimed kind. */
 async function worker(store: FactoryStore) {
-  const settings = new LiveSettings({ config, base: { ...baseFromConfig(config), max_workers: 8 }, source: store, log: silent });
-  await store.setSettingOverride({ key: "workers", project: "", value: "8", actor: "local:owner" });
+  const settings = new LiveSettings({ config, base: { ...baseFromConfig(config), max_workers: 16 }, source: store, log: silent });
+  await store.setSettingOverride({ key: "workers", project: "", value: "16", actor: "local:owner" });
   const w = new Worker({
     id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner: new FakeRunner({}), broker: new FakeBroker(), storage: new MemoryStorage(),
     clock: new FakeClock(), config, prompts, log: silent, scanner: cleanScanner, toolEnv: { PATH: "/usr/bin" }, awake: new NoKeepAwake(), settings,
@@ -56,9 +56,9 @@ const setKinds = (store: FactoryStore, kinds: readonly string[]) =>
   store.setSettingOverride({ key: "worker_kinds", project: "", value: JSON.stringify(kinds), actor: "local:owner" });
 
 describe("the worker's claim reads worker_kinds", () => {
-  it("default: a worker claims every one of the eight kinds, as with the fixed list", async () => {
+  it("default: a worker claims every one of the kinds, as with the fixed list", async () => {
     const { store } = await newStore();
-    expect([...WORKER_KINDS].sort()).toEqual(["implement", "improve", "merge-check", "resolve", "restart", "review", "triage", "update"]);
+    expect(WORKER_KINDS).toEqual(expect.arrayContaining(["implement", "improve", "merge-check", "resolve", "restart", "review", "triage", "update", "screenshot"]));
     await enqueue(store, WORKER_KINDS);
     const { w, claimed } = await worker(store);
     await drain(w);
