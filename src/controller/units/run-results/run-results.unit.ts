@@ -14,7 +14,7 @@ import { autoApprovedFooter, droppedAnswers, droppedValues, heldNote, renderSpec
 import { STANDING_APPROVED, ruleId, specKind, standingActor } from "../../../core/standing.js";
 import { applyCompanions } from "../../../core/companions.js";
 import { atSizeCheckpoint, sizeCaps, sizeCheckpointNote, suggestedSplit } from "../../../core/split.js";
-import { type Actor, RECURRING_FAILURE, type Run, type StateChangeDetail, type WorkItem, type WorkItemId, runTokenCount } from "../../../core/types.js";
+import { type Actor, RECURRING_FAILURE, type Run, type RunKind, type StateChangeDetail, type WorkItem, type WorkItemId, runTokenCount } from "../../../core/types.js";
 import { failingTests, firstErrorLine, stripAnsi } from "../../../core/output-summary.js"; import { doneChecksDetail } from "../../../core/checks.js";
 import { PROVIDER_SETUP } from "../../../interfaces/agent-runner.js";
 import type { ActionRow } from "../../../outbound/index.js";
@@ -25,16 +25,17 @@ import { deliveredMeanwhile, deliveryGaveUp, prDelivered, prPending, pushApplied
 import { EMPTY_DIFF, emptyDiff, floorBlock, forgeAuthComment, needsHuman, preflightAccessComment, specRevision, unchangedHead } from "./notices.js";
 import { autoResolve, autoResolvedComment, resolveFailed } from "./resolve.js";
 import { failedBlock, failedCode, leakBlock, noAutoRetry, providerSetup, retryOrBlock, sessionReleased } from "./retry.js";
+import { runKindLabel } from "./run-kind-label.js";
 
 // The area files take these values from here, which imports them already: an import of core/ or ../support.js in
 // them would raise the dependency-direction and kinds counts (tests/architecture).
-export type { FailureClass, NeedsHuman, StateChangeDetail };
+export type { FailureClass, NeedsHuman, RunKind, StateChangeDetail };
 export {
   AGENT_NEEDS_HUMAN, AUTO_RESOLVE_LIMIT, CHECKS_ENV, CHECKS_ENV_LIMIT, DELIVERY_FAILED, FLOOR_TIER, FORGE_AUTH, MAX_FEEDBACK_CHARS, PREFLIGHT_ACCESS,
   PROVIDER_SETUP, RECURRING_FAILURE, REPEATED_FAILURE, SESSION_RELEASED, STALL_STREAK_HOLD, SYSTEM, autoResolveAttempts, autoResolveKey,
   commandFooter, commandState, conflictCounts, conflictCountsLine, doneChecksDetail, failingTests, failureClass, failureLine, fenced, firstErrorLine,
   footerAfter, isCovered, iso, nextAutoResolveAttempt, parseAutoResolveKey, prNumber, preflightCheck, quote, repeatsFastInfraFailure,
-  repeatsLastFailure, retryDelayMs, retryKey, retryNotBefore, retryPathsReply, runKey, sameStep, sizeCaps, stallStreak, stripAnsi, suggestedSplit,
+  repeatsLastFailure, retryDelayMs, retryKey, retryNotBefore, retryPathsReply, runKey, runKindLabel, sameStep, sizeCaps, stallStreak, stripAnsi, suggestedSplit,
   takenOver, withholdReplyLines,
 };
 
@@ -422,6 +423,11 @@ export class RunResultsUnit {
   /** Outbound delivered an update or resolve run's push: the review of the pushed head is queued (delivery.ts). */
   async pushDelivered(id: WorkItemId, run_id: string): Promise<void> {
     return pushDelivered(this.c, id, run_id);
+  }
+
+  /** A run kind's plain label for owner text ("Merge check"), from the one map (run-kind-label.ts). */
+  kindLabel(kind: RunKind): string {
+    return runKindLabel(kind);
   }
 
   /** The item's latest succeeded review run, the one the CI gate applies to. */

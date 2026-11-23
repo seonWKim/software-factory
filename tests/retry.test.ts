@@ -220,7 +220,7 @@ describe("the last-attempt comment", () => {
     expect((await f.item(it0)).blocked_reason).toBe("max_attempts");
     expect(f.source.comments).toHaveLength(1);
     const body = f.source.comments[0]!.body;
-    expect(body).toContain("The triage run failed 3 times");
+    expect(body).toContain("The Triage run failed 3 times");
     expect(body).toContain("`agent_failed`");
     expect(body).toContain("the agent exited with an error");
     expect(body).toContain("agent said: the tests did not pass");

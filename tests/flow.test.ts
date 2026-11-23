@@ -2882,7 +2882,7 @@ describe("+paths on /approve and /retry, and /retry notes (issue #280)", () => {
     expect(await f.store.getWorkItem(before.id)).toEqual(before);
     const replies = f.source.comments.filter((c) => c.marker === "<!-- factory:refused:9801 -->");
     expect(replies).toHaveLength(1);
-    expect(replies[0]!.body).toContain("applies only to a failed implement or resolve run, and this item's failed run is a triage run");
+    expect(replies[0]!.body).toContain("applies only to a failed implement or resolve run, and this item's failed run is a Triage run");
   });
 
   it("bad paths and more than 10 are refused with one reply each, and nothing changes", async () => {
