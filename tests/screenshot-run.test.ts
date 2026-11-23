@@ -352,7 +352,7 @@ describe("the item API", () => {
     const d: UiDeps = { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: 60_000, health: new HealthMonitor(async () => [], clock), storage };
     const it1 = await make(store, 1, "A UI change");
     /** One run of `kind`, finished with the outcome `outcome` builds from its id. */
-    const finish = async (kind: Run["kind"], key: string, input: NewRun["input"], outcome: (r: Run) => RunOutcome) => {
+    const finish = async (kind: Run["kind"], key: string, input: NonNullable<NewRun["input"]> | null, outcome: (r: Run) => RunOutcome) => {
       await store.enqueueRun({ work_item_id: it1.id, kind, idempotency_key: key, input });
       const r = (await store.claimRun({ worker_id: "w9" as WorkerId, kinds: [kind], lease_ms: 60_000 }))!;
       await store.completeRun(r.id, r.lease!.token, outcome(r));
@@ -395,7 +395,7 @@ describe("the item API", () => {
     const run = await shot(1, "dark");
     await storage.put(screenshotKey(it1.id, run.id, "items", 390, "dark"), PNG);
     await storage.put(screenshotKey(it1.id, run.id, "items", 390, "light"), PNG);
-    const q = (theme: string, runId = run.id) => `${SCREENSHOT_PATH}?item=${encodeURIComponent(it1.id)}&run=${runId}&page=items&width=390&theme=${theme}`;
+    const q = (theme: string, runId: string = run.id) => `${SCREENSHOT_PATH}?item=${encodeURIComponent(it1.id)}&run=${runId}&page=items&width=390&theme=${theme}`;
     expect(await json(d, q("dark"))).toEqual({ data_url: `data:image/png;base64,${Buffer.from(PNG).toString("base64")}` });
     // Stored, but not in the run's outcome; or another run: 404.
     expect((await get(d, q("light"))).status).toBe(404);
