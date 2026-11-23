@@ -9,7 +9,7 @@ import { readStoredProject } from "../core/project-labels.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
-import { type Check, type CheckStatus, checkStatus } from "../core/health-check.js";
+import { type Check, type CheckAction, type CheckStatus, checkStatus } from "../core/health-check.js";
 import { type Activity, BackgroundSnapshot } from "./background-refresh.js";
 import { Withholder } from "./withhold.js";
 
@@ -52,12 +52,14 @@ interface RawRun {
 
 /**
  * One row of the report: `msg` is the sentence Health shows; `detail`, when the check has one, the raw text behind
- * Details; `since` / `next`, when the check names a time, its ISO instants (the page shows them in local time).
+ * Details; `action`, when the row offers one, what the page opens (the Add model credential dialog); `since` / `next`,
+ * when the check names a time, its ISO instants (the page shows them in local time).
  */
 export interface HealthRow {
   status: CheckStatus;
   msg: string;
   detail?: string;
+  action?: CheckAction;
   since?: string;
   next?: string;
 }
@@ -77,14 +79,21 @@ const PATH = /(?<=^|[\s(])(?<!(?:GET|POST|PUT|PATCH|DELETE) )~?\/[^\s;,()'"]+/g;
 /** A check as a report row: its `plain` sentence, else its text with every path moved behind Details, else its text. */
 function row(c: Check): HealthRow {
   const plain = c.plain ?? c.msg.replace(PATH, "(path in Details)");
-  const times = { ...(c.since !== undefined && { since: c.since }), ...(c.next !== undefined && { next: c.next }) };
-  return plain === c.msg ? { status: checkStatus(c), msg: c.msg, ...times } : { status: checkStatus(c), msg: plain, detail: c.msg, ...times };
+  const extra = { ...(c.action !== undefined && { action: c.action }), ...(c.since !== undefined && { since: c.since }), ...(c.next !== undefined && { next: c.next }) };
+  return plain === c.msg ? { status: checkStatus(c), msg: c.msg, ...extra } : { status: checkStatus(c), msg: plain, detail: c.msg, ...extra };
+}
+
+/** A group's checks (one result, one `plain`) as one row: the first's, with every check's text behind Details. */
+function groupRow(members: readonly Check[]): HealthRow {
+  const first = row(members[0]!);
+  return members.length === 1 ? first : { ...first, detail: members.map((c) => c.msg).join("\n") };
 }
 
 /**
  * The report's rows, in the checks' order (design 09-health, 2026-11-20): each check in plain words with its raw text as
  * `detail`, and every GitHub status-label check folded into one row where the first stood: "GitHub labels: all present",
- * or one warn "GitHub labels: N missing (run: npm run setup)" for N missing or unchecked, their lines in `detail`.
+ * or one warn "GitHub labels: N missing (run: npm run setup)" for N missing or unchecked, their lines in `detail`. The
+ * checks of one `group` (one cause, such as the three sandbox lines) fold the same way into one row (2026-11-23).
  */
 export function reportRows(checks: readonly Check[]): HealthRow[] {
   const labels = checks.filter((c) => c.label !== undefined);
@@ -92,7 +101,14 @@ export function reportRows(checks: readonly Check[]): HealthRow[] {
   const folded: HealthRow = missing.length === 0
     ? { status: "ok", msg: "GitHub labels: all present", detail: labels.map((c) => c.msg).join("\n") }
     : { status: "warn", msg: `GitHub labels: ${missing.length} missing (run: npm run setup)`, detail: missing.map((c) => c.msg).join("\n") };
-  return checks.flatMap((c) => (c.label === undefined ? [row(c)] : c === labels[0] ? [folded] : []));
+  const groups = new Map<string, Check[]>();
+  for (const c of checks) if (c.label === undefined && c.group !== undefined) groups.set(c.group, [...(groups.get(c.group) ?? []), c]);
+  return checks.flatMap((c) => {
+    if (c.label !== undefined) return c === labels[0] ? [folded] : [];
+    const members = c.group === undefined ? undefined : groups.get(c.group)!;
+    if (members === undefined) return [row(c)];
+    return c === members[0] ? [groupRow(members)] : [];
+  });
 }
 
 /**
