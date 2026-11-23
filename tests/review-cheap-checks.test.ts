@@ -201,7 +201,7 @@ describe("review cheap checks: unchanged head", () => {
     expect(f.reviewSpecs()).toHaveLength(2);
     expect(f.reviewSpecs()[1]!.prompt).toContain("the missing reasons are in the PR body now");
     const changes = await f.store.listStateChanges((await f.item()).id);
-    expect(changes.find((c) => c.reason === "review_rerun")!.detail).toMatchObject({ newer: "note", run_id: skipped.id, unchanged_head: true });
+    expect(changes.find((c) => c.reason === "review_unchanged_head" && c.detail?.rerun)!.detail).toMatchObject({ newer: "note", run_id: skipped.id, unchanged_head: true });
     expect(await f.item()).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
   });
 
@@ -213,7 +213,7 @@ describe("review cheap checks: unchanged head", () => {
     expect(f.reviewSpecs()).toHaveLength(2);
     expect(f.reviewSpecs()[1]!.prompt).toContain("the revised spec");
     const changes = await f.store.listStateChanges((await f.item()).id);
-    expect(changes.find((c) => c.reason === "review_rerun")!.detail).toMatchObject({ newer: "spec" });
+    expect(changes.find((c) => c.reason === "review_unchanged_head" && c.detail?.rerun)!.detail).toMatchObject({ newer: "spec" });
   });
 
   it("with nothing newer than the bug verdict, a review requeued at that head blocks at max_loops again and reruns nothing", async () => {

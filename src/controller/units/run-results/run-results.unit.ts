@@ -660,7 +660,7 @@ export class RunResultsUnit {
       const newer = await gate.newerThanVerdict(it, last.run), detail = { run_id: run.id, review_run_id: last.run.id, unchanged_head: true };
       if (!newer) return gate.reviewBug(it, run, {}, detail);
       const input = { ...(await gate.reviewInput(prNumber(it), it.id)), rereview: true as const, ...(newer.note ? { notes: newer.note } : {}) };
-      return { patch: {}, actor: SYSTEM, reason: "review_rerun", detail: { ...detail, newer: newer.what }, ack_run: run.id, enqueue: { kind: "review", idempotency_key: `${it.id}:review:rereview:${run.id}`, input } };
+      return { ...ack, detail: { ...detail, rerun: true, newer: newer.what }, enqueue: { kind: "review", idempotency_key: `${it.id}:review:rereview:${run.id}`, input } };
     }
     if (last?.verdict !== "pass") return ack;
     const checks = await gate.readChecks(it);
