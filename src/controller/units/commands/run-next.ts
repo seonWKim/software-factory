@@ -12,12 +12,12 @@ type UserId = Parameters<Ctx["k"]["d"]["store"]["recordAppCommandRequest"]>[0]["
 /** The app request's command and the CLI word. */
 export const RUN_NEXT_COMMAND = "run-next";
 /** Why a Run next changed nothing. */
-export const NO_QUEUED_RUN = "the item has no queued run, so nothing changed";
+const NO_QUEUED_RUN = "the item has no queued run, so nothing changed";
 /** Queued runs read to find the moved run's position: it is first, so the first page is enough. */
 const POSITION_READ = 50;
 
 /** The thread reply of an applied Run next: the run's kind and its queue position now. */
-export function runNextReply(kind: string, position: number): string {
+function runNextReply(kind: string, position: number): string {
   return [
     `Run next: the queued ${kind} run is now at queue position ${position}.`,
     "It starts when a worker slot is free. A busy item, a dependency, a coordination hold, paused claims or a rate limit still keep it queued; then the item's status says why.",
