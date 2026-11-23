@@ -75,9 +75,6 @@ import type {
   RecordPrHeadResult,
   RecordVerdictInput,
   ThreadDelivery,
-  BasePush,
-  BasePushBacklog,
-  BasePushOutcome,
   ThreadLinkField,
   RecordVerdictResult,
   OwnerDecision,
@@ -121,6 +118,7 @@ import { SqlScheduleStore } from "./schedules.js";
 import { claimLock, endReservations, liveReservations, reservationOf } from "./reservations.js";
 import * as notices from "./notices.js";
 import * as noticeMessages from "./notice-messages.js";
+import * as basePush from "./base-push.js";
 import * as posted from "./posted-comments.js";
 import * as verdicts from "./verdicts.js";
 import * as standing from "./standing-rules.js";
@@ -2133,43 +2131,10 @@ export class SqlFactoryStore extends SqlScheduleStore implements FactoryStore {
     return this.failQueued(QUEUES.outbox, seq, token, error, retry_in_ms);
   }
 
-  // The base push (design 05-sources, Local items; RFC 0015 M8): outbound's `push_base` action, its tries its batch's.
+  // The base push (design 05-sources, Local items; RFC 0015 M8): base-push.ts
 
-  async getBasePush(work_item_id: WorkItemId): Promise<BasePush | null> {
-    const [row] = await this.db.all(
-      "SELECT seq, args, delivered_ref FROM outbound_actions WHERE action = 'push_base' AND work_item_id = ? ORDER BY seq DESC LIMIT 1", [work_item_id],
-    );
-    if (!row) return null;
-    const [batch] = await this.db.all(
-      "SELECT b.attempts, b.last_error FROM outbound_batch_intents i JOIN outbound_batches b ON b.id = i.batch_id WHERE i.intent_id = ?", [`act_${Number(row.seq)}`],
-    );
-    const args = JSON.parse(String(row.args)) as { base_ref: string; merge_sha: string };
-    const done = row.delivered_ref === null ? null : (JSON.parse(String(row.delivered_ref)) as { pushed?: string; conflicts?: string[] });
-    return {
-      base_ref: args.base_ref, merge_sha: args.merge_sha,
-      attempts: Number(batch?.attempts ?? 0), last_error: (batch?.last_error as string | null | undefined) ?? null,
-      outcome: done === null ? null : done.pushed !== undefined ? "pushed" : "conflict", pushed_sha: done?.pushed ?? null,
-    };
-  }
-
-  async listBasePushBacklogs(): Promise<BasePushBacklog[]> {
-    // A pushed outcome is stored as `{"pushed":…}` (local-git.ts): the rows after the newest one of any base, none
-    // of them pushed, each pending or a conflict.
-    const rows = await this.db.all(
-      `SELECT seq, args, delivered_ref FROM outbound_actions WHERE action = 'push_base' AND seq > COALESCE(
-         (SELECT MAX(seq) FROM outbound_actions WHERE action = 'push_base' AND delivered_ref LIKE '{"pushed"%'), 0) ORDER BY seq`,
-    );
-    const bases = new Map<string, BasePushBacklog>();
-    for (const row of rows) {
-      const base = (JSON.parse(String(row.args)) as { base_ref: string }).base_ref;
-      const b = bases.get(base) ?? { base_ref: base, waiting: 0, conflicts: null };
-      b.waiting++;
-      // In order, so the newest delivered conflict names the files.
-      if (row.delivered_ref !== null) b.conflicts = (JSON.parse(String(row.delivered_ref)) as { conflicts?: string[] }).conflicts ?? [];
-      bases.set(base, b);
-    }
-    return [...bases.values()];
-  }
+  getBasePush(work_item_id: WorkItemId) { return basePush.getBasePush(this.db, work_item_id); }
+  listBasePushBacklogs() { return basePush.listBasePushBacklogs(this.db); }
 
   /** Claims row `seq` of a queue for `lease_ms`: only an unfinished row with no live claim (and, with `fence`, a held lease). */
   private async claimQueued(q: Queue, seq: number, lease_ms: number, fence?: SyncFence): Promise<number | null> {

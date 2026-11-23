@@ -172,27 +172,16 @@ export interface TransitionInput {
 /** How a base push finished: `pushed` (the remote base contains the merge) or `conflict` (it moved and does not merge). */
 export type BasePushOutcome = "pushed" | "conflict";
 
-/** A local merge's base push (RFC 0015 M8: outbound's `push_base` action), as the status page shows it. */
+/** A local merge's base push (RFC 0015 M8: outbound's `push_base` action), as the status page shows it. `attempts`: failed tries so
+ * far (an outage, a rate limit, a base that moved under the push), its batch's; `outcome`: null while pending; `pushed_sha`: the
+ * remote base after a `pushed` outcome. */
 export interface BasePush {
-  base_ref: string;
-  merge_sha: string;
-  /** Failed tries so far (an outage, a rate limit, a base that moved under the push): its batch's. */
-  attempts: number;
-  /** Null while pending. */
-  outcome: BasePushOutcome | null;
-  /** The remote base after a `pushed` outcome. */
-  pushed_sha: string | null;
-  last_error: string | null;
+  base_ref: string; merge_sha: string; attempts: number; outcome: BasePushOutcome | null; pushed_sha: string | null; last_error: string | null;
 }
 
-/** The local merges of one base not on the remote yet (design 05-sources, Local items), as Needs you reads them. */
-export interface BasePushBacklog {
-  base_ref: string;
-  /** The base's push_base actions after the newest pushed one: pending, or delivered as a conflict. At least 1. */
-  waiting: number;
-  /** The conflicting files of the base's newest delivered push when it is a conflict; null otherwise. */
-  conflicts: string[] | null;
-}
+/** One base's local merges not on the remote (design 05-sources, Local items): `waiting` counts its push_base actions after
+ * the newest pushed one (at least 1); `conflicts`: the files of its newest delivered push when a conflict, else null. */
+export interface BasePushBacklog { base_ref: string; waiting: number; conflicts: string[] | null }
 
 export type TransitionResult =
   /** `cancelled`: the runs `cancel_queued_runs` and `cancel_running_runs` cancelled (empty without them). */
@@ -976,12 +965,7 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
    * delivered merge stored), delivered or not; null when its merge stored none. Read-only.
    */
   getBasePush(work_item_id: WorkItemId): Promise<BasePush | null>;
-  /**
-   * Each base with local merges not pushed (design 05-sources, Local items): the number of its push_base actions
-   * after the newest pushed one, and the conflicting files of its newest delivered push when that is a conflict. The
-   * base names come from the actions. Only actions after the newest pushed one of any base are read, so a base no
-   * merge pushes any more drops out once another base's push lands. Read-only; empty when nothing waits.
-   */
+  /** Each base with local merges not pushed (BasePushBacklog), from the push_base actions after the newest pushed one. Read-only. */
   listBasePushBacklogs(): Promise<BasePushBacklog[]>;
 
   // App command requests (issue #245): commands sent from the factory's own app, applied by the controller tick
