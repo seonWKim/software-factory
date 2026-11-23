@@ -239,15 +239,18 @@ export type RoutinePlan =
 /** What planRoutine reads: the routine due at `slot`, the routine runs on its carrier, and the slot's hold item if filed. */
 export interface PlanInput { routine: Routine; slot: Timestamp; now: Date; project: string; runs: readonly Run[]; hold: Pick<WorkItem, "stage" | "close_reason"> | null }
 
-/** The plan for a due routine (see RoutinePlan). An approved hold fires whatever the cap says: the approve raised it. */
+/**
+ * The plan for a due routine (see RoutinePlan). A held slot waits for its answer, a new day included; an approved
+ * hold fires whatever the cap says (the approve raised it), a rejected one is skipped.
+ */
 export function planRoutine(p: PlanInput): RoutinePlan {
   const { routine: r, slot, now } = p;
   const read = { next_due_at: r.next_due_at, last_run_at: r.last_run_at };
   if (p.runs.some((x) => x.kind === "routine" && x.finished_at === null)) return { kind: "wait", routine: r, slot };
   if (p.hold?.stage === "CLOSED" && p.hold.close_reason !== "completed") return { kind: "skip", routine: r, slot, read, marks: afterSlot(r, now) };
-  const approved = p.hold?.stage === "CLOSED";
+  if (p.hold && p.hold.stage !== "CLOSED") return { kind: "wait", routine: r, slot };
   const day = utcDay(now.getTime()), spent = spentOn(p.runs, day), last = lastCost(p.runs), cap = dailyCap(r, day);
-  if (!approved && overDailyCap(cap, spent, last)) return p.hold ? { kind: "wait", routine: r, slot } : { kind: "hold", routine: r, slot, item: holdItem(r, p.project, slot, spent, last, cap!) };
+  if (!p.hold && overDailyCap(cap, spent, last)) return { kind: "hold", routine: r, slot, item: holdItem(r, p.project, slot, spent, last, cap!) };
   return {
     kind: "fire", routine: r, slot, read, marks: afterSlot(r, now), carrier: carrierItem(r, p.project),
     run: { idempotency_key: routineRunKey(r.id, slot), input: { routine: { instruction: r.instruction, url: r.url } } },
