@@ -10,6 +10,7 @@ Pick the component by the need, before drawing anything by hand. A UI spec names
 |---|---|---|
 | a state | `StatusBadge` for an item, run or worker state, else `Badge` | `StatusBadge` shows the state table's label and tone (`src/shared/states.ts`) with `data-status`; `Badge` any other short status as a pill, tone from a state table key; never a hand-made chip or a bordered Button. |
 | an on/off choice in a list | Checkbox (none yet: `Switch` until it exists) | One box per row that turns that row's choice on or off. No Checkbox exists yet; a follow-up issue adds it. Until then use `Switch`, never a Button drawn as a box. |
+| a short notice that goes by itself | `Toast` | Top right for 6 s, paused while hovered or focused, with Dismiss; never for a state the owner must act on (that is a `Notice`). |
 | a row's extra actions | `OverflowMenu` | The row's secondary actions behind one "more" button at its end, so the row stays one line. |
 | a row in a bordered list | `ListRow` | Leading control, one-line title with ellipsis, details line, every action in its ⋯ menu. |
 | a reference list or a search over the page, with no confirm | `ModalPanel` | Header with the title (or the search field) and a close icon button; the body scrolls. Never a hand-made overlay `div`. |
@@ -54,6 +55,10 @@ An item's, a run's or a worker's state (`badge.tsx`): `state` is a key of the st
 ## Notice
 
 An inline message. Variants (`tone`): `info` (default), `ok`, `warn`, `bad`. Optional title. `warn` and `bad` have role alert, the others role status.
+
+## Toast
+
+A transient notice that goes by itself (`toast.tsx`): a `surface` box with a 1 px `border`, the `box` radius, 12 px padding and `shadow-lg`, fixed at the top right under the top bar (22rem wide; below `sm` the full width less 16 px each side), its content beside a ghost `sm` Dismiss Button. A live region (`role="status"`). It fades in, and after `TOAST_MS` (6 s) fades out (200 ms, none with reduced motion) and calls `onClose`; the timer waits while the pointer is over it or focus is inside it, so a list being read never vanishes. Dismiss closes it at once. One size, no variants. States: shown, paused (hovered or focused), fading. For a status line after a send use `announceStatus` (Dialog); a state that stays until it changes is a `Notice`.
 
 ## EmptyState
 

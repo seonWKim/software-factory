@@ -11,6 +11,8 @@ import { asObject } from "./values.js";
 import { Card } from "../../components/ui/card.js";
 import { Badge } from "../../components/ui/badge.js";
 import { AgentsHomePicker } from "../agents-home-picker.js";
+import { cn } from "../../lib/cn.js";
+import { SETTINGS_ROW, SETTINGS_ROWS } from "./rows.js";
 
 /**
  * Turning the tacit ledger on: the Rules page's agents home picker and check over what GET /api/v1/rules says (read once
@@ -54,11 +56,11 @@ function IntegrationsSection({ view }: { view: SettingsView }) {
   };
   return (
     <Card title={t("settings.integrations")} count={integrations.length}>
-      <ul className="space-y-2 text-sm">
+      <ul className={SETTINGS_ROWS}>
         {integrations.map((i) => {
           const on = i.plugin !== "none";
           return (
-            <li key={i.kind} data-integration={i.kind} className="flex flex-wrap items-center gap-2">
+            <li key={i.kind} data-integration={i.kind} className={cn(SETTINGS_ROW, "flex flex-wrap items-center gap-2")}>
               <Switch aria-label={t("settings.integrationLabel", { name: i.interface })} checked={on} disabled={busy || (on && i.source !== "setting")} onCheckedChange={() => (on ? back(i.kind) : setTurningOn(i.interface))} />
               <span className="font-medium">{i.interface}</span>
               <Badge level={on ? "needs_approval" : undefined}>{on ? i.plugin : t("settings.integrationOff")}</Badge>
@@ -81,7 +83,7 @@ function IntegrationsSection({ view }: { view: SettingsView }) {
   );
 }
 
-/** The Integrations tab: the integrations and Calendar. */
+/** The Integrations tab: the integrations and Calendar, Cards 24px apart (Card's own gap). */
 export function IntegrationsTab({ view }: { view: SettingsView }) {
   return (
     <div>

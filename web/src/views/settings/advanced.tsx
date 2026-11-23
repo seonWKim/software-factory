@@ -10,6 +10,7 @@ import { KeyValue } from "../../components/ui/key-value.js";
 import { Table, Td, Tr } from "../../components/ui/parts.js";
 import type { MessageKey } from "../../i18n/en.js";
 import { t } from "../../i18n/index.js";
+import { SETTINGS_INTRO } from "./rows.js";
 import { duration } from "../../lib/format.js";
 import { Link } from "../../nav.js";
 import { BASE } from "../../pages.js";
@@ -314,13 +315,13 @@ export function AdvancedTab({ view: v, query }: { view: SettingsView; query: str
         <Link href={`${BASE}data`} className={LINK_CLASS}>{t("page.data")}</Link>
       </p>
       <Card title={t("settings.settableKeys")} count={v.keys.length}>
-        <p className="mb-2 text-sm text-pretty text-text-2">{t("settings.settableIntro")}</p>
+        <p className={SETTINGS_INTRO}>{t("settings.settableIntro")}</p>
         <ProjectLabel view={v} />
         <KeysTable view={v} query={query} />
       </Card>
       <FileKeysSection view={v} />
       <Card title={PR_ONLY_TITLE} count={prOnly.length}>
-        <p className="mb-2 text-sm text-pretty text-text-2">
+        <p className={SETTINGS_INTRO}>
           {withNodes("settings.prOnlyIntro", { file: <code>{"factory.config.json"}</code> })}
         </p>
         <DataTable
