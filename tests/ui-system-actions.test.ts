@@ -31,14 +31,14 @@ interface Action {
   code: string; text: string; command: string; until: string | null; work_item_id: string | null; pause?: string;
   pattern?: string; error_code?: string; failing_tests?: string[]; output_tail?: string | null;
 }
-interface Overview { needs_you: number; system_actions: Action[]; server_rev: string | null; github_token_days: number | "unknown" | null }
+interface Overview { needs_you: number; unpushed_merges: number; system_actions: Action[]; server_rev: string | null; github_token_days: number | "unknown" | null }
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 /** A real store behind a Proxy: `schemaVersion` and `listClaimDecisions` answer from the test. */
-async function setup(opts: { version?: SchemaVersion | Error; checks?: Check[]; revision?: string | null; factory?: FactoryStatus | null } = {}) {
+async function setup(opts: { backlogs?: { base_ref: string; waiting: number; conflicts: string[] | null }[]; version?: SchemaVersion | Error; checks?: Check[]; revision?: string | null; factory?: FactoryStatus | null } = {}) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const decisions = new Map<string, ClaimDecision[]>();
@@ -50,6 +50,7 @@ async function setup(opts: { version?: SchemaVersion | Error; checks?: Check[]; 
           return opts.version;
         };
       }
+      if (prop === "listBasePushBacklogs" && opts.backlogs) return async () => opts.backlogs;
       if (prop === "listClaimDecisions") return async (id: WorkItemId) => decisions.get(id) ?? [];
       const v = Reflect.get(target, prop, receiver) as unknown;
       return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
@@ -88,6 +89,16 @@ describe("system actions: none on a quiet factory", () => {
     expect(o.system_actions).toEqual([]);
     expect(o.needs_you).toBe(0);
     expect(o.server_rev).toBe(REV_A);
+  });
+});
+
+describe("overview: unpushed local merges", () => {
+  it("is the sum of waiting over all bases, and 0 when none wait", async () => {
+    expect((await (await setup()).overview()).unpushed_merges).toBe(0);
+    const backlogs = [{ base_ref: "main", waiting: 2, conflicts: null }, { base_ref: "dev", waiting: 1, conflicts: ["a.ts"] }];
+    const o = await (await setup({ backlogs })).overview();
+    expect(o.unpushed_merges).toBe(3);
+    expect(o.needs_you).toBe(0);
   });
 });
 
