@@ -28,7 +28,7 @@ export function OutcomeText({ outcome }: { outcome: Outcome }) {
     <span
       role={outcome.tone === "error" ? "alert" : "status"}
       data-outcome
-      className={cn("text-xs text-pretty break-words", outcome.tone === "error" ? "text-pill-bad-fg" : "text-text-2")}
+      className={cn("text-xs text-pretty break-words", outcome.tone === "error" ? "text-pill-bad-fg" : "text-text-1")}
     >
       {outcome.text}
     </span>
@@ -44,11 +44,11 @@ export function PendingProposals({
     <ul aria-label={t("command.proposals")} className="mt-3 space-y-2">
       {proposals.map((p) => (
         <li key={p.id} data-proposal={p.id} className="max-w-xl min-w-0 rounded-control border border-border-strong p-2">
-          <p className="text-xs text-text-2">{t("command.pending")}</p>
+          <p className="text-xs text-text-1">{t("command.pending")}</p>
           <ul className="my-1 space-y-0.5">
             {p.commands.map((c) => (
               <li key={c.index} className="min-w-0 text-sm break-words">
-                <code className="break-all">{c.line}</code> <span className="text-xs text-text-2">{t("command.on", { id: c.work_item_id })}</span>
+                <code className="break-all">{c.line}</code> <span className="text-xs text-text-1">{t("command.on", { id: c.work_item_id })}</span>
               </li>
             ))}
           </ul>
