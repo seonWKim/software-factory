@@ -2521,6 +2521,10 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       await push("release", { conflicts: ["r.txt"] });
       expect(await of("release")).toEqual({ base_ref: "release", waiting: 1, conflicts: ["r.txt"] });
       expect(await of("main")).toMatchObject({ waiting: 4 });
+      // A push that lands on another base leaves this base's backlog as it is.
+      await push("release", { pushed: "r" });
+      expect(await of("release")).toBeNull();
+      expect(await of("main")).toEqual({ base_ref: "main", waiting: 4, conflicts: ["b.txt", "c.txt"] });
       // A push that lands clears the base: nothing before it waits.
       await push("main", { pushed: "q" });
       expect(await of("main")).toBeNull();

@@ -23,19 +23,18 @@ export async function getBasePush(db: SqlDriver, work_item_id: WorkItemId): Prom
 }
 
 export async function listBasePushBacklogs(db: SqlDriver): Promise<BasePushBacklog[]> {
-  // A pushed outcome is stored as `{"pushed":…}` (local-git.ts): the rows after the newest one of any base, none
-  // of them pushed, each pending or a conflict.
-  const rows = await db.all(
-    `SELECT seq, args, delivered_ref FROM outbound_actions WHERE action = 'push_base' AND seq > COALESCE(
-       (SELECT MAX(seq) FROM outbound_actions WHERE action = 'push_base' AND delivered_ref LIKE '{"pushed"%'), 0) ORDER BY seq`,
-  );
+  // Per base, the rows after that base's newest pushed one (`{"pushed":…}`, local-git.ts), each pending or a
+  // conflict. Grouped in code, in seq order, so a push to one base never clears another base's backlog.
+  const rows = await db.all("SELECT args, delivered_ref FROM outbound_actions WHERE action = 'push_base' ORDER BY seq");
   const bases = new Map<string, BasePushBacklog>();
   for (const row of rows) {
     const base = (JSON.parse(String(row.args)) as { base_ref: string }).base_ref;
+    const done = row.delivered_ref === null ? null : (JSON.parse(String(row.delivered_ref)) as { pushed?: string; conflicts?: string[] });
+    if (done?.pushed !== undefined) { bases.delete(base); continue; }
     const b = bases.get(base) ?? { base_ref: base, waiting: 0, conflicts: null };
     b.waiting++;
     // In order, so the newest delivered conflict names the files.
-    if (row.delivered_ref !== null) b.conflicts = (JSON.parse(String(row.delivered_ref)) as { conflicts?: string[] }).conflicts ?? [];
+    if (done !== null) b.conflicts = done.conflicts ?? [];
     bases.set(base, b);
   }
   return [...bases.values()];
