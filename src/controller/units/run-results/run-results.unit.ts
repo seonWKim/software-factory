@@ -1,96 +1,65 @@
 // Applies finished runs: triage, implement, review, update and resolve outcomes, failures, retries and blocks.
 // Moved out of the legacy controller (RFC 0015 M5); it reads through the kernel's reader and writes through the kernel.
+// The decisions by area live beside it: retry.ts (retries and blocks), delivery.ts (PR and push waits), resolve.ts
+// (conflict resolve) and notices.ts (needs-human, floor, empty diff, pauses, spec revision, unchanged head).
 
 import { prNumber } from "../../../core/change-ref.js";
 import { NO_FILES_REFUSAL, changesNoFile, commandFooter, commandState, retryPathsReply, withholdReplyLines } from "../../../core/commands.js";
 import { type NeedsHuman, type ReviewOutput, SPEC_CONFLICT, type TriageOutput, doneCheckCommands, findingLine, parseNeedsHuman, parseReview, parseTriage, specFindings } from "../../../core/outputs.js";
 import { AGENT_NEEDS_HUMAN, AUTO_ACTOR, AUTO_RESOLVE_LIMIT, autoApproveRefusal, REPEATED_FAILURE, type FailureClass, failureLine, repeatsFastInfraFailure, repeatsLastFailure, preflightCheck, PREFLIGHT_ACCESS, autoResolveAttempts, autoResolveKey, effectiveTier, failureClass, floorTier, isCovered, needsSpecApproval, nextAutoResolveAttempt, parseAutoResolveKey, retryDelayMs, retryKey, retryNotBefore, GITHUB_RATE_LIMITED, runKey, sameStep, STALL_STREAK_HOLD, stallStreak, takenOver, FORGE_AUTH, NO_AUTO_RETRY, CHECKS_ENV, CHECKS_ENV_LIMIT, SESSION_RELEASED, freeMigrationStamps, takenStamps } from "../../../core/policy.js";
 import { FIX_SPEC_APPROVED, gatePathTouched } from "../../../core/improver.js"; import { autoApprovalDetail, ownerAnswersFor } from "../../../shared/command-notes.js";
-import { dependencyStop } from "./dependency-stop.js"; import { autoGrant } from "./auto-grant.js";
 import { conflictCounts, conflictCountsLine } from "../../../core/resolve.js";
 import { autoApprovedFooter, droppedAnswers, droppedValues, heldNote, renderSpec } from "../../../core/spec-comment.js";
 import { STANDING_APPROVED, ruleId, specKind, standingActor } from "../../../core/standing.js";
 import { applyCompanions } from "../../../core/companions.js";
 import { atSizeCheckpoint, sizeCaps, sizeCheckpointNote, suggestedSplit } from "../../../core/split.js";
-import { type Actor, RECURRING_FAILURE, type Run, type StateChangeDetail, type Tier, type WorkItem, type WorkItemId, runTokenCount } from "../../../core/types.js";
+import { type Actor, RECURRING_FAILURE, type Run, type StateChangeDetail, type WorkItem, type WorkItemId, runTokenCount } from "../../../core/types.js";
 import { failingTests, firstErrorLine, stripAnsi } from "../../../core/output-summary.js"; import { doneChecksDetail } from "../../../core/checks.js";
 import { PROVIDER_SETUP } from "../../../interfaces/agent-runner.js";
 import type { ActionRow } from "../../../outbound/index.js";
 import { AUTO, DELIVERY_FAILED, type Decision, SYSTEM, UNCHANGED_HEAD, MAX_FEEDBACK_CHARS, FLOOR_TIER, CONFLICT_PENDING, quote, footerAfter, fenced, iso, updatingForChecks } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
+import { deliveredMeanwhile, deliveryGaveUp, prDelivered, prPending, pushApplied, pushDelivered, pushPending, pushWait } from "./delivery.js";
+import { EMPTY_DIFF, emptyDiff, floorBlock, forgeAuthComment, needsHuman, preflightAccessComment, specRevision, unchangedHead } from "./notices.js";
+import { autoResolve, autoResolvedComment, resolveFailed } from "./resolve.js";
+import { failedBlock, failedCode, leakBlock, noAutoRetry, providerSetup, retryOrBlock, sessionReleased } from "./retry.js";
+
+// The area files take these values from here, which imports them already: an import of core/ or ../support.js in
+// them would raise the dependency-direction and kinds counts (tests/architecture).
+export type { FailureClass, NeedsHuman, StateChangeDetail };
+export {
+  AGENT_NEEDS_HUMAN, AUTO_RESOLVE_LIMIT, CHECKS_ENV, CHECKS_ENV_LIMIT, DELIVERY_FAILED, FLOOR_TIER, FORGE_AUTH, MAX_FEEDBACK_CHARS, PREFLIGHT_ACCESS,
+  PROVIDER_SETUP, RECURRING_FAILURE, REPEATED_FAILURE, SESSION_RELEASED, STALL_STREAK_HOLD, SYSTEM, autoResolveAttempts, autoResolveKey,
+  commandFooter, commandState, conflictCounts, conflictCountsLine, doneChecksDetail, failingTests, failureClass, failureLine, fenced, firstErrorLine,
+  footerAfter, isCovered, iso, nextAutoResolveAttempt, parseAutoResolveKey, prNumber, preflightCheck, quote, repeatsFastInfraFailure,
+  repeatsLastFailure, retryDelayMs, retryKey, retryNotBefore, retryPathsReply, runKey, sameStep, sizeCaps, stallStreak, stripAnsi, suggestedSplit,
+  takenOver, withholdReplyLines,
+};
 
 /** blocked_reason of an adopted PR whose review found bugs: the factory never changes a person's branch. */
 const CHANGES_REQUESTED = "changes_requested";
-/** A review with nothing to review: no commits ahead of the base, or an empty diff (issue #223). */
-const EMPTY_DIFF = "empty_diff";
 /** The state a PR waiting on its merge conflict is in; every comment that sets it ends with its footer (`/resolve`). */
-const CONFLICT_PATCH = { stage: "REVIEW", blocked_on: "human", blocked_reason: CONFLICT_PENDING } as const;
-/** error_code of an implement run whose diff is over max_diff_lines or max_diff_files (design §4). */
-const DIFF_TOO_LARGE = "diff_too_large";
-/** A failed run's error code (`unknown` when the stored outcome has none), or `cancelled`. */
-const failedCode = (run: Run): string => (run.outcome?.status === "failed" ? run.outcome.error_code || "unknown" : "cancelled");
+export const CONFLICT_PATCH = { stage: "REVIEW", blocked_on: "human", blocked_reason: CONFLICT_PENDING } as const;
 /**
  * A failed or cancelled run's decision with its usage added to `token_cost` (design §6 Measurement): only a
  * decision that acknowledges this run, so the add lands in the ack's transaction and the ack fences it (a
  * second apply is refused as already acknowledged, and adds nothing). A run with no usage changes nothing.
  */
-/**
- * A session that ended without a PR (abandoned, lease lost), design §5, 2026-11-01: never retried. The item is released:
- * RUNNING, blocked on a human with `session_released`, nothing queued, for the next `session start`. A pushed branch stays.
- */
-function sessionReleased(_it: WorkItem, run: Run, code: string): Decision {
-  const detail = { run_id: run.id, error_code: code, ...(run.actor_id ? { actor_id: run.actor_id } : {}) };
-  return { patch: { blocked_on: "human", blocked_reason: SESSION_RELEASED }, actor: SYSTEM, reason: SESSION_RELEASED, detail, ack_run: run.id };
-}
 function withSpent(d: Decision, run: Run, it: WorkItem): Decision {
   const spent = runTokenCount(run);
   if (!d || spent === 0 || d.ack_run !== run.id || "token_cost" in d.patch) return d;
   return { ...d, patch: { ...d.patch, token_cost: it.token_cost + spent } };
 }
-/** The PR link a run outcome carries from the forge's open result (`pr_url`), as the patch's change_url (design 02). */
 /** An implement run's push and PR wait in outbound (RFC 0015 M7): `blocked_on: outbound`. */
 export const PR_PENDING = "pr_pending";
 /** An update or resolve run's push waits for outbound (RFC 0015 M7) before the review of its head is queued. */
 export const PUSH_PENDING = "push_pending";
 
+/** The PR link a run outcome carries from the forge's open result (`pr_url`), as the patch's change_url (design 02). */
 function prUrlOf(data: Record<string, unknown>): { change_url?: string } {
   return typeof data.pr_url === "string" ? { change_url: data.pr_url } : {};
 }
-const FAILURES: Record<string, string> = {
-  invalid_output: "the agent's answer did not have the expected shape",
-  no_commits: "the implementer made no commits",
-  scope_violation: "the branch changed files outside the allowed paths",
-  diff_too_large: "the branch diff is over max_diff_lines or max_diff_files",
-  merge_conflict: "the branch conflicts with the base branch and the conflict could not be resolved; nothing was pushed",
-  untrusted_base: "the base fetched before pushing does not contain the base the run started from; nothing was pushed",
-  out_of_scope: "the resolve run changed files that are neither conflicting nor under the allowed paths",
-  tests_failed: "the install or test command failed on the resolved branch",
-  // The implement run's code (design §4, 2026-11-03): a task failure, retried up to max_attempts. Not the
-  // CHECKS_FAILED blocked reason above, which is a failed PR check after review (design §5 CI gate).
-  checks_failed: "a check before push (repo.check_commands) failed, also after one fix step; nothing was pushed to the PR branch",
-  checks_env: "a check before push failed, also after one fix step, and its failing test files fail on the base commit too (flaky or broken on the base); retried without spending an attempt or a restart",
-  toolchain_missing: "a check before push could not start its tools (a module under node_modules or a tool binary is missing); an infrastructure failure, retried without spending an attempt",
-  unresolved_conflicts: "conflicts were left unresolved",
-  head_moved: "the install or test command moved HEAD off the commit the gates checked",
-  prompt_missing: "prompts/resolve.md is missing",
-  push_failed: "the push was rejected",
-  forge_auth: "the forge refused the factory's credentials (401 or 403); implement and update runs are paused",
-  preflight_failed: "a check before the agent started failed (the base fetch); no agent ran",
-  preflight_access: "the push access or PR API check before the agent started failed; implement and update runs are paused",
-  rate_limited: "the model provider's usage or rate limit was hit",
-  github_rate_limited: "the forge's API rate limit was hit; implement, update and review runs are paused until it resets",
-  provider_setup: "the model provider refused the account or config: its quota, the API key or the model name; nothing was retried",
-  egress_blocked: "the output was stopped by the leak scanner",
-  agent_failed: "the agent exited with an error",
-  agent_timed_out: "the agent run timed out",
-  agent_stalled: "the model printed nothing for stall_ms with no tool call open; runs are paused until a probe answers",
-  lease_lost: "the worker lost its lease on the run (stopped, crashed or slept)",
-  lease_expired: "the run's lease expired with no heartbeat (the worker stopped, crashed or slept)",
-  exception: "the worker hit an unexpected error",
-  git_failed: "a git command failed",
-  cancelled: "the run was cancelled",
-};
 /** The spec feedback of a review with a spec finding: every finding, spec ones marked, then the summary. */
 function specFeedback(r: ReviewOutput): string {
   return ["The factory reviewer found that the spec needs a change.", "", r.summary, "", ...r.findings.map((f) => `- ${findingLine(f)}`)].join("\n");
@@ -99,18 +68,6 @@ function specFeedback(r: ReviewOutput): string {
 function conflictFeedback(reason: string): string {
   return ["The implementer could not meet a done criterion inside the spec:", "", reason].join("\n");
 }
-const describeFailure = (code: string): string => FAILURES[code] ?? "the run failed";
-/** A run-failed comment's error code, in a Details fold after its plain sentence (issue #758), never in the sentence. */
-const codeDetails = (code: string): string[] => ["", "<details><summary>Details</summary>", "", `Error code \`${code}\`: ${describeFailure(code)}.`, "", "</details>", ""];
-function parseFloorHits(v: unknown): { path: string; tier: number }[] {
-  if (!Array.isArray(v)) return [];
-  const hits = v.filter(
-    (h): h is { path: string; tier: number } =>
-      typeof h === "object" && h !== null && typeof h.path === "string" && Number.isInteger(h.tier) && h.tier >= 1 && h.tier <= 5,
-  );
-  return hits.length === v.length ? hits : [];
-}
-/** A PR that passed review and waits for a human merge, the state an update run usually changes. */
 /** What auto mode answered for each decision of a spec it approved, above the footer naming the approval (design 03-risk, #586). */
 function autoAnswers(spec: TriageOutput): string {
   const items = spec.decision_items ?? [];
@@ -150,8 +107,8 @@ export class RunResultsUnit {
       // The agent asked for a human (decided 2026-11-07): a finished run with data, never retried on its own.
       if ((run.kind === "implement" || run.kind === "review" || run.kind === "resolve") && data.needs_human != null) {
         const ask = parseNeedsHuman(data.needs_human);
-        if (ask.ok && ask.value) return this.needsHuman(it, run, ask.value, tokens);
-        if (run.kind === "resolve") return this.resolveFailed(it, run, "invalid_output");
+        if (ask.ok && ask.value) return needsHuman(this.c, it, run, ask.value, tokens);
+        if (run.kind === "resolve") return resolveFailed(this.c, it, run, "invalid_output");
         return this.retryOrBlock(it, run, "task", "invalid_output");
       }
 
@@ -267,13 +224,13 @@ export class RunResultsUnit {
           };
         }
         case "implement": {
-          if (data.floor_block === true) return this.floorBlock(it, run, data, tokens);
+          if (data.floor_block === true) return floorBlock(this.c, it, run, data, tokens);
           // What the PR changes, for the coordination cost (design §5, 2026-11-03); absent on older outcomes.
           const files = Array.isArray(data.files) && data.files.every((f) => typeof f === "string") ? (data.files as string[]) : null;
           // The run stored its push and PR as intents (RFC 0015 M7): the item waits for outbound, and `prDelivered`
           // applies the PR number and queues the review once the PR delivery completes. One delivered before this
           // result is applied (outbound ran first) is applied here, so the wait never misses it.
-          if (data.pr_pending === true) return this.prPending(it, run, data, { token_cost: tokens, ...(files ? { pr_files: files } : {}) }, "implemented", doneChecksDetail(data));
+          if (data.pr_pending === true) return prPending(this.c, it, run, data, { token_cost: tokens, ...(files ? { pr_files: files } : {}) }, "implemented", doneChecksDetail(data));
           // No PR (the local broker, design 05-sources): the item reviews and merges as its local branch.
           const pr = data.pr_number === null || data.pr_number === undefined ? null : Number(data.pr_number);
           return this.c.unit("commands").applyQueued(it, {
@@ -293,10 +250,10 @@ export class RunResultsUnit {
         }
         case "review": {
           // The worker withheld finding text its scan flagged (issue #222): only the rule names reached here.
-          if (Array.isArray(data.egress_rules)) return this.leakBlock(it, run, data.egress_rules.map(String), { token_cost: tokens }, "review");
+          if (Array.isArray(data.egress_rules)) return leakBlock(this.c, it, run, data.egress_rules.map(String), { token_cost: tokens }, "review");
           // The worker's cheap checks (issue #223): nothing to review, or the head the last verdict was for (unchangedHead).
-          if (data.no_agent === EMPTY_DIFF) return this.emptyDiff(it, run, tokens);
-          if (data.no_agent === UNCHANGED_HEAD) return this.unchangedHead(it, run);
+          if (data.no_agent === EMPTY_DIFF) return emptyDiff(this.c, it, run, tokens);
+          if (data.no_agent === UNCHANGED_HEAD) return unchangedHead(this.c, it, run);
           const parsed = parseReview(data.review); // routes on `findings` only: confirmed ones; `unconfirmed` never sends the item back (design 04-agents)
           if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
           const tier = effectiveTier(parsed.value.tier, floorTier(it.allowed_paths, this.c.k.settings(it.project).floors), it.tier); await this.c.unit("improve").captureReview(it, run, parsed.value.findings);
@@ -314,27 +271,19 @@ export class RunResultsUnit {
           if (parsed.value.verdict === "bug" || spec.length > 0) {
             // Finding text becomes the next run's input or the spec feedback: scanned before anything is stored.
             const scan = await this.c.k.d.scanner.scan("comment", parsed.value.findings.map((f) => f.text).join("\n"));
-            if (!scan.clean) return this.leakBlock(it, run, scan.findings.map((f) => f.rule), { tier, token_cost: tokens }, "review");
+            if (!scan.clean) return leakBlock(this.c, it, run, scan.findings.map((f) => f.rule), { tier, token_cost: tokens }, "review");
           }
           // Any spec finding: the implementer cannot fix it inside the spec, so the spec is revised (issue #222).
-          if (spec.length > 0) return this.specRevision(it, run, specFeedback(parsed.value), { tier, token_cost: tokens }, "review");
+          if (spec.length > 0) return specRevision(this.c, it, run, specFeedback(parsed.value), { tier, token_cost: tokens }, "review");
           if (parsed.value.verdict === "bug") return this.c.unit("checks-gate").reviewBug(it, run, { tier, token_cost: tokens });
           return this.c.unit("checks-gate").checkGate(it, run, { tier, token_cost: tokens }, run.id);
         }
         case "resolve": {
           // The worker pushed the merge to the same PR branch. A fresh review checks it; its key comes from
           // this run's id, so it never collides with the review of an earlier loop or resolve.
-          const auto = parseAutoResolveKey(run.idempotency_key);
-          if (auto) {
-            const counts = await this.conflictCountsOf(it, 0);
-            await this.c.unit("outbox").prComment(it, `auto-resolved:${run.id}`, [
-              `The factory resolved the merge conflict on ${this.c.unit("local-merge").changeName(it)} automatically (attempt ${auto.attempt} of ${AUTO_RESOLVE_LIMIT} for base \`${auto.base_sha.slice(0, 8)}\`) and ${it.change_ref === null ? "committed" : "pushed"} the merge. A fresh review runs next.`,
-              "",
-              conflictCountsLine(counts),
-            ].join("\n"));
-          }
-          if (await this.pushPending(data)) return this.pushWait(run, "resolved", { token_cost: tokens });
-          const pushed = await this.pushApplied(it, run);
+          await autoResolvedComment(this.c, it, run);
+          if (await pushPending(this.c, data)) return pushWait(run, "resolved", { token_cost: tokens });
+          const pushed = await pushApplied(this.c, it, run);
           return { ...pushed, patch: { ...pushed.patch, token_cost: tokens }, reason: "resolved", ack_run: run.id };
         }
         case "manual":
@@ -345,7 +294,7 @@ export class RunResultsUnit {
           const files = Array.isArray(data.files) && data.files.every((f) => typeof f === "string") ? { pr_files: data.files as string[] } : {};
           const detail = { run_id: run.id, ...(run.actor_id ? { actor_id: run.actor_id } : {}) };
           // A forge item's push and PR are outbound's (RFC 0015 M7), as an implement run's: the item waits for the PR.
-          if (data.pr_pending === true) return this.prPending(it, run, data, { token_cost: tokens, ...files }, "session_finished", detail);
+          if (data.pr_pending === true) return prPending(this.c, it, run, data, { token_cost: tokens, ...files }, "session_finished", detail);
           // No PR (a local item, design 05-sources): it reviews and merges as its local branch, as an implement run's.
           const pr = data.pr_number === null || data.pr_number === undefined ? null : Number(data.pr_number);
           const input = await this.c.unit("checks-gate").reviewInput(pr, it.id);
@@ -362,8 +311,8 @@ export class RunResultsUnit {
           switch (data.result) {
             case "pushed":
               if (beforeImplement) {
-                if (await this.pushPending(data)) return this.pushWait(run, "update_pushed", {});
-                return { ...(await this.pushApplied(it, run)), reason: "update_pushed", ack_run: run.id };
+                if (await pushPending(this.c, data)) return pushWait(run, "update_pushed", {});
+                return { ...(await pushApplied(this.c, it, run)), reason: "update_pushed", ack_run: run.id };
               }
               return { patch: {}, actor: SYSTEM, reason: "update_pushed", ack_run: run.id };
             case "up_to_date": {
@@ -394,7 +343,7 @@ export class RunResultsUnit {
       }
     };
     await this.c.unit("transitions").decide(run.work_item_id, async (it) => this.landed(it, run, withSpent(await decision(it), run, it)));
-    await this.deliveredMeanwhile(run);
+    await deliveredMeanwhile(this.c, run);
   }
 
   /**
@@ -406,728 +355,69 @@ export class RunResultsUnit {
     return withSpent(await this.failedBlock(it, run), run, it);
   }
 
-  /**
-   * A PR or push outbound delivered while this result was decided (the delivery's handler on another tick or
-   * replica found the item not waiting yet, so it changed nothing): read once more after the wait is written, so
-   * the wait never misses it. Only an item still waiting changes, as in `prDelivered` and `pushDelivered`.
-   */
-  private async deliveredMeanwhile(run: Run): Promise<void> {
-    if (run.outcome?.status !== "succeeded") return;
-    const data = run.outcome.data;
-    const id = run.work_item_id as WorkItemId;
-    for (const key of [data.pr_intent, data.push_intent]) {
-      if (typeof key !== "string") continue;
-      const a = await this.c.k.actionByKey(key);
-      if (!a?.delivered_at) continue;
-      if (a.outcome === "failed") await this.deliveryGaveUp(id, a);
-      else if (a.action === "pr" && a.delivered_ref) await this.prDelivered(id, a.delivered_ref, a.delivered_url);
-      else if (a.action === "push") await this.pushDelivered(id, run.id);
-    }
-  }
-
-  /**
-   * Outbound gave up a run's PR or push (refused for good): an item still waiting for it waits for a person instead
-   * (`delivery_failed`), with the action and its error; the dead-letter alarm names it too. A redelivery changes nothing.
-   */
-  async deliveryGaveUp(id: WorkItemId, a: ActionRow): Promise<void> {
-    const waiting = a.action === "pr" ? PR_PENDING : PUSH_PENDING;
-    await this.c.unit("transitions").decide(id, async (it) =>
-      it.blocked_on === "outbound" && it.blocked_reason === waiting
-        ? { patch: { blocked_on: "human", blocked_reason: DELIVERY_FAILED }, actor: SYSTEM, reason: DELIVERY_FAILED, detail: { action: a.action, error: a.last_error ?? "unknown" } }
-        : null,
-    );
-  }
-
-  /**
-   * Outbound delivered an implement run's PR (RFC 0015 M7): its number and link go on the item at its version, the
-   * wait ends, and the review is queued as an implement result's was (queued `/revise` feedback first: applyQueued).
-   * Only an item still waiting for its PR changes, so a redelivered result or a late one changes nothing.
-   */
-  async prDelivered(id: WorkItemId, ref: string, url: string | null): Promise<void> {
-    await this.c.unit("transitions").decide(id, async (it) =>
-      it.blocked_on === "outbound" && it.blocked_reason === PR_PENDING ? this.c.unit("commands").applyQueued(it, await this.prApplied(it, ref, url)) : null,
-    );
-  }
-
-  /**
-   * Outbound delivered an update or resolve run's push (RFC 0015 M7): the review its result queued once runs now, on
-   * the pushed head. Only an item still waiting for a push changes, so a redelivered result changes nothing.
-   */
-  async pushDelivered(id: WorkItemId, run_id: string): Promise<void> {
-    await this.c.unit("transitions").decide(id, async (it) => {
-      if (it.blocked_on !== "outbound" || it.blocked_reason !== PUSH_PENDING) return null;
-      const run = (await this.c.k.reader.listRuns(it.id)).find((r) => r.id === run_id);
-      return run ? this.pushApplied(it, run) : null;
-    });
-  }
-
-  /** Whether a run's result names a push intent (`push_intent`) outbound has not delivered yet. */
-  private async pushPending(data: Record<string, unknown>): Promise<boolean> {
-    if (typeof data.push_intent !== "string") return false;
-    const push = await this.c.k.actionByKey(data.push_intent);
-    // A given-up push waits too: the step after the result turns the wait into `delivery_failed`.
-    return !push?.delivered_at || push.outcome === "failed";
-  }
-
-  /** The item waits for its run's push (`blocked_on: outbound`, `push_pending`); `pushDelivered` ends the wait. */
-  private pushWait(run: Run, reason: string, patch: Partial<WorkItem>): Decision {
-    return { patch: { ...patch, blocked_on: "outbound", blocked_reason: PUSH_PENDING }, actor: SYSTEM, reason, detail: { run_id: run.id }, ack_run: run.id };
-  }
-
-  /** The review of the head an update or resolve run pushed, keyed by that run (never an earlier loop's review). */
-  private async pushApplied(it: WorkItem, run: Run): Promise<NonNullable<Decision>> {
-    return {
-      patch: { ...(it.stage === "REVIEW" ? {} : { stage: "REVIEW" as const }), blocked_on: "none", blocked_reason: null },
-      actor: SYSTEM,
-      reason: "push_delivered",
-      detail: { run_id: run.id },
-      enqueue: { kind: "review", idempotency_key: `${it.id}:review:after-${run.kind}:${run.id}`, input: await this.c.unit("checks-gate").reviewInput(prNumber(it), it.id) },
-    };
-  }
-
-  /**
-   * A run that stored its push and PR as intents (RFC 0015 M7, an implement run or a session's finish): the item
-   * waits for outbound, and `prDelivered` applies the PR number and queues the review once the PR delivery completes.
-   * One delivered before this result is applied (outbound ran first) is applied here, so the wait never misses it.
-   */
-  private async prPending(it: WorkItem, run: Run, data: Record<string, unknown>, patch: Partial<WorkItem>, reason: string, detail?: StateChangeDetail): Promise<Decision> {
-    const delivered = typeof data.pr_intent === "string" ? await this.c.k.actionByKey(data.pr_intent) : null;
-    if (delivered?.delivered_ref) {
-      const applied = await this.prApplied(it, delivered.delivered_ref, delivered.delivered_url);
-      return this.c.unit("commands").applyQueued(it, { ...applied, patch: { ...applied.patch, ...patch }, reason, ack_run: run.id, ...(detail ? { detail } : {}) });
-    }
-    return { patch: { ...patch, blocked_on: "outbound", blocked_reason: PR_PENDING }, actor: SYSTEM, reason, ack_run: run.id, ...(detail ? { detail } : {}) };
-  }
-
-  /** The PR on the item and the review queued, as an implement result with a PR number did before. */
-  private async prApplied(it: WorkItem, ref: string, url: string | null): Promise<NonNullable<Decision>> {
-    return {
-      patch: { stage: "REVIEW", change_ref: ref, ...(url ? { change_url: url } : {}), blocked_on: "none", blocked_reason: null },
-      actor: SYSTEM,
-      reason: "pr_delivered",
-      enqueue: { kind: "review", idempotency_key: runKey(it, "review"), input: await this.c.unit("checks-gate").reviewInput(Number(ref), it.id) },
-    };
-  }
-
   /** A failed or cancelled run's decision, before its usage is added (`apply` does that). A takeover's run: no retry (05-restarts). */
   async applyFailedRun(it: WorkItem, run: Run): Promise<Decision> {
     // One owner comment per forge-auth pause, from the run that started it (marker-keyed on the pause end).
     if (run.outcome?.status === "failed" && run.outcome.error_code === FORGE_AUTH && run.outcome.pause_started) {
-      await this.forgeAuthComment(it, run);
+      await forgeAuthComment(this.c, it, run);
     }
     // The same for a preflight-access pause (issue #216), keyed on its own pause end.
     if (run.outcome?.status === "failed" && run.outcome.error_code === PREFLIGHT_ACCESS && run.outcome.pause_started) {
-      await this.preflightAccessComment(it, run);
+      await preflightAccessComment(this.c, it, run);
     }
     if (takenOver(run) || !this.c.unit("transitions").expects(it, run.kind)) return { patch: {}, actor: SYSTEM, reason: "run_ignored", ack_run: run.id };
     const code = failedCode(run);
-    if (run.kind === "resolve") return this.resolveFailed(it, run, code);
+    if (run.kind === "resolve") return resolveFailed(this.c, it, run, code);
     if (run.kind === "interactive") return sessionReleased(it, run, code);
     // The provider's account or config needs a person (design §5 Restarts): no retry would get further.
-    if (code === PROVIDER_SETUP) return this.providerSetup(it, run);
+    if (code === PROVIDER_SETUP) return providerSetup(this.c, it, run);
     // The implementer reported a criterion the spec does not let it meet (issue #222): a spec revision, not a block.
     if (run.kind === "implement" && code === SPEC_CONFLICT) {
       const reason = run.outcome?.status === "failed" ? run.outcome.detail.trim() : "";
       const scan = await this.c.k.d.scanner.scan("comment", reason);
-      if (!scan.clean) return this.leakBlock(it, run, scan.findings.map((f) => f.rule), {}, "implement");
-      return this.specRevision(it, run, conflictFeedback(reason), {}, "implement");
+      if (!scan.clean) return leakBlock(this.c, it, run, scan.findings.map((f) => f.rule), {}, "implement");
+      return specRevision(this.c, it, run, conflictFeedback(reason), {}, "implement");
     }
     // Deterministic codes, diff_too_large among them (design §5 Restarts): the same spec fails the same way.
-    if (run.kind === "implement" && NO_AUTO_RETRY.includes(code)) return this.noAutoRetry(it, run, code);
+    if (run.kind === "implement" && NO_AUTO_RETRY.includes(code)) return noAutoRetry(this.c, it, run, code);
     // A forge rate limit is no attempt for an update run either: it waits for the reset (design §5 Restarts).
     if (run.kind !== "update" || code === GITHUB_RATE_LIMITED) return this.retryOrBlock(it, run, failureClass(run.outcome), code);
     return this.failedBlock(it, run, code);
   }
 
-  /** The plain failed-run block: blocked on a human with `run_failed:<kind>:<code>`, one comment offering `/retry`. */
+  /** The plain failed-run block: blocked on a human with `run_failed:<kind>:<code>`, one comment offering `/retry` (retry.ts). */
   async failedBlock(it: WorkItem, run: Run, code = failedCode(run)): Promise<Decision> {
-    const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:${run.kind}:${code}` };
-    const url = await this.c.unit("outbox").comment(it, `run-failed:${run.id}`,
-      `The ${run.kind} run failed (\`${code}\`). Comment \`/retry\` to run it again.\n\n${footerAfter(it, patch)}`, "failure_comment_url");
-    return {
-      patch: { ...patch, failure_comment_url: url },
-      actor: SYSTEM,
-      reason: "run_failed",
-      detail: { run_id: run.id, error_code: code },
-      ack_run: run.id,
-    };
+    return failedBlock(this.c, it, run, code);
   }
 
-  /**
-   * A review with nothing to review (issue #223): the PR branch has no commits ahead of the base (already merged)
-   * or its diff is empty. No agent ran. The item blocks on a human with `empty_diff`; the one comment is keyed on
-   * the item, so a repeated run posts nothing.
-   */
-  async emptyDiff(it: WorkItem, run: Run, tokens: number): Promise<Decision> {
-    const patch = { token_cost: tokens, blocked_on: "human" as const, blocked_reason: EMPTY_DIFF };
-    await this.c.unit("outbox").comment(it, EMPTY_DIFF, [
-      `PR #${it.change_ref} has no changes against \`${this.c.k.cfg.repo.base_branch}\`: its branch has no commits ahead of the base, or its diff is empty. The factory ran no review (\`${EMPTY_DIFF}\`).`,
-      "",
-      "Close the PR if its change is already on the base, or push the missing commits to its branch.",
-      "",
-      footerAfter(it, patch),
-    ].join("\n"));
-    return { patch, actor: SYSTEM, reason: EMPTY_DIFF, detail: { run_id: run.id }, ack_run: run.id };
+  /** A failed triage, implement, review or judge run: a retry under its limits, else a block (retry.ts). */
+  async retryOrBlock(it: WorkItem, run: Run, cls: FailureClass, code: string, stop?: (limit: string, detail: StateChangeDetail) => Promise<Decision>): Promise<Decision> {
+    return retryOrBlock(this.c, it, run, cls, code, stop);
   }
 
-  /**
-   * A spec revision the factory starts itself (issue #222): a review with a spec finding, or an implement run that
-   * returned `spec_conflict`. The same path as `/revise` after a failure: back to triage with the feedback under
-   * the next `:v<n>` key, revision_count + 1, restart_count + 1 so the implement run after the revised spec is
-   * approved gets a new key (it continues on the PR branch; the PR number is kept). loop_count is unchanged. At
-   * the revision limit (`max_loops`) no triage run starts: the item waits at the spec gate with `max_revisions`
-   * (restart_count + 1 there too, so `/approve` implements the current spec afresh) and one comment says so.
-   */
-  async specRevision(
-    it: WorkItem,
-    run: Run,
-    feedback: string,
-    fields: { tier?: Tier; token_cost?: number },
-    from: "review" | "implement",
-  ): Promise<Decision> {
-    const limit = this.c.k.cfg.max_loops;
-    const kept = feedback.slice(0, MAX_FEEDBACK_CHARS).trim();
-    const detail = { run_id: run.id, from };
-    const why = from === "review" ? "The review found that the spec needs a change" : "The implementer reported that the spec cannot be met as written";
-    if (it.revision_count >= limit) {
-      const patch = {
-        ...fields, stage: "READY" as const, blocked_on: "human" as const, blocked_reason: "max_revisions",
-        restart_count: it.restart_count + 1, failure_comment_url: null,
-      };
-      await this.c.unit("outbox").comment(it, `max-revisions:${run.id}`, [
-        `${why}, but the spec was revised ${it.revision_count} times (limit \`max_loops\` = ${limit}), so the factory started no new triage run (\`max_revisions\`).`,
-        "",
-        "Reply `/approve` to implement the spec above as it is, or `/reject <reason>` to close.",
-        "",
-        footerAfter(it, patch),
-      ].join("\n"));
-      return { patch, actor: SYSTEM, reason: "max_revisions", detail, ack_run: run.id };
-    }
-    const n = it.revision_count + 1;
-    return {
-      patch: {
-        ...fields, stage: "NEW", blocked_on: "none", blocked_reason: null, revision_count: n, restart_count: it.restart_count + 1,
-        spec_feedback: kept, failure_comment_url: null,
-      },
-      actor: SYSTEM,
-      reason: from === "review" ? "review_spec_revision" : "spec_conflict_revision",
-      detail,
-      ack_run: run.id,
-      // The spec-gate revision key: differs from the intake key and from every earlier revision's key.
-      enqueue: { kind: "triage", idempotency_key: `${runKey(it, "triage")}:v${n}` },
-    };
+  /** A conflict to resolve with no person: an automatic resolve run, or a wait for a person at the limit (resolve.ts). */
+  async autoResolve(it: WorkItem, baseSha: string, cause: StateChangeDetail, ack_run: Run["id"] | null): Promise<Decision> {
+    return autoResolve(this.c, it, baseSha, cause, ack_run);
   }
 
-  /**
-   * Finding text or a spec_conflict reason the egress scan flagged (issue #222): nothing of it is stored. The item
-   * blocks on a human as a failed run of its kind (so `/retry` and `/revise` apply) and one comment names the rules.
-   */
-  async leakBlock(
-    it: WorkItem,
-    run: Run,
-    rules: readonly string[],
-    fields: { tier?: Tier; token_cost?: number },
-    kind: "review" | "implement",
-  ): Promise<Decision> {
-    const names = [...new Set(rules)].map((r) => r.replace(/[^\w.:-]/g, "").slice(0, 60)).filter(Boolean);
-    const patch = { ...fields, blocked_on: "human" as const, blocked_reason: `run_failed:${kind}:egress_blocked` };
-    const what = kind === "review" ? "review findings" : "spec conflict the implementer reported";
-    const url = await this.c.unit("outbox").comment(it, `leak-blocked:${run.id}`, [
-      `The ${what} were blocked by the leak scanner (${names.map((n) => `\`${n}\``).join(", ") || "a rule"}), so nothing of them was stored or posted.`,
-      "",
-      `Comment \`/retry\` to run the ${kind} again, or \`/revise <feedback>\` to get a new spec written.`,
-      "",
-      footerAfter(it, patch),
-    ].join("\n"), "failure_comment_url");
-    return {
-      patch: { ...patch, failure_comment_url: url },
-      actor: SYSTEM,
-      reason: "run_failed",
-      detail: { run_id: run.id, error_code: "egress_blocked", rules: names.join(",") },
-      ack_run: run.id,
-    };
+  /** Outbound gave up a run's PR or push: an item still waiting for it waits for a person (delivery.ts). */
+  async deliveryGaveUp(id: WorkItemId, a: ActionRow): Promise<void> {
+    return deliveryGaveUp(this.c, id, a);
   }
 
-  /**
-   * A review that skipped its unchanged head (issue #223). After a passing verdict, pending or passed checks change
-   * nothing; failed checks loop as any failed checks do, since only items blocked on CI are polled. After a `bug`
-   * verdict on a factory branch (design 05-ci-gate, 2026-11-23): a note or spec newer than it queues a review at that
-   * head (`rereview`, the newest note in its input); nothing newer sends the item back as the verdict did (reviewBug).
-   */
-  async unchangedHead(it: WorkItem, run: Run): Promise<Decision> {
-    const gate = this.c.unit("checks-gate"), last = await gate.lastVerdict(it.id, run.id), ack: Decision = { patch: {}, actor: SYSTEM, reason: "review_unchanged_head", ack_run: run.id };
-    if (last?.verdict === "bug" && it.origin !== "adopted") {
-      const newer = await gate.newerThanVerdict(it, last.run), detail = { run_id: run.id, review_run_id: last.run.id, unchanged_head: true };
-      if (!newer) return gate.reviewBug(it, run, {}, detail);
-      const input = { ...(await gate.reviewInput(prNumber(it), it.id)), rereview: true as const, ...(newer.note ? { notes: newer.note } : {}) };
-      return { ...ack, detail: { ...detail, rerun: true, newer: newer.what }, enqueue: { kind: "review", idempotency_key: `${it.id}:review:rereview:${run.id}`, input } };
-    }
-    if (last?.verdict !== "pass") return ack;
-    const checks = await gate.readChecks(it);
-    return checks.state === "failed" ? gate.checksFailed(it, run, checks.failed, {}, { ack_run: run.id }) : ack;
+  /** Outbound delivered an implement run's PR: the wait ends and the review is queued (delivery.ts). */
+  async prDelivered(id: WorkItemId, ref: string, url: string | null): Promise<void> {
+    return prDelivered(this.c, id, ref, url);
+  }
+
+  /** Outbound delivered an update or resolve run's push: the review of the pushed head is queued (delivery.ts). */
+  async pushDelivered(id: WorkItemId, run_id: string): Promise<void> {
+    return pushDelivered(this.c, id, run_id);
   }
 
   /** The item's latest succeeded review run, the one the CI gate applies to. */
   async latestReview(id: WorkItemId): Promise<Run | undefined> {
     return (await this.c.k.reader.listRuns(id)).filter((r) => r.kind === "review" && r.outcome?.status === "succeeded").at(-1);
-  }
-
-  /**
-   * A failed triage, implement or review run (design §5 Restarts). Counts come from the run history of
-   * this step (the first run and its automatic retries): a rate limit or a run a takeover cancelled is never an attempt; infra failures
-   * (stalls too; 3 in a row hold the item) count toward max_restart (and add one to restart_count); task failures toward max_attempts. `checks_env`
-   * spends neither: it is counted over the item's whole run history, and the one after CHECKS_ENV_LIMIT blocks
-   * the item on a human (`run_failed:<kind>:checks_env`) with no retry. Under both limits, a new run is enqueued in
-   * the same transition with `not_before` = failure + backoff (rate limit: its reset time). At a limit, the item blocks on a human with the last error posted (with `stop`: `stop`'s decision,
-   * no comment, as a goal's judge, 04-split-specs). The retry key is the failed run's; the ack fences a second apply.
-   */
-  async retryOrBlock(it: WorkItem, run: Run, cls: FailureClass, code: string, stop?: (limit: string, detail: StateChangeDetail) => Promise<Decision>): Promise<Decision> {
-    const { max_restart, retry_base_ms, retry_max_ms } = this.c.k.cfg;
-    const { max_attempts } = this.c.k.settings(it.project);
-    const step = (await this.c.k.reader.listRuns(it.id)).filter(
-      (r) => r.kind === run.kind && sameStep(r.idempotency_key, run.idempotency_key) && (r.id === run.id || r.acknowledged_at !== null) && !takenOver(r),
-    );
-    const count = (c: FailureClass) => step.filter((r) => failureClass(r.outcome) === c).length;
-    const task = count("task");
-    const infra = count("infra");
-    const failedAt = Date.parse(run.finished_at ?? this.c.k.d.clock.now().toISOString());
-    const restart = cls === "infra" ? { restart_count: it.restart_count + 1 } : {};
-    const detail = { run_id: run.id, error_code: code, failure: cls, task_failures: task, infra_failures: infra, ...doneChecksDetail(run.outcome) };
-
-    if (cls === "checks_env") {
-      const env = (await this.c.k.reader.listRuns(it.id)).filter(
-        (r) => failureClass(r.outcome) === "checks_env" && (r.id === run.id || r.acknowledged_at !== null),
-      ).length;
-      if (env > CHECKS_ENV_LIMIT) {
-        // The run_failed form, so `/retry` and the status page read it like any other failed run.
-        const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:${run.kind}:${CHECKS_ENV}` };
-        const url = await this.lastAttemptComment(it, run, code, CHECKS_ENV, env, footerAfter(it, patch));
-        return { patch: { ...patch, failure_comment_url: url }, actor: SYSTEM, reason: CHECKS_ENV, detail: { ...detail, checks_env_failures: env }, ack_run: run.id };
-      }
-    }
-    const streak = stallStreak(step), held = streak >= STALL_STREAK_HOLD; // its runs keep stalling (05-restarts): its retry waits for /retry
-    const limit = task >= max_attempts ? "max_attempts" : infra >= max_restart ? "max_restart" : null;
-    // Neither a rate limit, a checks_env run nor a missing model credential is an attempt: they never reach a limit (design §5 Restarts).
-    if (!held && cls !== "rate_limited" && cls !== "checks_env" && cls !== "setup_missing" && limit) {
-      if (stop) return stop(limit, detail);
-      const patch = { ...restart, blocked_on: "human" as const, blocked_reason: limit };
-      const url = await this.lastAttemptComment(it, run, code, limit, limit === "max_attempts" ? task : infra, footerAfter(it, patch));
-      return {
-        patch: { ...patch, failure_comment_url: url },
-        actor: SYSTEM,
-        reason: limit,
-        detail,
-        ack_run: run.id,
-      };
-    }
-    // The same task failure twice in a row (decided 2026-11-07): a third run would fail the same way.
-    if (cls === "task" && this.c.k.d.repeated_failure_rule !== false && repeatsLastFailure(step, run)) return stop ? stop(REPEATED_FAILURE, detail) : this.repeatedFailure(it, run, code, detail);
-    // The same infra failure twice in a row, each within a minute of its start (issue #216): no passing hiccup.
-    const fast = cls === "infra" && this.c.k.d.repeated_failure_rule !== false && repeatsFastInfraFailure(step, run) ? { ...detail, fast_repeat: true } : null;
-    if (fast) return stop ? stop(REPEATED_FAILURE, fast) : this.repeatedInfraFailure(it, run, code, fast);
-    if (held && stop) return stop(RECURRING_FAILURE, { ...detail, stall_streak: streak });
-    // A forge 401/403, a failed access check or a forge rate limit also waits for its claim pause to end (design §5 Restarts).
-    const notBefore = retryNotBefore({
-      cls, code, failed_at: failedAt, backoff_at: failedAt + retryDelayMs(task + infra, retry_base_ms, retry_max_ms),
-      reset: run.outcome?.status === "failed" ? run.outcome.reset_at : null, retry_max_ms,
-    });
-    // The run kept its commits on a wip branch: after a failed push or PR the retry pushes them with no agent run;
-    // after a stop mid-work (rate limit, stall, timeout) the wip ref is marked `continue` by the worker, and the
-    // retry runs the agent on it (design §5 Restarts).
-    const wip = run.kind === "implement" && run.outcome?.status === "failed" ? run.outcome.wip : undefined;
-    // A retried review keeps the CI results read when it was queued (issue #223); a retried judge its phase (design 04-split-specs).
-    const input = wip ? { wip } : run.kind === "review" || run.kind === "judge" ? run.input : null;
-    return {
-      patch: held ? { ...restart, blocked_on: "human", blocked_reason: RECURRING_FAILURE } : restart,
-      actor: SYSTEM,
-      reason: held ? RECURRING_FAILURE : cls === "rate_limited" ? "run_rate_limited" : "run_retry_scheduled",
-      detail: { ...detail, ...(held ? { stall_streak: streak } : {}), not_before: notBefore },
-      ack_run: run.id,
-      enqueue: { kind: run.kind, idempotency_key: retryKey(run.idempotency_key), not_before: notBefore, ...(input ? { input } : {}) },
-    };
-  }
-
-  /**
-   * A conflict to resolve with no person (design §5 Merge conflict): an update run's (`ack_run`, 2026-11-02) or a local
-   * item's (local-merge's startLocalResolve, no run to ack, 2026-11-12). Under AUTO_RESOLVE_LIMIT automatic resolve runs
-   * per base commit, the item goes to RUNNING and a resolve run is enqueued in the same transition, keyed on (item, base
-   * commit, attempt). At the limit, or with no base commit to key on, it waits for a person on merge_conflict_pending.
-   * The ack (a local item: leaving merge_pending) fences a second apply, so applying it twice enqueues one resolve run.
-   */
-  async autoResolve(it: WorkItem, baseSha: string, cause: StateChangeDetail, ack_run: Run["id"] | null): Promise<Decision> {
-    const keys = (await this.c.k.reader.listRuns(it.id)).filter((r) => r.kind === "resolve").map((r) => r.idempotency_key);
-    const done = baseSha ? autoResolveAttempts(keys, it.id, baseSha) : AUTO_RESOLVE_LIMIT;
-    const attempt = nextAutoResolveAttempt(done);
-    const detail = { ...cause, base_sha: baseSha || null, auto_resolve_attempts: done };
-    if (attempt === null) {
-      const counts = await this.conflictCountsOf(it, 1);
-      await this.c.unit("outbox").prComment(it, `auto-resolve-limit:${ack_run ?? `${it.id}:${baseSha}`}`, [
-        `${this.c.unit("local-merge").changeName(it, true)} still conflicts with base \`${baseSha.slice(0, 8) || "unknown"}\`, and the factory already made ${done} automatic resolve attempts for it (limit ${AUTO_RESOLVE_LIMIT} per base commit), so it stopped. Nothing was ${it.change_ref === null ? "committed" : "pushed"}.`,
-        "Comment `/resolve [notes]` to try again, or resolve it by hand.",
-        "",
-        conflictCountsLine(counts),
-        "",
-        footerAfter(it, CONFLICT_PATCH),
-      ].join("\n"));
-      return { patch: CONFLICT_PATCH, actor: SYSTEM, reason: "update_conflict", detail, ...(ack_run === null ? {} : { ack_run }) };
-    }
-    return {
-      patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null },
-      actor: SYSTEM,
-      reason: "auto_resolve_started",
-      detail: { ...detail, attempt },
-      ...(ack_run === null ? {} : { ack_run }),
-      enqueue: { kind: "resolve", idempotency_key: autoResolveKey(it.id, baseSha, attempt), input: { notes: "" } },
-    };
-  }
-
-  /**
-   * Any failed resolve run (agent, scope, tests, push, egress, rate limit, lease): nothing was pushed, so the
-   * PR is as it was. An automatic run under the limit for its base commit enqueues the next attempt at once
-   * (a rate limit waits for its reset), with no comment; the item stays RUNNING (decision changed 2026-11-02).
-   * Otherwise (a human's `/resolve`, or the last automatic attempt) the item goes back to waiting on the
-   * conflict, not to run_failed:*, so the next `/resolve` is accepted. One comment, keyed on the run, names
-   * the code; for an automatic run it also states the conflict counts.
-   */
-  async resolveFailed(it: WorkItem, run: Run, code: string): Promise<Decision> {
-    const auto = parseAutoResolveKey(run.idempotency_key);
-    // provider_setup is never retried (design §5 Restarts): the item waits on a person, as after the last attempt.
-    const next = auto && code !== PROVIDER_SETUP ? nextAutoResolveAttempt(auto.attempt) : null;
-    if (auto && next !== null) {
-      const failedAt = Date.parse(run.finished_at ?? this.c.k.d.clock.now().toISOString());
-      const reset = run.outcome?.status === "failed" && code === "rate_limited" ? run.outcome.reset_at : null;
-      const notBefore = code === "rate_limited" ? (reset ?? iso(failedAt + this.c.k.cfg.retry_max_ms)) : null;
-      return {
-        patch: {},
-        actor: SYSTEM,
-        reason: "auto_resolve_retry",
-        detail: { run_id: run.id, error_code: code, base_sha: auto.base_sha, attempt: next },
-        ack_run: run.id,
-        enqueue: {
-          kind: "resolve",
-          idempotency_key: autoResolveKey(it.id, auto.base_sha, next),
-          input: { notes: "" },
-          ...(notBefore ? { not_before: notBefore } : {}),
-        },
-      };
-    }
-    const detail = run.outcome?.status === "failed" ? run.outcome.detail.trim() : "";
-    const counts = auto ? await this.conflictCountsOf(it, 1) : null;
-    const body = (withDetail: boolean) => [
-      auto
-        ? `The automatic resolve run failed: ${describeFailure(code)}.${withDetail && detail ? ` ${detail}` : ""} That was attempt ${auto.attempt} of ${AUTO_RESOLVE_LIMIT} for base \`${auto.base_sha.slice(0, 8)}\`, so the factory stopped.`
-        : `The resolve run failed: ${describeFailure(code)}.${withDetail && detail ? ` ${detail}` : ""}`,
-      ...codeDetails(code),
-      `Nothing was ${it.change_ref === null ? "committed" : "pushed"}; ${this.c.unit("local-merge").changeName(it)} is unchanged and still has the merge conflict.`,
-      "Comment `/resolve [notes]` to try again, or resolve it by hand.",
-      ...(counts ? ["", conflictCountsLine(counts)] : []),
-      "",
-      footerAfter(it, CONFLICT_PATCH),
-    ].join("\n");
-    // The detail is run output (G5): post it only if the scan passes, else the comment without it.
-    const scan = await this.c.k.d.scanner.scan("comment", body(true));
-    if (auto) await this.c.unit("outbox").prComment(it, `run-failed:${run.id}`, body(scan.clean));
-    else await this.c.unit("outbox").comment(it, `run-failed:${run.id}`, body(scan.clean));
-    return {
-      patch: CONFLICT_PATCH,
-      actor: SYSTEM,
-      reason: "resolve_failed",
-      detail: { run_id: run.id, error_code: code, ...(auto ? { base_sha: auto.base_sha, attempt: auto.attempt } : {}) },
-      ack_run: run.id,
-    };
-  }
-
-  /**
-   * The item's conflict counts from its run history and state changes. `pending`: 1 when the decision being
-   * made sets merge_conflict_pending, which its own state change will record only after the comment.
-   */
-  async conflictCountsOf(it: WorkItem, pending: 0 | 1): Promise<{ automatic: number; person: number }> {
-    const c = conflictCounts(await this.c.k.reader.listRuns(it.id), await this.c.k.reader.listStateChanges(it.id));
-    return { automatic: c.automatic, person: c.person + pending };
-  }
-
-  /**
-   * Two task failures in a row in one step with the same code and detail line (issue #167, decided
-   * 2026-11-07): the item blocks on a human with `repeated_failure` and no third run is queued. One comment,
-   * keyed on the run; the detail line is dropped if the egress scan flags it. `/retry` starts the step afresh.
-   */
-  async repeatedFailure(it: WorkItem, run: Run, code: string, detail: StateChangeDetail): Promise<Decision> {
-    const line = run.outcome?.status === "failed" ? failureLine(run.outcome.detail) : "";
-    const patch = { blocked_on: "human" as const, blocked_reason: REPEATED_FAILURE };
-    const body = (withDetail: boolean) => [
-      "## Factory check: the same failure twice",
-      "",
-      `The ${run.kind} run failed twice in a row the same way: ${describeFailure(code)}.${withDetail && line ? ` ${line}` : ""}`,
-      ...codeDetails(code),
-      "The factory stopped retrying it, since a third run would most likely fail the same way. Fix the cause, then comment `/retry` to run it again with a fresh attempt budget, `/revise <feedback>` to get a new spec written, or `/reject <reason>` to close.",
-      "",
-      footerAfter(it, patch),
-    ].join("\n");
-    const scan = await this.c.k.d.scanner.scan("comment", body(true));
-    const url = await this.c.unit("outbox").comment(it, `run-failed:${run.id}`, body(scan.clean), "failure_comment_url");
-    return {
-      patch: { ...patch, failure_comment_url: url },
-      actor: SYSTEM,
-      reason: REPEATED_FAILURE,
-      detail,
-      ack_run: run.id,
-    };
-  }
-
-  /**
-   * An infra failure that repeats the step's previous run at once (issue #216, decided 2026-11-07): same infra
-   * code and detail, both runs finished within FAST_FAILURE_MS of their start. The item blocks on a human with
-   * `repeated_failure` (restart_count + 1, as for any infra failure) and no retry is queued. One comment, keyed on
-   * the run, names the code, the detail and the tail of the last run's output, as the max_restart dead letter
-   * does; the detail is dropped if the egress scan flags it, then the tail too. `/retry` starts the step afresh.
-   */
-  async repeatedInfraFailure(it: WorkItem, run: Run, code: string, detail: StateChangeDetail): Promise<Decision> {
-    const out = run.outcome?.status === "failed" ? run.outcome : null;
-    const patch = { restart_count: it.restart_count + 1, blocked_on: "human" as const, blocked_reason: REPEATED_FAILURE };
-    const tail = stripAnsi(out?.output_tail || "").trim();
-    const text = stripAnsi(out?.detail ?? "").trim();
-    const body = (withDetail: boolean, withTail: boolean) => [
-      "## Factory check: the same infrastructure failure twice",
-      "",
-      `The ${run.kind} run failed twice in a row the same way, each time within a minute of starting: ${describeFailure(code)}.${withDetail && text ? ` ${text}` : ""}`,
-      ...codeDetails(code),
-      ...(withTail && tail
-        ? ["<details><summary>Output tail of the last run</summary>", "", fenced(tail), "", "</details>", ""]
-        : []),
-      "The factory stopped restarting it, since another run would most likely fail the same way at once. Fix the cause, then comment `/retry` to run it again with a fresh budget, `/revise <feedback>` to get a new spec written, or `/reject <reason>` to close.",
-      "",
-      footerAfter(it, patch),
-    ].join("\n");
-    let text0 = body(true, true);
-    if (!(await this.c.k.d.scanner.scan("comment", text0)).clean) text0 = body(false, true);
-    if (!(await this.c.k.d.scanner.scan("comment", text0)).clean) text0 = body(false, false);
-    const url = await this.c.unit("outbox").comment(it, `run-failed:${run.id}`, text0, "failure_comment_url");
-    return {
-      patch: { ...patch, failure_comment_url: url },
-      actor: SYSTEM,
-      reason: REPEATED_FAILURE,
-      detail,
-      ack_run: run.id,
-    };
-  }
-
-  /**
-   * An implement, review or resolve run that returned needs_human (issue #167): nothing pushed or queued, blocked on `agent_needs_human`, one comment (keyed on
-   * the run) with the reason and question unless the scan flags them, and the footer. An implement stop on an open dependency waits instead (dependency-stop.ts).
-   */
-  async needsHuman(it: WorkItem, run: Run, ask: NeedsHuman, tokens: number): Promise<Decision> {
-    const waits = await dependencyStop(this.c, it, run, ask, tokens); if (waits) return waits;
-    const patch = { blocked_on: "human" as const, blocked_reason: AGENT_NEEDS_HUMAN };
-    const footer = commandFooter(commandState({ ...it, ...patch }, run.kind), run.kind === "implement" && (await this.c.unit("coordination").namesUnmerged(it, ask.reason)) ? [] : ["hold"]);
-    const answer = run.kind === "resolve"
-      ? "Reply `/resolve <your answer>` to run the resolve again with your answer as its notes, or `/retry` to run it again as it is."
-      : `Fix what it needs, then reply \`/retry\` to run the ${run.kind} again, \`/revise <feedback>\` to get a new spec written with your answer, or \`/reject <reason>\` to close.`;
-    const named = [...new Set(ask.paths ?? [])], asked = named.filter((p) => !isCovered(p, it.allowed_paths)), reply = run.kind === "implement" ? retryPathsReply(asked) : null;
-    const granted = run.kind === "implement" ? await autoGrant(this.c, { ...it, ...patch }, run, { named, asked, reply }, tokens) : undefined; if (granted !== undefined) return granted; // test paths or allowed paths only: once (design 05-restarts)
-    const body = (withText: boolean) => [
-      "## Factory: the agent needs a human",
-      "",
-      `The ${run.kind} run stopped and asked for a human instead of going on. Nothing was pushed.`,
-      "",
-      ...(withText
-        ? [
-            "**Reason**", "", quote(withholdReplyLines(ask.reason)), "", "**Question**", "", quote(withholdReplyLines(ask.question)),
-            ...(reply ? ["", "It names paths outside the allowed paths. To allow them and run the implementer again, reply:", "", "```", reply, "```"] : []),
-          ]
-        : ["The agent's reason and question were withheld by the leak scanner."]),
-      "",
-      answer,
-      "",
-      footer,
-    ].join("\n");
-    const scan = await this.c.k.d.scanner.scan("comment", body(true));
-    const url = await this.c.unit("outbox").comment(it, `needs-human:${run.id}`, body(scan.clean), "failure_comment_url");
-    return {
-      patch: { ...patch, token_cost: tokens, failure_comment_url: url },
-      actor: SYSTEM,
-      reason: AGENT_NEEDS_HUMAN,
-      detail: { run_id: run.id, run_kind: run.kind },
-      ack_run: run.id,
-    };
-  }
-
-  /**
-   * An implement failure the factory never retries automatically (design §5 Restarts, decided 2026-11-02; before,
-   * only `diff_too_large`): `no_commits`, `scope_violation`, `egress_blocked` and the pre-push size gate's
-   * `diff_too_large` (design §4). The same spec would fail the same way. Blocks on a human with the usual
-   * run_failed reason, so `/retry` reruns the implement and `/revise` asks for a new spec. One comment, keyed on
-   * the run; its detail is dropped if the egress scan flags it.
-   */
-  async noAutoRetry(it: WorkItem, run: Run, code: string): Promise<Decision> {
-    const detail = run.outcome?.status === "failed" ? run.outcome.detail.trim() : "";
-    const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:implement:${code}` };
-    const body = (withDetail: boolean) => {
-      if (code === DIFF_TOO_LARGE) {
-        const { max_diff_lines, max_diff_files } = sizeCaps(it, this.c.k.settings(it.project));
-        return [
-          "## Factory size check: push blocked",
-          "",
-          `The implement run's diff is too large to review, so nothing was pushed${withDetail && detail ? `: ${detail}` : ""}.`,
-          ...codeDetails(DIFF_TOO_LARGE),
-          `Limits: \`max_diff_lines\` = ${max_diff_lines} (added plus deleted lines), \`max_diff_files\` = ${max_diff_files}.`,
-          "",
-          "Comment `/revise <feedback>` to get a new, smaller spec written with your feedback, or `/retry` to run the implementer again on the same spec; it must make a smaller change.",
-          "",
-          ...suggestedSplit(detail, it.allowed_paths, { max_diff_lines, max_diff_files }),
-          footerAfter(it, patch),
-        ].join("\n");
-      }
-      return [
-        "## Factory check: implement run stopped",
-        "",
-        `The implement run failed: ${describeFailure(code)}.${withDetail && detail ? ` ${detail}` : ""} Nothing was pushed.`,
-        ...codeDetails(code),
-        "The factory does not retry this automatically, since the same spec would most likely fail the same way. Comment `/revise <feedback>` to get a new spec written with your feedback, or `/retry` to run the implementer again on the same spec.",
-        "",
-        footerAfter(it, patch),
-      ].join("\n");
-    };
-    const scan = await this.c.k.d.scanner.scan("comment", body(true));
-    const url = await this.c.unit("outbox").comment(it, `run-failed:${run.id}`, body(scan.clean), "failure_comment_url");
-    return {
-      patch: { ...patch, failure_comment_url: url },
-      actor: SYSTEM,
-      reason: "run_failed",
-      detail: { run_id: run.id, error_code: code },
-      ack_run: run.id,
-    };
-  }
-
-  /**
-   * A run the model provider refused for its account or config (`provider_setup`, design §5 Restarts): the quota,
-   * the API key or the model name. Any run kind; never retried, since waiting does not fix it, and no claim pause.
-   * Blocks on a human with `run_failed:<kind>:provider_setup`, so `/retry` runs it again once fixed. One comment,
-   * keyed on the run, says what to fix and quotes the provider's message, dropped if the egress scan flags it.
-   */
-  async providerSetup(it: WorkItem, run: Run): Promise<Decision> {
-    const detail = run.outcome?.status === "failed" ? run.outcome.detail.trim() : "";
-    const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:${run.kind}:${PROVIDER_SETUP}` };
-    const body = (withDetail: boolean) => [
-      "## Factory check: the model provider needs setup",
-      "",
-      `The ${run.kind} run failed: ${describeFailure(PROVIDER_SETUP)}.${withDetail && detail ? ` ${detail}` : ""}`,
-      ...codeDetails(PROVIDER_SETUP),
-      "The factory does not retry this automatically, since waiting will not fix it. Check the provider account's quota or billing, the API key (`npm run setup`) and the model names in `factory.config.json`, then comment `/retry` to run it again.",
-      "",
-      footerAfter(it, patch),
-    ].join("\n");
-    const scan = await this.c.k.d.scanner.scan("comment", body(true));
-    const url = await this.c.unit("outbox").comment(it, `run-failed:${run.id}`, body(scan.clean), "failure_comment_url");
-    return {
-      patch: { ...patch, failure_comment_url: url },
-      actor: SYSTEM,
-      reason: "run_failed",
-      detail: { run_id: run.id, error_code: PROVIDER_SETUP },
-      ack_run: run.id,
-    };
-  }
-
-  /**
-   * The owner comment for a forge-auth pause (design §5 Restarts): on the item whose run started the pause, once
-   * per pause (the marker is keyed on the pause's end). It names the code and the time only, never the forge's
-   * answer or a credential.
-   */
-  async forgeAuthComment(it: WorkItem, run: Run): Promise<void> {
-    const until = run.outcome?.status === "failed" ? run.outcome.reset_at : null;
-    if (!until) return;
-    await this.c.unit("outbox").comment(it, `forge-auth:${until}`, [
-      "## Factory forge check: implement runs paused",
-      "",
-      `The forge answered 401 or 403 to the factory's credentials during this item's ${run.kind} run (\`${FORGE_AUTH}\`), so implement and update runs are paused for every worker until ${until}. Triage and review runs go on.`,
-      "",
-      "Check the factory's forge credentials (the app installation or token): they need write access to contents and changes on this repository. The run is retried after the pause ends.",
-    ].join("\n"));
-  }
-
-  /**
-   * The owner comment for a preflight-access pause (issue #216): on the item whose run started it, once per pause
-   * (keyed on the pause's end). It names the failed check and the time, never the forge's answer.
-   */
-  async preflightAccessComment(it: WorkItem, run: Run): Promise<void> {
-    const out = run.outcome?.status === "failed" ? run.outcome : null;
-    if (!out?.reset_at) return;
-    const check = preflightCheck(out.detail) ?? "push_access or pr_api";
-    await this.c.unit("outbox").comment(it, `preflight-access:${out.reset_at}`, [
-      "## Factory forge check: implement runs paused",
-      "",
-      `The implement preflight's \`${check}\` check failed during this item's ${run.kind} run (\`${PREFLIGHT_ACCESS}\`), so implement and update runs are paused for every worker until ${out.reset_at}. Triage and review runs go on.`,
-      "",
-      "Check that the factory's forge app or token can still read this repository and its changes, and that the forge answers. The run is retried after the pause ends.",
-    ].join("\n"));
-  }
-
-  /**
-   * The pre-push floor check found changed files under a floor above the item's tier (design §4). Nothing was
-   * pushed. The item stays RUNNING, blocked on a human; `/approve` raises the tier and runs implement again.
-   */
-  async floorBlock(it: WorkItem, run: Run, data: Record<string, unknown>, tokens: number): Promise<Decision> {
-    const hits = parseFloorHits(data.floor_paths);
-    const need = hits.reduce((m, h) => Math.max(m, h.tier), 0);
-    if (hits.length === 0 || data.required_tier !== need) return this.retryOrBlock(it, run, "task", "invalid_output");
-    const patch = { token_cost: tokens, blocked_on: "human" as const, blocked_reason: FLOOR_TIER };
-    await this.c.unit("outbox").comment(it, `floor:${run.id}`, [
-      "## Factory floor check: push blocked",
-      "",
-      `This item is tier ${it.tier ?? 1}, but the implementer changed files under a floor that needs a higher tier, so nothing was pushed:`,
-      "",
-      ...hits.map((h) => `- \`${h.path}\` needs tier ${h.tier}`),
-      "",
-      `Reply \`/approve\` to raise the item to tier ${need} and run the implementer again, or \`/reject <reason>\` to close it.`,
-      "",
-      footerAfter(it, patch),
-    ].join("\n"));
-    return {
-      patch,
-      actor: SYSTEM,
-      reason: "floor_blocked",
-      detail: { run_id: run.id, item_tier: it.tier, required_tier: need, paths: hits.map((h) => h.path).join(",").slice(0, 1000) },
-      ack_run: run.id,
-    };
-  }
-
-  /**
-   * The dead-letter note: what failed, its code, and the tail of the last output. Posted only if G5 passes.
-   * Returns the comment's URL, or null when the scan withheld it.
-   */
-  async lastAttemptComment(it: WorkItem, run: Run, code: string, limit: string, n: number, footer: string): Promise<string | null> {
-    const out = run.outcome?.status === "failed" ? run.outcome : null;
-    const what = limit === "max_attempts"
-      ? `The ${run.kind} run failed ${n} times (limit \`max_attempts\` = ${this.c.k.settings(it.project).max_attempts}), so the factory stopped retrying it.`
-      : limit === CHECKS_ENV
-        ? `The ${run.kind} run's checks failed on the base branch too ${n} times (the factory requeues at most ${CHECKS_ENV_LIMIT}), so it stopped retrying it. Fix or skip the failing tests on the base branch first.`
-        : `The ${run.kind} run hit ${n} infrastructure failures (limit \`max_restart\` = ${this.c.k.cfg.max_restart}), so the factory stopped restarting it.`;
-    const tail = stripAnsi(out?.output_tail || out?.detail || "").trim();
-    const first = firstErrorLine(tail);
-    const tests = failingTests(tail);
-    const body = [
-      what,
-      "",
-      `Last error: ${describeFailure(code)}.${out?.detail ? ` ${stripAnsi(out.detail)}` : ""}`,
-      ...codeDetails(code),
-      ...(first ? ["First error line:", "", fenced(first), ""] : []),
-      ...(tests.length ? ["Failing tests:", "", ...tests.map((t) => `- \`${t.replace(/`/g, "'")}\``), ""] : []),
-      ...(tail
-        ? ["<details><summary>Output tail of the last run</summary>", "", fenced(tail), "", "</details>", ""]
-        : ["The last run left no output.", ""]),
-      "Comment `/retry` to run it again.",
-      "",
-      footer,
-    ].join("\n");
-    const scan = await this.c.k.d.scanner.scan("comment", body);
-    if (!scan.clean) {
-      this.c.k.d.log.warn("last-attempt comment blocked by the egress scan; not posted", {
-        work_item_id: it.id,
-        run_id: run.id,
-        rules: scan.findings.map((f) => f.rule).join(","),
-      });
-      return null;
-    }
-    return this.c.unit("outbox").comment(it, `run-failed:${run.id}`, body, "failure_comment_url");
   }
 }
 

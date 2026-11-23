@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { IMPROVER, MAX_NEW_ITEMS, SYSTEM_ITEM, enqueueImprove, fileReport, issueMarker, manualWindow, patternKey, systemSource } from "../src/core/improver.js";
+import { IMPROVER, MAX_NEW_ITEMS, PUSHBACK, SYSTEM_ITEM, enqueueImprove, fileReport, issueMarker, manualWindow, patternKey, systemSource } from "../src/core/improver.js";
 import { Worker } from "../src/worker/index.js";
 import type { FailureGroup, ImproveDraft, ImproveReport, ImproveWindow, RunId, SourceRef, Timestamp, UserId, WorkItem, WorkerId, WorkItemId } from "../src/core/types.js";
 import type { AgentRunner } from "../src/interfaces/agent-runner.js";
@@ -389,6 +389,25 @@ describe("improve filing: fix specs", () => {
     expect(await w.store.listAlerts({ limit: 10 })).toHaveLength(2);
   });
 
+  it("a pushback group that needs a person stores no alert; the report still lists it, skipped with needs_person", async () => {
+    const w = await local();
+    const runs = [await w.fail("provider_setup"), await w.fail("provider_setup"), await w.fail("provider_setup")];
+    const other = [await w.fail("quota_hit"), await w.fail("quota_hit"), await w.fail("quota_hit")];
+    const report = await draftedReport(w.store, w.clock, [
+      await groupOf(w.store, PUSHBACK, runs, drafted({ needs_person: true })),
+      await groupOf(w.store, "quota_hit", other, drafted({ needs_person: true })),
+    ]);
+    const source = w.sources[0]!;
+    const done = await fileReport({ store: w.store, scanner: w.scanner, clock: w.clock, file: source.fileIssue!.bind(source), comment: async () => {} }, report);
+    expect(done.groups.map((g) => [g.error_code, g.filing])).toEqual([
+      [PUSHBACK, { status: "skipped", reason: "needs_person" }],
+      ["quota_hit", { status: "skipped", reason: "needs_person" }],
+    ]);
+    expect(await filedItems(w.store)).toEqual([]);
+    // The other group keeps its needs_person alert; the pushback group stores none.
+    expect((await w.store.listAlerts({ limit: 10 })).map((a) => a.pattern_key)).toEqual([`needs_person:${patternKey(report.groups[1]!)}`]);
+  });
+
   it("a draft that needs no person and touches no gate path gets one fix item with its triage run queued; of two replicas one files it", async () => {
     const w = await local();
     const runs = [await w.fail("checks_failed"), await w.fail("checks_failed"), await w.fail("checks_failed")];
@@ -456,7 +475,7 @@ describe("improve filing: a stall group that followed a host sleep", () => {
   const slept = (w: { store: FactoryStore; clock: FakeClock }, run: RunId | null) =>
     w.store.recordHostSleep({ worker_id: w1, woke_at: w.clock.now().toISOString() as Timestamp, gap_ms: 600_000, run_id: run });
 
-  it("is not filed: no item, no triage run, its filing skipped with host_sleep, one information alert a day that holds nothing", async () => {
+  it("is not filed: no item, no triage run, its filing skipped with host_sleep, and no alert is stored", async () => {
     const w = await local();
     const runs = [await w.fail(AGENT_STALLED, "silent"), await w.fail(AGENT_STALLED, "silent")];
     await slept(w, runs[1]!);
@@ -467,17 +486,12 @@ describe("improve filing: a stall group that followed a host sleep", () => {
     expect(await filedItems(w.store)).toEqual([]);
     expect(await w.store.listRunsByKind("triage", ["queued"])).toEqual([]);
     expect(await w.store.getFiledPattern(PROJECT.key, patternKey(report.groups[0]!))).toBeNull();
-    const alerts = await w.store.listAlerts({ limit: 10 });
-    expect(alerts.map((a) => [a.pattern, a.pattern_key, a.error_code, a.count])).toEqual([
-      ["repeated_error", `host_sleep:${patternKey(report.groups[0]!)}`, AGENT_STALLED, 2],
-    ]);
-    expect(alerts[0]!.detail).toContain("followed a host sleep, so no fix item was filed");
-    expect(w.scanner.scans.some((s) => s.channel === "ui" && s.content === alerts[0]!.detail)).toBe(true);
-    // The alert holds no item: the stalled items are not blocked.
+    expect(await w.store.listAlerts({ limit: 10 })).toEqual([]);
+    // Nothing holds the stalled items.
     for (const id of report.groups[0]!.work_item_ids) expect(await w.store.getWorkItem(id)).toMatchObject({ blocked_on: "none" });
-    // Another improve run the same day stores no second alert and files nothing.
+    // Another improve run the same day skips it again, stores no alert and files nothing.
     expect((await w.improve()).groups[0]!.filing).toEqual({ status: "skipped", reason: "host_sleep" });
-    expect(await w.store.listAlerts({ limit: 10 })).toHaveLength(1);
+    expect(await w.store.listAlerts({ limit: 10 })).toEqual([]);
     expect(await filedItems(w.store)).toEqual([]);
   });
 
@@ -505,17 +519,6 @@ describe("improve filing: a stall group that followed a host sleep", () => {
     expect(comments).toEqual([]);
   });
 
-  it("a flagged alert text is stored without its detail", async () => {
-    const w = await local();
-    const runs = [await w.fail(AGENT_STALLED, "silent"), await w.fail(AGENT_STALLED, "silent")];
-    await slept(w, runs[0]!);
-    const report = await draftedReport(w.store, w.clock, [{ ...(await groupOf(w.store, AGENT_STALLED, runs, { status: "skipped", reason: "call_cap" })), detail: "silent" }]);
-    const flagUi: EgressScanner = { scan: async (channel) => (channel === "ui" ? { clean: false, findings: [{ rule: "test_leak", channel }] } : { clean: true }) };
-    const source = w.sources[0]!;
-    await fileReport({ store: w.store, scanner: flagUi, clock: w.clock, file: source.fileIssue!.bind(source), comment: async () => {} }, report);
-    expect((await w.store.listAlerts({ limit: 10 })).map((a) => [a.pattern_key, a.detail])).toEqual([[`host_sleep:${patternKey(report.groups[0]!)}`, null]]);
-  });
-
   it("a stall group with no host sleep on its runs is filed and triaged as before; a sleep of another run or an idle tick does not count", async () => {
     const w = await local();
     for (let i = 0; i < 3; i++) await w.fail(AGENT_STALLED, "silent");
@@ -527,7 +530,6 @@ describe("improve filing: a stall group that followed a host sleep", () => {
     expect(items).toHaveLength(1);
     expect(report.groups.map((g) => g.filing)).toEqual([{ status: "filed", ref: items[0]!.source }]);
     expect((await w.store.listRuns(items[0]!.id)).map((r) => [r.kind, r.status])).toEqual([["triage", "queued"]]);
-    expect((await w.store.listAlerts({ limit: 10 })).filter((a) => a.pattern_key.startsWith("host_sleep:"))).toEqual([]);
   });
 
   it("a group with another error code is filed as before, even when its runs held a host sleep", async () => {
