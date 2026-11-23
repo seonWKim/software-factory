@@ -1,0 +1,340 @@
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import type { FactoryConfig } from "../src/core/config.js";
+import { WORKER_KINDS } from "../src/core/settings.js";
+import type { Run, RunOutcome, UserId, WorkItem, WorkItemPatch, WorkerId } from "../src/core/types.js";
+import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
+import { CAPTURE_ENV, captureEnv, chromeBrowser } from "../src/shared/chrome-browser.js";
+import {
+  type BrowserSession, CaptureUnavailable, SCREENSHOT_SIZES, SCREENSHOT_THEMES, type ScreenshotBrowser, captureAll, capturePages, screenshotKey,
+} from "../src/shared/screenshots.js";
+import { Worker } from "../src/worker/index.js";
+import { loadRunKinds } from "../src/worker/run-kind.js";
+import { BUILD_COMMAND, screenshotRun } from "../src/worker/runs/screenshot/screenshot.run.js";
+import { FakeBroker } from "./helpers/fakes/broker.js";
+import { cleanScanner, config, prompts, silent } from "./helpers/fakes/config.js";
+import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
+import { FakeSource } from "./helpers/fakes/source.js";
+import { PROJECT_KEY, newStore } from "./helpers/store.js";
+
+// Screenshots of changed pages before merge (design 04-screenshots): a passing review of a change under a
+// `repo.ui_check` path queues one screenshot run; it captures the fixture dashboard's pages at 390px and 1280px in
+// light and dark into shared storage; one screenshot review follows and posts one comment. No step changes a stage,
+// blocked_on or blocked_reason. A fake browser and memory storage stand in: no test starts a real Chrome.
+
+const UI = { command: ["npm", "run", "-s", "check:responsive"], paths: ["web/", "src/ui/"] };
+const actor = { kind: "system" as const, id: "system:test" };
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+const PAGES_TS = `export const PAGES = [\n  { path: "", label: "Floor" },\n  { path: "items", label: "Work" },\n  { path: "settings", label: "Settings" },\n];\n`;
+const FIXTURE = { item: "local-fixture-item", run: "run_fixture" };
+
+/** A browser on a fake fixture: records what it opened and shot; `failAt` fails that shot (1-based), `refuse` fails the open. */
+function fakeBrowser(o: { failAt?: number; refuse?: Error } = {}) {
+  const opened: string[] = [];
+  const shots: string[] = [];
+  let closed = 0;
+  const browser: ScreenshotBrowser = {
+    async open(root) {
+      if (o.refuse) throw o.refuse;
+      opened.push(root);
+      const session: BrowserSession = {
+        pages: capturePages(PAGES_TS, FIXTURE),
+        async shoot(page, at) {
+          shots.push(`${page.path}@${at.width}x${at.height}:${at.theme}`);
+          if (shots.length === o.failAt) throw new Error("Page.captureScreenshot: target closed\nstack");
+          return PNG;
+        },
+        async close() {
+          closed++;
+        },
+      };
+      return session;
+    },
+  };
+  return { browser, opened, shots, closed: () => closed };
+}
+
+const signal = new AbortController().signal;
+
+describe("the capture set", () => {
+  it("is every sidebar page, then the item page and the transcript page, each at 390px and 1280px in light and dark", async () => {
+    const f = fakeBrowser();
+    const storage = new MemoryStorage();
+    const out = await captureAll(f.browser, storage, { item_id: "it1", run_id: "run1", root: "/wt/1", signal });
+    expect(out.reason).toBeNull();
+    const pages = ["floor", "items", "settings", "item", "transcript"];
+    expect([...new Set(out.captures.map((c) => c.page))]).toEqual(pages);
+    for (const page of pages) {
+      expect(out.captures.filter((c) => c.page === page).map((c) => `${c.width}-${c.theme}`)).toEqual(["390-light", "390-dark", "1280-light", "1280-dark"]);
+    }
+    expect(out.captures.find((c) => c.page === "item")).toMatchObject({ key: "it1/run1/item-390-light.png" });
+    expect([...storage.data.keys()]).toEqual(out.captures.map((c) => c.key));
+    // The item and transcript pages are the fixture's, at the heights check:responsive uses.
+    expect(f.shots).toContain(`items/${FIXTURE.item}@390x844:light`);
+    expect(f.shots).toContain(`items/${FIXTURE.item}/runs/${FIXTURE.run}@1280x800:dark`);
+    expect(f.opened).toEqual(["/wt/1"]);
+    expect(f.closed()).toBe(1);
+  });
+
+  it("the four captures are fixed: two widths and two themes, no setting", () => {
+    expect(SCREENSHOT_SIZES.map((s) => s.width)).toEqual([390, 1280]);
+    expect([...SCREENSHOT_THEMES]).toEqual(["light", "dark"]);
+    expect(screenshotKey("it", "run", "settings", 1280, "dark")).toBe("it/run/settings-1280-dark.png");
+  });
+
+  it("reads the sidebar pages from the checkout's web/src/pages.ts, as check:responsive does", async () => {
+    const real = await readFile(join(import.meta.dirname, "..", "web", "src", "pages.ts"), "utf8");
+    const pages = capturePages(real, FIXTURE).map((p) => p.name);
+    expect(pages).toEqual(expect.arrayContaining(["items", "settings", "item", "transcript"]));
+    expect(pages.slice(-2)).toEqual(["item", "transcript"]);
+  });
+});
+
+describe("a capture that fails", () => {
+  it("ends with the captures it has and a reason, and closes the browser", async () => {
+    const f = fakeBrowser({ failAt: 3 });
+    const storage = new MemoryStorage();
+    const out = await captureAll(f.browser, storage, { item_id: "it1", run_id: "run1", root: "/wt/1", signal });
+    expect(out.captures.map((c) => c.key)).toEqual(["it1/run1/floor-390-light.png", "it1/run1/floor-390-dark.png"]);
+    expect(out.reason).toBe("the capture of floor at 1280px, light failed: Page.captureScreenshot: target closed");
+    expect(storage.data.size).toBe(out.captures.length);
+    expect(f.closed()).toBe(1);
+  });
+
+  it("a browser that cannot start (no Chrome) gives its reason and no capture", async () => {
+    const out = await captureAll(fakeBrowser({ refuse: new CaptureUnavailable("Chrome is not installed on this worker") }).browser, new MemoryStorage(), { item_id: "i", run_id: "r", root: "/x", signal });
+    expect(out).toEqual({ captures: [], reason: "Chrome is not installed on this worker" });
+  });
+});
+
+describe("the Chrome browser", () => {
+  const dirs: string[] = [];
+  afterEach(async () => {
+    for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true });
+  });
+  /** A checkout whose capture script is a stand-in (plain Node, no Chrome) that speaks the protocol. */
+  async function checkout(script: string): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), "sf-shots-test-"));
+    dirs.push(root);
+    await mkdir(join(root, "scripts", "responsive"), { recursive: true });
+    await writeFile(join(root, "scripts", "responsive", "capture.mjs"), script);
+    return root;
+  }
+
+  it("passes the capture script only the env Chrome needs: no token or secret", () => {
+    const env = captureEnv({ PATH: "/usr/bin", HOME: "/home/o", GITHUB_TOKEN: "ghp_x", ANTHROPIC_API_KEY: "sk-x", SF_SECRET: "s", CHROME_PATH: "/c" });
+    expect(env).toEqual({ PATH: "/usr/bin", HOME: "/home/o", CHROME_PATH: "/c" });
+    expect(CAPTURE_ENV.some((k) => /TOKEN|KEY|SECRET|PASSWORD/.test(k))).toBe(false);
+  });
+
+  it("captures through the script's JSON lines, one PNG per shot", async () => {
+    const root = await checkout([
+      `import { createInterface } from "node:readline";`,
+      `const out = (m) => process.stdout.write(JSON.stringify(m) + "\\n");`,
+      `out({ ready: { item: "it", run: "r", pages_ts: ${JSON.stringify(PAGES_TS)} } });`,
+      `for await (const line of createInterface({ input: process.stdin })) {`,
+      `  const { shoot } = JSON.parse(line);`,
+      `  out(shoot.path === "settings" ? { error: "boom" } : { png: Buffer.from(shoot.path + "@" + shoot.width + shoot.theme).toString("base64") });`,
+      `}`,
+    ].join("\n"));
+    const storage = new MemoryStorage();
+    const out = await captureAll(chromeBrowser(), storage, { item_id: "i", run_id: "r", root, signal });
+    expect(out.captures.map((c) => c.page)).toEqual(["floor", "floor", "floor", "floor", "items", "items", "items", "items"]);
+    expect(out.reason).toBe("the capture of settings at 390px, light failed: boom");
+    expect(Buffer.from(storage.data.get("i/r/items-1280-dark.png")!).toString()).toBe("items@1280dark");
+  });
+
+  it("a script that reports Chrome missing, or a checkout with no script, is a reason", async () => {
+    const root = await checkout(`process.stdout.write(JSON.stringify({ error: "Chrome is not installed on this worker (set CHROME_PATH)", unavailable: true }) + "\\n");`);
+    expect(await captureAll(chromeBrowser(), new MemoryStorage(), { item_id: "i", run_id: "r", root, signal })).toEqual({
+      captures: [], reason: "Chrome is not installed on this worker (set CHROME_PATH)",
+    });
+    const empty = await mkdtemp(join(tmpdir(), "sf-shots-test-"));
+    dirs.push(empty);
+    expect((await captureAll(chromeBrowser(), new MemoryStorage(), { item_id: "i", run_id: "r", root: empty, signal })).reason).toBe("the checkout has no scripts/responsive/capture.mjs");
+  });
+
+  it("the capture script seeds the fixture store only and writes no file in the repository or .playwright-mcp/", async () => {
+    const text = await readFile(join(import.meta.dirname, "..", "scripts", "responsive", "capture.mjs"), "utf8");
+    expect(text).toMatch(/import\("\.\/fixture\.mjs"\)/);
+    expect(text).not.toMatch(/factory\.config|\.factory\/|\.playwright-mcp|writeFile/);
+  });
+});
+
+/** A store, a controller and a worker whose screenshot runs use `browser` (Chrome, the default, finds no script in the fake folder). */
+async function harness(o: { ui_check?: FactoryConfig["repo"]["ui_check"] | null; exits?: Record<string, number> } = {}) {
+  const { store, clock } = await newStore();
+  const ui = o.ui_check === null ? {} : { ui_check: o.ui_check ?? UI };
+  const cfg: FactoryConfig = { ...config, repo: { ...config.repo, ...ui } };
+  const controller = new ControllerRole({ store, sources: [new FakeSource()], auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
+  const sandbox = new FakeSandbox();
+  Object.assign(sandbox.exits, o.exits ?? {});
+  const runner = new FakeRunner({ review: () => ({ output: { verdict: "pass", tier: 2, findings: [{ kind: "code", text: "breaks decision rule 1 on items at 390px, dark" }], summary: "one rule" } }) });
+  const storage = new MemoryStorage();
+  const worker = new Worker({
+    id: "w1" as WorkerId, store, sandbox, runner, broker: new FakeBroker(), storage, clock, config: cfg, prompts, log: silent, scanner: cleanScanner,
+    toolEnv: {}, awake: new NoKeepAwake(),
+  });
+  const inReview = async (patch: WorkItemPatch = {}): Promise<WorkItem> => {
+    const { item } = await store.createWorkItem({ source: { type: "local", id: "local-1", link: "local:local-1" }, requester_id: "local:me" as UserId, project: PROJECT_KEY, problem: "p", resources: [] }, actor);
+    const r = await store.transition({ id: item.id, expected_version: item.version, actor, reason: "setup", patch: { stage: "REVIEW", tier: 2, pr_files: ["web/src/views/pages.tsx"], ...patch } });
+    if (!r.ok) throw new Error("setup failed");
+    return r.item;
+  };
+  /** Claims the queued run of `kind` and finishes it with `outcome`. */
+  const finish = async (kind: Run["kind"], outcome: RunOutcome): Promise<Run> => {
+    const run = await store.claimRun({ worker_id: "w9" as WorkerId, kinds: [kind], lease_ms: 60_000 });
+    if (!run) throw new Error(`no ${kind} run queued`);
+    await store.completeRun(run.id, run.lease!.token, outcome);
+    return run;
+  };
+  const review = async (it: WorkItem, verdict: "pass" | "bug", findings: unknown[] = []) => {
+    await store.enqueueRun({ work_item_id: it.id, kind: "review", idempotency_key: `${it.id}:review:test` });
+    const run = await finish("review", { status: "succeeded", summary: "", data: { review: { verdict, tier: 2, findings, summary: "s" }, head_sha: "h1" } });
+    await controller.tickRuns();
+    return run;
+  };
+  const runs = async (it: WorkItem, kind: Run["kind"]) => (await store.listRuns(it.id)).filter((r) => r.kind === kind);
+  const comments = async (it: WorkItem) => (await store.listItemMessages(it.id)).filter((m) => m.marker.startsWith("<!-- factory:screenshot-review:")).map((m) => m.body);
+  const state = async (it: WorkItem) => {
+    const x = (await store.getWorkItem(it.id))!;
+    return { stage: x.stage, blocked_on: x.blocked_on, blocked_reason: x.blocked_reason };
+  };
+  return { store, cfg, controller, worker, sandbox, runner, storage, inReview, finish, review, runs, comments, state };
+}
+
+describe("the trigger after a review", () => {
+  it("a passing review of a change under a repo.ui_check path queues one screenshot run, keyed on the item and the review", async () => {
+    const h = await harness();
+    const it1 = await h.inReview();
+    const rev = await h.review(it1, "pass");
+    const shots = await h.runs(it1, "screenshot");
+    expect(shots).toHaveLength(1);
+    expect(shots[0]).toMatchObject({ status: "queued", idempotency_key: `${it1.id}:screenshot:${rev.id}`, input: { review_run_id: rev.id } });
+    // Applying the same review again queues nothing more.
+    await h.controller.tickRuns();
+    expect(await h.runs(it1, "screenshot")).toHaveLength(1);
+  });
+
+  it("a bug verdict, a spec finding, a change outside the UI paths, no pr_files or no repo.ui_check queues none", async () => {
+    const cases: [string, Parameters<typeof harness>[0], WorkItemPatch, "pass" | "bug", unknown[]][] = [
+      ["bug", {}, {}, "bug", [{ kind: "code", text: "x" }]],
+      ["spec finding", {}, {}, "pass", [{ kind: "spec", text: "needs a file" }]],
+      ["outside", {}, { pr_files: ["src/core/policy.ts", "docs/design.md"] }, "pass", []],
+      ["no pr_files", {}, { pr_files: null }, "pass", []],
+      ["no ui_check", { ui_check: null }, {}, "pass", []],
+    ];
+    for (const [name, opts, patch, verdict, findings] of cases) {
+      const h = await harness(opts);
+      const it1 = await h.inReview(patch);
+      await h.review(it1, verdict, findings);
+      expect(await h.runs(it1, "screenshot"), name).toEqual([]);
+    }
+  });
+
+  it("the paths are repo.ui_check's", async () => {
+    const h = await harness({ ui_check: { command: ["x"], paths: ["app/"] } });
+    const it1 = await h.inReview({ pr_files: ["app/page.tsx"] });
+    await h.review(it1, "pass");
+    expect(await h.runs(it1, "screenshot")).toHaveLength(1);
+  });
+});
+
+describe("the screenshot run and its review", () => {
+  it("is a run kind every worker claims, with its run file, in a folder", async () => {
+    expect(WORKER_KINDS).toContain("screenshot");
+    expect((await loadRunKinds()).get("screenshot")).toMatchObject({ name: "screenshot", folder: true });
+  });
+
+  it("builds the branch, then captures with the browser it is handed", async () => {
+    const h = await harness();
+    const it1 = await h.inReview();
+    await h.review(it1, "pass");
+    const run = (await h.store.claimRun({ worker_id: "w1" as WorkerId, kinds: ["screenshot"], lease_ms: 60_000 }))!;
+    const handle = await h.sandbox.create({ repo: "/repo", branch: "factory/x", base_ref: "main" });
+    const f = fakeBrowser();
+    const kind = screenshotRun(f.browser);
+    const data = await kind.execute(h.worker, { run, item: it1, ctx: {} as never, signal, model: "cheap", step: (_id, fn) => fn({} as never), handle });
+    expect(h.sandbox.commands).toEqual(expect.arrayContaining(["npm ci", BUILD_COMMAND.join(" ")]));
+    expect(f.opened).toEqual([handle.workdir]);
+    expect(data).toMatchObject({ reason: null, review_run_id: run.input?.review_run_id });
+    expect((data.captures as unknown[]).length).toBe(5 * 4);
+    expect([...h.storage.data.keys()].every((k) => k.startsWith(`${it1.id}/${run.id}/`))).toBe(true);
+  });
+
+  it("a failed build is a reason, never a run failure, and captures nothing", async () => {
+    const h = await harness({ exits: { [BUILD_COMMAND.join(" ")]: 1 } });
+    const it1 = await h.inReview();
+    await h.review(it1, "pass");
+    const run = (await h.store.claimRun({ worker_id: "w1" as WorkerId, kinds: ["screenshot"], lease_ms: 60_000 }))!;
+    const handle = await h.sandbox.create({ repo: "/repo", branch: "factory/x", base_ref: "main" });
+    const f = fakeBrowser();
+    const data = await screenshotRun(f.browser).execute(h.worker, { run, item: it1, ctx: {} as never, signal, model: "cheap", step: (_id, fn) => fn({} as never), handle });
+    expect(data).toMatchObject({ captures: [], reason: expect.stringMatching(/^the build failed/) });
+    expect(f.opened).toEqual([]);
+  });
+
+  it("with no Chrome: the run ends with its reason, one screenshot review lists it as not captured and posts one comment; no state changes", async () => {
+    const h = await harness();
+    const it1 = await h.inReview();
+    await h.review(it1, "pass");
+    const before = await h.state(it1);
+    // The worker's screenshot run: Chrome's browser finds no capture script in the fake folder.
+    while (await h.worker.tick()) await h.controller.tickRuns();
+    await h.controller.tickRuns();
+    const [shot] = await h.runs(it1, "screenshot");
+    expect(shot).toMatchObject({ status: "succeeded", outcome: { data: { captures: [], reason: "the checkout has no scripts/responsive/capture.mjs" } } });
+    const followUp = (await h.runs(it1, "review")).filter((r) => r.input?.screenshot_review === true);
+    expect(followUp).toHaveLength(1);
+    expect(followUp[0]).toMatchObject({
+      idempotency_key: `${it1.id}:review:screenshots:${shot!.id}`,
+      input: { screenshot_review: true, screenshot_run_id: shot!.id, screenshots: { captures: [], reason: "the checkout has no scripts/responsive/capture.mjs" } },
+    });
+    // No agent ran for a review with nothing to look at.
+    expect(h.runner.specs).toEqual([]);
+    const [comment, ...more] = await h.comments(it1);
+    expect(more).toEqual([]);
+    expect(comment).toContain("- screenshots not captured: the checkout has no scripts/responsive/capture.mjs");
+    expect(await h.state(it1)).toEqual(before);
+    // Every run is acknowledged; nothing else is queued.
+    expect((await h.store.listUnacknowledgedRuns(20)).filter((r) => r.work_item_id === it1.id)).toEqual([]);
+  });
+
+  it("with captures: the reviewer gets the images and its findings post as one comment of kind code; no state changes", async () => {
+    const h = await harness();
+    const it1 = await h.inReview();
+    await h.review(it1, "pass");
+    const before = await h.state(it1);
+    const captures = [{ page: "items", width: 390, theme: "dark", key: `${it1.id}/run_x/items-390-dark.png` }];
+    await h.storage.put(captures[0]!.key, PNG);
+    await h.finish("screenshot", { status: "succeeded", summary: "", data: { captures, reason: null } });
+    await h.controller.tickRuns();
+    while (await h.worker.tick()) await h.controller.tickRuns();
+    await h.controller.tickRuns();
+    expect(h.runner.specs).toHaveLength(1);
+    expect(h.runner.specs[0]!.prompt).toContain("`.factory-screenshots/items-390-dark.png`: page items, 390px, dark");
+    expect(h.runner.specs[0]!.prompt).toContain("design-system/patterns.md");
+    const done = (await h.runs(it1, "review")).find((r) => r.input?.screenshot_review === true)!;
+    expect(done.outcome).toMatchObject({ status: "succeeded", data: { screenshot_review: { findings: [{ kind: "code", text: "breaks decision rule 1 on items at 390px, dark" }], unverified: [] } } });
+    expect(done.outcome?.status === "succeeded" && done.outcome.data.review).toBeUndefined();
+    const [comment, ...more] = await h.comments(it1);
+    expect(more).toEqual([]);
+    expect(comment).toContain("- breaks decision rule 1 on items at 390px, dark");
+    expect(await h.state(it1)).toEqual(before);
+  });
+
+  it("a failed screenshot run still queues the screenshot review, with the failure as its reason", async () => {
+    const h = await harness();
+    const it1 = await h.inReview();
+    await h.review(it1, "pass");
+    await h.finish("screenshot", { status: "failed", error_code: "lease_lost", detail: "x", infra: true });
+    await h.controller.tickRuns();
+    const followUp = (await h.runs(it1, "review")).find((r) => r.input?.screenshot_review === true);
+    expect(followUp?.input?.screenshots).toEqual({ captures: [], reason: "the screenshot run failed (lease_lost)" });
+    // Not retried: the one screenshot run.
+    expect(await h.runs(it1, "screenshot")).toHaveLength(1);
+  });
+});
