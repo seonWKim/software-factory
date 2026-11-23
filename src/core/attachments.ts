@@ -6,6 +6,14 @@
 import { commandPhase, phaseLabel } from "./commands.js";
 import type { Timestamp, UserId, WorkItem, WorkItemId } from "./types.js";
 
+/** The `at` detail of added context: a `revise_queued` state change on a New or in-triage item (design 02-attachments). */
+export const AT_TRIAGE = "triage";
+
+/** Every context the owner added to the item while it was New or in triage, oldest first, from its state changes. */
+export function addedContext(changes: readonly { reason: string; detail: Readonly<Record<string, unknown>> | null }[]): string[] {
+  return changes.flatMap((c) => (c.reason === "revise_queued" && c.detail?.at === AT_TRIAGE && typeof c.detail.feedback === "string" ? [c.detail.feedback] : []));
+}
+
 /** The image types an attachment may have, found from the file's first bytes, never from its name. */
 export const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"] as const;
 export type ImageType = (typeof IMAGE_TYPES)[number];

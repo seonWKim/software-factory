@@ -3,7 +3,8 @@ import { TRIAGE_SCHEMA, parseTriage } from "../../../core/outputs.js";
 import type { Run, WorkItem } from "../../../core/types.js";
 import type { SandboxHandle } from "../../../interfaces/sandbox.js";
 import { ownerAnswersFor } from "../../../shared/command-notes.js";
-import { RunFailure, renderOwnerAnswers, renderRevision, renderWorkItem, tail } from "../../support.js";
+import { RunFailure, renderAttachments, renderOwnerAnswers, renderRevision, renderWorkItem, tail } from "../../support.js";
+import { addedContext } from "../../../core/attachments.js";
 import type { Worker } from "../../runner.js";
 import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
 
@@ -15,11 +16,16 @@ async function triage(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle
   return step("run-agent", async () => {
     // The owner's stored answers bind every re-write of the spec, a phase's from its parent's split (design 04-agents.md).
     const answers = renderOwnerAnswers(await ownerAnswersFor(item, (id) => w.d.store.listStateChanges(id)));
-    const prompt = item.revision_count > 0
-      ? await w.withIndex(renderRevision(item, answers), [item.issue_text ?? item.problem, item.spec_feedback ?? ""].join("\n"))
-      : await w.withIndex(renderWorkItem(item, { includeSpec: false, answers }), item.problem);
+    // Context added on a New or in-triage item and its attachments (design 02-attachments): untrusted, after the filed text; images as image input.
+    const [contexts, attachments] = [addedContext(await w.d.store.listStateChanges(item.id)), await w.d.store.listAttachments(item.id)];
+    const added = renderAttachments(contexts, attachments);
+    const images = attachments.flatMap((a) => (a.kind === "image" && a.media_type && a.data ? [{ media_type: a.media_type, data: a.data }] : []));
+    const base = item.revision_count > 0
+      ? await w.withIndex(renderRevision(item, answers), [item.issue_text ?? item.problem, item.spec_feedback ?? "", ...contexts].join("\n"))
+      : await w.withIndex(renderWorkItem(item, { includeSpec: false, answers }), [item.problem, ...contexts].join("\n"));
+    const prompt = added ? `${base}\n\n${added}` : base;
     const ask = (text: string, agentStep?: string) =>
-      w.agent(run, item, handle, signal, { prompt: text, model_class: model, output_schema: TRIAGE_SCHEMA }, agentStep);
+      w.agent(run, item, handle, signal, { prompt: text, model_class: model, output_schema: TRIAGE_SCHEMA, ...(images.length > 0 ? { images } : {}) }, agentStep);
     let result = await ask(prompt);
     let spec = parseTriage(result.output);
     if (!spec.ok && spec.error.endsWith(MARKUP_REFUSAL)) {
