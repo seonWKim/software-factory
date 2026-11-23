@@ -7,7 +7,8 @@ export default defineSetting({
   owner: "controller",
   type: "object",
   default: {
-    "mode": "hold"
+    "mode": "run_after_minutes",
+    "minutes": 120
   },
   description: "What a run held by coordination cost does: wait for /approve, start after some minutes, or start.",
   applies: "the next claim",
