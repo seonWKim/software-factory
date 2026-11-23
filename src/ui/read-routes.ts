@@ -5,10 +5,10 @@
 // needs the CSRF token; plugins-import-api.ts), /api/v1/calendar (calendar-api.ts), /api/v1/model-credential (the
 // dialog's secret names; model-credential.ts), /api/v1/supervisor (what Migrate now, Start and Restart now may do;
 // migrate-api.ts), /api/v1/calendar/events (the Calendar page's range read; calendar-events-api.ts), /api/v1/screenshot
-// (one stored image of an item's screenshot run; item-screenshots.ts) and /api/v1/evals/<skill>/runs, /grid and
-// /compare (a skill's eval runs, grid and compare; evals-api.ts, a path pattern), /api/v1/items/:id/changes (the item
-// page's Changes tab; changes.ts) and /api/v1/schedules and /api/v1/schedules/runs (`?schedule=<id>`;
-// schedules-api.ts); every other
+// (one stored image of an item's screenshot run; item-screenshots.ts) and /api/v1/evals/<skill>/runs, /grid, /compare
+// and /suite (a skill's eval runs, grid, compare, suite and cases; evals-api.ts, a path pattern),
+// /api/v1/items/:id/changes (the item page's Changes tab; changes.ts) and /api/v1/schedules and
+// /api/v1/schedules/runs (`?schedule=<id>`; schedules-api.ts); every other
 // path is api.ts's. They are served here beside api.ts so it stays within its size budget. A new read route adds one
 // entry to READ_ROUTES, not a line in server.ts.
 
