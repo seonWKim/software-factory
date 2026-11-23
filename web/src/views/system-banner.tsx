@@ -423,23 +423,32 @@ const clockTime = (at: string) => new Date(at).toLocaleTimeString([], { hour: "2
  * failed; a repeated error has Show failures; both open a dialog on this page. Other alarms have no menu.
  */
 function AlarmRow({ action }: { action: SystemAction }) {
-  if (action.auto_stop) return <AutoStopRow action={action} stop={action.auto_stop} />;
+  return action.auto_stop ? <AutoStopRow action={action} stop={action.auto_stop} /> : <PlainAlarmRow action={action} />;
+}
+
+/** A non-auto-stop alarm's row: Dismiss and its refusal, then the "⋯" menu when the alarm has a dialog. */
+function PlainAlarmRow({ action }: { action: SystemAction }) {
   const what = action.pattern === "red_main" ? "what_failed" : action.pattern === "repeated_error" && action.error_code ? "show_failures" : null;
-  const end = action.alert_id ? <DismissAlarm alertId={action.alert_id} /> : null;
-  return <AlarmMenuRow action={action} title={action.text} lead={[]} dialog={what} output={action} end={end} />;
+  const dismiss = useDismissAlarm(action.alert_id ?? null);
+  return (
+    <AlarmMenuRow action={action} title={action.text} lead={[]} dialog={what} output={action} end={dismiss.button}>
+      {dismiss.error}
+    </AlarmMenuRow>
+  );
 }
 
 /**
  * Dismiss on an alarm row, modelled on ResumeNow: posts the alarm's `alert_id` with the pauses' CSRF token, then
- * reloads the overview, so the row leaves Needs you. A refusal shows beside the button. Nothing while the server has no
- * pause routes (`csrf_token` null). The sm Button's negative margin keeps the row's height.
+ * reloads the overview, so the row leaves Needs you. `button` goes in the row's end slot (the sm Button's negative
+ * margin keeps the row's height); `error`, a refusal, goes on its own line below the row's title, never in the actions
+ * column (patterns C-050). Neither while the alarm has no `alert_id` or the server has no pause routes.
  */
-function DismissAlarm({ alertId }: { alertId: string }) {
+function useDismissAlarm(alertId: string | null): { button: ReactNode; error: ReactNode } {
   const client = useQueryClient();
   const token = useApi<PausesView>(API.pauses).data?.csrf_token ?? null;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  if (token === null) return null;
+  if (token === null || alertId === null) return { button: null, error: null };
   const dismiss = async () => {
     setBusy(true);
     setError(null);
@@ -453,12 +462,10 @@ function DismissAlarm({ alertId }: { alertId: string }) {
       setBusy(false);
     }
   };
-  return (
-    <>
-      {error && <span role="alert" className="max-w-48 text-xs text-pretty break-words text-pill-bad-fg">{error}</span>}
-      <Button data-dismiss-alarm size="sm" variant="secondary" className="-my-1" disabled={busy} onClick={() => void dismiss()}>{t("needs.dismissAlarm")}</Button>
-    </>
-  );
+  return {
+    button: <Button data-dismiss-alarm size="sm" variant="secondary" className="-my-1" disabled={busy} onClick={() => void dismiss()}>{t("needs.dismissAlarm")}</Button>,
+    error: error && <p data-row-error role="alert" className="text-xs text-pretty break-words text-pill-bad-fg">{error}</p>,
+  };
 }
 
 /**

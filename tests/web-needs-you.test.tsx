@@ -423,12 +423,14 @@ describe("an alarm row's Dismiss (design 09-dashboard-tasks-needs)", () => {
     await waitFor(() => expect(reads()).toBeGreaterThan(before));
   });
 
-  it("shows a refused dismiss beside the button", async () => {
+  it("shows a refused dismiss on its own line below the row's title, not in the actions column", async () => {
     postReply = { status: 403, body: { error: "Dismissing needs write permission (approve_spec)." } };
     const { alarm } = await checkRows();
     fireEvent.click(within(alarm).getByRole("button", { name: "Dismiss" }));
     const refusal = await within(alarm).findByRole("alert");
     expect(refusal.textContent).toBe("Dismissing needs write permission (approve_spec).");
-    expect(refusal.closest("[data-row-menu]")).not.toBeNull();
+    expect(refusal.closest("[data-row-error]")).toBeTruthy();
+    expect(refusal.closest("[data-row-menu]")).toBeNull();
+    expect(within(alarm).getByRole("button", { name: "Dismiss" }).closest("[data-row-menu]")).not.toBeNull();
   });
 });
