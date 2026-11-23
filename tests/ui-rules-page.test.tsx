@@ -323,7 +323,7 @@ describe("Rules page", () => {
     expect(dialog().querySelector('[data-detail-part="why"]')!.textContent).toContain("Root reason: tests never ran");
     expect([...dialog().querySelectorAll("[data-evidence]")].map((e) => (e as HTMLElement).dataset.evidence)).toEqual(["T-20261017-de7e", "T-20261017-9f3c"]);
     const consequence = dialog().querySelector("[data-dialog-consequence]")!.textContent!;
-    expect(consequence).toBe("Promoting records the verdict with this change as applied to its target file and creates a task to build it. Nothing is written to the file from here.");
+    expect(consequence).toBe("Promoting records the verdict and creates a task to build it.");
     expect(consequence).not.toMatch(/by hand|Now and Proposed/);
     expect(within(dialog()).queryByRole("alert")).toBeNull();
     const confirm = within(dialog()).getByRole("button", { name: "Send promote" }) as HTMLButtonElement;

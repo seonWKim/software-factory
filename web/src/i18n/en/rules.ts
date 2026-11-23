@@ -47,7 +47,7 @@ export const rules = {
   "rules.hold": "Hold",
   "rules.reject": "Reject",
   "rules.consequencePromoteProposal": "Promoting replaces the Now lines with the Proposed lines in the target file, then records the verdict. If the Now lines are not there exactly once, or the change is refused, nothing is written and the error shows here.",
-  "rules.consequencePromoteProse": "Promoting records the verdict with this change as applied to its target file and creates a task to build it. Nothing is written to the file from here.",
+  "rules.consequencePromoteBuild": "Promoting records the verdict and creates a task to build it.",
   "rules.consequencePromoteClass": "Promoting writes this rule into your rules, records the verdict and updates your agents' instructions; it is part of every run's prompt from the next run on.",
   "rules.consequenceHold": "Holding keeps the entry waiting without a decision.",
   "rules.consequenceReject": "Rejecting drops the entry: it never reaches a prompt.",

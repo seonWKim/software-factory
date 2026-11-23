@@ -91,7 +91,7 @@ export function VerdictDialog({ entry, applied, verdict, token, returnFocusTo, o
   return (
     <Dialog
       title={t("rules.dialogTitle", { label, title: entry.title })}
-      consequence={t(promote ? "rules.consequencePromoteClass" : prose ? "rules.consequencePromoteProse" : CONSEQUENCE[verdict])}
+      consequence={t(promote ? "rules.consequencePromoteClass" : prose ? "rules.consequencePromoteBuild" : CONSEQUENCE[verdict])}
       confirmLabel={t("rules.send", { label: label.toLowerCase() })}
       confirmDisabled={busy || reason.trim() === "" || (promote && Object.values(rule).includes("")) || (applies && lines.isPending)}
       danger={verdict === "reject"}
