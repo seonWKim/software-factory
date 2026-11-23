@@ -11,7 +11,7 @@
 
 import { DEPENDENCY_CLOSED, DEPENDENCY_CYCLE, FAILED_PHASES, type ItemPhase, PERSON_PHASES, isClosedPhase, phaseOf } from "../core/phase.js";
 import { isModelRunKind } from "../core/model-choice.js";
-import { failureClass, IMPLEMENT_KINDS, REPEATED_FAILURE, retryClears } from "../core/policy.js";
+import { AGENT_STALLED, failureClass, IMPLEMENT_KINDS, REPEATED_FAILURE, retryClears } from "../core/policy.js";
 import type { BlockedOn, ClaimDecision, CloseReason, RunKind, RunOutcome, Stage } from "../core/types.js";
 import { FAILURE_DESCRIPTIONS } from "./failures.js";
 
@@ -137,9 +137,11 @@ function why(code: WhyCode, reason_code: ReasonCode, next_actor: NextActor, para
   return { code, reason_code, params, next_actor, refs: refsOf(Object.values(params).join(" ")), alarms: [], holder_id };
 }
 
-/** The recurring-failure reason by why a plain retry is likely enough (policy retryClears), or the task's own failure. */
+/**
+ * The recurring-failure reason by why a plain retry is likely enough (policy retryClears), or the task's own failure.
+ * A stall is an infra failure (design 05-restarts, 2026-11-23) with its own words, read from its error code.
+ */
 const RECURRING: Partial<Record<ReturnType<typeof failureClass>, ReasonCode>> = {
-  stalled: "recurring_stalled",
   rate_limited: "recurring_rate_limited",
   infra: "recurring_infra",
 };
@@ -159,7 +161,8 @@ export function failureWords(code: string): string {
 function recurring(f: HeldFailure | null): Why {
   if (f === null) return why("human", "recurring_none", "human");
   const said = failureWords(f.outcome.error_code).replace(/\.$/, "");
-  const code = retryClears(f.outcome) ? (RECURRING[failureClass(f.outcome)] ?? "recurring_own") : "recurring_own";
+  const code = !retryClears(f.outcome) ? "recurring_own"
+    : f.outcome.error_code === AGENT_STALLED ? "recurring_stalled" : (RECURRING[failureClass(f.outcome)] ?? "recurring_own");
   return why("human", code, "human", { failure: f.detail ? `${said} (${f.detail})` : said });
 }
 

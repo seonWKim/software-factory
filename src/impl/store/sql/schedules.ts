@@ -9,10 +9,10 @@ import type { Timestamp, UserId } from "../../../core/types.js";
 import type { Row, SqlDriver } from "../../../state/index.js";
 import { SqlRunOutputStore } from "./run-output.js";
 
-const COLUMNS = "id, title, cadence_kind, cadence_spec, zone, created_by, created_at, next_due_at, running_since";
-const RUN_COLUMNS = "schedule_id, occurrence_at, outcome, recorded_at";
-/** The running state each outcome's claim requires: fired takes an idle schedule, refused a running one. */
-const CLAIM_STATE: Readonly<Record<ScheduleOutcome, string>> = { fired: "running_since IS NULL", refused: "running_since IS NOT NULL" };
+const COLUMNS = "id, title, cadence_kind, cadence_spec, zone, created_by, created_at, next_due_at, running_since, skip_when_busy";
+const RUN_COLUMNS = "schedule_id, occurrence_at, outcome, recorded_at, queued_implement_runs";
+/** The running state each outcome's claim requires: fired and skipped take an idle schedule, refused a running one. */
+const CLAIM_STATE: Readonly<Record<ScheduleOutcome, string>> = { fired: "running_since IS NULL", refused: "running_since IS NOT NULL", skipped: "running_since IS NULL" };
 
 const time = (v: unknown) => (v == null ? null : (String(v) as Timestamp));
 
@@ -20,11 +20,13 @@ function rowToSchedule(r: Row): Schedule {
   return {
     id: String(r.id), title: String(r.title), cadence: { kind: String(r.cadence_kind) as CadenceKind, spec: String(r.cadence_spec) }, zone: String(r.zone),
     created_by: String(r.created_by) as UserId, created_at: String(r.created_at) as Timestamp, next_due_at: time(r.next_due_at), running_since: time(r.running_since),
+    skip_when_busy: Number(r.skip_when_busy ?? 0) === 1,
   };
 }
 
 const rowToRun = (r: Row): ScheduleRun => ({
   schedule_id: String(r.schedule_id), occurrence_at: String(r.occurrence_at) as Timestamp, outcome: String(r.outcome) as ScheduleOutcome, recorded_at: String(r.recorded_at) as Timestamp,
+  ...(r.queued_implement_runs == null ? {} : { queued_implement_runs: Number(r.queued_implement_runs) }),
 });
 
 /** ScheduleStore over a SqlDriver; `scheduleStamp` is the store's injected Clock's time. */
@@ -35,8 +37,8 @@ export class SqlScheduleStore extends SqlRunOutputStore implements ScheduleStore
 
   async addSchedule(s: NewSchedule): Promise<Schedule> {
     try {
-      await this.db.run(`INSERT INTO controller_schedules (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`, [
-        s.id, s.title, s.cadence.kind, s.cadence.spec, s.zone, s.created_by, s.created_at, s.next_due_at,
+      await this.db.run(`INSERT INTO controller_schedules (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`, [
+        s.id, s.title, s.cadence.kind, s.cadence.spec, s.zone, s.created_by, s.created_at, s.next_due_at, s.skip_when_busy ? 1 : null,
       ]);
     } catch (err) {
       if (!this.db.isDuplicateKey(err)) throw err;
@@ -62,14 +64,24 @@ export class SqlScheduleStore extends SqlRunOutputStore implements ScheduleStore
         c.next_due_at, ...(c.outcome === "fired" ? [now] : []), c.schedule_id, c.occurrence_at,
       ]);
       if (moved !== 1) return null;
-      const run: ScheduleRun = { schedule_id: c.schedule_id, occurrence_at: c.occurrence_at, outcome: c.outcome, recorded_at: now };
-      await tx.run(`INSERT INTO controller_schedule_runs (${RUN_COLUMNS}) VALUES (?, ?, ?, ?)`, [run.schedule_id, run.occurrence_at, run.outcome, run.recorded_at]);
+      const run: ScheduleRun = {
+        schedule_id: c.schedule_id, occurrence_at: c.occurrence_at, outcome: c.outcome, recorded_at: now,
+        ...(c.queued_implement_runs === undefined ? {} : { queued_implement_runs: c.queued_implement_runs }),
+      };
+      await tx.run(`INSERT INTO controller_schedule_runs (${RUN_COLUMNS}) VALUES (?, ?, ?, ?, ?)`, [
+        run.schedule_id, run.occurrence_at, run.outcome, run.recorded_at, run.queued_implement_runs ?? null,
+      ]);
       return run;
     });
   }
 
   async endScheduleRun(schedule_id: string, running_since: Timestamp): Promise<boolean> {
     return (await this.db.run("UPDATE controller_schedules SET running_since = NULL WHERE id = ? AND running_since = ?", [schedule_id, running_since])) === 1;
+  }
+
+  async countQueuedImplementRuns(): Promise<number> {
+    const [row] = await this.db.all("SELECT COUNT(*) AS n FROM worker_runs WHERE status = 'queued' AND kind = 'implement'");
+    return Number(row?.n ?? 0);
   }
 
   async listScheduleRuns(schedule_id: string): Promise<ScheduleRun[]> {

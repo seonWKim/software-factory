@@ -4,7 +4,7 @@
 import { prNumber } from "../../../core/change-ref.js";
 import { NO_FILES_REFUSAL, changesNoFile, commandFooter, commandState, retryPathsReply, withholdReplyLines } from "../../../core/commands.js";
 import { type NeedsHuman, type ReviewOutput, SPEC_CONFLICT, type TriageOutput, doneCheckCommands, findingLine, parseNeedsHuman, parseReview, parseTriage, specFindings } from "../../../core/outputs.js";
-import { AGENT_NEEDS_HUMAN, AUTO_ACTOR, AUTO_RESOLVE_LIMIT, autoApproveRefusal, REPEATED_FAILURE, type FailureClass, failureLine, repeatsFastInfraFailure, repeatsLastFailure, preflightCheck, PREFLIGHT_ACCESS, autoResolveAttempts, autoResolveKey, effectiveTier, failureClass, floorTier, isCovered, needsSpecApproval, nextAutoResolveAttempt, parseAutoResolveKey, retryDelayMs, retryKey, retryNotBefore, GITHUB_RATE_LIMITED, runKey, sameStep, takenOver, FORGE_AUTH, NO_AUTO_RETRY, CHECKS_ENV, CHECKS_ENV_LIMIT, SESSION_RELEASED } from "../../../core/policy.js";
+import { AGENT_NEEDS_HUMAN, AUTO_ACTOR, AUTO_RESOLVE_LIMIT, autoApproveRefusal, REPEATED_FAILURE, type FailureClass, failureLine, repeatsFastInfraFailure, repeatsLastFailure, preflightCheck, PREFLIGHT_ACCESS, autoResolveAttempts, autoResolveKey, effectiveTier, failureClass, floorTier, isCovered, needsSpecApproval, nextAutoResolveAttempt, parseAutoResolveKey, retryDelayMs, retryKey, retryNotBefore, GITHUB_RATE_LIMITED, runKey, sameStep, STALL_STREAK_HOLD, stallStreak, takenOver, FORGE_AUTH, NO_AUTO_RETRY, CHECKS_ENV, CHECKS_ENV_LIMIT, SESSION_RELEASED, freeMigrationStamps, takenStamps } from "../../../core/policy.js";
 import { FIX_SPEC_APPROVED, gatePathTouched } from "../../../core/improver.js"; import { autoApprovalDetail, ownerAnswersFor } from "../../../shared/command-notes.js";
 import { dependencyStop } from "./dependency-stop.js"; import { autoGrant } from "./auto-grant.js";
 import { conflictCounts, conflictCountsLine } from "../../../core/resolve.js";
@@ -12,7 +12,7 @@ import { autoApprovedFooter, droppedAnswers, droppedValues, heldNote, renderSpec
 import { STANDING_APPROVED, ruleId, specKind, standingActor } from "../../../core/standing.js";
 import { applyCompanions } from "../../../core/companions.js";
 import { suggestedSplit } from "../../../core/split.js";
-import { type Actor, type Run, type StateChangeDetail, type Tier, type WorkItem, type WorkItemId, runTokenCount } from "../../../core/types.js";
+import { type Actor, RECURRING_FAILURE, type Run, type StateChangeDetail, type Tier, type WorkItem, type WorkItemId, runTokenCount } from "../../../core/types.js";
 import { failingTests, firstErrorLine, stripAnsi } from "../../../core/output-summary.js"; import { doneChecksDetail } from "../../../core/checks.js";
 import { PROVIDER_SETUP } from "../../../interfaces/agent-runner.js";
 import type { ActionRow } from "../../../outbound/index.js";
@@ -144,7 +144,7 @@ export class RunResultsUnit {
       if (run.kind === "improve") return ack(run.outcome?.status === "succeeded" ? "improve_done" : "improve_failed");
       // The run's full token count (design §6 Measurement); old succeeded rows keep the data.tokens they stored.
       const tokens = it.token_cost + runTokenCount(run);
-      if (!run.outcome || run.outcome.status !== "succeeded") return this.c.unit("model-probe").stallScope(it, run, await this.applyFailedRun(it, run));
+      if (!run.outcome || run.outcome.status !== "succeeded") return this.c.unit("model-probe").stallScope(run, await this.applyFailedRun(it, run));
       if (!this.c.unit("transitions").expects(it, run.kind)) return ack("run_ignored");
       const data = run.outcome.data;
       // The agent asked for a human (decided 2026-11-07): a finished run with data, never retried on its own.
@@ -162,9 +162,9 @@ export class RunResultsUnit {
         case "triage": {
           // The item's size caps decide whether the estimate needs phases (src/core/split.ts).
           const { max_diff_lines, max_diff_files, floors } = this.c.k.settings(it.project);
-          // Path companions first (design 04-triage.md): on the raw answer, so a companion triage named only in
+          // Migration timestamps, then path companions (design 04-triage.md): a new migration on a base branch's timestamp moves to the next free minute; companions on that answer, so one named only in
           // files_to_change is covered, and before the floor, which raises the tier or refuses a built-in rule's path.
-          const { answer, added } = applyCompanions(data.spec, this.c.k.cfg.path_companions ?? [], floors);
+          const { answer, added } = applyCompanions(freeMigrationStamps(data.spec, takenStamps((await this.c.k.reader.baseFiles("src/")) ?? [])).answer, this.c.k.cfg.path_companions ?? [], floors);
           const parsed = parseTriage(answer, { max_diff_lines, max_diff_files, check_commands: doneCheckCommands(this.c.k.cfg.repo) }); // done_checks required (design 04-triage)
           if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
           const spec = parsed.value;
@@ -675,7 +675,7 @@ export class RunResultsUnit {
   /**
    * A failed triage, implement or review run (design §5 Restarts). Counts come from the run history of
    * this step (the first run and its automatic retries): a rate limit or a run a takeover cancelled is never an attempt; infra failures
-   * count toward max_restart (and add one to restart_count); task failures toward max_attempts. `checks_env`
+   * (stalls too; 3 in a row hold the item) count toward max_restart (and add one to restart_count); task failures toward max_attempts. `checks_env`
    * spends neither: it is counted over the item's whole run history, and the one after CHECKS_ENV_LIMIT blocks
    * the item on a human (`run_failed:<kind>:checks_env`) with no retry. Under both
    * limits, a new run is enqueued in the same transition with `not_before` = failure + backoff (rate limit:
@@ -706,9 +706,10 @@ export class RunResultsUnit {
         return { patch: { ...patch, failure_comment_url: url }, actor: SYSTEM, reason: CHECKS_ENV, detail: { ...detail, checks_env_failures: env }, ack_run: run.id };
       }
     }
+    const streak = stallStreak(step), held = streak >= STALL_STREAK_HOLD; // its runs keep stalling (05-restarts): its retry waits for /retry
     const limit = task >= max_attempts ? "max_attempts" : infra >= max_restart ? "max_restart" : null;
-    // Neither a rate limit, a stall, a checks_env run nor a missing model credential is an attempt: they never reach a limit (design §5 Restarts).
-    if (cls !== "rate_limited" && cls !== "stalled" && cls !== "checks_env" && cls !== "setup_missing" && limit) {
+    // Neither a rate limit, a checks_env run nor a missing model credential is an attempt: they never reach a limit (design §5 Restarts).
+    if (!held && cls !== "rate_limited" && cls !== "checks_env" && cls !== "setup_missing" && limit) {
       const patch = { ...restart, blocked_on: "human" as const, blocked_reason: limit };
       const url = await this.lastAttemptComment(it, run, code, limit, limit === "max_attempts" ? task : infra, footerAfter(it, patch));
       return {
@@ -725,8 +726,7 @@ export class RunResultsUnit {
     if (cls === "infra" && this.c.k.d.repeated_failure_rule !== false && repeatsFastInfraFailure(step, run)) {
       return this.repeatedInfraFailure(it, run, code, { ...detail, fast_repeat: true });
     }
-    // A forge 401/403, a failed access check or a forge rate limit also waits for its claim pause to end; a stall
-    // has no backoff, the stall pause holds every claim until a probe answers (design §5 Restarts).
+    // A forge 401/403, a failed access check or a forge rate limit also waits for its claim pause to end (design §5 Restarts).
     const notBefore = retryNotBefore({
       cls, code, failed_at: failedAt, backoff_at: failedAt + retryDelayMs(task + infra, retry_base_ms, retry_max_ms),
       reset: run.outcome?.status === "failed" ? run.outcome.reset_at : null, retry_max_ms,
@@ -738,10 +738,10 @@ export class RunResultsUnit {
     // A retried review keeps the CI results read when it was queued (issue #223).
     const input = wip ? { wip } : run.kind === "review" ? run.input : null;
     return {
-      patch: restart,
+      patch: held ? { ...restart, blocked_on: "human", blocked_reason: RECURRING_FAILURE } : restart,
       actor: SYSTEM,
-      reason: cls === "rate_limited" ? "run_rate_limited" : cls === "stalled" ? "run_stalled" : "run_retry_scheduled",
-      detail: { ...detail, not_before: notBefore },
+      reason: held ? RECURRING_FAILURE : cls === "rate_limited" ? "run_rate_limited" : "run_retry_scheduled",
+      detail: { ...detail, ...(held ? { stall_streak: streak } : {}), not_before: notBefore },
       ack_run: run.id,
       enqueue: { kind: run.kind, idempotency_key: retryKey(run.idempotency_key), not_before: notBefore, ...(input ? { input } : {}) },
     };

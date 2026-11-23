@@ -234,7 +234,9 @@ describe("merge queue: a merged result that fails its checks sends the item back
     const f = await factory();
     const { id, check } = await f.queuedRed();
     await decide(f, check, { status: "succeeded", summary: "", data: { result: "red", why: "conflict", conflicts: ["README.md"], branch: "b", base_sha: "x" } });
-    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", loop_count: 0 });
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", loop_count: 0 });
+    // Returned from merge_queued with the refusal, as a dashboard Merge is.
+    expect((await f.store.listStateChanges(id)).filter((c) => c.reason === "merge_returned").map((c) => c.detail?.refusal)).toEqual([expect.stringContaining("conflicts in `README.md`")]);
     expect((await f.store.listStateChanges(id)).some((c) => c.reason === "merge_check_failed")).toBe(false);
     expect((await refusedBodies(f, id))[0]).toContain("the merged commit conflicts in `README.md`");
     expect((await (await f.controller.unit("merge-queue")).entries(id)).map((e) => e.state)).toEqual(["removed"]);
@@ -246,7 +248,8 @@ describe("merge queue: a merged result that fails its checks sends the item back
     await (await f.controller.unit("merge-queue")).checked({
       ...check, status: "failed", outcome: { status: "failed", error_code: "git_failed", detail: "worktree", infra: true },
     } as Run);
-    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", loop_count: 0 });
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", loop_count: 0 });
+    expect((await f.store.listStateChanges(id)).filter((c) => c.reason === "merge_returned").map((c) => c.detail?.refusal)).toEqual([expect.stringContaining("could not run")]);
     expect((await f.store.listRuns(id)).filter((r) => r.kind === "implement")).toHaveLength(1);
     expect((await refusedBodies(f, id))[0]).toContain("its merge check could not run (`git_failed`)");
     expect((await (await f.controller.unit("merge-queue")).entries(id)).map((e) => e.state)).toEqual(["removed"]);
@@ -286,7 +289,8 @@ describe("factory merge at max_loops after a failed merge check (design 04-spec-
     expect(again).toBeGreaterThan(stop);
     expect(changes.filter((c) => c.reason === "merge_check_again")).toHaveLength(1);
     expect(changes[again]).toMatchObject({ actor: { kind: "user", id: ME }, changes: { blocked_reason: { from: "max_loops", to: "merge_pending" } } });
-    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", loop_count: 0 });
+    // Back in the queue: merge_queued while its entry is checking.
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_on: "ci", blocked_reason: "merge_queued", loop_count: 0 });
     const queue = await f.controller.unit("merge-queue");
     expect((await queue.entries(id)).map((e) => e.state)).toEqual(["removed", "checking"]);
     const checks = (await f.store.listRuns(id)).filter((r) => r.kind === "merge-check");

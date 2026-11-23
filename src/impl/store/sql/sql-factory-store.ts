@@ -116,7 +116,7 @@ import * as signals from "./signals.js";
 import * as evaluations from "./merge-evaluations.js";
 import * as proposals from "./command-proposals.js";
 import * as tasks from "./tasks.js";
-import { SqlScheduleStore } from "./schedules.js";
+import { SqlSkillEvalStore } from "./skill-evals.js";
 import { claimLock, endReservations, liveReservations, reservationOf } from "./reservations.js";
 import * as notices from "./notices.js";
 import * as noticeMessages from "./notice-messages.js";
@@ -127,9 +127,9 @@ import * as standing from "./standing-rules.js";
 /**
  * FactoryStore over a SqlDriver (SQLite; `db` is public for components owning tables). Every write is one driver transaction. Correctness
  * never depends on the row locks alone: every state change is also a conditional UPDATE (version,
- * status, lease token), and uniqueness is enforced by keys, with a duplicate treated as "already there". Task projects: SqlProjectStore, schedules: SqlScheduleStore (schedules.ts).
+ * status, lease token), and uniqueness is enforced by keys, with a duplicate treated as "already there". Task projects: SqlProjectStore, schedules: SqlScheduleStore (schedules.ts), skill evals: SqlSkillEvalStore (skill-evals.ts).
  */
-export class SqlFactoryStore extends SqlScheduleStore implements FactoryStore {
+export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
   constructor(db: SqlDriver, private readonly clock: Clock) {
     super(db, () => clock.now().toISOString() as Timestamp);
   }
@@ -1241,9 +1241,8 @@ export class SqlFactoryStore extends SqlScheduleStore implements FactoryStore {
   setFiledPatternRef(id: FiledPatternId, report_id: ImproveReportId, ref: SourceRef): Promise<void> {
     return filed.setFiledPatternRef(this.db, id, report_id, ref);
   }
-  listFiledPatternsWithoutOutcome(project: string): Promise<FiledPattern[]> {
-    return filed.listFiledPatternsWithoutOutcome(this.db, project);
-  }
+  async listFiledPatternsWithin(within_ms: number) { const since = this.after(-within_ms); return { since, rows: await filed.listFiledPatternsSince(this.db, since) }; }
+  listFiledPatternsWithoutOutcome(project: string): Promise<FiledPattern[]> { return filed.listFiledPatternsWithoutOutcome(this.db, project); }
   setFiledPatternOutcome(id: FiledPatternId, outcome: NonNullable<FiledPattern["outcome"]>, at: Timestamp): Promise<boolean> {
     return filed.setFiledPatternOutcome(this.db, id, outcome, at);
   }

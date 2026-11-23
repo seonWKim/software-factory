@@ -256,7 +256,7 @@ const NUMBER_KEYS: ReadonlySet<string> = new Set([
   "first_output_ms", "poll_interval_ms", "tick_ms", "heartbeat_ms", "lease_ms", "workers", "alarm_repeat_count", "alarm_window_minutes",
   "alarm_restart_count", "standing_approvals.threshold", "auto_merge_max_tier", "stall_ms", "probe_interval_ms", "auth_pause_ms",
   "max_coordination_cost", "hotspot_weight", "mechanical_weight", "spend.daily_budget_usd", "spend.weekly_budget_usd",
-  "conflict_hotspot_threshold",
+  "conflict_hotspot_threshold", "agent_stop_check_ms",
 ]);
 /** A key's kind from its built-in default's type; a number box only for a listed numeric key, so an unmapped key reads as text. */
 const kindOf = (k: SettableKey): Kind => {

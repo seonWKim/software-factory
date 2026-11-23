@@ -21,6 +21,7 @@ import type { SessionReservation, SessionReservationStore } from "../core/sessio
 import type { ProposalStore } from "../core/proposals.js";
 import type { StandingChangeStore } from "../core/standing.js";
 import type { ScheduleStore } from "../core/schedule.js";
+import type { SkillEvalStore } from "./skill-eval-store.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
@@ -82,7 +83,6 @@ export type RecordPrHeadResult =
   | { ok: false; reason: "not_found" }
   /** last_head_sha is no longer `expected_head` (another poll or a factory push recorded first). Nothing written. */
   | { ok: false; reason: "head_moved"; current: WorkItem };
-
 export interface NewUnreviewedMerge {
   project: string;
   /** The PR number as text; the store mirrors it into its legacy PR column. */
@@ -131,8 +131,8 @@ export interface NewImproveReport extends ImproveWindow {
 /** A `model_stall` or `network` claim pause (design §7): the improver files no run that failed inside one. `ended_at` null: still in effect. */
 export type PauseInterval = { name: "model_stall" | "network"; started_at: Timestamp; ended_at: Timestamp | null };
 
-/** A filed pattern as claimed; the store adds `id` and `created_at`, and `filed_ref` starts null. */
-export type NewFiledPattern = Omit<FiledPattern, "id" | "created_at" | "filed_ref" | "outcome" | "outcome_at">;
+/** A filed pattern as claimed; the store adds `id` and `created_at`, and `filed_ref` starts null. `evidence` absent: stored null. */
+export type NewFiledPattern = Omit<FiledPattern, "id" | "created_at" | "filed_ref" | "outcome" | "outcome_at" | "evidence"> & { evidence?: number | null };
 
 /** A standing-approval rule as written; the store adds the timestamps. */
 export type NewStandingRule = Pick<StandingRule, "gate" | "tier" | "enabled" | "set_by">;
@@ -356,7 +356,7 @@ export interface NoticeMessageStore {
   getNoticeQuestion(id: string): Promise<NoticeQuestion | null>;
 }
 
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore {
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore, SkillEvalStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes
@@ -602,8 +602,8 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   getOpenWorkItemByTitle(project: string, title: string): Promise<WorkItem | null>;
   /** Sets the item of the row `id` while `report_id` still holds it; a row another report claimed is left alone. */
   setFiledPatternRef(id: FiledPatternId, report_id: ImproveReportId, ref: SourceRef): Promise<void>;
-  /** The filed patterns of `project` that have an item and no outcome yet, oldest first. Read-only. */
-  listFiledPatternsWithoutOutcome(project: string): Promise<FiledPattern[]>;
+  listFiledPatternsWithin(within_ms: number): Promise<{ since: Timestamp; rows: FiledPattern[] }>; // every project's rows with an item claimed at or after `since` (store clock's now − within_ms), oldest first
+  listFiledPatternsWithoutOutcome(project: string): Promise<FiledPattern[]>; // `project`'s filed patterns with an item and no outcome yet, oldest first. Read-only.
   /** Sets the outcome of row `id` only while it has none: true when this call wrote it, false when one was there. */
   setFiledPatternOutcome(id: FiledPatternId, outcome: NonNullable<FiledPattern["outcome"]>, at: Timestamp): Promise<boolean>;
 
