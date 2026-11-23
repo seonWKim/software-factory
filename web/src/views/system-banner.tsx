@@ -12,6 +12,7 @@ import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { ListRow, ROW_TITLE } from "../components/ui/list-row.js";
 import { type MenuItem, OverflowMenu } from "../components/ui/menu.js";
+import { useWide } from "../components/ui/parts.js";
 import { When, useNow } from "./common.js";
 import { alarmAnchor } from "./settings/general.js";
 import { Outcome, useWrite } from "./settings-file-keys.js";
@@ -214,6 +215,7 @@ export function StopAllAgents() {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const wide = useWide();
   const token = view?.csrf_token ?? null;
   if (token === null || view?.pauses.some((p) => p.name === OWNER_PAUSE)) return null;
   const close = () => {
@@ -237,10 +239,13 @@ export function StopAllAgents() {
   };
   return (
     <>
-      <Button data-testid="stop-all-agents" variant="secondary" aria-label={t("stop.button")} className="shrink-0 max-sm:w-8 max-sm:justify-center max-sm:px-0" onClick={() => setOpen(true)}>
-        <OctagonX aria-hidden className="hidden size-4 max-sm:block" />
-        <span className="max-sm:hidden">{t("stop.button")}</span>
-      </Button>
+      {wide ? (
+        <Button data-testid="stop-all-agents" variant="secondary" className="shrink-0" onClick={() => setOpen(true)}>{t("stop.button")}</Button>
+      ) : (
+        <Button data-testid="stop-all-agents" variant="secondary" size="icon" aria-label={t("stop.button")} onClick={() => setOpen(true)}>
+          <OctagonX aria-hidden className="size-4" />
+        </Button>
+      )}
       {open && (
         <Dialog title={t("stop.title")} consequence={t("stop.consequence")} confirmLabel={t("stop.button")} confirmDisabled={busy} error={error}
           onConfirm={() => void confirm()} onClose={close} />
