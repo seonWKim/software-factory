@@ -83,10 +83,11 @@ describe("app shell", () => {
     (RESPONSES as Record<string, unknown>)["/api/v1/settings"] = SETTINGS;
     history.replaceState(null, "", "/app/settings");
     mount();
-    return screen.findByRole("group", { name: "Theme" });
+    return screen.findByRole("radiogroup", { name: "Theme" });
   }
-  const choose = (name: string) => fireEvent.click(within(screen.getByRole("group", { name: "Theme" })).getByRole("button", { name }));
-  const pressed = () => within(screen.getByRole("group", { name: "Theme" })).getAllByRole("button").filter((b) => b.getAttribute("aria-pressed") === "true").map((b) => b.textContent);
+  // The SegmentedControl is a radiogroup: the chosen theme is its aria-checked radio.
+  const choose = (name: string) => fireEvent.click(within(screen.getByRole("radiogroup", { name: "Theme" })).getByRole("radio", { name }));
+  const pressed = () => within(screen.getByRole("radiogroup", { name: "Theme" })).getAllByRole("radio").filter((b) => b.getAttribute("aria-checked") === "true").map((b) => b.textContent);
   afterEach(() => void delete (RESPONSES as Record<string, unknown>)["/api/v1/settings"]);
 
   it("the top bar has no Theme control; Settings > General's Appearance offers System, Light and Dark, System pressed by default", async () => {
@@ -95,7 +96,7 @@ describe("app shell", () => {
     expect(within(document.querySelector("header")!).queryByRole("button", { name: "Theme" })).toBeNull();
     cleanup();
     const group = await mountAppearance();
-    expect(within(group).getAllByRole("button").map((b) => b.textContent)).toEqual(["System", "Light", "Dark"]);
+    expect(within(group).getAllByRole("radio").map((b) => b.textContent)).toEqual(["System", "Light", "Dark"]);
     expect(pressed()).toEqual(["System"]);
     choose("Light");
     expect(pressed()).toEqual(["Light"]);
