@@ -65,6 +65,7 @@ import { checkToolchainEnv, codeVersion, readRestarts, uiCommandsActor, uiUserId
 import { type Loaded, loadConfig, localProject, resolvedConfig } from "./load-config.js";
 import { reviewReplay } from "./golden-replay.js";
 import { Cleaner, type CleanupStore, agentTempRoots, cleanupConfig, hostProcesses } from "./cleanup/index.js";
+import { RUN_FOLDER } from "./setup-paths.js";
 
 export { CODE_ROOT_ENV, CONFIG_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 
@@ -168,7 +169,7 @@ export async function hostCleaner(loaded: Loaded, store: CleanupStore, clock: Cl
   const worktreesDir = await realpath(loaded.worktreesDir).catch(() => loaded.worktreesDir);
   return new Cleaner({
     store, clock, config: cleanupConfig(loaded.file), host: hostId(loaded.stateDir), log: new ConsoleLogger(clock, "cleanup"),
-    env: { repo: repo.path, worktreesDir, branchPrefix: branch_prefix, baseBranch: repo.base_branch, run: runProcess, processes: hostProcesses(runProcess, repo.path), agentTempRoots: agentTempRoots() },
+    env: { repo: repo.path, worktreesDir, runFolder: RUN_FOLDER, branchPrefix: branch_prefix, baseBranch: repo.base_branch, run: runProcess, processes: hostProcesses(runProcess, repo.path), agentTempRoots: agentTempRoots() },
   });
 }
 

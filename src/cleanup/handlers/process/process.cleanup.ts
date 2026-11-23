@@ -5,7 +5,6 @@
 
 import { join, sep } from "node:path";
 import { type Resource, defineCleanupHandler } from "../../handler.js";
-import { RUN_FOLDER } from "../../../setup-paths.js";
 
 const KIND = "process";
 
@@ -17,7 +16,7 @@ export default defineCleanupHandler({
     for (const p of await env.processes.list()) {
       if (p.pid === process.pid || !p.cwd.startsWith(env.worktreesDir + sep)) continue;
       const folder = p.cwd.slice(env.worktreesDir.length + 1).split(sep)[0]!;
-      if (!RUN_FOLDER.test(folder)) continue;
+      if (!env.runFolder.test(folder)) continue;
       out.push({
         kind: KIND, key: `pid:${p.pid}`, label: `process ${p.pid} (${p.command}) in ${p.cwd}`,
         // The item is the folder's: the sweep keeps this process unless that folder goes in the same pass.

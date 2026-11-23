@@ -17,6 +17,7 @@ import type { CommandRunner } from "../src/interfaces/updater.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { runProcess } from "../src/impl/process/run-process.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
+import { RUN_FOLDER } from "../src/setup-paths.js";
 import { git } from "./helpers/git-fixture.js";
 
 const HOUR = 3_600_000;
@@ -94,7 +95,7 @@ async function machine(ids: readonly string[] = ["wi_1"]) {
   const stopped: number[] = [];
   const tempRoot = realpathSync(mkdtempSync(join(tmpdir(), "sf-cleanup-agent-tmp-")));
   const env: CleanupEnv = {
-    repo: dir, worktreesDir, branchPrefix: "factory/", baseBranch: "main", run: runProcess,
+    repo: dir, worktreesDir, runFolder: RUN_FOLDER, branchPrefix: "factory/", baseBranch: "main", run: runProcess,
     processes: { list: async () => procs, stop: async (pid) => void stopped.push(pid) }, agentTempRoots: [tempRoot],
   };
   const clock = new FakeClock("2026-11-20T00:00:00.000Z");

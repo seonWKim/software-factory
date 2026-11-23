@@ -26,6 +26,8 @@ export interface CleanupEnv {
   readonly repo: string;
   /** The folder this host's run folders are made in. */
   readonly worktreesDir: string;
+  /** The name of a run folder the sandbox makes in `worktreesDir` (setup-paths' RUN_FOLDER, given by the root). */
+  readonly runFolder: RegExp;
   /** `branch_prefix` (`factory/`): an item's branch is `<prefix><id>`. */
   readonly branchPrefix: string;
   readonly baseBranch: string;

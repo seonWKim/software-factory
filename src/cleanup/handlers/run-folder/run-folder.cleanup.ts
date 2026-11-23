@@ -7,7 +7,6 @@ import { join } from "node:path";
 import { folderSize } from "../../folder-size.js";
 import { type Resource, defineCleanupHandler } from "../../handler.js";
 import { folderUnsafe } from "../../removal-safety.js";
-import { RUN_FOLDER } from "../../../setup-paths.js";
 
 const KIND = "run-folder";
 
@@ -24,7 +23,7 @@ export default defineCleanupHandler({
     const out: Resource[] = [];
     for (const name of (await readdir(env.worktreesDir).catch(() => [] as string[])).sort()) {
       const path = join(env.worktreesDir, name);
-      if (!RUN_FOLDER.test(name) || !(await stat(join(path, ".git")).catch(() => null))?.isDirectory()) continue;
+      if (!env.runFolder.test(name) || !(await stat(join(path, ".git")).catch(() => null))?.isDirectory()) continue;
       const branch = await checkedOut(path);
       const base = { kind: KIND, key: path, label: `run folder ${path}`, data: { path, branch: branch ?? "" } };
       if (branch === null) out.push({ ...base, item_id: null, unowned: "detached (a triage run): no item branch" });
