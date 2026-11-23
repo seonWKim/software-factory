@@ -374,7 +374,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
         [{ status: "failed" as const, error_code: "agent_error", detail: "", infra: false, usage }, "task", 20],
         [{ status: "failed" as const, error_code: "push_failed", detail: "", infra: true }, "infra", 0],
         [{ status: "failed" as const, error_code: "rate_limited", detail: "", infra: true, usage }, "rate_limited", 20],
-        [{ status: "failed" as const, error_code: "agent_stalled", detail: "", infra: true }, "stalled", 0],
+        [{ status: "failed" as const, error_code: "agent_stalled", detail: "", infra: false }, "infra", 0],
       ] as const;
       // One store for every case (a fresh database per case is slow): one item each, claimed in turn.
       const { store } = await make();

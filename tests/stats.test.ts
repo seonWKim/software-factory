@@ -13,7 +13,9 @@ import {
 import type { Tier, Timestamp, UserId, VerdictSeverity, WorkItemId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
-import { human, issue, newStore, system } from "./helpers/store.js";
+import { HOTSPOT } from "../src/core/hotspots.js";
+import { FILING_KINDS } from "../src/core/stats.js";
+import { OTHER_PROJECT_KEY, PROJECT_KEY, human, issue, newStore, system } from "./helpers/store.js";
 
 const WEIGHTS = { none: 0, minor: 1, major: 3, critical: 10 };
 const REPO_ROOT = join(import.meta.dirname, "..");
@@ -214,7 +216,7 @@ describe("factory stats", () => {
     });
     await collectStats(spy, config);
     await collectAutonomy(spy);
-    expect(new Set(calls)).toEqual(new Set(["listStatsRecords", "listRunsByKind", "listMergeEvaluations"]));
+    expect(new Set(calls)).toEqual(new Set(["listStatsRecords", "listRunsByKind", "listMergeEvaluations", "listFiledPatternsWithin", "listProposals"]));
     expect(await snapshot()).toEqual(before);
   });
 });
@@ -489,6 +491,78 @@ describe("stats config", () => {
     const real = JSON.parse(readFileSync(join(REPO_ROOT, "factory.config.json"), "utf8")) as Record<string, unknown>;
     const dir = tempRoot({ ...real, stats: { weights: { ...WEIGHTS, major: -3 } } });
     await expect(loadConfig(dir)).rejects.toThrow(/stats\.weights\.major/);
+  });
+});
+
+// Issue #775: what the factory files on itself, per kind, over the last 30 days. Done and rejected read each item's close_reason.
+describe("factory stats: filings per kind", () => {
+  const config: StatsConfig = { weights: WEIGHTS, min_sample: 2 };
+  type Close = "completed" | "rejected" | null;
+
+  async function seeded() {
+    const clock = new FakeClock("2026-03-01T00:00:00.000Z");
+    const { store } = await newStore(clock);
+    const { item: sys } = await store.createWorkItem(issue(900), system);
+    const { run } = await store.enqueueRun({ work_item_id: sys.id, kind: "improve", idempotency_key: "improve" });
+    const window = { window_start: "2026-02-28T00:00:00.000Z" as Timestamp, window_end: "2026-03-01T00:00:00.000Z" as Timestamp };
+    const { report } = await store.recordImproveReport({ run_id: run.id, project: PROJECT_KEY, ...window, groups: [], patterns: [] });
+    let n = 0;
+    const item = async (project: string, close: Close) => {
+      const { item } = await store.createWorkItem({ ...issue(++n), project }, system);
+      if (close) await store.transition({ id: item.id, expected_version: item.version, actor: system, reason: "closed", patch: { stage: "CLOSED", close_reason: close } });
+      return item.source;
+    };
+    const pattern = async (error_code: string, close: Close, project = PROJECT_KEY) => {
+      const ref = await item(project, close);
+      const { row } = await store.takeFiledPattern({ project, pattern_key: `k${n}`, error_code, detail: "d", report_id: report.id, evidence: 3 });
+      await store.setFiledPatternRef(row.id, report.id, ref);
+    };
+    const proposal = async (close: Close) => {
+      const ref = await item(PROJECT_KEY, close);
+      const { proposal: p } = await store.recordProposal({
+        project: PROJECT_KEY, report_id: report.id, pattern_key: `p${n}`, error_code: "checks_failed", run_count: 2, file: "prompts/review.md", state: "pending", needs_human_merge: false,
+      });
+      await store.decideProposal(p.id, "promote", "local:owner" as UserId);
+      await store.setProposalFiledRef(p.id, ref);
+    };
+    // Outside the window: 40 days before the stats are read.
+    await pattern(HOTSPOT, "rejected");
+    await proposal("rejected");
+    clock.set("2026-04-01T00:00:00.000Z");
+    await pattern(HOTSPOT, "completed");
+    await pattern(HOTSPOT, "rejected");
+    await pattern(HOTSPOT, "rejected", OTHER_PROJECT_KEY);
+    await pattern(HOTSPOT, null);
+    await pattern("checks_failed", "rejected");
+    await pattern("agent_timed_out", null);
+    await proposal("completed");
+    // A promoted proposal with no item yet is not counted.
+    const { proposal: unfiled } = await store.recordProposal({
+      project: PROJECT_KEY, report_id: report.id, pattern_key: "unfiled", error_code: "x", run_count: 2, file: "prompts/review.md", state: "pending", needs_human_merge: false,
+    });
+    await store.decideProposal(unfiled.id, "promote", "local:owner" as UserId);
+    clock.set("2026-04-10T00:00:00.000Z");
+    return { store };
+  }
+
+  it("counts filed, done and rejected per kind over the last 30 days, across projects", async () => {
+    const { store } = await seeded();
+    const report = await collectStats(store, config);
+    expect(report.filings?.map((r) => r.kind)).toEqual([...FILING_KINDS]);
+    expect(report.filings).toEqual([
+      { kind: "hotspot", filed: 4, done: 1, rejected: 2 },
+      { kind: "failure_pattern", filed: 2, done: 0, rejected: 1 },
+      { kind: "proposal", filed: 1, done: 1, rejected: 0 },
+    ]);
+  });
+
+  it("factory stats prints one row per kind with filed, done and rejected", async () => {
+    const { store } = await seeded();
+    const lines = formatStatsText(await collectStats(store, config)).split("\n");
+    const at = lines.findIndex((l) => /^filed_by_factory\s+filed\s+done\s+rejected$/.test(l));
+    expect(at).toBeGreaterThan(0);
+    expect(lines.slice(at + 1, at + 4).map((l) => l.split(/\s{2,}/))).toEqual([["hotspot", "4", "1", "2"], ["failure pattern", "2", "0", "1"], ["proposal", "1", "1", "0"]]);
+    expect(lines.join("\n")).toContain("in the last 30 days");
   });
 });
 
