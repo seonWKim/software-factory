@@ -53,7 +53,7 @@ Weigh every change against it: does it make the factory better at building softw
 
 A change to the dashboard (`web/`) reads `design-system/components.md`, `design-system/patterns.md`, `design-system/writing.md` (also for text the server writes for a page) and the last 40 active lines of `design-system/learnings.md` (the owner's past corrections; skip a line a later `supersedes` line names), composes from `web/src/components/ui/`, and follows `design-system/dx.md` for its build steps, checks and PR checklist.
 
-A UI change edits only the page file it touches (`docs/design/09-dashboard-<page>.md`, with its `docs/design/history/` file). The sidebar and top bar are in `docs/design/09-dashboard-shell.md`, the shared components in `docs/design/09-dashboard-components.md`. `docs/design/09-dashboard-app.md` is an index; add no decision to it.
+A UI change edits only the page file it touches (`docs/design/09-dashboard-<page>.md`, with its `docs/design/history/` file; the item page is `09-dashboard-item.md` and its area files `09-dashboard-item-about.md`, `-runs.md`, `-thread.md`, `-actions.md`). The sidebar and top bar are in `docs/design/09-dashboard-shell.md`, the shared components in `docs/design/09-dashboard-components.md`. `docs/design/09-dashboard-app.md` is an index; add no decision to it.
 
 ## Rules for agents working on this repo
 
