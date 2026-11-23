@@ -1,6 +1,7 @@
 import type { TriagePhase } from "./outputs.js";
-import type { SourceRef, StateChangeDetail, WorkItemId } from "./types.js";
-export { sizeCaps } from "./size-cap.js"; // an item's size caps, for the size readers that import the split rule
+import type { Run, SourceRef, StateChangeDetail, WorkItem, WorkItemId } from "./types.js";
+import { sizeCaps } from "./size-cap.js";
+export { sizeCaps }; // an item's size caps, for the size readers that import the split rule
 
 // Split specs (design 2026-11-01): when triage estimates a change near the size caps, it proposes 2 to 4
 // ordered phases. On /approve the factory files one sub-issue per phase; each later phase is held until the
@@ -70,15 +71,77 @@ export function atSizeCheckpoint(spec: SizeEstimate & { phases?: readonly unknow
   return (spec.phases?.length ?? 0) === 0 && needsSplit(spec, limits);
 }
 
-/** The size checkpoint's note above the spec's footer: the estimate, the threshold, and what the owner can reply. */
+/**
+ * The size checkpoint's note above the spec's footer: the estimate, the threshold, and what the owner can reply, with
+ * the one-time cap `/approve <why>` stores (`approveOverCapText`).
+ */
 export function sizeCheckpointNote(est: SizeEstimate, limits: SplitLimits): string {
   const t = splitThresholds(limits);
   return (
     `This spec waits for \`/approve\` at the size checkpoint: its estimate (${est.estimated_lines} lines, ${est.estimated_files} files) ` +
-    `is over ${SPLIT_PERCENT}% of a cap (${t.lines} lines or ${t.files} files; \`max_diff_lines\` = ${limits.max_diff_lines}, ` +
-    `\`max_diff_files\` = ${limits.max_diff_files}) and it has no phases. Reply \`/approve\` to implement it as one change, ` +
-    `or \`/revise <feedback>\` to ask for ${MIN_PHASES} to ${MAX_PHASES} phases.`
+    `is over ${SPLIT_PERCENT}% of a cap (${t.lines} lines or ${t.files} files) and it has no phases. ` +
+    `${approveOverCapText({ lines: est.estimated_lines, files: est.estimated_files }, limits, "implement it as one change")} ` +
+    `Or reply \`/revise <feedback>\` to ask for ${MIN_PHASES} to ${MAX_PHASES} phases.`
   );
+}
+
+/** Line and file counts: a diff's, or an estimate's. */
+export interface Sizes {
+  lines: number;
+  files: number;
+}
+
+/**
+ * The one-time cap an over-cap `/approve` proposes for `sizes` (design 04-split-specs, 2026-11-24): each cap raised
+ * just enough that the size is within SPLIT_PERCENT of it, so the approved size is no longer at its size checkpoint;
+ * never below the cap in force.
+ */
+export function proposedCap(sizes: Sizes, caps: SplitLimits): SplitLimits {
+  const up = (n: number, cap: number) => Math.max(cap, Math.ceil((n * 100) / SPLIT_PERCENT));
+  return { max_diff_lines: up(sizes.lines, caps.max_diff_lines), max_diff_files: up(sizes.files, caps.max_diff_files) };
+}
+
+/** What `/approve <why>` does over the caps (`does`): the size, the caps in force and the proposed one-time cap, in one sentence. */
+export function approveOverCapText(sizes: Sizes, caps: SplitLimits, does: string): string {
+  const p = proposedCap(sizes, caps);
+  return (
+    `Reply \`/approve <why>\` to ${does} over the cap: ${sizes.lines} lines in ${sizes.files} files against ` +
+    `\`max_diff_lines\` = ${caps.max_diff_lines} and \`max_diff_files\` = ${caps.max_diff_files}, with a one-time cap of ` +
+    `${p.max_diff_lines} lines and ${p.max_diff_files} files for this item; the note saying why is required.`
+  );
+}
+
+/** blocked_reason of an item whose implement run's diff was over its caps (the `too_large` phase). */
+export const TOO_LARGE = "run_failed:implement:diff_too_large";
+
+/** An `/approve` over the item's caps: where, the size it approves, the caps in force, the project's caps and the proposed one-time cap. */
+export interface OverCap {
+  at: "spec" | "too_large";
+  sizes: Sizes;
+  caps: SplitLimits;
+  project_cap: SplitLimits;
+  one_time_cap: SplitLimits;
+}
+
+/**
+ * Whether an `/approve` on `it` approves a change over its size caps (design 04-split-specs, 2026-11-24): at `too_large`,
+ * the blocked diff's size from its run's failure detail (`{ sizes: null }` when the run recorded none); at the spec gate,
+ * a spec at its size checkpoint (`spec`, the latest), its estimate. Null for any other approval. `settings` holds the
+ * project's caps; the caps in force are the item's (`sizeCaps`).
+ */
+export function overCap(
+  it: Pick<WorkItem, "project" | "stage" | "blocked_reason" | "size_cap">, runs: readonly Run[],
+  spec: (SizeEstimate & { phases?: readonly unknown[] }) | null, settings: SplitLimits,
+): OverCap | { sizes: null } | null {
+  const caps = sizeCaps(it, settings), project_cap = sizeCaps({ project: it.project }, settings);
+  const over = (at: OverCap["at"], sizes: Sizes): OverCap => ({ at, sizes, caps, project_cap, one_time_cap: proposedCap(sizes, caps) });
+  if (it.blocked_reason === TOO_LARGE) {
+    const run = runs.filter((r) => r.kind === "implement" && r.outcome?.status === "failed" && r.outcome.error_code === "diff_too_large").at(-1);
+    const sizes = run?.outcome?.status === "failed" ? parseSizeDetail(run.outcome.detail) : null;
+    return sizes ? over("too_large", sizes) : { sizes: null };
+  }
+  const atGate = it.stage === "READY" && (it.blocked_reason === "spec_pending" || it.blocked_reason === "max_revisions");
+  return atGate && spec && atSizeCheckpoint(spec, caps) ? over("spec", { lines: spec.estimated_lines, files: spec.estimated_files }) : null;
 }
 
 /**
@@ -185,7 +248,7 @@ export function parseSubIssues(d: StateChangeDetail | null | undefined): string[
 }
 
 /** The line and file counts in the size gate's failure detail (`sizeDetail`), or null when it has none. */
-export function parseSizeDetail(detail: string): { lines: number; files: number } | null {
+export function parseSizeDetail(detail: string): Sizes | null {
   const m = /changes (\d+) lines\b[\s\S]*?\bin (\d+) files\b/.exec(detail);
   return m ? { lines: Number(m[1]), files: Number(m[2]) } : null;
 }
@@ -255,15 +318,19 @@ export function suggestSplit(diff: { lines: number; files: number; paths: readon
 }
 
 /**
- * The size checkpoint's suggested split (design 2026-11-01): built from the diff size in the size gate's detail
- * and the paths the item may change, never the code; no agent runs. Empty when the detail has no counts or
- * there is nothing to split. Ends with a blank line, so the footer follows.
+ * The too_large comment's size section: the over-cap `/approve` with the diff size, the caps and the proposed one-time
+ * cap (design 04-split-specs, 2026-11-24), then the suggested split (design 2026-11-01), built from the diff size in the
+ * size gate's detail and the paths the item may change, never the code; no agent runs. Empty when the detail has no
+ * counts; no split part when there is nothing to split. Ends with a blank line, so the footer follows.
  */
 export function suggestedSplit(detail: string, paths: readonly string[], limits: { max_diff_lines: number; max_diff_files: number }): string[] {
   const size = parseSizeDetail(detail);
-  const phases = size ? suggestSplit({ ...size, paths }, limits) : [];
-  if (!size || phases.length === 0) return [];
+  if (!size) return [];
+  const approve = [approveOverCapText(size, limits, "run the implementer again on the same spec"), ""];
+  const phases = suggestSplit({ ...size, paths }, limits);
+  if (phases.length === 0) return approve;
   const out = [
+    ...approve,
     "### Suggested split",
     `Built from the diff size (${size.lines} lines in ${size.files} files) and the item's allowed paths, not from the code, so treat it as a starting point. To use it, reply \`/revise <feedback>\` and ask for these phases; the new spec then files one sub-issue per phase on \`/approve\`.`,
   ];

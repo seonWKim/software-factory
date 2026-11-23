@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { CLI_TOP_WORDS, HELP_WORD, cliName, cliUsageLines, parseLocalCliArgs, resolveItem, runLocalCli } from "../../../core/local-cli.js";
+import { CLI_TOP_WORDS, HELP_WORD, cliName, cliUsageLines, parseLocalCliArgs, resolveItem, runLocalCli, storedProjectCaps } from "../../../core/local-cli.js";
 import { answersDetail, splitAnswers } from "../../../shared/command-notes.js";
 import { storeProjectResolver } from "../../../ui/settings-api.js";
 import { defineCommand } from "../../command.js";
@@ -39,6 +39,7 @@ export default defineCommand({
           cli,
           ui: loaded.file.ui ?? {},
           answers: { split: splitAnswers, detail: answersDetail },
+          caps: async (project) => storedProjectCaps(store, { file: {}, layers: loaded.config.settings }, `${owner}/${name}`, (await resolveProject())?.key ?? null, project),
         },
         action,
       );

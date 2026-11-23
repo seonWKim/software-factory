@@ -71,4 +71,5 @@ export const TABLE_DOCS: Readonly<Record<string, string>> = {
   "controller_work_items.tier": "Risk tier, 1 (lowest) to 5.",
   "controller_work_items.loop_count": "Implement and review rounds so far.",
   "controller_work_items.change_ref": "The change under review (a PR number or a local branch).",
+  "controller_work_items.size_cap": "JSON of the one-time size cap an over-cap approval set, which replaces the project's caps for this item.",
 };

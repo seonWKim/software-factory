@@ -103,8 +103,8 @@ export const COMMANDS: readonly CommandSpec[] = [
     description:
       "Approve the spec, the floor block or a run held for a person by the Rule of Two, or start an implement run held by coordination cost now (not one waiting for a dependency). Notes on the same line or below go to the implementer and the reviewer. " +
       "`/approve +paths <path>...` (at most 10, notes on the lines below) on the spec or the floor block also adds those paths to the allowed paths",
-    // Also accepted on an implement run held by coordination cost (design §5, 2026-11-03): that hold is not in the
-    // item's fields, so it is no phase here; the hold comment names the command. Never on a dependency hold.
+    // Also accepted on an implement run held by coordination cost (design §5, 2026-11-03; the hold comment names it), never on a dependency
+    // hold, and at too_large with a note, over the cap (design 04-split-specs, 2026-11-24; its comment names it): neither is a phase here.
     phases: ["spec_pending", "max_revisions", "floor_tier", "rule_of_two"],
     needs_pr: false,
     changes_state: true,
@@ -213,7 +213,7 @@ export const commandSpec = (name: CommandName): CommandSpec => BY_NAME.get(name)
 /** blocked_reason prefix (with `blocked_on: human`) of an item whose dependency closed without a merge (design §5). */
 export { DEPENDENCY_CLOSED } from "./phase.js"; export { LOCAL_SOURCE, MERGE_COMMAND, RESTART_COMMAND } from "./local-merge.js"; // for the commands unit
 export { LOCAL_ID, dependsOnIds, localItemOf, wantedDependsOn, withDependsOn } from "./task-build.js"; // for `/hold` and the coordination unit
-export { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity } from "./local-cli.js"; export { specKind } from "./standing.js"; // for the commands unit
+export { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity } from "./local-cli.js"; export { specKind } from "./standing.js"; export { overCap } from "./split.js"; export { overCapApproval } from "./size-cap.js"; // for the commands unit; the last two: an over-cap `/approve` (design 04-split-specs)
 
 /** Block reasons whose step `/retry` reads from the stage (or, for the agent blocks, from the item's runs first). */
 const STAGE_RETRY_REASONS: readonly (string | null)[] = ["max_attempts", "max_restart", AGENT_NEEDS_HUMAN, REPEATED_FAILURE];
@@ -580,7 +580,7 @@ export function approveRefusal(it: ItemState): string | null {
   if (it.blocked_reason === "budget_checkpoint") return CHECKPOINT_REFUSAL;
   if (it.blocked_reason === SCHEDULE_CHECKPOINT) return null; // the approve gate closes it (design 08-schedules)
   const s = commandState(it);
-  if (applies(commandSpec("approve"), s)) return null;
+  if (applies(commandSpec("approve"), s) || s.phase === "too_large") return null; // too_large: the controller's over-cap check (design 04-split-specs)
   if (it.stage === "READY" && (it.blocked_on === "upstream" || it.blocked_reason === "delivery_failed")) return null;
   if (it.blocked_on === "dependency") return dependencyHoldRefusal(it.blocked_reason);
   return specNotWaiting(s.phase);

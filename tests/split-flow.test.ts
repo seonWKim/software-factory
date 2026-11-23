@@ -57,8 +57,8 @@ async function setup(cfg: FactoryConfig = config) {
     return run!;
   };
   const triaged = (spec: unknown): RunOutcome => ({ status: "succeeded", summary: "s", data: { spec } });
-  const approve = async (src: SourceRef) => {
-    source.queue.push({ kind: "spec_approved", source: src, comment_id: String(++comment), approver: alice });
+  const approve = async (src: SourceRef, note?: string) => {
+    source.queue.push({ kind: "spec_approved", source: src, comment_id: String(++comment), approver: alice, ...(note === undefined ? {} : { note }) });
     await controller.tickIntake();
   };
   const closeSource = async (src: SourceRef, state_reason: SourceCloseReason) => {
@@ -198,8 +198,26 @@ describe("split spec flow", () => {
     expect(spec.body).toContain("at the size checkpoint");
     expect(spec.body).toContain("1400 lines");
     expect(spec.body.indexOf("at the size checkpoint")).toBeLessThan(spec.body.indexOf("Commands you can reply with now:"));
+    // The note names /approve with the size, the cap and the proposed one-time cap (design 04-split-specs, 2026-11-24).
+    expect(spec.body).toContain("`/approve <why>`");
+    expect(spec.body).toContain("one-time cap of 1648 lines and 40 files");
+    // Over the cap with no note: one reply, nothing stored.
+    const before = (await f.get(item)).version;
     await f.approve(issueRef(72));
-    expect(await f.get(item)).toMatchObject({ stage: "RUNNING", blocked_on: "none" });
+    const refusals = f.source.comments.filter((c) => c.source.id === issueRef(72).id && c.marker.startsWith("<!-- factory:refused:"));
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]!.body).toContain("needs a note saying why");
+    expect(await f.get(item)).toMatchObject({ version: before, stage: "READY", blocked_reason: "spec_pending", size_cap: null });
+    // With a note: the spec's approval stores the estimate's one-time cap and its record in the same transition.
+    await f.approve(issueRef(72), "one change keeps the migration atomic");
+    expect(await f.get(item)).toMatchObject({ stage: "RUNNING", blocked_on: "none", size_cap: { max_diff_lines: 1648, max_diff_files: 40 } });
+    const approved = (await f.store.listStateChanges(item.id)).filter((c) => c.reason === "spec_approved");
+    expect(approved).toHaveLength(1);
+    expect(approved[0]!.changes.size_cap).toEqual({ from: null, to: { max_diff_lines: 1648, max_diff_files: 40 } });
+    expect(JSON.parse(String(approved[0]!.detail!.size_cap_approved))).toEqual({
+      actor: "github:1", sizes: { lines: 1400, files: 4 }, project_cap: { max_diff_lines: 1500, max_diff_files: 40 },
+      one_time_cap: { max_diff_lines: 1648, max_diff_files: 40 }, note: "one change keeps the migration atomic",
+    });
     expect(f.source.subIssues).toEqual([]);
   });
 

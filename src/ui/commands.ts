@@ -37,6 +37,8 @@ import { RESTART_COMMAND, mergedIntoBase } from "../core/restart.js";
 import { parseNeedsHuman } from "../core/outputs.js";
 import { phaseOf } from "../core/phase.js";
 import { isCovered } from "../core/policy.js";
+import { storedProjectCaps } from "../core/size-cap.js";
+import { overCap } from "../core/split.js";
 import type { Run, StateChange, UserId, WorkItem, WorkItemId } from "../core/types.js";
 import type { AuthDecision } from "../interfaces/auth-provider.js";
 import type { AppCommandRequest } from "../interfaces/factory-store.js";
@@ -213,7 +215,7 @@ const APPLIED_NOW: readonly string[] = ["approve", MERGE_COMMAND];
  */
 async function applyNow(d: UiDeps, r: AppCommandRequest, item: WorkItem): Promise<Record<string, unknown>> {
   const c = d.commands;
-  if (!c?.allowed || !APPLIED_NOW.includes(r.command)) return {};
+  if (!c?.allowed || !APPLIED_NOW.includes(r.command) || (r.command === "approve" && (await overCapApprove(d, item)))) return {};
   const done = (r.command === "approve" ? await noFilesApprove(d, c.allowed, r, item) : null) ?? await requestTransition({
     store: d.store, scanner: d.scanner, allowed: c.allowed, answers: { split: splitAnswers, detail: answersDetail }, changeName: c.changeName ?? String, forge: c.forge, localMerge: c.localMerge,
   }, r, item);
@@ -226,6 +228,20 @@ async function applyNow(d: UiDeps, r: AppCommandRequest, item: WorkItem): Promis
     refusal,
   };
 }
+
+/**
+ * An Approve over the item's size caps (design 04-split-specs, 2026-11-24): at too_large, or a spec at its size
+ * checkpoint against the caps the controller reads (storedProjectCaps). Left to the controller, which refuses it
+ * without a note in the thread or stores the one-time cap with its `size_cap_approved` record.
+ */
+async function overCapApprove(d: UiDeps, item: WorkItem): Promise<boolean> {
+  const it = (await d.store.getWorkItem(item.id)) ?? item, runs = await d.store.listRuns(it.id), s = d.settings;
+  const key = s ? ((await s.resolveProject())?.key ?? null) : null, owner = s ? `${s.repo.owner}/${s.repo.name}` : "";
+  return overCap(it, runs, latestSpec(runs), await storedProjectCaps(d.store, s?.base ?? NO_SETTINGS_FILE, owner, key, it.project)) !== null;
+}
+
+/** The settings base with no config file: the built-in caps, then the stored overrides. */
+const NO_SETTINGS_FILE = { file: {}, layers: { defaults: {}, projects: {} } };
 
 /**
  * An Approve of a spec that changes no file in this repo (design 04-spec-gate-commands, 2026-11-20): refused with the
