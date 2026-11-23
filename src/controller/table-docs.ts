@@ -43,6 +43,7 @@ export const TABLE_DOCS: Readonly<Record<string, string>> = {
   controller_skill_eval_cases: "Cases of a skill eval suite: the input to replay and the output expected.",
   controller_skill_eval_replays: "One verdict per case in an eval run, with its detail; one row per run and case.",
   controller_skill_eval_runs: "Runs of a skill eval suite: their status and when each started and finished.",
+  "controller_skill_eval_runs.skill_version": "A hash of the skill folder's file names and contents when the run replayed it; empty on older runs.",
   controller_skill_eval_suites: "Skill eval suites: one set of cases for a skill, and who made it.",
   controller_standing_proposals: "Offers to turn on a standing approval after a run of the same approvals.",
   controller_standing_rule_changes: "Every change to a standing approval (turned on, paused, threshold changed, removed): before, after and who made it.",
