@@ -28,7 +28,7 @@ export interface ScreenshotOutcome {
 }
 
 /** A finding of the screenshot review, in the review's own shape. */
-export interface ScreenshotFinding {
+interface ScreenshotFinding {
   readonly kind: string;
   readonly text: string;
 }

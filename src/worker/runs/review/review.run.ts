@@ -98,7 +98,7 @@ async function review(
 }
 
 /** Where, inside the run folder, the screenshot review's images are copied for the reviewer to read. */
-export const SCREENSHOTS_DIR = ".factory-screenshots";
+const SCREENSHOTS_DIR = ".factory-screenshots";
 
 /**
  * The screenshot review (design 04-screenshots): a review run queued after the screenshot run, with its captures or

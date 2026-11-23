@@ -19,9 +19,9 @@ type Item = NonNullable<Awaited<ReturnType<Ctx["k"]["reader"]["getWorkItem"]>>>;
 type Queued = NonNullable<Extract<Parameters<Ctx["k"]["commitItem"]>[1], { kind: "transition" }>["input"]["enqueue"]>;
 
 /** State-change reasons of the three steps. */
-export const SCREENSHOTS_QUEUED = "screenshots_queued";
-export const SCREENSHOT_REVIEW_QUEUED = "screenshot_review_queued";
-export const SCREENSHOT_REVIEWED = "screenshot_reviewed";
+const SCREENSHOTS_QUEUED = "screenshots_queued";
+const SCREENSHOT_REVIEW_QUEUED = "screenshot_review_queued";
+const SCREENSHOT_REVIEWED = "screenshot_reviewed";
 
 /** How many times a plain transition is tried again on a version conflict. */
 const CONFLICT_RETRIES = 5;
@@ -75,7 +75,7 @@ export async function screenshotStep(c: Ctx, run: Run): Promise<void> {
 }
 
 /** What a screenshot run stored, or why it stored nothing: a failed or cancelled run names its error code. */
-export function screenshotsOf(run: Run): { captures: { page: string; width: number; theme: string; key: string }[]; reason: string | null } {
+function screenshotsOf(run: Run): { captures: { page: string; width: number; theme: string; key: string }[]; reason: string | null } {
   if (run.outcome?.status !== "succeeded") {
     return { captures: [], reason: `the screenshot run ${run.outcome?.status === "failed" ? `failed (${run.outcome.error_code || "unknown"})` : "was cancelled"}` };
   }
@@ -95,7 +95,7 @@ async function screenshotsTaken(c: Ctx, run: Run): Promise<void> {
 }
 
 /** The screenshot review's one comment: its findings, then what it could not verify; a failed review says so. */
-export function screenshotReviewComment(run: Run): string {
+function screenshotReviewComment(run: Run): string {
   const head = "**Screenshot review** of the changed pages against `design-system/patterns.md` (390px and 1280px, light and dark; the seeded fixture store). It changes no state: the screenshots are on the item page's Changes tab.";
   const r = run.outcome?.status === "succeeded" ? parseScreenshotReview(run.outcome.data.screenshot_review) : null;
   if (!r) {

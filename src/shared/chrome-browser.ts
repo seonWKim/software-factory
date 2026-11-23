@@ -11,7 +11,7 @@ import { createInterface } from "node:readline";
 import { type BrowserSession, CaptureUnavailable, type ScreenshotBrowser, capturePages } from "./screenshots.js";
 
 /** The capture script, relative to the checkout. */
-export const CAPTURE_SCRIPT = join("scripts", "responsive", "capture.mjs");
+const CAPTURE_SCRIPT = join("scripts", "responsive", "capture.mjs");
 
 /** The env names the capture script may see: where programs, the home folder and temp files are, and Chrome's path. */
 export const CAPTURE_ENV = ["PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "CHROME_PATH", "CI"] as const;
