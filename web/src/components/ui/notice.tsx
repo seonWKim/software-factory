@@ -44,7 +44,7 @@ export function EmptyState({ icon: Icon, title, description, action }: { icon?: 
  * script or an agent reads) stays its label; the control names the key with `aria-keyshortcuts`.
  */
 export function Kbd({ children, hint }: { children?: ReactNode; hint?: string }) {
-  const style = "rounded-control border border-border-strong bg-surface-2 px-1.5 py-0.5 font-sans text-xs text-text-1";
+  const style = "inline-block min-w-5 rounded-control border border-border-strong bg-surface-2 px-1.5 py-0.5 text-center font-sans text-xs text-text-1";
   if (hint !== undefined) return <kbd aria-hidden data-key={hint} className={cn(style, "after:content-[attr(data-key)]")} />;
   return <kbd className={style}>{children}</kbd>;
 }

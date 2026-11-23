@@ -5,25 +5,30 @@ import { BASE } from "./pages.js";
 // textarea, select or contenteditable element, nor with Ctrl, Alt or Shift held (⌘K is the one chord here; ⌘Z is the
 // Tasks page's own listener, through isUndo).
 
-/** One shortcut for the help list: the keys as typed, and the catalog key of what they do. */
+/** The help list's groups, in the order it shows them. */
+export const SHORTCUT_GROUPS = ["general", "navigation", "rows", "tasks"] as const;
+export type ShortcutGroup = (typeof SHORTCUT_GROUPS)[number];
+
+/** One shortcut for the help list: the keys as typed, its group, and the catalog key of what they do. */
 export interface Shortcut {
   keys: string;
+  group: ShortcutGroup;
   what: "keys.search" | "keys.help" | "keys.goWork" | "keys.next" | "keys.prev" | "keys.open" | "keys.primary" | "keys.addTask" | "keys.editTask" | "keys.deleteTask" | "keys.undoDone";
 }
 
 export const SHORTCUTS: readonly Shortcut[] = [
-  { keys: "⌘K", what: "keys.search" },
-  { keys: "?", what: "keys.help" },
-  { keys: "g w", what: "keys.goWork" },
-  { keys: "g a", what: "keys.goWork" },
-  { keys: "j", what: "keys.next" },
-  { keys: "k", what: "keys.prev" },
-  { keys: "Enter", what: "keys.open" },
-  { keys: "p", what: "keys.primary" },
-  { keys: "q", what: "keys.addTask" },
-  { keys: "e", what: "keys.editTask" },
-  { keys: "Delete", what: "keys.deleteTask" },
-  { keys: "⌘Z", what: "keys.undoDone" },
+  { keys: "⌘K", group: "general", what: "keys.search" },
+  { keys: "?", group: "general", what: "keys.help" },
+  { keys: "g w", group: "navigation", what: "keys.goWork" },
+  { keys: "g a", group: "navigation", what: "keys.goWork" },
+  { keys: "j", group: "rows", what: "keys.next" },
+  { keys: "k", group: "rows", what: "keys.prev" },
+  { keys: "Enter", group: "rows", what: "keys.open" },
+  { keys: "p", group: "rows", what: "keys.primary" },
+  { keys: "q", group: "tasks", what: "keys.addTask" },
+  { keys: "e", group: "tasks", what: "keys.editTask" },
+  { keys: "Delete", group: "tasks", what: "keys.deleteTask" },
+  { keys: "⌘Z", group: "tasks", what: "keys.undoDone" },
 ];
 
 /**
