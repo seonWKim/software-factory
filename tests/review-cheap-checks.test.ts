@@ -406,6 +406,12 @@ describe("prompts/review.md", () => {
     expect(text).toMatch(/For a change under `web\/`, check the diff against\s+`design-system\/patterns\.md` and `design-system\/components\.md`/);
     expect(text).toMatch(/only when the project has `design-system\/patterns\.md` and the diff changes its UI/);
     expect(text).toMatch(/names the rule by its number/);
-    expect(text).toMatch(/`check:responsive` screenshots as evidence when they exist; when they do not, list\s+them under `unverified`/);
+    expect(text).toMatch(/`check:responsive` screenshots as evidence when they exist\./);
+  });
+
+  it("says how the screenshot review uses the captured screenshots, and that a review without them lists none as unverified", () => {
+    expect(text).toMatch(/A review with no "Screenshots" section in its input lists no screenshots under `unverified`/);
+    expect(text).toMatch(/check it against `design-system\/patterns\.md`[\s\S]*each broken rule is a finding of kind `code` that names the rule by\s+its number/);
+    expect(text).toMatch(/A capture that did not happen is listed under `unverified` as\s+`screenshots not captured: <reason>`; it never changes the verdict/);
   });
 });

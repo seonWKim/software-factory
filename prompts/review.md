@@ -32,8 +32,14 @@ Do:
    for the change. Check it also against the components the spec names and the "Stays fixed" list in
    `design-system/README.md`; each fixed item it changes is a finding of kind `code`. A hand-made element where the
    `design-system/components.md` "Which component for what" table names a component is a finding of kind `code`
-   that names the table row (for example "a hand-made checkbox: row 'an on/off choice in a list'"). Attach the `check:responsive` screenshots as evidence when they exist; when they do not, list
-   them under `unverified`.
+   that names the table row (for example "a hand-made checkbox: row 'an on/off choice in a list'"). Attach the `check:responsive` screenshots as evidence when they exist.
+   Screenshots: after a review passes on a change to a UI path, the factory captures the dashboard's pages (390px and
+   1280px, light and dark, from a seeded fixture store) and queues a separate screenshot review whose input has a
+   "Screenshots" section. A review with no "Screenshots" section in its input lists no screenshots under `unverified`.
+   In the screenshot review, open each image file it names and check it against `design-system/patterns.md`
+   (spacing, sizes, open menus, nothing squeezed): each broken rule is a finding of kind `code` that names the rule by
+   its number and the page, width and theme. A capture that did not happen is listed under `unverified` as
+   `screenshots not captured: <reason>`; it never changes the verdict.
 8. UI changes: when the diff touches UI paths (`web/`, `src/ui/`, or the paths the project lists for its UI) and you
    could not run its build, its type-check or its screenshots, set `ui_unverified` to true and list each of those you
    could not run under `unverified`, one line each, naming the command. For a done criterion about the UI, name the

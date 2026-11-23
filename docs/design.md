@@ -3,10 +3,10 @@
 Read this index, then only the topics you touch. A topic states its current decision first, replaced ones in `history/<topic>.md`. Add a line here only for a new topic. "§5" means `05-*`.
 
 ## 1. Shape
-- [01-shape.md](design/01-shape.md): flow from intake to the human gate and post-merge.
+- [01-shape.md](design/01-shape.md): intake to human gate and post-merge.
 
 ## 2. Work item
-- [02-work-item.md](design/02-work-item.md): one work-item shape for every source.
+- [02-work-item.md](design/02-work-item.md): one work-item shape for all sources.
 - [02-attachments.md](design/02-attachments.md): triage context, images, links.
 - [02-tasks.md](design/02-tasks.md): plain tasks: table, `task add`, route.
 - [02-tasks-quick-add.md](design/02-tasks-quick-add.md): quick-add words, repeats.
@@ -20,15 +20,16 @@ Read this index, then only the topics you touch. A topic states its current deci
 - [03-risk.md](design/03-risk.md): tier and safety ratchet.
 
 ## 4. Agents
-- [04-agents.md](design/04-agents.md): agent roles, model class per run kind and tier.
-- [04-gate-commands.md](design/04-gate-commands.md): human commands, refusals, footers.
+- [04-agents.md](design/04-agents.md): agent roles, model class per kind and tier.
+- [04-gate-commands.md](design/04-gate-commands.md): human commands, refusals.
 - [04-spec-gate-commands.md](design/04-spec-gate-commands.md): spec answers, `/revise`.
 - [04-chat-commands.md](design/04-chat-commands.md): chat commands.
 - [04-verdicts.md](design/04-verdicts.md): `/verdict`, implicit verdicts, pushbacks.
 - [04-closing-source-issue.md](design/04-closing-source-issue.md): closing the source.
 - [04-pre-push-gates.md](design/04-pre-push-gates.md): pre-push gates.
-- [04-triage.md](design/04-triage.md): path companions, allowed paths, topic folders.
-- [04-split-specs.md](design/04-split-specs.md): size estimates, phases, phase hold.
+- [04-triage.md](design/04-triage.md): path companions, allowed paths.
+- [04-split-specs.md](design/04-split-specs.md): size estimates, phases.
+- [04-screenshots.md](design/04-screenshots.md): UI screenshots.
 
 ## 5. Coordination
 - [05-coordination.md](design/05-coordination.md): claim order, leases, fencing.
@@ -42,7 +43,7 @@ Read this index, then only the topics you touch. A topic states its current deci
 - [05-ci-gate.md](design/05-ci-gate.md): CI workflow, check gate.
 - [05-sources.md](design/05-sources.md): local items, thread, outbox, CLI.
 - [05-slack-intake.md](design/05-slack-intake.md): Slack intake.
-- [05-github-sync.md](design/05-github-sync.md): GitHub client, forge PRs, call budget.
+- [05-github-sync.md](design/05-github-sync.md): GitHub client, PRs, call budget.
 - [05-stream-intake.md](design/05-stream-intake.md): stream intake, adopted PRs.
 - [05-interactive-sessions.md](design/05-interactive-sessions.md): interactive run.
 - [05-status-labels.md](design/05-status-labels.md): the eight status labels.
@@ -51,8 +52,8 @@ Read this index, then only the topics you touch. A topic states its current deci
 ## 6. Measurement
 - [06-measurement.md](design/06-measurement.md): feedback rate, stats, golden set.
 - [06-token-budget.md](design/06-token-budget.md): per-tier token checkpoints.
-- [06-spend.md](design/06-spend.md): spend per day, week, item; dollar budgets.
-- [06-efficiency.md](design/06-efficiency.md): items, tokens and time per period.
+- [06-spend.md](design/06-spend.md): spend per day, week, item; budgets.
+- [06-efficiency.md](design/06-efficiency.md): items, tokens, time per period.
 
 ## 7. Self-improvement
 - [07-self-improvement.md](design/07-self-improvement.md): self-change.

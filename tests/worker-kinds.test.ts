@@ -58,7 +58,7 @@ const setKinds = (store: FactoryStore, kinds: readonly string[]) =>
 describe("the worker's claim reads worker_kinds", () => {
   it("default: a worker claims every claimable kind, as with the fixed list", async () => {
     const { store } = await newStore();
-    expect(WORKER_KINDS).toEqual(expect.arrayContaining(["implement", "improve", "merge-check", "resolve", "restart", "review", "triage", "update", "judge"]));
+    expect(WORKER_KINDS).toEqual(expect.arrayContaining(["implement", "improve", "merge-check", "resolve", "restart", "review", "triage", "update", "screenshot", "judge"]));
     await enqueue(store, WORKER_KINDS);
     const { w, claimed } = await worker(store);
     await drain(w);
