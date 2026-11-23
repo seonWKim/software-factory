@@ -368,8 +368,8 @@ export function ItemsPage() {
 /**
  * One work item (design 09-dashboard-item): its title, then its decision (the DecisionCard while the owner is next,
  * else its reason and "…" menu), its facts, the current run with its live state, the thread (collapsed after its
- * first message), the runs (with errors) and the timeline. An item with a branch has the tabs Overview (all of that
- * below the facts) and Changes (item-changes.tsx), kept in `?tab=`.
+ * first message), the runs (with errors) and the timeline. An item with a branch has the tabs Overview (all of that)
+ * and Changes (item-changes.tsx) in a PageToolbar under the header, kept in `?tab=`.
  */
 export function ItemPage({ id }: { id: string }) {
   const now = useNow();
@@ -396,6 +396,19 @@ export function ItemPage({ id }: { id: string }) {
         <Link href={itemPath(item.id)} aria-current="page" title={item.id} className={cn("inline-block max-w-[16ch] truncate align-bottom tabular-nums", ID_CLASS)}>{short}</Link>
       </nav>
       <PageHeader title={<span data-raw>{item.title ?? short}</span>} actions={runs.some(isInteractiveRun) ? <InteractiveBadge /> : undefined} />
+      {item.has_changes && (
+        <PageToolbar
+          tabs={
+            <Tabs
+              label={t("item.views")}
+              options={[{ id: "overview", label: t("item.tabOverview") }, { id: "changes", label: t("item.tabChanges") }]}
+              value={tab === "changes" ? "changes" : "overview"}
+              onChange={(v) => pickTab(v === "changes" ? v : null)}
+            />
+          }
+        />
+      )}
+      {item.has_changes && tab === "changes" ? <ItemChangesTab id={item.id} /> : <>
       {item.parent_id && (
         <p data-testid="parent" className="mt-1 text-sm">
           {t("item.phase", { phase: item.phase ?? "?" })} <Link href={itemPath(item.parent_id)} className={LINK_CLASS}>{t("item.splitParent")}</Link>
@@ -438,16 +451,6 @@ export function ItemPage({ id }: { id: string }) {
           <dd className="min-w-0"><CopyText value={item.source.id} what="source ID" /></dd>
         </dl>
       </Disclosure>
-      {item.has_changes && (
-        <Tabs
-          className="mt-4"
-          label={t("item.views")}
-          options={[{ id: "overview", label: t("item.tabOverview") }, { id: "changes", label: t("item.tabChanges") }]}
-          value={tab === "changes" ? "changes" : "overview"}
-          onChange={(v) => pickTab(v === "changes" ? v : null)}
-        />
-      )}
-      {item.has_changes && tab === "changes" ? <div className="mt-4"><ItemChangesTab id={item.id} /></div> : <>
       <CurrentRun runs={runs} itemId={item.id} now={now} />
       <Thread entries={q.data.thread ?? []} now={now} />
       <Phases phases={item.phases ?? []} />

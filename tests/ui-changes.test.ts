@@ -79,11 +79,14 @@ describe("item page: Changes tab", () => {
   it("lists each changed file with its added and removed counts, and shows a chosen file's diff on the page", async () => {
     mount("/app/items/wi_ready");
     const tabs = await screen.findByRole("tablist", { name: "Item views" });
+    // The tabs sit in the page toolbar right under the item's header (patterns.md, Page layout).
+    expect(tabs.closest("[data-page-toolbar]")?.previousElementSibling?.querySelector("h1")).not.toBeNull();
     fireEvent.click(within(tabs).getByRole("tab", { name: "Changes" }));
     expect(location.search).toBe("?tab=changes");
     const list = await screen.findByRole("list", { name: "Changed files" });
     const rows = [...list.querySelectorAll("li")];
     expect(rows.map((r) => r.dataset.file)).toEqual(["src/a.ts", "src/leak.ts", "img/logo.png"]);
+    expect(rows.every((r) => r.hasAttribute("data-list-row"))).toBe(true);
     expect(rows[0]!.querySelector("[data-added]")!.textContent).toBe("+3");
     expect(rows[0]!.querySelector("[data-removed]")!.textContent).toBe("−1");
     expect(rows[2]!.textContent).toContain("binary");

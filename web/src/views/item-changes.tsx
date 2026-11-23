@@ -3,6 +3,7 @@ import { useState } from "react";
 import { API, type ItemChanges, type Session, postRecheck, useApi, useManualApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { Card } from "../components/ui/card.js";
+import { ListRow, ROW_TITLE } from "../components/ui/list-row.js";
 import { EmptyState } from "../components/ui/notice.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { ALERT } from "./tasks/shared.js";
@@ -40,7 +41,7 @@ function FileDiff({ id, path }: { id: string; path: string }) {
   );
 }
 
-/** The Changes tab: the changed files as a list of buttons, then the chosen file's diff below it. */
+/** The Changes tab: the changed files as list rows (the path, then its counts), then the chosen file's diff below it. */
 export function ItemChangesTab({ id }: { id: string }) {
   const q = useManualApi<ItemChanges>(API.itemChanges(id));
   const [picked, pick] = useState<string | null>(null);
@@ -53,23 +54,29 @@ export function ItemChangesTab({ id }: { id: string }) {
         {files.length === 0 ? <EmptyState title={t("item.noChanges")} /> : (
           <ul aria-label={t("item.changedFiles")} className="divide-y divide-border rounded-control border border-border">
             {files.map((f) => (
-              <li key={f.path} data-file={f.path}>
-                <Button
-                  variant="ghost"
-                  aria-pressed={picked === f.path}
-                  onClick={() => pick(f.path)}
-                  className="w-full min-w-0 gap-3 text-left"
-                >
-                  <span className="min-w-0 grow truncate font-mono text-xs" title={f.path}>{f.path}</span>
-                  {f.added === null || f.removed === null ? (
-                    <span className="shrink-0 text-xs text-text-2">{t("item.binary")}</span>
-                  ) : (
-                    <span className="shrink-0 text-xs tabular-nums" title={t("item.lines", { added: f.added, removed: f.removed })}>
-                      <span data-added className="text-pill-ok-fg">+{f.added}</span> <span data-removed className="text-pill-bad-fg">−{f.removed}</span>
-                    </span>
-                  )}
-                </Button>
-              </li>
+              <ListRow
+                key={f.path}
+                data-file={f.path}
+                className={cn(picked === f.path && "bg-surface-2")}
+                title={
+                  // The path stays the row's title text; the shared Button lies over it, so the row keeps its height.
+                  <p title={f.path} className={cn(ROW_TITLE, "relative font-mono hover:underline")}>
+                    {f.path}
+                    <Button
+                      variant="ghost"
+                      aria-pressed={picked === f.path}
+                      aria-label={t("item.fileChanges", { path: f.path })}
+                      className="absolute inset-0 min-h-0! px-0! enabled:hover:bg-transparent!"
+                      onClick={() => pick(f.path)}
+                    />
+                  </p>
+                }
+                details={f.added === null || f.removed === null ? <span>{t("item.binary")}</span> : (
+                  <span className="tabular-nums" title={t("item.lines", { added: f.added, removed: f.removed })}>
+                    <span data-added className="text-pill-ok-fg">+{f.added}</span> <span data-removed className="text-pill-bad-fg">−{f.removed}</span>
+                  </span>
+                )}
+              />
             ))}
           </ul>
         )}
