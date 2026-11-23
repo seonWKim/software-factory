@@ -120,7 +120,7 @@ describe("base reconcile: one item per origin sha", () => {
     expect(item).toMatchObject({ source: { type: "local", id: reconcileSourceId("main", SHA("c")) }, stage: "RUNNING", blocked_on: "none" });
     // No triage, no spec approval: the resolve run is its first and only run.
     expect((await f.store.listRuns(item!.id)).map((r) => [r.kind, r.idempotency_key])).toEqual([["resolve", `${item!.id}:reconcile:${SHA("c")}`]]);
-    expect((await f.store.listStateChanges(item!.id)).map((c) => c.reason)).toEqual(["intake", "reconcile_started"]);
+    expect((await f.store.listStateChanges(item!.id)).map((c) => c.reason)).toEqual(["intake", "auto_resolve_started"]);
     expect(g.pushes).toEqual([]);
 
     await f.mergeAndPush(await f.ready());

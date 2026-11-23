@@ -90,7 +90,7 @@ export class IntakeUnit {
     if (created) this.c.k.d.log.info("base reconcile filed", { work_item_id: item.id, base_ref, remote });
     await this.c.unit("transitions").decide(item.id, (it) => (it.stage === "NEW" && it.blocked_on === "none"
       ? {
-          patch: { stage: "RUNNING" }, actor: SYSTEM, reason: "reconcile_started", detail: { base_ref, remote },
+          patch: { stage: "RUNNING" }, actor: SYSTEM, reason: "auto_resolve_started", detail: { cause: "base_reconcile", base_ref, remote },
           enqueue: { kind: "resolve", idempotency_key: `${item.id}:reconcile:${remote}`, input: { notes: "" } },
         }
       : null));

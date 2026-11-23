@@ -281,7 +281,7 @@ export class RunResultsUnit {
         case "resolve": {
           // A base reconcile (design 05-sources): its checked merge waits for the merge queue, never for a review.
           if (this.c.unit("local-merge").reconcileOf(it)) {
-            return { patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", token_cost: tokens }, actor: SYSTEM, reason: "reconciled", ack_run: run.id };
+            return { patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", token_cost: tokens }, actor: SYSTEM, reason: "resolved", detail: { cause: "base_reconcile" }, ack_run: run.id };
           }
           // The worker pushed the merge to the same PR branch. A fresh review checks it; its key comes from
           // this run's id, so it never collides with the review of an earlier loop or resolve.
