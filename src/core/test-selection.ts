@@ -5,8 +5,9 @@ import type { FactoryStore } from "../interfaces/factory-store.js";
 
 // Test selection before push (design §4, decided 2026-11-21): the check before push (the implement run's two
 // rounds and the interactive finish) runs the test command on the test files that can reach the branch's changed
-// files, plus a fixed always-run list. The merge check runs the full list, so a test this graph cannot see (one
-// that reads a file by path, or imports a string built at run time) still runs before a merge.
+// files, plus a fixed always-run list. A test that reads a file or folder by a literal path reaches what it reads
+// (the read rule, decided 2026-11-23). The merge check runs the full list, so a test this graph cannot see (one that
+// reads a path built at run time, or imports a string built at run time) still runs before a merge.
 // Shadow mode (design §4, RFC 0023 §4): the selection narrows the test command only in enforce mode, a per-project
 // learned setting. In shadow mode (no stored mode) the full command runs and a failing test file outside the
 // selection is a miss; ENFORCE_AFTER clean runs in a row switch to enforce, a miss at the merge check back to shadow.
@@ -15,7 +16,15 @@ import type { FactoryStore } from "../interfaces/factory-store.js";
 export type TestSelectionConfig = NonNullable<FactoryConfig["repo"]["test_selection"]>;
 
 /** Full: the whole test command, and why. Otherwise the test files (and always-run prefixes) to run, why, and the diff's files. */
-export type TestSelection = { full: true; reason: string } | { full: false; files: string[]; reason: string; changed: string[] };
+export type TestSelection =
+  | { full: true; reason: string }
+  | { full: false; files: string[]; reason: string; changed: string[]; reads?: ReadPick[] };
+
+/** A test picked because it reads a changed file: the path it reads, a folder ending in `/`. */
+export interface ReadPick {
+  test: string;
+  path: string;
+}
 
 /** The folders the import graph reads. A changed file under none of them is no source or test file (docs, config). */
 const GRAPH_ROOTS = ["src/", "web/src/", "tests/"] as const;
@@ -45,15 +54,23 @@ function fullReason(path: string, hubs: readonly string[]): string | null {
   return null;
 }
 
+const folderOf = (file: string) => file.split("/").slice(0, -1).join("/");
+
+/** Repo-relative paths joined, `.` and `..` segments folded (core/ imports no node: module); null when it leaves the repository. */
+function fold(paths: readonly string[]): string | null {
+  const parts: string[] = [];
+  for (const seg of paths.join("/").split("/")) {
+    if (seg === "..") {
+      if (parts.pop() === undefined) return null;
+    } else if (seg !== "." && seg !== "") parts.push(seg);
+  }
+  return parts.join("/");
+}
+
 /** The tracked file `spec` names from `from`, trying the TypeScript sources a `.js` specifier stands for; null when none. */
 function resolveSpecifier(from: string, spec: string, known: ReadonlySet<string>): string | null {
-  // The importer's folder joined with the specifier, `.` and `..` segments folded (core/ imports no node: module).
-  const parts: string[] = [];
-  for (const seg of [...from.split("/").slice(0, -1), ...spec.split("/")]) {
-    if (seg === "..") parts.pop();
-    else if (seg !== "." && seg !== "") parts.push(seg);
-  }
-  const target = parts.join("/");
+  const target = fold([folderOf(from), spec]);
+  if (target === null) return null;
   const stem = target.replace(/\.(m|c)?jsx?$/, "");
   const tries = [target, `${stem}.ts`, `${stem}.tsx`, `${target}.ts`, `${target}.tsx`, `${target}.js`, `${target}/index.ts`, `${target}/index.tsx`];
   return tries.find((t) => known.has(t)) ?? null;
@@ -80,11 +97,127 @@ export function importersOf(grep: string, known: ReadonlySet<string>): Map<strin
   return by;
 }
 
+/** The read calls whose first argument names a path a test reads (the read rule). POSIX ERE for git grep; READ_CALL is the same in JS. */
+const READ_PATTERN = "(readFileSync|readFile|readdirSync|readdir|existsSync|glob)[[:space:]]*\\(";
+const READ_CALL = /\b(?:readFileSync|readFile|readdirSync|readdir|existsSync|glob)\s*\(/g;
+/** The lines the read scan keeps: the read calls and the const bindings a path may name. */
+const READ_LINES = `${READ_PATTERN}|const[[:space:]]`;
+const BINDING = /\bconst\s+([A-Za-z_$][\w$]*)\s*(?::[^=]*)?=(?!=)/g;
+const CLOSE: Record<string, string> = { "(": ")", "[": "]", "{": "}" };
+
+/** The expression starting at `at` up to the first `,`, `;` or unmatched closing bracket outside strings and brackets, and where it ends. */
+function expressionAt(text: string, at: number): { expr: string; end: number } {
+  const open: string[] = [];
+  let i = at;
+  for (; i < text.length; i++) {
+    const c = text[i]!;
+    if (c === '"' || c === "'" || c === "`") {
+      const close = text.indexOf(c, i + 1);
+      i = close === -1 ? text.length : close;
+    } else if (CLOSE[c]) open.push(CLOSE[c]);
+    else if (open.length > 0 && c === open.at(-1)) open.pop();
+    else if (open.length === 0 && (c === "," || c === ";" || c === ")" || c === "]" || c === "}")) break;
+  }
+  return { expr: text.slice(at, i).trim(), end: i };
+}
+
+/** The arguments of a call whose `(` is at `at`, when its `)` closes the text; null otherwise. */
+function callArgs(text: string, at: number): string[] | null {
+  const args: string[] = [];
+  let i = at + 1;
+  for (;;) {
+    const { expr, end } = expressionAt(text, i);
+    if (expr !== "") args.push(expr);
+    if (text[end] !== ",") return text[end] === ")" && text.slice(end + 1).trim() === "" ? args : null;
+    i = end + 1;
+  }
+}
+
+/**
+ * The repo-relative paths an expression in `file` names: a string literal (from the repository root, where the tests
+ * run), `import.meta.dirname` (the file's folder), `join(...)`/`resolve(...)` of these, `new URL("<literal>",
+ * import.meta.url)`, `fileURLToPath(import.meta.url)` (the file) or `dirname(...)` of one, or a const of `file` bound to one (every binding of the name: wider,
+ * never narrower). Empty for anything else, a variable or an expression not built from literals.
+ */
+function pathsOf(expr: string, file: string, bindings: ReadonlyMap<string, string[]>, depth = 0): string[] {
+  if (depth > 8) return [];
+  const lit = /^(["'`])([^"'`\\$]*)\1$/.exec(expr);
+  if (lit) return lit[2]!.startsWith("/") ? [] : [lit[2]!];
+  if (expr === "import.meta.dirname") return [folderOf(file)];
+  if (expr === "import.meta.url") return [file];
+  if (/^[A-Za-z_$][\w$]*$/.test(expr)) return (bindings.get(expr) ?? []).flatMap((e) => pathsOf(e, file, bindings, depth + 1));
+  const call = /^(?:(?:path|posix)\.)?(join|resolve|dirname|fileURLToPath|new URL)\s*\(/.exec(expr);
+  const args = call ? callArgs(expr, call[0].length - 1) : null;
+  if (!call || !args || args.length === 0) return [];
+  if (call[1] === "fileURLToPath") return args.length === 1 ? pathsOf(args[0]!, file, bindings, depth + 1) : [];
+  if (call[1] === "dirname") return args.length === 1 ? pathsOf(args[0]!, file, bindings, depth + 1).map((p) => `${p}/..`) : [];
+  if (call[1] === "new URL") {
+    const rel = /^(["'`])([^"'`\\$]*)\1$/.exec(args[0]!);
+    return rel && args[1] === "import.meta.url" && !rel[2]!.startsWith("/") ? [`${folderOf(file)}/${rel[2]}`] : [];
+  }
+  let joined = [""];
+  for (const a of args) {
+    const each = pathsOf(a, file, bindings, depth + 1);
+    joined = joined.flatMap((j) => each.map((p) => (j === "" ? p : `${j}/${p}`))).slice(0, 64);
+  }
+  return joined;
+}
+
+/**
+ * Reader lists by read file, each with the path its reader names (a folder ending in `/`), from `git grep -z` output
+ * of the files under tests/ that make a read call. A path that names a tracked file links that file; one that names
+ * a folder links every tracked file under it. A glob reads from the folder before its first pattern segment. The
+ * repository root and a path outside it link nothing.
+ */
+export function readersOf(grep: string, known: ReadonlySet<string>): Map<string, Map<string, string>> {
+  const lines = new Map<string, string[]>();
+  for (const row of grep.split("\n")) {
+    const [from, line] = row.split("\0");
+    if (from && line !== undefined) lines.set(from, [...(lines.get(from) ?? []), line]);
+  }
+  const by = new Map<string, Map<string, string>>();
+  const link = (from: string, file: string, via: string) => {
+    if (file === from) return;
+    const set = by.get(file) ?? new Map<string, string>();
+    if (!set.has(from)) set.set(from, via);
+    by.set(file, set);
+  };
+  for (const [from, text] of lines) {
+    const bindings = new Map<string, string[]>();
+    for (const line of text) {
+      for (const m of line.matchAll(BINDING)) bindings.set(m[1]!, [...(bindings.get(m[1]!) ?? []), expressionAt(line, m.index + m[0].length).expr]);
+    }
+    for (const line of text) {
+      for (const m of line.matchAll(READ_CALL)) {
+        for (const raw of pathsOf(expressionAt(line, m.index + m[0].length).expr, from, bindings)) {
+          const segs = raw.split("/");
+          const magic = segs.findIndex((s) => /[*?[{]/.test(s));
+          const path = fold(magic === -1 ? segs : segs.slice(0, magic));
+          if (!path) continue;
+          if (known.has(path)) link(from, path, path);
+          else for (const f of known) if (f.startsWith(`${path}/`)) link(from, f, `${path}/`);
+        }
+      }
+    }
+  }
+  return by;
+}
+
+/** `git grep` output, or "" when nothing matches (git grep exits 1). */
+async function grepOrNone(git: TrustedGit, args: string[]): Promise<string> {
+  try {
+    return await git(["grep", ...args]);
+  } catch {
+    return "";
+  }
+}
+
 /**
  * The selection for the branch's diff against `baseSha` (the three-dot diff the scope gate reads). A changed file on
  * the full list (a hub, a package file, a test setup file, vitest.config.ts or a tsconfig*.json): full. Otherwise each
  * changed test file is picked, and each changed file's importers are walked: a test importer is picked, a hub is
- * neither picked nor walked, any other is walked further. The always-run list is added.
+ * neither picked nor walked, any other is walked further. Each changed file's readers under tests/ (readersOf) are
+ * treated the same way, named in `reads`. The always-run list is added.
  */
 export async function selectTests(git: TrustedGit, baseSha: string, cfg: TestSelectionConfig): Promise<TestSelection> {
   const changed = (await git(["diff", "--name-only", "-z", "--no-renames", `${baseSha}...HEAD`])).split("\0").filter(Boolean).sort();
@@ -97,17 +230,27 @@ export async function selectTests(git: TrustedGit, baseSha: string, cfg: TestSel
     return { full: false, files: [...cfg.always], reason: `${cfg.always.length} files, no source or test file changed: the always-run list only`, changed };
   }
   const tracked = new Set((await git(["ls-files", "-z", "--", ...GRAPH_ROOTS])).split("\0").filter(Boolean));
-  let grep = "";
-  try {
-    grep = await git(["grep", "-z", "-I", "-E", GREP_PATTERN, "--", ...GRAPH_ROOTS]);
-  } catch {
-    grep = ""; // git grep exits 1 when nothing matches: no imports at all
-  }
-  // A deleted file is no longer tracked, yet its importers still name it.
-  const importers = importersOf(grep, new Set([...tracked, ...sources]));
+  // A deleted file is no longer tracked, yet its importers and readers still name it.
+  const known = new Set([...tracked, ...sources]);
+  const importers = importersOf(await grepOrNone(git, ["-z", "-I", "-E", GREP_PATTERN, "--", ...GRAPH_ROOTS]), known);
+  // The read scan: one grep lists the files under tests/ making a read call, one more returns their lines.
+  const reading = (await grepOrNone(git, ["-l", "-z", "-I", "-E", READ_PATTERN, "--", "tests/"])).split("\0").filter(Boolean);
+  const readers = reading.length === 0 ? new Map<string, Map<string, string>>() : readersOf(await grepOrNone(git, ["-z", "-I", "-E", READ_LINES, "--", ...reading]), known);
   const picked = new Set(sources.filter((p) => isTest(p) && tracked.has(p)));
   const seen = new Set(sources);
   const queue = [...sources];
+  // A read reaches only the text of the file it reads, so only a changed file's readers are picked or walked.
+  const reads: ReadPick[] = [];
+  for (const file of sources) {
+    for (const [from, path] of readers.get(file) ?? []) {
+      if (seen.has(from)) continue;
+      seen.add(from);
+      if (isTest(from)) {
+        picked.add(from);
+        reads.push({ test: from, path });
+      } else if (!cfg.hubs.includes(from)) queue.push(from);
+    }
+  }
   for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
     for (const from of importers.get(next) ?? []) {
       if (seen.has(from)) continue;
@@ -118,7 +261,9 @@ export async function selectTests(git: TrustedGit, baseSha: string, cfg: TestSel
   }
   const reached = [...picked].sort();
   const files = [...reached, ...cfg.always.filter((a) => !picked.has(a))];
-  return { full: false, files, reason: `${files.length} files, ${reached.length} reaching the ${sources.length} changed source and test files, plus ${cfg.always.length} always-run`, changed };
+  const reason = `${files.length} files, ${reached.length} reaching the ${sources.length} changed source and test files, plus ${cfg.always.length} always-run`;
+  reads.sort((a, b) => (a.test < b.test ? -1 : a.test > b.test ? 1 : 0));
+  return { full: false, files, reason, changed, ...(reads.length > 0 ? { reads } : {}) };
 }
 
 const repoRelative = (v: unknown): v is string =>

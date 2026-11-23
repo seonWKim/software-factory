@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { type CheckRound, PrePushSelection, selectedChecks } from "../src/core/checks.js";
 import type { LearnedSettingChange, SetLearnedSettingInput } from "../src/core/learned-settings.js";
 import {
-  ENFORCE_AFTER, MODE_KEY, type SelectionMode, type SelectionRecord, cleanCursor, importersOf, mergeMiss, nextMode, noteSelection, selectTests, selectionMode,
+  ENFORCE_AFTER, MODE_KEY, type SelectionMode, type SelectionRecord, cleanCursor, importersOf, mergeMiss, readersOf, nextMode, noteSelection, selectTests, selectionMode,
   testSelectionConfig, uncovered,
 } from "../src/core/test-selection.js";
 import type { Run, RunId, Timestamp, WorkItemId } from "../src/core/types.js";
@@ -48,6 +48,27 @@ const FILES: Record<string, string> = {
   "tsconfig.json": "{}\n",
   "web/tsconfig.json": "{}\n",
   "docs/notes.md": "notes\n",
+  // Reads by literal path (design §4, the read rule): the test reaches the file, or every file under the folder.
+  "src/read/one.ts": "export const one = 1;\n",
+  "src/units/a/a.unit.ts": 'export const a = { reason: "a" };\n',
+  "src/units/b.unit.ts": 'export const b = { reason: "b" };\n',
+  "tests/reads-one.test.ts": 'import { readFileSync } from "node:fs";\nconst text = readFileSync("src/read/one.ts", "utf8");\n',
+  "tests/reads-units.test.ts": [
+    'import { readFileSync, readdirSync } from "node:fs";',
+    'import { join } from "node:path";',
+    "function reasons() {",
+    '  const dir = join(import.meta.dirname, "..", "src", "units");',
+    "  const files = readdirSync(dir, { recursive: true });",
+    '  return files.map((f) => readFileSync(join(dir, String(f)), "utf8"));',
+    "}",
+    "",
+  ].join("\n"),
+  "tests/reads-url.test.ts": 'const t = readFileSync(new URL("../src/read/one.ts", import.meta.url), "utf8");\n',
+  // A variable path: no edge, as before.
+  "tests/reads-variable.test.ts": 'const t = readFileSync(process.argv[2]!, "utf8");\nconst u = existsSync(somewhere);\n',
+  // A helper that reads: walked like a helper, so its importer is selected.
+  "tests/helpers/reader.ts": 'export const r = () => readFileSync(join("src", "read", "one.ts"), "utf8");\n',
+  "tests/uses-reader.test.ts": 'import { r } from "./helpers/reader.js";\n',
 };
 
 const CFG = { hubs: ["src/hub.ts"], always: ["tests/arch/", "tests/always.test.ts"] };
@@ -133,6 +154,55 @@ describe("selectTests", () => {
     });
   });
 
+  it("a test reading one source file by literal path is selected when that file changes, naming the read; a helper that reads it is walked", async () => {
+    const b = branch({ "src/read/one.ts": "export const one = 2;\n" });
+    expect(await selectTests(b.read, b.base, CFG)).toEqual({
+      full: false,
+      files: ["tests/reads-one.test.ts", "tests/reads-url.test.ts", "tests/uses-reader.test.ts", "tests/arch/", "tests/always.test.ts"],
+      reason: "5 files, 3 reaching the 1 changed source and test files, plus 2 always-run",
+      changed: ["src/read/one.ts"],
+      reads: [{ test: "tests/reads-one.test.ts", path: "src/read/one.ts" }, { test: "tests/reads-url.test.ts", path: "src/read/one.ts" }],
+    });
+  });
+
+  it("a test reading a literal path is not selected when an unrelated file changes", async () => {
+    const b = branch({ "src/other.ts": "export const other = 2;\n" });
+    const s = await selectTests(b.read, b.base, CFG);
+    expect(s).toEqual({
+      full: false, files: ["tests/broken.test.ts", "tests/other.test.ts", "tests/arch/", "tests/always.test.ts"],
+      reason: "4 files, 2 reaching the 1 changed source and test files, plus 2 always-run", changed: ["src/other.ts"],
+    });
+  });
+
+  it("a folder read through a const bound to a join of import.meta.dirname selects the test for a change to any file under that folder", async () => {
+    for (const path of ["src/units/b.unit.ts", "src/units/a/a.unit.ts"]) {
+      const b = branch({ [path]: "// changed\n" });
+      expect(await selectTests(b.read, b.base, CFG), path).toMatchObject({
+        full: false, files: ["tests/reads-units.test.ts", "tests/arch/", "tests/always.test.ts"], reads: [{ test: "tests/reads-units.test.ts", path: "src/units/" }],
+      });
+    }
+  });
+
+  it("a test reading a variable path keeps today's selection: only its own change or its imports select it", async () => {
+    const b = branch({ "src/read/one.ts": "export const one = 2;\n", "src/units/b.unit.ts": "// changed\n", "src/other.ts": "export const other = 2;\n" });
+    const s = await selectTests(b.read, b.base, CFG);
+    expect(s.full ? [] : s.files).not.toContain("tests/reads-variable.test.ts");
+    const own = branch({ "tests/reads-variable.test.ts": "// changed\n" });
+    expect(await selectTests(own.read, own.base, CFG)).toEqual({
+      full: false, files: ["tests/reads-variable.test.ts", "tests/arch/", "tests/always.test.ts"],
+      reason: "3 files, 1 reaching the 1 changed source and test files, plus 2 always-run", changed: ["tests/reads-variable.test.ts"],
+    });
+  });
+
+  it("in this repository, a change to src/controller/units/kernel.ts selects tests/item-page.test.tsx, which reads src/controller/units/", async () => {
+    const root = join(import.meta.dirname, "..");
+    const read = async (args: string[]) =>
+      args[0] === "diff" ? "src/controller/units/kernel.ts\0" : execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
+    const s = await selectTests(read, "base", { hubs: [], always: [] });
+    expect(s.full ? [] : s.files).toContain("tests/item-page.test.tsx");
+    expect(s.full ? [] : s.reads).toContainEqual({ test: "tests/item-page.test.tsx", path: "src/controller/units/" });
+  });
+
   it("an always-run file the diff also reaches is listed once", async () => {
     const b = branch({ "tests/always.test.ts": "// changed\n" });
     expect(await selectTests(b.read, b.base, CFG)).toMatchObject({ full: false, files: ["tests/always.test.ts", "tests/arch/"] });
@@ -158,6 +228,29 @@ describe("importersOf", () => {
       'tests/t.test.ts\0vi.mock("../src/b.js", () => import("../src/c.js"));',
     ].join("\n");
     expect([...importersOf(grep, known).keys()].sort()).toEqual(["src/b.ts", "src/c.ts"]);
+  });
+});
+
+describe("readersOf", () => {
+  const known = new Set(["src/a.ts", "src/d/b.ts", "src/d/e/c.ts", "web/src/x.css", "tests/t.test.ts"]);
+  const scan = (...lines: string[]) => readersOf(lines.map((l) => `tests/t.test.ts\0${l}`).join("\n"), known);
+  const linked = (by: Map<string, Map<string, string>>) => [...by].map(([file, from]) => `${file} <- ${[...from.values()].join(" ")}`).sort();
+
+  it("links each literal form: a string, join/resolve of literals, new URL from import.meta.url, a const root, dirname(fileURLToPath(import.meta.url)) and a glob's folder", () => {
+    expect(linked(scan('readFileSync("src/a.ts")'))).toEqual(["src/a.ts <- src/a.ts"]);
+    expect(linked(scan('await readFile(resolve(import.meta.dirname, "../web/src", "x.css"))'))).toEqual(["web/src/x.css <- web/src/x.css"]);
+    expect(linked(scan('existsSync(new URL("../src/d/e/", import.meta.url))'))).toEqual(["src/d/e/c.ts <- src/d/e/"]);
+    expect(linked(scan('const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");', 'readdirSync(join(ROOT, "src", "d"))'))).toEqual([
+      "src/d/b.ts <- src/d/", "src/d/e/c.ts <- src/d/",
+    ]);
+    expect(linked(scan('for (const f of glob("src/d/**/*.ts")) {}'))).toEqual(["src/d/b.ts <- src/d/", "src/d/e/c.ts <- src/d/"]);
+  });
+
+  it("links nothing for a variable, an expression not built from literals, a path outside the repository or the repository root", () => {
+    expect(linked(scan(
+      "readFileSync(file)", "readFileSync(join(dir, name))", "readFileSync(`src/${name}.ts`)", 'readFileSync("/etc/hosts")',
+      'readFileSync(join(import.meta.dirname, "..", "..", "src", "a.ts"))', 'readdirSync(join(import.meta.dirname, ".."))', 'readFileSync("src/a" + ".ts")',
+    ))).toEqual([]);
   });
 });
 
@@ -188,6 +281,19 @@ describe("selectedChecks", () => {
     const repo = { test_command: TEST, test_selection: { hubs: ["src/compose.ts"], always: [] } };
     expect((await selectedChecks(repo, [TYPECHECK, TEST], diffOnly(["src/compose.ts"]), "base", (l) => lines.push(l), "enforce")).commands).toEqual([TYPECHECK, TEST]);
     expect(lines).toEqual(["test selection (enforce): full: hub file src/compose.ts changed"]);
+  });
+
+  it("logs one line per test picked by a read after the reason line, naming the path read (a folder ends in /)", async () => {
+    const lines: string[] = [];
+    const repo = { test_command: TEST, test_selection: { hubs: [], always: [] } };
+    const b = branch({ "src/units/b.unit.ts": "// changed\n", "src/read/one.ts": "export const one = 2;\n" });
+    await selectedChecks(repo, [TEST], b.read, b.base, (l) => lines.push(l), "shadow");
+    expect(lines).toEqual([
+      "test selection (shadow): 4 files, 4 reaching the 2 changed source and test files, plus 0 always-run: tests/reads-one.test.ts tests/reads-units.test.ts tests/reads-url.test.ts tests/uses-reader.test.ts",
+      "test selection (shadow): tests/reads-one.test.ts reads src/read/one.ts",
+      "test selection (shadow): tests/reads-units.test.ts reads src/units/",
+      "test selection (shadow): tests/reads-url.test.ts reads src/read/one.ts",
+    ]);
   });
 
   it("without repo.test_selection every command runs whole and nothing is read or logged", async () => {
