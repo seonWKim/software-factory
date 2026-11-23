@@ -6,7 +6,8 @@
 // dialog's secret names; model-credential.ts), /api/v1/supervisor (what Migrate now, Start and Restart now may do;
 // migrate-api.ts), /api/v1/calendar/events (the Calendar page's range read; calendar-events-api.ts) and
 // /api/v1/evals/<skill>/runs, /grid and /compare (a skill's eval runs, grid and compare; evals-api.ts, a path
-// pattern) and /api/v1/items/:id/changes (the item page's Changes tab; changes.ts); every other
+// pattern), /api/v1/items/:id/changes (the item page's Changes tab; changes.ts) and /api/v1/schedules and
+// /api/v1/schedules/runs (`?schedule=<id>`; schedules-api.ts); every other
 // path is api.ts's. They are served here beside api.ts so it stays within its size budget. A new read route adds one
 // entry to READ_ROUTES, not a line in server.ts.
 
@@ -26,6 +27,7 @@ import { MODEL_CREDENTIAL_PATH, readModelCredential } from "./model-credential.j
 import { SUPERVISOR_PATH, readSupervisor } from "./migrate-api.js";
 import { EVALS_PATH, readSkillEvals } from "./evals-api.js";
 import { changesPathId, readItemChanges } from "./changes.js";
+import { SCHEDULES_PATH, SCHEDULE_RUNS_PATH, readScheduleRuns, readSchedules } from "./schedules-api.js";
 import type { ServerDeps, UiRequest } from "./server.js";
 
 /** One GET (or HEAD) route under /api/v1: its path (or a pattern over it) and its read. */
@@ -56,6 +58,8 @@ const READ_ROUTES: readonly ReadRoute[] = [
   { path: SUPERVISOR_PATH, run: (d, u) => (d.migrate !== undefined && d.pauses !== undefined ? readSupervisor(d.migrate, d.pauses) : api(d, u)) },
   { path: CALENDAR_EVENTS_PATH, run: (d, u) => readCalendarEvents(d, u.searchParams.get("from"), u.searchParams.get("to")) },
   { path: EVALS_PATH, run: (d, u) => readSkillEvals(d, { grid: skillEvalGrid, compare: compareSkillEvalRuns }, u) },
+  { path: SCHEDULES_PATH, run: (d) => readSchedules(d) },
+  { path: SCHEDULE_RUNS_PATH, run: (d, u) => readScheduleRuns(d, u.searchParams.get("schedule")) },
 ];
 
 /** Answers one GET (or HEAD) under /api/v1 on its parsed URL. */

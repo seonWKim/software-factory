@@ -2,14 +2,15 @@
 // `controller_schedule_runs`, as SqlScheduleStore, which SqlFactoryStore extends, so these methods add no line to
 // sql-factory-store.ts's budget. The claim is one UPDATE conditional on the `next_due_at` the worker read and on
 // the schedule's running state; zero rows changed means another worker claimed it first, and nothing is recorded.
-// A held checkpoint is resumed or rejected by UPDATEs conditional on its run row still being held.
+// A held checkpoint is resumed or rejected by UPDATEs conditional on its run row still being held. An edit, pause,
+// resume or run is one UPDATE conditional on the `next_due_at` it read, so it and a claim never both apply.
 
 import type { CadenceKind } from "../../../core/schedule-cadence.js";
 import type {
-  ClaimOutcome, NewSchedule, Schedule, ScheduleActionKind, ScheduleClaim, ScheduleOutcome, ScheduleRun, ScheduleRunResult, ScheduleStore,
+  ClaimOutcome, NewSchedule, Schedule, ScheduleActionKind, ScheduleClaim, ScheduleOutcome, SchedulePatch, ScheduleRun, ScheduleRunResult, ScheduleStore,
 } from "../../../core/schedule.js";
 import type { Timestamp, UserId } from "../../../core/types.js";
-import type { Row, SqlDriver } from "../../../state/index.js";
+import type { Row, SqlDriver, SqlValue } from "../../../state/index.js";
 import { SqlRunOutputStore } from "./run-output.js";
 
 const COLUMNS = "id, title, cadence_kind, cadence_spec, zone, created_by, created_at, next_due_at, running_since, skip_when_busy, action_kind, action_settings, token_cap";
@@ -127,6 +128,25 @@ export class SqlScheduleStore extends SqlRunOutputStore implements ScheduleStore
       await tx.run("UPDATE controller_schedules SET token_cap = ?, running_since = ? WHERE id = ?", [token_cap, now, schedule_id]);
       return now;
     });
+  }
+
+  async updateSchedule(id: string, read: Timestamp | null, patch: SchedulePatch): Promise<boolean> {
+    const cols: [string, SqlValue][] = [];
+    if (patch.title !== undefined) cols.push(["title", patch.title]);
+    if (patch.cadence !== undefined) cols.push(["cadence_kind", patch.cadence.kind], ["cadence_spec", patch.cadence.spec]);
+    if (patch.zone !== undefined) cols.push(["zone", patch.zone]);
+    if (patch.next_due_at !== undefined) cols.push(["next_due_at", patch.next_due_at]);
+    if (patch.skip_when_busy !== undefined) cols.push(["skip_when_busy", patch.skip_when_busy ? 1 : null]);
+    if (patch.action !== undefined) cols.push(["action_kind", patch.action?.kind ?? null], ["action_settings", patch.action ? JSON.stringify(patch.action.settings) : null]);
+    if (patch.token_cap !== undefined) cols.push(["token_cap", patch.token_cap]);
+    if (cols.length === 0) return false;
+    const due = read === null ? "next_due_at IS NULL" : "next_due_at = ?";
+    const sql = `UPDATE controller_schedules SET ${cols.map(([c]) => `${c} = ?`).join(", ")} WHERE id = ? AND ${due}`;
+    return (await this.db.run(sql, [...cols.map(([, v]) => v), id, ...(read === null ? [] : [read])])) === 1;
+  }
+
+  scheduleNow(): Timestamp {
+    return this.scheduleStamp();
   }
 
   async rejectHeldScheduleRun(schedule_id: string, occurrence_at: Timestamp): Promise<boolean> {

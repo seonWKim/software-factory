@@ -13,14 +13,16 @@ import { needsDueDate, parseQuickAdd, parseQuickEdit } from "./quick-add.js";
 import { type Project, projectSlug } from "./projects.js";
 import { ProjectRefused, type TaskEdit, type TaskFields, projectRefusal, taskLine } from "./tasks.js";
 import { CREATE_HELP, LOCAL_ID, NO_PROJECT_KEY, buildTask, createLocalItem, createProjectTask, localItemOf, withDependsOn } from "./task-build.js";
+import { type ScheduleCommand, parseScheduleArgs, runScheduleCommand } from "./schedule.js";
 
 /**
  * The writer side of local intake (issue #200; design 05-sources.md, "CLI intake"). `factory task create`
  * creates a local work item with its triage run queued, and with `--project <slug>` also a task in that project linked
  * to it, as `task build` links one (design 02-tasks); `task add` stores a plain task from quick-add words and `task
  * done` completes one and `task reopen` undoes that, `task edit`, `task delete` and `task sub` change, remove and nest one (design 02-tasks: no
- * work item, no triage); `project …` keeps the task projects and `task project` links a task to one, unlinks it or moves it
- * (design 02-tasks, task projects); `task list` and `task show` read the store; `task paths` (as `/paths`), `task note` (as `/note`), `approve`,
+ * work item, no triage); `project …` keeps the task projects and `task project` links a task to one, unlinks it or moves it (design 02-tasks,
+ * task projects); `schedule …` manages schedules (src/core/schedule.ts, design 08-schedules; writes the owner's only); `task list` and `task show`
+ * read the store; `task paths` (as `/paths`), `task note` (as `/note`), `approve`,
  * `retry`, `revise`, `reject`, `resolve`, `hold` and `verdict` append one row to the CLI command log (`command_inbox`) and change no item
  * state, for an item of any source; `approve` first runs the controller's phase check (`approveRefusal`) and refuses
  * with its text before any write (issue #528), and `verdict` its parser and closed-item check (`verdictRefusal`,
@@ -76,8 +78,7 @@ export function isCliCommandKey(key: string): boolean {
   return key.startsWith(CLI_KEY_PREFIX);
 }
 
-/** Set by a project's wrapper (`gb`, say) to its own command name; the CLI's hints start with it (design 05-sources). */
-export const CLI_NAME_ENV = "FACTORY_CLI_NAME";
+/** Set by a project's wrapper (`gb`, say) to its own command name; the CLI's hints start with it (design 05-sources). */ export const CLI_NAME_ENV = "FACTORY_CLI_NAME";
 /** The hints' command name when no wrapper names itself: chat replies and `/help` always use it. */ export const DEFAULT_CLI_NAME = "factory";
 /** The command name the CLI's hints start with: CLI_NAME_ENV when it is one word, else DEFAULT_CLI_NAME. */
 export function cliName(env: Readonly<Record<string, string | undefined>>): string {
@@ -87,14 +88,10 @@ export function cliName(env: Readonly<Record<string, string | undefined>>): stri
 /** `task create`'s last line: what happens to the new item next. */ export const CREATE_NEXT_STEP = "triage queued; you'll be asked to approve the spec";
 const UI_PORT = 4310; // `ui.port` unset: compose.ts DEFAULT_UI_PORT, which core cannot import
 
-/** The top-level words `factory` hands to this module: the table's task, project and item commands (with `confirm`). */
-export const CLI_TOP_WORDS = topWords(["task", "item"]);
-
-/** `factory help [<id>]`: the `/help` reply, which lists every command, so it is no entry of the command table. */
-export const HELP_WORD = "help";
-
-/** `factory confirm <proposal-id>`: confirms every pending command of a stored proposal. */
-export const CONFIRM_WORD = "confirm";
+/** The top-level words `factory` hands to this module: the table's task, project, item (with `confirm`) and schedule commands. */
+export const CLI_TOP_WORDS = topWords(["task", "item", "schedule"]);
+/** `factory help [<id>]`: the `/help` reply, which lists every command, so it is no entry of the command table. */ export const HELP_WORD = "help";
+/** `factory confirm <proposal-id>`: confirms every pending command of a stored proposal. */ export const CONFIRM_WORD = "confirm";
 
 /**
  * The dashboard's app commands beside the item commands (design 09-dashboard-app): the command box's sentence, read by
@@ -129,7 +126,8 @@ export type CliAction =
   | { action: "show"; id: WorkItemId }
   | { action: "command"; command: ItemCommand; id: WorkItemId; text: string }
   | { action: "help"; id: WorkItemId | null }
-  | { action: "confirm"; proposal: string };
+  | { action: "confirm"; proposal: string }
+  | { action: "schedule"; command: ScheduleCommand };
 
 /** This module's commands, from the command table (src/core/command-table.ts). */
 const LOCAL_COMMANDS = COMMAND_TABLE.filter((c) => (CLI_TOP_WORDS as readonly string[]).includes(c.name.split(" ")[0]!));
@@ -214,6 +212,7 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
     return bad(`unknown task command ${JSON.stringify(sub ?? "")}`);
   }
   if (word === "project") return parseProjectArgs(args, bad);
+  if (word === "schedule") return ((c) => (typeof c === "string" ? bad(c) : { action: "schedule" as const, command: c }))(parseScheduleArgs(args));
   if ((ITEM_COMMANDS as readonly string[]).includes(word)) {
     const [id, ...rest] = args;
     if (!id) return bad(`${word} needs a work item ID`);
@@ -279,7 +278,7 @@ export interface LocalCliDeps {
     | "claimOwner" | "addTask" | "listTasks" | "completeTask" | "reopenTask" | "listCommandProposals"
     | "getTask" | "linkTask" | "updateTask" | "deleteTask" | "addSubTask"
     | "createProject" | "listProjects" | "renameProject" | "archiveProject" | "restoreProject" | "deleteProject" | "getProjectBySlug"
-    | "addTaskToProject" | "removeTaskFromProject" | "moveTaskToProject" | "listTaskProjectSlugs"
+    | "addTaskToProject" | "removeTaskFromProject" | "moveTaskToProject" | "listTaskProjectSlugs" | "listSchedules" | "listScheduleRuns" | "addSchedule" | "updateSchedule" | "scheduleNow"
   >;
   /** Who every command acts as (`cliIdentity`). */
   identity: CliIdentity;
@@ -311,8 +310,7 @@ export async function resolveItem(store: Pick<FactoryStore, "findWorkItemIds" | 
   return item ?? { code: 1, lines: ids.length > 1 ? [`${token} names ${ids.length} work items; give more of its ID:`, ...ids.map((id) => `  ${id}\t${shortItemId(id)}`)] : [`no work item ${token}`] };
 }
 
-/** The most items, and the most open tasks, `task list` reads. */
-export const TASK_LIST_LIMIT = 200;
+/** The most items, and the most open tasks, `task list` reads. */ export const TASK_LIST_LIMIT = 200;
 
 export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliResult> {
   const fail = (line: string): CliResult => ({ code: 1, lines: [line] });
@@ -429,6 +427,8 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
     }
     case "project":
       return runProject(d, a, fail, claim);
+    case "schedule": // A write first claims the owner, as every write does, and is refused for anyone else.
+      return runScheduleCommand(d.store, a.command, user, async () => (await claim()) === user);
     case "show": {
       const item = await resolveItem(d.store, a.id);
       if ("lines" in item) return item;
