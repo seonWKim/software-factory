@@ -114,8 +114,6 @@ export const tasks = {
   "calendarPage.week": "Week",
   "calendarPage.month": "Month",
   "calendarPage.period": "Shown period",
-  "calendarPage.previous": "Previous",
-  "calendarPage.next": "Next",
   "calendarPage.previousWeek": "Previous week",
   "calendarPage.nextWeek": "Next week",
   "calendarPage.previousMonth": "Previous month",

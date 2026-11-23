@@ -47,7 +47,7 @@ describe("the running count on Work and Activity", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Active 3" }));
     const states = () => screen.getByRole("tablist", { name: "Filter Active by state" });
     expect(within(states()).getByRole("tab", { name: "Running 3" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "List" }));
+    fireEvent.click(screen.getByRole("radio", { name: "List" }));
     expect(within(states()).getByRole("tab", { name: "Running 3" })).toBeTruthy();
   });
 });

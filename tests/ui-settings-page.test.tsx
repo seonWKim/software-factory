@@ -519,7 +519,7 @@ describe("Settings page", () => {
       expect(first.querySelector("span")!.textContent, k.key).toBe(keyLabel(k.key));
       const details = r.querySelector("details[data-details]")!;
       expect(details.querySelector("summary")!.textContent).toBe("Details");
-      expect([...details.querySelectorAll(":scope > dl > dt")].map((d) => d.textContent)).toEqual(["Key name", "Source", "File value", "Applies at"]);
+      expect([...details.querySelectorAll(":scope > div > dl > dt")].map((d) => d.textContent)).toEqual(["Key name", "Source", "File value", "Applies at"]);
       expect(details.querySelector("dd")!.textContent).toBe(k.key);
       // Outside Details the key name appears nowhere in the row.
       const bare = [...r.querySelectorAll("*")].filter((e) => !e.closest("details[data-details]") && e.children.length === 0 && e.textContent === k.key);

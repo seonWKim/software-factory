@@ -187,9 +187,10 @@ describe("app pages", () => {
     }
   });
 
-  it("every page's h1 is in the page title type, and every h2 is the title of a Card (Health's Spend and Failures too)", async () => {
+  it("every page's h1 is in the page title type, and every h2 is the title of a Card (Health's Spend and Failures too) or the Calendar's period in its toolbar", async () => {
     const names: Record<string, string> = { tasks: "Tasks", calendar: "Calendar", items: "Work", "health?tab=runners": "Health", "health?tab=failures": "Health", rules: "Rules", plugins: "Plugins", data: "Data", settings: "Settings" };
-    const outside = () => screen.queryAllByRole("heading", { level: 2 }).filter((h) => !h.closest("section.rounded-card.bg-surface.shadow-sm")).map((h) => h.textContent);
+    // The one exception: the Calendar's period heading sits in its toolbar line (09-dashboard-tasks-calendar).
+    const outside = () => screen.queryAllByRole("heading", { level: 2 }).filter((h) => !h.closest("section.rounded-card.bg-surface.shadow-sm, [data-calendar-toolbar]")).map((h) => h.textContent);
     for (const [path, name] of Object.entries(names)) {
       history.replaceState(null, "", `/app/${path}`);
       mount();

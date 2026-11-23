@@ -16,7 +16,7 @@ Pick the component by the need, before drawing anything by hand. A UI spec names
 
 ## Card
 
-A block of a page (`card.tsx`): the `surface` background, a 1px `border`, the `card` radius, 24px padding (`p-6`; 16px below `sm`, so a 320px window keeps its content width) and `shadow-sm`. Optional h2 `title` in the section title role (`text-base font-semibold`, the exported `CARD_TITLE`): Card is the one owner of a page's h2, so every h2 on every page has this one size, an optional `count` beside it and an optional `action` at the end of the title row. It is a region named by `label`, else by `title` (Data names its table Card "Table <name>" and titles it with the bare name); with neither it is a plain block. `id` gives it an anchor (`#spend`, `#failures`); `live` announces a title that changes (the calendar's period). Cards follow each other 24px apart. No variants or sizes.
+A block of a page (`card.tsx`): the `surface` background, a 1px `border`, the `card` radius, 24px padding (`p-6`; 16px below `sm`, so a 320px window keeps its content width) and `shadow-sm`. Optional h2 `title` in the section title role (`text-base font-semibold`, the exported `CARD_TITLE`): Card is the one owner of a page's h2 (the Calendar's period in its toolbar, in `CARD_TITLE`, is the one exception), so every h2 on every page has this one size, an optional `count` beside it and an optional `action` at the end of the title row. It is a region named by `label`, else by `title` (Data names its table Card "Table <name>" and titles it with the bare name); with neither it is a plain block. `id` gives it an anchor (`#spend`, `#failures`); `live` announces a title that changes (the calendar's period). Cards follow each other 24px apart. No variants or sizes.
 
 ## CardSection
 
@@ -116,7 +116,7 @@ A short hint on hover and keyboard focus, hidden by Esc or leaving. Variants (`p
 
 ## Button
 
-The dashboard's one button. Variants: `primary` (accent background, `on-solid` text: the one main action of a view), `secondary` (default: `border-strong` border on `surface`), `ghost` (no border, `surface-2` on hover), `danger` (`failed` text); `danger` with `solid` is filled with the failed colour, only for a confirm dialog's destructive confirm. Sizes: `md` (default, at least 32 px high), `sm` (at least 28 px), `icon` (32 px square). States: default, hover (enabled only), focus-visible, pressed (`aria-pressed` or `aria-checked`: `surface-2` background), `disabled` (opacity 0.5). `type` defaults to `button`.
+The dashboard's one button. Variants: `primary` (accent background, `on-solid` text: the one main action of a view), `secondary` (default: `border-strong` border on `surface`), `ghost` (no border, `surface-2` on hover), `danger` (`failed` text); `danger` with `solid` is filled with the failed colour, only for a confirm dialog's destructive confirm. Sizes: `md` (default, at least 32 px high), `sm` (at least 28 px), `icon` (32 px square). `buttonClass({ variant, size })` returns the same classes for a control that must be another library's button (react-aria's Tree chevron slot). States: default, hover (enabled only), focus-visible, pressed (`aria-pressed` or `aria-checked`: `surface-2` background), `disabled` (opacity 0.5). `type` defaults to `button`.
 
 ## Checkbox
 
@@ -128,7 +128,7 @@ A `role=switch` button with `aria-checked`, 24 px high (the smallest target) aro
 
 ## SegmentedControl
 
-One choice among a few views (`role=group` with an `aria-label`): a 32 px box with a 1 px `border-strong` edge on `surface`, holding 28 px segments in one row that never wraps. Controlled by `value` and `onChange`; `options` gives each segment's `id` and label. States: selected (`aria-pressed`, `surface` fill, a `border-strong` ring, `text-1` text; neutral, never accent), default (`text-2`), hover (`surface-2`, `text-1`), focus-visible.
+One choice among a few views, drawn like a macOS segmented control (`role=radiogroup` with an `aria-label`, each segment a `role=radio` with `aria-checked`): one 32px `surface-2` track (`rounded-control`, 2px padding) holding equal-width 28px segments (`auto-cols-fr`) in one row that never wraps, `text-sm` medium. A raised thumb (`surface`, `shadow-sm`, a 1px `border` ring; `border-strong` with no ring in dark, lighter than the track) sits under the checked segment and slides to it (150ms, motion-safe). Controlled by `value` and `onChange`; `options` gives each segment's `id`, label and optional `data-*`. Roving tabindex: only the checked segment is in the tab order (the first when none matches); ArrowRight/ArrowDown and ArrowLeft/ArrowUp move to the next and previous segment, wrapping, Home and End to the first and last, and the segment a key reaches is focused and checked at once. For a choice, never for actions that send something (use Buttons). States: checked (`text-1` on the thumb; neutral, never accent), default (`text-2`), hover (`text-1`), focus-visible, no value (no thumb).
 
 ## Link and ID
 
@@ -160,7 +160,11 @@ A readable name (`label`, e.g. "worker 3" or "you") as a plain button on the sha
 
 ## Disclosure
 
-A native `<details>` with a `<summary>` at least 28px tall (`min-h-7`, like a small Button): one chevron marker (turned down when open), one label style (`text-xs text-text-2`, no box). Props: `summary` (the visible label), `children` (the body), `defaultOpen` (starts open; default closed), `lazy` (mount the body only while open, for a body that reads something on demand), `onToggle(open)`, and `className` (a margin only) and `data-*` passed to the `<details>`. `aria-expanded` is on the summary and follows the open state; click, Enter and Space toggle it. Use it only for long content (more than ~3 lines or a list): decision rule 2 in `patterns.md`, never a single value. Write no raw `<details>` in `web/src/views/`; Markdown folds through it too.
+A native `<details>` with a `<summary>` at least 28px tall (`min-h-7`, like a small Button): the `DisclosureChevron` (turned down when open), then the label in `text-xs` medium `text-2`. The summary is a quiet hover target: `rounded-control`, pulled 6px left by its own padding (`-ml-1.5 px-1.5`) so the chevron starts where the text above it does, `surface-2` fill and `text-1` on hover. An open body starts 4px below the summary and ends 4px above what follows. Props: `summary` (the visible label), `children` (the body), `defaultOpen` (starts open; default closed), `lazy` (mount the body only while open, for a body that reads something on demand), `onToggle(open)`, `summaryTone` (the label colour on a pill fill), and `className` (a margin only) and `data-*` passed to the `<details>`. `aria-expanded` is on the summary and follows the open state; click, Enter and Space toggle it. Use it only for long content (more than ~3 lines or a list): decision rule 2 in `patterns.md`, never a single value. Write no raw `<details>` in `web/src/views/`; Markdown folds through it too.
+
+## DisclosureChevron
+
+The one expand mark (`disclosure.tsx`): lucide's ChevronRight at 14px (`size-3.5`; a caller may pass `size-4`), `text-3`, `text-2` when its trigger (marked `group`) is hovered, turned down (`rotate-90`) when `open` with a 150ms ease-out rotate (motion-safe). Carries `data-chevron`. The Disclosure summary, the Work tree's expand button (inside the ghost `icon` Button, 32px) and project folder rows draw it; never a ▸ text triangle. States: closed, open.
 
 ## KeyValue
 
