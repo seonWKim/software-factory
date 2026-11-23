@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { OctagonX } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { API, type AutoStop, type FactoryState, type MigrateDryRun, type PausesView, type SettingsView, type SupervisorView, type SystemAction, postMigrate, postResume, postSupervisor, useApi } from "../api.js";
+import { postDismissAlarm } from "../api/alarms.js";
 import { postJson } from "../api/client.js";
 import { Button } from "../components/ui/button.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
@@ -417,15 +418,47 @@ const STOP_CAUSE: Readonly<Record<string, MessageKey>> = {
 const clockTime = (at: string) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 
 /**
- * An open alarm's row on the shared ListRow (design 09-dashboard-tasks), every action in its "⋯" menu. The auto-mode
- * stop's alarm (design 03-risk) is AutoStopRow. A red_main alarm has What failed; a repeated error has Show failures;
- * both open a dialog on this page. Other alarms show the server's sentence and have no menu. No dismiss: an alarm
- * closes by itself.
+ * An open alarm's row on the shared ListRow (design 09-dashboard-tasks-needs): Dismiss at the row's end, then its "⋯"
+ * menu. The auto-mode stop's alarm (design 03-risk) is AutoStopRow, which has no Dismiss. A red_main alarm has What
+ * failed; a repeated error has Show failures; both open a dialog on this page. Other alarms have no menu.
  */
 function AlarmRow({ action }: { action: SystemAction }) {
   if (action.auto_stop) return <AutoStopRow action={action} stop={action.auto_stop} />;
   const what = action.pattern === "red_main" ? "what_failed" : action.pattern === "repeated_error" && action.error_code ? "show_failures" : null;
-  return <AlarmMenuRow action={action} title={action.text} lead={[]} dialog={what} output={action} />;
+  const end = action.alert_id ? <DismissAlarm alertId={action.alert_id} /> : null;
+  return <AlarmMenuRow action={action} title={action.text} lead={[]} dialog={what} output={action} end={end} />;
+}
+
+/**
+ * Dismiss on an alarm row, modelled on ResumeNow: posts the alarm's `alert_id` with the pauses' CSRF token, then
+ * reloads the overview, so the row leaves Needs you. A refusal shows beside the button. Nothing while the server has no
+ * pause routes (`csrf_token` null). The sm Button's negative margin keeps the row's height.
+ */
+function DismissAlarm({ alertId }: { alertId: string }) {
+  const client = useQueryClient();
+  const token = useApi<PausesView>(API.pauses).data?.csrf_token ?? null;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (token === null) return null;
+  const dismiss = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await postDismissAlarm(token, alertId);
+      if (!r.ok) setError(r.error);
+      else await client.invalidateQueries({ queryKey: [API.overview] });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      {error && <span role="alert" className="max-w-48 text-xs text-pretty break-words text-pill-bad-fg">{error}</span>}
+      <Button data-dismiss-alarm size="sm" variant="secondary" className="-my-1" disabled={busy} onClick={() => void dismiss()}>{t("needs.dismissAlarm")}</Button>
+    </>
+  );
 }
 
 /**
@@ -450,14 +483,18 @@ function AutoStopRow({ action, stop }: { action: SystemAction; stop: AutoStop })
   );
 }
 
-/** An alarm row's ListRow: its title on one line, `lead` then the item that opens its dialog in the "⋯" menu, and the dialog. */
-function AlarmMenuRow({ action, id, title, lead, dialog, output, children }: {
+/**
+ * An alarm row's ListRow: its title on one line, `end` (Dismiss) in the row's end slot before the "⋯" menu, `lead` then
+ * the item that opens its dialog in that menu, and the dialog.
+ */
+function AlarmMenuRow({ action, id, title, lead, dialog, output, end, children }: {
   action: SystemAction;
   id?: string;
   title: string;
   lead: MenuItem[];
   dialog: "what_failed" | "show_failures" | null;
   output: Pick<SystemAction, "failing_tests" | "output_tail">;
+  end?: ReactNode;
   children?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -468,7 +505,7 @@ function AlarmMenuRow({ action, id, title, lead, dialog, output, children }: {
       data-check="alarm"
       {...(id ? { id } : {})}
       title={<p data-alarm-summary data-raw title={title} className={cn(ROW_TITLE, "text-text-1")}>{title}</p>}
-      {...(items.length > 0 ? { menu: <OverflowMenu label={t("commands.more")} items={items} /> } : {})}
+      {...(items.length > 0 || end ? { menu: <span className="flex items-center gap-2">{end}{items.length > 0 && <OverflowMenu label={t("commands.more")} items={items} />}</span> } : {})}
     >
       {children}
       {open && dialog === "what_failed" && <WhatFailedDialog output={output} onClose={() => setOpen(false)} />}
