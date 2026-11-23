@@ -123,6 +123,50 @@ describe("shortcuts", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("? help: a click inside keeps it open, a click on the backdrop closes it", () => {
+    mount();
+    press("?");
+    const box = screen.getByRole("dialog", { name: "Keyboard shortcuts" });
+    fireEvent.click(within(box).getByText("Show this list"));
+    expect(screen.getByRole("dialog", { name: "Keyboard shortcuts" })).toBe(box);
+    // The backdrop is the dialog element itself: the panel's content sits inside it.
+    fireEvent.click(box);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("⌘K search: a click in its field keeps it open, a click on the backdrop closes it", async () => {
+    mount();
+    await screen.findByText("First spec");
+    press("k", { metaKey: true });
+    const box = await screen.findByRole("dialog", { name: "Search" });
+    fireEvent.click(within(box).getByRole("searchbox"));
+    expect(screen.getByRole("dialog", { name: "Search" })).toBe(box);
+    fireEvent.click(box);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("the help's close button closes it, and focus goes back to the sidebar's Shortcuts button that opened it", async () => {
+    mount();
+    const opener = within(await screen.findByRole("complementary", { name: "Sidebar" })).getByRole("button", { name: "? Shortcuts" });
+    opener.focus();
+    fireEvent.click(opener);
+    const box = screen.getByRole("dialog", { name: "Keyboard shortcuts" });
+    expect(box.contains(document.activeElement)).toBe(true);
+    fireEvent.click(within(box).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it("the help groups the shortcuts and gives each action one row, its keys at the end", () => {
+    mount();
+    press("?");
+    const box = screen.getByRole("dialog", { name: "Keyboard shortcuts" });
+    expect(within(box).getAllByRole("region").map((r) => r.getAttribute("aria-label"))).toEqual(["General", "Navigation", "Lists", "Tasks page", "Commands"]);
+    // g w and g a do the same thing: one Go to Work row with both.
+    const work = within(within(box).getByRole("region", { name: "Navigation" })).getAllByRole("listitem");
+    expect(work.map((li) => [li.firstElementChild!.textContent, [...li.querySelectorAll("kbd")].map((k) => k.textContent)])).toEqual([["Go to Work", ["g", "w", "g", "a"]]]);
+  });
+
   it("j and k move the selected row, Enter opens it", async () => {
     mount();
     await screen.findByText("First spec");
