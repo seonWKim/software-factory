@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { POLL_MS } from "../web/src/api.js";
 import { THEME_KEY, paintChoice, storedChoice } from "../web/src/theme.js";
 import { BANNER_LINK_CLASS } from "../web/src/components/ui/link-style.js";
-import { RevisionBanner } from "../web/src/views/system-banner.js";
+import { RevisionBanner, UnpushedMerges } from "../web/src/views/system-banner.js";
 import { AT, overview, row, RESPONSES, state, installShellFixtures, waitBadge, mount } from "./ui-shell-fixtures.js";
 
 installShellFixtures();
@@ -165,6 +165,20 @@ describe("app shell", () => {
     render(<RevisionBanner server="a" web="b" />);
     expect(screen.getByText("reload").className).toBe(BANNER_LINK_CLASS);
     expect(screen.getByTestId("revision-banner").className).toMatch(/(?<![\w-])text-pill-warn-fg(?![\w-])/);
+  });
+
+  it("the unpushed-merges line shows its count with the warn tokens, and nothing at 0", () => {
+    const { rerender } = render(<UnpushedMerges count={3} />);
+    const el = screen.getByTestId("unpushed-merges");
+    expect(el.textContent).toBe("3 local merges not pushed");
+    expect(el.className).toMatch(/(?<![\w-])text-pill-warn-fg(?![\w-])/);
+    expect(el.className).toMatch(/(?<![\w-])bg-pill-warn-bg(?![\w-])/);
+    rerender(<UnpushedMerges count={1} />);
+    expect(screen.getByTestId("unpushed-merges").textContent).toBe("1 local merges not pushed");
+    rerender(<UnpushedMerges count={0} />);
+    expect(screen.queryByTestId("unpushed-merges")).toBeNull();
+    rerender(<UnpushedMerges count={undefined} />);
+    expect(screen.queryByTestId("unpushed-merges")).toBeNull();
   });
 
   it("keeps the stored choice ahead of the system preference", async () => {

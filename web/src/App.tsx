@@ -19,7 +19,7 @@ import { HealthPage, ItemPage, ItemsPage } from "./views/pages.js";
 import { PluginsPage } from "./views/plugins.js";
 import { SettingsPage } from "./views/settings.js";
 import { APPEARANCE_ANCHOR } from "./views/settings/appearance.js";
-import { FactoryRevision, RevisionBanner, StopAllAgents, UpdateNote } from "./views/system-banner.js";
+import { FactoryRevision, RevisionBanner, StopAllAgents, UnpushedMerges, UpdateNote } from "./views/system-banner.js";
 import { TranscriptView, transcriptRoute } from "./views/transcript.js";
 import { RulesPage } from "./views/rules.js";
 import { ProposalsPage } from "./views/proposals.js";
@@ -127,6 +127,7 @@ export function App() {
             />
           </header>
           <RevisionBanner server={overview.data?.server_rev} web={WEB_REV} />
+          <UnpushedMerges count={overview.data?.unpushed_merges} />
           <UpdateNote factory={overview.data?.factory} />
           <main className="w-full min-w-0 p-4 max-w-page-wide has-[[data-page-width=read]]:max-w-page-read">
             {transcript ? (
