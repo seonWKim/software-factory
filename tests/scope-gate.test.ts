@@ -27,6 +27,29 @@ describe("scopeViolations (pure)", () => {
   });
 });
 
+// Migration timestamps (design 04-triage): a build that finds the spec's migration timestamp taken adds the same
+// folder, component and slug at a later minute; that file and its test pass the scope check like the spec's path.
+describe("scopeViolations and a later same-slug migration", () => {
+  const spec = ["src/controller/migrations/20261122T1200-controller-new-thing.migration.ts", "tests/20261122T1200-controller-new-thing.test.ts"];
+
+  it("passes an implement run that adds <later-ts>-<same slug>.migration.ts and its test in place of the spec's paths", () => {
+    const later = z("src/controller/migrations/20261122T1202-controller-new-thing.migration.ts", "tests/20261122T1202-controller-new-thing.test.ts");
+    expect(scopeViolations(later, spec)).toEqual([]);
+  });
+
+  it("still refuses an earlier timestamp, another slug or another component folder", () => {
+    const outside = [
+      "src/controller/migrations/20261122T1159-controller-new-thing.migration.ts",
+      "src/controller/migrations/20261122T1202-controller-other-thing.migration.ts",
+      "src/worker/migrations/20261122T1202-worker-new-thing.migration.ts",
+      "src/worker/migrations/20261122T1202-controller-new-thing.migration.ts",
+      "tests/20261122T1100-controller-new-thing.test.ts",
+      "tests/20261122T1202-worker-new-thing.test.ts",
+    ];
+    expect(scopeViolations(z(...outside), spec)).toEqual([...outside].sort());
+  });
+});
+
 describe("scopeViolations on real git output", () => {
   let dir = "";
   afterEach(() => {

@@ -36,7 +36,8 @@ import { ApprovalsSection, StandingProposal, StandingRule } from "./standing.js"
 // kind and file count, with Promote visible (off, with its reason in the row, when a class's draft could not be read or
 // a proposal names no target file); its
 // ⋯ menu lists every verdict, Promote, Hold and Reject (danger, last), so all three are in one place; each opens a dialog (rules-verdict.tsx). Its before and after lines,
-// why and where sit behind "Why and where" (rules-detail.tsx). With none waiting an EmptyState gives the next step.
+// why and where sit behind "Why and where" (rules-detail.tsx); a promoted prose proposal links its task to build it
+// (`task`, 2026-11-20). With none waiting an EmptyState gives the next step.
 // Details: the improve report link (Health's Improve tab), standing rules that are off, decided entries, the pushbacks
 // (rules-pushbacks.tsx, when the ledger lists them), Retired, and How this works. Only the owner sends.
 // With the ledger off the page is an EmptyState whose action is Turn on, first, above the standing card (stores `integrations`,
@@ -120,6 +121,14 @@ function RuleCard({ entry, excerpt, applied, token }: { entry: RuleRow; excerpt?
             {t("rules.promote")}
           </Button>
         </ButtonRow>
+      )}
+      {entry.task != null && (
+        <p data-rule-task className={muted}>
+          {t("rules.task")}{" "}
+          <Link href={`${BASE}tasks`} className={`font-mono ${LINK_CLASS}`}>
+            {entry.task}
+          </Link>
+        </p>
       )}
       <Disclosure lazy summary={t("rules.showDetail")}>
         {excerpt !== undefined && <ExcerptBlock excerpt={excerpt} />}

@@ -1,7 +1,8 @@
 // The Rules page and the learned rules in the prompt (issue #571). The page lists the ledger's pending entries through
 // TacitLedger.pending and sends promote, reject and hold through TacitLedger.verdict, owner only, with a reason, and for
 // promote of a class the owner's wording, default and exception, which the plugin writes into the home's rules.md
-// before the verdict (rolled back if the verdict fails); promote of a proposal applies its lines to its target first. A promoted rule reaches the next run's prompt under its own
+// before the verdict (rolled back if the verdict fails); promote of a proposal applies its lines to its target first,
+// or with no lines records the verdict and stores one task to build it. A promoted rule reaches the next run's prompt under its own
 // heading, read through the plugin's rules() only. Every test runs against a temp home with stub CLIs that take only
 // the real CLIs' forms: no real home, no network, no live model.
 //
@@ -25,7 +26,7 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { AgentsHomeTacitLedger, checkAgentsHome, tacitLedgerAt } from "../src/impl/tacit/agents-home-tacit-ledger.js";
 import { NoTacitLedger } from "../src/impl/tacit/no-tacit-ledger.js";
-import type { TacitApplied, TacitEntryDetail, TacitLedger } from "../src/interfaces/tacit-ledger.js";
+import { type TacitApplied, type TacitEntryDetail, type TacitLedger, TacitRefusal } from "../src/interfaces/tacit-ledger.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type UiTacit, uiTacit } from "../src/ui/rules-api.js";
 import type { PauseDeps, UiPauses } from "../src/ui/pause-api.js";
@@ -163,7 +164,7 @@ const promote = (id: string, over: Record<string, unknown> = {}) =>
 const listed = (e: Entry) => ({
   id: e.id, title: e.title, state: e.state, ...(e.kind !== undefined ? { kind: e.kind } : {}), ...(e.target !== undefined ? { target: e.target } : {}),
   judged: null, draft_error: null,
-  draft: e.id.startsWith("C-") ? { default: e.title, exception: "없음", incidents: ["T-1", "T-2"], scope: "software" } : null,
+  draft: e.id.startsWith("C-") ? { default: e.title, exception: "없음", incidents: ["T-1", "T-2"], scope: "software" } : null, task: null,
 });
 
 const PENDING: Entry[] = [
@@ -278,7 +279,7 @@ describe("Rules page: GET /api/v1/rules", SPAWNS, () => {
     utimesSync(join(dir, "rule-candidates.md"), built, built);
     writeFileSync(join(dir, "ledger.jsonl"), `${JSON.stringify({ type: "verdict", class: "C-012", ts: "2026-11-13T10:00:00Z", decision: "promote", reason: "r", by: "owner", rule: "x", encoded_to: "private/tacit/rules.md" })}\n`);
     const v = await (await page(s.ledger)).get();
-    expect(v.entries.find((e: { id: string }) => e.id === "C-012")).toEqual({ id: "C-012", title: "keep existing CLI flags", state: "pending", judged: "promote", draft: null, draft_error: null });
+    expect(v.entries.find((e: { id: string }) => e.id === "C-012")).toEqual({ id: "C-012", title: "keep existing CLI flags", state: "pending", judged: "promote", draft: null, draft_error: null, task: null });
     expect(v.entries.find((e: { id: string }) => e.id === "C-013")).toEqual(listed(PENDING[2]!));
   });
 
@@ -286,7 +287,7 @@ describe("Rules page: GET /api/v1/rules", SPAWNS, () => {
     const s = stubHome(PENDING);
     writeFileSync(join(s.home, "bin", "evolve"), `#!/bin/sh\n[ "$1" = pending ] && { printf '## tacit Pending 1\\n- C-012 keep flags\\n'; exit 0; }\necho 'ledger locked' >&2\nexit 3\n`);
     const v = await (await page(s.ledger)).get();
-    expect(v.entries).toEqual([{ id: "C-012", title: "keep flags", state: "pending", judged: null, draft: null, draft_error: expect.stringContaining("evolve show exited 3: ledger locked") }]);
+    expect(v.entries).toEqual([{ id: "C-012", title: "keep flags", state: "pending", judged: null, draft: null, draft_error: expect.stringContaining("evolve show exited 3: ledger locked"), task: null }]);
   });
 
   it("names why a user who is not the owner cannot judge", async () => {
@@ -358,7 +359,7 @@ describe("Rules page: GET /api/v1/rules/entry", () => {
     const p = await page(f.ledger);
     expect(await p.entry("?id=C-012")).toEqual({
       status: 200,
-      value: { id: "C-012", error: null, retire: null, detail: { id: "C-012", default: "Keep every flag.", exceptions: "deprecated ones", incidents: 2, evidence: [{ ref: "T-1", date: "2026-11-02", quote: "keep --json" }], root_reason: "renames skip callers", scope: "CLI" } },
+      value: { id: "C-012", error: null, retire: null, cited: {}, detail: { id: "C-012", default: "Keep every flag.", exceptions: "deprecated ones", incidents: 2, evidence: [{ ref: "T-1", date: "2026-11-02", quote: "keep --json" }], root_reason: "renames skip callers", scope: "CLI" } },
     });
     const bare = fakeLedger(async (id) => ({ id, kind: "edit-asset", target: "prompts/review.md" }));
     expect((await (await page(bare.ledger)).entry("?id=P-20261103-34e9")).value.detail).toEqual({ id: "P-20261103-34e9", kind: "edit-asset", target: "prompts/review.md" });
@@ -411,9 +412,135 @@ describe("Rules page: GET /api/v1/rules/entry", () => {
     const shown = fakeLedger(async (id) => ({ id, scope: "from the plugin" }));
     const ui = await uiTacit("fake", async (n) => (n === "fake" ? shown.ledger : new NoTacitLedger()), { base: baseFromConfig(config), source: store, log: silent, config });
     expect(await ui.ledger.show!("C-012")).toEqual({ id: "C-012", scope: "from the plugin" });
+    expect(await ui.ledger.decided!(["P-0003"])).toEqual({});
     await (ui.ledger as unknown as { apply(i: Record<string, string>): Promise<void> }).apply({ tacit: "none" });
     expect(ui.ledger.enabled).toBe(false);
     expect(await ui.ledger.show!("C-012")).toBeNull();
+    expect(await ui.ledger.decided!(["P-0003"])).toEqual({});
+  });
+});
+
+/** What a proposal to build gives: no Now or Proposed lines. */
+const BUILD: TacitEntryDetail = {
+  id: "P-0009", description: "Add a quiet-hours subcommand to evolve.", kind: "new-asset", target: "bin/evolve", root_reason: "Notices wake the owner at night.",
+  evidence: [{ ref: "T-1", date: "2026-11-05", quote: "stop at 3am" }, { ref: "P-0003", date: "2026-11-01" }, { ref: "T-1" }],
+};
+
+/**
+ * A fake ledger for a promote of P-0009, whose `show` gives `detail`: `verdict` logs each call and records its decision
+ * where `decided` reads it back (the ledger's verdict log), or throws `failWith`.
+ */
+function buildLedger(detail: TacitEntryDetail | null = BUILD) {
+  const verdicts: string[][] = [];
+  const decisions: Record<string, string> = {};
+  const state: { failWith: Error | null; shows: number } = { failWith: null, shows: 0 };
+  const ledger: TacitLedger = {
+    enabled: true,
+    capture: async () => {},
+    rules: async () => [],
+    pending: async () => [{ id: "P-0009", title: "Quiet hours for evolve", state: "open", kind: "new-asset", target: "bin/evolve" }],
+    show: async () => { state.shows++; return detail; },
+    verdict: async (id, decision, reason) => {
+      if (state.failWith !== null) throw state.failWith;
+      verdicts.push([id, decision, reason]);
+      decisions[id] = decision;
+    },
+    decided: async (ids) => Object.fromEntries(ids.filter((id) => decisions[id] !== undefined).map((id) => [id, decisions[id]!])),
+  };
+  return { ledger, verdicts, decisions, state };
+}
+
+describe("Rules page: promote of a proposal with no lines builds it as a task", () => {
+  const PROMOTE = { id: "P-0009", verdict: "promote", reason: "worth building" };
+  const BODY = [
+    "Rationale: Notices wake the owner at night.", "Change: Add a quiet-hours subcommand to evolve.", "Target: bin/evolve", "Evidence: T-1, P-0003", "Proposal: P-0009",
+  ].join("\n");
+
+  it("sends the verdict once, then stores one task: tk_ + the ID in lower case, the proposal's title, a body with rationale, change, target, evidence and ID", async () => {
+    const f = buildLedger();
+    const p = await page(f.ledger);
+    expect((await p.get()).entries[0].task).toBeNull();
+    expect(await p.post(PROMOTE)).toEqual({ status: 200, value: { id: "P-0009", verdict: "promote", task_id: "tk_p-0009" } });
+    expect(f.verdicts).toEqual([["P-0009", "promote", "worth building"]]);
+    const task = await p.store.getTask("tk_p-0009");
+    expect(task).toMatchObject({ id: "tk_p-0009", title: "Quiet hours for evolve", body: BODY, created_by: OWNER, done_at: null, work_item_id: null });
+    expect((await p.store.listTasks(100)).map((t) => t.id)).toEqual(["tk_p-0009"]);
+    // The card links the task from then on.
+    expect((await p.get()).entries[0].task).toBe("tk_p-0009");
+  });
+
+  it("a retry, also after a lost response, sends no second verdict and stores no second task", async () => {
+    const f = buildLedger();
+    const p = await page(f.ledger);
+    await p.post(PROMOTE);
+    expect(await p.post(PROMOTE)).toEqual({ status: 200, value: { id: "P-0009", verdict: "promote", task_id: "tk_p-0009" } });
+    expect(f.verdicts).toHaveLength(1);
+    expect((await p.store.listTasks(100)).map((t) => t.id)).toEqual(["tk_p-0009"]);
+    // The verdict was recorded but the answer (and the task) was lost: the retry reads the ledger's verdict and only stores the task.
+    const lost = buildLedger();
+    lost.decisions["P-0009"] = "promote";
+    const q = await page(lost.ledger);
+    expect((await q.post(PROMOTE)).status).toBe(200);
+    expect(lost.verdicts).toEqual([]);
+    expect((await q.store.listTasks(100)).map((t) => t.id)).toEqual(["tk_p-0009"]);
+  });
+
+  it("a verdict that is refused or fails stores no task, and its error is the answer", async () => {
+    const f = buildLedger();
+    const p = await page(f.ledger);
+    f.state.failWith = new TacitRefusal("P-0009 (evolve show) has no target line: nothing written");
+    expect(await p.post(PROMOTE)).toEqual({ status: 409, value: { error: "The promote was refused: P-0009 (evolve show) has no target line: nothing written" } });
+    f.state.failWith = new Error("evolve verdict exited 1: evolve: P-0009 was judged already");
+    expect(await p.post(PROMOTE)).toEqual({ status: 502, value: { error: "The ledger refused the verdict: evolve verdict exited 1: evolve: P-0009 was judged already" } });
+    expect(await p.store.getTask("tk_p-0009")).toBeNull();
+    expect(await p.store.listTasks(100)).toEqual([]);
+  });
+
+  it("a proposal with no target, or no detail, is refused before any verdict runs, with no task", async () => {
+    for (const detail of [{ ...BUILD, target: undefined }, null]) {
+      const f = buildLedger(detail as TacitEntryDetail | null);
+      const p = await page(f.ledger);
+      expect(await p.post(PROMOTE)).toMatchObject({ status: 409, value: { error: expect.stringContaining("refused") } });
+      expect(f.verdicts).toEqual([]);
+      expect(await p.store.listTasks(100)).toEqual([]);
+    }
+  });
+
+  it("a proposal ID a task ID cannot be made from is a 400 before any CLI runs", async () => {
+    const f = buildLedger();
+    const p = await page(f.ledger);
+    for (const id of ["P-00 9", "P-0009/x", "P-"]) {
+      expect(await p.post({ ...PROMOTE, id })).toMatchObject({ status: 400, value: { error: expect.stringContaining("P- followed by") } });
+    }
+    expect(f.state.shows).toBe(0);
+    expect(f.verdicts).toEqual([]);
+    // Hold and reject take no task, so their ID is not checked against it.
+    expect((await p.post({ id: "P-00 9", verdict: "hold", reason: "x" })).status).toBe(200);
+  });
+
+  it("a proposal with both lines is applied as before: the verdict, and no task", async () => {
+    const f = buildLedger({ ...BUILD, current: "a", proposed: "b" });
+    const p = await page(f.ledger);
+    expect(await p.post(PROMOTE)).toEqual({ status: 200, value: { id: "P-0009", verdict: "promote" } });
+    expect(f.verdicts).toEqual([["P-0009", "promote", "worth building"]]);
+    expect(await p.store.listTasks(100)).toEqual([]);
+  });
+
+  it("the task's title and body pass through the Withholder", async () => {
+    const f = buildLedger({ ...BUILD, root_reason: `leaked ${SECRET}` });
+    const p = await page(f.ledger, OWNER, [SECRET]);
+    expect((await p.post(PROMOTE)).status).toBe(200);
+    const task = await p.store.getTask("tk_p-0009");
+    expect(task!.body).not.toContain(SECRET);
+    expect(task!.body).toMatch(/^Rationale: \[withheld: [^\n]*\nChange: Add a quiet-hours subcommand to evolve\.\n/);
+    expect(task!.body).toContain("Proposal: P-0009");
+  });
+
+  it("the entry read gives each cited ID's recorded verdict, and none for an ID with no record", async () => {
+    const f = buildLedger();
+    f.decisions["P-0003"] = "promote";
+    const v = (await (await page(f.ledger)).entry("?id=P-0009")).value;
+    expect(v.cited).toEqual({ "P-0003": "promote" });
   });
 });
 

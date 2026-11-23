@@ -38,8 +38,9 @@ async function harness(calendar: { name: string; source: CalendarSource }[], o: 
   const role = new ControllerRole({ store, sources: [new FakeSource()], auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner, calendar });
   const step = async () => (await role.unit("calendar")).calendarStep();
   const csrfToken = newCsrfToken();
-  // The Calendar section's routes are wired; this test calls only POST /sync, which never runs the connect flow.
-  const flow = new UiCalendar({ plugins: [], listed: async () => [], run: async () => ({ sync: null }) });
+  // The Calendar section's routes are wired; POST /sync never runs the connect flow.
+  // Its `listed` is the live `calendar` setting, so the Calendar read lists these sources as connected.
+  const flow = new UiCalendar({ plugins: [], listed: async () => calendar.map((c) => c.name), run: async () => ({ sync: null }) });
   const settings = { csrfToken, calendar: flow } as unknown as UiSettings;
   const pauses: UiPauses = { principal: async () => o.as ?? OWNER, authorize: async () => ({ allow: true }), csrfToken, log: silent };
   const d: ApiDeps = {
