@@ -4,14 +4,14 @@
 
 import { describe, expect, it } from "vitest";
 import { agentAction } from "../src/controller/units/schedule/plugins/agent/agent-action.js";
-import { buildAction, buildSourceId } from "../src/controller/units/schedule/plugins/build/build-action.js";
+import { buildAction } from "../src/controller/units/schedule/plugins/build/build-action.js";
 import { feedbackAction } from "../src/controller/units/schedule/plugins/feedback/feedback-action.js";
 import { scheduledAction } from "../src/core/controller-deps.js";
 import { type ScheduleActionSpec, addSchedule } from "../src/core/schedule.js";
 import type { UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
-import { RoutedScheduleAction } from "../src/impl/schedule-action/routed-action.js";
+import { RoutedScheduleAction, occurrenceSourceId } from "../src/impl/schedule-action/routed-action.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { READ_TOOLS } from "../src/worker/index.js";
@@ -49,7 +49,7 @@ describe("the build action", () => {
     expect(warned).toEqual([]);
     expect(runner.specs).toEqual([]);
     const items = await store.listWorkItems(50);
-    expect(items.map((i) => i.source.id).sort()).toEqual([buildSourceId("sch_b", FIRST), buildSourceId("sch_b", "2026-11-24T00:00:00.000Z")].sort());
+    expect(items.map((i) => i.source.id).sort()).toEqual([occurrenceSourceId("sch_b", FIRST), occurrenceSourceId("sch_b", "2026-11-24T00:00:00.000Z")].sort());
     expect(items.map((i) => [i.title, i.project, i.requester_id, i.source.type])).toEqual([
       ["Weekly dependency bump", PROJECT, ME, "local"], ["Weekly dependency bump", PROJECT, ME, "local"],
     ]);

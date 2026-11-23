@@ -21,6 +21,9 @@ const SYSTEM_PROMPT = "You run a scheduled task on this repository. You can read
 
 type Ctx = Contexts["schedule_action"];
 
+/** The source ID of `schedule_id`'s occurrence at `occurrence_at`: `2026-11-23T00:00:00.000Z` → `schedule-<id>-20261123T000000Z`. */
+export const occurrenceSourceId = (schedule_id: string, occurrence_at: string): string => `schedule-${schedule_id}-${occurrence_at.replace(/[-:]|\.\d+/g, "")}`;
+
 /** `tools` narrowed to SCHEDULE_AGENT_TOOLS, in that order; throws, before any agent starts, when one is missing or not read-only. */
 export function readOnlyTools(tools: readonly ToolSpec[]): ToolSpec[] {
   return SCHEDULE_AGENT_TOOLS.map((name) => {
@@ -43,6 +46,7 @@ export class RoutedScheduleAction implements ScheduleAction {
   private ports(schedule: Schedule, occurrence_at: Timestamp): ActionPorts {
     const { store, scanner, project } = this.c;
     return {
+      occurrence_id: occurrenceSourceId(schedule.id, occurrence_at),
       fileItem: async ({ source_id, title, body }) => {
         if (!(await scanner.scan("comment", `${title}\n\n${body}`)).clean) return null;
         const source = { type: "local", id: source_id, link: `local:${source_id}` };

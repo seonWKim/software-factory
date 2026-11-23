@@ -196,10 +196,8 @@ export const SCHEDULE_CHECKPOINT_APPROVED = "schedule_checkpoint_approved";
 /** The actor of the checkpoint item's writes. */
 const SCHEDULER: Actor = { kind: "system", id: "system:schedule" };
 
-/** A slot as an ID part: `2026-11-23T00:00:00.000Z` → `20261123T000000Z`. */
-export const slotKey = (occurrence_at: string): string => occurrence_at.replace(/[-:]|\.\d+/g, "");
-/** The source ID of the item that holds `schedule_id`'s occurrence at `occurrence_at`. */
-export const checkpointSourceId = (schedule_id: string, occurrence_at: string): string => `schedule-checkpoint-${schedule_id}-${slotKey(occurrence_at)}`;
+/** The source ID of the item that holds `schedule_id`'s occurrence at `occurrence_at` (slot `2026-11-23T00:00:00.000Z` → `20261123T000000Z`). */
+export const checkpointSourceId = (schedule_id: string, occurrence_at: string): string => `schedule-checkpoint-${schedule_id}-${occurrence_at.replace(/[-:]|\.\d+/g, "")}`;
 
 /** The cap an `/approve` sets: SCHEDULE_TOKEN_CAP more than the cap, or than what was used when that is more. */
 export const raisedCap = (cap: number, used: number): number => Math.max(cap, used) + SCHEDULE_TOKEN_CAP;

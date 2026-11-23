@@ -55,8 +55,6 @@ export function feedbackCap(settings: Readonly<Record<string, unknown>>): number
   return typeof n === "number" && Number.isSafeInteger(n) && n >= 1 ? Math.min(n, FEEDBACK_MAX_TASKS) : FEEDBACK_MAX_TASKS;
 }
 
-const slotPart = (occurrence_at: string) => occurrence_at.replace(/[-:]|\.\d+/g, "");
-
 function prompt(ask: string, cap: number): string {
   return [
     ask, "",
@@ -85,7 +83,7 @@ export const feedbackAction: ScheduleActionRoute = async (schedule, occurrence_a
     else if (filed.length >= cap) unfiled.push({ title: t.title, reason: "over_cap" });
     else {
       const body = [t.body, "", "Evidence:", ...evidenceLines(t), "", `Filed by schedule \`${schedule.id}\` for its occurrence due ${occurrence_at}.`].join("\n");
-      const item = await ports.fileItem({ source_id: `schedule-${schedule.id}-${slotPart(occurrence_at)}-${filed.length + 1}`, title: t.title, body });
+      const item = await ports.fileItem({ source_id: `${ports.occurrence_id}-${filed.length + 1}`, title: t.title, body });
       if (item) filed.push({ id: item.id, title: t.title, created: item.created });
       else unfiled.push({ title: t.title, reason: "withheld" });
     }

@@ -26,6 +26,8 @@ export interface AgentAnswer {
 }
 
 export interface ActionPorts {
+  /** The occurrence as a source ID, `schedule-<schedule id>-<slot>`: an action files its items under it, so a retry files none twice. */
+  readonly occurrence_id: string;
   /**
    * Files one local work item with its triage run queued, idempotent on `source_id`: a second call returns the same
    * item with `created` false. Null when the egress scan flagged its title or body, and nothing was filed.
