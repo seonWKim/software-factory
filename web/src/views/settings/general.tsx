@@ -6,6 +6,7 @@ import { LINK_CLASS } from "../../components/ui/link-style.js";
 import { Switch } from "../../components/ui/switch.js";
 import type { MessageKey } from "../../i18n/en.js";
 import { t } from "../../i18n/index.js";
+import { SETTINGS_INTRO } from "./rows.js";
 import { Link } from "../../nav.js";
 import { BASE } from "../../pages.js";
 import { Outcome, useWrite } from "../settings-file-keys.js";
@@ -13,6 +14,7 @@ import { Editor } from "./editor.js";
 import { ModeDialog } from "./mode-dialog.js";
 import { stringItems, stringOf } from "./values.js";
 import { Card } from "../../components/ui/card.js";
+import { AppearanceSection } from "./appearance.js";
 
 /** The kinds of wait on the owner that `notice_kinds` lists, in its order, each with its switch's label. */
 const NOTICE_KINDS = [
@@ -76,7 +78,7 @@ function NoticesSection({ view }: { view: SettingsView }) {
   if (!kinds && !quiet) return null;
   return (
     <Card title={t("settings.notices")}>
-      <p className="mb-2 text-sm text-pretty text-text-2">
+      <p className={SETTINGS_INTRO}>
         {t("settings.noticesIntro")}
       </p>
       <div className="flex flex-wrap items-start gap-x-10 gap-y-4">
@@ -191,12 +193,13 @@ function ModeSection({ view }: { view: SettingsView }) {
   );
 }
 
-/** The General tab: Mode and the auto-merge tier, then Notices. */
+/** The General tab: Mode and the auto-merge tier, then Notices, then Appearance (the theme). */
 export function GeneralTab({ view }: { view: SettingsView }) {
   return (
     <div>
       <ModeSection view={view} />
       <NoticesSection view={view} />
+      <AppearanceSection />
     </div>
   );
 }

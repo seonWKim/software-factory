@@ -139,7 +139,9 @@ describe("Data page", () => {
     await act(async () => void (await vi.advanceTimersByTimeAsync(POLL_MS * 20)));
     await act(async () => void window.dispatchEvent(new Event("focus")));
     expect(dataReads().length).toBe(before);
-    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    // Refresh sits in the top bar's More menu (issue #79).
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Refresh" }));
     await act(async () => void (await vi.advanceTimersByTimeAsync(10)));
     expect(dataReads().length).toBe(before + data.length);
   });

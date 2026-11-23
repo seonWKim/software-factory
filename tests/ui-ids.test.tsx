@@ -159,9 +159,10 @@ describe("narrow windows (check:responsive at 390px)", () => {
     const written: string[] = [];
     Object.defineProperty(navigator, "clipboard", { value: { writeText: async (v: string) => void written.push(v) }, configurable: true });
     await mountAt("runners", "Being built");
-    const names = [...document.querySelectorAll("main [data-id]")];
+    // The Runners section of Health's Runs tab (Failures and Host sleeps, below it, have Details of their own).
+    const names = [...document.querySelectorAll("#health-runners [data-id]")];
     expect(names.length).toBeGreaterThan(0);
-    expect(document.querySelector("main details")).toBeNull();
+    expect(document.querySelector("#health-runners details")).toBeNull();
     const label = names[0] as HTMLElement;
     expect(label.tagName).toBe("BUTTON");
     expect(label.textContent).toBe("worker 0");

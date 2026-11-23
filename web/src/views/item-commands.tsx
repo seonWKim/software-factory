@@ -217,7 +217,8 @@ export function ItemCommands({ id, commands, reason = null }: { id: string; comm
         </AddContextActions>
       )}
       {restart && <RestartButton id={id} command={restart} on={enabled} busy={busy} replies={data?.replies ?? []} local={local.restart} send={() => void post("restart", "")} />}
-      {commands.length === 0 && !showsMerge(detail?.merge) && (
+      {/* Only for an open item: a closed one says so in its status line (item-facts.tsx ClosedStatus). */}
+      {commands.length === 0 && !showsMerge(detail?.merge) && detail?.stage !== "CLOSED" && (
         <p data-commands-none className="mt-2 text-sm text-pretty text-text-2">
           {t("commands.none")}
         </p>

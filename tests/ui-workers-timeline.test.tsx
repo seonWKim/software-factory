@@ -225,18 +225,18 @@ const bar = (id: string) => document.querySelector(`[data-run="${id}"]`) as HTML
 const node = (id: string) => document.querySelector(`[data-node="${id}"]`) as HTMLElement;
 
 describe("the Workers page", () => {
-  it("has window buttons 1h, 6h and 24h with 6h pressed, and a switch reads the other window", async () => {
+  it("has window segments 1h, 6h and 24h with 6h checked, and a switch reads the other window", async () => {
     await mountWorkers();
-    const group = screen.getByRole("group", { name: "Time window" });
-    const buttons = within(group).getAllByRole("button");
+    const group = screen.getByRole("radiogroup", { name: "Time window" });
+    const buttons = within(group).getAllByRole("radio");
     expect(buttons.map((b) => b.textContent)).toEqual(["1h", "6h", "24h"]);
-    expect(within(group).getByRole("button", { name: "6h" }).getAttribute("aria-pressed")).toBe("true");
+    expect(within(group).getByRole("radio", { name: "6h" }).getAttribute("aria-checked")).toBe("true");
     expect(fetched).toContain("/api/v1/runs?window=6h");
     expect(fetched).toContain("/api/v1/items/graph?window=6h");
-    fireEvent.click(within(group).getByRole("button", { name: "1h" }));
+    fireEvent.click(within(group).getByRole("radio", { name: "1h" }));
     await vi.waitFor(() => expect(fetched).toContain("/api/v1/runs?window=1h"));
     expect(fetched).toContain("/api/v1/items/graph?window=1h");
-    expect(within(group).getByRole("button", { name: "1h" }).getAttribute("aria-pressed")).toBe("true");
+    expect(within(group).getByRole("radio", { name: "1h" }).getAttribute("aria-checked")).toBe("true");
   });
 
   it("reads again every 10 seconds while visible", async () => {
@@ -327,8 +327,8 @@ describe("the Workers page", () => {
   it("has no control that edits anything: its only buttons are the window switch", async () => {
     await mountWorkers();
     const main = document.querySelector("main")!;
-    const group = within(main).getByRole("group", { name: "Time window" });
-    for (const b of within(main).getAllByRole("button")) expect(group.contains(b)).toBe(true);
+    const group = within(main).getByRole("radiogroup", { name: "Time window" });
+    for (const b of main.querySelectorAll("button")) expect(group.contains(b)).toBe(true);
     expect(main.querySelector("input, select, textarea, form")).toBeNull();
   });
 

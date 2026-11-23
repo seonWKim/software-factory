@@ -85,10 +85,10 @@ export type RecordPrHeadResult =
   | { ok: false; reason: "head_moved"; current: WorkItem };
 export interface NewUnreviewedMerge {
   project: string;
-  /** The PR number as text; the store mirrors it into its legacy PR column. */
   change_ref: string;
   merge_sha: string;
   merger_id: UserId | null;
+  title?: string | null;
 }
 
 export interface NewRun {

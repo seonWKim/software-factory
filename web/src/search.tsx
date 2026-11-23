@@ -1,15 +1,16 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { type JSX, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { API, type ItemDetail, type ItemRow, type Items, type Session, useApi } from "./api.js";
 import { Button } from "./components/ui/button.js";
-import { ButtonRow } from "./components/ui/button-row.js";
+import { SUB_TITLE } from "./components/ui/card.js";
 import { Input } from "./components/ui/input.js";
 import { cn } from "./lib/cn.js";
-import { SHORTCUTS } from "./keys.js";
+import { Kbd } from "./components/ui/notice.js";
+import { SHORTCUTS, SHORTCUT_GROUPS, type Shortcut, type ShortcutGroup } from "./keys.js";
 import { t } from "./i18n/index.js";
 import { type MessageKey } from "./i18n/en.js";
 import { BASE, PAGES, itemPath } from "./pages.js";
-import { announceStatus } from "./components/ui/dialog.js";
+import { ModalPanel, announceStatus } from "./components/ui/dialog.js";
 import { useCommandSend } from "./views/command-send.js";
 import { withPaths } from "./views/item-commands.js";
 import { ApproveDialog, approvePhase, chosenAnswers, commandLabel, initialChoices } from "./views/item-decisions.js";
@@ -45,17 +46,17 @@ function CommandHelp({ filter = "" }: { filter?: string }) {
   const shown = COMMAND_HELP.filter((c) => !q || c.usage.toLowerCase().includes(q) || t(c.what).toLowerCase().includes(q));
   if (shown.length === 0) return null;
   return (
-    <section aria-label={t("commands.label")} data-command-help className="mt-3">
-      <h2 className="mb-1 text-sm font-semibold">{t("commands.label")}</h2>
-      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1">
+    <section aria-label={t("commands.label")} data-command-help className="mt-5 border-t border-border pt-4">
+      <h3 className={cn(SUB_TITLE, "mb-2")}>{t("commands.label")}</h3>
+      <dl className="space-y-3">
         {shown.map((c) => (
-          <div key={c.usage} className="contents">
-            <dt><code className="font-mono text-xs break-all">{c.usage}</code></dt>
-            <dd>{t(c.what)}</dd>
+          <div key={c.usage}>
+            <dt><code className="rounded-control bg-surface-2 px-1.5 py-0.5 font-mono text-xs break-all text-text-1">{c.usage}</code></dt>
+            <dd className="mt-1 text-pretty text-text-2">{t(c.what)}</dd>
           </div>
         ))}
       </dl>
-      <p className="mt-2 text-xs text-text-2">{t("commands.helpWhere")}</p>
+      <p className="mt-4 text-xs text-pretty text-text-2">{t("commands.helpWhere")}</p>
     </section>
   );
 }
@@ -133,39 +134,12 @@ function SearchApprove({ row, onClose }: { row: ItemRow; onClose: () => void }) 
   );
 }
 
-/** A modal frame: Escape and the Close button close it. */
-function Dialog({ label, onClose, children }: { label: string; onClose: () => void; children: JSX.Element | JSX.Element[] }) {
-  const frame = useRef<HTMLDivElement>(null);
-  // Focus goes into the dialog (unless a field in it took it), so Escape reaches it.
-  useEffect(() => {
-    if (!frame.current?.contains(document.activeElement)) frame.current?.focus();
-  }, []);
-  const onKey = (e: KeyboardEvent) => {
-    if (e.key === "Escape") {
-      e.stopPropagation();
-      onClose();
-    }
-  };
-  return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-text-1/40 p-4 pt-[10dvh]" onKeyDown={onKey}>
-      <div ref={frame} tabIndex={-1} role="dialog" aria-modal="true" aria-label={label} className="max-h-[80dvh] w-full max-w-md overflow-y-auto rounded-control outline-none border border-border bg-surface p-3 text-sm shadow-lg">
-        {children}
-        <ButtonRow className="mt-3 justify-end">
-          <Button onClick={onClose}>{t("keys.close")}</Button>
-        </ButtonRow>
-      </div>
-    </div>
-  );
-}
-
 /** The search: type to filter, arrows to move, Enter or a click to go there, Escape to close. */
 export function SearchDialog({ navigate, onClose }: { navigate: (to: string) => void; onClose: () => void }) {
   const client = useQueryClient();
   const [text, setText] = useState("");
   const [at, setAt] = useState(0);
   const [approving, setApproving] = useState<ItemRow | null>(null);
-  const input = useRef<HTMLInputElement>(null);
-  useEffect(() => input.current?.focus(), []);
   // The closed items come from the existing closed=1 read (newest LIST_LIMIT), which the default read leaves out.
   const closed = useApi<Items>(`${API.items}?closed=1`);
   // Commands off for this page's session: no approve to offer.
@@ -207,24 +181,30 @@ export function SearchDialog({ navigate, onClose }: { navigate: (to: string) => 
     }
   };
   return (
-    <Dialog label={t("search.open")} onClose={onClose}>
-      <Input
-        ref={input}
-        type="search"
-        value={text}
-        placeholder={t("search.placeholder")}
-        aria-label={t("search.placeholder")}
-        onChange={(e) => {
-          setText(e.target.value);
-          setAt(0);
-        }}
-        onKeyDown={onKey}
-        className="w-full"
-      />
+    <ModalPanel
+      title={t("search.open")}
+      size="md"
+      placement="top"
+      onClose={onClose}
+      header={
+        <Input
+          type="search"
+          value={text}
+          placeholder={t("search.placeholder")}
+          aria-label={t("search.placeholder")}
+          onChange={(e) => {
+            setText(e.target.value);
+            setAt(0);
+          }}
+          onKeyDown={onKey}
+          className="w-full"
+        />
+      }
+    >
       {hits.length === 0 ? (
-        <p className="mt-2 text-text-2">{t("search.none")}</p>
+        <p className="text-text-2">{t("search.none")}</p>
       ) : (
-        <ul role="listbox" aria-label={t("search.open")} className="mt-2 space-y-0.5">
+        <ul role="listbox" aria-label={t("search.open")} className="space-y-0.5">
           {hits.map((h, i) => (
             <li key={h.key} role="option" aria-selected={i === at}>
               <Button
@@ -240,24 +220,62 @@ export function SearchDialog({ navigate, onClose }: { navigate: (to: string) => 
         </ul>
       )}
       <CommandHelp filter={text} />
-    </Dialog>
+    </ModalPanel>
   );
 }
 
-/** The list of every shortcut, then the command help. */
-export function HelpDialog({ onClose }: { onClose: () => void }) {
+/** Each shortcut group's label. */
+const GROUP_LABEL: Record<ShortcutGroup, MessageKey> = {
+  general: "keys.group.general",
+  navigation: "keys.group.navigation",
+  rows: "keys.group.rows",
+  tasks: "keys.group.tasks",
+};
+
+/** One shortcut's keys: each key of a sequence ("g w") in its own Kbd, alternatives joined by "or". */
+function Keys({ keys }: { keys: string[] }) {
   return (
-    <Dialog label={t("keys.title")} onClose={onClose}>
-      <h2 className="mb-2 text-sm font-semibold">{t("keys.title")}</h2>
-      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1">
-        {SHORTCUTS.map((s) => (
-          <div key={s.keys} className="contents">
-            <dt><kbd className="rounded-control border border-border-strong px-1.5 font-mono text-xs">{s.keys}</kbd></dt>
-            <dd>{t(s.what)}</dd>
-          </div>
+    <span className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+      {keys.map((k, i) => (
+        <Fragment key={k}>
+          {i > 0 && <span className="px-0.5 text-xs text-text-3">{t("keys.or")}</span>}
+          {k.split(" ").map((part, j) => (
+            <Fragment key={part + j}>
+              {j > 0 && " "}
+              <Kbd>{part}</Kbd>
+            </Fragment>
+          ))}
+        </Fragment>
+      ))}
+    </span>
+  );
+}
+
+/** The shortcuts by group, one row per action (its keys at the right), then the command help. */
+export function HelpDialog({ onClose }: { onClose: () => void }) {
+  const groups = SHORTCUT_GROUPS.map((group) => {
+    const rows = new Map<Shortcut["what"], string[]>();
+    for (const s of SHORTCUTS) if (s.group === group) rows.set(s.what, [...(rows.get(s.what) ?? []), s.keys]);
+    return { group, rows: [...rows] };
+  });
+  return (
+    <ModalPanel title={t("keys.title")} onClose={onClose}>
+      <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+        {groups.map(({ group, rows }) => (
+          <section key={group} aria-label={t(GROUP_LABEL[group])}>
+            <h3 className={cn(SUB_TITLE, "mb-1")}>{t(GROUP_LABEL[group])}</h3>
+            <ul>
+              {rows.map(([what, keys]) => (
+                <li key={what} className="flex items-center justify-between gap-4 py-1.5">
+                  <span className="min-w-0 text-pretty">{t(what)}</span>
+                  <Keys keys={keys} />
+                </li>
+              ))}
+            </ul>
+          </section>
         ))}
-      </dl>
+      </div>
       <CommandHelp />
-    </Dialog>
+    </ModalPanel>
   );
 }

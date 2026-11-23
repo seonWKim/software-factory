@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { readFileSync } from "node:fs";
 import { useRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Dialog } from "../web/src/components/ui/dialog.js";
+import { Dialog, ModalPanel } from "../web/src/components/ui/dialog.js";
 import { NeedsList } from "../web/src/views/task-work.js";
 import { ApproveDialog } from "../web/src/views/item-decisions.js";
 
@@ -119,6 +119,65 @@ describe("Dialog", () => {
     const dialog = readFileSync("web/src/components/ui/dialog.tsx", "utf8");
     for (const text of [dialog, readFileSync("web/src/index.css", "utf8")]) expect(text).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(|oklch\(/i);
     expect(dialog).toContain("w-[calc(100%-2rem)]");
+  });
+});
+
+/** A button that opens a ModalPanel holding a field. */
+function PanelHost() {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button onClick={() => setOpen(true)}>open panel</button>
+      {open && (
+        <ModalPanel title="Reference" onClose={() => setOpen(false)}>
+          <p>Body text</p>
+        </ModalPanel>
+      )}
+    </>
+  );
+}
+
+describe("ModalPanel", () => {
+  const open = () => {
+    const opener = screen.getByRole("button", { name: "open panel" });
+    opener.focus();
+    fireEvent.click(opener);
+    return opener;
+  };
+
+  it("has the title in its header with a Close icon button, and focus goes to its body, then back to the opener", () => {
+    render(<PanelHost />);
+    const opener = open();
+    const panel = screen.getByRole("dialog", { name: "Reference" });
+    expect(within(panel).getByRole("heading", { name: "Reference" }).closest("header")!.contains(within(panel).getByRole("button", { name: "Close" }))).toBe(true);
+    expect(document.activeElement).toBe(panel.querySelector("[data-panel-body]"));
+    fireEvent.click(within(panel).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it("Esc closes it; a click on the backdrop closes it, a click inside does not", () => {
+    render(<PanelHost />);
+    open();
+    fireEvent.keyDown(screen.getByText("Body text"), { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    open();
+    fireEvent.click(screen.getByText("Body text"));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    fireEvent.click(screen.getByRole("dialog"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("a press that starts inside and ends on the backdrop (selecting text) does not close it", () => {
+    render(<PanelHost />);
+    open();
+    fireEvent.pointerDown(screen.getByText("Body text"));
+    fireEvent.click(screen.getByRole("dialog"));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    // The next press on the backdrop alone still closes it.
+    fireEvent.pointerDown(screen.getByRole("dialog"));
+    fireEvent.click(screen.getByRole("dialog"));
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
 

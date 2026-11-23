@@ -254,8 +254,8 @@ describe("Failures page", () => {
     show(WindowedFailures);
     await screen.findAllByTestId("failure-group");
     expect(fetched).toContain("/api/v1/failures?window=7d");
-    expect(within(screen.getByRole("group", { name: "Window" })).getByRole("button", { name: "Last 7 days" }).getAttribute("aria-pressed")).toBe("true");
-    fireEvent.click(screen.getByRole("button", { name: "Last 24 hours" }));
+    expect(within(screen.getByRole("radiogroup", { name: "Window" })).getByRole("radio", { name: "Last 7 days" }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(screen.getByRole("radio", { name: "Last 24 hours" }));
     await vi.waitFor(() => expect(fetched).toContain("/api/v1/failures?window=24h"));
     expect(new URLSearchParams(location.search).get("window")).toBe("24h");
   });

@@ -445,11 +445,11 @@ describe("Settings page", () => {
     expect([...rest!.querySelectorAll("dt")].filter((d) => !d.closest("details")).map((d) => d.textContent)).toEqual(["Details", "Reset"]);
   });
 
-  it("shows exactly three tabs, General selected by default, with Mode and Notices and nothing from the other tabs", async () => {
+  it("shows exactly three tabs, General selected by default, with Mode, Notices and Appearance and nothing from the other tabs", async () => {
     await show("");
     expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["General", "Integrations", "Advanced"]);
     expect(selectedTab()).toBe("General");
-    expect(regions()).toEqual(["Mode"]);
+    expect(regions()).toEqual(["Mode", "Appearance"]);
     expect(screen.queryByRole("table", { name: "Settable keys" })).toBeNull();
   });
 
@@ -484,7 +484,7 @@ describe("Settings page", () => {
     expect(location.search).toBe("?tab=integrations");
     expect(screen.queryByRole("table", { name: "Settable keys" })).toBeNull();
     fireEvent.click(screen.getByRole("tab", { name: "General" }));
-    expect(regions()).toEqual(["Mode"]);
+    expect(regions()).toEqual(["Mode", "Appearance"]);
     // A reload: a fresh page on the URL as it stands.
     fireEvent.click(screen.getByRole("tab", { name: "Advanced" }));
     cleanup();
@@ -519,7 +519,7 @@ describe("Settings page", () => {
       expect(first.querySelector("span")!.textContent, k.key).toBe(keyLabel(k.key));
       const details = r.querySelector("details[data-details]")!;
       expect(details.querySelector("summary")!.textContent).toBe("Details");
-      expect([...details.querySelectorAll(":scope > dl > dt")].map((d) => d.textContent)).toEqual(["Key name", "Source", "File value", "Applies at"]);
+      expect([...details.querySelectorAll(":scope > div > dl > dt")].map((d) => d.textContent)).toEqual(["Key name", "Source", "File value", "Applies at"]);
       expect(details.querySelector("dd")!.textContent).toBe(k.key);
       // Outside Details the key name appears nowhere in the row.
       const bare = [...r.querySelectorAll("*")].filter((e) => !e.closest("details[data-details]") && e.children.length === 0 && e.textContent === k.key);

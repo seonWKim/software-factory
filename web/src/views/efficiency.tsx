@@ -218,7 +218,7 @@ export function EfficiencyTab() {
           <>
             <CardSection title={t("efficiency.finished")}>
               <p className="mb-2 text-sm text-pretty text-text-2">{t("efficiency.finishedNote")}</p>
-              <div className="grid gap-3 sm:grid-cols-3">
+              <div className="grid gap-3 lg:grid-cols-3">
                 <MiniChart title={t("efficiency.last24h")} chart={v.hours} label={hourLabel} />
                 <MiniChart title={t("efficiency.last14d")} chart={v.days} label={dayLabel} />
                 <MiniChart title={t("efficiency.last8w")} chart={v.weeks} label={dayLabel} selected={weekStart} onSelect={pick} />

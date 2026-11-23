@@ -7,6 +7,7 @@ import { redirectFor } from "../web/src/pages.js";
 import { ItemsTable } from "../web/src/views/common.js";
 import { API, POLL_MS } from "../web/src/api.js";
 import { RevisionBanner, SEEN_REV_KEY } from "../web/src/views/system-banner.js";
+import { TOAST_MS } from "../web/src/components/ui/toast.js";
 import { VIEW_KEY } from "../web/src/views/tree.js";
 import { AT, overview, row, items, runs, queue, RESPONSES, state, installShellFixtures, waitBadge, mount } from "./ui-shell-fixtures.js";
 
@@ -148,15 +149,18 @@ describe("app pages", () => {
     history.replaceState(null, "", "/app/health");
     mount();
     await screen.findByText("push access denied");
-    // The Checks tab: neither section draws below the tabs, and the Failures window switch is not shown.
+    // The Overview tab: neither section draws below the tabs, and the Failures window switch is not shown.
     expect(screen.queryByRole("heading", { level: 2, name: "Spend" })).toBeNull();
     expect(screen.queryByRole("heading", { level: 2, name: "Failures" })).toBeNull();
     expect(document.querySelector("[data-failures-window]")).toBeNull();
-    fireEvent.click(screen.getByRole("tab", { name: "Spend" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Cost" }));
     expect(await screen.findByRole("heading", { level: 2, name: "Spend" })).toBeTruthy();
     expect(screen.queryByRole("heading", { level: 2, name: "Failures" })).toBeNull();
-    fireEvent.click(screen.getByRole("tab", { name: "Failures" }));
+    // Runs holds Runners, Failures (its window switch in the toolbar) and Host sleeps, in that order.
+    fireEvent.click(screen.getByRole("tab", { name: "Runs" }));
     expect(await screen.findByRole("heading", { level: 2, name: "Failures" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 2, name: "Host sleeps" })).toBeTruthy();
+    expect([...document.querySelectorAll("[data-health-section]")].map((e) => e.getAttribute("data-health-section"))).toEqual(["runners", "failures", "sleeps"]);
     expect(document.querySelector("[data-failures-window]")).not.toBeNull();
     expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
     cleanup();
@@ -187,9 +191,10 @@ describe("app pages", () => {
     }
   });
 
-  it("every page's h1 is in the page title type, and every h2 is the title of a Card (Health's Spend and Failures too)", async () => {
+  it("every page's h1 is in the page title type, and every h2 is the title of a Card (Health's Spend and Failures too) or the Calendar's period in its toolbar", async () => {
     const names: Record<string, string> = { tasks: "Tasks", calendar: "Calendar", items: "Work", "health?tab=runners": "Health", "health?tab=failures": "Health", rules: "Rules", plugins: "Plugins", data: "Data", settings: "Settings" };
-    const outside = () => screen.queryAllByRole("heading", { level: 2 }).filter((h) => !h.closest("section.rounded-card.bg-surface.shadow-sm")).map((h) => h.textContent);
+    // The one exception: the Calendar's period heading sits in its toolbar line (09-dashboard-tasks-calendar).
+    const outside = () => screen.queryAllByRole("heading", { level: 2 }).filter((h) => !h.closest("section.rounded-card.bg-surface.shadow-sm, [data-calendar-toolbar]")).map((h) => h.textContent);
     for (const [path, name] of Object.entries(names)) {
       history.replaceState(null, "", `/app/${path}`);
       mount();
@@ -226,21 +231,48 @@ describe("app pages", () => {
     expect(state.fetched).toContain("/api/v1/items?state=needs");
   });
 
-  it("Health tabs: Checks by default, counts in the labels, a failing check marks its tab, an unknown tab selects Checks, a click keeps the history length", async () => {
+  it("Health tabs: Overview by default, four tabs, counts only for what waits on the owner, a failing check marks Overview, an unknown tab selects Overview, a click keeps the history length", async () => {
     history.replaceState(null, "", "/app/health?tab=nonsense");
     mount();
     await screen.findByText("push access denied");
     const tabs = screen.getAllByRole("tab");
-    expect(tabs.map((x) => x.textContent!.replace(/\s*\(.*$/, ""))).toEqual(["Checks", "Spend", "Failures", "Runners", "Host sleeps", "Merged without review", "Efficiency"]);
+    // One failing check (the ok one is not counted) and two unreviewed merges; Runs and Cost carry no count.
+    expect(tabs.map((x) => x.textContent)).toEqual(["Overview (1) ⚠ failing", "Runs", "Cost", "Review (2)"]);
     expect(tabs[0]!.getAttribute("aria-selected")).toBe("true");
-    expect(tabs[0]!.textContent).toContain("(2)");
-    expect(tabs[0]!.textContent).toContain("failing");
-    expect(tabs[4]!.textContent).toContain("(0)");
     const length = history.length;
-    fireEvent.click(tabs[4]!);
-    expect(location.search).toBe("?tab=sleeps");
+    fireEvent.click(tabs[1]!);
+    expect(location.search).toBe("?tab=runs");
     expect(history.length).toBe(length);
-    expect(screen.getByText("No host sleep recorded.")).toBeTruthy();
+    expect(await screen.findByText("No host sleep recorded.")).toBeTruthy();
+  });
+
+  it("an old Health tab link opens the tab that now holds it and scrolls to that section; the first section of a tab needs no scroll", async () => {
+    const scrolled: string[] = [];
+    // jsdom has no scrolling: record which element the page asked to scroll into view.
+    const proto = HTMLElement.prototype as { scrollIntoView?: unknown };
+    const before = proto.scrollIntoView;
+    proto.scrollIntoView = function (this: HTMLElement) {
+      scrolled.push(this.id);
+    };
+    try {
+      const opens: [string, string, string | null][] = [
+        ["sleeps", "Runs", "health-sleeps"], ["failures", "Runs", "health-failures"], ["runners", "Runs", null],
+        ["spend", "Cost", null], ["efficiency", "Cost", "health-efficiency"], ["merges", "Review", null], ["checks", "Overview", null],
+      ];
+      for (const [old, tab, anchor] of opens) {
+        scrolled.length = 0;
+        history.replaceState(null, "", `/app/health?tab=${old}`);
+        mount();
+        await screen.findByRole("tablist", { name: "Health sections" });
+        expect(screen.getByRole("tab", { selected: true }).textContent, old).toContain(tab);
+        await act(async () => void (await vi.advanceTimersByTimeAsync(10)));
+        expect(document.getElementById(`health-${old}`), old).not.toBeNull();
+        expect(scrolled, old).toEqual(anchor ? [anchor] : []);
+        cleanup();
+      }
+    } finally {
+      proto.scrollIntoView = before;
+    }
   });
 
   it("health lists failing checks first", async () => {
@@ -273,7 +305,7 @@ describe("unreviewed merges", () => {
   });
 
   it("Health lists them in a table: PR (linked only with a URL), merged by, short sha, when", async () => {
-    history.replaceState(null, "", "/app/health?tab=merges");
+    history.replaceState(null, "", "/app/health?tab=review");
     mount();
     const t = await screen.findByRole("table", { name: "Merged without review" });
     expect([...t.querySelectorAll("th")].map((h) => h.textContent)).toEqual(["PR", "Merged by", "Merge commit", "When"]);
@@ -415,12 +447,19 @@ describe("factory update note and header revision", () => {
     });
   });
 
-  it("Dismiss hides the note for that revision: not back on a poll or a reload", async () => {
-    localStorage.setItem(SEEN_REV_KEY, OLD); // a stored earlier revision: the note shows on load
+  it("the update toast goes by itself after 6 s and does not come back for that revision on a poll or a reload", async () => {
+    localStorage.setItem(SEEN_REV_KEY, OLD); // a stored earlier revision: the toast shows on load
     await withFactory(UPDATED, async () => {
       mount();
       const note = await screen.findByTestId("update-note");
-      fireEvent.click(within(note).getByRole("button", { name: "Dismiss" }));
+      expect(note.closest("[role=status]")!.className).toMatch(/\bfixed\b/);
+      // Stored at once: a reload while it still shows does not show it twice.
+      expect(localStorage.getItem(SEEN_REV_KEY)).toBe(NEW);
+      await act(async () => void (await vi.advanceTimersByTimeAsync(TOAST_MS - 500)));
+      expect(screen.getByTestId("update-note")).toBeTruthy();
+      await act(async () => void (await vi.advanceTimersByTimeAsync(1000)));
+      // Then the 200 ms fade.
+      await act(async () => void (await vi.advanceTimersByTimeAsync(300)));
       expect(screen.queryByTestId("update-note")).toBeNull();
       await poll();
       expect(screen.queryByTestId("update-note")).toBeNull();
@@ -428,6 +467,19 @@ describe("factory update note and header revision", () => {
       mount();
       await waitBadge();
       await poll();
+      expect(screen.queryByTestId("update-note")).toBeNull();
+    });
+  });
+
+  it("Dismiss closes the toast at once; hovering it keeps it past 6 s", async () => {
+    localStorage.setItem(SEEN_REV_KEY, OLD);
+    await withFactory(UPDATED, async () => {
+      mount();
+      const card = (await screen.findByTestId("update-note")).closest("[role=status]")!;
+      fireEvent.mouseEnter(card);
+      await act(async () => void (await vi.advanceTimersByTimeAsync(TOAST_MS * 2)));
+      expect(screen.getByTestId("update-note")).toBeTruthy();
+      fireEvent.click(within(card as HTMLElement).getByRole("button", { name: "Dismiss" }));
       expect(screen.queryByTestId("update-note")).toBeNull();
     });
   });
@@ -442,10 +494,13 @@ describe("factory update note and header revision", () => {
     });
   });
 
-  it("the header shows the running short revision and its state; only the revision without behind; nothing without a factory", async () => {
+  it("the sidebar footer shows the running short revision and its state; only the revision without behind; nothing without a factory", async () => {
     await withFactory(UPDATED, async () => {
       mount();
       await vi.waitFor(() => expect(screen.getByTestId("factory-rev").textContent).toBe("3dc0029 · up to date"));
+      // In the sidebar footer under "? Shortcuts", out of the top bar (issue #79).
+      expect(screen.getByTestId("factory-rev").closest("aside")).toBeTruthy();
+      expect(screen.getByTestId("factory-rev").closest("header")).toBeNull();
     });
     cleanup();
     await withFactory({ ...UPDATED, behind: 3 }, async () => {

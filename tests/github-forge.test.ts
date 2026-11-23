@@ -360,7 +360,7 @@ describe("GitHubForge: pull requests the factory did not open (design 2026-11-01
     expect(gets).toEqual(["/repos/o/r/pulls/14"]);
   });
 
-  it("reports merges and closes of every PR, with the merger, and marks forks", async () => {
+  it("reports merges and closes of every PR, with the merger and the merged PR's title, and marks forks", async () => {
     const { client, forge } = make();
     client.closed = [
       pull(20, "feature/x", { merged_at: "2026-11-01T00:00:03Z", merge_commit_sha: "m20", updated_at: "2026-11-01T00:00:03Z" }),
@@ -374,8 +374,8 @@ describe("GitHubForge: pull requests the factory did not open (design 2026-11-01
     client.byNumber[21] = { merged_by: null };
     const { events } = await forge.poll(null);
     expect(events.filter((e) => e.kind === "change_merged" || e.kind === "change_closed")).toEqual([
-      { kind: "change_merged", change_ref: "20", head_branch: "feature/x", merge_sha: "m20", merger: bobId },
-      { kind: "change_merged", change_ref: "21", head_branch: "patch-1", merge_sha: "m21", merger: null, fork: true },
+      { kind: "change_merged", change_ref: "20", head_branch: "feature/x", merge_sha: "m20", merger: bobId, title: "PR 20" },
+      { kind: "change_merged", change_ref: "21", head_branch: "patch-1", merge_sha: "m21", merger: null, title: "PR 21", fork: true },
       { kind: "change_closed", change_ref: "22", head_branch: "feature/y" },
     ]);
   });

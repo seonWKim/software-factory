@@ -1432,8 +1432,8 @@ export class SqlFactoryStore extends SqlAttachmentStore implements FactoryStore 
     return this.db.transaction(async (tx) => {
       const created = await this.insertOnce(
         tx,
-        "INSERT INTO controller_unreviewed_merges (id, project, change_ref, merge_sha, merger_id, at) VALUES (?, ?, ?, ?, ?, ?)",
-        [newId("um") as UnreviewedMergeId, input.project, input.change_ref, input.merge_sha, input.merger_id, this.now()],
+        "INSERT INTO controller_unreviewed_merges (id, project, change_ref, merge_sha, merger_id, at, title) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [newId("um") as UnreviewedMergeId, input.project, input.change_ref, input.merge_sha, input.merger_id, this.now(), input.title ?? null],
       );
       const [row] = await tx.all("SELECT * FROM controller_unreviewed_merges WHERE project = ? AND change_ref = ?", [input.project, input.change_ref]);
       return { merge: rowToUnreviewedMerge(row!), created };

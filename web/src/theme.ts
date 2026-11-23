@@ -1,3 +1,5 @@
+import { useSyncExternalStore } from "react";
+
 // The theme choice lives in this browser only (design §9): System (follow the system colour scheme, the default),
 // Light or Dark. Storage can throw (private mode, blocked site data), so every access is guarded and the page
 // still works without it. Only "light" or "dark" is ever stored; System is the absence of a stored value.
@@ -49,4 +51,36 @@ export function saveChoice(choice: ThemeChoice): void {
   } catch {
     // no storage: the choice lasts for this page only
   }
+}
+
+// The page's one current choice, shared by the app shell (which starts it) and Settings' Appearance control.
+let current: ThemeChoice | null = null;
+let stopListening: () => void = () => {};
+const listeners = new Set<() => void>();
+
+/** Applies the stored choice (the app shell, on mount); the returned function removes its system listener. */
+export function startTheme(): () => void {
+  current = storedChoice();
+  stopListening = applyChoice(current);
+  return () => {
+    stopListening();
+    stopListening = () => {};
+  };
+}
+
+/** Keeps `choice` for this browser and shows it now: the old choice's system listener goes, the new one's comes. */
+export function chooseTheme(choice: ThemeChoice): void {
+  saveChoice(choice);
+  current = choice;
+  stopListening();
+  stopListening = applyChoice(choice);
+  for (const l of listeners) l();
+}
+
+/** The current choice, re-rendering when Settings changes it. */
+export function useThemeChoice(): ThemeChoice {
+  return useSyncExternalStore(
+    (l) => (listeners.add(l), () => void listeners.delete(l)),
+    () => current ?? storedChoice(),
+  );
 }

@@ -10,13 +10,15 @@ Pick the component by the need, before drawing anything by hand. A UI spec names
 |---|---|---|
 | a state | `StatusBadge` for an item, run or worker state, else `Badge` | `StatusBadge` shows the state table's label and tone (`src/shared/states.ts`) with `data-status`; `Badge` any other short status as a pill, tone from a state table key; never a hand-made chip or a bordered Button. |
 | an on/off choice in a list | Checkbox (none yet: `Switch` until it exists) | One box per row that turns that row's choice on or off. No Checkbox exists yet; a follow-up issue adds it. Until then use `Switch`, never a Button drawn as a box. |
+| a short notice that goes by itself | `Toast` | Top right for 6 s, paused while hovered or focused, with Dismiss; never for a state the owner must act on (that is a `Notice`). |
 | a row's extra actions | `OverflowMenu` | The row's secondary actions behind one "more" button at its end, so the row stays one line. |
 | a row in a bordered list | `ListRow` | Leading control, one-line title with ellipsis, details line, every action in its ⋯ menu. |
+| a reference list or a search over the page, with no confirm | `ModalPanel` | Header with the title (or the search field) and a close icon button; the body scrolls. Never a hand-made overlay `div`. |
 | input inside a list row | `Dialog` | A field a row action needs opens in a Dialog; the row's height never changes. |
 
 ## Card
 
-A block of a page (`card.tsx`): the `surface` background, a 1px `border`, the `card` radius, 24px padding (`p-6`; 16px below `sm`, so a 320px window keeps its content width) and `shadow-sm`. Optional h2 `title` in the section title role (`text-base font-semibold`, the exported `CARD_TITLE`): Card is the one owner of a page's h2, so every h2 on every page has this one size, an optional `count` beside it and an optional `action` at the end of the title row. It is a region named by `label`, else by `title` (Data names its table Card "Table <name>" and titles it with the bare name); with neither it is a plain block. `id` gives it an anchor (`#spend`, `#failures`); `live` announces a title that changes (the calendar's period). Cards follow each other 24px apart. No variants or sizes.
+A block of a page (`card.tsx`): the `surface` background, a 1px `border`, the `card` radius, 24px padding (`p-6`; 16px below `sm`, so a 320px window keeps its content width) and `shadow-sm`. Optional h2 `title` in the section title role (`text-base font-semibold`, the exported `CARD_TITLE`): Card is the one owner of a page's h2 (the Calendar's period in its toolbar, in `CARD_TITLE`, is the one exception), so every h2 on every page has this one size, an optional `count` beside it and an optional `action` at the end of the title row. It is a region named by `label`, else by `title` (Data names its table Card "Table <name>" and titles it with the bare name); with neither it is a plain block. `id` gives it an anchor (`#spend`, `#failures`); `live` announces a title that changes (the calendar's period). Cards follow each other 24px apart. No variants or sizes.
 
 ## CardSection
 
@@ -53,6 +55,10 @@ An item's, a run's or a worker's state (`badge.tsx`): `state` is a key of the st
 ## Notice
 
 An inline message. Variants (`tone`): `info` (default), `ok`, `warn`, `bad`. Optional title. `warn` and `bad` have role alert, the others role status.
+
+## Toast
+
+A transient notice that goes by itself (`toast.tsx`): a `surface` box with a 1 px `border`, the `box` radius, 12 px padding and `shadow-lg`, fixed at the top right under the top bar (22rem wide; below `sm` the full width less 16 px each side), its content beside a ghost `sm` Dismiss Button. A live region (`role="status"`). It fades in, and after `TOAST_MS` (6 s) fades out (200 ms, none with reduced motion) and calls `onClose`; the timer waits while the pointer is over it or focus is inside it, so a list being read never vanishes. Dismiss closes it at once. One size, no variants. States: shown, paused (hovered or focused), fading. For a status line after a send use `announceStatus` (Dialog); a state that stays until it changes is a `Notice`.
 
 ## EmptyState
 
@@ -108,7 +114,7 @@ One row of a bordered list (`list-row.tsx`; the Tasks page's Needs you, date gro
 
 ## Kbd
 
-A keyboard key as text, such as Esc. No variants or sizes.
+A keyboard key as text, such as Esc: a chip at least 20 px wide, centred, `text-xs` on `surface-2` with a `border-strong` edge and radius `control`. A key sequence (`g w`) is one Kbd per key. No variants or sizes.
 
 ## Tooltip
 
@@ -116,7 +122,7 @@ A short hint on hover and keyboard focus, hidden by Esc or leaving. Variants (`p
 
 ## Button
 
-The dashboard's one button. Variants: `primary` (accent background, `on-solid` text: the one main action of a view), `secondary` (default: `border-strong` border on `surface`), `ghost` (no border, `surface-2` on hover), `danger` (`failed` text); `danger` with `solid` is filled with the failed colour, only for a confirm dialog's destructive confirm. Sizes: `md` (default, at least 32 px high), `sm` (at least 28 px), `icon` (32 px square). States: default, hover (enabled only), focus-visible, pressed (`aria-pressed` or `aria-checked`: `surface-2` background), `disabled` (opacity 0.5). `type` defaults to `button`.
+The dashboard's one button. Variants: `primary` (accent background, `on-solid` text: the one main action of a view), `secondary` (default: `border-strong` border on `surface`), `ghost` (no border, `surface-2` on hover), `danger` (`failed` text); `danger` with `solid` is filled with the failed colour, only for a confirm dialog's destructive confirm. Sizes: `md` (default, at least 32 px high), `sm` (at least 28 px), `icon` (32 px square). `buttonClass({ variant, size })` returns the same classes for a control that must be another library's button (react-aria's Tree chevron slot). States: default, hover (enabled only), focus-visible, pressed (`aria-pressed` or `aria-checked`: `surface-2` background), `disabled` (opacity 0.5). `type` defaults to `button`.
 
 ## Checkbox
 
@@ -128,7 +134,7 @@ A `role=switch` button with `aria-checked`, 24 px high (the smallest target) aro
 
 ## SegmentedControl
 
-One choice among a few views (`role=group` with an `aria-label`): a 32 px box with a 1 px `border-strong` edge on `surface`, holding 28 px segments in one row that never wraps. Controlled by `value` and `onChange`; `options` gives each segment's `id` and label. States: selected (`aria-pressed`, `surface` fill, a `border-strong` ring, `text-1` text; neutral, never accent), default (`text-2`), hover (`surface-2`, `text-1`), focus-visible.
+One choice among a few views, drawn like a macOS segmented control (`role=radiogroup` with an `aria-label`, each segment a `role=radio` with `aria-checked`): one 32px `surface-2` track (`rounded-control`, 2px padding) holding equal-width 28px segments (`auto-cols-fr`) in one row that never wraps, `text-sm` medium. A raised thumb (`surface`, `shadow-sm`, a 1px `border` ring; `border-strong` with no ring in dark, lighter than the track) sits under the checked segment and slides to it (150ms, motion-safe). Controlled by `value` and `onChange`; `options` gives each segment's `id`, label and optional `data-*`. Roving tabindex: only the checked segment is in the tab order (the first when none matches); ArrowRight/ArrowDown and ArrowLeft/ArrowUp move to the next and previous segment, wrapping, Home and End to the first and last, and the segment a key reaches is focused and checked at once. For a choice, never for actions that send something (use Buttons). States: checked (`text-1` on the thumb; neutral, never accent), default (`text-2`), hover (`text-1`), focus-visible, no value (no thumb).
 
 ## Link and ID
 
@@ -146,6 +152,10 @@ The one pager for a long list (`web/src/components/ui/pagination.tsx`, a `nav` l
 
 The native modal `<dialog>`, opened on mount and closed on unmount, rendered into `document.body`: radius `card`, padding 24 px, a `text-base` semibold title, optional children and a one-line `consequence`, and a right-aligned ButtonRow footer with Cancel (secondary Button) before the confirm. Variants: default (confirm is a `primary` Button), `danger` (confirm is a `danger` Button with `solid`). States: open, `confirmDisabled`, with an `error` (shown in the dialog, role alert). Esc and a click on the backdrop cancel; Enter in a one-line field confirms; focus returns to `returnFocusTo`, else to the element focused when it opened. `announceStatus` shows a short status line after a send.
 
+## ModalPanel
+
+A modal with no confirm, for a reference list (the shortcut list) or a search: the same native `<dialog>` as Dialog (showModal, so the page behind is inert and Tab stays inside; rendered into `document.body`). A header row (12 px top and bottom, 20 px left, a bottom `border`) holds the `text-base` semibold title, or `header` in its place (the search field; the title stays as a hidden heading), and a ghost icon Button with an X (Close) at its right; under it the body (20 px across, 16 px down, `text-sm`) scrolls by itself, so the header stays put. Radius `card`, `shadow-lg`, the Dialog's backdrop. Sizes: `lg` (42rem, default) and `md` (32rem); both leave a 16 px gutter on a phone. Placement: `center` (default) or `top` (10% down, at most 80% of the window high, so a list that filters as you type does not move it). Esc, a click on the backdrop and the close button close it; a press that starts inside and ends on the backdrop does not. Focus goes to its first field, else its body, and back to `returnFocusTo`, else the element focused when it opened, without scrolling the page.
+
 ## CopyButton
 
 A small bordered `text-xs` button (`border-strong`, `text-2`, hover `surface-2`) that writes `value` to the clipboard; `what` names it in its accessible name and title ("Copy item ID"). States: default ("Copy"), done ("Copied" for 1.5 s), no clipboard (nothing happens; the text stays selectable).
@@ -160,7 +170,11 @@ A readable name (`label`, e.g. "worker 3" or "you") as a plain button on the sha
 
 ## Disclosure
 
-A native `<details>` with a `<summary>` at least 28px tall (`min-h-7`, like a small Button): one chevron marker (turned down when open), one label style (`text-xs text-text-2`, no box). Props: `summary` (the visible label), `children` (the body), `defaultOpen` (starts open; default closed), `lazy` (mount the body only while open, for a body that reads something on demand), `onToggle(open)`, and `className` (a margin only) and `data-*` passed to the `<details>`. `aria-expanded` is on the summary and follows the open state; click, Enter and Space toggle it. Use it only for long content (more than ~3 lines or a list): decision rule 2 in `patterns.md`, never a single value. Write no raw `<details>` in `web/src/views/`; Markdown folds through it too.
+A native `<details>` with a `<summary>` at least 28px tall (`min-h-7`, like a small Button): the `DisclosureChevron` (turned down when open), then the label in `text-xs` medium `text-2`. The summary is a quiet hover target: `rounded-control`, pulled 6px left by its own padding (`-ml-1.5 px-1.5`) so the chevron starts where the text above it does, `surface-2` fill and `text-1` on hover. An open body starts 4px below the summary and ends 4px above what follows. Props: `summary` (the visible label), `children` (the body), `defaultOpen` (starts open; default closed), `lazy` (mount the body only while open, for a body that reads something on demand), `onToggle(open)`, `summaryTone` (the label colour on a pill fill), and `className` (a margin only) and `data-*` passed to the `<details>`. `aria-expanded` is on the summary and follows the open state; click, Enter and Space toggle it. Use it only for long content (more than ~3 lines or a list): decision rule 2 in `patterns.md`, never a single value. Write no raw `<details>` in `web/src/views/`; Markdown folds through it too.
+
+## DisclosureChevron
+
+The one expand mark (`disclosure.tsx`): lucide's ChevronRight at 14px (`size-3.5`; a caller may pass `size-4`), `text-3`, `text-2` when its trigger (marked `group`) is hovered, turned down (`rotate-90`) when `open` with a 150ms ease-out rotate (motion-safe). Carries `data-chevron`. The Disclosure summary, the Work tree's expand button (inside the ghost `icon` Button, 32px) and project folder rows draw it; never a ▸ text triangle. States: closed, open.
 
 ## KeyValue
 
