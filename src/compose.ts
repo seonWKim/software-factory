@@ -67,6 +67,7 @@ import { LearnedRules, joinGuidance } from "./core/learned-rules.js";
 import { checkToolchainEnv, codeVersion, readRestarts, uiCommandsActor, uiUserId, workerIndexBase } from "./config-values.js";
 import { type Loaded, loadConfig, localProject, resolvedConfig } from "./load-config.js";
 import { reviewReplay } from "./golden-replay.js";
+import { skillImproveWiring } from "./skill-evals.js";
 import { Cleaner, type CleanupStore, agentTempRoots, cleanupConfig, hostProcesses } from "./cleanup/index.js";
 import { RUN_FOLDER } from "./setup-paths.js";
 
@@ -337,6 +338,7 @@ export async function build(
     cpus: availableParallelism(),
     models: { table: loaded.model_by, names: loaded.models },
     reviewReplay: reviewReplay({ sandbox, runner, scanner, clock, models: { table: loaded.model_by } }), // the improve run's golden replay (design 07)
+    skillImprove: skillImproveWiring(store, loaded, { sandbox, runner, llm, scanner }), // skill drafts (design 07); undefined without capabilities.skill_folders
     awake, capability, guidance: joinGuidance([new PackGuidance(loaded.packs), new LearnedRules(tacit)]), // packs' rules, then promoted rules (design 07)
     settings, learned,
     engines,

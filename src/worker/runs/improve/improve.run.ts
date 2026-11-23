@@ -1,6 +1,6 @@
 import {
-  type Grade, type GradeSubject, IMPROVER_DEFAULTS, type ImproveDeps, improvePrompts, learnDesign, learnFromReport, proposeChanges, proposesIn, runImprove, scoreRun,
-  scorerFor,
+  type Grade, type GradeSubject, IMPROVER_DEFAULTS, type ImproveDeps, improvePrompts, improveSkills, learnDesign, learnFromReport, proposeChanges, proposesIn, runImprove,
+  scoreRun, scorerFor,
 } from "../../../core/improver.js";
 import type { Run, WorkItem } from "../../../core/types.js";
 import { factoryGit } from "../../../impl/broker/trusted-git.js";
@@ -13,8 +13,9 @@ import { DEFAULT_TIMEOUTS, defineRunKind } from "../../run-kind.js";
  * counts toward the run's. Stores one report; the outcome names it. Then, only in the daily run and only from the
  * stored report, the learner may write one tighter max_diff_lines for the project (design 08-settings), and, as
  * `improver.schedule` allows, the entity proposals are drafted and replayed through the golden set (core/proposals.ts).
- * Last, with a model, the project's design learnings are tagged and counted; the outcome lists the proposals due
- * (design 07-design-learnings).
+ * With a model and capabilities.skill_folders, each seeded skill below its eval target that dropped or stalled gets
+ * one draft, measured in scratch and stored for a verdict (src/core/skill-improve.ts). Last, with a model, the
+ * project's design learnings are tagged and counted; the outcome lists the proposals due (design 07-design-learnings).
  */
 async function improve(w: Worker, run: Run, item: WorkItem, signal: AbortSignal): Promise<Record<string, unknown>> {
   const metered = meteredLlm(w, run);
@@ -28,6 +29,8 @@ async function improve(w: Worker, run: Run, item: WorkItem, signal: AbortSignal)
     item,
   );
   const learned = await learnFromReport({ store: w.d.store, layers: w.cfg.settings }, run, report);
+  const wiring = w.d.skillImprove;
+  const skills = metered && wiring ? await improveSkills({ store: w.d.store, scanner: w.d.scanner, llm: metered, clock: w.d.clock, wiring, signal }, item.project) : [];
   // Entity proposals (design §7, #496): the review prompt's change per recurring failure, with its golden evidence; nothing applied.
   const cfg = w.cfg.improver ?? IMPROVER_DEFAULTS;
   const replay = w.d.reviewReplay; // the golden replay, built in the composition root (src/golden-replay.ts)
@@ -39,6 +42,7 @@ async function improve(w: Worker, run: Run, item: WorkItem, signal: AbortSignal)
     report_id: report.id, groups: report.groups.length, patterns: report.patterns.length, proposals: proposals.map((p) => p.id),
     ...(learned ? { learned: { key: learned.key, old_value: learned.old_value, new_value: learned.new_value } } : {}),
     ...(design ? { design } : {}),
+    ...(skills.length > 0 ? { skill_drafts: skills.map((s) => ({ skill_ref: s.skill_ref, trigger: s.trigger, ...s.draft })) } : {}),
   };
 }
 
