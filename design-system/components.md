@@ -13,6 +13,7 @@ Pick the component by the need, before drawing anything by hand. A UI spec names
 | a short notice that goes by itself | `Toast` | Top right for 6 s, paused while hovered or focused, with Dismiss; never for a state the owner must act on (that is a `Notice`). |
 | a row's extra actions | `OverflowMenu` | The row's secondary actions behind one "more" button at its end, so the row stays one line. |
 | a row in a bordered list | `ListRow` | Leading control, one-line title with ellipsis, details line, every action in its ⋯ menu. |
+| a reference list or a search over the page, with no confirm | `ModalPanel` | Header with the title (or the search field) and a close icon button; the body scrolls. Never a hand-made overlay `div`. |
 | input inside a list row | `Dialog` | A field a row action needs opens in a Dialog; the row's height never changes. |
 
 ## Card
@@ -113,7 +114,7 @@ One row of a bordered list (`list-row.tsx`; the Tasks page's Needs you, date gro
 
 ## Kbd
 
-A keyboard key as text, such as Esc. No variants or sizes.
+A keyboard key as text, such as Esc: a chip at least 20 px wide, centred, `text-xs` on `surface-2` with a `border-strong` edge and radius `control`. A key sequence (`g w`) is one Kbd per key. No variants or sizes.
 
 ## Tooltip
 
@@ -150,6 +151,10 @@ The one pager for a long list (`web/src/components/ui/pagination.tsx`, a `nav` l
 ## Dialog
 
 The native modal `<dialog>`, opened on mount and closed on unmount, rendered into `document.body`: radius `card`, padding 24 px, a `text-base` semibold title, optional children and a one-line `consequence`, and a right-aligned ButtonRow footer with Cancel (secondary Button) before the confirm. Variants: default (confirm is a `primary` Button), `danger` (confirm is a `danger` Button with `solid`). States: open, `confirmDisabled`, with an `error` (shown in the dialog, role alert). Esc and a click on the backdrop cancel; Enter in a one-line field confirms; focus returns to `returnFocusTo`, else to the element focused when it opened. `announceStatus` shows a short status line after a send.
+
+## ModalPanel
+
+A modal with no confirm, for a reference list (the shortcut list) or a search: the same native `<dialog>` as Dialog (showModal, so the page behind is inert and Tab stays inside; rendered into `document.body`). A header row (12 px top and bottom, 20 px left, a bottom `border`) holds the `text-base` semibold title, or `header` in its place (the search field; the title stays as a hidden heading), and a ghost icon Button with an X (Close) at its right; under it the body (20 px across, 16 px down, `text-sm`) scrolls by itself, so the header stays put. Radius `card`, `shadow-lg`, the Dialog's backdrop. Sizes: `lg` (42rem, default) and `md` (32rem); both leave a 16 px gutter on a phone. Placement: `center` (default) or `top` (10% down, at most 80% of the window high, so a list that filters as you type does not move it). Esc, a click on the backdrop and the close button close it; a press that starts inside and ends on the backdrop does not. Focus goes to its first field, else its body, and back to `returnFocusTo`, else the element focused when it opened, without scrolling the page.
 
 ## CopyButton
 
