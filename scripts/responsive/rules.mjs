@@ -1,7 +1,8 @@
 // The layout rules `npm run check:responsive` applies to each page, viewport and theme. `checkLayout` runs inside
 // the page (serialized with toString), so it uses only browser APIs. Each rule is one question with one answer:
 //
-//   page-scroll     the page scrolls sideways: documentElement.scrollWidth > the viewport width.
+//   page-scroll     the page scrolls sideways: documentElement.scrollWidth > the viewport width, or the
+//                   [data-scroll-root] content column's scrollWidth > its clientWidth.
 //   offscreen       a visible element, or its own text, ends past the viewport's right edge, and no ancestor of it
 //                   clips or scrolls sideways (an overflow-x:auto table wrapper is fine; the wrapper itself is checked
 //                   too). Only the outermost such element of a chain is reported.
@@ -11,7 +12,8 @@
 //   overlay-bounds  an open dialog, popover, menu, listbox or tooltip extends past the viewport.
 //   small-target    a painted interactive element (button, link, input, select, textarea, summary, or a role of
 //                   button, menuitem, checkbox, radio, switch, tab) is smaller than 24x24 CSS px; links in running
-//                   text count too.
+//                   text count too. An input inside a <label> is measured by the label's box, which clicks it (the
+//                   Checkbox's 16px box sits in a 32px label).
 //   unreachable     the page is taller than the viewport but html or body hides vertical overflow.
 //
 // The page template's structure (docs/design/09-dashboard-shell.md, design-system/patterns.md), one rule each:
@@ -108,6 +110,22 @@ export function checkLayout(limits) {
   // page-scroll
   const sw = document.documentElement.scrollWidth;
   if (sw > W + 1) fail("page-scroll", document.documentElement, `scrollWidth ${sw}px > viewport ${W}px`);
+  // The app scrolls inside its content column, so the document can fit while the column scrolls sideways.
+  const root = document.querySelector("[data-scroll-root]");
+  if (root && root.scrollWidth > root.clientWidth + 1) {
+    // The widest element that no ancestor clips, so the next run shows which one makes the column scroll.
+    let widest = null;
+    for (const el of root.querySelectorAll?.("*") ?? []) {
+      if (!painted(el)) continue;
+      let clipped = false;
+      for (let a = el.parentElement; a && a !== root; a = a.parentElement) if (style(a).overflowX !== "visible") clipped = true;
+      if (clipped) continue;
+      const w = el.getBoundingClientRect().right - root.getBoundingClientRect().left;
+      if (!widest || w > widest.w) widest = { el, w };
+    }
+    const named = widest ? `; widest unclipped element ${selector(widest.el)} ends ${Math.round(widest.w)}px from the column's left` : "";
+    fail("page-scroll", root, `scroll root scrollWidth ${root.scrollWidth}px > clientWidth ${root.clientWidth}px${named}`);
+  }
 
   // unreachable
   const sh = document.documentElement.scrollHeight;
@@ -154,8 +172,12 @@ export function checkLayout(limits) {
     }
 
     // small-target
-    if (el.matches(interactive) && (r.width < limits.minTarget - 0.5 || r.height < limits.minTarget - 0.5)) {
-      fail("small-target", el, `${Math.round(r.width)}x${Math.round(r.height)}px, under ${limits.minTarget}x${limits.minTarget}px`);
+    if (el.matches(interactive)) {
+      const label = el.matches("input") ? el.closest("label") : null;
+      const hit = label ? label.getBoundingClientRect() : r;
+      if (hit.width < limits.minTarget - 0.5 || hit.height < limits.minTarget - 0.5) {
+        fail("small-target", el, `${Math.round(hit.width)}x${Math.round(hit.height)}px, under ${limits.minTarget}x${limits.minTarget}px`);
+      }
     }
 
     // tall-fixed

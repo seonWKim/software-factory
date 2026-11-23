@@ -576,9 +576,9 @@ export class CommandsUnit {
     if (e.kind === "retry_requested" && mergeCheckStopped(it, await this.c.k.reader.listStateChanges(it.id))) return { refuse: mergeCheckRetryRefusal(it.id) };
     if (e.kind === "retry_requested") return commandPhase(it) === "phase_hold" ? this.c.unit("phases").retryPhase(it, actor, note, paths) : recheckRetry(it, note, paths, retry(it, actor, await this.retryKind(it), note, paths.length > 0 ? this.widen(it, paths) : null), (await this.c.k.reader.listStateChanges(it.id)).at(-1), this.c.k.d.clock.now(), RECHECK_PATHS_REFUSAL); // a day old: re-check the premise first
     const phase = commandPhase(it);
-    // At the review loop limit too: a human chose to go back through triage or to close (design §4).
-    const afterFailure = phase === "too_large" || phase === "failed_implement" || phase === "agent_needs_human" || phase === "repeated_failure" ||
-      phase === "max_loops";
+    // At the review loop limit, and in REVIEW after a factory branch's `bug` verdict (2026-11-23), too: a human chose to go back through triage or to close (design 04-spec-gate-commands).
+    const afterFailure = phase === "too_large" || phase === "failed_implement" || phase === "agent_needs_human" || phase === "repeated_failure" || phase === "max_loops" ||
+      (e.kind === "revise_requested" && it.stage === "REVIEW" && it.origin !== "adopted" && (await this.c.unit("checks-gate").lastVerdict(it.id))?.verdict === "bug");
     if (afterFailure && e.kind === "revise_requested") return this.reviseAfterFailure(e, it, actor);
     if (e.kind === "revise_requested" && phase === "implementing" && it.stage === "RUNNING") return queueRevise(this.c, e, it, actor);
     if (!awaitingSpec(it)) {
@@ -631,7 +631,7 @@ export class CommandsUnit {
   }
 
   /**
-   * `/revise <feedback>` at a failed implement run, a `diff_too_large` block or the review loop limit (design §4):
+   * `/revise <feedback>` at a failed implement run, a `diff_too_large` block, the review loop limit or in REVIEW after a `bug` verdict (design §4):
    * the item goes back through triage with the feedback, then to the spec gate. The revision counter and
    * `max_loops` apply as at the spec gate, but at the limit nothing changes: the item keeps its block, where
    * `/retry` and `/reject` still apply. restart_count + 1 so the implement run after the next `/approve` gets a

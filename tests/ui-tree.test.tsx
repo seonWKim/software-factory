@@ -53,7 +53,7 @@ const ROWS = [
 const overview = { as_of: AT, stages: {}, needs_you: 1, running: 1, queued: 1, last_24h: { succeeded: 0, failed: 0, tokens: 0 }, unreviewed_merges_7d: 0, plugins: { issues: null } };
 // One queued run: the Work summary's "queued" counts runs like overview.queued, not items at level queued.
 const queueBody = { as_of: AT, queue: [{ position: 1, id: "run_q", kind: "implement", work_item_id: "wi_20", attempt: 0, created_at: AT, not_before: null }] };
-const itemsBody = { as_of: AT, total: ROWS.length, items: ROWS, facets: { allStates: ROWS.length, state: {} }, counts: { open: 0, running: 1 } };
+const itemsBody: { as_of: string; total: number; items: typeof ROWS; facets: object; counts: object } = { as_of: AT, total: ROWS.length, items: ROWS, facets: { allStates: ROWS.length, state: {} }, counts: { open: 0, running: 1 } };
 let fetched: string[] = [];
 
 class MemoryStorage {
@@ -66,6 +66,7 @@ class MemoryStorage {
 
 beforeEach(() => {
   fetched = [];
+  itemsBody.items = ROWS;
   // react-aria's focus handling calls CSS.escape, which jsdom does not have.
   if (!globalThis.CSS?.escape) vi.stubGlobal("CSS", { escape: (v: string) => v.replace(/[^\w-]/g, "\\$&") });
   vi.stubGlobal("localStorage", new MemoryStorage());
@@ -187,6 +188,40 @@ describe("items tree", () => {
     fireEvent.change(screen.getByRole("searchbox", { name: "Search work items" }), { target: { value: "phase three" } });
     await settle();
     expect(titles(screen.getByRole("treegrid", { name: "Work items" }))).toEqual(["Split parent", "Phase three"]);
+  });
+
+  it("leaves system items out by default; Show system items brings them back with the System badge and sends system=1", async () => {
+    itemsBody.items = [...ROWS, row(70, "system", "Self-improvement", { blocked_reason: "system_item", why: null })] as typeof ROWS;
+    const tree = await mount();
+    expect(titles(tree)).not.toContain("Self-improvement");
+    const button = screen.getByRole("button", { name: "Show system items" });
+    expect(button.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(button);
+    const shown = await screen.findByRole("treegrid", { name: "Work items" });
+    expect(titles(shown)).toContain("Self-improvement");
+    const sysRow = rowOf(shown, "Self-improvement");
+    expect(within(sysRow).getByText("System")).toBeTruthy();
+    expect(sysRow.textContent).not.toContain("Blocked by another task");
+    expect(sysRow.querySelector("[data-waits-for]")).toBeNull();
+    expect(screen.getByRole("button", { name: "Show system items" }).getAttribute("aria-pressed")).toBe("true");
+    await settle();
+    expect(fetched.some((u) => u.includes("system=1"))).toBe(true);
+  });
+
+  it("the list view has Show system items too, and asks the server with system=1", async () => {
+    await mount();
+    fireEvent.click(screen.getByRole("button", { name: "List" }));
+    await screen.findByRole("table", { name: "Work items" });
+    fireEvent.click(screen.getByRole("button", { name: "Show system items" }));
+    await settle();
+    expect(fetched.at(-1)).toBe("/api/v1/items?system=1");
+  });
+
+  it("a fresh install with no items shows the empty state with the local way first", async () => {
+    itemsBody.items = [];
+    await mount().catch(() => null);
+    expect(await screen.findByText("No work item yet")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Add a task" }).getAttribute("href")).toBe("/app/tasks");
   });
 
   it("makes exactly one items request per poll, whatever the number of rows", async () => {

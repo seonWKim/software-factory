@@ -103,10 +103,12 @@ describe("hold_policy and hotspot_mode at config load (issue #314)", () => {
     expect(problems({ hotspot_mode: "soft" })).toEqual([expect.stringMatching(/^hotspot_mode must be "policy" or "hold"/)]);
   });
 
-  it("valid values load; run_after_minutes without minutes means 20; absent keys take the defaults", () => {
+  it("valid values load; run_after_minutes without minutes means 120; absent keys take the defaults (run_after_minutes 120)", () => {
     expect(problems({ hold_policy: { mode: "run" }, hotspot_mode: "hold" })).toEqual([]);
-    expect(coordinationConfig({ hold_policy: { mode: "run_after_minutes" } }).hold_policy).toEqual({ mode: "run_after_minutes", minutes: 20 });
-    expect(coordinationConfig({})).toMatchObject({ hold_policy: { mode: "hold" }, hotspot_mode: "policy" });
+    expect(coordinationConfig({ hold_policy: { mode: "run_after_minutes" } }).hold_policy).toEqual({ mode: "run_after_minutes", minutes: 120 });
+    expect(coordinationConfig({})).toMatchObject({ hold_policy: { mode: "run_after_minutes", minutes: 120 }, hotspot_mode: "policy" });
+    // mode hold is still a valid value: it keeps a run held until /approve.
+    expect(coordinationConfig({ hold_policy: { mode: "hold" } }).hold_policy).toEqual({ mode: "hold" });
   });
 
   it("factory settings set refuses the same values and accepts a valid one", async () => {

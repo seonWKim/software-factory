@@ -21,6 +21,7 @@ import type { SessionReservation, SessionReservationStore } from "../core/sessio
 import type { ProposalStore } from "../core/proposals.js";
 import type { StandingChangeStore } from "../core/standing.js";
 import type { ScheduleStore } from "../core/schedule.js";
+import type { SkillEvalStore } from "./skill-eval-store.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
@@ -82,7 +83,6 @@ export type RecordPrHeadResult =
   | { ok: false; reason: "not_found" }
   /** last_head_sha is no longer `expected_head` (another poll or a factory push recorded first). Nothing written. */
   | { ok: false; reason: "head_moved"; current: WorkItem };
-
 export interface NewUnreviewedMerge {
   project: string;
   /** The PR number as text; the store mirrors it into its legacy PR column. */
@@ -172,18 +172,16 @@ export interface TransitionInput {
 /** How a base push finished: `pushed` (the remote base contains the merge) or `conflict` (it moved and does not merge). */
 export type BasePushOutcome = "pushed" | "conflict";
 
-/** A local merge's base push (RFC 0015 M8: outbound's `push_base` action), as the status page shows it. */
+/** A local merge's base push (RFC 0015 M8: outbound's `push_base` action), as the status page shows it. `attempts`: failed tries so
+ * far (an outage, a rate limit, a base that moved under the push), its batch's; `outcome`: null while pending; `pushed_sha`: the
+ * remote base after a `pushed` outcome. */
 export interface BasePush {
-  base_ref: string;
-  merge_sha: string;
-  /** Failed tries so far (an outage, a rate limit, a base that moved under the push): its batch's. */
-  attempts: number;
-  /** Null while pending. */
-  outcome: BasePushOutcome | null;
-  /** The remote base after a `pushed` outcome. */
-  pushed_sha: string | null;
-  last_error: string | null;
+  base_ref: string; merge_sha: string; attempts: number; outcome: BasePushOutcome | null; pushed_sha: string | null; last_error: string | null;
 }
+
+/** One base's local merges not on the remote (design 05-sources, Local items): `waiting` counts its push_base actions after
+ * the newest pushed one (at least 1); `conflicts`: the files of its newest delivered push when a conflict, else null. */
+export interface BasePushBacklog { base_ref: string; waiting: number; conflicts: string[] | null }
 
 export type TransitionResult =
   /** `cancelled`: the runs `cancel_queued_runs` and `cancel_running_runs` cancelled (empty without them). */
@@ -356,7 +354,7 @@ export interface NoticeMessageStore {
   getNoticeQuestion(id: string): Promise<NoticeQuestion | null>;
 }
 
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore {
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore, SkillEvalStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes
@@ -967,6 +965,8 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
    * delivered merge stored), delivered or not; null when its merge stored none. Read-only.
    */
   getBasePush(work_item_id: WorkItemId): Promise<BasePush | null>;
+  /** Each base with local merges not pushed (BasePushBacklog), from the push_base actions after the newest pushed one. Read-only. */
+  listBasePushBacklogs(): Promise<BasePushBacklog[]>;
 
   // App command requests (issue #245): commands sent from the factory's own app, applied by the controller tick
   // through the same path as a comment command. Created by the status page's POST /api/v1/items/:id/commands (#227).

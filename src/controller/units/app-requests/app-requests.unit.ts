@@ -4,9 +4,9 @@
 
 import { APP_REQUEST, COMMANDS, MERGE_REQUESTED, mergeEntered, mergeQueued, refusalText } from "../../../core/commands.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
-import { type WorkItem, type WorkItemId } from "../../../core/types.js";
+import { type Actor, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { AppCommandRequest } from "../../../interfaces/factory-store.js";
-import { type CommandEvent, COMMAND, QUOTABLE_COMMAND } from "../support.js";
+import { AUTO, type CommandEvent, COMMAND, QUOTABLE_COMMAND } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
@@ -34,8 +34,8 @@ export class AppRequestsUnit {
    * already stored (an earlier try, another replica, or the dashboard's request path: design 09-dashboard-app) is
    * marked applied, after the rest of a request-time approval (CommandsUnit.afterRequestApprove). The request path
    * writes nothing for a Merge: here a local item enters the merge queue (merge_pending → merge_queued,
-   * merge_requested) before its merge runs, a refusal puts it back at merge_pending, and a Merge another request
-   * queued is done already. An item with a PR asks the forge as before; its item stays merge_pending.
+   * merge_requested) before its merge runs, a refusal puts it back at merge_pending, and a Merge another request,
+   * `factory merge`, `/merge` or auto mode queued is done already. An item with a PR asks the forge as before; its item stays merge_pending.
    */
   async applyAppRequest(r: AppCommandRequest): Promise<void> {
     const known = COMMANDS.some((c) => c.name === r.command);
@@ -78,7 +78,7 @@ export class AppRequestsUnit {
     }
     // Refused here, but applied by a concurrent try of the same request (or the dashboard's request path): that one stands.
     if (refusal !== null && (await applied())) return settle();
-    if (refusal !== null && r.command === MERGE_COMMAND) await this.c.unit("commands").mergeReturned(item.id, refusal);
+    if (refusal !== null && r.command === MERGE_COMMAND) await this.c.unit("merge-queue").returned(item.id, refusal);
     await this.finishAppRequest(r, item, refusal === null ? null : say(refusal));
   }
 
@@ -88,11 +88,21 @@ export class AppRequestsUnit {
    * on a second try of it.
    */
   private async enterMerge(id: WorkItemId, r: AppCommandRequest): Promise<boolean> {
-    await this.c.unit("transitions").decide(id, (it) => mergeEntered(it, { kind: "user", id: r.actor }, r.seq));
+    await this.mergeEntered(id, r.actor, { [APP_REQUEST]: r.seq });
     const it = await this.c.k.reader.getWorkItem(id);
     if (!it || !mergeQueued(it)) return true;
     const entry = (await this.c.k.reader.listStateChanges(id)).filter((c) => c.reason === MERGE_REQUESTED).at(-1);
     return entry?.detail?.[APP_REQUEST] === r.seq;
+  }
+
+  /**
+   * A local item at merge_pending moves to merge_queued (`mergeEntered`), by `by` (a factory user id or `system:auto`)
+   * with `detail` on its state change: a dashboard Merge's request seq, or the merge queue's merge key when it creates
+   * the entry of a `factory merge`, `/merge` or auto mode merge. Nothing changes for an item queued already.
+   */
+  async mergeEntered(id: WorkItemId, by: string, detail: StateChangeDetail): Promise<void> {
+    const actor: Actor = by === AUTO.id ? AUTO : { kind: "user", id: by as UserId };
+    await this.c.unit("transitions").decide(id, (it) => mergeEntered(it, actor, detail));
   }
 
   /** Posts `text` (a refusal) once on the item's source, keyed on the request, then marks the request handled. */

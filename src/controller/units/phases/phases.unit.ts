@@ -1,11 +1,11 @@
 // Split specs: the approval that files one phase per sub-issue through outbound, phase holds and releases, closing a
 // finished split. Moved out of the legacy controller (RFC 0015 M5); its store I/O is still inline (unit-purity ratchet).
 
-import { type TriageOutput, type TriagePhase, parseTriage } from "../../../core/outputs.js";
-import { runKey } from "../../../core/policy.js";
+import { type TriageOutput, type TriagePhase, parseJudge, parseTriage } from "../../../core/outputs.js";
+import { failureClass, runKey, sameStep, takenOver } from "../../../core/policy.js";
 import { specDecisionDetail } from "../../../core/standing.js";
 import { PHASE_HOLD, PHASES_OPEN, SPLIT_APPROVED, SPLIT_FILING, atSizeCheckpoint, goalLinesText, sizeCaps, parseSubIssues, phaseIssueBody, phaseLinkDetail, phaseMarker, phaseTitle } from "../../../core/split.js";
-import { type Actor, type SourceRef, type StateChange, type StateChangeDetail, type WorkItem, type WorkItemId } from "../../../core/types.js";
+import { type Actor, type Run, type SourceRef, type StateChange, type StateChangeDetail, type WorkItem, type WorkItemId, runTokenCount } from "../../../core/types.js";
 import type { ActionRow } from "../../../outbound/index.js";
 import { type Decision, DELIVERY_FAILED, type Refusal, SYSTEM, completed, splitFiling, splitOpen, footerAfter } from "../support.js";
 import type { Ctx } from "../context.js";
@@ -40,6 +40,33 @@ type PhaseFiling = { index: number; phase: TriagePhase; total: number; prev: Sou
 function phaseBody(it: WorkItem, f: PhaseFiling): string {
   return phaseIssueBody({ parent: it.source, phase: f.phase, index: f.index, total: f.total, depends_on: f.prev });
 }
+
+/** State change reason on a goal split's parent when its judge run for a phase was queued; detail: the phase and its merge sha. */
+const JUDGE_QUEUED = "judge_queued";
+/** State change reason on the parent applying a judge's verdict: detail `phase`, `verdict`, `reason`, `applied` (and a fix's fields). */
+const JUDGE_VERDICT = "judge_verdict";
+/** State change reason on the parent when its judge run found no prompts/judge.md: the phase counts as unjudged, as with no goal. */
+const JUDGE_SKIPPED = "judge_skipped";
+/** State change reason on the parent when its judge run reached a retry limit: the goal stops as a goal question. */
+const JUDGE_FAILED = "judge_failed";
+/** blocked_reason (with `blocked_on: human`) of a goal split whose judge answered fix or ask, or next on its last phase. */
+const GOAL_QUESTION = "goal_question";
+/** The judge run's key for phase `phase` of goal split `parent`: one per phase (design 04-split-specs). */
+const judgeKey = (parent: WorkItemId, phase: number): string => `judge:${parent}:${phase}`;
+
+/** The goal lines a split_approved detail stores (`goal_done_when`, a JSON array), or null for a split without a goal. */
+function goalLines(d: StateChangeDetail | null | undefined): string[] | null {
+  if (!d || typeof d.goal_done_when !== "string") return null;
+  try {
+    const v: unknown = JSON.parse(d.goal_done_when);
+    return Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === "string") ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A goal phase the judge reads: closed completed with a merge sha. */
+const judgeable = (p: WorkItem): p is WorkItem & { phase: number; merge_sha: string } => completed(p) && p.phase !== null && typeof p.merge_sha === "string" && p.merge_sha !== "";
 
 /** Split specs: the approval that files one phase per sub-issue, phase holds and releases, closing a finished split. */
 export class PhasesUnit {
@@ -282,7 +309,8 @@ export class PhasesUnit {
 
   /**
    * Moves split specs along (design 2026-11-01). A split whose phases are being filed goes on (`advanceSplit`). A
-   * held phase whose previous phase is CLOSED / completed is released into triage. A split parent whose recorded phases are all CLOSED gets one comment, is closed on its source,
+   * held phase whose previous phase is CLOSED / completed is released into triage (on a goal split, once the judge
+   * let that phase go on). An open goal split gets one judge run per merged phase (judgePhases). A split parent whose recorded phases are all CLOSED gets one comment, is closed on its source,
    * then CLOSED in the store: completed when its last phase closed completed, else rejected (closeSplitIfDone). A
    * phase closed any other way keeps the next phase held. Safe on any replica and safe to repeat: every step re-reads the store, the
    * comment is keyed, closing a closed issue changes nothing, and each transition is conditional.
@@ -293,7 +321,10 @@ export class PhasesUnit {
     for (const h of held) if (phaseHeld(h)) await this.c.k.guard("phase release", () => this.releasePhase(h.id));
     const parents = await this.c.k.d.store.listWorkItemsWhere({ stage: "READY", blocked_on: "upstream", limit: PHASE_BATCH });
     for (const p of parents) {
-      if (splitOpen(p)) await this.c.k.guard("split close", () => this.closeSplitIfDone(p.id));
+      if (splitOpen(p)) {
+        await this.c.k.guard("goal judge", () => this.judgePhases(p.id));
+        await this.c.k.guard("split close", () => this.closeSplitIfDone(p.id));
+      }
       // A filing whose step was lost (a crash after the claim, a lost DeliveryCompleted) goes on.
       else if (splitFiling(p)) await this.c.k.guard("split filing", () => this.advanceSplit(p.id));
     }
@@ -333,6 +364,8 @@ export class PhasesUnit {
     }
     const prev = await this.previousPhase(it);
     if (it.phase > 1 && !completed(prev)) return;
+    // A goal split's phase starts only after the judge let the one before it go on (design 04-split-specs).
+    if (prev && !(await this.judgedOn(it.parent_id, prev))) return;
     const detail = { parent_work_item_id: it.parent_id, phase: it.phase, depends_on: prev?.source.id ?? null };
     await this.c.unit("transitions").decide(id, (cur) => (phaseHeld(cur) ? release(cur, SYSTEM, "phase_released", detail) : null));
   }
@@ -390,7 +423,8 @@ export class PhasesUnit {
    * Closes split parent `id` once every recorded phase is CLOSED, whatever each phase's close reason (design
    * 04-split-specs, 2026-11-18). The last phase decides how: closed completed, the parent closes completed with that
    * phase's merge sha; closed any other way, the parent closes rejected and its source issue is closed as a rejected
-   * item's is. Its dependents are re-checked either way (design 05-dependencies).
+   * item's is. A goal split whose last phase merged closes only after the judge's done on it, and its comment says
+   * the goal's lines were met (design 04-split-specs). Its dependents are re-checked either way (design 05-dependencies).
    */
   async closeSplitIfDone(id: WorkItemId): Promise<void> {
     const it = await this.c.k.d.store.getWorkItem(id);
@@ -404,9 +438,14 @@ export class PhasesUnit {
     if (!this.c.k.adapterFor(it.source, "closeIssue")) return;
     const last = await this.lastPhase(id);
     const merged = completed(last);
+    // A goal split's last merged phase waits for the judge's verdict: done closes it, any other stops it for the owner.
+    if (merged && last && !(await this.judgedOn(id, last))) return;
+    const goalMet = merged && last ? (await this.judgement(id, last))?.reason === JUDGE_VERDICT : false;
     const done = phases.filter(completed).length;
     await this.c.unit("outbox").comment(it, `split-done:${it.id}`, merged
-      ? done === ids.length
+      ? goalMet
+        ? `Closed because all ${ids.length} phases of this split were closed and the judge found the goal's lines met after the last phase.`
+        : done === ids.length
         ? `Closed because all ${ids.length} phases of this split were closed as completed.`
         : `Closed because all ${ids.length} phases of this split were closed and the last phase was closed as completed (${done} of ${ids.length} completed).`
       : `Closed because all ${ids.length} phases of this split were closed and the last phase closed without a merge. The factory closed this issue as not planned.`);
@@ -419,12 +458,117 @@ export class PhasesUnit {
             patch: { stage: "CLOSED", close_reason: merged ? "completed" : "rejected", merge_sha, blocked_on: "none", blocked_reason: null },
             actor: SYSTEM,
             reason: merged ? "split_completed" : "split_rejected",
-            detail: { phases: ids.length, completed: done },
+            detail: { phases: ids.length, completed: done, ...(goalMet ? { goal_met: true } : {}) },
           }
         : null,
     );
     // Its dependents count it merged, or get the dependency_closed hold, now that its phases are closed (design §5).
     await this.c.k.guard("dependents", () => this.c.unit("coordination").releaseDependents(it.source.id));
+  }
+
+  /** The goal lines of open split `id`'s last approval, or null for a split without a goal. */
+  private async goal(id: WorkItemId): Promise<string[] | null> {
+    return goalLines((await this.c.k.d.store.listStateChanges(id)).filter((c) => c.reason === SPLIT_APPROVED).at(-1)?.detail);
+  }
+
+  /**
+   * Queues one judge run per goal phase that closed completed with a merge sha (design 04-split-specs), on the
+   * parent, keyed `judge:<parent>:<phase>`. Each queue is a conditional transition that re-reads the parent's runs,
+   * so a second pass (another tick, another replica) finds the run of that phase, its retries included, and queues
+   * nothing. A split without goal lines queues none.
+   */
+  async judgePhases(id: WorkItemId): Promise<void> {
+    const goal = await this.goal(id);
+    if (!goal) return;
+    const phases = (await this.recordedPhases(id)).sort((a, b) => (a.phase ?? 0) - (b.phase ?? 0));
+    for (const p of phases.filter(judgeable)) {
+      const key = judgeKey(id, p.phase);
+      await this.c.unit("transitions").decide(id, async (cur) => {
+        if (!splitOpen(cur)) return null;
+        if ((await this.c.k.d.store.listRuns(id)).some((r) => r.kind === "judge" && sameStep(r.idempotency_key, key))) return null;
+        const judge = {
+          phase: p.phase, goal_done_when: goal, title: p.title ?? "", problem: p.problem, done_criteria: p.done_criteria ?? [], merge_sha: p.merge_sha, phases: phases.map((x) => x.title ?? ""),
+        };
+        return { patch: {}, actor: SYSTEM, reason: JUDGE_QUEUED, detail: { phase: p.phase, merge_sha: p.merge_sha }, enqueue: { kind: "judge" as const, idempotency_key: key, input: { judge } } };
+      });
+    }
+  }
+
+  /** The parent's latest judgement of `phase`: its judge_verdict or judge_skipped change; null while none is applied. */
+  private async judgement(id: WorkItemId, phase: WorkItem): Promise<StateChange | null> {
+    return (await this.c.k.d.store.listStateChanges(id))
+      .filter((c) => (c.reason === JUDGE_VERDICT || c.reason === JUDGE_SKIPPED) && c.detail?.phase === phase.phase)
+      .at(-1) ?? null;
+  }
+
+  /**
+   * Whether the goal may go on past `phase`: always for a split without goal lines or a phase the judge does not read
+   * (no merge sha); else once its judgement let it (next, done, or no prompts/judge.md). A goal question keeps it.
+   */
+  private async judgedOn(id: WorkItemId, phase: WorkItem): Promise<boolean> {
+    if (!judgeable(phase) || !(await this.goal(id))) return true;
+    const j = await this.judgement(id, phase);
+    return j !== null && (j.reason === JUDGE_SKIPPED || j.detail?.applied === "next" || j.detail?.applied === "done");
+  }
+
+  /** The phase a judge run judges: its input's, else its key's (`judge:<parent>:<phase>`, a retry's `:a<n>` after it). */
+  private judgedPhase(run: Run): number | null {
+    const m = /^judge:.+:(\d+)(?::a\d+)?$/.exec(run.idempotency_key);
+    return run.input?.judge?.phase ?? (m ? Number(m[1]) : null);
+  }
+
+  /**
+   * Applies a finished judge run to its goal split's parent (design 04-split-specs), acked in the same conditional
+   * transition so a second apply is refused; the run's tokens go to the parent's token_cost. A parent no longer
+   * waiting on its phases, or a run a takeover cancelled: acked, nothing else. No prompts/judge.md (`prompt_missing`):
+   * the phase counts as unjudged, so the split goes on as one without a goal. Any other failure, or an answer that
+   * fails parseJudge, is retried as a triage failure is (`invalid_output`); the phase stays closed. A judge that
+   * reaches a retry limit stops the goal as a goal question (`judge_failed`), not as a dead run: the parent keeps a
+   * state the owner's answer on the goal lifts, where max_attempts or repeated_failure would leave it unreachable.
+   */
+  async judgeResult(run: Run): Promise<void> {
+    await this.c.unit("transitions").decide(run.work_item_id, async (it) => {
+      const d = await this.judgeDecision(it, run);
+      return d && d.ack_run === run.id && !("token_cost" in d.patch) ? { ...d, patch: { ...d.patch, token_cost: it.token_cost + runTokenCount(run) } } : d;
+    });
+  }
+
+  private async judgeDecision(it: WorkItem, run: Run): Promise<Decision> {
+    const ack = (reason: string, detail?: StateChangeDetail): Decision => ({ patch: {}, actor: SYSTEM, reason, ...(detail ? { detail } : {}), ack_run: run.id });
+    if (takenOver(run) || !splitOpen(it)) return ack("run_ignored");
+    const phase = this.judgedPhase(run);
+    const of = `phase ${phase ?? "?"} of ${(await this.recordedPhases(it.id)).length}`;
+    const stop = (limit: string, detail: StateChangeDetail) => this.goalQuestion(it, run, phase, JUDGE_FAILED, { ...detail, phase, limit },
+      `The judge of ${of} could not give a verdict (${limit}), so the goal waits for the owner.`, `Last error: ${String(detail.error_code)}`);
+    if (run.outcome?.status !== "succeeded") {
+      const code = run.outcome?.status === "failed" ? run.outcome.error_code || "unknown" : "cancelled";
+      if (code === "prompt_missing") return ack(JUDGE_SKIPPED, { phase, run_id: run.id, error_code: code });
+      return this.c.unit("run-results").retryOrBlock(it, run, failureClass(run.outcome), code, stop);
+    }
+    const parsed = parseJudge(run.outcome.data.verdict);
+    if (!parsed.ok) return this.c.unit("run-results").retryOrBlock(it, run, "task", "invalid_output", stop);
+    const v = parsed.value;
+    const isLast = phase !== null && phase === (await this.lastPhase(it.id))?.phase;
+    // done before the last phase goes on as next; next on the last leaves no phase to run, so the owner decides.
+    const applied = v.verdict === "done" ? (isLast ? "done" : "next") : v.verdict === "next" && !isLast ? "next" : GOAL_QUESTION;
+    const fix = v.fix
+      ? { fix_title: v.fix.title, fix_problem: v.fix.problem, fix_done_criteria: JSON.stringify(v.fix.done_criteria), fix_allowed_paths: JSON.stringify(v.fix.allowed_paths) }
+      : {};
+    const detail = { phase, verdict: v.verdict, reason: v.reason, applied, run_id: run.id, ...fix };
+    if (applied !== GOAL_QUESTION) return ack(JUDGE_VERDICT, detail);
+    const why = v.verdict === "fix"
+      ? `The judge found that the goal's lines do not hold after ${of} and proposes a fix phase, "${v.fix?.title ?? ""}". Fix phases are not filed yet, so the goal waits for the owner.`
+      : v.verdict === "ask"
+        ? `The judge of ${of} asks the owner to decide before the goal goes on.`
+        : `The judge answered next on ${of}, the last recorded phase, so no phase is left to run and the goal waits for the owner.`;
+    return this.goalQuestion(it, run, phase, JUDGE_VERDICT, detail, why, `Reason: ${v.reason}`);
+  }
+
+  /** Stops goal split `it` for the owner on `phase`: blocked_on human, goal_question, with one comment keyed on the phase. */
+  private async goalQuestion(it: WorkItem, run: Run, phase: number | null, reason: string, detail: StateChangeDetail, why: string, line: string): Promise<Decision> {
+    const patch = { blocked_on: "human" as const, blocked_reason: GOAL_QUESTION };
+    await this.c.unit("outbox").comment(it, `goal-question:${it.id}:${phase ?? "?"}`, [why, "", line, "", footerAfter(it, patch)].join("\n"));
+    return { patch, actor: SYSTEM, reason, detail, ack_run: run.id };
   }
 }
 

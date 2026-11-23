@@ -23,7 +23,7 @@ Direction: `tighten-only` keys may only be tightened by a lower level (owner →
 | `first_output_ms` | worker | runtime | global | free |  | `180000` | Longest an agent run may go from its start with no model output before it counts as stalled. |
 | `floors` | controller | review | project | tighten-only | dial | `[]` | Paths that raise a work item's tier to at least a given tier when a change touches them. |
 | `heartbeat_ms` | worker | runtime | global | free |  | `60000` | How often a worker renews the lease on the step it runs. |
-| `hold_policy` | controller | runtime | global | free |  | `{"mode":"hold"}` | What a run held by coordination cost does: wait for /approve, start after some minutes, or start. |
+| `hold_policy` | controller | runtime | global | free |  | `{"mode":"run_after_minutes","minutes":120}` | What a run held by coordination cost does: wait for /approve, start after some minutes, or start. |
 | `hooks` | runtime | review | global | tighten-only |  | `[]` | Hook names the owner enabled; a hook runs only when listed here. Empty: no hook runs. |
 | `hotspot_weight` | controller | runtime | global | tighten-only |  | `3` | Weight of a shared hotspot path in the coordination cost of two runs side by side. |
 | `intake_label` | inbound | runtime | global | free |  |  | Label that takes a forge issue in as a new work item; an open item keeps the label it has. |
@@ -66,5 +66,5 @@ Direction: `tighten-only` keys may only be tightened by a lower level (owner →
 | `tick_ms` | runtime | runtime | global | free |  | `2000` | How often the controller and the worker pool run their loop. |
 | `tool_grants` | runtime | runtime | global | tighten-only |  | `{}` | Which read-only tools each role (run kind) may call; a role with no entry gets none. |
 | `toolchain` | worker | review | global | free |  |  | Cache folders agents may read but not write, their extra env, and the command that warms them. |
-| `worker_kinds` | worker | runtime | global | free |  | `["triage","review","merge-check","update","restart","improve","implement","resolve"]` | Run kinds the workers claim; a queued run of another kind waits for an interactive session. |
+| `worker_kinds` | worker | runtime | global | free |  | `["triage","review","merge-check","update","restart","improve","implement","resolve","judge"]` | Run kinds the workers claim; a queued run of another kind waits for an interactive session. |
 | `workers` | worker | runtime | global | free |  | `1` | Worker loops in each process that claim and run steps. |

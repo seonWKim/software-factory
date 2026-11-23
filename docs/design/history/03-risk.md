@@ -1,5 +1,6 @@
 ## History
 
+- Until 2026-11-23 (wi_7454238f): any red main after an automatic merge (the install command, the checks or the UI check failing or not running on the new base tip) raised its alert, filed a fix item and set auto mode back to manual; nothing reverted the merge, so the base stayed red until a person acted, and no green base was stored, so a bad merge could not be told from a base already red. Changed to revert one automatic merge made in the last hour onto a stored green base, see the revert decision at the top of 03-risk.
 - Until 2026-11-22: "Turn auto back on" (the last stop is shown decision) wrote mode auto at once, with no confirmation; it now asks in the shared Dialog first (design 09-dashboard-settings).
 - Until 2026-11-09: `tests/architecture/` was not on the gate list; a spec allowing `tests/` could be auto-approved and its change auto-merged. Changed to put the ratchets on the gate list above.
 - Until 2026-11-07: floors were folders only, and no test checked that credential readers sit under one. The GitHub App and token credential files fell outside every floor, so a change to them could pass at tier 2 or 3. Changed to give each a tier-4 file floor and to add the credential-floor test.

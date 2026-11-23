@@ -229,9 +229,9 @@ export class Worker {
   }
 
   async executeHeld(run: Run, token: number, engine: ExecutionEngine, ref: RunRef, adopted: Adopted, lease: AbortController): Promise<void> {
-    const log = { run_id: run.id, work_item_id: run.work_item_id, kind: run.kind, attempt: run.attempt, worker_id: this.d.id };
-    const startedAt = this.d.clock.now().getTime();
-    this.d.log.info("run start", log);
+    const log = { run_id: run.id, work_item_id: run.work_item_id, kind: run.kind, attempt: run.attempt, worker_id: this.d.id }, startedAt = this.d.clock.now().getTime();
+    const hold = run.kind === "implement" ? (await this.d.store.listClaimDecisions(run.work_item_id)).find((d) => d.run_id === run.id && d.decision !== "held") : undefined, p = this.live.values().hold_policy; // a run past a cost hold names its decision and, timed_out, the limit (design 05-dependencies)
+    this.d.log.info("run start", { ...log, hold_decision: hold?.decision, hold_limit_minutes: hold?.decision === "timed_out" && p.mode === "run_after_minutes" ? p.minutes : undefined });
     const stopHeartbeat = new AbortController();
     const heartbeat = this.heartbeat(run, engine, stopHeartbeat.signal);
     // `workers pause` reaches a running implement or review run within one tick_ms (design §5 Pause).
@@ -259,8 +259,8 @@ export class Worker {
       });
       // The guards allowed the run (its claim and its passport); the owner's hooks may still refuse it.
       await this.beforeRun(run, item);
-      // One class for every agent step of the run, the merge-conflict steps of an implement run included.
-      const model = isModelRunKind(run.kind) ? await this.modelFor(run, run.kind, item) : null;
+      // One class for every agent step of the run, the merge-conflict steps of an implement run included; the judge's is strong whatever the tier (design 04-split-specs).
+      const model = run.kind === "judge" ? "strong" : isModelRunKind(run.kind) ? await this.modelFor(run, run.kind, item) : null;
       // An update run has no agent, so the class it is handed is never used.
       // A step's timeout or the run's deadline aborts the run's signal too, so the step's work (the agent, checks)
       // stops; and a failed step settles only once its work has, so the run's folder never goes under a running agent.
@@ -511,7 +511,7 @@ export class Worker {
     if (!kind) throw new RunFailure("unknown_run_kind", run.kind);
     if (!kind.folder) return kind.execute(this, call);
     const { repo } = this.cfg;
-    const branch = run.kind === "triage" ? null : branchFor(item, this.cfg.branch_prefix);
+    const branch = run.kind === "triage" || run.kind === "judge" ? null : branchFor(item, this.cfg.branch_prefix); // the judge reads the base its phase merged into
     const plan = await this.resumePlan(run);
     const kept = plan || run.kind !== "implement" ? null : await this.keptFolder(run);
     const handle = plan?.folder ?? kept?.handle ?? (await this.route(item).sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }));

@@ -4,7 +4,7 @@
 import { prNumber } from "../../../core/change-ref.js";
 import { NO_FILES_REFUSAL, changesNoFile, commandFooter, commandState, retryPathsReply, withholdReplyLines } from "../../../core/commands.js";
 import { type NeedsHuman, type ReviewOutput, SPEC_CONFLICT, type TriageOutput, doneCheckCommands, findingLine, parseNeedsHuman, parseReview, parseTriage, specFindings } from "../../../core/outputs.js";
-import { AGENT_NEEDS_HUMAN, AUTO_ACTOR, AUTO_RESOLVE_LIMIT, autoApproveRefusal, REPEATED_FAILURE, type FailureClass, failureLine, repeatsFastInfraFailure, repeatsLastFailure, preflightCheck, PREFLIGHT_ACCESS, autoResolveAttempts, autoResolveKey, effectiveTier, failureClass, floorTier, isCovered, needsSpecApproval, nextAutoResolveAttempt, parseAutoResolveKey, retryDelayMs, retryKey, retryNotBefore, GITHUB_RATE_LIMITED, runKey, sameStep, takenOver, FORGE_AUTH, NO_AUTO_RETRY, CHECKS_ENV, CHECKS_ENV_LIMIT, SESSION_RELEASED } from "../../../core/policy.js";
+import { AGENT_NEEDS_HUMAN, AUTO_ACTOR, AUTO_RESOLVE_LIMIT, autoApproveRefusal, REPEATED_FAILURE, type FailureClass, failureLine, repeatsFastInfraFailure, repeatsLastFailure, preflightCheck, PREFLIGHT_ACCESS, autoResolveAttempts, autoResolveKey, effectiveTier, failureClass, floorTier, isCovered, needsSpecApproval, nextAutoResolveAttempt, parseAutoResolveKey, retryDelayMs, retryKey, retryNotBefore, GITHUB_RATE_LIMITED, runKey, sameStep, STALL_STREAK_HOLD, stallStreak, takenOver, FORGE_AUTH, NO_AUTO_RETRY, CHECKS_ENV, CHECKS_ENV_LIMIT, SESSION_RELEASED, freeMigrationStamps, takenStamps } from "../../../core/policy.js";
 import { FIX_SPEC_APPROVED, gatePathTouched } from "../../../core/improver.js"; import { autoApprovalDetail, ownerAnswersFor } from "../../../shared/command-notes.js";
 import { dependencyStop } from "./dependency-stop.js"; import { autoGrant } from "./auto-grant.js";
 import { conflictCounts, conflictCountsLine } from "../../../core/resolve.js";
@@ -12,7 +12,7 @@ import { autoApprovedFooter, droppedAnswers, droppedValues, heldNote, renderSpec
 import { STANDING_APPROVED, ruleId, specKind, standingActor } from "../../../core/standing.js";
 import { applyCompanions } from "../../../core/companions.js";
 import { atSizeCheckpoint, sizeCaps, sizeCheckpointNote, suggestedSplit } from "../../../core/split.js";
-import { type Actor, type Run, type StateChangeDetail, type Tier, type WorkItem, type WorkItemId, runTokenCount } from "../../../core/types.js";
+import { type Actor, RECURRING_FAILURE, type Run, type StateChangeDetail, type Tier, type WorkItem, type WorkItemId, runTokenCount } from "../../../core/types.js";
 import { failingTests, firstErrorLine, stripAnsi } from "../../../core/output-summary.js"; import { doneChecksDetail } from "../../../core/checks.js";
 import { PROVIDER_SETUP } from "../../../interfaces/agent-runner.js";
 import type { ActionRow } from "../../../outbound/index.js";
@@ -132,8 +132,8 @@ export class RunResultsUnit {
   }
 
   async apply(run: Run): Promise<void> {
-    // A merge-check run changes no item stage: the merge queue decides on its entry and acks it (RFC 0015 M8); a restart run's result is posted and acked (local-merge unit).
-    if (run.kind === "merge-check" || run.kind === "restart") return run.kind === "restart" ? this.c.unit("local-merge").restarted(run) : this.c.unit("merge-queue").checked(run);
+    // A merge-check run changes no item stage: the merge queue decides on its entry and acks it (RFC 0015 M8); a restart run's result is posted and acked (local-merge unit); a judge run's applies to its goal split (phases unit).
+    if (run.kind === "merge-check" || run.kind === "restart" || run.kind === "judge") return run.kind === "restart" ? this.c.unit("local-merge").restarted(run) : run.kind === "judge" ? this.c.unit("phases").judgeResult(run) : this.c.unit("merge-queue").checked(run);
     // A succeeded improve run's groups are filed before its ack (design §7); a fault is logged and the run acked.
     if (run.kind === "improve" && run.outcome?.status === "succeeded") await this.c.k.guard("improve filing", () => this.c.unit("improve").fileImprove(run));
     const ack = (reason: string): Decision => ({ patch: {}, actor: SYSTEM, reason, ack_run: run.id });
@@ -144,7 +144,7 @@ export class RunResultsUnit {
       if (run.kind === "improve") return ack(run.outcome?.status === "succeeded" ? "improve_done" : "improve_failed");
       // The run's full token count (design §6 Measurement); old succeeded rows keep the data.tokens they stored.
       const tokens = it.token_cost + runTokenCount(run);
-      if (!run.outcome || run.outcome.status !== "succeeded") return this.c.unit("model-probe").stallScope(it, run, await this.applyFailedRun(it, run));
+      if (!run.outcome || run.outcome.status !== "succeeded") return this.c.unit("model-probe").stallScope(run, await this.applyFailedRun(it, run));
       if (!this.c.unit("transitions").expects(it, run.kind)) return ack("run_ignored");
       const data = run.outcome.data;
       // The agent asked for a human (decided 2026-11-07): a finished run with data, never retried on its own.
@@ -156,15 +156,15 @@ export class RunResultsUnit {
       }
 
       switch (run.kind) {
-        case "merge-check": case "restart":
-          // `apply` hands merge-check runs to the merge queue, and restart runs to the local-merge unit, before it reads any outcome.
+        case "merge-check": case "restart": case "judge":
+          // `apply` hands merge-check runs to the merge queue, restart runs to the local-merge unit and judge runs to the phases unit, before it reads any outcome.
           throw new Error(`${run.kind} run ${run.id} reached the run outcome path`);
         case "triage": {
           // The item's size caps (src/core/size-cap.ts) decide whether the estimate needs phases (src/core/split.ts).
           const settings = this.c.k.settings(it.project), { floors } = settings, caps = sizeCaps(it, settings);
-          // Path companions first (design 04-triage.md): on the raw answer, so a companion triage named only in
+          // Migration timestamps, then path companions (design 04-triage.md): a new migration on a base branch's timestamp moves to the next free minute; companions on that answer, so one named only in
           // files_to_change is covered, and before the floor, which raises the tier or refuses a built-in rule's path.
-          const { answer, added } = applyCompanions(data.spec, this.c.k.cfg.path_companions ?? [], floors);
+          const { answer, added } = applyCompanions(freeMigrationStamps(data.spec, takenStamps((await this.c.k.reader.baseFiles("src/")) ?? [])).answer, this.c.k.cfg.path_companions ?? [], floors);
           const parsed = parseTriage(answer, { check_commands: doneCheckCommands(this.c.k.cfg.repo) }); // done_checks required (design 04-triage); no caps: 1 or over 4 phases is refused, an oversize estimate with none waits at its size checkpoint below
           if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
           const spec = parsed.value;
@@ -294,8 +294,7 @@ export class RunResultsUnit {
         case "review": {
           // The worker withheld finding text its scan flagged (issue #222): only the rule names reached here.
           if (Array.isArray(data.egress_rules)) return this.leakBlock(it, run, data.egress_rules.map(String), { token_cost: tokens }, "review");
-          // The worker's cheap checks (issue #223): nothing to review, or the head the last verdict was for. An
-          // unchanged head keeps the item's state as it is: the last verdict was applied already, none is replayed.
+          // The worker's cheap checks (issue #223): nothing to review, or the head the last verdict was for (unchangedHead).
           if (data.no_agent === EMPTY_DIFF) return this.emptyDiff(it, run, tokens);
           if (data.no_agent === UNCHANGED_HEAD) return this.unchangedHead(it, run);
           const parsed = parseReview(data.review); // routes on `findings` only: confirmed ones; `unconfirmed` never sends the item back (design 04-agents)
@@ -319,27 +318,7 @@ export class RunResultsUnit {
           }
           // Any spec finding: the implementer cannot fix it inside the spec, so the spec is revised (issue #222).
           if (spec.length > 0) return this.specRevision(it, run, specFeedback(parsed.value), { tier, token_cost: tokens }, "review");
-          if (parsed.value.verdict === "bug") {
-            if (it.loop_count + 1 >= this.c.k.cfg.max_loops) {
-              const patch = { tier, token_cost: tokens, blocked_on: "human" as const, blocked_reason: "max_loops" };
-              await this.c.unit("outbox").comment(it, `max-loops:${run.id}`,
-                `Review found bugs ${it.loop_count + 1} times (limit ${this.c.k.cfg.max_loops}). A human needs to decide.\n\n${footerAfter(it, patch)}`);
-              return {
-                patch,
-                actor: SYSTEM,
-                reason: "max_loops",
-                ack_run: run.id,
-              };
-            }
-            const next = { ...it, loop_count: it.loop_count + 1 };
-            return {
-              patch: { tier, token_cost: tokens, stage: "RUNNING", loop_count: next.loop_count },
-              actor: SYSTEM,
-              reason: "review_bug",
-              ack_run: run.id,
-              enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
-            };
-          }
+          if (parsed.value.verdict === "bug") return this.c.unit("checks-gate").reviewBug(it, run, { tier, token_cost: tokens });
           return this.c.unit("checks-gate").checkGate(it, run, { tier, token_cost: tokens }, run.id);
         }
         case "resolve": {
@@ -670,15 +649,22 @@ export class RunResultsUnit {
   }
 
   /**
-   * A review that skipped its unchanged head (issue #223). Its last verdict was applied already, so pending or
-   * passed checks change nothing. Failed checks after a passing verdict loop as any failed checks do: otherwise
-   * nothing would look again, since only items blocked on CI are polled. A `bug` verdict stays as it was.
+   * A review that skipped its unchanged head (issue #223). After a passing verdict, pending or passed checks change
+   * nothing; failed checks loop as any failed checks do, since only items blocked on CI are polled. After a `bug`
+   * verdict on a factory branch (design 05-ci-gate, 2026-11-23): a note or spec newer than it queues a review at that
+   * head (`rereview`, the newest note in its input); nothing newer sends the item back as the verdict did (reviewBug).
    */
   async unchangedHead(it: WorkItem, run: Run): Promise<Decision> {
-    const ack: Decision = { patch: {}, actor: SYSTEM, reason: "review_unchanged_head", ack_run: run.id };
-    if (!(await this.c.unit("checks-gate").lastVerdictPassed(it.id, run.id))) return ack;
-    const checks = await this.c.unit("checks-gate").readChecks(it);
-    return checks.state === "failed" ? this.c.unit("checks-gate").checksFailed(it, run, checks.failed, {}, { ack_run: run.id }) : ack;
+    const gate = this.c.unit("checks-gate"), last = await gate.lastVerdict(it.id, run.id), ack: Decision = { patch: {}, actor: SYSTEM, reason: "review_unchanged_head", ack_run: run.id };
+    if (last?.verdict === "bug" && it.origin !== "adopted") {
+      const newer = await gate.newerThanVerdict(it, last.run), detail = { run_id: run.id, review_run_id: last.run.id, unchanged_head: true };
+      if (!newer) return gate.reviewBug(it, run, {}, detail);
+      const input = { ...(await gate.reviewInput(prNumber(it), it.id)), rereview: true as const, ...(newer.note ? { notes: newer.note } : {}) };
+      return { ...ack, detail: { ...detail, rerun: true, newer: newer.what }, enqueue: { kind: "review", idempotency_key: `${it.id}:review:rereview:${run.id}`, input } };
+    }
+    if (last?.verdict !== "pass") return ack;
+    const checks = await gate.readChecks(it);
+    return checks.state === "failed" ? gate.checksFailed(it, run, checks.failed, {}, { ack_run: run.id }) : ack;
   }
 
   /** The item's latest succeeded review run, the one the CI gate applies to. */
@@ -689,14 +675,13 @@ export class RunResultsUnit {
   /**
    * A failed triage, implement or review run (design §5 Restarts). Counts come from the run history of
    * this step (the first run and its automatic retries): a rate limit or a run a takeover cancelled is never an attempt; infra failures
-   * count toward max_restart (and add one to restart_count); task failures toward max_attempts. `checks_env`
+   * (stalls too; 3 in a row hold the item) count toward max_restart (and add one to restart_count); task failures toward max_attempts. `checks_env`
    * spends neither: it is counted over the item's whole run history, and the one after CHECKS_ENV_LIMIT blocks
-   * the item on a human (`run_failed:<kind>:checks_env`) with no retry. Under both
-   * limits, a new run is enqueued in the same transition with `not_before` = failure + backoff (rate limit:
-   * its reset time). At a limit, the item blocks on a human with the last error posted. The retry key comes
-   * from the failed run's key, and the ack fences the run, so applying it twice enqueues one retry.
+   * the item on a human (`run_failed:<kind>:checks_env`) with no retry. Under both limits, a new run is enqueued in
+   * the same transition with `not_before` = failure + backoff (rate limit: its reset time). At a limit, the item blocks on a human with the last error posted (with `stop`: `stop`'s decision,
+   * no comment, as a goal's judge, 04-split-specs). The retry key is the failed run's; the ack fences a second apply.
    */
-  async retryOrBlock(it: WorkItem, run: Run, cls: FailureClass, code: string): Promise<Decision> {
+  async retryOrBlock(it: WorkItem, run: Run, cls: FailureClass, code: string, stop?: (limit: string, detail: StateChangeDetail) => Promise<Decision>): Promise<Decision> {
     const { max_restart, retry_base_ms, retry_max_ms } = this.c.k.cfg;
     const { max_attempts } = this.c.k.settings(it.project);
     const step = (await this.c.k.reader.listRuns(it.id)).filter(
@@ -720,9 +705,11 @@ export class RunResultsUnit {
         return { patch: { ...patch, failure_comment_url: url }, actor: SYSTEM, reason: CHECKS_ENV, detail: { ...detail, checks_env_failures: env }, ack_run: run.id };
       }
     }
+    const streak = stallStreak(step), held = streak >= STALL_STREAK_HOLD; // its runs keep stalling (05-restarts): its retry waits for /retry
     const limit = task >= max_attempts ? "max_attempts" : infra >= max_restart ? "max_restart" : null;
-    // Neither a rate limit, a stall, a checks_env run nor a missing model credential is an attempt: they never reach a limit (design §5 Restarts).
-    if (cls !== "rate_limited" && cls !== "stalled" && cls !== "checks_env" && cls !== "setup_missing" && limit) {
+    // Neither a rate limit, a checks_env run nor a missing model credential is an attempt: they never reach a limit (design §5 Restarts).
+    if (!held && cls !== "rate_limited" && cls !== "checks_env" && cls !== "setup_missing" && limit) {
+      if (stop) return stop(limit, detail);
       const patch = { ...restart, blocked_on: "human" as const, blocked_reason: limit };
       const url = await this.lastAttemptComment(it, run, code, limit, limit === "max_attempts" ? task : infra, footerAfter(it, patch));
       return {
@@ -734,13 +721,12 @@ export class RunResultsUnit {
       };
     }
     // The same task failure twice in a row (decided 2026-11-07): a third run would fail the same way.
-    if (cls === "task" && this.c.k.d.repeated_failure_rule !== false && repeatsLastFailure(step, run)) return this.repeatedFailure(it, run, code, detail);
+    if (cls === "task" && this.c.k.d.repeated_failure_rule !== false && repeatsLastFailure(step, run)) return stop ? stop(REPEATED_FAILURE, detail) : this.repeatedFailure(it, run, code, detail);
     // The same infra failure twice in a row, each within a minute of its start (issue #216): no passing hiccup.
-    if (cls === "infra" && this.c.k.d.repeated_failure_rule !== false && repeatsFastInfraFailure(step, run)) {
-      return this.repeatedInfraFailure(it, run, code, { ...detail, fast_repeat: true });
-    }
-    // A forge 401/403, a failed access check or a forge rate limit also waits for its claim pause to end; a stall
-    // has no backoff, the stall pause holds every claim until a probe answers (design §5 Restarts).
+    const fast = cls === "infra" && this.c.k.d.repeated_failure_rule !== false && repeatsFastInfraFailure(step, run) ? { ...detail, fast_repeat: true } : null;
+    if (fast) return stop ? stop(REPEATED_FAILURE, fast) : this.repeatedInfraFailure(it, run, code, fast);
+    if (held && stop) return stop(RECURRING_FAILURE, { ...detail, stall_streak: streak });
+    // A forge 401/403, a failed access check or a forge rate limit also waits for its claim pause to end (design §5 Restarts).
     const notBefore = retryNotBefore({
       cls, code, failed_at: failedAt, backoff_at: failedAt + retryDelayMs(task + infra, retry_base_ms, retry_max_ms),
       reset: run.outcome?.status === "failed" ? run.outcome.reset_at : null, retry_max_ms,
@@ -749,13 +735,13 @@ export class RunResultsUnit {
     // after a stop mid-work (rate limit, stall, timeout) the wip ref is marked `continue` by the worker, and the
     // retry runs the agent on it (design §5 Restarts).
     const wip = run.kind === "implement" && run.outcome?.status === "failed" ? run.outcome.wip : undefined;
-    // A retried review keeps the CI results read when it was queued (issue #223).
-    const input = wip ? { wip } : run.kind === "review" ? run.input : null;
+    // A retried review keeps the CI results read when it was queued (issue #223); a retried judge its phase (design 04-split-specs).
+    const input = wip ? { wip } : run.kind === "review" || run.kind === "judge" ? run.input : null;
     return {
-      patch: restart,
+      patch: held ? { ...restart, blocked_on: "human", blocked_reason: RECURRING_FAILURE } : restart,
       actor: SYSTEM,
-      reason: cls === "rate_limited" ? "run_rate_limited" : cls === "stalled" ? "run_stalled" : "run_retry_scheduled",
-      detail: { ...detail, not_before: notBefore },
+      reason: held ? RECURRING_FAILURE : cls === "rate_limited" ? "run_rate_limited" : "run_retry_scheduled",
+      detail: { ...detail, ...(held ? { stall_streak: streak } : {}), not_before: notBefore },
       ack_run: run.id,
       enqueue: { kind: run.kind, idempotency_key: retryKey(run.idempotency_key), not_before: notBefore, ...(input ? { input } : {}) },
     };

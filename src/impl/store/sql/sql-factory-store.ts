@@ -9,8 +9,9 @@ import type {
 } from "../../../core/types.js";
 import { RECURRING_FAILURE, outcomeTokens } from "../../../core/types.js";
 import {
-  type CoordinationSettings, type DependencyLink, type Hold, type Holder,
+  type CoordinationSettings, type DependencyLink, type Holder,
   DEFAULT_COORDINATION,
+  aheadOf,
   claimDecision,
   conflictWindowStart,
   holdOutcome,
@@ -75,8 +76,6 @@ import type {
   RecordPrHeadResult,
   RecordVerdictInput,
   ThreadDelivery,
-  BasePush,
-  BasePushOutcome,
   ThreadLinkField,
   RecordVerdictResult,
   OwnerDecision,
@@ -116,10 +115,12 @@ import * as signals from "./signals.js";
 import * as evaluations from "./merge-evaluations.js";
 import * as proposals from "./command-proposals.js";
 import * as tasks from "./tasks.js";
-import { SqlScheduleStore } from "./schedules.js";
+import { SqlSkillEvalStore } from "./skill-evals.js";
 import { claimLock, endReservations, liveReservations, reservationOf } from "./reservations.js";
+import { type CoordContext, claimDecisionsOf, claimOrder, implementTimes, RELEASED, releaseHolder, writeClaimDecision } from "./claim-coordination.js";
 import * as notices from "./notices.js";
 import * as noticeMessages from "./notice-messages.js";
+import * as basePush from "./base-push.js";
 import * as posted from "./posted-comments.js";
 import * as verdicts from "./verdicts.js";
 import * as standing from "./standing-rules.js";
@@ -127,9 +128,9 @@ import * as standing from "./standing-rules.js";
 /**
  * FactoryStore over a SqlDriver (SQLite; `db` is public for components owning tables). Every write is one driver transaction. Correctness
  * never depends on the row locks alone: every state change is also a conditional UPDATE (version,
- * status, lease token), and uniqueness is enforced by keys, with a duplicate treated as "already there". Task projects: SqlProjectStore, schedules: SqlScheduleStore (schedules.ts).
+ * status, lease token), and uniqueness is enforced by keys, with a duplicate treated as "already there". Task projects: SqlProjectStore, schedules: SqlScheduleStore (schedules.ts), skill evals: SqlSkillEvalStore (skill-evals.ts).
  */
-export class SqlFactoryStore extends SqlScheduleStore implements FactoryStore {
+export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
   constructor(db: SqlDriver, private readonly clock: Clock) {
     super(db, () => clock.now().toISOString() as Timestamp);
   }
@@ -298,15 +299,11 @@ export class SqlFactoryStore extends SqlScheduleStore implements FactoryStore {
       await tx.run("UPDATE controller_budget_checkpoints SET outcome = ? WHERE work_item_id = ? AND outcome IS NULL", [outcome, input.id]);
     }
     await evaluations.onMergeTransition(tx, current, item, input.actor.id, now); // a merge stores its evaluation once (design §6)
-    // A closed item (its PR merged or closed: the merge path's transition) holds nothing from this commit on, so the queued runs' decisions that name
-    // it go too; the next claim records what holds them now (design §5). An approval stays: it is the human's, for that run. Only a completed close completes linked tasks (design 02-tasks).
+    // A closed item (its PR merged or closed: the merge path's transition) holds nothing from this commit on (releaseHolder); the next claim records
+    // what holds the runs it held (design §5). Only a completed close completes linked tasks (design 02-tasks).
     if (current.stage !== "CLOSED" && item.stage === "CLOSED") {
       if (item.close_reason === "completed") await tasks.completeLinkedTasks(this.db, tx, input.id, now);
-      await tx.run(
-        `DELETE FROM controller_claim_decisions WHERE holder_work_item_id = ? AND approved_by IS NULL
-           AND run_id IN (SELECT id FROM worker_runs WHERE status = 'queued')`,
-        [input.id],
-      );
+      await releaseHolder(tx, input.id);
     }
     return { ok: true, item, state_change, enqueued, cancelled };
   }
@@ -637,11 +634,9 @@ export class SqlFactoryStore extends SqlScheduleStore implements FactoryStore {
     }
     const conflicts = await this.conflictsByProject(tx, [...new Set([...items.values()].map((it) => it.project))], conflictWindowStart(this.clock.now(), s));
     const runIds = runs.map((q) => q.id as string);
-    const decisions = new Map<string, ClaimDecision>();
-    for (const r of await tx.all(`SELECT * FROM controller_claim_decisions WHERE run_id IN (${placeholders(runIds.length)})`, runIds)) {
-      decisions.set(r.run_id as string, rowToClaimDecision(r));
-    }
+    const { decisions, released } = await claimDecisionsOf(tx, runIds);
     const depHeld = (id: string) => unmet.has(id) || items.get(id)?.blocked_on === "dependency";
+    const times = await implementTimes(tx, [...items.keys()]);
     // Holders: running items, open PRs, then other claimable queued implement runs of items with no PR.
     const holders: Holder[] = [];
     const ref = (it: WorkItem, self: string) => (it.change_ref !== null ? `#${it.change_ref}` : shortRef(it.source.id, self));
@@ -652,6 +647,7 @@ export class SqlFactoryStore extends SqlScheduleStore implements FactoryStore {
       kind,
       files: it.pr_files ?? (it.change_ref === null ? it.files_to_change : null) ?? it.allowed_paths,
       fallback: kind === "pr" && it.pr_files === null,
+      ...(kind === "waiting" ? {} : { queued: times.get(it.id)?.queued ?? null, started: times.get(it.id)?.started ?? null }),
     });
     for (const id of busy) {
       const it = items.get(id);
@@ -662,13 +658,15 @@ export class SqlFactoryStore extends SqlScheduleStore implements FactoryStore {
       const it = items.get(id);
       if (it && it.change_ref === null && !busy.has(id) && !depHeld(id)) holders.push(holderOf(it, "waiting"));
     }
-    return { items, holders, conflicts, decisions, depHeld };
+    return { items, holders, conflicts, decisions, released, depHeld, times, ...claimOrder(runs, decisions) };
   }
 
   /**
    * Whether queued implement run `runId` may be claimed now (design §5, 2026-11-03). Writes the run's claim
    * decision when the cost rule decided it and the decision changed. A `held` run then follows `hold_policy`
-   * (issue #314), timed from `held_since`: the start of the hold, kept while the run stays held.
+   * (issue #314), timed from `held_since`: the start of the hold, kept while the run stays held. Oldest held first
+   * (design 05-dependencies, 2026-11-23): a run already held is held only by running items and open PRs that were
+   * ahead of it (`aheadOf`), and an older queued run that is held holds it too.
    */
   private async coordinate(
     tx: SqlExecutor, runId: RunId, itemId: WorkItemId, c: CoordContext, s: CoordinationSettings,
@@ -678,15 +676,28 @@ export class SqlFactoryStore extends SqlScheduleStore implements FactoryStore {
     // A review fix or retry on an item with a PR: its conflicts are the PR's, handled at merge.
     if (!it || it.change_ref !== null) return true;
     const existing = c.decisions.get(runId) ?? null;
-    // Holders named relative to this item, so one of the same repository is "#N".
-    const holders = c.holders.map((h) => (h.work_item_id ? { ...h, ref: this.refFor(c, h.work_item_id, it) } : h));
+    const now = this.now();
+    // A hold goes on across its named holder closing (`released`): the start stays, and so does the order rule.
+    const heldSince = existing?.decision === "held" ? (existing.held_since ?? existing.at) : (c.released.get(runId) ?? null);
+    const wasHeld = heldSince !== null;
+    const since = heldSince ?? now;
+    const queued = c.times.get(itemId)?.queued ?? now;
+    const mine = c.order.get(itemId) ?? Infinity;
+    // Holders named relative to this item, so one of the same repository is "#N". On a first hold every running
+    // item and open PR started before now, so the order rule applies only to a run already held.
+    const holders = c.holders
+      .filter((h) => !wasHeld || aheadOf(h, since, queued))
+      .map((h) => ({
+        ...h,
+        ...(h.work_item_id ? { ref: this.refFor(c, h.work_item_id, it) } : {}),
+        ...(h.kind === "waiting" ? { held: c.held.get(h.work_item_id!) === true && (c.order.get(h.work_item_id!) ?? Infinity) < mine } : {}),
+      }));
     const holds = holdsOn({ work_item_id: it.id, project: it.project, files: it.files_to_change ?? it.allowed_paths }, holders,
       c.conflicts.get(it.project) ?? new Map(), s);
     const verdict = claimDecision(holds);
     if (verdict === "free") return true;
-    const now = this.now();
-    const since = existing?.decision === "held" ? (existing.held_since ?? existing.at) : now;
-    const write = (decision: ClaimDecision["decision"]) => this.writeDecision(tx, it, runId, decision, holds[0]!, s.max_cost, existing, since);
+    const write = (decision: ClaimDecision["decision"]) =>
+      writeClaimDecision(tx, (sql, params) => this.insertOnce(tx, sql, params), now, { it, runId, decision, hold: holds[0]!, threshold: s.max_cost, existing, held_since: since });
     if (existing?.approved_by) {
       await write("approved");
       return true;
@@ -697,6 +708,7 @@ export class SqlFactoryStore extends SqlScheduleStore implements FactoryStore {
     }
     const outcome = holdOutcome(holds, s, Date.parse(now) - Date.parse(since));
     await write(outcome);
+    c.held.set(itemId, outcome === "held"); // newer runs in this claim wait behind it (rule 2)
     return outcome !== "held";
   }
 
@@ -704,49 +716,6 @@ export class SqlFactoryStore extends SqlScheduleStore implements FactoryStore {
     const h = c.items.get(holderId);
     if (!h) return holderId;
     return h.change_ref !== null ? `#${h.change_ref}` : shortRef(h.source.id, self.source.id);
-  }
-
-  /** Upserts the run's claim decision; a decision equal to the stored one writes nothing. approved_by is kept. */
-  private async writeDecision(
-    tx: SqlExecutor, it: WorkItem, runId: RunId, decision: ClaimDecision["decision"], hold: Hold, threshold: number,
-    existing: ClaimDecision | null, held_since: Timestamp,
-  ): Promise<void> {
-    const row = {
-      decision,
-      holder_work_item_id: hold.holder.work_item_id,
-      holder_ref: hold.holder.ref,
-      holder_kind: hold.holder.kind,
-      shared: JSON.stringify(hold.shared),
-      cost: hold.cost,
-      threshold,
-      fallback: hold.holder.fallback ? 1 : 0,
-      held_since,
-    };
-    if (
-      existing && existing.decision === row.decision && existing.holder_work_item_id === row.holder_work_item_id &&
-      existing.holder_ref === row.holder_ref && existing.holder_kind === row.holder_kind &&
-      JSON.stringify(existing.shared) === row.shared && existing.cost === row.cost && existing.threshold === row.threshold &&
-      (existing.fallback ? 1 : 0) === row.fallback && existing.held_since === row.held_since
-    ) {
-      return;
-    }
-    const values = [
-      row.decision, row.holder_work_item_id, row.holder_ref, row.holder_kind, row.shared, row.cost, row.threshold, row.fallback, row.held_since,
-    ];
-    const now = this.now();
-    const updated = await tx.run(
-      `UPDATE controller_claim_decisions SET decision = ?, holder_work_item_id = ?, holder_ref = ?, holder_kind = ?, shared = ?, cost = ?,
-         threshold = ?, fallback = ?, held_since = ?, at = ? WHERE run_id = ?`,
-      [...values, now, runId],
-    );
-    if (updated === 0) {
-      await this.insertOnce(
-        tx,
-        `INSERT INTO controller_claim_decisions (run_id, work_item_id, decision, holder_work_item_id, holder_ref, holder_kind, shared, cost,
-           threshold, fallback, held_since, approved_by, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
-        [runId, it.id, ...values, now],
-      );
-    }
   }
 
   async pauseClaims(resume_at: Timestamp, name: ClaimPauseName = RATE_LIMIT_PAUSE): Promise<{ extended: boolean; started?: boolean; resume_at: Timestamp }> {
@@ -1372,7 +1341,9 @@ export class SqlFactoryStore extends SqlScheduleStore implements FactoryStore {
   listClaimDecisions(id: WorkItemId): Promise<ClaimDecision[]> { return this.claimDecisionsWhere("work_item_id = ?", [id]); }
   listClaimDecisionsSince(since: Timestamp): Promise<ClaimDecision[]> { return this.claimDecisionsWhere("at >= ?", [since]); }
   private async claimDecisionsWhere(where: string, args: readonly string[]): Promise<ClaimDecision[]> {
-    return (await this.db.all(`SELECT * FROM controller_claim_decisions WHERE ${where} ORDER BY at, ${this.db.dialect.seq}`, [...args])).map(rowToClaimDecision);
+    return (await this.db.all(
+      `SELECT * FROM controller_claim_decisions WHERE decision <> '${RELEASED}' AND (${where}) ORDER BY at, ${this.db.dialect.seq}`, [...args],
+    )).map(rowToClaimDecision);
   }
 
   async listLatestClaimDecisions(ids: readonly WorkItemId[]): Promise<Map<WorkItemId, ClaimDecision>> {
@@ -2132,24 +2103,10 @@ export class SqlFactoryStore extends SqlScheduleStore implements FactoryStore {
     return this.failQueued(QUEUES.outbox, seq, token, error, retry_in_ms);
   }
 
-  // The base push (design 05-sources, Local items; RFC 0015 M8): outbound's `push_base` action, its tries its batch's.
+  // The base push (design 05-sources, Local items; RFC 0015 M8): base-push.ts
 
-  async getBasePush(work_item_id: WorkItemId): Promise<BasePush | null> {
-    const [row] = await this.db.all(
-      "SELECT seq, args, delivered_ref FROM outbound_actions WHERE action = 'push_base' AND work_item_id = ? ORDER BY seq DESC LIMIT 1", [work_item_id],
-    );
-    if (!row) return null;
-    const [batch] = await this.db.all(
-      "SELECT b.attempts, b.last_error FROM outbound_batch_intents i JOIN outbound_batches b ON b.id = i.batch_id WHERE i.intent_id = ?", [`act_${Number(row.seq)}`],
-    );
-    const args = JSON.parse(String(row.args)) as { base_ref: string; merge_sha: string };
-    const done = row.delivered_ref === null ? null : (JSON.parse(String(row.delivered_ref)) as { pushed?: string; conflicts?: string[] });
-    return {
-      base_ref: args.base_ref, merge_sha: args.merge_sha,
-      attempts: Number(batch?.attempts ?? 0), last_error: (batch?.last_error as string | null | undefined) ?? null,
-      outcome: done === null ? null : done.pushed !== undefined ? "pushed" : "conflict", pushed_sha: done?.pushed ?? null,
-    };
-  }
+  getBasePush(work_item_id: WorkItemId) { return basePush.getBasePush(this.db, work_item_id); }
+  listBasePushBacklogs() { return basePush.listBasePushBacklogs(this.db); }
 
   /** Claims row `seq` of a queue for `lease_ms`: only an unfinished row with no live claim (and, with `fence`, a held lease). */
   private async claimQueued(q: Queue, seq: number, lease_ms: number, fence?: SyncFence): Promise<number | null> {
@@ -2663,17 +2620,6 @@ function whereOf(filter: Omit<WorkItemFilter, "limit">): { where: string; params
     if (v !== undefined) { where.push(sql); params.push(v); }
   }
   return { where: where.length ? ` WHERE ${where.join(" AND ")}` : "", params };
-}
-
-/** What claimRun reads once for the coordination check (design §5, 2026-11-03). */
-interface CoordContext {
-  items: Map<string, WorkItem>;
-  holders: Holder[];
-  /** Recorded conflicts per project, then per path. */
-  conflicts: Map<string, Map<string, number>>;
-  decisions: Map<string, ClaimDecision>;
-  /** Held by a dependency: an edge not yet merged, or `blocked_on: dependency`. */
-  depHeld: (id: string) => boolean;
 }
 
 /** Notes kept per session: the newest ones. */

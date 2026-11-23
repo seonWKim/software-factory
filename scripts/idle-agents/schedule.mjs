@@ -1,5 +1,6 @@
 // Pure helpers for scripts/idle-agents.mjs, importable without side effects (tests/idle-agents.test.ts): the
-// once-a-day due check, the run record (length, browser use) and the project factory's revision lag.
+// once-a-day due check, the run record (length, browser use), the project factory's revision lag and the sandbox
+// around a feedback run.
 // `now` and `timeZone` are parameters so a test can fake the clock and the zone; the script passes the real ones.
 
 /** The local date (YYYY-MM-DD) of a timestamp: "once a day" follows the owner's day, not UTC's. */
@@ -51,4 +52,18 @@ export function revisionLine(rev, revTime, mainTime) {
   const hours = Math.max(0, Math.round((mainTime - revTime) / 3600));
   const behind = hours > 24 ? "MORE than a day behind origin/main: say so in your notes and file it as a problem" : "within a day of origin/main";
   return `Project factory revision: ${rev.slice(0, 12)}, ${hours} h behind origin/main (${behind}).`;
+}
+
+/**
+ * Runs `run` with a sandbox of its own: `start` resolves with the sandbox's `url` and a `stop`; `run` gets the URL,
+ * and the sandbox is stopped after it, whether it resolved or threw (the failure passes on). A sandbox that fails to
+ * start runs nothing.
+ */
+export async function withSandbox(start, run) {
+  const sandbox = await start();
+  try {
+    return await run(sandbox.url);
+  } finally {
+    await sandbox.stop();
+  }
 }

@@ -308,8 +308,7 @@ const isSafePath = (p: string): boolean => p.length > 0 && !p.startsWith("/") &&
  */
 function ownerOnlyError(field: string, paths: readonly string[]): string | null {
   const named = paths.filter((p) => p.split("/").filter((s) => s !== "" && s !== ".")[0] === ".claude");
-  if (named.length === 0) return null;
-  return `${field}: ${named.join(", ")}: .claude/ paths are owner-only; an agent run cannot write them, so a spec never names one`;
+  return named.length === 0 ? null : `${field}: ${named.join(", ")}: .claude/ paths are owner-only; an agent run cannot write them, so a spec never names one`;
 }
 
 /**
@@ -332,18 +331,13 @@ function markupError(fields: Record<string, string | readonly string[] | undefin
 /** A decision's default: a non-empty string, else none. */
 const defaultOf = (v: unknown): string | null => (isStr(v) && v.trim() !== "" ? v : null);
 
-/**
- * A decision in triage's shape (issue #526): a question, a reason, a default, and no options or 2 to 4 of them with
- * the default among them. The error names the field.
- */
+/** A decision in triage's shape (issue #526): a question, a reason, a default, and no options or 2 to 4 of them with the default among them. The error names the field. */
 function parseQuestion(d: Record<string, unknown>, at: string): SpecDecision | string {
   if (!isStr(d.question) || d.question.trim() === "") return `${at}.question: must be a non-empty string`;
   if (!isStr(d.reason) || d.reason.trim() === "") return `${at}.reason: must be a non-empty string`;
   if (d.default !== undefined && d.default !== null && !isStr(d.default)) return `${at}.default: must be a string`;
   const options = proposedDependency(d.question) !== null ? DEPENDENCY_OPTIONS : d.options ?? []; // a dependency proposal is always yes/no (design 04-triage)
-  if (!isStrs(options) || options.some((o) => o.trim() === "") || (options.length > 0 && (options.length < MIN_OPTIONS || options.length > MAX_OPTIONS))) {
-    return `${at}.options: must be [] or ${MIN_OPTIONS} to ${MAX_OPTIONS} non-empty strings`;
-  }
+  if (!isStrs(options) || options.some((o) => o.trim() === "") || (options.length > 0 && (options.length < MIN_OPTIONS || options.length > MAX_OPTIONS))) return `${at}.options: must be [] or ${MIN_OPTIONS} to ${MAX_OPTIONS} non-empty strings`;
   const def = defaultOf(d.default);
   if (options.length > 0 && (def === null || !options.includes(def))) return `${at}.default: must be one of the options`;
   for (const k of ["owner_only", "layout"] as const) if (d[k] !== undefined && typeof d[k] !== "boolean") return `${at}.${k}: must be true or false`;
@@ -415,9 +409,7 @@ function decisionLine(d: SpecDecision): string {
 function parsePhases(v: unknown): Validation<TriagePhase[] | undefined> {
   if (v === undefined || (Array.isArray(v) && v.length === 0)) return { ok: true, value: undefined };
   if (!Array.isArray(v)) return { ok: false, error: "phases" };
-  if (v.length < MIN_PHASES || v.length > MAX_PHASES) {
-    return { ok: false, error: `phases: a split has ${MIN_PHASES} to ${MAX_PHASES} phases, not ${v.length}` };
-  }
+  if (v.length < MIN_PHASES || v.length > MAX_PHASES) return { ok: false, error: `phases: a split has ${MIN_PHASES} to ${MAX_PHASES} phases, not ${v.length}` };
   const phases: TriagePhase[] = [];
   for (const [i, p] of v.entries()) {
     const bad = (what: string): Validation<never> => ({ ok: false, error: `phases[${i}].${what}` });
@@ -526,10 +518,7 @@ function noAnswerError(v: unknown): string {
   return `no structured answer: the answer is ${Array.isArray(v) ? "an array" : `a ${typeof v}`}, not an object`;
 }
 
-/**
- * An implement or resolve answer. With needs_human or spec_conflict, summary and next_steps may be left out (they
- * become ""). `missing` and `deviations` are optional lists; absent is [].
- */
+/** An implement or resolve answer. With needs_human or spec_conflict, summary and next_steps may be left out (they become ""). `missing` and `deviations` are optional lists; absent is []. */
 export function parseImplement(v: unknown): Validation<ImplementOutput> {
   if (!isObj(v)) return { ok: false, error: noAnswerError(v) };
   const ask = parseNeedsHuman(v.needs_human);
@@ -596,4 +585,15 @@ export function parseReview(v: unknown): Validation<ReviewOutput> {
 export function parseReviewConfirm(v: unknown): Validation<ReviewConfirmOutput> {
   if (!isObj(v) || typeof v.confirmed !== "boolean" || !isStr(v.reason)) return { ok: false, error: isObj(v) ? "confirmed/reason" : noAnswerError(v) };
   return { ok: true, value: { confirmed: v.confirmed, reason: v.reason.trim() } };
+}
+
+export const JUDGE_VERDICTS = ["next", "fix", "done", "ask"] as const;
+export type JudgeOutput = { verdict: (typeof JUDGE_VERDICTS)[number]; reason: string; fix?: TriagePhase }; // a judge run's answer (design 04-split-specs): `fix` names the phase to add
+/** A judge answer: a verdict of JUDGE_VERDICTS and a reason; `fix` needs a title, a problem, a done criterion and an allowed path. */
+export function parseJudge(v: unknown): Validation<JudgeOutput> {
+  const verdict = isObj(v) ? JUDGE_VERDICTS.find((x) => x === v.verdict) : undefined, reason = isObj(v) && isStr(v.reason) ? v.reason.trim() : "", f = isObj(v) ? v.fix : null;
+  if (!verdict || !reason) return { ok: false, error: isObj(v) ? `verdict (${JUDGE_VERDICTS.join(", ")}) and reason` : noAnswerError(v) };
+  const lines = (x: unknown) => (isStrs(x) ? x.map((l) => l.trim()).filter(Boolean) : []), fix = isObj(f) && isStr(f.title) && isStr(f.problem) ? { title: f.title.trim(), problem: f.problem.trim(), done_criteria: lines(f.done_criteria), allowed_paths: lines(f.allowed_paths) } : null;
+  if (verdict !== "fix") return { ok: true, value: { verdict, reason } };
+  return fix?.title && fix.problem && fix.done_criteria.length > 0 && fix.allowed_paths.length > 0 ? { ok: true, value: { verdict, reason, fix } } : { ok: false, error: "fix: a title, a problem, a done criterion and an allowed path" };
 }

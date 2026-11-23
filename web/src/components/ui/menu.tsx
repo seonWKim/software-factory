@@ -3,6 +3,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } f
 import { cn } from "../../lib/cn.js";
 import { Button } from "./button.js";
 import { DISABLED, FOCUS } from "./control.js";
+import { Kbd } from "./notice.js";
 
 // OverflowMenu (a "more" button with a short list of actions) and Tooltip (a short hint on hover and focus, which
 // stays open while hovered or focused so a link in it works).
@@ -15,8 +16,12 @@ export interface MenuItem {
   disabled?: boolean;
   /** Set on a list that picks one of its items: the current one is true, the others false (aria-checked, a check mark). */
   checked?: boolean;
-  /** The item's `data-action`: the command it sends (a decision's actions carry one each). */
+  /** The item's `data-action`: the CLI command it sends (a decision's actions carry one each). */
   action?: string;
+  /** The item's `data-item`: the ID of the work item or task its action is for. */
+  item?: string;
+  /** The key that does the same, shown in a Kbd after the label (Kbd `hint`) and named by `aria-keyshortcuts`. */
+  shortcut?: string;
 }
 
 /** The room kept between an opened list and the edge of the page content (or of the viewport). */
@@ -66,6 +71,8 @@ export function OverflowMenu({ label, items, icon }: { label: string; items: rea
                 role="menuitem"
                 aria-checked={item.checked}
                 {...(item.action ? { "data-action": item.action } : {})}
+                {...(item.item ? { "data-item": item.item } : {})}
+                {...(item.shortcut ? { "aria-keyshortcuts": item.shortcut } : {})}
                 disabled={item.disabled}
                 onClick={() => {
                   setOpen(false);
@@ -81,6 +88,7 @@ export function OverflowMenu({ label, items, icon }: { label: string; items: rea
               >
                 {item.checked !== undefined && <Check aria-hidden className={cn("size-4 shrink-0", !item.checked && "invisible")} />}
                 {item.label}
+                {item.shortcut && <span className="ml-auto pl-3"><Kbd hint={item.shortcut} /></span>}
               </button>
             </li>
           ))}
@@ -98,10 +106,12 @@ const PLACE = { top: "bottom-full pb-1", bottom: "top-full pt-1" } as const;
 
 /**
  * A short hint for its child, shown on hover and on keyboard focus, hidden by Esc. `placement` is above (default),
- * below, or beside the trigger from its top edge. It stays open while the pointer or focus is inside it, so a link in `text` can be clicked or tabbed to.
+ * below, or beside the trigger from its top edge; `shortcut` adds the trigger's key in a Kbd. It stays open while the pointer or focus is inside it, so a link in `text` can be clicked or tabbed to.
  */
-export function Tooltip({ text, placement = "top", align = "center", className, children }: {
+export function Tooltip({ text, shortcut, placement = "top", align = "center", className, children }: {
   text: ReactNode;
+  /** The key that does what the trigger does, shown in a Kbd after the text. */
+  shortcut?: string;
   placement?: "top" | "bottom" | "beside";
   align?: keyof typeof ALIGN;
   /** Classes for the wrapper around the trigger, such as a size. */
@@ -124,7 +134,10 @@ export function Tooltip({ text, placement = "top", align = "center", className, 
       {shown && (
         // The padding, not a margin, bridges trigger and bubble, so the pointer can move onto the bubble.
         <span id={id} role="tooltip" className={cn("absolute z-10", placement === "beside" ? cn("top-0", BESIDE[align]) : cn(ALIGN[align], PLACE[placement]))}>
-          <span className="block w-max max-w-56 rounded-control bg-text-1 px-2 py-1 text-xs text-surface">{text}</span>
+          <span className="block w-max max-w-56 rounded-control bg-text-1 px-2 py-1 text-xs text-surface">
+            {text}
+            {shortcut && <span className="ml-1.5"><Kbd>{shortcut}</Kbd></span>}
+          </span>
         </span>
       )}
     </span>

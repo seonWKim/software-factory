@@ -29,16 +29,19 @@ export interface TreeFilter {
   state: string | null;
   q: string;
   showClosed: boolean;
+  /** System items (the self-improvement run's bookkeeping item, state `system`) show only when set. */
+  showSystem?: boolean;
   /** Only these items (a link from Failures names them); closed ones show too. */
   ids?: ReadonlySet<string> | null;
 }
 
 /**
  * Whether a row passes the filters, as the list's server filter reads them (src/shared/states.ts inStateFilter): a
- * group, one state, or none. Finished rows only with Show closed or a Finished filter.
+ * group, one state, or none. Finished rows only with Show closed or a Finished filter; system items only with Show system items.
  */
 export function itemMatches(it: ItemRow, f: TreeFilter): boolean {
   if (f.ids) return f.ids.has(it.id) && inSearch(it, f.q);
+  if (it.item_phase === "system" && !f.showSystem) return false;
   if (isFinished(it) && !f.showClosed && !filterShowsFinished(f.state)) return false;
   return (f.state === null || inStateFilter(it.item_phase, f.state)) && inSearch(it, f.q);
 }

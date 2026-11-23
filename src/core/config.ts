@@ -587,8 +587,8 @@ export interface Prompts {
   review: string;
   resolve?: string; // prompts/resolve.md; absent when the file is missing: a resolve run then fails with `prompt_missing`
   "review-confirm"?: string; // prompts/review-confirm.md (design 04-agents); absent: each confirm step fails and its finding stays
-  /** prompts/improve.md, the improve run's system prompt (design §7). Absent: the improve run asks no model. */
-  improve?: string;
+  improve?: string; // prompts/improve.md, the improve run's system prompt (design §7); absent: the improve run asks no model
+  judge?: string; // prompts/judge.md (design 04-split-specs); absent: a judge run fails with `prompt_missing` and its goal split goes on unjudged
 }
 
 /** `merge_queue.push_base` (design 05-sources, Local items): absent means off, otherwise true or false or startup fails. */
