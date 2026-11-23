@@ -6,6 +6,7 @@ import {
   DEFAULT_HOTSPOTS,
   DEFAULT_MECHANICAL,
   type Holder,
+  aheadOf,
   claimDecision,
   coordinationCost,
   dependencyReason,
@@ -82,6 +83,29 @@ describe("coordination cost (design §5, 2026-11-03)", () => {
     expect(claimDecision([h("waiting"), h("waiting")])).toBe("deadlock");
     expect(claimDecision([h("waiting"), h("pr")])).toBe("held");
     expect(claimDecision([h("running")])).toBe("held");
+  });
+
+  it("oldest held first: an older waiting run that is held holds like a running item, and ranks before other waiting runs", () => {
+    const h = (kind: Holder["kind"], held?: boolean) =>
+      ({ holder: { work_item_id: "x", project: "p", ref: "#1", kind, files: [], fallback: false, ...(held === undefined ? {} : { held }) }, shared: [], cost: 3 });
+    expect(claimDecision([h("waiting", false), h("waiting")])).toBe("deadlock");
+    expect(claimDecision([h("waiting"), h("waiting", true)])).toBe("held");
+    const holder = (id: string, held: boolean): Holder => ({ work_item_id: id, project: "p", ref: id, kind: "waiting", files: ["SET_UP.md"], fallback: false, held });
+    const holds = holdsOn({ work_item_id: "wi_a", project: "p", files: ["SET_UP.md"] }, [holder("wi_free", false), holder("wi_held", true)], none, S);
+    expect(holds.map((x) => x.holder.work_item_id)).toEqual(["wi_held", "wi_free"]);
+  });
+
+  it("aheadOf: a running item or PR holds a held run only when it started before the hold began or was queued before the run", () => {
+    const t = (m: number) => new Date(Date.UTC(2026, 10, 22, 0, m)).toISOString() as never;
+    const holder = (kind: Holder["kind"], queued: number | null, started: number | null): Holder =>
+      ({ work_item_id: "wi_b", project: "p", ref: "#2", kind, files: [], fallback: false, queued: queued === null ? null : t(queued), started: started === null ? null : t(started) });
+    const holdStart = t(10), queued = t(5);
+    expect(aheadOf(holder("running", 1, 2), holdStart, queued)).toBe(true); // started before the hold
+    expect(aheadOf(holder("running", 8, 10), holdStart, queued)).toBe(false); // started at the hold start, queued after the run
+    expect(aheadOf(holder("pr", 8, 30), holdStart, queued)).toBe(false);
+    expect(aheadOf(holder("running", 1, 30), holdStart, queued)).toBe(true); // queued ahead of the run: the run waits for it
+    expect(aheadOf(holder("pr", null, null), holdStart, queued)).toBe(true); // no recorded run: started before any hold
+    expect(aheadOf(holder("waiting", 8, null), holdStart, queued)).toBe(true); // the claim order rules waiting runs
   });
 
   it("running and PR holds come before waiting ones whatever the cost, so the first hold is the one that decides", () => {

@@ -11,6 +11,7 @@ import { RECURRING_FAILURE, outcomeTokens } from "../../../core/types.js";
 import {
   type CoordinationSettings, type DependencyLink, type Hold, type Holder,
   DEFAULT_COORDINATION,
+  aheadOf,
   claimDecision,
   conflictWindowStart,
   holdOutcome,
@@ -642,6 +643,16 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
       decisions.set(r.run_id as string, rowToClaimDecision(r));
     }
     const depHeld = (id: string) => unmet.has(id) || items.get(id)?.blocked_on === "dependency";
+    // When each item's first implement run was queued and started: the order rule (design 05-dependencies, 2026-11-23).
+    const itemIds = [...items.keys()];
+    const times = new Map<string, { queued: Timestamp | null; started: Timestamp | null }>();
+    for (const r of itemIds.length === 0 ? [] : await tx.all(
+      `SELECT work_item_id, MIN(created_at) AS queued, MIN(started_at) AS started FROM worker_runs
+       WHERE kind = 'implement' AND work_item_id IN (${placeholders(itemIds.length)}) GROUP BY work_item_id`,
+      itemIds,
+    )) {
+      times.set(r.work_item_id as string, { queued: (r.queued as Timestamp | null) ?? null, started: (r.started as Timestamp | null) ?? null });
+    }
     // Holders: running items, open PRs, then other claimable queued implement runs of items with no PR.
     const holders: Holder[] = [];
     const ref = (it: WorkItem, self: string) => (it.change_ref !== null ? `#${it.change_ref}` : shortRef(it.source.id, self));
@@ -652,6 +663,7 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
       kind,
       files: it.pr_files ?? (it.change_ref === null ? it.files_to_change : null) ?? it.allowed_paths,
       fallback: kind === "pr" && it.pr_files === null,
+      ...(kind === "waiting" ? {} : { queued: times.get(it.id)?.queued ?? null, started: times.get(it.id)?.started ?? null }),
     });
     for (const id of busy) {
       const it = items.get(id);
@@ -662,13 +674,25 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
       const it = items.get(id);
       if (it && it.change_ref === null && !busy.has(id) && !depHeld(id)) holders.push(holderOf(it, "waiting"));
     }
-    return { items, holders, conflicts, decisions, depHeld };
+    // Each queued item's place in the claim order, and whether its run is held now (rule 2: it holds newer runs).
+    const order = new Map<string, number>();
+    const held = new Map<string, boolean>();
+    for (const [i, q] of runs.entries()) {
+      const id = q.work_item_id as string;
+      if (order.has(id)) continue;
+      order.set(id, i);
+      const d = decisions.get(q.id as string);
+      held.set(id, d?.decision === "held" && d.approved_by === null);
+    }
+    return { items, holders, conflicts, decisions, depHeld, times, order, held };
   }
 
   /**
    * Whether queued implement run `runId` may be claimed now (design §5, 2026-11-03). Writes the run's claim
    * decision when the cost rule decided it and the decision changed. A `held` run then follows `hold_policy`
-   * (issue #314), timed from `held_since`: the start of the hold, kept while the run stays held.
+   * (issue #314), timed from `held_since`: the start of the hold, kept while the run stays held. Oldest held first
+   * (design 05-dependencies, 2026-11-23): a run already held is held only by running items and open PRs that were
+   * ahead of it (`aheadOf`), and an older queued run that is held holds it too.
    */
   private async coordinate(
     tx: SqlExecutor, runId: RunId, itemId: WorkItemId, c: CoordContext, s: CoordinationSettings,
@@ -678,14 +702,24 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
     // A review fix or retry on an item with a PR: its conflicts are the PR's, handled at merge.
     if (!it || it.change_ref !== null) return true;
     const existing = c.decisions.get(runId) ?? null;
-    // Holders named relative to this item, so one of the same repository is "#N".
-    const holders = c.holders.map((h) => (h.work_item_id ? { ...h, ref: this.refFor(c, h.work_item_id, it) } : h));
+    const now = this.now();
+    const wasHeld = existing?.decision === "held";
+    const since = wasHeld ? (existing.held_since ?? existing.at) : now;
+    const queued = c.times.get(itemId)?.queued ?? now;
+    const mine = c.order.get(itemId) ?? Infinity;
+    // Holders named relative to this item, so one of the same repository is "#N". On a first hold every running
+    // item and open PR started before now, so the order rule applies only to a run already held.
+    const holders = c.holders
+      .filter((h) => !wasHeld || aheadOf(h, since, queued))
+      .map((h) => ({
+        ...h,
+        ...(h.work_item_id ? { ref: this.refFor(c, h.work_item_id, it) } : {}),
+        ...(h.kind === "waiting" ? { held: c.held.get(h.work_item_id!) === true && (c.order.get(h.work_item_id!) ?? Infinity) < mine } : {}),
+      }));
     const holds = holdsOn({ work_item_id: it.id, project: it.project, files: it.files_to_change ?? it.allowed_paths }, holders,
       c.conflicts.get(it.project) ?? new Map(), s);
     const verdict = claimDecision(holds);
     if (verdict === "free") return true;
-    const now = this.now();
-    const since = existing?.decision === "held" ? (existing.held_since ?? existing.at) : now;
     const write = (decision: ClaimDecision["decision"]) => this.writeDecision(tx, it, runId, decision, holds[0]!, s.max_cost, existing, since);
     if (existing?.approved_by) {
       await write("approved");
@@ -697,6 +731,7 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
     }
     const outcome = holdOutcome(holds, s, Date.parse(now) - Date.parse(since));
     await write(outcome);
+    c.held.set(itemId, outcome === "held"); // newer runs in this claim wait behind it (rule 2)
     return outcome !== "held";
   }
 
@@ -2674,6 +2709,12 @@ interface CoordContext {
   decisions: Map<string, ClaimDecision>;
   /** Held by a dependency: an edge not yet merged, or `blocked_on: dependency`. */
   depHeld: (id: string) => boolean;
+  /** Per item: when its first implement run was queued and started. */
+  times: Map<string, { queued: Timestamp | null; started: Timestamp | null }>;
+  /** Per queued item: its place in the claim order. */
+  order: Map<string, number>;
+  /** Per queued item: whether its run is held (stored, or decided earlier in this claim). */
+  held: Map<string, boolean>;
 }
 
 /** Notes kept per session: the newest ones. */
