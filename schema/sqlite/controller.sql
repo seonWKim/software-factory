@@ -120,6 +120,12 @@ CREATE TABLE controller_golden_fingerprints (
     at                TEXT NOT NULL
   );
 
+CREATE TABLE controller_green_bases (
+    project     TEXT PRIMARY KEY,
+    base_sha    TEXT NOT NULL,
+    checked_at  TEXT NOT NULL
+  );
+
 CREATE TABLE controller_handoffs (
     id            TEXT PRIMARY KEY,
     run_id        TEXT NOT NULL REFERENCES worker_runs(id),

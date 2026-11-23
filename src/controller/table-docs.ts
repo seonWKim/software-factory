@@ -16,6 +16,7 @@ export const TABLE_DOCS: Readonly<Record<string, string>> = {
   controller_filed_patterns: "Failure patterns the improve run filed as work items, and what came of each.",
   controller_golden_fingerprints: "Each entity's last golden gate run: its content hash, verdict, pass rate and failing cases, and its base.",
   "controller_golden_fingerprints.base_fingerprint": "The content hash of the entity's last passing run, which the next run is compared with.",
+  controller_green_bases: "Per project, the base branch commit its last check after an automatic merge passed on, and when.",
   controller_handoffs: "The handoff a run left: its commit, what it worked on and the next steps.",
   controller_improve_proposals: "Changes the improve run proposed to an entity file for a recurring failure, with golden evidence and the owner's verdict.",
   "controller_improve_proposals.state": "watching, skipped, withheld, pending, held, promoted or rejected.",
