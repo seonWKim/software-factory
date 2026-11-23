@@ -53,7 +53,9 @@ Produce:
   - a command: `{"line": "...", "command": "..."}`, one of the project's check commands as written here:
     {{check_commands}}. No other command is accepted.
   - a test file: `{"line": "...", "test_file": "tests/..."}`, a repo-relative test file under `tests/` that
-    checks the line (it may be one the change adds).
+    checks the line. Name an existing test file, or mark each test file you add to done_checks that the
+    change creates with `"new": true` (`{"line": "...", "test_file": "tests/...", "new": true}`) and list it in
+    allowed_paths. A test file that does not exist and is not marked new is sent back once, then refused.
   - manual, with a reason: `{"line": "...", "manual": true, "reason": "..."}`, only when no command or test
     file can check the line (for example a docs wording); the reason says why a person checks it.
   An answer without done_checks, or with a done-when line that has neither a check nor a manual reason, is refused.

@@ -5,9 +5,13 @@
 
 import { checkCommands, commandText } from "./checks.js";
 import type { FactoryConfig } from "./config.js";
+import { isCovered } from "./policy.js";
 
-/** One done-when line's check: a repo check command (its text), a test file, or a manual reason. */
-export type DoneCheck = { line: string; command: string } | { line: string; test_file: string } | { line: string; manual: true; reason: string };
+/**
+ * One done-when line's check: a repo check command (its text), a test file (`new: true` when the base lacks it and the
+ * run creates it, design 04-triage), or a manual reason.
+ */
+export type DoneCheck = { line: string; command: string } | { line: string; test_file: string; new?: true } | { line: string; manual: true; reason: string };
 
 /**
  * The JSON Schema of triage's `done_checks`. The three forms share one item schema (the runners' schema check has no
@@ -15,7 +19,7 @@ export type DoneCheck = { line: string; command: string } | { line: string; test
  */
 export const DONE_CHECKS_SCHEMA = {
   type: "array",
-  description: "One entry per done_criteria line, in the same order: {line, command}, {line, test_file} or {line, manual: true, reason}.",
+  description: "One entry per done_criteria line, in the same order: {line, command}, {line, test_file} (with new: true for a file the change creates) or {line, manual: true, reason}.",
   items: {
     type: "object",
     additionalProperties: false,
@@ -24,6 +28,7 @@ export const DONE_CHECKS_SCHEMA = {
       line: { type: "string", description: "The done-when line, exactly as written in done_criteria." },
       command: { type: "string", description: "One of the repo's check commands, as its text, when it checks the line." },
       test_file: { type: "string", description: "A test file under tests/ that checks the line." },
+      new: { const: true, description: "With test_file: the file does not exist on the base and the change creates it; list it in allowed_paths." },
       manual: { const: true, description: "Only when no command or test file can check the line: a person checks it." },
       reason: { type: "string", description: "With manual: why a person checks the line." },
     },
@@ -39,7 +44,7 @@ const isTestFile = (p: string): boolean => {
   return parts.length > 1 && parts[0] === "tests" && parts.every((s) => s !== "" && s !== "." && s !== "..");
 };
 
-const FORMS = "must be {line, command}, {line, test_file} or {line, manual: true, reason}";
+const FORMS = "must be {line, command}, {line, test_file}, {line, test_file, new: true} or {line, manual: true, reason}";
 const filled = (v: unknown): v is string => typeof v === "string" && v.trim() !== "";
 
 /** One entry, or the error naming it (`done_checks[i]`). */
@@ -54,7 +59,10 @@ function parseEntry(e: unknown, line: string | undefined, at: string, commands: 
     if (commands && !commands.includes(o.command.trim())) return `${at}.command: must be one of the repo's check commands: ${commands.join("; ")}`;
     return { line, command: o.command.trim() };
   }
-  if (keys === "test_file") return typeof o.test_file === "string" && isTestFile(o.test_file) ? { line, test_file: o.test_file } : `${at}.test_file: must be a repo-relative path under tests/`;
+  if (keys === "test_file" || (keys === "new,test_file" && o.new === true)) {
+    if (typeof o.test_file !== "string" || !isTestFile(o.test_file)) return `${at}.test_file: must be a repo-relative path under tests/`;
+    return { line, test_file: o.test_file, ...(o.new === true ? { new: true as const } : {}) };
+  }
   if (keys === "manual,reason" && o.manual === true) return { line, manual: true, reason: (o.reason as string).trim() };
   return `${at}: ${FORMS}`;
 }
@@ -118,18 +126,21 @@ const swapDecision = (file: string, closest: string) => ({
 });
 
 /**
- * Triage's test file names against the repo's files (design 04-pre-push-gates), before parseTriage: each done_checks
- * test file and each exact tests/ file in allowed_paths or files_to_change that `files` (the repo's tests/ files) lacks is
- * replaced everywhere it is named, done-when lines included, by the closest existing test file by name, and a decision
- * names each swap. A name no file is close to stays: a file the run creates. Anything else is left for parseTriage.
+ * Triage's test file names against the repo's files (design 04-pre-push-gates), before parseTriage: each exact tests/
+ * file in allowed_paths or files_to_change that `files` (the repo's tests/ files) lacks is replaced everywhere it is
+ * named, done-when lines included, by the closest existing test file by name, and a decision names each swap. A name no
+ * file is close to stays: a file the run creates. A done_checks test file is never swapped (design 04-triage): a missing
+ * one is new or is sent back: `refusal` names it (checkFileRefusal). Anything else is left for parseTriage.
  */
-export function checkTestFiles(v: unknown, files: readonly string[]): unknown {
+export function checkTestFiles(v: unknown, files: readonly string[]): { answer: unknown; refusal: string | null } {
+  return { answer: swapTestFiles(v, files), refusal: checkFileRefusal(v, files) };
+}
+
+function swapTestFiles(v: unknown, files: readonly string[]): unknown {
   if (!isObj(v) || !(v.decisions === undefined || Array.isArray(v.decisions))) return v;
   const lists = (x: unknown): unknown[] => (Array.isArray(x) ? x : []);
-  const named = [
-    ...lists(v.done_checks).flatMap((c) => (isObj(c) && isStr(c.test_file) ? [c.test_file] : [])),
-    ...[v.allowed_paths, v.files_to_change].flatMap((l) => (isStrs(l) ? l.filter(isExactTestPath) : [])),
-  ];
+  const checked = new Set(lists(v.done_checks).flatMap((c) => (isObj(c) && isStr(c.test_file) ? [c.test_file] : [])));
+  const named = [v.allowed_paths, v.files_to_change].flatMap((l) => (isStrs(l) ? l.filter((p) => isExactTestPath(p) && !checked.has(p)) : []));
   const swap = new Map([...new Set(named)].flatMap((f) => { const c = files.includes(f) ? null : closestTestFile(f, files); return c ? [[f, c] as const] : []; }));
   if (swap.size === 0) return v;
   const path = (p: unknown) => (isStr(p) ? (swap.get(p) ?? p) : p);
@@ -138,15 +149,33 @@ export function checkTestFiles(v: unknown, files: readonly string[]): unknown {
   return {
     ...v,
     ...(Array.isArray(v.done_criteria) ? { done_criteria: v.done_criteria.map(text) } : {}),
-    ...(Array.isArray(v.done_checks) ? { done_checks: v.done_checks.map((c) => (isObj(c) ? { ...c, line: text(c.line), ...("test_file" in c ? { test_file: path(c.test_file) } : {}) } : c)) } : {}),
+    ...(Array.isArray(v.done_checks) ? { done_checks: v.done_checks.map((c) => (isObj(c) ? { ...c, line: text(c.line) } : c)) } : {}),
     allowed_paths: paths(v.allowed_paths), files_to_change: paths(v.files_to_change),
     decisions: [...lists(v.decisions), ...[...swap].map(([from, to]) => swapDecision(from, to))],
   };
 }
 
+/**
+ * A triage answer's done-check test files that cannot run as written (design 04-triage): each one `files` (the base's
+ * tests/ files) lacks and that is not marked `new: true`, and each marked one allowed_paths does not cover. The error
+ * that names them, for the one re-ask and the run's failure; null when there is none (or no list to read).
+ */
+export function checkFileRefusal(v: unknown, files: readonly string[]): string | null {
+  if (!isObj(v) || !Array.isArray(v.done_checks)) return null;
+  const allowed = isStrs(v.allowed_paths) ? v.allowed_paths : [];
+  const tests = v.done_checks.flatMap((c) => (isObj(c) && isStr(c.test_file) ? [{ file: c.test_file, marked: c.new === true }] : []));
+  const missing = [...new Set(tests.filter((c) => !c.marked && !files.includes(c.file)).map((c) => c.file))];
+  const uncovered = [...new Set(tests.filter((c) => c.marked && !isCovered(c.file, allowed)).map((c) => c.file))];
+  const parts = [
+    ...(missing.length > 0 ? [`these test files do not exist on the base and are not marked new: true: ${missing.join(", ")}`] : []),
+    ...(uncovered.length > 0 ? [`these test files are marked new: true but allowed_paths does not cover them: ${uncovered.join(", ")}`] : []),
+  ];
+  return parts.length > 0 ? `done_checks: ${parts.join("; ")}` : null;
+}
+
 /** A check as the spec comment shows it after its done-when line: `check: <command or test file>`, or `manual: <reason>`. */
 export function doneCheckText(c: DoneCheck): string {
   if ("command" in c) return `check: \`${c.command}\``;
-  if ("test_file" in c) return `check: \`${c.test_file}\``;
+  if ("test_file" in c) return `check: \`${c.test_file}\`${c.new ? ", new file" : ""}`;
   return `manual: ${c.reason}`;
 }

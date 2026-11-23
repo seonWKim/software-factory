@@ -9,11 +9,25 @@ import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js
 /** The `parseTriage` refusal (issue #454) that earns one re-prompt (issue #488); any other refusal fails at once. */
 const MARKUP_REFUSAL = ": tool-call markup outside code";
 
-/** The base's files under tests/, from the run folder's index; null when git cannot list them (then nothing is checked). */
+/** What to tell triage after a refused answer, per refusal that earns the one re-prompt, and the re-prompt's step name. */
+const RETRY = {
+  markup: { text: "Never write tool-call tags inside a field value. Answer with the JSON only.", step: "markup-retry" },
+  check_files: {
+    text: "Name an existing test file for each done-when check, or mark a test file the change creates with new: true and list it in allowed_paths. Answer with the whole spec as JSON.",
+    step: "check-files-retry",
+  },
+} as const;
+
+/**
+ * The base's files under tests/, from the run folder's index; null when git cannot list them or lists none (then nothing
+ * is checked: with no test file on the base there is nothing to compare a name with, as for a fake folder). Checking an
+ * empty listing too would refuse the shared test spec's check file in every fixture repo that has no tests/ folder.
+ */
 async function testFiles(w: Worker, handle: SandboxHandle): Promise<string[] | null> {
   try {
     const r = await w.gitRaw(handle, ["ls-files", "-z", "--", "tests"]);
-    return r.exit_code === 0 ? r.stdout.split("\0").filter(Boolean) : null;
+    const files = r.exit_code === 0 ? r.stdout.split("\0").filter(Boolean) : [];
+    return files.length > 0 ? files : null;
   } catch {
     return null; // a sandbox that cannot run git (a narrow test fake)
   }
@@ -39,15 +53,18 @@ async function triage(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle
       w.agent(run, item, handle, signal, { prompt: text, model_class: model, output_schema: TRIAGE_SCHEMA, ...(images.length > 0 ? { images } : {}) }, agentStep);
     // The run folder is a checkout of the base (no clone of its own): its tests/ files are what the spec's test file names are checked against (design 04-pre-push-gates).
     const tests = await testFiles(w, handle);
-    const parse = (output: unknown) => parseTriage(tests ? checkTestFiles(output, tests) : output);
+    // A done-check test file the base lacks must be marked new and covered by allowed_paths (design 04-triage).
+    const parse = (output: unknown) => {
+      const checked = tests ? checkTestFiles(output, tests) : { answer: output, refusal: null };
+      const spec = parseTriage(checked.answer);
+      if (!spec.ok) return { ...spec, retry: spec.error.endsWith(MARKUP_REFUSAL) ? RETRY.markup : null };
+      return checked.refusal ? { ok: false as const, error: checked.refusal, retry: RETRY.check_files } : spec;
+    };
     let result = await ask(prompt);
     let spec = parse(result.output);
-    if (!spec.ok && spec.error.endsWith(MARKUP_REFUSAL)) {
+    if (!spec.ok && spec.retry) {
       // One more call in the same step, naming the error; a second refusal fails the run with that error.
-      result = await ask(
-        `${prompt}\n\n## Your previous answer was refused\n\n${spec.error}\n\nNever write tool-call tags inside a field value. Answer with the JSON only.`,
-        "markup-retry",
-      );
+      result = await ask(`${prompt}\n\n## Your previous answer was refused\n\n${spec.error}\n\n${spec.retry.text}`, spec.retry.step);
       spec = parse(result.output);
     }
     if (!spec.ok) throw new RunFailure("invalid_output", spec.error, false, { output_tail: tail(result.transcript) });
