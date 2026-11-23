@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildUiParts } from "../src/compose.js";
 import { loadConfig } from "../src/load-config.js";
 import { uiUserId } from "../src/config-values.js";
-import { goldenConfig } from "../src/core/config.js";
+import { SKILL_IMPROVE_DEFAULTS, SKILL_IMPROVE_KEYS, goldenConfig } from "../src/core/config.js";
 import { cleanupConfig } from "../src/cleanup/index.js";
 import type { CliIdentity } from "../src/core/local-cli.js";
 import type { UserId } from "../src/core/types.js";
@@ -624,5 +624,33 @@ describe("repo.check_tz (design §4, the merge check's time zone)", () => {
   it("check_tz is a known repo key", async () => {
     const err = await loadError({ ...SQLITE, repo: { ...REPO, check_zt: "UTC" } });
     expect(err.message).toMatch(/did you mean "check_tz"/);
+  });
+});
+
+describe("skill improvement keys (design 07-self-improvement)", () => {
+  it("the six keys have the decided defaults in src/core/config.ts", () => {
+    expect(SKILL_IMPROVE_DEFAULTS).toEqual({
+      skill_improve_drop_margin: 0.05,
+      skill_improve_stall_runs: 3,
+      skill_improve_target: 0.9,
+      skill_improve_noise: 0.02,
+      skill_drafts_per_day: 3,
+      skill_draft_token_budget: 50000,
+    });
+    expect([...SKILL_IMPROVE_KEYS].sort()).toEqual(Object.keys(SKILL_IMPROVE_DEFAULTS).sort());
+  });
+
+  it("each is a listed top-level key, so a config setting all six loads without an unknown-key error", async () => {
+    for (const k of SKILL_IMPROVE_KEYS) expect(TOP_LEVEL_KEYS, k).toContain(k);
+    const config = { ...REAL, store: { type: "sqlite" }, ...SKILL_IMPROVE_DEFAULTS };
+    await expect(loadConfig(root(config))).resolves.toBeDefined();
+  });
+
+  it("skill folders reuse capabilities.skill_folders: no skill_folders top-level key", async () => {
+    expect(TOP_LEVEL_KEYS).not.toContain("skill_folders");
+    expect(TOP_LEVEL_KEYS).toContain("capabilities");
+    const err = await loadError({ ...REAL, store: { type: "sqlite" }, skill_folders: ["skills"] });
+    expect(err).toBeInstanceOf(ConfigKeyError);
+    expect(err.message).toContain("skill_folders");
   });
 });

@@ -8,12 +8,13 @@ import { NO_FILES_REFUSAL, changesNoFile, commandFooter, commandState, retryPath
 import { type NeedsHuman, type ReviewOutput, SPEC_CONFLICT, type TriageOutput, doneCheckCommands, findingLine, parseNeedsHuman, parseReview, parseTriage, specFindings } from "../../../core/outputs.js";
 import { AGENT_NEEDS_HUMAN, AUTO_ACTOR, AUTO_RESOLVE_LIMIT, autoApproveRefusal, REPEATED_FAILURE, type FailureClass, failureLine, repeatsFastInfraFailure, repeatsLastFailure, preflightCheck, PREFLIGHT_ACCESS, autoResolveAttempts, autoResolveKey, effectiveTier, failureClass, floorTier, isCovered, needsSpecApproval, nextAutoResolveAttempt, parseAutoResolveKey, retryDelayMs, retryKey, retryNotBefore, GITHUB_RATE_LIMITED, runKey, sameStep, STALL_STREAK_HOLD, stallStreak, takenOver, FORGE_AUTH, NO_AUTO_RETRY, CHECKS_ENV, CHECKS_ENV_LIMIT, SESSION_RELEASED, freeMigrationStamps, takenStamps } from "../../../core/policy.js";
 import { FIX_SPEC_APPROVED, gatePathTouched } from "../../../core/improver.js"; import { autoApprovalDetail, ownerAnswersFor } from "../../../shared/command-notes.js";
+import { isScreenshotStep, queueScreenshots, screenshotStep } from "./screenshots.js";
 import { conflictCounts, conflictCountsLine } from "../../../core/resolve.js";
 import { autoApprovedFooter, droppedAnswers, droppedValues, heldNote, renderSpec } from "../../../core/spec-comment.js";
 import { STANDING_APPROVED, ruleId, specKind, standingActor } from "../../../core/standing.js";
 import { applyCompanions } from "../../../core/companions.js";
 import { atSizeCheckpoint, sizeCaps, sizeCheckpointNote, suggestedSplit } from "../../../core/split.js";
-import { type Actor, RECURRING_FAILURE, type Run, type StateChangeDetail, type WorkItem, type WorkItemId, runTokenCount } from "../../../core/types.js";
+import { type Actor, RECURRING_FAILURE, type Run, type RunKind, type StateChangeDetail, type WorkItem, type WorkItemId, runTokenCount } from "../../../core/types.js";
 import { failingTests, firstErrorLine, stripAnsi } from "../../../core/output-summary.js"; import { doneChecksDetail } from "../../../core/checks.js";
 import { PROVIDER_SETUP } from "../../../interfaces/agent-runner.js";
 import type { ActionRow } from "../../../outbound/index.js";
@@ -24,16 +25,17 @@ import { deliveredMeanwhile, deliveryGaveUp, prDelivered, prPending, pushApplied
 import { EMPTY_DIFF, emptyDiff, floorBlock, forgeAuthComment, needsHuman, preflightAccessComment, specRevision, unchangedHead } from "./notices.js";
 import { autoResolve, autoResolvedComment, resolveFailed } from "./resolve.js";
 import { failedBlock, failedCode, leakBlock, noAutoRetry, providerSetup, retryOrBlock, sessionReleased } from "./retry.js";
+import { runKindLabel } from "./run-kind-label.js";
 
 // The area files take these values from here, which imports them already: an import of core/ or ../support.js in
 // them would raise the dependency-direction and kinds counts (tests/architecture).
-export type { FailureClass, NeedsHuman, StateChangeDetail };
+export type { FailureClass, NeedsHuman, RunKind, StateChangeDetail };
 export {
   AGENT_NEEDS_HUMAN, AUTO_RESOLVE_LIMIT, CHECKS_ENV, CHECKS_ENV_LIMIT, DELIVERY_FAILED, FLOOR_TIER, FORGE_AUTH, MAX_FEEDBACK_CHARS, PREFLIGHT_ACCESS,
   PROVIDER_SETUP, RECURRING_FAILURE, REPEATED_FAILURE, SESSION_RELEASED, STALL_STREAK_HOLD, SYSTEM, autoResolveAttempts, autoResolveKey,
   commandFooter, commandState, conflictCounts, conflictCountsLine, doneChecksDetail, failingTests, failureClass, failureLine, fenced, firstErrorLine,
   footerAfter, isCovered, iso, nextAutoResolveAttempt, parseAutoResolveKey, prNumber, preflightCheck, quote, repeatsFastInfraFailure,
-  repeatsLastFailure, retryDelayMs, retryKey, retryNotBefore, retryPathsReply, runKey, sameStep, sizeCaps, stallStreak, stripAnsi, suggestedSplit,
+  repeatsLastFailure, retryDelayMs, retryKey, retryNotBefore, retryPathsReply, runKey, runKindLabel, sameStep, sizeCaps, stallStreak, stripAnsi, suggestedSplit,
   takenOver, withholdReplyLines,
 };
 
@@ -90,7 +92,9 @@ export class RunResultsUnit {
 
   async apply(run: Run): Promise<void> {
     // A merge-check run changes no item stage: the merge queue decides on its entry and acks it (RFC 0015 M8); a restart run's result is posted and acked (local-merge unit); a judge run's applies to its goal split (phases unit).
+    // Screenshot runs and screenshot reviews post and ack, changing no item state; a passing review on a UI change queues a screenshot run first (design 04-screenshots).
     if (run.kind === "merge-check" || run.kind === "restart" || run.kind === "judge") return run.kind === "restart" ? this.c.unit("local-merge").restarted(run) : run.kind === "judge" ? this.c.unit("phases").judgeResult(run) : this.c.unit("merge-queue").checked(run);
+    if (isScreenshotStep(run)) return screenshotStep(this.c, run, runTokenCount(run)); else await this.c.k.guard("screenshots", () => queueScreenshots(this.c, run));
     // A succeeded improve run's groups are filed before its ack (design §7); a fault is logged and the run acked.
     if (run.kind === "improve" && run.outcome?.status === "succeeded") await this.c.k.guard("improve filing", () => this.c.unit("improve").fileImprove(run));
     // A finished routine run's findings become pending suggestions before its ack; a fault is logged and the run acked.
@@ -117,8 +121,7 @@ export class RunResultsUnit {
       }
 
       switch (run.kind) {
-        case "merge-check": case "restart": case "judge":
-          // `apply` hands merge-check runs to the merge queue, restart runs to the local-merge unit and judge runs to the phases unit, before it reads any outcome.
+        case "merge-check": case "restart": case "judge": case "screenshot": // `apply` hands these to the merge queue, the local-merge unit, the phases unit and screenshots.ts before it reads any outcome.
           throw new Error(`${run.kind} run ${run.id} reached the run outcome path`);
         case "triage": { const context = await this.c.unit("commands").applyQueued(it, { patch: { token_cost: tokens }, actor: SYSTEM, reason: "triaged", ack_run: run.id }); if (context.enqueue) return context; // added context: one more triage (design 02-attachments)
           // The item's size caps (src/core/size-cap.ts) decide whether the estimate needs phases (src/core/split.ts).
@@ -424,9 +427,14 @@ export class RunResultsUnit {
     return pushDelivered(this.c, id, run_id);
   }
 
+  /** A run kind's plain label for owner text ("Merge check"), from the one map (run-kind-label.ts). */
+  kindLabel(kind: RunKind): string {
+    return runKindLabel(kind);
+  }
+
   /** The item's latest succeeded review run, the one the CI gate applies to. */
   async latestReview(id: WorkItemId): Promise<Run | undefined> {
-    return (await this.c.k.reader.listRuns(id)).filter((r) => r.kind === "review" && r.outcome?.status === "succeeded").at(-1);
+    return (await this.c.k.reader.listRuns(id)).filter((r) => r.kind === "review" && r.outcome?.status === "succeeded" && r.input?.screenshot_review !== true).at(-1);
   }
 }
 

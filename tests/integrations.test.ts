@@ -1,5 +1,5 @@
-// The runtime `integrations` setting (design 08-settings, 2026-11-12): it switches only an interface marked
-// `integration` (the tacit ledger) to a registered plugin, over factory.config.json's choice, with no restart. The
+// The runtime `integrations` setting (design 08-settings, 2026-11-12 and 2026-11-24): it switches only an interface marked
+// `integration` (the tacit ledger, the eval source) to a registered plugin, over factory.config.json's choice, with no restart. The
 // controller and the worker pool see a change by their next tick through the live holder LiveSettings refreshes.
 // Every ledger here is a fake: no test runs the real tacit or evolve CLI.
 
@@ -13,6 +13,7 @@ import type { TacitLedger } from "../src/interfaces/tacit-ledger.js";
 import { REGISTRY, checkIntegrations, createPlugin, withPlugin } from "../src/plugins.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { LiveTacit } from "../src/runtime/live-tacit.js";
+import { NO_EVAL_SOURCE, evalSourceName, liveEvalSource } from "../src/runtime/live-eval-source.js";
 import { type SettingsDeps, runSettings } from "../src/settings-cmd.js";
 import { WorkerPool } from "../src/worker/index.js";
 import { HealthMonitor } from "../src/ui/health.js";
@@ -53,6 +54,12 @@ describe("integrations: the registry check", () => {
     expect(checkIntegrations(REGISTRY, {})).toEqual({});
   });
 
+  it("takes a registered eval source name and refuses an unknown one", () => {
+    expect(checkIntegrations(REGISTRY, { eval_source: "agents-home" })).toEqual({ eval_source: "agents-home" });
+    expect(checkIntegrations(REGISTRY, { eval_source: "none", tacit: "agents-home" })).toEqual({ eval_source: "none", tacit: "agents-home" });
+    expect(() => checkIntegrations(REGISTRY, { eval_source: "nope" })).toThrow(/integrations: unknown SkillEvalSource plugin "nope" for eval_source/);
+  });
+
   it("refuses a guard, any other interface, an unknown interface and an unknown plugin name", () => {
     for (const guard of ["secrets", "egress", "broker"]) {
       expect(() => checkIntegrations(REGISTRY, { [guard]: "x" }), guard).toThrow(/is a guard/);
@@ -83,7 +90,7 @@ describe("integrations: settings set", () => {
 
   it("a refused set writes no override and no audit row", async () => {
     const { d, store } = await deps();
-    for (const value of [{ secrets: "env-file" }, { broker: "github" }, { egress: "pattern" }, { runner: "claude-code" }, { tacit: "nope" }, { teapot: "x" }]) {
+    for (const value of [{ secrets: "env-file" }, { broker: "github" }, { egress: "pattern" }, { runner: "claude-code" }, { tacit: "nope" }, { eval_source: "nope" }, { teapot: "x" }]) {
       const r = await runSettings(d, { action: "set", key: "integrations", value: JSON.stringify(value) });
       expect(r.ok, JSON.stringify(value)).toBe(false);
       expect(r.lines[0]).toMatch(/^refused: integrations/);
@@ -97,6 +104,12 @@ describe("integrations: settings set", () => {
     const r = await runSettings(d, { action: "set", key: "integrations", value: '{"tacit":"agents-home"}' });
     expect(r).toEqual({ ok: false, lines: ["refused: integrations changes only by the owner: Only the owner changes this key; you are local:other."] });
     expect(await store.listSettingChanges(10)).toEqual([]);
+  });
+
+  it("the owner's set of a registered eval source is stored", async () => {
+    const { d, store } = await deps({ mayOwn: async () => null });
+    expect((await runSettings(d, { action: "set", key: "integrations", value: '{"eval_source":"agents-home"}' })).ok).toBe(true);
+    expect((await store.listSettingOverrides()).map((o) => [o.key, o.value])).toContainEqual(["integrations", '{"eval_source":"agents-home"}']);
   });
 
   it("the owner's set is stored with one audit row, free in either direction", async () => {
@@ -216,5 +229,27 @@ describe("integrations: the Settings page", () => {
     expect((await readSettings(d, s)).integrations).toEqual([{ kind: "tacit", interface: "TacitLedger", plugin: "none", source: "config", configured: "none" }]);
     await store.setSettingOverride({ key: "integrations", project: "", value: '{"tacit":"agents-home"}', actor: "local:owner" });
     expect((await readSettings(d, s)).integrations).toEqual([{ kind: "tacit", interface: "TacitLedger", plugin: "agents-home", source: "setting", configured: "none" }]);
+  });
+});
+
+describe("integrations: the eval source switch", () => {
+  const sources = { configured: undefined, registered: ["none", "fake"], open: async (name: string) => ({ enabled: name !== "none", name }) };
+
+  it("builds the entry's source on each call, else the config's, with no restart", async () => {
+    const { store } = await newStore(new FakeClock());
+    const settings = new LiveSettings({ config, base: baseFromConfig(config), source: store, log: silent });
+    const s = { ...sources, configured: "none", settings };
+    expect(await liveEvalSource(s)).toEqual({ refused: NO_EVAL_SOURCE });
+    await store.setSettingOverride({ key: "integrations", project: "", value: '{"eval_source":"fake"}', actor: "local:owner" });
+    expect(await liveEvalSource(s)).toEqual({ name: "fake", source: { enabled: true, name: "fake" } });
+    await store.resetSettingOverride({ key: "integrations", project: "", actor: "local:owner" });
+    expect(await evalSourceName(s)).toBe("none");
+  });
+
+  it("refuses with no name at all, and an unknown name", async () => {
+    const { store } = await newStore(new FakeClock());
+    const settings = new LiveSettings({ config, base: baseFromConfig(config), source: store, log: silent });
+    expect(await liveEvalSource({ ...sources, settings })).toEqual({ refused: NO_EVAL_SOURCE });
+    expect(await liveEvalSource({ ...sources, configured: "gone", settings })).toEqual({ refused: expect.stringMatching(/unknown eval source "gone"/) });
   });
 });

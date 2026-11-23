@@ -32,7 +32,7 @@ import { ItemTable, type ItemTableRow } from "./item-row.js";
 import { ItemDecision } from "./decision-card.js";
 import { ItemAbout } from "./item-about.js";
 import { ClosedStatus, ItemFacts, TIMELINE_ANCHOR, timelineSentence } from "./item-facts.js";
-import { ItemChangesTab, RecheckButton } from "./item-changes.js";
+import { type ItemScreenshotReview, type ItemScreenshots, ItemChanges, ItemChangesTab, RecheckButton } from "./item-changes.js";
 import { AddModelCredential } from "./model-credential-dialog.js";
 import { ResumeNow, type SupervisorActionName, SupervisorActions } from "./system-banner.js";
 import { Thread } from "./thread.js";
@@ -369,17 +369,23 @@ export function ItemsPage() {
   );
 }
 
+/** The item page's tabs (design 04-screenshots): its overview, and the Changes tab with the changed files and the screenshots. */
+type ItemTab = "overview" | "changes";
+/** What the item API adds for the Changes tab (src/ui/item-screenshots.ts). */
+type ItemChangesFields = { screenshots?: ItemScreenshots | null; screenshot_review?: ItemScreenshotReview | null };
+
 /**
  * One work item (design 09-dashboard-item): its title, then its decision (the DecisionCard while the owner is next,
  * else its reason and "…" menu), its facts, the current run with its live state, the thread (collapsed after its
- * first message), the runs (with errors) and the timeline. An item with a branch has the tabs Overview (all of that)
- * and Changes (item-changes.tsx) in a PageToolbar under the header, kept in `?tab=`.
+ * first message), the runs (with errors) and the timeline. An item with a branch or a screenshot run has the tabs
+ * Overview and Changes (item-changes.tsx) in a PageToolbar under the header, kept in `?tab=`; About and the decision
+ * (with Merge) stay above both tabs' content.
  */
 export function ItemPage({ id }: { id: string }) {
   const now = useNow();
-  const q = useApi<ItemDetail>(API.item(id));
+  const q = useApi<ItemDetail & ItemChangesFields>(API.item(id));
   const viewer = useViewer();
-  const [tab, pickTab] = useUrlParam("tab", (v) => v === "changes");
+  const [picked, pick] = useUrlParam("tab", (v) => v === "changes");
   if (q.isError) return <><PageHeader title={t("app.workItem")} /><ErrorNote error={q.error} /></>;
   if (!q.data) return <><PageHeader title={t("app.workItem")} /><Loading rows={6} label="loading.item" onRetry={() => void q.refetch()} /></>;
   const { item, runs, timeline } = q.data;
@@ -392,6 +398,9 @@ export function ItemPage({ id }: { id: string }) {
   const transcripts = q.data.transcripts ?? {};
   const short = shortItemId(item.id);
   const level = item.item_phase;
+  const hasTabs = item.has_changes === true || q.data.screenshots != null;
+  const tab: ItemTab = hasTabs && picked === "changes" ? "changes" : "overview";
+  const tabs: { id: ItemTab; label: string }[] = [{ id: "overview", label: t("item.tabOverview") }, { id: "changes", label: t("item.tabChanges") }];
   return (
     <>
       <nav aria-label={t("item.breadcrumb")} className="mb-1 text-sm">
@@ -400,19 +409,7 @@ export function ItemPage({ id }: { id: string }) {
         <Link href={itemPath(item.id)} aria-current="page" title={item.id} className={cn("inline-block max-w-[16ch] truncate align-bottom tabular-nums", ID_CLASS)}>{short}</Link>
       </nav>
       <PageHeader title={<span data-raw>{item.title ?? short}</span>} actions={runs.some(isInteractiveRun) ? <InteractiveBadge /> : undefined} />
-      {item.has_changes && (
-        <PageToolbar
-          tabs={
-            <Tabs
-              label={t("item.views")}
-              options={[{ id: "overview", label: t("item.tabOverview") }, { id: "changes", label: t("item.tabChanges") }]}
-              value={tab === "changes" ? "changes" : "overview"}
-              onChange={(v) => pickTab(v === "changes" ? v : null)}
-            />
-          }
-        />
-      )}
-      {item.has_changes && tab === "changes" ? <ItemChangesTab id={item.id} /> : <>
+      {hasTabs && <PageToolbar tabs={<Tabs label={t("item.views")} options={tabs} value={tab} onChange={(v) => pick(v === "overview" ? null : v)} />} />}
       {item.parent_id && (
         <p data-testid="parent" className="mt-1 text-sm">
           {t("item.phase", { phase: item.phase ?? "?" })} <Link href={itemPath(item.parent_id)} className={LINK_CLASS}>{t("item.splitParent")}</Link>
@@ -429,57 +426,65 @@ export function ItemPage({ id }: { id: string }) {
           </p>
         ) : null}
       />
-      <ItemFacts item={item} now={now} />
-      <Disclosure data-ids className="mt-2" summary={t("ids.summary")}>
-        <dl className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
-          <dt className="text-xs text-text-2">{t("ids.item")}</dt>
-          <dd className="min-w-0"><CopyText value={item.id} what="item ID" /></dd>
-          <dt className="text-xs text-text-2">{t("ids.source")}</dt>
-          <dd className="min-w-0"><CopyText value={item.source.id} what="source ID" /></dd>
-        </dl>
-      </Disclosure>
-      <CurrentRun runs={runs} itemId={item.id} now={now} />
-      <Thread entries={q.data.thread ?? []} now={now} />
-      <Phases phases={item.phases ?? []} />
-      {item.merge_check && (
-        <Card title={t("item.mergeCheck")}>
-          <p className="text-sm" data-merge-check-detail>
-            <MergeCheckNote check={item.merge_check} />
-            {item.merge_check.base_sha && item.merge_check.checked_at && (
-              <span className="ml-2 text-text-2">
-                {t("item.againstBase")} <code className="font-mono text-xs" title={item.merge_check.base_sha}>{item.merge_check.base_sha.slice(0, 12)}</code>, <When at={item.merge_check.checked_at} now={now} label="item.checkedAgo" />
-              </span>
-            )}
-          </p>
-          {item.merge_check.conflicts.length > 0 && (
-            <ul aria-label={t("item.conflicting")} className="mt-1 list-disc pl-6 font-mono text-xs">
-              {item.merge_check.conflicts.map((f) => <li key={f}>{f}</li>)}
-            </ul>
-          )}
-          {item.merge_check.recheck && <RecheckButton id={item.id} />}
-        </Card>
-      )}
-      <Card title={t("item.runs")} count={runs.length}>
-        <ItemTable label={t("item.runs")} head={RUN_HEAD()} empty={t("item.noRun")} rows={foldRuns(runs).map(({ run, tries }) => runRow(run, tries, item.id, (transcripts[run.id]?.length ?? 0) > 0, now))} />
-      </Card>
-      <Card id={TIMELINE_ANCHOR} title={t("item.timeline")} count={entries.length}>
-        <ol className="space-y-1 text-sm">
-          {entries.map((e) => {
-            if (e.kind === "sleep") return (
-              <li key={`sleep:${e.h.worker_id}:${e.h.woke_at}`} className="flex gap-3" data-testid="host-sleep">
-                <span className="w-16 shrink-0 text-right text-text-3 tabular-nums"><When at={e.h.woke_at} now={now} /></span>
-                <span className="min-w-0">
-                  <span className="font-medium">{sleptText(e.h.gap_ms)}</span>
-                  <span className="text-text-3">{t("item.on")}</span>
-                  <WorkerName id={e.h.worker_id} />
+      {tab === "changes" ? (
+        <>
+          {item.has_changes && <ItemChangesTab id={item.id} />}
+          <ItemChanges itemId={item.id} screenshots={q.data.screenshots ?? null} review={q.data.screenshot_review ?? null} />
+        </>
+      ) : (
+        <>
+        <ItemFacts item={item} now={now} />
+        <Disclosure data-ids className="mt-2" summary={t("ids.summary")}>
+          <dl className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
+            <dt className="text-xs text-text-2">{t("ids.item")}</dt>
+            <dd className="min-w-0"><CopyText value={item.id} what="item ID" /></dd>
+            <dt className="text-xs text-text-2">{t("ids.source")}</dt>
+            <dd className="min-w-0"><CopyText value={item.source.id} what="source ID" /></dd>
+          </dl>
+        </Disclosure>
+        <CurrentRun runs={runs} itemId={item.id} now={now} />
+        <Thread entries={q.data.thread ?? []} now={now} />
+        <Phases phases={item.phases ?? []} />
+        {item.merge_check && (
+          <Card title={t("item.mergeCheck")}>
+            <p className="text-sm" data-merge-check-detail>
+              <MergeCheckNote check={item.merge_check} />
+              {item.merge_check.base_sha && item.merge_check.checked_at && (
+                <span className="ml-2 text-text-2">
+                  {t("item.againstBase")} <code className="font-mono text-xs" title={item.merge_check.base_sha}>{item.merge_check.base_sha.slice(0, 12)}</code>, <When at={item.merge_check.checked_at} now={now} label="item.checkedAgo" />
                 </span>
-              </li>
-            );
-            return <TimelineRow key={e.t.version} entry={e.t} now={now} viewer={viewer} />;
-          })}
-        </ol>
-      </Card>
-      </>}
+              )}
+            </p>
+            {item.merge_check.conflicts.length > 0 && (
+              <ul aria-label={t("item.conflicting")} className="mt-1 list-disc pl-6 font-mono text-xs">
+                {item.merge_check.conflicts.map((f) => <li key={f}>{f}</li>)}
+              </ul>
+            )}
+            {item.merge_check.recheck && <RecheckButton id={item.id} />}
+          </Card>
+        )}
+        <Card title={t("item.runs")} count={runs.length}>
+          <ItemTable label={t("item.runs")} head={RUN_HEAD()} empty={t("item.noRun")} rows={foldRuns(runs).map(({ run, tries }) => runRow(run, tries, item.id, (transcripts[run.id]?.length ?? 0) > 0, now))} />
+        </Card>
+        <Card id={TIMELINE_ANCHOR} title={t("item.timeline")} count={entries.length}>
+          <ol className="space-y-1 text-sm">
+            {entries.map((e) => {
+              if (e.kind === "sleep") return (
+                <li key={`sleep:${e.h.worker_id}:${e.h.woke_at}`} className="flex gap-3" data-testid="host-sleep">
+                  <span className="w-16 shrink-0 text-right text-text-3 tabular-nums"><When at={e.h.woke_at} now={now} /></span>
+                  <span className="min-w-0">
+                    <span className="font-medium">{sleptText(e.h.gap_ms)}</span>
+                    <span className="text-text-3">{t("item.on")}</span>
+                    <WorkerName id={e.h.worker_id} />
+                  </span>
+                </li>
+              );
+              return <TimelineRow key={e.t.version} entry={e.t} now={now} viewer={viewer} />;
+            })}
+          </ol>
+        </Card>
+        </>
+      )}
     </>
   );
 }

@@ -1,8 +1,8 @@
 // The dashboard's POST route table (design §9): each write route's path match, CSRF token and handler, and the
 // guards every one passes after server.ts's Host check, in this order: Origin equal to the Host's own http origin,
 // Content-Type application/json, the per-process CSRF token in x-csrf-token, the body size, then the route. The
-// resume, stop, standing, improve, proposal verdict, migrate and supervisor routes then check the owner
-// (approve_spec), the rules, schedules, calendar, model credential and Ask routes the owner, the pack approvals route
+// resume, stop, alarm dismiss, standing, improve, proposal verdict, migrate, supervisor and evals write routes then check the owner
+// (approve_spec), the rules, schedules, calendar, model credential, Ask and evals run routes the owner (ownerOf), the pack approvals route
 // approve_tool, the task and attachments routes the commands actor (the project file routes, project-files.ts PROJECT_FILE_ROUTES, only to
 // set the folder and to save; their reads are POSTs too, so they pass every guard), the plugins import the page's factory user, Re-check (design 09-dashboard-item; changes.ts) the commands token. The item commands
 // route (commands.ts) runs its own guards in the same order. A new write route adds one entry to WRITE_ROUTES (and
@@ -12,6 +12,7 @@ import { type ApiResult, apiError } from "./api.js";
 import { commandsPathId, commandsPost, staleCsrf } from "./commands.js";
 import { SETTINGS_PATH, csrfMatches, writeSettings } from "./settings-api.js";
 import { RESUME_PATH, STOP_PATH, resumePause, stopAllAgents } from "./pause-api.js";
+import { ALARM_DISMISS_PATH, dismissPost } from "./alarm-api.js";
 import { STANDING_PATH, writeStanding } from "./standing-api.js";
 import { PACK_APPROVALS_PATH, writePackApproval } from "./packs-api.js";
 import { TASK_WRITES } from "./tasks-api.js";
@@ -28,11 +29,14 @@ import { MIGRATE_PATH, SUPERVISOR_PATH, postMigrate, postSupervisor } from "./mi
 import { ATTACH_PATH, writeAttachment } from "./attachments-api.js";
 import { attach } from "../core/attachments.js";
 import { recheckMergeCheck, recheckPathId } from "./changes.js";
+import { EVALS_WRITE_PATH, skillOf, writeEvals } from "./evals-api.js";
+import { EVALS_RUNS_PATH, postSkillEvalRun } from "./evals-run-api.js";
+import { liveEvalSource } from "../runtime/live-eval-source.js";
 import type { ServerDeps, UiRequest } from "./server.js";
 
 /** The 405 text for a POST to any path no write route takes. */
 export const POST_ONLY =
-  "Only the settings, item commands, pause resume, standing, improve run, pack approvals, plugins import, rule verdict, rule edit, pushback dismiss, schedule, proposal verdict, task, project file, calendar, model credential, data ask, migrate, supervisor, attachments and Re-check routes take a POST.";
+  "Only the settings, item commands, pause resume, alarm dismiss, standing, improve run, pack approvals, plugins import, rule verdict, rule edit, pushback dismiss, schedule, proposal verdict, task, project file, calendar, model credential, data ask, migrate, supervisor, attachments, evals write, evals run and Re-check routes take a POST.";
 
 /** One POST route: when it is wired for `path`, the CSRF token it checks, and its handler (after the guards). */
 export interface WriteRoute {
@@ -49,6 +53,7 @@ const WRITE_ROUTES: readonly WriteRoute[] = [
   { matches: (d, p) => p === SETTINGS_PATH && d.settings !== undefined, token: settingsToken, run: (d, _p, b) => writeSettings(d, d.settings!, b) },
   { matches: (d, p) => p === RESUME_PATH && d.pauses !== undefined, token: pausesToken, run: (d, _p, b) => resumePause(d, d.pauses!, b) },
   { matches: (d, p) => p === STOP_PATH && d.pauses !== undefined, token: pausesToken, run: (d) => stopAllAgents(d, d.pauses!) },
+  { matches: (d, p) => p === ALARM_DISMISS_PATH && d.pauses !== undefined, token: pausesToken, run: (d, _p, b) => dismissPost(d, d.pauses!, b) },
   { matches: (d, p) => p === STANDING_PATH && d.pauses !== undefined, token: pausesToken, run: (d, _p, b) => writeStanding(d, d.pauses!, b) },
   { matches: (d, p) => p === IMPROVE_RUN_PATH && improveRunWired(d), token: pausesToken, run: (d) => runImproveNow(d as ImproveRunDeps) },
   { matches: (d, p) => p === PACK_APPROVALS_PATH && d.pauses?.auth !== undefined, token: pausesToken, run: (d, _p, b) => writePackApproval(d, d.pauses!, b) },
@@ -76,6 +81,12 @@ const WRITE_ROUTES: readonly WriteRoute[] = [
   { matches: (d, p) => p === DATA_ASK_PATH && d.settings?.ask !== undefined, token: settingsToken, run: (d, _p, b) => askData(d, d.settings!.ask!, b) },
   { matches: (d, p) => p === MIGRATE_PATH && d.pauses !== undefined && d.migrate !== undefined, token: pausesToken, run: (d, _p, b) => postMigrate(d.migrate!, d.pauses!, b) },
   { matches: (d, p) => p === SUPERVISOR_PATH && d.pauses !== undefined && d.migrate !== undefined, token: pausesToken, run: (d, _p, b) => postSupervisor(d.migrate!, d.pauses!, b) },
+  { matches: (d, p) => p === EVALS_WRITE_PATH && d.pauses !== undefined && d.evals !== undefined, token: pausesToken, run: (d, _p, b) => writeEvals(d, d.evals!, d.pauses!, b, liveEvalSource) },
+  {
+    matches: (d, p) => EVALS_RUNS_PATH.test(p) && d.pauses !== undefined && d.evals?.run !== undefined,
+    token: pausesToken,
+    run: (d, p, b) => postSkillEvalRun(d, skillOf(EVALS_RUNS_PATH.exec(p)?.[1]), b, { run: d.evals!.run!, owner: (does) => ownerOf(d, d.pauses!, does), log: d.pauses!.log }),
+  },
   { matches: (d, p) => recheckPathId(p) !== null && d.commands !== undefined, token: (d) => d.commands!.token, run: (d, p) => recheckMergeCheck(d, recheckPathId(p)!) },
 ];
 

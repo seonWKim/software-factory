@@ -167,7 +167,7 @@ describe("the run-failed comment of a repeated failure", () => {
     expect(it).toMatchObject({ blocked_on: "human", blocked_reason: "repeated_failure" });
     const body = source.comments.find((c) => c.marker.includes("run-failed:"))!.body;
     const [sentence, rest] = body.split("<details>");
-    expect(sentence).toContain("The triage run failed twice in a row the same way: the agent exited with an error.");
+    expect(sentence).toContain("The Triage run failed twice in a row the same way: the agent exited with an error.");
     expect(sentence).not.toMatch(/`[a-z]+_[a-z]+`/);
     expect(sentence).not.toContain("agent_failed");
     expect(rest).toContain("<summary>Details</summary>");

@@ -15,7 +15,8 @@
 // lets src/compose.ts derive it from the sources (withForgeDefault, issue #273). CalendarSource is optional too, and
 // selected as a list by its own top-level `calendar` key (default [], design 02-tasks). ScheduleAction is optional
 // (design 08-schedules): leaving `plugins.schedule_action` out selects none, and no fired occurrence is claimed.
-// SkillEvalSource is optional (design 06-measurement): leaving `plugins.eval_source` out is no source, as `none` is.
+// SkillEvalSource is optional (design 06-measurement): leaving `plugins.eval_source` out is no source, as `none` is; it is
+// an integration (design 08-settings), so the runtime `integrations` setting may switch it.
 
 import { pathToFileURL } from "node:url";
 import { ConfigKeyError, suggestion } from "./config-keys.js";
@@ -93,7 +94,7 @@ const KINDS: { readonly [K in PluginKind]: KindInfo } = {
   tacit: { interface: "TacitLedger", configKey: "plugins.tacit", guard: false, optional: false, integration: true },
   calendar: { interface: "CalendarSource", configKey: "calendar", guard: false, optional: true },
   schedule_action: { interface: "ScheduleAction", configKey: "plugins.schedule_action", guard: false, optional: true },
-  eval_source: { interface: "SkillEvalSource", configKey: "plugins.eval_source", guard: false, optional: true },
+  eval_source: { interface: "SkillEvalSource", configKey: "plugins.eval_source", guard: false, optional: true, integration: true },
 };
 
 export const PLUGIN_KINDS = Object.keys(KINDS) as PluginKind[];

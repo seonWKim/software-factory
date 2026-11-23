@@ -164,8 +164,8 @@ export interface StateChange {
 export type StateChangeDetail = Record<string, string | number | boolean | null>;
 
 /**
- * `update` runs no agent: the worker merges the base branch into a factory PR branch (design §5).
- * `resolve` is the agent run a human starts with `/resolve` on a merge conflict (design §5).
+ * `update` runs no agent: the worker merges the base branch into a factory PR branch (design §5). `resolve` is the agent
+ * run a human starts with `/resolve` on a merge conflict (design §5). `screenshot` runs no agent (design 04-screenshots).
  * `manual` is a record, not work: a person pushed to the item's PR branch (design 2026-11-01). It is written already succeeded and acknowledged, so
  * no worker claims it and the controller applies nothing from it. `judge`: one read-only run per merged goal phase, on its goal split's parent (04-split-specs).
  * `interactive`: a person's own LLM session (`factory session`, design §5, 2026-11-01), written running with a lease,
@@ -173,7 +173,7 @@ export type StateChangeDetail = Record<string, string | number | boolean | null>
  * `improve` runs no agent (design §7): it groups the failed runs of a time window into one stored report, with one plain model call (no tools)
  * per group of two or more runs for a draft cause and fix. It belongs to its project's system work item, queued daily and by `factory improve`.
  */
-export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual" | "interactive" | "improve" | "merge-check" | "restart" | "judge" | "routine";
+export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual" | "interactive" | "improve" | "merge-check" | "restart" | "screenshot" | "judge" | "routine";
 
 /**
  * What the controller hands a run beyond the work item. `notes`: a human's `/resolve` text, or the newest note a `rereview` runs for, untrusted. `wip`: the failed implement run's commits on the forge; the retry pushes them with no agent run (design §5 Restarts).
@@ -190,9 +190,9 @@ export interface RunInput {
   /** An implement run's failing tests from the failed CI job's log after its one rerun (design 05-ci-gate), redacted, untrusted. */
   ci_failing_tests?: string;
   merge_check?: { base_ref: string; branches: string[] }; // a merge-check run's base and the branches merged onto it in queue order, this change last (RFC 0015 M8)
-  /** A judge run's goal lines, merged phase and recorded phases' titles (design 04-split-specs), fixed at enqueue so a retry judges the same. */
-  judge?: { phase: number; goal_done_when: string[]; title: string; problem: string; done_criteria: string[]; merge_sha: string; phases: string[] };
+  /** A judge run's goal lines, merged phase and recorded phases' titles (design 04-split-specs), fixed at enqueue so a retry judges the same. */ judge?: { phase: number; goal_done_when: string[]; title: string; problem: string; done_criteria: string[]; merge_sha: string; phases: string[] };
   routine?: { instruction: string; url: string | null }; // a `routine` run (read-only: Read, Glob, Grep, Browse): the owner's instruction and the one URL Browse may GET, fixed at enqueue
+  /** A screenshot run's passing review; a screenshot review's flag, its screenshot run and what that run stored (design 04-screenshots). */ review_run_id?: string; screenshot_review?: true; screenshot_run_id?: string; screenshots?: { captures: { page: string; width: number; theme: string; key: string }[]; reason: string | null };
 }
 
 /** One check on a PR's head commit and its result. The name is forge text: untrusted (G5). */

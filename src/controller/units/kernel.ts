@@ -19,6 +19,8 @@ type SourceAdapter = NonNullable<ControllerDeps["source"]>;
 /** The routines unit's constants and types (src/core/routines.ts), through the kernel, which reads and writes for it. */
 export { ROUTINE_CAP, ROUTINE_CAP_APPROVED, ROUTINE_CAP_REJECTED, SNOOZE_MS } from "../../core/routines.js";
 export type { RoutinePlan, RoutineSuggestion } from "../../core/routines.js";
+/** The core types the improve unit uses, through the kernel, so the unit adds no legacy import. */
+export type { FiledPattern, Run, SourceRef, Timestamp, WorkItem } from "../../core/types.js";
 
 /**
  * The sources a controller runs (design 2026-11-01): any number, no two of one type. PRs come from the forge,

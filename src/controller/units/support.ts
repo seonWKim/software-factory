@@ -63,9 +63,10 @@ export const GITHUB_SOURCE_TYPE: SourceType = "github_issue";
  * `/retry [notes]`: the failed step again under a new key. `widen` (a `+paths`, issue #280) applies only to a
  * failed implement or resolve run; on any other kind it is refused and nothing changes. The note, without its
  * `+paths` line, goes on the state change (and is a resolve run's notes). At the review loop limit it is an implement run with loop_count back at 0 and
- * the item RUNNING (a human chose to try again). On a `recurring_failure` hold it only lifts the hold.
+ * the item RUNNING (a human chose to try again). On a `recurring_failure` hold it only lifts the hold. `label` names a
+ * run kind in the refusal: the run-results unit's `kindLabel`, which this shared file takes as an argument.
  */
-export function retry(it: WorkItem, actor: Actor, kind: RunKind | undefined, note: string | null, widen: Widening | null): Decision | Refusal {
+export function retry(it: WorkItem, actor: Actor, kind: RunKind | undefined, note: string | null, widen: Widening | null, label: (kind: RunKind) => string): Decision | Refusal {
   // A recurring failure's hold (design 05-alarms) has its runs queued already: lifted, they are claimed.
   if (it.blocked_on === "human" && it.blocked_reason === RECURRING_FAILURE) {
     if (widen) return { refuse: "`+paths` does not apply to an item held for a recurring failure, which has no failed run to widen; reply `/retry` without `+paths`" };
@@ -73,7 +74,7 @@ export function retry(it: WorkItem, actor: Actor, kind: RunKind | undefined, not
   }
   if (it.blocked_on !== "human" || !kind) return { refuse: "there is no failed run to retry" };
   if (widen && kind !== "implement" && kind !== "resolve") {
-    return { refuse: `\`+paths\` applies only to a failed implement or resolve run, and this item's failed run is a ${kind} run; reply \`/retry\` without \`+paths\`` };
+    return { refuse: `\`+paths\` applies only to a failed implement or resolve run, and this item's failed run is a ${label(kind)} run; reply \`/retry\` without \`+paths\`` };
   }
   const w = widen ?? NO_WIDENING;
   const detail = { ...(note ? { note } : {}), ...w.detail };

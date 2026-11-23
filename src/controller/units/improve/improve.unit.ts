@@ -6,7 +6,7 @@ import {
   type DesignLearningSource, FIX_SPEC_APPROVED, type FilingDeps, LEARNINGS_HEAD, LEARNINGS_PATH, captureDesignLearning, captureKey, enqueueImprove, fileProposals,
   fileReport, isDesignFinding, markerKey, renderLine, settleOutcomes, triggerImprove, utcDay,
 } from "../../../core/improver.js";
-import { type FiledPattern, type Run, type SourceRef, type Timestamp, type WorkItem } from "../../../core/types.js";
+import type { FiledPattern, Run, SourceRef, Timestamp, WorkItem } from "../kernel.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
