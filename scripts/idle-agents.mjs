@@ -31,7 +31,7 @@ import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync, statSync
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
-import { countBrowserCalls, describeRun, localDate, pick, revisionLine } from "./idle-agents/schedule.mjs";
+import { countBrowserCalls, describeRun, localDate, pick, revisionLine, withSandbox } from "./idle-agents/schedule.mjs";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DIR = join(REPO, ".factory", "idle-agents");
@@ -225,10 +225,8 @@ async function runOnce({ agent, force }) {
   if (!roster.includes(chosen)) throw new Error(`unknown agent ${chosen}; agents: ${roster.join(", ")}`);
   if (!IDLE_ONLY.has(chosen) && !up[chosen]) return log(`${chosen}: its project's Gongbang does not answer; skipped`);
   writeFileSync(LOCK, String(process.pid));
-  let sandbox = null;
   try {
-    sandbox = await startSandbox();
-    state.runs[chosen] = await runAgent(chosen, sandbox.url, projects[chosen]);
+    state.runs[chosen] = await withSandbox(startSandbox, (url) => runAgent(chosen, url, projects[chosen]));
     state.last[chosen] = new Date().toISOString();
     writeFileSync(STATE, JSON.stringify(state, null, 2));
     log(`${chosen} done`);
@@ -236,7 +234,6 @@ async function runOnce({ agent, force }) {
     log(`${chosen} failed: ${err.message}`);
     appendFileSync(join(DIR, "errors.log"), `${new Date().toISOString()} ${chosen}: ${err.message}\n`);
   } finally {
-    await sandbox?.stop();
     if (existsSync(LOCK)) unlinkSync(LOCK);
   }
 }

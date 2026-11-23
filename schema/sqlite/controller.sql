@@ -286,7 +286,7 @@ CREATE TABLE controller_schedule_runs (
     schedule_id    TEXT NOT NULL,
     occurrence_at  TEXT NOT NULL,
     outcome        TEXT NOT NULL,
-    recorded_at    TEXT NOT NULL,
+    recorded_at    TEXT NOT NULL, queued_implement_runs INTEGER,
     PRIMARY KEY (schedule_id, occurrence_at)
   );
 
@@ -300,7 +300,7 @@ CREATE TABLE controller_schedules (
     created_at     TEXT NOT NULL,
     next_due_at    TEXT,
     running_since  TEXT
-  );
+  , skip_when_busy INTEGER);
 
 CREATE TABLE controller_signals (
     id            TEXT PRIMARY KEY,
