@@ -85,7 +85,7 @@ export class LocalMergeUnit {
    * Authorized by the local auth plugin for `approve_merge`, the approver role. Refused, with a reply, for an item not waiting
    * for a merge, and at once for a branch that conflicts with the local base, which starts its automatic resolve. Otherwise the change enters the merge
    * queue (RFC 0015 M8, the merge-queue unit): a merge-check run checks its merged result, and only a green one
-   * lands (`requestMerge`, an outbound delivery); a red one is removed and the reply says why, and the item stays in merge_pending. A checkout of
+   * lands (`requestMerge`, an outbound delivery); the item waits at merge_queued while its entry is live; a red one is removed, the item goes back to merge_pending and the reply says why. A second merge of a queued change (`already`) changes nothing: no return, no post. A checkout of
    * the base is fast-forwarded when clean and left as it was otherwise (the close's detail and the reply say so).
    * `who` AUTO_MERGE is auto mode's merge (autoMergeStep, design 03-risk): no person to authorize, actor
    * `system:auto`, and the state change names the mode change it ran under. Safe to run twice: the same `key` is
@@ -128,8 +128,8 @@ export class LocalMergeUnit {
         // Ready and approved: the change enters the merge queue, which checks its merged result before it lands.
         if (again) await this.c.unit("transitions").decide(item.id, async (it) => this.c.unit("commands").merge.again(it, await this.c.k.reader.listStateChanges(it.id), { kind: "user", id: principal.user_id as UserId }));
         const r = await this.c.unit("merge-queue").enter(item, auto ? AUTO_ACTOR : principal.user_id, key, detail);
-        if (r === null) return null;
-        refusal = r;
+        if (r === null || "already" in r) return null;
+        refusal = r.refusal;
       }
     }
     await this.refused(item.id, auto ? AUTO_ACTOR : "", key, refusal);
@@ -388,11 +388,11 @@ export class LocalMergeUnit {
   }
 
   /**
-   * A refusal posted on the item: why the merge did not apply, keyed by `key`. An item whose Merge was pressed on the
-   * dashboard (merge_queued) goes back to merge_pending with it first, so its row shows why at once.
+   * A refusal posted on the item: why the merge did not apply, keyed by `key`. An item at merge_queued goes back to
+   * merge_pending with it first (MergeQueueUnit.returned), so its row shows why at once.
    */
   async refused(id: WorkItemId, by: string, key: string, refusal: string): Promise<void> {
-    await this.c.unit("commands").mergeReturned(id, refusal);
+    await this.c.unit("merge-queue").returned(id, refusal);
     const item = await this.c.k.reader.getWorkItem(id);
     if (!item) return;
     this.c.k.d.log.info("command refused", { work_item_id: id, command: MERGE_COMMAND, reason: refusal.split("\n")[0]!.slice(0, 300) });
